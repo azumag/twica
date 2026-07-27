@@ -18,7 +18,7 @@ vi.mock('@/lib/overlay/demo-event-store', () => ({
 vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: vi.fn(),
   getRateLimitIdentifier: vi.fn(),
-  rateLimits: { gachaDemoBroadcast: {} },
+  rateLimits: { gachaDemoBroadcast: {}, gachaDemoCard: {} },
 }))
 
 const mockGetSession = vi.mocked(getSession)
@@ -108,7 +108,10 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
       expect.anything(),
       'twitch-1'
     )
-    expect(mockCheckRateLimit).toHaveBeenCalledTimes(1)
+    // #735: 全リクエスト共通のIPベース制限(gachaDemoCard)がbroadcast専用制限
+    // (gachaDemoBroadcast)より先に追加されたため、broadcastリクエストは2回
+    // checkRateLimitを通る。
+    expect(mockCheckRateLimit).toHaveBeenCalledTimes(2)
   })
 
   it('returns 429 before publishing when the dedicated limiter is exhausted', async () => {
@@ -145,7 +148,9 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     expect(body.card).toBeDefined()
     expect(mockGetSession).not.toHaveBeenCalled()
     expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
-    expect(mockCheckRateLimit).not.toHaveBeenCalled()
+    // #735: broadcast専用の制限は通らないが、全リクエスト共通のIPベース制限は通る
+    expect(mockCheckRateLimit).toHaveBeenCalledTimes(1)
+    expect(mockGetRateLimitIdentifier).toHaveBeenCalledWith(expect.anything())
   })
 
   it('does not publish or authenticate when broadcast=true lacks a streamerId', async () => {
@@ -156,6 +161,22 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     expect(body.card).toBeDefined()
     expect(mockGetSession).not.toHaveBeenCalled()
     expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
-    expect(mockCheckRateLimit).not.toHaveBeenCalled()
+    expect(mockCheckRateLimit).toHaveBeenCalledTimes(1)
+  })
+
+  it('#735: 全リクエスト共通のレートリミットに達した場合はセッション不要で429を返す', async () => {
+    mockCheckRateLimit.mockResolvedValue({
+      success: false,
+      limit: 30,
+      remaining: 0,
+      reset: Date.now() + 60_000,
+    })
+
+    const response = await POST(makeRequest({ cardId: 'some-card' }))
+    const body = await response.json()
+
+    expect(response.status).toBe(429)
+    expect(body.error).toBe(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)
+    expect(mockGetSession).not.toHaveBeenCalled()
   })
 })

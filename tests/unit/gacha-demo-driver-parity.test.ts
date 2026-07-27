@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { and, eq } from 'drizzle-orm'
 import { POST } from '@/app/api/gacha/demo/route'
 import { getDb } from '@/lib/db/client'
+import { cards as cardsTable } from '@/lib/db/schema'
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -61,6 +63,7 @@ interface PgResponse {
 
 function createDrizzleDbMock(selects: PgResponse[]) {
   let selectIndex = 0
+  const whereConditions: unknown[] = []
   const db = {
     select: vi.fn(() => {
       const response = selects[Math.min(selectIndex, selects.length - 1)] ?? { rows: [] }
@@ -70,14 +73,17 @@ function createDrizzleDbMock(selects: PgResponse[]) {
         : Promise.resolve(response.rows ?? [])
       const builder: any = {
         from: vi.fn(() => builder),
-        where: vi.fn(() => builder),
+        where: vi.fn((condition: unknown) => {
+          whereConditions.push(condition)
+          return builder
+        }),
         limit: vi.fn(() => builder),
         then: (onFulfilled: any, onRejected: any) => resolve().then(onFulfilled, onRejected),
       }
       return builder
     }),
   }
-  return { db }
+  return { db, whereConditions }
 }
 
 function primePgDb(selects: PgResponse[]) {
@@ -134,6 +140,43 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
     expect(body.userTwitchUsername).toBe('DemoUser')
+  })
+
+  it('#735: cardId指定時はis_active=trueかつ指定streamerId配下に絞り込む', async () => {
+    const pg = primePgDb([{ rows: [CARD_ROW] }])
+
+    const response = await POST(request({ cardId: 'card-1', streamerId: 'streamer-1' }))
+
+    expect(response.status).toBe(200)
+    expect(pg.whereConditions[0]).toEqual(
+      and(
+        eq(cardsTable.id, 'card-1'),
+        eq(cardsTable.streamer_id, 'streamer-1'),
+        eq(cardsTable.is_active, true)
+      )
+    )
+  })
+
+  it('#735: streamerId未指定時はis_active=trueのみで絞り込み、streamer_idは条件に含めない', async () => {
+    const pg = primePgDb([{ rows: [CARD_ROW] }])
+
+    const response = await POST(request({ cardId: 'card-1' }))
+
+    expect(response.status).toBe(200)
+    expect(pg.whereConditions[0]).toEqual(
+      and(eq(cardsTable.id, 'card-1'), eq(cardsTable.is_active, true))
+    )
+  })
+
+  it('#735: 絞り込みでヒットしない場合(非公開カード等)はエラーにせず組み込みデモカードへフォールバックする', async () => {
+    primePgDb([{ rows: [] }])
+
+    const response = await POST(request({ cardId: 'inactive-or-foreign-card', streamerId: 'streamer-1' }))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.card).toBeDefined()
+    expect(body.card.id).not.toBe('inactive-or-foreign-card')
   })
 
   it('retries with CARDS_SAFE_COLUMNS when production-only battle columns are absent', async () => {

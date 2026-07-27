@@ -13,14 +13,27 @@ import { cards as cardsTable } from "@/lib/db/schema";
 import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
 import { publishOverlayDemoEvent } from "@/lib/overlay/demo-event-store";
 
-/** Fetch one card from the authoritative PlanetScale database. */
-async function fetchCardByIdPg(cardId: string): Promise<Card | null> {
+/**
+ * Fetch one card from the authoritative PlanetScale database.
+ *
+ * #735: 元実装は is_active / streamer_id を一切見ずに任意の cardId を返していた
+ * ため、id さえ分かれば非公開(inactive)カードの name/description/image_url を
+ * 誰でも取得できた。デモ用途に必要な範囲(有効カードのみ、可能なら指定
+ * streamerId 配下のみ)に絞る。絞り込みでヒットしない場合は null を返し、
+ * 呼び出し側が streamerId のランダムカード → 組み込みデモカードへ
+ * フォールバックする既存の縮退chainに委ねる。
+ */
+async function fetchCardByIdPg(cardId: string, streamerId: string | null): Promise<Card | null> {
+  const condition = streamerId
+    ? and(eq(cardsTable.id, cardId), eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true))
+    : and(eq(cardsTable.id, cardId), eq(cardsTable.is_active, true));
+
   async function selectRow(useSafeColumns: boolean) {
     return withDbRetry(
       async () => {
         const { db } = await getDb();
         const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-        return query.from(cardsTable).where(eq(cardsTable.id, cardId)).limit(1);
+        return query.from(cardsTable).where(condition).limit(1);
       },
       "gacha/demo(fetch card by id)",
       { idempotent: true },
@@ -169,6 +182,29 @@ export async function POST(request: NextRequest) {
       // Treat invalid/empty JSON as a parameterless public demo request.
     }
 
+    // #735: このエンドポイントは意図的に無認証(OBSオーバーレイのデモ表示・
+    // プレビューUIから直接呼ばれる)だが、レートリミットが無いと任意cardIdの
+    // enumerationに使えてしまう。broadcast分岐は専用の制限(gachaDemoBroadcast)
+    // を別途持つため、ここでは全リクエストに共通の低めの制限をIPベースで課す。
+    const generalIdentifier = await getRateLimitIdentifier(request);
+    const generalRateLimitResult = await checkRateLimit(rateLimits.gachaDemoCard, generalIdentifier);
+    if (!generalRateLimitResult.success) {
+      return NextResponse.json<ApiRateLimitResponse>(
+        {
+          error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+          retryAfter: (generalRateLimitResult.reset || 0) - Math.floor(Date.now() / 1000),
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': String(generalRateLimitResult.limit),
+            'X-RateLimit-Remaining': String(generalRateLimitResult.remaining),
+            'X-RateLimit-Reset': String(generalRateLimitResult.reset),
+          },
+        }
+      );
+    }
+
     if (broadcast && streamerId) {
       const session = await getSession();
       if (!session) {
@@ -214,7 +250,7 @@ export async function POST(request: NextRequest) {
     };
 
     if (cardId && cardId !== "random") {
-      const card = await fetchCardByIdPg(cardId);
+      const card = await fetchCardByIdPg(cardId, streamerId);
       if (card) return respondWithCard(card, streamerId);
     }
 
