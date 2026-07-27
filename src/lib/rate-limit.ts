@@ -301,6 +301,12 @@ export const rateLimits = {
   // 制限（1000回/分/IP）までデモイベント配信を叩けてしまう。
   // /api/gacha (rateLimits.gacha) と同じ水準の専用制限を課す。
   gachaDemoBroadcast: createRatelimit("gachaDemoBroadcast", 30, 60 * 1000),
+  // Issue #735: /api/gacha/demo は意図的に無認証(OBSオーバーレイのデモ表示から
+  // 直接呼ばれる)公開エンドポイントだが、従来レートリミットが一切無く、任意の
+  // cardIdに対するカード情報取得（enumeration）に使えた。IPベースで課す
+  // 全リクエスト共通の制限（gachaDemoBroadcastとは別枠。broadcast分岐は
+  // 認証済みユーザー操作でIDベース、こちらは匿名IPベースのため識別子が異なる）。
+  gachaDemoCard: createRatelimit("gachaDemoCard", 30, 60 * 1000),
   authLogin: createRatelimit("authLogin", 5, 60 * 1000),
   authCallback: createRatelimit("authCallback", 10, 60 * 1000),
   authLogout: createRatelimit("authLogout", 10, 60 * 1000),

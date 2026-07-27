@@ -13,14 +13,33 @@ import { cards as cardsTable } from "@/lib/db/schema";
 import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
 import { publishOverlayDemoEvent } from "@/lib/overlay/demo-event-store";
 
-/** Fetch one card from the authoritative PlanetScale database. */
-async function fetchCardByIdPg(cardId: string): Promise<Card | null> {
+/**
+ * Fetch one card from the authoritative PlanetScale database.
+ *
+ * #735: 元実装は is_active / streamer_id を一切見ずに任意の cardId を返していた
+ * ため、id さえ分かれば非公開(inactive)カードの name/description/image_url を
+ * 誰でも取得できた。streamerId を必須にし、指定 streamerId 配下の有効カードに
+ * 絞る(streamerId を任意にすると、他streamerのidさえ知っていればactiveな
+ * カードの内容とその所有streamer_idを無認証で引ける横断オラクルになるため)。
+ * 実際の呼び出し元(OverlayPreview.tsx / overlay/[streamerId]/page.tsx)は常に
+ * cardIdとstreamerIdを同時に渡すため、正規の利用を壊さない。
+ * 絞り込みでヒットしない場合は null を返し、呼び出し側が streamerId の
+ * ランダムカード → 組み込みデモカードへフォールバックする既存の縮退chainに
+ * 委ねる。
+ */
+async function fetchCardByIdPg(cardId: string, streamerId: string): Promise<Card | null> {
+  const condition = and(
+    eq(cardsTable.id, cardId),
+    eq(cardsTable.streamer_id, streamerId),
+    eq(cardsTable.is_active, true)
+  );
+
   async function selectRow(useSafeColumns: boolean) {
     return withDbRetry(
       async () => {
         const { db } = await getDb();
         const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-        return query.from(cardsTable).where(eq(cardsTable.id, cardId)).limit(1);
+        return query.from(cardsTable).where(condition).limit(1);
       },
       "gacha/demo(fetch card by id)",
       { idempotent: true },
@@ -169,6 +188,35 @@ export async function POST(request: NextRequest) {
       // Treat invalid/empty JSON as a parameterless public demo request.
     }
 
+    // #735: このエンドポイントは意図的に無認証(OBSオーバーレイのデモ表示・
+    // プレビューUIから直接呼ばれる)だが、レートリミットが無いと任意cardIdの
+    // enumerationに使えてしまう。broadcast&&streamerId分岐は認証済みユーザーID
+    // 基準のより厳格な専用制限(gachaDemoBroadcast)を別途持つため、そちらを通る
+    // リクエストにはIPベースの制限を重ねない。同じ数値(30/分)の制限を先に
+    // 無関係な匿名IPベースの枠で課すと、同一IPを共有する別人の連打だけで
+    // 配信者自身のOBSデモボタンがブロックされ得るうえ、専用制限に一度も
+    // 到達しなくなってしまう。
+    if (!(broadcast && streamerId)) {
+      const generalIdentifier = await getRateLimitIdentifier(request);
+      const generalRateLimitResult = await checkRateLimit(rateLimits.gachaDemoCard, generalIdentifier);
+      if (!generalRateLimitResult.success) {
+        return NextResponse.json<ApiRateLimitResponse>(
+          {
+            error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+            retryAfter: (generalRateLimitResult.reset || 0) - Math.floor(Date.now() / 1000),
+          },
+          {
+            status: 429,
+            headers: {
+              'X-RateLimit-Limit': String(generalRateLimitResult.limit),
+              'X-RateLimit-Remaining': String(generalRateLimitResult.remaining),
+              'X-RateLimit-Reset': String(generalRateLimitResult.reset),
+            },
+          }
+        );
+      }
+    }
+
     if (broadcast && streamerId) {
       const session = await getSession();
       if (!session) {
@@ -213,8 +261,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ card, userTwitchUsername: "DemoUser" });
     };
 
-    if (cardId && cardId !== "random") {
-      const card = await fetchCardByIdPg(cardId);
+    // #735: streamerId が無いと、他streamerの任意のactiveカードを id だけで
+    // 無認証取得できる横断オラクルになるため streamerId を必須にする。
+    if (cardId && cardId !== "random" && streamerId) {
+      const card = await fetchCardByIdPg(cardId, streamerId);
       if (card) return respondWithCard(card, streamerId);
     }
 
