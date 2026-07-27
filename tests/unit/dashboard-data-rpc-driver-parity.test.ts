@@ -183,21 +183,63 @@ function createFallbackDb(
   return {
     select: vi.fn((fields: Record<string, unknown>) => ({
       from: vi.fn((table: Table) => {
+        let groupByColumns: Column[] = []
         const evaluate = () => {
           const rows = rowsByTable.get(table) ?? []
-          const hasAggregate = Object.values(fields).some((field) => is(field, SQL))
-          if (hasAggregate) return [{ count: rows.length }]
+          const aggregateEntries = Object.entries(fields).filter(([, field]) => is(field, SQL))
+          const columnEntries = Object.entries(fields).filter(([, field]) => is(field, Column))
 
-          return rows.map((row) =>
-            Object.fromEntries(
-              Object.entries(fields).map(([key, field]) => {
-                if (is(field, Column)) return [key, row[field.name] ?? null]
-                // JOIN後のネスト値はfixture側でキー名どおりに保持する。
-                // SQL条件の再実装を避けつつ、公開結果のネスト形状は厳密に検証できる。
-                return [key, row[key] ?? null]
-              })
+          if (aggregateEntries.length === 0) {
+            return rows.map((row) =>
+              Object.fromEntries(
+                Object.entries(fields).map(([key, field]) => {
+                  if (is(field, Column)) return [key, row[field.name] ?? null]
+                  // JOIN後のネスト値はfixture側でキー名どおりに保持する。
+                  // SQL条件の再実装を避けつつ、公開結果のネスト形状は厳密に検証できる。
+                  return [key, row[key] ?? null]
+                })
+              )
             )
-          )
+          }
+
+          // groupBy() 呼び出しが無い集計 = 全体件数のみ(既存の挙動)。
+          if (groupByColumns.length === 0) {
+            return [{ count: rows.length }]
+          }
+
+          // groupBy() 呼び出しあり = GROUP BY をシミュレートする。groupBy対象の
+          // カラム値でグループ化し、各グループの行をまとめて保持する
+          // (#833のGROUP BY集計テスト用)。
+          const groups = new Map<string, { keyValues: Record<string, unknown>; rowsInGroup: Record<string, unknown>[] }>()
+          for (const row of rows) {
+            const keyValues: Record<string, unknown> = {}
+            for (const [key, field] of columnEntries) {
+              if (is(field, Column)) keyValues[key] = row[field.name] ?? null
+            }
+            const groupKey = groupByColumns.map((col) => String(row[col.name] ?? '')).join('|')
+            const existing = groups.get(groupKey)
+            if (existing) {
+              existing.rowsInGroup.push(row)
+            } else {
+              groups.set(groupKey, { keyValues, rowsInGroup: [row] })
+            }
+          }
+          return Array.from(groups.values()).map(({ keyValues, rowsInGroup }) => {
+            const result: Record<string, unknown> = { ...keyValues }
+            for (const [key, field] of aggregateEntries) {
+              // count()はsql`count(${sql.raw("*")})`、countDistinct(col)は
+              // sql`count(distinct ${col})`として表現される(drizzle-orm/sql/
+              // functions/aggregate.js)。queryChunks内にColumnが含まれるかで
+              // 両者を判別し、distinct集計ならグループ内のユニーク値数を返す。
+              const distinctColumn = (field as SQL).queryChunks.find((chunk) => is(chunk, Column)) as
+                | Column
+                | undefined
+              result[key] = distinctColumn
+                ? new Set(rowsInGroup.map((r) => r[distinctColumn.name])).size
+                : rowsInGroup.length
+            }
+            return result
+          })
         }
         const builder: any = {
           leftJoin: vi.fn(() => builder),
@@ -205,6 +247,10 @@ function createFallbackDb(
           where: vi.fn(() => builder),
           orderBy: vi.fn(() => builder),
           limit: vi.fn(() => builder),
+          groupBy: vi.fn((...columns: Column[]) => {
+            groupByColumns = columns
+            return builder
+          }),
           then: (onFulfilled: any, onRejected: any) =>
             Promise.resolve().then(evaluate).then(onFulfilled, onRejected),
         }
@@ -416,21 +462,56 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     expect(pointCall.values).toEqual(['streamer-1', null, 10])
   })
 
+  it('#833: RPC経路はカスタムレアリティをそのまま(固定4種にハードコードせず)返す', async () => {
+    // #833の本質的な原因はJSフォールバック側が固定4レアリティにハードコード
+    // していたことで、RPC側(parseGachaDropStatsRpc)は元々rarity_statsの
+    // 内容をそのまま透過するだけで正しい。両経路が同じ入力に同じ結果を
+    // 返すことを固定し、将来どちらかにハードコードが再導入されたら
+    // このテストで検知できるようにする。
+    const dropStatsWithCustomRarity = {
+      ...dropStatsResult,
+      rarity_stats: [
+        { rarity: 'legendary', count: '0', rate: '0' },
+        { rarity: 'epic', count: '0', rate: '0' },
+        { rarity: 'rare', count: '0', rate: '0' },
+        { rarity: 'common', count: '6', rate: '60' },
+        { rarity: 'mythic', count: '4', rate: '40' },
+      ],
+    }
+    primeDb([
+      { rows: [{ result: dropStatsWithCustomRarity }] },
+      { rows: [{ result: channelPointResult }] },
+    ])
+
+    const result = await getGachaStats('streamer-1', '7d')
+
+    const mythicStat = result.rarityStats.find((row) => row.rarity === 'mythic')
+    expect(mythicStat).toMatchObject({ count: 4, rate: 40 })
+    expect(result.rarityStats).toHaveLength(5)
+    const sumOfCounts = result.rarityStats.reduce((sum, row) => sum + row.count, 0)
+    expect(sumOfCounts).toBe(10)
+    expect(sumOfCounts).toBe(result.totalDraws)
+  })
+
   it('drop統計RPC未デプロイ時は履歴から件数・排出ユーザー・レアリティを集約する', async () => {
+    // rarity は #833 以降 cardsTable.rarity への INNER JOIN + GROUP BY で
+    // 取得するため、fixture側もフラットな rarity フィールドを持たせる
+    // (createFallbackDb の GROUP BY シミュレーションが row[column.name] で
+    // 引くため、ネストした cards.rarity では解決できない)。
     const historyRows = [
       {
         card_id: 'card-a',
         user_twitch_id: 'viewer-1',
         user_twitch_username: 'viewer_one',
         redeemed_at: '2026-03-02T00:00:00+00:00',
-        cards: { rarity: 'common' },
+        rarity: 'common',
       },
       {
         card_id: 'card-a',
         user_twitch_id: 'viewer-1',
         user_twitch_username: 'Viewer New',
         redeemed_at: '2026-03-03T00:00:00+00:00',
-        cards: { rarity: 'common' },
+        rarity: 'common',
       },
     ]
     primeDb(
@@ -484,6 +565,76 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
         streamerId: 'streamer-1',
       }),
     )
+  })
+
+  it('#833: カスタムレアリティを含み、履歴サンプル上限を超える件数でも件数・レアリティ内訳が正確', async () => {
+    // 実運用では10000件超の履歴サンプルで actualCount/rarityStats が黙って
+    // 過小になっていた(#833)。ここではGROUP BY集計(count=25000)が
+    // 履歴サンプル(空配列=0件)から独立していることを直接検証する:
+    // もし実装がhistory配列から数え直す旧ロジックに戻れば、actualCount/
+    // rarityStatsのcountは0になりこのテストは失敗する。
+    const sql = createSqlMock([
+      { error: pgError('42883', 'get_gacha_drop_stats does not exist') },
+      { rows: [{ result: channelPointResult }] },
+    ])
+    let selectCallIndex = 0
+    const groupByResponses = [
+      [{ count: 25000 }], // count-only
+      [], // history detail sample(空でも件数計算に影響しないことを示す)
+      [{
+        id: 'card-a',
+        name: 'Card A',
+        rarity: 'mythic', // デフォルト4種に無いカスタムレアリティ
+        image_url: null,
+        drop_rate: 1,
+        created_at: '2026-01-01T00:00:00+00:00',
+      }],
+      [{ card_id: 'card-a', count: 25000 }], // drawCountsByCard(GROUP BY)
+      [{ rarity: 'mythic', count: 25000 }], // rarityCounts(GROUP BY)
+      [{ card_id: 'card-a', count: 500 }], // drawerCountsByCard(GROUP BY COUNT DISTINCT)
+    ]
+    const db = {
+      select: vi.fn(() => {
+        const response = groupByResponses[Math.min(selectCallIndex, groupByResponses.length - 1)]
+        selectCallIndex += 1
+        const builder: any = {
+          from: vi.fn(() => builder),
+          innerJoin: vi.fn(() => builder),
+          leftJoin: vi.fn(() => builder),
+          where: vi.fn(() => builder),
+          orderBy: vi.fn(() => builder),
+          limit: vi.fn(() => builder),
+          groupBy: vi.fn(() => builder),
+          then: (onFulfilled: any, onRejected: any) =>
+            Promise.resolve(response).then(onFulfilled, onRejected),
+        }
+        return builder
+      }),
+    }
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    const result = await getGachaStats('streamer-1', '7d')
+
+    expect(result.totalDraws).toBe(25000)
+    expect(result.cardStats[0]).toMatchObject({
+      cardId: 'card-a',
+      actualCount: 25000,
+      actualRate: 100,
+      // drawerCountはGROUP BY集計(500)から取り、空の履歴サンプルから0と
+      // 誤って数え直されない(レビュー指摘: actualCountだけ大きくdrawerCountが
+      // 0のままだと矛盾した表示になる)
+      drawerCount: 500,
+      drawers: [], // 明細一覧は履歴サンプル(空)のまま=付随情報として空でよい
+    })
+    const mythicStat = result.rarityStats.find((row) => row.rarity === 'mythic')
+    expect(mythicStat).toMatchObject({ count: 25000, rate: 100 })
+    // デフォルト4種(排出0でも表示)+実際に排出されたカスタムレアリティの順で並ぶ
+    expect(result.rarityStats.map((row) => row.rarity)).toEqual([
+      'legendary', 'epic', 'rare', 'common', 'mythic',
+    ])
+    // rarityStatsの内訳合計がtotal_drawsと一致する(カスタムレアリティ込み)
+    const sumOfCounts = result.rarityStats.reduce((sum, row) => sum + row.count, 0)
+    expect(sumOfCounts).toBe(25000)
   })
 
   it('channel point統計RPC障害時は履歴からポイントと順位を集約する', async () => {
@@ -629,5 +780,45 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
         streamerId: 'streamer-1',
       }),
     )
+  })
+
+  it('#833: 所持ユーザー明細サンプル件数を超えても、ownerCountはGROUP BY集計から正確な値を返す', async () => {
+    // 実運用ではownerRowsのLIMIT 10000サンプルからownerCountを数えていたため、
+    // streamer全体のuser_cards行数が10000件を超えると人気カードのownerCountが
+    // 黙って過小になっていた(#833)。ここではownerRows(明細サンプル)を空にし、
+    // 別のGROUP BY集計(COUNT DISTINCT)だけがownerCountを決めることを直接示す。
+    let selectCallIndex = 0
+    const responses = [
+      [{ id: 'card-a', name: 'Card A', rarity: 'common', image_url: null }], // cards
+      [], // ownerRows(明細サンプル、空でもownerCountに影響しないことを示す)
+      [{ card_id: 'card-a', count: 3000 }], // ownerCounts(GROUP BY COUNT DISTINCT)
+    ]
+    const db = {
+      select: vi.fn(() => {
+        const response = responses[Math.min(selectCallIndex, responses.length - 1)]
+        selectCallIndex += 1
+        const builder: any = {
+          from: vi.fn(() => builder),
+          innerJoin: vi.fn(() => builder),
+          where: vi.fn(() => builder),
+          orderBy: vi.fn(() => builder),
+          limit: vi.fn(() => builder),
+          groupBy: vi.fn(() => builder),
+          then: (onFulfilled: any, onRejected: any) =>
+            Promise.resolve(response).then(onFulfilled, onRejected),
+        }
+        return builder
+      }),
+    }
+    const sql = createSqlMock([{ error: pgError('42883', 'get_card_owner_stats does not exist') }])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    const result = await getGachaCardOwnerStats('streamer-1')
+
+    expect(result.cardStats[0]).toMatchObject({
+      cardId: 'card-a',
+      ownerCount: 3000,
+      owners: [],
+    })
   })
 })
