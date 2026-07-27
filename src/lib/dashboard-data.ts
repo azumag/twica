@@ -1449,6 +1449,7 @@ async function fetchGachaDropStatsFromHistory(
   }>;
   let drawCountsByCardRows: Array<{ card_id: string; count: number | string }>;
   let rarityCountsRows: Array<{ rarity: string; count: number | string }>;
+  let drawerCountsByCardRows: Array<{ card_id: string; count: number | string }>;
   try {
     const [
       countResultRows,
@@ -1456,6 +1457,7 @@ async function fetchGachaDropStatsFromHistory(
       cardRows,
       drawCountRows,
       rarityCountRows,
+      drawerCountRows,
     ] = await Promise.all([
       withDbRetry(
         async () => {
@@ -1535,12 +1537,31 @@ async function fetchGachaDropStatsFromHistory(
         "dashboard:gachaDropStats:rarityCounts",
         { idempotent: true },
       ),
+      // カード別のユニーク排出ユーザー数(drawerCount)もSQL側でGROUP BYして正確に
+      // 取る(#833レビュー指摘: drawersリスト表示用の明細はhistoryサンプルの
+      // ままで良いが、drawerCount自体をそこから数えるとactualCountだけが
+      // 正確になり「actualCountは大きいのにdrawerCountは0人」のような矛盾した
+      // 表示になりうる)。COUNT(DISTINCT ...)はNULLを自動的に除外するため、
+      // user_twitch_idがNULLの行を弾くdrawersByCard構築時のガードと整合する。
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ card_id: gachaHistoryTable.card_id, count: countDistinct(gachaHistoryTable.user_twitch_id) })
+            .from(gachaHistoryTable)
+            .where(historyFilter)
+            .groupBy(gachaHistoryTable.card_id);
+        },
+        "dashboard:gachaDropStats:drawerCountsByCard",
+        { idempotent: true },
+      ),
     ]);
     totalDraws = Number(countResultRows[0]?.count ?? 0);
     history = historyRows;
     cards = cardRows;
     drawCountsByCardRows = drawCountRows;
     rarityCountsRows = rarityCountRows;
+    drawerCountsByCardRows = drawerCountRows;
   } catch (error) {
     reportError(error, { context: "dashboard:gachaDropStats:fallback", streamerId });
     return { totalDraws: 0, cardStats: [], rarityStats: emptyRarityStats };
@@ -1550,9 +1571,13 @@ async function fetchGachaDropStatsFromHistory(
   for (const row of drawCountsByCardRows) {
     drawCounts.set(row.card_id, Number(row.count));
   }
+  const drawerCounts = new Map<string, number>();
+  for (const row of drawerCountsByCardRows) {
+    drawerCounts.set(row.card_id, Number(row.count));
+  }
 
-  // ドロワー明細(誰が引いたか)はhistoryサンプルからのみ構築する付随情報。
-  // actualCount/actualRateの算出には使わない。
+  // drawersリスト(誰が引いたか上位N件の明細)はhistoryサンプルからのみ構築する
+  // 付随情報。drawerCount(人数)の算出には使わない(上記GROUP BY集計を使う)。
   const drawersByCard = new Map<string, Map<string, GachaStatsDrawer>>();
   for (const row of history) {
     if (!row.user_twitch_id) continue;
@@ -1602,7 +1627,7 @@ async function fetchGachaDropStatsFromHistory(
         totalWeight > 0 ? (Number(card.drop_rate || 0) / totalWeight) * 100 : 0,
       actualCount,
       actualRate: totalDraws > 0 ? (actualCount / totalDraws) * 100 : 0,
-      drawerCount: allDrawers.length,
+      drawerCount: drawerCounts.get(card.id) || 0,
       drawers: allDrawers.slice(0, STATS_USERS_PER_CARD_LIMIT),
     };
   });

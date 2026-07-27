@@ -462,6 +462,37 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     expect(pointCall.values).toEqual(['streamer-1', null, 10])
   })
 
+  it('#833: RPC経路はカスタムレアリティをそのまま(固定4種にハードコードせず)返す', async () => {
+    // #833の本質的な原因はJSフォールバック側が固定4レアリティにハードコード
+    // していたことで、RPC側(parseGachaDropStatsRpc)は元々rarity_statsの
+    // 内容をそのまま透過するだけで正しい。両経路が同じ入力に同じ結果を
+    // 返すことを固定し、将来どちらかにハードコードが再導入されたら
+    // このテストで検知できるようにする。
+    const dropStatsWithCustomRarity = {
+      ...dropStatsResult,
+      rarity_stats: [
+        { rarity: 'legendary', count: '0', rate: '0' },
+        { rarity: 'epic', count: '0', rate: '0' },
+        { rarity: 'rare', count: '0', rate: '0' },
+        { rarity: 'common', count: '6', rate: '60' },
+        { rarity: 'mythic', count: '4', rate: '40' },
+      ],
+    }
+    primeDb([
+      { rows: [{ result: dropStatsWithCustomRarity }] },
+      { rows: [{ result: channelPointResult }] },
+    ])
+
+    const result = await getGachaStats('streamer-1', '7d')
+
+    const mythicStat = result.rarityStats.find((row) => row.rarity === 'mythic')
+    expect(mythicStat).toMatchObject({ count: 4, rate: 40 })
+    expect(result.rarityStats).toHaveLength(5)
+    const sumOfCounts = result.rarityStats.reduce((sum, row) => sum + row.count, 0)
+    expect(sumOfCounts).toBe(10)
+    expect(sumOfCounts).toBe(result.totalDraws)
+  })
+
   it('drop統計RPC未デプロイ時は履歴から件数・排出ユーザー・レアリティを集約する', async () => {
     // rarity は #833 以降 cardsTable.rarity への INNER JOIN + GROUP BY で
     // 取得するため、fixture側もフラットな rarity フィールドを持たせる
@@ -560,6 +591,7 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
       }],
       [{ card_id: 'card-a', count: 25000 }], // drawCountsByCard(GROUP BY)
       [{ rarity: 'mythic', count: 25000 }], // rarityCounts(GROUP BY)
+      [{ card_id: 'card-a', count: 500 }], // drawerCountsByCard(GROUP BY COUNT DISTINCT)
     ]
     const db = {
       select: vi.fn(() => {
@@ -588,8 +620,11 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
       cardId: 'card-a',
       actualCount: 25000,
       actualRate: 100,
-      drawerCount: 0,
-      drawers: [],
+      // drawerCountはGROUP BY集計(500)から取り、空の履歴サンプルから0と
+      // 誤って数え直されない(レビュー指摘: actualCountだけ大きくdrawerCountが
+      // 0のままだと矛盾した表示になる)
+      drawerCount: 500,
+      drawers: [], // 明細一覧は履歴サンプル(空)のまま=付随情報として空でよい
     })
     const mythicStat = result.rarityStats.find((row) => row.rarity === 'mythic')
     expect(mythicStat).toMatchObject({ count: 25000, rate: 100 })
