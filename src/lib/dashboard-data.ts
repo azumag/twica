@@ -4,6 +4,7 @@ import { unstable_cache } from "next/cache";
 import { logger } from "@/lib/logger.server";
 import { normalizeDropRate } from "@/lib/card-utils";
 import { reportError } from "@/lib/sentry/error-handler";
+import { RARITY_ORDER } from "@/lib/constants";
 
 import { logPerf, perfStart } from "@/lib/perf";
 // ---------------------------------------------------------------------------
@@ -16,6 +17,7 @@ import {
   and,
   asc,
   count as countRows,
+  countDistinct,
   desc,
   eq,
   getTableColumns,
@@ -1416,8 +1418,7 @@ async function fetchGachaDropStatsFromHistory(
   streamerId: string,
   fromDateIso: string
 ): Promise<Omit<GachaStatsResult, "channelPointStats">> {
-  const FIXED_RARITIES = ["legendary", "epic", "rare", "common"] as const;
-  const emptyRarityStats = FIXED_RARITIES.map((rarity) => ({
+  const emptyRarityStats = RARITY_ORDER.map((rarity) => ({
     rarity,
     count: 0,
     rate: 0,
@@ -1429,12 +1430,14 @@ async function fetchGachaDropStatsFromHistory(
     notLike(gachaHistoryTable.event_id, "manual:%"),
   );
   let totalDraws: number;
+  // カード別/レアリティ別の「排出数」自体は下記の GROUP BY 集計（打ち切り無し）
+  // から取る。history はドロワー明細（ユーザー名・引いた日時）の表示専用で、
+  // 1カードあたり上限件数で打ち切って良い付随情報のみに使う (#833)。
   let history: Array<{
     card_id: string;
     user_twitch_id: string;
     user_twitch_username: string | null;
     redeemed_at: string | null;
-    cards: { rarity: string } | null;
   }>;
   let cards: Array<{
     id: string;
@@ -1444,8 +1447,16 @@ async function fetchGachaDropStatsFromHistory(
     drop_rate: number | string | null;
     created_at: string | null;
   }>;
+  let drawCountsByCardRows: Array<{ card_id: string; count: number | string }>;
+  let rarityCountsRows: Array<{ rarity: string; count: number | string }>;
   try {
-    const [countResultRows, historyRows, cardRows] = await Promise.all([
+    const [
+      countResultRows,
+      historyRows,
+      cardRows,
+      drawCountRows,
+      rarityCountRows,
+    ] = await Promise.all([
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -1466,10 +1477,8 @@ async function fetchGachaDropStatsFromHistory(
               user_twitch_id: gachaHistoryTable.user_twitch_id,
               user_twitch_username: gachaHistoryTable.user_twitch_username,
               redeemed_at: gachaHistoryTable.redeemed_at,
-              cards: { rarity: cardsTable.rarity },
             })
             .from(gachaHistoryTable)
-            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
             .where(historyFilter)
             .limit(10000);
         },
@@ -1495,22 +1504,57 @@ async function fetchGachaDropStatsFromHistory(
         "dashboard:gachaDropStats:cards",
         { idempotent: true },
       ),
+      // カード別の排出数はSQL側でGROUP BYして正確に取る（#833: 以前はhistoryの
+      // LIMIT 10000サンプルから数えていたため、期間内の総排出数が10000件を超える
+      // 配信者では全カードのactualRateが黙って過小表示されていた）。
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ card_id: gachaHistoryTable.card_id, count: countRows() })
+            .from(gachaHistoryTable)
+            .where(historyFilter)
+            .groupBy(gachaHistoryTable.card_id);
+        },
+        "dashboard:gachaDropStats:drawCountsByCard",
+        { idempotent: true },
+      ),
+      // レアリティ別の排出数もSQL側でGROUP BY。RPC(migration 00050)のrarity_counts
+      // CTEと同じくcardsとのINNER JOINで、参照先カードが存在しない履歴行(想定外)は
+      // レアリティ別集計から除外する(total_drawsには含まれる)。
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ rarity: cardsTable.rarity, count: countRows() })
+            .from(gachaHistoryTable)
+            .innerJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+            .where(historyFilter)
+            .groupBy(cardsTable.rarity);
+        },
+        "dashboard:gachaDropStats:rarityCounts",
+        { idempotent: true },
+      ),
     ]);
     totalDraws = Number(countResultRows[0]?.count ?? 0);
     history = historyRows;
     cards = cardRows;
+    drawCountsByCardRows = drawCountRows;
+    rarityCountsRows = rarityCountRows;
   } catch (error) {
     reportError(error, { context: "dashboard:gachaDropStats:fallback", streamerId });
     return { totalDraws: 0, cardStats: [], rarityStats: emptyRarityStats };
   }
 
   const drawCounts = new Map<string, number>();
-  // 期間内にそのカードを引いたユーザーをカード×ユーザーで集計。
-  // RPC(get_gacha_drop_stats)と同じく1カードあたり上限件数で打ち切る。
+  for (const row of drawCountsByCardRows) {
+    drawCounts.set(row.card_id, Number(row.count));
+  }
+
+  // ドロワー明細(誰が引いたか)はhistoryサンプルからのみ構築する付随情報。
+  // actualCount/actualRateの算出には使わない。
   const drawersByCard = new Map<string, Map<string, GachaStatsDrawer>>();
   for (const row of history) {
-    drawCounts.set(row.card_id, (drawCounts.get(row.card_id) || 0) + 1);
-
     if (!row.user_twitch_id) continue;
     const cardDrawers = drawersByCard.get(row.card_id) || new Map();
     const existing = cardDrawers.get(row.user_twitch_id);
@@ -1563,16 +1607,21 @@ async function fetchGachaDropStatsFromHistory(
     };
   });
 
-  // レアリティ別集計は履歴←cards の join から引く（RPC migration 00038 と同じく
-  // is_active 非依存）。非アクティブ化済みカードの過去排出も RPC と同様に計上される。
+  // レアリティ集合はデフォルト4種(常に表示、排出0でも含む)＋実際に排出された
+  // カスタムレアリティ(RPC migration 00050のrarity_universeと同じ構成)。
+  // 以前はデフォルト4種の固定リストのみで、カスタムレアリティのカードが
+  // 排出されてもrarityStatsに一切現れず、内訳合計がtotal_drawsと一致
+  // しなかった (#833)。
   const rarityCounts = new Map<string, number>();
-  for (const row of history) {
-    const rarity = row.cards?.rarity;
-    if (rarity) {
-      rarityCounts.set(rarity, (rarityCounts.get(rarity) || 0) + 1);
-    }
+  for (const row of rarityCountsRows) {
+    rarityCounts.set(row.rarity, Number(row.count));
   }
-  const rarityStats = FIXED_RARITIES.map((rarity) => {
+  const customRarities = Array.from(rarityCounts.keys())
+    .filter((rarity) => !RARITY_ORDER.includes(rarity))
+    .sort((a, b) => a.localeCompare(b));
+  const rarityUniverse = [...RARITY_ORDER, ...customRarities];
+
+  const rarityStats = rarityUniverse.map((rarity) => {
       const count = rarityCounts.get(rarity) || 0;
     return {
       rarity,
@@ -1773,8 +1822,9 @@ async function fetchCardOwnerStatsFromUserCards(
     image_url: string | null;
   }>;
   let ownerRows: GachaCardOwnerStatsOwnerRow[];
+  let ownerCountRows: Array<{ card_id: string; count: number | string }>;
   try {
-    [cards, ownerRows] = await Promise.all([
+    [cards, ownerRows, ownerCountRows] = await Promise.all([
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -1814,12 +1864,37 @@ async function fetchCardOwnerStatsFromUserCards(
         "dashboard:cardOwnerStats:owners",
         { idempotent: true },
       ),
+      // カード別の所有者数(ユニークユーザー数)はSQL側でGROUP BYして正確に取る
+      // (#833: 以前はownerRowsのLIMIT 10000サンプルから数えていたため、streamer
+      // 全体のuser_cards行数が10000件を超えると人気カードのownerCountが黙って
+      // 過小になっていた)。1ユーザーが同一カードを複数所持しうるため
+      // COUNT(DISTINCT user_id) で重複を除く。
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({ card_id: userCardsTable.card_id, count: countDistinct(userCardsTable.user_id) })
+            .from(userCardsTable)
+            .innerJoin(cardsTable, eq(userCardsTable.card_id, cardsTable.id))
+            .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+            .groupBy(userCardsTable.card_id);
+        },
+        "dashboard:cardOwnerStats:ownerCounts",
+        { idempotent: true },
+      ),
     ]);
   } catch (error) {
     reportError(error, { context: "dashboard:cardOwnerStats:fallback", streamerId });
     return { cardStats: [] };
   }
 
+  const ownerCounts = new Map<string, number>();
+  for (const row of ownerCountRows) {
+    ownerCounts.set(row.card_id, Number(row.count));
+  }
+
+  // owners一覧(表示用の個別ユーザー明細)はownerRowsのサンプルからのみ構築する
+  // 付随情報。ownerCountの算出には使わない。
   const ownersByCard = new Map<string, Map<string, GachaCardOwner>>();
   for (const row of ownerRows) {
     const user = Array.isArray(row.users) ? row.users[0] : row.users;
@@ -1868,8 +1943,9 @@ async function fetchCardOwnerStatsFromUserCards(
         cardName: card.name,
         rarity: card.rarity,
         imageUrl: card.image_url,
-        // ownerCount は総数（打ち切り前）、owners はRPCと同じく上限件数で打ち切る
-        ownerCount: owners.length,
+        // ownerCount はGROUP BY集計による正確な総数、owners はRPCと同じく
+        // 上限件数で打ち切る (#833)
+        ownerCount: ownerCounts.get(card.id) || 0,
         owners: owners.slice(0, STATS_USERS_PER_CARD_LIMIT),
       };
     }),
