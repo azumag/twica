@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { POST } from '@/app/api/upload/route'
-import { getSession } from '@/lib/session'
+import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { getFileTypeFromBuffer } from '@/lib/file-utils'
 import { validateCSRFToken } from '@/lib/csrf'
@@ -37,6 +37,7 @@ vi.mock('@/lib/storage-usage', () => ({
 
 const mockCookies = vi.mocked(cookies)
 const mockGetSession = vi.mocked(getSession)
+const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockUploadToR2WithRetry = vi.mocked(uploadToR2WithRetry)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
@@ -46,6 +47,9 @@ describe('POST /api/upload', () => {
     vi.clearAllMocks()
     // Mock CSRF validation to pass by default
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
+    // 既存テストは配信者セッションを前提としているため、デフォルトはtrueにする
+    // （配信者権限なしのケースは専用テストで個別にfalseへ上書きする）
+    mockCanUseStreamerFeatures.mockReturnValue(true)
     // Mock cookies to return empty store
     mockCookies.mockResolvedValue({
       get: vi.fn().mockReturnValue(undefined),
@@ -99,6 +103,39 @@ describe('POST /api/upload', () => {
       expect(response.status).toBe(401)
       const body = await response.json()
       expect(body.error).toBe('Not authenticated')
+    })
+  })
+
+  describe('配信者権限のないセッション', () => {
+    it('403 エラーを返す(#832: 誰でも公開R2へアップロードできる問題の修正)', async () => {
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+        version: 1,
+      })
+      mockCanUseStreamerFeatures.mockReturnValue(false)
+
+      const imageFile = new File([createMinimalJpegBuffer()], 'test.jpg', {
+        type: 'image/jpeg',
+      })
+      const formData = new FormData()
+      formData.append('file', imageFile)
+
+      const request = new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(403)
+      const body = await response.json()
+      expect(body.error).toBe('Forbidden')
+      expect(mockUploadToR2WithRetry).not.toHaveBeenCalled()
     })
   })
 
@@ -289,9 +326,12 @@ describe('POST /api/upload', () => {
       expect(body.url).toBe('https://blob.vercel-storage.com/test-image.jpg')
       expect(mockUploadToR2WithRetry).toHaveBeenCalled()
       // First argument should be the filename pattern
-      // Filename format: {userPrefix(8chars)}_{uniqueSuffix(8chars)}.{ext}
+      // Filename format: {userPrefix(8chars)}_{uniqueSuffix(UUID)}.{ext}
+      // uniqueSuffixはcrypto.randomUUID()で生成する推測不能な値 (#832)
       // 第1引数はファイル名パターン
-      expect(mockUploadToR2WithRetry.mock.calls[0][0]).toMatch(/^[a-f0-9]{8}_[a-f0-9]{8}\.jpg$/)
+      expect(mockUploadToR2WithRetry.mock.calls[0][0]).toMatch(
+        /^[a-f0-9]{8}_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/
+      )
       // Second argument should be Buffer or Uint8Array-like (file contents)
       // 第2引数はファイル内容のBuffer
       const fileArg = mockUploadToR2WithRetry.mock.calls[0][1]

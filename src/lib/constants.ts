@@ -380,9 +380,12 @@ export const UPLOAD_CONFIG = {
   // Storage limits
   // ストレージ制限
   USER_STORAGE_LIMIT: 10 * 1024 * 1024, // 10MB per user (increased from 5MB)
-  // Global storage limit disabled - set to very large value
-  // グローバルストレージ制限を撤廃 - 非常に大きな値を設定
-  GLOBAL_STORAGE_LIMIT: Number.MAX_SAFE_INTEGER, // No global limit
+  // グローバル上限が実質無制限(Number.MAX_SAFE_INTEGER)だったため、認証さえ
+  // 通れば無制限に書き込める状態だった (#832)。ユーザー上限(10MB)+全プラン最大の
+  // ストレージボーナス(500MB, plan-constants.ts)を踏まえても、現在の運用規模で
+  // 現実的にありえない50GBを運用上の上限として設定する。unreachableではなく実際に
+  // 効くガードなので、規模が拡大したら見直すこと。
+  GLOBAL_STORAGE_LIMIT: 50 * 1024 * 1024 * 1024, // 50GB operational cap
 } as const
 
 /**

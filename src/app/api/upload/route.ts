@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession } from '@/lib/session';
+import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { handleApiError, handleBlobError } from '@/lib/error-handler';
 import { validateUpload, getUploadErrorMessage } from '@/lib/upload-validation';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
@@ -11,7 +11,7 @@ import { uploadToR2WithRetry } from '@/lib/r2-client';
 import { retryCloudflareR2Upload } from '@/lib/r2-retry-policy';
 import { recordBlobFile } from '@/lib/storage-db';
 import { getStorageUsage } from '@/lib/storage-usage';
-import { sha256Prefix } from '@/lib/crypto-utils';
+import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
 import { getUserPlan, PLAN_MAX_UPLOAD_SIZE } from '@/lib/plan';
 import type { Session } from '@/lib/session';
 
@@ -48,6 +48,14 @@ async function validateRequest(request: NextRequest): Promise<ValidateRequestRes
   if (!session) {
     return {
       error: NextResponse.json({ error: ERROR_MESSAGES.NOT_AUTHENTICATED }, { status: 401 }),
+    };
+  }
+
+  // カード画像アップロードは配信者機能なので、配信者権限を必須にする (#832)
+  // これが無いと任意のTwitchアカウントで公開R2への恒久URLを取得できてしまう
+  if (!canUseStreamerFeatures(session)) {
+    return {
+      error: NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 }),
     };
   }
 
@@ -162,10 +170,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // User prefix for tracking uploads per user (must match storage-db.ts)
-    // ユーザー別アップロード追跡用プレフィックス（storage-db.tsと一致させる）
+    // ユーザー別アップロード追跡用プレフィックス（storage-db.tsと一致させる、公開値でよい）
     // Web Crypto APIを使用（Cloudflare Workers互換）
     const userPrefixForFile = await sha256Prefix(session!.twitchUserId);
-    const uniqueSuffix = await sha256Prefix(`${session!.twitchUserId}-${Date.now()}`);
+    // suffixはtwitchUserId+Date.now()由来のsha256Prefix(8hex)だと、公開情報である
+    // twitchUserIdとミリ秒単位のDate.now()から総当りで再現できた (#832)。
+    // crypto.randomUUID()（128bit・推測不能）に変更する。
+    const uniqueSuffix = randomUUID();
 
     // Format: {userPrefix}_{uniqueSuffix}.{ext}
     fileName = `${userPrefixForFile}_${uniqueSuffix}.${ext}`;

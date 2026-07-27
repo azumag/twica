@@ -7,7 +7,7 @@ import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } f
 import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client';
-import { sha256Prefix } from '@/lib/crypto-utils';
+import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
 
 interface ValidateRequestResult {
@@ -148,7 +148,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // "sound_"プレフィックスで画像ファイルと区別
     // Web Crypto APIを使用（Cloudflare Workers互換）
     const userPrefix = await sha256Prefix(session!.twitchUserId);
-    const uniqueSuffix = await sha256Prefix(`${session!.twitchUserId}-sound-${Date.now()}`);
+    // suffixはtwitchUserId+Date.now()由来のsha256Prefix(8hex)だと総当りで再現できた
+    // (#832、画像アップロードと同型)。crypto.randomUUID()（推測不能）に変更する。
+    const uniqueSuffix = randomUUID();
 
     fileName = `sound_${userPrefix}_${uniqueSuffix}.${ext}`;
 
