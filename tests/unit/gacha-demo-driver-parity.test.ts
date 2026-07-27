@@ -112,7 +112,8 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
   it('fetches a requested card from PlanetScale', async () => {
     primePgDb([{ rows: [CARD_ROW] }])
 
-    const response = await POST(request({ cardId: 'card-1' }))
+    // #735: cardId指定の単一カード取得はstreamerId必須(下記の専用テスト参照)
+    const response = await POST(request({ cardId: 'card-1', streamerId: 'streamer-1' }))
     const body = await response.json()
 
     expect(response.status).toBe(200)
@@ -134,12 +135,13 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
   it('falls back to a built-in demo card when PostgreSQL is unavailable', async () => {
     primePgDb([{ error: new Error('connection failure') }])
 
-    const response = await POST(request({ cardId: 'missing' }))
+    const response = await POST(request({ cardId: 'missing', streamerId: 'streamer-1' }))
     const body = await response.json()
 
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
     expect(body.userTwitchUsername).toBe('DemoUser')
+    expect(getDb).toHaveBeenCalled()
   })
 
   it('#735: cardId指定時はis_active=trueかつ指定streamerId配下に絞り込む', async () => {
@@ -157,15 +159,17 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
     )
   })
 
-  it('#735: streamerId未指定時はis_active=trueのみで絞り込み、streamer_idは条件に含めない', async () => {
+  it('#735: streamerId未指定時はcardIdによる単一カード取得を一切試みない(他streamerのactiveカードを無認証で引ける横断オラクル化を防ぐ)', async () => {
     const pg = primePgDb([{ rows: [CARD_ROW] }])
 
     const response = await POST(request({ cardId: 'card-1' }))
+    const body = await response.json()
 
     expect(response.status).toBe(200)
-    expect(pg.whereConditions[0]).toEqual(
-      and(eq(cardsTable.id, 'card-1'), eq(cardsTable.is_active, true))
-    )
+    // DBへの問い合わせが一切発生しない(streamerId無しではcardId検索もstreamer別
+    // ランダム取得も走らないため、組み込みDEMO_CARDSへ直接フォールバックする)
+    expect(pg.db.select).not.toHaveBeenCalled()
+    expect(body.card.id).not.toBe('card-1')
   })
 
   it('#735: 絞り込みでヒットしない場合(非公開カード等)はエラーにせず組み込みデモカードへフォールバックする', async () => {
@@ -185,7 +189,7 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
       { rows: [SAFE_CARD_ROW] },
     ])
 
-    const response = await POST(request({ cardId: 'card-1' }))
+    const response = await POST(request({ cardId: 'card-1', streamerId: 'streamer-1' }))
     const body = await response.json()
 
     expect(response.status).toBe(200)

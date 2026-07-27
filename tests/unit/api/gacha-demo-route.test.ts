@@ -108,10 +108,11 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
       expect.anything(),
       'twitch-1'
     )
-    // #735: 全リクエスト共通のIPベース制限(gachaDemoCard)がbroadcast専用制限
-    // (gachaDemoBroadcast)より先に追加されたため、broadcastリクエストは2回
-    // checkRateLimitを通る。
-    expect(mockCheckRateLimit).toHaveBeenCalledTimes(2)
+    // #735: 全リクエスト共通のIPベース制限(gachaDemoCard)は、認証済みユーザーID
+    // 基準のより厳格な専用制限(gachaDemoBroadcast)がすでに適用される
+    // broadcast&&streamerIdリクエストには重ねない(重ねると無関係な匿名IPの
+    // 連打だけで専用制限に到達する前にブロックされてしまうため)。
+    expect(mockCheckRateLimit).toHaveBeenCalledTimes(1)
   })
 
   it('returns 429 before publishing when the dedicated limiter is exhausted', async () => {
@@ -161,6 +162,31 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     expect(body.card).toBeDefined()
     expect(mockGetSession).not.toHaveBeenCalled()
     expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockCheckRateLimit).toHaveBeenCalledTimes(1)
+  })
+
+  it('#735: 匿名IPの一般制限が枯渇していても、認証済みユーザーのbroadcastは専用制限のみで判定され成功する', async () => {
+    mockGetSession.mockResolvedValue({
+      twitchUserId: 'twitch-1',
+      twitchUsername: 'user1',
+      broadcasterType: 'affiliate',
+    } as Awaited<ReturnType<typeof getSession>>)
+    mockGetStreamerIdByTwitchUserId.mockResolvedValue({ id: 'streamer-1' })
+    mockGetRateLimitIdentifier.mockImplementation(async (_req, twitchUserId) =>
+      twitchUserId ? `user:${twitchUserId}` : 'ip:203.0.113.1'
+    )
+    // 匿名IPベースの識別子に対しては枯渇済みを返す。gachaDemoCard(一般制限)が
+    // broadcast&&streamerId経路でも誤って呼ばれてしまえば、この枯渇で検出できる。
+    mockCheckRateLimit.mockImplementation(async (_limiter, identifier: string) => {
+      if (identifier.startsWith('ip:')) {
+        return { success: false, limit: 30, remaining: 0, reset: Date.now() + 60_000 }
+      }
+      return { success: true, limit: 30, remaining: 29, reset: Date.now() + 60_000 }
+    })
+
+    const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
+
+    expect(response.status).toBe(200)
     expect(mockCheckRateLimit).toHaveBeenCalledTimes(1)
   })
 
