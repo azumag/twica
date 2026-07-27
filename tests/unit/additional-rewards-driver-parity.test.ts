@@ -12,6 +12,7 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { getDb } from "@/lib/db/client";
 import { streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable } from "@/lib/db/schema";
+import { ERROR_MESSAGES } from "@/lib/constants";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
@@ -615,6 +616,23 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
         new NextRequest("http://localhost/api/streamer/additional-rewards?deleteAll=true", { method: "DELETE" })
       );
       expect(response.status).toBe(404);
+    });
+
+    it("CSRF検証が無効な場合は403を返し、レートリミット/セッション取得/DB削除にも到達しない (#736)", async () => {
+      mockValidateCSRFToken.mockResolvedValue({ valid: false, error: "bad csrf" } as any);
+      const pg = createDrizzleDbMock({ selects: [{ rows: [{ id: "streamer-1" }] }] });
+      primePgDb(pg);
+
+      const { DELETE } = await loadRoute();
+      const response = await DELETE(
+        new NextRequest("http://localhost/api/streamer/additional-rewards?deleteAll=true", { method: "DELETE" })
+      );
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.FORBIDDEN });
+      expect(mockCheckRateLimit).not.toHaveBeenCalled();
+      expect(mockGetSession).not.toHaveBeenCalled();
+      expect(pg.deleteCalls).toHaveLength(0);
     });
 
   });
