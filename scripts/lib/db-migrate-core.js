@@ -317,13 +317,15 @@ function maskQuotedSqlSegments(sql) {
 
   for (let index = 0; index < sql.length; index += 1) {
     const character = sql[index]
-    if (character === "'" || character === '"') {
-      const quote = character
-      const isEscapeString =
-        quote === "'" &&
-        (sql[index - 1] === 'e' || sql[index - 1] === 'E') &&
-        (index < 2 || !/[A-Za-z0-9_$]/.test(sql[index - 2]))
-      let end = index + 1
+    const isEscapeStringPrefix =
+      (character === 'e' || character === 'E') &&
+      sql[index + 1] === "'" &&
+      (index === 0 || !/[A-Za-z0-9_$]/.test(sql[index - 1]))
+    if (character === "'" || character === '"' || isEscapeStringPrefix) {
+      const quoteIndex = isEscapeStringPrefix ? index + 1 : index
+      const quote = sql[quoteIndex]
+      const isEscapeString = isEscapeStringPrefix
+      let end = quoteIndex + 1
       for (; end < sql.length; end += 1) {
         if (isEscapeString && sql[end] === '\\' && end + 1 < sql.length) {
           end += 1
@@ -400,9 +402,71 @@ function stripRedundantOuterParentheses(expression) {
   return result
 }
 
+/**
+ * PostgreSQLがpartial predicateの各比較式へ付ける冗長な括弧を吸収する。
+ * AND/ORを含むグループの括弧はprecedenceを変えうるため、比較演算子を含み、
+ * グループ内にトップレベルのAND/ORが無い場合だけ対象にする。
+ * @param {string} predicate
+ * @returns {string}
+ */
+function stripSimplePredicateParentheses(predicate) {
+  let result = predicate
+  let changed = true
+  while (changed) {
+    changed = false
+    result = result.replace(/\(([^()]+)\)/g, (match, inner) => {
+      if (!/[=<>]\s*/.test(inner) || /\b(?:AND|OR)\b/i.test(inner)) return match
+      changed = true
+      return inner
+    })
+  }
+  return result
+}
+
+/**
+ * single-quoted / E-string / dollar-quoted literalを同じ標準SQL literal表記へ
+ * 揃える。pg_get_indexdefは入力の$$literal$$を' literal '::textへ書き換えるため、
+ * 表記だけが異なる同値literalを比較で拒否しないようにする。
+ * @param {string} segment
+ * @returns {string}
+ */
+function canonicalizeQuotedLiteral(segment) {
+  if (segment.startsWith('"')) return segment
+
+  let body
+  if (segment.startsWith('$')) {
+    const tag = segment.match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0]
+    body = tag ? segment.slice(tag.length, -tag.length) : segment
+  } else {
+    const isEscapeString = /^[eE]'/u.test(segment)
+    body = segment.slice(isEscapeString ? 2 : 1, -1)
+    if (isEscapeString) {
+      body = body.replace(/\\(.)/gs, (_match, escaped) => {
+        const escapes = {
+          a: '\x07',
+          b: '\b',
+          f: '\f',
+          n: '\n',
+          r: '\r',
+          t: '\t',
+          v: '\v',
+          '\\': '\\',
+          "'": "'",
+          '"': '"',
+        }
+        return Object.prototype.hasOwnProperty.call(escapes, escaped) ? escapes[escaped] : escaped
+      })
+    } else {
+      body = body.replace(/''/g, "'")
+    }
+  }
+  return `'${body.replace(/'/g, "''")}'`
+}
+
 function normalizeIndexDefinition(definition) {
   const withoutTrailingSemicolon = definition.trim().replace(/;$/, '')
   const { masked, quotedSegments } = maskQuotedSqlSegments(withoutTrailingSemicolon)
+  const canonicalQuotedSegments = quotedSegments.map(canonicalizeQuotedLiteral)
   let normalized = masked.replace(/\s+/g, ' ').trim()
     .replace(/\bCREATE\s+INDEX\s+CONCURRENTLY\s+/i, 'CREATE INDEX ')
     .replace(/\bIF\s+NOT\s+EXISTS\s+/i, '')
@@ -427,15 +491,17 @@ function normalizeIndexDefinition(definition) {
   // predicate全体を括弧で包む（例: WHERE (status = 'READY'::text)）。
   // literal placeholder直後のcastだけを吸収し、他の式に明示されたcastは残す。
   normalized = normalized.replace(/\u0001(\d+)\u0002::text\b/gi, (match, index) => {
-    const segment = quotedSegments[Number(index)]
-    return segment && /^(?:[eE])?'|^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.test(segment)
+    const segment = canonicalQuotedSegments[Number(index)]
+    return segment && /^'/.test(segment)
       ? `\u0001${index}\u0002`
       : match
   })
   const whereIndex = normalized.search(/\bWHERE\b/i)
   if (whereIndex >= 0) {
     const whereKeyword = normalized.slice(whereIndex).match(/^WHERE\b/i)?.[0] ?? 'WHERE'
-    const predicate = stripRedundantOuterParentheses(normalized.slice(whereIndex + whereKeyword.length))
+    const predicate = stripSimplePredicateParentheses(
+      stripRedundantOuterParentheses(normalized.slice(whereIndex + whereKeyword.length))
+    )
     normalized = `${normalized.slice(0, whereIndex)}${whereKeyword} ${predicate}`
   }
 
@@ -467,7 +533,7 @@ function normalizeIndexDefinition(definition) {
       lowercasedOutsideQuotes += character.toLowerCase()
     }
   }
-  return restoreQuotedSqlSegments(lowercasedOutsideQuotes, quotedSegments)
+  return restoreQuotedSqlSegments(lowercasedOutsideQuotes, canonicalQuotedSegments)
 }
 
 /**

@@ -250,7 +250,7 @@ describe('forbidden index postcondition helpers', () => {
         {
           name: 'quoted_users_idx',
           definition:
-            "CREATE INDEX quoted_users_idx ON public.users USING btree (id) WHERE label = 'A  B' AND code = E'X\\\\Y' AND note = $$Keep  Spaces$$",
+            "CREATE INDEX quoted_users_idx ON public.users USING btree (id) WHERE ((label = 'A  B'::text) AND (code = 'X\\Y'::text) AND (note = 'Keep  Spaces'::text))",
         },
       ])
     ).toEqual([])
@@ -259,7 +259,7 @@ describe('forbidden index postcondition helpers', () => {
         {
           name: 'quoted_users_idx',
           definition:
-            "CREATE INDEX quoted_users_idx ON public.users USING btree (id) WHERE label = 'A B' AND code = E'X\\\\Y' AND note = $$Keep Spaces$$",
+            "CREATE INDEX quoted_users_idx ON public.users USING btree (id) WHERE ((label = 'A B'::text) AND (code = 'X\\Y'::text) AND (note = 'Keep Spaces'::text))",
         },
       ])
     ).toEqual(['quoted_users_idx'])

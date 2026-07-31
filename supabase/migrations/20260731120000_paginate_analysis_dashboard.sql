@@ -414,34 +414,39 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_user_join TEXT;
+  v_candidate_where TEXT;
   v_result JSONB;
 BEGIN
-  -- 検索ありでは候補streamerが少数なので、users全件をHash Joinするより
-  -- twitch_user_idの一意indexへ候補ごとにlookupする方が安い。検索なしでは
-  -- 全候補を扱うため、通常JOINを選んでusersを一度だけ走査する。SRFの既定
-  -- 行数推定に左右されないよう、plannerへ渡すJOIN形を実行時に分ける。
+  -- 検索述語をSET返却functionの内側へ隠すと、呼び出し側plannerは常に
+  -- 既定1000行のSRFと判断し、広範囲検索でも不適切なjoin方式を選ぶことがある。
+  -- 検索あり／なしでWHERE句という固定SQL fragmentだけを分け、検索値自体は
+  -- $3でバインドする。これにより少数検索ではGIN、広範囲検索ではSeq Scan/Hash
+  -- Joinをplannerが選択できる。fragmentへ利用者入力を連結しないためSQL injection
+  -- の経路も作らない。
   IF p_search IS NULL OR p_search = '' THEN
-    v_user_join := 'LEFT JOIN users u ON u.twitch_user_id = s.twitch_user_id';
+    v_candidate_where := $where$
+      WHERE (NOT COALESCE($4, FALSE) OR s.chat_announcement_enabled)
+        AND (NOT COALESCE($5, FALSE)
+          OR COALESCE(length(s.chat_announcement_template), 0) > 0)
+    $where$;
   ELSE
-    v_user_join := $join$
-      LEFT JOIN LATERAL (
-        SELECT u.twitch_scopes
-        FROM users u
-        WHERE u.twitch_user_id = s.twitch_user_id
-        LIMIT 1
-      ) u ON TRUE
-    $join$;
+    v_candidate_where := $where$
+      WHERE (
+          s.twitch_username ILIKE $3 ESCAPE E'\\'
+          OR s.twitch_display_name ILIKE $3 ESCAPE E'\\'
+          OR s.twitch_user_id ILIKE $3 ESCAPE E'\\'
+        )
+        AND (NOT COALESCE($4, FALSE) OR s.chat_announcement_enabled)
+        AND (NOT COALESCE($5, FALSE)
+          OR COALESCE(length(s.chat_announcement_template), 0) > 0)
+    $where$;
   END IF;
 
   EXECUTE format($query$
 WITH candidate_streamers AS MATERIALIZED (
   SELECT s.*
-  FROM get_analysis_streamer_candidate_rows(
-    $3,
-    $4,
-    $5
-  ) AS s
+  FROM streamers s
+  %s
 ),
 candidate_card_counts AS MATERIALIZED (
   SELECT c.streamer_id, COUNT(*)::INTEGER AS card_count
@@ -495,7 +500,7 @@ streamer_base AS MATERIALIZED (
     vcb.streamer_id IS NOT NULL AS has_vote_campaign_bonus
   FROM candidate_streamers s
   LEFT JOIN candidate_card_counts cc ON cc.streamer_id = s.id
-  %s
+  LEFT JOIN users u ON u.twitch_user_id = s.twitch_user_id
   LEFT JOIN streamer_chat_sender_settings css ON css.streamer_id = s.id
   LEFT JOIN twitch_bot_accounts bot ON bot.id = css.custom_bot_account_id
   LEFT JOIN storage_usage su
@@ -537,7 +542,7 @@ SELECT jsonb_build_object(
   ), '[]'::JSONB),
   'count', (SELECT COUNT(*)::INTEGER FROM filtered_streamers)
 )
-  $query$, v_user_join)
+  $query$, v_candidate_where)
   INTO v_result
   USING
     p_page,
