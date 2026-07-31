@@ -41,6 +41,48 @@ interface DataTableProps<T> {
   pagination?: PaginationConfig
 }
 
+interface ServerPaginationRecoveryInput {
+  requestedPage?: number
+  currentPage: number
+  totalPages: number
+  dataLength: number
+  totalItems: number
+  loading: boolean
+}
+
+/**
+ * countとrowsが別スナップショットになったときの空ページ復帰先を計算する。
+ *
+ * `requestedPage > totalPages` は検索条件変更などで要求ページ自体が上限を越えた
+ * ケースなので、countから計算した最終ページへ戻す。それ以外の2ページ目以降が
+ * 空なら、countが一時的に古い可能性があるため1ページ前へ退避する。UIを直接
+ * 操作せず純粋関数にしておくことで、競合境界をReactの実体やブラウザに依存せず
+ * 単体テストできるようにする。
+ */
+export function getServerPaginationRecoveryPage({
+  requestedPage,
+  currentPage,
+  totalPages,
+  dataLength,
+  totalItems,
+  loading,
+}: ServerPaginationRecoveryInput): number | null {
+  if (
+    loading ||
+    dataLength !== 0 ||
+    totalItems <= 0 ||
+    requestedPage === undefined
+  ) {
+    return null
+  }
+
+  const recoveryPage =
+    requestedPage > totalPages
+      ? currentPage
+      : Math.max(currentPage - 1, 1)
+  return requestedPage === recoveryPage ? null : recoveryPage
+}
+
 /**
  * Reusable data table component for displaying lists of items
  * Supports custom column rendering, loading states, empty states, and pagination
@@ -76,10 +118,14 @@ export function DataTable<T>({
   const pageLimitReached = isServerPagination && fullTotalPages > totalPages
   const requestedPage = pagination?.currentPage
   const onPageChange = pagination?.onPageChange
-  const recoveryPage =
-    requestedPage !== undefined && requestedPage > totalPages
-      ? currentPage
-      : Math.max(currentPage - 1, 1)
+  const recoveryPage = getServerPaginationRecoveryPage({
+    requestedPage,
+    currentPage,
+    totalPages,
+    dataLength: data.length,
+    totalItems,
+    loading,
+  })
 
   useEffect(() => {
     // count取得とrows取得の間に削除・検索条件変更が起きると、要求ページが
@@ -91,17 +137,13 @@ export function DataTable<T>({
     // "Cannot update a component while rendering"警告も避ける。
     if (
       !isServerPagination ||
-      loading ||
-      data.length !== 0 ||
-      totalItems <= 0 ||
-      requestedPage === undefined ||
       onPageChange === undefined ||
-      requestedPage === recoveryPage
+      recoveryPage === null
     ) {
       return
     }
     onPageChange(recoveryPage)
-  }, [data.length, isServerPagination, loading, onPageChange, recoveryPage, requestedPage, totalItems])
+  }, [isServerPagination, onPageChange, recoveryPage])
 
   if (loading) {
     return (

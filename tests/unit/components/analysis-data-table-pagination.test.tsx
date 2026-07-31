@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
+import { getServerPaginationRecoveryPage } from '../../../analysis/src/components/DataTable'
 import { MAX_ANALYSIS_PAGE } from '../../../analysis/src/lib/pagination'
 
 const dataTableSource = readFileSync(
@@ -32,14 +33,39 @@ describe('analysis DataTable server pagination guard', () => {
 
   it('countとrowsの競合で空ページになったら親を最終ページへ戻す', () => {
     // data=[]かつtotalItems>0のときにページャーを先にreturnすると、
-    // currentPageが新しい最終ページを越えたまま固定される。effectで親へ
-    // クランプ値を通知する契約をsource-levelで固定する。
-    expect(normalizedSource).toContain('data.length !== 0')
-    expect(normalizedSource).toContain('totalItems <= 0')
-    expect(normalizedSource).toContain('const recoveryPage =')
-    expect(normalizedSource).toContain('Math.max(currentPage - 1, 1)')
-    expect(normalizedSource).toContain('loading ||')
-    expect(normalizedSource).toContain('requestedPage === recoveryPage')
+    // currentPageが新しい最終ページを越えたまま固定される。復帰先の計算を
+    // 純粋関数として実際に実行し、count/rows競合と検索条件変更の両方を検証する。
+    expect(
+      getServerPaginationRecoveryPage({
+        requestedPage: 2,
+        currentPage: 2,
+        totalPages: 2,
+        dataLength: 0,
+        totalItems: 21,
+        loading: false,
+      })
+    ).toBe(1)
+    expect(
+      getServerPaginationRecoveryPage({
+        requestedPage: 5,
+        currentPage: 2,
+        totalPages: 2,
+        dataLength: 0,
+        totalItems: 21,
+        loading: false,
+      })
+    ).toBe(2)
+    expect(
+      getServerPaginationRecoveryPage({
+        requestedPage: 2,
+        currentPage: 2,
+        totalPages: 2,
+        dataLength: 0,
+        totalItems: 21,
+        loading: true,
+      })
+    ).toBeNull()
+    expect(normalizedSource).toContain('getServerPaginationRecoveryPage({')
     expect(normalizedSource).toContain('onPageChange(recoveryPage)')
   })
 })
