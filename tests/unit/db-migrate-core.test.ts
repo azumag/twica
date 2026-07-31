@@ -8,6 +8,8 @@ import {
   computeChecksum,
   countEffectiveStatements,
   containsSetLocal,
+  extractCreatedIndexNames,
+  validateIndexStates,
   buildMigrationDescriptor,
   loadMigrationFiles,
   loadMigrationFilesFromDirs,
@@ -168,6 +170,35 @@ describe('containsSetLocal', () => {
 
   it('SET LOCAL を含まないコードは false', () => {
     expect(containsSetLocal('SET statement_timeout = 0;\nSELECT 1;')).toBe(false)
+  })
+})
+
+describe('forbidden index postcondition helpers', () => {
+  it('コメントを除外し、CREATE INDEXの未引用/引用名を抽出する', () => {
+    const sql = [
+      '-- CREATE INDEX ignored_comment ON public.users (id);',
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS users_created_idx ON public.users (created_at);',
+      '/* CREATE INDEX ignored_block_comment ON public.users (id); */',
+      'CREATE INDEX "Users Search IDX" ON public.users (twitch_username);',
+    ].join('\n')
+
+    expect(extractCreatedIndexNames(sql)).toEqual(['users_created_idx', 'Users Search IDX'])
+  })
+
+  it('missing/invalid/validの状態を区別し、invalidならhistory登録前に止められる', () => {
+    expect(
+      validateIndexStates(
+        ['valid_idx', 'invalid_idx', 'missing_idx'],
+        [
+          { name: 'valid_idx', indisvalid: true, indisready: true },
+          { name: 'invalid_idx', indisvalid: false, indisready: true },
+        ]
+      )
+    ).toEqual({ missing: ['missing_idx'], invalid: ['invalid_idx'] })
+
+    expect(validateIndexStates(['valid_idx'], [{ name: 'valid_idx', indisvalid: true, indisready: true }])).toEqual(
+      { missing: [], invalid: [] }
+    )
   })
 })
 
@@ -369,9 +400,9 @@ describe('loadMigrationFilesFromDirs (Issue #691 Chunk 1 C-1対応)', () => {
   })
 
   // C-1の実運用シナリオそのもの: 実際に db/planetscale/migrations/ に配置した
-  // 2ファイル（bootstrap→baseline）が、supabase/migrations/ の既存ファイル群と
+  // PlanetScale専用ファイル群（bootstrap→baselineと後続のDDL）が、supabase/migrations/ の既存ファイル群と
   // 正しくマージされ、ファイル名の日時順で正しい位置（末尾側）に来ることを確認する。
-  it('実ディレクトリ: supabase/migrations/ と db/planetscale/migrations/ をマージするとplanetscale専用2ファイルが末尾に来る', () => {
+  it('実ディレクトリ: supabase/migrations/ と db/planetscale/migrations/ をマージすると専用migrationが末尾に来る', () => {
     const supabaseDir = join(__dirname, '../../supabase/migrations')
     const planetscaleDir = join(__dirname, '../../db/planetscale/migrations')
     const descriptors = loadMigrationFilesFromDirs([supabaseDir, planetscaleDir])
@@ -381,6 +412,7 @@ describe('loadMigrationFilesFromDirs (Issue #691 Chunk 1 C-1対応)', () => {
     expect(filenames).toEqual(sorted)
     expect(filenames).toContain('20260719180000_planetscale_bootstrap.sql')
     expect(filenames).toContain('20260719180100_planetscale_public_schema_baseline.sql')
+    expect(filenames).toContain('20260801090005_create_analysis_streamers_search_trgm_index.sql')
     // supabase/migrations/ 側には(移動済みのため)もう存在しないことも確認する
     const bootstrapDescriptor = descriptors.find(
       (d: { filename: string }) => d.filename === '20260719180000_planetscale_bootstrap.sql'

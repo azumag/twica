@@ -30,6 +30,21 @@ describe('analysis dashboard: bounded data contract', () => {
     expect(migration).toContain('GRANT EXECUTE ON FUNCTION get_analysis_streamers_page')
   })
 
+  it('検索条件はカード/ボーナス集計より前の候補CTEへ適用する', () => {
+    const usersCandidate = migration.indexOf('WITH candidate_users AS MATERIALIZED')
+    const usersCardCount = migration.indexOf('FROM user_cards uc')
+    const streamersCandidate = migration.indexOf('WITH candidate_streamers AS MATERIALIZED')
+    const streamersCardCount = migration.indexOf('FROM cards c')
+
+    expect(usersCandidate).toBeGreaterThanOrEqual(0)
+    expect(usersCardCount).toBeGreaterThan(usersCandidate)
+    expect(migration).toContain('JOIN candidate_users cu ON cu.id = uc.user_id')
+    expect(streamersCandidate).toBeGreaterThan(usersCandidate)
+    expect(streamersCardCount).toBeGreaterThan(streamersCandidate)
+    expect(migration).toContain('JOIN candidate_streamers cs ON cs.id = c.streamer_id')
+    expect(migration).toContain('FROM summary_streamer_base sb')
+  })
+
   it('一覧ページは現在ページのrowsとDB countをDataTableへ渡し、全件をローカルsliceしない', () => {
     expect(usersPage).toContain('page: currentPage')
     expect(usersPage).toContain('debouncedSearchTerm')

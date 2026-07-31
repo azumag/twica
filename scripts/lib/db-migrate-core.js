@@ -227,6 +227,61 @@ function containsSetLocal(content) {
 }
 
 /**
+ * forbidden migration に含まれる CREATE INDEX の名前を取り出す純粋関数。
+ *
+ * CREATE INDEX CONCURRENTLY は失敗時に「無効なindexが残る」ことがある。
+ * その状態で `IF NOT EXISTS` を再実行すると、PostgreSQLは同名relationが
+ * あるとして作成をスキップするため、runnerがSQL成功だけを見てhistoryへ
+ * 記録すると、以後ずっと壊れたindexを正当な適用済みとして扱ってしまう。
+ * runnerはこの名前を使って `pg_index.indisvalid/indisready` を確認し、
+ * 不完全なindexのままhistoryへ進まないようにする。
+ *
+ * 厳密なSQLパーサを導入せず、migrationで使うCREATE INDEXの定型だけを扱う。
+ * 行コメントとブロックコメントは除去するが、文字列リテラル中のキーワードを
+ * SQLとして解釈することはしない。対象migrationはDDL 1文だけという別ガードを
+ * 既に持つため、ここで複雑な汎用SQLパーサを追加するのはYAGNIと判断した。
+ *
+ * @param {string} content
+ * @returns {string[]}
+ */
+function extractCreatedIndexNames(content) {
+  const withoutComments = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.replace(/--.*$/g, ''))
+    .join('\n')
+  const pattern = /\bCREATE\s+INDEX(?:\s+CONCURRENTLY)?\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|([a-z_][a-z0-9_$]*))/gi
+  const names = []
+  for (const match of withoutComments.matchAll(pattern)) {
+    const name = match[1] ?? match[2]
+    if (name && !names.includes(name)) names.push(name)
+  }
+  return names
+}
+
+/**
+ * DBから返されたindex状態が、期待したindexをすべて有効にしているか検証する純粋関数。
+ *
+ * `indisready` は再構築・作成途中のindexを除外し、`indisvalid` はplannerが利用可能な
+ * indexかを表す。どちらか一方でもfalseなら、migration historyへ登録する前に停止して
+ * 再実行または運用者によるREINDEX/DROP判断を促す。DB問い合わせ自体はCLI側に残し、
+ * この関数はfault-injection相当の状態（missing/invalid/valid）を単体テストできるようにする。
+ *
+ * @param {string[]} expectedNames
+ * @param {{ name: string, indisvalid: boolean, indisready: boolean }[]} states
+ * @returns {{ missing: string[], invalid: string[] }}
+ */
+function validateIndexStates(expectedNames, states) {
+  const stateByName = new Map(states.map((state) => [state.name, state]))
+  const missing = expectedNames.filter((name) => !stateByName.has(name))
+  const invalid = expectedNames.filter((name) => {
+    const state = stateByName.get(name)
+    return state !== undefined && (state.indisvalid !== true || state.indisready !== true)
+  })
+  return { missing, invalid }
+}
+
+/**
  * 1ファイル分の migration descriptor を組み立てる純粋関数。
  * ファイル名が MIGRATION_FILENAME_RE にマッチしない場合、version/name は null になり、
  * errors にその旨が積まれる（呼び出し側で不正ファイルとして扱われる）。
@@ -655,6 +710,8 @@ module.exports = {
   computeChecksum,
   countEffectiveStatements,
   containsSetLocal,
+  extractCreatedIndexNames,
+  validateIndexStates,
   buildMigrationDescriptor,
   loadMigrationFiles,
   loadMigrationFilesFromDirs,

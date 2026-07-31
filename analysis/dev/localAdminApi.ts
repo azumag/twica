@@ -29,6 +29,7 @@ import {
   updateSupportCodeStatusPg,
   updateSupportInquiryStatusPg,
 } from './adminApiPg'
+import { MAX_ANALYSIS_PAGE } from '../src/lib/pagination'
 
 type Env = Record<string, string>
 
@@ -143,7 +144,7 @@ function parseTimeRange(raw: string | null): TimeRange {
 export function parsePagination(
   url: URL,
   maxPageSize = 1000,
-  maxPage = 1000
+  maxPage = MAX_ANALYSIS_PAGE
 ): { page: number; pageSize: number } {
   const page = Number(url.searchParams.get('page') || '1')
   const pageSize = Number(url.searchParams.get('pageSize') || '20')

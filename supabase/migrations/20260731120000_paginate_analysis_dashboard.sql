@@ -13,7 +13,7 @@
 -- PlanetScaleの実DBでは対象テーブルに書き込みが続くため、索引作成を
 -- CREATE INDEX CONCURRENTLY で別migrationとして適用し、ガチャ引き換えや
 -- ユーザー登録の書き込みを通常のCREATE INDEXで長時間待たせないようにする。
--- 索引本体は 20260801090001〜20260801090005 に分離している。
+-- 索引本体は db/planetscale/migrations/20260801090001〜20260801090005 に分離している。
 
 -- Overviewの30日推移は日ごとのLATERAL COUNTを30回実行していたため、対象期間を
 -- 先に一度だけGROUP BYしてから日付系列へLEFT JOINする。返却件数は従来どおり
@@ -124,12 +124,7 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-WITH card_counts AS MATERIALIZED (
-  SELECT user_id, COUNT(*)::INTEGER AS card_count
-  FROM user_cards
-  GROUP BY user_id
-),
-all_users AS MATERIALIZED (
+WITH candidate_users AS MATERIALIZED (
   SELECT
     u.id,
     u.twitch_user_id,
@@ -139,18 +134,47 @@ all_users AS MATERIALIZED (
     u.tos_accepted_at,
     COALESCE(u.twitch_scopes, '{}'::TEXT[]) AS twitch_scopes,
     u.created_at,
-    u.updated_at,
-    COALESCE(cc.card_count, 0)::INTEGER AS card_count
+    u.updated_at
   FROM users u
-  LEFT JOIN card_counts cc ON cc.user_id = u.id
+  WHERE (p_search IS NULL OR p_search = ''
+    OR u.twitch_username ILIKE p_search ESCAPE E'\\'
+    OR u.twitch_display_name ILIKE p_search ESCAPE E'\\')
+),
+card_counts AS MATERIALIZED (
+  SELECT uc.user_id, COUNT(*)::INTEGER AS card_count
+  FROM user_cards uc
+  JOIN candidate_users cu ON cu.id = uc.user_id
+  GROUP BY uc.user_id
 ),
 filtered_users AS MATERIALIZED (
-  SELECT au.*
-  FROM all_users au
-  WHERE (p_search IS NULL OR p_search = ''
-    OR au.twitch_username ILIKE p_search ESCAPE E'\\'
-    OR au.twitch_display_name ILIKE p_search ESCAPE E'\\')
-    AND (NOT COALESCE(p_hide_zero_cards, FALSE) OR au.card_count > 0)
+  SELECT
+    cu.*,
+    COALESCE(cc.card_count, 0)::INTEGER AS card_count
+  FROM candidate_users cu
+  LEFT JOIN card_counts cc ON cc.user_id = cu.id
+  WHERE NOT COALESCE(p_hide_zero_cards, FALSE)
+    OR COALESCE(cc.card_count, 0) > 0
+),
+user_totals AS (
+  SELECT
+    COUNT(*)::INTEGER AS total_users,
+    COUNT(*) FILTER (WHERE u.tos_accepted_at IS NOT NULL)::INTEGER AS users_with_tos
+  FROM users u
+),
+user_card_totals AS (
+  SELECT
+    COUNT(*)::INTEGER AS total_cards,
+    COUNT(DISTINCT uc.user_id)::INTEGER AS users_with_cards
+  FROM user_cards uc
+),
+summary AS (
+  SELECT
+    ut.total_users,
+    uct.total_cards,
+    ut.users_with_tos,
+    uct.users_with_cards
+  FROM user_totals ut
+  CROSS JOIN user_card_totals uct
 ),
 paged_users AS (
   SELECT fu.*
@@ -164,14 +188,6 @@ paged_users AS (
   LIMIT LEAST(GREATEST(COALESCE(p_page_size, 20), 1), 100)
   OFFSET (GREATEST(COALESCE(p_page, 1), 1)::BIGINT - 1)
     * LEAST(GREATEST(COALESCE(p_page_size, 20), 1), 100)::BIGINT
-),
-summary AS (
-  SELECT
-    COUNT(*)::INTEGER AS total_users,
-    COALESCE(SUM(au.card_count), 0)::INTEGER AS total_cards,
-    COUNT(*) FILTER (WHERE au.tos_accepted_at IS NOT NULL)::INTEGER AS users_with_tos,
-    COUNT(*) FILTER (WHERE au.card_count > 0)::INTEGER AS users_with_cards
-  FROM all_users au
 )
 SELECT jsonb_build_object(
   'rows', COALESCE((
@@ -223,16 +239,40 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-WITH card_counts AS MATERIALIZED (
-  SELECT streamer_id, COUNT(*)::INTEGER AS card_count
-  FROM cards
-  GROUP BY streamer_id
+WITH candidate_streamers AS MATERIALIZED (
+  SELECT s.*
+  FROM streamers s
+  WHERE (p_search IS NULL OR p_search = ''
+    OR s.twitch_username ILIKE p_search ESCAPE E'\\'
+    OR s.twitch_display_name ILIKE p_search ESCAPE E'\\'
+    OR s.twitch_user_id ILIKE p_search ESCAPE E'\\')
+    AND (NOT COALESCE(p_filter_chat_enabled, FALSE) OR s.chat_announcement_enabled)
+    AND (NOT COALESCE(p_filter_has_template, FALSE)
+      OR COALESCE(length(s.chat_announcement_template), 0) > 0)
 ),
-vote_campaign_bonus AS MATERIALIZED (
-  SELECT DISTINCT streamer_id
-  FROM streamer_storage_bonus
-  WHERE type = 'campaign'
-    AND memo = '2026選挙応援'
+candidate_card_counts AS MATERIALIZED (
+  SELECT c.streamer_id, COUNT(*)::INTEGER AS card_count
+  FROM cards c
+  JOIN candidate_streamers cs ON cs.id = c.streamer_id
+  GROUP BY c.streamer_id
+),
+candidate_vote_campaign_bonus AS MATERIALIZED (
+  SELECT DISTINCT b.streamer_id
+  FROM streamer_storage_bonus b
+  JOIN candidate_streamers cs ON cs.id = b.streamer_id
+  WHERE b.type = 'campaign'
+    AND b.memo = '2026選挙応援'
+),
+all_card_counts AS MATERIALIZED (
+  SELECT c.streamer_id, COUNT(*)::INTEGER AS card_count
+  FROM cards c
+  GROUP BY c.streamer_id
+),
+all_vote_campaign_bonus AS MATERIALIZED (
+  SELECT DISTINCT b.streamer_id
+  FROM streamer_storage_bonus b
+  WHERE b.type = 'campaign'
+    AND b.memo = '2026選挙応援'
 ),
 system_bot AS (
   SELECT EXISTS (
@@ -271,26 +311,61 @@ streamer_base AS MATERIALIZED (
       END
     ) AS chat_send_available,
     vcb.streamer_id IS NOT NULL AS has_vote_campaign_bonus
-  FROM streamers s
-  LEFT JOIN card_counts cc ON cc.streamer_id = s.id
+  FROM candidate_streamers s
+  LEFT JOIN candidate_card_counts cc ON cc.streamer_id = s.id
   LEFT JOIN users u ON u.twitch_user_id = s.twitch_user_id
   LEFT JOIN streamer_chat_sender_settings css ON css.streamer_id = s.id
   LEFT JOIN twitch_bot_accounts bot ON bot.id = css.custom_bot_account_id
   LEFT JOIN storage_usage su
     ON su.user_prefix = substring(encode(extensions.digest(s.twitch_user_id, 'sha256'), 'hex') from 1 for 8)
-  LEFT JOIN vote_campaign_bonus vcb ON vcb.streamer_id = s.id
+  LEFT JOIN candidate_vote_campaign_bonus vcb ON vcb.streamer_id = s.id
+),
+summary_streamer_base AS MATERIALIZED (
+  -- summaryは検索条件に左右されない既存契約を維持する。一方、一覧用の
+  -- streamer_baseはcandidate_streamersから始めることで、検索時にカード・
+  -- ボーナス集計を全配信者へ行わない。全体summaryのための走査と、検索候補
+  -- の絞り込みを意図的に分離している。
+  SELECT
+    s.*,
+    COALESCE(cc.card_count, 0)::INTEGER AS card_count,
+    COALESCE(su.bytes_used, 0)::BIGINT AS storage_bytes,
+    COALESCE(u.twitch_scopes, '{}'::TEXT[]) @> ARRAY['user:write:chat']::TEXT[] AS has_chat_scope,
+    COALESCE(css.sender_mode, 'streamer') AS chat_sender_mode,
+    CASE
+      WHEN COALESCE(css.sender_mode, 'streamer') = 'custom_bot' THEN
+        COALESCE(bot.owner_type = 'streamer'
+          AND bot.streamer_id = s.id
+          AND bot.status = 'active', FALSE)
+      WHEN COALESCE(css.sender_mode, 'streamer') = 'official_bot' THEN
+        (SELECT has_active_system_bot FROM system_bot)
+      ELSE FALSE
+    END AS has_active_bot_sender,
+    (
+      (COALESCE(u.twitch_scopes, '{}'::TEXT[]) @> ARRAY['user:write:chat']::TEXT[])
+      OR CASE
+        WHEN COALESCE(css.sender_mode, 'streamer') = 'custom_bot' THEN
+          COALESCE(bot.owner_type = 'streamer'
+            AND bot.streamer_id = s.id
+            AND bot.status = 'active', FALSE)
+        WHEN COALESCE(css.sender_mode, 'streamer') = 'official_bot' THEN
+          (SELECT has_active_system_bot FROM system_bot)
+        ELSE FALSE
+      END
+    ) AS chat_send_available,
+    vcb.streamer_id IS NOT NULL AS has_vote_campaign_bonus
+  FROM streamers s
+  LEFT JOIN all_card_counts cc ON cc.streamer_id = s.id
+  LEFT JOIN users u ON u.twitch_user_id = s.twitch_user_id
+  LEFT JOIN streamer_chat_sender_settings css ON css.streamer_id = s.id
+  LEFT JOIN twitch_bot_accounts bot ON bot.id = css.custom_bot_account_id
+  LEFT JOIN storage_usage su
+    ON su.user_prefix = substring(encode(extensions.digest(s.twitch_user_id, 'sha256'), 'hex') from 1 for 8)
+  LEFT JOIN all_vote_campaign_bonus vcb ON vcb.streamer_id = s.id
 ),
 filtered_streamers AS MATERIALIZED (
   SELECT sb.*
   FROM streamer_base sb
-  WHERE (p_search IS NULL OR p_search = ''
-    OR sb.twitch_username ILIKE p_search ESCAPE E'\\'
-    OR sb.twitch_display_name ILIKE p_search ESCAPE E'\\'
-    OR sb.twitch_user_id ILIKE p_search ESCAPE E'\\')
-    AND (NOT COALESCE(p_hide_zero_cards, FALSE) OR sb.card_count > 0)
-    AND (NOT COALESCE(p_filter_chat_enabled, FALSE) OR sb.chat_announcement_enabled)
-    AND (NOT COALESCE(p_filter_has_template, FALSE)
-      OR COALESCE(length(sb.chat_announcement_template), 0) > 0)
+  WHERE (NOT COALESCE(p_hide_zero_cards, FALSE) OR sb.card_count > 0)
     AND (NOT COALESCE(p_filter_missing_scope, FALSE)
       OR (sb.chat_announcement_enabled AND NOT sb.chat_send_available))
     AND (NOT COALESCE(p_filter_vote_campaign, FALSE) OR sb.has_vote_campaign_bonus)
@@ -324,7 +399,7 @@ summary AS (
     COUNT(*) FILTER (WHERE sb.chat_announcement_enabled AND NOT sb.chat_send_available)::INTEGER
       AS chat_enabled_no_sender,
     COUNT(*) FILTER (WHERE sb.has_vote_campaign_bonus)::INTEGER AS vote_campaign_users
-  FROM streamer_base sb
+  FROM summary_streamer_base sb
 )
 SELECT jsonb_build_object(
   'rows', COALESCE((

@@ -110,11 +110,22 @@ VALUES
     '2026-01-02T00:00:00Z'
   );
 
+-- 一覧の候補CTEへ移した検索・チャット系フィルターも、ページRPCから
+-- 直接評価されることを確認する。fixture-streamer-1は同じTwitch IDの
+-- usersレコードを持たないため、chat_send_available=falseとなり、
+-- filter_missing_scopeの対象にもなる。
+UPDATE streamers
+SET
+  chat_announcement_enabled = TRUE,
+  chat_announcement_template = 'Fixture {user}'
+WHERE id = '00000000-0000-0000-0000-000000000201';
+
 DO $$
 DECLARE
   users_page JSONB;
   users_filtered JSONB;
   streamers_page JSONB;
+  streamers_filtered JSONB;
   options_page JSONB;
 BEGIN
   users_page := get_analysis_users_page(1, 2, NULL, 'card_count_desc', FALSE);
@@ -141,6 +152,24 @@ BEGIN
     OR streamers_page -> 'rows' -> 0 ->> 'id' <> '00000000-0000-0000-0000-000000000201'
   THEN
     RAISE EXCEPTION 'streamers page contract mismatch: %', streamers_page;
+  END IF;
+
+  streamers_filtered := get_analysis_streamers_page(
+    1,
+    100,
+    '%fixture-streamer%',
+    'name_asc',
+    FALSE,
+    TRUE,
+    TRUE,
+    TRUE,
+    FALSE
+  );
+  IF jsonb_array_length(streamers_filtered -> 'rows') <> 1
+    OR (streamers_filtered ->> 'count')::INTEGER <> 1
+    OR streamers_filtered -> 'rows' -> 0 ->> 'id' <> '00000000-0000-0000-0000-000000000201'
+  THEN
+    RAISE EXCEPTION 'streamers filter contract mismatch: %', streamers_filtered;
   END IF;
 
   options_page := get_analysis_streamer_options_page(1, 1, '%fixture-streamer%');
