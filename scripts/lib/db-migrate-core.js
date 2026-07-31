@@ -424,6 +424,77 @@ function stripSimplePredicateParentheses(predicate) {
 }
 
 /**
+ * PostgreSQL E-stringのescapeを値へデコードする。単文字escapeだけでなく、
+ * `\\xNN` / `\\ooo` / `\\uNNNN` / `\\UNNNNNNNN`を扱わないと、正しいE-string
+ * predicateをpg_get_indexdefの通常literalと同一視できず、逆に誤ったliteralを
+ * canonicalizeして通す可能性がある。未知/不完全なescapeは入力を保ったままにし、
+ * 比較を安全側（不一致）へ倒す。
+ * @param {string} body
+ * @returns {string}
+ */
+function decodePostgresEscapeString(body) {
+  const result = []
+  const simpleEscapes = {
+    a: '\x07',
+    b: '\b',
+    f: '\f',
+    n: '\n',
+    r: '\r',
+    t: '\t',
+    v: '\v',
+    '\\': '\\',
+    "'": "'",
+    '"': '"',
+  }
+
+  for (let index = 0; index < body.length; index += 1) {
+    if (body[index] !== '\\' || index + 1 >= body.length) {
+      result.push(body[index])
+      continue
+    }
+
+    const escape = body[index + 1]
+    if (Object.prototype.hasOwnProperty.call(simpleEscapes, escape)) {
+      result.push(simpleEscapes[escape])
+      index += 1
+      continue
+    }
+
+    if (escape === 'x' || escape === 'u' || escape === 'U') {
+      const digitCount = escape === 'x' ? 2 : escape === 'u' ? 4 : 8
+      const digits = body.slice(index + 2, index + 2 + digitCount)
+      const pattern = escape === 'x' ? /^[0-9A-Fa-f]{1,2}$/ : new RegExp(`^[0-9A-Fa-f]{${digitCount}}$`)
+      if (pattern.test(digits)) {
+        const codePoint = Number.parseInt(digits, 16)
+        if (codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+          result.push(String.fromCodePoint(codePoint))
+          index += 1 + digits.length
+          continue
+        }
+      }
+      result.push('\\', escape)
+      index += 1
+      continue
+    }
+
+    if (/^[0-7]$/.test(escape)) {
+      const digits = body.slice(index + 1, index + 4).match(/^[0-7]{1,3}/)?.[0]
+      if (digits) {
+        result.push(String.fromCodePoint(Number.parseInt(digits, 8)))
+        index += digits.length
+        continue
+      }
+    }
+
+    // PostgreSQLが受理しない/意味を確定できないescapeは、値を推測せず
+    // backslash込みで残す。正常な定義同士を誤って一致させないための安全側処理。
+    result.push('\\', escape)
+    index += 1
+  }
+  return result.join('')
+}
+
+/**
  * single-quoted / E-string / dollar-quoted literalを同じ標準SQL literal表記へ
  * 揃える。pg_get_indexdefは入力の$$literal$$を' literal '::textへ書き換えるため、
  * 表記だけが異なる同値literalを比較で拒否しないようにする。
@@ -441,21 +512,7 @@ function canonicalizeQuotedLiteral(segment) {
     const isEscapeString = /^[eE]'/u.test(segment)
     body = segment.slice(isEscapeString ? 2 : 1, -1)
     if (isEscapeString) {
-      body = body.replace(/\\(.)/gs, (_match, escaped) => {
-        const escapes = {
-          a: '\x07',
-          b: '\b',
-          f: '\f',
-          n: '\n',
-          r: '\r',
-          t: '\t',
-          v: '\v',
-          '\\': '\\',
-          "'": "'",
-          '"': '"',
-        }
-        return Object.prototype.hasOwnProperty.call(escapes, escaped) ? escapes[escaped] : escaped
-      })
+      body = decodePostgresEscapeString(body)
     } else {
       body = body.replace(/''/g, "'")
     }

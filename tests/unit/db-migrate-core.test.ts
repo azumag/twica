@@ -281,6 +281,31 @@ describe('forbidden index postcondition helpers', () => {
     ).toEqual([])
   })
 
+  it('E-stringのhex・octal・Unicode escapeをpg_get_indexdefの値へcanonicalizeする', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX escaped_users_idx ON public.users (id) WHERE code = E'\\x41' AND octal = E'\\101' AND unicode = E'\\u0041';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escaped_users_idx',
+          definition:
+            "CREATE INDEX escaped_users_idx ON public.users USING btree (id) WHERE ((code = 'A'::text) AND (octal = 'A'::text) AND (unicode = 'A'::text))",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escaped_users_idx',
+          definition:
+            "CREATE INDEX escaped_users_idx ON public.users USING btree (id) WHERE ((code = 'x41'::text) AND (octal = '101'::text) AND (unicode = 'u0041'::text))",
+        },
+      ])
+    ).toEqual(['escaped_users_idx'])
+  })
+
   it('missing/invalid/validの状態を区別し、invalidならhistory登録前に止められる', () => {
     expect(
       validateIndexStates(
