@@ -8,6 +8,7 @@ import {
 } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { StreamerPopup } from '../components/StreamerPopup'
 
 /**
@@ -37,6 +38,10 @@ export function Streamers() {
   const [loading, setLoading] = useState(true)
   // 検索クエリ（ユーザー名・表示名・Twitch User IDでフィルタリング）
   const [searchQuery, setSearchQuery] = useState('')
+  // Streamers RPCはカード数・ストレージ・チャット設定を集計するため、検索入力の
+  // 中間値ごとに実行すると全体集計を連続して起動してしまう。最後の入力から300ms
+  // 待ってからAPIへ渡し、入力中の不要なDB処理をまとめる。
+  const debouncedSearchQuery = useDebouncedValue(searchQuery)
   // ソート順（デフォルト: カード数の多い順）
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
   // カード数0のストリーマーを非表示にするフラグ
@@ -81,7 +86,7 @@ export function Streamers() {
           {
             page: currentPage,
             pageSize,
-            search: searchQuery,
+            search: debouncedSearchQuery,
             sort: sortOrder,
             hideZeroCards,
             filterChatEnabled,
@@ -103,7 +108,7 @@ export function Streamers() {
       }
     })()
     return () => controller.abort()
-  }, [currentPage, pageSize, searchQuery, sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, retryToken])
+  }, [currentPage, pageSize, debouncedSearchQuery, sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, retryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {

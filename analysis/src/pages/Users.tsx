@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { adminApi, type UserListSortOrder, type UserListSummary } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { User } from '../types/database'
 
 // Extended user type with aggregated statistics
@@ -21,6 +22,10 @@ export function Users() {
   const [users, setUsers] = useState<UserWithStats[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
+  // 入力中の中間文字列ではRPCを発火させず、最後の入力から300ms後に検索する。
+  // UsersのRPCは正確な件数と全体summaryも再計算するため、キー入力ごとの実行を
+  // 抑えてDBの全体集計とレスポンス競合を減らす。
+  const debouncedSearchTerm = useDebouncedValue(searchTerm)
   // ソート順（デフォルト: カード数の多い順）
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
   // カード数0のユーザーを非表示にするフラグ
@@ -52,7 +57,7 @@ export function Users() {
           {
             page: currentPage,
             pageSize,
-            search: searchTerm,
+            search: debouncedSearchTerm,
             sort: sortOrder,
             hideZeroCards,
           },
@@ -88,7 +93,7 @@ export function Users() {
       }
     })()
     return () => controller.abort()
-  }, [currentPage, pageSize, searchTerm, sortOrder, hideZeroCards, retryToken])
+  }, [currentPage, pageSize, debouncedSearchTerm, sortOrder, hideZeroCards, retryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
