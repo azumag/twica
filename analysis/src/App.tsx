@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from 'react'
+import { Component, lazy, Suspense, type ErrorInfo, type ReactNode } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { Layout } from './components/Layout'
 
@@ -57,13 +57,67 @@ function RouteLoadingFallback() {
   )
 }
 
+type RouteErrorBoundaryProps = {
+  children: ReactNode
+}
+
+type RouteErrorBoundaryState = {
+  error: Error | null
+}
+
+/**
+ * 遅延チャンクの取得失敗を画面単位で受け止めるError Boundary。
+ *
+ * Suspenseはdynamic importの保留中状態しか扱わず、古いindex.htmlが参照する
+ * チャンクをデプロイ後に削除された場合や、一時的なネットワーク切断でimportが
+ * rejectされた場合は捕捉しない。そのまま未処理例外にするとLayoutまでアンマウント
+ * され、管理者には白画面だけが残るため、ナビゲーションを維持したまま再読み込みを
+ * 促す。再試行を自動化せず明示ボタンにすることで、恒常的な配信障害時の無限reload
+ * ループも避ける。
+ */
+class RouteErrorBoundary extends Component<RouteErrorBoundaryProps, RouteErrorBoundaryState> {
+  state: RouteErrorBoundaryState = { error: null }
+
+  static getDerivedStateFromError(error: Error): RouteErrorBoundaryState {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    console.error('Failed to load analysis dashboard route:', error, errorInfo)
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+
+    return (
+      <div className="rounded-lg bg-white p-8 shadow" role="alert">
+        <h2 className="text-lg font-semibold text-gray-900">Failed to load this page</h2>
+        <p className="mt-2 text-sm text-gray-600">
+          The page bundle may be stale after a deployment. Reload the page and try again.
+        </p>
+        <button
+          type="button"
+          className="mt-4 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          onClick={() => window.location.reload()}
+        >
+          Reload page
+        </button>
+      </div>
+    )
+  }
+}
+
 /**
  * すべての遅延ルートで同じSuspense境界を使う。
  * ルートごとにfallbackの実装を複製すると画面追加時に表示仕様がずれるため、
  * チャンク読み込み中のUXをここで一元化する。
  */
 function LazyPage({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<RouteLoadingFallback />}>{children}</Suspense>
+  return (
+    <RouteErrorBoundary>
+      <Suspense fallback={<RouteLoadingFallback />}>{children}</Suspense>
+    </RouteErrorBoundary>
+  )
 }
 
 /**

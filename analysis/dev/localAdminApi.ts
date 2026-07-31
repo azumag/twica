@@ -31,18 +31,12 @@ import {
   updateSupportCodeStatusPg,
   updateSupportInquiryStatusPg,
 } from './adminApiPg'
+import type { StreamerListSortOrder, UserListSortOrder } from '../src/lib/adminApi'
 import { MAX_ANALYSIS_PAGE } from '../src/lib/pagination'
 
 type Env = Record<string, string>
 
 type TimeRange = '7d' | '30d' | '90d' | 'all'
-type UserListSortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'name_asc'
-type StreamerListSortOrder =
-  | 'card_count_desc'
-  | 'card_count_asc'
-  | 'created_at_desc'
-  | 'name_asc'
-  | 'storage_desc'
 
 type RouteContext = {
   req: IncomingMessage

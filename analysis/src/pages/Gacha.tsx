@@ -3,6 +3,7 @@ import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { RarityBadge } from '../components/RarityBadge'
 import { StreamerPopup } from '../components/StreamerPopup'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { Rarity } from '../types/database'
 import {
   adminApi,
@@ -64,6 +65,10 @@ export function Gacha() {
   // --- ストリーマー選択肢（軽量・最大100件。検索で候補を絞り込む） ---
   const [streamers, setStreamers] = useState<StreamerOption[]>([])
   const [streamerSearchInput, setStreamerSearchInput] = useState('')
+  // 候補検索も一覧画面と同じdebounce実装を使い、入力1文字ごとのRPC発火と
+  // 画面ごとの遅延値のドリフトを防ぐ。選択中IDは別依存値として保持するため、
+  // 検索結果が切り替わっても現在選択中の候補をpin留めする処理は維持できる。
+  const debouncedStreamerSearch = useDebouncedValue(streamerSearchInput, 250)
   const [selectedStreamerId, setSelectedStreamerId] = useState('')
 
   // --- チャート/統計用集計データ（/__admin/gacha/summary でDB側GROUP BY済み） ---
@@ -97,36 +102,33 @@ export function Gacha() {
   // ========================================
   useEffect(() => {
     const controller = new AbortController()
-    const timer = setTimeout(() => {
-      ;(async () => {
-        try {
-          const { rows } = await adminApi.getStreamerOptions(
-            { page: 1, pageSize: 100, search: streamerSearchInput },
-            { signal: controller.signal }
-          )
-          setStreamers((previousRows) => {
-            // 検索結果を置き換えるだけだと、100件目以降の配信者を検索して
-            // 選択した後に検索文字を消した際、その選択肢が先頭100件から外れて
-            // selectの表示が空になる。現在選択中の候補だけは軽量な1行として
-            // 次の結果にも残し、選択状態とサーバー側の集計条件を一致させる。
-            const selected = previousRows.find((row) => row.id === selectedStreamerId)
-            if (selected && !rows.some((row) => row.id === selected.id)) {
-              return [selected, ...rows]
-            }
-            return rows
-          })
-        } catch (err) {
-          if (controller.signal.aborted) return
-          // 候補だけの取得失敗は集計・履歴テーブルをブロックさせない。
-          console.error('Failed to fetch streamer options:', err)
-        }
-      })()
-    }, 250)
+    ;(async () => {
+      try {
+        const { rows } = await adminApi.getStreamerOptions(
+          { page: 1, pageSize: 100, search: debouncedStreamerSearch },
+          { signal: controller.signal }
+        )
+        setStreamers((previousRows) => {
+          // 検索結果を置き換えるだけだと、100件目以降の配信者を検索して
+          // 選択した後に検索文字を消した際、その選択肢が先頭100件から外れて
+          // selectの表示が空になる。現在選択中の候補だけは軽量な1行として
+          // 次の結果にも残し、選択状態とサーバー側の集計条件を一致させる。
+          const selected = previousRows.find((row) => row.id === selectedStreamerId)
+          if (selected && !rows.some((row) => row.id === selected.id)) {
+            return [selected, ...rows]
+          }
+          return rows
+        })
+      } catch (err) {
+        if (controller.signal.aborted) return
+        // 候補だけの取得失敗は集計・履歴テーブルをブロックさせない。
+        console.error('Failed to fetch streamer options:', err)
+      }
+    })()
     return () => {
-      clearTimeout(timer)
       controller.abort()
     }
-  }, [streamerSearchInput, selectedStreamerId])
+  }, [debouncedStreamerSearch, selectedStreamerId])
 
   // ========================================
   // fetchSummary: チャート/統計用集計データ取得（timeRange/selectedStreamerId変更時）
