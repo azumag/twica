@@ -76,25 +76,32 @@ export function DataTable<T>({
   const pageLimitReached = isServerPagination && fullTotalPages > totalPages
   const requestedPage = pagination?.currentPage
   const onPageChange = pagination?.onPageChange
+  const recoveryPage =
+    requestedPage !== undefined && requestedPage > totalPages
+      ? currentPage
+      : Math.max(currentPage - 1, 1)
 
   useEffect(() => {
     // count取得とrows取得の間に削除・検索条件変更が起きると、要求ページが
     // 新しい最終ページを越えて空配列になることがある。空状態を先にreturnすると
     // ページャーも消えて自力で復帰できないため、表示可能な最終ページへ親の状態を
-    // 戻して再取得する。レンダー中にsetStateせずeffectで行うことでReactの
+    // 戻して再取得する。countがまだ古い場合はcurrentPage - 1へ退避し、
+    // 要求ページ自体がcount上の最終ページを越えている場合だけ、クランプ済みの
+    // 最終ページへ戻す。レンダー中にsetStateせずeffectで行うことでReactの
     // "Cannot update a component while rendering"警告も避ける。
     if (
       !isServerPagination ||
+      loading ||
       data.length !== 0 ||
       totalItems <= 0 ||
       requestedPage === undefined ||
       onPageChange === undefined ||
-      requestedPage === currentPage
+      requestedPage === recoveryPage
     ) {
       return
     }
-    onPageChange(currentPage)
-  }, [currentPage, data.length, isServerPagination, onPageChange, requestedPage, totalItems])
+    onPageChange(recoveryPage)
+  }, [data.length, isServerPagination, loading, onPageChange, recoveryPage, requestedPage, totalItems])
 
   if (loading) {
     return (

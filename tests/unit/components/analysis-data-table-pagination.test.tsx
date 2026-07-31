@@ -36,6 +36,10 @@ describe('analysis DataTable server pagination guard', () => {
     // クランプ値を通知する契約をsource-levelで固定する。
     expect(normalizedSource).toContain('data.length !== 0')
     expect(normalizedSource).toContain('totalItems <= 0')
-    expect(normalizedSource).toContain('onPageChange(currentPage)')
+    expect(normalizedSource).toContain('const recoveryPage =')
+    expect(normalizedSource).toContain('Math.max(currentPage - 1, 1)')
+    expect(normalizedSource).toContain('loading ||')
+    expect(normalizedSource).toContain('requestedPage === recoveryPage')
+    expect(normalizedSource).toContain('onPageChange(recoveryPage)')
   })
 })
