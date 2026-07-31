@@ -9,14 +9,11 @@
 -- 現在ページの行だけに限定する。summaryは配列ではなくCOUNT/SUMのスカラーで返し、
 -- UIの全体統計を維持しながら大量レコードの転送を避ける。
 
-CREATE INDEX IF NOT EXISTS idx_users_created_at_analysis
-  ON users(created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_gacha_history_redeemed_at_analysis
-  ON gacha_history(redeemed_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_streamers_created_at_analysis
-  ON streamers(created_at DESC);
+-- 一覧・検索用の索引は、このトランザクションmigrationへ同居させない。
+-- PlanetScaleの実DBでは対象テーブルに書き込みが続くため、索引作成を
+-- CREATE INDEX CONCURRENTLY で別migrationとして適用し、ガチャ引き換えや
+-- ユーザー登録の書き込みを通常のCREATE INDEXで長時間待たせないようにする。
+-- 索引本体は 20260801090001〜20260801090005 に分離している。
 
 -- Overviewの30日推移は日ごとのLATERAL COUNTを30回実行していたため、対象期間を
 -- 先に一度だけGROUP BYしてから日付系列へLEFT JOINする。返却件数は従来どおり

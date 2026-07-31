@@ -1020,6 +1020,24 @@ describe('localAdminApi: Postgres専用wrapper', () => {
 })
 
 describe('localAdminApi: pure helper', () => {
+  it('parsePagination は巨大なページ番号をDBへ渡す前に400へ正規化する', async () => {
+    const { parsePagination } = await importLocalAdminApi()
+
+    expect(parsePagination(new URL('http://localhost/?page=1000&pageSize=100'))).toEqual({
+      page: 1000,
+      pageSize: 100,
+    })
+    expect(() =>
+      parsePagination(new URL('http://localhost/?page=1001&pageSize=100'))
+    ).toThrow('page must be a safe integer from 1 to 1000')
+    expect(() =>
+      parsePagination(new URL('http://localhost/?page=2147483648&pageSize=100'))
+    ).toThrow('page must be a safe integer from 1 to 1000')
+    expect(() =>
+      parsePagination(new URL('http://localhost/?page=1e309&pageSize=100'))
+    ).toThrow('page must be a safe integer from 1 to 1000')
+  })
+
   it('escapeIlikePattern は LIKEの制御文字をエスケープする', async () => {
     const { escapeIlikePattern } = await importLocalAdminApi()
     expect(escapeIlikePattern('100%_off')).toBe('100\\%\\_off')

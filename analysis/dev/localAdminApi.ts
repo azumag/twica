@@ -134,15 +134,25 @@ function parseTimeRange(raw: string | null): TimeRange {
 
 // page/pageSizeが未検証だと負のOFFSETや過大なLIMITがDBまで届く。
 // 予測可能な4xxへ正規化し、DBドライバ由来のエラーを露出させない。
-function parsePagination(url: URL, maxPageSize = 1000): { page: number; pageSize: number } {
+//
+// ページ番号にも上限を設ける。ページ番号を無制限に受け入れると、例えば
+// page=2147483648 が PostgreSQL の INTEGER 引数へ到達して500になったり、
+// 有効な整数でも巨大な OFFSET のためにDBが大量行を読み飛ばす。管理画面の
+// 一覧は「全件を取り切るAPI」ではなくbounded pageを返すAPIなので、現実的な
+// 上限を超える要求は、深いOFFSETを実行する前に明示的な400として拒否する。
+export function parsePagination(
+  url: URL,
+  maxPageSize = 1000,
+  maxPage = 1000
+): { page: number; pageSize: number } {
   const page = Number(url.searchParams.get('page') || '1')
   const pageSize = Number(url.searchParams.get('pageSize') || '20')
-  if (!Number.isInteger(page) || page < 1) {
-    throw Object.assign(new Error('page must be a positive integer'), {
+  if (!Number.isSafeInteger(page) || page < 1 || page > maxPage) {
+    throw Object.assign(new Error(`page must be a safe integer from 1 to ${maxPage}`), {
       statusCode: 400,
     })
   }
-  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > maxPageSize) {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > maxPageSize) {
     throw Object.assign(
       new Error(`pageSize must be a positive integer up to ${maxPageSize}`),
       {
