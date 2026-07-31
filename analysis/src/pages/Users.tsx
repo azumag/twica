@@ -48,6 +48,11 @@ export function Users() {
   // 以前はこの後にローカルfilter/sortを行っていたため、画面のページャーが
   // 全件取得を隠してしまっていた。rowsは1ページ分、count/summaryは集計値である。
   useEffect(() => {
+    // 検索入力中にページを1へ戻すeffectも別に走るため、ここで旧debounced値を
+    // 使った中間リクエストを止める。入力が止まって両値が一致したrenderだけが
+    // page 1の確定検索を開始し、1文字ごとの全体集計RPCを発生させない。
+    if (searchTerm !== debouncedSearchTerm) return
+
     const controller = new AbortController()
     ;(async () => {
       setLoading(true)
@@ -93,7 +98,7 @@ export function Users() {
       }
     })()
     return () => controller.abort()
-  }, [currentPage, pageSize, debouncedSearchTerm, sortOrder, hideZeroCards, retryToken])
+  }, [currentPage, pageSize, searchTerm, debouncedSearchTerm, sortOrder, hideZeroCards, retryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
