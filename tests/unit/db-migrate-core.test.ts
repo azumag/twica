@@ -224,7 +224,8 @@ describe('forbidden index postcondition helpers', () => {
       validateIndexDefinitions(definitions, [
         {
           name: 'ready_users_idx',
-          definition: "CREATE INDEX ready_users_idx ON public.users USING btree (id) WHERE status = 'READY'",
+          definition:
+            "CREATE INDEX ready_users_idx ON public.users USING btree (id) WHERE (status = 'READY'::text)",
         },
       ])
     ).toEqual([])
@@ -232,7 +233,8 @@ describe('forbidden index postcondition helpers', () => {
       validateIndexDefinitions(definitions, [
         {
           name: 'ready_users_idx',
-          definition: "CREATE INDEX ready_users_idx ON public.users USING btree (id) WHERE status = 'ready'",
+          definition:
+            "CREATE INDEX ready_users_idx ON public.users USING btree (id) WHERE (status = 'ready'::text)",
         },
       ])
     ).toEqual(['ready_users_idx'])

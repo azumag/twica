@@ -409,16 +409,38 @@ CREATE OR REPLACE FUNCTION get_analysis_streamers_page(
   p_filter_vote_campaign BOOLEAN DEFAULT FALSE
 )
 RETURNS JSONB
-LANGUAGE sql
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  v_user_join TEXT;
+  v_result JSONB;
+BEGIN
+  -- 検索ありでは候補streamerが少数なので、users全件をHash Joinするより
+  -- twitch_user_idの一意indexへ候補ごとにlookupする方が安い。検索なしでは
+  -- 全候補を扱うため、通常JOINを選んでusersを一度だけ走査する。SRFの既定
+  -- 行数推定に左右されないよう、plannerへ渡すJOIN形を実行時に分ける。
+  IF p_search IS NULL OR p_search = '' THEN
+    v_user_join := 'LEFT JOIN users u ON u.twitch_user_id = s.twitch_user_id';
+  ELSE
+    v_user_join := $join$
+      LEFT JOIN LATERAL (
+        SELECT u.twitch_scopes
+        FROM users u
+        WHERE u.twitch_user_id = s.twitch_user_id
+        LIMIT 1
+      ) u ON TRUE
+    $join$;
+  END IF;
+
+  EXECUTE format($query$
 WITH candidate_streamers AS MATERIALIZED (
   SELECT s.*
   FROM get_analysis_streamer_candidate_rows(
-    p_search,
-    p_filter_chat_enabled,
-    p_filter_has_template
+    $3,
+    $4,
+    $5
   ) AS s
 ),
 candidate_card_counts AS MATERIALIZED (
@@ -473,16 +495,7 @@ streamer_base AS MATERIALIZED (
     vcb.streamer_id IS NOT NULL AS has_vote_campaign_bonus
   FROM candidate_streamers s
   LEFT JOIN candidate_card_counts cc ON cc.streamer_id = s.id
-  -- 候補streamerが少数でも、SRFの推定行数（既定1000）を起点にusersを
-  -- Hash Joinすると、users全件のSeq Scanへ戻ることがある。streamerごとに
-  -- 一意indexを使う相関lookupへ固定し、検索結果が少数の一覧で全usersを
-  -- 読み込まないようにする。必要なのはscopeだけなので、行全体は取得しない。
-  LEFT JOIN LATERAL (
-    SELECT u.twitch_scopes
-    FROM users u
-    WHERE u.twitch_user_id = s.twitch_user_id
-    LIMIT 1
-  ) u ON TRUE
+  %s
   LEFT JOIN streamer_chat_sender_settings css ON css.streamer_id = s.id
   LEFT JOIN twitch_bot_accounts bot ON bot.id = css.custom_bot_account_id
   LEFT JOIN storage_usage su
@@ -492,38 +505,53 @@ streamer_base AS MATERIALIZED (
 filtered_streamers AS MATERIALIZED (
   SELECT sb.*
   FROM streamer_base sb
-  WHERE (NOT COALESCE(p_hide_zero_cards, FALSE) OR sb.card_count > 0)
-    AND (NOT COALESCE(p_filter_missing_scope, FALSE)
+  WHERE (NOT COALESCE($7, FALSE) OR sb.card_count > 0)
+    AND (NOT COALESCE($8, FALSE)
       OR (sb.chat_announcement_enabled AND NOT sb.chat_send_available))
-    AND (NOT COALESCE(p_filter_vote_campaign, FALSE) OR sb.has_vote_campaign_bonus)
+    AND (NOT COALESCE($9, FALSE) OR sb.has_vote_campaign_bonus)
 ),
 paged_streamers AS (
   SELECT fs.*
   FROM filtered_streamers fs
   ORDER BY
-    CASE WHEN p_sort = 'card_count_desc' THEN fs.card_count END DESC NULLS LAST,
-    CASE WHEN p_sort = 'card_count_asc' THEN fs.card_count END ASC NULLS LAST,
-    CASE WHEN p_sort = 'storage_desc' THEN fs.storage_bytes END DESC NULLS LAST,
-    CASE WHEN p_sort = 'name_asc' THEN fs.twitch_display_name END ASC NULLS LAST,
+    CASE WHEN $6 = 'card_count_desc' THEN fs.card_count END DESC NULLS LAST,
+    CASE WHEN $6 = 'card_count_asc' THEN fs.card_count END ASC NULLS LAST,
+    CASE WHEN $6 = 'storage_desc' THEN fs.storage_bytes END DESC NULLS LAST,
+    CASE WHEN $6 = 'name_asc' THEN fs.twitch_display_name END ASC NULLS LAST,
     fs.created_at DESC,
     fs.id ASC
-  LIMIT LEAST(GREATEST(COALESCE(p_page_size, 20), 1), 100)
-  OFFSET (GREATEST(COALESCE(p_page, 1), 1)::BIGINT - 1)
-    * LEAST(GREATEST(COALESCE(p_page_size, 20), 1), 100)::BIGINT
+  LIMIT LEAST(GREATEST(COALESCE($2, 20), 1), 100)
+  OFFSET (GREATEST(COALESCE($1, 1), 1)::BIGINT - 1)
+    * LEAST(GREATEST(COALESCE($2, 20), 1), 100)::BIGINT
 )
 SELECT jsonb_build_object(
   'rows', COALESCE((
     SELECT jsonb_agg(to_jsonb(ps) ORDER BY
-      CASE WHEN p_sort = 'card_count_desc' THEN ps.card_count END DESC NULLS LAST,
-      CASE WHEN p_sort = 'card_count_asc' THEN ps.card_count END ASC NULLS LAST,
-      CASE WHEN p_sort = 'storage_desc' THEN ps.storage_bytes END DESC NULLS LAST,
-      CASE WHEN p_sort = 'name_asc' THEN ps.twitch_display_name END ASC NULLS LAST,
+      CASE WHEN $6 = 'card_count_desc' THEN ps.card_count END DESC NULLS LAST,
+      CASE WHEN $6 = 'card_count_asc' THEN ps.card_count END ASC NULLS LAST,
+      CASE WHEN $6 = 'storage_desc' THEN ps.storage_bytes END DESC NULLS LAST,
+      CASE WHEN $6 = 'name_asc' THEN ps.twitch_display_name END ASC NULLS LAST,
       ps.created_at DESC,
       ps.id ASC
     ) FROM paged_streamers ps
   ), '[]'::JSONB),
   'count', (SELECT COUNT(*)::INTEGER FROM filtered_streamers)
-);
+)
+  $query$, v_user_join)
+  INTO v_result
+  USING
+    p_page,
+    p_page_size,
+    p_search,
+    p_filter_chat_enabled,
+    p_filter_has_template,
+    p_sort,
+    p_hide_zero_cards,
+    p_filter_missing_scope,
+    p_filter_vote_campaign;
+
+  RETURN v_result;
+END;
 $$;
 
 -- Streamers一覧のglobal summaryはページ移動・検索とは独立しているため、ページRPC

@@ -375,6 +375,31 @@ function restoreQuotedSqlSegments(masked, quotedSegments) {
   return masked.replace(/\u0001(\d+)\u0002/g, (_match, index) => quotedSegments[Number(index)])
 }
 
+/**
+ * 括弧が式全体を一重に包んでいる場合だけ外す。quoted segmentはplaceholderに
+ * 置換済みなので、predicate内のliteralに含まれる括弧を誤って数えない。
+ * @param {string} expression
+ * @returns {string}
+ */
+function stripRedundantOuterParentheses(expression) {
+  let result = expression.trim()
+  while (result.startsWith('(') && result.endsWith(')')) {
+    let depth = 0
+    let enclosesWholeExpression = true
+    for (let index = 0; index < result.length; index += 1) {
+      if (result[index] === '(') depth += 1
+      if (result[index] === ')') depth -= 1
+      if (depth === 0 && index < result.length - 1) {
+        enclosesWholeExpression = false
+        break
+      }
+    }
+    if (!enclosesWholeExpression || depth !== 0) break
+    result = result.slice(1, -1).trim()
+  }
+  return result
+}
+
 function normalizeIndexDefinition(definition) {
   const withoutTrailingSemicolon = definition.trim().replace(/;$/, '')
   const { masked, quotedSegments } = maskQuotedSqlSegments(withoutTrailingSemicolon)
@@ -397,6 +422,23 @@ function normalizeIndexDefinition(definition) {
     ),
     'ON $1 USING btree '
   )
+
+  // pg_get_indexdefは、文字列literalへ暗黙の::text castを追加し、partial
+  // predicate全体を括弧で包む（例: WHERE (status = 'READY'::text)）。
+  // literal placeholder直後のcastだけを吸収し、他の式に明示されたcastは残す。
+  normalized = normalized.replace(/\u0001(\d+)\u0002::text\b/gi, (match, index) => {
+    const segment = quotedSegments[Number(index)]
+    return segment && /^(?:[eE])?'|^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.test(segment)
+      ? `\u0001${index}\u0002`
+      : match
+  })
+  const whereIndex = normalized.search(/\bWHERE\b/i)
+  if (whereIndex >= 0) {
+    const whereKeyword = normalized.slice(whereIndex).match(/^WHERE\b/i)?.[0] ?? 'WHERE'
+    const predicate = stripRedundantOuterParentheses(normalized.slice(whereIndex + whereKeyword.length))
+    normalized = `${normalized.slice(0, whereIndex)}${whereKeyword} ${predicate}`
+  }
+
   // SQLキーワード・未引用識別子の大小文字は意味を持たないが、single-quoted
   // literalとdouble-quoted identifierの大小文字は意味を持つ。定義全体を
   // toLowerCase()すると、例えば WHERE status = 'READY' と 'ready' を同一視して

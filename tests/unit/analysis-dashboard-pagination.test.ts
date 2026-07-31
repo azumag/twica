@@ -24,8 +24,25 @@ describe('analysis dashboard: bounded data contract', () => {
     expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_streamers_summary()')
     expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_streamer_options_page(')
     expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_gacha_summary(')
-    expect(migration.match(/LIMIT LEAST\(GREATEST\(COALESCE\(p_page_size/g)).toHaveLength(3)
-    expect(migration).toContain('), 100)')
+    const pageRpcBodies = [
+      'get_analysis_users_page',
+      'get_analysis_streamer_options_page',
+      'get_analysis_streamers_page',
+    ].map((functionName) => {
+      const start = migration.indexOf(`CREATE OR REPLACE FUNCTION ${functionName}(`)
+      const end = migration.indexOf('\nCREATE OR REPLACE FUNCTION ', start + 1)
+
+      expect(start).toBeGreaterThanOrEqual(0)
+      return migration.slice(start, end === -1 ? migration.length : end)
+    })
+
+    // streamers pageは動的SQLのため、LIMIT/OFFSET内の引数名が$2になる。
+    expect(pageRpcBodies).toHaveLength(3)
+    for (const body of pageRpcBodies) {
+      expect(body).toMatch(
+        /LIMIT LEAST\(GREATEST\(COALESCE\((?:p_page_size|\$2), \d+\), 1\), 100\)/,
+      )
+    }
     expect(migration).toContain('fu.id ASC')
     expect(migration).toContain('fs.id ASC')
     expect(migration).toContain('p.id ASC')
