@@ -32,9 +32,11 @@ describe('analysis dashboard: bounded data contract', () => {
 
   it('一覧ページは現在ページのrowsとDB countをDataTableへ渡し、全件をローカルsliceしない', () => {
     expect(usersPage).toContain('page: currentPage')
+    expect(usersPage).toContain('debouncedSearchTerm')
     expect(usersPage).toContain('totalItems: totalCount')
     expect(usersPage).not.toContain('data={sortedUsers}')
     expect(streamersPage).toContain('page: currentPage')
+    expect(streamersPage).toContain('debouncedSearchQuery')
     expect(streamersPage).toContain('totalItems: totalCount')
     expect(streamersPage).not.toContain('data={filteredAndSortedStreamers}')
   })
