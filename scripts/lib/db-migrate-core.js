@@ -303,11 +303,82 @@ function extractCreatedIndexDefinitions(content) {
  * @param {string} definition
  * @returns {string}
  */
+/**
+ * SQL定義のquoted literal / identifier / dollar-quoted bodyをplaceholderへ退避する。
+ * normalizeIndexDefinitionは引用符外の空白・大小文字だけを吸収する必要があるため、
+ * 先にこの境界を確定する。E''のbackslash escape、doubled quote、$tag$ / $$ の双方を
+ * 扱い、定義比較のためにリテラル内容を変更しない。
+ * @param {string} sql
+ * @returns {{ masked: string, quotedSegments: string[] }}
+ */
+function maskQuotedSqlSegments(sql) {
+  const quotedSegments = []
+  let masked = ''
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index]
+    if (character === "'" || character === '"') {
+      const quote = character
+      const isEscapeString =
+        quote === "'" &&
+        (sql[index - 1] === 'e' || sql[index - 1] === 'E') &&
+        (index < 2 || !/[A-Za-z0-9_$]/.test(sql[index - 2]))
+      let end = index + 1
+      for (; end < sql.length; end += 1) {
+        if (isEscapeString && sql[end] === '\\' && end + 1 < sql.length) {
+          end += 1
+          continue
+        }
+        if (sql[end] !== quote) continue
+        if (sql[end + 1] === quote) {
+          end += 1
+          continue
+        }
+        end += 1
+        break
+      }
+      const placeholder = `\u0001${quotedSegments.length}\u0002`
+      quotedSegments.push(sql.slice(index, end))
+      masked += placeholder
+      index = end - 1
+      continue
+    }
+
+    if (character === '$') {
+      const dollarTag = sql.slice(index).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0]
+      if (dollarTag) {
+        const closingIndex = sql.indexOf(dollarTag, index + dollarTag.length)
+        if (closingIndex >= 0) {
+          const end = closingIndex + dollarTag.length
+          const placeholder = `\u0001${quotedSegments.length}\u0002`
+          quotedSegments.push(sql.slice(index, end))
+          masked += placeholder
+          index = end - 1
+          continue
+        }
+      }
+    }
+
+    masked += character
+  }
+
+  return { masked, quotedSegments }
+}
+
+/**
+ * placeholderへ退避したquoted segmentを元のSQLへ戻す。
+ * @param {string} masked
+ * @param {string[]} quotedSegments
+ * @returns {string}
+ */
+function restoreQuotedSqlSegments(masked, quotedSegments) {
+  return masked.replace(/\u0001(\d+)\u0002/g, (_match, index) => quotedSegments[Number(index)])
+}
+
 function normalizeIndexDefinition(definition) {
-  let normalized = definition
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/;$/, '')
+  const withoutTrailingSemicolon = definition.trim().replace(/;$/, '')
+  const { masked, quotedSegments } = maskQuotedSqlSegments(withoutTrailingSemicolon)
+  let normalized = masked.replace(/\s+/g, ' ').trim()
     .replace(/\bCREATE\s+INDEX\s+CONCURRENTLY\s+/i, 'CREATE INDEX ')
     .replace(/\bIF\s+NOT\s+EXISTS\s+/i, '')
     .replace(/\bpublic\.gin_trgm_ops\b/gi, 'gin_trgm_ops')
@@ -315,8 +386,15 @@ function normalizeIndexDefinition(definition) {
     .replace(/\s+\)/g, ')')
 
   // migrationではbtreeのUSING句を省略できるが、pg_get_indexdefは明示する。
+  // ここまでにquoted identifierもplaceholderへ置換済みなので、schema/tableが
+  // 引用符付きでも同じ表記差吸収を適用できる。placeholderはrestore時に元の
+  // quoted identifierへ戻るため、識別子の大小文字・空白は保持される。
+  const maskedIdentifier = '(?:\\u0001\\d+\\u0002|[a-z_][a-z0-9_$]*)'
   normalized = normalized.replace(
-    /\bON\s+((?:"[^"]+"|[a-z_][a-z0-9_$]*)(?:\.(?:"[^"]+"|[a-z_][a-z0-9_$]*))?)\s+(?=\()/i,
+    new RegExp(
+      `\\bON\\s+(${maskedIdentifier}(?:\\.${maskedIdentifier})?)\\s+(?=\\()`,
+      'i'
+    ),
     'ON $1 USING btree '
   )
   // SQLキーワード・未引用識別子の大小文字は意味を持たないが、single-quoted
@@ -347,7 +425,7 @@ function normalizeIndexDefinition(definition) {
       lowercasedOutsideQuotes += character.toLowerCase()
     }
   }
-  return lowercasedOutsideQuotes
+  return restoreQuotedSqlSegments(lowercasedOutsideQuotes, quotedSegments)
 }
 
 /**

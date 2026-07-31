@@ -238,6 +238,47 @@ describe('forbidden index postcondition helpers', () => {
     ).toEqual(['ready_users_idx'])
   })
 
+  it('引用符内の連続空白・E文字列・dollar quoteを意味のある差として保持する', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX quoted_users_idx ON public.users (id) WHERE label = 'A  B' AND code = E'X\\\\Y' AND note = $$Keep  Spaces$$;"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'quoted_users_idx',
+          definition:
+            "CREATE INDEX quoted_users_idx ON public.users USING btree (id) WHERE label = 'A  B' AND code = E'X\\\\Y' AND note = $$Keep  Spaces$$",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'quoted_users_idx',
+          definition:
+            "CREATE INDEX quoted_users_idx ON public.users USING btree (id) WHERE label = 'A B' AND code = E'X\\\\Y' AND note = $$Keep Spaces$$",
+        },
+      ])
+    ).toEqual(['quoted_users_idx'])
+  })
+
+  it('quoted identifierの表記差吸収は識別子の内容を変更しない', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      'CREATE INDEX quoted_identifier_idx ON "Public Schema"."Users Table" ("Display Name");'
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'quoted_identifier_idx',
+          definition:
+            'CREATE INDEX quoted_identifier_idx ON "Public Schema"."Users Table" USING btree ("Display Name")',
+        },
+      ])
+    ).toEqual([])
+  })
+
   it('missing/invalid/validの状態を区別し、invalidならhistory登録前に止められる', () => {
     expect(
       validateIndexStates(

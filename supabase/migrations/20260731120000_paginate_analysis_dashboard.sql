@@ -473,7 +473,16 @@ streamer_base AS MATERIALIZED (
     vcb.streamer_id IS NOT NULL AS has_vote_campaign_bonus
   FROM candidate_streamers s
   LEFT JOIN candidate_card_counts cc ON cc.streamer_id = s.id
-  LEFT JOIN users u ON u.twitch_user_id = s.twitch_user_id
+  -- 候補streamerが少数でも、SRFの推定行数（既定1000）を起点にusersを
+  -- Hash Joinすると、users全件のSeq Scanへ戻ることがある。streamerごとに
+  -- 一意indexを使う相関lookupへ固定し、検索結果が少数の一覧で全usersを
+  -- 読み込まないようにする。必要なのはscopeだけなので、行全体は取得しない。
+  LEFT JOIN LATERAL (
+    SELECT u.twitch_scopes
+    FROM users u
+    WHERE u.twitch_user_id = s.twitch_user_id
+    LIMIT 1
+  ) u ON TRUE
   LEFT JOIN streamer_chat_sender_settings css ON css.streamer_id = s.id
   LEFT JOIN twitch_bot_accounts bot ON bot.id = css.custom_bot_account_id
   LEFT JOIN storage_usage su

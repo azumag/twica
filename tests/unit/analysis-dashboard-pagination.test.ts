@@ -48,6 +48,8 @@ describe('analysis dashboard: bounded data contract', () => {
     expect(migration).toContain('FROM get_analysis_streamer_candidate_rows(')
     expect(migration).not.toContain('JOIN get_analysis_user_candidate_ids')
     expect(migration).not.toContain('JOIN get_analysis_streamer_candidate_ids')
+    expect(migration).toContain('LEFT JOIN LATERAL (')
+    expect(migration).toContain('u.twitch_user_id = s.twitch_user_id')
     expect(migration).toContain("v_filter := 'gh.redeemed_at >= $1'")
   })
 
