@@ -120,26 +120,69 @@ describe('adminApiPg: pg直結クエリ', () => {
     expect(calls[0].text).toContain('get_analysis_streamer_leaderboard()')
   })
 
-  it('listUsersPg: get_analysis_users() を呼ぶ', async () => {
-    const { tag, calls } = fakeSqlTag([{ id: 'u1' }])
+  it('listUsersPg: ページとフィルタをget_analysis_users_page()へバインドする', async () => {
+    const expected = { rows: [{ id: 'u1' }], count: 1, summary: {} }
+    const { tag, calls } = fakeSqlTag(expected)
     const mod = await importAdminApiPg()
     mod.__setAnalysisSqlFactoryForTests(() => tag as never)
 
-    const data = await mod.listUsersPg({})
+    const data = await mod.listUsersPg({}, {
+      page: 2,
+      pageSize: 10,
+      search: '%alice%',
+      sort: 'name_asc',
+      hideZeroCards: true,
+    })
 
-    expect(data).toEqual([{ id: 'u1' }])
-    expect(calls[0].text).toContain('get_analysis_users()')
+    expect(data).toEqual(expected)
+    expect(calls[0].text).toContain('get_analysis_users_page(')
+    expect(calls[0].values).toEqual([2, 10, '%alice%', 'name_asc', true])
   })
 
-  it('listStreamersWithStatsPg: get_analysis_streamers() を呼ぶ', async () => {
-    const { tag, calls } = fakeSqlTag([{ id: 'st1' }])
+  it('listStreamersWithStatsPg: ページとフィルタをget_analysis_streamers_page()へバインドする', async () => {
+    const expected = { rows: [{ id: 'st1' }], count: 1, summary: {} }
+    const { tag, calls } = fakeSqlTag(expected)
     const mod = await importAdminApiPg()
     mod.__setAnalysisSqlFactoryForTests(() => tag as never)
 
-    const data = await mod.listStreamersWithStatsPg({})
+    const data = await mod.listStreamersWithStatsPg({}, {
+      page: 1,
+      pageSize: 20,
+      search: '%channel%',
+      sort: 'storage_desc',
+      hideZeroCards: true,
+      filterChatEnabled: true,
+      filterHasTemplate: false,
+      filterMissingScope: true,
+      filterVoteCampaign: false,
+    })
 
-    expect(data).toEqual([{ id: 'st1' }])
-    expect(calls[0].text).toContain('get_analysis_streamers()')
+    expect(data).toEqual(expected)
+    expect(calls[0].text).toContain('get_analysis_streamers_page(')
+    expect(calls[0].values).toEqual([
+      1,
+      20,
+      '%channel%',
+      'storage_desc',
+      true,
+      true,
+      false,
+      true,
+      false,
+    ])
+  })
+
+  it('getStreamerOptionsPg: 軽量候補をページングして取得する', async () => {
+    const expected = { rows: [{ id: 'st1' }], count: 1 }
+    const { tag, calls } = fakeSqlTag(expected)
+    const mod = await importAdminApiPg()
+    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
+
+    const data = await mod.getStreamerOptionsPg({}, { page: 1, pageSize: 50, search: '%chan%' })
+
+    expect(data).toEqual(expected)
+    expect(calls[0].text).toContain('get_analysis_streamer_options_page(')
+    expect(calls[0].values).toEqual([1, 50, '%chan%'])
   })
 
   // 5関数とも callAnalysisJsonFunction() を共有しているため、エラー伝播の検証は
@@ -314,28 +357,6 @@ describe('adminApiPg: gachaHistoryFromWhere（動的WHERE句の組み立て）',
   })
 })
 
-describe('adminApiPg: getGachaChartPg', () => {
-  it('LIMIT 10000・jsonb整形した行配列を返し、フィルタがバインドされる', async () => {
-    const { tag, calls } = fakeSqlTag([{ id: 'g1' }])
-    const mod = await importAdminApiPg()
-    mod.__setAnalysisSqlFactoryForTests(() => tag as never)
-
-    const data = await mod.getGachaChartPg(
-      {},
-      { streamerId: 'streamer-1', fromDate: '2024-01-01T00:00:00Z' }
-    )
-
-    expect(data).toEqual([{ id: 'g1' }])
-    expect(calls).toHaveLength(1)
-    // 外側の jsonb_agg にも明示 ORDER BY を持たせている（サブクエリの
-    // ORDER BY + LIMIT の並び順に暗黙で依存しない防御的な集約）
-    expect(calls[0].text).toContain('jsonb_agg(row_json ORDER BY sort_redeemed_at DESC)')
-    expect(calls[0].text).toContain('LIMIT 10000')
-    expect(calls[0].text).toContain('AND gh.streamer_id = ')
-    expect(calls[0].values).toEqual(['streamer-1', '2024-01-01T00:00:00Z'])
-  })
-})
-
 describe('adminApiPg: getGachaTablePg', () => {
   it('件数クエリとデータクエリを共有WHEREで別々に発行し、{rows, count}を返す', async () => {
     const { tag, calls } = fakeSqlTag([{ id: 'g1' }], 42)
@@ -385,7 +406,7 @@ describe('adminApiPg: getGachaExportRowsPg', () => {
     const data = await mod.getGachaExportRowsPg({}, { rarity: 'legendary' })
 
     expect(data).toEqual([{ redeemed_at: '2024-01-01T00:00:00Z' }])
-    // getGachaChartPg/getGachaTablePgと違いページングやcountクエリを伴わない単発クエリ
+    // getGachaTablePgと違いページングやcountクエリを伴わない単発クエリ
     expect(calls).toHaveLength(1)
     // LIMIT はバインドパラメータとして渡すため（GACHA_EXPORT_ROW_LIMIT_PG）、
     // テキストではなく values の末尾を確認する
@@ -865,13 +886,13 @@ describe('localAdminApi: Postgres専用wrapper', () => {
     },
     {
       name: 'listUsers',
-      sql: 'get_analysis_users()',
-      call: (mod: any) => mod.listUsers({}),
+      sql: 'get_analysis_users_page(',
+      call: (mod: any) => mod.listUsers({ page: 1, pageSize: 20 }, {}),
     },
     {
       name: 'listStreamersWithStats',
-      sql: 'get_analysis_streamers()',
-      call: (mod: any) => mod.listStreamersWithStats({}),
+      sql: 'get_analysis_streamers_page(',
+      call: (mod: any) => mod.listStreamersWithStats({ page: 1, pageSize: 20 }, {}),
     },
   ]
 
@@ -999,9 +1020,10 @@ describe('localAdminApi: Postgres専用wrapper', () => {
 })
 
 describe('localAdminApi: pure helper', () => {
-  it('escapeIlikePattern は % と _ をエスケープする', async () => {
+  it('escapeIlikePattern は LIKEの制御文字をエスケープする', async () => {
     const { escapeIlikePattern } = await importLocalAdminApi()
     expect(escapeIlikePattern('100%_off')).toBe('100\\%\\_off')
+    expect(escapeIlikePattern('back\\slash')).toBe('back\\\\slash')
   })
 
   it('computeExclusiveToDateIso は翌日0時UTCを返す', async () => {

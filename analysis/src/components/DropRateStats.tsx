@@ -53,7 +53,7 @@ export function DropRateStats({ streamerId, timeRange }: DropRateStatsProps) {
 
     try {
       // __admin/drop-rate-stats 経由で get_gacha_drop_stats RPC を呼び出す。
-      // DBサイドの正確なCOUNT/GROUP BY集計のため、10000件キャップや近似値の懸念はない。
+      // DBサイドの正確なCOUNT/GROUP BY集計のため、履歴行数に依存した近似値の懸念はない。
       const data = await adminApi.getDropRateStats({ streamerId, range: timeRange })
 
       const stats: CardStat[] = data.card_stats.map((c) => ({
