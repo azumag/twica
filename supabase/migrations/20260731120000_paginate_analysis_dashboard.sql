@@ -112,6 +112,177 @@ SELECT jsonb_build_object(
 );
 $$;
 
+-- ガチャ集計の初期表示は7日間だが、p_from_date/p_streamer_idのNULL許容を
+-- 1つのOR条件へまとめると、期間指定時にもredeemed_at索引や
+-- (streamer_id, redeemed_at, ...)索引を使えない実行計画になり得る。
+-- 条件の4通りをPL/pgSQL側で分岐し、動的SQLへ入れるのは固定文字列の
+-- predicateだけにする。日付とUUIDは必ずUSINGでバインドし、検索値をSQLへ
+-- 連結しない。全期間を明示した場合だけTRUE分岐になり、全走査を許容する。
+CREATE OR REPLACE FUNCTION get_analysis_gacha_summary(
+  p_from_date TIMESTAMPTZ DEFAULT NULL,
+  p_streamer_id UUID DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_filter TEXT;
+  v_result JSONB;
+BEGIN
+  IF p_from_date IS NULL AND p_streamer_id IS NULL THEN
+    v_filter := 'TRUE';
+  ELSIF p_from_date IS NULL THEN
+    v_filter := 'gh.streamer_id = $2';
+  ELSIF p_streamer_id IS NULL THEN
+    v_filter := 'gh.redeemed_at >= $1';
+  ELSE
+    v_filter := 'gh.streamer_id = $2 AND gh.redeemed_at >= $1';
+  END IF;
+
+  EXECUTE format($query$
+    WITH filtered AS MATERIALIZED (
+      SELECT gh.*
+      FROM gacha_history gh
+      WHERE %s
+    ),
+    daily AS (
+      SELECT COALESCE(jsonb_agg(
+        jsonb_build_object('date', day_key, 'count', draw_count)
+        ORDER BY day_key
+      ), '[]'::jsonb) AS rows
+      FROM (
+        SELECT
+          to_char(date_trunc('day', redeemed_at), 'YYYY-MM-DD') AS day_key,
+          COUNT(*)::INTEGER AS draw_count
+        FROM filtered
+        GROUP BY date_trunc('day', redeemed_at)
+      ) d
+    ),
+    rarities AS (
+      SELECT COALESCE(jsonb_agg(
+        jsonb_build_object(
+          'name', upper(left(rarity, 1)) || substring(rarity from 2),
+          'value', draw_count,
+          'rarity', rarity
+        )
+        ORDER BY draw_count DESC, rarity
+      ), '[]'::jsonb) AS rows
+      FROM (
+        SELECT c.rarity, COUNT(*)::INTEGER AS draw_count
+        FROM filtered gh
+        JOIN cards c ON c.id = gh.card_id
+        GROUP BY c.rarity
+        HAVING COUNT(*) > 0
+      ) r
+    ),
+    popular AS (
+      SELECT COALESCE(jsonb_agg(
+        jsonb_build_object(
+          'card', jsonb_build_object(
+            'id', c.id,
+            'name', c.name,
+            'rarity', c.rarity,
+            'image_url', c.image_url
+          ),
+          'count', ranked.draw_count
+        )
+        ORDER BY ranked.draw_count DESC, c.name
+      ), '[]'::jsonb) AS rows
+      FROM (
+        SELECT card_id, COUNT(*)::INTEGER AS draw_count
+        FROM filtered
+        GROUP BY card_id
+        ORDER BY COUNT(*) DESC
+        LIMIT 10
+      ) ranked
+      JOIN cards c ON c.id = ranked.card_id
+    )
+    SELECT jsonb_build_object(
+      'totalGacha', (SELECT COUNT(*)::INTEGER FROM filtered),
+      'uniqueUsers', (SELECT COUNT(DISTINCT user_twitch_id)::INTEGER FROM filtered),
+      'legendaryCount', (
+        SELECT COUNT(*)::INTEGER
+        FROM filtered gh
+        JOIN cards c ON c.id = gh.card_id
+        WHERE c.rarity = 'legendary'
+      ),
+      'dailyGachaData', (SELECT rows FROM daily),
+      'rarityDistribution', (SELECT rows FROM rarities),
+      'popularCards', (SELECT rows FROM popular)
+    )
+  $query$, v_filter)
+  INTO v_result
+  USING p_from_date, p_streamer_id;
+
+  RETURN v_result;
+END;
+$$;
+
+-- 検索条件をNULL/空文字のORと同じWHERE句へ混ぜると、PostgreSQLの
+-- パラメータ化されたRPCでは「検索あり」の実行でも条件全体が汎用的な
+-- OR式として残り、pg_trgmのGIN索引よりSeq Scanを選ぶことがある。
+-- 検索あり／なしをPL/pgSQLで分岐し、検索あり側には検索述語だけを渡す。
+-- 一覧RPCはこの候補ID集合をJOINするため、カード集計やJSON化の対象だけを
+-- 検索候補へ絞り込める。内部ヘルパーはPUBLICへ公開しない。
+CREATE OR REPLACE FUNCTION get_analysis_user_candidate_ids(
+  p_search TEXT DEFAULT NULL
+)
+RETURNS SETOF UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF p_search IS NULL OR p_search = '' THEN
+    RETURN QUERY
+    SELECT u.id
+    FROM users u;
+  ELSE
+    RETURN QUERY
+    SELECT u.id
+    FROM users u
+    WHERE u.twitch_username ILIKE p_search ESCAPE E'\\'
+      OR u.twitch_display_name ILIKE p_search ESCAPE E'\\';
+  END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION get_analysis_streamer_candidate_ids(
+  p_search TEXT DEFAULT NULL,
+  p_filter_chat_enabled BOOLEAN DEFAULT FALSE,
+  p_filter_has_template BOOLEAN DEFAULT FALSE
+)
+RETURNS SETOF UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF p_search IS NULL OR p_search = '' THEN
+    RETURN QUERY
+    SELECT s.id
+    FROM streamers s
+    WHERE (NOT COALESCE(p_filter_chat_enabled, FALSE) OR s.chat_announcement_enabled)
+      AND (NOT COALESCE(p_filter_has_template, FALSE)
+        OR COALESCE(length(s.chat_announcement_template), 0) > 0);
+  ELSE
+    RETURN QUERY
+    SELECT s.id
+    FROM streamers s
+    WHERE (
+        s.twitch_username ILIKE p_search ESCAPE E'\\'
+        OR s.twitch_display_name ILIKE p_search ESCAPE E'\\'
+        OR s.twitch_user_id ILIKE p_search ESCAPE E'\\'
+      )
+      AND (NOT COALESCE(p_filter_chat_enabled, FALSE) OR s.chat_announcement_enabled)
+      AND (NOT COALESCE(p_filter_has_template, FALSE)
+        OR COALESCE(length(s.chat_announcement_template), 0) > 0);
+  END IF;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION get_analysis_users_page(
   p_page INTEGER DEFAULT 1,
   p_page_size INTEGER DEFAULT 20,
@@ -136,9 +307,7 @@ WITH candidate_users AS MATERIALIZED (
     u.created_at,
     u.updated_at
   FROM users u
-  WHERE (p_search IS NULL OR p_search = ''
-    OR u.twitch_username ILIKE p_search ESCAPE E'\\'
-    OR u.twitch_display_name ILIKE p_search ESCAPE E'\\')
+  JOIN get_analysis_user_candidate_ids(p_search) candidate ON candidate = u.id
 ),
 card_counts AS MATERIALIZED (
   SELECT uc.user_id, COUNT(*)::INTEGER AS card_count
@@ -154,27 +323,6 @@ filtered_users AS MATERIALIZED (
   LEFT JOIN card_counts cc ON cc.user_id = cu.id
   WHERE NOT COALESCE(p_hide_zero_cards, FALSE)
     OR COALESCE(cc.card_count, 0) > 0
-),
-user_totals AS (
-  SELECT
-    COUNT(*)::INTEGER AS total_users,
-    COUNT(*) FILTER (WHERE u.tos_accepted_at IS NOT NULL)::INTEGER AS users_with_tos
-  FROM users u
-),
-user_card_totals AS (
-  SELECT
-    COUNT(*)::INTEGER AS total_cards,
-    COUNT(DISTINCT uc.user_id)::INTEGER AS users_with_cards
-  FROM user_cards uc
-),
-summary AS (
-  SELECT
-    ut.total_users,
-    uct.total_cards,
-    ut.users_with_tos,
-    uct.users_with_cards
-  FROM user_totals ut
-  CROSS JOIN user_card_totals uct
 ),
 paged_users AS (
   SELECT fu.*
@@ -213,14 +361,39 @@ SELECT jsonb_build_object(
     )
     FROM paged_users pu
   ), '[]'::JSONB),
-  'count', (SELECT COUNT(*)::INTEGER FROM filtered_users),
-  'summary', jsonb_build_object(
-    'totalUsers', (SELECT total_users FROM summary),
-    'totalCards', (SELECT total_cards FROM summary),
-    'usersWithTos', (SELECT users_with_tos FROM summary),
-    'usersWithCards', (SELECT users_with_cards FROM summary)
-  )
+  'count', (SELECT COUNT(*)::INTEGER FROM filtered_users)
 );
+$$;
+
+-- ページ移動・検索・ソートのたびにglobal summaryまで再集計すると、一覧RPCの
+-- 軽量化効果を全体集計が打ち消す。summaryはページとは独立した一度の取得に分け、
+-- UI側で画面表示中に保持する。データ更新後は画面の再試行で明示的に再取得する。
+CREATE OR REPLACE FUNCTION get_analysis_users_summary()
+RETURNS JSONB
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+WITH user_totals AS (
+  SELECT
+    COUNT(*)::INTEGER AS total_users,
+    COUNT(*) FILTER (WHERE u.tos_accepted_at IS NOT NULL)::INTEGER AS users_with_tos
+  FROM users u
+),
+user_card_totals AS (
+  SELECT
+    COUNT(*)::INTEGER AS total_cards,
+    COUNT(DISTINCT uc.user_id)::INTEGER AS users_with_cards
+  FROM user_cards uc
+)
+SELECT jsonb_build_object(
+  'totalUsers', ut.total_users,
+  'totalCards', uct.total_cards,
+  'usersWithTos', ut.users_with_tos,
+  'usersWithCards', uct.users_with_cards
+)
+FROM user_totals ut
+CROSS JOIN user_card_totals uct;
 $$;
 
 CREATE OR REPLACE FUNCTION get_analysis_streamers_page(
@@ -242,13 +415,11 @@ AS $$
 WITH candidate_streamers AS MATERIALIZED (
   SELECT s.*
   FROM streamers s
-  WHERE (p_search IS NULL OR p_search = ''
-    OR s.twitch_username ILIKE p_search ESCAPE E'\\'
-    OR s.twitch_display_name ILIKE p_search ESCAPE E'\\'
-    OR s.twitch_user_id ILIKE p_search ESCAPE E'\\')
-    AND (NOT COALESCE(p_filter_chat_enabled, FALSE) OR s.chat_announcement_enabled)
-    AND (NOT COALESCE(p_filter_has_template, FALSE)
-      OR COALESCE(length(s.chat_announcement_template), 0) > 0)
+  JOIN get_analysis_streamer_candidate_ids(
+    p_search,
+    p_filter_chat_enabled,
+    p_filter_has_template
+  ) candidate ON candidate = s.id
 ),
 candidate_card_counts AS MATERIALIZED (
   SELECT c.streamer_id, COUNT(*)::INTEGER AS card_count
@@ -260,17 +431,6 @@ candidate_vote_campaign_bonus AS MATERIALIZED (
   SELECT DISTINCT b.streamer_id
   FROM streamer_storage_bonus b
   JOIN candidate_streamers cs ON cs.id = b.streamer_id
-  WHERE b.type = 'campaign'
-    AND b.memo = '2026選挙応援'
-),
-all_card_counts AS MATERIALIZED (
-  SELECT c.streamer_id, COUNT(*)::INTEGER AS card_count
-  FROM cards c
-  GROUP BY c.streamer_id
-),
-all_vote_campaign_bonus AS MATERIALIZED (
-  SELECT DISTINCT b.streamer_id
-  FROM streamer_storage_bonus b
   WHERE b.type = 'campaign'
     AND b.memo = '2026選挙応援'
 ),
@@ -320,11 +480,72 @@ streamer_base AS MATERIALIZED (
     ON su.user_prefix = substring(encode(extensions.digest(s.twitch_user_id, 'sha256'), 'hex') from 1 for 8)
   LEFT JOIN candidate_vote_campaign_bonus vcb ON vcb.streamer_id = s.id
 ),
+filtered_streamers AS MATERIALIZED (
+  SELECT sb.*
+  FROM streamer_base sb
+  WHERE (NOT COALESCE(p_hide_zero_cards, FALSE) OR sb.card_count > 0)
+    AND (NOT COALESCE(p_filter_missing_scope, FALSE)
+      OR (sb.chat_announcement_enabled AND NOT sb.chat_send_available))
+    AND (NOT COALESCE(p_filter_vote_campaign, FALSE) OR sb.has_vote_campaign_bonus)
+),
+paged_streamers AS (
+  SELECT fs.*
+  FROM filtered_streamers fs
+  ORDER BY
+    CASE WHEN p_sort = 'card_count_desc' THEN fs.card_count END DESC NULLS LAST,
+    CASE WHEN p_sort = 'card_count_asc' THEN fs.card_count END ASC NULLS LAST,
+    CASE WHEN p_sort = 'storage_desc' THEN fs.storage_bytes END DESC NULLS LAST,
+    CASE WHEN p_sort = 'name_asc' THEN fs.twitch_display_name END ASC NULLS LAST,
+    fs.created_at DESC,
+    fs.id ASC
+  LIMIT LEAST(GREATEST(COALESCE(p_page_size, 20), 1), 100)
+  OFFSET (GREATEST(COALESCE(p_page, 1), 1)::BIGINT - 1)
+    * LEAST(GREATEST(COALESCE(p_page_size, 20), 1), 100)::BIGINT
+)
+SELECT jsonb_build_object(
+  'rows', COALESCE((
+    SELECT jsonb_agg(to_jsonb(ps) ORDER BY
+      CASE WHEN p_sort = 'card_count_desc' THEN ps.card_count END DESC NULLS LAST,
+      CASE WHEN p_sort = 'card_count_asc' THEN ps.card_count END ASC NULLS LAST,
+      CASE WHEN p_sort = 'storage_desc' THEN ps.storage_bytes END DESC NULLS LAST,
+      CASE WHEN p_sort = 'name_asc' THEN ps.twitch_display_name END ASC NULLS LAST,
+      ps.created_at DESC,
+      ps.id ASC
+    ) FROM paged_streamers ps
+  ), '[]'::JSONB),
+  'count', (SELECT COUNT(*)::INTEGER FROM filtered_streamers)
+);
+$$;
+
+-- Streamers一覧のglobal summaryはページ移動・検索とは独立しているため、ページRPC
+-- から分離する。カード、storage、チャット送信可否、投票キャンペーンの全体値は
+-- このRPCを画面初回表示または再試行時だけ呼び出し、一覧RPCの毎回再集計を避ける。
+CREATE OR REPLACE FUNCTION get_analysis_streamers_summary()
+RETURNS JSONB
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+WITH all_card_counts AS MATERIALIZED (
+  SELECT c.streamer_id, COUNT(*)::INTEGER AS card_count
+  FROM cards c
+  GROUP BY c.streamer_id
+),
+all_vote_campaign_bonus AS MATERIALIZED (
+  SELECT DISTINCT b.streamer_id
+  FROM streamer_storage_bonus b
+  WHERE b.type = 'campaign'
+    AND b.memo = '2026選挙応援'
+),
+system_bot AS (
+  SELECT EXISTS (
+    SELECT 1
+    FROM twitch_bot_accounts
+    WHERE owner_type = 'system'
+      AND status = 'active'
+  ) AS has_active_system_bot
+),
 summary_streamer_base AS MATERIALIZED (
-  -- summaryは検索条件に左右されない既存契約を維持する。一方、一覧用の
-  -- streamer_baseはcandidate_streamersから始めることで、検索時にカード・
-  -- ボーナス集計を全配信者へ行わない。全体summaryのための走査と、検索候補
-  -- の絞り込みを意図的に分離している。
   SELECT
     s.*,
     COALESCE(cc.card_count, 0)::INTEGER AS card_count,
@@ -361,71 +582,26 @@ summary_streamer_base AS MATERIALIZED (
   LEFT JOIN storage_usage su
     ON su.user_prefix = substring(encode(extensions.digest(s.twitch_user_id, 'sha256'), 'hex') from 1 for 8)
   LEFT JOIN all_vote_campaign_bonus vcb ON vcb.streamer_id = s.id
-),
-filtered_streamers AS MATERIALIZED (
-  SELECT sb.*
-  FROM streamer_base sb
-  WHERE (NOT COALESCE(p_hide_zero_cards, FALSE) OR sb.card_count > 0)
-    AND (NOT COALESCE(p_filter_missing_scope, FALSE)
-      OR (sb.chat_announcement_enabled AND NOT sb.chat_send_available))
-    AND (NOT COALESCE(p_filter_vote_campaign, FALSE) OR sb.has_vote_campaign_bonus)
-),
-paged_streamers AS (
-  SELECT fs.*
-  FROM filtered_streamers fs
-  ORDER BY
-    CASE WHEN p_sort = 'card_count_desc' THEN fs.card_count END DESC NULLS LAST,
-    CASE WHEN p_sort = 'card_count_asc' THEN fs.card_count END ASC NULLS LAST,
-    CASE WHEN p_sort = 'storage_desc' THEN fs.storage_bytes END DESC NULLS LAST,
-    CASE WHEN p_sort = 'name_asc' THEN fs.twitch_display_name END ASC NULLS LAST,
-    fs.created_at DESC,
-    fs.id ASC
-  LIMIT LEAST(GREATEST(COALESCE(p_page_size, 20), 1), 100)
-  OFFSET (GREATEST(COALESCE(p_page, 1), 1)::BIGINT - 1)
-    * LEAST(GREATEST(COALESCE(p_page_size, 20), 1), 100)::BIGINT
-),
-summary AS (
-  SELECT
-    COUNT(*)::INTEGER AS total_streamers,
-    COUNT(*) FILTER (WHERE sb.is_active)::INTEGER AS active_streamers,
-    COUNT(*) FILTER (WHERE COALESCE(length(sb.channel_point_reward_id), 0) > 0)::INTEGER
-      AS configured_streamers,
-    COALESCE(SUM(sb.card_count), 0)::INTEGER AS total_cards,
-    COALESCE(SUM(sb.storage_bytes), 0)::BIGINT AS total_storage,
-    COUNT(*) FILTER (WHERE sb.card_count > 0)::INTEGER AS streamers_with_cards,
-    COUNT(*) FILTER (WHERE sb.chat_announcement_enabled)::INTEGER AS chat_enabled_streamers,
-    COUNT(*) FILTER (WHERE COALESCE(length(sb.chat_announcement_template), 0) > 0)::INTEGER
-      AS custom_template_streamers,
-    COUNT(*) FILTER (WHERE sb.chat_announcement_enabled AND NOT sb.chat_send_available)::INTEGER
-      AS chat_enabled_no_sender,
-    COUNT(*) FILTER (WHERE sb.has_vote_campaign_bonus)::INTEGER AS vote_campaign_users
-  FROM summary_streamer_base sb
 )
 SELECT jsonb_build_object(
-  'rows', COALESCE((
-    SELECT jsonb_agg(to_jsonb(ps) ORDER BY
-      CASE WHEN p_sort = 'card_count_desc' THEN ps.card_count END DESC NULLS LAST,
-      CASE WHEN p_sort = 'card_count_asc' THEN ps.card_count END ASC NULLS LAST,
-      CASE WHEN p_sort = 'storage_desc' THEN ps.storage_bytes END DESC NULLS LAST,
-      CASE WHEN p_sort = 'name_asc' THEN ps.twitch_display_name END ASC NULLS LAST,
-      ps.created_at DESC,
-      ps.id ASC
-    ) FROM paged_streamers ps
-  ), '[]'::JSONB),
-  'count', (SELECT COUNT(*)::INTEGER FROM filtered_streamers),
-  'summary', jsonb_build_object(
-    'totalStreamers', (SELECT total_streamers FROM summary),
-    'activeStreamers', (SELECT active_streamers FROM summary),
-    'configuredStreamers', (SELECT configured_streamers FROM summary),
-    'totalCards', (SELECT total_cards FROM summary),
-    'totalStorage', (SELECT total_storage FROM summary),
-    'streamersWithCards', (SELECT streamers_with_cards FROM summary),
-    'chatEnabledStreamers', (SELECT chat_enabled_streamers FROM summary),
-    'customTemplateStreamers', (SELECT custom_template_streamers FROM summary),
-    'chatEnabledNoSender', (SELECT chat_enabled_no_sender FROM summary),
-    'voteCampaignUsers', (SELECT vote_campaign_users FROM summary)
-  )
-);
+  'totalStreamers', COUNT(*)::INTEGER,
+  'activeStreamers', COUNT(*) FILTER (WHERE sb.is_active)::INTEGER,
+  'configuredStreamers', COUNT(*) FILTER (
+    WHERE COALESCE(length(sb.channel_point_reward_id), 0) > 0
+  )::INTEGER,
+  'totalCards', COALESCE(SUM(sb.card_count), 0)::INTEGER,
+  'totalStorage', COALESCE(SUM(sb.storage_bytes), 0)::BIGINT,
+  'streamersWithCards', COUNT(*) FILTER (WHERE sb.card_count > 0)::INTEGER,
+  'chatEnabledStreamers', COUNT(*) FILTER (WHERE sb.chat_announcement_enabled)::INTEGER,
+  'customTemplateStreamers', COUNT(*) FILTER (
+    WHERE COALESCE(length(sb.chat_announcement_template), 0) > 0
+  )::INTEGER,
+  'chatEnabledNoSender', COUNT(*) FILTER (
+    WHERE sb.chat_announcement_enabled AND NOT sb.chat_send_available
+  )::INTEGER,
+  'voteCampaignUsers', COUNT(*) FILTER (WHERE sb.has_vote_campaign_bonus)::INTEGER
+)
+FROM summary_streamer_base sb;
 $$;
 
 CREATE OR REPLACE FUNCTION get_analysis_streamer_options_page(
@@ -441,10 +617,8 @@ AS $$
 WITH filtered AS MATERIALIZED (
   SELECT s.id, s.twitch_username, s.twitch_display_name
   FROM streamers s
-  WHERE (p_search IS NULL OR p_search = ''
-    OR s.twitch_username ILIKE p_search ESCAPE E'\\'
-    OR s.twitch_display_name ILIKE p_search ESCAPE E'\\'
-    OR s.twitch_user_id ILIKE p_search ESCAPE E'\\')
+  JOIN get_analysis_streamer_candidate_ids(p_search, FALSE, FALSE) candidate
+    ON candidate = s.id
 ),
 paged AS (
   SELECT f.*
@@ -469,11 +643,19 @@ SELECT jsonb_build_object(
 $$;
 
 REVOKE ALL ON FUNCTION get_analysis_overview() FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_user_candidate_ids(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_streamer_candidate_ids(TEXT, BOOLEAN, BOOLEAN) FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_users_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN) FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_users_summary() FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_streamers_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN) FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_streamers_summary() FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_streamer_options_page(INTEGER, INTEGER, TEXT) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION get_analysis_overview() TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_user_candidate_ids(TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_streamer_candidate_ids(TEXT, BOOLEAN, BOOLEAN) TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_users_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_users_summary() TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_streamers_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_streamers_summary() TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_streamer_options_page(INTEGER, INTEGER, TEXT) TO service_role;

@@ -19,8 +19,11 @@ const streamerGachaPage = readFileSync(
 describe('analysis dashboard: bounded data contract', () => {
   it('DB RPCは一覧を最大100行に制限し、安定したid tie-breakerを持つ', () => {
     expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_users_page(')
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_users_summary()')
     expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_streamers_page(')
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_streamers_summary()')
     expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_streamer_options_page(')
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION get_analysis_gacha_summary(')
     expect(migration.match(/LIMIT LEAST\(GREATEST\(COALESCE\(p_page_size/g)).toHaveLength(3)
     expect(migration).toContain('), 100)')
     expect(migration).toContain('fu.id ASC')
@@ -34,15 +37,16 @@ describe('analysis dashboard: bounded data contract', () => {
     const usersCandidate = migration.indexOf('WITH candidate_users AS MATERIALIZED')
     const usersCardCount = migration.indexOf('FROM user_cards uc')
     const streamersCandidate = migration.indexOf('WITH candidate_streamers AS MATERIALIZED')
-    const streamersCardCount = migration.indexOf('FROM cards c')
 
     expect(usersCandidate).toBeGreaterThanOrEqual(0)
     expect(usersCardCount).toBeGreaterThan(usersCandidate)
     expect(migration).toContain('JOIN candidate_users cu ON cu.id = uc.user_id')
     expect(streamersCandidate).toBeGreaterThan(usersCandidate)
-    expect(streamersCardCount).toBeGreaterThan(streamersCandidate)
+    expect(migration.indexOf('candidate_card_counts AS MATERIALIZED')).toBeGreaterThan(streamersCandidate)
     expect(migration).toContain('JOIN candidate_streamers cs ON cs.id = c.streamer_id')
-    expect(migration).toContain('FROM summary_streamer_base sb')
+    expect(migration).toContain('JOIN get_analysis_user_candidate_ids(p_search)')
+    expect(migration).toContain('JOIN get_analysis_streamer_candidate_ids(')
+    expect(migration).toContain("v_filter := 'gh.redeemed_at >= $1'")
   })
 
   it('一覧ページは現在ページのrowsとDB countをDataTableへ渡し、全件をローカルsliceしない', () => {
@@ -69,5 +73,7 @@ describe('analysis dashboard: bounded data contract', () => {
     expect(streamerGachaPage).not.toContain('new Set(chartData')
     expect(localAdminApi).toContain("path === '/gacha/table'")
     expect(localAdminApi).toContain('parsePagination(url, 100)')
+    expect(localAdminApi).toContain("path === '/users/summary'")
+    expect(localAdminApi).toContain("path === '/streamers/summary'")
   })
 })

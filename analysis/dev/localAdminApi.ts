@@ -13,6 +13,7 @@ import {
   getStreamerByIdPg,
   getStreamerCardsPagePg,
   getStreamerLeaderboardPg,
+  getStreamersSummaryPg,
   getSupportInquiriesPg,
   getUserCardsSummaryPg,
   getUserCardsTablePg,
@@ -24,6 +25,7 @@ import {
   listSupportInquiryMessagesPg,
   listTwitchSubsPg,
   listUsersPg,
+  getUsersSummaryPg,
   revokeSupportCodePg,
   updateAnnouncementPg,
   updateSupportCodeStatusPg,
@@ -303,6 +305,13 @@ export async function listUsers(
   return listUsersPg(env, params)
 }
 
+// global summaryはページ移動と独立して一度だけ取得する。ページRPCへ同じ集計を
+// 毎回含めると、現在ページだけを返す最適化の裏で全件集計が繰り返されるため、
+// 専用RPCとして画面側にキャッシュ可能な境界を作る。
+export async function getUsersSummary(env: Env) {
+  return getUsersSummaryPg(env)
+}
+
 // Streamersも同じ契約に統一する。重いカード数・ストレージ・チャット設定の
 // 集計はDB側で行うが、JSON化するのは要求されたページの行だけに限定する。
 export async function listStreamersWithStats(
@@ -320,6 +329,10 @@ export async function listStreamersWithStats(
   env: Env
 ) {
   return listStreamersWithStatsPg(env, params)
+}
+
+export async function getStreamersSummary(env: Env) {
+  return getStreamersSummaryPg(env)
 }
 
 export async function getStreamerOptions(
@@ -651,6 +664,10 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
     )
   }
 
+  if (req.method === 'GET' && path === '/users/summary') {
+    return getUsersSummary(env)
+  }
+
   if (req.method === 'GET' && path === '/streamers') {
     const { page, pageSize } = parsePagination(url, 100)
     const rawSearch = url.searchParams.get('search')?.trim() || ''
@@ -668,6 +685,10 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
       },
       env
     )
+  }
+
+  if (req.method === 'GET' && path === '/streamers/summary') {
+    return getStreamersSummary(env)
   }
 
   // Gachaの配信者選択肢は一覧全件ではなく、表示に必要な軽量な候補だけ取得する。

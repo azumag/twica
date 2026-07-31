@@ -23,8 +23,8 @@ export function Users() {
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   // 入力中の中間文字列ではRPCを発火させず、最後の入力から300ms後に検索する。
-  // UsersのRPCは正確な件数と全体summaryも再計算するため、キー入力ごとの実行を
-  // 抑えてDBの全体集計とレスポンス競合を減らす。
+  // 一覧RPCはrows/countだけを返す。検索入力ごとの全体summary再集計を避けるため、
+  // summaryは画面表示時に専用RPCから一度だけ取得する。
   const debouncedSearchTerm = useDebouncedValue(searchTerm)
   // ソート順（デフォルト: カード数の多い順）
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
@@ -44,9 +44,23 @@ export function Users() {
   // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
   const [retryToken, setRetryToken] = useState(0)
 
-  // 検索・ソート・フィルタをDB側へ渡し、現在ページだけを取得する。
+  useEffect(() => {
+    const controller = new AbortController()
+    ;(async () => {
+      try {
+        const nextSummary = await adminApi.getUsersSummary({ signal: controller.signal })
+        setSummary(nextSummary)
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setError((err instanceof Error && err.message) || 'ユーザー集計の取得に失敗しました')
+      }
+    })()
+    return () => controller.abort()
+  }, [retryToken])
+
+  // 検索・ソート・フィルタをDB側へ渡し、現在ページとcountだけを取得する。
   // 以前はこの後にローカルfilter/sortを行っていたため、画面のページャーが
-  // 全件取得を隠してしまっていた。rowsは1ページ分、count/summaryは集計値である。
+  // 全件取得を隠してしまっていた。rowsは1ページ分、countは候補全体の件数である。
   useEffect(() => {
     // 検索入力中にページを1へ戻すeffectも別に走るため、ここで旧debounced値を
     // 使った中間リクエストを止める。入力が止まって両値が一致したrenderだけが
@@ -58,7 +72,7 @@ export function Users() {
       setLoading(true)
       setError(null)
       try {
-        const { rows, count, summary: nextSummary } = await adminApi.getUsers(
+        const { rows, count } = await adminApi.getUsers(
           {
             page: currentPage,
             pageSize,
@@ -88,7 +102,6 @@ export function Users() {
 
         setUsers(usersWithStats)
         setTotalCount(count)
-        setSummary(nextSummary)
       } catch (err) {
         if (controller.signal.aborted) return
         console.error('Error fetching users:', err)

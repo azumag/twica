@@ -191,6 +191,10 @@ export async function listUsersPg(
   )
 }
 
+export async function getUsersSummaryPg(env: Record<string, string>): Promise<unknown> {
+  return callAnalysisJsonFunction(env, (sql) => sql`select get_analysis_users_summary() as result`)
+}
+
 export async function listStreamersWithStatsPg(
   env: Record<string, string>,
   params: {
@@ -210,6 +214,10 @@ export async function listStreamersWithStatsPg(
     (sql) =>
       sql`select get_analysis_streamers_page(${params.page}, ${params.pageSize}, ${params.search ?? null}, ${params.sort ?? 'card_count_desc'}, ${params.hideZeroCards ?? false}, ${params.filterChatEnabled ?? false}, ${params.filterHasTemplate ?? false}, ${params.filterMissingScope ?? false}, ${params.filterVoteCampaign ?? false}) as result`
   )
+}
+
+export async function getStreamersSummaryPg(env: Record<string, string>): Promise<unknown> {
+  return callAnalysisJsonFunction(env, (sql) => sql`select get_analysis_streamers_summary() as result`)
 }
 
 export async function getStreamerOptionsPg(

@@ -161,8 +161,10 @@ export interface StreamerOption {
   twitch_display_name: string
 }
 
-export type UserListResponse = PaginatedWithSummary<UserWithCardCount, UserListSummary>
-export type StreamerListResponse = PaginatedWithSummary<StreamerWithStats, StreamerListSummary>
+// 一覧RPCはrows/countだけを返し、global summaryは専用RPCから画面単位で取得する。
+// ページ移動や検索のたびに全ユーザー／全配信者を再集計しないための境界。
+export type UserListResponse = Paginated<UserWithCardCount>
+export type StreamerListResponse = Paginated<StreamerWithStats>
 
 export interface UserListParams {
   page: number
@@ -364,6 +366,8 @@ export const adminApi = {
       sort: params.sort || 'card_count_desc',
       hideZeroCards: params.hideZeroCards ? 'true' : undefined,
     })}`, options),
+  getUsersSummary: (options?: RequestOptions) =>
+    request<UserListSummary>('/users/summary', options),
   getStreamers: (
     params: StreamerListParams = { page: 1, pageSize: 20 },
     options?: RequestOptions
@@ -378,6 +382,8 @@ export const adminApi = {
       filterMissingScope: params.filterMissingScope ? 'true' : undefined,
       filterVoteCampaign: params.filterVoteCampaign ? 'true' : undefined,
     })}`, options),
+  getStreamersSummary: (options?: RequestOptions) =>
+    request<StreamerListSummary>('/streamers/summary', options),
   getStreamerOptions: (params: StreamerOptionParams, options?: RequestOptions) =>
     request<Paginated<StreamerOption>>(`/streamers/options?${buildQueryString({
       page: params.page,

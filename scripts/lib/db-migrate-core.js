@@ -260,6 +260,86 @@ function extractCreatedIndexNames(content) {
 }
 
 /**
+ * forbidden migrationのCREATE INDEX文を、名前と定義の組で抽出する純粋関数。
+ *
+ * `IF NOT EXISTS`は同名relationがあるとDDLを成功扱いにするため、名前だけを
+ * `pg_index`で確認すると、別テーブル・別列・別方式の誤ったindexを正しいものと
+ * 取り違える。runnerはこの定義と`pg_get_indexdef`を正規化比較してからhistoryへ
+ * 登録する。対象migrationは1文DDLという既存ガードがあるため、汎用SQLパーサを
+ * 導入せず、コメント除去後のセミコロン区切りで十分な範囲に限定する。
+ *
+ * @param {string} content
+ * @returns {{ name: string, definition: string }[]}
+ */
+function extractCreatedIndexDefinitions(content) {
+  const withoutComments = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.replace(/--.*$/g, ''))
+    .join('\n')
+  const definitions = []
+  for (const statement of withoutComments.split(';')) {
+    const trimmed = statement.trim()
+    if (!/^CREATE\s+INDEX\b/i.test(trimmed)) continue
+    const match = trimmed.match(
+      /^CREATE\s+INDEX(?:\s+CONCURRENTLY)?\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|([a-z_][a-z0-9_$]*))/i
+    )
+    if (!match) continue
+    const name = match[1] ?? match[2]
+    if (!definitions.some((definition) => definition.name === name)) {
+      definitions.push({ name, definition: trimmed })
+    }
+  }
+  return definitions
+}
+
+/**
+ * CREATE INDEX文と`pg_get_indexdef`の表記差を吸収して比較用に正規化する。
+ *
+ * PostgreSQLは省略された`USING btree`を出力へ補い、opclassのschema修飾を
+ * 省略することがある。一方、migration側には`CONCURRENTLY`/`IF NOT EXISTS`が
+ * ある。これらは実体のindex定義ではないため吸収するが、対象テーブル、列、
+ * sort方向、アクセス方式、opclass、predicateは残し、誤った同名indexを通さない。
+ * @param {string} definition
+ * @returns {string}
+ */
+function normalizeIndexDefinition(definition) {
+  let normalized = definition
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/;$/, '')
+    .replace(/\bCREATE\s+INDEX\s+CONCURRENTLY\s+/i, 'CREATE INDEX ')
+    .replace(/\bIF\s+NOT\s+EXISTS\s+/i, '')
+    .replace(/\bpublic\.gin_trgm_ops\b/gi, 'gin_trgm_ops')
+    .replace(/\(\s+/g, '(')
+    .replace(/\s+\)/g, ')')
+
+  // migrationではbtreeのUSING句を省略できるが、pg_get_indexdefは明示する。
+  normalized = normalized.replace(
+    /\bON\s+((?:"[^"]+"|[a-z_][a-z0-9_$]*)(?:\.(?:"[^"]+"|[a-z_][a-z0-9_$]*))?)\s+(?=\()/i,
+    'ON $1 USING btree '
+  )
+  return normalized.toLowerCase()
+}
+
+/**
+ * 既存同名indexの定義がmigrationの意図と一致するかを検証する純粋関数。
+ * @param {{ name: string, definition: string }[]} expectedDefinitions
+ * @param {{ name: string, definition?: string }[]} states
+ * @returns {string[]} 定義不一致のindex名
+ */
+function validateIndexDefinitions(expectedDefinitions, states) {
+  const stateByName = new Map(states.map((state) => [state.name, state]))
+  return expectedDefinitions
+    .filter((expected) => {
+      const actual = stateByName.get(expected.name)
+      if (!actual || typeof actual.definition !== 'string') return false
+      return normalizeIndexDefinition(expected.definition) !== normalizeIndexDefinition(actual.definition)
+    })
+    .map((expected) => expected.name)
+}
+
+/**
  * DBから返されたindex状態が、期待したindexをすべて有効にしているか検証する純粋関数。
  *
  * `indisready` は再構築・作成途中のindexを除外し、`indisvalid` はplannerが利用可能な
@@ -711,6 +791,9 @@ module.exports = {
   countEffectiveStatements,
   containsSetLocal,
   extractCreatedIndexNames,
+  extractCreatedIndexDefinitions,
+  normalizeIndexDefinition,
+  validateIndexDefinitions,
   validateIndexStates,
   buildMigrationDescriptor,
   loadMigrationFiles,

@@ -38,9 +38,8 @@ export function Streamers() {
   const [loading, setLoading] = useState(true)
   // 検索クエリ（ユーザー名・表示名・Twitch User IDでフィルタリング）
   const [searchQuery, setSearchQuery] = useState('')
-  // Streamers RPCはカード数・ストレージ・チャット設定を集計するため、検索入力の
-  // 中間値ごとに実行すると全体集計を連続して起動してしまう。最後の入力から300ms
-  // 待ってからAPIへ渡し、入力中の不要なDB処理をまとめる。
+  // 一覧RPCはrows/countだけを返す。検索入力の中間値ごとに全体summaryを再集計
+  // しないよう、summaryは画面表示時に専用RPCから一度だけ取得する。
   const debouncedSearchQuery = useDebouncedValue(searchQuery)
   // ソート順（デフォルト: カード数の多い順）
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
@@ -74,8 +73,22 @@ export function Streamers() {
   // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
   const [retryToken, setRetryToken] = useState(0)
 
-  // 検索・フィルタ・ソートをDB側へ渡し、カード数・ストレージ等の重い集計結果も
-  // 現在ページの行だけ受け取る。画面側のページャーは全件配列をsliceしない。
+  useEffect(() => {
+    const controller = new AbortController()
+    ;(async () => {
+      try {
+        const nextSummary = await adminApi.getStreamersSummary({ signal: controller.signal })
+        setSummary(nextSummary)
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setError((err instanceof Error && err.message) || '配信者集計の取得に失敗しました')
+      }
+    })()
+    return () => controller.abort()
+  }, [retryToken])
+
+  // 検索・フィルタ・ソートをDB側へ渡し、現在ページの行とcountだけを受け取る。
+  // 画面側のページャーは全件配列をsliceせず、global summaryは上の専用RPCで保持する。
   useEffect(() => {
     // 検索入力中にページを1へ戻すeffectも別に走るため、ここで旧debounced値を
     // 使った中間リクエストを止める。入力が止まって両値が一致したrenderだけが
@@ -87,7 +100,7 @@ export function Streamers() {
       setLoading(true)
       setError(null)
       try {
-        const { rows, count, summary: nextSummary } = await adminApi.getStreamers(
+        const { rows, count } = await adminApi.getStreamers(
           {
             page: currentPage,
             pageSize,
@@ -103,7 +116,6 @@ export function Streamers() {
         )
         setStreamers(rows)
         setTotalCount(count)
-        setSummary(nextSummary)
       } catch (err) {
         if (controller.signal.aborted) return
         console.error('Error fetching streamers:', err)

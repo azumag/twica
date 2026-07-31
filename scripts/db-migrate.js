@@ -607,7 +607,8 @@ async function cmdApply(sql, migrationsDirs, provider, { bootstrap, confirmFresh
           // 失敗する。そのためforbiddenは実質的にSQL文1つのみをサポートする。この制約は
           // buildMigrationDescriptor（countEffectiveStatements）でファイル読み込み時点にバリデーション
           // 済みのため、ここに到達する時点で複数文であることは無い想定。
-          const expectedIndexNames = core.extractCreatedIndexNames(content)
+          const expectedIndexDefinitions = core.extractCreatedIndexDefinitions(content)
+          const expectedIndexNames = expectedIndexDefinitions.map((index) => index.name)
           await sql.unsafe(content)
 
           if (expectedIndexNames.length > 0) {
@@ -620,7 +621,8 @@ async function cmdApply(sql, migrationsDirs, provider, { bootstrap, confirmFresh
               SELECT
                 c.relname AS name,
                 i.indisvalid,
-                i.indisready
+                i.indisready,
+                pg_get_indexdef(c.oid) AS definition
               FROM pg_class c
               JOIN pg_index i ON i.indexrelid = c.oid
               JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -628,10 +630,17 @@ async function cmdApply(sql, migrationsDirs, provider, { bootstrap, confirmFresh
                 AND c.relname = ANY(${sql.array(expectedIndexNames)})
             `
             const { missing, invalid } = core.validateIndexStates(expectedIndexNames, indexStates)
-            if (missing.length > 0 || invalid.length > 0) {
+            const definitionMismatch = core.validateIndexDefinitions(
+              expectedIndexDefinitions,
+              indexStates
+            )
+            if (missing.length > 0 || invalid.length > 0 || definitionMismatch.length > 0) {
               const details = [
                 missing.length > 0 ? `missing=${missing.join(',')}` : null,
                 invalid.length > 0 ? `invalid=${invalid.join(',')}` : null,
+                definitionMismatch.length > 0
+                  ? `definition_mismatch=${definitionMismatch.join(',')}`
+                  : null,
               ]
                 .filter(Boolean)
                 .join(' ')

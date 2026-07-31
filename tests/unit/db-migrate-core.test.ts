@@ -9,6 +9,8 @@ import {
   countEffectiveStatements,
   containsSetLocal,
   extractCreatedIndexNames,
+  extractCreatedIndexDefinitions,
+  validateIndexDefinitions,
   validateIndexStates,
   buildMigrationDescriptor,
   loadMigrationFiles,
@@ -183,6 +185,34 @@ describe('forbidden index postcondition helpers', () => {
     ].join('\n')
 
     expect(extractCreatedIndexNames(sql)).toEqual(['users_created_idx', 'Users Search IDX'])
+  })
+
+  it('migration定義とpg_get_indexdefの表記差を吸収し、実体差は検出する', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS users_created_idx ON public.users (created_at DESC);'
+    )
+    expect(definitions).toEqual([
+      {
+        name: 'users_created_idx',
+        definition: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS users_created_idx ON public.users (created_at DESC)',
+      },
+    ])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'users_created_idx',
+          definition: 'CREATE INDEX users_created_idx ON public.users USING btree (created_at DESC)',
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'users_created_idx',
+          definition: 'CREATE INDEX users_created_idx ON public.streamers USING btree (created_at DESC)',
+        },
+      ])
+    ).toEqual(['users_created_idx'])
   })
 
   it('missing/invalid/validの状態を区別し、invalidならhistory登録前に止められる', () => {
