@@ -253,6 +253,22 @@ BEGIN
     'service_role',
     'get_analysis_streamers_page(integer,integer,text,text,boolean,boolean,boolean,boolean,boolean)',
     'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'service_role',
+    'get_analysis_streamer_leaderboard()',
+    'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'service_role',
+    'get_analysis_users()',
+    'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'service_role',
+    'get_analysis_streamers()',
+    'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'service_role',
+    'get_analysis_gacha_summary(timestamptz,uuid)',
+    'EXECUTE'
   ) OR has_function_privilege(
     'anon',
     'get_analysis_users_page(integer,integer,text,text,boolean)',
@@ -269,9 +285,134 @@ BEGIN
     'anon',
     'get_analysis_streamers_summary()',
     'EXECUTE'
+  ) OR has_function_privilege(
+    'anon',
+    'get_analysis_streamer_leaderboard()',
+    'EXECUTE'
+  ) OR has_function_privilege(
+    'anon',
+    'get_analysis_users()',
+    'EXECUTE'
+  ) OR has_function_privilege(
+    'anon',
+    'get_analysis_streamers()',
+    'EXECUTE'
+  ) OR has_function_privilege(
+    'anon',
+    'get_analysis_gacha_summary(timestamptz,uuid)',
+    'EXECUTE'
   )
   THEN
     RAISE EXCEPTION 'analysis page RPC privilege contract mismatch';
+  END IF;
+END
+$$;
+
+-- 小規模fixtureだけでは、統計情報が少なすぎてPostgreSQLが常にSeq Scanを
+-- 選ぶため、検索性能の回帰を検出できない。実データを永続化しない同一transaction
+-- 内で500,000行ずつ投入し、ANALYZE後の実行計画を確認する。ILIKE検索は1件程度、
+-- 7日検索は全体の約2%に絞り、plannerがGIN/期間索引を選ぶ十分な選択性を作る。
+INSERT INTO users (
+  id,
+  twitch_user_id,
+  twitch_username,
+  twitch_display_name,
+  created_at,
+  updated_at
+)
+SELECT
+  md5('analysis-perf-user-' || i)::UUID,
+  'analysis-perf-user-' || i,
+  'analysis-perf-user-' || i,
+  'Analysis Perf User ' || i,
+  TIMESTAMPTZ '2025-01-01T00:00:00Z' + i * INTERVAL '1 minute',
+  TIMESTAMPTZ '2025-01-01T00:00:00Z' + i * INTERVAL '1 minute'
+FROM generate_series(1, 500000) AS series(i);
+
+INSERT INTO streamers (
+  id,
+  twitch_user_id,
+  twitch_username,
+  twitch_display_name,
+  created_at,
+  updated_at
+)
+SELECT
+  md5('analysis-perf-streamer-' || i)::UUID,
+  'analysis-perf-streamer-' || i,
+  'analysis-perf-streamer-' || i,
+  'Analysis Perf Streamer ' || i,
+  TIMESTAMPTZ '2025-01-01T00:00:00Z' + i * INTERVAL '1 minute',
+  TIMESTAMPTZ '2025-01-01T00:00:00Z' + i * INTERVAL '1 minute'
+FROM generate_series(1, 500000) AS series(i);
+
+INSERT INTO gacha_history (
+  id,
+  user_twitch_id,
+  user_twitch_username,
+  card_id,
+  streamer_id,
+  redeemed_at,
+  event_id
+)
+SELECT
+  md5('analysis-perf-gacha-' || i)::UUID,
+  'analysis-perf-user-' || i,
+  'analysis-perf-user-' || i,
+  '00000000-0000-0000-0000-000000000301',
+  '00000000-0000-0000-0000-000000000201',
+  TIMESTAMPTZ '2026-01-01T00:00:00Z' + ((i - 1) % 365) * INTERVAL '1 day',
+  'analysis-perf-gacha-' || i
+FROM generate_series(1, 500000) AS series(i);
+
+ANALYZE users;
+ANALYZE streamers;
+ANALYZE gacha_history;
+
+DO $$
+DECLARE
+  users_plan JSONB;
+  streamers_plan JSONB;
+  gacha_plan JSONB;
+BEGIN
+  EXECUTE $plan$
+    EXPLAIN (FORMAT JSON)
+    SELECT u.id
+    FROM users u
+    WHERE u.twitch_username ILIKE '%analysis-perf-user-19999%' ESCAPE E'\\'
+       OR u.twitch_display_name ILIKE '%analysis-perf-user-19999%' ESCAPE E'\\'
+    LIMIT 100
+  $plan$ INTO users_plan;
+
+  IF users_plan::TEXT NOT LIKE '%idx_users_analysis_search_trgm%' THEN
+    RAISE EXCEPTION 'users search plan did not use the trigram index: %', users_plan;
+  END IF;
+
+  EXECUTE $plan$
+    EXPLAIN (FORMAT JSON)
+    SELECT s.id
+    FROM streamers s
+    WHERE s.twitch_username ILIKE '%analysis-perf-streamer-19999%' ESCAPE E'\\'
+       OR s.twitch_display_name ILIKE '%analysis-perf-streamer-19999%' ESCAPE E'\\'
+       OR s.twitch_user_id ILIKE '%analysis-perf-streamer-19999%' ESCAPE E'\\'
+    LIMIT 100
+  $plan$ INTO streamers_plan;
+
+  IF streamers_plan::TEXT NOT LIKE '%idx_streamers_analysis_search_trgm%' THEN
+    RAISE EXCEPTION 'streamer search plan did not use the trigram index: %', streamers_plan;
+  END IF;
+
+  EXECUTE $plan$
+    EXPLAIN (FORMAT JSON)
+    SELECT gh.id
+    FROM gacha_history gh
+    WHERE gh.redeemed_at >= '2026-12-25T00:00:00Z'::TIMESTAMPTZ
+    ORDER BY gh.redeemed_at DESC
+    LIMIT 100
+  $plan$ INTO gacha_plan;
+
+  IF gacha_plan::TEXT NOT LIKE '%idx_gacha_history_redeemed_at_analysis%' THEN
+    RAISE EXCEPTION 'gacha 7-day plan did not use the redeemed_at index: %', gacha_plan;
   END IF;
 END
 $$;

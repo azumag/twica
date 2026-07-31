@@ -9,6 +9,7 @@ const migration = readFileSync(
 )
 const usersPage = readFileSync(resolve(repoRoot, 'analysis/src/pages/Users.tsx'), 'utf8')
 const streamersPage = readFileSync(resolve(repoRoot, 'analysis/src/pages/Streamers.tsx'), 'utf8')
+const app = readFileSync(resolve(repoRoot, 'analysis/src/App.tsx'), 'utf8')
 const gachaPage = readFileSync(resolve(repoRoot, 'analysis/src/pages/Gacha.tsx'), 'utf8')
 const localAdminApi = readFileSync(resolve(repoRoot, 'analysis/dev/localAdminApi.ts'), 'utf8')
 const streamerGachaPage = readFileSync(
@@ -81,6 +82,23 @@ describe('analysis dashboard: bounded data contract', () => {
     expect(streamersPage).toContain('if (searchQuery !== debouncedSearchQuery) return')
     expect(streamersPage).toContain('totalItems: totalCount')
     expect(streamersPage).not.toContain('data={filteredAndSortedStreamers}')
+  })
+
+  it('一覧とsummaryの失敗状態を分離し、lazy route失敗後の遷移でboundaryを再生成する', () => {
+    // summary RPCは検索・ページ変更では再取得しないため、一覧の成功でsummaryの
+    // エラーが消える実装へ戻ると、初期値の集計を正常値として表示してしまう。
+    // React二重解決を避けるため、ここではページの状態契約とroute keyをsource-level
+    // で固定し、実DBfixtureとは異なるUI回帰を軽量に検出する。
+    expect(usersPage).toContain('summaryError')
+    expect(usersPage).toContain('listError')
+    expect(usersPage).toContain('summaryRetryToken')
+    expect(usersPage).toContain('listRetryToken')
+    expect(streamersPage).toContain('summaryError')
+    expect(streamersPage).toContain('listError')
+    expect(streamersPage).toContain('summaryRetryToken')
+    expect(streamersPage).toContain('listRetryToken')
+    expect(app).toContain('const location = useLocation()')
+    expect(app).toContain('<RouteErrorBoundary key={location.key}>')
   })
 
   it('Gacha系の初回期間は7日で、チャートは行取得ではなく集計RPCを使う', () => {

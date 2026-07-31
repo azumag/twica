@@ -69,23 +69,27 @@ export function Streamers() {
     chatEnabledNoSender: 0,
     voteCampaignUsers: 0,
   })
-  const [error, setError] = useState<string | null>(null)
-  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
-  const [retryToken, setRetryToken] = useState(0)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
+  // summaryと一覧は別RPCで、検索・フィルター変更時に一覧だけ再取得する。
+  // 再試行トリガーも分け、summary失敗を一覧取得成功で消さないようにする。
+  const [summaryRetryToken, setSummaryRetryToken] = useState(0)
+  const [listRetryToken, setListRetryToken] = useState(0)
 
   useEffect(() => {
     const controller = new AbortController()
     ;(async () => {
+      setSummaryError(null)
       try {
         const nextSummary = await adminApi.getStreamersSummary({ signal: controller.signal })
         setSummary(nextSummary)
       } catch (err) {
         if (controller.signal.aborted) return
-        setError((err instanceof Error && err.message) || '配信者集計の取得に失敗しました')
+        setSummaryError((err instanceof Error && err.message) || '配信者集計の取得に失敗しました')
       }
     })()
     return () => controller.abort()
-  }, [retryToken])
+  }, [summaryRetryToken])
 
   // 検索・フィルタ・ソートをDB側へ渡し、現在ページの行とcountだけを受け取る。
   // 画面側のページャーは全件配列をsliceせず、global summaryは上の専用RPCで保持する。
@@ -98,7 +102,7 @@ export function Streamers() {
     const controller = new AbortController()
     ;(async () => {
       setLoading(true)
-      setError(null)
+      setListError(null)
       try {
         const { rows, count } = await adminApi.getStreamers(
           {
@@ -119,13 +123,13 @@ export function Streamers() {
       } catch (err) {
         if (controller.signal.aborted) return
         console.error('Error fetching streamers:', err)
-        setError((err instanceof Error && err.message) || 'ストリーマー一覧の取得に失敗しました')
+        setListError((err instanceof Error && err.message) || 'ストリーマー一覧の取得に失敗しました')
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
     })()
     return () => controller.abort()
-  }, [currentPage, pageSize, searchQuery, debouncedSearchQuery, sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, retryToken])
+  }, [currentPage, pageSize, searchQuery, debouncedSearchQuery, sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, listRetryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
@@ -333,7 +337,15 @@ export function Streamers() {
         <p className="text-gray-500 mt-1">Manage and view all registered streamers</p>
       </div>
 
-      <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
+      <ErrorBanner
+        messages={[summaryError]}
+        title="配信者集計の読み込みエラー"
+        onRetry={() => setSummaryRetryToken((token) => token + 1)}
+      />
+      <ErrorBanner
+        messages={[listError]}
+        onRetry={() => setListRetryToken((token) => token + 1)}
+      />
 
       {/* Summary Stats - includes total storage usage across all streamers */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">

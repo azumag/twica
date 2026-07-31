@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense, type ErrorInfo, type ReactNode } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, useLocation } from 'react-router-dom'
 import { Layout } from './components/Layout'
 
 // 各画面はOverviewの初回表示には不要で、Gacha画面はrechartsも読み込むため、
@@ -113,8 +113,10 @@ class RouteErrorBoundary extends Component<RouteErrorBoundaryProps, RouteErrorBo
  * チャンク読み込み中のUXをここで一元化する。
  */
 function LazyPage({ children }: { children: ReactNode }) {
+  const location = useLocation()
+
   return (
-    <RouteErrorBoundary>
+    <RouteErrorBoundary key={location.key}>
       <Suspense fallback={<RouteLoadingFallback />}>{children}</Suspense>
     </RouteErrorBoundary>
   )

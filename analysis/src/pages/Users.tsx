@@ -40,23 +40,27 @@ export function Users() {
     usersWithTos: 0,
     usersWithCards: 0,
   })
-  const [error, setError] = useState<string | null>(null)
-  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
-  const [retryToken, setRetryToken] = useState(0)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
+  // summaryと一覧は別RPCで、検索・ページ変更時に一覧だけ再取得する。
+  // 再試行トリガーも分け、summary失敗を一覧取得成功で消さないようにする。
+  const [summaryRetryToken, setSummaryRetryToken] = useState(0)
+  const [listRetryToken, setListRetryToken] = useState(0)
 
   useEffect(() => {
     const controller = new AbortController()
     ;(async () => {
+      setSummaryError(null)
       try {
         const nextSummary = await adminApi.getUsersSummary({ signal: controller.signal })
         setSummary(nextSummary)
       } catch (err) {
         if (controller.signal.aborted) return
-        setError((err instanceof Error && err.message) || 'ユーザー集計の取得に失敗しました')
+        setSummaryError((err instanceof Error && err.message) || 'ユーザー集計の取得に失敗しました')
       }
     })()
     return () => controller.abort()
-  }, [retryToken])
+  }, [summaryRetryToken])
 
   // 検索・ソート・フィルタをDB側へ渡し、現在ページとcountだけを取得する。
   // 以前はこの後にローカルfilter/sortを行っていたため、画面のページャーが
@@ -70,7 +74,7 @@ export function Users() {
     const controller = new AbortController()
     ;(async () => {
       setLoading(true)
-      setError(null)
+      setListError(null)
       try {
         const { rows, count } = await adminApi.getUsers(
           {
@@ -105,13 +109,13 @@ export function Users() {
       } catch (err) {
         if (controller.signal.aborted) return
         console.error('Error fetching users:', err)
-        setError((err instanceof Error && err.message) || 'ユーザー一覧の取得に失敗しました')
+        setListError((err instanceof Error && err.message) || 'ユーザー一覧の取得に失敗しました')
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
     })()
     return () => controller.abort()
-  }, [currentPage, pageSize, searchTerm, debouncedSearchTerm, sortOrder, hideZeroCards, retryToken])
+  }, [currentPage, pageSize, searchTerm, debouncedSearchTerm, sortOrder, hideZeroCards, listRetryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
@@ -191,7 +195,15 @@ export function Users() {
         <p className="text-gray-500 mt-1">Manage and view all registered users</p>
       </div>
 
-      <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
+      <ErrorBanner
+        messages={[summaryError]}
+        title="ユーザー集計の読み込みエラー"
+        onRetry={() => setSummaryRetryToken((token) => token + 1)}
+      />
+      <ErrorBanner
+        messages={[listError]}
+        onRetry={() => setListRetryToken((token) => token + 1)}
+      />
 
       {/* Summary Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

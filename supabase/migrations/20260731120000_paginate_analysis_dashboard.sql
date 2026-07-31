@@ -683,6 +683,14 @@ SELECT jsonb_build_object(
 $$;
 
 REVOKE ALL ON FUNCTION get_analysis_overview() FROM PUBLIC;
+-- 00073で作成済みの旧RPCもSECURITY DEFINERのまま残るため、
+-- CREATE OR REPLACEでは既存PUBLIC EXECUTEが消えない点を明示的に補正する。
+-- 新しいページRPCだけを閉じても、同じ管理データを返す旧RPCが公開されたままだと
+-- anonから全件取得経路を復活できるため、旧署名も同じ境界へ揃える。
+REVOKE ALL ON FUNCTION get_analysis_streamer_leaderboard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_users() FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_streamers() FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_gacha_summary(TIMESTAMPTZ, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_user_candidate_rows(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_streamer_candidate_rows(TEXT, BOOLEAN, BOOLEAN) FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_users_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN) FROM PUBLIC;
@@ -692,6 +700,10 @@ REVOKE ALL ON FUNCTION get_analysis_streamers_summary() FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_streamer_options_page(INTEGER, INTEGER, TEXT) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION get_analysis_overview() TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_streamer_leaderboard() TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_users() TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_streamers() TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_gacha_summary(TIMESTAMPTZ, UUID) TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_user_candidate_rows(TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_streamer_candidate_rows(TEXT, BOOLEAN, BOOLEAN) TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_users_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN) TO service_role;
