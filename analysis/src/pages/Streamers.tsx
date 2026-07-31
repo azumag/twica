@@ -77,6 +77,11 @@ export function Streamers() {
   // 検索・フィルタ・ソートをDB側へ渡し、カード数・ストレージ等の重い集計結果も
   // 現在ページの行だけ受け取る。画面側のページャーは全件配列をsliceしない。
   useEffect(() => {
+    // 検索入力中にページを1へ戻すeffectも別に走るため、ここで旧debounced値を
+    // 使った中間リクエストを止める。入力が止まって両値が一致したrenderだけが
+    // page 1の確定検索を開始し、カード・ストレージ等の全体集計を重複実行しない。
+    if (searchQuery !== debouncedSearchQuery) return
+
     const controller = new AbortController()
     ;(async () => {
       setLoading(true)
@@ -108,7 +113,7 @@ export function Streamers() {
       }
     })()
     return () => controller.abort()
-  }, [currentPage, pageSize, debouncedSearchQuery, sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, retryToken])
+  }, [currentPage, pageSize, searchQuery, debouncedSearchQuery, sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, retryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
