@@ -1,4 +1,4 @@
-import { ReactNode } from 'react'
+import { ReactNode, useEffect } from 'react'
 import { MAX_ANALYSIS_PAGE } from '../lib/pagination'
 
 interface Column<T> {
@@ -74,6 +74,27 @@ export function DataTable<T>({
   const endIndex = pagination ? startIndex + pageSize : totalItems
   const displayData = isServerPagination ? data : (pagination ? data.slice(startIndex, endIndex) : data)
   const pageLimitReached = isServerPagination && fullTotalPages > totalPages
+  const requestedPage = pagination?.currentPage
+  const onPageChange = pagination?.onPageChange
+
+  useEffect(() => {
+    // count取得とrows取得の間に削除・検索条件変更が起きると、要求ページが
+    // 新しい最終ページを越えて空配列になることがある。空状態を先にreturnすると
+    // ページャーも消えて自力で復帰できないため、表示可能な最終ページへ親の状態を
+    // 戻して再取得する。レンダー中にsetStateせずeffectで行うことでReactの
+    // "Cannot update a component while rendering"警告も避ける。
+    if (
+      !isServerPagination ||
+      data.length !== 0 ||
+      totalItems <= 0 ||
+      requestedPage === undefined ||
+      onPageChange === undefined ||
+      requestedPage === currentPage
+    ) {
+      return
+    }
+    onPageChange(currentPage)
+  }, [currentPage, data.length, isServerPagination, onPageChange, requestedPage, totalItems])
 
   if (loading) {
     return (

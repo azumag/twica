@@ -373,6 +373,8 @@ DO $$
 DECLARE
   users_plan JSONB;
   streamers_plan JSONB;
+  gacha_user_count_plan JSONB;
+  gacha_user_page_plan JSONB;
   gacha_plan JSONB;
 BEGIN
   EXECUTE $plan$
@@ -400,6 +402,30 @@ BEGIN
 
   IF streamers_plan::TEXT NOT LIKE '%idx_streamers_analysis_search_trgm%' THEN
     RAISE EXCEPTION 'streamer search plan did not use the trigram index: %', streamers_plan;
+  END IF;
+
+  EXECUTE $plan$
+    EXPLAIN (FORMAT JSON)
+    SELECT count(*)
+    FROM gacha_history gh
+    WHERE gh.user_twitch_username ILIKE '%analysis-perf-user-19999%' ESCAPE E'\\'
+  $plan$ INTO gacha_user_count_plan;
+
+  IF gacha_user_count_plan::TEXT NOT LIKE '%idx_gacha_history_username_analysis_search_trgm%' THEN
+    RAISE EXCEPTION 'gacha username count plan did not use the trigram index: %', gacha_user_count_plan;
+  END IF;
+
+  EXECUTE $plan$
+    EXPLAIN (FORMAT JSON)
+    SELECT gh.id
+    FROM gacha_history gh
+    WHERE gh.user_twitch_username ILIKE '%analysis-perf-user-19999%' ESCAPE E'\\'
+    ORDER BY gh.redeemed_at DESC, gh.id DESC
+    LIMIT 100
+  $plan$ INTO gacha_user_page_plan;
+
+  IF gacha_user_page_plan::TEXT NOT LIKE '%idx_gacha_history_username_analysis_search_trgm%' THEN
+    RAISE EXCEPTION 'gacha username page plan did not use the trigram index: %', gacha_user_page_plan;
   END IF;
 
   EXECUTE $plan$

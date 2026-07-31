@@ -29,4 +29,13 @@ describe('analysis DataTable server pagination guard', () => {
     expect(normalizedSource).toContain('onClick={() => pagination.onPageChange(currentPage + 1)}')
     expect(normalizedSource).toContain('{currentPage} / {totalPages}')
   })
+
+  it('countとrowsの競合で空ページになったら親を最終ページへ戻す', () => {
+    // data=[]かつtotalItems>0のときにページャーを先にreturnすると、
+    // currentPageが新しい最終ページを越えたまま固定される。effectで親へ
+    // クランプ値を通知する契約をsource-levelで固定する。
+    expect(normalizedSource).toContain('data.length !== 0')
+    expect(normalizedSource).toContain('totalItems <= 0')
+    expect(normalizedSource).toContain('onPageChange(currentPage)')
+  })
 })

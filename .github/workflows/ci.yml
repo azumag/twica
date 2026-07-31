@@ -230,15 +230,11 @@ jobs:
           # runtime migration runnerと同じdescriptor parserで、共通migrationと
           # PlanetScale専用migrationをマージ・provider filter・名前順sortする。
           # CIだけ別の対象集合を再実装すると、新しい共通migrationを見落とすため。
-          while IFS=$'\t' read -r transaction migration; do
-            if [ "$transaction" = "forbidden" ]; then
-              psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
-                -f "$migration"
-            else
-              psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
-                -f "$migration"
-            fi
-          done < <(node -e "
+          # process substitution (`done < <(node ...)`)では、nodeがdescriptor解析に
+          # 失敗してもwhile側の終了コードだけが残り、GitHub Actionsの`set -e`が
+          # エラーを見逃す。先にcommand substitutionの代入を完了させることで、
+          # nodeの非0終了をこのstepの失敗として伝播させ、DDL適用へ進ませない。
+          migration_descriptors="$(node -e "
             const path = require('node:path');
             const core = require('./scripts/lib/db-migrate-core');
             const descriptors = core.loadMigrationFilesFromDirs([
@@ -255,7 +251,18 @@ jobs:
                 console.log(descriptor.transaction + '\\t' + path.join(descriptor.sourceDir, descriptor.filename));
               }
             }
-          ")
+          ")"
+          if [ -n "$migration_descriptors" ]; then
+            while IFS=$'\t' read -r transaction migration; do
+              if [ "$transaction" = "forbidden" ]; then
+                psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+                  -f "$migration"
+              else
+                psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+                  -f "$migration"
+              fi
+            done <<< "$migration_descriptors"
+          fi
 
       - name: Verify analysis dashboard pagination RPCs
         # SQLの文字列検査だけでは、ページ行・count・summaryの整合性や

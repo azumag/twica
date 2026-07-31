@@ -12,6 +12,11 @@ const streamersPage = readFileSync(resolve(repoRoot, 'analysis/src/pages/Streame
 const app = readFileSync(resolve(repoRoot, 'analysis/src/App.tsx'), 'utf8')
 const gachaPage = readFileSync(resolve(repoRoot, 'analysis/src/pages/Gacha.tsx'), 'utf8')
 const localAdminApi = readFileSync(resolve(repoRoot, 'analysis/dev/localAdminApi.ts'), 'utf8')
+const ciWorkflow = readFileSync(resolve(repoRoot, '.github/workflows/ci.yml'), 'utf8')
+const gachaUsernameIndexMigration = readFileSync(
+  resolve(repoRoot, 'db/planetscale/migrations/20260801090006_create_analysis_gacha_username_search_trgm_index.sql'),
+  'utf8'
+)
 const streamerGachaPage = readFileSync(
   resolve(repoRoot, 'analysis/src/pages/StreamerGachaHistory.tsx'),
   'utf8'
@@ -114,5 +119,16 @@ describe('analysis dashboard: bounded data contract', () => {
     expect(localAdminApi).toContain('parsePagination(url, 100)')
     expect(localAdminApi).toContain("path === '/users/summary'")
     expect(localAdminApi).toContain("path === '/streamers/summary'")
+  })
+
+  it('全期間のGachaユーザー名検索をGIN索引で支え、descriptor失敗をCIで伝播する', () => {
+    expect(gachaUsernameIndexMigration).toContain(
+      'idx_gacha_history_username_analysis_search_trgm'
+    )
+    // process substitutionではnodeの失敗がwhileの成功に隠れるため、descriptor列挙
+    // は先に代入し、失敗時にmigration適用へ進まない構造をCIの契約として固定する。
+    expect(ciWorkflow).toContain('migration_descriptors="$(node -e "')
+    expect(ciWorkflow).toContain('done <<< "$migration_descriptors"')
+    expect(ciWorkflow).not.toContain('done < <(node -e "')
   })
 })
