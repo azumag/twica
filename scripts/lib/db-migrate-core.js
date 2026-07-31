@@ -427,8 +427,8 @@ function stripSimplePredicateParentheses(predicate) {
  * PostgreSQL E-stringのescapeを値へデコードする。単文字escapeだけでなく、
  * `\\xNN` / `\\ooo` / `\\uNNNN` / `\\UNNNNNNNN`を扱わないと、正しいE-string
  * predicateをpg_get_indexdefの通常literalと同一視できず、逆に誤ったliteralを
- * canonicalizeして通す可能性がある。未知/不完全なescapeは入力を保ったままにし、
- * 比較を安全側（不一致）へ倒す。
+ * canonicalizeして通す可能性がある。PostgreSQLが受理する未知escapeはbackslashを
+ * 除去し、不完全なhex/Unicode escapeは原表記を保って比較を安全側へ倒す。
  * @param {string} body
  * @returns {string}
  */
@@ -446,15 +446,29 @@ function decodePostgresEscapeString(body) {
     "'": "'",
     '"': '"',
   }
+  const byteEscapes = []
+  const flushByteEscapes = () => {
+    if (byteEscapes.length === 0) return
+    try {
+      result.push(new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(byteEscapes)))
+    } catch {
+      // 不正なUTF-8 byte列はPostgreSQL側でも通常literalへcanonicalizeできない。
+      // 値を推測せず、byte escapeの原表記へ戻して比較を不一致にする。
+      result.push(...byteEscapes.map((byte) => String.fromCharCode(byte)))
+    }
+    byteEscapes.length = 0
+  }
 
   for (let index = 0; index < body.length; index += 1) {
     if (body[index] !== '\\' || index + 1 >= body.length) {
+      flushByteEscapes()
       result.push(body[index])
       continue
     }
 
     const escape = body[index + 1]
     if (Object.prototype.hasOwnProperty.call(simpleEscapes, escape)) {
+      flushByteEscapes()
       result.push(simpleEscapes[escape])
       index += 1
       continue
@@ -466,7 +480,13 @@ function decodePostgresEscapeString(body) {
       const pattern = escape === 'x' ? /^[0-9A-Fa-f]{1,2}$/ : new RegExp(`^[0-9A-Fa-f]{${digitCount}}$`)
       if (pattern.test(digits)) {
         const codePoint = Number.parseInt(digits, 16)
+        if (escape === 'x') {
+          byteEscapes.push(codePoint)
+          index += 1 + digits.length
+          continue
+        }
         if (codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+          flushByteEscapes()
           result.push(String.fromCodePoint(codePoint))
           index += 1 + digits.length
           continue
@@ -480,17 +500,19 @@ function decodePostgresEscapeString(body) {
     if (/^[0-7]$/.test(escape)) {
       const digits = body.slice(index + 1, index + 4).match(/^[0-7]{1,3}/)?.[0]
       if (digits) {
-        result.push(String.fromCodePoint(Number.parseInt(digits, 8)))
+        byteEscapes.push(Number.parseInt(digits, 8))
         index += digits.length
         continue
       }
     }
 
-    // PostgreSQLが受理しない/意味を確定できないescapeは、値を推測せず
-    // backslash込みで残す。正常な定義同士を誤って一致させないための安全側処理。
-    result.push('\\', escape)
+    // PostgreSQLは未知escapeのbackslashを捨て、後続文字だけを値にする。
+    // 例: E'\\q' は 'q'。これはpg_get_indexdefとの一致に必要な仕様である。
+    flushByteEscapes()
+    result.push(escape)
     index += 1
   }
+  flushByteEscapes()
   return result.join('')
 }
 
@@ -512,6 +534,7 @@ function canonicalizeQuotedLiteral(segment) {
     const isEscapeString = /^[eE]'/u.test(segment)
     body = segment.slice(isEscapeString ? 2 : 1, -1)
     if (isEscapeString) {
+      body = body.replace(/''/g, "'")
       body = decodePostgresEscapeString(body)
     } else {
       body = body.replace(/''/g, "'")

@@ -306,6 +306,47 @@ describe('forbidden index postcondition helpers', () => {
     ).toEqual(['escaped_users_idx'])
   })
 
+  it('E-stringのUTF-8 byte escapeをUnicode値へ復号し、誤った文字列を拒否する', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX utf8_users_idx ON public.users (id) WHERE code = E'\\xC3\\xA9' AND octal = E'\\303\\251';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'utf8_users_idx',
+          definition:
+            "CREATE INDEX utf8_users_idx ON public.users USING btree (id) WHERE ((code = 'é'::text) AND (octal = 'é'::text))",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'utf8_users_idx',
+          definition:
+            "CREATE INDEX utf8_users_idx ON public.users USING btree (id) WHERE ((code = 'Ã©'::text) AND (octal = 'Ã©'::text))",
+        },
+      ])
+    ).toEqual(['utf8_users_idx'])
+  })
+
+  it('E-stringの未知escapeとdoubled quoteをPostgreSQLの値へ合わせる', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX escape_edge_users_idx ON public.users (id) WHERE code = E'\\q' AND label = E'foo''bar';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escape_edge_users_idx',
+          definition:
+            "CREATE INDEX escape_edge_users_idx ON public.users USING btree (id) WHERE ((code = 'q'::text) AND (label = 'foo''bar'::text))",
+        },
+      ])
+    ).toEqual([])
+  })
+
   it('missing/invalid/validの状態を区別し、invalidならhistory登録前に止められる', () => {
     expect(
       validateIndexStates(
