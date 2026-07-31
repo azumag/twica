@@ -347,6 +347,55 @@ describe('forbidden index postcondition helpers', () => {
     ).toEqual([])
   })
 
+  it('E-stringの1桁/0桁hex escapeとsurrogate pairをPostgreSQLの値へ合わせる', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX escape_width_users_idx ON public.users (id) WHERE odd_hex = E'\\x4Z' AND empty_hex = E'\\x' AND emoji = E'\\uD83D\\uDE00';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escape_width_users_idx',
+          definition:
+            "CREATE INDEX escape_width_users_idx ON public.users USING btree (id) WHERE ((odd_hex = '\x04Z'::text) AND (empty_hex = 'x'::text) AND (emoji = '😀'::text))",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escape_width_users_idx',
+          definition:
+            "CREATE INDEX escape_width_users_idx ON public.users USING btree (id) WHERE ((odd_hex = '\\x04Z'::text) AND (empty_hex = '\\x'::text) AND (emoji = '\\uD83D\\uDE00'::text))",
+        },
+      ])
+    ).toEqual(['escape_width_users_idx'])
+  })
+
+  it('UTF-8 byte escape内のBOMを保持し、BOMなし値を誤って一致させない', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX bom_users_idx ON public.users (id) WHERE label = E'\\xEF\\xBB\\xBFA';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'bom_users_idx',
+          definition:
+            "CREATE INDEX bom_users_idx ON public.users USING btree (id) WHERE (label = '\ufeffA'::text)",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'bom_users_idx',
+          definition: "CREATE INDEX bom_users_idx ON public.users USING btree (id) WHERE (label = 'A'::text)",
+        },
+      ])
+    ).toEqual(['bom_users_idx'])
+  })
+
   it('missing/invalid/validの状態を区別し、invalidならhistory登録前に止められる', () => {
     expect(
       validateIndexStates(

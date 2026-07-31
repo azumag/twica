@@ -450,7 +450,9 @@ function decodePostgresEscapeString(body) {
   const flushByteEscapes = () => {
     if (byteEscapes.length === 0) return
     try {
-      result.push(new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(byteEscapes)))
+      result.push(
+        new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Uint8Array.from(byteEscapes))
+      )
     } catch {
       // 不正なUTF-8 byte列はPostgreSQL側でも通常literalへcanonicalizeできない。
       // 値を推測せず、byte escapeの原表記へ戻して比較を不一致にする。
@@ -477,18 +479,39 @@ function decodePostgresEscapeString(body) {
     if (escape === 'x' || escape === 'u' || escape === 'U') {
       const digitCount = escape === 'x' ? 2 : escape === 'u' ? 4 : 8
       const digits = body.slice(index + 2, index + 2 + digitCount)
-      const pattern = escape === 'x' ? /^[0-9A-Fa-f]{1,2}$/ : new RegExp(`^[0-9A-Fa-f]{${digitCount}}$`)
-      if (pattern.test(digits)) {
-        const codePoint = Number.parseInt(digits, 16)
+      const pattern = escape === 'x' ? /^[0-9A-Fa-f]{1,2}/ : new RegExp(`^[0-9A-Fa-f]{${digitCount}}$`)
+      if (escape === 'x' && !/^[0-9A-Fa-f]/.test(digits)) {
+        // \xにhex digitが続かない場合、PostgreSQLは特殊escapeと解釈せず
+        // backslashを除去してxをそのまま値にする（E'\\x' -> 'x'）。
+        flushByteEscapes()
+        result.push(escape)
+        index += 1
+        continue
+      }
+      const matchedDigits = digits.match(pattern)?.[0]
+      if (matchedDigits) {
+        const codePoint = Number.parseInt(matchedDigits, 16)
         if (escape === 'x') {
           byteEscapes.push(codePoint)
-          index += 1 + digits.length
+          index += 1 + matchedDigits.length
           continue
+        }
+        if (escape === 'u' && codePoint >= 0xd800 && codePoint <= 0xdbff) {
+          const lowSurrogate = body
+            .slice(index + 2 + digitCount)
+            .match(/^\\u([0-9A-Fa-f]{4})/i)?.[1]
+          const lowCodePoint = lowSurrogate ? Number.parseInt(lowSurrogate, 16) : null
+          if (lowCodePoint !== null && lowCodePoint >= 0xdc00 && lowCodePoint <= 0xdfff) {
+            flushByteEscapes()
+            result.push(String.fromCodePoint(0x10000 + (codePoint - 0xd800) * 0x400 + lowCodePoint - 0xdc00))
+            index += 1 + digitCount + 2 + digitCount
+            continue
+          }
         }
         if (codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)) {
           flushByteEscapes()
           result.push(String.fromCodePoint(codePoint))
-          index += 1 + digits.length
+          index += 1 + matchedDigits.length
           continue
         }
       }
