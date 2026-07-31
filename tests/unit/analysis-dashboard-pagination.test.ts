@@ -42,6 +42,7 @@ describe('analysis dashboard: bounded data contract', () => {
   it('Gacha系の初回期間は7日で、チャートは行取得ではなく集計RPCを使う', () => {
     expect(gachaPage).toContain("useState<TimeRange>('7d')")
     expect(gachaPage).toContain('adminApi.getStreamerOptions(')
+    expect(gachaPage).toContain('const selected = previousRows.find')
     expect(gachaPage).not.toContain('adminApi.getStreamers(')
     expect(streamerGachaPage).toContain("useState<TimeRange>('7d')")
     expect(streamerGachaPage).toContain('adminApi.getGachaSummary(')

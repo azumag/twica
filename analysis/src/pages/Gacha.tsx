@@ -104,7 +104,17 @@ export function Gacha() {
             { page: 1, pageSize: 100, search: streamerSearchInput },
             { signal: controller.signal }
           )
-          setStreamers(rows)
+          setStreamers((previousRows) => {
+            // 検索結果を置き換えるだけだと、100件目以降の配信者を検索して
+            // 選択した後に検索文字を消した際、その選択肢が先頭100件から外れて
+            // selectの表示が空になる。現在選択中の候補だけは軽量な1行として
+            // 次の結果にも残し、選択状態とサーバー側の集計条件を一致させる。
+            const selected = previousRows.find((row) => row.id === selectedStreamerId)
+            if (selected && !rows.some((row) => row.id === selected.id)) {
+              return [selected, ...rows]
+            }
+            return rows
+          })
         } catch (err) {
           if (controller.signal.aborted) return
           // 候補だけの取得失敗は集計・履歴テーブルをブロックさせない。
@@ -116,7 +126,7 @@ export function Gacha() {
       clearTimeout(timer)
       controller.abort()
     }
-  }, [streamerSearchInput])
+  }, [streamerSearchInput, selectedStreamerId])
 
   // ========================================
   // fetchSummary: チャート/統計用集計データ取得（timeRange/selectedStreamerId変更時）
