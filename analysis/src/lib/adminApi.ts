@@ -97,6 +97,10 @@ export interface Paginated<T> {
   count: number
 }
 
+export interface PaginatedWithSummary<T, S> extends Paginated<T> {
+  summary: S
+}
+
 // analysis/src/pages/Users.tsx の fetchUsers() が読む形（user.user_cards?.[0]?.count）と一致
 export type UserWithCardCount = User & { user_cards: { count: number }[] }
 
@@ -118,18 +122,76 @@ export interface StreamerWithStats extends Streamer {
   has_vote_campaign_bonus: boolean
 }
 
-// チャート用ガチャ履歴行 - cards は最小フィールドのみ
-export type GachaChartCard = Pick<Card, 'id' | 'name' | 'rarity' | 'image_url'>
+export type UserListSortOrder =
+  | 'card_count_desc'
+  | 'card_count_asc'
+  | 'created_at_desc'
+  | 'name_asc'
 
-export interface GachaChartRow {
-  id: string
-  redeemed_at: string
-  card_id: string
-  user_twitch_id: string
-  streamer_id: string
-  cards: GachaChartCard | null
-  streamers: Streamer | null
+export type StreamerListSortOrder =
+  | 'card_count_desc'
+  | 'card_count_asc'
+  | 'created_at_desc'
+  | 'name_asc'
+  | 'storage_desc'
+
+export interface UserListSummary {
+  totalUsers: number
+  totalCards: number
+  usersWithTos: number
+  usersWithCards: number
 }
+
+export interface StreamerListSummary {
+  totalStreamers: number
+  activeStreamers: number
+  configuredStreamers: number
+  totalCards: number
+  totalStorage: number
+  streamersWithCards: number
+  chatEnabledStreamers: number
+  customTemplateStreamers: number
+  chatEnabledNoSender: number
+  voteCampaignUsers: number
+}
+
+export interface StreamerOption {
+  id: string
+  twitch_username: string
+  twitch_display_name: string
+}
+
+export type UserListResponse = PaginatedWithSummary<UserWithCardCount, UserListSummary>
+export type StreamerListResponse = PaginatedWithSummary<StreamerWithStats, StreamerListSummary>
+
+export interface UserListParams {
+  page: number
+  pageSize: number
+  search?: string
+  sort?: UserListSortOrder
+  hideZeroCards?: boolean
+}
+
+export interface StreamerListParams {
+  page: number
+  pageSize: number
+  search?: string
+  sort?: StreamerListSortOrder
+  hideZeroCards?: boolean
+  filterChatEnabled?: boolean
+  filterHasTemplate?: boolean
+  filterMissingScope?: boolean
+  filterVoteCampaign?: boolean
+}
+
+export interface StreamerOptionParams {
+  page: number
+  pageSize: number
+  search?: string
+}
+
+// DB側集計RPCが返す人気カードの最小フィールド
+export type GachaChartCard = Pick<Card, 'id' | 'name' | 'rarity' | 'image_url'>
 
 export interface GachaSummary {
   totalGacha: number
@@ -226,10 +288,9 @@ function buildQueryString(params: Record<string, string | number | undefined>): 
 }
 
 // リクエストがハングしたまま返ってこない事故(サーバープロセスの停止・ネットワーク
-// 断等)を防ぐデフォルトタイムアウト。getStreamerLeaderboard()はgacha_history全件
-// (~65,000行超)をNode側でfetchAllPagedしながら集計するため既知で約20秒かかる
-// (Overview.tsx/localAdminApi.tsのコメント参照)。誤って正常な低速リクエストを
-// 打ち切らないよう、その3倍程度の余裕を持たせた値にする
+// 断等)を防ぐデフォルトタイムアウト。Overviewや一覧の集計はDB側で完結するが、
+// ネットワーク障害やDBの一時的な遅延でリクエストが無期限に残らないよう、
+// UIが再試行できる十分な余裕を持たせた値にする。
 const DEFAULT_TIMEOUT_MS = 60_000
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -296,12 +357,35 @@ export const adminApi = {
   getOverview: (options?: RequestOptions) => request<OverviewData>('/overview', options),
   getOverviewLeaderboard: (options?: RequestOptions) =>
     request<StreamerLeaderboardEntry[]>('/overview/leaderboard', options),
-  getUsers: (options?: RequestOptions) => request<UserWithCardCount[]>('/users', options),
-  getStreamers: (options?: RequestOptions) => request<StreamerWithStats[]>('/streamers', options),
+  getUsers: (params: UserListParams = { page: 1, pageSize: 20 }, options?: RequestOptions) =>
+    request<UserListResponse>(`/users?${buildQueryString({
+      ...params,
+      search: params.search?.trim() || undefined,
+      sort: params.sort || 'card_count_desc',
+      hideZeroCards: params.hideZeroCards ? 'true' : undefined,
+    })}`, options),
+  getStreamers: (
+    params: StreamerListParams = { page: 1, pageSize: 20 },
+    options?: RequestOptions
+  ) =>
+    request<StreamerListResponse>(`/streamers?${buildQueryString({
+      ...params,
+      search: params.search?.trim() || undefined,
+      sort: params.sort || 'card_count_desc',
+      hideZeroCards: params.hideZeroCards ? 'true' : undefined,
+      filterChatEnabled: params.filterChatEnabled ? 'true' : undefined,
+      filterHasTemplate: params.filterHasTemplate ? 'true' : undefined,
+      filterMissingScope: params.filterMissingScope ? 'true' : undefined,
+      filterVoteCampaign: params.filterVoteCampaign ? 'true' : undefined,
+    })}`, options),
+  getStreamerOptions: (params: StreamerOptionParams, options?: RequestOptions) =>
+    request<Paginated<StreamerOption>>(`/streamers/options?${buildQueryString({
+      page: params.page,
+      pageSize: params.pageSize,
+      search: params.search,
+    })}`, options),
   getStreamer: (id: string, options?: RequestOptions) =>
     request<Streamer>(`/streamers/${id}`, options),
-  getGachaChart: (params: { range: TimeRange; streamerId?: string }, options?: RequestOptions) =>
-    request<GachaChartRow[]>(`/gacha/chart?${buildQueryString(params)}`, options),
   getGachaSummary: (params: { range: TimeRange; streamerId?: string }, options?: RequestOptions) =>
     request<GachaSummary>(`/gacha/summary?${buildQueryString(params)}`, options),
   getGachaTable: (params: GachaTableParams, options?: RequestOptions) =>

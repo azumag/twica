@@ -23,10 +23,10 @@
  * 関数名は SQL インジェクション対策として動的に組み立てず、呼び出す関数ごとに
  * 個別のリテラル SQL を書く。
  *
- * gacha chart/table/export（`getGachaChartPg` 以下）は上記と異なり、対応する
+ * gacha table/export（`getGachaTablePg` 以下）は上記と異なり、対応する
  * `get_analysis_*()` SQL 関数が存在しない（絞り込み条件が可変で、既存の
  * `00073_add_analysis_dashboard_rpcs.sql` のような固定引数のRPC化に馴染まないため）。
- * そのため、この3関数のみ postgres.js のフラグメント合成（`sql`` を `${}` でネスト、
+ * そのため、この2機能のみ postgres.js のフラグメント合成（`sql`` を `${}` でネスト、
  * postgres.js README「nesting sql`` fragments」参照）で動的 WHERE 句を組み立てる。
  * 値は必ずバインドパラメータとして渡され文字列連結は一切行わないため、
  * 条件の有無を動的に変えてもインジェクションの余地はない。
@@ -46,7 +46,7 @@ import postgres from 'postgres'
  * `grant service_role to <role>` 済みである必要がある（未付与だと接続自体は成功し、
  * 呼び出し時に "permission denied for function" で失敗する）。
  *
- * `getGachaChartPg` 以下の関数群は SQL 関数を経由せず対象テーブル（gacha_history/
+ * `getGachaTablePg` 以下の関数群は SQL 関数を経由せず対象テーブル（gacha_history/
  * cards/streamers/users/user_cards/support_codes/user_licenses/support_inquiries/
  * support_inquiry_messages 等、増分が進むごとに増える）を直接 SELECT/INSERT/UPDATE
  * するため、上記の EXECUTE 権限に加えてこれらテーブルへの DML 権限も必要
@@ -174,12 +174,56 @@ export async function getStreamerLeaderboardPg(env: Record<string, string>): Pro
   )
 }
 
-export async function listUsersPg(env: Record<string, string>): Promise<unknown> {
-  return callAnalysisJsonFunction(env, (sql) => sql`select get_analysis_users() as result`)
+export async function listUsersPg(
+  env: Record<string, string>,
+  params: {
+    page: number
+    pageSize: number
+    search?: string | null
+    sort?: string
+    hideZeroCards?: boolean
+  } = { page: 1, pageSize: 20 }
+): Promise<unknown> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) =>
+      sql`select get_analysis_users_page(${params.page}, ${params.pageSize}, ${params.search ?? null}, ${params.sort ?? 'card_count_desc'}, ${params.hideZeroCards ?? false}) as result`
+  )
 }
 
-export async function listStreamersWithStatsPg(env: Record<string, string>): Promise<unknown> {
-  return callAnalysisJsonFunction(env, (sql) => sql`select get_analysis_streamers() as result`)
+export async function listStreamersWithStatsPg(
+  env: Record<string, string>,
+  params: {
+    page: number
+    pageSize: number
+    search?: string | null
+    sort?: string
+    hideZeroCards?: boolean
+    filterChatEnabled?: boolean
+    filterHasTemplate?: boolean
+    filterMissingScope?: boolean
+    filterVoteCampaign?: boolean
+  } = { page: 1, pageSize: 20 }
+): Promise<unknown> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) =>
+      sql`select get_analysis_streamers_page(${params.page}, ${params.pageSize}, ${params.search ?? null}, ${params.sort ?? 'card_count_desc'}, ${params.hideZeroCards ?? false}, ${params.filterChatEnabled ?? false}, ${params.filterHasTemplate ?? false}, ${params.filterMissingScope ?? false}, ${params.filterVoteCampaign ?? false}) as result`
+  )
+}
+
+export async function getStreamerOptionsPg(
+  env: Record<string, string>,
+  params: { page: number; pageSize: number; search?: string | null } = {
+    page: 1,
+    pageSize: 50,
+  }
+): Promise<unknown> {
+  return callAnalysisJsonFunction(
+    env,
+    (sql) =>
+      sql`select get_analysis_streamer_options_page(${params.page}, ${params.pageSize}, ${params.search ?? null}) as result`
+  )
 }
 
 /**
@@ -231,7 +275,7 @@ export async function getGachaSummaryPg(
   )
 }
 
-/** getGachaChartPg/getGachaTablePg/getGachaExportRowsPg が共有する絞り込み条件。 */
+/** getGachaTablePg/getGachaExportRowsPg が共有する絞り込み条件。 */
 export interface GachaHistoryFilters {
   streamerId?: string
   /** ISO文字列。範囲の下限（含む）。未指定なら絞り込まない。 */
@@ -273,50 +317,6 @@ export function gachaHistoryFromWhere(sql: postgres.Sql, filters: GachaHistoryFi
 }
 
 /**
- * ダッシュボードのガチャチャートが期待する行を返す（GachaChartRow 相当）。
- * `getGachaChart()`（PostgREST版）は `.limit(10000)` を指定しているが、
- * Supabase の max-rows API 設定（既定 1000）により実際には最大1000件しか
- * 返っていない（`docs/db-driver-migration.md` 参照、`getGachaExportRows` の
- * fetchAllPaged 導入理由と同じ制約）。pg 直結には PostgREST の max-rows は
- * 適用されないため、ここではコードが本来意図している10000件の上限をそのまま使う
- * （既存の実挙動＝1000件を人為的に再現するのではなく、コードの記述どおりの
- * 上限に揃える。管理者用の内部チャートであり、より完全なデータが出ることは
- * リスクではない）。
- *
- * timestamp/timestamptz を生列として SELECT すると postgres.js が JS Date
- * オブジェクトへ変換してしまい、呼び出し元が期待する ISO 文字列と型が
- * 食い違う（かつファイル冒頭の「jsonb 列1本しかSELECTしない」前提も崩れる）。
- * そのため jsonb_build_object() で個々の値を明示的に組み立てる
- * （timestamptz を jsonb_build_object の値として渡すと to_jsonb() と同じ
- * ISO 8601 変換が適用される）。
- */
-export async function getGachaChartPg(
-  env: Record<string, string>,
-  filters: Pick<GachaHistoryFilters, 'streamerId' | 'fromDate'>
-): Promise<unknown> {
-  return callAnalysisJsonFunction(env, (sql) => sql`
-    SELECT COALESCE(jsonb_agg(row_json ORDER BY sort_redeemed_at DESC), '[]'::jsonb) AS result
-    FROM (
-      SELECT
-        jsonb_build_object(
-          'id', gh.id,
-          'redeemed_at', gh.redeemed_at,
-          'card_id', gh.card_id,
-          'user_twitch_id', gh.user_twitch_id,
-          'streamer_id', gh.streamer_id,
-          'cards', jsonb_build_object(
-            'id', c.id, 'name', c.name, 'rarity', c.rarity, 'image_url', c.image_url
-          ),
-          'streamers', to_jsonb(s.*)
-        ) AS row_json,
-        gh.redeemed_at AS sort_redeemed_at
-      ${gachaHistoryFromWhere(sql, filters)}
-      ORDER BY gh.redeemed_at DESC
-      LIMIT 10000
-    ) chart
-  `)
-}
-
 /**
  * 件数のみを取得する（`getGachaTablePg` 専用）。`count(*) OVER()` ウィンドウ関数で
  * 1クエリに統合する案もあったが、要求ページが最終ページを超えて0行になった場合に
@@ -383,8 +383,8 @@ const GACHA_EXPORT_ROW_LIMIT_PG = 50000
 
 /**
  * CSVエクスポート用の行を返す（`getGachaExportRows()` 相当）。PostgREST版は
- * max-rows制約により `fetchAllPaged` で1000件ずつバッチ取得しているが、
- * pg直結にはその制約がないため単発の `LIMIT` クエリで完結する。
+ * max-rows制約により `fetchAllPaged` で1000件ずつバッチ取得していた旧経路だが、
+ * pg直結では明示的な安全上限を持つ単発の `LIMIT` クエリで完結する。
  */
 export async function getGachaExportRowsPg(
   env: Record<string, string>,
@@ -570,7 +570,7 @@ export async function getStreamerCardsPagePg(
  * サポートコード一覧を作成日降順で返す（`GET /support-codes` 相当）。
  *
  * PostgREST版は `.range()` を指定しない単発 `select()` のため、Supabase の
- * max-rows API 設定（既定1000件、`getGachaChartPg` のコメント参照）で
+ * max-rows API 設定（既定1000件）で
  * 実際には最大1000件に打ち切られている可能性があるが、pg直結にはこの制約が
  * 適用されないためLIMITなしで全件返す。support_codes/user_licenses/
  * twitch_has_sub ユーザーはいずれも管理対象データとして現実的には
