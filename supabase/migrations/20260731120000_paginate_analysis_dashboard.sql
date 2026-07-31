@@ -224,12 +224,14 @@ $$;
 -- パラメータ化されたRPCでは「検索あり」の実行でも条件全体が汎用的な
 -- OR式として残り、pg_trgmのGIN索引よりSeq Scanを選ぶことがある。
 -- 検索あり／なしをPL/pgSQLで分岐し、検索あり側には検索述語だけを渡す。
--- 一覧RPCはこの候補ID集合をJOINするため、カード集計やJSON化の対象だけを
--- 検索候補へ絞り込める。内部ヘルパーはPUBLICへ公開しない。
-CREATE OR REPLACE FUNCTION get_analysis_user_candidate_ids(
+-- 一覧RPCへUUIDだけを返して元テーブルへ再JOINすると、PL/pgSQLのSET返却行数
+-- 推定値によって候補数が多いと判断され、元テーブル全件のSeq Scanへ戻る場合がある。
+-- そのため候補行そのものを返し、一覧RPCはusers/streamersを再走査しない。
+-- 内部ヘルパーはPUBLICへ公開しない。
+CREATE OR REPLACE FUNCTION get_analysis_user_candidate_rows(
   p_search TEXT DEFAULT NULL
 )
-RETURNS SETOF UUID
+RETURNS SETOF users
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -237,11 +239,11 @@ AS $$
 BEGIN
   IF p_search IS NULL OR p_search = '' THEN
     RETURN QUERY
-    SELECT u.id
+    SELECT u.*
     FROM users u;
   ELSE
     RETURN QUERY
-    SELECT u.id
+    SELECT u.*
     FROM users u
     WHERE u.twitch_username ILIKE p_search ESCAPE E'\\'
       OR u.twitch_display_name ILIKE p_search ESCAPE E'\\';
@@ -249,12 +251,12 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION get_analysis_streamer_candidate_ids(
+CREATE OR REPLACE FUNCTION get_analysis_streamer_candidate_rows(
   p_search TEXT DEFAULT NULL,
   p_filter_chat_enabled BOOLEAN DEFAULT FALSE,
   p_filter_has_template BOOLEAN DEFAULT FALSE
 )
-RETURNS SETOF UUID
+RETURNS SETOF streamers
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -262,14 +264,14 @@ AS $$
 BEGIN
   IF p_search IS NULL OR p_search = '' THEN
     RETURN QUERY
-    SELECT s.id
+    SELECT s.*
     FROM streamers s
     WHERE (NOT COALESCE(p_filter_chat_enabled, FALSE) OR s.chat_announcement_enabled)
       AND (NOT COALESCE(p_filter_has_template, FALSE)
         OR COALESCE(length(s.chat_announcement_template), 0) > 0);
   ELSE
     RETURN QUERY
-    SELECT s.id
+    SELECT s.*
     FROM streamers s
     WHERE (
         s.twitch_username ILIKE p_search ESCAPE E'\\'
@@ -306,8 +308,7 @@ WITH candidate_users AS MATERIALIZED (
     COALESCE(u.twitch_scopes, '{}'::TEXT[]) AS twitch_scopes,
     u.created_at,
     u.updated_at
-  FROM users u
-  JOIN get_analysis_user_candidate_ids(p_search) candidate ON candidate = u.id
+  FROM get_analysis_user_candidate_rows(p_search) AS u
 ),
 card_counts AS MATERIALIZED (
   SELECT uc.user_id, COUNT(*)::INTEGER AS card_count
@@ -414,12 +415,11 @@ SET search_path = public
 AS $$
 WITH candidate_streamers AS MATERIALIZED (
   SELECT s.*
-  FROM streamers s
-  JOIN get_analysis_streamer_candidate_ids(
+  FROM get_analysis_streamer_candidate_rows(
     p_search,
     p_filter_chat_enabled,
     p_filter_has_template
-  ) candidate ON candidate = s.id
+  ) AS s
 ),
 candidate_card_counts AS MATERIALIZED (
   SELECT c.streamer_id, COUNT(*)::INTEGER AS card_count
@@ -616,9 +616,7 @@ SET search_path = public
 AS $$
 WITH filtered AS MATERIALIZED (
   SELECT s.id, s.twitch_username, s.twitch_display_name
-  FROM streamers s
-  JOIN get_analysis_streamer_candidate_ids(p_search, FALSE, FALSE) candidate
-    ON candidate = s.id
+  FROM get_analysis_streamer_candidate_rows(p_search, FALSE, FALSE) AS s
 ),
 paged AS (
   SELECT f.*
@@ -643,8 +641,8 @@ SELECT jsonb_build_object(
 $$;
 
 REVOKE ALL ON FUNCTION get_analysis_overview() FROM PUBLIC;
-REVOKE ALL ON FUNCTION get_analysis_user_candidate_ids(TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION get_analysis_streamer_candidate_ids(TEXT, BOOLEAN, BOOLEAN) FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_user_candidate_rows(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_analysis_streamer_candidate_rows(TEXT, BOOLEAN, BOOLEAN) FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_users_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN) FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_users_summary() FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_streamers_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN) FROM PUBLIC;
@@ -652,8 +650,8 @@ REVOKE ALL ON FUNCTION get_analysis_streamers_summary() FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_analysis_streamer_options_page(INTEGER, INTEGER, TEXT) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION get_analysis_overview() TO service_role;
-GRANT EXECUTE ON FUNCTION get_analysis_user_candidate_ids(TEXT) TO service_role;
-GRANT EXECUTE ON FUNCTION get_analysis_streamer_candidate_ids(TEXT, BOOLEAN, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_user_candidate_rows(TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION get_analysis_streamer_candidate_rows(TEXT, BOOLEAN, BOOLEAN) TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_users_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN) TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_users_summary() TO service_role;
 GRANT EXECUTE ON FUNCTION get_analysis_streamers_page(INTEGER, INTEGER, TEXT, TEXT, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN, BOOLEAN) TO service_role;

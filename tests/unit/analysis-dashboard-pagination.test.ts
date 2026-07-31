@@ -44,8 +44,10 @@ describe('analysis dashboard: bounded data contract', () => {
     expect(streamersCandidate).toBeGreaterThan(usersCandidate)
     expect(migration.indexOf('candidate_card_counts AS MATERIALIZED')).toBeGreaterThan(streamersCandidate)
     expect(migration).toContain('JOIN candidate_streamers cs ON cs.id = c.streamer_id')
-    expect(migration).toContain('JOIN get_analysis_user_candidate_ids(p_search)')
-    expect(migration).toContain('JOIN get_analysis_streamer_candidate_ids(')
+    expect(migration).toContain('FROM get_analysis_user_candidate_rows(p_search) AS u')
+    expect(migration).toContain('FROM get_analysis_streamer_candidate_rows(')
+    expect(migration).not.toContain('JOIN get_analysis_user_candidate_ids')
+    expect(migration).not.toContain('JOIN get_analysis_streamer_candidate_ids')
     expect(migration).toContain("v_filter := 'gh.redeemed_at >= $1'")
   })
 

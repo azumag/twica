@@ -215,6 +215,29 @@ describe('forbidden index postcondition helpers', () => {
     ).toEqual(['users_created_idx'])
   })
 
+  it('predicate内の文字列リテラル大小文字は正規化せず、誤った同名indexを検出する', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX CONCURRENTLY IF NOT EXISTS ready_users_idx ON public.users (id) WHERE status = 'READY';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'ready_users_idx',
+          definition: "CREATE INDEX ready_users_idx ON public.users USING btree (id) WHERE status = 'READY'",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'ready_users_idx',
+          definition: "CREATE INDEX ready_users_idx ON public.users USING btree (id) WHERE status = 'ready'",
+        },
+      ])
+    ).toEqual(['ready_users_idx'])
+  })
+
   it('missing/invalid/validの状態を区別し、invalidならhistory登録前に止められる', () => {
     expect(
       validateIndexStates(

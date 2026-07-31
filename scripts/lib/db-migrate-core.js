@@ -319,7 +319,35 @@ function normalizeIndexDefinition(definition) {
     /\bON\s+((?:"[^"]+"|[a-z_][a-z0-9_$]*)(?:\.(?:"[^"]+"|[a-z_][a-z0-9_$]*))?)\s+(?=\()/i,
     'ON $1 USING btree '
   )
-  return normalized.toLowerCase()
+  // SQLキーワード・未引用識別子の大小文字は意味を持たないが、single-quoted
+  // literalとdouble-quoted identifierの大小文字は意味を持つ。定義全体を
+  // toLowerCase()すると、例えば WHERE status = 'READY' と 'ready' を同一視して
+  // IF NOT EXISTS後の誤ったindexをhistoryへ登録してしまうため、引用符の外側だけを
+  // 小文字化する。PostgreSQLの標準的な doubled-quote escapeも1文字列として保持する。
+  let lowercasedOutsideQuotes = ''
+  let quote = null
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index]
+    if (quote !== null) {
+      lowercasedOutsideQuotes += character
+      if (character === quote) {
+        if (normalized[index + 1] === quote) {
+          lowercasedOutsideQuotes += normalized[index + 1]
+          index += 1
+        } else {
+          quote = null
+        }
+      }
+      continue
+    }
+    if (character === "'" || character === '"') {
+      quote = character
+      lowercasedOutsideQuotes += character
+    } else {
+      lowercasedOutsideQuotes += character.toLowerCase()
+    }
+  }
+  return lowercasedOutsideQuotes
 }
 
 /**
