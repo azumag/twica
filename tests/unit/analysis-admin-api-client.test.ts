@@ -107,7 +107,7 @@ describe('adminApi: request()のタイムアウト/AbortSignal', () => {
 // キャンセルできるように、読み取り系メソッドは末尾にoptions?: RequestOptionsを
 // 受け取り、渡されたsignalをrequest()へそのまま渡す(既定のタイムアウトsignalで
 // 上書きしない)。読み取り系20メソッド全てを網羅的にテストする意味は薄いため、
-// 引数の形が異なる代表2パターン(引数無し/paramsあり)のみ検証する
+// 引数の形が異なる代表2パターン(ページparams付き/既存params付き)のみ検証する
 describe('adminApi: RequestOptionsによるsignal透過(#701 UI state/UX)', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -118,12 +118,12 @@ describe('adminApi: RequestOptionsによるsignal透過(#701 UI state/UX)', () =
   // 失わないようにするため)。そのため合成後のsignalへの参照同一性ではなく、
   // 呼び出し元のcontrollerをabortすると実際にfetchへ渡ったsignalも
   // abortされるという振る舞いで検証する(実装の内部詳細に依存しない)
-  it('引数無しメソッド(getUsers)へ渡したsignalをabortするとfetchのsignalもabortされる', async () => {
+  it('ページparams付きメソッド(getUsers)へ渡したsignalをabortするとfetchのsignalもabortされる', async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeFetchResponse({ ok: true, json: [] }))
     vi.stubGlobal('fetch', fetchMock)
     const controller = new AbortController()
 
-    await adminApi.getUsers({ signal: controller.signal })
+    await adminApi.getUsers({ page: 1, pageSize: 20 }, { signal: controller.signal })
 
     const [, options] = fetchMock.mock.calls[0]
     expect(options.signal).toBeInstanceOf(AbortSignal)
@@ -156,7 +156,7 @@ describe('adminApi: RequestOptionsによるsignal透過(#701 UI state/UX)', () =
     const anySpy = vi.spyOn(AbortSignal, 'any')
     const controller = new AbortController()
 
-    await adminApi.getUsers({ signal: controller.signal })
+    await adminApi.getUsers({ page: 1, pageSize: 20 }, { signal: controller.signal })
 
     expect(anySpy).toHaveBeenCalledWith([controller.signal, expect.any(AbortSignal)])
     anySpy.mockRestore()

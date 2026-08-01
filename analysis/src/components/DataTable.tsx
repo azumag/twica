@@ -1,4 +1,5 @@
-import { ReactNode } from 'react'
+import { ReactNode, useEffect } from 'react'
+import { MAX_ANALYSIS_PAGE } from '../lib/pagination'
 
 interface Column<T> {
   key: string
@@ -21,6 +22,8 @@ interface PaginationConfig {
   onPageSizeChange?: (size: number) => void
   // 利用可能なページサイズ（オプション）
   pageSizeOptions?: number[]
+  // API側の最大ページ番号。未指定時はanalysis dashboardの共通上限を使う。
+  maxPage?: number
 }
 
 interface DataTableProps<T> {
@@ -36,6 +39,48 @@ interface DataTableProps<T> {
   onRowClick?: (item: T) => void
   // ページネーション設定（オプション）
   pagination?: PaginationConfig
+}
+
+interface ServerPaginationRecoveryInput {
+  requestedPage?: number
+  currentPage: number
+  totalPages: number
+  dataLength: number
+  totalItems: number
+  loading: boolean
+}
+
+/**
+ * countとrowsが別スナップショットになったときの空ページ復帰先を計算する。
+ *
+ * `requestedPage > totalPages` は検索条件変更などで要求ページ自体が上限を越えた
+ * ケースなので、countから計算した最終ページへ戻す。それ以外の2ページ目以降が
+ * 空なら、countが一時的に古い可能性があるため1ページ前へ退避する。UIを直接
+ * 操作せず純粋関数にしておくことで、競合境界をReactの実体やブラウザに依存せず
+ * 単体テストできるようにする。
+ */
+export function getServerPaginationRecoveryPage({
+  requestedPage,
+  currentPage,
+  totalPages,
+  dataLength,
+  totalItems,
+  loading,
+}: ServerPaginationRecoveryInput): number | null {
+  if (
+    loading ||
+    dataLength !== 0 ||
+    totalItems <= 0 ||
+    requestedPage === undefined
+  ) {
+    return null
+  }
+
+  const recoveryPage =
+    requestedPage > totalPages
+      ? currentPage
+      : Math.max(currentPage - 1, 1)
+  return requestedPage === recoveryPage ? null : recoveryPage
 }
 
 /**
@@ -54,10 +99,51 @@ export function DataTable<T>({
   // サーバーサイドページネーション: totalItems指定時はデータは既にページング済みなのでslice不要
   const isServerPagination = pagination?.totalItems !== undefined
   const totalItems = isServerPagination ? pagination!.totalItems! : data.length
-  const totalPages = pagination ? Math.ceil(totalItems / pagination.pageSize) : 1
-  const startIndex = pagination ? (pagination.currentPage - 1) * pagination.pageSize : 0
-  const endIndex = pagination ? startIndex + pagination.pageSize : totalItems
+  const pageSize = pagination ? Math.max(pagination.pageSize, 1) : 1
+  const fullTotalPages = pagination ? Math.ceil(totalItems / pageSize) : 1
+  // サーバー側ページングだけを上限対象にする。ローカル配列を扱う既存の
+  // テーブルまで黙って1000ページに切り詰めると、UIの表示契約を変えてしまうため。
+  const maxPage = isServerPagination
+    ? Math.max(pagination?.maxPage ?? MAX_ANALYSIS_PAGE, 1)
+    : fullTotalPages
+  const totalPages = pagination ? Math.min(Math.max(fullTotalPages, 1), maxPage) : 1
+  // 検索条件変更でtotalItemsが減った直後も、古いページ番号で空表示にしない。
+  // APIへの次回要求も上限内になるよう、表示上のページをクランプする。
+  const currentPage = pagination
+    ? Math.min(Math.max(pagination.currentPage, 1), totalPages)
+    : 1
+  const startIndex = pagination ? (currentPage - 1) * pageSize : 0
+  const endIndex = pagination ? startIndex + pageSize : totalItems
   const displayData = isServerPagination ? data : (pagination ? data.slice(startIndex, endIndex) : data)
+  const pageLimitReached = isServerPagination && fullTotalPages > totalPages
+  const requestedPage = pagination?.currentPage
+  const onPageChange = pagination?.onPageChange
+  const recoveryPage = getServerPaginationRecoveryPage({
+    requestedPage,
+    currentPage,
+    totalPages,
+    dataLength: data.length,
+    totalItems,
+    loading,
+  })
+
+  useEffect(() => {
+    // count取得とrows取得の間に削除・検索条件変更が起きると、要求ページが
+    // 新しい最終ページを越えて空配列になることがある。空状態を先にreturnすると
+    // ページャーも消えて自力で復帰できないため、表示可能な最終ページへ親の状態を
+    // 戻して再取得する。countがまだ古い場合はcurrentPage - 1へ退避し、
+    // 要求ページ自体がcount上の最終ページを越えている場合だけ、クランプ済みの
+    // 最終ページへ戻す。レンダー中にsetStateせずeffectで行うことでReactの
+    // "Cannot update a component while rendering"警告も避ける。
+    if (
+      !isServerPagination ||
+      onPageChange === undefined ||
+      recoveryPage === null
+    ) {
+      return
+    }
+    onPageChange(recoveryPage)
+  }, [isServerPagination, onPageChange, recoveryPage])
 
   if (loading) {
     return (
@@ -106,8 +192,8 @@ export function DataTable<T>({
     )
   }
 
-  const canGoPrev = pagination ? pagination.currentPage > 1 : false
-  const canGoNext = pagination ? pagination.currentPage < totalPages : false
+  const canGoPrev = pagination ? currentPage > 1 : false
+  const canGoNext = pagination ? currentPage < totalPages : false
 
   return (
     <div className="bg-white rounded-lg shadow">
@@ -152,6 +238,11 @@ export function DataTable<T>({
         <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex flex-wrap items-center justify-between gap-4">
           <div className="text-sm text-gray-500">
             {totalItems}件中 {startIndex + 1}-{Math.min(endIndex, totalItems)}件を表示
+            {pageLimitReached && (
+              <span className="ml-2" role="status">
+                （負荷保護のため先頭{Math.min(totalPages * pageSize, totalItems)}件まで）
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-4">
             {pagination.onPageSizeChange && pagination.pageSizeOptions && (
@@ -180,17 +271,17 @@ export function DataTable<T>({
                 &laquo;
               </button>
               <button
-                onClick={() => pagination.onPageChange(pagination.currentPage - 1)}
+                onClick={() => pagination.onPageChange(currentPage - 1)}
                 disabled={!canGoPrev}
                 className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 前へ
               </button>
               <span className="text-sm text-gray-700 px-2">
-                {pagination.currentPage} / {totalPages}
+                {currentPage} / {totalPages}
               </span>
               <button
-                onClick={() => pagination.onPageChange(pagination.currentPage + 1)}
+                onClick={() => pagination.onPageChange(currentPage + 1)}
                 disabled={!canGoNext}
                 className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
               >

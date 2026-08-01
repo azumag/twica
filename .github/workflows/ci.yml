@@ -214,8 +214,10 @@ jobs:
 
       - name: Apply PlanetScale baseline and additive migrations
         # SQL文字列テストではPL/pgSQLの構文や三値論理を検証できない。実運用と同じ
-        # PostgreSQL 17へ各ファイルを個別transactionで順序どおり適用し、途中の
-        # 1ファイルでも失敗したらON_ERROR_STOPでjobを停止する。
+        # PostgreSQL 17へ各ファイルをdescriptorのtransaction指定どおりに
+        # 順序適用し、途中の1ファイルでも失敗したらON_ERROR_STOPでjobを停止する。
+        # CREATE INDEX CONCURRENTLYを含むforbidden migrationだけは
+        # トランザクション外で実行し、実運用のdb-migrate.jsと同じ実行条件を検証する。
         env:
           PGPASSWORD: postgres
         run: |
@@ -228,7 +230,11 @@ jobs:
           # runtime migration runnerと同じdescriptor parserで、共通migrationと
           # PlanetScale専用migrationをマージ・provider filter・名前順sortする。
           # CIだけ別の対象集合を再実装すると、新しい共通migrationを見落とすため。
-          mapfile -t migrations < <(node -e "
+          # process substitution (`done < <(node ...)`)では、nodeがdescriptor解析に
+          # 失敗してもwhile側の終了コードだけが残り、GitHub Actionsの`set -e`が
+          # エラーを見逃す。先にcommand substitutionの代入を完了させることで、
+          # nodeの非0終了をこのstepの失敗として伝播させ、DDL適用へ進ませない。
+          migration_descriptors="$(node -e "
             const path = require('node:path');
             const core = require('./scripts/lib/db-migrate-core');
             const descriptors = core.loadMigrationFilesFromDirs([
@@ -242,14 +248,31 @@ jobs:
                 BigInt(descriptor.version) > 20260719180100n
                 && core.isProviderApplicable(descriptor, 'planetscale')
               ) {
-                console.log(path.join(descriptor.sourceDir, descriptor.filename));
+                console.log(descriptor.transaction + '\\t' + path.join(descriptor.sourceDir, descriptor.filename));
               }
             }
-          ")
-          for migration in "${migrations[@]}"; do
-            psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
-              -f "$migration"
-          done
+          ")"
+          if [ -n "$migration_descriptors" ]; then
+            while IFS=$'\t' read -r transaction migration; do
+              if [ "$transaction" = "forbidden" ]; then
+                psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+                  -f "$migration"
+              else
+                psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+                  -f "$migration"
+              fi
+            done <<< "$migration_descriptors"
+          fi
+
+      - name: Verify analysis dashboard pagination RPCs
+        # SQLの文字列検査だけでは、ページ行・count・summaryの整合性や
+        # SECURITY DEFINER RPCの実行可否を保証できない。CI用の一時DBへfixtureを
+        # 同一トランザクションで投入し、実際に各RPCを呼び出してからROLLBACKする。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/analysis-dashboard-pagination-postgres.sql
 
       - name: Verify transactional gacha outbox invariants
         # 旧RPC互換、single/N連、歯抜け復旧、NULL副作用0、権限、lease fencingを

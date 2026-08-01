@@ -1,15 +1,16 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { RarityBadge } from '../components/RarityBadge'
 import { StreamerPopup } from '../components/StreamerPopup'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { Rarity } from '../types/database'
 import {
   adminApi,
   TimeRange,
   GachaSummary,
   GachaTableRow,
-  StreamerWithStats,
+  StreamerOption,
 } from '../lib/adminApi'
 import {
   LineChart,
@@ -53,15 +54,21 @@ const PAGE_SIZE_OPTIONS = [20, 50, 100]
  * filter, and a paginated/filterable history table (server-side, via /__admin/gacha/*)
  */
 export function Gacha() {
-  const [timeRange, setTimeRange] = useState<TimeRange>('all')
+  // 全期間は明示選択時だけ許可し、初回の集計・履歴取得は直近7日に限定する。
+  const [timeRange, setTimeRange] = useState<TimeRange>('7d')
   const [chartError, setChartError] = useState<string | null>(null)
   const [tableError, setTableError] = useState<string | null>(null)
   // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
   const [chartRetryToken, setChartRetryToken] = useState(0)
   const [tableRetryToken, setTableRetryToken] = useState(0)
 
-  // --- 全ストリーマー一覧（ストリーマーフィルタのドロップダウン用、マウント時に一度だけ取得） ---
-  const [streamers, setStreamers] = useState<StreamerWithStats[]>([])
+  // --- ストリーマー選択肢（軽量・最大100件。検索で候補を絞り込む） ---
+  const [streamers, setStreamers] = useState<StreamerOption[]>([])
+  const [streamerSearchInput, setStreamerSearchInput] = useState('')
+  // 候補検索も一覧画面と同じdebounce実装を使い、入力1文字ごとのRPC発火と
+  // 画面ごとの遅延値のドリフトを防ぐ。選択中IDは別依存値として保持するため、
+  // 検索結果が切り替わっても現在選択中の候補をpin留めする処理は維持できる。
+  const debouncedStreamerSearch = useDebouncedValue(streamerSearchInput, 250)
   const [selectedStreamerId, setSelectedStreamerId] = useState('')
 
   // --- チャート/統計用集計データ（/__admin/gacha/summary でDB側GROUP BY済み） ---
@@ -89,22 +96,39 @@ export function Gacha() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ========================================
-  // fetchStreamers: ストリーマーフィルタ用の一覧取得（マウント時に一度だけ）
+  // fetchStreamerOptions: ドロップダウン専用の軽量候補をbounded取得する。
+  // StreamerWithStats全件を取得してから並べ替える旧経路を廃止し、検索時も
+  // 100件以内の候補だけを保持する。
   // ========================================
   useEffect(() => {
     const controller = new AbortController()
     ;(async () => {
       try {
-        const data = await adminApi.getStreamers({ signal: controller.signal })
-        setStreamers(data)
+        const { rows } = await adminApi.getStreamerOptions(
+          { page: 1, pageSize: 100, search: debouncedStreamerSearch },
+          { signal: controller.signal }
+        )
+        setStreamers((previousRows) => {
+          // 検索結果を置き換えるだけだと、100件目以降の配信者を検索して
+          // 選択した後に検索文字を消した際、その選択肢が先頭100件から外れて
+          // selectの表示が空になる。現在選択中の候補だけは軽量な1行として
+          // 次の結果にも残し、選択状態とサーバー側の集計条件を一致させる。
+          const selected = previousRows.find((row) => row.id === selectedStreamerId)
+          if (selected && !rows.some((row) => row.id === selected.id)) {
+            return [selected, ...rows]
+          }
+          return rows
+        })
       } catch (err) {
         if (controller.signal.aborted) return
-        // ドロップダウンが空のままになるだけなので致命的ではない
-        console.error('Failed to fetch streamers:', err)
+        // 候補だけの取得失敗は集計・履歴テーブルをブロックさせない。
+        console.error('Failed to fetch streamer options:', err)
       }
     })()
-    return () => controller.abort()
-  }, [])
+    return () => {
+      controller.abort()
+    }
+  }, [debouncedStreamerSearch, selectedStreamerId])
 
   // ========================================
   // fetchSummary: チャート/統計用集計データ取得（timeRange/selectedStreamerId変更時）
@@ -220,11 +244,6 @@ export function Gacha() {
   }, [])
 
   // ストリーマーフィルタ用ドロップダウンの選択肢（カード数の多い順）
-  const sortedStreamers = useMemo(
-    () => [...streamers].sort((a, b) => b.card_count - a.card_count),
-    [streamers]
-  )
-
   // CSVエクスポート: window.location.href によるフルページ遷移だと、サーバーが
   // エラー(JSON/500)を返した場合にSPAの状態(フィルタ等)が失われた上にエラーも
   // 画面に表示されない。fetch + blobダウンロードに切り替え、失敗時はtableErrorに出す
@@ -503,13 +522,20 @@ export function Gacha() {
             {/* Streamer Filter */}
             <div>
               <label className="block text-xs text-gray-500 mb-1">Streamer</label>
+              <input
+                type="text"
+                value={streamerSearchInput}
+                onChange={(e) => setStreamerSearchInput(e.target.value)}
+                placeholder="候補を検索..."
+                className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-40 mb-1"
+              />
               <select
                 value={selectedStreamerId}
                 onChange={(e) => handleStreamerChange(e.target.value)}
                 className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">All Streamers</option>
-                {sortedStreamers.map((s) => (
+                {streamers.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.twitch_display_name}
                   </option>

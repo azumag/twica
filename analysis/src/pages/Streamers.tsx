@@ -1,8 +1,14 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { adminApi, type StreamerWithStats } from '../lib/adminApi'
+import {
+  adminApi,
+  type StreamerListSortOrder,
+  type StreamerListSummary,
+  type StreamerWithStats,
+} from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { StreamerPopup } from '../components/StreamerPopup'
 
 /**
@@ -18,7 +24,7 @@ function formatBytes(bytes: number): string {
 }
 
 // ソート順の定義
-type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'name_asc' | 'storage_desc'
+type SortOrder = StreamerListSortOrder
 
 /**
  * Streamers page - Displays all registered streamers with their card collections
@@ -32,6 +38,9 @@ export function Streamers() {
   const [loading, setLoading] = useState(true)
   // 検索クエリ（ユーザー名・表示名・Twitch User IDでフィルタリング）
   const [searchQuery, setSearchQuery] = useState('')
+  // 一覧RPCはrows/countだけを返す。検索入力の中間値ごとに全体summaryを再集計
+  // しないよう、summaryは画面表示時に専用RPCから一度だけ取得する。
+  const debouncedSearchQuery = useDebouncedValue(searchQuery)
   // ソート順（デフォルト: カード数の多い順）
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
   // カード数0のストリーマーを非表示にするフラグ
@@ -47,31 +56,80 @@ export function Streamers() {
   // ページネーション状態
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const [error, setError] = useState<string | null>(null)
-  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
-  const [retryToken, setRetryToken] = useState(0)
+  const [totalCount, setTotalCount] = useState(0)
+  const [summary, setSummary] = useState<StreamerListSummary>({
+    totalStreamers: 0,
+    activeStreamers: 0,
+    configuredStreamers: 0,
+    totalCards: 0,
+    totalStorage: 0,
+    streamersWithCards: 0,
+    chatEnabledStreamers: 0,
+    customTemplateStreamers: 0,
+    chatEnabledNoSender: 0,
+    voteCampaignUsers: 0,
+  })
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
+  // summaryと一覧は別RPCで、検索・フィルター変更時に一覧だけ再取得する。
+  // 再試行トリガーも分け、summary失敗を一覧取得成功で消さないようにする。
+  const [summaryRetryToken, setSummaryRetryToken] = useState(0)
+  const [listRetryToken, setListRetryToken] = useState(0)
 
-  // Fetches all streamers with card counts and storage usage
-  // カード数・ストレージ使用量・チャット送信可否・投票キャンペーン適用状況は
-  // すべてサーバーサイド（/__admin/streamers）で集計済みのため、1回のAPI呼び出しで完結する
   useEffect(() => {
     const controller = new AbortController()
     ;(async () => {
-      setLoading(true)
-      setError(null)
+      setSummaryError(null)
       try {
-        const streamers = await adminApi.getStreamers({ signal: controller.signal })
-        setStreamers(streamers)
+        const nextSummary = await adminApi.getStreamersSummary({ signal: controller.signal })
+        setSummary(nextSummary)
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setSummaryError((err instanceof Error && err.message) || '配信者集計の取得に失敗しました')
+      }
+    })()
+    return () => controller.abort()
+  }, [summaryRetryToken])
+
+  // 検索・フィルタ・ソートをDB側へ渡し、現在ページの行とcountだけを受け取る。
+  // 画面側のページャーは全件配列をsliceせず、global summaryは上の専用RPCで保持する。
+  useEffect(() => {
+    // 検索入力中にページを1へ戻すeffectも別に走るため、ここで旧debounced値を
+    // 使った中間リクエストを止める。入力が止まって両値が一致したrenderだけが
+    // page 1の確定検索を開始し、カード・ストレージ等の全体集計を重複実行しない。
+    if (searchQuery !== debouncedSearchQuery) return
+
+    const controller = new AbortController()
+    ;(async () => {
+      setLoading(true)
+      setListError(null)
+      try {
+        const { rows, count } = await adminApi.getStreamers(
+          {
+            page: currentPage,
+            pageSize,
+            search: debouncedSearchQuery,
+            sort: sortOrder,
+            hideZeroCards,
+            filterChatEnabled,
+            filterHasTemplate,
+            filterMissingScope,
+            filterVoteCampaign,
+          },
+          { signal: controller.signal }
+        )
+        setStreamers(rows)
+        setTotalCount(count)
       } catch (err) {
         if (controller.signal.aborted) return
         console.error('Error fetching streamers:', err)
-        setError((err instanceof Error && err.message) || 'ストリーマー一覧の取得に失敗しました')
+        setListError((err instanceof Error && err.message) || 'ストリーマー一覧の取得に失敗しました')
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
     })()
     return () => controller.abort()
-  }, [retryToken])
+  }, [currentPage, pageSize, searchQuery, debouncedSearchQuery, sortOrder, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, listRetryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
@@ -271,87 +329,6 @@ export function Streamers() {
     },
   ]
 
-  // Calculate summary statistics including total storage usage
-  // 全ストリーマーの統計情報を計算（ストレージ使用量を含む）
-  const activeStreamers = streamers.filter((s) => s.is_active).length
-  const configuredStreamers = streamers.filter((s) => s.channel_point_reward_id).length
-  const totalCards = streamers.reduce((sum, s) => sum + s.card_count, 0)
-  const totalStorage = streamers.reduce((sum, s) => sum + s.storage_bytes, 0)
-  const streamersWithCards = streamers.filter((s) => s.card_count > 0).length
-  // チャット通知ONのストリーマー数
-  const chatEnabledStreamers = streamers.filter((s) => s.chat_announcement_enabled).length
-  // カスタムテンプレート設定済みのストリーマー数
-  const customTemplateStreamers = streamers.filter((s) => s.chat_announcement_template).length
-  // Chat通知ONだが現在の送信方式で送信できないストリーマー数（要対応）
-  const chatEnabledNoSender = streamers.filter((s) => s.chat_announcement_enabled && !s.chat_send_available).length
-  // 投票キャンペーンボーナスを有効化したユーザー数
-  const voteCampaignUsers = streamers.filter((s) => s.has_vote_campaign_bonus).length
-
-  /**
-   * フィルターとソートを適用したストリーマー一覧を生成
-   * 検索クエリ、カード数フィルター、ソート順を適用
-   * パフォーマンス最適化のためuseMemoでメモ化
-   */
-  const filteredAndSortedStreamers = useMemo(() => {
-    let result = streamers
-
-    // フィルター: 検索クエリ（ユーザー名、表示名、またはTwitch User IDに部分一致）
-    // broadcasterTwitchUserIdで配信者を特定する運用ケースに対応
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase().trim()
-      result = result.filter(
-        (s) =>
-          s.twitch_username.toLowerCase().includes(query) ||
-          s.twitch_display_name.toLowerCase().includes(query) ||
-          s.twitch_user_id.includes(query)
-      )
-    }
-
-    // フィルター: カード数0を非表示にする場合
-    if (hideZeroCards) {
-      result = result.filter((s) => s.card_count > 0)
-    }
-
-    // フィルター: チャット通知ONのストリーマーのみ表示
-    if (filterChatEnabled) {
-      result = result.filter((s) => s.chat_announcement_enabled)
-    }
-
-    // フィルター: カスタムテンプレート設定済みのストリーマーのみ表示
-    if (filterHasTemplate) {
-      result = result.filter((s) => s.chat_announcement_template)
-    }
-
-    // フィルター: Chat通知ONだが現在の送信方式で送信できないストリーマーのみ表示
-    if (filterMissingScope) {
-      result = result.filter((s) => s.chat_announcement_enabled && !s.chat_send_available)
-    }
-
-    // フィルター: 投票キャンペーン有効化済みのストリーマーのみ表示
-    if (filterVoteCampaign) {
-      result = result.filter((s) => s.has_vote_campaign_bonus)
-    }
-
-    // ソート
-    result = [...result].sort((a, b) => {
-      switch (sortOrder) {
-        case 'card_count_desc':
-          return b.card_count - a.card_count
-        case 'card_count_asc':
-          return a.card_count - b.card_count
-        case 'storage_desc':
-          return b.storage_bytes - a.storage_bytes
-        case 'name_asc':
-          return a.twitch_display_name.localeCompare(b.twitch_display_name)
-        case 'created_at_desc':
-        default:
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      }
-    })
-
-    return result
-  }, [streamers, searchQuery, hideZeroCards, filterChatEnabled, filterHasTemplate, filterMissingScope, filterVoteCampaign, sortOrder])
-
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -360,54 +337,62 @@ export function Streamers() {
         <p className="text-gray-500 mt-1">Manage and view all registered streamers</p>
       </div>
 
-      <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
+      <ErrorBanner
+        messages={[summaryError]}
+        title="配信者集計の読み込みエラー"
+        onRetry={() => setSummaryRetryToken((token) => token + 1)}
+      />
+      <ErrorBanner
+        messages={[listError]}
+        onRetry={() => setListRetryToken((token) => token + 1)}
+      />
 
       {/* Summary Stats - includes total storage usage across all streamers */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Streamers</p>
-          <p className="text-2xl font-bold">{streamers.length}</p>
+          <p className="text-2xl font-bold">{summary.totalStreamers}</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Active</p>
-          <p className="text-2xl font-bold text-green-600">{activeStreamers}</p>
+          <p className="text-2xl font-bold text-green-600">{summary.activeStreamers}</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">EventSub Configured</p>
-          <p className="text-2xl font-bold text-blue-600">{configuredStreamers}</p>
+          <p className="text-2xl font-bold text-blue-600">{summary.configuredStreamers}</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Cards</p>
-          <p className="text-2xl font-bold">{totalCards}</p>
+          <p className="text-2xl font-bold">{summary.totalCards}</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Storage</p>
-          <p className="text-2xl font-bold text-purple-600">{formatBytes(totalStorage)}</p>
+          <p className="text-2xl font-bold text-purple-600">{formatBytes(summary.totalStorage)}</p>
         </div>
         {/* チャット通知をONにしているストリーマー数 */}
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Chat通知 ON</p>
-          <p className="text-2xl font-bold text-green-600">{chatEnabledStreamers}</p>
+          <p className="text-2xl font-bold text-green-600">{summary.chatEnabledStreamers}</p>
         </div>
         {/* カスタムテンプレートを設定済みのストリーマー数 */}
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">カスタムテンプレート</p>
-          <p className="text-2xl font-bold text-purple-600">{customTemplateStreamers}</p>
+          <p className="text-2xl font-bold text-purple-600">{summary.customTemplateStreamers}</p>
         </div>
         {/* 投票キャンペーンボーナスを有効化したユーザー数 */}
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">投票キャンペーン</p>
-          <p className="text-2xl font-bold text-pink-600">{voteCampaignUsers}</p>
+          <p className="text-2xl font-bold text-pink-600">{summary.voteCampaignUsers}</p>
         </div>
       </div>
 
       {/* Chat通知ONなのに現在の送信方式で送信できないストリーマーがいる場合に警告バナーを表示 */}
-      {chatEnabledNoSender > 0 && (
+      {summary.chatEnabledNoSender > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center gap-3">
           <span className="text-amber-500 text-xl">⚠</span>
           <div>
             <p className="text-sm font-medium text-amber-800">
-              Chat通知ONだが現在の送信方式では送信不可: {chatEnabledNoSender}件
+              Chat通知ONだが現在の送信方式では送信不可: {summary.chatEnabledNoSender}件
             </p>
             <p className="text-xs text-amber-600 mt-0.5">
               配信者本人の再認証、または有効なBOT送信設定が必要です。
@@ -545,9 +530,9 @@ export function Streamers() {
 
           {/* 表示件数 */}
           <div className="text-sm text-gray-500 ml-auto">
-            表示: {filteredAndSortedStreamers.length} / {streamers.length} 件
+            表示: {streamers.length} / {totalCount} 件
             {searchQuery && ` (検索: "${searchQuery}")`}
-            {hideZeroCards && ` (カードあり: ${streamersWithCards}件)`}
+            {hideZeroCards && ` (カードあり: ${summary.streamersWithCards}件)`}
           </div>
         </div>
       </div>
@@ -555,13 +540,14 @@ export function Streamers() {
       {/* Streamers Table */}
       <DataTable
         columns={columns}
-        data={filteredAndSortedStreamers}
+        data={streamers}
         keyExtractor={(streamer) => streamer.id}
         loading={loading}
         emptyMessage="No streamers registered"
         pagination={{
           currentPage,
           pageSize,
+          totalItems: totalCount,
           onPageChange: setCurrentPage,
           onPageSizeChange: (size) => {
             setPageSize(size)

@@ -8,6 +8,10 @@ import {
   computeChecksum,
   countEffectiveStatements,
   containsSetLocal,
+  extractCreatedIndexNames,
+  extractCreatedIndexDefinitions,
+  validateIndexDefinitions,
+  validateIndexStates,
   buildMigrationDescriptor,
   loadMigrationFiles,
   loadMigrationFilesFromDirs,
@@ -168,6 +172,244 @@ describe('containsSetLocal', () => {
 
   it('SET LOCAL を含まないコードは false', () => {
     expect(containsSetLocal('SET statement_timeout = 0;\nSELECT 1;')).toBe(false)
+  })
+})
+
+describe('forbidden index postcondition helpers', () => {
+  it('コメントを除外し、CREATE INDEXの未引用/引用名を抽出する', () => {
+    const sql = [
+      '-- CREATE INDEX ignored_comment ON public.users (id);',
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS users_created_idx ON public.users (created_at);',
+      '/* CREATE INDEX ignored_block_comment ON public.users (id); */',
+      'CREATE INDEX "Users Search IDX" ON public.users (twitch_username);',
+    ].join('\n')
+
+    expect(extractCreatedIndexNames(sql)).toEqual(['users_created_idx', 'Users Search IDX'])
+  })
+
+  it('migration定義とpg_get_indexdefの表記差を吸収し、実体差は検出する', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS users_created_idx ON public.users (created_at DESC);'
+    )
+    expect(definitions).toEqual([
+      {
+        name: 'users_created_idx',
+        definition: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS users_created_idx ON public.users (created_at DESC)',
+      },
+    ])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'users_created_idx',
+          definition: 'CREATE INDEX users_created_idx ON public.users USING btree (created_at DESC)',
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'users_created_idx',
+          definition: 'CREATE INDEX users_created_idx ON public.streamers USING btree (created_at DESC)',
+        },
+      ])
+    ).toEqual(['users_created_idx'])
+  })
+
+  it('predicate内の文字列リテラル大小文字は正規化せず、誤った同名indexを検出する', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX CONCURRENTLY IF NOT EXISTS ready_users_idx ON public.users (id) WHERE status = 'READY';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'ready_users_idx',
+          definition:
+            "CREATE INDEX ready_users_idx ON public.users USING btree (id) WHERE (status = 'READY'::text)",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'ready_users_idx',
+          definition:
+            "CREATE INDEX ready_users_idx ON public.users USING btree (id) WHERE (status = 'ready'::text)",
+        },
+      ])
+    ).toEqual(['ready_users_idx'])
+  })
+
+  it('引用符内の連続空白・E文字列・dollar quoteを意味のある差として保持する', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX quoted_users_idx ON public.users (id) WHERE label = 'A  B' AND code = E'X\\\\Y' AND note = $$Keep  Spaces$$;"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'quoted_users_idx',
+          definition:
+            "CREATE INDEX quoted_users_idx ON public.users USING btree (id) WHERE ((label = 'A  B'::text) AND (code = 'X\\Y'::text) AND (note = 'Keep  Spaces'::text))",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'quoted_users_idx',
+          definition:
+            "CREATE INDEX quoted_users_idx ON public.users USING btree (id) WHERE ((label = 'A B'::text) AND (code = 'X\\Y'::text) AND (note = 'Keep Spaces'::text))",
+        },
+      ])
+    ).toEqual(['quoted_users_idx'])
+  })
+
+  it('quoted identifierの表記差吸収は識別子の内容を変更しない', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      'CREATE INDEX quoted_identifier_idx ON "Public Schema"."Users Table" ("Display Name");'
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'quoted_identifier_idx',
+          definition:
+            'CREATE INDEX quoted_identifier_idx ON "Public Schema"."Users Table" USING btree ("Display Name")',
+        },
+      ])
+    ).toEqual([])
+  })
+
+  it('E-stringのhex・octal・Unicode escapeをpg_get_indexdefの値へcanonicalizeする', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX escaped_users_idx ON public.users (id) WHERE code = E'\\x41' AND octal = E'\\101' AND unicode = E'\\u0041';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escaped_users_idx',
+          definition:
+            "CREATE INDEX escaped_users_idx ON public.users USING btree (id) WHERE ((code = 'A'::text) AND (octal = 'A'::text) AND (unicode = 'A'::text))",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escaped_users_idx',
+          definition:
+            "CREATE INDEX escaped_users_idx ON public.users USING btree (id) WHERE ((code = 'x41'::text) AND (octal = '101'::text) AND (unicode = 'u0041'::text))",
+        },
+      ])
+    ).toEqual(['escaped_users_idx'])
+  })
+
+  it('E-stringのUTF-8 byte escapeをUnicode値へ復号し、誤った文字列を拒否する', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX utf8_users_idx ON public.users (id) WHERE code = E'\\xC3\\xA9' AND octal = E'\\303\\251';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'utf8_users_idx',
+          definition:
+            "CREATE INDEX utf8_users_idx ON public.users USING btree (id) WHERE ((code = 'é'::text) AND (octal = 'é'::text))",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'utf8_users_idx',
+          definition:
+            "CREATE INDEX utf8_users_idx ON public.users USING btree (id) WHERE ((code = 'Ã©'::text) AND (octal = 'Ã©'::text))",
+        },
+      ])
+    ).toEqual(['utf8_users_idx'])
+  })
+
+  it('E-stringの未知escapeとdoubled quoteをPostgreSQLの値へ合わせる', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX escape_edge_users_idx ON public.users (id) WHERE code = E'\\q' AND label = E'foo''bar';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escape_edge_users_idx',
+          definition:
+            "CREATE INDEX escape_edge_users_idx ON public.users USING btree (id) WHERE ((code = 'q'::text) AND (label = 'foo''bar'::text))",
+        },
+      ])
+    ).toEqual([])
+  })
+
+  it('E-stringの1桁/0桁hex escapeとsurrogate pairをPostgreSQLの値へ合わせる', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX escape_width_users_idx ON public.users (id) WHERE odd_hex = E'\\x4Z' AND empty_hex = E'\\x' AND emoji = E'\\uD83D\\uDE00';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escape_width_users_idx',
+          definition:
+            "CREATE INDEX escape_width_users_idx ON public.users USING btree (id) WHERE ((odd_hex = '\x04Z'::text) AND (empty_hex = 'x'::text) AND (emoji = '😀'::text))",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'escape_width_users_idx',
+          definition:
+            "CREATE INDEX escape_width_users_idx ON public.users USING btree (id) WHERE ((odd_hex = '\\x04Z'::text) AND (empty_hex = '\\x'::text) AND (emoji = '\\uD83D\\uDE00'::text))",
+        },
+      ])
+    ).toEqual(['escape_width_users_idx'])
+  })
+
+  it('UTF-8 byte escape内のBOMを保持し、BOMなし値を誤って一致させない', () => {
+    const definitions = extractCreatedIndexDefinitions(
+      "CREATE INDEX bom_users_idx ON public.users (id) WHERE label = E'\\xEF\\xBB\\xBFA';"
+    )
+
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'bom_users_idx',
+          definition:
+            "CREATE INDEX bom_users_idx ON public.users USING btree (id) WHERE (label = '\ufeffA'::text)",
+        },
+      ])
+    ).toEqual([])
+    expect(
+      validateIndexDefinitions(definitions, [
+        {
+          name: 'bom_users_idx',
+          definition: "CREATE INDEX bom_users_idx ON public.users USING btree (id) WHERE (label = 'A'::text)",
+        },
+      ])
+    ).toEqual(['bom_users_idx'])
+  })
+
+  it('missing/invalid/validの状態を区別し、invalidならhistory登録前に止められる', () => {
+    expect(
+      validateIndexStates(
+        ['valid_idx', 'invalid_idx', 'missing_idx'],
+        [
+          { name: 'valid_idx', indisvalid: true, indisready: true },
+          { name: 'invalid_idx', indisvalid: false, indisready: true },
+        ]
+      )
+    ).toEqual({ missing: ['missing_idx'], invalid: ['invalid_idx'] })
+
+    expect(validateIndexStates(['valid_idx'], [{ name: 'valid_idx', indisvalid: true, indisready: true }])).toEqual(
+      { missing: [], invalid: [] }
+    )
   })
 })
 
@@ -369,9 +611,9 @@ describe('loadMigrationFilesFromDirs (Issue #691 Chunk 1 C-1対応)', () => {
   })
 
   // C-1の実運用シナリオそのもの: 実際に db/planetscale/migrations/ に配置した
-  // 2ファイル（bootstrap→baseline）が、supabase/migrations/ の既存ファイル群と
+  // PlanetScale専用ファイル群（bootstrap→baselineと後続のDDL）が、supabase/migrations/ の既存ファイル群と
   // 正しくマージされ、ファイル名の日時順で正しい位置（末尾側）に来ることを確認する。
-  it('実ディレクトリ: supabase/migrations/ と db/planetscale/migrations/ をマージするとplanetscale専用2ファイルが末尾に来る', () => {
+  it('実ディレクトリ: supabase/migrations/ と db/planetscale/migrations/ をマージすると専用migrationが末尾に来る', () => {
     const supabaseDir = join(__dirname, '../../supabase/migrations')
     const planetscaleDir = join(__dirname, '../../db/planetscale/migrations')
     const descriptors = loadMigrationFilesFromDirs([supabaseDir, planetscaleDir])
@@ -381,6 +623,7 @@ describe('loadMigrationFilesFromDirs (Issue #691 Chunk 1 C-1対応)', () => {
     expect(filenames).toEqual(sorted)
     expect(filenames).toContain('20260719180000_planetscale_bootstrap.sql')
     expect(filenames).toContain('20260719180100_planetscale_public_schema_baseline.sql')
+    expect(filenames).toContain('20260801090005_create_analysis_streamers_search_trgm_index.sql')
     // supabase/migrations/ 側には(移動済みのため)もう存在しないことも確認する
     const bootstrapDescriptor = descriptors.find(
       (d: { filename: string }) => d.filename === '20260719180000_planetscale_bootstrap.sql'
