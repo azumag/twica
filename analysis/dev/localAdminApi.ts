@@ -6,7 +6,6 @@ import {
   createSupportInquiryMessagePg,
   deleteAnnouncementPg,
   getDropRateStatsPg,
-  getGachaChartPg,
   getGachaExportRowsPg,
   getGachaSummaryPg,
   getGachaTablePg,
@@ -14,21 +13,26 @@ import {
   getStreamerByIdPg,
   getStreamerCardsPagePg,
   getStreamerLeaderboardPg,
+  getStreamersSummaryPg,
   getSupportInquiriesPg,
   getUserCardsSummaryPg,
   getUserCardsTablePg,
   listAnnouncementsPg,
   listLicensesPg,
+  getStreamerOptionsPg,
   listStreamersWithStatsPg,
   listSupportCodesPg,
   listSupportInquiryMessagesPg,
   listTwitchSubsPg,
   listUsersPg,
+  getUsersSummaryPg,
   revokeSupportCodePg,
   updateAnnouncementPg,
   updateSupportCodeStatusPg,
   updateSupportInquiryStatusPg,
 } from './adminApiPg'
+import type { StreamerListSortOrder, UserListSortOrder } from '../src/lib/adminApi'
+import { MAX_ANALYSIS_PAGE } from '../src/lib/pagination'
 
 type Env = Record<string, string>
 
@@ -116,7 +120,10 @@ const VALID_TIME_RANGES: readonly TimeRange[] = ['7d', '30d', '90d', 'all']
 // getFromDateForRange() 内で NaN 経由の Invalid Date → toISOString() 例外という
 // 分かりにくい500になる。ここで早期にバリデーションして400を返す
 function parseTimeRange(raw: string | null): TimeRange {
-  if (raw === null) return 'all'
+  // ガチャ画面の初期表示は直近7日を基準にする。期間未指定を全期間に
+  // フォールバックすると、古い履歴が増えるほど集計・テーブルの初回コストが
+  // 増えるため、明示的に「全期間」を選んだ場合だけ all を許可する。
+  if (raw === null) return '7d'
   if ((VALID_TIME_RANGES as readonly string[]).includes(raw))
     return raw as TimeRange
   throw Object.assign(new Error(`Invalid range: ${raw}`), { statusCode: 400 })
@@ -124,23 +131,69 @@ function parseTimeRange(raw: string | null): TimeRange {
 
 // page/pageSizeが未検証だと負のOFFSETや過大なLIMITがDBまで届く。
 // 予測可能な4xxへ正規化し、DBドライバ由来のエラーを露出させない。
-function parsePagination(url: URL): { page: number; pageSize: number } {
+//
+// ページ番号にも上限を設ける。ページ番号を無制限に受け入れると、例えば
+// page=2147483648 が PostgreSQL の INTEGER 引数へ到達して500になったり、
+// 有効な整数でも巨大な OFFSET のためにDBが大量行を読み飛ばす。管理画面の
+// 一覧は「全件を取り切るAPI」ではなくbounded pageを返すAPIなので、現実的な
+// 上限を超える要求は、深いOFFSETを実行する前に明示的な400として拒否する。
+export function parsePagination(
+  url: URL,
+  maxPageSize = 1000,
+  maxPage = MAX_ANALYSIS_PAGE
+): { page: number; pageSize: number } {
   const page = Number(url.searchParams.get('page') || '1')
   const pageSize = Number(url.searchParams.get('pageSize') || '20')
-  if (!Number.isInteger(page) || page < 1) {
-    throw Object.assign(new Error('page must be a positive integer'), {
+  if (!Number.isSafeInteger(page) || page < 1 || page > maxPage) {
+    throw Object.assign(new Error(`page must be a safe integer from 1 to ${maxPage}`), {
       statusCode: 400,
     })
   }
-  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > maxPageSize) {
     throw Object.assign(
-      new Error('pageSize must be a positive integer up to 1000'),
+      new Error(`pageSize must be a positive integer up to ${maxPageSize}`),
       {
         statusCode: 400,
       }
     )
   }
   return { page, pageSize }
+}
+
+function parseBooleanParam(raw: string | null): boolean {
+  if (raw === null || raw === '') return false
+  if (raw === 'true') return true
+  if (raw === 'false') return false
+  throw Object.assign(new Error(`Invalid boolean: ${raw}`), { statusCode: 400 })
+}
+
+function parseUserListSort(raw: string | null): UserListSortOrder {
+  const value = raw || 'card_count_desc'
+  const valid: readonly UserListSortOrder[] = [
+    'card_count_desc',
+    'card_count_asc',
+    'created_at_desc',
+    'name_asc',
+  ]
+  if (!valid.includes(value as UserListSortOrder)) {
+    throw Object.assign(new Error(`Invalid user sort: ${value}`), { statusCode: 400 })
+  }
+  return value as UserListSortOrder
+}
+
+function parseStreamerListSort(raw: string | null): StreamerListSortOrder {
+  const value = raw || 'card_count_desc'
+  const valid: readonly StreamerListSortOrder[] = [
+    'card_count_desc',
+    'card_count_asc',
+    'created_at_desc',
+    'name_asc',
+    'storage_desc',
+  ]
+  if (!valid.includes(value as StreamerListSortOrder)) {
+    throw Object.assign(new Error(`Invalid streamer sort: ${value}`), { statusCode: 400 })
+  }
+  return value as StreamerListSortOrder
 }
 
 export async function listLicenses(env: Env) {
@@ -231,18 +284,56 @@ export async function getOverview(env: Env) {
 export const USER_SAFE_COLUMNS =
   'id, twitch_user_id, twitch_username, twitch_display_name, twitch_profile_image_url, tos_accepted_at, twitch_scopes, created_at, updated_at'
 
-// ユーザー一覧（カード所持数付き）を返す。集計は get_analysis_users()
-// （00073_add_analysis_dashboard_rpcs.sql）がDB側で行い、関数未適用時はfail-fastする。
-export async function listUsers(env: Env) {
-  return listUsersPg(env)
+// ユーザー一覧はDB側で検索・集計・ページングを済ませ、現在ページと全体サマリーだけを返す。
+// これによりNodeプロセスがusers全件を保持してからブラウザへ渡す経路を廃止する。
+export async function listUsers(
+  params: {
+    page: number
+    pageSize: number
+    search?: string
+    sort?: UserListSortOrder
+    hideZeroCards?: boolean
+  },
+  env: Env
+) {
+  return listUsersPg(env, params)
 }
 
-// analysis/src/pages/Streamers.tsx の fetchStreamers() が期待する、カード数・
-// ストレージ使用量・チャット送信可否・投票キャンペーン特典を含む配信者一覧を返す。
-// 集計は get_analysis_streamers()（00073_add_analysis_dashboard_rpcs.sql）がDB側で行い、
-// 関数未適用時はfail-fastする。
-export async function listStreamersWithStats(env: Env) {
-  return listStreamersWithStatsPg(env)
+// global summaryはページ移動と独立して一度だけ取得する。ページRPCへ同じ集計を
+// 毎回含めると、現在ページだけを返す最適化の裏で全件集計が繰り返されるため、
+// 専用RPCとして画面側にキャッシュ可能な境界を作る。
+export async function getUsersSummary(env: Env) {
+  return getUsersSummaryPg(env)
+}
+
+// Streamersも同じ契約に統一する。重いカード数・ストレージ・チャット設定の
+// 集計はDB側で行うが、JSON化するのは要求されたページの行だけに限定する。
+export async function listStreamersWithStats(
+  params: {
+    page: number
+    pageSize: number
+    search?: string
+    sort?: StreamerListSortOrder
+    hideZeroCards?: boolean
+    filterChatEnabled?: boolean
+    filterHasTemplate?: boolean
+    filterMissingScope?: boolean
+    filterVoteCampaign?: boolean
+  },
+  env: Env
+) {
+  return listStreamersWithStatsPg(env, params)
+}
+
+export async function getStreamersSummary(env: Env) {
+  return getStreamersSummaryPg(env)
+}
+
+export async function getStreamerOptions(
+  params: { page: number; pageSize: number; search?: string },
+  env: Env
+) {
+  return getStreamerOptionsPg(env, params)
 }
 
 // #701: StreamerCards.tsx/StreamerGachaHistory.tsxのブラウザDB直接アクセスを
@@ -259,18 +350,6 @@ export async function getStreamerById(id: string, env: Env) {
   return getStreamerByIdPg(env, id)
 }
 
-// analysis/src/pages/StreamerGachaHistory.tsx のチャート用クエリと同一ロジック。
-// streamerId未指定時は全ストリーマー横断(analysis/src/pages/Gacha.tsx相当)になるため
-// streamers(*) も併せて埋め込む
-export async function getGachaChart(
-  params: { range: TimeRange; streamerId?: string },
-  env: Env
-) {
-  const fromDate = getFromDateForRange(params.range)
-
-  return getGachaChartPg(env, { streamerId: params.streamerId, fromDate })
-}
-
 export async function getGachaSummary(
   params: { range: TimeRange; streamerId?: string },
   env: Env
@@ -283,10 +362,12 @@ export async function getGachaSummary(
   })
 }
 
-// ILIKE 部分一致用のパターン文字エスケープ（%/_）。
+// ILIKE 部分一致用のパターン文字エスケープ（\\/%/_）。
 // テーブル表示とCSVエクスポートで同一の検索条件を保証する。
 export function escapeIlikePattern(value: string): string {
-  return value.replace(/%/g, '\\%').replace(/_/g, '\\_')
+  // バックスラッシュ自身を先にエスケープしないと、後続の %/_ 用エスケープが
+  // 検索文字列中のバックスラッシュをLIKEの制御文字として解釈してしまう。
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
 
 // to（YYYY-MM-DD）を「翌日0時（exclusive上限）」のISO文字列に変換する。
@@ -563,22 +644,66 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   }
 
   if (req.method === 'GET' && path === '/users') {
-    return listUsers(env)
+    const { page, pageSize } = parsePagination(url, 100)
+    const rawSearch = url.searchParams.get('search')?.trim() || ''
+    return listUsers(
+      {
+        page,
+        pageSize,
+        search: rawSearch ? `%${escapeIlikePattern(rawSearch)}%` : undefined,
+        sort: parseUserListSort(url.searchParams.get('sort')),
+        hideZeroCards: parseBooleanParam(url.searchParams.get('hideZeroCards')),
+      },
+      env
+    )
+  }
+
+  if (req.method === 'GET' && path === '/users/summary') {
+    return getUsersSummary(env)
   }
 
   if (req.method === 'GET' && path === '/streamers') {
-    return listStreamersWithStats(env)
+    const { page, pageSize } = parsePagination(url, 100)
+    const rawSearch = url.searchParams.get('search')?.trim() || ''
+    return listStreamersWithStats(
+      {
+        page,
+        pageSize,
+        search: rawSearch ? `%${escapeIlikePattern(rawSearch)}%` : undefined,
+        sort: parseStreamerListSort(url.searchParams.get('sort')),
+        hideZeroCards: parseBooleanParam(url.searchParams.get('hideZeroCards')),
+        filterChatEnabled: parseBooleanParam(url.searchParams.get('filterChatEnabled')),
+        filterHasTemplate: parseBooleanParam(url.searchParams.get('filterHasTemplate')),
+        filterMissingScope: parseBooleanParam(url.searchParams.get('filterMissingScope')),
+        filterVoteCampaign: parseBooleanParam(url.searchParams.get('filterVoteCampaign')),
+      },
+      env
+    )
+  }
+
+  if (req.method === 'GET' && path === '/streamers/summary') {
+    return getStreamersSummary(env)
+  }
+
+  // Gachaの配信者選択肢は一覧全件ではなく、表示に必要な軽量な候補だけ取得する。
+  // 検索入力がある場合も同じbounded endpointを使い、ドロップダウンのために
+  // StreamerWithStats全体（カード数・ストレージ・Bot設定）を転送しない。
+  if (req.method === 'GET' && path === '/streamers/options') {
+    const { page, pageSize } = parsePagination(url, 100)
+    const rawSearch = url.searchParams.get('search')?.trim() || ''
+    return getStreamerOptions(
+      {
+        page,
+        pageSize,
+        search: rawSearch ? `%${escapeIlikePattern(rawSearch)}%` : undefined,
+      },
+      env
+    )
   }
 
   const streamerByIdMatch = path.match(/^\/streamers\/([^/]+)$/)
   if (req.method === 'GET' && streamerByIdMatch) {
     return getStreamerById(streamerByIdMatch[1], env)
-  }
-
-  if (req.method === 'GET' && path === '/gacha/chart') {
-    const range = parseTimeRange(url.searchParams.get('range'))
-    const streamerId = url.searchParams.get('streamerId') || undefined
-    return getGachaChart({ range, streamerId }, env)
   }
 
   if (req.method === 'GET' && path === '/gacha/summary') {
@@ -589,7 +714,10 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
 
   if (req.method === 'GET' && path === '/gacha/table') {
     const range = parseTimeRange(url.searchParams.get('range'))
-    const { page, pageSize } = parsePagination(url)
+    // ガチャ履歴テーブルも画面の選択肢（20/50/100）に合わせ、1回のレスポンスを
+    // 最大100行に固定する。デフォルトの1000行上限をそのまま使うと、画面外から
+    // 大きなpageSizeを指定した場合に「サーバー側ページング」でも過大取得できる。
+    const { page, pageSize } = parsePagination(url, 100)
     const username = url.searchParams.get('username') || ''
     const rarity = url.searchParams.get('rarity') || ''
     const from = url.searchParams.get('from') || ''

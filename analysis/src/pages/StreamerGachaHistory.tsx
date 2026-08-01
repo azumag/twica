@@ -1,11 +1,9 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   adminApi,
-  DropRateStatsResponse,
+  GachaSummary,
   TimeRange,
-  GachaChartRow,
-  GachaChartCard,
   GachaTableRow,
 } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
@@ -72,7 +70,8 @@ export function StreamerGachaHistory() {
 
   // --- 基本 state ---
   const [streamer, setStreamer] = useState<Streamer | null>(null)
-  const [timeRange, setTimeRange] = useState<TimeRange>('all')
+  // 初回表示は直近7日。全期間はユーザーが明示的に選択したときだけ集計する。
+  const [timeRange, setTimeRange] = useState<TimeRange>('7d')
   // streamer本体のエラーはchartErrorに相乗りさせず専用のstateで持つ。
   // 相乗りさせるとtimeRange変更時のsetChartError(null)で「streamer取得は
   // 再試行されていないのに」エラー表示だけが消え、ヘッダーが黙って空のまま残る
@@ -84,17 +83,16 @@ export function StreamerGachaHistory() {
   const [chartRetryToken, setChartRetryToken] = useState(0)
   const [tableRetryToken, setTableRetryToken] = useState(0)
 
-  // --- チャート用データ（bounded 10000件、timeRange で再取得。/__admin/gacha/chart 経由） ---
-  const [chartData, setChartData] = useState<GachaChartRow[]>([])
+  // --- チャート用集計（DB側GROUP BY済み。履歴行をクライアントへ持ち込まない） ---
+  const [chartSummary, setChartSummary] = useState<GachaSummary>({
+    totalGacha: 0,
+    uniqueUsers: 0,
+    legendaryCount: 0,
+    dailyGachaData: [],
+    rarityDistribution: [],
+    popularCards: [],
+  })
   const [chartLoading, setChartLoading] = useState(true)
-
-  // --- サマリー統計用データ（get_gacha_drop_stats RPC、正確な集計） ---
-  // <DropRateStats> も内部で同じRPCを呼ぶが、props経由で状態を共有せず
-  // あえて独立に取得する（疎結合を優先。DB側は軽量なインデックス集計のため許容）
-  const [dropRateStats, setDropRateStats] = useState<DropRateStatsResponse | null>(null)
-  const [dropRateStatsLoading, setDropRateStatsLoading] = useState(true)
-  const [dropRateStatsError, setDropRateStatsError] = useState<string | null>(null)
-  const [dropRateStatsRetryToken, setDropRateStatsRetryToken] = useState(0)
 
   // --- テーブル用データ（ページネーション + フィルタ） ---
   const [tableData, setTableData] = useState<GachaTableRow[]>([])
@@ -131,8 +129,9 @@ export function StreamerGachaHistory() {
   }, [streamerId, streamerRetryToken])
 
   // ========================================
-  // fetchChartData: チャート用bounded(10000件)データ取得（streamerId/timeRange変更時）
-  // /__admin/gacha/chart 経由（anon keyではRLSによりgacha_historyを直接読めないため）
+  // fetchChartData: DB側で集計済みのチャート値を取得（streamerId/timeRange変更時）。
+  // 大量の履歴行を取得してからブラウザで集計する経路を廃止し、日別・レアリティ・
+  // 人気カード・ユニークユーザー数を1つの集計レスポンスで受け取る。
   // ========================================
   useEffect(() => {
     if (!streamerId) return
@@ -144,11 +143,11 @@ export function StreamerGachaHistory() {
       setChartLoading(true)
       setChartError(null)
       try {
-        const data = await adminApi.getGachaChart(
+        const data = await adminApi.getGachaSummary(
           { range: timeRange, streamerId },
           { signal: controller.signal }
         )
-        setChartData(data)
+        setChartSummary(data)
       } catch (err) {
         if (controller.signal.aborted) return
         setChartError(`Chart data error: ${(err instanceof Error && err.message) || 'Unknown error'}`)
@@ -160,36 +159,6 @@ export function StreamerGachaHistory() {
     fetchChartData()
     return () => controller.abort()
   }, [streamerId, timeRange, chartRetryToken])
-
-  // ========================================
-  // fetchDropRateStats: サマリー統計用の正確な集計取得（streamerId/timeRange変更時）
-  // get_gacha_drop_stats RPC（10000件キャップなし、DB側で正確なCOUNT/GROUP BY）から
-  // totalGacha/legendaryCount/legendaryRate を導出する。<DropRateStats> とは独立に取得。
-  // ========================================
-  useEffect(() => {
-    if (!streamerId) return
-    const controller = new AbortController()
-
-    const fetchDropRateStats = async () => {
-      setDropRateStatsLoading(true)
-      setDropRateStatsError(null)
-      try {
-        const data = await adminApi.getDropRateStats(
-          { streamerId, range: timeRange },
-          { signal: controller.signal }
-        )
-        setDropRateStats(data)
-      } catch (err) {
-        if (controller.signal.aborted) return
-        setDropRateStatsError((err instanceof Error && err.message) || 'Unknown error')
-      } finally {
-        if (!controller.signal.aborted) setDropRateStatsLoading(false)
-      }
-    }
-
-    fetchDropRateStats()
-    return () => controller.abort()
-  }, [streamerId, timeRange, dropRateStatsRetryToken])
 
   // ========================================
   // fetchTableData: テーブル用データ取得（ページ/フィルタ/timeRange変更時）
@@ -262,62 +231,15 @@ export function StreamerGachaHistory() {
     setCurrentPage(1)
   }, [])
 
-  // ========================================
-  // チャート用の集計データ（useMemo）
-  // ========================================
-
-  /** 日別ガチャ数を集計（折れ線チャート用） */
-  const dailyGachaData = useMemo(() => {
-    // ISO日付文字列（YYYY-MM-DD）をキーに集計し、ロケール依存のパース問題を回避
-    const dailyCounts = new Map<string, number>()
-    chartData.forEach((gacha) => {
-      const isoDate = gacha.redeemed_at.slice(0, 10) // "2024-01-05"
-      dailyCounts.set(isoDate, (dailyCounts.get(isoDate) || 0) + 1)
-    })
-    return Array.from(dailyCounts.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([isoDate, count]) => ({
-        date: new Date(isoDate).toLocaleDateString('ja-JP'),
-        count,
-      }))
-  }, [chartData])
-
-  /** レアリティ分布を集計（円チャート用） */
-  const rarityDistribution = useMemo(() => {
-    const counts: Record<Rarity, number> = { common: 0, rare: 0, epic: 0, legendary: 0 }
-    chartData.forEach((gacha) => {
-      if (gacha.cards?.rarity) counts[gacha.cards.rarity]++
-    })
-    return Object.entries(counts)
-      .filter(([, count]) => count > 0)
-      .map(([rarity, count]) => ({
-        name: rarity.charAt(0).toUpperCase() + rarity.slice(1),
-        value: count,
-        rarity: rarity as Rarity,
-      }))
-  }, [chartData])
-
-  /** 人気カードランキング（TOP10） */
-  const popularCards = useMemo(() => {
-    const cardCounts = new Map<string, { card: GachaChartCard; count: number }>()
-    chartData.forEach((gacha) => {
-      if (gacha.cards) {
-        const existing = cardCounts.get(gacha.cards.id)
-        if (existing) existing.count++
-        else cardCounts.set(gacha.cards.id, { card: gacha.cards, count: 1 })
-      }
-    })
-    return Array.from(cardCounts.values())
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10)
-  }, [chartData])
-
-  // サマリー統計（get_gacha_drop_stats RPCの正確な集計から算出。10000件キャップなし）
-  const totalGacha = dropRateStats?.total_draws ?? 0
-  const legendaryCount = dropRateStats?.rarity_stats.find((r) => r.rarity === 'legendary')?.count ?? 0
+  // サマリーはDBのCOUNT/GROUP BY結果をそのまま表示する。履歴全件をブラウザで
+  // Set/Map集計しないため、7日を超えるデータ量に初回表示が比例しない。
+  const totalGacha = chartSummary.totalGacha
+  const uniqueUsers = chartSummary.uniqueUsers
+  const legendaryCount = chartSummary.legendaryCount
   const legendaryRate = totalGacha > 0 ? ((legendaryCount / totalGacha) * 100).toFixed(2) : '0'
-  // uniqueUsers はRPCに対応フィールドがないため、引き続きチャートデータ（10000件上限）から近似算出
-  const uniqueUsers = new Set(chartData.map((g) => g.user_twitch_id)).size
+  const dailyGachaData = chartSummary.dailyGachaData
+  const rarityDistribution = chartSummary.rarityDistribution
+  const popularCards = chartSummary.popularCards
 
   /** ガチャ履歴テーブルのカラム定義 */
   const columns = [
@@ -418,12 +340,10 @@ export function StreamerGachaHistory() {
           streamerError,
           chartError,
           tableError,
-          dropRateStatsError && `Summary stats error: ${dropRateStatsError}`,
         ]}
         onRetry={() => {
           setStreamerRetryToken((t) => t + 1)
           setChartRetryToken((t) => t + 1)
-          setDropRateStatsRetryToken((t) => t + 1)
           setTableRetryToken((t) => t + 1)
         }}
       />
@@ -432,7 +352,7 @@ export function StreamerGachaHistory() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">総ガチャ数</p>
-          {dropRateStatsLoading ? (
+          {chartLoading ? (
             <div className="h-7 w-20 bg-gray-100 animate-pulse rounded mt-1" />
           ) : (
             <p className="text-2xl font-bold">{totalGacha.toLocaleString()}</p>
@@ -445,14 +365,10 @@ export function StreamerGachaHistory() {
           ) : (
             <p className="text-2xl font-bold">{uniqueUsers.toLocaleString()}</p>
           )}
-          {/* uniqueUsers に対応する正確な集計RPCがないため、引き続きチャートの10000件上限からの近似値 */}
-          {chartData.length >= 10000 && (
-            <p className="text-xs text-amber-600 mt-1">※ 直近10,000件からの概算です</p>
-          )}
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">レジェンダリー獲得数</p>
-          {dropRateStatsLoading ? (
+          {chartLoading ? (
             <div className="h-7 w-16 bg-gray-100 animate-pulse rounded mt-1" />
           ) : (
             <p className="text-2xl font-bold text-amber-600">{legendaryCount.toLocaleString()}</p>
@@ -460,20 +376,13 @@ export function StreamerGachaHistory() {
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">レジェンダリー率</p>
-          {dropRateStatsLoading ? (
+          {chartLoading ? (
             <div className="h-7 w-14 bg-gray-100 animate-pulse rounded mt-1" />
           ) : (
             <p className="text-2xl font-bold">{legendaryRate}%</p>
           )}
         </div>
       </div>
-      {/* チャート（日別推移・レアリティ分布・人気カード）は10000件上限のため、超過時は近似値であることを注記 */}
-      {chartData.length >= 10000 && (
-        <p className="text-xs text-amber-600">
-          ※ 下記チャートは直近10,000件からの算出です。正確な総回数は下部の排出率統計を参照してください。
-        </p>
-      )}
-
       {/* チャートセクション */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* 日別ガチャ数 折れ線チャート */}

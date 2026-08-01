@@ -607,7 +607,47 @@ async function cmdApply(sql, migrationsDirs, provider, { bootstrap, confirmFresh
           // 失敗する。そのためforbiddenは実質的にSQL文1つのみをサポートする。この制約は
           // buildMigrationDescriptor（countEffectiveStatements）でファイル読み込み時点にバリデーション
           // 済みのため、ここに到達する時点で複数文であることは無い想定。
+          const expectedIndexDefinitions = core.extractCreatedIndexDefinitions(content)
+          const expectedIndexNames = expectedIndexDefinitions.map((index) => index.name)
           await sql.unsafe(content)
+
+          if (expectedIndexNames.length > 0) {
+            // CREATE INDEX CONCURRENTLY は、失敗後に同名のinvalid indexを残す場合がある。
+            // 次回実行で `IF NOT EXISTS` がそれを見て成功扱いにすると、historyだけが進み
+            // plannerが利用できない索引を「適用済み」と誤認するため、history insertの前に
+            // PostgreSQLの実状態を必ず確認する。対象の新規索引はpublic schemaへ作成するため、
+            // 同名relationの別schemaを誤って採用しないようschemaも絞る。
+            const indexStates = await sql`
+              SELECT
+                c.relname AS name,
+                i.indisvalid,
+                i.indisready,
+                pg_get_indexdef(c.oid) AS definition
+              FROM pg_class c
+              JOIN pg_index i ON i.indexrelid = c.oid
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relname = ANY(${sql.array(expectedIndexNames)})
+            `
+            const { missing, invalid } = core.validateIndexStates(expectedIndexNames, indexStates)
+            const definitionMismatch = core.validateIndexDefinitions(
+              expectedIndexDefinitions,
+              indexStates
+            )
+            if (missing.length > 0 || invalid.length > 0 || definitionMismatch.length > 0) {
+              const details = [
+                missing.length > 0 ? `missing=${missing.join(',')}` : null,
+                invalid.length > 0 ? `invalid=${invalid.join(',')}` : null,
+                definitionMismatch.length > 0
+                  ? `definition_mismatch=${definitionMismatch.join(',')}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(' ')
+              throw new Error(`forbidden index migration のpostcondition検証に失敗しました: ${details}`)
+            }
+          }
+
           await sql`
             insert into twica_meta.schema_migrations (version, name, checksum, applied_by, execution_id)
             values (${d.version}, ${d.name}, ${d.checksum}, ${appliedBy}, ${executionId})

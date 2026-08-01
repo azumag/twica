@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { adminApi } from '../lib/adminApi'
+import { adminApi, type UserListSortOrder, type UserListSummary } from '../lib/adminApi'
 import { DataTable } from '../components/DataTable'
 import { ErrorBanner } from '../components/ErrorBanner'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { User } from '../types/database'
 
 // Extended user type with aggregated statistics
@@ -11,7 +12,7 @@ interface UserWithStats extends User {
 }
 
 // ソート順の定義
-type SortOrder = 'card_count_desc' | 'card_count_asc' | 'created_at_desc' | 'name_asc'
+type SortOrder = UserListSortOrder
 
 /**
  * Users page - Displays all registered users with their statistics
@@ -21,6 +22,10 @@ export function Users() {
   const [users, setUsers] = useState<UserWithStats[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
+  // 入力中の中間文字列ではRPCを発火させず、最後の入力から300ms後に検索する。
+  // 一覧RPCはrows/countだけを返す。検索入力ごとの全体summary再集計を避けるため、
+  // summaryは画面表示時に専用RPCから一度だけ取得する。
+  const debouncedSearchTerm = useDebouncedValue(searchTerm)
   // ソート順（デフォルト: カード数の多い順）
   const [sortOrder, setSortOrder] = useState<SortOrder>('card_count_desc')
   // カード数0のユーザーを非表示にするフラグ
@@ -28,22 +33,62 @@ export function Users() {
   // ページネーション状態
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const [error, setError] = useState<string | null>(null)
-  // 再試行ボタン用のトリガー（値自体に意味は無く、変更するとeffectを再実行させる）
-  const [retryToken, setRetryToken] = useState(0)
+  const [totalCount, setTotalCount] = useState(0)
+  const [summary, setSummary] = useState<UserListSummary>({
+    totalUsers: 0,
+    totalCards: 0,
+    usersWithTos: 0,
+    usersWithCards: 0,
+  })
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
+  // summaryと一覧は別RPCで、検索・ページ変更時に一覧だけ再取得する。
+  // 再試行トリガーも分け、summary失敗を一覧取得成功で消さないようにする。
+  const [summaryRetryToken, setSummaryRetryToken] = useState(0)
+  const [listRetryToken, setListRetryToken] = useState(0)
 
-  // Fetches all users with their card counts
-  // サーバーサイド（/__admin/users）でカード数を集計済みのデータを取得
   useEffect(() => {
     const controller = new AbortController()
     ;(async () => {
-      setLoading(true)
-      setError(null)
+      setSummaryError(null)
       try {
-        const rawData = await adminApi.getUsers({ signal: controller.signal })
+        const nextSummary = await adminApi.getUsersSummary({ signal: controller.signal })
+        setSummary(nextSummary)
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setSummaryError((err instanceof Error && err.message) || 'ユーザー集計の取得に失敗しました')
+      }
+    })()
+    return () => controller.abort()
+  }, [summaryRetryToken])
+
+  // 検索・ソート・フィルタをDB側へ渡し、現在ページとcountだけを取得する。
+  // 以前はこの後にローカルfilter/sortを行っていたため、画面のページャーが
+  // 全件取得を隠してしまっていた。rowsは1ページ分、countは候補全体の件数である。
+  useEffect(() => {
+    // 検索入力中にページを1へ戻すeffectも別に走るため、ここで旧debounced値を
+    // 使った中間リクエストを止める。入力が止まって両値が一致したrenderだけが
+    // page 1の確定検索を開始し、1文字ごとの全体集計RPCを発生させない。
+    if (searchTerm !== debouncedSearchTerm) return
+
+    const controller = new AbortController()
+    ;(async () => {
+      setLoading(true)
+      setListError(null)
+      try {
+        const { rows, count } = await adminApi.getUsers(
+          {
+            page: currentPage,
+            pageSize,
+            search: debouncedSearchTerm,
+            sort: sortOrder,
+            hideZeroCards,
+          },
+          { signal: controller.signal }
+        )
 
         // Combine users with their statistics
-        const usersWithStats: UserWithStats[] = rawData.map((user) => {
+        const usersWithStats: UserWithStats[] = rows.map((user) => {
           const cardCount = user.user_cards?.[0]?.count ?? 0
           return {
             id: user.id,
@@ -60,49 +105,22 @@ export function Users() {
         })
 
         setUsers(usersWithStats)
+        setTotalCount(count)
       } catch (err) {
         if (controller.signal.aborted) return
         console.error('Error fetching users:', err)
-        setError((err instanceof Error && err.message) || 'ユーザー一覧の取得に失敗しました')
+        setListError((err instanceof Error && err.message) || 'ユーザー一覧の取得に失敗しました')
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
     })()
     return () => controller.abort()
-  }, [retryToken])
+  }, [currentPage, pageSize, searchTerm, debouncedSearchTerm, sortOrder, hideZeroCards, listRetryToken])
 
   // フィルター条件が変わったらページを1に戻す
   useEffect(() => {
     setCurrentPage(1)
   }, [searchTerm, sortOrder, hideZeroCards])
-
-  // Filter users based on search term and hideZeroCards flag
-  const filteredUsers = users.filter((user) => {
-    // 検索フィルター
-    const matchesSearch =
-      user.twitch_username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.twitch_display_name.toLowerCase().includes(searchTerm.toLowerCase())
-    // カード0件フィルター
-    const matchesCardFilter = hideZeroCards ? user.card_count > 0 : true
-    return matchesSearch && matchesCardFilter
-  })
-
-  /**
-   * ソートを適用したユーザー一覧を生成
-   */
-  const sortedUsers = [...filteredUsers].sort((a, b) => {
-    switch (sortOrder) {
-      case 'card_count_desc':
-        return b.card_count - a.card_count
-      case 'card_count_asc':
-        return a.card_count - b.card_count
-      case 'name_asc':
-        return a.twitch_display_name.localeCompare(b.twitch_display_name)
-      case 'created_at_desc':
-      default:
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    }
-  })
 
   // Table column definitions
   const columns = [
@@ -169,11 +187,6 @@ export function Users() {
     },
   ]
 
-  // Calculate summary statistics（全データに基づく）
-  const totalCards = users.reduce((sum, u) => sum + u.card_count, 0)
-  const usersWithTos = users.filter((u) => u.tos_accepted_at).length
-  const usersWithCards = users.filter((u) => u.card_count > 0).length
-
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -182,24 +195,32 @@ export function Users() {
         <p className="text-gray-500 mt-1">Manage and view all registered users</p>
       </div>
 
-      <ErrorBanner messages={[error]} onRetry={() => setRetryToken((t) => t + 1)} />
+      <ErrorBanner
+        messages={[summaryError]}
+        title="ユーザー集計の読み込みエラー"
+        onRetry={() => setSummaryRetryToken((token) => token + 1)}
+      />
+      <ErrorBanner
+        messages={[listError]}
+        onRetry={() => setListRetryToken((token) => token + 1)}
+      />
 
       {/* Summary Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Users</p>
-          <p className="text-2xl font-bold">{users.length}</p>
+          <p className="text-2xl font-bold">{summary.totalUsers}</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">Total Cards Owned</p>
-          <p className="text-2xl font-bold">{totalCards}</p>
+          <p className="text-2xl font-bold">{summary.totalCards}</p>
         </div>
         <div className="bg-white rounded-lg shadow p-4">
           <p className="text-sm text-gray-500">ToS Accepted</p>
           <p className="text-2xl font-bold">
-            {usersWithTos}
+            {summary.usersWithTos}
             <span className="text-sm font-normal text-gray-500 ml-1">
-              ({users.length > 0 ? ((usersWithTos / users.length) * 100).toFixed(1) : 0}%)
+              ({summary.totalUsers > 0 ? ((summary.usersWithTos / summary.totalUsers) * 100).toFixed(1) : 0}%)
             </span>
           </p>
         </div>
@@ -252,8 +273,8 @@ export function Users() {
 
           {/* 表示件数 */}
           <div className="text-sm text-gray-500">
-            表示: {sortedUsers.length} / {users.length} 件
-            {hideZeroCards && ` (カード所持: ${usersWithCards}件)`}
+            表示: {users.length} / {totalCount} 件
+            {hideZeroCards && ` (カード所持: ${summary.usersWithCards}件)`}
           </div>
         </div>
       </div>
@@ -261,13 +282,14 @@ export function Users() {
       {/* Users Table */}
       <DataTable
         columns={columns}
-        data={sortedUsers}
+        data={users}
         keyExtractor={(user) => user.id}
         loading={loading}
         emptyMessage="No users found"
         pagination={{
           currentPage,
           pageSize,
+          totalItems: totalCount,
           onPageChange: setCurrentPage,
           onPageSizeChange: (size) => {
             setPageSize(size)

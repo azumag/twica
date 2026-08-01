@@ -227,6 +227,458 @@ function containsSetLocal(content) {
 }
 
 /**
+ * forbidden migration に含まれる CREATE INDEX の名前を取り出す純粋関数。
+ *
+ * CREATE INDEX CONCURRENTLY は失敗時に「無効なindexが残る」ことがある。
+ * その状態で `IF NOT EXISTS` を再実行すると、PostgreSQLは同名relationが
+ * あるとして作成をスキップするため、runnerがSQL成功だけを見てhistoryへ
+ * 記録すると、以後ずっと壊れたindexを正当な適用済みとして扱ってしまう。
+ * runnerはこの名前を使って `pg_index.indisvalid/indisready` を確認し、
+ * 不完全なindexのままhistoryへ進まないようにする。
+ *
+ * 厳密なSQLパーサを導入せず、migrationで使うCREATE INDEXの定型だけを扱う。
+ * 行コメントとブロックコメントは除去するが、文字列リテラル中のキーワードを
+ * SQLとして解釈することはしない。対象migrationはDDL 1文だけという別ガードを
+ * 既に持つため、ここで複雑な汎用SQLパーサを追加するのはYAGNIと判断した。
+ *
+ * @param {string} content
+ * @returns {string[]}
+ */
+function extractCreatedIndexNames(content) {
+  const withoutComments = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.replace(/--.*$/g, ''))
+    .join('\n')
+  const pattern = /\bCREATE\s+INDEX(?:\s+CONCURRENTLY)?\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|([a-z_][a-z0-9_$]*))/gi
+  const names = []
+  for (const match of withoutComments.matchAll(pattern)) {
+    const name = match[1] ?? match[2]
+    if (name && !names.includes(name)) names.push(name)
+  }
+  return names
+}
+
+/**
+ * forbidden migrationのCREATE INDEX文を、名前と定義の組で抽出する純粋関数。
+ *
+ * `IF NOT EXISTS`は同名relationがあるとDDLを成功扱いにするため、名前だけを
+ * `pg_index`で確認すると、別テーブル・別列・別方式の誤ったindexを正しいものと
+ * 取り違える。runnerはこの定義と`pg_get_indexdef`を正規化比較してからhistoryへ
+ * 登録する。対象migrationは1文DDLという既存ガードがあるため、汎用SQLパーサを
+ * 導入せず、コメント除去後のセミコロン区切りで十分な範囲に限定する。
+ *
+ * @param {string} content
+ * @returns {{ name: string, definition: string }[]}
+ */
+function extractCreatedIndexDefinitions(content) {
+  const withoutComments = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.replace(/--.*$/g, ''))
+    .join('\n')
+  const definitions = []
+  for (const statement of withoutComments.split(';')) {
+    const trimmed = statement.trim()
+    if (!/^CREATE\s+INDEX\b/i.test(trimmed)) continue
+    const match = trimmed.match(
+      /^CREATE\s+INDEX(?:\s+CONCURRENTLY)?\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|([a-z_][a-z0-9_$]*))/i
+    )
+    if (!match) continue
+    const name = match[1] ?? match[2]
+    if (!definitions.some((definition) => definition.name === name)) {
+      definitions.push({ name, definition: trimmed })
+    }
+  }
+  return definitions
+}
+
+/**
+ * CREATE INDEX文と`pg_get_indexdef`の表記差を吸収して比較用に正規化する。
+ *
+ * PostgreSQLは省略された`USING btree`を出力へ補い、opclassのschema修飾を
+ * 省略することがある。一方、migration側には`CONCURRENTLY`/`IF NOT EXISTS`が
+ * ある。これらは実体のindex定義ではないため吸収するが、対象テーブル、列、
+ * sort方向、アクセス方式、opclass、predicateは残し、誤った同名indexを通さない。
+ * @param {string} definition
+ * @returns {string}
+ */
+/**
+ * SQL定義のquoted literal / identifier / dollar-quoted bodyをplaceholderへ退避する。
+ * normalizeIndexDefinitionは引用符外の空白・大小文字だけを吸収する必要があるため、
+ * 先にこの境界を確定する。E''のbackslash escape、doubled quote、$tag$ / $$ の双方を
+ * 扱い、定義比較のためにリテラル内容を変更しない。
+ * @param {string} sql
+ * @returns {{ masked: string, quotedSegments: string[] }}
+ */
+function maskQuotedSqlSegments(sql) {
+  const quotedSegments = []
+  let masked = ''
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index]
+    const isEscapeStringPrefix =
+      (character === 'e' || character === 'E') &&
+      sql[index + 1] === "'" &&
+      (index === 0 || !/[A-Za-z0-9_$]/.test(sql[index - 1]))
+    if (character === "'" || character === '"' || isEscapeStringPrefix) {
+      const quoteIndex = isEscapeStringPrefix ? index + 1 : index
+      const quote = sql[quoteIndex]
+      const isEscapeString = isEscapeStringPrefix
+      let end = quoteIndex + 1
+      for (; end < sql.length; end += 1) {
+        if (isEscapeString && sql[end] === '\\' && end + 1 < sql.length) {
+          end += 1
+          continue
+        }
+        if (sql[end] !== quote) continue
+        if (sql[end + 1] === quote) {
+          end += 1
+          continue
+        }
+        end += 1
+        break
+      }
+      const placeholder = `\u0001${quotedSegments.length}\u0002`
+      quotedSegments.push(sql.slice(index, end))
+      masked += placeholder
+      index = end - 1
+      continue
+    }
+
+    if (character === '$') {
+      const dollarTag = sql.slice(index).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0]
+      if (dollarTag) {
+        const closingIndex = sql.indexOf(dollarTag, index + dollarTag.length)
+        if (closingIndex >= 0) {
+          const end = closingIndex + dollarTag.length
+          const placeholder = `\u0001${quotedSegments.length}\u0002`
+          quotedSegments.push(sql.slice(index, end))
+          masked += placeholder
+          index = end - 1
+          continue
+        }
+      }
+    }
+
+    masked += character
+  }
+
+  return { masked, quotedSegments }
+}
+
+/**
+ * placeholderへ退避したquoted segmentを元のSQLへ戻す。
+ * @param {string} masked
+ * @param {string[]} quotedSegments
+ * @returns {string}
+ */
+function restoreQuotedSqlSegments(masked, quotedSegments) {
+  return masked.replace(/\u0001(\d+)\u0002/g, (_match, index) => quotedSegments[Number(index)])
+}
+
+/**
+ * 括弧が式全体を一重に包んでいる場合だけ外す。quoted segmentはplaceholderに
+ * 置換済みなので、predicate内のliteralに含まれる括弧を誤って数えない。
+ * @param {string} expression
+ * @returns {string}
+ */
+function stripRedundantOuterParentheses(expression) {
+  let result = expression.trim()
+  while (result.startsWith('(') && result.endsWith(')')) {
+    let depth = 0
+    let enclosesWholeExpression = true
+    for (let index = 0; index < result.length; index += 1) {
+      if (result[index] === '(') depth += 1
+      if (result[index] === ')') depth -= 1
+      if (depth === 0 && index < result.length - 1) {
+        enclosesWholeExpression = false
+        break
+      }
+    }
+    if (!enclosesWholeExpression || depth !== 0) break
+    result = result.slice(1, -1).trim()
+  }
+  return result
+}
+
+/**
+ * PostgreSQLがpartial predicateの各比較式へ付ける冗長な括弧を吸収する。
+ * AND/ORを含むグループの括弧はprecedenceを変えうるため、比較演算子を含み、
+ * グループ内にトップレベルのAND/ORが無い場合だけ対象にする。
+ * @param {string} predicate
+ * @returns {string}
+ */
+function stripSimplePredicateParentheses(predicate) {
+  let result = predicate
+  let changed = true
+  while (changed) {
+    changed = false
+    result = result.replace(/\(([^()]+)\)/g, (match, inner) => {
+      if (!/[=<>]\s*/.test(inner) || /\b(?:AND|OR)\b/i.test(inner)) return match
+      changed = true
+      return inner
+    })
+  }
+  return result
+}
+
+/**
+ * PostgreSQL E-stringのescapeを値へデコードする。単文字escapeだけでなく、
+ * `\\xNN` / `\\ooo` / `\\uNNNN` / `\\UNNNNNNNN`を扱わないと、正しいE-string
+ * predicateをpg_get_indexdefの通常literalと同一視できず、逆に誤ったliteralを
+ * canonicalizeして通す可能性がある。PostgreSQLが受理する未知escapeはbackslashを
+ * 除去し、不完全なhex/Unicode escapeは原表記を保って比較を安全側へ倒す。
+ * @param {string} body
+ * @returns {string}
+ */
+function decodePostgresEscapeString(body) {
+  const result = []
+  const simpleEscapes = {
+    a: '\x07',
+    b: '\b',
+    f: '\f',
+    n: '\n',
+    r: '\r',
+    t: '\t',
+    v: '\v',
+    '\\': '\\',
+    "'": "'",
+    '"': '"',
+  }
+  const byteEscapes = []
+  const flushByteEscapes = () => {
+    if (byteEscapes.length === 0) return
+    try {
+      result.push(
+        new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Uint8Array.from(byteEscapes))
+      )
+    } catch {
+      // 不正なUTF-8 byte列はPostgreSQL側でも通常literalへcanonicalizeできない。
+      // 値を推測せず、byte escapeの原表記へ戻して比較を不一致にする。
+      result.push(...byteEscapes.map((byte) => String.fromCharCode(byte)))
+    }
+    byteEscapes.length = 0
+  }
+
+  for (let index = 0; index < body.length; index += 1) {
+    if (body[index] !== '\\' || index + 1 >= body.length) {
+      flushByteEscapes()
+      result.push(body[index])
+      continue
+    }
+
+    const escape = body[index + 1]
+    if (Object.prototype.hasOwnProperty.call(simpleEscapes, escape)) {
+      flushByteEscapes()
+      result.push(simpleEscapes[escape])
+      index += 1
+      continue
+    }
+
+    if (escape === 'x' || escape === 'u' || escape === 'U') {
+      const digitCount = escape === 'x' ? 2 : escape === 'u' ? 4 : 8
+      const digits = body.slice(index + 2, index + 2 + digitCount)
+      const pattern = escape === 'x' ? /^[0-9A-Fa-f]{1,2}/ : new RegExp(`^[0-9A-Fa-f]{${digitCount}}$`)
+      if (escape === 'x' && !/^[0-9A-Fa-f]/.test(digits)) {
+        // \xにhex digitが続かない場合、PostgreSQLは特殊escapeと解釈せず
+        // backslashを除去してxをそのまま値にする（E'\\x' -> 'x'）。
+        flushByteEscapes()
+        result.push(escape)
+        index += 1
+        continue
+      }
+      const matchedDigits = digits.match(pattern)?.[0]
+      if (matchedDigits) {
+        const codePoint = Number.parseInt(matchedDigits, 16)
+        if (escape === 'x') {
+          byteEscapes.push(codePoint)
+          index += 1 + matchedDigits.length
+          continue
+        }
+        if (escape === 'u' && codePoint >= 0xd800 && codePoint <= 0xdbff) {
+          const lowSurrogate = body
+            .slice(index + 2 + digitCount)
+            .match(/^\\u([0-9A-Fa-f]{4})/i)?.[1]
+          const lowCodePoint = lowSurrogate ? Number.parseInt(lowSurrogate, 16) : null
+          if (lowCodePoint !== null && lowCodePoint >= 0xdc00 && lowCodePoint <= 0xdfff) {
+            flushByteEscapes()
+            result.push(String.fromCodePoint(0x10000 + (codePoint - 0xd800) * 0x400 + lowCodePoint - 0xdc00))
+            index += 1 + digitCount + 2 + digitCount
+            continue
+          }
+        }
+        if (codePoint <= 0x10ffff && !(codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+          flushByteEscapes()
+          result.push(String.fromCodePoint(codePoint))
+          index += 1 + matchedDigits.length
+          continue
+        }
+      }
+      result.push('\\', escape)
+      index += 1
+      continue
+    }
+
+    if (/^[0-7]$/.test(escape)) {
+      const digits = body.slice(index + 1, index + 4).match(/^[0-7]{1,3}/)?.[0]
+      if (digits) {
+        byteEscapes.push(Number.parseInt(digits, 8))
+        index += digits.length
+        continue
+      }
+    }
+
+    // PostgreSQLは未知escapeのbackslashを捨て、後続文字だけを値にする。
+    // 例: E'\\q' は 'q'。これはpg_get_indexdefとの一致に必要な仕様である。
+    flushByteEscapes()
+    result.push(escape)
+    index += 1
+  }
+  flushByteEscapes()
+  return result.join('')
+}
+
+/**
+ * single-quoted / E-string / dollar-quoted literalを同じ標準SQL literal表記へ
+ * 揃える。pg_get_indexdefは入力の$$literal$$を' literal '::textへ書き換えるため、
+ * 表記だけが異なる同値literalを比較で拒否しないようにする。
+ * @param {string} segment
+ * @returns {string}
+ */
+function canonicalizeQuotedLiteral(segment) {
+  if (segment.startsWith('"')) return segment
+
+  let body
+  if (segment.startsWith('$')) {
+    const tag = segment.match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0]
+    body = tag ? segment.slice(tag.length, -tag.length) : segment
+  } else {
+    const isEscapeString = /^[eE]'/u.test(segment)
+    body = segment.slice(isEscapeString ? 2 : 1, -1)
+    if (isEscapeString) {
+      body = body.replace(/''/g, "'")
+      body = decodePostgresEscapeString(body)
+    } else {
+      body = body.replace(/''/g, "'")
+    }
+  }
+  return `'${body.replace(/'/g, "''")}'`
+}
+
+function normalizeIndexDefinition(definition) {
+  const withoutTrailingSemicolon = definition.trim().replace(/;$/, '')
+  const { masked, quotedSegments } = maskQuotedSqlSegments(withoutTrailingSemicolon)
+  const canonicalQuotedSegments = quotedSegments.map(canonicalizeQuotedLiteral)
+  let normalized = masked.replace(/\s+/g, ' ').trim()
+    .replace(/\bCREATE\s+INDEX\s+CONCURRENTLY\s+/i, 'CREATE INDEX ')
+    .replace(/\bIF\s+NOT\s+EXISTS\s+/i, '')
+    .replace(/\bpublic\.gin_trgm_ops\b/gi, 'gin_trgm_ops')
+    .replace(/\(\s+/g, '(')
+    .replace(/\s+\)/g, ')')
+
+  // migrationではbtreeのUSING句を省略できるが、pg_get_indexdefは明示する。
+  // ここまでにquoted identifierもplaceholderへ置換済みなので、schema/tableが
+  // 引用符付きでも同じ表記差吸収を適用できる。placeholderはrestore時に元の
+  // quoted identifierへ戻るため、識別子の大小文字・空白は保持される。
+  const maskedIdentifier = '(?:\\u0001\\d+\\u0002|[a-z_][a-z0-9_$]*)'
+  normalized = normalized.replace(
+    new RegExp(
+      `\\bON\\s+(${maskedIdentifier}(?:\\.${maskedIdentifier})?)\\s+(?=\\()`,
+      'i'
+    ),
+    'ON $1 USING btree '
+  )
+
+  // pg_get_indexdefは、文字列literalへ暗黙の::text castを追加し、partial
+  // predicate全体を括弧で包む（例: WHERE (status = 'READY'::text)）。
+  // literal placeholder直後のcastだけを吸収し、他の式に明示されたcastは残す。
+  normalized = normalized.replace(/\u0001(\d+)\u0002::text\b/gi, (match, index) => {
+    const segment = canonicalQuotedSegments[Number(index)]
+    return segment && /^'/.test(segment)
+      ? `\u0001${index}\u0002`
+      : match
+  })
+  const whereIndex = normalized.search(/\bWHERE\b/i)
+  if (whereIndex >= 0) {
+    const whereKeyword = normalized.slice(whereIndex).match(/^WHERE\b/i)?.[0] ?? 'WHERE'
+    const predicate = stripSimplePredicateParentheses(
+      stripRedundantOuterParentheses(normalized.slice(whereIndex + whereKeyword.length))
+    )
+    normalized = `${normalized.slice(0, whereIndex)}${whereKeyword} ${predicate}`
+  }
+
+  // SQLキーワード・未引用識別子の大小文字は意味を持たないが、single-quoted
+  // literalとdouble-quoted identifierの大小文字は意味を持つ。定義全体を
+  // toLowerCase()すると、例えば WHERE status = 'READY' と 'ready' を同一視して
+  // IF NOT EXISTS後の誤ったindexをhistoryへ登録してしまうため、引用符の外側だけを
+  // 小文字化する。PostgreSQLの標準的な doubled-quote escapeも1文字列として保持する。
+  let lowercasedOutsideQuotes = ''
+  let quote = null
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index]
+    if (quote !== null) {
+      lowercasedOutsideQuotes += character
+      if (character === quote) {
+        if (normalized[index + 1] === quote) {
+          lowercasedOutsideQuotes += normalized[index + 1]
+          index += 1
+        } else {
+          quote = null
+        }
+      }
+      continue
+    }
+    if (character === "'" || character === '"') {
+      quote = character
+      lowercasedOutsideQuotes += character
+    } else {
+      lowercasedOutsideQuotes += character.toLowerCase()
+    }
+  }
+  return restoreQuotedSqlSegments(lowercasedOutsideQuotes, canonicalQuotedSegments)
+}
+
+/**
+ * 既存同名indexの定義がmigrationの意図と一致するかを検証する純粋関数。
+ * @param {{ name: string, definition: string }[]} expectedDefinitions
+ * @param {{ name: string, definition?: string }[]} states
+ * @returns {string[]} 定義不一致のindex名
+ */
+function validateIndexDefinitions(expectedDefinitions, states) {
+  const stateByName = new Map(states.map((state) => [state.name, state]))
+  return expectedDefinitions
+    .filter((expected) => {
+      const actual = stateByName.get(expected.name)
+      if (!actual || typeof actual.definition !== 'string') return false
+      return normalizeIndexDefinition(expected.definition) !== normalizeIndexDefinition(actual.definition)
+    })
+    .map((expected) => expected.name)
+}
+
+/**
+ * DBから返されたindex状態が、期待したindexをすべて有効にしているか検証する純粋関数。
+ *
+ * `indisready` は再構築・作成途中のindexを除外し、`indisvalid` はplannerが利用可能な
+ * indexかを表す。どちらか一方でもfalseなら、migration historyへ登録する前に停止して
+ * 再実行または運用者によるREINDEX/DROP判断を促す。DB問い合わせ自体はCLI側に残し、
+ * この関数はfault-injection相当の状態（missing/invalid/valid）を単体テストできるようにする。
+ *
+ * @param {string[]} expectedNames
+ * @param {{ name: string, indisvalid: boolean, indisready: boolean }[]} states
+ * @returns {{ missing: string[], invalid: string[] }}
+ */
+function validateIndexStates(expectedNames, states) {
+  const stateByName = new Map(states.map((state) => [state.name, state]))
+  const missing = expectedNames.filter((name) => !stateByName.has(name))
+  const invalid = expectedNames.filter((name) => {
+    const state = stateByName.get(name)
+    return state !== undefined && (state.indisvalid !== true || state.indisready !== true)
+  })
+  return { missing, invalid }
+}
+
+/**
  * 1ファイル分の migration descriptor を組み立てる純粋関数。
  * ファイル名が MIGRATION_FILENAME_RE にマッチしない場合、version/name は null になり、
  * errors にその旨が積まれる（呼び出し側で不正ファイルとして扱われる）。
@@ -655,6 +1107,11 @@ module.exports = {
   computeChecksum,
   countEffectiveStatements,
   containsSetLocal,
+  extractCreatedIndexNames,
+  extractCreatedIndexDefinitions,
+  normalizeIndexDefinition,
+  validateIndexDefinitions,
+  validateIndexStates,
   buildMigrationDescriptor,
   loadMigrationFiles,
   loadMigrationFilesFromDirs,
