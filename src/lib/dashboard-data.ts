@@ -26,7 +26,10 @@ import {
   ilike,
   inArray,
   lt,
+  max,
   notLike,
+  sql,
+  sum,
 } from "drizzle-orm";
 import { getDb, type DbHandle } from "@/lib/db/client";
 import { isPgFunctionNotFoundError, isPgMissingColumnError, isPgUniqueViolationError } from "@/lib/db/errors";
@@ -1149,11 +1152,13 @@ interface ChannelPointUsageStatsRpcRow {
   last_redeemed_at: string | null;
 }
 
-interface ChannelPointUsageHistoryRow {
+interface ChannelPointUsageHistoryRankingRow {
   user_twitch_id: string;
-  user_twitch_username: string | null;
-  reward_cost: number | string | null;
-  redeemed_at: string | null;
+  username: string | null;
+  total_points: number | string | null;
+  redemption_count: number | string;
+  last_redeemed_at: string | null;
+  total_points_all_users: number | string | null;
 }
 
 interface GachaDropStatsRpcDrawerRow {
@@ -1307,27 +1312,46 @@ async function fetchChannelPointUsageStatsFromHistory(
   streamerId: string,
   limit = 10
 ): Promise<GachaStatsResult["channelPointStats"]> {
-  let data: ChannelPointUsageHistoryRow[];
+  const historyFilter = and(
+    eq(gachaHistoryTable.streamer_id, streamerId),
+    gt(gachaHistoryTable.reward_cost, 0),
+  );
+  let rankingRows: ChannelPointUsageHistoryRankingRow[];
   try {
-    data = await withDbRetry(
+    rankingRows = await withDbRetry(
       async () => {
         const { db } = await getDb();
+        const totalPoints = sum(gachaHistoryTable.reward_cost);
+        const redemptionCount = countRows();
+        const lastRedeemedAt = max(gachaHistoryTable.redeemed_at);
+        // GROUP BY後のユーザー別SUMをwindow SUMすることで、ランキングLIMITの
+        // 対象外ユーザーも含む全ポイントを同じ1 statement内で算出する。
+        // PostgreSQLではwindow関数はGROUP BY集計後・ORDER BY/LIMIT前に評価される
+        // ため、上位N行だけを返しても値は全ユーザー分の合計になる。総合計と順位を
+        // 別SQLにすると更新の途中で異なるsnapshotを読む可能性と二重走査が生じるが、
+        // この形なら単一snapshot・単一走査でRPC migration 00036/00039と同じ集計を
+        // 得られる。該当行が0件なら結果行自体が無く、呼び出し側で0/空配列へ戻す。
+        const totalPointsAllUsers =
+          sql<number | string>`sum(sum(${gachaHistoryTable.reward_cost})) over ()`;
         return db
           .select({
             user_twitch_id: gachaHistoryTable.user_twitch_id,
-            user_twitch_username: gachaHistoryTable.user_twitch_username,
-            reward_cost: gachaHistoryTable.reward_cost,
-            redeemed_at: gachaHistoryTable.redeemed_at,
+            username: sql<string>`coalesce(max(${gachaHistoryTable.user_twitch_username}), ${gachaHistoryTable.user_twitch_id})`,
+            total_points: totalPoints,
+            redemption_count: redemptionCount,
+            last_redeemed_at: lastRedeemedAt,
+            total_points_all_users: totalPointsAllUsers,
           })
           .from(gachaHistoryTable)
-          .where(
-            and(
-              eq(gachaHistoryTable.streamer_id, streamerId),
-              gt(gachaHistoryTable.reward_cost, 0),
-            ),
+          .where(historyFilter)
+          .groupBy(gachaHistoryTable.user_twitch_id)
+          .orderBy(
+            desc(totalPoints),
+            desc(redemptionCount),
+            desc(lastRedeemedAt),
           )
-          .orderBy(desc(gachaHistoryTable.redeemed_at))
-          .limit(10000);
+          // LIMITは必ずGROUP BY・window集計・順位確定後にだけ適用する。
+          .limit(Math.max(1, limit));
       },
       "dashboard:channelPointUsageHistory",
       { idempotent: true },
@@ -1337,52 +1361,15 @@ async function fetchChannelPointUsageStatsFromHistory(
     return EMPTY_CHANNEL_POINT_STATS;
   }
 
-  const usageByUser = new Map<string, {
-    username: string;
-    totalPoints: number;
-    redemptionCount: number;
-    lastRedeemedAt: string | null;
-  }>();
-  let totalPoints = 0;
-
-  for (const row of data) {
-    const rewardCost = Number(row.reward_cost || 0);
-    if (!row.user_twitch_id || rewardCost <= 0) continue;
-
-    totalPoints += rewardCost;
-    const existing = usageByUser.get(row.user_twitch_id);
-    if (existing) {
-      existing.totalPoints += rewardCost;
-      existing.redemptionCount += 1;
-      if (row.user_twitch_username) {
-        existing.username = row.user_twitch_username;
-      }
-      if (
-        row.redeemed_at &&
-        (!existing.lastRedeemedAt || row.redeemed_at > existing.lastRedeemedAt)
-      ) {
-        existing.lastRedeemedAt = row.redeemed_at;
-      }
-    } else {
-      usageByUser.set(row.user_twitch_id, {
-        username: row.user_twitch_username || row.user_twitch_id,
-        totalPoints: rewardCost,
-        redemptionCount: 1,
-        lastRedeemedAt: row.redeemed_at,
-      });
-    }
-  }
-
   return {
-    totalPoints,
-    ranking: Array.from(usageByUser.entries())
-      .map(([userTwitchId, usage]) => ({ userTwitchId, ...usage }))
-      .sort((a, b) => {
-              if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
-        if (b.redemptionCount !== a.redemptionCount) return b.redemptionCount - a.redemptionCount;
-        return (b.lastRedeemedAt || "").localeCompare(a.lastRedeemedAt || "");
-      })
-      .slice(0, Math.max(1, limit)),
+    totalPoints: Number(rankingRows[0]?.total_points_all_users ?? 0),
+    ranking: rankingRows.map((row) => ({
+      userTwitchId: row.user_twitch_id,
+      username: row.username || row.user_twitch_id,
+      totalPoints: Number(row.total_points ?? 0),
+      redemptionCount: Number(row.redemption_count),
+      lastRedeemedAt: row.last_redeemed_at,
+    })),
   };
 }
 
