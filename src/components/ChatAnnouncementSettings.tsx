@@ -28,9 +28,18 @@ interface ChatAnnouncementSettingsProps {
 const DEFAULT_CHAT_TEMPLATE = "@{user} が【{rarity}】{card} を獲得しました！";
 const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = "@{user} が{draws}連ガチャで {rarityCounts} を獲得しました！{cards}";
 
+// N連は追加報酬・Raidとも最大15回にクランプされる（gacha.ts）。カード名は入力検証で
+// 最大100文字（validations.ts）であり、15枚を「、」14個で連結すると 100 * 15 + 14 =
+// 1514文字になる。{newCardsOrNone} はカスタムN連テンプレート内で省略されず展開されるため、
+// Twitch送信時の500文字truncateを事前に利用者へ警告できるよう、この上限を見積もりへ使う。
+const MAX_MULTI_DRAW_COUNT = 15;
+const MAX_CARD_NAME_CHARACTERS = 100;
+const MAX_NEW_CARDS_OR_NONE_CHARACTERS =
+  MAX_CARD_NAME_CHARACTERS * MAX_MULTI_DRAW_COUNT + (MAX_MULTI_DRAW_COUNT - 1);
+
 const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   user: 25,
-  card: 100,
+  card: MAX_CARD_NAME_CHARACTERS,
   cards: 300,
   rarity: 12,
   num: 10,
@@ -42,6 +51,9 @@ const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   // newCards は cards と同等の上限（実装上は 「初出: 」付与時に予約される）
   // newCards mirrors `cards` length; runtime reserves space for the "初出: " suffix
   newCards: 300,
+  // 初入手ありでは最大15枚のカード名一覧、正常0件では短い固定値「なし」になる
+  // It can contain all 15 card names (1514 chars), or the short fixed value "なし" for zero matches
+  newCardsOrNone: MAX_NEW_CARDS_OR_NONE_CHARACTERS,
   newCardCount: 4,
   // パック名の上限はDBのCHECK制約（MAX_COLLECTION_NAME_LENGTH）に合わせる
   // Pack name limit mirrors the DB CHECK constraint (MAX_COLLECTION_NAME_LENGTH)
@@ -63,6 +75,7 @@ function buildChatPreviewMessage(
     detail: string;
     url: string;
     newCards: string;
+    newCardsOrNone: string;
     newCardCount: string;
     packName: string;
   }
@@ -80,6 +93,7 @@ function buildChatPreviewMessage(
     .replace(/\{detail\}/g, placeholders.detail)
     .replace(/\{url\}/g, placeholders.url)
     .replace(/\{newCards\}/g, placeholders.newCards)
+    .replace(/\{newCardsOrNone\}/g, placeholders.newCardsOrNone)
     .replace(/\{newCardCount\}/g, placeholders.newCardCount)
     .replace(/\{packName\}/g, placeholders.packName)
     .replace(/\s+/g, " ")
@@ -132,15 +146,15 @@ export default function ChatAnnouncementSettings({
   const activeMultiTemplate = multiTemplate || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE;
   const canSendChat = hasScope || botConnected;
 
-  // {newCards}/{newCardCount} は multiShowCards（カード名一覧表示）が有効なときのみ値が入り、
+  // {newCards}/{newCardsOrNone}/{newCardCount} は multiShowCards（カード名一覧表示）が有効なときのみ値が入り、
   // 無効時は本文生成ロジック側で空文字に置換される（#487仕様、本PRでは変更しない）。
   // 誤設定に気づきにくいため、テンプレートがこれらを使っているのに表示設定がOFFの場合は警告する。
-  // {newCards}/{newCardCount} only get content when multiShowCards (card-name list display) is
+  // {newCards}/{newCardsOrNone}/{newCardCount} only get content when multiShowCards (card-name list display) is
   // enabled; otherwise the message-building logic replaces them with an empty string (existing
   // #487 behavior, unchanged by this PR). Since that's easy to misconfigure without noticing,
   // warn when the template references them while the display toggle is off.
   const usesNewCardPlaceholders = useMemo(
-    () => /\{newCards\}|\{newCardCount\}/.test(activeMultiTemplate),
+    () => /\{newCards\}|\{newCardsOrNone\}|\{newCardCount\}/.test(activeMultiTemplate),
     [activeMultiTemplate]
   );
   const showNewCardPlaceholderWarning = usesNewCardPlaceholders && !multiShowCards;
@@ -159,6 +173,7 @@ export default function ChatAnnouncementSettings({
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
       newCards: "レジェンダリーカード、レアカード",
+      newCardsOrNone: "レジェンダリーカード、レアカード",
       newCardCount: "2",
       packName: "サンプルパック",
     });
@@ -178,6 +193,7 @@ export default function ChatAnnouncementSettings({
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
       newCards: multiShowCards ? "レジェンダリーカード、レアカード" : "",
+      newCardsOrNone: multiShowCards ? "レジェンダリーカード、レアカード" : "",
       newCardCount: multiShowCards ? "2" : "",
       packName: "サンプルパック",
     });
@@ -188,28 +204,56 @@ export default function ChatAnnouncementSettings({
     [demoMessage]
   );
 
-  const estimatedMaxMessageCharacterCount = useMemo(() => {
-    return countCharacters(
-      buildChatPreviewMessage(activeTemplate, {
-        user: "U".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.user),
-        card: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.card),
-        cards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.cards),
-        draws: "10",
-        rarityCounts: "レジェンダリーx10",
-        rarity: "レ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.rarity),
-        num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
-        unique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.unique),
-        all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
-        detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
-        url: `https://twica.live/collection/${streamerId}`,
-        newCards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCards),
-        newCardCount: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardCount),
-        packName: "パ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packName),
-      })
-    );
+  const singleTemplateEstimatedMaxMessageCharacterCount = useMemo(() => {
+    const singleDrawPlaceholders = {
+      user: "U".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.user),
+      card: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.card),
+      // These N連-only placeholders are always empty for a single draw at runtime.
+      cards: "",
+      draws: "",
+      rarityCounts: "",
+      rarity: "レ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.rarity),
+      num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
+      unique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.unique),
+      all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
+      detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
+      url: `https://twica.live/collection/${streamerId}`,
+      newCards: "",
+      newCardsOrNone: "",
+      newCardCount: "",
+      packName: "パ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packName),
+    };
+
+    return countCharacters(buildChatPreviewMessage(activeTemplate, singleDrawPlaceholders));
   }, [activeTemplate, streamerId]);
 
-  const mayExceedChatLimit = estimatedMaxMessageCharacterCount > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
+  const multiTemplateEstimatedMaxMessageCharacterCount = useMemo(() => {
+    const multiDrawPlaceholders = {
+      user: "U".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.user),
+      card: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.card),
+      // `multiShowCards` がOFFなら、N連カード名系は実通知でも必ず空文字になる。
+      cards: multiShowCards ? "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.cards) : "",
+      draws: String(MAX_MULTI_DRAW_COUNT),
+      rarityCounts: "レジェンダリーx15",
+      rarity: "レ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.rarity),
+      num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
+      unique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.unique),
+      all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
+      detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
+      url: `https://twica.live/collection/${streamerId}`,
+      newCards: multiShowCards ? "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCards) : "",
+      newCardsOrNone: multiShowCards ? "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardsOrNone) : "",
+      newCardCount: multiShowCards ? "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardCount) : "",
+      packName: "パ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packName),
+    };
+
+    return countCharacters(buildChatPreviewMessage(activeMultiTemplate, multiDrawPlaceholders));
+  }, [activeMultiTemplate, multiShowCards, streamerId]);
+
+  const singleTemplateMayExceedChatLimit =
+    singleTemplateEstimatedMaxMessageCharacterCount > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
+  const multiTemplateMayExceedChatLimit =
+    multiTemplateEstimatedMaxMessageCharacterCount > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
 
   // コンポーネントマウント時にスコープをチェック
   // Check scope on component mount
@@ -583,17 +627,17 @@ export default function ChatAnnouncementSettings({
               max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
             })}
           </p>
-          {mayExceedChatLimit && (
-            <div className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
+          {singleTemplateMayExceedChatLimit && (
+            <div data-testid="single-template-length-warning" className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
               {t("messages.lengthWarning", {
-                estimated: estimatedMaxMessageCharacterCount,
+                estimated: singleTemplateEstimatedMaxMessageCharacterCount,
                 max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
               })}
             </div>
           )}
         </div>
 
-        <div className="rounded-lg border border-gray-700 bg-gray-900/40 p-4">
+        <div data-testid="multi-template-settings" className="rounded-lg border border-gray-700 bg-gray-900/40 p-4">
           <label className="mb-1 block text-sm text-gray-300">
             {t("form.multiTemplate")}
           </label>
@@ -618,13 +662,21 @@ export default function ChatAnnouncementSettings({
             />
             {t("form.multiShowCards")}
           </label>
-          {/* #504: multiShowCards無効時に{newCards}/{newCardCount}が空文字化される仕様は */}
+          {/* #504/#840: multiShowCards無効時に初入手系placeholderが空文字化される仕様は */}
           {/* 誤設定に見えやすいため、テンプレートがこれらを使っている場合のみ警告を表示する */}
-          {/* #504: warn when the template uses {newCards}/{newCardCount} while multiShowCards */}
+          {/* #504/#840: warn when the template uses new-card placeholders while multiShowCards */}
           {/* is off, since the resulting empty-string substitution otherwise looks like a bug */}
           {showNewCardPlaceholderWarning && (
             <div className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
               {t("messages.newCardPlaceholderWarning")}
+            </div>
+          )}
+          {multiTemplateMayExceedChatLimit && (
+            <div data-testid="multi-template-length-warning" className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
+              {t("messages.lengthWarning", {
+                estimated: multiTemplateEstimatedMaxMessageCharacterCount,
+                max: TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
+              })}
             </div>
           )}
         </div>

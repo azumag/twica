@@ -1,17 +1,18 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
 import jaMessages from "../../../messages/ja.json";
 
 // next-intl unescapes the ICU '{'...'}' sequences from messages/ja.json into literal
-// {newCards}/{newCardCount} at render time, so the expectation here is the rendered
+// {newCards}/{newCardsOrNone}/{newCardCount} at render time, so the expectation here is the rendered
 // text rather than the raw JSON string.
 const NEW_CARD_WARNING_TEXT =
-  "「N連通知にカード名一覧を含める」が無効なため、テンプレート内の {newCards} / {newCardCount} は送信時に空文字に置き換わります。内容を表示したい場合は上のチェックボックスを有効にしてください。";
+  "「N連通知にカード名一覧を含める」が無効なため、テンプレート内の {newCards} / {newCardsOrNone} / {newCardCount} は送信時に空文字に置き換わります。内容を表示したい場合は上のチェックボックスを有効にしてください。";
 
 function renderSettings(
   overrides: Partial<{
+    currentTemplate: string | null;
     currentMultiTemplate: string | null;
     currentMultiShowCards: boolean;
   }> = {}
@@ -21,7 +22,7 @@ function renderSettings(
       <ChatAnnouncementSettings
         streamerId="streamer-1"
         currentEnabled={false}
-        currentTemplate={null}
+        currentTemplate={overrides.currentTemplate ?? null}
         currentMultiTemplate={overrides.currentMultiTemplate ?? null}
         currentMultiShowCards={overrides.currentMultiShowCards ?? true}
         botAccount={null}
@@ -98,6 +99,15 @@ describe("ChatAnnouncementSettings", () => {
       expect(await screen.findByText(NEW_CARD_WARNING_TEXT)).toBeInTheDocument();
     });
 
+    it("is shown when multiShowCards is disabled and the template uses {newCardsOrNone}", async () => {
+      renderSettings({
+        currentMultiTemplate: "@{user} が新規カード {newCardsOrNone} を獲得！",
+        currentMultiShowCards: false,
+      });
+
+      expect(await screen.findByText(NEW_CARD_WARNING_TEXT)).toBeInTheDocument();
+    });
+
     it("toggles live as the user flips the multiShowCards checkbox", async () => {
       renderSettings({
         currentMultiTemplate: "@{user} が新規カード {newCards} を獲得！",
@@ -114,5 +124,39 @@ describe("ChatAnnouncementSettings", () => {
       fireEvent.click(checkbox);
       expect(screen.queryByText(NEW_CARD_WARNING_TEXT)).not.toBeInTheDocument();
     });
+  });
+
+  it("shows {newCardsOrNone} in the multi-draw placeholder help and replaces it in the demo", async () => {
+    renderSettings({
+      currentMultiTemplate: "初入手: {newCardsOrNone}",
+      currentMultiShowCards: true,
+    });
+
+    expect(await screen.findByText(/\{newCardsOrNone\}=今回初めて獲得したカード名一覧/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "チャットデモ" }));
+    expect(await screen.findByText("初入手: レジェンダリーカード、レアカード")).toBeInTheDocument();
+  });
+
+  it("shows the N連 length warning for one {newCardsOrNone} and keeps it in the N連 container", async () => {
+    renderSettings({
+      currentMultiTemplate: "{newCardsOrNone}",
+      currentMultiShowCards: true,
+    });
+
+    const multiTemplateSettings = await screen.findByTestId("multi-template-settings");
+    const warning = within(multiTemplateSettings).getByTestId("multi-template-length-warning");
+    expect(warning).toBeInTheDocument();
+    expect(warning).toHaveTextContent("カード名一覧・カード説明・URLなど");
+  });
+
+  it("does not show an N連-only length warning under the single-draw template", async () => {
+    renderSettings({
+      currentTemplate: "@{user} が {card} を獲得しました！",
+      currentMultiTemplate: "{newCardsOrNone}",
+      currentMultiShowCards: true,
+    });
+
+    expect(await screen.findByTestId("multi-template-length-warning")).toBeInTheDocument();
+    expect(screen.queryByTestId("single-template-length-warning")).not.toBeInTheDocument();
   });
 });
