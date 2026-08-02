@@ -6,6 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Column, SQL, Table, is } from 'drizzle-orm'
+import { drizzle as drizzleProxy } from 'drizzle-orm/pg-proxy'
 import {
   getGachaCardOwnerStats,
   getGachaStats,
@@ -268,6 +269,24 @@ function primeDb(
   const db = createFallbackDb(rowsByTable)
   vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
   return { sql, db }
+}
+
+/**
+ * 実DBへ接続せず、DrizzleのPostgreSQL dialectが生成したSQL/paramsを捕捉する。
+ * 手製builderは完成済み行しか検証できないため、Issue #849の集計SQL契約に限って
+ * pg-proxyを使い、実際のquery builder生成結果と行デコードの両方を固定する。
+ */
+function createCapturingPgProxyDb(rows: unknown[][]) {
+  const queries: Array<{
+    sql: string
+    params: unknown[]
+    method: 'all' | 'execute'
+  }> = []
+  const db = drizzleProxy(async (query, params, method) => {
+    queries.push({ sql: query, params: [...params], method })
+    return { rows }
+  })
+  return { db, queries }
 }
 
 describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
@@ -638,28 +657,19 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
   })
 
   it('channel point統計RPC障害時は履歴からポイントと順位を集約する', async () => {
-    primeDb(
-      [
-        { rows: [{ result: dropStatsResult }] },
-        { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
-      ],
-      new Map<Table, Array<Record<string, unknown>>>([
-        [gachaHistoryTable, [
-          {
-            user_twitch_id: 'viewer-1',
-            user_twitch_username: 'viewer_one',
-            reward_cost: 100,
-            redeemed_at: '2026-03-01T00:00:00+00:00',
-          },
-          {
-            user_twitch_id: 'viewer-1',
-            user_twitch_username: 'Viewer New',
-            reward_cost: '250',
-            redeemed_at: '2026-03-03T00:00:00+00:00',
-          },
-        ]],
-      ])
-    )
+    const sql = createSqlMock([
+      { rows: [{ result: dropStatsResult }] },
+      { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
+    ])
+    const { db } = createCapturingPgProxyDb([[
+      'viewer-1',
+      'Viewer New',
+      '350',
+      2,
+      '2026-03-03T00:00:00+00:00',
+      '350',
+    ]])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
 
     const result = await getGachaStats('streamer-1', '30d')
 
@@ -687,6 +697,74 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
         streamerId: 'streamer-1',
       }),
     )
+  })
+
+  it('channel point fallbackは10000件超でもDB集計値の上位Nとusername fallbackを返す', async () => {
+    // 10,000件の明細取得上限とは独立して、DBが返したwindow総計とユーザー別SUMを
+    // 採用する。pg-proxy経由で実際の生成SQLも検証し、完成済みmock値だけを返して
+    // 誤ったクエリを見逃さないようにする。
+    const sql = createSqlMock([
+      { rows: [{ result: dropStatsResult }] },
+      { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
+    ])
+    const { db, queries } = createCapturingPgProxyDb([
+      [
+        'viewer-top', 'Top Viewer', '1500000', '15000',
+        '2026-03-03T00:00:00+00:00', '2500000',
+      ],
+      [
+        'viewer-fallback', null, '1000000', '12000',
+        '2026-03-02T00:00:00+00:00', '2500000',
+      ],
+    ])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    const result = await getGachaStats('streamer-1', '30d')
+
+    expect(result.channelPointStats).toEqual({
+      totalPoints: 2500000,
+      ranking: [
+        {
+          userTwitchId: 'viewer-top', username: 'Top Viewer', totalPoints: 1500000,
+          redemptionCount: 15000, lastRedeemedAt: '2026-03-03T00:00:00+00:00',
+        },
+        {
+          userTwitchId: 'viewer-fallback', username: 'viewer-fallback', totalPoints: 1000000,
+          redemptionCount: 12000, lastRedeemedAt: '2026-03-02T00:00:00+00:00',
+        },
+      ],
+    })
+    expect(queries).toHaveLength(1)
+    const generated = queries[0]
+    expect(generated.method).toBe('all')
+    expect(generated.params).toEqual(['streamer-1', 0, 10])
+    expect(generated.sql).toMatch(/from "gacha_history"/i)
+    expect(generated.sql).toMatch(/"gacha_history"\."streamer_id" = \$1/i)
+    expect(generated.sql).toMatch(/"gacha_history"\."reward_cost" > \$2/i)
+    // PostgreSQL dialectはSELECT式の同一テーブル列を非修飾で出力する一方、
+    // WHERE/GROUP BY/ORDER BYでは修飾する。実際の生成SQLをそのまま固定する。
+    expect(generated.sql).toMatch(/coalesce\(max\("user_twitch_username"\), "user_twitch_id"\)/i)
+    expect(generated.sql).toMatch(/sum\("reward_cost"\)/i)
+    expect(generated.sql).toMatch(/count\(\*\)/i)
+    expect(generated.sql).toMatch(/max\("redeemed_at"\)/i)
+    expect(generated.sql).toMatch(/sum\(sum\("reward_cost"\)\) over \(\)/i)
+    expect(generated.sql).toMatch(/group by "gacha_history"\."user_twitch_id"/i)
+    expect(generated.sql).toMatch(/order by sum\("gacha_history"\."reward_cost"\) desc, count\(\*\) desc, max\("gacha_history"\."redeemed_at"\) desc/i)
+    expect(generated.sql).toMatch(/limit \$3/i)
+  })
+
+  it('channel point fallbackは対象履歴が空なら0ポイント・空ランキングを返す', async () => {
+    const sql = createSqlMock([
+      { rows: [{ result: dropStatsResult }] },
+      { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
+    ])
+    const { db, queries } = createCapturingPgProxyDb([])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    const result = await getGachaStats('streamer-1', '30d')
+
+    expect(result.channelPointStats).toEqual({ totalPoints: 0, ranking: [] })
+    expect(queries).toHaveLength(1)
   })
 
   it('card owner RPCをuuid引数で実行し、owner値を正規化する', async () => {
