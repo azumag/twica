@@ -137,17 +137,20 @@ describe("ChatAnnouncementSettings", () => {
     expect(await screen.findByText("初入手: レジェンダリーカード、レアカード")).toBeInTheDocument();
   });
 
-  it("shows the N連 length warning for one {newCardsOrNone} and keeps it in the N連 container", async () => {
-    renderSettings({
-      currentMultiTemplate: "{newCardsOrNone}",
-      currentMultiShowCards: true,
-    });
+  it.each(["{cards}", "{newCards}", "{newCardsOrNone}"])(
+    "shows the N連 length warning for the 15-card maximum of %s",
+    async (placeholder) => {
+      renderSettings({
+        currentMultiTemplate: placeholder,
+        currentMultiShowCards: true,
+      });
 
-    const multiTemplateSettings = await screen.findByTestId("multi-template-settings");
-    const warning = within(multiTemplateSettings).getByTestId("multi-template-length-warning");
-    expect(warning).toBeInTheDocument();
-    expect(warning).toHaveTextContent("カード名一覧・カード説明・URLなど");
-  });
+      const multiTemplateSettings = await screen.findByTestId("multi-template-settings");
+      const warning = within(multiTemplateSettings).getByTestId("multi-template-length-warning");
+      expect(warning).toBeInTheDocument();
+      expect(warning).toHaveTextContent("カード名一覧・カード説明・URLなど");
+    }
+  );
 
   it("does not show an N連-only length warning under the single-draw template", async () => {
     renderSettings({

@@ -30,17 +30,18 @@ const DEFAULT_MULTI_DRAW_CHAT_TEMPLATE = "@{user} が{draws}連ガチャで {rar
 
 // N連は追加報酬・Raidとも最大15回にクランプされる（gacha.ts）。カード名は入力検証で
 // 最大100文字（validations.ts）であり、15枚を「、」14個で連結すると 100 * 15 + 14 =
-// 1514文字になる。{newCardsOrNone} はカスタムN連テンプレート内で省略されず展開されるため、
-// Twitch送信時の500文字truncateを事前に利用者へ警告できるよう、この上限を見積もりへ使う。
+// 1514文字になる。{cards}/{newCards}/{newCardsOrNone} はいずれも同じカード名一覧を
+// 展開し得るため、片方だけを短く見積もるとTwitch送信時の500文字truncate警告を見落とす。
+// 単発の{card}は一枚だけという別契約なので、このN連専用上限を共有しない。
 const MAX_MULTI_DRAW_COUNT = 15;
 const MAX_CARD_NAME_CHARACTERS = 100;
-const MAX_NEW_CARDS_OR_NONE_CHARACTERS =
+const MAX_MULTI_DRAW_CARD_LIST_CHARACTERS =
   MAX_CARD_NAME_CHARACTERS * MAX_MULTI_DRAW_COUNT + (MAX_MULTI_DRAW_COUNT - 1);
 
 const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   user: 25,
   card: MAX_CARD_NAME_CHARACTERS,
-  cards: 300,
+  cards: MAX_MULTI_DRAW_CARD_LIST_CHARACTERS,
   rarity: 12,
   num: 10,
   // コンプ進捗のユニーク/全種類数は現実的に4桁で十分
@@ -48,12 +49,12 @@ const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   unique: 4,
   all: 4,
   detail: CARD_DESCRIPTION_MAX_CHARACTERS,
-  // newCards は cards と同等の上限（実装上は 「初出: 」付与時に予約される）
-  // newCards mirrors `cards` length; runtime reserves space for the "初出: " suffix
-  newCards: 300,
+  // 3つとも最大15枚のカード名一覧を展開できる。正常0件の{newCardsOrNone}だけは
+  // 「なし」になるが、警告は取り得る最大本文長で判定する。
+  newCards: MAX_MULTI_DRAW_CARD_LIST_CHARACTERS,
   // 初入手ありでは最大15枚のカード名一覧、正常0件では短い固定値「なし」になる
   // It can contain all 15 card names (1514 chars), or the short fixed value "なし" for zero matches
-  newCardsOrNone: MAX_NEW_CARDS_OR_NONE_CHARACTERS,
+  newCardsOrNone: MAX_MULTI_DRAW_CARD_LIST_CHARACTERS,
   newCardCount: 4,
   // パック名の上限はDBのCHECK制約（MAX_COLLECTION_NAME_LENGTH）に合わせる
   // Pack name limit mirrors the DB CHECK constraint (MAX_COLLECTION_NAME_LENGTH)
