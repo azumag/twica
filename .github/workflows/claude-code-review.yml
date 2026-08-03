@@ -36,11 +36,17 @@ concurrency:
 
 jobs:
   claude-review:
+    # Claude Code が --max-turns 30 に繰り返し到達し、レビューコメントを投稿しないまま
+    # 終了しているため、原因と実行条件を見直すまでこの job 全体を一時停止する。
+    # 先頭の false により runner の割り当て前に job がスキップされるため、checkout や
+    # Claude Code Action は起動せず、不要な API 利用・サブスクリプション消費・課金も発生しない。
+    # 再開時は max-turns、プロンプト、権限を見直したうえで、次行の `false &&` だけを削除する。
     # - draft PR は作業途中のためレビューしない(ready_for_review で拾う)。
     # - fork からの PR では GitHub がシークレットを渡さないため CLAUDE_CODE_OAUTH_TOKEN が使えず
     #   必ず失敗する。head.repo.full_name の比較で除外する(fork 判定と異なり、
     #   fork リポジトリが削除済みで head.repo が null の場合もまとめて除外できる)。
     if: >-
+      false &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
