@@ -789,6 +789,24 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       )
     })
 
+    it('sender_modeが custom_bot/official_bot/streamer のいずれでもない未知値はterminal-unavailableとして保持する', async () => {
+      const fixture = createDrizzleDbMock({
+        selects: [
+          { rows: [{ id: 'streamer-1' }] },
+          { rows: [{ sender_mode: 'unknown_mode', custom_bot_account_id: null }] },
+        ],
+      })
+      primeDb(fixture)
+
+      await expect(resolveBotAccountForChat('broadcaster-1')).resolves.toEqual({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT sender mode is unsupported',
+      })
+      // DB CHECK制約追加前の未知値・手動不整合を本人scope不足へ誤って倒さないよう、
+      // BOTアカウントの追加照会（3クエリ目）は発行されない。
+      expect(fixture.selectCalls).toHaveLength(2)
+    })
+
     it('custom bot の期限内トークンを返し、3段階の参照先を固定する', async () => {
       const fixture = createDrizzleDbMock({
         selects: [
