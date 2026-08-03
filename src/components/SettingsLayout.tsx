@@ -14,6 +14,7 @@ import CopyButton from "@/components/CopyButton";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
 import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import { legacySoundToRules, normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
+import { resolveChatAnnouncementSectionStatus } from "@/lib/chat-delivery-ui";
 import type { Card, Json } from "@/types/database";
 import type { PlanType } from "@/lib/plan-constants";
 
@@ -251,11 +252,10 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
   // （送信可否は不明）まで「送信手段なし」と誤判定する。dashboard bannerと同じ
   // helper由来の確定値を直接使い、正常に不足を確認できた場合だけ警告する。
   const announcementNeedsAttention = data.chatAnnouncement.needsAttention;
-  const announcementStatus: SettingsSection["status"] = announcementNeedsAttention
-    ? "attention"
-    : data.chatAnnouncement.enabled
-      ? "active"
-      : "empty";
+  const announcementStatus: SettingsSection["status"] = resolveChatAnnouncementSectionStatus({
+    enabled: data.chatAnnouncement.enabled,
+    needsAttention: announcementNeedsAttention,
+  });
   const visibilityStatus: SettingsSection["status"] = data.visibility.showUnowned
     ? "active"
     : "empty";
@@ -316,7 +316,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       description: t("advanced.section.announcementDesc"),
       icon: <SectionIcon name="chat" />,
       status: announcementStatus,
-      statusLabel: announcementNeedsAttention
+      attentionLabel: announcementNeedsAttention
         ? t("advanced.status.attention")
         : undefined,
       content: (

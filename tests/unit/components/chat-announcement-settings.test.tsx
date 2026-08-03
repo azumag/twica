@@ -11,6 +11,26 @@ vi.mock("next/navigation", () => ({
   useRouter: () => routerMocks,
 }));
 
+const ORIGINAL_LOCATION = window.location;
+
+function stubLocationHref() {
+  const current = window.location;
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: {
+      hash: current.hash,
+      host: current.host,
+      hostname: current.hostname,
+      href: current.href,
+      origin: current.origin,
+      pathname: current.pathname,
+      port: current.port,
+      protocol: current.protocol,
+      search: current.search,
+    },
+  });
+}
+
 // next-intl unescapes the ICU '{'...'}' sequences from messages/ja.json into literal
 // {newCards}/{newCardsOrNone}/{newCardCount} at render time, so the expectation here is the rendered
 // text rather than the raw JSON string.
@@ -54,6 +74,31 @@ describe("ChatAnnouncementSettings", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    Object.defineProperty(window, "location", { value: ORIGINAL_LOCATION, configurable: true });
+  });
+
+  it("再認証APIの200応答に有効なTwitch loginUrlがなければ遷移せず翻訳済みエラーを表示する", async () => {
+    stubLocationHref();
+    const originalHref = window.location.href;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/auth/check-scope")) {
+          return Promise.resolve(new Response(JSON.stringify({ hasScope: false }), { status: 200 }));
+        }
+        if (url.includes("/api/auth/reauth")) {
+          return Promise.resolve(new Response(JSON.stringify({ state: "state-123" }), { status: 200 }));
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      })
+    );
+    renderSettings({ currentEnabled: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Twitchで再認証" }));
+
+    expect(await screen.findByText("再認証に失敗しました")).toBeInTheDocument();
+    expect(window.location.href).toBe(originalHref);
   });
 
   it("shows template controls by default without the legacy advanced checkbox", async () => {

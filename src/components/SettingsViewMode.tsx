@@ -233,8 +233,8 @@ export interface SettingsSection {
   icon?: ReactNode;
   /** active/configured/empty/attention — controls the right-side status marker */
   status?: "active" | "configured" | "empty" | "attention";
-  /** 色に依存せずattention等の意味を伝える、短い可視ラベル。 */
-  statusLabel?: string;
+  /** attention状態を色だけに依存せず伝える短い可視ラベル。 */
+  attentionLabel?: string;
   content: ReactNode;
 }
 
@@ -326,9 +326,9 @@ export function AdvancedSettingsLayout({
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT_CLASS[section.status]}`}
                       />
                     )}
-                    {section.statusLabel && (
+                    {section.status === "attention" && section.attentionLabel && (
                       <span className="shrink-0 rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                        {section.statusLabel}
+                        {section.attentionLabel}
                       </span>
                     )}
                   </span>

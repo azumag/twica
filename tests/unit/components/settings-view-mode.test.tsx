@@ -262,7 +262,7 @@ describe('SettingsViewMode', () => {
               id: 'announcement',
               label: 'チャット通知',
               status: 'attention',
-              statusLabel: '要対応',
+              attentionLabel: '要対応',
               content: <div>chat panel</div>,
             },
           ]}

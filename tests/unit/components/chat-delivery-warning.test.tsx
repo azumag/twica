@@ -116,6 +116,24 @@ describe('ChatDeliveryWarning', () => {
     expect(screen.queryByText(/Failed to fetch/)).toBeNull()
   })
 
+  it('200でも非JSONならloadingを解除し、Cookie保存・redirectを行わない', async () => {
+    stubLocationHref()
+    const originalHref = window.location.href
+    const originalCookie = document.cookie
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>not json</html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+    }))
+    renderWarning(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Twitchと再認証' }))
+
+    expect(await screen.findByText('再認証を開始できませんでした。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Twitchと再認証' })).not.toBeDisabled()
+    expect(window.location.href).toBe(originalHref)
+    expect(document.cookie).toBe(originalCookie)
+  })
+
   it('Context更新前にmaintenance 503を受けても既存翻訳へ正規化する', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       error: {
@@ -138,7 +156,7 @@ describe('ChatDeliveryWarning', () => {
   it('成功時はOAuth state cookieを保存してTwitchへredirectする', async () => {
     stubLocationHref()
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      loginUrl: 'https://id.twitch.tv/oauth2/authorize?mock=1',
+      loginUrl: 'https://id.twitch.tv/oauth2/authorize?mock=1&state=state-123',
       state: 'state-123',
     }), {
       status: 200,
@@ -149,8 +167,33 @@ describe('ChatDeliveryWarning', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Twitchと再認証' }))
 
     await waitFor(() => expect(window.location.href).toBe(
-      'https://id.twitch.tv/oauth2/authorize?mock=1',
+      'https://id.twitch.tv/oauth2/authorize?mock=1&state=state-123',
     ))
     expect(document.cookie).toContain('twitch_auth_state=state-123')
+  })
+
+  it.each([
+    { payload: { state: 'state-123' }, label: 'loginUrl欠落' },
+    {
+      payload: { loginUrl: 'https://example.com/oauth2/authorize?state=state-123', state: 'state-123' },
+      label: 'Twitch外URL',
+    },
+    {
+      payload: { loginUrl: 'https://id.twitch.tv/oauth2/authorize?state=other', state: 'state-123' },
+      label: 'state不一致',
+    },
+  ])('200応答でも不正なOAuth payload（$label）はredirectしない', async ({ payload }) => {
+    stubLocationHref()
+    const originalHref = window.location.href
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    renderWarning(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Twitchと再認証' }))
+
+    expect(await screen.findByText('再認証を開始できませんでした。')).toBeInTheDocument()
+    expect(window.location.href).toBe(originalHref)
   })
 })

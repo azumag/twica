@@ -9,6 +9,7 @@ import { countCharacters } from "@/lib/text-utils";
 import { MAX_COLLECTION_NAME_LENGTH } from "@/lib/validation/collection-name";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
+import { useChatReauthorization } from "@/lib/twitch/use-chat-reauthorization";
 
 interface ChatAnnouncementSettingsProps {
   streamerId: string;
@@ -122,6 +123,7 @@ export default function ChatAnnouncementSettings({
   // 各書き込みボタンのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const isMaintenanceBlocked = maintenanceMode !== "off";
+  const { reauthorizing, reauthorize } = useChatReauthorization(isMaintenanceBlocked);
 
   // State管理
   const [enabled, setEnabled] = useState(currentEnabled);
@@ -140,7 +142,6 @@ export default function ChatAnnouncementSettings({
   // State for scope check
   const [hasScope, setHasScope] = useState<boolean | null>(null);
   const [checkingScope, setCheckingScope] = useState(true);
-  const [reauthorizing, setReauthorizing] = useState(false);
   const [botConnected, setBotConnected] = useState(Boolean(botAccount));
   const [botDisplayName, setBotDisplayName] = useState(botAccount?.displayName || botAccount?.username || "");
   const [botConnecting, setBotConnecting] = useState(false);
@@ -294,48 +295,21 @@ export default function ChatAnnouncementSettings({
    * Start re-authentication to get additional scope
    */
   const handleReauthorize = useCallback(async () => {
-    setReauthorizing(true);
     setMessage("");
     setIsError(false);
 
-    try {
-      const response = await fetch("/api/auth/reauth", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          additionalScopes: ["user:write:chat"],
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-
-        // state をCookieに保存してからリダイレクト
-        // Save state to cookie before redirect
-        if (data.state) {
-          document.cookie = `twitch_auth_state=${data.state}; path=/; max-age=600; secure; samesite=lax`;
-        }
-
-        // Twitch認証ページにリダイレクト
-        // Redirect to Twitch authorization page
-        window.location.href = data.loginUrl;
-      } else {
-        const errorData = await response.json();
-        const maintenanceError = parseMaintenanceError(response, errorData);
-        setMessage(maintenanceError?.message || errorData.error || t("errors.reauthorizeFailed"));
-        setIsError(true);
-        setReauthorizing(false);
-      }
-    } catch (error) {
-      logger.error("Reauthorize error:", error);
-      setMessage(t("errors.reauthorizeFailed"));
+    const failure = await reauthorize();
+    if (failure) {
+      // shared hookはAPI由来文言をUIへ渡さず、maintenanceか未知失敗かだけ返す。
+      // ここでは既存の設定画面用翻訳へ写し、bannerとの挙動差を作らない。
+      setMessage(
+        failure === "maintenance"
+          ? tMaintenance("writeDisabled")
+          : t("errors.reauthorizeFailed")
+      );
       setIsError(true);
-      setReauthorizing(false);
     }
-  }, [t]);
+  }, [reauthorize, t, tMaintenance]);
 
   const handleConnectBot = useCallback(async () => {
     setBotConnecting(true);

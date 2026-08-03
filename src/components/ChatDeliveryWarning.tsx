@@ -2,9 +2,8 @@
 
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { useMaintenanceStatus } from '@/components/MaintenanceStatusProvider'
-import { parseMaintenanceError } from '@/lib/maintenance/client'
+import { useChatReauthorization } from '@/lib/twitch/use-chat-reauthorization'
 
 interface ChatDeliveryWarningProps {
   needsAttention: boolean
@@ -22,60 +21,19 @@ export default function ChatDeliveryWarning({ needsAttention }: ChatDeliveryWarn
   const tMaintenance = useTranslations('maintenance')
   const { mode: maintenanceMode } = useMaintenanceStatus()
   const isMaintenanceBlocked = maintenanceMode !== 'off'
-  const [reauthorizing, setReauthorizing] = useState(false)
+  const { reauthorizing, reauthorize } = useChatReauthorization(isMaintenanceBlocked)
   const [error, setError] = useState<string | null>(null)
 
   if (!needsAttention) return null
 
   const handleReauthorize = async () => {
-    // disabled属性だけに依存せず、テスト・支援技術・将来の呼び出し変更から直接
-    // handlerが実行されてもmaintenance write境界を越えないよう二重にguardする。
-    if (isMaintenanceBlocked) {
-      setError(tMaintenance('writeDisabled'))
-      return
-    }
-    setReauthorizing(true)
     setError(null)
-    try {
-      const response = await fetch('/api/auth/reauth', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ additionalScopes: [ADDITIONAL_SCOPES.CHAT_WRITE] }),
-      })
-      const responseBody: unknown = await response.json().catch(() => null)
-      if (!response.ok) {
-        // Contextのpoll間隔内にmaintenanceへ切り替わった競合でも、503の既存
-        // structured contractだけを認識し、locale固定のmaintenance文言へ正規化する。
-        // reauth endpointはDB障害でも503を返すため、statusだけでmaintenance扱い
-        // すると原因を誤表示する。必ずmaintenance_* codeまで検証する。
-        if (parseMaintenanceError(response, responseBody)) {
-          setError(tMaintenance('writeDisabled'))
-          setReauthorizing(false)
-          return
-        }
-        throw new Error('reauth request failed')
-      }
-      const data = responseBody as {
-        loginUrl?: unknown
-        state?: unknown
-      } | null
-      if (typeof data?.loginUrl !== 'string') {
-        throw new Error('reauth request failed')
-      }
-
-      // 既存ChatAnnouncementSettingsと同じOAuth state受け渡し。state値は認証用の
-      // 一時値でtokenではなく、10分・Secure・SameSite=Laxに限定して保存する。
-      if (typeof data.state === 'string') {
-        document.cookie = `twitch_auth_state=${data.state}; path=/; max-age=600; secure; samesite=lax`
-      }
-      window.location.href = data.loginUrl
-    } catch (reauthError) {
-      // fetch実装やAPI内部の英語・機密寄りメッセージをUIへ露出せず、全未知失敗を
-      // i18n済みの安全な文言へ正規化する。詳細はserver側ログで追跡する。
-      void reauthError
+    const failure = await reauthorize()
+    if (failure === 'maintenance') {
+      setError(tMaintenance('writeDisabled'))
+    } else if (failure === 'request') {
+      // fetch実装やAPI内部の英語・機密寄りメッセージをUIへ露出しない。
       setError(t('reauthFailed'))
-      setReauthorizing(false)
     }
   }
 

@@ -1,30 +1,15 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-
-function readSource(path: string): string {
-  return readFileSync(join(process.cwd(), path), 'utf8')
-}
+import { resolveChatAnnouncementSectionStatus } from '@/lib/chat-delivery-ui'
 
 describe('settings chat delivery capability contract', () => {
-  it('server helperのneedsAttentionをbannerとsettings sidebarへ再計算せず渡す', () => {
-    const dashboardLayoutSource = readSource('src/app/dashboard/layout.tsx')
-    const pageSource = readSource('src/app/dashboard/settings/page.tsx')
-    const layoutSource = readSource('src/components/SettingsLayout.tsx')
-
-    // helper失敗時は canSendChat=false でも needsAttention=false になる。途中で
-    // enabled && !canSendChat を再構築するとfalse-positiveが復活するため、serverで
-    // 確定したbooleanをbanner・prop境界・sidebar判定の全てで直接使う契約を固定する。
-    expect(dashboardLayoutSource).toContain(
-      'ChatDeliveryWarning needsAttention={chatDeliveryCapability?.needsAttention ?? false}',
-    )
-    expect(pageSource).toContain('needsAttention: chatDeliveryCapability.needsAttention')
-    expect(pageSource).not.toContain('deliveryAvailable: chatDeliveryCapability.canSendChat')
-    expect(layoutSource).toContain(
-      'const announcementNeedsAttention = data.chatAnnouncement.needsAttention;',
-    )
-    expect(layoutSource).not.toContain(
-      'data.chatAnnouncement.enabled && !data.chatAnnouncement.deliveryAvailable',
-    )
+  it.each([
+    [{ enabled: true, needsAttention: true }, 'attention'],
+    [{ enabled: true, needsAttention: false }, 'active'],
+    [{ enabled: false, needsAttention: false }, 'empty'],
+    // server helperが確定した不足判定を最優先する。normally impossibleな組み合わせも
+    // attentionへ倒すことで、clientが別材料から警告を打ち消す回帰を防ぐ。
+    [{ enabled: false, needsAttention: true }, 'attention'],
+  ] as const)('server確定値をclientで再計算せずsection状態へ写す: %o', (input, expected) => {
+    expect(resolveChatAnnouncementSectionStatus(input)).toBe(expected)
   })
 })
