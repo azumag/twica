@@ -176,33 +176,58 @@ export function formatRarityCountsForChat(cardNamesByRarity: string[]): string {
     .join(CARD_LIST_SEPARATOR);
 }
 
-export function findNewCardNamesForCurrentDraw(
+type UserCardCountRow = {
+  count: unknown;
+  card: { id: string; is_active?: boolean };
+};
+
+/**
+ * 初入手判定で共有する今回の当選数と最終所持数を1回だけ構築する。DB境界では型注釈に
+ * 反して文字列等が混入し得るため、ここでは値を正規化せず保持し、安全な新placeholder側が
+ * Number.isIntegerでfail-closedに検証できるようにする。既存placeholder側の数値変換は
+ * collectNewCardNamesForCurrentDraw内で従来どおり行い、保存済みテンプレートの出力を変えない。
+ */
+function buildCurrentDrawCountMaps(
   drawnCards: GachaCard[],
-  userCardCounts: Array<{ count: number; card: { id: string; is_active?: boolean } }>
-): string[] {
+  userCardCounts: UserCardCountRow[],
+): {
+  drawnCounts: Map<string, number>;
+  finalCounts: Map<string, unknown>;
+} {
   const drawnCounts = new Map<string, number>();
   for (const drawnCard of drawnCards) {
     drawnCounts.set(drawnCard.id, (drawnCounts.get(drawnCard.id) ?? 0) + 1);
   }
 
-  const finalCounts = new Map<string, number>();
+  const finalCounts = new Map<string, unknown>();
   for (const row of userCardCounts) {
     if (!row.card?.id) continue;
-    finalCounts.set(row.card.id, Number(row.count) || 0);
+    finalCounts.set(row.card.id, row.count);
   }
 
+  return { drawnCounts, finalCounts };
+}
+
+function collectNewCardNamesForCurrentDraw(
+  drawnCards: GachaCard[],
+  drawnCounts: Map<string, number>,
+  finalCounts: Map<string, unknown>,
+): string[] {
   const seenInCurrentDraw = new Set<string>();
   const newCardNames: string[] = [];
 
   for (const drawnCard of drawnCards) {
     if (seenInCurrentDraw.has(drawnCard.id)) continue;
 
-    const finalCount = finalCounts.get(drawnCard.id);
-    if (finalCount === undefined) {
+    const rawFinalCount = finalCounts.get(drawnCard.id);
+    if (rawFinalCount === undefined) {
       seenInCurrentDraw.add(drawnCard.id);
       continue;
     }
 
+    // 既存 {newCards}/{newCardCount} は従来から Number(value) || 0 で縮退している。
+    // 新placeholderの厳密判定は呼び出し前に済ませ、ここは後方互換の算出だけを担う。
+    const finalCount = Number(rawFinalCount) || 0;
     const currentDrawCount = drawnCounts.get(drawnCard.id) ?? 0;
     const previousCount = finalCount - currentDrawCount;
     // 所持数の取得に失敗して finalCount=0 へ縮退すると、previousCount が負値になって
@@ -217,6 +242,41 @@ export function findNewCardNamesForCurrentDraw(
   }
 
   return newCardNames;
+}
+
+export function findNewCardNamesForCurrentDraw(
+  drawnCards: GachaCard[],
+  userCardCounts: UserCardCountRow[],
+): string[] {
+  const { drawnCounts, finalCounts } = buildCurrentDrawCountMaps(drawnCards, userCardCounts);
+  return collectNewCardNamesForCurrentDraw(drawnCards, drawnCounts, finalCounts);
+}
+
+/**
+ * 初入手名一覧を安全に解決する。`findNewCardNamesForCurrentDraw` の既存仕様は、行欠落時に
+ * 「初入手ではない」とみなして空配列を返すため、既存 {newCards} の互換出力には適している。
+ * しかし {newCardsOrNone} の「なし」は、全当選カードについて今回の抽選回数以上の最終所持数を
+ * 確認できた場合だけ出してよい。行欠落・0・不正な値はDB/RPCの部分応答の可能性があり、空配列と
+ * 同一視すると「判定不能」を「初入手なし」と誤通知するため undefined を返して区別する。
+ */
+function resolveNewCardNamesForCurrentDraw(
+  drawnCards: GachaCard[],
+  userCardCounts: UserCardCountRow[],
+): string[] | undefined {
+  const { drawnCounts, finalCounts } = buildCurrentDrawCountMaps(drawnCards, userCardCounts);
+
+  for (const [cardId, currentDrawCount] of drawnCounts) {
+    const finalCount = finalCounts.get(cardId);
+    if (
+      typeof finalCount !== 'number'
+      || !Number.isInteger(finalCount)
+      || finalCount < currentDrawCount
+    ) {
+      return undefined;
+    }
+  }
+
+  return collectNewCardNamesForCurrentDraw(drawnCards, drawnCounts, finalCounts);
 }
 
 export async function handleRaidNotification(messageId: string, event: {
@@ -344,6 +404,11 @@ export interface ChatAnnouncementSnapshot {
   uniqueCount: number;
   allCount: number;
   newCardNames: string[];
+  /**
+   * 全当選カードの最終所持数を確認できた場合だけtrue。payload v1へ後方互換に追加するため
+   * optionalとし、fieldが無い移行前outbox行は「判定不能」としてfail-closedに扱う。
+   */
+  newCardNamesResolved?: boolean;
 }
 
 /**
@@ -1007,12 +1072,12 @@ export async function sendChatAnnouncement(
   const messageTemplate = isMultiDraw
     ? streamer.chat_announcement_multi_template || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE
     : streamer.chat_announcement_template || DEFAULT_CHAT_TEMPLATE;
-  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}|\{rarityCounts\}|\{newCards\}|\{newCardCount\}/.test(messageTemplate);
+  const usesMultiDrawPlaceholders = /\{cards\}|\{draws\}|\{rarityCounts\}|\{newCards\}|\{newCardCount\}|\{newCardsOrNone\}/.test(messageTemplate);
   const effectiveTemplate = messageTemplate;
   const needsCardCount = /\{num\}/.test(effectiveTemplate);
   const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
   const needsAllCount = /\{all\}/.test(effectiveTemplate);
-  const usesNewCardPlaceholders = /\{newCards\}|\{newCardCount\}/.test(effectiveTemplate);
+  const usesNewCardPlaceholders = /\{newCards\}|\{newCardCount\}|\{newCardsOrNone\}/.test(effectiveTemplate);
   const shouldAppendDefaultNewCards = isMultiDraw
     && streamer.chat_announcement_multi_show_cards
     && !streamer.chat_announcement_multi_template;
@@ -1024,6 +1089,13 @@ export async function sendChatAnnouncement(
   let uniqueCount: number | undefined = snapshot?.uniqueCount;
   let allCount: number | undefined = snapshot?.allCount;
   let newCardNames: string[] = snapshot?.newCardNames ?? [];
+  // `newCardNames` 自体は既存 {newCards}/{newCardCount} の後方互換のため、従来どおり
+  // 失敗時にも空配列へフォールバックする。一方で空配列だけでは「正常に0件」と
+  // 「取得不能」を区別できず、後者で {newCardsOrNone} を「なし」と誤通知してしまう。
+  // そこで判定成否を別フラグに保持し、新placeholderだけがこの明示状態を見る。
+  // snapshotの存在だけでは、SQL集約時に当選カードの所持行が欠落していないことを保証できない。
+  // DBが明示的に完全性を検証した新fieldだけを信頼し、移行前payloadは空文字へfail-closedにする。
+  let newCardInfoResolved = snapshot?.newCardNamesResolved === true;
 
   if (!snapshot && (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo)) {
     // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
@@ -1107,8 +1179,17 @@ export async function sendChatAnnouncement(
             uniqueCount = rows.filter((row) => row.card?.is_active === true).length;
           }
 
-          if (needsNewCardInfo) {
-            newCardNames = findNewCardNamesForCurrentDraw(drawnCards, rows);
+          // `data: null, error: null` は0件配列ではなく応答欠落として扱う。空配列だけが
+          // 「正常に0件」と言えるため、Array.isArrayで確認できた場合に限り解決済みにする。
+          if (needsNewCardInfo && Array.isArray(userCardCountsResult?.data)) {
+            const resolvedNewCardNames = resolveNewCardNamesForCurrentDraw(drawnCards, rows);
+            // 不完全な配列でも既存 {newCards}/{newCardCount} は従来の部分結果を使う。
+            // 新placeholderだけは resolve 成功時に限るため、保存済みテンプレートの
+            // 出力を変えずに「なし」の誤通知だけを防げる。
+            newCardNames = resolvedNewCardNames ?? findNewCardNamesForCurrentDraw(drawnCards, rows);
+            if (resolvedNewCardNames !== undefined) {
+              newCardInfoResolved = true;
+            }
           }
         }
       }
@@ -1157,6 +1238,11 @@ export async function sendChatAnnouncement(
       ? newCardNames.join(CARD_LIST_SEPARATOR)
       : undefined,
     newCardCount: needsNewCardInfo ? newCardNames.length : undefined,
+    newCardsOrNone: needsNewCardInfo && newCardInfoResolved
+      ? newCardNames.length > 0
+        ? newCardNames.join(CARD_LIST_SEPARATOR)
+        : 'なし'
+      : undefined,
     rarity: rarityMap[card.rarity] || card.rarity,
     detail: card.description || undefined,
     num: cardCount,

@@ -137,6 +137,7 @@ describe('transactional chat outbox claim/ack', () => {
         uniqueCount: 1,
         allCount: 10,
         newCardNames: ['Alpha'],
+        newCardNamesResolved: true,
       },
     }
 
@@ -160,6 +161,41 @@ describe('transactional chat outbox claim/ack', () => {
       payloadVersion: 1,
       payload: { ...payload, chatSnapshot: undefined },
     })).toBeNull()
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: {
+        ...payload,
+        chatSnapshot: { ...payload.chatSnapshot, newCardNamesResolved: 'true' },
+      },
+    })).toBeNull()
+
+    // v1のadditive拡張なので、migration前に作られたfield無しpayloadもdecodeは継続する。
+    // 通知側がfield欠落を「判定不能」と扱い、{newCardsOrNone}だけを空文字にする。
+    const legacySnapshot = {
+      cardCount: payload.chatSnapshot.cardCount,
+      uniqueCount: payload.chatSnapshot.uniqueCount,
+      allCount: payload.chatSnapshot.allCount,
+      newCardNames: payload.chatSnapshot.newCardNames,
+    }
+    const legacyPayload = { ...payload, chatSnapshot: legacySnapshot }
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: legacyPayload,
+    })).toEqual(legacyPayload)
+
+    // SQLが歯抜け復旧を判定不能としたpayloadもv1として配送可能であり、通知側だけが
+    // newCardsOrNoneを空文字化する。falseをdecoderで拒否すると安全なpayloadがDLQになる。
+    const unresolvedPayload = {
+      ...payload,
+      chatSnapshot: { ...payload.chatSnapshot, newCardNamesResolved: false },
+    }
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: unresolvedPayload,
+    })).toEqual(unresolvedPayload)
   })
 
   it('sent更新はidとlease_idの両方でfenceする', async () => {

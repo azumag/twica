@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sendChatAnnouncement } from '@/lib/services/eventsub-redemption'
 import { TwitchChatService } from '@/lib/twitch/chat-service'
 import { logger } from '@/lib/logger.server'
+import { getDb } from '@/lib/db/client'
 
 /**
  * `sendChatAnnouncement` の `duplicate → skipped` 変換を直接検証する。
@@ -37,7 +38,13 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
     rarity: 'common',
     drop_rate: 1,
   }
-  const snapshot = { cardCount: 1, uniqueCount: 1, allCount: 10, newCardNames: [] }
+  const snapshot = {
+    cardCount: 1,
+    uniqueCount: 1,
+    allCount: 10,
+    newCardNames: [],
+    newCardNamesResolved: true,
+  }
 
   it('Twitchが重複として抑止した場合はDLQ行きのterminalではなくskippedを返す', async () => {
     vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
@@ -111,5 +118,252 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
     )
 
     expect(outcome).toEqual({ outcome: 'sent' })
+  })
+
+  it('{newCardsOrNone} は初入手ありなら既存 {newCards} と同じ一覧を送る', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta], undefined,
+      { ...snapshot, newCardNames: ['Alpha'] },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=Alpha|legacy=Alpha|count=1')
+  })
+
+  it('{newCardsOrNone} はsnapshotで正常0件が確定している場合だけ「なし」を送る', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta], undefined, snapshot,
+    )
+
+    // legacy placeholders remain byte-for-byte compatible: empty {newCards} and numeric 0.
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=なし|legacy=|count=0')
+  })
+
+  it('outbox snapshotが判定不能なら既存placeholderだけを維持し {newCardsOrNone} は空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta], undefined,
+      { ...snapshot, newCardNames: ['Alpha'], newCardNamesResolved: false },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=|legacy=Alpha|count=1')
+  })
+
+  it('移行前outbox snapshotは判定成否fieldが無いため「なし」にせず空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+    const legacySnapshot = {
+      cardCount: snapshot.cardCount,
+      uniqueCount: snapshot.uniqueCount,
+      allCount: snapshot.allCount,
+      newCardNames: snapshot.newCardNames,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta], undefined,
+      legacySnapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=|legacy=|count=0')
+  })
+
+  it('multiShowCardsがOFFなら {newCardsOrNone} はsnapshotがあっても空文字になる', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}',
+      chat_announcement_multi_show_cards: false,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta], undefined,
+      { ...snapshot, newCardNames: ['Alpha'] },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=')
+  })
+
+  it('初入手情報の取得失敗時は {newCardsOrNone} を「なし」と誤表示しない', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    vi.mocked(getDb).mockRejectedValueOnce(new Error('database unavailable'))
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta],
+    )
+
+    // Existing {newCardCount}=0 fallback is preserved; only the new placeholder stays blank.
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=|legacy=|count=0')
+  })
+
+  it('当選カードの所持行が欠落して初入手判定不能な場合は {newCardsOrNone} を空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const sql = vi.fn().mockResolvedValue([{ result: [{ count: 1, card: { id: card.id, is_active: true } }] }])
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as never)
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta],
+    )
+
+    // The existing placeholders keep their historical partial-result behavior.
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=|legacy=Alpha|count=1')
+  })
+
+  it('全当選カードの所持数が正常に取得できて既所有なら {newCardsOrNone} は「なし」になる', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const sql = vi.fn().mockResolvedValue([{
+      result: [
+        { count: 2, card: { id: card.id, is_active: true } },
+        { count: 3, card: { id: beta.id, is_active: true } },
+      ],
+    }])
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as never)
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta],
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=なし|legacy=|count=0')
+  })
+
+  it('同一N連で同じカードを2回引いても {newCardsOrNone} はカード名を1回だけ表示する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const sql = vi.fn().mockResolvedValue([{ result: [{ count: 2, card: { id: card.id, is_active: true } }] }])
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as never)
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, card],
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=Alpha')
+  })
+
+  it('RPCがdata:null/error:nullを返す判定不能時は {newCardsOrNone} を空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const sql = vi.fn().mockResolvedValue([{ result: null }])
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as never)
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta],
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=')
+  })
+
+  it.each([
+    ['zero', 0],
+    ['fractional', 1.5],
+    ['string', '2'],
+    ['below current draw count', 1],
+  ])('invalid final count (%s) leaves {newCardsOrNone} empty', async (_label, count) => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const sql = vi.fn().mockResolvedValue([{ result: [{ count, card: { id: card.id, is_active: true } }] }])
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as never)
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, card],
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=')
+  })
+
+  it('単発通知では {newCardsOrNone} は未指定のまま空文字になる', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const singleStreamer = {
+      ...streamer,
+      chat_announcement_template: 'new={newCardsOrNone}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', singleStreamer, card, 'Viewer', 'viewer-1', undefined, undefined, snapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=')
   })
 })
