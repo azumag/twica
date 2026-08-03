@@ -1,5 +1,10 @@
 import { getEnvVar } from '@/lib/env-validation'
-import { getBotAccountForChat, getTwitchAccessToken, hasScope } from './token-manager'
+import {
+  getScopeStatus,
+  getTwitchAccessToken,
+  resolveBotAccountForChat,
+  TwitchTokenError,
+} from './token-manager'
 import { ADDITIONAL_SCOPES } from './scopes'
 import { logger } from '@/lib/logger.server'
 import { reportApiError, reportError } from '@/lib/sentry/error-handler'
@@ -134,9 +139,25 @@ export type ChatSendOutcome =
    * 詳細は下の DUPLICATE_DROP_CODE の解説を参照。
    */
   | { outcome: 'duplicate'; reason: string }
-  | { outcome: 'terminal'; reason: string }
+  | { outcome: 'terminal'; code: ChatSendTerminalCode; reason: string }
   | { outcome: 'retryable'; reason: string }
   | { outcome: 'aborted'; reason: string }
+
+/**
+ * terminal失敗を運用障害とユーザー操作待ちに分ける機械判定コード。
+ *
+ * reasonはDLQと人間向けログの診断情報として残す一方、制御分岐に使わない。
+ * Twitchの文言や自前メッセージを変更しても、missing scopeだけを安全に
+ * 自動Issue対象外へ維持するため、呼び出し側はこのcodeを判定する。
+ */
+export const CHAT_SEND_TERMINAL_CODES = {
+  MISSING_SCOPE: 'missing_scope',
+  CREDENTIAL_UNAVAILABLE: 'credential_unavailable',
+  TWITCH_REJECTED: 'twitch_rejected',
+} as const
+
+export type ChatSendTerminalCode =
+  (typeof CHAT_SEND_TERMINAL_CODES)[keyof typeof CHAT_SEND_TERMINAL_CODES]
 
 export interface ChatSendOptions {
   /**
@@ -166,7 +187,15 @@ export class TwitchChatService {
    * @returns 成功した場合はtrue、失敗した場合はfalse
    */
   async sendChatMessage(broadcasterTwitchUserId: string, message: string): Promise<boolean> {
-    const result = await this.sendChatMessageDetailed(broadcasterTwitchUserId, message)
+    // legacy boolean APIはoutbox上位境界を持たないため、従来どおりこの呼び出し内で
+    // reportApiError/reportErrorを永続化する。分類付きAPIとはprivate境界で分離し、
+    // 将来のoutbox callerが報告抑制オプションを付け忘れない構造にする。
+    const result = await this.sendChatMessageInternal(
+      broadcasterTwitchUserId,
+      message,
+      {},
+      true,
+    )
     // duplicate は障害ではない（DUPLICATE_DROP_CODE 参照）。false を返すと呼び出し側が
     // 送信失敗として警告ログを出すため、成功と同じ扱いにする。
     return result.outcome === 'sent' || result.outcome === 'duplicate'
@@ -182,7 +211,24 @@ export class TwitchChatService {
     message: string,
     options: ChatSendOptions = {},
   ): Promise<ChatSendOutcome> {
-    const botAccount = await getBotAccountForChat(broadcasterTwitchUserId)
+    // transactional outboxではpending中の報告を抑え、liveまたはdead到達時の
+    // 上位境界に1回だけ集約する。terminalも上位がDLQ状態と合わせて報告する。
+    return this.sendChatMessageInternal(
+      broadcasterTwitchUserId,
+      message,
+      options,
+      false,
+    )
+  }
+
+  private async sendChatMessageInternal(
+    broadcasterTwitchUserId: string,
+    message: string,
+    options: ChatSendOptions,
+    reportFailures: boolean,
+  ): Promise<ChatSendOutcome> {
+    const botResolution = await resolveBotAccountForChat(broadcasterTwitchUserId)
+    const botAccount = botResolution.status === 'available' ? botResolution.account : null
     let senderTwitchUserId = broadcasterTwitchUserId
     let accessToken = botAccount?.accessToken ?? null
 
@@ -191,15 +237,77 @@ export class TwitchChatService {
     } else {
       // 送信前にDBのスコープを確認（無駄なAPI呼び出し抑止）
       // Check DB scope before sending to avoid unnecessary API calls (e.g., repeated 401s from EventSub)
-      const hasChatScope = await hasScope(broadcasterTwitchUserId, ADDITIONAL_SCOPES.CHAT_WRITE)
-      if (!hasChatScope) {
+      const chatScopeStatus = await getScopeStatus(
+        broadcasterTwitchUserId,
+        ADDITIONAL_SCOPES.CHAT_WRITE,
+      )
+      if (chatScopeStatus === 'missing') {
+        // BOT未設定の場合だけ本人のscope不足と確定できる。BOT設定済みで解決不能な
+        // 状態をmissing_scopeへ落とすと誤った再認証案内とreport抑制が起きるため、
+        // retryable/terminalのBOT解決結果を本人scopeより優先する。
+        if (botResolution.status === 'retryable-unavailable') {
+          logger.warn('BOT chat sender is temporarily unavailable; deferring chat delivery', {
+            broadcasterTwitchUserId,
+            reason: botResolution.reason,
+          })
+          return {
+            outcome: 'retryable',
+            reason: botResolution.reason,
+          }
+        }
+        if (botResolution.status === 'terminal-unavailable') {
+          logger.warn('Configured BOT chat sender credential is unavailable', {
+            broadcasterTwitchUserId,
+            reason: botResolution.reason,
+          })
+          return {
+            outcome: 'terminal',
+            code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+            reason: botResolution.reason,
+          }
+        }
         logger.info('Skipping chat message - user:write:chat scope not granted', { broadcasterTwitchUserId })
-        return { outcome: 'terminal', reason: 'user:write:chat scope not granted' }
+        return {
+          outcome: 'terminal',
+          code: CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE,
+          reason: 'user:write:chat scope not granted',
+        }
+      }
+      if (chatScopeStatus === 'unavailable') {
+        // DB/スキーマ障害をユーザーの権限不足として永久DLQ化しない。outboxの
+        // bounded retryへ戻し、上限到達時は既存reportError経路で運用通知する。
+        logger.warn('Unable to verify user:write:chat scope; deferring chat delivery', {
+          broadcasterTwitchUserId,
+        })
+        return {
+          outcome: 'retryable',
+          reason: 'unable to verify user:write:chat scope',
+        }
       }
 
       // 配信者本人のアクセストークンを取得（user:write:chatスコープが必要）
       // Get the broadcaster's access token (requires user:write:chat scope)
-      accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
+      try {
+        accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
+      } catch (error) {
+        if (error instanceof TwitchTokenError) {
+          if (error.code === 'DATABASE_ERROR' || error.code === 'REFRESH_FAILED') {
+            // 本人fallbackのDB/refresh障害もcredential欠落へ潰さず、outboxの
+            // bounded retryへ戻す。NO_TOKEN/USER_NOT_FOUNDは下のterminal契約と同じ。
+            return {
+              outcome: 'retryable',
+              reason: 'chat sender credential is temporarily unavailable',
+            }
+          }
+          return {
+            outcome: 'terminal',
+            code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+            reason: 'chat sender access token unavailable',
+          }
+        }
+        // 型のない未知例外は既存のlive/replay境界へ伝播させ、retry/reportを維持する。
+        throw error
+      }
     }
 
     if (!accessToken) {
@@ -208,7 +316,11 @@ export class TwitchChatService {
         senderTwitchUserId,
         usingBotAccount: Boolean(botAccount),
       })
-      return { outcome: 'terminal', reason: 'chat sender access token unavailable' }
+      return {
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+        reason: 'chat sender access token unavailable',
+      }
     }
 
     // メッセージを500文字に制限（Twitch APIの制限）
@@ -345,8 +457,8 @@ export class TwitchChatService {
         })
         await sleep(CHAT_SEND_RETRY_DELAYS_MS[attempt - 1])
       } catch (error) {
-        // ネットワーク例外（fetch reject）はリトライ対象。最終試行のみ外で報告する。
-        // Network exception (fetch reject) is retryable; only the final one will be reported.
+        // ネットワーク例外（fetch reject）はリトライ対象。試行終了後、legacy boolean
+        // APIだけ下位報告し、outbox詳細APIはretryableを上位境界へ返す。
         lastException = error
         lastResponse = null
         lastResponseErrorBody = null
@@ -367,8 +479,8 @@ export class TwitchChatService {
       }
     }
 
-    // 全試行が失敗。HTTPエラー or ネットワーク例外のいずれかを1度だけ報告する。
-    // All attempts exhausted. Report exactly once.
+    // 全試行が失敗。legacy boolean APIは下位で1回報告し、outbox詳細APIはここでは
+    // 永続化せず分類だけ返してlive/dead/DLQの上位境界へ責任を集約する。
     if (lastResponse !== null) {
       const errorBody = lastResponseErrorBody ?? {}
 
@@ -390,23 +502,24 @@ export class TwitchChatService {
         })
       }
 
-      // PlanetScaleへ記録し、Cron Worker経由でGitHub Issueを自動作成する。
-      // try-catch で囲む: reportApiError の失敗が return false をブロックしないようにする
-      // Wrapped in try-catch so reportApiError failure doesn't prevent return false
-      try {
-        await reportApiError('/helix/chat/messages', 'POST',
-          new Error(`Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`),
-          {
-            broadcasterTwitchUserId,
-            senderTwitchUserId,
-            usingBotAccount: Boolean(botAccount),
-            status: lastResponse.status,
-            twitchError: errorBody.error,
-          }
-        )
-      } catch {
-        // reportApiError 自体の失敗はベストエフォート — メインフローをブロックしない
-        // reportApiError failure is best-effort — must not block main flow
+      if (reportFailures) {
+        // legacy boolean APIだけが下位で永続化する。outbox詳細APIは結果分類のみ返し、
+        // live/replay側がpending/dead/DLQ状態と合わせて報告するため二重Issue化しない。
+        try {
+          await reportApiError('/helix/chat/messages', 'POST',
+            new Error(`Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`),
+            {
+              broadcasterTwitchUserId,
+              senderTwitchUserId,
+              usingBotAccount: Boolean(botAccount),
+              status: lastResponse.status,
+              twitchError: errorBody.error,
+            }
+          )
+        } catch {
+          // reportApiError 自体の失敗はベストエフォート — メインフローをブロックしない
+          // reportApiError failure is best-effort — must not block main flow
+        }
       }
       return isRetryableHttpStatus(lastResponse.status)
         ? {
@@ -415,23 +528,25 @@ export class TwitchChatService {
           }
         : {
             outcome: 'terminal',
+            code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
             reason: `Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`,
           }
     }
 
-    // ネットワーク例外パス。reportError 内部で console.error も出力される
-    // try-catch で囲む: reportError の失敗で例外が sendChatMessage 外に漏れないようにする
-    // Network exception path. Wrapped in try-catch so reportError failure doesn't leak.
-    try {
-      await reportError(lastException, {
-        context: 'chat-service:sendChatMessage',
-        broadcasterTwitchUserId,
-        senderTwitchUserId,
-        usingBotAccount: Boolean(botAccount),
-      })
-    } catch {
-      // reportError 自体の失敗はベストエフォート — 必ず return false に到達させる
-      // reportError failure is best-effort — must always reach return false
+    if (reportFailures) {
+      // legacy boolean APIのみ下位報告する。outbox詳細APIはretryable分類を返し、
+      // live/replay側がdelivery stateと一緒に報告する。
+      try {
+        await reportError(lastException, {
+          context: 'chat-service:sendChatMessage',
+          broadcasterTwitchUserId,
+          senderTwitchUserId,
+          usingBotAccount: Boolean(botAccount),
+        })
+      } catch {
+        // reportError 自体の失敗はベストエフォート — 必ず return false に到達させる
+        // reportError failure is best-effort — must always reach return false
+      }
     }
     return {
       outcome: 'retryable',

@@ -3,6 +3,7 @@ import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
+import { CHAT_SEND_TERMINAL_CODES } from "@/lib/twitch/chat-service";
 import {
   listParkedEventSubNotifications,
   deleteParkedEventSubNotification,
@@ -408,17 +409,43 @@ export async function POST(request: NextRequest) {
           });
         } else if (outcome.outcome === "terminal") {
           const persisted = await deadLetterChatNotification(claim, outcome.reason);
-          await reportErrorSafely(
-            new Error(`[eventsub-replay] chat notification moved to DLQ: ${outcome.reason}`),
-            { key: baseResult.key, messageId: claim.batchId, persisted }
-          );
+          // live EventSub経路と同じ契約: scope不足はユーザーの再認証待ちなので、
+          // DLQと構造化ログは残すが自動Issue化しない。reason文字列ではなく
+          // chat-serviceのtyped codeで判定し、Twitch文言変更による誤分類を防ぐ。
+          // token欠落・401・未知terminalは引き続きreportErrorSafelyへ送る。
+          if (outcome.code === CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE && persisted) {
+            logger.info("[eventsub-replay] chat notification moved to DLQ pending Twitch reauthorization", {
+              key: baseResult.key,
+              messageId: claim.batchId,
+              outboxId: claim.id,
+              code: outcome.code,
+              reason: outcome.reason,
+              persisted,
+            });
+          } else {
+            await reportErrorSafely(
+              new Error(
+                persisted
+                  ? `[eventsub-replay] chat notification moved to DLQ: ${outcome.reason}`
+                  : `[eventsub-replay] chat notification DLQ update lost its lease: ${outcome.reason}`,
+              ),
+              { key: baseResult.key, messageId: claim.batchId, persisted }
+            );
+          }
           results.push({ ...baseResult, outcome: "failed", error: `DLQ: ${outcome.reason}` });
         } else if (outcome.outcome === "retryable") {
           const state = await retryChatNotification(claim, outcome.reason);
-          if (state === "lost-lease") {
+          if (state === "lost-lease" || state === "dead") {
+            // pendingは通常のbounded retryなので毎回の通報を避ける。一方、deadは
+            // 上限到達後の最終状態であり、この通報がないとDB scope確認不能などの
+            // 一時障害が恒久DLQ化しても運用側が検知できない。
             await reportErrorSafely(
-              new Error("[eventsub-replay] chat retry update lost its lease"),
-              { key: baseResult.key, messageId: claim.batchId }
+              new Error(
+                state === "lost-lease"
+                  ? "[eventsub-replay] chat retry update lost its lease"
+                  : `[eventsub-replay] chat delivery exhausted retries: ${outcome.reason}`,
+              ),
+              { key: baseResult.key, messageId: claim.batchId, state }
             );
           }
           results.push({
@@ -428,12 +455,24 @@ export async function POST(request: NextRequest) {
           });
         } else {
           // lost lease / deadline / fence障害時は、新所有者の状態を上書きしない。
+          // missing_scope以外を黙殺しない契約に合わせ、outbox更新は行わずとも
+          // 運用障害としてawait済みのreportErrorへ残す。
+          await reportErrorSafely(
+            new Error(`[eventsub-replay] chat delivery aborted: ${outcome.reason}`),
+            { key: baseResult.key, messageId: claim.batchId },
+          );
           results.push({ ...baseResult, outcome: "failed", error: outcome.reason });
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const state = await retryChatNotification(claim, message);
-        logger.error("[eventsub-replay] transactional chat relay failed", {
+        // deadLetter/ack/send自体のthrowもmissing_scope抑制の外側である。logger.errorの
+        // fire-and-forget永続化だけに依存せず、request内でreport完了を待つ。
+        await reportErrorSafely(
+          new Error(`[eventsub-replay] transactional chat relay failed: ${message}`),
+          { key: baseResult.key, messageId: claim.batchId, state },
+        );
+        logger.warn("[eventsub-replay] transactional chat relay failed", {
           outboxId: claim.id,
           messageId: claim.batchId,
           state,

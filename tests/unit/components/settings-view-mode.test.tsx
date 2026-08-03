@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import {
   AdvancedSettings,
@@ -68,6 +68,9 @@ describe('SettingsViewMode', () => {
   })
 
   afterEach(() => {
+    // Vitestの実行順・bundle分割に依存せずDOMを破棄する。前テストのsidebarが残ると
+    // getByRole/getByTestIdが複数一致し、実装回帰ではない失敗を生むため明示する。
+    cleanup()
     vi.restoreAllMocks()
   })
 
@@ -128,6 +131,19 @@ describe('SettingsViewMode', () => {
       expect(
         screen.getByRole('button', { name: 'シンプル' })
       ).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('明示URL導線のrequestedModeは保存済みsimpleより優先して詳細を開く', () => {
+      window.localStorage.setItem(STORAGE_KEY, 'simple')
+      render(
+        <NextIntlClientProvider locale="ja" messages={messages}>
+          <SettingsViewModeProvider initialModeHint="simple" requestedMode="advanced">
+            <SettingsViewToggle />
+          </SettingsViewModeProvider>
+        </NextIntlClientProvider>
+      )
+      act(() => {})
+      expect(screen.getByRole('button', { name: '詳細' })).toHaveAttribute('aria-pressed', 'true')
     })
 
     it('localStorage への保存に失敗しても同一タブ内では表示モードを切り替えられる', () => {
@@ -234,6 +250,46 @@ describe('SettingsViewMode', () => {
 
       expect(screen.getByTestId('first-panel').parentElement).toHaveAttribute('hidden')
       expect(screen.getByTestId('second-panel')).toBeInTheDocument()
+    })
+
+    it('allowlist済みinitialSectionIdを初期選択し、attentionを色と可視テキストで示す', () => {
+      renderWithProvider(
+        <AdvancedSettingsLayout
+          initialSectionId="announcement"
+          sections={[
+            { id: 'overlay', label: 'Overlay', content: <div>overlay panel</div> },
+            {
+              id: 'announcement',
+              label: 'チャット通知',
+              status: 'attention',
+              statusLabel: '要対応',
+              content: <div>chat panel</div>,
+            },
+          ]}
+        />
+      )
+
+      expect(screen.getByText('chat panel')).toBeInTheDocument()
+      expect(screen.queryByText('overlay panel')).toBeNull()
+      expect(screen.getByText('要対応')).toBeVisible()
+      expect(screen.getByRole('button', { name: /チャット通知.*要対応/ })).toHaveAttribute(
+        'aria-current',
+        'true',
+      )
+    })
+
+    it('未知のinitialSectionIdは先頭sectionへfallbackする', () => {
+      renderWithProvider(
+        <AdvancedSettingsLayout
+          initialSectionId="not-allowed"
+          sections={[
+            { id: 'overlay', label: 'Overlay', content: <div>overlay panel</div> },
+            { id: 'announcement', label: 'Chat', content: <div>chat panel</div> },
+          ]}
+        />
+      )
+      expect(screen.getByText('overlay panel')).toBeInTheDocument()
+      expect(screen.queryByText('chat panel')).toBeNull()
     })
   })
 })

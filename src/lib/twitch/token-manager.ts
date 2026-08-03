@@ -400,8 +400,9 @@ async function readBotRefreshWinner(
  *
  * - users を twitch_user_id で 1 行取得。UNIQUE 制約（migration 00001）により
  *   最大 1 行なので、LIMIT 1 + rows[0] ?? null とする。
- * - トークン列追加 migration よりコードが先行する窓では SQLSTATE 42703 を
- *   warn + null とし、「トークン無し」の安全側へ倒す。
+ * - トークン/lease列のmigrationよりコードが先行する窓ではSQLSTATE 42703を
+ *   DATABASE_ERRORとして上位へ伝える。nullへ落とすと恒久credential欠落と
+ *   区別できず、chat outboxが再試行せずDLQ化するためである。
  * - 取得後の期限判定は既存実装と同一ロジック。期限切れ時の refreshTwitchAccessToken は
  *   共有関数のまま呼ぶ。
  */
@@ -436,13 +437,17 @@ async function getTwitchAccessTokenPg(twitchUserId: string): Promise<string | nu
     user = rows[0] ?? null;
   } catch (dbError) {
     if (isPgMissingColumnError(dbError)) {
-      logger.error('Twitch token columns are missing; denying token access', {
+      logger.warn('Twitch token columns are missing; denying token access', {
         twitchUserId,
         error: dbError,
       });
-      return null;
+      throw new TwitchTokenError(
+        'Twitch token schema is unavailable',
+        'DATABASE_ERROR',
+        dbError instanceof Error ? dbError : undefined,
+      );
     }
-    logger.error('Database error fetching user tokens', { twitchUserId, error: dbError });
+    logger.warn('Database error fetching user tokens', { twitchUserId, error: dbError });
     throw new TwitchTokenError(
       'Failed to fetch user tokens from database',
       'DATABASE_ERROR',
@@ -474,12 +479,17 @@ async function getTwitchAccessTokenPg(twitchUserId: string): Promise<string | nu
     if (isPgMissingColumnError(error)) {
       // migration/app workflowは独立しており、lease列が先行配備されていない窓が
       // あり得る。旧CAS-onlyへ戻すと並行OAuth上限を再発させるため、OAuthを呼ばず
-      // token access自体をfail-closedにする。
-      logger.error('Twitch token columns are missing; denying token access', {
+      // token access自体はfail-closedにする。ただしnullは「credentialが恒久的に
+      // 無い」という契約なので使わず、上位outboxが再試行できるDATABASE_ERRORへ写す。
+      logger.warn('Twitch token columns are missing; denying token access', {
         twitchUserId,
         error,
       })
-      return null
+      throw new TwitchTokenError(
+        'Twitch token refresh schema is unavailable',
+        'DATABASE_ERROR',
+        error instanceof Error ? error : undefined,
+      )
     }
     throw error
   }
@@ -498,6 +508,17 @@ export interface BotChatAccount {
   accessToken: string;
   ownerType: 'streamer' | 'system';
 }
+
+/**
+ * BOT送信者の解決結果。nullだけでは「未設定」と「設定済みだが一時障害」と
+ * 「再認証が必要な恒久credential欠落」を区別できず、後段が本人scope不足へ
+ * 誤分類するため、chat outbox向けには判別共用体を公開する。
+ */
+export type BotChatAccountResolution =
+  | { status: 'available'; account: BotChatAccount }
+  | { status: 'not-configured' }
+  | { status: 'retryable-unavailable'; reason: string }
+  | { status: 'terminal-unavailable'; reason: string };
 
 interface BotAccountRow {
   id: string;
@@ -531,7 +552,9 @@ function isMissingBotSchemaErrorPg(error: unknown): boolean {
  * - BOTスキーマ未配備はSQLSTATE 42703/42P01で検知し、安全側へ縮退する。
  * - トークン値はログに出さない。
  */
-async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<BotChatAccount | null> {
+async function resolveBotAccountForChatPg(
+  broadcasterTwitchUserId: string,
+): Promise<BotChatAccountResolution> {
   let streamer: { id: string } | null;
   try {
     const rows = await withDbRetry(
@@ -550,16 +573,15 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
     );
     streamer = rows[0] ?? null;
   } catch (dbError) {
-    logger.error('Database error fetching BOT account', { broadcasterTwitchUserId, error: dbError });
-    throw new TwitchTokenError(
-      'Failed to fetch BOT account from database',
-      'DATABASE_ERROR',
-      dbError instanceof Error ? dbError : undefined
-    );
+    logger.warn('Database error fetching BOT account', { broadcasterTwitchUserId, error: dbError });
+    return {
+      status: 'retryable-unavailable',
+      reason: 'unable to resolve BOT sender from database',
+    };
   }
 
   if (!streamer) {
-    return null;
+    return { status: 'not-configured' };
   }
   // withDbRetry の queryFn（closure）から参照するため const に固定する
   const streamerId = streamer.id;
@@ -585,22 +607,24 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
     senderSettings = rows[0] ?? null;
   } catch (settingsError) {
     if (isMissingBotSchemaErrorPg(settingsError)) {
-      logger.error('Chat sender settings schema is missing; disabling BOT chat sender', {
+      logger.warn('Chat sender settings schema is missing; disabling BOT chat sender', {
         broadcasterTwitchUserId,
         error: settingsError,
       });
-      return null;
+      return {
+        status: 'retryable-unavailable',
+        reason: 'BOT sender schema is unavailable',
+      };
     }
-    logger.error('Database error fetching chat sender settings', { broadcasterTwitchUserId, error: settingsError });
-    throw new TwitchTokenError(
-      'Failed to fetch chat sender settings from database',
-      'DATABASE_ERROR',
-      settingsError instanceof Error ? settingsError : undefined
-    );
+    logger.warn('Database error fetching chat sender settings', { broadcasterTwitchUserId, error: settingsError });
+    return {
+      status: 'retryable-unavailable',
+      reason: 'unable to resolve BOT sender settings',
+    };
   }
 
   if (!senderSettings || senderSettings.sender_mode === 'streamer') {
-    return null;
+    return { status: 'not-configured' };
   }
 
   // 認証と送信に必要な8列だけを取得し、不要なcredential露出を避ける。
@@ -619,7 +643,10 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
 
   if (senderSettings.sender_mode === 'custom_bot') {
     if (!senderSettings.custom_bot_account_id) {
-      return null;
+      return {
+        status: 'terminal-unavailable',
+        reason: 'configured custom BOT credential is missing',
+      };
     }
     const customBotAccountId = senderSettings.custom_bot_account_id;
 
@@ -649,18 +676,20 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
       botAccount = (rows[0] ?? null) as BotAccountRow | null;
     } catch (error) {
       if (isMissingBotSchemaErrorPg(error)) {
-        logger.error('Twitch BOT accounts schema is missing; disabling custom BOT sender', {
+        logger.warn('Twitch BOT accounts schema is missing; disabling custom BOT sender', {
           broadcasterTwitchUserId,
           error,
         });
-        return null;
+        return {
+          status: 'retryable-unavailable',
+          reason: 'BOT credential schema is unavailable',
+        };
       }
-      logger.error('Database error fetching custom BOT account', { broadcasterTwitchUserId, error });
-      throw new TwitchTokenError(
-        'Failed to fetch custom BOT account from database',
-        'DATABASE_ERROR',
-        error instanceof Error ? error : undefined
-      );
+      logger.warn('Database error fetching custom BOT account', { broadcasterTwitchUserId, error });
+      return {
+        status: 'retryable-unavailable',
+        reason: 'unable to resolve custom BOT credential',
+      };
     }
   } else if (senderSettings.sender_mode === 'official_bot') {
     try {
@@ -686,23 +715,35 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
       botAccount = (rows[0] ?? null) as BotAccountRow | null;
     } catch (error) {
       if (isMissingBotSchemaErrorPg(error)) {
-        logger.error('Twitch BOT accounts schema is missing; disabling official BOT sender', {
+        logger.warn('Twitch BOT accounts schema is missing; disabling official BOT sender', {
           broadcasterTwitchUserId,
           error,
         });
-        return null;
+        return {
+          status: 'retryable-unavailable',
+          reason: 'BOT credential schema is unavailable',
+        };
       }
-      logger.error('Database error fetching official BOT account', { broadcasterTwitchUserId, error });
-      throw new TwitchTokenError(
-        'Failed to fetch official BOT account from database',
-        'DATABASE_ERROR',
-        error instanceof Error ? error : undefined
-      );
+      logger.warn('Database error fetching official BOT account', { broadcasterTwitchUserId, error });
+      return {
+        status: 'retryable-unavailable',
+        reason: 'unable to resolve official BOT credential',
+      };
     }
+  } else {
+    // DB CHECK追加前の未知値や手動不整合は設定済みcredentialの恒久欠落として扱う。
+    // 本人scope不足へ落とすと誤った再認証案内になるため、typed terminalを返す。
+    return {
+      status: 'terminal-unavailable',
+      reason: 'configured BOT sender mode is unsupported',
+    };
   }
 
   if (!botAccount) {
-    return null;
+    return {
+      status: 'terminal-unavailable',
+      reason: 'configured BOT credential is unavailable',
+    };
   }
   // withDbRetry の queryFn（closure）から参照するため const に固定する
   // （let のままだと TypeScript の null 除去ナローイングが closure 内へ届かない）
@@ -710,17 +751,23 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
 
   const expiresAt = new Date(account.twitch_token_expires_at);
   if (isNaN(expiresAt.getTime())) {
-    return null;
+    return {
+      status: 'terminal-unavailable',
+      reason: 'configured BOT credential expiry is invalid',
+    };
   }
 
   if (expiresAt > new Date()) {
     return {
-      accountId: account.id,
-      senderId: account.twitch_user_id,
-      username: account.twitch_username,
-      displayName: account.twitch_display_name,
-      accessToken: account.twitch_access_token,
-      ownerType: account.owner_type,
+      status: 'available',
+      account: {
+        accountId: account.id,
+        senderId: account.twitch_user_id,
+        username: account.twitch_username,
+        displayName: account.twitch_display_name,
+        accessToken: account.twitch_access_token,
+        ownerType: account.owner_type,
+      },
     };
   }
 
@@ -804,26 +851,55 @@ async function getBotAccountForChatPg(broadcasterTwitchUserId: string): Promise<
     })
 
     return {
-      accountId: account.id,
-      senderId: account.twitch_user_id,
-      username: account.twitch_username,
-      displayName: account.twitch_display_name,
-      accessToken,
-      ownerType: account.owner_type,
+      status: 'available',
+      account: {
+        accountId: account.id,
+        senderId: account.twitch_user_id,
+        username: account.twitch_username,
+        displayName: account.twitch_display_name,
+        accessToken,
+        ownerType: account.owner_type,
+      },
     };
-  } catch {
-    // Token endpoint 本文や下位例外は永続化せず、固定理由だけを1回記録する。
-    logger.error('Failed to refresh BOT Twitch access token', {
+  } catch (error) {
+    // Twitch公式では無効refresh tokenを400/401として再同意対象にする。それ以外は
+    // 上流・network・DB・lease競合など回復可能性を否定できないためbounded retryへ。
+    const terminal = shouldDisableBotCredential(error);
+    // logger.server.errorはerrors永続化と自動Issue化を伴う。retryableをここでerrorに
+    // するとreplayのpending抑制を迂回するため、恒久失効だけerror、一時障害はwarn。
+    const logContext = {
       broadcasterTwitchUserId,
       accountId: account.id,
-    });
-    return null;
+    };
+    if (terminal) {
+      logger.error('Failed to refresh BOT Twitch access token', logContext);
+      return {
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      };
+    }
+    logger.warn('Failed to refresh BOT Twitch access token', logContext);
+    return {
+      status: 'retryable-unavailable',
+      reason: 'configured BOT credential is temporarily unavailable',
+    };
   }
 }
 
+/** chat outbox向けの判別可能なBOT sender解決契約。 */
+export async function resolveBotAccountForChat(
+  broadcasterTwitchUserId: string,
+): Promise<BotChatAccountResolution> {
+  return resolveBotAccountForChatPg(broadcasterTwitchUserId);
+}
+
+/**
+ * 既存呼び出し向けのnullable互換wrapper。新しい送信経路は障害分類を失わないよう
+ * resolveBotAccountForChat()を使用する。
+ */
 export async function getBotAccountForChat(broadcasterTwitchUserId: string): Promise<BotChatAccount | null> {
-  // BOT設定・token refresh・CAS保存はPlanetScaleの同じrequest内で完結させる。
-  return getBotAccountForChatPg(broadcasterTwitchUserId);
+  const resolution = await resolveBotAccountForChatPg(broadcasterTwitchUserId);
+  return resolution.status === 'available' ? resolution.account : null;
 }
 
 /**
@@ -971,8 +1047,8 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
       },
     })
   } catch (error) {
-    // lease列未配備は呼び出し元がfail-closed nullへ落とすため、SQLSTATEを
-    // TwitchTokenErrorで隠さずそのまま返す。
+    // lease列未配備は呼び出し元がTwitchTokenError(DATABASE_ERROR)へ変換し、
+    // chat outboxをterminalにせずbounded retryへ戻すため、SQLSTATEを隠さず返す。
     if (isPgMissingColumnError(error)) throw error
     // 永続化責任は bootstrap/rewards/callback 等の API 境界に統一する。ここで
     // logger.error を使うと同じ例外を下位層と境界の双方が errors へ書く。
@@ -1084,19 +1160,17 @@ export async function deleteTwitchTokens(twitchUserId: string): Promise<void> {
 }
 
 /**
- * ユーザーが特定のTwitchスコープを持っているかチェック
- * Check if a user has a specific Twitch scope granted
- * @param twitchUserId - TwitchユーザーID
- * @param scope - 確認するスコープ（例: 'user:write:chat'）
- * @returns スコープが付与されている場合はtrue
+ * 保存スコープの厳格な判定結果。unavailableはDB/スキーマ障害により
+ * grantedかmissingかを確定できない状態であり、missingとして扱ってはならない。
  */
+export type TwitchScopeStatus = 'granted' | 'missing' | 'unavailable';
+
 /**
- * hasScope のPlanetScale実装。
- * twitch_scopes は text[] 列のため必ずDrizzleスキーマ経由で読む
- * （fetch_types: false の生SQLでは配列が
- * パースされない。src/lib/db/client.ts の注意書き参照）。
+ * scope三値判定のPlanetScale/Drizzle実装。
+ * twitch_scopesはtext[]列のためDrizzleスキーマ経由で読み、DB障害は
+ * unavailableとしてscope不足と分離する。
  */
-async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean> {
+async function getScopeStatusPg(twitchUserId: string, scope: string): Promise<TwitchScopeStatus> {
   let user: { twitch_scopes: string[] | null } | null;
   try {
     const rows = await withDbRetry(
@@ -1116,28 +1190,48 @@ async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean>
     user = rows[0] ?? null;
   } catch (error) {
     if (isPgMissingColumnError(error)) {
-      logger.error('twitch_scopes column is missing; denying scope access', {
+      logger.warn('twitch_scopes column is missing; denying scope access', {
         twitchUserId,
         scope,
         error,
       });
-      return false;
+      return 'unavailable';
     }
-    logger.error('Database error checking scope', { twitchUserId, scope, error });
-    return false;
+    logger.warn('Database error checking scope', { twitchUserId, scope, error });
+    return 'unavailable';
   }
 
   // twitch_scopesがnullまたは空配列の場合、追加スコープは付与されていない
   // If twitch_scopes is null or empty, no additional scopes have been granted
   if (!user?.twitch_scopes || user.twitch_scopes.length === 0) {
-    return false;
+    return 'missing';
   }
 
-  return user.twitch_scopes.includes(scope);
+  return user.twitch_scopes.includes(scope) ? 'granted' : 'missing';
 }
 
+async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean> {
+  return (await getScopeStatusPg(twitchUserId, scope)) === 'granted';
+}
+
+/**
+ * ユーザーが特定のTwitchスコープを持つかをbooleanで返す既存契約。
+ * 認可UIをfail-closedに保つため、missingとunavailableはいずれもfalseを返す。
+ */
 export async function hasScope(twitchUserId: string, scope: string): Promise<boolean> {
   return hasScopePg(twitchUserId, scope);
+}
+
+/**
+ * scope不足とDB判定不能を分離する厳格な三値契約。
+ * chat outboxはmissingだけを恒久DLQ化し、unavailableをbounded retryへ回すことで、
+ * 一時的なDB障害による通知の永久欠落を防ぐ。
+ */
+export async function getScopeStatus(
+  twitchUserId: string,
+  scope: string,
+): Promise<TwitchScopeStatus> {
+  return getScopeStatusPg(twitchUserId, scope);
 }
 
 /**

@@ -80,6 +80,8 @@ export interface SettingsLayoutData {
   };
   chatAnnouncement: {
     enabled: boolean;
+    /** server helperがDB取得成否も含めて確定した警告判定。clientで再計算しない。 */
+    needsAttention: boolean;
     template: string | null;
     multiTemplate: string | null;
     multiShowCards: boolean;
@@ -96,11 +98,15 @@ export interface SettingsLayoutData {
     defaultPackName: string | null;
   };
   initialModeHint: "simple" | "advanced";
+  initialSectionId?: "announcement";
 }
 
 export default function SettingsLayout(props: SettingsLayoutData) {
   return (
-    <SettingsViewModeProvider initialModeHint={props.initialModeHint}>
+    <SettingsViewModeProvider
+      initialModeHint={props.initialModeHint}
+      requestedMode={props.initialSectionId ? "advanced" : undefined}
+    >
       <VoteCampaignButton visible={props.showVoteCampaign} bonusMb={VOTE_CAMPAIGN_CONFIG.BONUS_MB} />
       <ModeSwitch data={props} />
     </SettingsViewModeProvider>
@@ -241,9 +247,15 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
     : effectiveSoundRules.length > 0
       ? "configured"
       : "empty";
-  const announcementStatus: SettingsSection["status"] = data.chatAnnouncement.enabled
-    ? "active"
-    : "empty";
+  // `enabled && !canSendChat` をここで再計算すると、server helperのDB query失敗
+  // （送信可否は不明）まで「送信手段なし」と誤判定する。dashboard bannerと同じ
+  // helper由来の確定値を直接使い、正常に不足を確認できた場合だけ警告する。
+  const announcementNeedsAttention = data.chatAnnouncement.needsAttention;
+  const announcementStatus: SettingsSection["status"] = announcementNeedsAttention
+    ? "attention"
+    : data.chatAnnouncement.enabled
+      ? "active"
+      : "empty";
   const visibilityStatus: SettingsSection["status"] = data.visibility.showUnowned
     ? "active"
     : "empty";
@@ -304,6 +316,9 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       description: t("advanced.section.announcementDesc"),
       icon: <SectionIcon name="chat" />,
       status: announcementStatus,
+      statusLabel: announcementNeedsAttention
+        ? t("advanced.status.attention")
+        : undefined,
       content: (
         <ChatAnnouncementSettings
           streamerId={data.streamerId}
@@ -342,7 +357,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
   return (
     <div className="space-y-6">
       <PageHeader title={t("title")} description={t("description")} />
-      <AdvancedSettingsLayout sections={sections} />
+      <AdvancedSettingsLayout sections={sections} initialSectionId={data.initialSectionId} />
     </div>
   );
 }

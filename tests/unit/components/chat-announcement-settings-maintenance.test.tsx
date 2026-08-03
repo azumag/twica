@@ -6,6 +6,12 @@ import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider
 import type { MaintenanceStatusResponse } from "@/lib/maintenance/client";
 import jaMessages from "../../../messages/ja.json";
 
+// ChatAnnouncementSettingsがIssue #827でuseRouterを利用するため、この保守モード専用
+// テストでは副作用のないrefresh実装を注入し、既存のmaintenance境界だけを検証する。
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
+
 // #694 Stage 6c: ChatAnnouncementSettings の書き込み経路
 // (POST /api/streamer/settings のテンプレート保存/有効化トグル) に対する
 // maintenance統合テスト。

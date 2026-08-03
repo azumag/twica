@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { CARD_DESCRIPTION_MAX_CHARACTERS, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
@@ -116,6 +117,7 @@ export default function ChatAnnouncementSettings({
 }: ChatAnnouncementSettingsProps) {
   const t = useTranslations("chatAnnouncementSettings");
   const tMaintenance = useTranslations("maintenance");
+  const router = useRouter();
   // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
   // 各書き込みボタンのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
   const { mode: maintenanceMode } = useMaintenanceStatus();
@@ -395,6 +397,10 @@ export default function ChatAnnouncementSettings({
       setBotDisplayName("");
       setMessage(t("messages.botDisconnected"));
       setIsError(false);
+      // Bot接続状態はdashboardのServer Component（layout/sidebar）でも表示可否判定に
+      // 利用される。POST成功後だけ現在ルートを再取得し、失敗時にサーバー表示まで
+      // 未接続扱いへ進めてしまう不整合を防ぐ。
+      router.refresh();
     } catch (error) {
       logger.error("Alternate account disconnect error:", error);
       setMessage(t("errors.botDisconnectFailed"));
@@ -402,7 +408,7 @@ export default function ChatAnnouncementSettings({
     } finally {
       setBotDisconnecting(false);
     }
-  }, [streamerId, t]);
+  }, [router, streamerId, t]);
 
   /**
    * 設定を保存
@@ -468,8 +474,13 @@ export default function ChatAnnouncementSettings({
       // 失敗した場合は元に戻す
       // Revert on failure
       setEnabled(!newEnabled);
+    } else if (!newEnabled) {
+      // 通知ON/OFFはdashboardのServer Component（layout/sidebar）側の表示可否判定にも
+      // 影響する。保存成功が確定したOFF遷移だけ再取得し、失敗時は従来どおり
+      // ローカルstateを戻してサーバー表示を更新しない。
+      router.refresh();
     }
-  }, [enabled, multiShowCards, multiTemplate, saveSettings, template]);
+  }, [enabled, multiShowCards, multiTemplate, router, saveSettings, template]);
 
   /**
    * テンプレートを保存
@@ -593,6 +604,7 @@ export default function ChatAnnouncementSettings({
               type="checkbox"
               checked={enabled}
               onChange={handleToggleEnabled}
+              aria-label={t("form.enableAnnouncement")}
               title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
               disabled={saving || !canSendChat || isMaintenanceBlocked}
               className="peer sr-only"

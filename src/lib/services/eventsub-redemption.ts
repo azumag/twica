@@ -27,7 +27,9 @@ import { reportError } from "@/lib/sentry/error-handler";
 import {
   TwitchChatService,
   DEFAULT_CHAT_TEMPLATE,
+  CHAT_SEND_TERMINAL_CODES,
   type ChatMessagePlaceholders,
+  type ChatSendTerminalCode,
 } from "@/lib/twitch/chat-service";
 import { cancelRedemption } from "@/lib/twitch/channel-points";
 
@@ -512,6 +514,23 @@ export async function postRedemptionNotify(
         deliveryStatePersisted = true;
         if (!persisted) {
           throw new Error(`Chat announcement DLQ update lost its lease: ${outcome.reason}`);
+        }
+
+        // scope不足はコード不具合ではなく、配信者がTwitch再認証を完了するまでの
+        // ユーザー操作待ちである。outboxをterminal/DLQにして無限再試行は止めるが、
+        // throwすると下の共通境界がreportErrorし自動Issueを量産するため、このcode
+        // だけ正常終了する。reasonはDLQに、codeと対象IDは構造化ログに残るので、
+        // 通知欠落の監査可能性は維持される。token欠落・401・未知terminalはここへ
+        // 入らず従来どおりthrow/reportErrorされる。
+        if (outcome.code === CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE) {
+          logger.info('[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization', {
+            code: outcome.code,
+            reason: outcome.reason,
+            streamerId: data.streamer.id,
+            broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+            outboxId: claim.id,
+          });
+          return;
         }
         throw new Error(`Chat announcement moved to DLQ: ${outcome.reason}`);
       }
@@ -1007,7 +1026,7 @@ async function fetchActiveCardCountPg(
 export type ChatAnnouncementOutcome =
   | { outcome: 'sent' }
   | { outcome: 'skipped' }
-  | { outcome: 'terminal'; reason: string }
+  | { outcome: 'terminal'; code: ChatSendTerminalCode; reason: string }
   | { outcome: 'retryable'; reason: string }
   | { outcome: 'aborted'; reason: string };
 
@@ -1343,6 +1362,8 @@ export async function sendChatAnnouncement(
       cardName: card.name,
       drawCount: drawnCards.length,
       multiDraw: isMultiDraw,
+      ...('code' in outcome ? { code: outcome.code } : {}),
+      ...('reason' in outcome ? { reason: outcome.reason } : {}),
     });
   }
   return outcome;

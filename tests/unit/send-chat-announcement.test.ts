@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { sendChatAnnouncement } from '@/lib/services/eventsub-redemption'
-import { TwitchChatService } from '@/lib/twitch/chat-service'
+import { CHAT_SEND_TERMINAL_CODES, TwitchChatService } from '@/lib/twitch/chat-service'
 import { logger } from '@/lib/logger.server'
 import { getDb } from '@/lib/db/client'
 
@@ -46,6 +48,36 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
     newCardNamesResolved: true,
   }
 
+  it('outboxのfence有無2分岐を下位報告なしの分類付きAPIへ固定する', () => {
+    const chatServiceSource = readFileSync(
+      resolve(process.cwd(), 'src/lib/twitch/chat-service.ts'),
+      'utf8',
+    )
+    const redemptionSource = readFileSync(
+      resolve(process.cwd(), 'src/lib/services/eventsub-redemption.ts'),
+      'utf8',
+    )
+
+    const detailedStart = chatServiceSource.indexOf('async sendChatMessageDetailed(')
+    const internalStart = chatServiceSource.indexOf('private async sendChatMessageInternal(')
+    const detailedBoundary = chatServiceSource.slice(detailedStart, internalStart)
+    const outcomeStart = redemptionSource.indexOf('const outcome = typeof chatService.sendChatMessageDetailed')
+    const outcomeEnd = redemptionSource.indexOf("if (outcome.outcome === 'sent')", outcomeStart)
+    const outboxCallBoundary = redemptionSource.slice(outcomeStart, outcomeEnd)
+
+    expect(detailedStart).toBeGreaterThan(-1)
+    expect(internalStart).toBeGreaterThan(detailedStart)
+    // 分類付きpublic APIからprivate実装へ渡す最後の引数falseが、下位report抑制の境界。
+    expect(detailedBoundary).toContain('options,\n      false,')
+    // beforeExternalSendの有無どちらもsendChatMessageDetailedを使う。片方がlegacy
+    // boolean APIへ戻ると、replay pending中にも下位reportが永続化されるため禁止する。
+    expect(outboxCallBoundary.match(/chatService\.sendChatMessageDetailed\(/g)).toHaveLength(2)
+    expect(outboxCallBoundary).toContain('{ beforeExternalSend }')
+    expect(outboxCallBoundary).toContain(
+      'chatService.sendChatMessageDetailed(broadcasterTwitchUserId, message)',
+    )
+  })
+
   it('Twitchが重複として抑止した場合はDLQ行きのterminalではなくskippedを返す', async () => {
     vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
       outcome: 'duplicate',
@@ -81,6 +113,7 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
   it('比較対象: 通常のterminal（AutoMod等）はskippedへ写さずそのまま返す', async () => {
     vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
       outcome: 'terminal',
+      code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
       reason: 'Twitch API 200: The message was held by AutoMod.',
     })
 
@@ -97,6 +130,7 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
 
     expect(outcome).toEqual({
       outcome: 'terminal',
+      code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
       reason: 'Twitch API 200: The message was held by AutoMod.',
     })
   })

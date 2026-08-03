@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   useSyncExternalStore,
@@ -82,9 +83,12 @@ function readCurrentMode(fallbackMode: SettingsViewMode): SettingsViewMode {
 export function SettingsViewModeProvider({
   children,
   initialModeHint,
+  requestedMode,
 }: {
   children: ReactNode;
   initialModeHint?: SettingsViewMode;
+  /** URL CTA等、ユーザーが明示した遷移だけlocalStorageより優先して一度適用する。 */
+  requestedMode?: SettingsViewMode;
 }) {
   const fallbackMode: SettingsViewMode = initialModeHint ?? DEFAULT_MODE;
 
@@ -115,6 +119,10 @@ export function SettingsViewModeProvider({
     }
     notifyStorageSubscribers();
   }, []);
+
+  useEffect(() => {
+    if (requestedMode) setMode(requestedMode);
+  }, [requestedMode, setMode]);
 
   const value = useMemo(() => ({ mode, setMode }), [mode, setMode]);
 
@@ -223,8 +231,10 @@ export interface SettingsSection {
   label: string;
   description?: string;
   icon?: ReactNode;
-  /** active/configured/empty — controls the right-side status dot color */
-  status?: "active" | "configured" | "empty";
+  /** active/configured/empty/attention — controls the right-side status marker */
+  status?: "active" | "configured" | "empty" | "attention";
+  /** 色に依存せずattention等の意味を伝える、短い可視ラベル。 */
+  statusLabel?: string;
   content: ReactNode;
 }
 
@@ -232,6 +242,7 @@ const STATUS_DOT_CLASS: Record<NonNullable<SettingsSection["status"]>, string> =
   active: "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.65)]",
   configured: "bg-violet-400 shadow-[0_0_8px_rgba(167,139,250,0.55)]",
   empty: "bg-gray-600",
+  attention: "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.65)]",
 };
 
 /**
@@ -241,11 +252,23 @@ const STATUS_DOT_CLASS: Record<NonNullable<SettingsSection["status"]>, string> =
  * 一度に 1 セクションだけ表示することで、情報過多を解消する。
  * モバイル (lg 未満) では横スクロールするピル型タブとして折り畳まれる。
  */
-export function AdvancedSettingsLayout({ sections }: { sections: SettingsSection[] }) {
+export function AdvancedSettingsLayout({
+  sections,
+  initialSectionId,
+}: {
+  sections: SettingsSection[];
+  initialSectionId?: string;
+}) {
   const t = useTranslations("settingsPage.advanced");
-  const [activeId, setActiveId] = useState<string>(sections[0]?.id ?? "");
+  // URL由来の値を直接stateへ入れず、実際に渡されたsectionとの一致を確認する。
+  // allowlist外の任意文字列で空ペインを作らず、従来の先頭sectionへ安全に戻す。
+  const requestedInitialActiveId = sections.find(
+    (section) => section.id === initialSectionId,
+  )?.id;
+  const initialActiveId = requestedInitialActiveId ?? sections[0]?.id ?? "";
+  const [activeId, setActiveId] = useState<string>(initialActiveId);
   const [visitedIds, setVisitedIds] = useState<Set<string>>(
-    () => new Set(sections[0]?.id ? [sections[0].id] : [])
+    () => new Set(initialActiveId ? [initialActiveId] : [])
   );
   const active = sections.find((s) => s.id === activeId) ?? sections[0];
 
@@ -302,6 +325,11 @@ export function AdvancedSettingsLayout({ sections }: { sections: SettingsSection
                         aria-hidden="true"
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT_CLASS[section.status]}`}
                       />
+                    )}
+                    {section.statusLabel && (
+                      <span className="shrink-0 rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                        {section.statusLabel}
+                      </span>
                     )}
                   </span>
                   {section.description && (
