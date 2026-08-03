@@ -865,14 +865,15 @@ async function resolveBotAccountForChatPg(
     // Twitch公式では無効refresh tokenを400/401として再同意対象にする。それ以外は
     // 上流・network・DB・lease競合など回復可能性を否定できないためbounded retryへ。
     const terminal = shouldDisableBotCredential(error);
-    // logger.server.errorはerrors永続化と自動Issue化を伴う。retryableをここでerrorに
-    // するとreplayのpending抑制を迂回するため、恒久失効だけerror、一時障害はwarn。
+    // この層はtyped結果を返す責務に限定する。logger.server.errorはerrors永続化を伴い、
+    // legacy/live/replayの所有境界でも同じterminalを報告すると二重Issue候補になる。
+    // retryable・terminalともここではwarn、呼び出し境界で最終状態と合わせて1回報告する。
     const logContext = {
       broadcasterTwitchUserId,
       accountId: account.id,
     };
     if (terminal) {
-      logger.error('Failed to refresh BOT Twitch access token', logContext);
+      logger.warn('Failed to refresh BOT Twitch access token', logContext);
       return {
         status: 'terminal-unavailable',
         reason: 'configured BOT credential requires reauthorization',
@@ -1170,7 +1171,11 @@ export type TwitchScopeStatus = 'granted' | 'missing' | 'unavailable';
  * twitch_scopesはtext[]列のためDrizzleスキーマ経由で読み、DB障害は
  * unavailableとしてscope不足と分離する。
  */
-async function getScopeStatusPg(twitchUserId: string, scope: string): Promise<TwitchScopeStatus> {
+async function getScopeStatusPg(
+  twitchUserId: string,
+  scope: string,
+  reportUnavailable: boolean,
+): Promise<TwitchScopeStatus> {
   let user: { twitch_scopes: string[] | null } | null;
   try {
     const rows = await withDbRetry(
@@ -1190,14 +1195,27 @@ async function getScopeStatusPg(twitchUserId: string, scope: string): Promise<Tw
     user = rows[0] ?? null;
   } catch (error) {
     if (isPgMissingColumnError(error)) {
-      logger.warn('twitch_scopes column is missing; denying scope access', {
+      const context = {
         twitchUserId,
         scope,
         error,
-      });
+      };
+      // boolean hasScope()の既存callerはunavailableをfalseへ畳み、上位に報告境界を
+      // 持たないため従来どおりerrorを残す。chatの三値callerはbounded retry/DLQの
+      // 上位境界で1回だけ報告するので、ここではwarnに留めて二重Issue化を防ぐ。
+      if (reportUnavailable) {
+        logger.error('twitch_scopes column is missing; denying scope access', context);
+      } else {
+        logger.warn('twitch_scopes column is missing; denying scope access', context);
+      }
       return 'unavailable';
     }
-    logger.warn('Database error checking scope', { twitchUserId, scope, error });
+    const context = { twitchUserId, scope, error };
+    if (reportUnavailable) {
+      logger.error('Database error checking scope', context);
+    } else {
+      logger.warn('Database error checking scope', context);
+    }
     return 'unavailable';
   }
 
@@ -1211,7 +1229,8 @@ async function getScopeStatusPg(twitchUserId: string, scope: string): Promise<Tw
 }
 
 async function hasScopePg(twitchUserId: string, scope: string): Promise<boolean> {
-  return (await getScopeStatusPg(twitchUserId, scope)) === 'granted';
+  // booleanへ情報を失う前に、DB判定不能をこの境界で永続化する。
+  return (await getScopeStatusPg(twitchUserId, scope, true)) === 'granted';
 }
 
 /**
@@ -1231,7 +1250,8 @@ export async function getScopeStatus(
   twitchUserId: string,
   scope: string,
 ): Promise<TwitchScopeStatus> {
-  return getScopeStatusPg(twitchUserId, scope);
+  // chat callerはtyped unavailableを受け取り、live/dead到達時に上位で報告する。
+  return getScopeStatusPg(twitchUserId, scope, false);
 }
 
 /**

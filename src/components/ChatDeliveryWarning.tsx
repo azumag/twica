@@ -21,7 +21,7 @@ export default function ChatDeliveryWarning({ needsAttention }: ChatDeliveryWarn
   const tMaintenance = useTranslations('maintenance')
   const { mode: maintenanceMode } = useMaintenanceStatus()
   const isMaintenanceBlocked = maintenanceMode !== 'off'
-  const { reauthorizing, reauthorize } = useChatReauthorization(isMaintenanceBlocked)
+  const { reauthorizing, reauthorize } = useChatReauthorization()
   const [error, setError] = useState<string | null>(null)
 
   if (!needsAttention) return null

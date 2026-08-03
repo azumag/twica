@@ -397,7 +397,24 @@ export async function POST(request: NextRequest) {
             // 別relayが再送する可能性があるため、黙って成功扱いにせず運用へ通知する。
             await reportErrorSafely(
               new Error("[eventsub-replay] chat sent but outbox ack lost its lease"),
-              { key: baseResult.key, messageId: claim.batchId }
+              {
+                key: baseResult.key,
+                messageId: claim.batchId,
+                ...(outcome.degradation ? { degradation: outcome.degradation } : {}),
+              }
+            );
+          } else if (outcome.degradation) {
+            // 配送成功はackしたまま、設定BOTの恒久失効だけをreplay所有境界で
+            // 1回永続化する。sentをDLQへ戻すと同じ本文を再送してしまう。
+            await reportErrorSafely(
+              new Error(
+                `[eventsub-replay] chat sent using fallback sender: ${outcome.degradation.reason}`,
+              ),
+              {
+                key: baseResult.key,
+                messageId: claim.batchId,
+                degradation: outcome.degradation,
+              },
             );
           }
           results.push({

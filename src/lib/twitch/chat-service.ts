@@ -131,7 +131,13 @@ interface TwitchChatSendResponse {
   }>
 }
 
-export type ChatSendOutcome =
+export interface ChatSendDegradation {
+  /** fallback送信は完了したが、設定されたsender credentialに恒久対応が必要。 */
+  code: ChatSendTerminalCode
+  reason: string
+}
+
+export type ChatSendOutcome = (
   | { outcome: 'sent' }
   /**
    * Twitchが同一本文の連投として意図的に抑止したケース（drop_reason=msg_duplicate）。
@@ -142,6 +148,7 @@ export type ChatSendOutcome =
   | { outcome: 'terminal'; code: ChatSendTerminalCode; reason: string }
   | { outcome: 'retryable'; reason: string }
   | { outcome: 'aborted'; reason: string }
+) & { degradation?: ChatSendDegradation }
 
 /**
  * terminal失敗を運用障害とユーザー操作待ちに分ける機械判定コード。
@@ -229,8 +236,81 @@ export class TwitchChatService {
   ): Promise<ChatSendOutcome> {
     const botResolution = await resolveBotAccountForChat(broadcasterTwitchUserId)
     const botAccount = botResolution.status === 'available' ? botResolution.account : null
+    // 恒久BOT障害でも本人credentialが有効なら通知自体はfallback送信できる。その場合、
+    // sentを失敗へ変えずに監視責任だけ上位へ渡す。一時BOT障害はfallback成功時まで
+    // Issue化すると瞬断で乱立するためdegradationにはせず、既存warnだけを残す。
+    const credentialDegradation: ChatSendDegradation | undefined =
+      botResolution.status === 'terminal-unavailable'
+        ? {
+            code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+            reason: botResolution.reason,
+          }
+        : undefined
     let senderTwitchUserId = broadcasterTwitchUserId
     let accessToken = botAccount?.accessToken ?? null
+
+    const withCredentialDegradation = <T extends ChatSendOutcome>(outcome: T): T => (
+      credentialDegradation
+        ? { ...outcome, degradation: credentialDegradation }
+        : outcome
+    ) as T
+
+    /**
+     * Twitch APIへ到達する前の失敗を、legacy boolean APIだけで1回永続化する。
+     *
+     * transactional outboxは上位でretry/DLQ状態と一緒に報告するためここでは抑制する。
+     * legacy経路にはその上位境界がないので、scope確認不能・credential障害を単なる
+     * falseへ落とすと監視から消える。一方、missing_scopeだけはユーザーの再認証待ちで
+     * あり、Issue乱立を避ける本PRの対象なので明示的に報告対象外にする。
+     */
+    const finishPreflightFailure = async (
+      outcome: Extract<ChatSendOutcome, { outcome: 'terminal' | 'retryable' }>,
+    ): Promise<ChatSendOutcome> => {
+      const resolvedOutcome = withCredentialDegradation(outcome)
+      const isExpectedMissingScope = outcome.outcome === 'terminal'
+        && outcome.code === CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE
+      if (reportFailures && !isExpectedMissingScope) {
+        try {
+          await reportError(new Error(`Chat delivery preflight failed: ${outcome.reason}`), {
+            context: 'chat-service:sendChatMessage:preflight',
+            broadcasterTwitchUserId,
+            senderTwitchUserId,
+            usingBotAccount: Boolean(botAccount),
+            botResolution: botResolution.status,
+            outcome: outcome.outcome,
+            ...(outcome.outcome === 'terminal' ? { code: outcome.code } : {}),
+            ...(credentialDegradation ? { degradation: credentialDegradation } : {}),
+          })
+        } catch {
+          // 監視保存はbest-effort。売り切れ通知などの救済処理へ例外を逆流させない。
+        }
+      }
+      return resolvedOutcome
+    }
+
+    /** legacy boolean経路では、成功した縮退送信にも永続監視の所有境界が必要。 */
+    const finishSuccessfulOutcome = async (
+      outcome: Extract<ChatSendOutcome, { outcome: 'sent' | 'duplicate' }>,
+    ): Promise<ChatSendOutcome> => {
+      const resolvedOutcome = withCredentialDegradation(outcome)
+      if (reportFailures && credentialDegradation) {
+        try {
+          await reportError(
+            new Error(`Chat delivery used fallback sender: ${credentialDegradation.reason}`),
+            {
+              context: 'chat-service:sendChatMessage:degraded-success',
+              broadcasterTwitchUserId,
+              senderTwitchUserId,
+              outcome: outcome.outcome,
+              degradation: credentialDegradation,
+            },
+          )
+        } catch {
+          // 報告失敗で成功済みのTwitch送信をfalseへ変えない。
+        }
+      }
+      return resolvedOutcome
+    }
 
     if (botAccount) {
       senderTwitchUserId = botAccount.senderId
@@ -250,28 +330,28 @@ export class TwitchChatService {
             broadcasterTwitchUserId,
             reason: botResolution.reason,
           })
-          return {
+          return finishPreflightFailure({
             outcome: 'retryable',
             reason: botResolution.reason,
-          }
+          })
         }
         if (botResolution.status === 'terminal-unavailable') {
           logger.warn('Configured BOT chat sender credential is unavailable', {
             broadcasterTwitchUserId,
             reason: botResolution.reason,
           })
-          return {
+          return finishPreflightFailure({
             outcome: 'terminal',
             code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
             reason: botResolution.reason,
-          }
+          })
         }
         logger.info('Skipping chat message - user:write:chat scope not granted', { broadcasterTwitchUserId })
-        return {
+        return finishPreflightFailure({
           outcome: 'terminal',
           code: CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE,
           reason: 'user:write:chat scope not granted',
-        }
+        })
       }
       if (chatScopeStatus === 'unavailable') {
         // DB/スキーマ障害をユーザーの権限不足として永久DLQ化しない。outboxの
@@ -279,10 +359,10 @@ export class TwitchChatService {
         logger.warn('Unable to verify user:write:chat scope; deferring chat delivery', {
           broadcasterTwitchUserId,
         })
-        return {
+        return finishPreflightFailure({
           outcome: 'retryable',
           reason: 'unable to verify user:write:chat scope',
-        }
+        })
       }
 
       // 配信者本人のアクセストークンを取得（user:write:chatスコープが必要）
@@ -294,16 +374,16 @@ export class TwitchChatService {
           if (error.code === 'DATABASE_ERROR' || error.code === 'REFRESH_FAILED') {
             // 本人fallbackのDB/refresh障害もcredential欠落へ潰さず、outboxの
             // bounded retryへ戻す。NO_TOKEN/USER_NOT_FOUNDは下のterminal契約と同じ。
-            return {
+            return finishPreflightFailure({
               outcome: 'retryable',
               reason: 'chat sender credential is temporarily unavailable',
-            }
+            })
           }
-          return {
+          return finishPreflightFailure({
             outcome: 'terminal',
             code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
             reason: 'chat sender access token unavailable',
-          }
+          })
         }
         // 型のない未知例外は既存のlive/replay境界へ伝播させ、retry/reportを維持する。
         throw error
@@ -316,11 +396,11 @@ export class TwitchChatService {
         senderTwitchUserId,
         usingBotAccount: Boolean(botAccount),
       })
-      return {
+      return finishPreflightFailure({
         outcome: 'terminal',
         code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
         reason: 'chat sender access token unavailable',
-      }
+      })
     }
 
     // メッセージを500文字に制限（Twitch APIの制限）
@@ -360,7 +440,10 @@ export class TwitchChatService {
                 senderTwitchUserId,
                 attempt,
               })
-              return { outcome: 'aborted', reason: 'chat delivery ownership lost before send' }
+              return withCredentialDegradation({
+                outcome: 'aborted',
+                reason: 'chat delivery ownership lost before send',
+              })
             }
           } catch (error) {
             // fence確認不能時に送ると、別relayとの二重送信を否定できない。
@@ -371,10 +454,10 @@ export class TwitchChatService {
               attempt,
               error: error instanceof Error ? error.message : String(error),
             })
-            return {
+            return withCredentialDegradation({
               outcome: 'aborted',
               reason: `chat delivery fence failed: ${error instanceof Error ? error.message : String(error)}`,
-            }
+            })
           }
         }
 
@@ -400,7 +483,7 @@ export class TwitchChatService {
               messageLength: countCharacters(truncatedMessage),
               attempt,
             })
-            return { outcome: 'sent' }
+            return finishSuccessfulOutcome({ outcome: 'sent' })
           }
 
           const dropCode = sentResult?.drop_reason?.code ?? 'invalid-success-response'
@@ -419,7 +502,7 @@ export class TwitchChatService {
               usingBotAccount: Boolean(botAccount),
               attempt,
             })
-            return { outcome: 'duplicate', reason: dropMessage }
+            return finishSuccessfulOutcome({ outcome: 'duplicate', reason: dropMessage })
           }
 
           lastResponse = response
@@ -521,7 +604,7 @@ export class TwitchChatService {
           // reportApiError failure is best-effort — must not block main flow
         }
       }
-      return isRetryableHttpStatus(lastResponse.status)
+      return withCredentialDegradation(isRetryableHttpStatus(lastResponse.status)
         ? {
             outcome: 'retryable',
             reason: `Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`,
@@ -531,6 +614,7 @@ export class TwitchChatService {
             code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
             reason: `Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`,
           }
+      )
     }
 
     if (reportFailures) {
@@ -548,10 +632,10 @@ export class TwitchChatService {
         // reportError failure is best-effort — must always reach return false
       }
     }
-    return {
+    return withCredentialDegradation({
       outcome: 'retryable',
       reason: lastException instanceof Error ? lastException.message : String(lastException),
-    }
+    })
   }
 
   /**

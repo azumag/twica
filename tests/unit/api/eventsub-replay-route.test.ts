@@ -366,6 +366,31 @@ describe('POST /api/admin/eventsub-replay', () => {
       expect(json.results[0].outcome).toBe('skipped')
     })
 
+    it('fallback送信成功はackを維持し、credential degradationを1回だけreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      const degradation = {
+        code: 'credential_unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent', degradation })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(claim)
+      expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
+      expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('fallback sender') }),
+        expect.objectContaining({ messageId: claim.batchId, degradation }),
+      )
+      expect(json.results[0].outcome).toBe('succeeded')
+    })
+
     it('外部送信開始期限内に開始済みなら、遅延成功をroute deadlineまで待って1回だけackする', async () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date(0))

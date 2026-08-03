@@ -62,6 +62,9 @@ vi.mock('@/components/TwitchLoginRedirect', () => ({ TwitchLoginRedirect: () => 
 vi.mock('@/components/MaintenanceBanner', () => ({ default: () => null }))
 vi.mock('@/components/MaintenanceStatusProvider', () => ({
   MaintenanceStatusProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  // dashboard配下の実コンポーネントがhookを参照しても、通常運用時と同じ
+  // maintenance無効状態で描画できるProvider契約をmock側にも揃える。
+  useMaintenanceStatus: () => ({ mode: 'off' }),
 }))
 
 vi.mock('@/components/ChatDeliveryWarning', () => ({

@@ -280,6 +280,30 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(persistedClaim)
   })
 
+  it('live配送のfallback成功はackし、credential degradationだけを1回reportする', async () => {
+    setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
+    const degradation = {
+      code: 'credential_unavailable',
+      reason: 'configured BOT credential requires reauthorization',
+    }
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({ outcome: 'sent', degradation })
+
+    const response = await POST(await createRedemptionRequest('eventsub-degraded-chat'))
+
+    expect(response.status).toBe(200)
+    expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(1)
+    expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
+    expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+    expect(mockReportError).toHaveBeenCalledTimes(1)
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('fallback sender') }),
+      expect.objectContaining({
+        context: 'eventsub:postRedemptionNotify:chatDegradation',
+        degradation,
+      }),
+    )
+  })
+
   it('名前付き引数のSQLを実行し、所持数とアクティブ種類数を組み立てる', async () => {
     const sqlMock = setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
     // HTTPハンドラ内の一時オブジェクトではなく、ガチャ確定と同じtransactionで

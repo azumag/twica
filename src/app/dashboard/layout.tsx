@@ -9,6 +9,7 @@ import { MaintenanceStatusProvider } from "@/components/MaintenanceStatusProvide
 import MaintenanceBanner from "@/components/MaintenanceBanner";
 import ChatDeliveryWarning from "@/components/ChatDeliveryWarning";
 import { getChatDeliveryCapability } from "@/lib/twitch/chat-delivery-capability";
+import { ChatReauthorizationProvider } from "@/lib/twitch/use-chat-reauthorization";
 
 /**
  * Dashboard layout component
@@ -66,27 +67,31 @@ export default async function DashboardLayout({
     // （書き込みボタンごとの個別fetchを避ける設計。詳細は
     // MaintenanceStatusProvider.tsx のコメント参照）。
     <MaintenanceStatusProvider>
-      <div className="min-h-screen bg-gray-900">
-        <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
+      {/* 共通警告とsettings内CTAでOAuth state発行を競合させないよう、
+          dashboard全体を1つの再認証single-flight境界に置く。 */}
+      <ChatReauthorizationProvider>
+        <div className="min-h-screen bg-gray-900">
+          <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
 
-        <div className="container mx-auto px-4 py-6">
-          {/* メンテナンスバナー: read-only中であることをダッシュボード全体で常時表示 */}
-          <MaintenanceBanner />
+          <div className="container mx-auto px-4 py-6">
+            {/* メンテナンスバナー: read-only中であることをダッシュボード全体で常時表示 */}
+            <MaintenanceBanner />
 
-          {/* チャット通知が有効なのに実効送信手段がない場合の非dismissable警告 */}
-          <ChatDeliveryWarning needsAttention={chatDeliveryCapability?.needsAttention ?? false} />
+            {/* チャット通知が有効なのに実効送信手段がない場合の非dismissable警告 */}
+            <ChatDeliveryWarning needsAttention={chatDeliveryCapability?.needsAttention ?? false} />
 
-          {/* Navigation bar */}
-          {/* ナビゲーションバー */}
-          <div className="mb-6">
-            <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
+            {/* Navigation bar */}
+            {/* ナビゲーションバー */}
+            <div className="mb-6">
+              <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
+            </div>
+
+            {/* Page content */}
+            {/* ページコンテンツ */}
+            <main>{children}</main>
           </div>
-
-          {/* Page content */}
-          {/* ページコンテンツ */}
-          <main>{children}</main>
         </div>
-      </div>
+      </ChatReauthorizationProvider>
     </MaintenanceStatusProvider>
   );
 }

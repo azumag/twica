@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { NextIntlClientProvider } from "next-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
+import { ChatReauthorizationProvider } from "@/lib/twitch/use-chat-reauthorization";
 import jaMessages from "../../../messages/ja.json";
 
 // Issue #827: mutation成功後のServer Component再取得を呼び出し単位で検証する。
@@ -48,14 +49,16 @@ function renderSettings(
 ) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
-      <ChatAnnouncementSettings
-        streamerId="streamer-1"
-        currentEnabled={overrides.currentEnabled ?? false}
-        currentTemplate={overrides.currentTemplate ?? null}
-        currentMultiTemplate={overrides.currentMultiTemplate ?? null}
-        currentMultiShowCards={overrides.currentMultiShowCards ?? true}
-        botAccount={overrides.botAccount ?? null}
-      />
+      <ChatReauthorizationProvider>
+        <ChatAnnouncementSettings
+          streamerId="streamer-1"
+          currentEnabled={overrides.currentEnabled ?? false}
+          currentTemplate={overrides.currentTemplate ?? null}
+          currentMultiTemplate={overrides.currentMultiTemplate ?? null}
+          currentMultiShowCards={overrides.currentMultiShowCards ?? true}
+          botAccount={overrides.botAccount ?? null}
+        />
+      </ChatReauthorizationProvider>
     </NextIntlClientProvider>
   );
 }

@@ -28,6 +28,7 @@ import {
   TwitchChatService,
   DEFAULT_CHAT_TEMPLATE,
   CHAT_SEND_TERMINAL_CODES,
+  type ChatSendDegradation,
   type ChatMessagePlaceholders,
   type ChatSendTerminalCode,
 } from "@/lib/twitch/chat-service";
@@ -505,7 +506,29 @@ export async function postRedemptionNotify(
         // ackできなければ別relayが再送し得るため、成功として黙殺せず通知する。
         deliveryStatePersisted = true;
         if (!persisted) {
-          throw new Error('Chat announcement sent but outbox ack lost its lease');
+          throw new Error(
+            `Chat announcement sent but outbox ack lost its lease${
+              outcome.degradation ? `; sender degraded: ${outcome.degradation.reason}` : ''
+            }`,
+          );
+        }
+        if (outcome.degradation) {
+          // Twitch送信とoutbox ackは成功済みなのでDLQ/retryへ戻さない。一方、設定BOTの
+          // 恒久失効をsentだけで握りつぶさず、このlive所有境界で1回だけ永続化する。
+          logger.warn('[postRedemptionNotify] Chat sent using fallback sender', {
+            streamerId: data.streamer.id,
+            broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+            degradation: outcome.degradation,
+          });
+          await reportNotificationError(
+            new Error(`Chat delivery used fallback sender: ${outcome.degradation.reason}`),
+            {
+              context: 'eventsub:postRedemptionNotify:chatDegradation',
+              streamerId: data.streamer.id,
+              broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+              degradation: outcome.degradation,
+            },
+          );
         }
         return;
       }
@@ -1023,12 +1046,13 @@ async function fetchActiveCardCountPg(
  * @param snapshot - ガチャcommit時点の所有数系placeholder（outbox v1では必須）
  * @param beforeExternalSend - 資格情報解決後・Twitch送信直前に行うowner fence
  */
-export type ChatAnnouncementOutcome =
+export type ChatAnnouncementOutcome = (
   | { outcome: 'sent' }
   | { outcome: 'skipped' }
   | { outcome: 'terminal'; code: ChatSendTerminalCode; reason: string }
   | { outcome: 'retryable'; reason: string }
-  | { outcome: 'aborted'; reason: string };
+  | { outcome: 'aborted'; reason: string }
+) & { degradation?: ChatSendDegradation };
 
 export async function sendChatAnnouncement(
   broadcasterTwitchUserId: string,
@@ -1352,7 +1376,9 @@ export async function sendChatAnnouncement(
       multiDraw: isMultiDraw,
       reason: outcome.reason,
     });
-    return { outcome: 'skipped' };
+    return outcome.degradation
+      ? { outcome: 'skipped', degradation: outcome.degradation }
+      : { outcome: 'skipped' };
   } else {
     // sendChatMessage が false を返した場合のログ（API呼び出し失敗）
     // Log when sendChatMessage returns false (API call failure)

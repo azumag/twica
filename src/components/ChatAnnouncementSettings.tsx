@@ -123,7 +123,7 @@ export default function ChatAnnouncementSettings({
   // 各書き込みボタンのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const isMaintenanceBlocked = maintenanceMode !== "off";
-  const { reauthorizing, reauthorize } = useChatReauthorization(isMaintenanceBlocked);
+  const { reauthorizing, reauthorize } = useChatReauthorization();
 
   // State管理
   const [enabled, setEnabled] = useState(currentEnabled);

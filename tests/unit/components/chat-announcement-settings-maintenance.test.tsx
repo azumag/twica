@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from "next-intl";
 import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
 import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider";
 import type { MaintenanceStatusResponse } from "@/lib/maintenance/client";
+import { ChatReauthorizationProvider } from "@/lib/twitch/use-chat-reauthorization";
 import jaMessages from "../../../messages/ja.json";
 
 // ChatAnnouncementSettingsがIssue #827でuseRouterを利用するため、この保守モード専用
@@ -20,14 +21,16 @@ function renderSettings(status: MaintenanceStatusResponse) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <MaintenanceStatusContext.Provider value={status}>
-        <ChatAnnouncementSettings
-          streamerId="streamer-1"
-          currentEnabled={false}
-          currentTemplate={null}
-          currentMultiTemplate={null}
-          currentMultiShowCards
-          botAccount={null}
-        />
+        <ChatReauthorizationProvider>
+          <ChatAnnouncementSettings
+            streamerId="streamer-1"
+            currentEnabled={false}
+            currentTemplate={null}
+            currentMultiTemplate={null}
+            currentMultiShowCards
+            botAccount={null}
+          />
+        </ChatReauthorizationProvider>
       </MaintenanceStatusContext.Provider>
     </NextIntlClientProvider>
   );

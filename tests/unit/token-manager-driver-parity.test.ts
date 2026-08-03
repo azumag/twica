@@ -262,11 +262,12 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
     expect(executableLines).not.toMatch(/^(?:const|let|var)\s+\w+\s*=\s*(?:new\s+Map|Promise\.)/m)
   })
 
-  it('retryableなtoken/BOT/scope解決ログをlogger.errorへ戻さない', () => {
+  it('token/BOT下位層の障害ログをlogger.errorへ戻さない', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/lib/twitch/token-manager.ts'), 'utf8')
-    const retryableMessages = [
+    const lowerLayerWarnOnlyMessages = [
       'Twitch token columns are missing; denying token access',
       'Database error fetching user tokens',
+      'Failed to refresh Twitch access token',
       'Database error fetching BOT account',
       'Chat sender settings schema is missing; disabling BOT chat sender',
       'Database error fetching chat sender settings',
@@ -274,13 +275,14 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       'Database error fetching custom BOT account',
       'Twitch BOT accounts schema is missing; disabling official BOT sender',
       'Database error fetching official BOT account',
-      'twitch_scopes column is missing; denying scope access',
-      'Database error checking scope',
+      'Failed to refresh BOT Twitch access token',
     ]
 
     // logger.server.errorはerrors表と自動Issue作成を起動する。replay pending中の
-    // retryable障害はwarnに限定し、dead到達時の上位reportErrorへ報告を一元化する。
-    for (const message of retryableMessages) {
+    // retryable/terminal障害は下位token/BOT層ではwarnに限定し、呼び出し境界の
+    // reportErrorへ永続化責任を一元化する。scope判定はgetScopeStatusとhasScopeで
+    // 所有境界が異なるため、この文字列契約へ混ぜず、下の実挙動テストで固定する。
+    for (const message of lowerLayerWarnOnlyMessages) {
       expect(source).toContain(`logger.warn('${message}'`)
       expect(source).not.toContain(`logger.error('${message}'`)
     }
@@ -581,7 +583,7 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       await expect(hasScope('user-1', scope)).resolves.toBe(expected)
     })
 
-    it('hasScope は列欠落時にfalseへ倒し、retryable経路をwarnで監視可能にする', async () => {
+    it('hasScope は列欠落時にfalseへ倒し、上位境界がないためerrorを永続化する', async () => {
       const missingColumnError = { code: '42703', message: 'column missing' }
       const fixture = createDrizzleDbMock({
         selects: [{ error: missingColumnError }],
@@ -589,7 +591,7 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       primeDb(fixture)
 
       await expect(hasScope('user-1', 'user:write:chat')).resolves.toBe(false)
-      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
         'twitch_scopes column is missing; denying scope access',
         {
           twitchUserId: 'user-1',
@@ -597,7 +599,21 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
           error: missingColumnError,
         },
       )
-      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
+    })
+
+    it('hasScope は一般DB障害もfalseへ倒す前にerrorを永続化する', async () => {
+      const databaseError = { code: '08006', message: 'connection failure' }
+      const fixture = createDrizzleDbMock({
+        selects: Array.from({ length: 4 }, () => ({ error: databaseError })),
+      })
+      primeDb(fixture)
+
+      await expect(hasScope('user-1', 'user:write:chat')).resolves.toBe(false)
+      expect(vi.mocked(logger.error)).toHaveBeenCalledWith('Database error checking scope', {
+        twitchUserId: 'user-1',
+        scope: 'user:write:chat',
+        error: databaseError,
+      })
     })
 
     it.each([
@@ -628,6 +644,25 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
         scope: 'user:write:chat',
         error: databaseError,
       })
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
+    })
+
+    it('getScopeStatus は列欠落もunavailableへ分類し、上位報告に備えてwarnだけを残す', async () => {
+      const missingColumnError = { code: '42703', message: 'column missing' }
+      const fixture = createDrizzleDbMock({
+        selects: [{ error: missingColumnError }],
+      })
+      primeDb(fixture)
+
+      await expect(getScopeStatus('user-1', 'user:write:chat')).resolves.toBe('unavailable')
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        'twitch_scopes column is missing; denying scope access',
+        {
+          twitchUserId: 'user-1',
+          scope: 'user:write:chat',
+          error: missingColumnError,
+        },
+      )
       expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
     })
 
@@ -783,10 +818,11 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
         reason: 'configured BOT credential requires reauthorization',
       })
       expect(fixture.refreshState.status).toBe('error')
-      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
         'Failed to refresh BOT Twitch access token',
         { broadcasterTwitchUserId: 'broadcaster-1', accountId: 'bot-account-1' },
       )
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
     })
 
     it('sender_modeが custom_bot/official_bot/streamer のいずれでもない未知値はterminal-unavailableとして保持する', async () => {

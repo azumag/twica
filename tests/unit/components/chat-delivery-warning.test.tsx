@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from 'next-intl'
 import ChatDeliveryWarning from '@/components/ChatDeliveryWarning'
 import { MaintenanceStatusContext } from '@/components/MaintenanceStatusProvider'
 import type { MaintenanceMode } from '@/lib/maintenance/state'
+import { ChatReauthorizationProvider } from '@/lib/twitch/use-chat-reauthorization'
 
 const messages = {
   chatDeliveryWarning: {
@@ -23,7 +24,9 @@ function renderWarning(needsAttention: boolean, maintenanceMode: MaintenanceMode
   return render(
     <NextIntlClientProvider locale="ja" messages={messages}>
       <MaintenanceStatusContext.Provider value={{ mode: maintenanceMode }}>
-        <ChatDeliveryWarning needsAttention={needsAttention} />
+        <ChatReauthorizationProvider>
+          <ChatDeliveryWarning needsAttention={needsAttention} />
+        </ChatReauthorizationProvider>
       </MaintenanceStatusContext.Provider>
     </NextIntlClientProvider>,
   )
@@ -93,6 +96,39 @@ describe('ChatDeliveryWarning', () => {
       }),
     ))
     expect(screen.getByText('再認証を開始できませんでした。')).toBeInTheDocument()
+  })
+
+  it('同じProvider配下の別CTAを連続操作してもreauth requestは1本だけ発行する', async () => {
+    let resolveResponse!: (response: Response) => void
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () => new Promise<Response>((resolve) => {
+        resolveResponse = resolve
+      }),
+    )
+    render(
+      <NextIntlClientProvider locale="ja" messages={messages}>
+        <MaintenanceStatusContext.Provider value={{ mode: 'off' }}>
+          <ChatReauthorizationProvider>
+            <ChatDeliveryWarning needsAttention />
+            <ChatDeliveryWarning needsAttention />
+          </ChatReauthorizationProvider>
+        </MaintenanceStatusContext.Provider>
+      </NextIntlClientProvider>,
+    )
+
+    const buttons = screen.getAllByRole('button', { name: 'Twitchと再認証' })
+    fireEvent.click(buttons[0])
+    // Contextの共有loadingで別consumerも即座に無効化される。handler側のrefも
+    // 同じProvider instanceに属するため、state反映前の直接呼び出しにも耐える。
+    expect(buttons[1]).toBeDisabled()
+    fireEvent.click(buttons[1])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    resolveResponse(new Response(JSON.stringify({ error: 'temporary failure' }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    }))
+    await waitFor(() => expect(buttons[0]).not.toBeDisabled())
   })
 
   it('maintenance中は再認証CTAを無効化しAPIを呼ばない', () => {

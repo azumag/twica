@@ -154,6 +154,35 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
     expect(outcome).toEqual({ outcome: 'sent' })
   })
 
+  it('fallback送信成功のcredential degradationをlive/replay所有境界へ透過する', async () => {
+    vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+      degradation: {
+        code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+        reason: 'configured BOT credential requires reauthorization',
+      },
+    })
+
+    const outcome = await sendChatAnnouncement(
+      '130871908',
+      streamer,
+      card,
+      'Viewer',
+      'viewer-1',
+      undefined,
+      undefined,
+      snapshot,
+    )
+
+    expect(outcome).toEqual({
+      outcome: 'sent',
+      degradation: {
+        code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+        reason: 'configured BOT credential requires reauthorization',
+      },
+    })
+  })
+
   it('{newCardsOrNone} は初入手ありなら既存 {newCards} と同じ一覧を送る', async () => {
     const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
       outcome: 'sent',
