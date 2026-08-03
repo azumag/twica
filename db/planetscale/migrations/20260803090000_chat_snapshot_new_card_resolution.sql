@@ -188,6 +188,10 @@ BEGIN
       GROUP BY uc.card_id
     ),
     expected_events AS (
+      -- CTEはstatementをまたいで共有できない。上のstatementは全historyの完成を
+      -- 先にfail-closed検証し、ここではchat有効時だけ所有数を集約するため、同じ
+      -- event列を意図的に再定義する。単一statement化するとchat無効配信者にも
+      -- placeholder集約コストが発生するため、この重複を保つ。
       SELECT
         draw_index,
         CASE
@@ -205,6 +209,10 @@ BEGIN
       FROM expected_events
       JOIN gacha_history gh ON gh.event_id = expected_events.event_id
       JOIN cards c ON c.id = gh.card_id
+      -- event_idは一意で上のordered_cardsも完成を検証済みだが、この集約だけを
+      -- 読んでも別配信者・別ユーザーの履歴を混入させない防御境界を明示する。
+      WHERE gh.streamer_id = p_streamer_id
+        AND gh.user_twitch_id = p_user_twitch_id
       GROUP BY gh.card_id
     ),
     expected_history_timestamp_counts AS (
@@ -214,6 +222,8 @@ BEGIN
         count(*)::integer AS expected_count
       FROM expected_events
       JOIN gacha_history gh ON gh.event_id = expected_events.event_id
+      WHERE gh.streamer_id = p_streamer_id
+        AND gh.user_twitch_id = p_user_twitch_id
       GROUP BY gh.card_id, gh.redeemed_at
     ),
     obtained_card_timestamp_counts AS (

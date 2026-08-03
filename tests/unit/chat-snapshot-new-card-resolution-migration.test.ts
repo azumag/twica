@@ -21,9 +21,11 @@ describe('chat snapshot new-card resolution migration', () => {
 
   it('最終所持数とevent時刻ごとの付与数が両方確認できたときだけ解決済みを加算する', () => {
     expect(migration).toMatch(/v_new_card_names_resolved\s+boolean/)
+    expect(migration).toMatch(/drawn_card_counts\s+AS\s*\([\s\S]*?FROM\s+expected_events\s+JOIN\s+gacha_history\s+gh\s+ON\s+gh\.event_id\s*=\s*expected_events\.event_id[\s\S]*?WHERE\s+gh\.streamer_id\s*=\s*p_streamer_id\s+AND\s+gh\.user_twitch_id\s*=\s*p_user_twitch_id[\s\S]*?GROUP\s+BY\s+gh\.card_id\s*\)/)
     expect(migration).toMatch(/FROM\s+drawn_card_counts\s+drawn\s+LEFT\s+JOIN\s+user_card_counts\s+owned\s+ON\s+owned\.card_id\s*=\s*drawn\.card_id/)
     expect(migration).toMatch(/WHERE\s+owned\.card_id\s+IS\s+NULL\s+OR\s+owned\.final_count\s*<\s*drawn\.drawn_count/)
     expect(migration).toMatch(/expected_history_timestamp_counts\s+AS\s*\(/)
+    expect(migration).toMatch(/expected_history_timestamp_counts\s+AS\s*\([\s\S]*?FROM\s+expected_events\s+JOIN\s+gacha_history\s+gh\s+ON\s+gh\.event_id\s*=\s*expected_events\.event_id\s+WHERE\s+gh\.streamer_id\s*=\s*p_streamer_id\s+AND\s+gh\.user_twitch_id\s*=\s*p_user_twitch_id[\s\S]*?GROUP\s+BY\s+gh\.card_id\s*,\s*gh\.redeemed_at\s*\)/)
     expect(migration).toMatch(/obtained_card_timestamp_counts\s+AS\s*\(/)
     expect(migration).toMatch(/GROUP\s+BY\s+gh\.card_id\s*,\s*gh\.redeemed_at/)
     expect(migration).toMatch(/GROUP\s+BY\s+uc\.card_id\s*,\s*uc\.obtained_at/)
