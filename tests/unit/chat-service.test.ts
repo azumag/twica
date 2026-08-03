@@ -354,6 +354,47 @@ describe('TwitchChatService', () => {
 
       expect(message).toBe('viewer: 初出 0種類');
     });
+
+    it('{newCardsOrNone} に初入手カード名一覧を渡すと置換する', () => {
+      const message = service.buildMessage(
+        '{user}: 初入手 {newCardsOrNone}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+          newCardsOrNone: 'Alpha、Gamma',
+        },
+      );
+
+      expect(message).toBe('viewer: 初入手 Alpha、Gamma');
+    });
+
+    it('{newCardsOrNone} に正常0件用の「なし」を渡すと置換する', () => {
+      const message = service.buildMessage(
+        '{user}: 初入手 {newCardsOrNone}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+          newCardsOrNone: 'なし',
+        },
+      );
+
+      expect(message).toBe('viewer: 初入手 なし');
+    });
+
+    it('{newCardsOrNone} 未指定時は既存の任意placeholderと同様に空文字へ置換する', () => {
+      const message = service.buildMessage(
+        '{user}: 初入手 {newCardsOrNone}',
+        {
+          user: 'viewer',
+          card: 'Alpha',
+          rarity: 'レア',
+        },
+      );
+
+      expect(message).toBe('viewer: 初入手');
+    });
   });
 
   describe('sendChatMessage - 401エラー時のDB保護', () => {

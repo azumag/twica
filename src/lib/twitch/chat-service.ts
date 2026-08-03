@@ -70,6 +70,9 @@ export interface ChatMessagePlaceholders {
   // 複数枚ガチャで今回初めて獲得したカードの種類数（オプション）
   // Count of newly obtained card types in the current multi-draw announcement (optional)
   newCardCount?: number
+  // 複数枚ガチャで今回初めて獲得したカード名一覧。正常に0件と判定できた場合は「なし」
+  // Newly obtained card names in the current multi-draw, or "なし" when zero was resolved
+  newCardsOrNone?: string
   // カードのレアリティ（日本語または英語）
   // Card rarity (Japanese or English)
   rarity: string
@@ -519,6 +522,12 @@ export class TwitchChatService {
       message = message.replace(/\{newCardCount\}/g, String(placeholders.newCardCount))
     } else {
       message = message.replace(/\{newCardCount\}/g, '')
+    }
+
+    if (placeholders.newCardsOrNone) {
+      message = message.replace(/\{newCardsOrNone\}/g, placeholders.newCardsOrNone)
+    } else {
+      message = message.replace(/\{newCardsOrNone\}/g, '')
     }
 
     if (placeholders.packName) {
