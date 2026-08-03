@@ -38,7 +38,13 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
     rarity: 'common',
     drop_rate: 1,
   }
-  const snapshot = { cardCount: 1, uniqueCount: 1, allCount: 10, newCardNames: [] }
+  const snapshot = {
+    cardCount: 1,
+    uniqueCount: 1,
+    allCount: 10,
+    newCardNames: [],
+    newCardNamesResolved: true,
+  }
 
   it('Twitchが重複として抑止した場合はDLQ行きのterminalではなくskippedを返す', async () => {
     vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
@@ -150,6 +156,50 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
 
     // legacy placeholders remain byte-for-byte compatible: empty {newCards} and numeric 0.
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=なし|legacy=|count=0')
+  })
+
+  it('outbox snapshotが判定不能なら既存placeholderだけを維持し {newCardsOrNone} は空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta], undefined,
+      { ...snapshot, newCardNames: ['Alpha'], newCardNamesResolved: false },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=|legacy=Alpha|count=1')
+  })
+
+  it('移行前outbox snapshotは判定成否fieldが無いため「なし」にせず空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const beta = { ...card, id: 'card-2', name: 'Beta' }
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}|legacy={newCards}|count={newCardCount}',
+      chat_announcement_multi_show_cards: true,
+    }
+    const legacySnapshot = {
+      cardCount: snapshot.cardCount,
+      uniqueCount: snapshot.uniqueCount,
+      allCount: snapshot.allCount,
+      newCardNames: snapshot.newCardNames,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta], undefined,
+      legacySnapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=|legacy=|count=0')
   })
 
   it('multiShowCardsがOFFなら {newCardsOrNone} はsnapshotがあっても空文字になる', async () => {

@@ -123,6 +123,10 @@ export function decodeChatNotificationPayload(
     || (snapshot.allCount as number) < 0
     || !Array.isArray(snapshot.newCardNames)
     || !snapshot.newCardNames.every((name) => typeof name === 'string')
+    // payload v1へのadditive field。migration先行中の旧workerは余分なfieldを無視でき、
+    // app先行中の新workerはfieldが無い既存outboxを判定不能として安全に配送できる。
+    || (snapshot.newCardNamesResolved !== undefined
+      && typeof snapshot.newCardNamesResolved !== 'boolean')
   ) {
     return null
   }
