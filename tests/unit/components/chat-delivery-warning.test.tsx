@@ -9,7 +9,7 @@ import { ChatReauthorizationProvider } from '@/lib/twitch/use-chat-reauthorizati
 const messages = {
   chatDeliveryWarning: {
     title: 'チャット通知を送信できません',
-    description: 'チャット通知の送信元アカウントの認証が必要です。ガチャとカード付与は通常どおり動作しますが、チャット通知は送信されません。',
+    description: 'チャット通知の送信元アカウントの再認証が必要です。ガチャとカード付与は通常どおり動作しますが、チャット通知は送信されません。',
     reauthorize: 'Twitchと再認証',
     reauthorizing: '再認証中...',
     settingsLink: 'チャット通知設定',
