@@ -246,7 +246,9 @@ export async function GET(request: Request) {
       return NextResponse.redirect(authUrl)
     }
 
-    return NextResponse.json({ authUrl })
+    // stateを返し、クライアント側でauthUrlのstateと突き合わせて遷移前に検証できる
+    // ようにする（reauth/BOT接続APIと同じOAuth/CSRF境界の検証。Issue #865フォローアップ）。
+    return NextResponse.json({ authUrl, state })
   } catch (error) {
     // handleAuthError が唯一の永続化責任点。ここで別途 reportAuthError を呼ぶと
     // 同一例外が2件の errors 行・自動issueになる。

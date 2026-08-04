@@ -77,7 +77,9 @@ export async function POST(request: NextRequest) {
     const redirectUri = `${baseUrl}${API_ROUTES.AUTH_TWITCH_CALLBACK}`
     const loginUrl = getTwitchAuthUrl(redirectUri, state, [ADDITIONAL_SCOPES.CHAT_WRITE])
 
-    const response = NextResponse.json({ success: true, loginUrl })
+    // stateを返し、クライアント側でも遷移前にloginUrlのstateと突き合わせて検証できるようにする
+    // （reauth APIと同じOAuth/CSRF境界の検証をBOT接続フローにも適用する。Issue #865）。
+    const response = NextResponse.json({ success: true, loginUrl, state })
     response.cookies.set(COOKIE_NAMES.BOT_AUTH_STATE, state, STATE_COOKIE_OPTIONS)
     return response
   } catch (error) {

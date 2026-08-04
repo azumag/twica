@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
+import { parseTwitchAuthorizationResponse } from "@/lib/twitch/authorization-response";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 interface TwitchSubCheckSectionProps {
@@ -86,10 +87,17 @@ export default function TwitchSubCheckSection({
 
       if (response.ok) {
         const data = await response.json();
-        if (data.state) {
-          document.cookie = `twitch_auth_state=${data.state}; path=/; max-age=600; secure; samesite=lax`;
+        // 壊れたAPI応答や侵害時の外部URLをそのままwindow.locationへ渡さないため、
+        // ChatAnnouncementSettingsのreauth/BOT接続と同じorigin/path/state検証を通す
+        // （Issue #865フォローアップ）。
+        const authorization = parseTwitchAuthorizationResponse(data);
+        if (!authorization) {
+          setMessage({ type: "error", text: t("messages.reauthorizeFailed") });
+          setReauthorizing(false);
+          return;
         }
-        window.location.href = data.loginUrl;
+        document.cookie = `twitch_auth_state=${authorization.state}; path=/; max-age=600; secure; samesite=lax`;
+        window.location.href = authorization.loginUrl;
       } else {
         const errorData = await response.json();
         const maintenanceError = parseMaintenanceError(response, errorData);
