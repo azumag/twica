@@ -40,6 +40,35 @@ describe('parseTwitchAuthorizationResponse', () => {
     expect(result).toBeNull()
   })
 
+  it('stateに許可されない文字（cookie属性インジェクションを狙った値）が含まれていればnullを返す', () => {
+    const maliciousState = 'abc; Domain=evil.com; Path=/'
+    const result = parseTwitchAuthorizationResponse({
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?state=${encodeURIComponent(maliciousState)}`,
+      state: maliciousState,
+    })
+
+    expect(result).toBeNull()
+  })
+
+  it('stateが8文字未満ならnullを返す', () => {
+    const shortState = 'short1'
+    const result = parseTwitchAuthorizationResponse({
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?state=${shortState}`,
+      state: shortState,
+    })
+
+    expect(result).toBeNull()
+  })
+
+  it('URLに重複したstateクエリパラメータがあればnullを返す', () => {
+    const result = parseTwitchAuthorizationResponse({
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?state=${VALID_STATE}&state=other-value`,
+      state: VALID_STATE,
+    })
+
+    expect(result).toBeNull()
+  })
+
   it('URLにusername/passwordが埋め込まれていればnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
       loginUrl: `https://attacker:pw@id.twitch.tv/oauth2/authorize?state=${VALID_STATE}`,

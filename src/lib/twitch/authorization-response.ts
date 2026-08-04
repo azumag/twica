@@ -1,5 +1,10 @@
 const TWITCH_AUTHORIZATION_ORIGIN = 'https://id.twitch.tv'
 const TWITCH_AUTHORIZATION_PATH = '/oauth2/authorize'
+// サーバー側の生成方式はcrypto.randomUUID()（36文字、16進数+ハイフン）または
+// randomBytesHex(32)（64文字、16進数のみ）のいずれかで、他の文字は使わない。
+// ここで許可文字を絞ることで、stateが後段でdocument.cookieへ直接埋め込まれる
+// 呼び出し元（例: "abc; Domain=evil.com; Path=/"）でのcookie属性インジェクションを防ぐ。
+const STATE_PATTERN = /^[A-Za-z0-9-]{8,256}$/
 
 export interface TwitchAuthorizationResponse {
   loginUrl: string
@@ -18,18 +23,22 @@ export function parseTwitchAuthorizationResponse(body: unknown): TwitchAuthoriza
   if (typeof body !== 'object' || body === null) return null
 
   const { loginUrl, state } = body as Record<string, unknown>
-  if (typeof loginUrl !== 'string' || typeof state !== 'string' || state.length === 0) {
+  if (typeof loginUrl !== 'string' || typeof state !== 'string' || !STATE_PATTERN.test(state)) {
     return null
   }
 
   try {
     const url = new URL(loginUrl)
+    // getAll: 重複したstateクエリ（?state=a&state=b）はgetでは先頭しか見えず
+    // 曖昧になるため、ちょうど1件だけであることも確認する。
+    const stateParams = url.searchParams.getAll('state')
     if (
       url.origin !== TWITCH_AUTHORIZATION_ORIGIN ||
       url.pathname !== TWITCH_AUTHORIZATION_PATH ||
       url.username !== '' ||
       url.password !== '' ||
-      url.searchParams.get('state') !== state
+      stateParams.length !== 1 ||
+      stateParams[0] !== state
     ) {
       return null
     }

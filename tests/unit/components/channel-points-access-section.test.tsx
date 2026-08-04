@@ -230,7 +230,7 @@ describe("ChannelPointsAccessSection", () => {
         additionalScopes: CHANNEL_POINT_SCOPES,
         returnTo: "/dashboard/account",
       });
-      return jsonResponse({ loginUrl: "https://id.twitch.tv/oauth2/authorize?mock=1&state=abc123", state: "abc123" });
+      return jsonResponse({ loginUrl: "https://id.twitch.tv/oauth2/authorize?mock=1&state=abc12345", state: "abc12345" });
     });
     vi.stubGlobal(
       "fetch",
@@ -248,7 +248,7 @@ describe("ChannelPointsAccessSection", () => {
 
     await waitFor(() => expect(reauthHandler).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect(window.location.href).toBe("https://id.twitch.tv/oauth2/authorize?mock=1&state=abc123")
+      expect(window.location.href).toBe("https://id.twitch.tv/oauth2/authorize?mock=1&state=abc12345")
     );
   });
 
@@ -260,7 +260,7 @@ describe("ChannelPointsAccessSection", () => {
       buildFetchMock({
         get: () => jsonResponse(makeState({ hasRequiredScope: false, requiresReauth: true, stale: false })),
         // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
-        reauth: () => jsonResponse({ loginUrl: "https://evil.example.com/phish", state: "abc123" }),
+        reauth: () => jsonResponse({ loginUrl: "https://evil.example.com/phish", state: "abc12345" }),
       })
     );
 
