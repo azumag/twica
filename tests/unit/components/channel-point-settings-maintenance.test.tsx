@@ -117,7 +117,7 @@ describe("ChannelPointSettings maintenance integration", () => {
     // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
     fetchMock = mockFetch({
       needsReauth: true,
-      reauthBody: { loginUrl: "https://evil.example.com/phish", state: "state-1" },
+      reauthBody: { loginUrl: "https://evil.example.com/phish", state: "state-1234" },
     });
     vi.stubGlobal("fetch", fetchMock);
     renderComponent({ mode: "off" });

@@ -69,7 +69,7 @@ describe('TwitchLoginRedirect maintenance integration', () => {
         // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
         return Promise.resolve(
           new Response(
-            JSON.stringify({ authUrl: 'https://evil.example.com/phish', state: 'state-1' }),
+            JSON.stringify({ authUrl: 'https://evil.example.com/phish', state: 'state-1234' }),
             { status: 200, headers: { 'content-type': 'application/json' } }
           )
         )

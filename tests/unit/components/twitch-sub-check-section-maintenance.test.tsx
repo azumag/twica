@@ -87,7 +87,7 @@ describe('TwitchSubCheckSection maintenance integration', () => {
         // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
         if (url.includes('/api/auth/reauth')) {
           return new Response(
-            JSON.stringify({ loginUrl: 'https://evil.example.com/phish', state: 'state-1' }),
+            JSON.stringify({ loginUrl: 'https://evil.example.com/phish', state: 'state-1234' }),
             { status: 200 }
           )
         }
