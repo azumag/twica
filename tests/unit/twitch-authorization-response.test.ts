@@ -98,6 +98,16 @@ describe('parseTwitchAuthorizationResponse', () => {
     expect(result).toBeNull()
   })
 
+  it('stateが256文字を超えるならnullを返す', () => {
+    const longState = 'a'.repeat(257)
+    const result = parseTwitchAuthorizationResponse({
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?state=${longState}`,
+      state: longState,
+    })
+
+    expect(result).toBeNull()
+  })
+
   it('URLに重複したstateクエリパラメータがあればnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
       loginUrl: `https://id.twitch.tv/oauth2/authorize?state=${VALID_STATE}&state=other-value`,
