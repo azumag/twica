@@ -4,6 +4,10 @@ import { NextIntlClientProvider } from 'next-intl'
 import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
 import jaMessages from '../../../messages/ja.json'
 
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
+
 // #694 Stage 6c 既知の不具合対応（Stage 3のFableレビューで指摘）:
 // TwitchLoginRedirect はマウント時に自動で fetch('/api/auth/twitch/login') を
 // 呼び、response.json() で {authUrl} を期待する。maintenance中はこのrouteが
@@ -80,11 +84,20 @@ describe('TwitchLoginRedirect maintenance integration', () => {
 
     renderRedirect()
 
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([u]) => String(u).includes('/api/auth/twitch/login'))
-      ).toBe(true)
-    })
+    // 検証失敗時にスピナー（「リダイレクト中...」）に取り残されず、
+    // 案内文言へ切り替わることを確認する（PR #868レビュー指摘）。
+    expect(await screen.findByText('ログインに失敗しました')).toBeInTheDocument()
+    expect(screen.queryByText('Twitchログインページへ移動中...')).not.toBeInTheDocument()
+    expect(window.location.href).toBe(originalHref)
+  })
+
+  it('login APIの200応答にauthUrlが無ければ遷移せず案内文言を表示する', async () => {
+    const originalHref = window.location.href
+    vi.stubGlobal('fetch', mockFetch('off'))
+
+    renderRedirect()
+
+    expect(await screen.findByText('ログインに失敗しました')).toBeInTheDocument()
     expect(window.location.href).toBe(originalHref)
   })
 

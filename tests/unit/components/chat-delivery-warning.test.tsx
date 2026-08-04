@@ -192,7 +192,7 @@ describe('ChatDeliveryWarning', () => {
   it('成功時はOAuth state cookieを保存してTwitchへredirectする', async () => {
     stubLocationHref()
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      loginUrl: 'https://id.twitch.tv/oauth2/authorize?mock=1&state=state-123',
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?mock=1&redirect_uri=${encodeURIComponent(window.location.origin + '/api/auth/twitch/callback')}&state=state-123`,
       state: 'state-123',
     }), {
       status: 200,
@@ -203,7 +203,7 @@ describe('ChatDeliveryWarning', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Twitchと再認証' }))
 
     await waitFor(() => expect(window.location.href).toBe(
-      'https://id.twitch.tv/oauth2/authorize?mock=1&state=state-123',
+      `https://id.twitch.tv/oauth2/authorize?mock=1&redirect_uri=${encodeURIComponent(window.location.origin + '/api/auth/twitch/callback')}&state=state-123`,
     ))
     expect(document.cookie).toContain('twitch_auth_state=state-123')
   })

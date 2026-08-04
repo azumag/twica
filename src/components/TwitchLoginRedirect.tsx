@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { TwitchLoginResponse } from '@/types/auth'
+import { logger } from '@/lib/logger'
 import { fetchMaintenanceStatus } from '@/lib/maintenance/client'
 import { parseTwitchAuthorizationResponse } from '@/lib/twitch/authorization-response'
 
@@ -27,6 +28,11 @@ export function TwitchLoginRedirect() {
   // 例外が握りつぶされていた。マウント時にまずmaintenance状態を確認し、
   // ブロック中ならそもそもこのfetchを呼ばず、案内文言を表示する。
   const [isMaintenanceBlocked, setIsMaintenanceBlocked] = useState(false)
+  // このコンポーネントはユーザー操作なしでマウント時に自動発火するため、
+  // 検証失敗やネットワーク例外時も「リダイレクト中...」の表示のまま何も
+  // 変わらないと、ユーザーはスピナーに取り残されてしまう。redirectFailed
+  // で明示的に案内文言へ切り替える。
+  const [redirectFailed, setRedirectFailed] = useState(false)
 
   useEffect(() => {
     let isMounted = true
@@ -53,13 +59,18 @@ export function TwitchLoginRedirect() {
           if (authorization) {
             window.location.href = authorization.loginUrl
           } else {
-            console.error('[TwitchLoginRedirect] login response failed authorization URL validation')
+            logger.error('[TwitchLoginRedirect] login response failed authorization URL validation')
+            setRedirectFailed(true)
           }
+        } else if (isMounted) {
+          logger.error('[TwitchLoginRedirect] login response missing authUrl')
+          setRedirectFailed(true)
         }
       } catch (error) {
         if (isMounted) {
           // Sentry removed for Cloudflare Workers bundle size reduction
-          console.error('[TwitchLoginRedirect]', error)
+          logger.error('[TwitchLoginRedirect]', error)
+          setRedirectFailed(true)
         }
       }
     }
@@ -74,7 +85,11 @@ export function TwitchLoginRedirect() {
   return (
     <div className="flex items-center justify-center">
       <div className="text-white">
-        {isMaintenanceBlocked ? tMaintenance('writeDisabled') : t('redirecting')}
+        {isMaintenanceBlocked
+          ? tMaintenance('writeDisabled')
+          : redirectFailed
+            ? t('loginFailed')
+            : t('redirecting')}
       </div>
     </div>
   )

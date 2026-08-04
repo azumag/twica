@@ -230,7 +230,11 @@ describe("ChannelPointsAccessSection", () => {
         additionalScopes: CHANNEL_POINT_SCOPES,
         returnTo: "/dashboard/account",
       });
-      return jsonResponse({ loginUrl: "https://id.twitch.tv/oauth2/authorize?mock=1&state=abc12345", state: "abc12345" });
+      const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/twitch/callback`);
+      return jsonResponse({
+        loginUrl: `https://id.twitch.tv/oauth2/authorize?mock=1&redirect_uri=${redirectUri}&state=abc12345`,
+        state: "abc12345",
+      });
     });
     vi.stubGlobal(
       "fetch",
@@ -247,8 +251,11 @@ describe("ChannelPointsAccessSection", () => {
     fireEvent.click(button);
 
     await waitFor(() => expect(reauthHandler).toHaveBeenCalledTimes(1));
+    const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/twitch/callback`);
     await waitFor(() =>
-      expect(window.location.href).toBe("https://id.twitch.tv/oauth2/authorize?mock=1&state=abc12345")
+      expect(window.location.href).toBe(
+        `https://id.twitch.tv/oauth2/authorize?mock=1&redirect_uri=${redirectUri}&state=abc12345`
+      )
     );
   });
 
