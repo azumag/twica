@@ -539,7 +539,7 @@
   },
   "chatDeliveryWarning": {
     "title": "Chat announcements cannot be sent",
-    "description": "Twitch message permission is missing. Gacha draws and card grants will continue normally, but chat announcements will not be sent.",
+    "description": "The account used to send chat messages needs to be re-authorized. Gacha draws and card grants will continue normally, but chat announcements will not be sent.",
     "reauthorize": "Re-authorize with Twitch",
     "reauthorizing": "Re-authorizing...",
     "settingsLink": "Chat announcement settings",
