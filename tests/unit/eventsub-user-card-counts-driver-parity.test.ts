@@ -304,6 +304,35 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     )
   })
 
+  // BOT恒久失効(degradation)は失敗系outcomeにも付与される。token-managerが永続報告を
+  // 所有境界へ委ねる契約のため、本人credential障害と同時発生した場合でも
+  // 「設定BOTが要再認証」の直接シグナルをDLQ reasonとreportへ残すことを検証する。
+  it('live配送のterminal失敗でもcredential degradationをDLQ reasonとreportへ畳み込む', async () => {
+    setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
+    const degradation = {
+      code: 'credential_unavailable',
+      reason: 'configured BOT credential requires reauthorization',
+    }
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({
+      outcome: 'terminal',
+      code: 'credential_unavailable',
+      reason: 'chat sender access token unavailable',
+      degradation,
+    })
+
+    const response = await POST(await createRedemptionRequest('eventsub-degraded-terminal'))
+
+    expect(response.status).toBe(200)
+    const expectedReason =
+      'chat sender access token unavailable; sender degraded: configured BOT credential requires reauthorization'
+    expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(expect.anything(), expectedReason)
+    expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('sender degraded') }),
+      expect.anything(),
+    )
+  })
+
   it('名前付き引数のSQLを実行し、所持数とアクティブ種類数を組み立てる', async () => {
     const sqlMock = setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
     // HTTPハンドラ内の一時オブジェクトではなく、ガチャ確定と同じtransactionで

@@ -32,6 +32,7 @@ import {
   type ChatMessagePlaceholders,
   type ChatSendTerminalCode,
 } from "@/lib/twitch/chat-service";
+import { formatChatFailureReason } from "@/lib/twitch/chat-failure-reason";
 import { cancelRedemption } from "@/lib/twitch/channel-points";
 
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
@@ -506,11 +507,10 @@ export async function postRedemptionNotify(
         // ackできなければ別relayが再送し得るため、成功として黙殺せず通知する。
         deliveryStatePersisted = true;
         if (!persisted) {
-          throw new Error(
-            `Chat announcement sent but outbox ack lost its lease${
-              outcome.degradation ? `; sender degraded: ${outcome.degradation.reason}` : ''
-            }`,
-          );
+          throw new Error(formatChatFailureReason(
+            'Chat announcement sent but outbox ack lost its lease',
+            outcome.degradation,
+          ));
         }
         if (outcome.degradation) {
           // Twitch送信とoutbox ackは成功済みなのでDLQ/retryへ戻さない。一方、設定BOTの
@@ -532,11 +532,16 @@ export async function postRedemptionNotify(
         }
         return;
       }
+      // 失敗系outcomeにもdegradation（設定BOT恒久失効）が付与される。token-managerは
+      // 永続報告せず所有境界の1回報告へ委ねる契約のため、DLQ reason・retry reason・
+      // throw経由のreportErrorへ畳み込み、本人credential障害と同時発生しても
+      // 「設定BOTが要再認証」の直接シグナルを欠落させない。
+      const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation);
       if (outcome.outcome === 'terminal') {
-        const persisted = await deadLetterChatNotification(claim, outcome.reason);
+        const persisted = await deadLetterChatNotification(claim, failureReason);
         deliveryStatePersisted = true;
         if (!persisted) {
-          throw new Error(`Chat announcement DLQ update lost its lease: ${outcome.reason}`);
+          throw new Error(`Chat announcement DLQ update lost its lease: ${failureReason}`);
         }
 
         // scope不足はコード不具合ではなく、配信者がTwitch再認証を完了するまでの
@@ -555,17 +560,17 @@ export async function postRedemptionNotify(
           });
           return;
         }
-        throw new Error(`Chat announcement moved to DLQ: ${outcome.reason}`);
+        throw new Error(`Chat announcement moved to DLQ: ${failureReason}`);
       }
       if (outcome.outcome === 'aborted') {
         // leaseを失った（またはfence確認不能な）所有者は、新所有者の状態を
         // pending/deadへ上書きしてはならない。現在のlease失効/新所有者へ委ねる。
         deliveryStatePersisted = true;
-        throw new Error(`Chat announcement aborted: ${outcome.reason}`);
+        throw new Error(`Chat announcement aborted: ${failureReason}`);
       }
-      const retryState = await retryChatNotification(claim, outcome.reason);
+      const retryState = await retryChatNotification(claim, failureReason);
       deliveryStatePersisted = true;
-      throw new Error(`Chat announcement ${retryState}: ${outcome.reason}`);
+      throw new Error(`Chat announcement ${retryState}: ${failureReason}`);
     } catch (error) {
       // sendChatAnnouncement自体の予期しないthrowも一時障害として上限付き再試行へ戻す。
       const reason = error instanceof Error ? error.message : String(error);

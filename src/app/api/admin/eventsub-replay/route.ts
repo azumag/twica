@@ -4,6 +4,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
 import { CHAT_SEND_TERMINAL_CODES } from "@/lib/twitch/chat-service";
+import { formatChatFailureReason } from "@/lib/twitch/chat-failure-reason";
 import {
   listParkedEventSubNotifications,
   deleteParkedEventSubNotification,
@@ -425,7 +426,12 @@ export async function POST(request: NextRequest) {
             ...(persisted ? {} : { error: "sent, but outbox ack lost its lease" }),
           });
         } else if (outcome.outcome === "terminal") {
-          const persisted = await deadLetterChatNotification(claim, outcome.reason);
+          // 失敗系outcomeにも設定BOT恒久失効のdegradationが付与される。live境界と同じく
+          // DLQ reason・retry reason・エラー報告へ畳み込み、本人credential障害と
+          // 同時発生しても「設定BOTが要再認証」の直接シグナルを欠落させない。
+          // MISSING_SCOPEはBOT解決結果が優先されるためdegradationと同時には現れない。
+          const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation);
+          const persisted = await deadLetterChatNotification(claim, failureReason);
           // live EventSub経路と同じ契約: scope不足はユーザーの再認証待ちなので、
           // DLQと構造化ログは残すが自動Issue化しない。reason文字列ではなく
           // chat-serviceのtyped codeで判定し、Twitch文言変更による誤分類を防ぐ。
@@ -443,15 +449,21 @@ export async function POST(request: NextRequest) {
             await reportErrorSafely(
               new Error(
                 persisted
-                  ? `[eventsub-replay] chat notification moved to DLQ: ${outcome.reason}`
-                  : `[eventsub-replay] chat notification DLQ update lost its lease: ${outcome.reason}`,
+                  ? `[eventsub-replay] chat notification moved to DLQ: ${failureReason}`
+                  : `[eventsub-replay] chat notification DLQ update lost its lease: ${failureReason}`,
               ),
-              { key: baseResult.key, messageId: claim.batchId, persisted }
+              {
+                key: baseResult.key,
+                messageId: claim.batchId,
+                persisted,
+                ...(outcome.degradation ? { degradation: outcome.degradation } : {}),
+              }
             );
           }
-          results.push({ ...baseResult, outcome: "failed", error: `DLQ: ${outcome.reason}` });
+          results.push({ ...baseResult, outcome: "failed", error: `DLQ: ${failureReason}` });
         } else if (outcome.outcome === "retryable") {
-          const state = await retryChatNotification(claim, outcome.reason);
+          const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation);
+          const state = await retryChatNotification(claim, failureReason);
           if (state === "lost-lease" || state === "dead") {
             // pendingは通常のbounded retryなので毎回の通報を避ける。一方、deadは
             // 上限到達後の最終状態であり、この通報がないとDB scope確認不能などの
@@ -460,25 +472,35 @@ export async function POST(request: NextRequest) {
               new Error(
                 state === "lost-lease"
                   ? "[eventsub-replay] chat retry update lost its lease"
-                  : `[eventsub-replay] chat delivery exhausted retries: ${outcome.reason}`,
+                  : `[eventsub-replay] chat delivery exhausted retries: ${failureReason}`,
               ),
-              { key: baseResult.key, messageId: claim.batchId, state }
+              {
+                key: baseResult.key,
+                messageId: claim.batchId,
+                state,
+                ...(outcome.degradation ? { degradation: outcome.degradation } : {}),
+              }
             );
           }
           results.push({
             ...baseResult,
             outcome: "failed",
-            error: `${state}: ${outcome.reason}`,
+            error: `${state}: ${failureReason}`,
           });
         } else {
           // lost lease / deadline / fence障害時は、新所有者の状態を上書きしない。
           // missing_scope以外を黙殺しない契約に合わせ、outbox更新は行わずとも
           // 運用障害としてawait済みのreportErrorへ残す。
+          const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation);
           await reportErrorSafely(
-            new Error(`[eventsub-replay] chat delivery aborted: ${outcome.reason}`),
-            { key: baseResult.key, messageId: claim.batchId },
+            new Error(`[eventsub-replay] chat delivery aborted: ${failureReason}`),
+            {
+              key: baseResult.key,
+              messageId: claim.batchId,
+              ...(outcome.degradation ? { degradation: outcome.degradation } : {}),
+            },
           );
-          results.push({ ...baseResult, outcome: "failed", error: outcome.reason });
+          results.push({ ...baseResult, outcome: "failed", error: failureReason });
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

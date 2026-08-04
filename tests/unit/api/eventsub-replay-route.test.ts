@@ -391,6 +391,69 @@ describe('POST /api/admin/eventsub-replay', () => {
       expect(json.results[0].outcome).toBe('succeeded')
     })
 
+    // BOT恒久失効(degradation)は成功縮退だけでなく失敗系outcomeにも付与される。
+    // token-managerが永続報告を境界へ委ねる契約のため、失敗系でdegradationを
+    // 読み落とすと「設定BOTが要再認証」の直接シグナルがどこにも残らない。
+    it('terminal失敗に付随するcredential degradationをDLQ reasonとreportへ畳み込む', async () => {
+      const claim = makeChatOutboxClaim()
+      const degradation = {
+        code: 'credential_unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'terminal',
+        code: 'credential_unavailable',
+        reason: 'chat sender access token unavailable',
+        degradation,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      const expectedReason =
+        'chat sender access token unavailable; sender degraded: configured BOT credential requires reauthorization'
+      expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(claim, expectedReason)
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('sender degraded') }),
+        expect.objectContaining({ messageId: claim.batchId, degradation }),
+      )
+      expect(json.results[0]).toMatchObject({ outcome: 'failed', error: `DLQ: ${expectedReason}` })
+    })
+
+    it('retryable失敗のdead化にもcredential degradationを畳み込んでreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      const degradation = {
+        code: 'credential_unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'retryable',
+        reason: 'unable to verify user:write:chat scope',
+        degradation,
+      })
+      mocks.retryChatNotification.mockResolvedValueOnce('dead')
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      const expectedReason =
+        'unable to verify user:write:chat scope; sender degraded: configured BOT credential requires reauthorization'
+      expect(mocks.retryChatNotification).toHaveBeenCalledWith(claim, expectedReason)
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('sender degraded') }),
+        expect.objectContaining({ messageId: claim.batchId, state: 'dead', degradation }),
+      )
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(json.results[0]).toMatchObject({ outcome: 'failed', error: `dead: ${expectedReason}` })
+    })
+
     it('外部送信開始期限内に開始済みなら、遅延成功をroute deadlineまで待って1回だけackする', async () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date(0))
