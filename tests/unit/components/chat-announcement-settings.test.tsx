@@ -1,8 +1,36 @@
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatAnnouncementSettings from "@/components/ChatAnnouncementSettings";
+import { ChatReauthorizationProvider } from "@/lib/twitch/use-chat-reauthorization";
 import jaMessages from "../../../messages/ja.json";
+
+// Issue #827: mutation成功後のServer Component再取得を呼び出し単位で検証する。
+// vi.mockのfactoryはホイストされるため、参照するモックもvi.hoistedで生成する。
+const routerMocks = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => routerMocks,
+}));
+
+const ORIGINAL_LOCATION = window.location;
+
+function stubLocationHref() {
+  const current = window.location;
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: {
+      hash: current.hash,
+      host: current.host,
+      hostname: current.hostname,
+      href: current.href,
+      origin: current.origin,
+      pathname: current.pathname,
+      port: current.port,
+      protocol: current.protocol,
+      search: current.search,
+    },
+  });
+}
 
 // next-intl unescapes the ICU '{'...'}' sequences from messages/ja.json into literal
 // {newCards}/{newCardsOrNone}/{newCardCount} at render time, so the expectation here is the rendered
@@ -15,24 +43,29 @@ function renderSettings(
     currentTemplate: string | null;
     currentMultiTemplate: string | null;
     currentMultiShowCards: boolean;
+    currentEnabled: boolean;
+    botAccount: { username: string | null; displayName: string | null } | null;
   }> = {}
 ) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
-      <ChatAnnouncementSettings
-        streamerId="streamer-1"
-        currentEnabled={false}
-        currentTemplate={overrides.currentTemplate ?? null}
-        currentMultiTemplate={overrides.currentMultiTemplate ?? null}
-        currentMultiShowCards={overrides.currentMultiShowCards ?? true}
-        botAccount={null}
-      />
+      <ChatReauthorizationProvider>
+        <ChatAnnouncementSettings
+          streamerId="streamer-1"
+          currentEnabled={overrides.currentEnabled ?? false}
+          currentTemplate={overrides.currentTemplate ?? null}
+          currentMultiTemplate={overrides.currentMultiTemplate ?? null}
+          currentMultiShowCards={overrides.currentMultiShowCards ?? true}
+          botAccount={overrides.botAccount ?? null}
+        />
+      </ChatReauthorizationProvider>
     </NextIntlClientProvider>
   );
 }
 
 describe("ChatAnnouncementSettings", () => {
   beforeEach(() => {
+    routerMocks.refresh.mockReset();
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -44,6 +77,31 @@ describe("ChatAnnouncementSettings", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    Object.defineProperty(window, "location", { value: ORIGINAL_LOCATION, configurable: true });
+  });
+
+  it("再認証APIの200応答に有効なTwitch loginUrlがなければ遷移せず翻訳済みエラーを表示する", async () => {
+    stubLocationHref();
+    const originalHref = window.location.href;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/auth/check-scope")) {
+          return Promise.resolve(new Response(JSON.stringify({ hasScope: false }), { status: 200 }));
+        }
+        if (url.includes("/api/auth/reauth")) {
+          return Promise.resolve(new Response(JSON.stringify({ state: "state-123" }), { status: 200 }));
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      })
+    );
+    renderSettings({ currentEnabled: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Twitchで再認証" }));
+
+    expect(await screen.findByText("再認証に失敗しました")).toBeInTheDocument();
+    expect(window.location.href).toBe(originalHref);
   });
 
   it("shows template controls by default without the legacy advanced checkbox", async () => {
@@ -54,6 +112,76 @@ describe("ChatAnnouncementSettings", () => {
     expect(screen.getByText("N連ガチャ用テンプレート（任意）")).toBeInTheDocument();
     expect(screen.getByText("N連通知にカード名一覧を含める")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "チャットデモ" })).toBeInTheDocument();
+  });
+
+  describe("Server Component refresh after delivery setting mutations (#827)", () => {
+    // 初回check-scopeと設定POSTをURLで分岐し、対象mutationの成否を明示する。
+    // これにより初回GET成功を設定保存成功と誤認するテストを避ける。
+    function stubSettingsMutation(status: number) {
+      const settingsPost = vi.fn(() =>
+        new Response(JSON.stringify(status >= 400 ? { error: "設定更新失敗" } : {}), { status })
+      );
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: RequestInfo | URL) => {
+          const url = typeof input === "string" ? input : input.toString();
+          if (url.includes("/api/auth/check-scope")) {
+            return Promise.resolve(
+              new Response(JSON.stringify({ hasScope: true }), { status: 200 })
+            );
+          }
+          if (url.includes("/api/streamer/settings")) {
+            return Promise.resolve(settingsPost());
+          }
+          throw new Error(`Unexpected fetch: ${url}`);
+        })
+      );
+      return settingsPost;
+    }
+
+    it("通知OFFの保存成功後だけdashboardのServer Componentを再取得する", async () => {
+      const settingsPost = stubSettingsMutation(200);
+      renderSettings({ currentEnabled: true });
+
+      const toggle = await screen.findByRole("checkbox", { name: "チャット通知を有効にする" });
+      fireEvent.click(toggle);
+
+      await waitFor(() => expect(settingsPost).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(routerMocks.refresh).toHaveBeenCalledTimes(1));
+    });
+
+    it("通知OFFの保存失敗時はServer Componentを再取得しない", async () => {
+      const settingsPost = stubSettingsMutation(500);
+      renderSettings({ currentEnabled: true });
+
+      const toggle = await screen.findByRole("checkbox", { name: "チャット通知を有効にする" });
+      fireEvent.click(toggle);
+
+      await waitFor(() => expect(settingsPost).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(toggle).toBeChecked());
+      expect(routerMocks.refresh).not.toHaveBeenCalled();
+    });
+
+    it("Bot切断成功後だけdashboardのServer Componentを再取得する", async () => {
+      const settingsPost = stubSettingsMutation(200);
+      renderSettings({ botAccount: { username: "twica-bot", displayName: "TwiCa Bot" } });
+
+      fireEvent.click(await screen.findByRole("button", { name: "解除する" }));
+
+      await waitFor(() => expect(settingsPost).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(routerMocks.refresh).toHaveBeenCalledTimes(1));
+    });
+
+    it("Bot切断失敗時はServer Componentを再取得しない", async () => {
+      const settingsPost = stubSettingsMutation(500);
+      renderSettings({ botAccount: { username: "twica-bot", displayName: "TwiCa Bot" } });
+
+      fireEvent.click(await screen.findByRole("button", { name: "解除する" }));
+
+      await waitFor(() => expect(settingsPost).toHaveBeenCalledTimes(1));
+      await screen.findByText("設定更新失敗");
+      expect(routerMocks.refresh).not.toHaveBeenCalled();
+    });
   });
 
   // Issue #504: {newCards}/{newCardCount} is silently replaced with an empty string

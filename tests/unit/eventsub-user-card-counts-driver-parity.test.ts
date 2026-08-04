@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   executeGachaForEventSub: vi.fn(),
   buildMessage: vi.fn(() => 'built message'),
   sendChatMessage: vi.fn().mockResolvedValue(true),
+  sendChatMessageDetailed: vi.fn().mockResolvedValue({ outcome: 'sent' }),
   claimChatNotificationBatch: vi.fn(),
   decodeChatNotificationPayload: vi.fn(),
   markChatNotificationSent: vi.fn(),
@@ -57,9 +58,15 @@ vi.mock('@/lib/overlay-realtime/publisher', () => ({
 
 vi.mock('@/lib/twitch/chat-service', () => ({
   DEFAULT_CHAT_TEMPLATE: '{user} got {card}',
+  CHAT_SEND_TERMINAL_CODES: {
+    MISSING_SCOPE: 'missing_scope',
+    CREDENTIAL_UNAVAILABLE: 'credential_unavailable',
+    TWITCH_REJECTED: 'twitch_rejected',
+  },
   TwitchChatService: vi.fn().mockImplementation(() => ({
     buildMessage: mocks.buildMessage,
     sendChatMessage: mocks.sendChatMessage,
+    sendChatMessageDetailed: mocks.sendChatMessageDetailed,
   })),
 }))
 
@@ -186,6 +193,8 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     mockReportError.mockResolvedValue(undefined)
     mocks.buildMessage.mockReturnValue('built message')
     mocks.sendChatMessage.mockResolvedValue(true)
+    mocks.sendChatMessageDetailed.mockReset()
+    mocks.sendChatMessageDetailed.mockResolvedValue({ outcome: 'sent' })
     mocks.claimChatNotificationBatch.mockImplementation(async (batchId: string) => {
       const latestResult = mocks.executeGachaForEventSub.mock.results.at(-1)?.value
       const outcome = latestResult ? await latestResult : null
@@ -271,6 +280,59 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(persistedClaim)
   })
 
+  it('live配送のfallback成功はackし、credential degradationだけを1回reportする', async () => {
+    setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
+    const degradation = {
+      code: 'credential_unavailable',
+      reason: 'configured BOT credential requires reauthorization',
+    }
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({ outcome: 'sent', degradation })
+
+    const response = await POST(await createRedemptionRequest('eventsub-degraded-chat'))
+
+    expect(response.status).toBe(200)
+    expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(1)
+    expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
+    expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+    expect(mockReportError).toHaveBeenCalledTimes(1)
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('fallback sender') }),
+      expect.objectContaining({
+        context: 'eventsub:postRedemptionNotify:chatDegradation',
+        degradation,
+      }),
+    )
+  })
+
+  // BOT恒久失効(degradation)は失敗系outcomeにも付与される。token-managerが永続報告を
+  // 所有境界へ委ねる契約のため、本人credential障害と同時発生した場合でも
+  // 「設定BOTが要再認証」の直接シグナルをDLQ reasonとreportへ残すことを検証する。
+  it('live配送のterminal失敗でもcredential degradationをDLQ reasonとreportへ畳み込む', async () => {
+    setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
+    const degradation = {
+      code: 'credential_unavailable',
+      reason: 'configured BOT credential requires reauthorization',
+    }
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({
+      outcome: 'terminal',
+      code: 'credential_unavailable',
+      reason: 'chat sender access token unavailable',
+      degradation,
+    })
+
+    const response = await POST(await createRedemptionRequest('eventsub-degraded-terminal'))
+
+    expect(response.status).toBe(200)
+    const expectedReason =
+      'chat sender access token unavailable; sender degraded: configured BOT credential requires reauthorization'
+    expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(expect.anything(), expectedReason)
+    expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('sender degraded') }),
+      expect.anything(),
+    )
+  })
+
   it('名前付き引数のSQLを実行し、所持数とアクティブ種類数を組み立てる', async () => {
     const sqlMock = setupPgSql([{ rows: [{ result: USER_CARD_COUNT_ROWS }] }])
     // HTTPハンドラ内の一時オブジェクトではなく、ガチャ確定と同じtransactionで
@@ -320,7 +382,11 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
       '@{user} persisted {card} 所持{num}枚目 コンプ進捗{unique}',
       expect.objectContaining({ num: 3, unique: 1 }),
     )
-    expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
+    expect(mocks.sendChatMessageDetailed).toHaveBeenCalledWith(
+      'broadcaster-1',
+      'built message',
+      expect.objectContaining({ beforeExternalSend: expect.any(Function) }),
+    )
     // outboxはガチャtransaction内で既に作成済み。ライブ配送はclaim後の
     // Twitch成功時だけowner-fenced sentへ更新する。
     expect(mocks.claimChatNotificationBatch).toHaveBeenCalledWith('eventsub-counts-pg')
@@ -365,7 +431,11 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
       '@{user} 現在{all}種類',
       expect.objectContaining({ all: 17 }),
     )
-    expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
+    expect(mocks.sendChatMessageDetailed).toHaveBeenCalledWith(
+      'broadcaster-1',
+      'built message',
+      expect.objectContaining({ beforeExternalSend: expect.any(Function) }),
+    )
   })
 
   it('RPCエラー(42883含む)を報告し、reporter障害時もカウント無し通知を継続する', async () => {
@@ -383,7 +453,11 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
       expect.objectContaining({ num: undefined, unique: undefined }),
     )
     // 通知自体はカウント無しでも必ず送信される
-    expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
+    expect(mocks.sendChatMessageDetailed).toHaveBeenCalledWith(
+      'broadcaster-1',
+      'built message',
+      expect.objectContaining({ beforeExternalSend: expect.any(Function) }),
+    )
     // schema不整合は監視へ報告するが、ガチャ確定後の通知境界なので
     // reporter自体がrejectしてもEventSub応答とチャット送信を巻き戻さない。
     expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
@@ -414,7 +488,7 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
   it('チャット送信とreporterが共にrejectしても、確定済み交換のEventSub応答は成功する', async () => {
     // EventSub の 5xx はTwitch側のsubscription revoke判断に使われうる。通知は
     // カード付与後のbest-effort処理なので、二次障害がWebhook成功応答を壊さない。
-    mocks.sendChatMessage.mockRejectedValueOnce(new Error('chat transport unavailable'))
+    mocks.sendChatMessageDetailed.mockRejectedValueOnce(new Error('chat transport unavailable'))
     mockReportError.mockRejectedValueOnce(new Error('error reporter unavailable'))
     const request = await createRedemptionRequest('eventsub-chat-and-reporter-reject')
     // このケースは通知のreject境界だけを検証する。{num}/{unique} のDB失敗が
@@ -442,7 +516,11 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
       expect.objectContaining({ broadcaster_user_id: 'broadcaster-1', user_id: 'viewer-1' }),
       'eventsub-chat-and-reporter-reject',
     )
-    expect(mocks.sendChatMessage).toHaveBeenCalledWith('broadcaster-1', 'built message')
+    expect(mocks.sendChatMessageDetailed).toHaveBeenCalledWith(
+      'broadcaster-1',
+      'built message',
+      expect.objectContaining({ beforeExternalSend: expect.any(Function) }),
+    )
     // 予期しない送信throwは上限付きbackoffへ戻し、Cron relayが回収する。
     expect(mocks.retryChatNotification).toHaveBeenCalledTimes(1)
     expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
@@ -457,5 +535,152 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
         error: 'error reporter unavailable',
       }),
     )
+  })
+
+  it('missing_scopeはoutboxをDLQ化するがreportErrorしない', async () => {
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({
+      outcome: 'terminal',
+      code: 'missing_scope',
+      reason: 'user:write:chat scope not granted',
+    })
+    mocks.executeGachaForEventSub.mockResolvedValueOnce({
+      success: true,
+      data: {
+        card: { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} {card}',
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: false,
+        },
+      },
+    })
+
+    const response = await POST(await createRedemptionRequest('eventsub-chat-missing-scope'))
+
+    expect(response.status).toBe(200)
+    expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ batchId: 'eventsub-chat-missing-scope' }),
+      'user:write:chat scope not granted',
+    )
+    expect(mockReportError).not.toHaveBeenCalled()
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
+      '[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization',
+      expect.objectContaining({ code: 'missing_scope', streamerId: 'streamer-1' }),
+    )
+  })
+
+  it.each([
+    ['scope確認不能', 'eventsub-chat-scope-unavailable', 'unable to verify user:write:chat scope'],
+    ['BOT一時解決不能', 'eventsub-chat-bot-unavailable', 'configured BOT credential is temporarily unavailable'],
+    ['本人token DB障害', 'eventsub-chat-token-unavailable', 'chat sender credential is temporarily unavailable'],
+    ['Twitch 503', 'eventsub-chat-503', 'Twitch API 503'],
+    ['network障害', 'eventsub-chat-network', 'ECONNRESET'],
+  ])('%sはlive outboxを再試行へ戻し、DLQ化せずreportErrorする', async (_label, batchId, reason) => {
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({
+      outcome: 'retryable',
+      reason,
+    })
+    mocks.executeGachaForEventSub.mockResolvedValueOnce({
+      success: true,
+      data: {
+        card: { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} {card}',
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: false,
+        },
+      },
+    })
+
+    const response = await POST(await createRedemptionRequest(batchId))
+
+    expect(response.status).toBe(200)
+    expect(mocks.retryChatNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ batchId }),
+      reason,
+    )
+    expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
+    expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: `Chat announcement pending: ${reason}`,
+      }),
+      expect.objectContaining({ context: 'eventsub:postRedemptionNotify:chatAnnouncement' }),
+    )
+    expect(mockReportError).toHaveBeenCalledTimes(1)
+  })
+
+  it('missing_scopeでもlive DLQ更新がleaseを失った場合はreportErrorする', async () => {
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({
+      outcome: 'terminal',
+      code: 'missing_scope',
+      reason: 'user:write:chat scope not granted',
+    })
+    mocks.deadLetterChatNotification.mockResolvedValueOnce(false)
+    mocks.executeGachaForEventSub.mockResolvedValueOnce({
+      success: true,
+      data: {
+        card: { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} {card}',
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: false,
+        },
+      },
+    })
+
+    const response = await POST(await createRedemptionRequest('eventsub-chat-missing-scope-lost-lease'))
+
+    expect(response.status).toBe(200)
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Chat announcement DLQ update lost its lease: user:write:chat scope not granted',
+      }),
+      expect.objectContaining({ context: 'eventsub:postRedemptionNotify:chatAnnouncement' }),
+    )
+  })
+
+  it('missing_scope以外のterminalはDLQ化して従来どおりreportErrorする', async () => {
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({
+      outcome: 'terminal',
+      code: 'twitch_rejected',
+      reason: 'Twitch API 403: forbidden',
+    })
+    mocks.executeGachaForEventSub.mockResolvedValueOnce({
+      success: true,
+      data: {
+        card: { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} {card}',
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: false,
+        },
+      },
+    })
+
+    const response = await POST(await createRedemptionRequest('eventsub-chat-other-terminal'))
+
+    expect(response.status).toBe(200)
+    expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ batchId: 'eventsub-chat-other-terminal' }),
+      'Twitch API 403: forbidden',
+    )
+    expect(mockReportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Chat announcement moved to DLQ: Twitch API 403: forbidden' }),
+      expect.objectContaining({ context: 'eventsub:postRedemptionNotify:chatAnnouncement' }),
+    )
+    expect(mockReportError).toHaveBeenCalledTimes(1)
   })
 })

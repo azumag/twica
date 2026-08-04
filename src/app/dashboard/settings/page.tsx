@@ -6,6 +6,7 @@ import { shouldShowVoteCampaign } from "@/lib/storage-db";
 import { getUserPlan } from "@/lib/plan";
 import { normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 import SettingsLayout from "@/components/SettingsLayout";
+import { getChatDeliveryCapability } from "@/lib/twitch/chat-delivery-capability";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -20,7 +21,11 @@ import SettingsLayout from "@/components/SettingsLayout";
  * 既存ユーザーで詳細機能が有効化済みの場合は初期モードを "advanced" にして、
  * 設定が消えたように見える混乱を避ける。localStorage の選択が優先。
  */
-export default async function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ section?: string | string[] }>;
+}) {
   const session = await getSession();
   if (!session) redirect("/");
 
@@ -37,7 +42,18 @@ export default async function SettingsPage() {
   ]);
   if (!streamerData) redirect("/dashboard");
 
-  const botAccount = await getCustomBotAccountDisplayForStreamer(streamerData.streamer.id);
+  // dashboard警告の副CTAだけを許可する固定allowlist。任意文字列をclientの
+  // active sectionへ渡さず、未知値は従来どおりoverlay初期表示へ戻す。
+  const requestedSection = (await searchParams).section === "announcement"
+    ? "announcement" as const
+    : undefined;
+
+  const [botAccount, chatDeliveryCapability] = await Promise.all([
+    getCustomBotAccountDisplayForStreamer(streamerData.streamer.id),
+    // dashboard layoutと同じtwitchUserIdで呼ぶためReact cacheが効き、設定ページ
+    // 固有のDB I/O追加は発生せず、helper自体も外部Twitch APIを呼ばない。
+    getChatDeliveryCapability(session.twitchUserId),
+  ]);
 
   // Issue #638(回帰): gacha_sound_enabled は PR #595 F1 で「有効なcatch-all
   // ルールがある場合のみtrue」を返す互換ミラーに変更されたため、レアリティ別・
@@ -74,6 +90,10 @@ export default async function SettingsPage() {
       }}
       chatAnnouncement={{
         enabled: streamerData.streamer.chat_announcement_enabled ?? false,
+        // capability query失敗時は送信可否が「不明」であり「不足」ではない。
+        // canSendChatからclient側で再計算せず、server helperが確定した警告判定を
+        // そのまま渡すことで、dashboard bannerとsettings sidebarを一致させる。
+        needsAttention: chatDeliveryCapability.needsAttention,
         template: streamerData.streamer.chat_announcement_template ?? null,
         multiTemplate: streamerData.streamer.chat_announcement_multi_template ?? null,
         multiShowCards: streamerData.streamer.chat_announcement_multi_show_cards ?? true,
@@ -95,6 +115,7 @@ export default async function SettingsPage() {
         defaultPackName: streamerData.streamer.default_card_pack_name ?? null,
       }}
       initialModeHint={hasAdvancedSettingsInUse ? "advanced" : "simple"}
+      initialSectionId={requestedSection}
     />
   );
 }

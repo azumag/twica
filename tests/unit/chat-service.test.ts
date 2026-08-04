@@ -1,9 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { TwitchChatService } from '@/lib/twitch/chat-service';
-import { getBotAccountForChat, getTwitchAccessToken, hasScope } from '@/lib/twitch/token-manager';
+import { CHAT_SEND_TERMINAL_CODES, TwitchChatService } from '@/lib/twitch/chat-service';
+import {
+  getScopeStatus,
+  getTwitchAccessToken,
+  resolveBotAccountForChat,
+  TwitchTokenError,
+} from '@/lib/twitch/token-manager';
 import { reportApiError, reportError } from '@/lib/sentry/error-handler';
 
-vi.mock('@/lib/twitch/token-manager');
+vi.mock('@/lib/twitch/token-manager', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/twitch/token-manager')>();
+
+  return {
+    ...actual,
+    // 例外クラスまで自動mockするとconstructorがcodeを設定せず、実運用と異なる
+    // instanceof/code判定になる。I/O関数だけをmockし、TwitchTokenErrorは実装を維持する。
+    getScopeStatus: vi.fn(),
+    getTwitchAccessToken: vi.fn(),
+    resolveBotAccountForChat: vi.fn(),
+  };
+});
 vi.mock('@/lib/env-validation', () => ({
   getEnvVar: vi.fn().mockReturnValue('test-client-id'),
 }));
@@ -29,8 +45,8 @@ describe('TwitchChatService', () => {
     // @ts-expect-error - test-only stub: delay引数を無視してコールバックを即時実行
     globalThis.setTimeout = (cb: () => void) => { cb(); return 0; };
     // デフォルトではスコープあり（個別テストでオーバーライド可能）
-    vi.mocked(hasScope).mockResolvedValue(true);
-    vi.mocked(getBotAccountForChat).mockResolvedValue(null);
+    vi.mocked(getScopeStatus).mockResolvedValue('granted');
+    vi.mocked(resolveBotAccountForChat).mockResolvedValue({ status: 'not-configured' });
     service = new TwitchChatService();
   });
 
@@ -39,21 +55,23 @@ describe('TwitchChatService', () => {
     globalThis.setTimeout = originalSetTimeout;
   });
 
-  describe('sendChatMessage - hasScope事前チェック', () => {
-    it('hasScope=falseの場合、Twitch APIを呼ばずにfalseを返す', async () => {
-      vi.mocked(hasScope).mockResolvedValue(false);
+  describe('sendChatMessage - scope事前チェック', () => {
+    it('scope不足の場合、Twitch APIを呼ばずにfalseを返す', async () => {
+      vi.mocked(getScopeStatus).mockResolvedValue('missing');
 
       const result = await service.sendChatMessage('123456789', 'test message');
 
       expect(result).toBe(false);
-      expect(hasScope).toHaveBeenCalledWith('123456789', 'user:write:chat');
+      expect(getScopeStatus).toHaveBeenCalledWith('123456789', 'user:write:chat');
       // Twitch APIもトークン取得も呼ばれない
       expect(getTwitchAccessToken).not.toHaveBeenCalled();
       expect(global.fetch).not.toHaveBeenCalled();
+      // ユーザーの再認証待ちは既知状態であり、自動Issueを作らない。
+      expect(reportError).not.toHaveBeenCalled();
     });
 
-    it('hasScope=trueの場合、通常のAPI呼び出しフローに進む', async () => {
-      vi.mocked(hasScope).mockResolvedValue(true);
+    it('scope付与済みの場合、通常のAPI呼び出しフローに進む', async () => {
+      vi.mocked(getScopeStatus).mockResolvedValue('granted');
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
 
       vi.mocked(global.fetch).mockResolvedValue({
@@ -65,18 +83,21 @@ describe('TwitchChatService', () => {
       const result = await service.sendChatMessage('123456789', 'test message');
 
       expect(result).toBe(true);
-      expect(hasScope).toHaveBeenCalledWith('123456789', 'user:write:chat');
+      expect(getScopeStatus).toHaveBeenCalledWith('123456789', 'user:write:chat');
       expect(getTwitchAccessToken).toHaveBeenCalled();
     });
 
     it('BOTアカウント設定時はBOTのsender_idとトークンで送信する', async () => {
-      vi.mocked(getBotAccountForChat).mockResolvedValue({
-        accountId: 'bot-account-id',
-        senderId: 'bot-user-id',
-        username: 'twica_bot',
-        displayName: 'TwiCa Bot',
-        accessToken: 'bot-token',
-        ownerType: 'streamer',
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'available',
+        account: {
+          accountId: 'bot-account-id',
+          senderId: 'bot-user-id',
+          username: 'twica_bot',
+          displayName: 'TwiCa Bot',
+          accessToken: 'bot-token',
+          ownerType: 'streamer',
+        },
       });
 
       vi.mocked(global.fetch).mockResolvedValue({
@@ -88,7 +109,7 @@ describe('TwitchChatService', () => {
       const result = await service.sendChatMessage('123456789', 'test message');
 
       expect(result).toBe(true);
-      expect(hasScope).not.toHaveBeenCalled();
+      expect(getScopeStatus).not.toHaveBeenCalled();
       expect(getTwitchAccessToken).not.toHaveBeenCalled();
       expect(global.fetch).toHaveBeenCalledWith(
         'https://api.twitch.tv/helix/chat/messages',
@@ -107,7 +128,7 @@ describe('TwitchChatService', () => {
     });
 
     it('500文字を超える日本語メッセージは文字単位で切り詰めて送信する', async () => {
-      vi.mocked(hasScope).mockResolvedValue(true);
+      vi.mocked(getScopeStatus).mockResolvedValue('granted');
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
 
       vi.mocked(global.fetch).mockResolvedValue({
@@ -133,24 +154,179 @@ describe('TwitchChatService', () => {
 
   describe('sendChatMessageDetailed - outbox再試行分類', () => {
     it('scope未付与とtoken欠落はAPIを呼ばずterminalに分類する', async () => {
-      vi.mocked(hasScope).mockResolvedValue(false);
+      vi.mocked(getScopeStatus).mockResolvedValue('missing');
 
       await expect(
         service.sendChatMessageDetailed('123456789', 'test message')
       ).resolves.toEqual({
         outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE,
         reason: 'user:write:chat scope not granted',
       });
       expect(global.fetch).not.toHaveBeenCalled();
 
-      vi.mocked(hasScope).mockResolvedValue(true);
+      vi.mocked(getScopeStatus).mockResolvedValue('granted');
       vi.mocked(getTwitchAccessToken).mockResolvedValue(null);
       await expect(
         service.sendChatMessageDetailed('123456789', 'test message')
       ).resolves.toEqual({
         outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
         reason: 'chat sender access token unavailable',
       });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('scope確認不能は恒久的な権限不足へ誤分類せずretryableにする', async () => {
+      vi.mocked(getScopeStatus).mockResolvedValue('unavailable');
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'retryable',
+        reason: 'unable to verify user:write:chat scope',
+      });
+      expect(getTwitchAccessToken).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('BOT一時解決不能かつ本人scope不足はmissing_scopeへ誤分類しない', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'retryable-unavailable',
+        reason: 'configured BOT credential is temporarily unavailable',
+      });
+      vi.mocked(getScopeStatus).mockResolvedValue('missing');
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'retryable',
+        reason: 'configured BOT credential is temporarily unavailable',
+      });
+      expect(getTwitchAccessToken).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('BOT恒久credential欠落かつ本人scope不足はcredential terminalにする', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      });
+      vi.mocked(getScopeStatus).mockResolvedValue('missing');
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+        reason: 'configured BOT credential requires reauthorization',
+        degradation: {
+          code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+          reason: 'configured BOT credential requires reauthorization',
+        },
+      });
+      expect(getTwitchAccessToken).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('BOT解決不能でも本人scope付与済みなら本人credentialへfallbackする', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'retryable-unavailable',
+        reason: 'configured BOT credential is temporarily unavailable',
+      });
+      vi.mocked(getScopeStatus).mockResolvedValue('granted');
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({ outcome: 'sent' });
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.twitch.tv/helix/chat/messages',
+        expect.objectContaining({
+          body: JSON.stringify({
+            broadcaster_id: '123456789',
+            sender_id: '123456789',
+            message: 'test message',
+          }),
+        }),
+      );
+    });
+
+    it('BOT恒久失効でも本人fallback送信を成功させ、typed degradationを上位へ渡す', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      });
+      vi.mocked(getScopeStatus).mockResolvedValue('granted');
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'sent',
+        degradation: {
+          code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+          reason: 'configured BOT credential requires reauthorization',
+        },
+      });
+      // 詳細APIはlive/replay境界へ報告責任を渡し、ここでは二重永続化しない。
+      expect(reportError).not.toHaveBeenCalled();
+    });
+
+    it.each(['DATABASE_ERROR', 'REFRESH_FAILED'] as const)(
+      '本人fallbackの%sはcredential terminalへ潰さずretryableにする',
+      async (code) => {
+        vi.mocked(getScopeStatus).mockResolvedValue('granted');
+        vi.mocked(getTwitchAccessToken).mockRejectedValue(
+          new TwitchTokenError('temporary credential failure', code),
+        );
+
+        await expect(
+          service.sendChatMessageDetailed('123456789', 'test message')
+        ).resolves.toEqual({
+          outcome: 'retryable',
+          reason: 'chat sender credential is temporarily unavailable',
+        });
+        expect(global.fetch).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['NO_TOKEN', 'USER_NOT_FOUND'] as const)(
+      '本人fallbackの%sはcredential terminalとして報告対象を維持する',
+      async (code) => {
+        vi.mocked(getScopeStatus).mockResolvedValue('granted');
+        vi.mocked(getTwitchAccessToken).mockRejectedValue(
+          new TwitchTokenError('permanent credential failure', code),
+        );
+
+        await expect(
+          service.sendChatMessageDetailed('123456789', 'test message')
+        ).resolves.toEqual({
+          outcome: 'terminal',
+          code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+          reason: 'chat sender access token unavailable',
+        });
+        expect(global.fetch).not.toHaveBeenCalled();
+      },
+    );
+
+    it('本人fallbackの未知例外は上位retry/report境界へ伝播する', async () => {
+      vi.mocked(getScopeStatus).mockResolvedValue('granted');
+      vi.mocked(getTwitchAccessToken).mockRejectedValue(new Error('unexpected token failure'));
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).rejects.toThrow('unexpected token failure');
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
@@ -169,6 +345,7 @@ describe('TwitchChatService', () => {
         service.sendChatMessageDetailed('123456789', 'test message')
       ).resolves.toEqual({
         outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
         reason: 'Twitch API 401: Insufficient authorization in token',
       });
       expect(global.fetch).toHaveBeenCalledTimes(1);
@@ -189,19 +366,26 @@ describe('TwitchChatService', () => {
         reason: 'Twitch API 503: temporary outage',
       });
       expect(global.fetch).toHaveBeenCalledTimes(3);
+      // outbox詳細APIはterminal/retryableを分類するだけで、下位永続化を行わない。
+      expect(reportApiError).not.toHaveBeenCalled();
+      expect(reportError).not.toHaveBeenCalled();
     });
 
-    it('network例外は最大試行後retryableに分類する', async () => {
+    it('network例外はfence有無に関係なく下位報告せずretryableに分類する', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
       vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNRESET'));
+      const beforeExternalSend = vi.fn().mockResolvedValue(true);
 
       await expect(
-        service.sendChatMessageDetailed('123456789', 'test message')
+        service.sendChatMessageDetailed('123456789', 'test message', { beforeExternalSend })
       ).resolves.toEqual({
         outcome: 'retryable',
         reason: 'ECONNRESET',
       });
       expect(global.fetch).toHaveBeenCalledTimes(3);
+      expect(beforeExternalSend).toHaveBeenCalledTimes(3);
+      expect(reportApiError).not.toHaveBeenCalled();
+      expect(reportError).not.toHaveBeenCalled();
     });
 
     it('外部送信直前fenceがfalseまたはthrowならfetchせずabortedに分類する', async () => {
@@ -231,6 +415,8 @@ describe('TwitchChatService', () => {
         reason: `Twitch API ${status}: temporary outage`,
       });
       expect(global.fetch).toHaveBeenCalledTimes(3);
+      expect(reportApiError).not.toHaveBeenCalled();
+      expect(reportError).not.toHaveBeenCalled();
     });
 
     it('HTTP 200でもis_sent=falseならdrop_reason付きterminalに分類する', async () => {
@@ -254,9 +440,12 @@ describe('TwitchChatService', () => {
         service.sendChatMessageDetailed('123456789', 'test message')
       ).resolves.toEqual({
         outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
         reason: 'Twitch API 200: The message was held by AutoMod.',
       });
       expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(reportApiError).not.toHaveBeenCalled();
+      expect(reportError).not.toHaveBeenCalled();
     });
 
     // issue #842/#843: 同じ視聴者が同じカードを30秒以内に引くとテンプレート展開後の
@@ -505,6 +694,129 @@ describe('TwitchChatService', () => {
       );
     });
 
+    it('scope確認不能のpreflight失敗はlegacy経路でもreportErrorを1回残す', async () => {
+      vi.mocked(getScopeStatus).mockResolvedValue('unavailable');
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(reportError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Chat delivery preflight failed: unable to verify user:write:chat scope',
+        }),
+        expect.objectContaining({
+          context: 'chat-service:sendChatMessage:preflight',
+          broadcasterTwitchUserId: '123456789',
+          outcome: 'retryable',
+        }),
+      );
+    });
+
+    it('credential欠落のpreflight失敗はlegacy経路でもreportErrorを1回残す', async () => {
+      vi.mocked(getTwitchAccessToken).mockRejectedValue(
+        new TwitchTokenError('missing credential', 'NO_TOKEN'),
+      );
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(reportError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Chat delivery preflight failed: chat sender access token unavailable',
+        }),
+        expect.objectContaining({
+          context: 'chat-service:sendChatMessage:preflight',
+          broadcasterTwitchUserId: '123456789',
+          outcome: 'terminal',
+          code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+        }),
+      );
+    });
+
+    it('legacy経路はBOT恒久失効からのfallback送信成功をtrueのまま1回reportする', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      });
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: [{ message_id: 'msg-123', is_sent: true }] }),
+      } as Response);
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(true);
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(reportError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining('configured BOT credential requires reauthorization'),
+        }),
+        expect.objectContaining({
+          context: 'chat-service:sendChatMessage:degraded-success',
+          outcome: 'sent',
+          degradation: {
+            code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+            reason: 'configured BOT credential requires reauthorization',
+          },
+        }),
+      );
+    });
+
+    // BOT恒久失効(degradation)は本人credentialへのfallback後もAPI失敗し得る。
+    // legacy boolean経路は下位報告が唯一の永続化点のため、preflight報告と同様に
+    // degradationを載せないと「設定BOTが要再認証」のシグナルが失われる。
+    it('fallback送信のAPI失敗でもreportApiErrorへdegradationを載せる', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      });
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: 'Unauthorized', status: 401, message: 'invalid token' }),
+      } as Response);
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+      expect(reportApiError).toHaveBeenCalledWith(
+        '/helix/chat/messages',
+        'POST',
+        expect.any(Error),
+        expect.objectContaining({
+          broadcasterTwitchUserId: '123456789',
+          status: 401,
+          degradation: {
+            code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+            reason: 'configured BOT credential requires reauthorization',
+          },
+        }),
+      );
+    });
+
+    it('fallback送信のネットワーク例外でもreportErrorへdegradationを載せる', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      });
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNRESET'));
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+      expect(reportError).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          context: 'chat-service:sendChatMessage',
+          broadcasterTwitchUserId: '123456789',
+          degradation: {
+            code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+            reason: 'configured BOT credential requires reauthorization',
+          },
+        }),
+      );
+    });
+
     it('送信成功時は reportApiError/reportError が呼ばれない', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
 
@@ -625,7 +937,7 @@ describe('TwitchChatService', () => {
 
       for (const status of [502, 503, 504, 429]) {
         vi.clearAllMocks();
-        vi.mocked(hasScope).mockResolvedValue(true);
+        vi.mocked(getScopeStatus).mockResolvedValue('granted');
         vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
 
         vi.mocked(global.fetch)

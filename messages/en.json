@@ -537,6 +537,14 @@
       "connectedAs": "Sending as {name}"
     }
   },
+  "chatDeliveryWarning": {
+    "title": "Chat announcements cannot be sent",
+    "description": "Twitch message permission is missing. Gacha draws and card grants will continue normally, but chat announcements will not be sent.",
+    "reauthorize": "Re-authorize with Twitch",
+    "reauthorizing": "Re-authorizing...",
+    "settingsLink": "Chat announcement settings",
+    "reauthFailed": "Could not start re-authorization. Please try again shortly."
+  },
   "cardVisibilitySettings": {
     "title": "Unowned Card Visibility",
     "description": "Choose whether viewers can see cards they haven't collected yet on your collection page.",
@@ -765,6 +773,9 @@
     },
     "advanced": {
       "navAria": "Settings sections",
+      "status": {
+        "attention": "Action needed"
+      },
       "section": {
         "overlay": "Overlay",
         "overlayDesc": "OBS URL & effects",
