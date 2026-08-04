@@ -764,6 +764,59 @@ describe('TwitchChatService', () => {
       );
     });
 
+    // BOT恒久失効(degradation)は本人credentialへのfallback後もAPI失敗し得る。
+    // legacy boolean経路は下位報告が唯一の永続化点のため、preflight報告と同様に
+    // degradationを載せないと「設定BOTが要再認証」のシグナルが失われる。
+    it('fallback送信のAPI失敗でもreportApiErrorへdegradationを載せる', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      });
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: 'Unauthorized', status: 401, message: 'invalid token' }),
+      } as Response);
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+      expect(reportApiError).toHaveBeenCalledWith(
+        '/helix/chat/messages',
+        'POST',
+        expect.any(Error),
+        expect.objectContaining({
+          broadcasterTwitchUserId: '123456789',
+          status: 401,
+          degradation: {
+            code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+            reason: 'configured BOT credential requires reauthorization',
+          },
+        }),
+      );
+    });
+
+    it('fallback送信のネットワーク例外でもreportErrorへdegradationを載せる', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      });
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNRESET'));
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+      expect(reportError).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          context: 'chat-service:sendChatMessage',
+          broadcasterTwitchUserId: '123456789',
+          degradation: {
+            code: CHAT_SEND_TERMINAL_CODES.CREDENTIAL_UNAVAILABLE,
+            reason: 'configured BOT credential requires reauthorization',
+          },
+        }),
+      );
+    });
+
     it('送信成功時は reportApiError/reportError が呼ばれない', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
 

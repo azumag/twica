@@ -597,6 +597,10 @@ export class TwitchChatService {
               usingBotAccount: Boolean(botAccount),
               status: lastResponse.status,
               twitchError: errorBody.error,
+              // BOT恒久失効からのfallback送信がAPI段階で失敗した場合、この報告が
+              // legacy経路の唯一の永続化点。preflight報告(finishPreflightFailure)と
+              // 同様にdegradationを載せ、「設定BOTが要再認証」のシグナルを欠落させない。
+              ...(credentialDegradation ? { degradation: credentialDegradation } : {}),
             }
           )
         } catch {
@@ -626,6 +630,9 @@ export class TwitchChatService {
           broadcasterTwitchUserId,
           senderTwitchUserId,
           usingBotAccount: Boolean(botAccount),
+          // API失敗報告と同じ理由で、fallback送信の例外失敗にもBOT恒久失効の
+          // シグナルを残す（legacy経路はこの報告が唯一の永続化点）。
+          ...(credentialDegradation ? { degradation: credentialDegradation } : {}),
         })
       } catch {
         // reportError 自体の失敗はベストエフォート — 必ず return false に到達させる
