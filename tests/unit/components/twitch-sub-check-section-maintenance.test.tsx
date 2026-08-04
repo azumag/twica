@@ -52,9 +52,55 @@ const maintenanceErrorResponse = () =>
     { status: 503 }
   )
 
+const ORIGINAL_LOCATION = window.location
+
+function stubLocationHref() {
+  const current = window.location
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: {
+      hash: current.hash,
+      host: current.host,
+      hostname: current.hostname,
+      href: current.href,
+      origin: current.origin,
+      pathname: current.pathname,
+      port: current.port,
+      protocol: current.protocol,
+      search: current.search,
+    },
+  })
+}
+
 describe('TwitchSubCheckSection maintenance integration', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    Object.defineProperty(window, 'location', { value: ORIGINAL_LOCATION, configurable: true })
+  })
+
+  it('reauth APIの200応答に有効なTwitch loginUrlがなければ遷移せず翻訳済みエラーを表示する（Issue #865フォローアップ）', async () => {
+    stubLocationHref()
+    const originalHref = window.location.href
+    vi.stubGlobal(
+      'fetch',
+      mockFetchWithScope(false, (url) => {
+        // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
+        if (url.includes('/api/auth/reauth')) {
+          return new Response(
+            JSON.stringify({ loginUrl: 'https://evil.example.com/phish', state: 'state-1' }),
+            { status: 200 }
+          )
+        }
+        return new Response(JSON.stringify({}), { status: 200 })
+      })
+    )
+    renderSection({ mode: 'off' }, false)
+
+    const button = await screen.findByRole('button', { name: '権限を付与' })
+    fireEvent.click(button)
+
+    expect(await screen.findByText('再認証に失敗しました。')).toBeInTheDocument()
+    expect(window.location.href).toBe(originalHref)
   })
 
   it('mode=off のときは確認/無効化ボタンが操作可能（既存挙動を壊さない）', async () => {

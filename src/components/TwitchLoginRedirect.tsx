@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { TwitchLoginResponse } from '@/types/auth'
 import { fetchMaintenanceStatus } from '@/lib/maintenance/client'
+import { parseTwitchAuthorizationResponse } from '@/lib/twitch/authorization-response'
 
 /**
  * Component that redirects to Twitch login page
@@ -43,7 +44,17 @@ export function TwitchLoginRedirect() {
         const data: TwitchLoginResponse = await response.json()
 
         if (data.authUrl && isMounted) {
-          window.location.href = data.authUrl
+          // 壊れたAPI応答や侵害時の外部URLをそのままwindow.locationへ渡さないため、
+          // reauth/BOT接続と同じorigin/path/state検証を通す（Issue #865フォローアップ）。
+          const authorization = parseTwitchAuthorizationResponse({
+            loginUrl: data.authUrl,
+            state: data.state,
+          })
+          if (authorization) {
+            window.location.href = authorization.loginUrl
+          } else {
+            console.error('[TwitchLoginRedirect] login response failed authorization URL validation')
+          }
         }
       } catch (error) {
         if (isMounted) {

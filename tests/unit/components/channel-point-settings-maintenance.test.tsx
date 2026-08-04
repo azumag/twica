@@ -15,8 +15,14 @@ vi.mock("@/lib/logger");
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
-function mockFetch(overrides: { rewards?: unknown[]; createRewardStatus?: number; createRewardBody?: unknown } = {}): FetchMock {
-  const { rewards = [], createRewardStatus = 200, createRewardBody } = overrides;
+function mockFetch(overrides: {
+  rewards?: unknown[];
+  createRewardStatus?: number;
+  createRewardBody?: unknown;
+  needsReauth?: boolean;
+  reauthBody?: unknown;
+} = {}): FetchMock {
+  const { rewards = [], createRewardStatus = 200, createRewardBody, needsReauth = false, reauthBody } = overrides;
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
@@ -30,8 +36,8 @@ function mockFetch(overrides: { rewards?: unknown[]; createRewardStatus?: number
     if (url.includes("/api/twitch/channel-point-bootstrap")) {
       return new Response(
         JSON.stringify({
-          hasRequiredScope: true,
-          requiresReauth: false,
+          hasRequiredScope: !needsReauth,
+          requiresReauth: needsReauth,
           rewards,
           subscriptions: [],
           additionalRewards: [],
@@ -45,6 +51,12 @@ function mockFetch(overrides: { rewards?: unknown[]; createRewardStatus?: number
         JSON.stringify(createRewardBody ?? { error: "unexpected" }),
         { status: createRewardStatus, headers: { "content-type": "application/json" } }
       );
+    }
+    if (url.includes("/api/auth/reauth") && method === "POST") {
+      return new Response(JSON.stringify(reauthBody ?? { error: "unexpected" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
     return new Response(JSON.stringify({}), {
       status: 200,
@@ -71,11 +83,50 @@ function renderComponent(
   );
 }
 
+const ORIGINAL_LOCATION = window.location;
+
+function stubLocationHref() {
+  const current = window.location;
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: {
+      hash: current.hash,
+      host: current.host,
+      hostname: current.hostname,
+      href: current.href,
+      origin: current.origin,
+      pathname: current.pathname,
+      port: current.port,
+      protocol: current.protocol,
+      search: current.search,
+    },
+  });
+}
+
 describe("ChannelPointSettings maintenance integration", () => {
   let fetchMock: FetchMock;
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    Object.defineProperty(window, "location", { value: ORIGINAL_LOCATION, configurable: true });
+  });
+
+  it("reauth APIの200応答に有効なTwitch loginUrlがなければ遷移せず翻訳済みエラーを表示する（Issue #865フォローアップ）", async () => {
+    stubLocationHref();
+    const originalHref = window.location.href;
+    // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
+    fetchMock = mockFetch({
+      needsReauth: true,
+      reauthBody: { loginUrl: "https://evil.example.com/phish", state: "state-1" },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderComponent({ mode: "off" });
+
+    const button = await screen.findByRole("button", { name: "チャネルポイント連携を有効化" });
+    fireEvent.click(button);
+
+    expect(await screen.findByText("再認証に失敗しました。時間をおいて再度お試しください。")).toBeInTheDocument();
+    expect(window.location.href).toBe(originalHref);
   });
 
   it("mode=off のときは報酬作成ボタンが操作可能（既存挙動を壊さない）", async () => {

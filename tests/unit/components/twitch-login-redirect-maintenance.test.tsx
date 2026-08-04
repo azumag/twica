@@ -59,6 +59,35 @@ describe('TwitchLoginRedirect maintenance integration', () => {
     })
   })
 
+  it('login APIの200応答に有効なTwitch authUrlがなければ遷移しない（Issue #865フォローアップ）', async () => {
+    const originalHref = window.location.href
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/api/maintenance-status')) {
+        return Promise.resolve(new Response(JSON.stringify({ mode: 'off' }), { status: 200 }))
+      }
+      if (String(url).includes('/api/auth/twitch/login')) {
+        // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ authUrl: 'https://evil.example.com/phish', state: 'state-1' }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+        )
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderRedirect()
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([u]) => String(u).includes('/api/auth/twitch/login'))
+      ).toBe(true)
+    })
+    expect(window.location.href).toBe(originalHref)
+  })
+
   it('mode!=off のときは「リダイレクト中」表示の代わりに案内文言を表示し、ログインAPIへのfetchを一切呼ばない', async () => {
     const fetchMock = mockFetch('read-only')
     vi.stubGlobal('fetch', fetchMock)
