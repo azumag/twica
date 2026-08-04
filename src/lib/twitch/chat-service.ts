@@ -315,6 +315,23 @@ export class TwitchChatService {
     if (botAccount) {
       senderTwitchUserId = botAccount.senderId
     } else {
+      // BOT設定済みで一時的に解決できない場合、本人scopeの状態に関わらずリトライへ
+      // 戻し、次回試行までBOT名義を維持する（Issue #862）。DB瞬断等のretryableを
+      // 本人scope granted時にすり抜けさせて即fallbackすると、一時障害のたびに
+      // 送信者名義が本人へ切り替わってしまう。terminal-unavailable（恒久失効）は
+      // 本人scope次第でterminalまたはdegradation付きfallbackへ分岐する必要が
+      // あるため、従来どおりscope判定の内側で扱う。
+      if (botResolution.status === 'retryable-unavailable') {
+        logger.warn('BOT chat sender is temporarily unavailable; deferring chat delivery', {
+          broadcasterTwitchUserId,
+          reason: botResolution.reason,
+        })
+        return finishPreflightFailure({
+          outcome: 'retryable',
+          reason: botResolution.reason,
+        })
+      }
+
       // 送信前にDBのスコープを確認（無駄なAPI呼び出し抑止）
       // Check DB scope before sending to avoid unnecessary API calls (e.g., repeated 401s from EventSub)
       const chatScopeStatus = await getScopeStatus(
@@ -322,19 +339,9 @@ export class TwitchChatService {
         ADDITIONAL_SCOPES.CHAT_WRITE,
       )
       if (chatScopeStatus === 'missing') {
-        // BOT未設定の場合だけ本人のscope不足と確定できる。BOT設定済みで解決不能な
+        // BOT未設定の場合だけ本人のscope不足と確定できる。BOT設定済みで恒久解決不能な
         // 状態をmissing_scopeへ落とすと誤った再認証案内とreport抑制が起きるため、
-        // retryable/terminalのBOT解決結果を本人scopeより優先する。
-        if (botResolution.status === 'retryable-unavailable') {
-          logger.warn('BOT chat sender is temporarily unavailable; deferring chat delivery', {
-            broadcasterTwitchUserId,
-            reason: botResolution.reason,
-          })
-          return finishPreflightFailure({
-            outcome: 'retryable',
-            reason: botResolution.reason,
-          })
-        }
+        // terminalのBOT解決結果を本人scopeより優先する。
         if (botResolution.status === 'terminal-unavailable') {
           logger.warn('Configured BOT chat sender credential is unavailable', {
             broadcasterTwitchUserId,
