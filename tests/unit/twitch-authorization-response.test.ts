@@ -89,13 +89,23 @@ describe('parseTwitchAuthorizationResponse', () => {
   })
 
   it('stateが8文字未満ならnullを返す', () => {
+    // redirect_uriを含めない場合、その欠落だけでもnullになりstate長の検証を
+    // 実質テストできなくなる（vacuous test）ため、他はすべて有効な形にする。
     const shortState = 'short1'
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://id.twitch.tv/oauth2/authorize?state=${shortState}`,
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?client_id=abc&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&state=${shortState}`,
       state: shortState,
     })
 
     expect(result).toBeNull()
+  })
+
+  it('stateがちょうど8文字なら正規化して返す（下限の境界値）', () => {
+    const boundaryState = 'a'.repeat(8)
+    const loginUrl = `https://id.twitch.tv/oauth2/authorize?client_id=abc&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&state=${boundaryState}`
+    const result = parseTwitchAuthorizationResponse({ loginUrl, state: boundaryState })
+
+    expect(result).toEqual({ loginUrl, state: boundaryState })
   })
 
   it('stateが256文字を超えるならnullを返す', () => {
