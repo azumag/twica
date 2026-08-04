@@ -68,6 +68,36 @@ describe('TwitchLoginButton maintenance integration', () => {
     })
   })
 
+  it('login APIの200応答に有効なTwitch authUrlがなければ遷移せずボタンを再度有効にする（Issue #865フォローアップ）', async () => {
+    const originalHref = window.location.href
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/api/maintenance-status')) {
+        return Promise.resolve(new Response(JSON.stringify({ mode: 'off' }), { status: 200 }))
+      }
+      if (String(url).includes('/api/auth/twitch/login')) {
+        // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ authUrl: 'https://evil.example.com/phish', state: 'state-1234' }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+        )
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderButton()
+
+    const button = await screen.findByRole('button', { name: 'Twitchでログイン' })
+    fireEvent.click(button)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Twitchでログイン' })).not.toBeDisabled()
+    })
+    expect(window.location.href).toBe(originalHref)
+  })
+
   it('mode!=off のときはボタンがdisableされ案内文言を表示し、ログインAPIへのfetchを一切呼ばない', async () => {
     const fetchMock = mockFetch('read-only')
     vi.stubGlobal('fetch', fetchMock)

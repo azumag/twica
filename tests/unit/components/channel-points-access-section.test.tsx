@@ -230,7 +230,11 @@ describe("ChannelPointsAccessSection", () => {
         additionalScopes: CHANNEL_POINT_SCOPES,
         returnTo: "/dashboard/account",
       });
-      return jsonResponse({ loginUrl: "https://id.twitch.tv/oauth2/authorize?mock=1", state: "abc123" });
+      const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/twitch/callback`);
+      return jsonResponse({
+        loginUrl: `https://id.twitch.tv/oauth2/authorize?mock=1&redirect_uri=${redirectUri}&state=abc12345`,
+        state: "abc12345",
+      });
     });
     vi.stubGlobal(
       "fetch",
@@ -247,9 +251,33 @@ describe("ChannelPointsAccessSection", () => {
     fireEvent.click(button);
 
     await waitFor(() => expect(reauthHandler).toHaveBeenCalledTimes(1));
+    const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/twitch/callback`);
     await waitFor(() =>
-      expect(window.location.href).toBe("https://id.twitch.tv/oauth2/authorize?mock=1")
+      expect(window.location.href).toBe(
+        `https://id.twitch.tv/oauth2/authorize?mock=1&redirect_uri=${redirectUri}&state=abc12345`
+      )
     );
+  });
+
+  it("reauth APIの200応答に有効なTwitch loginUrlがなければ遷移せず汎用エラーを表示する（Issue #865フォローアップ）", async () => {
+    stubLocationHref();
+    const originalHref = window.location.href;
+    vi.stubGlobal(
+      "fetch",
+      buildFetchMock({
+        get: () => jsonResponse(makeState({ hasRequiredScope: false, requiresReauth: true, stale: false })),
+        // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
+        reauth: () => jsonResponse({ loginUrl: "https://evil.example.com/phish", state: "abc12345" }),
+      })
+    );
+
+    renderSection({ mode: "off" });
+
+    const button = await screen.findByRole("button", { name: JA.reauthButton });
+    fireEvent.click(button);
+
+    expect(await screen.findByText(JA.genericError)).toBeInTheDocument();
+    expect(window.location.href).toBe(originalHref);
   });
 
   it("non-affiliate + スコープ有 + stale の場合、ユーザー操作なしで自動的に1回だけPOST /api/account/channel-pointsが発火する", async () => {

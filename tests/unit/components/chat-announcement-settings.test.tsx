@@ -104,6 +104,36 @@ describe("ChatAnnouncementSettings", () => {
     expect(window.location.href).toBe(originalHref);
   });
 
+  it("BOT接続APIの200応答に有効なTwitch loginUrlがなければ遷移せず翻訳済みエラーを表示する（Issue #865）", async () => {
+    stubLocationHref();
+    const originalHref = window.location.href;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/auth/check-scope")) {
+          return Promise.resolve(new Response(JSON.stringify({ hasScope: true }), { status: 200 }));
+        }
+        if (url.includes("/api/auth/bot/connect")) {
+          // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ success: true, loginUrl: "https://evil.example.com/phish", state: "state-123" }),
+              { status: 200 }
+            )
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      })
+    );
+    renderSettings({ currentEnabled: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "連携する" }));
+
+    expect(await screen.findByText("別アカウント連携の開始に失敗しました")).toBeInTheDocument();
+    expect(window.location.href).toBe(originalHref);
+  });
+
   it("shows template controls by default without the legacy advanced checkbox", async () => {
     renderSettings();
 

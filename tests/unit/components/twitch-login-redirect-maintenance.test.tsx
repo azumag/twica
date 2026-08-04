@@ -4,6 +4,10 @@ import { NextIntlClientProvider } from 'next-intl'
 import { TwitchLoginRedirect } from '@/components/TwitchLoginRedirect'
 import jaMessages from '../../../messages/ja.json'
 
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
+
 // #694 Stage 6c 既知の不具合対応（Stage 3のFableレビューで指摘）:
 // TwitchLoginRedirect はマウント時に自動で fetch('/api/auth/twitch/login') を
 // 呼び、response.json() で {authUrl} を期待する。maintenance中はこのrouteが
@@ -57,6 +61,44 @@ describe('TwitchLoginRedirect maintenance integration', () => {
         fetchMock.mock.calls.some(([u]) => String(u).includes('/api/auth/twitch/login'))
       ).toBe(true)
     })
+  })
+
+  it('login APIの200応答に有効なTwitch authUrlがなければ遷移しない（Issue #865フォローアップ）', async () => {
+    const originalHref = window.location.href
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/api/maintenance-status')) {
+        return Promise.resolve(new Response(JSON.stringify({ mode: 'off' }), { status: 200 }))
+      }
+      if (String(url).includes('/api/auth/twitch/login')) {
+        // origin/pathがTwitchの認可endpointと一致しない、侵害/バグ時を想定した応答
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ authUrl: 'https://evil.example.com/phish', state: 'state-1234' }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+        )
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderRedirect()
+
+    // 検証失敗時にスピナー（「リダイレクト中...」）に取り残されず、
+    // 案内文言へ切り替わることを確認する（PR #868レビュー指摘）。
+    expect(await screen.findByText('ログインに失敗しました')).toBeInTheDocument()
+    expect(screen.queryByText('Twitchログインページへ移動中...')).not.toBeInTheDocument()
+    expect(window.location.href).toBe(originalHref)
+  })
+
+  it('login APIの200応答にauthUrlが無ければ遷移せず案内文言を表示する', async () => {
+    const originalHref = window.location.href
+    vi.stubGlobal('fetch', mockFetch('off'))
+
+    renderRedirect()
+
+    expect(await screen.findByText('ログインに失敗しました')).toBeInTheDocument()
+    expect(window.location.href).toBe(originalHref)
   })
 
   it('mode!=off のときは「リダイレクト中」表示の代わりに案内文言を表示し、ログインAPIへのfetchを一切呼ばない', async () => {

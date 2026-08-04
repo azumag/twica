@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
 import { logger } from '@/lib/logger'
 import { fetchMaintenanceStatus } from '@/lib/maintenance/client'
+import { parseTwitchAuthorizationResponse } from '@/lib/twitch/authorization-response'
 
 interface TwitchLoginButtonProps {
   className?: string
@@ -96,7 +97,18 @@ export function TwitchLoginButton({ className = '', showIcon = false }: TwitchLo
 
       const data = await response.json()
       if (data.authUrl) {
-        window.location.href = data.authUrl
+        // 壊れたAPI応答や侵害時の外部URLをそのままwindow.locationへ渡さないため、
+        // reauth/BOT接続と同じorigin/path/state検証を通す（Issue #865フォローアップ）。
+        const authorization = parseTwitchAuthorizationResponse({
+          loginUrl: data.authUrl,
+          state: data.state,
+        })
+        if (authorization) {
+          window.location.href = authorization.loginUrl
+        } else {
+          logger.error('Login API returned an invalid authUrl')
+          setIsLoading(false)
+        }
       } else if (data.error) {
         // Handle JSON error response from API
         // APIからのJSONエラーレスポンスを処理
