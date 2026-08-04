@@ -190,23 +190,6 @@ describe('TwitchChatService', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('BOT一時解決不能かつ本人scope不足はmissing_scopeへ誤分類しない', async () => {
-      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
-        status: 'retryable-unavailable',
-        reason: 'configured BOT credential is temporarily unavailable',
-      });
-      vi.mocked(getScopeStatus).mockResolvedValue('missing');
-
-      await expect(
-        service.sendChatMessageDetailed('123456789', 'test message')
-      ).resolves.toEqual({
-        outcome: 'retryable',
-        reason: 'configured BOT credential is temporarily unavailable',
-      });
-      expect(getTwitchAccessToken).not.toHaveBeenCalled();
-      expect(global.fetch).not.toHaveBeenCalled();
-    });
-
     it('BOT恒久credential欠落かつ本人scope不足はcredential terminalにする', async () => {
       vi.mocked(resolveBotAccountForChat).mockResolvedValue({
         status: 'terminal-unavailable',
@@ -229,27 +212,32 @@ describe('TwitchChatService', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('BOT一時解決不能なら本人scope付与済みでもリトライへ戻しBOT名義を維持する', async () => {
-      // Issue #862: retryable-unavailable（DB瞬断等の一時障害）を本人scope
-      // granted時にすり抜けさせて即fallbackすると、一時障害のたびに送信者名義が
-      // 本人へ切り替わってしまう。本人credentialへは切り替えず、次回試行まで
-      // BOT名義を維持する。
-      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
-        status: 'retryable-unavailable',
-        reason: 'configured BOT credential is temporarily unavailable',
-      });
-      vi.mocked(getScopeStatus).mockResolvedValue('granted');
-      vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
+    it.each(['missing', 'granted', 'unavailable'] as const)(
+      'BOT一時解決不能なら本人scope状態(%s)に関わらずリトライへ戻しBOT名義を維持する',
+      async (scopeStatus) => {
+        // Issue #862: retryable-unavailable（DB瞬断等の一時障害）を本人scope
+        // granted時にすり抜けさせて即fallbackすると、一時障害のたびに送信者名義が
+        // 本人へ切り替わってしまう。本人credentialへは切り替えず、次回試行まで
+        // BOT名義を維持する。scope確認より前に判定するため、getScopeStatusは
+        // 呼ばれないことも合わせて固定する。
+        vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+          status: 'retryable-unavailable',
+          reason: 'configured BOT credential is temporarily unavailable',
+        });
+        vi.mocked(getScopeStatus).mockResolvedValue(scopeStatus);
+        vi.mocked(getTwitchAccessToken).mockResolvedValue('streamer-token');
 
-      await expect(
-        service.sendChatMessageDetailed('123456789', 'test message')
-      ).resolves.toEqual({
-        outcome: 'retryable',
-        reason: 'configured BOT credential is temporarily unavailable',
-      });
-      expect(getTwitchAccessToken).not.toHaveBeenCalled();
-      expect(global.fetch).not.toHaveBeenCalled();
-    });
+        await expect(
+          service.sendChatMessageDetailed('123456789', 'test message')
+        ).resolves.toEqual({
+          outcome: 'retryable',
+          reason: 'configured BOT credential is temporarily unavailable',
+        });
+        expect(getScopeStatus).not.toHaveBeenCalled();
+        expect(getTwitchAccessToken).not.toHaveBeenCalled();
+        expect(global.fetch).not.toHaveBeenCalled();
+      },
+    );
 
     it('BOT恒久失効でも本人fallback送信を成功させ、typed degradationを上位へ渡す', async () => {
       vi.mocked(resolveBotAccountForChat).mockResolvedValue({
@@ -698,6 +686,29 @@ describe('TwitchChatService', () => {
       expect(reportError).toHaveBeenCalledWith(
         expect.objectContaining({
           message: 'Chat delivery preflight failed: unable to verify user:write:chat scope',
+        }),
+        expect.objectContaining({
+          context: 'chat-service:sendChatMessage:preflight',
+          broadcasterTwitchUserId: '123456789',
+          outcome: 'retryable',
+        }),
+      );
+    });
+
+    it('BOT一時解決不能のpreflight失敗はlegacy経路でもreportErrorを1回残す', async () => {
+      vi.mocked(resolveBotAccountForChat).mockResolvedValue({
+        status: 'retryable-unavailable',
+        reason: 'configured BOT credential is temporarily unavailable',
+      });
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+
+      expect(getScopeStatus).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(reportError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Chat delivery preflight failed: configured BOT credential is temporarily unavailable',
         }),
         expect.objectContaining({
           context: 'chat-service:sendChatMessage:preflight',
