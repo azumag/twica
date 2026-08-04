@@ -10,6 +10,7 @@ import { MAX_COLLECTION_NAME_LENGTH } from "@/lib/validation/collection-name";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import { useChatReauthorization } from "@/lib/twitch/use-chat-reauthorization";
+import { parseTwitchAuthorizationResponse } from "@/lib/twitch/authorization-response";
 
 interface ChatAnnouncementSettingsProps {
   streamerId: string;
@@ -323,8 +324,17 @@ export default function ChatAnnouncementSettings({
       });
 
       if (response.ok) {
-        const data = await response.json();
-        window.location.href = data.loginUrl;
+        // reauthフローと同じOAuth/CSRF境界の検証: origin/path/state一致を確認してから
+        // 遷移する。壊れたAPI応答や侵害時の外部URLをそのままwindow.locationへ渡さない
+        // ため（Issue #865）。
+        const data: unknown = await response.json();
+        const authorization = parseTwitchAuthorizationResponse(data);
+        if (!authorization) {
+          setMessage(t("errors.botConnectFailed"));
+          setIsError(true);
+          return;
+        }
+        window.location.href = authorization.loginUrl;
         return;
       }
 
