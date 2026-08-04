@@ -13,9 +13,11 @@ import {
   deleteTwitchTokens,
   getBotAccountForChat,
   getCustomBotAccountDisplayForStreamer,
+  getScopeStatus,
   getTwitchAccessToken,
   hasScope,
   removeScope,
+  resolveBotAccountForChat,
   saveTwitchScopes,
   saveTwitchTokens,
   TwitchTokenError,
@@ -260,6 +262,32 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
     expect(executableLines).not.toMatch(/^(?:const|let|var)\s+\w+\s*=\s*(?:new\s+Map|Promise\.)/m)
   })
 
+  it('token/BOT下位層の障害ログをlogger.errorへ戻さない', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/lib/twitch/token-manager.ts'), 'utf8')
+    const lowerLayerWarnOnlyMessages = [
+      'Twitch token columns are missing; denying token access',
+      'Database error fetching user tokens',
+      'Failed to refresh Twitch access token',
+      'Database error fetching BOT account',
+      'Chat sender settings schema is missing; disabling BOT chat sender',
+      'Database error fetching chat sender settings',
+      'Twitch BOT accounts schema is missing; disabling custom BOT sender',
+      'Database error fetching custom BOT account',
+      'Twitch BOT accounts schema is missing; disabling official BOT sender',
+      'Database error fetching official BOT account',
+      'Failed to refresh BOT Twitch access token',
+    ]
+
+    // logger.server.errorはerrors表と自動Issue作成を起動する。replay pending中の
+    // retryable/terminal障害は下位token/BOT層ではwarnに限定し、呼び出し境界の
+    // reportErrorへ永続化責任を一元化する。scope判定はgetScopeStatusとhasScopeで
+    // 所有境界が異なるため、この文字列契約へ混ぜず、下の実挙動テストで固定する。
+    for (const message of lowerLayerWarnOnlyMessages) {
+      expect(source).toContain(`logger.warn('${message}'`)
+      expect(source).not.toContain(`logger.error('${message}'`)
+    }
+  })
+
   describe('getTwitchAccessToken', () => {
     it('期限内トークンを返し、users の3列だけを一意IDで取得する', async () => {
       const fixture = createDrizzleDbMock({ selects: [{ rows: [userTokenRow()] }] })
@@ -324,19 +352,23 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       ))
     })
 
-    it('lease列が未デプロイならOAuthを呼ばず、資格情報をfail closedする', async () => {
+    it('lease列が未デプロイならOAuthを呼ばず、retryableなDATABASE_ERRORへ分類する', async () => {
       const fixture = createDrizzleDbMock({
         selects: [{ rows: [userTokenRow(pastIso())] }],
         updates: [{ error: { code: '42703', message: 'lease column missing' } }],
       })
       primeDb(fixture)
 
-      await expect(getTwitchAccessToken('user-1')).resolves.toBeNull()
+      await expect(getTwitchAccessToken('user-1')).rejects.toMatchObject({
+        name: 'TwitchTokenError',
+        code: 'DATABASE_ERROR',
+      } satisfies Partial<TwitchTokenError>)
       expect(refreshTwitchToken).not.toHaveBeenCalled()
-      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
         'Twitch token columns are missing; denying token access',
         expect.objectContaining({ twitchUserId: 'user-1' }),
       )
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
     })
 
     it('51並行user refreshはDB leaseでOAuthを一回だけ実行し、全員がwinner tokenを返す', async () => {
@@ -434,17 +466,26 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       expect(fixture.updateCalls.some(call => call.set?.twitch_access_token === 'new-token')).toBe(false)
     })
 
-    it('未デプロイ列(42703)は監視ログを残してnull、それ以外のDB障害はDATABASE_ERRORにする', async () => {
+    it('未デプロイ列(42703)を恒久token欠落へ潰さずDATABASE_ERRORにする', async () => {
       const missingColumnError = { code: '42703', message: 'column missing' }
       const missingColumn = createDrizzleDbMock({
         selects: [{ error: missingColumnError }],
       })
       primeDb(missingColumn)
-      await expect(getTwitchAccessToken('user-1')).resolves.toBeNull()
-      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      await expect(getTwitchAccessToken('user-1')).rejects.toMatchObject({
+        name: 'TwitchTokenError',
+        code: 'DATABASE_ERROR',
+      } satisfies Partial<TwitchTokenError>)
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
         'Twitch token columns are missing; denying token access',
         { twitchUserId: 'user-1', error: missingColumnError },
       )
+
+      // row/token自体が存在しない恒久欠落は引き続きnullであり、schema障害と混同しない。
+      const noCredential = createDrizzleDbMock({ selects: [{ rows: [] }] })
+      primeDb(noCredential)
+      await expect(getTwitchAccessToken('user-1')).resolves.toBeNull()
 
       const broken = createDrizzleDbMock({
         selects: [{ error: new Error('database unavailable') }],
@@ -454,6 +495,10 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
         name: 'TwitchTokenError',
         code: 'DATABASE_ERROR',
       } satisfies Partial<TwitchTokenError>)
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        'Database error fetching user tokens',
+        expect.objectContaining({ twitchUserId: 'user-1' }),
+      )
     })
   })
 
@@ -538,7 +583,7 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       await expect(hasScope('user-1', scope)).resolves.toBe(expected)
     })
 
-    it('hasScope は列欠落時にfalseへ倒し、logger.errorで監視可能にする', async () => {
+    it('hasScope は列欠落時にfalseへ倒し、上位境界がないためerrorを永続化する', async () => {
       const missingColumnError = { code: '42703', message: 'column missing' }
       const fixture = createDrizzleDbMock({
         selects: [{ error: missingColumnError }],
@@ -554,6 +599,71 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
           error: missingColumnError,
         },
       )
+    })
+
+    it('hasScope は一般DB障害もfalseへ倒す前にerrorを永続化する', async () => {
+      const databaseError = { code: '08006', message: 'connection failure' }
+      const fixture = createDrizzleDbMock({
+        selects: Array.from({ length: 4 }, () => ({ error: databaseError })),
+      })
+      primeDb(fixture)
+
+      await expect(hasScope('user-1', 'user:write:chat')).resolves.toBe(false)
+      expect(vi.mocked(logger.error)).toHaveBeenCalledWith('Database error checking scope', {
+        twitchUserId: 'user-1',
+        scope: 'user:write:chat',
+        error: databaseError,
+      })
+    })
+
+    it.each([
+      [['user:write:chat', 'user:read:email'], 'granted'],
+      [['user:read:email'], 'missing'],
+      [null, 'missing'],
+    ] as const)('getScopeStatus は保存スコープを三値契約へ分類する', async (scopes, expected) => {
+      const fixture = createDrizzleDbMock({
+        selects: [{ rows: [{ twitch_scopes: scopes }] }],
+      })
+      primeDb(fixture)
+
+      await expect(getScopeStatus('user-1', 'user:write:chat')).resolves.toBe(expected)
+    })
+
+    it('getScopeStatus はDB障害をscope不足へ潰さずunavailableにする', async () => {
+      const databaseError = { code: '08006', message: 'connection failure' }
+      const fixture = createDrizzleDbMock({
+        // 08006 は冪等READで「初回 + 3回」試行されるため、全試行を障害にして
+        // fixture の応答枯渇時フォールバック（空行）を成功扱いさせない。
+        selects: Array.from({ length: 4 }, () => ({ error: databaseError })),
+      })
+      primeDb(fixture)
+
+      await expect(getScopeStatus('user-1', 'user:write:chat')).resolves.toBe('unavailable')
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith('Database error checking scope', {
+        twitchUserId: 'user-1',
+        scope: 'user:write:chat',
+        error: databaseError,
+      })
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
+    })
+
+    it('getScopeStatus は列欠落もunavailableへ分類し、上位報告に備えてwarnだけを残す', async () => {
+      const missingColumnError = { code: '42703', message: 'column missing' }
+      const fixture = createDrizzleDbMock({
+        selects: [{ error: missingColumnError }],
+      })
+      primeDb(fixture)
+
+      await expect(getScopeStatus('user-1', 'user:write:chat')).resolves.toBe('unavailable')
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        'twitch_scopes column is missing; denying scope access',
+        {
+          twitchUserId: 'user-1',
+          scope: 'user:write:chat',
+          error: missingColumnError,
+        },
+      )
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
     })
 
     it('removeScope は該当値だけを除外し、未保持ならUPDATEしない', async () => {
@@ -627,6 +737,112 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
   })
 
   describe('getBotAccountForChat', () => {
+    it('active BOTの一時refresh失敗はretryable-unavailableとして保持する', async () => {
+      vi.mocked(refreshTwitchToken).mockRejectedValue(new TwitchTokenRefreshError(522))
+      const fixture = createDrizzleDbMock({
+        selects: [
+          { rows: [{ id: 'streamer-1' }] },
+          { rows: [{ sender_mode: 'custom_bot', custom_bot_account_id: 'bot-account-1' }] },
+          { rows: [botAccountRow(pastIso())] },
+        ],
+        // 一時障害では恒久失効用UPDATEが走らず、既存active状態が維持されることを検証する。
+        refreshState: { status: 'active' },
+      })
+      primeDb(fixture)
+
+      await expect(resolveBotAccountForChat('broadcaster-1')).resolves.toEqual({
+        status: 'retryable-unavailable',
+        reason: 'configured BOT credential is temporarily unavailable',
+      })
+      expect(fixture.refreshState.status).toBe('active')
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        'Failed to refresh BOT Twitch access token',
+        { broadcasterTwitchUserId: 'broadcaster-1', accountId: 'bot-account-1' },
+      )
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
+    })
+
+    it('BOT解決のDB障害はretryable-unavailableとして保持する', async () => {
+      const databaseError = { code: '08006', message: 'connection failure' }
+      const fixture = createDrizzleDbMock({
+        // 冪等READの初回+3回をすべて失敗させ、空行fallbackを混入させない。
+        selects: Array.from({ length: 4 }, () => ({ error: databaseError })),
+      })
+      primeDb(fixture)
+
+      await expect(resolveBotAccountForChat('broadcaster-1')).resolves.toEqual({
+        status: 'retryable-unavailable',
+        reason: 'unable to resolve BOT sender from database',
+      })
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        'Database error fetching BOT account',
+        { broadcasterTwitchUserId: 'broadcaster-1', error: databaseError },
+      )
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
+    })
+
+    it('BOT schema欠落は未設定へ潰さずretryable-unavailableとして保持する', async () => {
+      const missingTableError = { code: '42P01', message: 'table missing' }
+      const fixture = createDrizzleDbMock({
+        selects: [
+          { rows: [{ id: 'streamer-1' }] },
+          { error: missingTableError },
+        ],
+      })
+      primeDb(fixture)
+
+      await expect(resolveBotAccountForChat('broadcaster-1')).resolves.toEqual({
+        status: 'retryable-unavailable',
+        reason: 'BOT sender schema is unavailable',
+      })
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        'Chat sender settings schema is missing; disabling BOT chat sender',
+        { broadcasterTwitchUserId: 'broadcaster-1', error: missingTableError },
+      )
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
+    })
+
+    it('BOTの恒久refresh失効はterminal-unavailableとして保持する', async () => {
+      vi.mocked(refreshTwitchToken).mockRejectedValue(new TwitchTokenRefreshError(401))
+      const fixture = createDrizzleDbMock({
+        selects: [
+          { rows: [{ id: 'streamer-1' }] },
+          { rows: [{ sender_mode: 'custom_bot', custom_bot_account_id: 'bot-account-1' }] },
+          { rows: [botAccountRow(pastIso())] },
+        ],
+      })
+      primeDb(fixture)
+
+      await expect(resolveBotAccountForChat('broadcaster-1')).resolves.toEqual({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      })
+      expect(fixture.refreshState.status).toBe('error')
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        'Failed to refresh BOT Twitch access token',
+        { broadcasterTwitchUserId: 'broadcaster-1', accountId: 'bot-account-1' },
+      )
+      expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
+    })
+
+    it('sender_modeが custom_bot/official_bot/streamer のいずれでもない未知値はterminal-unavailableとして保持する', async () => {
+      const fixture = createDrizzleDbMock({
+        selects: [
+          { rows: [{ id: 'streamer-1' }] },
+          { rows: [{ sender_mode: 'unknown_mode', custom_bot_account_id: null }] },
+        ],
+      })
+      primeDb(fixture)
+
+      await expect(resolveBotAccountForChat('broadcaster-1')).resolves.toEqual({
+        status: 'terminal-unavailable',
+        reason: 'configured BOT sender mode is unsupported',
+      })
+      // DB CHECK制約追加前の未知値・手動不整合を本人scope不足へ誤って倒さないよう、
+      // BOTアカウントの追加照会（3クエリ目）は発行されない。
+      expect(fixture.selectCalls).toHaveLength(2)
+    })
+
     it('custom bot の期限内トークンを返し、3段階の参照先を固定する', async () => {
       const fixture = createDrizzleDbMock({
         selects: [
@@ -861,7 +1077,7 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       primeDb(fixture)
 
       await expect(getBotAccountForChat('broadcaster-1')).resolves.toBeNull()
-      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
         'Chat sender settings schema is missing; disabling BOT chat sender',
         { broadcasterTwitchUserId: 'broadcaster-1', error: missingTableError },
       )

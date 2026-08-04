@@ -7,6 +7,9 @@ import DashboardNav from "@/components/DashboardNav";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
 import { MaintenanceStatusProvider } from "@/components/MaintenanceStatusProvider";
 import MaintenanceBanner from "@/components/MaintenanceBanner";
+import ChatDeliveryWarning from "@/components/ChatDeliveryWarning";
+import { getChatDeliveryCapability } from "@/lib/twitch/chat-delivery-capability";
+import { ChatReauthorizationProvider } from "@/lib/twitch/use-chat-reauthorization";
 
 /**
  * Dashboard layout component
@@ -41,9 +44,16 @@ export default async function DashboardLayout({
 
   // Check if user has a supporter plan (support/patron) for inquiry access
   // 問い合わせ機能アクセス用に支援者プランを確認
-  const [plan, unreadAnnouncements] = await Promise.all([
+  const [plan, unreadAnnouncements, chatDeliveryCapability] = await Promise.all([
     getUserPlanSnapshot(session.twitchUserId),
     getUnreadAnnouncements(session.twitchUserId),
+    // 視聴者には配信設定がないためDB照会を行わない。配信者だけ、設定・
+    // active Bot・DB保存scopeをページロード時に確認する。外部Twitch APIは呼ばず、
+    // helperはReact cacheされているので、settings pageも同じ判定を要求しても
+    // request内のI/Oは重複しない。
+    isStreamer
+      ? getChatDeliveryCapability(session.twitchUserId)
+      : Promise.resolve(null),
   ]);
   const isSupporter = plan !== 'basic';
   const unreadAnnouncementsCount = unreadAnnouncements.length;
@@ -57,24 +67,31 @@ export default async function DashboardLayout({
     // （書き込みボタンごとの個別fetchを避ける設計。詳細は
     // MaintenanceStatusProvider.tsx のコメント参照）。
     <MaintenanceStatusProvider>
-      <div className="min-h-screen bg-gray-900">
-        <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
+      {/* 共通警告とsettings内CTAでOAuth state発行を競合させないよう、
+          dashboard全体を1つの再認証single-flight境界に置く。 */}
+      <ChatReauthorizationProvider>
+        <div className="min-h-screen bg-gray-900">
+          <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
 
-        <div className="container mx-auto px-4 py-6">
-          {/* メンテナンスバナー: read-only中であることをダッシュボード全体で常時表示 */}
-          <MaintenanceBanner />
+          <div className="container mx-auto px-4 py-6">
+            {/* メンテナンスバナー: read-only中であることをダッシュボード全体で常時表示 */}
+            <MaintenanceBanner />
 
-          {/* Navigation bar */}
-          {/* ナビゲーションバー */}
-          <div className="mb-6">
-            <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
+            {/* チャット通知が有効なのに実効送信手段がない場合の非dismissable警告 */}
+            <ChatDeliveryWarning needsAttention={chatDeliveryCapability?.needsAttention ?? false} />
+
+            {/* Navigation bar */}
+            {/* ナビゲーションバー */}
+            <div className="mb-6">
+              <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
+            </div>
+
+            {/* Page content */}
+            {/* ページコンテンツ */}
+            <main>{children}</main>
           </div>
-
-          {/* Page content */}
-          {/* ページコンテンツ */}
-          <main>{children}</main>
         </div>
-      </div>
+      </ChatReauthorizationProvider>
     </MaintenanceStatusProvider>
   );
 }

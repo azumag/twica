@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { CARD_DESCRIPTION_MAX_CHARACTERS, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from "@/lib/constants";
@@ -8,6 +9,7 @@ import { countCharacters } from "@/lib/text-utils";
 import { MAX_COLLECTION_NAME_LENGTH } from "@/lib/validation/collection-name";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
+import { useChatReauthorization } from "@/lib/twitch/use-chat-reauthorization";
 
 interface ChatAnnouncementSettingsProps {
   streamerId: string;
@@ -116,10 +118,12 @@ export default function ChatAnnouncementSettings({
 }: ChatAnnouncementSettingsProps) {
   const t = useTranslations("chatAnnouncementSettings");
   const tMaintenance = useTranslations("maintenance");
+  const router = useRouter();
   // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
   // 各書き込みボタンのたびに個別fetchしない設計（MaintenanceStatusProvider参照）。
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const isMaintenanceBlocked = maintenanceMode !== "off";
+  const { reauthorizing, reauthorize } = useChatReauthorization();
 
   // State管理
   const [enabled, setEnabled] = useState(currentEnabled);
@@ -138,7 +142,6 @@ export default function ChatAnnouncementSettings({
   // State for scope check
   const [hasScope, setHasScope] = useState<boolean | null>(null);
   const [checkingScope, setCheckingScope] = useState(true);
-  const [reauthorizing, setReauthorizing] = useState(false);
   const [botConnected, setBotConnected] = useState(Boolean(botAccount));
   const [botDisplayName, setBotDisplayName] = useState(botAccount?.displayName || botAccount?.username || "");
   const [botConnecting, setBotConnecting] = useState(false);
@@ -292,48 +295,21 @@ export default function ChatAnnouncementSettings({
    * Start re-authentication to get additional scope
    */
   const handleReauthorize = useCallback(async () => {
-    setReauthorizing(true);
     setMessage("");
     setIsError(false);
 
-    try {
-      const response = await fetch("/api/auth/reauth", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          additionalScopes: ["user:write:chat"],
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-
-        // state をCookieに保存してからリダイレクト
-        // Save state to cookie before redirect
-        if (data.state) {
-          document.cookie = `twitch_auth_state=${data.state}; path=/; max-age=600; secure; samesite=lax`;
-        }
-
-        // Twitch認証ページにリダイレクト
-        // Redirect to Twitch authorization page
-        window.location.href = data.loginUrl;
-      } else {
-        const errorData = await response.json();
-        const maintenanceError = parseMaintenanceError(response, errorData);
-        setMessage(maintenanceError?.message || errorData.error || t("errors.reauthorizeFailed"));
-        setIsError(true);
-        setReauthorizing(false);
-      }
-    } catch (error) {
-      logger.error("Reauthorize error:", error);
-      setMessage(t("errors.reauthorizeFailed"));
+    const failure = await reauthorize();
+    if (failure) {
+      // shared hookはAPI由来文言をUIへ渡さず、maintenanceか未知失敗かだけ返す。
+      // ここでは既存の設定画面用翻訳へ写し、bannerとの挙動差を作らない。
+      setMessage(
+        failure === "maintenance"
+          ? tMaintenance("writeDisabled")
+          : t("errors.reauthorizeFailed")
+      );
       setIsError(true);
-      setReauthorizing(false);
     }
-  }, [t]);
+  }, [reauthorize, t, tMaintenance]);
 
   const handleConnectBot = useCallback(async () => {
     setBotConnecting(true);
@@ -395,6 +371,10 @@ export default function ChatAnnouncementSettings({
       setBotDisplayName("");
       setMessage(t("messages.botDisconnected"));
       setIsError(false);
+      // Bot接続状態はdashboardのServer Component（layout/sidebar）でも表示可否判定に
+      // 利用される。POST成功後だけ現在ルートを再取得し、失敗時にサーバー表示まで
+      // 未接続扱いへ進めてしまう不整合を防ぐ。
+      router.refresh();
     } catch (error) {
       logger.error("Alternate account disconnect error:", error);
       setMessage(t("errors.botDisconnectFailed"));
@@ -402,7 +382,7 @@ export default function ChatAnnouncementSettings({
     } finally {
       setBotDisconnecting(false);
     }
-  }, [streamerId, t]);
+  }, [router, streamerId, t]);
 
   /**
    * 設定を保存
@@ -468,8 +448,13 @@ export default function ChatAnnouncementSettings({
       // 失敗した場合は元に戻す
       // Revert on failure
       setEnabled(!newEnabled);
+    } else if (!newEnabled) {
+      // 通知ON/OFFはdashboardのServer Component（layout/sidebar）側の表示可否判定にも
+      // 影響する。保存成功が確定したOFF遷移だけ再取得し、失敗時は従来どおり
+      // ローカルstateを戻してサーバー表示を更新しない。
+      router.refresh();
     }
-  }, [enabled, multiShowCards, multiTemplate, saveSettings, template]);
+  }, [enabled, multiShowCards, multiTemplate, router, saveSettings, template]);
 
   /**
    * テンプレートを保存
@@ -593,6 +578,7 @@ export default function ChatAnnouncementSettings({
               type="checkbox"
               checked={enabled}
               onChange={handleToggleEnabled}
+              aria-label={t("form.enableAnnouncement")}
               title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
               disabled={saving || !canSendChat || isMaintenanceBlocked}
               className="peer sr-only"

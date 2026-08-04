@@ -537,6 +537,14 @@
       "connectedAs": "{name} から送信します"
     }
   },
+  "chatDeliveryWarning": {
+    "title": "チャット通知を送信できません",
+    "description": "Twitchの送信権限がありません。ガチャとカード付与は通常どおり動作しますが、チャット通知は送信されません。",
+    "reauthorize": "Twitchと再認証",
+    "reauthorizing": "再認証中...",
+    "settingsLink": "チャット通知設定",
+    "reauthFailed": "再認証を開始できませんでした。しばらくしてから再度お試しください。"
+  },
   "cardVisibilitySettings": {
     "title": "未所持カードの表示設定",
     "description": "視聴者向けコレクションページで、未所持カードを並べて見せるかどうかを設定します。",
@@ -765,6 +773,9 @@
     },
     "advanced": {
       "navAria": "設定セクション",
+      "status": {
+        "attention": "要対応"
+      },
       "section": {
         "overlay": "オーバーレイ",
         "overlayDesc": "OBS表示URLと演出",

@@ -27,8 +27,12 @@ import { reportError } from "@/lib/sentry/error-handler";
 import {
   TwitchChatService,
   DEFAULT_CHAT_TEMPLATE,
+  CHAT_SEND_TERMINAL_CODES,
+  type ChatSendDegradation,
   type ChatMessagePlaceholders,
+  type ChatSendTerminalCode,
 } from "@/lib/twitch/chat-service";
+import { formatChatFailureReason } from "@/lib/twitch/chat-failure-reason";
 import { cancelRedemption } from "@/lib/twitch/channel-points";
 
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
@@ -503,27 +507,70 @@ export async function postRedemptionNotify(
         // ackできなければ別relayが再送し得るため、成功として黙殺せず通知する。
         deliveryStatePersisted = true;
         if (!persisted) {
-          throw new Error('Chat announcement sent but outbox ack lost its lease');
+          throw new Error(formatChatFailureReason(
+            'Chat announcement sent but outbox ack lost its lease',
+            outcome.degradation,
+          ));
+        }
+        if (outcome.degradation) {
+          // Twitch送信とoutbox ackは成功済みなのでDLQ/retryへ戻さない。一方、設定BOTの
+          // 恒久失効をsentだけで握りつぶさず、このlive所有境界で1回だけ永続化する。
+          logger.warn('[postRedemptionNotify] Chat sent using fallback sender', {
+            streamerId: data.streamer.id,
+            broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+            degradation: outcome.degradation,
+          });
+          await reportNotificationError(
+            new Error(`Chat delivery used fallback sender: ${outcome.degradation.reason}`),
+            {
+              context: 'eventsub:postRedemptionNotify:chatDegradation',
+              streamerId: data.streamer.id,
+              broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+              degradation: outcome.degradation,
+            },
+          );
         }
         return;
       }
+      // 失敗系outcomeにもdegradation（設定BOT恒久失効）が付与される。token-managerは
+      // 永続報告せず所有境界の1回報告へ委ねる契約のため、DLQ reason・retry reason・
+      // throw経由のreportErrorへ畳み込み、本人credential障害と同時発生しても
+      // 「設定BOTが要再認証」の直接シグナルを欠落させない。
+      const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation);
       if (outcome.outcome === 'terminal') {
-        const persisted = await deadLetterChatNotification(claim, outcome.reason);
+        const persisted = await deadLetterChatNotification(claim, failureReason);
         deliveryStatePersisted = true;
         if (!persisted) {
-          throw new Error(`Chat announcement DLQ update lost its lease: ${outcome.reason}`);
+          throw new Error(`Chat announcement DLQ update lost its lease: ${failureReason}`);
         }
-        throw new Error(`Chat announcement moved to DLQ: ${outcome.reason}`);
+
+        // scope不足はコード不具合ではなく、配信者がTwitch再認証を完了するまでの
+        // ユーザー操作待ちである。outboxをterminal/DLQにして無限再試行は止めるが、
+        // throwすると下の共通境界がreportErrorし自動Issueを量産するため、このcode
+        // だけ正常終了する。reasonはDLQに、codeと対象IDは構造化ログに残るので、
+        // 通知欠落の監査可能性は維持される。token欠落・401・未知terminalはここへ
+        // 入らず従来どおりthrow/reportErrorされる。
+        if (outcome.code === CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE) {
+          logger.info('[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization', {
+            code: outcome.code,
+            reason: outcome.reason,
+            streamerId: data.streamer.id,
+            broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+            outboxId: claim.id,
+          });
+          return;
+        }
+        throw new Error(`Chat announcement moved to DLQ: ${failureReason}`);
       }
       if (outcome.outcome === 'aborted') {
         // leaseを失った（またはfence確認不能な）所有者は、新所有者の状態を
         // pending/deadへ上書きしてはならない。現在のlease失効/新所有者へ委ねる。
         deliveryStatePersisted = true;
-        throw new Error(`Chat announcement aborted: ${outcome.reason}`);
+        throw new Error(`Chat announcement aborted: ${failureReason}`);
       }
-      const retryState = await retryChatNotification(claim, outcome.reason);
+      const retryState = await retryChatNotification(claim, failureReason);
       deliveryStatePersisted = true;
-      throw new Error(`Chat announcement ${retryState}: ${outcome.reason}`);
+      throw new Error(`Chat announcement ${retryState}: ${failureReason}`);
     } catch (error) {
       // sendChatAnnouncement自体の予期しないthrowも一時障害として上限付き再試行へ戻す。
       const reason = error instanceof Error ? error.message : String(error);
@@ -1004,12 +1051,13 @@ async function fetchActiveCardCountPg(
  * @param snapshot - ガチャcommit時点の所有数系placeholder（outbox v1では必須）
  * @param beforeExternalSend - 資格情報解決後・Twitch送信直前に行うowner fence
  */
-export type ChatAnnouncementOutcome =
+export type ChatAnnouncementOutcome = (
   | { outcome: 'sent' }
   | { outcome: 'skipped' }
-  | { outcome: 'terminal'; reason: string }
+  | { outcome: 'terminal'; code: ChatSendTerminalCode; reason: string }
   | { outcome: 'retryable'; reason: string }
-  | { outcome: 'aborted'; reason: string };
+  | { outcome: 'aborted'; reason: string }
+) & { degradation?: ChatSendDegradation };
 
 export async function sendChatAnnouncement(
   broadcasterTwitchUserId: string,
@@ -1333,7 +1381,9 @@ export async function sendChatAnnouncement(
       multiDraw: isMultiDraw,
       reason: outcome.reason,
     });
-    return { outcome: 'skipped' };
+    return outcome.degradation
+      ? { outcome: 'skipped', degradation: outcome.degradation }
+      : { outcome: 'skipped' };
   } else {
     // sendChatMessage が false を返した場合のログ（API呼び出し失敗）
     // Log when sendChatMessage returns false (API call failure)
@@ -1343,6 +1393,8 @@ export async function sendChatAnnouncement(
       cardName: card.name,
       drawCount: drawnCards.length,
       multiDraw: isMultiDraw,
+      ...('code' in outcome ? { code: outcome.code } : {}),
+      ...('reason' in outcome ? { reason: outcome.reason } : {}),
     });
   }
   return outcome;

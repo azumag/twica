@@ -366,6 +366,94 @@ describe('POST /api/admin/eventsub-replay', () => {
       expect(json.results[0].outcome).toBe('skipped')
     })
 
+    it('fallback送信成功はackを維持し、credential degradationを1回だけreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      const degradation = {
+        code: 'credential_unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent', degradation })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(claim)
+      expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
+      expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('fallback sender') }),
+        expect.objectContaining({ messageId: claim.batchId, degradation }),
+      )
+      expect(json.results[0].outcome).toBe('succeeded')
+    })
+
+    // BOT恒久失効(degradation)は成功縮退だけでなく失敗系outcomeにも付与される。
+    // token-managerが永続報告を境界へ委ねる契約のため、失敗系でdegradationを
+    // 読み落とすと「設定BOTが要再認証」の直接シグナルがどこにも残らない。
+    it('terminal失敗に付随するcredential degradationをDLQ reasonとreportへ畳み込む', async () => {
+      const claim = makeChatOutboxClaim()
+      const degradation = {
+        code: 'credential_unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'terminal',
+        code: 'credential_unavailable',
+        reason: 'chat sender access token unavailable',
+        degradation,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      const expectedReason =
+        'chat sender access token unavailable; sender degraded: configured BOT credential requires reauthorization'
+      expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(claim, expectedReason)
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('sender degraded') }),
+        expect.objectContaining({ messageId: claim.batchId, degradation }),
+      )
+      expect(json.results[0]).toMatchObject({ outcome: 'failed', error: `DLQ: ${expectedReason}` })
+    })
+
+    it('retryable失敗のdead化にもcredential degradationを畳み込んでreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      const degradation = {
+        code: 'credential_unavailable',
+        reason: 'configured BOT credential requires reauthorization',
+      }
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'retryable',
+        reason: 'unable to verify user:write:chat scope',
+        degradation,
+      })
+      mocks.retryChatNotification.mockResolvedValueOnce('dead')
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      const expectedReason =
+        'unable to verify user:write:chat scope; sender degraded: configured BOT credential requires reauthorization'
+      expect(mocks.retryChatNotification).toHaveBeenCalledWith(claim, expectedReason)
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('sender degraded') }),
+        expect.objectContaining({ messageId: claim.batchId, state: 'dead', degradation }),
+      )
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(json.results[0]).toMatchObject({ outcome: 'failed', error: `dead: ${expectedReason}` })
+    })
+
     it('外部送信開始期限内に開始済みなら、遅延成功をroute deadlineまで待って1回だけackする', async () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date(0))
@@ -468,18 +556,121 @@ describe('POST /api/admin/eventsub-replay', () => {
       expect(mocks.reportError).toHaveBeenCalledTimes(1)
     })
 
-    it('一時失敗はbackoff付きpendingへ戻す', async () => {
+    it.each([
+      ['503', 'Twitch API 503'],
+      ['network', 'ECONNRESET'],
+    ])('%s一時失敗はbackoff付きpendingへ戻し、上位でもreportしない', async (_label, reason) => {
       const claim = makeChatOutboxClaim()
       mocks.claimDueChatNotifications
         .mockResolvedValueOnce([claim])
         .mockResolvedValueOnce([])
-      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'retryable', reason: 'Twitch API 503' })
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'retryable', reason })
 
       const { POST } = await import('@/app/api/admin/eventsub-replay/route')
       const json = await (await POST(createReplayRequest({}))).json()
 
-      expect(mocks.retryChatNotification).toHaveBeenCalledWith(claim, 'Twitch API 503')
-      expect(json.results[0]).toMatchObject({ outcome: 'failed', error: 'pending: Twitch API 503' })
+      expect(mocks.retryChatNotification).toHaveBeenCalledWith(claim, reason)
+      expect(json.results[0]).toMatchObject({ outcome: 'failed', error: `pending: ${reason}` })
+      expect(mocks.reportError).not.toHaveBeenCalled()
+    })
+
+    it('本人token DB障害はreplayでpendingへ戻し、途中経過をreportしない', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'retryable',
+        reason: 'chat sender credential is temporarily unavailable',
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.retryChatNotification).toHaveBeenCalledWith(
+        claim,
+        'chat sender credential is temporarily unavailable',
+      )
+      expect(json.results[0]).toMatchObject({
+        outcome: 'failed',
+        error: 'pending: chat sender credential is temporarily unavailable',
+      })
+      expect(mocks.reportError).not.toHaveBeenCalled()
+    })
+
+    it('scope確認不能が再試行上限へ達した場合はdead化をreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'retryable',
+        reason: 'unable to verify user:write:chat scope',
+      })
+      mocks.retryChatNotification.mockResolvedValueOnce('dead')
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.retryChatNotification).toHaveBeenCalledWith(
+        claim,
+        'unable to verify user:write:chat scope',
+      )
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('exhausted retries') }),
+        expect.objectContaining({ messageId: claim.batchId, state: 'dead' }),
+      )
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(json.results[0]).toMatchObject({
+        outcome: 'failed',
+        error: 'dead: unable to verify user:write:chat scope',
+      })
+    })
+
+    it.each([
+      'configured BOT credential is temporarily unavailable',
+      'chat sender credential is temporarily unavailable',
+      'Twitch API 503',
+      'ECONNRESET',
+    ])('%sが再試行上限へ達した場合はdead化をreportする', async (reason) => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'retryable', reason })
+      mocks.retryChatNotification.mockResolvedValueOnce('dead')
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.retryChatNotification).toHaveBeenCalledWith(claim, reason)
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('exhausted retries') }),
+        expect.objectContaining({ messageId: claim.batchId, state: 'dead' }),
+      )
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(json.results[0]).toMatchObject({ outcome: 'failed', error: `dead: ${reason}` })
+    })
+
+    it('送信直前fence喪失のabortedはoutboxを上書きせずreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'aborted',
+        reason: 'chat delivery ownership lost before send',
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      await POST(createReplayRequest({}))
+
+      expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
+      expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('chat delivery aborted') }),
+        expect.objectContaining({ messageId: claim.batchId }),
+      )
     })
 
     it('恒久失敗は即DLQ化し、後続claimを塞がない', async () => {
@@ -490,15 +681,59 @@ describe('POST /api/admin/eventsub-replay', () => {
         .mockResolvedValueOnce([success])
         .mockResolvedValueOnce([])
       mocks.sendChatAnnouncement
-        .mockResolvedValueOnce({ outcome: 'terminal', reason: 'scope missing' })
+        .mockResolvedValueOnce({ outcome: 'terminal', code: 'twitch_rejected', reason: 'AutoMod rejected' })
         .mockResolvedValueOnce({ outcome: 'sent' })
 
       const { POST } = await import('@/app/api/admin/eventsub-replay/route')
       const json = await (await POST(createReplayRequest({}))).json()
 
-      expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(terminal, 'scope missing')
+      expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(terminal, 'AutoMod rejected')
       expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(success)
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
       expect(json.results.map((result: { outcome: string }) => result.outcome)).toEqual(['failed', 'succeeded'])
+    })
+
+    it('missing_scopeでもDLQ更新がleaseを失った場合は運用障害としてreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'terminal',
+        code: 'missing_scope',
+        reason: 'user:write:chat scope not granted',
+      })
+      mocks.deadLetterChatNotification.mockResolvedValueOnce(false)
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      await POST(createReplayRequest({}))
+
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('DLQ update lost its lease') }),
+        expect.objectContaining({ persisted: false }),
+      )
+    })
+
+    it('DLQ更新自体がthrowした場合はpendingへ戻してreportする', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'terminal',
+        code: 'missing_scope',
+        reason: 'user:write:chat scope not granted',
+      })
+      mocks.deadLetterChatNotification.mockRejectedValueOnce(new Error('database unavailable'))
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      await POST(createReplayRequest({}))
+
+      expect(mocks.retryChatNotification).toHaveBeenCalledWith(claim, 'database unavailable')
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('transactional chat relay failed') }),
+        expect.objectContaining({ messageId: claim.batchId, state: 'pending' }),
+      )
     })
 
     it('恒久失敗20件を1 tickあたり5件ずつDLQ化し、後続tickで21件目を配送する', async () => {
@@ -523,6 +758,7 @@ describe('POST /api/admin/eventsub-replay', () => {
         .mockResolvedValueOnce([])
       mocks.sendChatAnnouncement.mockResolvedValue({
         outcome: 'terminal',
+        code: 'missing_scope',
         reason: 'user:write:chat scope not granted',
       })
 
@@ -533,6 +769,8 @@ describe('POST /api/admin/eventsub-replay', () => {
         expect(result.counts).toEqual(expectedCounts({ failed: 5, total: 5 }))
       }
       expect(mocks.deadLetterChatNotification).toHaveBeenCalledTimes(20)
+      // 既知のユーザー再認証待ちはDLQ監査を残すが、自動Issue化しない。
+      expect(mocks.reportError).not.toHaveBeenCalled()
 
       mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent' })
       const second = await (await POST(createReplayRequest({ limit: 20 }))).json()
