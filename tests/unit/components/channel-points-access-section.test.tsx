@@ -232,7 +232,7 @@ describe("ChannelPointsAccessSection", () => {
       });
       const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/twitch/callback`);
       return jsonResponse({
-        loginUrl: `https://id.twitch.tv/oauth2/authorize?mock=1&redirect_uri=${redirectUri}&state=abc12345`,
+        loginUrl: `https://id.twitch.tv/oauth2/authorize?client_id=${process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID}&redirect_uri=${redirectUri}&state=abc12345`,
         state: "abc12345",
       });
     });
@@ -254,7 +254,7 @@ describe("ChannelPointsAccessSection", () => {
     const redirectUri = encodeURIComponent(`${window.location.origin}/api/auth/twitch/callback`);
     await waitFor(() =>
       expect(window.location.href).toBe(
-        `https://id.twitch.tv/oauth2/authorize?mock=1&redirect_uri=${redirectUri}&state=abc12345`
+        `https://id.twitch.tv/oauth2/authorize?client_id=${process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID}&redirect_uri=${redirectUri}&state=abc12345`
       )
     );
   });
