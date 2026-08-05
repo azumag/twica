@@ -58,6 +58,12 @@ function isSameOriginRedirectUri(redirectUri: string): boolean {
  * 場合は fail-closed でnullを返す（ビルド時にインライン化されるため実質常に設定済み）。
  */
 export function parseTwitchAuthorizationResponse(body: unknown): TwitchAuthorizationResponse | null {
+  // EXPECTED_CLIENT_IDが未設定（undefinedまたは空文字）ならfail-closed。このガードが
+  // ないと、env値が空文字のときに `client_id=`（空値）を持つURLが
+  // `clientIdParams[0] !== EXPECTED_CLIENT_ID`（'' !== ''）をすり抜けて検証を通過して
+  // しまう（Issue #869 review follow-up）。
+  if (!EXPECTED_CLIENT_ID) return null
+
   if (typeof body !== 'object' || body === null) return null
 
   const { loginUrl, state } = body as Record<string, unknown>

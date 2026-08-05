@@ -19,8 +19,12 @@ describe('parseTwitchAuthorizationResponse', () => {
   })
 
   it('redirect_uriが自アプリと異なるoriginならnullを返す（Issue #869: consent phishing対策）', () => {
+    // client_idを検証対象外の箇所へ含める理由: 含めないとclient_id欠落だけでも
+    // nullになり、redirect_uriのorigin検証自体を実質テストできなくなる
+    // （vacuous test）。他の否定テストも同様の理由でclient_id/redirect_uriを
+    // 有効な形にしている。
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://id.twitch.tv/oauth2/authorize?redirect_uri=${encodeURIComponent('https://evil.example.com/callback')}&state=${VALID_STATE}`,
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?client_id=${VALID_CLIENT_ID}&redirect_uri=${encodeURIComponent('https://evil.example.com/callback')}&state=${VALID_STATE}`,
       state: VALID_STATE,
     })
 
@@ -29,7 +33,7 @@ describe('parseTwitchAuthorizationResponse', () => {
 
   it('redirect_uriが欠落していればnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://id.twitch.tv/oauth2/authorize?state=${VALID_STATE}`,
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?client_id=${VALID_CLIENT_ID}&state=${VALID_STATE}`,
       state: VALID_STATE,
     })
 
@@ -38,7 +42,7 @@ describe('parseTwitchAuthorizationResponse', () => {
 
   it('URLに重複したredirect_uriクエリパラメータがあればnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://id.twitch.tv/oauth2/authorize?redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&redirect_uri=${encodeURIComponent('https://evil.example.com/callback')}&state=${VALID_STATE}`,
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?client_id=${VALID_CLIENT_ID}&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&redirect_uri=${encodeURIComponent('https://evil.example.com/callback')}&state=${VALID_STATE}`,
       state: VALID_STATE,
     })
 
@@ -47,7 +51,7 @@ describe('parseTwitchAuthorizationResponse', () => {
 
   it('redirect_uriが不正なURL文字列ならnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://id.twitch.tv/oauth2/authorize?redirect_uri=not-a-url&state=${VALID_STATE}`,
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?client_id=${VALID_CLIENT_ID}&redirect_uri=not-a-url&state=${VALID_STATE}`,
       state: VALID_STATE,
     })
 
@@ -56,7 +60,7 @@ describe('parseTwitchAuthorizationResponse', () => {
 
   it('originがTwitch公式と異なればnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://evil.example.com/oauth2/authorize?state=${VALID_STATE}`,
+      loginUrl: `https://evil.example.com/oauth2/authorize?client_id=${VALID_CLIENT_ID}&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&state=${VALID_STATE}`,
       state: VALID_STATE,
     })
 
@@ -65,7 +69,7 @@ describe('parseTwitchAuthorizationResponse', () => {
 
   it('pathがoauth2/authorize以外ならnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://id.twitch.tv/oauth2/token?state=${VALID_STATE}`,
+      loginUrl: `https://id.twitch.tv/oauth2/token?client_id=${VALID_CLIENT_ID}&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&state=${VALID_STATE}`,
       state: VALID_STATE,
     })
 
@@ -74,7 +78,7 @@ describe('parseTwitchAuthorizationResponse', () => {
 
   it('URL内のstateとbodyのstateが不一致ならnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://id.twitch.tv/oauth2/authorize?state=different-state`,
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?client_id=${VALID_CLIENT_ID}&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&state=different-state`,
       state: VALID_STATE,
     })
 
@@ -133,7 +137,7 @@ describe('parseTwitchAuthorizationResponse', () => {
 
   it('URLに重複したstateクエリパラメータがあればnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://id.twitch.tv/oauth2/authorize?state=${VALID_STATE}&state=other-value`,
+      loginUrl: `https://id.twitch.tv/oauth2/authorize?client_id=${VALID_CLIENT_ID}&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&state=${VALID_STATE}&state=other-value`,
       state: VALID_STATE,
     })
 
@@ -209,11 +213,26 @@ describe('parseTwitchAuthorizationResponse', () => {
 
       expect(result).toBeNull()
     })
+
+    it('期待client_idが空文字でclient_id=（空値）が来てもnullを返す（fail-closedガードの回帰防止）', async () => {
+      // ガードの明示的なチェック（`if (!EXPECTED_CLIENT_ID) return null`）がないと、
+      // EXPECTED_CLIENT_IDが''のとき `client_id=`（空値）を持つURLが
+      // `'' !== ''` をすり抜けて検証を通過してしまう（review follow-up）。
+      vi.stubEnv('NEXT_PUBLIC_TWITCH_CLIENT_ID', '')
+      vi.resetModules()
+      const { parseTwitchAuthorizationResponse: parseWithEmptyExpectedClientId } =
+        await import('@/lib/twitch/authorization-response')
+
+      const loginUrl = `https://id.twitch.tv/oauth2/authorize?client_id=&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&state=${VALID_STATE}`
+      const result = parseWithEmptyExpectedClientId({ loginUrl, state: VALID_STATE })
+
+      expect(result).toBeNull()
+    })
   })
 
   it('URLにusername/passwordが埋め込まれていればnullを返す', () => {
     const result = parseTwitchAuthorizationResponse({
-      loginUrl: `https://attacker:pw@id.twitch.tv/oauth2/authorize?state=${VALID_STATE}`,
+      loginUrl: `https://attacker:pw@id.twitch.tv/oauth2/authorize?client_id=${VALID_CLIENT_ID}&redirect_uri=${encodeURIComponent(SAME_ORIGIN_REDIRECT_URI)}&state=${VALID_STATE}`,
       state: VALID_STATE,
     })
 
