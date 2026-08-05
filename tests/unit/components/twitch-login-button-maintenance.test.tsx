@@ -204,6 +204,54 @@ describe('TwitchLoginButton maintenance integration', () => {
     ).toBe(false)
   })
 
+  // #870: ログインAPIがauthUrlもerrorも持たない応答（例: {}）を返す異常系で、
+  // 従来はどちらのif/else分岐にも入らずsetIsLoading(false)が呼ばれないため、
+  // disabled={isLoading || ...}でボタンが恒久的にdisableのまま取り残される。
+  // フォールバック分岐でローディングを解除し、再度操作可能へ戻ることを検証する。
+  it('ログインAPIがauthUrlもerrorも返さない場合でもローディングから復帰してボタンが再度操作可能になる', async () => {
+    const secretValue = 'should-not-be-logged'
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/api/maintenance-status')) {
+        return Promise.resolve(new Response(JSON.stringify({ mode: 'off' }), { status: 200 }))
+      }
+      if (String(url).includes('/api/auth/twitch/login')) {
+        // authUrlもerrorも持たない壊れた/侵害された応答を想定し、秘密情報に
+        // 見えるbodyを返す（ログへ漏れないことの検証に使う）。
+        return Promise.resolve(
+          new Response(JSON.stringify({ secretValue }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        )
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.mocked(logger.error).mockClear()
+
+    renderButton()
+
+    const button = await screen.findByRole('button', { name: 'Twitchでログイン' })
+    fireEvent.click(button)
+
+    // クリック直後は連打防止のため同期的にローディング（disable）になる。
+    expect(button).toBeDisabled()
+
+    // APIが{}（authUrlもerrorも無い）を返しても、フォールバック分岐の
+    // setIsLoading(false)により最終的に再度操作可能な状態へ戻る。
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Twitchでログイン' })).not.toBeDisabled()
+    })
+
+    // 固定reasonだけをログし、応答body（秘密情報を含みうる）を漏らさない
+    // （#865と同じ非漏洩ポリシー）。
+    expect(logger.error).toHaveBeenCalledWith(
+      'Login API returned a response with neither authUrl nor error',
+      { reason: 'malformed-login-response' }
+    )
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(secretValue)
+  })
+
   // #785 Fableレビュー指摘: setIsLoading(true) を fetchMaintenanceStatus() の
   // await より前（handleLogin冒頭）に移動したことで、クリック直後・非同期処理の
   // 応答を待たずに同期的にボタンがdisableされることを直接検証する。これにより

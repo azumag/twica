@@ -119,6 +119,17 @@ export function TwitchLoginButton({ className = '', showIcon = false }: TwitchLo
         // APIからのJSONエラーレスポンスを処理
         logger.error('Login API error:', { error: data.error })
         setIsLoading(false)
+      } else {
+        // #870: 応答がauthUrlもerrorも持たない異常系（例: {}）。ここに分岐が
+        // 無いとsetIsLoading(false)が呼ばれず、disabled={isLoading || ...}の
+        // ためボタンが何の表示もないまま恒久的にdisableされたまま取り残される。
+        // ローディング状態を解除して再試行可能に戻す。応答body全体を記録すると
+        // 壊れた/侵害されたAPI応答に含まれる秘密情報がログへ漏れるため、固定
+        // reasonのみを残し生データはログに含めない（#865のポリシーと同じ）。
+        logger.error('Login API returned a response with neither authUrl nor error', {
+          reason: 'malformed-login-response',
+        })
+        setIsLoading(false)
       }
     } catch (error) {
       logger.error('Login error:', { error })
