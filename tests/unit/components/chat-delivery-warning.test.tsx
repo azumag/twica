@@ -5,24 +5,11 @@ import ChatDeliveryWarning from '@/components/ChatDeliveryWarning'
 import { MaintenanceStatusContext } from '@/components/MaintenanceStatusProvider'
 import type { MaintenanceMode } from '@/lib/maintenance/state'
 import { ChatReauthorizationProvider } from '@/lib/twitch/use-chat-reauthorization'
-
-const messages = {
-  chatDeliveryWarning: {
-    title: 'チャット通知を送信できません',
-    description: 'チャット通知の送信元アカウントの再認証が必要です。ガチャとカード付与は通常どおり動作しますが、チャット通知は送信されません。',
-    reauthorize: 'Twitchと再認証',
-    reauthorizing: '再認証中...',
-    settingsLink: 'チャット通知設定',
-    reauthFailed: '再認証を開始できませんでした。',
-  },
-  maintenance: {
-    writeDisabled: 'メンテナンス中は変更できません',
-  },
-}
+import jaMessages from '../../../messages/ja.json'
 
 function renderWarning(needsAttention: boolean, maintenanceMode: MaintenanceMode = 'off') {
   return render(
-    <NextIntlClientProvider locale="ja" messages={messages}>
+    <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <MaintenanceStatusContext.Provider value={{ mode: maintenanceMode }}>
         <ChatReauthorizationProvider>
           <ChatDeliveryWarning needsAttention={needsAttention} />
@@ -68,6 +55,7 @@ describe('ChatDeliveryWarning', () => {
     const warning = screen.getByTestId('chat-delivery-warning')
     expect(warning).toHaveAttribute('aria-live', 'polite')
     expect(screen.getByText('チャット通知を送信できません')).toBeInTheDocument()
+    expect(screen.getByText(/送信元アカウントの再認証が必要/)).toBeInTheDocument()
     expect(screen.getByText(/ガチャとカード付与は通常どおり動作/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'チャット通知設定' })).toHaveAttribute(
       'href',
@@ -95,7 +83,7 @@ describe('ChatDeliveryWarning', () => {
         body: JSON.stringify({ additionalScopes: ['user:write:chat'] }),
       }),
     ))
-    expect(screen.getByText('再認証を開始できませんでした。')).toBeInTheDocument()
+    expect(screen.getByText('再認証を開始できませんでした。しばらくしてから再度お試しください。')).toBeInTheDocument()
   })
 
   it('同じProvider配下の別CTAを連続操作してもreauth requestは1本だけ発行する', async () => {
@@ -106,7 +94,7 @@ describe('ChatDeliveryWarning', () => {
       }),
     )
     render(
-      <NextIntlClientProvider locale="ja" messages={messages}>
+      <NextIntlClientProvider locale="ja" messages={jaMessages}>
         <MaintenanceStatusContext.Provider value={{ mode: 'off' }}>
           <ChatReauthorizationProvider>
             <ChatDeliveryWarning needsAttention />
@@ -137,7 +125,7 @@ describe('ChatDeliveryWarning', () => {
 
     const button = screen.getByRole('button', { name: 'Twitchと再認証' })
     expect(button).toBeDisabled()
-    expect(button).toHaveAttribute('title', 'メンテナンス中は変更できません')
+    expect(button).toHaveAttribute('title', 'メンテナンス中は操作できません')
     fireEvent.click(button)
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -148,7 +136,7 @@ describe('ChatDeliveryWarning', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Twitchと再認証' }))
 
-    expect(await screen.findByText('再認証を開始できませんでした。')).toBeInTheDocument()
+    expect(await screen.findByText('再認証を開始できませんでした。しばらくしてから再度お試しください。')).toBeInTheDocument()
     expect(screen.queryByText(/Failed to fetch/)).toBeNull()
   })
 
@@ -164,7 +152,7 @@ describe('ChatDeliveryWarning', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Twitchと再認証' }))
 
-    expect(await screen.findByText('再認証を開始できませんでした。')).toBeInTheDocument()
+    expect(await screen.findByText('再認証を開始できませんでした。しばらくしてから再度お試しください。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Twitchと再認証' })).not.toBeDisabled()
     expect(window.location.href).toBe(originalHref)
     expect(document.cookie).toBe(originalCookie)
@@ -185,7 +173,7 @@ describe('ChatDeliveryWarning', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Twitchと再認証' }))
 
-    expect(await screen.findByText('メンテナンス中は変更できません')).toBeInTheDocument()
+    expect(await screen.findByText('メンテナンス中は操作できません')).toBeInTheDocument()
     expect(screen.queryByText('server locale message')).toBeNull()
   })
 
@@ -229,7 +217,7 @@ describe('ChatDeliveryWarning', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Twitchと再認証' }))
 
-    expect(await screen.findByText('再認証を開始できませんでした。')).toBeInTheDocument()
+    expect(await screen.findByText('再認証を開始できませんでした。しばらくしてから再度お試しください。')).toBeInTheDocument()
     expect(window.location.href).toBe(originalHref)
   })
 })
