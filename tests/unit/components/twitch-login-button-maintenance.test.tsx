@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import { TwitchLoginButton } from '@/components/TwitchLoginButton'
+import { logger } from '@/lib/logger'
 import jaMessages from '../../../messages/ja.json'
 
 vi.mock('@/lib/logger', () => ({
@@ -96,6 +97,39 @@ describe('TwitchLoginButton maintenance integration', () => {
       expect(screen.getByRole('button', { name: 'Twitchでログイン' })).not.toBeDisabled()
     })
     expect(window.location.href).toBe(originalHref)
+  })
+
+  it('不正なauthUrlを拒否したときはURLをログへ渡さず固定reasonだけ記録する', async () => {
+    const rejectedUrl = 'https://evil.example.com/users/alice@example.com/reset/secret?token=should-not-log'
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/api/maintenance-status')) {
+        return Promise.resolve(new Response(JSON.stringify({ mode: 'off' }), { status: 200 }))
+      }
+      if (String(url).includes('/api/auth/twitch/login')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ authUrl: rejectedUrl, state: 'state-1234' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        )
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.mocked(logger.error).mockClear()
+
+    renderButton()
+
+    const button = await screen.findByRole('button', { name: 'Twitchでログイン' })
+    fireEvent.click(button)
+
+    await waitFor(() => expect(button).not.toBeDisabled())
+    expect(logger.error).toHaveBeenCalledTimes(1)
+    expect(logger.error).toHaveBeenCalledWith('Login API returned an invalid authUrl', {
+      reason: 'authorization-url-validation-failed',
+    })
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain('alice@example.com')
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain('should-not-log')
   })
 
   it('mode!=off のときはボタンがdisableされ案内文言を表示し、ログインAPIへのfetchを一切呼ばない', async () => {
