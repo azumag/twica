@@ -106,16 +106,12 @@ export function TwitchLoginButton({ className = '', showIcon = false }: TwitchLo
         if (authorization) {
           window.location.href = authorization.loginUrl
         } else {
-          // origin/pathnameのみ記録（クエリ文字列にPIIが含まれ得るため除外）。
-          // 検証拒否の原因切り分け用（本番での設定ミス調査など）。
-          let rejectedUrlSummary = 'unparsable'
-          try {
-            const rejected = new URL(String(data.authUrl))
-            rejectedUrlSummary = `${rejected.origin}${rejected.pathname}`
-          } catch {
-            // rejectedUrlSummary は 'unparsable' のまま
-          }
-          logger.error('Login API returned an invalid authUrl', { authUrl: rejectedUrlSummary })
+          // URLのorigin/pathnameも攻撃者制御値であり、クエリを除外しても
+          // pathnameへPIIや秘密情報が含まれる可能性があるため記録しない。
+          // 固定reasonだけを残し、拒否されたURLをブラウザconsoleへ漏らさない。
+          logger.error('Login API returned an invalid authUrl', {
+            reason: 'authorization-url-validation-failed',
+          })
           setIsLoading(false)
         }
       } else if (data.error) {
