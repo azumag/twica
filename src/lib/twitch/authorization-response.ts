@@ -4,7 +4,11 @@ const TWITCH_AUTHORIZATION_PATH = '/oauth2/authorize'
 // バンドルへリテラルとして埋め込まれ、preview/本番で値が異なっても各環境のビルドが
 // 正しい期待値を持つ（Issue #869）。サーバー側のgetTwitchAuthUrl()と同じ変数から
 // URLを生成するため、正当な応答は常にこの値と一致する。
-const EXPECTED_CLIENT_ID = process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID
+// サーバー側は getEnvVar()（src/lib/env-validation.ts）経由で前後の空白・改行を
+// trimしてから使う（Cloudflareダッシュボードでのペースト時などに混入するため）。
+// ここでtrimしないと、混入があった場合にサーバーの生成値とここでの期待値がズレ、
+// 正当なログイン/再認証/BOT接続まで誤ってfail-closedでブロックしてしまう。
+const EXPECTED_CLIENT_ID = process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID?.trim()
 // サーバー側の生成方式はcrypto.randomUUID()（36文字、16進数+ハイフン）または
 // randomBytesHex(32)（64文字、16進数のみ）のいずれかで、他の文字は使わない。
 // ここで許可文字を絞ることで、stateが後段でdocument.cookieへ直接埋め込まれる

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseTwitchAuthorizationResponse } from '@/lib/twitch/authorization-response'
 
 // Issue #865: reauth API・BOT接続APIの両方が共有するOAuth応答検証。
@@ -174,6 +174,41 @@ describe('parseTwitchAuthorizationResponse', () => {
     })
 
     expect(result).toBeNull()
+  })
+
+  // EXPECTED_CLIENT_ID はモジュール読み込み時に評価される定数のため、env値を
+  // 変えて再評価させるには resetModules + 動的importが必要（storage-usage.test.ts等と同型）。
+  describe('EXPECTED_CLIENT_ID の環境変数評価', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs()
+      vi.resetModules()
+    })
+
+    it('env値に前後の空白・改行が混入していてもtrimして一致判定する（サーバー側getEnvVar()のtrimと整合、Issue #869フォローアップ）', async () => {
+      // サーバー側の getTwitchAuthUrl() は getEnvVar() 経由でtrim済みの値からURLを
+      // 生成する（src/lib/env-validation.ts）。Cloudflareダッシュボードでのペースト時
+      // などにenv値へ前後の空白・改行が混入した場合でも、クライアント側がtrimしなければ
+      // 正当な応答まで誤ってfail-closedでブロックしてしまう回帰を防ぐ。
+      vi.stubEnv('NEXT_PUBLIC_TWITCH_CLIENT_ID', `${VALID_CLIENT_ID}\n`)
+      vi.resetModules()
+      const { parseTwitchAuthorizationResponse: parseWithWhitespaceEnv } =
+        await import('@/lib/twitch/authorization-response')
+
+      const result = parseWithWhitespaceEnv({ loginUrl: VALID_LOGIN_URL, state: VALID_STATE })
+
+      expect(result).toEqual({ loginUrl: VALID_LOGIN_URL, state: VALID_STATE })
+    })
+
+    it('期待client_idが未設定ならfail-closedで常にnullを返す', async () => {
+      vi.stubEnv('NEXT_PUBLIC_TWITCH_CLIENT_ID', '')
+      vi.resetModules()
+      const { parseTwitchAuthorizationResponse: parseWithoutExpectedClientId } =
+        await import('@/lib/twitch/authorization-response')
+
+      const result = parseWithoutExpectedClientId({ loginUrl: VALID_LOGIN_URL, state: VALID_STATE })
+
+      expect(result).toBeNull()
+    })
   })
 
   it('URLにusername/passwordが埋め込まれていればnullを返す', () => {
