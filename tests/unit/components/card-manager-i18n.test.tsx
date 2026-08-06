@@ -35,6 +35,22 @@ describe('CardManager i18n safety messages', () => {
     expect(confirmMock).toHaveBeenCalledWith(
       'Permanently delete this card?\n\n⚠️ This will also remove the card from all users who own it.'
     )
-    expect(fetchMock).not.toHaveBeenCalledWith('/api/cards/card-1', expect.anything())
+
+    // `fetch(url, init)` と `fetch(new Request(url, init))` のどちらでも、対象カードへの
+    // DELETEが発生していないことを判定する。呼び出し形式に依存した検証にすると、
+    // キャンセル後の削除回帰を見逃すため、URLとmethodを正規化して確認する。
+    const fetchCalls = fetchMock.mock.calls as unknown as Array<[
+      RequestInfo | URL,
+      RequestInit | undefined,
+    ]>
+    const targetDeleteCalls = fetchCalls.filter(([input, init]) => {
+      const requestLike = typeof input === 'object' && input !== null && 'url' in input
+        ? (input as Request)
+        : null
+      const url = requestLike?.url ?? String(input)
+      const method = requestLike?.method ?? init?.method ?? 'GET'
+      return url.endsWith('/api/cards/card-1') && method.toUpperCase() === 'DELETE'
+    })
+    expect(targetDeleteCalls).toHaveLength(0)
   })
 })
