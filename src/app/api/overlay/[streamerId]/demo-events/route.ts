@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getOverlayDemoEvent } from '@/lib/overlay/demo-event-store'
 import { ERROR_MESSAGES } from '@/lib/constants'
-import { checkRateLimit, getRateLimitIdentifier, rateLimits } from '@/lib/rate-limit'
+import { checkRateLimit, getRateLimitIdentifier, rateLimits, retryAfterSeconds } from '@/lib/rate-limit'
 import type { ApiRateLimitResponse } from '@/types/api'
 
 interface RouteParams {
@@ -36,7 +36,7 @@ export async function GET(
     return NextResponse.json<ApiRateLimitResponse>(
       {
         error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000),
+        retryAfter: retryAfterSeconds(rateLimitResult.reset),
       },
       {
         status: 429,

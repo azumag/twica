@@ -8,7 +8,7 @@ import {
   validateRarity,
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
-import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
 import { extractTwitchUserId } from "@/types/database";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
@@ -348,7 +348,7 @@ export async function PUT(
     return NextResponse.json<ApiRateLimitResponse>(
       {
         error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
+        retryAfter: retryAfterSeconds(rateLimitResult.reset)
       },
       {
         status: 429,
@@ -666,7 +666,7 @@ export async function DELETE(
     return NextResponse.json<ApiRateLimitResponse>(
       {
         error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
+        retryAfter: retryAfterSeconds(rateLimitResult.reset)
       },
       {
         status: 429,

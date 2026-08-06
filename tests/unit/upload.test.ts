@@ -11,7 +11,13 @@ import { uploadToR2WithRetry } from '@/lib/r2-client'
 // Mock dependencies
 vi.mock('next/headers')
 vi.mock('@/lib/session')
-vi.mock('@/lib/rate-limit')
+vi.mock('@/lib/rate-limit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/rate-limit')>()
+  return {
+    ...actual,
+    checkRateLimit: vi.fn(),
+  }
+})
 vi.mock('@/lib/csrf')
 // Mock R2 client for upload functionality
 // R2クライアントをモックしてアップロード機能をテスト
@@ -84,7 +90,11 @@ describe('POST /api/upload', () => {
       expect(response.status).toBe(429)
       const body = await response.json()
       expect(body.error).toBe('Too many requests. Please try again later.')
+      // retryAfter は秒単位の小さな正の整数であること（epochミリ秒のまま返す過去のバグ #786 の回帰防止）
       expect(body.retryAfter).toBeDefined()
+      expect(Number.isInteger(body.retryAfter)).toBe(true)
+      expect(body.retryAfter).toBeGreaterThan(0)
+      expect(body.retryAfter).toBeLessThanOrEqual(60)
     })
   })
 
