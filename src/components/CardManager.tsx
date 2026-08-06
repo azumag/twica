@@ -1586,9 +1586,11 @@ export default function CardManager({
     <div className="rounded-xl bg-gray-800 p-6">
       {/* Header section - stacks vertically on mobile for better button readability */}
       {/* ヘッダーセクション - モバイルではボタンの可読性向上のため縦並び */}
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* ヘッダーのツールバー行: ボタン群は折り返しを許可し(whitespace-nowrapの各ボタンは縮小不能のため)、
+          2行に折り返した際にタイトルが上端に揃うよう items-start にする */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           {/* Drop rate settings button */}
           {/* カード排出確率設定ボタン */}
           <button
