@@ -19,6 +19,23 @@ function collectKeys(value: unknown, prefix = ''): string[] {
   return []
 }
 
+function collectMessages(value: unknown, prefix = ''): Array<[string, string]> {
+  if (typeof value === 'string') return [[prefix, value]]
+  if (typeof value === 'object' && value !== null) {
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+      collectMessages(child, `${prefix}${key}.`)
+    )
+  }
+  return []
+}
+
+// next-intl のメッセージ引数は `{name}` の形式で記述されるため、キー集合だけでなく
+// 各キーの引数名集合も比較する。片方の翻訳だけ引数を削除・改名すると、実行時に
+// プレースホルダーがそのまま表示されるため、翻訳追加時点で検出できるようにする。
+function collectPlaceholders(message: string): string[] {
+  return [...message.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]).sort()
+}
+
 describe('i18n メッセージキー・パリティ (ja/en)', () => {
   it('トップレベルのスコープ集合が一致する', () => {
     expect(Object.keys(jaMessages).sort()).toEqual(Object.keys(enMessages).sort())
@@ -37,5 +54,19 @@ describe('i18n メッセージキー・パリティ (ja/en)', () => {
       'jaのみに存在するキー（en.jsonへの追加漏れ）': [],
       'enのみに存在するキー（ja.jsonへの追加漏れ）': [],
     })
+  })
+
+  it('各メッセージのプレースホルダー集合が一致する', () => {
+    const jaMessagesByKey = new Map(collectMessages(jaMessages))
+    const enMessagesByKey = new Map(collectMessages(enMessages))
+    const differences = [...jaMessagesByKey.keys()].flatMap((key) => {
+      const jaPlaceholders = collectPlaceholders(jaMessagesByKey.get(key) ?? '')
+      const enPlaceholders = collectPlaceholders(enMessagesByKey.get(key) ?? '')
+      return JSON.stringify(jaPlaceholders) === JSON.stringify(enPlaceholders)
+        ? []
+        : [{ key, jaPlaceholders, enPlaceholders }]
+    })
+
+    expect(differences).toEqual([])
   })
 })

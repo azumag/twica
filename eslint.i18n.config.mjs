@@ -10,13 +10,15 @@ const require = createRequire(import.meta.url);
 // 移設完了ファイルはここから削除すること。
 const i18nDebtFiles = require("./scripts/i18n-debt-files.js");
 
-// ファイルパスを glob パターン化する際、ディレクトリ名に含まれる `[` `]` は
-// glob の文字クラスとして解釈されるため、そのセグメントを `*` に置き換える
-// （例: overlay/[streamerId]/ → overlay/*/。micromatch では [ のエスケープが機能しない）。
+// ESLint の `files` は glob として評価されるため、負債リストのファイル名に含まれる
+// globメタ文字をリテラルとしてエスケープする。動的ルートの `[streamerId]` を `*` に
+// 置き換えると、同階層の未登録ファイルまで負債扱いになるため、登録された1ファイル
+// だけに除外範囲を限定する。
+const GLOB_META_CHARACTERS = /[\\*?\[\]{}()!+@]/g;
 const globSafePath = (f) =>
   f
     .split("/")
-    .map((seg) => (/[\[\]]/.test(seg) ? "*" : seg))
+    .map((seg) => seg.replace(GLOB_META_CHARACTERS, "\\$&"))
     .join("/");
 
 /**
