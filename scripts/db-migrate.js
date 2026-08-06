@@ -23,6 +23,10 @@
  *   - history table が存在しない（＝一度もapply/bootstrapされていない）DBに対して
  *     `--bootstrap` 無しで大量のmigrationをapplyしようとした場合、誤操作防止のため
  *     `--confirm-fresh-apply` を要求する（Fableレビュー Medium-1）
+ *   - 未適用migrationに非加法的な文（DROP COLUMN / RENAME / ALTER COLUMN TYPE /
+ *     DROP TABLE等 / TRUNCATE）が含まれる場合、apply/plan をブロックする。
+ *     自動適用は additive な変更のみ許可する運用（planetscale-migrate.yml）のためで、
+ *     `--allow-non-additive` で明示的に解除する（Issue #800）
  *
  * 使い方:
  *   DATABASE_URL="postgres://..." node scripts/db-migrate.js status
@@ -116,6 +120,14 @@ const HELP_TEXT = `
             実行されていない）DBに対し、--bootstrap を付けずに一定件数以上のmigrationを
             通常applyしようとした場合の確認フラグ。本番DBのような「実際には適用済みのはず」の
             DBへ --bootstrap を付け忘れて誤って全SQLを実行してしまう事故を防ぐためのガード。
+  --allow-non-additive
+            apply/plan コマンド専用（Issue #800）。未適用migrationに非加法的な文
+            （DROP COLUMN / RENAME COLUMN / ALTER COLUMN ... TYPE / DROP TABLE等 / TRUNCATE）が
+            含まれる場合、自動適用は additive な変更のみ許可する運用のため通常はブロックされるが、
+            このフラグでブロックを明示的に解除して続行する。contract フェーズ（列削除・型変更等）は
+            デプロイ順序を人間が管理して手動適用すること。DROP INDEX / DROP CONSTRAINT /
+            DROP POLICY / DROP TRIGGER は対象外（意図的に許可）。bootstrap はSQLを実行せず
+            履歴登録のみのためガード対象外（--allow-non-additive は不要・no-op）。
   --help, -h
             このヘルプを表示する
 
@@ -133,12 +145,12 @@ const HELP_TEXT = `
 // parseArgs が認識する真偽値フラグ（値を取らないもの）。
 // これに含まれず `--` で始まる引数は「未知のフラグ」として unknownArgs に積まれる
 // （Issue #692 Fableレビュー High-2: 未知フラグ・typoを黙って無視しない）。
-const KNOWN_BOOLEAN_FLAGS = ['--help', '-h', '--bootstrap', '--confirm-fresh-apply']
+const KNOWN_BOOLEAN_FLAGS = ['--help', '-h', '--bootstrap', '--confirm-fresh-apply', '--allow-non-additive']
 
 // 未知フラグに対する簡易な「もしかして」候補（--help との組み合わせは対象外）。
 // 厳密な曖昧一致ライブラリは導入せず、Levenshtein距離が近いものだけを提案する簡易実装
 // （YAGNI: このCLIのフラグ数は少なく、厳密なfuzzy matchingを導入する価値が薄いため）。
-const SUGGESTABLE_FLAGS = ['--help', '--bootstrap', '--confirm-fresh-apply']
+const SUGGESTABLE_FLAGS = ['--help', '--bootstrap', '--confirm-fresh-apply', '--allow-non-additive']
 
 /** 2文字列間の編集距離（Levenshtein距離）を計算する純粋関数 */
 function levenshteinDistance(a, b) {
@@ -191,6 +203,7 @@ function parseArgs(argv) {
   const help = args.includes('--help') || args.includes('-h')
   const bootstrap = args.includes('--bootstrap')
   const confirmFreshApply = args.includes('--confirm-fresh-apply')
+  const allowNonAdditive = args.includes('--allow-non-additive')
 
   let command
   let providerFlag
@@ -214,7 +227,7 @@ function parseArgs(argv) {
   }
 
   const provider = providerFlag ? providerFlag.slice('--provider='.length) : undefined
-  return { help, command, bootstrap, confirmFreshApply, provider, unknownArgs }
+  return { help, command, bootstrap, confirmFreshApply, allowNonAdditive, provider, unknownArgs }
 }
 
 const VALID_COMMANDS = ['status', 'plan', 'apply', 'verify']
@@ -225,7 +238,7 @@ const VALID_COMMANDS = ['status', 'plan', 'apply', 'verify']
  * （help / error / 正常系の3値を返す）。
  */
 function resolveConfig(argv, env) {
-  const { help, command, bootstrap, confirmFreshApply, provider, unknownArgs } = parseArgs(argv)
+  const { help, command, bootstrap, confirmFreshApply, allowNonAdditive, provider, unknownArgs } = parseArgs(argv)
   if (help) return { help: true }
 
   if (unknownArgs.length > 0) {
@@ -248,6 +261,10 @@ function resolveConfig(argv, env) {
 
   if (confirmFreshApply && command !== 'apply') {
     return { error: '--confirm-fresh-apply は apply コマンドでのみ使用できます。' }
+  }
+
+  if (allowNonAdditive && command !== 'apply' && command !== 'plan') {
+    return { error: '--allow-non-additive は apply/plan コマンドでのみ使用できます。' }
   }
 
   // 「--provider=」（フラグは指定されているが値が空文字列）を、フラグ自体の省略と同じ
@@ -276,7 +293,7 @@ function resolveConfig(argv, env) {
     }
   }
 
-  return { command, bootstrap, confirmFreshApply, provider: resolvedProvider, databaseUrl }
+  return { command, bootstrap, confirmFreshApply, allowNonAdditive, provider: resolvedProvider, databaseUrl }
 }
 
 /**
@@ -414,6 +431,72 @@ function printBlockingErrors(state) {
   }
 }
 
+/**
+ * 未適用migrationに非加法的(non-additive)な文が含まれるかを検査する / Issue #800。
+ *
+ * CI（planetscale-migrate.yml）は main push 毎に apply を自動実行するため、
+ * DROP COLUMN 等の非加法的変更が含まれるmigrationが誤って混入すると本番障害に直結する。
+ * apply/plan の実行前に pending 全ファイルをスキャンし、検出時はブロックする
+ * （--allow-non-additive 指定時のみ続行。contractフェーズの手動適用は人間が順序管理する）。
+ * 適用済み(non-pending)ファイルは既に本番反映済みのためスキャン対象外。
+ * 部分適用を防ぐため、1件でも検出したら全体をブロックする（先行のadditive分だけ適用して
+ * 途中で止まる、を許さない）。
+ *
+ * @param {{ pending: { sourceDir: string, filename: string, version: string, name: string }[] }} state
+ * @returns {{ version: string, name: string, findings: { kind: string, line: number }[] }[]}
+ *   非加法的な文を含む pending migration の一覧（無ければ空配列）
+ */
+function findNonAdditivePending(state) {
+  const violations = []
+  for (const d of state.pending) {
+    const content = core.readMigrationFile(d.sourceDir, d.filename)
+    const findings = core.detectNonAdditiveStatements(content)
+    if (findings.length > 0) {
+      violations.push({ version: d.version, name: d.name, findings })
+    }
+  }
+  return violations
+}
+
+function printNonAdditiveBlock(violations) {
+  console.error('[db-migrate] 非加法的(non-additive)なmigrationが検出されました:')
+  for (const v of violations) {
+    for (const f of v.findings) {
+      console.error(`  - ${v.version} ${v.name}: ${f.kind} (行 ${f.line})`)
+    }
+  }
+  console.error('[db-migrate] このパイプラインでの自動適用は additive な変更のみ許可されています。')
+  console.error('[db-migrate] --allow-non-additive を付けない限り apply/plan は実行しません。')
+  console.error('[db-migrate] 列削除・型変更等の contract フェーズは、デプロイ順序を人間が管理して手動適用してください。')
+}
+
+function printNonAdditiveWarning(violations) {
+  console.error('[db-migrate] 警告: --allow-non-additive が指定されているため、非加法的migrationを続行します:')
+  for (const v of violations) {
+    for (const f of v.findings) {
+      console.error(`  - ${v.version} ${v.name}: ${f.kind} (行 ${f.line})`)
+    }
+  }
+}
+
+/**
+ * 非加法的migrationガード。1件でも検出されたらブロックする（exit 1）。
+ * --allow-non-additive 指定時は警告ログのみで続行する。
+ * @param {{ pending: object[] }} state
+ * @param {boolean} allowNonAdditive
+ * @returns {boolean} true ならブロック（呼び出し側は処理を中止して exit 1 を返すこと）
+ */
+function shouldBlockNonAdditive(state, allowNonAdditive) {
+  const violations = findNonAdditivePending(state)
+  if (violations.length === 0) return false
+  if (allowNonAdditive) {
+    printNonAdditiveWarning(violations)
+    return false
+  }
+  printNonAdditiveBlock(violations)
+  return true
+}
+
 async function cmdStatus(sql, migrationsDirs, provider) {
   const state = await computeState(sql, migrationsDirs, provider)
   if (hasBlockingErrors(state)) {
@@ -442,10 +525,16 @@ async function cmdStatus(sql, migrationsDirs, provider) {
   return 0
 }
 
-async function cmdPlan(sql, migrationsDirs, provider) {
+async function cmdPlan(sql, migrationsDirs, provider, { allowNonAdditive }) {
   const state = await computeState(sql, migrationsDirs, provider)
   if (hasBlockingErrors(state)) {
     printBlockingErrors(state)
+    return 1
+  }
+
+  // Issue #800: 非加法的migrationの機械的ブロック（dry-runとはいえ、applyが拒否する内容を
+  // 「適用します」と表示するのは誤誘導になるため、planでも同一ガードを掛ける）。
+  if (shouldBlockNonAdditive(state, allowNonAdditive)) {
     return 1
   }
 
@@ -487,7 +576,7 @@ function printApplySummary(results, warnings) {
  * apply コマンド本体。advisory lock を取得したセッション内で、
  * history テーブルの存在確認・整合性チェック・実際の適用（またはbootstrap登録）を行う。
  */
-async function cmdApply(sql, migrationsDirs, provider, { bootstrap, confirmFreshApply, appliedBy, warningSink }) {
+async function cmdApply(sql, migrationsDirs, provider, { bootstrap, confirmFreshApply, allowNonAdditive, appliedBy, warningSink }) {
   // 同時実行防止: 固定キーの advisory lock を取得する。既に別プロセスが保持している場合は
   // ここでブロックし、解放され次第このプロセスが取得する（Issue #692: 「待機またはエラー」の
   // うち「待機」を採用。取得後は他方が適用済みの内容を読むだけなので自然にno-opになる）。
@@ -512,6 +601,13 @@ async function cmdApply(sql, migrationsDirs, provider, { bootstrap, confirmFresh
     const state = await computeState(sql, migrationsDirs, provider)
     if (hasBlockingErrors(state)) {
       printBlockingErrors(state)
+      return 1
+    }
+
+    // Issue #800: 非加法的migrationの機械的ブロック。ここは schema/table 作成の「前」なので、
+    // ブロック時に副作用は一切残らない（shouldBlockFreshApply と同じ「1回しか効かない」問題が
+    // 構造的に起きない）。bootstrap はSQLを実行せず履歴登録のみのためガード対象外。
+    if (!bootstrap && shouldBlockNonAdditive(state, allowNonAdditive)) {
       return 1
     }
 
@@ -726,7 +822,7 @@ async function main() {
     return
   }
 
-  const { command, bootstrap, confirmFreshApply, provider, databaseUrl } = resolved
+  const { command, bootstrap, confirmFreshApply, allowNonAdditive, provider, databaseUrl } = resolved
   const warningSink = { current: null, list: [] }
   const sql = createSqlClient(databaseUrl, warningSink)
   const migrationsDirs = resolveMigrationsDirs(provider)
@@ -741,13 +837,14 @@ async function main() {
     if (command === 'status') {
       exitCode = await cmdStatus(sql, migrationsDirs, provider)
     } else if (command === 'plan') {
-      exitCode = await cmdPlan(sql, migrationsDirs, provider)
+      exitCode = await cmdPlan(sql, migrationsDirs, provider, { allowNonAdditive })
     } else if (command === 'verify') {
       exitCode = await cmdVerify(sql, migrationsDirs, provider)
     } else if (command === 'apply') {
       exitCode = await cmdApply(sql, migrationsDirs, provider, {
         bootstrap,
         confirmFreshApply,
+        allowNonAdditive,
         appliedBy: resolveAppliedBy(process.env),
         warningSink,
       })
@@ -778,6 +875,7 @@ module.exports = {
   resolveAppliedBy,
   hasBlockingErrors,
   shouldBlockFreshApply,
+  shouldBlockNonAdditive,
   FRESH_APPLY_PENDING_THRESHOLD,
   resolveMigrationsDirs,
   SUPABASE_MIGRATIONS_DIR,

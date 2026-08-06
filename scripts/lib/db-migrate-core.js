@@ -227,6 +227,91 @@ function containsSetLocal(content) {
 }
 
 /**
+ * 非加法的(non-additive)なmigration文を検知する純粋関数 / Issue #800。
+ *
+ * 背景:
+ * `.github/workflows/planetscale-migrate.yml` が main push 毎に `apply --provider=planetscale`
+ * を自動実行し本番DBへmigrationを適用する。アプリ側の deploy-window fallback は
+ * 加法的（additive）な変更（列追加等）にしか成り立たないため、DROP COLUMN や RENAME 等の
+ * 非加法的変更が混入したmigrationが誤って本番へ自動適用されると、
+ * 新旧アプリコードとスキーマの不一致による本番障害に直結する。
+ * 本関数はその事故を「apply 実行前に」機械的にブロックするための検知を行う
+ * （shouldBlockFreshApply と同じ「事故は起きる前提でコードが守る」設計思想）。
+ *
+ * 検知の考え方:
+ * - 単語だけ（`\bdrop\b` 等）で検知すると、実ファイルに多数存在する列名 `drop_rate`・
+ *   関数名 `rename_card_pack` 等を誤検知するため、「文の形」（`DROP COLUMN` 等）で検知する。
+ * - `DROP INDEX` / `DROP CONSTRAINT` / `DROP POLICY` / `DROP TRIGGER` は
+ *   アプリが読む列・表・関数の契約（クエリ結果面）を変えず、実ファイルにも既に存在する
+ *   ため、意図的にブロック対象外とする。
+ * - 完全なSQLパーサは過剰実装（YAGNI）。正規表現ベースの簡易検知で、未知構文バリアントの
+ *   見逃しは許容し、最終防御はレビュー運用に委ねる。代表的な見逃し例:
+ *   PostgreSQL の `COLUMN` キーワード省略形（`ALTER TABLE t DROP c;` /
+ *   `ALTER TABLE t RENAME a TO b;` / `ALTER id TYPE ...`）は検知しない（誤検知を
+ *   増やさず、安全側に倒さない判断。省略形が混入する場合はレビューで気づく前提）。
+ * - 行コメント・ブロックコメントは事前に除去する（ヘッダー記述やコメント内言及による
+ *   誤検知を防ぐ。extractCreatedIndexNames と同じ前処理。文字列リテラル内や
+ *   DO ブロック内のキーワードは除去されず検知されるが、安全側に倒れるため許容する）。
+ *
+ * @param {string} content - migration ファイルの内容全体
+ * @returns {{ kind: string, line: number }[]} 検出された文の種別と行番号（1始まり）の配列。無ければ空配列
+ */
+const NON_ADDITIVE_PATTERNS = [
+  // 列削除。IF EXISTS が付いていても旧コードが列を読む契約を破壊するためブロックする
+  { kind: 'DROP COLUMN', re: /\bdrop\s+column\b/gi },
+  // 列・表のリネーム。クエリが書く列名・表名の契約を破壊する
+  { kind: 'RENAME COLUMN/TABLE', re: /\brename\s+(column|table|to)\b/gi },
+  // 型変更（ALTER COLUMN ... TYPE / SET DATA TYPE）。読み書きの型契約を変更する。
+  // 識別子は「スペースを含むクォート付き（"my col"）」または「空白・カンマ・セミコロンを
+  // 含まない通常トークン」のどちらでも受ける
+  {
+    kind: 'ALTER COLUMN TYPE',
+    re: /\balter\s+column\s+(?:"[^"]*"|[^\s,;]+)\s+(type|set\s+data\s+type)\b/gi,
+  },
+  // オブジェクト削除。実行時参照が死ぬ。DROP INDEX/CONSTRAINT/POLICY/TRIGGER は対象外
+  // （アプリが読む契約面を変えないため、意図的に許可する）
+  {
+    kind: 'DROP TABLE/VIEW/FUNCTION',
+    re: /\bdrop\s+(table|view|materialized\s+view|function|procedure|schema|sequence|type|domain|extension)\b/gi,
+  },
+  // データ破壊（TRUNCATE ... RESTART IDENTITY CASCADE を含む）。
+  // TRUNCATE は PostgreSQL の unreserved keyword のため識別子（`CREATE TABLE truncate` 等）
+  // にもマッチしうる。対象名の形まで含めることで、識別子としての使用は誤検知しない
+  { kind: 'TRUNCATE', re: /\btruncate\s+(?:table\s+)?(?:[a-z_][a-z0-9_$]*|"[^"]*")/gi },
+]
+
+function detectNonAdditiveStatements(content) {
+  // ブロックコメント除去 → 行コメント除去。ブロックコメント内の改行は行番号を維持する
+  // ため残す（extractCreatedIndexNames の前処理は改行を消すため、行番号を報告する
+  // 本関数ではブロックコメントの文字だけを除去する実装にしている）。
+  const code = content
+    .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ''))
+    .split('\n')
+    .map((line) => line.replace(/--.*$/g, ''))
+    .join('\n')
+  const findings = []
+  for (const p of NON_ADDITIVE_PATTERNS) {
+    for (const match of code.matchAll(p.re)) {
+      // マッチ位置から行番号を算出（1始まり）。ファイルは小さいため先頭から数えてもコストは無視できる
+      const line = code.slice(0, match.index).split('\n').length
+      findings.push({ kind: p.kind, line })
+    }
+  }
+  // ファイル内の出現順（行番号順）で並べ替え、同一行での重複報告は先頭の1件にまとめる
+  // （同一行に DROP COLUMN と TRUNCATE が並ぶことは実運用でほぼ無く、行番号と種別が
+  // 分かれば人間が現物を見て判断できるため、全件列挙はしない）。
+  findings.sort((a, b) => a.line - b.line)
+  const deduped = []
+  let previousLine = -1
+  for (const f of findings) {
+    if (f.line === previousLine) continue
+    deduped.push(f)
+    previousLine = f.line
+  }
+  return deduped
+}
+
+/**
  * forbidden migration に含まれる CREATE INDEX の名前を取り出す純粋関数。
  *
  * CREATE INDEX CONCURRENTLY は失敗時に「無効なindexが残る」ことがある。
@@ -1107,6 +1192,7 @@ module.exports = {
   computeChecksum,
   countEffectiveStatements,
   containsSetLocal,
+  detectNonAdditiveStatements,
   extractCreatedIndexNames,
   extractCreatedIndexDefinitions,
   normalizeIndexDefinition,
