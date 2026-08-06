@@ -30,6 +30,7 @@ describe('CardManager i18n safety messages', () => {
       </NextIntlClientProvider>
     )
 
+    const fetchCallCountBeforeCancel = fetchMock.mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'Delete Permanently' }))
 
     expect(confirmMock).toHaveBeenCalledWith(
@@ -48,9 +49,11 @@ describe('CardManager i18n safety messages', () => {
         ? (input as Request)
         : null
       const url = requestLike?.url ?? String(input)
-      const method = requestLike?.method ?? init?.method ?? 'GET'
+      // FetchのRequestInitはRequest本体のmethodを上書きできるため、initを優先する。
+      const method = init?.method ?? requestLike?.method ?? 'GET'
       return url.endsWith('/api/cards/card-1') && method.toUpperCase() === 'DELETE'
     })
     expect(targetDeleteCalls).toHaveLength(0)
+    expect(fetchMock.mock.calls).toHaveLength(fetchCallCountBeforeCancel)
   })
 })
