@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, afterEach } from 'vitest'
+import { mkdtempSync, writeFileSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   parseArgs,
   resolveConfig,
   resolveAppliedBy,
   hasBlockingErrors,
   shouldBlockFreshApply,
+  shouldBlockNonAdditive,
   FRESH_APPLY_PENDING_THRESHOLD,
   resolveMigrationsDirs,
   SUPABASE_MIGRATIONS_DIR,
@@ -24,6 +28,7 @@ describe('parseArgs', () => {
       command: undefined,
       bootstrap: false,
       confirmFreshApply: false,
+      allowNonAdditive: false,
       provider: undefined,
       unknownArgs: [],
     })
@@ -34,9 +39,12 @@ describe('parseArgs', () => {
     expect(parseArgs(['node', 'db-migrate.js', 'apply']).command).toBe('apply')
   })
 
-  it('--bootstrap / --confirm-fresh-apply / --help / -h を検出する', () => {
+  it('--bootstrap / --confirm-fresh-apply / --allow-non-additive / --help / -h を検出する', () => {
     expect(parseArgs(['node', 'db-migrate.js', 'apply', '--bootstrap']).bootstrap).toBe(true)
     expect(parseArgs(['node', 'db-migrate.js', 'apply', '--confirm-fresh-apply']).confirmFreshApply).toBe(
+      true
+    )
+    expect(parseArgs(['node', 'db-migrate.js', 'apply', '--allow-non-additive']).allowNonAdditive).toBe(
       true
     )
     expect(parseArgs(['node', 'db-migrate.js', '--help']).help).toBe(true)
@@ -174,14 +182,43 @@ describe('resolveConfig', () => {
       databaseUrl: string
       bootstrap: boolean
       confirmFreshApply: boolean
+      allowNonAdditive: boolean
     }
     expect(result).toEqual({
       command: 'plan',
       bootstrap: false,
       confirmFreshApply: false,
+      allowNonAdditive: false,
       provider: 'postgres',
       databaseUrl: env.DATABASE_URL,
     })
+  })
+
+  it('--allow-non-additive は apply/plan でのみ許可され、status/verify ではエラー', () => {
+    const plan = resolveConfig(['node', 'db-migrate.js', 'plan', '--allow-non-additive'], env) as {
+      allowNonAdditive: boolean
+    }
+    expect(plan.allowNonAdditive).toBe(true)
+    const apply = resolveConfig(['node', 'db-migrate.js', 'apply', '--allow-non-additive'], env) as {
+      allowNonAdditive: boolean
+    }
+    expect(apply.allowNonAdditive).toBe(true)
+    const status = resolveConfig(['node', 'db-migrate.js', 'status', '--allow-non-additive'], env) as {
+      error: string
+    }
+    expect(status.error).toContain('--allow-non-additive')
+    const verify = resolveConfig(['node', 'db-migrate.js', 'verify', '--allow-non-additive'], env) as {
+      error: string
+    }
+    expect(verify.error).toContain('--allow-non-additive')
+  })
+
+  it('--allow-non-additive の typo は unknownArgs でエラーになる', () => {
+    const result = resolveConfig(
+      ['node', 'db-migrate.js', 'apply', '--allow-nonadditive'],
+      env
+    ) as { error: string }
+    expect(result.error).toContain('不明な引数')
   })
 })
 
@@ -299,5 +336,58 @@ describe('resolveMigrationsDirs', () => {
 
   it('provider=postgres でも supabase/migrations/ のみを返す', () => {
     expect(resolveMigrationsDirs('postgres')).toEqual([SUPABASE_MIGRATIONS_DIR])
+  })
+})
+
+/**
+ * Issue #800: 非加法的migrationの機械的ブロックガード。
+ * shouldBlockNonAdditive は pending の migration ファイルを実読するため、
+ * 一時ディレクトリにファイルを作って検証する（db-migrate-core.test.ts と同じ流儀）。
+ */
+describe('shouldBlockNonAdditive (Issue #800)', () => {
+  let tmpDir: string
+
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  function makePending(files: Record<string, string>) {
+    tmpDir = mkdtempSync(join(tmpdir(), 'db-migrate-nonadd-'))
+    const pending = []
+    for (const [filename, content] of Object.entries(files)) {
+      writeFileSync(join(tmpDir, filename), content)
+      pending.push({ version: filename.split('_')[0], name: filename, sourceDir: tmpDir, filename })
+    }
+    return { pending }
+  }
+
+  it('非加法的な文を含む pending migration がある場合はブロックする (true)', () => {
+    const state = makePending({
+      '20260901000000_add_column.sql': 'ALTER TABLE users ADD COLUMN IF NOT EXISTS new_col text;',
+      '20260901000001_drop_column.sql': 'ALTER TABLE users DROP COLUMN old_col;',
+    })
+    expect(shouldBlockNonAdditive(state, false)).toBe(true)
+  })
+
+  it('--allow-non-additive 指定時はブロックせず続行する (false)', () => {
+    const state = makePending({
+      '20260901000000_drop_column.sql': 'ALTER TABLE users DROP COLUMN old_col;',
+    })
+    expect(shouldBlockNonAdditive(state, true)).toBe(false)
+  })
+
+  it('非加法的な文が無い pending のみの場合はブロックしない (false)', () => {
+    const state = makePending({
+      '20260901000000_add_column.sql': 'ALTER TABLE users ADD COLUMN IF NOT EXISTS new_col text;',
+    })
+    expect(shouldBlockNonAdditive(state, false)).toBe(false)
+  })
+
+  it('DROP INDEX / DROP CONSTRAINT はブロック対象外（ブロックしない）', () => {
+    const state = makePending({
+      '20260901000000_drop_index.sql': 'DROP INDEX IF EXISTS users_created_idx;',
+      '20260901000001_drop_constraint.sql': 'ALTER TABLE users DROP CONSTRAINT IF EXISTS users_pkey;',
+    })
+    expect(shouldBlockNonAdditive(state, false)).toBe(false)
   })
 })
