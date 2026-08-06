@@ -1,7 +1,18 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import SortedCardGrid from '@/components/SortedCardGrid'
 import type { Card } from '@/types/database'
+
+// ExpandableDescription が useTranslations（next-intl）を使うようになったため（#835）、
+// Provider なしのテストでもキー解決が動くよう next-intl をモックする。
+// このテストの対象（SortedCardGrid）は translations を props で受けるため、
+// モックは ExpandableDescription の「開く/閉じる」だけ解決できれば十分。
+vi.mock('next-intl', () => ({
+  useTranslations: () => (key: string) => {
+    const map: Record<string, string> = { expand: '開く', collapse: '閉じる' }
+    return map[key] ?? key
+  },
+}))
 
 // Issue #395: 未所持カードを視聴者向けに表示するときの「詳細を隠す」モードを検証する。
 // hideUnownedDetails=true のとき、未所持カードは画像が表示されず、プレースホルダーテキスト ("???")

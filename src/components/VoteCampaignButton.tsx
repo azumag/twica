@@ -22,6 +22,8 @@ interface VoteCampaignButtonProps {
 export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignButtonProps) {
   const router = useRouter()
   const tMaintenance = useTranslations('maintenance')
+  const tVote = useTranslations('voteCampaign')
+  const tCommon = useTranslations('common')
   // #694 Stage 6c: dashboard/page.tsxで使われるため dashboard/layout.tsx の
   // MaintenanceStatusProvider配下（Context経由でmode取得）。
   const { mode: maintenanceMode } = useMaintenanceStatus()
@@ -53,7 +55,7 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
       return (
         <div className="mb-8 rounded-xl bg-gray-800/50 border border-gray-600/50 p-4">
           <p className="text-sm text-gray-300">
-            キャンペーンパネルを非表示にしました。再表示したい場合は、右上の歯車アイコン（ユーザ設定ページ）から設定できます。
+            {tVote('hiddenNotice')}
           </p>
         </div>
       )
@@ -90,13 +92,13 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
           const data = await response.json()
           // maintenance mode による503拒否ならサーバーの案内文言を優先する。
           const maintenanceError = parseMaintenanceError(response, data)
-          setError(maintenanceError?.message || data.error || 'エラーが発生しました')
+          setError(maintenanceError?.message || data.error || tVote('errorOccurred'))
         } catch {
-          setError('エラーが発生しました')
+          setError(tVote('errorOccurred'))
         }
       }
     } catch {
-      setError('ネットワークエラーが発生しました')
+      setError(tCommon('networkError'))
     } finally {
       setIsLoading(false)
     }
@@ -113,7 +115,7 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
     return (
       <div className="mb-8 rounded-xl bg-gradient-to-r from-green-900/50 to-emerald-900/50 border border-green-600/50 p-6">
         <p className="text-sm font-medium text-green-300">
-          +{bonusMb}MB のストレージボーナスが適用されました！
+          {tVote('bonusApplied', { bonusMb })}
         </p>
       </div>
     )
@@ -122,11 +124,10 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
   return (
     <div className="mb-8 rounded-xl bg-gradient-to-r from-pink-900/50 to-purple-900/50 border border-pink-600/50 p-6">
       <h3 className="mb-2 text-lg font-semibold text-white">
-        選挙行ったよ/行こうかな キャンペーン
+        {tVote('title')}
       </h3>
-      <p className="mb-3 text-sm text-gray-300">
-        ボタンを押すと画像アップロード容量が +{bonusMb}MB されます（1回限り）<br />
-        ※ 現在チャネルポイントが使えないユーザ様でも、将来アフィリエイト・パートナーになった際に容量追加されます。
+      <p className="mb-3 text-sm text-gray-300 whitespace-pre-line">
+        {tVote('description', { bonusMb })}
       </p>
 
       {error && (
@@ -163,19 +164,19 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
                 d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
               />
             </svg>
-            処理中...
+            {tVote('processing')}
           </>
         ) : (
-          '選挙行ったよ/行こうかな'
+          tVote('buttonLabel')
         )}
       </button>
 
       <div className="mt-4 space-y-2 text-xs text-gray-400 leading-relaxed">
         <p>
-          ＊ 投票済証の提示など証拠を求めることはありません。投票したか否かを確認するためのものではありません。また、現在選挙権のない方でも、将来得ることがあれば投票行こうかな、と思って頂ければ、どなたでもOKです。
+          {tVote('noteVoting')}
         </p>
         <p>
-          ＊ 本応援は、投票率が上がって欲しいな、という思いで開催しております。特定の政党や候補者を応援するものではありません。
+          {tVote('notePurpose')}
         </p>
       </div>
 
@@ -185,7 +186,7 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
           onClick={handleDismiss}
           className="text-xs text-gray-500 underline hover:text-gray-400 transition"
         >
-          今後表示しない
+          {tVote('dismiss')}
         </button>
       </div>
     </div>
