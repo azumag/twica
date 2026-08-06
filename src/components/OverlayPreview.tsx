@@ -547,15 +547,15 @@ export default function OverlayPreview({
         // maintenance mode による503拒否ならサーバーの案内文言を優先する。
         const maintenanceError = parseMaintenanceError(response, errorData);
         console.error("Gacha API error:", errorData);
-        alert(`ガチャ実行エラー: ${maintenanceError?.message || errorData.error || "Unknown error"}`);
+        alert(t("gachaError", { msg: maintenanceError?.message || errorData.error || "Unknown error" }));
       }
     } catch (error) {
       console.error("Failed to execute gacha:", error);
-      alert("ガチャ実行に失敗しました");
+      alert(t("gachaFailed"));
     } finally {
       setIsExecuting(false);
     }
-  }, [streamerId, isExecuting, isMaintenanceBlocked, tMaintenance]);
+  }, [streamerId, isExecuting, isMaintenanceBlocked, tMaintenance, t]);
 
   // オプションの切り替え
   const toggleOption = (key: keyof OverlayOptions) => {
@@ -893,7 +893,7 @@ export default function OverlayPreview({
               onChange={(e) => setSelectedCardId(e.target.value)}
               className="rounded-lg bg-gray-700 px-3 py-2 text-sm text-white border border-gray-600 focus:border-purple-500 focus:outline-none min-w-[200px]"
             >
-              <option value="random">ランダム</option>
+              <option value="random">{t("random")}</option>
               {activeCards.map((card) => (
                 <option key={card.id} value={card.id}>
                   {card.name} ({card.rarity})
@@ -950,7 +950,7 @@ export default function OverlayPreview({
                   : "bg-green-600 hover:bg-green-700"
               }`}
             >
-              {isExecuting ? "実行中..." : "実際に引く"}
+              {isExecuting ? t("executing") : t("actuallyDraw")}
             </button>
           )}
         </div>
@@ -970,7 +970,7 @@ export default function OverlayPreview({
       {/* Explanation for preview environment */}
       {isPreviewEnvironment && activeCards.length > 0 && (
         <p className="text-xs text-gray-500 mt-1">
-          ※「実際に引く」はプレビュー環境専用です。DBに記録され、履歴に残ります。
+          {t("previewDrawNote")}
         </p>
       )}
 

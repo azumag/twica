@@ -447,8 +447,9 @@ export const STORAGE_LIMIT_MESSAGES = {
   // User limit message: increased to 10MB
   // ユーザー制限メッセージ: 10MBに増加
   USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。',
-  // Global limit message: kept for backwards compatibility but no longer used
-  // グローバル制限メッセージ: 後方互換性のために残すが使用されない
+  // 後方互換のため維持。クライアントは code フィールドで t() 解決するため、この文言は
+  // サーバーフォールバック（未知のクライアント等）でしか表示されない
+  // （#835: 英語ロケールでも制限理由を表示できるよう、APIの error 文言は最終手段）。
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
 } as const
 

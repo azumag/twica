@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useTranslations } from "next-intl";
 
 interface ExpandableDescriptionProps {
   description: string;
@@ -30,6 +31,7 @@ export default function ExpandableDescription({
   // テキストサイズに基づくクラス
   // Classes based on text size
   const textSizeClass = size === "xs" ? "text-xs text-gray-400" : "text-sm text-gray-300";
+  const tCommon = useTranslations("common");
   const [isExpanded, setIsExpanded] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
   const textRef = useRef<HTMLParagraphElement>(null);
@@ -87,7 +89,7 @@ export default function ExpandableDescription({
           className="text-xs text-purple-400 hover:text-purple-300 mt-1 flex items-center gap-1"
         >
           <span>▼</span>
-          <span>開く</span>
+          <span>{tCommon("expand")}</span>
         </button>
       )}
       {/* 折りたたみインジケーター（展開時のみ表示） */}
@@ -98,7 +100,7 @@ export default function ExpandableDescription({
           className="text-xs text-purple-400 hover:text-purple-300 mt-1 flex items-center gap-1"
         >
           <span>▲</span>
-          <span>閉じる</span>
+          <span>{tCommon("collapse")}</span>
         </button>
       )}
     </div>

@@ -168,6 +168,30 @@ jobs:
       - name: Lint
         run: npm run lint
 
+  lint-i18n:
+    name: Lint i18n (Japanese literals)
+    # PRだけでなく、preview/mainへマージされたpushでも同じガードを実行する。
+    # PR側のイベントが欠落した場合でも、デプロイ対象のコミットで回帰を検出できるようにする。
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ハードコード日本語リテラルの回帰防止（#835）。負債リスト
+      # （scripts/i18n-debt-files.js）に無いファイルで日本語リテラルを追加すると失敗する。
+      - name: Lint i18n
+        run: npm run lint:i18n
+
   migration-order-check:
     name: Migration order check
     if: github.event_name == 'pull_request'

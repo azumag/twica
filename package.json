@@ -8,6 +8,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
+    "lint:i18n": "eslint --config eslint.i18n.config.mjs src",
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
@@ -64,6 +65,7 @@
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.972.0",
     "@cloudflare/workers-types": "4.20260702.1",
+    "@formatjs/icu-messageformat-parser": "^2.11.4",
     "@opennextjs/cloudflare": "^1.16.1",
     "@swc/helpers": "^0.5.23",
     "@tailwindcss/postcss": "^4",
