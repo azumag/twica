@@ -432,3 +432,23 @@ export async function getRateLimitIdentifier(
   const ip = getClientIp(request);
   return `ip:${ip}`;
 }
+
+/**
+ * Convert a rate-limit reset time (epoch ms) into a client-facing retry-after value in seconds.
+ * レート制限のリセット時刻（epochミリ秒）を、クライアント向けの「待機すべき秒数」へ変換する。
+ *
+ * RateLimitResult.reset は `Date.now() + windowMs` の epoch ミリ秒であるため、
+ * 秒単位に変換するには現在時刻（ミリ秒）との差を取ってから 1000 で割る必要がある。
+ * 過去に `Math.floor(Date.now() / 1000)` を直接引く誤った実装があり、
+ * 約 1.7e12 秒（≒5万年）という無意味な値を返していた（issue #786）。
+ *
+ * @param reset - リセット予定時刻（epoch ミリ秒）。省略時のみ fallbackMs 後の時刻とみなす
+ *               （`??` のため明示的な 0 はフォールバックせず 0 秒＝即時再試行許可を意味する）
+ * @param fallbackMs - reset 未指定時のフォールバック待機時間（ミリ秒）
+ * @returns 待機すべき秒数（0 以上にクランプした整数）
+ */
+export function retryAfterSeconds(reset?: number, fallbackMs = 60000): number {
+  const resetTime = reset ?? Date.now() + fallbackMs;
+  // 429 返却時点で reset が過去になっているケース（KV に残った古いカウンタ等）でも負値を返さないようクランプする
+  return Math.max(0, Math.ceil((resetTime - Date.now()) / 1000));
+}

@@ -8,7 +8,7 @@ import {
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { logger } from "@/lib/logger.server";
-import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
@@ -150,7 +150,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json<ApiRateLimitResponse>(
       {
         error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
+        retryAfter: retryAfterSeconds(rateLimitResult.reset)
       },
       {
         status: 429,

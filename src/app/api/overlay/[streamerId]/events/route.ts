@@ -5,6 +5,7 @@ import {
   checkRateLimit,
   getRateLimitIdentifier,
   rateLimits,
+  retryAfterSeconds,
 } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import type { Rarity } from "@/types/database";
@@ -276,8 +277,7 @@ export async function GET(
       return NextResponse.json<ApiRateLimitResponse>(
         {
           error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-          retryAfter:
-            (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000),
+          retryAfter: retryAfterSeconds(rateLimitResult.reset),
         },
         {
           status: 429,
