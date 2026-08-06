@@ -462,7 +462,7 @@ export default function ChannelPointSettings({
         }
       } else if (eventSubData.warning) {
         // 警告状態：サブスクリプションの確認が必要
-        setMessage(eventSubData.message || "状態を確認してください");
+        setMessage(eventSubData.message || t("messages.checkStatus"));
         setEventSubStatus("pending");
         setRegistrationFailed(false);
         setSavedMainRewardId(selectedRewardId);
@@ -897,7 +897,7 @@ export default function ChannelPointSettings({
     <p className="mt-1 text-xs text-gray-500">
       {t("collections.premiumLocked")}
       <a href="/plans" className="ml-1 text-purple-400 hover:text-purple-300 underline">
-        支援特典について
+        {tCommon("supportPlanInfo")}
       </a>
     </p>
   );
@@ -995,108 +995,108 @@ export default function ChannelPointSettings({
                              ? "text-red-400"
                              : "text-yellow-400"
                        }>
-                         {/* Display user-friendly status text */}
-                         {/* ユーザーフレンドリーなステータステキストを表示 */}
-                         {sub.status === "enabled"
-                           ? "有効"
-                           : sub.status === "webhook_callback_verification_pending"
-                             ? "接続確認中"
-                             : ["webhook_callback_verification_failed", "notification_failures_exceeded", "authorization_revoked"].includes(sub.status)
-                               ? "失敗：時間をおいて再設定してください"
-                               : sub.status}
-                       </span>
-                     </div>
-                     {/* Explanation for pending verification status */}
-                     {/* 検証待ち状態の説明 */}
-                     {sub.status === "webhook_callback_verification_pending" && (
-                       <div className="mt-1 rounded bg-yellow-500/10 p-2 text-xs text-yellow-300">
-                         <p className="font-medium">Webhook検証待ち</p>
-                         <p className="mt-1 text-yellow-400/80">
-                           TwitchがWebhookエンドポイントの検証を試みています。
-                           通常は数秒〜数分で完了します。
-                         </p>
-                         <ul className="mt-1 list-inside list-disc text-yellow-400/70">
-                           <li>サーバーが正常に動作しているか確認してください</li>
-                           <li>しばらく待ってから「更新」ボタンを押してください</li>
-                           <li>解決しない場合は、報酬を再設定してみてください</li>
-                         </ul>
-                       </div>
-                     )}
-                     {/* Explanation for failed verification status */}
-                     {/* 検証失敗状態の説明 */}
-                     {sub.status === "webhook_callback_verification_failed" && (
-                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
-                         <p className="font-medium">Webhook検証失敗</p>
-                         <p className="mt-1 text-red-400/80">
-                           TwitchからのWebhook検証に失敗しました。
-                         </p>
-                         <ul className="mt-1 list-inside list-disc text-red-400/70">
-                           <li>サーバーが外部からアクセス可能か確認してください</li>
-                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
-                         </ul>
-                       </div>
-                     )}
-                     {/* Explanation for notification failures exceeded */}
-                     {/* 通知失敗超過の説明 */}
-                     {sub.status === "notification_failures_exceeded" && (
-                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
-                         <p className="font-medium">通知失敗が多発</p>
-                         <p className="mt-1 text-red-400/80">
-                           Twitchからの通知が何度も失敗したため、サブスクリプションが無効化されました。
-                         </p>
-                         <ul className="mt-1 list-inside list-disc text-red-400/70">
-                           <li>サーバーの状態を確認してください</li>
-                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
-                         </ul>
-                       </div>
-                     )}
-                     {/* Explanation for authorization revoked */}
-                     {/* 認証取り消しの説明 */}
-                     {sub.status === "authorization_revoked" && (
-                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
-                         <p className="font-medium">認証が取り消されました</p>
-                         <p className="mt-1 text-red-400/80">
-                           Twitchの認証が取り消されたため、サブスクリプションが無効化されました。
-                         </p>
-                         <ul className="mt-1 list-inside list-disc text-red-400/70">
-                           <li>再度ログインしてください</li>
-                           <li>「保存 & EventSub登録」ボタンで再登録してください</li>
-                         </ul>
-                       </div>
-                     )}
-                     {/* Callback URL mismatch warning */}
-                     {/* Callback URL不一致の警告 */}
-                     {sub.debug && !sub.debug.callbackMatch && (
-                       <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
-                         <p className="font-medium">Callback URL不一致</p>
-                         <p className="mt-1 text-red-400/80">
-                           登録されているCallback URLと現在のアプリURLが一致しません。
-                           EventSubを再登録してください。
-                         </p>
-                         <p className="mt-1 text-red-400/60 break-all">
-                           現在: {sub.transport?.callback || "不明"}
-                         </p>
-                         <p className="text-red-400/60 break-all">
-                           期待: {sub.debug.expectedCallbackUrl}
-                         </p>
-                       </div>
-                     )}
-                   </div>
-                 ))}
-               </div>
-             ) : registrationFailed ? (
-               /* Registration failed - webhook unreachable */
-               /* 登録失敗 - Webhookに到達できなかった */
-               <div className="rounded bg-red-500/10 p-3 text-xs text-red-300">
-                 <p className="font-medium">接続失敗</p>
-                 <p className="mt-1 text-red-400/80">
-                   EventSubの登録に失敗しました。Webhookエンドポイントに到達できませんでした。
-                 </p>
-                 <ul className="mt-1 list-inside list-disc text-red-400/70">
-                   <li>サーバーが外部からアクセス可能か確認してください</li>
-                   <li>時間をおいて「保存 & EventSub登録」ボタンで再登録してください</li>
-                 </ul>
-               </div>
+                          {/* Display user-friendly status text */}
+                          {/* ユーザーフレンドリーなステータステキストを表示 */}
+                          {sub.status === "enabled"
+                            ? t("eventSubStatus.enabled")
+                            : sub.status === "webhook_callback_verification_pending"
+                              ? t("eventSubStatus.pending")
+                              : ["webhook_callback_verification_failed", "notification_failures_exceeded", "authorization_revoked"].includes(sub.status)
+                                ? t("eventSubStatus.failed")
+                                : sub.status}
+                        </span>
+                      </div>
+                      {/* Explanation for pending verification status */}
+                      {/* 検証待ち状態の説明 */}
+                      {sub.status === "webhook_callback_verification_pending" && (
+                        <div className="mt-1 rounded bg-yellow-500/10 p-2 text-xs text-yellow-300">
+                          <p className="font-medium">{t("eventSubStatus.pendingTitle")}</p>
+                          <p className="mt-1 text-yellow-400/80">
+                            {t("eventSubStatus.pendingDescription")}
+                          </p>
+                          <ul className="mt-1 list-inside list-disc text-yellow-400/70">
+                            <li>{t("eventSubStatus.pendingItem1")}</li>
+                            <li>{t("eventSubStatus.pendingItem2")}</li>
+                            <li>{t("eventSubStatus.pendingItem3")}</li>
+                          </ul>
+                        </div>
+                      )}
+                      {/* Explanation for failed verification status */}
+                      {/* 検証失敗状態の説明 */}
+                      {sub.status === "webhook_callback_verification_failed" && (
+                        <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                          <p className="font-medium">{t("eventSubStatus.verificationFailedTitle")}</p>
+                          <p className="mt-1 text-red-400/80">
+                            {t("eventSubStatus.verificationFailedDescription")}
+                          </p>
+                          <ul className="mt-1 list-inside list-disc text-red-400/70">
+                            <li>{t("eventSubStatus.verificationFailedItem1")}</li>
+                            <li>{t("eventSubStatus.verificationFailedItem2")}</li>
+                          </ul>
+                        </div>
+                      )}
+                      {/* Explanation for notification failures exceeded */}
+                      {/* 通知失敗超過の説明 */}
+                      {sub.status === "notification_failures_exceeded" && (
+                        <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                          <p className="font-medium">{t("eventSubStatus.notificationFailuresTitle")}</p>
+                          <p className="mt-1 text-red-400/80">
+                            {t("eventSubStatus.notificationFailuresDescription")}
+                          </p>
+                          <ul className="mt-1 list-inside list-disc text-red-400/70">
+                            <li>{t("eventSubStatus.notificationFailuresItem1")}</li>
+                            <li>{t("eventSubStatus.notificationFailuresItem2")}</li>
+                          </ul>
+                        </div>
+                      )}
+                      {/* Explanation for authorization revoked */}
+                      {/* 認証取り消しの説明 */}
+                      {sub.status === "authorization_revoked" && (
+                        <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                          <p className="font-medium">{t("eventSubStatus.authorizationRevokedTitle")}</p>
+                          <p className="mt-1 text-red-400/80">
+                            {t("eventSubStatus.authorizationRevokedDescription")}
+                          </p>
+                          <ul className="mt-1 list-inside list-disc text-red-400/70">
+                            <li>{t("eventSubStatus.authorizationRevokedItem1")}</li>
+                            <li>{t("eventSubStatus.authorizationRevokedItem2")}</li>
+                          </ul>
+                        </div>
+                      )}
+                      {/* Callback URL mismatch warning */}
+                      {/* Callback URL不一致の警告 */}
+                      {sub.debug && !sub.debug.callbackMatch && (
+                        <div className="mt-1 rounded bg-red-500/10 p-2 text-xs text-red-300">
+                          <p className="font-medium">{t("eventSubStatus.callbackMismatchTitle")}</p>
+                          <p className="mt-1 text-red-400/80">
+                            {t("eventSubStatus.callbackMismatchDescription")}
+                          </p>
+                          <p className="mt-1 text-red-400/60 break-all">
+                            {t("eventSubStatus.callbackMismatchCurrent", {
+                              callback: sub.transport?.callback || t("eventSubStatus.unknown"),
+                            })}
+                          </p>
+                          <p className="text-red-400/60 break-all">
+                            {t("eventSubStatus.callbackMismatchExpected", { url: sub.debug.expectedCallbackUrl })}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : registrationFailed ? (
+                /* Registration failed - webhook unreachable */
+                /* 登録失敗 - Webhookに到達できなかった */
+                <div className="rounded bg-red-500/10 p-3 text-xs text-red-300">
+                  <p className="font-medium">{t("eventSubStatus.registrationFailedTitle")}</p>
+                  <p className="mt-1 text-red-400/80">
+                    {t("eventSubStatus.registrationFailedDescription")}
+                  </p>
+                  <ul className="mt-1 list-inside list-disc text-red-400/70">
+                    <li>{t("eventSubStatus.registrationFailedItem1")}</li>
+                    <li>{t("eventSubStatus.registrationFailedItem2")}</li>
+                  </ul>
+                </div>
              ) : (
                <p className="text-xs text-gray-500">
                  {t("form.noSubscriptions")}

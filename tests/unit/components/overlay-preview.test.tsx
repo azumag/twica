@@ -31,6 +31,7 @@ const messages = {
     demoHelpTitle: 'デモの種類',
     close: '閉じる',
     demoNote: 'デモノート',
+    random: 'ランダム',
     urlUpdated: 'オーバーレイURLが更新されました',
     collectionUrl: 'コレクションページURL',
     collectionUrlDescription: 'コレクションページです。',

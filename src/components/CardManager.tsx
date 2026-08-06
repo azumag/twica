@@ -654,17 +654,17 @@ export default function CardManager({
       });
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "エモートの取得に失敗しました");
+        throw new Error(error.error || t("emoteImport.fetchFailed"));
       }
       const data: TwitchEmote[] = await response.json();
       setEmotes(data);
     } catch (error) {
       logger.error("Failed to fetch emotes:", error);
-      setEmoteError(error instanceof Error ? error.message : "エモートの取得に失敗しました");
+      setEmoteError(error instanceof Error ? error.message : t("emoteImport.fetchFailed"));
     } finally {
       setLoadingEmotes(false);
     }
-  }, []);
+  }, [t]);
 
   /**
    * Get emotes that don't already exist as cards (by name comparison)
@@ -725,7 +725,7 @@ export default function CardManager({
         imageUrl: emote.imageUrl,
         rarity: emoteDefaultRarity,
         dropRate: emoteDefaultDropRate,
-        description: `Twitchエモート: ${emote.name}`,
+        description: t("emoteImport.cardDescriptionFromEmote", { name: emote.name }),
       }));
 
       const response = await fetch("/api/cards/batch", {
@@ -747,7 +747,7 @@ export default function CardManager({
         // {code, message, ...}オブジェクトのままError.messageへ文字列化され
         // "[object Object]"表示になっていた）。
         const maintenanceError = parseMaintenanceError(response, error);
-        throw new Error(maintenanceError?.message || error.error || "カードの作成に失敗しました");
+        throw new Error(maintenanceError?.message || error.error || t("emoteImport.createFailed"));
       }
 
       const result = await response.json();
@@ -769,7 +769,7 @@ export default function CardManager({
       setSelectedEmotes(new Set());
     } catch (error) {
       logger.error("Failed to create cards from emotes:", error);
-      setEmoteError(error instanceof Error ? error.message : "カードの作成に失敗しました");
+      setEmoteError(error instanceof Error ? error.message : t("emoteImport.createFailed"));
     } finally {
       setCreatingCards(false);
     }
@@ -1391,7 +1391,16 @@ export default function CardManager({
           // ストレージ制限エラーを処理 (507)
           if (uploadResponse.status === 507) {
             const errorData = await uploadResponse.json();
-            setUploadError(errorData.error);
+            // API はロケール依存の日本語文言を error に、機械判別用の code を返す
+            // （#835: 英語ロケールでも制限理由を表示できるよう、クライアント側で t() 解決する）。
+            // 未知の code は従来どおりサーバー文言へフォールバックする。
+            setUploadError(
+              errorData.code === "GLOBAL_LIMIT_REACHED"
+                ? t("messages.globalLimitReached")
+                : errorData.code === "USER_LIMIT_REACHED"
+                  ? t("messages.userLimitReached")
+                  : errorData.error
+            );
             fetchStorageStatus(); // Refresh storage status
             setSaving(false);
             return;
@@ -1473,7 +1482,7 @@ export default function CardManager({
         // フォールバック表示。#694 Stage 6bの要求「fetch失敗時のエラー表示」）。
         const maintenanceError = parseMaintenanceError(response, errorData);
         setUploadError(
-          maintenanceError?.message || errorData.error || `エラーが発生しました (${response.status})`
+          maintenanceError?.message || errorData.error || t("messages.errorOccurred", { status: response.status })
         );
         logger.error("Failed to save card:", errorData);
       }
@@ -1507,7 +1516,7 @@ export default function CardManager({
         // #694 Stage 6bレビュー指摘対応: maintenance mode による503拒否なら
         // サーバーの案内文言を優先する（他の書き込み経路と同じパターン）。
         const maintenanceError = parseMaintenanceError(response, errorData);
-        alert(`操作に失敗しました: ${maintenanceError?.message || errorData.error}`);
+        alert(t("messages.operationFailed", { msg: maintenanceError?.message || errorData.error }));
         logger.error("Toggle active failed:", errorData);
       } else {
         const responseData = await response.json();
@@ -1528,13 +1537,13 @@ export default function CardManager({
     } catch (error) {
       setCards(originalCards);
       logger.error("Failed to toggle card active:", error);
-      alert("ネットワークエラーが発生しました");
+      alert(tCommon("networkError"));
     }
   };
 
   // 全体削除（手持ちからも削除）
   const handleDelete = async (cardId: string) => {
-    if (!confirm("このカードを完全に削除しますか？\n\n⚠️ 既にこのカードを持っているユーザーの手持ちからも削除されます。")) return;
+    if (!confirm(t("confirmations.fullDeleteCard"))) return;
 
     const originalCards = cards;
     try {
@@ -1581,6 +1590,16 @@ export default function CardManager({
   };
 
   const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
+
+  // storage-status API の message はロケール依存の日本語文言が直に来るため、
+  // 機械判別用フラグから t() で解決した文言を表示に使う（#835: 英語ロケールでも
+  // 制限理由を表示できるようにする）。フラグが立っていない場合は null（表示なし）。
+  const storageLimitMessage = () => {
+    if (storageStatus?.planOverLimit) return t("messages.planOverLimit");
+    if (storageStatus?.globalLimitReached) return t("messages.globalLimitReached");
+    if (storageStatus?.userLimitReached) return t("messages.userLimitReached");
+    return null;
+  };
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
@@ -1644,10 +1663,10 @@ export default function CardManager({
         <div className="mb-4 rounded-lg bg-red-500/10 border border-red-500/30 p-4">
           <p className="font-medium text-red-300 mb-1">{t("messages.uploadLimited")}</p>
           <p className="text-sm text-red-400/80">
-            {storageStatus.message}
+            {storageLimitMessage()}
           </p>
           <a href="/plans" className="mt-2 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
-            支援特典について
+            {tCommon("supportPlanInfo")}
           </a>
         </div>
       )}
@@ -1665,12 +1684,12 @@ export default function CardManager({
       {/* ストレージ使用量をパネルレベルで表示 */}
       {storageStatus && (
         <div className="mb-6">
-          {storageStatus.uploadDisabled && storageStatus.message && !storageStatus.planOverLimit ? (
+          {storageStatus.uploadDisabled && !storageStatus.planOverLimit ? (
             <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-3 text-sm text-yellow-300">
               <p className="font-medium mb-1">{t("messages.uploadLimited")}</p>
-              <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message}</p>
+              <p className="text-yellow-400/80 text-xs leading-relaxed">{storageLimitMessage()}</p>
               <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
-                支援特典について
+                {tCommon("supportPlanInfo")}
               </a>
             </div>
           ) : (
@@ -1699,9 +1718,9 @@ export default function CardManager({
           {/* 容量制限の説明テキスト: ?アイコンクリックで表示/非表示を切り替え */}
           {showStorageHelp && !storageStatus.uploadDisabled && (
             <div className="mt-2">
-              <p className="text-yellow-400/80 text-xs leading-relaxed">{storageStatus.message || t("messages.storageLimitReason")}</p>
+              <p className="text-yellow-400/80 text-xs leading-relaxed">{storageLimitMessage() || t("messages.storageLimitReason")}</p>
               <a href="/plans" className="mt-1 inline-block text-xs text-purple-400 hover:text-purple-300 underline">
-                支援特典について
+                {tCommon("supportPlanInfo")}
               </a>
             </div>
           )}
@@ -2107,7 +2126,7 @@ export default function CardManager({
                     if (!stats) return null;
                     return (
                       <span className="flex items-center gap-2 text-xs text-gray-400 shrink-0">
-                        <span>{getRarityLabel(formData.rarity)}内: <span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
+                        <span>{t("form.intraPercentLabel", { rarity: getRarityLabel(formData.rarity) })}<span className="text-white">{stats.intraPercent.toFixed(0)}%</span></span>
                         <span className="text-gray-500">→</span>
                         <span>{t("form.overallDropRate")}: <span className="text-green-400">{stats.overallPercent.toFixed(1)}%</span></span>
                       </span>

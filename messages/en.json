@@ -14,7 +14,11 @@
     "refresh": "Refresh",
     "copy": "Copy",
     "copied": "Copied",
-    "noImage": "No Image"
+    "noImage": "No Image",
+    "networkError": "A network error occurred",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "supportPlanInfo": "Support plan details"
   },
   "auth": {
     "twitchLogin": "Login with Twitch",
@@ -86,7 +90,8 @@
       "resolutionStandard": "Standard (800px)",
       "resolutionFullHd": "Full HD (1920px)",
       "resolution4k": "4K (3840px)",
-      "previewPoolLabel": "Probability within the \"{pack}\" pack"
+      "previewPoolLabel": "Probability within the \"{pack}\" pack",
+      "intraPercentLabel": "Within {rarity}: "
     },
     "fileUpload": {
       "formats": "Supported: JPEG, PNG, GIF, WebP | ",
@@ -113,6 +118,9 @@
       "errorOccurred": "An error occurred ({status})",
       "uploadLimited": "Upload feature is limited",
       "imageUsage": "Image usage: {usage} / {limit}",
+      "userLimitReached": "The image upload limit is currently 10MB per account. If you exceed the limit, please delete existing images and try again.",
+      "globalLimitReached": "The image upload limit has been reached.",
+      "planOverLimit": "Storage capacity exceeded. Please upgrade your support plan or delete images.",
       "storageLimitReason": "Image Upload Storage Notice\n\nThe current image storage limit is 10MB per account. If you exceed the limit, please delete unnecessary images or consider using URLs to reference images stored on external services (URL references do not count toward the storage limit).\n\nWe are grateful that more users than expected are enjoying the service. This storage limit is a necessary measure to keep the service free. We appreciate your understanding. If we receive many requests for increased storage, we will consider introducing paid plans in the future.",
       "refreshing": "Refreshing",
       "descriptionTooLong": "Description must be {max} characters or fewer.",
@@ -317,7 +325,8 @@
       "defaultWeight": "Default Weight: {weight}%",
       "createCards": "Create {count} cards",
       "fetchFailed": "Failed to fetch emotes",
-      "createFailed": "Failed to create cards"
+      "createFailed": "Failed to create cards",
+      "cardDescriptionFromEmote": "Twitch emote: {name}"
     }
   },
   "rarityProbability": {
@@ -596,7 +605,8 @@
       "scopeRequired": "To enable the Channel Points integration, please grant Twitch permission to read and manage your channel point redemptions.",
       "reauthorizeFailed": "Re-authentication failed. Please try again later.",
       "channelPointsUnavailable": "Channel Points are not currently available on Twitch for this channel. Please check your monetization onboarding and Channel Points settings in the Twitch Creator Dashboard.",
-      "temporarilyUnavailable": "Temporarily unable to check with Twitch. Please try again shortly."
+      "temporarilyUnavailable": "Temporarily unable to check with Twitch. Please try again shortly.",
+      "checkStatus": "Please check the status"
     },
     "form": {
       "selectReward": "Select the channel point redemption that triggers card draws",
@@ -672,6 +682,37 @@
       "missing": "{name} (removed from Pack Management; the current binding is kept)",
       "premiumLocked": "Card Pack (supporter plan feature)",
       "packHint": "Register pack names from \"Pack Management\" in card management"
+    },
+    "eventSubStatus": {
+      "enabled": "Enabled",
+      "pending": "Verifying connection",
+      "failed": "Failed: please reconfigure later",
+      "pendingTitle": "Webhook verification pending",
+      "pendingDescription": "Twitch is attempting to verify the webhook endpoint. This usually completes within seconds to minutes.",
+      "pendingItem1": "Check that the server is running properly",
+      "pendingItem2": "Wait a moment and press the \"Refresh\" button",
+      "pendingItem3": "If it does not resolve, try reconfiguring the reward",
+      "verificationFailedTitle": "Webhook verification failed",
+      "verificationFailedDescription": "Twitch could not verify the webhook.",
+      "verificationFailedItem1": "Check that the server is accessible from the outside",
+      "verificationFailedItem2": "Re-register with the \"Save & Register EventSub\" button",
+      "notificationFailuresTitle": "Too many notification failures",
+      "notificationFailuresDescription": "The subscription was disabled because Twitch notifications failed repeatedly.",
+      "notificationFailuresItem1": "Check the server status",
+      "notificationFailuresItem2": "Re-register with the \"Save & Register EventSub\" button",
+      "authorizationRevokedTitle": "Authorization revoked",
+      "authorizationRevokedDescription": "The subscription was disabled because Twitch authorization was revoked.",
+      "authorizationRevokedItem1": "Please log in again",
+      "authorizationRevokedItem2": "Re-register with the \"Save & Register EventSub\" button",
+      "callbackMismatchTitle": "Callback URL mismatch",
+      "callbackMismatchDescription": "The registered callback URL does not match the current app URL. Please re-register EventSub.",
+      "callbackMismatchCurrent": "Current: {callback}",
+      "callbackMismatchExpected": "Expected: {url}",
+      "unknown": "Unknown",
+      "registrationFailedTitle": "Connection failed",
+      "registrationFailedDescription": "EventSub registration failed. The webhook endpoint could not be reached.",
+      "registrationFailedItem1": "Check that the server is accessible from the outside",
+      "registrationFailedItem2": "Re-register later with the \"Save & Register EventSub\" button"
     }
   },
   "gachaHistory": {
@@ -753,7 +794,13 @@
     "demoNote": "* DEMO button shows your configured cards. Demo cards are shown if you have no cards.",
     "urlUpdated": "Overlay URL has been updated",
     "collectionUrl": "Collection Page URL",
-    "collectionUrlDescription": "A page where viewers can view their collection from this streamer. Share it on chat or social media."
+    "collectionUrlDescription": "A page where viewers can view their collection from this streamer. Share it on chat or social media.",
+    "random": "Random",
+    "gachaError": "Gacha execution error: {msg}",
+    "gachaFailed": "Failed to execute gacha",
+    "executing": "Executing...",
+    "actuallyDraw": "Draw for real",
+    "previewDrawNote": "* \"Draw for real\" is only available in the preview environment. It will be recorded in the DB and appear in history."
   },
   "settingsPage": {
     "title": "Stream Settings",
@@ -1383,5 +1430,17 @@
       "enableFailed": "Failed to enable. Please try again later.",
       "genericError": "An error occurred. Please try again later."
     }
+  },
+  "voteCampaign": {
+    "errorOccurred": "An error occurred",
+    "hiddenNotice": "The campaign panel has been hidden. To show it again, you can enable it from the gear icon (user settings page) in the top right.",
+    "bonusApplied": "+{bonusMb}MB storage bonus applied!",
+    "title": "\"I Voted / Thinking of Voting\" Campaign",
+    "description": "Pressing the button adds +{bonusMb}MB to your image upload capacity (once only)\n* Even if Channel Points are not currently available to you, capacity will be added if you become an Affiliate or Partner in the future.",
+    "processing": "Processing...",
+    "buttonLabel": "I voted / Thinking of voting",
+    "noteVoting": "* We do not ask for proof of voting or anything similar, and this is not for verifying whether you voted. Anyone is welcome, even if you do not currently have voting rights but may gain them in the future.",
+    "notePurpose": "* This campaign is run with the hope of increasing voter turnout. It is not intended to support any particular political party or candidate.",
+    "dismiss": "Don't show again"
   }
 }

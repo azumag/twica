@@ -14,7 +14,11 @@
     "refresh": "更新",
     "copy": "コピー",
     "copied": "コピーしました",
-    "noImage": "No Image"
+    "noImage": "No Image",
+    "networkError": "ネットワークエラーが発生しました",
+    "expand": "開く",
+    "collapse": "閉じる",
+    "supportPlanInfo": "支援特典について"
   },
   "auth": {
     "twitchLogin": "Twitchでログイン",
@@ -86,7 +90,8 @@
       "resolutionStandard": "標準 (800px)",
       "resolutionFullHd": "Full HD (1920px)",
       "resolution4k": "4K (3840px)",
-      "previewPoolLabel": "「{pack}」パック内での確率"
+      "previewPoolLabel": "「{pack}」パック内での確率",
+      "intraPercentLabel": "{rarity}内: "
     },
     "fileUpload": {
       "formats": "対応形式: JPEG, PNG, GIF, WebP | ",
@@ -113,6 +118,9 @@
       "errorOccurred": "エラーが発生しました ({status})",
       "uploadLimited": "アップロード機能が制限されています",
       "imageUsage": "画像使用量: {usage} / {limit}",
+      "userLimitReached": "画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。",
+      "globalLimitReached": "画像のアップロード上限に達しました。",
+      "planOverLimit": "ストレージ容量を超過しています。支援特典をアップグレードするか、画像を削除してください。",
       "storageLimitReason": "画像アップロード容量に関するご案内\n\n現在、1アカウントあたりの画像容量上限は10MBとなっております。上限を超える場合は、不要な画像を削除していただくか、外部ストレージに保存した画像のURL引用をご検討ください（URL参照の場合は容量制限に含まれません）。\n\n予想を上回る多くの方にご利用いただいており、無料サービスを継続するための苦渋の措置となります。何卒ご理解いただけますと幸いです。なお、支援特典により容量を拡張できます。詳しくは「支援特典について」をご確認ください。",
       "refreshing": "更新中",
       "descriptionTooLong": "説明は{max}文字以内で入力してください。",
@@ -317,7 +325,8 @@
       "defaultWeight": "デフォルト重み: {weight}%",
       "createCards": "{count}件のカードを作成",
       "fetchFailed": "エモートの取得に失敗しました",
-      "createFailed": "カードの作成に失敗しました"
+      "createFailed": "カードの作成に失敗しました",
+      "cardDescriptionFromEmote": "Twitchエモート: {name}"
     }
   },
   "rarityProbability": {
@@ -596,7 +605,8 @@
       "scopeRequired": "チャネルポイント連携を有効化するには、Twitchでチャネルポイント引き換えの読み取り・管理権限の許可が必要です。",
       "reauthorizeFailed": "再認証に失敗しました。時間をおいて再度お試しください。",
       "channelPointsUnavailable": "現在Twitch上でチャネルポイントを利用できません。Twitch Creator Dashboardで収益化オンボーディングとチャネルポイント設定をご確認ください。",
-      "temporarilyUnavailable": "Twitchへの確認に一時的に失敗しました。時間をおいて再試行してください。"
+      "temporarilyUnavailable": "Twitchへの確認に一時的に失敗しました。時間をおいて再試行してください。",
+      "checkStatus": "状態を確認してください"
     },
     "form": {
       "selectReward": "カード引き換えのきっかけにするチャネルポイント引き換えを選択",
@@ -672,6 +682,37 @@
       "missing": "{name}(パック管理で登録解除済み。現在の紐付けは維持されています)",
       "premiumLocked": "カードパック（支援プラン限定機能）",
       "packHint": "パック名はカード管理の「パック管理」から登録できます"
+    },
+    "eventSubStatus": {
+      "enabled": "有効",
+      "pending": "接続確認中",
+      "failed": "失敗：時間をおいて再設定してください",
+      "pendingTitle": "Webhook検証待ち",
+      "pendingDescription": "TwitchがWebhookエンドポイントの検証を試みています。通常は数秒〜数分で完了します。",
+      "pendingItem1": "サーバーが正常に動作しているか確認してください",
+      "pendingItem2": "しばらく待ってから「更新」ボタンを押してください",
+      "pendingItem3": "解決しない場合は、報酬を再設定してみてください",
+      "verificationFailedTitle": "Webhook検証失敗",
+      "verificationFailedDescription": "TwitchからのWebhook検証に失敗しました。",
+      "verificationFailedItem1": "サーバーが外部からアクセス可能か確認してください",
+      "verificationFailedItem2": "「保存 & EventSub登録」ボタンで再登録してください",
+      "notificationFailuresTitle": "通知失敗が多発",
+      "notificationFailuresDescription": "Twitchからの通知が何度も失敗したため、サブスクリプションが無効化されました。",
+      "notificationFailuresItem1": "サーバーの状態を確認してください",
+      "notificationFailuresItem2": "「保存 & EventSub登録」ボタンで再登録してください",
+      "authorizationRevokedTitle": "認証が取り消されました",
+      "authorizationRevokedDescription": "Twitchの認証が取り消されたため、サブスクリプションが無効化されました。",
+      "authorizationRevokedItem1": "再度ログインしてください",
+      "authorizationRevokedItem2": "「保存 & EventSub登録」ボタンで再登録してください",
+      "callbackMismatchTitle": "Callback URL不一致",
+      "callbackMismatchDescription": "登録されているCallback URLと現在のアプリURLが一致しません。EventSubを再登録してください。",
+      "callbackMismatchCurrent": "現在: {callback}",
+      "callbackMismatchExpected": "期待: {url}",
+      "unknown": "不明",
+      "registrationFailedTitle": "接続失敗",
+      "registrationFailedDescription": "EventSubの登録に失敗しました。Webhookエンドポイントに到達できませんでした。",
+      "registrationFailedItem1": "サーバーが外部からアクセス可能か確認してください",
+      "registrationFailedItem2": "時間をおいて「保存 & EventSub登録」ボタンで再登録してください"
     }
   },
   "gachaHistory": {
@@ -753,7 +794,13 @@
     "demoNote": "※ DEMOボタンで設定されたカードが表示されます。カードがない場合はデモカードが表示されます。",
     "urlUpdated": "オーバーレイURLが更新されました",
     "collectionUrl": "コレクションページURL",
-    "collectionUrlDescription": "視聴者がこの配信者のコレクションを確認できるページです。チャットやSNSで共有できます。"
+    "collectionUrlDescription": "視聴者がこの配信者のコレクションを確認できるページです。チャットやSNSで共有できます。",
+    "random": "ランダム",
+    "gachaError": "ガチャ実行エラー: {msg}",
+    "gachaFailed": "ガチャ実行に失敗しました",
+    "executing": "実行中...",
+    "actuallyDraw": "実際に引く",
+    "previewDrawNote": "※「実際に引く」はプレビュー環境専用です。DBに記録され、履歴に残ります。"
   },
   "settingsPage": {
     "title": "配信設定",
@@ -801,7 +848,10 @@
     "description": "獲得したカードを確認できます。",
     "streamerOwnedCards": "全体所持枚数: {total}枚",
     "streamerCompletionProgress": "コンプリート進捗: {owned}/（全{total}種類）",
-    "progressAria": "コンプリート進捗 {percent}%"
+    "progressAria": "コンプリート進捗 {percent}%",
+    "overallOwnedCards": "全体所持枚数: {total}枚",
+    "overallCompletionProgress": "コンプリート進捗: {owned}/（全{total}種類）",
+    "completionBasisNote": "* コンプリート進捗は現在配布中のカードを基準に計算されています。"
   },
   "languageSwitcher": {
     "label": "言語",
@@ -1380,5 +1430,17 @@
       "enableFailed": "有効化に失敗しました。時間をおいて再試行してください。",
       "genericError": "エラーが発生しました。時間をおいて再試行してください。"
     }
+  },
+  "voteCampaign": {
+    "errorOccurred": "エラーが発生しました",
+    "hiddenNotice": "キャンペーンパネルを非表示にしました。再表示したい場合は、右上の歯車アイコン（ユーザ設定ページ）から設定できます。",
+    "bonusApplied": "+{bonusMb}MB のストレージボーナスが適用されました！",
+    "title": "選挙行ったよ/行こうかな キャンペーン",
+    "description": "ボタンを押すと画像アップロード容量が +{bonusMb}MB されます（1回限り）\n※ 現在チャネルポイントが使えないユーザ様でも、将来アフィリエイト・パートナーになった際に容量追加されます。",
+    "processing": "処理中...",
+    "buttonLabel": "選挙行ったよ/行こうかな",
+    "noteVoting": "＊ 投票済証の提示など証拠を求めることはありません。投票したか否かを確認するためのものではありません。また、現在選挙権のない方でも、将来得ることがあれば投票行こうかな、と思って頂ければ、どなたでもOKです。",
+    "notePurpose": "＊ 本応援は、投票率が上がって欲しいな、という思いで開催しております。特定の政党や候補者を応援するものではありません。",
+    "dismiss": "今後表示しない"
   }
 }
