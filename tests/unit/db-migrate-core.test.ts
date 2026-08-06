@@ -8,6 +8,7 @@ import {
   computeChecksum,
   countEffectiveStatements,
   containsSetLocal,
+  detectNonAdditiveStatements,
   extractCreatedIndexNames,
   extractCreatedIndexDefinitions,
   validateIndexDefinitions,
@@ -172,6 +173,148 @@ describe('containsSetLocal', () => {
 
   it('SET LOCAL を含まないコードは false', () => {
     expect(containsSetLocal('SET statement_timeout = 0;\nSELECT 1;')).toBe(false)
+  })
+})
+
+describe('detectNonAdditiveStatements (Issue #800)', () => {
+  it('DROP COLUMN を検出する（IF EXISTS・大文字小文字・ダブルクォート識別子を含む）', () => {
+    expect(detectNonAdditiveStatements('ALTER TABLE users DROP COLUMN IF EXISTS old_col;')).toEqual([
+      { kind: 'DROP COLUMN', line: 1 },
+    ])
+    expect(detectNonAdditiveStatements('alter table users drop column "old_col";')).toEqual([
+      { kind: 'DROP COLUMN', line: 1 },
+    ])
+  })
+
+  it('RENAME COLUMN / RENAME TO を検出する', () => {
+    expect(detectNonAdditiveStatements('ALTER TABLE users RENAME COLUMN a TO b;')).toEqual([
+      { kind: 'RENAME COLUMN/TABLE', line: 1 },
+    ])
+    expect(detectNonAdditiveStatements('ALTER TABLE users RENAME TO users_archive;')).toEqual([
+      { kind: 'RENAME COLUMN/TABLE', line: 1 },
+    ])
+  })
+
+  it('ALTER COLUMN ... TYPE / SET DATA TYPE を検出する', () => {
+    expect(detectNonAdditiveStatements('ALTER TABLE users ALTER COLUMN id TYPE bigint;')).toEqual([
+      { kind: 'ALTER COLUMN TYPE', line: 1 },
+    ])
+    expect(detectNonAdditiveStatements('ALTER TABLE users ALTER COLUMN id SET DATA TYPE text;')).toEqual([
+      { kind: 'ALTER COLUMN TYPE', line: 1 },
+    ])
+  })
+
+  it('改行を跨ぐ ALTER TABLE の複数行形式でも検出する', () => {
+    const content = ['ALTER TABLE users', '  ALTER COLUMN id TYPE bigint;'].join('\n')
+    expect(detectNonAdditiveStatements(content)).toEqual([{ kind: 'ALTER COLUMN TYPE', line: 2 }])
+  })
+
+  it('スペースを含むクォート付き識別子の ALTER COLUMN TYPE も検出する', () => {
+    expect(detectNonAdditiveStatements('ALTER TABLE users ALTER COLUMN "my col" TYPE text;')).toEqual([
+      { kind: 'ALTER COLUMN TYPE', line: 1 },
+    ])
+  })
+
+  it('DROP TABLE / VIEW / FUNCTION 等のオブジェクト削除を検出する', () => {
+    expect(detectNonAdditiveStatements('DROP TABLE IF EXISTS cards;')).toEqual([
+      { kind: 'DROP TABLE/VIEW/FUNCTION', line: 1 },
+    ])
+    expect(detectNonAdditiveStatements('DROP FUNCTION IF EXISTS public.redeem();')).toEqual([
+      { kind: 'DROP TABLE/VIEW/FUNCTION', line: 1 },
+    ])
+  })
+
+  it('DROP SCHEMA / PROCEDURE / TYPE / EXTENSION / SEQUENCE / DOMAIN も検出する', () => {
+    for (const sql of [
+      'DROP SCHEMA IF EXISTS legacy CASCADE;',
+      'DROP PROCEDURE IF EXISTS public.cleanup();',
+      'DROP TYPE IF EXISTS public.my_enum;',
+      'DROP EXTENSION IF EXISTS pg_trgm;',
+      'DROP SEQUENCE IF EXISTS public.cards_id_seq;',
+      'DROP DOMAIN IF EXISTS public.my_domain;',
+    ]) {
+      expect(detectNonAdditiveStatements(sql)).toEqual([
+        { kind: 'DROP TABLE/VIEW/FUNCTION', line: 1 },
+      ])
+    }
+  })
+
+  it('COLUMN キーワード省略形（ALTER TABLE t DROP c 等）は検知対象外（挙動の固定化）', () => {
+    // PostgreSQL の省略形構文は誤検知を増やすため意図的に検知しない。
+    // 見逃しはレビュー運用でカバーする前提（コメント参照）。挙動をテストで固定する。
+    expect(detectNonAdditiveStatements('ALTER TABLE users DROP old_col;')).toEqual([])
+    expect(detectNonAdditiveStatements('ALTER TABLE users ALTER id TYPE bigint;')).toEqual([])
+  })
+
+  it('TRUNCATE を検出する（RESTART IDENTITY CASCADE を含む）', () => {
+    expect(detectNonAdditiveStatements('TRUNCATE TABLE cards RESTART IDENTITY CASCADE;')).toEqual([
+      { kind: 'TRUNCATE', line: 1 },
+    ])
+    expect(detectNonAdditiveStatements('TRUNCATE cards;')).toEqual([{ kind: 'TRUNCATE', line: 1 }])
+  })
+
+  it('TRUNCATE を識別子として使う SQL（CREATE TABLE truncate 等）は誤検知しない', () => {
+    expect(detectNonAdditiveStatements('CREATE TABLE IF NOT EXISTS truncate (id bigint);')).toEqual([])
+  })
+
+  it('行コメント・ブロックコメント内の言及は検出しない', () => {
+    const content = [
+      '-- DROP COLUMN や RENAME COLUMN は使わない方針（コメント内の言及は誤検知しないこと）',
+      '/* ALTER TABLE users DROP COLUMN old_col; */',
+      'CREATE TABLE IF NOT EXISTS users (id bigint primary key);',
+    ].join('\n')
+    expect(detectNonAdditiveStatements(content)).toEqual([])
+  })
+
+  it('複数行ブロックコメントの後でも行番号が実際の行と一致する', () => {
+    const content = [
+      '/* ブロックコメント1行目',
+      '   ブロックコメント2行目 */',
+      'ALTER TABLE users DROP COLUMN old_col;',
+    ].join('\n')
+    expect(detectNonAdditiveStatements(content)).toEqual([{ kind: 'DROP COLUMN', line: 3 }])
+  })
+
+  it('DO ブロック / 文字列リテラル内の非加法的文は検知する（安全側・挙動の固定化）', () => {
+    // 完全なSQLパーサは持たないため、動的SQL内の文は除去されず検知される。
+    // 安全側（ブロック側）に倒れる挙動をテストで固定する（仕様変更時は要検討）。
+    const content = [
+      "DO $$ BEGIN",
+      "  EXECUTE 'ALTER TABLE users DROP COLUMN old_col';",
+      "END $$;",
+    ].join('\n')
+    expect(detectNonAdditiveStatements(content)).toEqual([{ kind: 'DROP COLUMN', line: 2 }])
+  })
+
+  it('単語の一部が一致するだけの識別子（drop_rate / rename_card_pack 等）は検出しない', () => {
+    const content = [
+      'ALTER TABLE cards ADD COLUMN IF NOT EXISTS drop_rate numeric NOT NULL DEFAULT 0;',
+      'CREATE FUNCTION rename_card_pack(...) RETURNS void AS $$ ... $$ LANGUAGE plpgsql;',
+      'CREATE TABLE card_drop_rates (id bigint);',
+    ].join('\n')
+    expect(detectNonAdditiveStatements(content)).toEqual([])
+  })
+
+  it('DROP INDEX / CONSTRAINT / POLICY / TRIGGER は意図的に許可する（検出しない）', () => {
+    const content = [
+      'DROP INDEX IF EXISTS users_created_idx;',
+      'ALTER TABLE users DROP CONSTRAINT IF EXISTS users_pkey;',
+      'DROP POLICY IF EXISTS public_read ON cards;',
+      'DROP TRIGGER IF EXISTS trg_updated_at ON users;',
+    ].join('\n')
+    expect(detectNonAdditiveStatements(content)).toEqual([])
+  })
+
+  it('同一行に複数パターンがあっても1件として報告し、行番号順で並べる', () => {
+    const content = ['SELECT 1;', 'ALTER TABLE users DROP COLUMN old_col;', 'DROP TABLE IF EXISTS t;'].join('\n')
+    expect(detectNonAdditiveStatements(content)).toEqual([
+      { kind: 'DROP COLUMN', line: 2 },
+      { kind: 'DROP TABLE/VIEW/FUNCTION', line: 3 },
+    ])
+  })
+
+  it('非加法的な文が無い場合は空配列を返す', () => {
+    expect(detectNonAdditiveStatements('CREATE TABLE IF NOT EXISTS users (id bigint primary key);')).toEqual([])
   })
 })
 
