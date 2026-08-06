@@ -170,7 +170,9 @@ jobs:
 
   lint-i18n:
     name: Lint i18n (Japanese literals)
-    if: github.event_name == 'pull_request'
+    # PRだけでなく、preview/mainへマージされたpushでも同じガードを実行する。
+    # PR側のイベントが欠落した場合でも、デプロイ対象のコミットで回帰を検出できるようにする。
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
