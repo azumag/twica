@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GachaService } from "@/lib/services/gacha";
 import { getSession } from "@/lib/session";
-import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
 import { reportGachaError } from "@/lib/sentry/error-handler";
 import { setUserContext, setRequestContext } from "@/lib/sentry/user-context";
 import { GACHA_COST, ERROR_MESSAGES } from "@/lib/constants";
@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json<ApiRateLimitResponse>(
       { 
         error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-        retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000)
+        retryAfter: retryAfterSeconds(rateLimitResult.reset)
       },
       {
         status: 429,

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { handleApiError, handleBlobError } from '@/lib/error-handler';
-import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit';
+import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from '@/lib/rate-limit';
 import { ERROR_MESSAGES, SOUND_UPLOAD_CONFIG } from '@/lib/constants';
 import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger.server';
@@ -31,7 +31,7 @@ async function validateRequest(request: NextRequest): Promise<ValidateRequestRes
       error: NextResponse.json(
         {
           error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-          retryAfter: rateLimitResult.reset,
+          retryAfter: retryAfterSeconds(rateLimitResult.reset),
         },
         {
           status: 429,

@@ -4,7 +4,7 @@ import { logger } from "@/lib/logger.server";
 import { getSession } from "@/lib/session";
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
 import type { ApiRateLimitResponse } from "@/types/api";
 import { eq, and } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
@@ -203,7 +203,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json<ApiRateLimitResponse>(
           {
             error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-            retryAfter: (generalRateLimitResult.reset || 0) - Math.floor(Date.now() / 1000),
+            retryAfter: retryAfterSeconds(generalRateLimitResult.reset),
           },
           {
             status: 429,
@@ -233,7 +233,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json<ApiRateLimitResponse>(
           {
             error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
-            retryAfter: (rateLimitResult.reset || 0) - Math.floor(Date.now() / 1000),
+            retryAfter: retryAfterSeconds(rateLimitResult.reset),
           },
           {
             status: 429,

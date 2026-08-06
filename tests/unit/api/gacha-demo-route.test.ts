@@ -19,6 +19,7 @@ vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: vi.fn(),
   getRateLimitIdentifier: vi.fn(),
   rateLimits: { gachaDemoBroadcast: {}, gachaDemoCard: {} },
+  retryAfterSeconds: vi.fn(),
 }))
 
 const mockGetSession = vi.mocked(getSession)
