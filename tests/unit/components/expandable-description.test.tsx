@@ -1,7 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, createEvent, fireEvent, render, screen } from '@testing-library/react'
+import type { AnchorHTMLAttributes } from 'react'
 import Link from 'next/link'
 import ExpandableDescription from '@/components/ExpandableDescription'
+
+type MockLinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
+  prefetch?: boolean
+}
+
+vi.mock('next/link', () => ({
+  default: ({ prefetch, ...props }: MockLinkProps) => (
+    <a {...props} data-prefetch={String(prefetch)} />
+  ),
+}))
 
 vi.mock('next-intl', () => ({
   useTranslations: () => (key: string) => key,
@@ -88,8 +99,15 @@ describe('ExpandableDescription', () => {
     const detailLink = screen.getByRole('link')
     const button = screen.getByRole('button', { name: /expand/ })
     expect(detailLink.contains(button)).toBe(false)
+    expect(detailLink).toHaveAttribute('data-prefetch', 'false')
     expect(button).toHaveAttribute('type', 'button')
     expect(button).toHaveAttribute('aria-expanded', 'false')
+
+    const description = screen.getByText('長い説明テキスト')
+    const descriptionClick = createEvent.click(description)
+    fireEvent(description, descriptionClick)
+    expect(descriptionClick.defaultPrevented).toBe(false)
+    parentClick.mockClear()
 
     button.focus()
     fireEvent.click(button)
