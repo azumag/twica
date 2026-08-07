@@ -136,7 +136,14 @@ describe('ExpandableDescription', () => {
     expect(textClick.defaultPrevented).toBe(true)
     expect(parentClick).not.toHaveBeenCalled()
 
-    const button = screen.getByRole('button', { name: /expand/ })
+    // 直前のテキストクリックで既に展開済みのため、ボタンのラベルは
+    // 「開く」ではなく「閉じる」になっている。同一ボタン要素での伝播阻止を
+    // 検証する意図なので、どちらのラベルでも取得できるようにする。
+    // The preceding text click already expanded the description, so the
+    // button's accessible name is "collapse", not "expand". The intent here
+    // is only to verify the same disclosure button also blocks propagation,
+    // so match either label.
+    const button = screen.getByRole('button', { name: /expand|collapse/ })
     fireEvent.click(button)
     expect(parentClick).not.toHaveBeenCalled()
   })
