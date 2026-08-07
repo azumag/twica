@@ -79,7 +79,7 @@ export default function CollectionCard({
     isOwned ? "cursor-pointer hover:scale-105" : "cursor-default"
   } ${isInactive ? "ring-1 ring-amber-400/30" : ""}`;
 
-  const cardBody = (
+  const cardContent = (
     <>
       {/* Card name and rarity badge at the top */}
       {/* 名前とレアリティを一番上に配置 */}
@@ -151,17 +151,26 @@ export default function CollectionCard({
         )}
       </div>
 
-      {/* Description and count at the bottom */}
-      {/* 説明とカウント */}
-      <div className="p-3 pt-2">
-        {descriptionComponent}
-        {(count ?? 0) > 1 && (
-          <div className="text-gray-400 text-sm">
-            {countLabel}
-          </div>
-        )}
-      </div>
     </>
+  );
+
+  const cardDetailHref = `/collection/${streamerId}/card/${id}`;
+
+  // 説明の開閉buttonをカード詳細Linkの外へ置くため、フッターはLinkの兄弟として描画する。
+  // Keep the footer outside the card Link so its disclosure button is never nested in an anchor.
+  const cardFooter = (
+    <div className="p-3 pt-2">
+      {descriptionComponent}
+      {(count ?? 0) > 1 && (
+        <Link
+          href={cardDetailHref}
+          className="text-gray-400 text-sm"
+          prefetch={false}
+        >
+          {countLabel}
+        </Link>
+      )}
+    </div>
   );
 
   // prefetch={false}: Disable automatic prefetching to prevent N+1 API calls
@@ -171,16 +180,20 @@ export default function CollectionCard({
   // 各カードリンクはホバー/ビューポート時にgetUserCardDetail()のサーバー側フェッチを発生させる
   // 50枚のカードがある場合、プリフェッチだけで150以上のDBクエリが発生する
   return isOwned ? (
-    <Link
-      href={`/collection/${streamerId}/card/${id}`}
-      className={cardClassName}
-      prefetch={false}
-    >
-      {cardBody}
-    </Link>
+    <div className={cardClassName}>
+      <Link
+        href={cardDetailHref}
+        className="block"
+        prefetch={false}
+      >
+        {cardContent}
+      </Link>
+      {cardFooter}
+    </div>
   ) : (
     <div className={cardClassName} aria-disabled="true">
-      {cardBody}
+      {cardContent}
+      {cardFooter}
     </div>
   );
 }
