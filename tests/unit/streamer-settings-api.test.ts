@@ -244,7 +244,7 @@ describe('POST /api/streamer/settings', () => {
       },
       body: JSON.stringify({
         streamerId: 'streamer123',
-        channelPointRewardId: 'reward-123',
+        channelPointRewardId: '11111111-1111-1111-1111-111111111111',
         channelPointRewardName: 'Test Reward',
       }),
     })
@@ -315,6 +315,71 @@ describe('POST /api/streamer/settings', () => {
     expect(response.status).toBe(400)
     const data = await response.json()
     expect(data.error).toBe('Rarity weights total must be 100%')
+  })
+
+  it('rejects non-UUID channelPointRewardId (issue #836)', async () => {
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        channelPointRewardId: 'reward-123',
+      }),
+    })
+    const response = await POST(request)
+    expect(response.status).toBe(400)
+  })
+
+  it('accepts an empty channelPointRewardName alongside a valid reward id (issue #836 regression)', async () => {
+    // ChannelPointSettings.tsx の handleSave は保存のたびに channelPointRewardName を
+    // 送信する（useState(currentRewardName || "") で初期化）。reward_name が未設定な
+    // 既存データを持つ配信者がこの保存操作で 400 にならないことを固定する。
+    const mockDbFixture = createDbFixture()
+      .withMaybeSingleResponse({
+        id: 'streamer123',
+        twitch_user_id: 'streamer123',
+      })
+      .build()
+
+    installDbFixture(mockDbFixture)
+
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        channelPointRewardId: '11111111-1111-1111-1111-111111111111',
+        channelPointRewardName: '',
+      }),
+    })
+    const response = await POST(request)
+    expect(response.status).toBe(200)
+  })
+
+  it('rejects non-boolean gachaSoundEnabled (issue #836)', async () => {
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        gachaSoundEnabled: 'yes',
+      }),
+    })
+    const response = await POST(request)
+    expect(response.status).toBe(400)
+  })
+
+  it('rejects oversized chatAnnouncementTemplate (issue #836)', async () => {
+    const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        streamerId: 'streamer123',
+        chatAnnouncementTemplate: 'a'.repeat(501),
+      }),
+    })
+    const response = await POST(request)
+    expect(response.status).toBe(400)
   })
 
   it('should allow empty rarity weights object for manual mode switch', async () => {
@@ -1001,7 +1066,7 @@ describe('POST /api/streamer/settings', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         streamerId: 'streamer123',
-        channelPointRewardId: 'reward-123',
+        channelPointRewardId: '11111111-1111-1111-1111-111111111111',
         channelPointCollectionName: 'weapons',
       }),
     })
@@ -1035,7 +1100,7 @@ describe('POST /api/streamer/settings', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         streamerId: 'streamer123',
-        channelPointRewardId: 'reward-123',
+        channelPointRewardId: '11111111-1111-1111-1111-111111111111',
         channelPointCollectionName: 'empty-pack',
       }),
     })
@@ -1257,7 +1322,7 @@ describe('POST /api/streamer/settings', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           streamerId: 'streamer123',
-          channelPointRewardId: 'reward-123',
+          channelPointRewardId: '11111111-1111-1111-1111-111111111111',
           channelPointRewardName: 'Test Reward',
         }),
       })
@@ -1265,7 +1330,7 @@ describe('POST /api/streamer/settings', () => {
       const response = await POST(request)
       expect(response.status).toBe(200)
       expect(updateQuery.update).toHaveBeenCalledWith(
-        expect.objectContaining({ channel_point_reward_id: 'reward-123' })
+        expect.objectContaining({ channel_point_reward_id: '11111111-1111-1111-1111-111111111111' })
       )
     })
 
@@ -1296,7 +1361,7 @@ describe('POST /api/streamer/settings', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           streamerId: 'streamer123',
-          channelPointRewardId: 'reward-123',
+          channelPointRewardId: '11111111-1111-1111-1111-111111111111',
           channelPointRewardName: 'Test Reward',
         }),
       })
@@ -1304,7 +1369,7 @@ describe('POST /api/streamer/settings', () => {
       const response = await POST(request)
       expect(response.status).toBe(200)
       expect(updateQuery.update).toHaveBeenCalledWith(
-        expect.objectContaining({ channel_point_reward_id: 'reward-123' })
+        expect.objectContaining({ channel_point_reward_id: '11111111-1111-1111-1111-111111111111' })
       )
     })
   })

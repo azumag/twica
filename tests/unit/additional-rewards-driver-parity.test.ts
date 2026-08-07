@@ -354,7 +354,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
   describe("POST", () => {
     it("所有権確認後に正しいテーブルと値でINSERTする", async () => {
       const OWNED_STREAMER = { id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: [] as string[] };
-      const NEW_REWARD = { id: "additional-1", reward_id: "extra-reward", reward_name: "Extra", draw_count: 5, is_raid_limited: false };
+      const NEW_REWARD = { id: "additional-1", reward_id: "22222222-2222-2222-2222-222222222222", reward_name: "Extra", draw_count: 5, is_raid_limited: false };
 
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNED_STREAMER] }],
@@ -364,7 +364,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const { POST: pgPOST } = await loadRoute();
       const pgResponse = await pgPOST(
         jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", {
-          rewardId: "extra-reward",
+          rewardId: "22222222-2222-2222-2222-222222222222",
           rewardName: "Extra",
           drawCount: 5,
         })
@@ -376,7 +376,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       expect(getDb).toHaveBeenCalled();
       expect(pg.insertCalls[0].table).toBe(streamerAdditionalGachaRewardsTable);
       expect(pg.insertCalls[0].values).toEqual(
-        expect.objectContaining({ streamer_id: "streamer-1", reward_id: "extra-reward", draw_count: 5, is_raid_limited: false })
+        expect.objectContaining({ streamer_id: "streamer-1", reward_id: "22222222-2222-2222-2222-222222222222", draw_count: 5, is_raid_limited: false })
       );
     });
 
@@ -392,7 +392,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const { POST } = await loadRoute();
       const response = await POST(
         jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", {
-          rewardId: "extra-reward",
+          rewardId: "22222222-2222-2222-2222-222222222222",
           drawCount: 10,
           isRaidLimited: true,
         })
@@ -425,7 +425,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const { POST } = await loadRoute();
       const response = await POST(
         jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", {
-          rewardId: "extra-reward",
+          rewardId: "22222222-2222-2222-2222-222222222222",
           drawCount: 10,
           isRaidLimited: true,
         })
@@ -458,7 +458,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const { POST } = await loadRoute();
       const response = await POST(
         jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", {
-          rewardId: "extra-reward",
+          rewardId: "22222222-2222-2222-2222-222222222222",
           drawCount: 10,
           isRaidLimited: true,
         })
@@ -478,7 +478,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
 
       const { POST } = await loadRoute();
       const response = await POST(
-        jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", { rewardId: "extra-reward" })
+        jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", { rewardId: "22222222-2222-2222-2222-222222222222" })
       );
 
       expect(response.status).toBe(409);
@@ -501,7 +501,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
 
       const { POST } = await loadRoute();
       const response = await POST(
-        jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", { rewardId: "extra-reward" })
+        jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", { rewardId: "22222222-2222-2222-2222-222222222222" })
       );
 
       expect(response.status).toBe(409);
@@ -538,7 +538,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
             values: vi.fn(() => builder),
             returning: vi.fn(() => builder),
             then: (onFulfilled: any, onRejected: any) =>
-              Promise.resolve([{ id: "additional-1", reward_id: "extra-reward", collection_name: null }]).then(onFulfilled, onRejected),
+              Promise.resolve([{ id: "additional-1", reward_id: "22222222-2222-2222-2222-222222222222", collection_name: null }]).then(onFulfilled, onRejected),
           };
           return builder;
         }),
@@ -548,7 +548,7 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const { POST } = await loadRoute();
       const response = await POST(
         jsonRequest("http://localhost/api/streamer/additional-rewards", "POST", {
-          rewardId: "extra-reward",
+          rewardId: "22222222-2222-2222-2222-222222222222",
           rewardName: "Weapons",
           collectionName: "weapons",
         })

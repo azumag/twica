@@ -93,7 +93,7 @@ const PARK_TTL_SECONDS = 7 * 24 * 60 * 60
  * 一覧取得・個別取得・削除の3メソッドを追加。型は実際の Cloudflare Workers KV
  * API（list/get/delete）に合わせている。
  */
-interface KVNamespaceLike {
+export interface KVNamespaceLike {
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
   /**
    * キー一覧を取得する。`list_complete: false` の場合は返却された `cursor` を
@@ -144,8 +144,13 @@ export interface ParkEventSubNotificationInput {
  * Cloudflare Workers 環境から RATE_LIMIT_KV バインディングを取得する。
  * next dev 等 Workers 外の環境、または binding 未設定時は null を返す
  * （r2-client.ts の getR2Binding と同じフォールバックパターン）。
+ *
+ * このモジュール外（src/lib/eventsub-dedup.ts、issue #836）からも同じ
+ * RATE_LIMIT_KV バインディングを参照するため export する。バインディング名を
+ * この1箇所に集約するという上部コメントの設計意図（KV_BINDING_NAME参照）を
+ * 保つため、呼び出し側で同名の定数・同じ取得ロジックを再実装しないこと。
  */
-async function getMaintenanceKvBinding(): Promise<KVNamespaceLike | null> {
+export async function getMaintenanceKvBinding(): Promise<KVNamespaceLike | null> {
   try {
     // ローカル開発時に @opennextjs/cloudflare をバンドルしないよう動的 import
     // （db/client.ts, r2-client.ts と同じ理由）
