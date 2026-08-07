@@ -48,14 +48,25 @@ export default function ExpandableDescription({
   }, [description]);
 
   const handleClick = (e: React.MouseEvent) => {
-    // カード全体が詳細画面への Link でラップされている場合（コレクションページ等）、
-    // このクリックが親へバブリングすると「開く/閉じる」と同時にカード詳細へ
-    // 遷移してしまうため、伝播を止める。
-    // Stop propagation so the enclosing card Link (detail navigation) is not triggered.
-    e.stopPropagation();
-    // 省略されている場合のみ展開/折りたたみを切り替え
-    // Only toggle if text is actually truncated
+    // 省略されている場合のみ展開/折りたたみを切り替える。
+    // Only toggle if text is actually truncated (or already expanded, to allow collapsing).
+    //
+    // stopPropagation はこの分岐の内側でのみ呼ぶ。もし条件外（省略されていない
+    // 短い説明文）でも無条件に呼んでしまうと、カード全体が詳細画面への Link で
+    // ラップされている場合（コレクションページ等）に、本来は親へ伝播してカード
+    // 詳細へ遷移するはずのクリックまで飲み込んでしまい、説明文の領域だけ
+    // 何も起きないクリック不能な死角ができてしまう。
+    //
+    // Only call stopPropagation inside this branch. Calling it unconditionally
+    // (even when the text isn't truncated) would swallow clicks that should
+    // otherwise bubble up to the enclosing card Link (detail navigation),
+    // creating a dead click zone over the non-truncated description text.
     if (isTruncated || isExpanded) {
+      // カード全体が詳細画面への Link でラップされている場合（コレクションページ等）、
+      // このクリックが親へバブリングすると「開く/閉じる」と同時にカード詳細へ
+      // 遷移してしまうため、伝播を止める。
+      // Stop propagation so the enclosing card Link (detail navigation) is not triggered.
+      e.stopPropagation();
       setIsExpanded(!isExpanded);
     }
   };
