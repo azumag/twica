@@ -17,30 +17,12 @@
  * - 適用対象は notification / revocation のみ。verification は同一 message-id の
  *   再送時に challenge を返し直すのが正しく、重複排除すると購読確立を壊しうる。
  */
-import type { KVNamespaceLike } from '@/lib/maintenance/eventsub-park'
+// eventsub-park.ts が RATE_LIMIT_KV バインディングの取得ロジックとバインディング名を
+// 一元管理している（同ファイル冒頭のコメント参照）。同じバインディングを参照する
+// 本モジュールはそれを再実装せず再利用する（issue #836 レビューで指摘された重複を解消）。
+import { getMaintenanceKvBinding } from '@/lib/maintenance/eventsub-park'
 
-const DEDUP_KV_BINDING_NAME = 'RATE_LIMIT_KV'
 const DEDUP_TTL_SECONDS = 10 * 60 // Twitch の再送窓（10分）
-
-/**
- * Cloudflare Workers 環境から KV バインディングを取得する。
- * Workers 外の環境（next dev / Node / テスト）では null（= フェイルオープン）。
- * eventsub-park.ts の getMaintenanceKvBinding と同じフォールバックパターン。
- */
-async function getDedupKvBinding(): Promise<KVNamespaceLike | null> {
-  try {
-    // ローカル開発時に @opennextjs/cloudflare をバンドルしないよう動的 import
-    // （db/client.ts, r2-client.ts と同じ理由）
-    const { getCloudflareContext } = await import('@opennextjs/cloudflare')
-    const { env } = await getCloudflareContext({ async: true })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const binding = (env as any)[DEDUP_KV_BINDING_NAME] as KVNamespaceLike | undefined
-    return binding ?? null
-  } catch {
-    // Cloudflare Workers 環境ではない（next dev / Node / テスト）
-    return null
-  }
-}
 
 /**
  * message-id が既知（10分以内に受信・処理完了済み）かどうかを判定する。
@@ -51,7 +33,7 @@ async function getDedupKvBinding(): Promise<KVNamespaceLike | null> {
  */
 export async function isDuplicateEventSubMessage(messageId: string): Promise<boolean> {
   if (!messageId) return false // ヘッダー欠落時は重複判定しない（署名検証で弾かれる）
-  const binding = await getDedupKvBinding()
+  const binding = await getMaintenanceKvBinding()
   if (!binding) return false // Workers 外 or KV 未設定: フェイルオープン
   try {
     const existing = await binding.get(`eventsub:dedup:${messageId}`)
@@ -70,7 +52,7 @@ export async function isDuplicateEventSubMessage(messageId: string): Promise<boo
  */
 export async function markEventSubMessageSeen(messageId: string): Promise<void> {
   if (!messageId) return
-  const binding = await getDedupKvBinding()
+  const binding = await getMaintenanceKvBinding()
   if (!binding) return
   try {
     await binding.put(`eventsub:dedup:${messageId}`, '1', { expirationTtl: DEDUP_TTL_SECONDS })
