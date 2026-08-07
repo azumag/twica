@@ -53,6 +53,7 @@ const baseTranslations = {
   cardCountTemplate: 'x{count}',
   noImage: 'NoImage',
   unownedCard: '???',
+  unownedStatus: '未所持カード',
   inactiveStatus: 'PAUSED',
   cardNumberTemplate: '#{number}',
   sortLabel: '並び替え',
@@ -93,6 +94,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     )
     expect(screen.getByText('OwnedCard')).toBeInTheDocument()
     expect(screen.getByAltText('OwnedCard')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'OwnedCard: x2' })).toBeInTheDocument()
   })
 
   it('reveals name/image/description for unowned cards when hideUnownedDetails=false (公開モード)', () => {
@@ -126,6 +128,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     expect(screen.getByAltText('SecretCard')).toBeInTheDocument()
     // 説明テキストも見える
     expect(screen.getByText(/カード説明テキスト/)).toBeInTheDocument()
+    expect(screen.getByText('未所持カード')).toBeInTheDocument()
     // 公開モードでも未所持カードは詳細遷移を提供しない
     // Unowned public cards reveal content but remain non-navigable.
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
