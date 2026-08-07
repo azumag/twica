@@ -158,7 +158,11 @@ export default function CollectionCard({
 
   // 説明の開閉buttonをカード詳細Linkの外へ置くため、フッターはLinkの兄弟として描画する。
   // Keep the footer outside the card Link so its disclosure button is never nested in an anchor.
-  const cardFooter = (
+  const hasCardFooter =
+    (descriptionComponent !== undefined && descriptionComponent !== null) ||
+    (count ?? 0) > 1;
+
+  const cardFooter = hasCardFooter ? (
     <div className="p-3 pt-2">
       {descriptionComponent}
       {(count ?? 0) > 1 && (
@@ -171,7 +175,7 @@ export default function CollectionCard({
         </Link>
       )}
     </div>
-  );
+  ) : null;
 
   // prefetch={false}: Disable automatic prefetching to prevent N+1 API calls
   // Each card link would trigger a server-side fetch of getUserCardDetail() on hover/viewport
