@@ -141,7 +141,10 @@ export default function SortedCardGrid({
               inactiveLabel={translations.inactiveStatus}
               descriptionComponent={
                 showDescription ? (
-                  <ExpandableDescription description={card.description as string} />
+                  <ExpandableDescription
+                    description={card.description as string}
+                    detailHref={`/collection/${streamerId}/card/${card.id}`}
+                  />
                 ) : undefined
               }
             />
