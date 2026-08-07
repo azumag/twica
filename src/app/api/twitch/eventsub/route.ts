@@ -6,6 +6,7 @@ import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
 import { getMaintenanceState } from "@/lib/maintenance/state";
 import { parkEventSubNotification } from "@/lib/maintenance/eventsub-park";
+import { isDuplicateEventSubMessage, markEventSubMessageSeen } from "@/lib/eventsub-dedup";
 // Issue #787 Stage 1: ガチャ交換・レイド処理ロジック本体は
 // src/lib/services/eventsub-redemption.ts へ純粋移動した（ロジック変更なし）。
 // Issue #787 Stage 3 の /api/admin/eventsub-replay route が同じ handleRedemption /
@@ -97,6 +98,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
   }
 
+  // Issue #836: Twitch 公式仕様の再送防御（10分窓のタイムスタンプ検証）。
+  // 古い（または不正な）タイムスタンプの再送を拒否する。Date.parse が NaN を
+  // 返すケースは Math.abs(NaN) > 10min が false になるため明示的に弾くこと。
+  // 注意: 10分を超えた遅延再送（停電復旧後等）は 403 になるが、これは Twitch 公式
+  // ガイドの推奨どおりであり、受信側の障害を原因とする再送は KV 退避 + 2xx の
+  // 既存経路で処理される（本ルートは revoke 判定材料になる 5xx を返さない設計）。
+  const timestampMs = Date.parse(timestamp);
+  if (Number.isNaN(timestampMs) || Math.abs(Date.now() - timestampMs) > 10 * 60 * 1000) {
+    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
+  }
+
   if (messageType !== MESSAGE_TYPE_NOTIFICATION) {
     const ip = getClientIp(request);
     const identifier = `ip:${ip}`;
@@ -118,6 +130,16 @@ export async function POST(request: NextRequest) {
   }
 
   if (messageType === MESSAGE_TYPE_NOTIFICATION) {
+    // Issue #836: message-id の重複排除（KV、TTL 10分）。同一 id の再送は
+    // 以降の処理をスキップし、Twitch には常に 2xx を返す（非2xx は
+    // subscription の revoke 判定材料になるため）。verification は再送時に
+    // challenge を返し直すのが正しいため対象外（revocation もここでは対象外。
+    // 重複 revoke は冪等に処理される）。
+    if (await isDuplicateEventSubMessage(messageId)) {
+      logger.info('[EventSub] Duplicate message-id ignored', { messageId });
+      return NextResponse.json({ received: true });
+    }
+
     const subscriptionType = data.subscription.type;
     const event = data.event;
 
@@ -156,12 +178,20 @@ export async function POST(request: NextRequest) {
     //   allowlist default-denyと同じfail-safeの考え方）。
     const maintenanceState = getMaintenanceState();
     if (maintenanceState.mode !== 'off') {
-      await parkEventSubNotification({
+      const parked = await parkEventSubNotification({
         messageId,
         payload: data,
         subscriptionType,
         maintenanceState,
       });
+      // 退避（= 処理の永続化）が完了した場合のみ、この message-id を重複排除に記録する。
+      // 退避に失敗した場合（KV書き込み不可等）は記録しない: ここで記録すると、
+      // Twitch が同一 message-id を独自に再送してきた際に重複と誤判定され、
+      // 再退避のチャンスを失って通知が永久に失われる。KV退避が失敗しても2xxを返す方針
+      // （下記コメント・parkEventSubNotification内のコメント参照）自体は維持する。
+      if (parked) {
+        await markEventSubMessageSeen(messageId);
+      }
       return NextResponse.json({ received: true });
     }
 
@@ -198,6 +228,9 @@ export async function POST(request: NextRequest) {
         // retry recordを永続化できないまま2xxを返すとTwitchは配送完了とみなし、
         // 部分付与・outbox欠落が永久化する。maintenance中の可用性優先方針とは違い、
         // 既に業務処理が失敗した通常時は503で再送を要求し、データ欠落を防ぐ。
+        // 注意（issue #836）: この経路では dedup 記録を行わない。記録済みだと
+        // Twitch が同一 message-id で再送してきた際に重複と誤判定され、ガチャ未実行の
+        // まま通知が永久喪失するため。
         logger.error('[EventSub] Retryable notification could not be persisted', {
           messageId,
           subscriptionType,
@@ -206,6 +239,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // 処理（または退避）が完了したので、この message-id を重複排除に記録する。
+    // 以降は同一 message-id の再送を 2xx で受領してスキップする。
+    await markEventSubMessageSeen(messageId);
     return NextResponse.json({ received: true });
   }
 

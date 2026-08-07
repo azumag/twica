@@ -8,6 +8,7 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger.server";
 import { resolveCollectionNameField, isRegisteredOrUnchanged, DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import { validateRewardId, validateRewardName } from "@/lib/validations";
 import {
   checkCollectionHasActiveCards,
   isMissingCollectionNameColumn,
@@ -456,6 +457,16 @@ export async function POST(request: NextRequest) {
 
     if (!rewardId) {
       return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
+    }
+
+    // Issue #836: rewardId は Twitch の報酬 ID（UUID）形式を要求する。
+    // 非 UUID が保存されると EventSub 購読条件（condition.reward_id）と不整合を起こす。
+    if (!validateRewardId(rewardId).valid) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    // rewardName は文字列 + 長さ上限 + 制御文字禁止（null は許可）。
+    if (!validateRewardName(rewardName).valid) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
     const normalizedDrawCount = drawCount === undefined ? 1 : Number(drawCount);

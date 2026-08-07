@@ -77,7 +77,9 @@ async function createNotificationRequest(payload: unknown): Promise<NextRequest>
   const secret = 'eventsub-test-secret'
   process.env.TWITCH_EVENTSUB_SECRET = secret
   const messageId = 'eventsub-message-1'
-  const timestamp = '2026-05-11T10:00:00Z'
+  // Issue #836: タイムスタンプ窓（10分）検証の導入により、固定日時は 403 になる。
+  // 現在時刻を使う（再送防止の窓検証に引っかからないようにするため）。
+  const timestamp = new Date().toISOString()
   const body = JSON.stringify(payload)
   const signature = await signEventSubBody(secret, messageId, timestamp, body)
 
@@ -97,6 +99,9 @@ async function createNotificationRequest(payload: unknown): Promise<NextRequest>
 describe('EventSub redemption handling', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // 前テストの dedup 用モック（重複/未受信テスト）が次テストへ漏れないよう
+    // 初期化する（getCloudflareContext の戻り値はこの fixture が上書きする）。
+    mocks.getCloudflareContext.mockReset()
     // unexpected/retryable の失敗は元のWebhookをKVに永続退避できた場合だけ200。
     // このfixtureはreportErrorの回帰テストを、実運用と同じdurable park成功経路で行う。
     mocks.getCloudflareContext.mockResolvedValue({
@@ -157,5 +162,115 @@ describe('EventSub redemption handling', () => {
         gachaError: 'Database error fetching streamer: permission denied',
       }),
     )
+  })
+})
+
+describe('EventSub replay protection (issue #836)', () => {
+  it('NaN タイムスタンプは 403 を返す', async () => {
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-nan-1'
+    const body = JSON.stringify({ subscription: { type: 'channel.channel_points_custom_reward_redemption.add' }, event: { broadcaster_user_id: '1' } })
+    const signature = await signEventSubBody(secret, messageId, 'not-a-date', body)
+
+    const request = new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': 'not-a-date',
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    })
+
+    const response = await POST(request)
+    expect(response.status).toBe(403)
+    expect(mocks.executeGachaForEventSub).not.toHaveBeenCalled()
+  })
+
+  beforeEach(() => {
+    mocks.executeGachaForEventSub.mockReset()
+    mocks.executeGachaForEventSub.mockResolvedValue({ success: false, error: 'Streamer not found' })
+  })
+
+  it('11分以上前のタイムスタンプは 403 を返す', async () => {
+    const oldTimestamp = new Date(Date.now() - 11 * 60 * 1000).toISOString()
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-stale-1'
+    const body = JSON.stringify({ subscription: { type: 'channel.channel_points_custom_reward_redemption.add' }, event: { broadcaster_user_id: '1' } })
+    const signature = await signEventSubBody(secret, messageId, oldTimestamp, body)
+
+    const request = new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': oldTimestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    })
+
+    const response = await POST(request)
+    expect(response.status).toBe(403)
+    expect(mocks.executeGachaForEventSub).not.toHaveBeenCalled()
+  })
+
+  it('重複 message-id は 2xx を返し、処理をスキップする', async () => {
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { get: vi.fn().mockResolvedValue('1'), put: vi.fn().mockResolvedValue(undefined) } },
+    })
+    const secret = 'eventsub-test-secret'
+    process.env.TWITCH_EVENTSUB_SECRET = secret
+    const messageId = 'eventsub-dup-1'
+    const timestamp = new Date().toISOString()
+    const body = JSON.stringify({ subscription: { type: 'channel.channel_points_custom_reward_redemption.add' }, event: { broadcaster_user_id: '1' } })
+    const signature = await signEventSubBody(secret, messageId, timestamp, body)
+
+    const request = new NextRequest('http://localhost:3000/api/twitch/eventsub', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'twitch-eventsub-message-id': messageId,
+        'twitch-eventsub-message-timestamp': timestamp,
+        'twitch-eventsub-message-type': 'notification',
+        'twitch-eventsub-message-signature': signature,
+      },
+      body,
+    })
+
+    const response = await POST(request)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ received: true })
+    expect(mocks.executeGachaForEventSub).not.toHaveBeenCalled()
+  })
+
+  it('未受信 message-id は KV に記録して処理を続行する', async () => {
+    const put = vi.fn().mockResolvedValue(undefined)
+    mocks.getCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { get: vi.fn().mockResolvedValue(null), put } },
+    })
+    const request = await createNotificationRequest({
+      subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
+      event: {
+        broadcaster_user_id: '1',
+        user_id: 'viewer-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'reward-1', title: 'Gacha', cost: 100 },
+      },
+    })
+    const response = await POST(request)
+    expect(response.status).toBe(200)
+    expect(put).toHaveBeenCalledWith(
+      expect.stringContaining('eventsub:dedup:'),
+      '1',
+      expect.objectContaining({ expirationTtl: 600 })
+    )
+    expect(mocks.executeGachaForEventSub).toHaveBeenCalledTimes(1)
   })
 })

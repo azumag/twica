@@ -18,6 +18,8 @@ import {
 // ---------------------------------------------------------------------------
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
+import { safeParseInt } from "@/lib/parse";
+import { UUID_REGEX } from "@/lib/validations";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { streamers as streamersTable } from "@/lib/db/schema";
@@ -51,17 +53,6 @@ async function fetchStreamerIdPg(twitchUserId: string): Promise<{ id: string } |
 
 const VALID_RARITIES = ["common", "rare", "epic", "legendary"];
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Parse integer with NaN fallback
- * NaN時にデフォルト値を返すintパーサー
- */
-function safeParseInt(value: string | null, defaultValue: number): number {
-  if (!value) return defaultValue;
-  const parsed = parseInt(value, 10);
-  return Number.isNaN(parsed) ? defaultValue : parsed;
-}
 
 /**
  * GET /api/gacha-history

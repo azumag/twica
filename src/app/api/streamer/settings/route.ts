@@ -23,6 +23,7 @@ import {
   isRegisteredOrUnchanged,
   DEFAULT_PACK_SENTINEL,
 } from "@/lib/validation/collection-name";
+import { validateRewardId, validateRewardName, validateChatAnnouncementTemplate } from "@/lib/validations";
 import {
   checkCollectionHasActiveCards,
   isMissingCollectionNameColumn,
@@ -807,6 +808,46 @@ export async function POST(request: NextRequest) {
     }
 
     if (gachaSoundRules !== undefined && !Array.isArray(gachaSoundRules)) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    // Issue #836: チャネルポイント報酬・チャット通知設定の入力検証。
+    // 同じルート内の boolean 検証（showUnownedCards 等）と対称にする。
+    // channelPointRewardId は Twitch の報酬 ID（UUID）。null はクリアを意味する。
+    if (
+      channelPointRewardId !== undefined
+      && !validateRewardId(channelPointRewardId).valid
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      channelPointRewardName !== undefined
+      && !validateRewardName(channelPointRewardName).valid
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      gachaSoundEnabled !== undefined
+      && typeof gachaSoundEnabled !== "boolean"
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      chatAnnouncementEnabled !== undefined
+      && typeof chatAnnouncementEnabled !== "boolean"
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      chatAnnouncementTemplate !== undefined
+      && !validateChatAnnouncementTemplate(chatAnnouncementTemplate).valid
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (
+      chatAnnouncementMultiTemplate !== undefined
+      && !validateChatAnnouncementTemplate(chatAnnouncementMultiTemplate).valid
+    ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 

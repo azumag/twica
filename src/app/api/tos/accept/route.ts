@@ -1,6 +1,8 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm'
 import { getSession } from '@/lib/session'
+import { validateCSRFToken } from '@/lib/csrf'
+import { checkRateLimit, rateLimits, getRateLimitIdentifier } from '@/lib/rate-limit'
 
 import { logger } from '@/lib/logger.server'
 import { ERROR_MESSAGES } from '@/lib/constants'
@@ -19,13 +21,39 @@ import { users as usersTable } from '@/lib/db/schema'
  * Records user's acceptance of Terms of Service
  */
 export async function POST(request: NextRequest) {
-  // Next.js の Route Handler と直接呼び出すテストの双方で統一したシグネチャを
-  // 維持する。POST 本体はセッションだけを使うため、リクエスト本文は意図的に読まない。
-  void request;
+  // Issue #836: セッションCookie認証で状態変更するルートのため、他のルートと
+  // 同じ順序（CSRF → セッション取得 → レート制限 → セッション確認）で検証する。
+  // POST 本体はセッションだけを使うため、本文は意図的に読まない（void request は廃止し、
+  // validateCSRFToken がリクエストヘッダーを検証する）。
   try {
-    // セッションからユーザー情報を取得
+    const csrfValidation = await validateCSRFToken(request)
+    if (!csrfValidation.valid) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.FORBIDDEN },
+        { status: 403 }
+      )
+    }
+
+    // セッションからユーザー情報を取得（レート制限の識別子に使う）
     // Get user info from session
     const session = await getSession()
+
+    const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+    const rateLimitResult = await checkRateLimit(rateLimits.tosAccept, identifier);
+
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': String(rateLimitResult.limit),
+            'X-RateLimit-Remaining': String(rateLimitResult.remaining),
+            'X-RateLimit-Reset': String(rateLimitResult.reset),
+          },
+        }
+      );
+    }
 
     if (!session) {
       // 未認証の場合は401エラーを返す

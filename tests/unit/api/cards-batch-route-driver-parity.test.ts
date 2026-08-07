@@ -365,4 +365,27 @@ describe("POST /api/cards/batch: PlanetScale契約 (#663)", () => {
     expect(pg.insertCalls).toHaveLength(1);
   });
 
-});
+
+  it("500字を超える description は400で拒否しINSERTしない (#836)", async () => {
+    const pg = createDrizzleDbMock({ selects: [{ rows: [STREAMER_ROW] }] });
+    primePgDb(pg);
+
+    const pgRes = await POST(
+      createBatchRequest({
+        streamerId: "streamer-1",
+        cards: [
+          {
+            name: "Card A",
+            imageUrl: "https://example.com/a.png",
+            rarity: "common",
+            dropRate: 0.5,
+            description: "あ".repeat(501),
+          },
+        ],
+      })
+    );
+
+    expect(pgRes.status).toBe(400);
+    expect(pg.insertCalls).toHaveLength(0);
+  });
+})

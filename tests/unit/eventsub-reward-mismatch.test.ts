@@ -118,7 +118,7 @@ async function createNotificationRequest(gachaError: string): Promise<NextReques
   const secret = 'eventsub-test-secret'
   process.env.TWITCH_EVENTSUB_SECRET = secret
   const messageId = `eventsub-${gachaError.replaceAll(' ', '-').toLowerCase()}`
-  const timestamp = '2026-05-11T10:00:00Z'
+  const timestamp = new Date().toISOString()
   const body = JSON.stringify({
     subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
     event: {
@@ -226,7 +226,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-channel-raid'
-    const timestamp = '2026-05-12T00:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.raid' },
       event: {
@@ -313,7 +313,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-multi-draw'
-    const timestamp = '2026-05-12T00:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {
@@ -374,7 +374,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-multi-draw-chat'
-    const timestamp = '2026-05-11T10:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {
@@ -449,7 +449,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-multi-draw-single-template'
-    const timestamp = '2026-05-11T10:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {
@@ -507,7 +507,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-multi-draw-new-cards'
-    const timestamp = '2026-05-11T10:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {
@@ -572,7 +572,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-multi-draw-new-placeholders'
-    const timestamp = '2026-05-11T10:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {
@@ -642,7 +642,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-long-multi-draw-chat'
-    const timestamp = '2026-05-11T10:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {
@@ -705,7 +705,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-multi-draw-rarity-summary'
-    const timestamp = '2026-05-11T10:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {
@@ -779,7 +779,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-new-cards-suffix-preserved'
-    const timestamp = '2026-05-11T10:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {
@@ -853,7 +853,7 @@ describe('EventSub reward mismatch handling', () => {
     const secret = 'eventsub-test-secret'
     process.env.TWITCH_EVENTSUB_SECRET = secret
     const messageId = 'eventsub-new-cards-legacy-fallback-zero'
-    const timestamp = '2026-05-11T10:00:00Z'
+    const timestamp = new Date().toISOString()
     const body = JSON.stringify({
       subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
       event: {

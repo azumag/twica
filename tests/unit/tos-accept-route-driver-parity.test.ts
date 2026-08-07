@@ -24,6 +24,18 @@ vi.mock('@/lib/session', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
+// Issue #836: tos/accept に CSRF 検証・レート制限を追加したため、テストでは
+// 両者を成功扱いにモックする（CSRF 失敗・429 の個別検証は別テストで行う）。
+vi.mock('@/lib/csrf', () => ({
+  validateCSRFToken: vi.fn().mockResolvedValue({ valid: true }),
+}))
+vi.mock('@/lib/rate-limit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/rate-limit')>()
+  return {
+    ...actual,
+    checkRateLimit: vi.fn().mockResolvedValue({ success: true, limit: 10, remaining: 9, reset: Date.now() + 60000 }),
+  }
+})
 
 const SESSION = { twitchUserId: 'user-1' } as any
 
@@ -163,6 +175,26 @@ describe('GET/POST /api/tos/accept: PlanetScale契約 (#711)', () => {
   })
 
   describe('POST', () => {
+    it('CSRF検証失敗: 403 を返し DB に触れない (issue #836)', async () => {
+      vi.mocked(getSession).mockResolvedValue({ twitchUserId: 'user-1' } as any)
+      const csrfMock = (await import('@/lib/csrf')).validateCSRFToken as ReturnType<typeof vi.fn>
+      csrfMock.mockResolvedValueOnce({ valid: false })
+
+      const res = await tosAcceptRoute.POST(createPostRequest() as any)
+      expect(res.status).toBe(403)
+      expect(getDb).not.toHaveBeenCalled()
+    })
+
+    it('レート制限超過: 429 を返す (issue #836)', async () => {
+      vi.mocked(getSession).mockResolvedValue({ twitchUserId: 'user-1' } as any)
+      const rateLimitMock = (await import('@/lib/rate-limit')).checkRateLimit as ReturnType<typeof vi.fn>
+      rateLimitMock.mockResolvedValueOnce({ success: false, limit: 10, remaining: 0, reset: Date.now() + 60000 })
+
+      const res = await tosAcceptRoute.POST(createPostRequest() as any)
+      expect(res.status).toBe(429)
+      expect(getDb).not.toHaveBeenCalled()
+    })
+
     it('未認証: 401 を返し DB に触れない', async () => {
       vi.mocked(getSession).mockResolvedValue(null)
 

@@ -200,7 +200,7 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     const pgResponse = await pgPOST(
       postRequest({
         streamerId: "streamer123",
-        channelPointRewardId: "reward-123",
+        channelPointRewardId: "33333333-3333-3333-3333-333333333333",
         channelPointRewardName: "Test Reward",
       })
     );
@@ -214,7 +214,7 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     );
     expect(pg.updateCalls[0].table).toBe(streamersTable);
     expect(pg.updateCalls[0].set).toEqual(
-      expect.objectContaining({ channel_point_reward_id: "reward-123", channel_point_reward_name: "Test Reward" })
+      expect.objectContaining({ channel_point_reward_id: "33333333-3333-3333-3333-333333333333", channel_point_reward_name: "Test Reward" })
     );
     expect(pg.updateCalls[0].where).toEqual(eq(streamersTable.id, "streamer123"));
   });
@@ -224,7 +224,7 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     primePgDb(pg);
 
     const { POST } = await loadRoute();
-    const response = await POST(postRequest({ streamerId: "streamer123", channelPointRewardId: "reward-1" }));
+    const response = await POST(postRequest({ streamerId: "streamer123", channelPointRewardId: "33333333-3333-3333-3333-333333333333" }));
     expect(response.status).toBe(403);
   });
 
@@ -368,7 +368,7 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as any);
 
     const { POST } = await loadRoute();
-    const response = await POST(postRequest({ streamerId: "streamer123", channelPointRewardId: "reward-1" }));
+    const response = await POST(postRequest({ streamerId: "streamer123", channelPointRewardId: "33333333-3333-3333-3333-333333333333" }));
     const body = await response.json();
 
     expect(response.status).toBe(200);
