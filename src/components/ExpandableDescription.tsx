@@ -133,7 +133,11 @@ export default function ExpandableDescription({
   const descriptionContent = (
     <p
       ref={textRef}
-      onClick={handleClick}
+      // detailHrefを指定した説明は入力手段によらず詳細リンクとして動作させ、
+      // 展開・折りたたみは専用buttonだけに限定する。
+      // Keep linked descriptions navigable by mouse and keyboard alike; the
+      // disclosure button is the only control that changes expansion state.
+      onClick={detailHref ? undefined : handleClick}
       style={expandedStyle}
       className={[textSizeClass, lineClampClass, isClickable ? "cursor-pointer hover:text-gray-200" : ""].join(" ")}
     >
@@ -144,7 +148,7 @@ export default function ExpandableDescription({
   return (
     <div className="mb-1">
       {detailHref ? (
-        <Link href={detailHref} className="block">
+        <Link href={detailHref} className="block" prefetch={false}>
           {descriptionContent}
         </Link>
       ) : (
