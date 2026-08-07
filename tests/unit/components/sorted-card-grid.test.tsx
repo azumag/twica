@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import SortedCardGrid from '@/components/SortedCardGrid'
 import type { Card } from '@/types/database'
 
@@ -53,6 +53,7 @@ const baseTranslations = {
   cardCountTemplate: 'x{count}',
   noImage: 'NoImage',
   unownedCard: '???',
+  unownedStatus: '未所持カード',
   inactiveStatus: 'PAUSED',
   cardNumberTemplate: '#{number}',
   sortLabel: '並び替え',
@@ -93,6 +94,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     )
     expect(screen.getByText('OwnedCard')).toBeInTheDocument()
     expect(screen.getByAltText('OwnedCard')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'OwnedCard: x2' })).toBeInTheDocument()
   })
 
   it('reveals name/image/description for unowned cards when hideUnownedDetails=false (公開モード)', () => {
@@ -126,6 +128,62 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     expect(screen.getByAltText('SecretCard')).toBeInTheDocument()
     // 説明テキストも見える
     expect(screen.getByText(/カード説明テキスト/)).toBeInTheDocument()
+    expect(screen.getByText('未所持カード')).toBeInTheDocument()
+    // 公開モードでも未所持カードは詳細遷移を提供しない
+    // Unowned public cards reveal content but remain non-navigable.
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('keeps disclosure controls outside detail links and operable for owned and unowned cards', () => {
+    const proto = HTMLElement.prototype
+    const savedScrollHeight = Object.getOwnPropertyDescriptor(proto, 'scrollHeight')
+    const savedClientHeight = Object.getOwnPropertyDescriptor(proto, 'clientHeight')
+    Object.defineProperty(proto, 'scrollHeight', { configurable: true, value: 100 })
+    Object.defineProperty(proto, 'clientHeight', { configurable: true, value: 50 })
+
+    try {
+      const cards = [
+        {
+          ...baseCard({ id: 'owned-long', name: 'OwnedLong', description: '長い説明1' }),
+          count: 1,
+          isOwned: true,
+        },
+        {
+          ...baseCard({ id: 'unowned-long', name: 'UnownedLong', description: '長い説明2' }),
+          count: 0,
+          isOwned: false,
+        },
+      ]
+      render(
+        <SortedCardGrid
+          cards={cards}
+          streamerId="streamer-1"
+          hideUnownedDetails={false}
+          translations={baseTranslations}
+        />
+      )
+
+      const buttons = screen.getAllByRole('button', { name: '開く' })
+      expect(buttons).toHaveLength(2)
+      for (const button of buttons) {
+        expect(button.closest('a')).toBeNull()
+        expect(button.closest('[aria-disabled="true"]')).toBeNull()
+        button.focus()
+        fireEvent.click(button)
+        expect(button).toHaveAttribute('aria-expanded', 'true')
+      }
+    } finally {
+      if (savedScrollHeight) {
+        Object.defineProperty(proto, 'scrollHeight', savedScrollHeight)
+      } else {
+        delete (proto as unknown as Record<string, unknown>).scrollHeight
+      }
+      if (savedClientHeight) {
+        Object.defineProperty(proto, 'clientHeight', savedClientHeight)
+      } else {
+        delete (proto as unknown as Record<string, unknown>).clientHeight
+      }
+    }
   })
 
   it('hides unowned card image / name / description when hideUnownedDetails=true (placeholder only)', () => {

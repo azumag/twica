@@ -43,6 +43,9 @@ interface CollectionCardProps {
   // Whether this card is owned by the current user (default: true for backward compatibility)
   // このカードを現在ユーザーが所持しているか（後方互換のためデフォルトtrue）
   isOwned?: boolean;
+  // Accessible label for the unowned-state marker.
+  // 未所持状態を支援技術へ伝えるラベル。
+  unownedLabel?: string;
   // Whether the card is no longer distributed
   // このカードが現在配布停止中かどうか
   isInactive?: boolean;
@@ -71,6 +74,7 @@ export default function CollectionCard({
   priority = false,
   noImageText,
   isOwned = true,
+  unownedLabel = "Unowned card",
   isInactive = false,
   inactiveLabel,
   descriptionComponent,
@@ -79,7 +83,7 @@ export default function CollectionCard({
     isOwned ? "cursor-pointer hover:scale-105" : "cursor-default"
   } ${isInactive ? "ring-1 ring-amber-400/30" : ""}`;
 
-  const cardBody = (
+  const cardContent = (
     <>
       {/* Card name and rarity badge at the top */}
       {/* 名前とレアリティを一番上に配置 */}
@@ -110,6 +114,7 @@ export default function CollectionCard({
 
       {!isOwned && (
         <div className="absolute right-2 top-2 rounded-full bg-black/60 p-1">
+          <span className="sr-only">{unownedLabel}</span>
           <svg
             className="h-3.5 w-3.5 text-white"
             viewBox="0 0 24 24"
@@ -151,18 +156,33 @@ export default function CollectionCard({
         )}
       </div>
 
-      {/* Description and count at the bottom */}
-      {/* 説明とカウント */}
-      <div className="p-3 pt-2">
-        {descriptionComponent}
-        {(count ?? 0) > 1 && (
-          <div className="text-gray-400 text-sm">
-            {countLabel}
-          </div>
-        )}
-      </div>
     </>
   );
+
+  const cardDetailHref = `/collection/${streamerId}/card/${id}`;
+
+  // 説明の開閉buttonをカード詳細Linkの外へ置くため、フッターはLinkの兄弟として描画する。
+  // Keep the footer outside the card Link so its disclosure button is never nested in an anchor.
+  const hasCount = isOwned && (count ?? 0) > 1;
+  const hasCardFooter =
+    (descriptionComponent !== undefined && descriptionComponent !== null) ||
+    hasCount;
+
+  const cardFooter = hasCardFooter ? (
+    <div className="p-3 pt-2">
+      {descriptionComponent}
+      {hasCount && (
+        <Link
+          href={cardDetailHref}
+          className="text-gray-400 text-sm"
+          aria-label={`${name}: ${countLabel}`}
+          prefetch={false}
+        >
+          {countLabel}
+        </Link>
+      )}
+    </div>
+  ) : null;
 
   // prefetch={false}: Disable automatic prefetching to prevent N+1 API calls
   // Each card link would trigger a server-side fetch of getUserCardDetail() on hover/viewport
@@ -171,16 +191,20 @@ export default function CollectionCard({
   // 各カードリンクはホバー/ビューポート時にgetUserCardDetail()のサーバー側フェッチを発生させる
   // 50枚のカードがある場合、プリフェッチだけで150以上のDBクエリが発生する
   return isOwned ? (
-    <Link
-      href={`/collection/${streamerId}/card/${id}`}
-      className={cardClassName}
-      prefetch={false}
-    >
-      {cardBody}
-    </Link>
+    <div className={cardClassName}>
+      <Link
+        href={cardDetailHref}
+        className="block"
+        prefetch={false}
+      >
+        {cardContent}
+      </Link>
+      {cardFooter}
+    </div>
   ) : (
-    <div className={cardClassName} aria-disabled="true">
-      {cardBody}
+    <div className={cardClassName}>
+      {cardContent}
+      {cardFooter}
     </div>
   );
 }
