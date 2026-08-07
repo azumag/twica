@@ -102,7 +102,7 @@ async function signEventSubBody(secret: string, messageId: string, timestamp: st
 async function createRedemptionRequest(messageId: string): Promise<NextRequest> {
   const secret = 'eventsub-test-secret'
   process.env.TWITCH_EVENTSUB_SECRET = secret
-  const timestamp = '2026-07-01T10:00:00Z'
+  const timestamp = new Date().toISOString()
   const body = JSON.stringify({
     subscription: { type: 'channel.channel_points_custom_reward_redemption.add' },
     event: {

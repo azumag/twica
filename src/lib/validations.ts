@@ -1,5 +1,5 @@
 
-import { CARD_DESCRIPTION_MAX_CHARACTERS, ERROR_MESSAGES } from './constants'
+import { CARD_DESCRIPTION_MAX_CHARACTERS, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS, ERROR_MESSAGES } from './constants'
 import { countCharacters } from './text-utils'
 // validateDropRateSumのDB読取はPlanetScale/Drizzleの単一経路。
 import { and, eq } from 'drizzle-orm'
@@ -181,6 +181,98 @@ export function validateRarity(rarity: unknown): { valid: boolean; error?: strin
 
   if (/[\u0000-\u001f\u007f]/.test(trimmedRarity)) {
     return { valid: false, error: ERROR_MESSAGES.INVALID_RARITY }
+  }
+
+  return { valid: true }
+}
+
+/**
+ * Twitch チャネルポイント報酬 ID の形式検証（UUID）。issue #836。
+ *
+ * Twitch の報酬 ID は UUID 形式。チャネルポイント報酬の紐付け（streamer/settings）と
+ * 追加報酬（additional-rewards）の reward_id として保存されるため、非 UUID の値が
+ * EventSub 購読条件（condition.reward_id）と不整合を起こさないようルート層で検証する。
+ * null / undefined は「設定なし・クリア」を意味するため許可する。
+ */
+export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function validateRewardId(rewardId: unknown): { valid: boolean; error?: string } {
+  if (rewardId === null || rewardId === undefined) {
+    return { valid: true }
+  }
+
+  if (typeof rewardId !== 'string') {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+
+  // 空文字列は「報酬なし」を意味する（クライアントは未選択時に "" を送る）
+  const trimmedId = rewardId.trim()
+  if (trimmedId === '') {
+    return { valid: true }
+  }
+
+  if (!UUID_REGEX.test(trimmedId)) {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+
+  return { valid: true }
+}
+
+/**
+ * 報酬名の検証（文字列 + 100 字上限 + 制御文字禁止）。issue #836。
+ * null / undefined は許可（設定なし・クリアを意味する）。
+ */
+export function validateRewardName(rewardName: unknown): { valid: boolean; error?: string } {
+  if (rewardName === null || rewardName === undefined) {
+    return { valid: true }
+  }
+
+  if (typeof rewardName !== 'string') {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+
+  const trimmedName = rewardName.trim()
+
+  if (trimmedName.length === 0 || trimmedName.length > 100) {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+
+  if (/[\u0000-\u001f\u007f]/.test(trimmedName)) {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+
+  return { valid: true }
+}
+
+/**
+ * チャット通知テンプレートの検証（文字列 + 500 字上限）。issue #836。
+ * null は許可（デフォルトテンプレートを使用）。送信時にも 500 字へ truncate される
+ * （chat-service）ため、上限は保存時・送信時の双方で一貫している。
+ * 複数行テンプレートは正当なユースケース（UI は textarea rows=3）のため、
+ * 改行（LF/CR）とタブは許可する。制御文字チェックは改行・タブを除外する。
+ */
+const TEMPLATE_CONTROL_CHAR_REGEX = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/
+
+export function validateChatAnnouncementTemplate(template: unknown): { valid: boolean; error?: string } {
+  if (template === null || template === undefined) {
+    return { valid: true }
+  }
+
+  if (typeof template !== 'string') {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+
+  if (countCharacters(template) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS) {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+
+  if (TEMPLATE_CONTROL_CHAR_REGEX.test(template)) {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+
+  // 空白のみのテンプレートは「通知文が無い」状態になるため拒否する
+  if (template.trim() === '') {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
   }
 
   return { valid: true }

@@ -121,10 +121,10 @@ describe("/api/streamer/additional-rewards raid options", () => {
   it("persists drawCount and raid-limited options", async () => {
     const db = primeDb({
       selects: [{ rows: [streamer()] }],
-      inserts: [{ rows: [{ id: "additional-1", reward_id: "raid-reward" }] }],
+      inserts: [{ rows: [{ id: "additional-1", reward_id: "44444444-4444-4444-4444-444444444444" }] }],
     });
     const response = await POST(request({
-      rewardId: "raid-reward",
+      rewardId: "44444444-4444-4444-4444-444444444444",
       rewardName: "Raid 10",
       drawCount: 10,
       isRaidLimited: true,
@@ -141,7 +141,7 @@ describe("/api/streamer/additional-rewards raid options", () => {
       inserts: [{ rows: [{ id: "additional-1", collection_name: "weapons" }] }],
     });
     const response = await POST(request({
-      rewardId: "extra-reward",
+      rewardId: "44444444-4444-4444-4444-444444444444",
       rewardName: "Weapons",
       collectionName: "weapons",
     }));
@@ -154,7 +154,7 @@ describe("/api/streamer/additional-rewards raid options", () => {
       selects: [{ rows: [streamer(["empty-pack"])] }, { rows: [{ count: 0 }] }],
     });
     const response = await POST(request({
-      rewardId: "extra-reward",
+      rewardId: "44444444-4444-4444-4444-444444444444",
       rewardName: "Empty",
       collectionName: "empty-pack",
     }));
@@ -163,14 +163,14 @@ describe("/api/streamer/additional-rewards raid options", () => {
   });
 
   it("rejects a present but invalid collectionName type", async () => {
-    const response = await POST(request({ rewardId: "extra-reward", collectionName: 123 }));
+    const response = await POST(request({ rewardId: "44444444-4444-4444-4444-444444444444", collectionName: 123 }));
     expect(response.status).toBe(400);
   });
 
   it("rejects an unregistered pack name", async () => {
     const db = primeDb({ selects: [{ rows: [streamer(["characters"])] }] });
     const response = await POST(request({
-      rewardId: "extra-reward",
+      rewardId: "44444444-4444-4444-4444-444444444444",
       rewardName: "Weapons",
       collectionName: "weapons",
     }));
@@ -181,9 +181,9 @@ describe("/api/streamer/additional-rewards raid options", () => {
   it("still creates a reward with no pack", async () => {
     const db = primeDb({
       selects: [{ rows: [streamer()] }],
-      inserts: [{ rows: [{ id: "additional-1", reward_id: "extra-reward" }] }],
+      inserts: [{ rows: [{ id: "additional-1", reward_id: "44444444-4444-4444-4444-444444444444" }] }],
     });
-    const response = await POST(request({ rewardId: "extra-reward", rewardName: "No Pack" }));
+    const response = await POST(request({ rewardId: "44444444-4444-4444-4444-444444444444", rewardName: "No Pack" }));
     expect(response.status).toBe(200);
     expect((await response.json()).success).toBe(true);
     expect(db.insertCalls[0]).not.toHaveProperty("collection_name");
@@ -195,7 +195,7 @@ describe("/api/streamer/additional-rewards raid options", () => {
       inserts: [{ rows: [{ id: "additional-1", collection_name: DEFAULT_PACK_SENTINEL }] }],
     });
     const response = await POST(request({
-      rewardId: "extra-reward",
+      rewardId: "44444444-4444-4444-4444-444444444444",
       rewardName: "Default",
       collectionName: DEFAULT_PACK_SENTINEL,
     }));
@@ -210,7 +210,7 @@ describe("/api/streamer/additional-rewards raid options", () => {
       selects: [{ rows: [streamer()] }, { rows: [{ count: 0 }] }],
     });
     const response = await POST(request({
-      rewardId: "extra-reward",
+      rewardId: "44444444-4444-4444-4444-444444444444",
       rewardName: "Default",
       collectionName: DEFAULT_PACK_SENTINEL,
     }));
@@ -224,10 +224,10 @@ describe("/api/streamer/additional-rewards raid options", () => {
         { error: { code: "42703", message: "column streamers.card_pack_names does not exist" } },
         { rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward" }] },
       ],
-      inserts: [{ rows: [{ id: "additional-1", reward_id: "extra-reward" }] }],
+      inserts: [{ rows: [{ id: "additional-1", reward_id: "44444444-4444-4444-4444-444444444444" }] }],
     });
     const response = await POST(request({
-      rewardId: "extra-reward",
+      rewardId: "44444444-4444-4444-4444-444444444444",
       rewardName: "Weapons",
       collectionName: "weapons",
     }));
@@ -238,7 +238,7 @@ describe("/api/streamer/additional-rewards raid options", () => {
 
   it("rejects drawCount outside the supported range", async () => {
     const response = await POST(request({
-      rewardId: "raid-reward",
+      rewardId: "44444444-4444-4444-4444-444444444444",
       rewardName: "Raid 20",
       drawCount: 20,
       isRaidLimited: true,

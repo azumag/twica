@@ -65,6 +65,15 @@ vi.mock('@opennextjs/cloudflare', () => ({
   getCloudflareContext: mocks.getCloudflareContext,
 }))
 
+// Issue #836: EventSub リプレイ防止（message-id 重複排除）は KV を参照する。
+// このテストは maintenance park の挙動検証が目的のため、dedup は「重複なし」で
+// モックし、KV の put/get 回数に影響を与えないようにする（dedup 自体の動作は
+// 専用テストで検証する）。
+vi.mock('@/lib/eventsub-dedup', () => ({
+  isDuplicateEventSubMessage: vi.fn().mockResolvedValue(false),
+  markEventSubMessageSeen: vi.fn().mockResolvedValue(undefined),
+}))
+
 const ALL_MAINTENANCE_ENV_KEYS = [
   'MAINTENANCE_MODE',
   'MAINTENANCE_STARTED_AT',
@@ -111,7 +120,7 @@ async function createEventSubRequest(
 ): Promise<NextRequest> {
   const secret = 'eventsub-test-secret'
   process.env.TWITCH_EVENTSUB_SECRET = secret
-  const timestamp = '2026-07-18T10:00:00Z'
+  const timestamp = new Date().toISOString()
   const body = JSON.stringify(payload)
   const validSignature = await signEventSubBody(secret, messageId, timestamp, body)
   // 正しい署名の末尾1文字だけを変えることで「署名検証は必ず失敗するが、それ以外

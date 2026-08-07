@@ -282,3 +282,31 @@ describe("GET /api/cards issued_count", () => {
     expect((await response.json()).cards[0]).not.toHaveProperty("issued_count");
   });
 });
+
+describe("pagination parameter clamping (issue #836)", () => {
+  it("clamps invalid limit values (abc, negative, huge) to the safe range", async () => {
+    for (const [limitParam, expected] of [
+      ["abc", 12],       // parseInt NaN → デフォルト12
+      ["-1", 12],        // 負値 → safeParseInt がデフォルト値（1未満は不正扱い）
+      ["1001", 1000],    // 上限1000
+      ["1000", 1000],    // 正常な最大値
+    ] as const) {
+      const mock = primeCards([BASE_CARD], []);
+      await GET(request({ limit: limitParam }));
+      expect(rowQueryCall(mock.calls).limit).toBe(expected);
+    }
+  });
+
+  it("clamps invalid offset values (abc, negative) to 0", async () => {
+    for (const [offsetParam, expected] of [
+      ["abc", 0],
+      ["-5", 0],
+      ["0", 0],
+      ["25", 25],
+    ] as const) {
+      const mock = primeCards([BASE_CARD], []);
+      await GET(request({ offset: offsetParam }));
+      expect(rowQueryCall(mock.calls).offset).toBe(expected);
+    }
+  });
+});

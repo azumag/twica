@@ -3,6 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 
 import {
   validateCardName,
+  validateCardDescription,
   validateImageUrl,
   validateRarity,
 } from "@/lib/validations";
@@ -239,6 +240,15 @@ export async function POST(request: NextRequest) {
 
       if (typeof card.dropRate !== "number" || card.dropRate < 0 || card.dropRate > 1) {
         validationErrors.push(`カード${i + 1}: ${ERROR_MESSAGES.DROP_RATE_INVALID}`);
+      }
+
+      // Issue #836: 単体作成（POST /api/cards）は validateCardDescription を適用しているが、
+      // バッチ経由は description の長さ検証がなく単体側の制限を迂回できていた。
+      // 同じ検証を適用して迂回を閉じる（null/undefined は許可されるため従来挙動は不変）。
+      const descriptionValidation = validateCardDescription(card.description);
+      if (!descriptionValidation.valid) {
+        validationErrors.push(`カード${i + 1}: ${descriptionValidation.error}`);
+        continue;
       }
     }
 

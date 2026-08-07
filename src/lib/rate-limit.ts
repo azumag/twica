@@ -310,6 +310,8 @@ export const rateLimits = {
   authLogin: createRatelimit("authLogin", 5, 60 * 1000),
   authCallback: createRatelimit("authCallback", 10, 60 * 1000),
   authLogout: createRatelimit("authLogout", 10, 60 * 1000),
+  // Issue #836: 利用規約同意（一度きりの操作）。誤発火・連打対策に authLogout と同水準。
+  tosAccept: createRatelimit("tosAccept", 10, 60 * 1000),
   authReauth: createRatelimit("authReauth", 3, 60 * 1000),
   // スコープ確認は読み取り専用の低リスク操作なので、authReauthより緩い制限を設定
   // check-scope is a read-only low-risk operation, so use a more generous limit than authReauth

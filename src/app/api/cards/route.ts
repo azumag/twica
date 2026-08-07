@@ -10,6 +10,7 @@ import {
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
+import { safeParseInt } from "@/lib/parse";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
@@ -715,8 +716,10 @@ export async function GET(request: NextRequest) {
   // ページネーションパラメータ
   // CardManager requests limit=1000 to load all cards for management view
   // カード管理画面では全カード取得のためlimit=1000でリクエストされる
-  const limit = Math.min(parseInt(searchParams.get("limit") || "12", 10), 1000);
-  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  // Issue #836: parseInt 直接使用（"abc"→NaN、負値そのまま）をやめ、
+  // safeParseInt + clamp で PostgreSQL へ不正値を渡さない。
+  const limit = Math.min(safeParseInt(searchParams.get("limit"), 12), 1000);
+  const offset = Math.max(0, safeParseInt(searchParams.get("offset"), 0));
 
   // Sorting parameters (default: created_at desc)
   // 並び替えパラメータ（デフォルト: created_at 降順）

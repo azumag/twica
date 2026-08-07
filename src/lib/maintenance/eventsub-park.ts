@@ -93,7 +93,7 @@ const PARK_TTL_SECONDS = 7 * 24 * 60 * 60
  * 一覧取得・個別取得・削除の3メソッドを追加。型は実際の Cloudflare Workers KV
  * API（list/get/delete）に合わせている。
  */
-interface KVNamespaceLike {
+export interface KVNamespaceLike {
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
   /**
    * キー一覧を取得する。`list_complete: false` の場合は返却された `cursor` を

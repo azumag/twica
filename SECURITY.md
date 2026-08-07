@@ -31,7 +31,7 @@ An unbounded decompression chain in HTTP responses on Node.js Fetch API via Cont
 ### Security Best Practices
 
 #### Session Management
-- Sessions use `SameSite='strict'` for CSRF protection
+- Sessions use `SameSite='lax'`（OAuth コールバックで Cookie を到達させるため。constants.ts 参照）
 - CSRF tokens provide additional protection layer
 - Sessions expire after 7 days
 - Version field prevents concurrent modifications
@@ -39,12 +39,13 @@ An unbounded decompression chain in HTTP responses on Node.js Fetch API via Cont
 #### Cookie Security
 - All cookies use `httpOnly: true`
 - All cookies use `secure: true` in production
-- State cookie uses `SameSite='lax' to allow OAuth callback
+- State cookie uses `SameSite='lax'` to allow OAuth callback
 
 #### Input Validation
 - All API inputs are validated
 - Rate limiting prevents abuse
 - CSRF protection on all state-changing requests
+  （例外: `/api/twitch/eventsub/debug` の DELETE は #831 で追跡中）
 
 #### Rate Limiting
 - In-memory rate limiting for development
