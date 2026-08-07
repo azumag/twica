@@ -158,14 +158,15 @@ export default function CollectionCard({
 
   // 説明の開閉buttonをカード詳細Linkの外へ置くため、フッターはLinkの兄弟として描画する。
   // Keep the footer outside the card Link so its disclosure button is never nested in an anchor.
+  const hasCount = isOwned && (count ?? 0) > 1;
   const hasCardFooter =
     (descriptionComponent !== undefined && descriptionComponent !== null) ||
-    (count ?? 0) > 1;
+    hasCount;
 
   const cardFooter = hasCardFooter ? (
     <div className="p-3 pt-2">
       {descriptionComponent}
-      {(count ?? 0) > 1 && (
+      {hasCount && (
         <Link
           href={cardDetailHref}
           className="text-gray-400 text-sm"
