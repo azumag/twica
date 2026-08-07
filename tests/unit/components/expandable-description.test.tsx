@@ -125,9 +125,9 @@ describe('ExpandableDescription', () => {
     const parentClick = vi.fn()
 
     render(
-      <Link href="/collection/streamer-1/card/card-1" onClick={parentClick}>
+      <div onClick={parentClick}>
         <ExpandableDescription description="長い説明テキスト" />
-      </Link>
+      </div>
     )
 
     const description = screen.getByText('長い説明テキスト')
