@@ -118,7 +118,7 @@ export default function ExpandableDescription({
 
   // line-clampのクラス名を動的に生成
   // Dynamically generate line-clamp class
-  const lineClampClass = isExpanded ? "" : \`line-clamp-\${maxLines}\`;
+  const lineClampClass = isExpanded ? "" : `line-clamp-${maxLines}`;
 
   // クリック可能かどうか（省略されているか展開済み）
   // Whether clickable (truncated or already expanded)
@@ -127,7 +127,7 @@ export default function ExpandableDescription({
   // 展開時に最大高さが指定されている場合のスタイル
   // Style for expanded state with max height limit
   const expandedStyle = isExpanded && maxExpandedHeight
-    ? { maxHeight: \`\${maxExpandedHeight}px\`, overflowY: "auto" as const }
+    ? { maxHeight: `${maxExpandedHeight}px`, overflowY: "auto" as const }
     : undefined;
 
   const descriptionContent = (
