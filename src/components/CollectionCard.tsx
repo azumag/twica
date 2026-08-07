@@ -109,7 +109,11 @@ export default function CollectionCard({
       </div>
 
       {!isOwned && (
-        <div className="absolute right-2 top-2 rounded-full bg-black/60 p-1">
+        <div
+          role="img"
+          aria-label="Unowned card"
+          className="absolute right-2 top-2 rounded-full bg-black/60 p-1"
+        >
           <svg
             className="h-3.5 w-3.5 text-white"
             viewBox="0 0 24 24"
@@ -196,7 +200,7 @@ export default function CollectionCard({
       {cardFooter}
     </div>
   ) : (
-    <div className={cardClassName} aria-disabled="true">
+    <div className={cardClassName}>
       {cardContent}
       {cardFooter}
     </div>
