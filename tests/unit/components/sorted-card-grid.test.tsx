@@ -126,6 +126,9 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     expect(screen.getByAltText('SecretCard')).toBeInTheDocument()
     // 説明テキストも見える
     expect(screen.getByText(/カード説明テキスト/)).toBeInTheDocument()
+    // 公開モードでも未所持カードは詳細遷移を提供しない
+    // Unowned public cards reveal content but remain non-navigable.
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 
   it('hides unowned card image / name / description when hideUnownedDetails=true (placeholder only)', () => {
