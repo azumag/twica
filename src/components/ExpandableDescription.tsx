@@ -47,7 +47,12 @@ export default function ExpandableDescription({
     }
   }, [description]);
 
-  const handleClick = () => {
+  const handleClick = (e: React.MouseEvent) => {
+    // カード全体が詳細画面への Link でラップされている場合（コレクションページ等）、
+    // このクリックが親へバブリングすると「開く/閉じる」と同時にカード詳細へ
+    // 遷移してしまうため、伝播を止める。
+    // Stop propagation so the enclosing card Link (detail navigation) is not triggered.
+    e.stopPropagation();
     // 省略されている場合のみ展開/折りたたみを切り替え
     // Only toggle if text is actually truncated
     if (isTruncated || isExpanded) {
