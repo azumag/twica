@@ -43,6 +43,9 @@ interface CollectionCardProps {
   // Whether this card is owned by the current user (default: true for backward compatibility)
   // このカードを現在ユーザーが所持しているか（後方互換のためデフォルトtrue）
   isOwned?: boolean;
+  // Accessible label for the unowned-state marker.
+  // 未所持状態を支援技術へ伝えるラベル。
+  unownedLabel?: string;
   // Whether the card is no longer distributed
   // このカードが現在配布停止中かどうか
   isInactive?: boolean;
@@ -71,6 +74,7 @@ export default function CollectionCard({
   priority = false,
   noImageText,
   isOwned = true,
+  unownedLabel = "Unowned card",
   isInactive = false,
   inactiveLabel,
   descriptionComponent,
@@ -109,10 +113,8 @@ export default function CollectionCard({
       </div>
 
       {!isOwned && (
-        <div
-          aria-hidden="true"
-          className="absolute right-2 top-2 rounded-full bg-black/60 p-1"
-        >
+        <div className="absolute right-2 top-2 rounded-full bg-black/60 p-1">
+          <span className="sr-only">{unownedLabel}</span>
           <svg
             className="h-3.5 w-3.5 text-white"
             viewBox="0 0 24 24"
@@ -173,6 +175,7 @@ export default function CollectionCard({
         <Link
           href={cardDetailHref}
           className="text-gray-400 text-sm"
+          aria-label={`${name}: ${countLabel}`}
           prefetch={false}
         >
           {countLabel}
