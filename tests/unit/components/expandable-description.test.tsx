@@ -1,5 +1,5 @@
-import { act, afterEach, createEvent, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, createEvent, fireEvent, render, screen } from '@testing-library/react'
 import Link from 'next/link'
 import ExpandableDescription from '@/components/ExpandableDescription'
 
