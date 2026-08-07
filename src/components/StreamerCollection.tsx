@@ -77,6 +77,7 @@ export default async function StreamerCollection({
     unownedCard: t("unownedCard"),
     inactiveStatus: tCardManager("status.paused"),
     cardNumberTemplate: t("cardNumber"),
+    unownedStatus: t("unownedStatus"),
     sortLabel: t("sort.label"),
     sortByNumber: t("sort.number"),
     sortByRarity: t("sort.rarity"),
