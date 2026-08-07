@@ -37,6 +37,9 @@ interface SortedCardGridProps {
     cardCountTemplate: string;
     noImage: string;
     unownedCard: string;
+    // Accessible status text for unowned cards.
+    // 未所持カードの支援技術向け状態ラベル。
+    unownedStatus?: string;
     inactiveStatus: string;
     cardNumberTemplate: string;
     sortLabel: string;
@@ -137,6 +140,7 @@ export default function SortedCardGrid({
                 maskUnownedDetails ? translations.unownedCard : translations.noImage
               }
               isOwned={isOwned}
+              unownedLabel={translations.unownedStatus}
               isInactive={isOwned && !card.is_active}
               inactiveLabel={translations.inactiveStatus}
               descriptionComponent={
