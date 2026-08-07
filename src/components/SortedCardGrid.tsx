@@ -143,7 +143,7 @@ export default function SortedCardGrid({
                 showDescription ? (
                   <ExpandableDescription
                     description={card.description as string}
-                    detailHref={`/collection/${streamerId}/card/${card.id}`}
+                    detailHref={isOwned ? `/collection/${streamerId}/card/${card.id}` : undefined}
                   />
                 ) : undefined
               }
