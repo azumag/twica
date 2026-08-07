@@ -39,6 +39,7 @@ export default function ExpandableDescription({
   const tCommon = useTranslations("common");
   const [previousDescription, setPreviousDescription] = useState(description);
   const [isExpanded, setIsExpanded] = useState(false);
+
   // Reactのrender中に直前のpropとの差し替えを同期する。A→B→Aのように
   // 文字列が再利用されても、直前の説明から変わるたびに展開状態を破棄する。
   // Synchronize against the immediately previous prop during render so an A→B→A
@@ -47,6 +48,7 @@ export default function ExpandableDescription({
     setPreviousDescription(description);
     setIsExpanded(false);
   }
+
   const [isTruncated, setIsTruncated] = useState(false);
   const textRef = useRef<HTMLParagraphElement>(null);
 
@@ -79,7 +81,56 @@ export default function ExpandableDescription({
       setIsTruncated(element.scrollHeight > element.clientHeight);
     });
     observer.observe(element);
-    const descriptionContent = (
+    return () => observer.disconnect();
+  }, [description, isExpanded]);
+
+  const handleClick = (e: React.MouseEvent) => {
+    // ResizeObserverに加えて操作時点でも実寸を再確認する。通知前に古い状態が残っても、
+    // 全文が収まる場合は通常遷移を維持し、新たに省略された場合はその場で展開できる。
+    // Re-check the current layout at interaction time as a fallback before a
+    // ResizeObserver notification so stale state cannot block or miss navigation.
+    const element = textRef.current;
+    const currentlyTruncated = element
+      ? element.scrollHeight > element.clientHeight
+      : isTruncated;
+    const isExpansionControl = e.currentTarget.tagName === "BUTTON";
+
+    // 省略された説明の開閉だけをカード内の操作として扱う。preventDefaultは
+    // 親Linkの既定遷移を止め、stopPropagationは親のonClickを止める。
+    // Only an actually truncated description is interactive. preventDefault stops
+    // enclosing-link navigation and stopPropagation prevents its parent onClick.
+    if (!currentlyTruncated && !isExpanded) {
+      // 通知前に残った古いbuttonは、ラベルに反して詳細へ遷移させず次描画で除去する。
+      // A stale button is canceled rather than navigating against its label.
+      setIsTruncated(false);
+      if (isExpansionControl) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    setIsTruncated(true);
+    setIsExpanded(!isExpanded);
+  };
+
+  // line-clampのクラス名を動的に生成
+  // Dynamically generate line-clamp class
+  const lineClampClass = isExpanded ? "" : \`line-clamp-\${maxLines}\`;
+
+  // クリック可能かどうか（省略されているか展開済み）
+  // Whether clickable (truncated or already expanded)
+  const isClickable = isTruncated || isExpanded;
+
+  // 展開時に最大高さが指定されている場合のスタイル
+  // Style for expanded state with max height limit
+  const expandedStyle = isExpanded && maxExpandedHeight
+    ? { maxHeight: \`\${maxExpandedHeight}px\`, overflowY: "auto" as const }
+    : undefined;
+
+  const descriptionContent = (
     <p
       ref={textRef}
       onClick={handleClick}
