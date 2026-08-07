@@ -375,7 +375,8 @@
       "rarity": "レアリティ順"
     },
     "viewCollection": "コレクションを見る",
-    "unownedCard": "???"
+    "unownedCard": "???",
+    "unownedStatus": "未所持カード"
   },
   "collectionProgress": {
     "progress": "{owned}/{total}種類",

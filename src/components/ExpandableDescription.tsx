@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useRef, useEffect } from "react";
 import { useTranslations } from "next-intl";
 
@@ -12,6 +13,9 @@ interface ExpandableDescriptionProps {
   /** 展開時の最大高さをピクセルで指定（デフォルト: 無制限） */
   /** Max height in pixels when expanded (default: unlimited) */
   maxExpandedHeight?: number;
+  /** 詳細ページへのリンク（説明本文だけをリンクにする場合に指定） */
+  /** Optional detail URL for the description text only. */
+  detailHref?: string;
 }
 
 /**
@@ -27,12 +31,24 @@ export default function ExpandableDescription({
   maxLines = 2,
   size = "sm",
   maxExpandedHeight,
+  detailHref,
 }: ExpandableDescriptionProps) {
   // テキストサイズに基づくクラス
   // Classes based on text size
   const textSizeClass = size === "xs" ? "text-xs text-gray-400" : "text-sm text-gray-300";
   const tCommon = useTranslations("common");
+  const [previousDescription, setPreviousDescription] = useState(description);
   const [isExpanded, setIsExpanded] = useState(false);
+
+  // Reactのrender中に直前のpropとの差し替えを同期する。A→B→Aのように
+  // 文字列が再利用されても、直前の説明から変わるたびに展開状態を破棄する。
+  // Synchronize against the immediately previous prop during render so an A→B→A
+  // sequence cannot resurrect A's old expansion state.
+  if (previousDescription !== description) {
+    setPreviousDescription(description);
+    setIsExpanded(false);
+  }
+
   const [isTruncated, setIsTruncated] = useState(false);
   const textRef = useRef<HTMLParagraphElement>(null);
 
@@ -47,28 +63,57 @@ export default function ExpandableDescription({
     }
   }, [description]);
 
-  const handleClick = (e: React.MouseEvent) => {
-    // 省略されている場合のみ展開/折りたたみを切り替える。
-    // Only toggle if text is actually truncated (or already expanded, to allow collapsing).
-    //
-    // stopPropagation はこの分岐の内側でのみ呼ぶ。もし条件外（省略されていない
-    // 短い説明文）でも無条件に呼んでしまうと、カード全体が詳細画面への Link で
-    // ラップされている場合（コレクションページ等）に、本来は親へ伝播してカード
-    // 詳細へ遷移するはずのクリックまで飲み込んでしまい、説明文の領域だけ
-    // 何も起きないクリック不能な死角ができてしまう。
-    //
-    // Only call stopPropagation inside this branch. Calling it unconditionally
-    // (even when the text isn't truncated) would swallow clicks that should
-    // otherwise bubble up to the enclosing card Link (detail navigation),
-    // creating a dead click zone over the non-truncated description text.
-    if (isTruncated || isExpanded) {
-      // カード全体が詳細画面への Link でラップされている場合（コレクションページ等）、
-      // このクリックが親へバブリングすると「開く/閉じる」と同時にカード詳細へ
-      // 遷移してしまうため、伝播を止める。
-      // Stop propagation so the enclosing card Link (detail navigation) is not triggered.
-      e.stopPropagation();
-      setIsExpanded(!isExpanded);
+  useEffect(() => {
+    const element = textRef.current;
+    if (!element || typeof ResizeObserver === "undefined") {
+      return;
     }
+
+    // レイアウト変更を購読し、表示中の「開く」ボタンを実際の省略状態と同期する。
+    // 展開中はline-clampを外しているため、observerからの実寸が非省略でもtrueを維持する。
+    // Observe layout changes so the expand control matches actual truncation; while
+    // expanded, preserve the flag because the clamp is intentionally removed.
+    const observer = new ResizeObserver(() => {
+      if (isExpanded) {
+        setIsTruncated(true);
+        return;
+      }
+      setIsTruncated(element.scrollHeight > element.clientHeight);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [description, isExpanded]);
+
+  const handleClick = (e: React.MouseEvent) => {
+    // ResizeObserverに加えて操作時点でも実寸を再確認する。通知前に古い状態が残っても、
+    // 全文が収まる場合は通常遷移を維持し、新たに省略された場合はその場で展開できる。
+    // Re-check the current layout at interaction time as a fallback before a
+    // ResizeObserver notification so stale state cannot block or miss navigation.
+    const element = textRef.current;
+    const currentlyTruncated = element
+      ? element.scrollHeight > element.clientHeight
+      : isTruncated;
+    const isExpansionControl = e.currentTarget.tagName === "BUTTON";
+
+    // 省略された説明の開閉だけをカード内の操作として扱う。preventDefaultは
+    // 親Linkの既定遷移を止め、stopPropagationは親のonClickを止める。
+    // Only an actually truncated description is interactive. preventDefault stops
+    // enclosing-link navigation and stopPropagation prevents its parent onClick.
+    if (!currentlyTruncated && !isExpanded) {
+      // 通知前に残った古いbuttonは、ラベルに反して詳細へ遷移させず次描画で除去する。
+      // A stale button is canceled rather than navigating against its label.
+      setIsTruncated(false);
+      if (isExpansionControl) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    setIsTruncated(true);
+    setIsExpanded(!isExpanded);
   };
 
   // line-clampのクラス名を動的に生成
@@ -85,38 +130,41 @@ export default function ExpandableDescription({
     ? { maxHeight: `${maxExpandedHeight}px`, overflowY: "auto" as const }
     : undefined;
 
+  const descriptionContent = (
+    <p
+      ref={textRef}
+      // detailHrefを指定した説明は入力手段によらず詳細リンクとして動作させ、
+      // 展開・折りたたみは専用buttonだけに限定する。
+      // Keep linked descriptions navigable by mouse and keyboard alike; the
+      // disclosure button is the only control that changes expansion state.
+      onClick={detailHref ? undefined : handleClick}
+      style={expandedStyle}
+      className={[textSizeClass, lineClampClass, isClickable ? "cursor-pointer hover:text-gray-200" : ""].join(" ")}
+    >
+      {description}
+    </p>
+  );
+
   return (
     <div className="mb-1">
-      <p
-        ref={textRef}
-        onClick={handleClick}
-        style={expandedStyle}
-        className={`${textSizeClass} ${lineClampClass} ${
-          isClickable ? "cursor-pointer hover:text-gray-200" : ""
-        }`}
-      >
-        {description}
-      </p>
-      {/* 展開インジケーター（省略時のみ表示、展開後は非表示だがクリックで折りたたみ可能） */}
-      {/* Expand indicator (shown only when truncated, hidden after expand but click to collapse still works) */}
-      {isTruncated && !isExpanded && (
-        <button
-          onClick={handleClick}
-          className="text-xs text-purple-400 hover:text-purple-300 mt-1 flex items-center gap-1"
-        >
-          <span>▼</span>
-          <span>{tCommon("expand")}</span>
-        </button>
+      {detailHref ? (
+        <Link href={detailHref} className="block" prefetch={false}>
+          {descriptionContent}
+        </Link>
+      ) : (
+        descriptionContent
       )}
-      {/* 折りたたみインジケーター（展開時のみ表示） */}
-      {/* Collapse indicator (shown only when expanded) */}
-      {isExpanded && (
+      {/* 開閉操作子は単一要素にして、展開状態を支援技術へ通知しフォーカスを維持する。 */}
+      {/* Keep one persistent control so focus survives toggles and assistive tech sees state. */}
+      {isTruncated && (
         <button
+          type="button"
+          aria-expanded={isExpanded}
           onClick={handleClick}
           className="text-xs text-purple-400 hover:text-purple-300 mt-1 flex items-center gap-1"
         >
-          <span>▲</span>
-          <span>{tCommon("collapse")}</span>
+          <span aria-hidden="true">{isExpanded ? "▲" : "▼"}</span>
+          <span>{tCommon(isExpanded ? "collapse" : "expand")}</span>
         </button>
       )}
     </div>
