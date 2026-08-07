@@ -110,8 +110,7 @@ export default function CollectionCard({
 
       {!isOwned && (
         <div
-          role="img"
-          aria-label="Unowned card"
+          aria-hidden="true"
           className="absolute right-2 top-2 rounded-full bg-black/60 p-1"
         >
           <svg
