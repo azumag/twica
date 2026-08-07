@@ -105,12 +105,16 @@ describe('validateRewardName (issue #836)', () => {
     expect(validateRewardName('a'.repeat(100))).toEqual({ valid: true })
   })
 
-  it('101字以上・空文字・制御文字を含む名前を拒否する', () => {
+  it('空文字列・空白のみは「名前未設定」として許可する（validateRewardId と対称）', () => {
+    // ChannelPointSettings.tsx の handleSave は保存のたびに channelPointRewardName を
+    // 送信する（useState(currentRewardName || "") で初期化）。reward_name が未設定な
+    // 既存データを持つ配信者が無関係な設定を保存できなくなるレグレッションを防ぐ。
+    expect(validateRewardName('')).toEqual({ valid: true })
+    expect(validateRewardName('   ')).toEqual({ valid: true })
+  })
+
+  it('101字以上・制御文字を含む名前を拒否する', () => {
     expect(validateRewardName('a'.repeat(101))).toEqual({
-      valid: false,
-      error: ERROR_MESSAGES.INVALID_REQUEST,
-    })
-    expect(validateRewardName('   ')).toEqual({
       valid: false,
       error: ERROR_MESSAGES.INVALID_REQUEST,
     })

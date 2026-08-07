@@ -221,6 +221,11 @@ export function validateRewardId(rewardId: unknown): { valid: boolean; error?: s
 /**
  * 報酬名の検証（文字列 + 100 字上限 + 制御文字禁止）。issue #836。
  * null / undefined は許可（設定なし・クリアを意味する）。
+ * 空文字列（trim後）も validateRewardId と対称に「名前なし」として許可する。
+ * ChannelPointSettings.tsx の handleSave は保存のたびに channelPointRewardId/Name を
+ * 両方送信するため（useState(currentRewardName || "") で初期化）、reward_name が
+ * 未設定な既存データを持つ行では "" が送られうる。ここを拒否すると、そのようなデータを
+ * 持つ配信者は無関係な設定変更（パック紐付け等）まで保存できなくなるレグレッションになる。
  */
 export function validateRewardName(rewardName: unknown): { valid: boolean; error?: string } {
   if (rewardName === null || rewardName === undefined) {
@@ -233,7 +238,11 @@ export function validateRewardName(rewardName: unknown): { valid: boolean; error
 
   const trimmedName = rewardName.trim()
 
-  if (trimmedName.length === 0 || trimmedName.length > 100) {
+  if (trimmedName === '') {
+    return { valid: true }
+  }
+
+  if (trimmedName.length > 100) {
     return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
   }
 

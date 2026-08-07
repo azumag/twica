@@ -178,14 +178,20 @@ export async function POST(request: NextRequest) {
     //   allowlist default-denyと同じfail-safeの考え方）。
     const maintenanceState = getMaintenanceState();
     if (maintenanceState.mode !== 'off') {
-      await parkEventSubNotification({
+      const parked = await parkEventSubNotification({
         messageId,
         payload: data,
         subscriptionType,
         maintenanceState,
       });
-      // 退避（= 処理の永続化）が完了したので、この message-id を重複排除に記録する
-      await markEventSubMessageSeen(messageId);
+      // 退避（= 処理の永続化）が完了した場合のみ、この message-id を重複排除に記録する。
+      // 退避に失敗した場合（KV書き込み不可等）は記録しない: ここで記録すると、
+      // Twitch が同一 message-id を独自に再送してきた際に重複と誤判定され、
+      // 再退避のチャンスを失って通知が永久に失われる。KV退避が失敗しても2xxを返す方針
+      // （下記コメント・parkEventSubNotification内のコメント参照）自体は維持する。
+      if (parked) {
+        await markEventSubMessageSeen(messageId);
+      }
       return NextResponse.json({ received: true });
     }
 
