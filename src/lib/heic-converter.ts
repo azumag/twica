@@ -19,12 +19,40 @@
  */
 export const HEIC_INPUT_MAX_BYTES = 25 * 1024 * 1024; // 25MB（変換前の入力上限。デコード後のメモリ使用量は圧縮時サイズより大幅に増えるため、緩めの安全弁）
 
+// heic2any 0.0.4 は変換用 Worker を停止する Abort API を公開していないため、
+// 呼び出し側が無期限に待ち続けないよう、import とデコードを合わせた総時間に上限を設ける。
+export const HEIC_CONVERSION_TIMEOUT_MS = 30_000;
+
 // 変換処理の失敗種別（呼び出し側で Error.message を比較するための定数）
 export const HEIC_ERROR_TOO_LARGE = "HEIC_TOO_LARGE";
 export const HEIC_ERROR_CONVERT_FAILED = "HEIC_CONVERT_FAILED";
+export const HEIC_ERROR_TIMEOUT = "HEIC_CONVERSION_TIMEOUT";
 
 const HEIC_MIME_TYPES = ["image/heic", "image/heif"];
 const HEIC_EXTENSIONS = [".heic", ".heif"];
+
+/**
+ * Abort API を持たない非同期処理に、利用者向けの有限な待機時間を与える。
+ *
+ * Promise.race は呼び出し側の Promise を終了させるだけで、heic2any 内部の
+ * Worker は停止できない。そのため、タイムアウト後に元の処理が遅れて完了しても
+ * 呼び出し側で結果を採用しないこと（CardManager の世代チェック）が必要になる。
+ */
+async function withTimeout<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const operationPromise = Promise.resolve().then(operation);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(HEIC_ERROR_TIMEOUT)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operationPromise, timeoutPromise]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
 
 /**
  * アップロード対象ファイルが HEIC / HEIF かどうかを判定する。
@@ -53,23 +81,19 @@ export async function convertHeicToJpeg(file: File): Promise<File> {
     throw new Error(HEIC_ERROR_TOO_LARGE);
   }
 
-  let heic2any: (input: {
-    blob: Blob;
-    toType: string;
-    quality?: number;
-  }) => Promise<Blob | Blob[]>;
-  try {
-    const mod = await import("heic2any");
-    heic2any = mod.default;
-  } catch {
-    throw new Error(HEIC_ERROR_CONVERT_FAILED);
-  }
-
   let output: Blob | Blob[];
   try {
-    // quality は既存のクロップ再圧縮（ImageCropper の 0.85）と同等水準にする
-    output = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.85 });
-  } catch {
+    output = await withTimeout(async () => {
+      const { default: heic2any } = await import("heic2any");
+      // quality は既存のクロップ再圧縮（ImageCropper の 0.85）と同等水準にする
+      return heic2any({ blob: file, toType: "image/jpeg", quality: 0.85 });
+    }, HEIC_CONVERSION_TIMEOUT_MS);
+  } catch (error) {
+    // タイムアウトは呼び出し側で変換失敗と区別できるよう、そのまま伝える。
+    // それ以外のライブラリ内部エラーは既存の利用者向けエラーへ正規化する。
+    if (error instanceof Error && error.message === HEIC_ERROR_TIMEOUT) {
+      throw error;
+    }
     throw new Error(HEIC_ERROR_CONVERT_FAILED);
   }
 
