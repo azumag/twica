@@ -1,0 +1,60 @@
+# Claude Auto Review (preview)
+#
+# preview ブランチへの push（通常は feature ブランチからの PR マージ）のたびに、
+# Claude Code（モデル: opus）が追加された変更を自動レビューし、
+# コミットコメントで指摘を報告する。
+#
+# 前提:
+# - GitHub Secrets に `CLAUDE_CODE_OAUTH_TOKEN`（Claude Code OAuth トークン）を設定
+# - ワークフローはデフォルトブランチ（main）に存在する必要がある
+#   （GitHub Actions はデフォルトブランチのワークフロー定義で全ブランチのイベントを処理する）
+name: Claude Auto Review (preview)
+
+on:
+  push:
+    branches: [preview]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # 直前の push との差分をレビューするため、履歴を取得する
+          fetch-depth: 0
+
+      - name: Claude Code Review (opus)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            BRANCH: preview
+            SHA: ${{ github.sha }}
+
+            preview ブランチへの push で追加された変更を厳しくレビューしてください。
+            対象は直前の push（この SHA のコミット）で追加されたコミットの差分です
+            （`git log -1 --format=%P` で親を特定し、`git diff` で差分を確認できます。
+            このリポジトリの preview への push は通常、feature ブランチからの PR マージです）。
+
+            レビュー観点（AGENTS.md 準拠）:
+            - コード品質とベストプラクティス
+            - 潜在的なバグとエッジケース
+            - パフォーマンスへの影響
+            - セキュリティ考慮
+            - コードの簡潔性（過度な抽象化・複雑化の回避）
+            - 単体テストのカバレッジは十分か
+            - YAGNI（過剰な実装と設計の回避）
+
+            指摘は日本語で行うこと。コード上の具体的な問題には行・ファイルを明記し、
+            全体の所見をコミットコメント（`gh api repos/{owner}/{repo}/commits/{sha}/comments`）
+            で投稿してください。問題がない場合は「指摘なし」と明記してください。
+            コードの修正は行わない（レビューのみ）。
+          claude_args: |
+            --model opus
+            --max-turns 30
+            --allowedTools "Bash(git:*),Bash(gh:*),Read,Write,Edit"
