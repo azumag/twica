@@ -18,6 +18,7 @@ const baseCard = (overrides: Partial<StreamerCollectionCard>): StreamerCollectio
   name: 'カードA',
   description: '',
   image_url: null,
+  image_padding_color: null,
   rarity: 'common',
   card_number: null,
   // StreamerCollectionCard.max_issuance_count は `number | null`(undefined 非許容)。

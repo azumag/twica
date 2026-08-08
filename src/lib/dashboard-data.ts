@@ -1173,6 +1173,7 @@ interface GachaDropStatsRpcCardRow {
   card_name: string;
   rarity: string;
   image_url: string | null;
+  image_padding_color?: string | null;
   configured_rate: number | string;
   actual_count: number | string;
   actual_rate: number | string;
@@ -1263,6 +1264,7 @@ function parseGachaDropStatsRpc(rpcResult: unknown): Omit<GachaStatsResult, "cha
       cardName: row.card_name,
       rarity: row.rarity,
       imageUrl: row.image_url,
+      imagePaddingColor: row.image_padding_color ?? null,
       configuredRate: Number(row.configured_rate || 0),
       actualCount: Number(row.actual_count || 0),
       actualRate: Number(row.actual_rate || 0),
@@ -1431,6 +1433,7 @@ async function fetchGachaDropStatsFromHistory(
     name: string;
     rarity: string;
     image_url: string | null;
+    image_padding_color: string | null;
     drop_rate: number | string | null;
     created_at: string | null;
   }>;
@@ -1483,6 +1486,7 @@ async function fetchGachaDropStatsFromHistory(
               name: cardsTable.name,
               rarity: cardsTable.rarity,
               image_url: cardsTable.image_url,
+              image_padding_color: cardsTable.image_padding_color,
               drop_rate: cardsTable.drop_rate,
               created_at: cardsTable.created_at,
             })
@@ -1610,6 +1614,7 @@ async function fetchGachaDropStatsFromHistory(
       cardName: card.name,
       rarity: card.rarity,
       imageUrl: card.image_url,
+      imagePaddingColor: card.image_padding_color ?? null,
       configuredRate:
         totalWeight > 0 ? (Number(card.drop_rate || 0) / totalWeight) * 100 : 0,
       actualCount,
@@ -1832,6 +1837,7 @@ async function fetchCardOwnerStatsFromUserCards(
     name: string;
     rarity: string;
     image_url: string | null;
+    image_padding_color: string | null;
   }>;
   let ownerRows: GachaCardOwnerStatsOwnerRow[];
   let ownerCountRows: Array<{ card_id: string; count: number | string }>;
@@ -1846,6 +1852,7 @@ async function fetchCardOwnerStatsFromUserCards(
               name: cardsTable.name,
               rarity: cardsTable.rarity,
               image_url: cardsTable.image_url,
+              image_padding_color: cardsTable.image_padding_color,
             })
             .from(cardsTable)
             .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
@@ -1955,6 +1962,7 @@ async function fetchCardOwnerStatsFromUserCards(
         cardName: card.name,
         rarity: card.rarity,
         imageUrl: card.image_url,
+        imagePaddingColor: card.image_padding_color ?? null,
         // ownerCount はGROUP BY集計による正確な総数、owners はRPCと同じく
         // 上限件数で打ち切る (#833)
         ownerCount: ownerCounts.get(card.id) || 0,

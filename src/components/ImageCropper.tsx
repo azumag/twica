@@ -5,13 +5,32 @@ import ReactCrop, { type Crop, centerCrop, makeAspectCrop } from "react-image-cr
 import "react-image-crop/dist/ReactCrop.css";
 import { getColorManaged2DContext } from "@/lib/canvas-color-space";
 
-// Crop mode type: square or portrait
-// トリミングモードの型：正方形またはポートレイト
-export type CropMode = "square" | "portrait";
+// Crop mode type: square, portrait, or fit (with padding)
+// トリミングモードの型：正方形・ポートレイト・余白（フィット）
+export type CropMode = "square" | "portrait" | "fit";
+
+// 余白（フィット）モードで焼き込む余白の色。transparent のみ PNG 出力になる
+// （JPEG はアルファチャンネルを持たないため）。
+export type FitColor = "black" | "white" | "gray" | "transparent";
+
+export const FIT_COLORS: Record<Exclude<FitColor, "transparent">, string> = {
+  black: "#000000",
+  white: "#FFFFFF",
+  gray: "#808080",
+};
+
+// 透明（PNG）の余白をプレビューするためのチェッカーボード背景。
+// CardManager の色選択 UI と共有する（見た目の統一・二重定義の防止）。
+export const CHECKERBOARD_BACKGROUND = {
+  backgroundImage:
+    "conic-gradient(#4b5563 0 25%, #374151 0 50%, #4b5563 0 75%, #374151 0)",
+  backgroundSize: "16px 16px",
+} as const;
 
 /**
  * maxWidth に応じたトリミングモード設定を生成
  * アスペクト比は固定（正方形=1:1, ポートレイト≈5:7）で、幅のみ変動
+ * fit（余白）は出力を正方形に固定し、画像全体を contain で収める
  * @param maxWidth - カード画像の最大幅（ピクセル）
  */
 export function getCropModes(maxWidth: number) {
@@ -33,6 +52,14 @@ export function getCropModes(maxWidth: number) {
       label: "ポートレイト",
       labelEn: "Portrait",
       dimensions: `${maxWidth}x${portraitHeight}`,
+    },
+    fit: {
+      width: maxWidth,
+      height: maxWidth,
+      aspect: 1,
+      label: "余白を追加",
+      labelEn: "Fit with padding",
+      dimensions: `${maxWidth}x${maxWidth}`,
     },
   };
 }
@@ -59,6 +86,8 @@ interface ImageCropperProps {
   // Maximum image width in pixels (plan-based, default: 800)
   // プラン別最大画像幅（デフォルト: 800px）
   maxWidth?: number;
+  // 余白（fit）モードの余白の色（fit 以外では未使用）
+  fitColor?: FitColor;
 }
 
 /**
@@ -93,10 +122,33 @@ function centerAspectCrop(mediaWidth: number, mediaHeight: number, aspect: numbe
  *
  * ユーザーが画像の領域を選択し、選択されたトリミングモードに基づいてトリミング画像を出力するコンポーネント
  */
-export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCancel, maxWidth = 800 }: ImageCropperProps) {
+/**
+ * contain フィット時の描画矩形を計算する純粋関数（#899）。
+ * 画像全体をアスペクト比維持で canvas に収め、余った分を中央配置する。
+ * renderFitImage が使用する（単体テストの対象）。
+ */
+export function computeFitDrawRect(
+  imageWidth: number,
+  imageHeight: number,
+  canvasWidth: number,
+  canvasHeight: number
+): { x: number; y: number; width: number; height: number } {
+  const scale = Math.min(canvasWidth / imageWidth, canvasHeight / imageHeight);
+  const drawWidth = imageWidth * scale;
+  const drawHeight = imageHeight * scale;
+  return {
+    x: (canvasWidth - drawWidth) / 2,
+    y: (canvasHeight - drawHeight) / 2,
+    width: drawWidth,
+    height: drawHeight,
+  };
+}
+
+export default function ImageCropper({ imageFile, cropMode, fitColor = "black", onCropComplete, onCancel, maxWidth = 800 }: ImageCropperProps) {
   // maxWidth に応じてトリミング設定を取得（プラン別解像度対応）
   const cropModes = useMemo(() => getCropModes(maxWidth), [maxWidth]);
   const cropConfig = cropModes[cropMode];
+  const isFitMode = cropMode === "fit";
   // Current crop selection state
   // 現在のクロップ選択状態
   const [crop, setCrop] = useState<Crop>();
@@ -116,8 +168,52 @@ export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCa
    */
   const onImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const { width, height } = e.currentTarget;
+    if (isFitMode) {
+      // 余白（fit）モードでは画像全体を収めるため、クロップ選択は行わない
+      setCrop({ unit: "%", x: 0, y: 0, width: 100, height: 100 });
+      return;
+    }
     setCrop(centerAspectCrop(width, height, cropConfig.aspect));
-  }, [cropConfig.aspect]);
+  }, [cropConfig.aspect, isFitMode]);
+
+
+/**
+ * 余白（fit）モードの描画: 画像全体をアスペクト比維持で出力キャンバスに収め、
+ * 余った領域を選択色で塗りつぶす（transparent は PNG 出力）。
+ * トリミングモードの getCroppedImg とは独立した処理（crop 選択が不要なため）。
+ */
+const renderFitImage = useCallback(async (image: HTMLImageElement): Promise<Blob | null> => {
+  const canvas = document.createElement("canvas");
+  const ctx = getColorManaged2DContext(canvas);
+  if (!ctx) return null;
+
+  canvas.width = cropConfig.width;
+  canvas.height = cropConfig.height;
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  // 余白を塗りつぶす（transparent の場合は塗らない）
+  if (fitColor !== "transparent") {
+    ctx.fillStyle = FIT_COLORS[fitColor];
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // contain: 画像全体をアスペクト比維持で中央に収める
+  const rect = computeFitDrawRect(
+    image.naturalWidth,
+    image.naturalHeight,
+    canvas.width,
+    canvas.height
+  );
+  ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+
+    // transparent は JPEG にアルファが無いため PNG で出力する
+    const outputType = fitColor === "transparent" ? "image/png" : "image/jpeg";
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => resolve(blob), outputType, 0.85);
+    });
+  }, [cropConfig.width, cropConfig.height, fitColor]);
 
   /**
    * Creates a canvas with the cropped and resized image
@@ -135,7 +231,12 @@ export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCa
    */
   const getCroppedImg = useCallback(async (): Promise<Blob | null> => {
     const image = imgRef.current;
-    if (!image || !crop) return null;
+    if (!image) return null;
+    // 余白（fit）モードではクロップ選択をしないため、crop は不要（100% 全体）
+    if (isFitMode) {
+      return renderFitImage(image);
+    }
+    if (!crop) return null;
 
     // Create an offscreen canvas for the crop operation
     // クロップ操作用のオフスクリーンCanvasを作成
@@ -193,7 +294,8 @@ export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCa
         0.85 // 85% quality provides good balance between size and quality
       );
     });
-  }, [crop, cropConfig.width, cropConfig.height]);
+  }, [crop, cropConfig.width, cropConfig.height, isFitMode, renderFitImage]);
+
 
   /**
    * Handles the confirm button click
@@ -251,26 +353,50 @@ export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCa
         {/* Crop area container */}
         {/* トリミングエリアのコンテナ */}
         <div className="p-4">
-          <p className="mb-3 text-sm text-gray-400">
-            ドラッグして位置とサイズを調整してください（{cropConfig.dimensions}にトリミングされます）
-          </p>
-          <div className="flex justify-center rounded-lg bg-gray-900 p-2">
-            <ReactCrop
-              crop={crop}
-              onChange={(_, percentCrop) => setCrop(percentCrop)}
-              aspect={cropConfig.aspect} // Aspect ratio based on crop mode
-              className="max-h-[60vh]"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                ref={imgRef}
-                src={previewUrl}
-                alt="トリミング対象の画像"
-                onLoad={onImageLoad}
-                className="max-h-[60vh] max-w-full object-contain"
-              />
-            </ReactCrop>
-          </div>
+          {isFitMode ? (
+            <>
+              <p className="mb-3 text-sm text-gray-400">
+                画像全体が{cropConfig.dimensions}に収まるよう、余白を追加します
+              </p>
+              <div
+                className="flex justify-center rounded-lg bg-gray-900 p-2"
+                // 余白の見え方を確認できるよう、透明の場合はチェッカーボードを表示する
+                style={fitColor === "transparent" ? CHECKERBOARD_BACKGROUND : undefined}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  ref={imgRef}
+                  src={previewUrl}
+                  alt="余白を追加する画像"
+                  onLoad={onImageLoad}
+                  className="max-h-[60vh] max-w-full object-contain"
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="mb-3 text-sm text-gray-400">
+                ドラッグして位置とサイズを調整してください（{cropConfig.dimensions}にトリミングされます）
+              </p>
+              <div className="flex justify-center rounded-lg bg-gray-900 p-2">
+                <ReactCrop
+                  crop={crop}
+                  onChange={(_, percentCrop) => setCrop(percentCrop)}
+                  aspect={cropConfig.aspect} // Aspect ratio based on crop mode
+                  className="max-h-[60vh]"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    ref={imgRef}
+                    src={previewUrl}
+                    alt="トリミング対象の画像"
+                    onLoad={onImageLoad}
+                    className="max-h-[60vh] max-w-full object-contain"
+                  />
+                </ReactCrop>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Action buttons */}
@@ -287,6 +413,7 @@ export default function ImageCropper({ imageFile, cropMode, onCropComplete, onCa
           <button
             type="button"
             onClick={handleConfirm}
+            // fit モードでも onImageLoad が crop を設定するため、画像ロード完了まで待つ
             disabled={processing || !crop}
             className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
           >

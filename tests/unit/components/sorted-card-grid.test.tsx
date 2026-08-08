@@ -27,6 +27,7 @@ const baseCard = (overrides: Partial<Card>): Card => ({
   name: 'カードA',
   description: 'カードAの説明',
   image_url: 'https://example.com/card-a.png',
+  image_padding_color: null,
   rarity: 'common',
   card_number: null,
   // Card.max_issuance_count は `number | null`(undefined 非許容)。overrides のみに

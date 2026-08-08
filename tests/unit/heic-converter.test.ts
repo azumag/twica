@@ -79,6 +79,26 @@ describe('convertHeicToJpeg (issue #770)', () => {
     )
   })
 
+  it('変換が応答しない場合はタイムアウトして HEIC_CONVERSION_TIMEOUT を投げる', async () => {
+    vi.useFakeTimers()
+    try {
+      heic2anyMock.mockImplementation(() => new Promise<Blob>(() => undefined))
+
+      const conversion = convertHeicToJpeg(makeFile('photo.heic', 'image/heic'))
+      // rejection handlerを先に接続し、タイマー発火とアサーションの間に
+      // Vitestが一時的な未処理rejectionとして扱わないようにする。
+      const rejection = expect(conversion).rejects.toThrow(HEIC_ERROR_TIMEOUT)
+      // 動的 import のmicrotaskを先に進め、変換Promiseがタイマーを登録してから時間を進める
+      await Promise.resolve()
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(HEIC_CONVERSION_TIMEOUT_MS)
+
+      await rejection
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('空の出力（サイズ0）は HEIC_CONVERT_FAILED として扱う', async () => {
     heicToMock.mockResolvedValue(new Blob([]))
 
