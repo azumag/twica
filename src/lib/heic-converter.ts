@@ -9,7 +9,7 @@
  * この方式の利点:
  * - 保存形式は従来どおり JPEG となり、カード表示側・`/api/upload` の変更が不要
  * - サーバー（Cloudflare Workers）でネイティブ画像ライブラリを動かす必要がない
- * - 変換ライブラリ（heic2any、MIT ライセンス）は HEIC 選択時のみ動的 import され、
+ * - 変換ライブラリ（heic-to）はCSP対応ビルドをHEIC選択時だけ動的 import し、
  *   通常アップロードの初期バンドルを増やさない
  *
  * 注意:
@@ -19,7 +19,7 @@
  */
 export const HEIC_INPUT_MAX_BYTES = 25 * 1024 * 1024; // 25MB（変換前の入力上限。デコード後のメモリ使用量は圧縮時サイズより大幅に増えるため、緩めの安全弁）
 
-// heic2any 0.0.4 は変換用 Worker を停止する Abort API を公開していないため、
+// heic-to の変換用 Worker を停止する Abort API は公開されていないため、
 // 呼び出し側が無期限に待ち続けないよう、import とデコードを合わせた総時間に上限を設ける。
 export const HEIC_CONVERSION_TIMEOUT_MS = 30_000;
 
@@ -34,9 +34,9 @@ const HEIC_EXTENSIONS = [".heic", ".heif"];
 /**
  * Abort API を持たない非同期処理に、利用者向けの有限な待機時間を与える。
  *
- * Promise.race は呼び出し側の Promise を終了させるだけで、heic2any 内部の
- * Worker は停止できない。そのため、タイムアウト後に元の処理が遅れて完了しても
- * 呼び出し側で結果を採用しないこと（CardManager の世代チェック）が必要になる。
+ * Promise.race は呼び出し側の Promise を終了させるだけで、変換 Worker は停止できない。
+ * そのため、タイムアウト後に元の処理が遅れて完了しても呼び出し側で結果を採用しない
+ * こと（CardManager の世代チェック）が必要になる。
  */
 async function withTimeout<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -70,7 +70,11 @@ export function isHeicUpload(file: File): boolean {
 
 /**
  * HEIC / HEIF ファイルを JPEG の File へ変換する。
- * 変換ライブラリ（heic2any）は HEIC 選択時のみ動的 import する。
+ * 変換ライブラリ（heic-to）のCSP対応ビルドをHEIC選択時のみ動的 import する。
+ *
+ * `heic-to/csp` は libheif を unsafe-eval なしでビルドした Worker を含むため、
+ * 本番の厳格なCSPを緩めずにブラウザ内変換を行える。通常のJPEG/PNGではimport
+ * 自体が発生しないので、初期ロードへデコーダを追加しない。
  *
  * @param file HEIC / HEIF ファイル
  * @returns JPEG に変換された File（ファイル名の拡張子は .jpg）
@@ -84,9 +88,10 @@ export async function convertHeicToJpeg(file: File): Promise<File> {
   let output: Blob | Blob[];
   try {
     output = await withTimeout(async () => {
-      const { default: heic2any } = await import("heic2any");
+      // `heic-to/csp` はCSP制約を満たすビルドを選ぶための明示的なサブパス。
+      const { heicTo } = await import("heic-to/csp");
       // quality は既存のクロップ再圧縮（ImageCropper の 0.85）と同等水準にする
-      return heic2any({ blob: file, toType: "image/jpeg", quality: 0.85 });
+      return heicTo({ blob: file, type: "image/jpeg", quality: 0.85 });
     }, HEIC_CONVERSION_TIMEOUT_MS);
   } catch (error) {
     // タイムアウトは呼び出し側で変換失敗と区別できるよう、そのまま伝える。
@@ -97,9 +102,8 @@ export async function convertHeicToJpeg(file: File): Promise<File> {
     throw new Error(HEIC_ERROR_CONVERT_FAILED);
   }
 
-  // heic2any は multiple 未指定時、コンテナ内の全画像をデコードした上で
-  // 先頭（primary image）の Blob を単一で返す。配列は返らないが、型上は
-  // Blob | Blob[] のため防御的に先頭を取る。
+  // heic-to は初期対応としてprimary imageを単一のBlobへ変換する。
+  // 型が将来 Blob[] へ拡張されても先頭画像だけを採用して既存契約を守る。
   const jpegBlob = Array.isArray(output) ? output[0] : output;
   if (!jpegBlob || jpegBlob.size === 0) {
     throw new Error(HEIC_ERROR_CONVERT_FAILED);

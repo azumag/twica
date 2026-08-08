@@ -13,9 +13,9 @@ function makeFile(name: string, type: string, size = 1024): File {
   return new File([new Uint8Array(size)], name, { type })
 }
 
-// heic2any の動的 import をモック（変換ユニット自体のテストに実ブラウザ変換は不要）
-vi.mock('heic2any', () => ({
-  default: vi.fn(),
+// heic-to の動的 import をモック（変換ユニット自体のテストに実ブラウザ変換は不要）
+vi.mock('heic-to/csp', () => ({
+  heicTo: vi.fn(),
 }))
 
 describe('isHeicUpload (issue #770)', () => {
@@ -39,15 +39,15 @@ describe('isHeicUpload (issue #770)', () => {
 })
 
 describe('convertHeicToJpeg (issue #770)', () => {
-  let heic2anyMock: ReturnType<typeof vi.fn>
+  let heicToMock: ReturnType<typeof vi.fn>
 
   beforeEach(async () => {
-    heic2anyMock = vi.mocked((await import('heic2any')).default)
-    heic2anyMock.mockReset()
+    heicToMock = vi.mocked((await import('heic-to/csp')).heicTo)
+    heicToMock.mockReset()
   })
 
   it('変換成功時に image/jpeg の File を返し、拡張子は .jpg になる', async () => {
-    heic2anyMock.mockResolvedValue(new Blob(['jpeg-data'], { type: 'image/jpeg' }))
+    heicToMock.mockResolvedValue(new Blob(['jpeg-data'], { type: 'image/jpeg' }))
     const input = makeFile('photo.heic', 'image/heic')
 
     const result = await convertHeicToJpeg(input)
@@ -55,13 +55,13 @@ describe('convertHeicToJpeg (issue #770)', () => {
     expect(result.type).toBe('image/jpeg')
     expect(result.name).toBe('photo.jpg')
     expect(result.lastModified).toBe(input.lastModified)
-    expect(heic2anyMock).toHaveBeenCalledWith(
-      expect.objectContaining({ blob: input, toType: 'image/jpeg', quality: 0.85 })
+    expect(heicToMock).toHaveBeenCalledWith(
+      expect.objectContaining({ blob: input, type: 'image/jpeg', quality: 0.85 })
     )
   })
 
   it('複数画像を含む HEIC コンテナでは primary image（先頭）のみを使う', async () => {
-    heic2anyMock.mockResolvedValue([
+    heicToMock.mockResolvedValue([
       new Blob(['primary'], { type: 'image/jpeg' }),
       new Blob(['secondary'], { type: 'image/jpeg' }),
     ])
@@ -72,7 +72,7 @@ describe('convertHeicToJpeg (issue #770)', () => {
   })
 
   it('変換失敗時は HEIC_CONVERT_FAILED エラーを投げる', async () => {
-    heic2anyMock.mockRejectedValue(new Error('decode failed'))
+    heicToMock.mockRejectedValue(new Error('decode failed'))
 
     await expect(convertHeicToJpeg(makeFile('photo.heic', 'image/heic'))).rejects.toThrow(
       HEIC_ERROR_CONVERT_FAILED
@@ -80,7 +80,7 @@ describe('convertHeicToJpeg (issue #770)', () => {
   })
 
   it('空の出力（サイズ0）は HEIC_CONVERT_FAILED として扱う', async () => {
-    heic2anyMock.mockResolvedValue(new Blob([]))
+    heicToMock.mockResolvedValue(new Blob([]))
 
     await expect(convertHeicToJpeg(makeFile('photo.heic', 'image/heic'))).rejects.toThrow(
       HEIC_ERROR_CONVERT_FAILED
@@ -91,13 +91,13 @@ describe('convertHeicToJpeg (issue #770)', () => {
     const oversized = makeFile('big.heic', 'image/heic', HEIC_INPUT_MAX_BYTES + 1)
 
     await expect(convertHeicToJpeg(oversized)).rejects.toThrow(HEIC_ERROR_TOO_LARGE)
-    expect(heic2anyMock).not.toHaveBeenCalled()
+    expect(heicToMock).not.toHaveBeenCalled()
   })
 
   it('変換が応答しない場合はタイムアウトして HEIC_CONVERSION_TIMEOUT を投げる', async () => {
     vi.useFakeTimers()
     try {
-      heic2anyMock.mockImplementation(() => new Promise<Blob>(() => undefined))
+      heicToMock.mockImplementation(() => new Promise<Blob>(() => undefined))
 
       const conversion = convertHeicToJpeg(makeFile('photo.heic', 'image/heic'))
       // rejection handlerを先に接続し、タイマー発火とアサーションの間に
