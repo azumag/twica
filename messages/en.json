@@ -127,7 +127,10 @@
       "imageUrlInvalidAspectRatio": "Image URL must be portrait (vertical) or square (current: {width}x{height})",
       "imageUrlResolutionExceeded": "Image URL resolution exceeds limit. Max width: {maxWidth}px, max height: {maxHeight}px (current: {width}x{height})",
       "imageUrlLoadFailed": "Failed to load image URL. Please check the URL.",
-      "imageUrlValidating": "Validating image..."
+      "imageUrlValidating": "Validating image...",
+      "heicConverting": "Converting HEIC image...",
+      "heicConvertFailed": "Could not read the HEIC image. Please choose another image or convert it to JPEG and try again.",
+      "heicTooLarge": "The HEIC image is too large. Please choose an image under {mb}MB."
     },
     "cardNumberEditor": {
       "title": "Edit Card Numbers",
