@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { NextIntlClientProvider } from 'next-intl'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import CardManager from '@/components/CardManager'
@@ -32,8 +33,8 @@ function stubImageLoad() {
   })
 }
 
-function renderCardManager() {
-  return render(
+function renderCardManager({ strictMode = false }: { strictMode?: boolean } = {}) {
+  const content = (
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <CardManager
         streamerId="streamer-1"
@@ -42,6 +43,7 @@ function renderCardManager() {
       />
     </NextIntlClientProvider>
   )
+  return render(strictMode ? <StrictMode>{content}</StrictMode> : content)
 }
 
 function openFormAndSelectFile(container: HTMLElement, file: File) {
@@ -100,6 +102,23 @@ describe('CardManager HEIC conversion (issue #770)', () => {
     expect(screen.queryByText('トリミングサイズを選択')).not.toBeInTheDocument()
   })
 
+  it('タイムアウトエラー時も変換中表示を解除し、再選択できる状態に戻る', async () => {
+    mocks.isHeicUpload.mockReturnValue(true)
+    mocks.convertHeicToJpeg.mockRejectedValue(new Error('HEIC_CONVERSION_TIMEOUT'))
+    const { container } = renderCardManager()
+
+    openFormAndSelectFile(container, heicFile())
+
+    // 実タイマーを30秒進めるテストはconverter単体で行い、ここではタイムアウトが
+    // コンポーネントへ届いた後の利用者向け終了状態を固定する。
+    expect(
+      await screen.findByText('HEIC画像を読み込めませんでした。別の画像を選択するか、JPEGへ変換してから再度お試しください。')
+    ).toBeInTheDocument()
+    expect(screen.queryByText('HEIC画像を変換中…')).not.toBeInTheDocument()
+    expect((container.querySelector('input[type="file"]') as HTMLInputElement).disabled).toBe(false)
+    expect(screen.queryByText('トリミングサイズを選択')).not.toBeInTheDocument()
+  })
+
   it('サイズ上限超過時は専用エラーを表示する', async () => {
     mocks.isHeicUpload.mockReturnValue(true)
     mocks.convertHeicToJpeg.mockRejectedValue(new Error('HEIC_TOO_LARGE'))
@@ -147,5 +166,76 @@ describe('CardManager HEIC conversion (issue #770)', () => {
     })
     expect(screen.queryByText('トリミングサイズを選択')).not.toBeInTheDocument()
     expect(screen.queryByText('HEIC画像を読み込めませんでした。別の画像を選択するか、JPEGへ変換してから再度お試しください。')).not.toBeInTheDocument()
+  })
+
+  it('キャンセル後に開き直したフォームの変換状態を、古い変換が解除しない', async () => {
+    stubImageLoad()
+    mocks.isHeicUpload.mockReturnValue(true)
+    let resolveFirst: (file: File) => void
+    let resolveSecond: (file: File) => void
+    let conversionCount = 0
+    mocks.convertHeicToJpeg.mockImplementation(
+      () => new Promise<File>((resolve) => {
+        if (conversionCount++ === 0) {
+          resolveFirst = resolve
+        } else {
+          resolveSecond = resolve
+        }
+      })
+    )
+    const { container } = renderCardManager()
+
+    openFormAndSelectFile(container, heicFile())
+    expect(await screen.findByRole('status')).toHaveTextContent('HEIC画像を変換中…')
+    fireEvent.click(screen.getByText('キャンセル'))
+
+    // 古い変換が未完了でも、キャンセル後は状態を持ち越さず新規フォームを開ける
+    openFormAndSelectFile(container, heicFile())
+    expect(await screen.findByRole('status')).toHaveTextContent('HEIC画像を変換中…')
+
+    // 古い変換の finally が実行されても、現在の変換中表示は維持する
+    resolveFirst!(jpegFile())
+    await waitFor(() => expect(mocks.convertHeicToJpeg).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('status')).toHaveTextContent('HEIC画像を変換中…')
+
+    resolveSecond!(jpegFile())
+    expect(await screen.findByText('トリミングサイズを選択')).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('Strict Modeでも変換完了後に既存フローへ進める', async () => {
+    stubImageLoad()
+    mocks.isHeicUpload.mockReturnValue(true)
+    mocks.convertHeicToJpeg.mockResolvedValue(jpegFile())
+    const { container } = renderCardManager({ strictMode: true })
+
+    openFormAndSelectFile(container, heicFile())
+
+    // Strict Modeの検証用cleanup後も、現行setupがマウント中として扱われることを確認する。
+    expect(await screen.findByText('トリミングサイズを選択')).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('アンマウント後に遅延した変換結果を反映しない', async () => {
+    mocks.isHeicUpload.mockReturnValue(true)
+    let resolveConvert: (file: File) => void
+    mocks.convertHeicToJpeg.mockImplementation(
+      () => new Promise<File>((resolve) => { resolveConvert = resolve })
+    )
+    const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    const { container, unmount } = renderCardManager()
+
+    openFormAndSelectFile(container, heicFile())
+    expect(await screen.findByRole('status')).toHaveTextContent('HEIC画像を変換中…')
+
+    unmount()
+    resolveConvert!(jpegFile())
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // アンマウント済みのコンポーネントに対する遅延結果は、クロップ開始に必要な
+    // object URL作成まで到達しない。DOMが消えたことだけではこのガードの回帰を
+    // 検出できないため、結果を処理した場合に必ず発生する副作用を直接検証する。
+    expect(createObjectURLSpy).not.toHaveBeenCalled()
   })
 })

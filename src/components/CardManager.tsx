@@ -505,6 +505,23 @@ export default function CardManager({
   // 画像サイズ読み取りの非同期コールバック無効化用カウンター
   // Counter to invalidate stale async image dimension callbacks
   const imageDimensionRequestId = useRef(0);
+  // HEIC変換専用の世代。画像寸法読み取り処理とは別に持ち、変換成功時に
+  // processSelectedFile() が画像寸法用IDを進めても、現行変換の finally が
+  // 自分自身を古いリクエストと誤判定しないようにする。
+  const heicConversionRequestId = useRef(0);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    // React Strict Mode は開発時に setup -> cleanup -> setup を再実行するため、
+    // 再マウントされた setup では必ず有効状態へ戻す。これを行わないと、
+    // 初回の検証用 cleanup が残り、実際にはマウント中でも変換結果を破棄してしまう。
+    isMountedRef.current = true;
+    return () => {
+      // 画面遷移などでアンマウントされた後に、保留中の変換Promiseから
+      // state更新やクロップ開始を行わない。Worker自体は停止できないため、
+      // 完了後の各経路でこのフラグを確認して結果だけを無効化する。
+      isMountedRef.current = false;
+    };
+  }, []);
   // Cropped image file ready for upload
   // アップロード準備完了のトリミング済み画像ファイル
   const [croppedFile, setCroppedFile] = useState<File | null>(null);
@@ -1096,6 +1113,9 @@ export default function CardManager({
     // Reset cropping state
     // トリミング状態をリセット
     imageDimensionRequestId.current++;
+    // キャンセル中のHEIC変換を無効化し、古いPromiseが後から状態を戻さないようにする
+    heicConversionRequestId.current++;
+    setIsConvertingHeic(false);
     setCropModalOpen(false);
     setCropModeModalOpen(false);
     setSelectedCropMode("square");
@@ -1118,25 +1138,28 @@ export default function CardManager({
     const file = e.target.files?.[0];
     setUploadError(null);
     if (file) {
+      // 新しいファイル選択は、前のHEIC変換結果を常に無効化する。
+      const conversionRequestId = ++heicConversionRequestId.current;
       // Issue #770: HEIC / HEIF はブラウザで表示できないため、選択直後に
       // クライアント側で JPEG へ変換してから既存フローへ渡す。変換中は入力が
-      // 無効化されるため、request id はフォームのキャンセル（resetForm 等）による
-      // 古い変換結果の無視に使う。
+      // 無効化されるため、世代IDはフォームのキャンセル（resetForm 等）や
+      // 再選択による古い変換結果の無視に使う。
       if (isHeicUpload(file)) {
         setIsConvertingHeic(true);
-        const requestId = ++imageDimensionRequestId.current;
         try {
           const converted = await convertHeicToJpeg(file);
-          if (requestId !== imageDimensionRequestId.current) return;
+          if (!isMountedRef.current || conversionRequestId !== heicConversionRequestId.current) return;
           processSelectedFile(converted);
         } catch (error) {
-          if (requestId !== imageDimensionRequestId.current) return;
+          if (!isMountedRef.current || conversionRequestId !== heicConversionRequestId.current) return;
           if (error instanceof Error && error.message === HEIC_ERROR_TOO_LARGE) {
             setUploadError(t("messages.heicTooLarge", { mb: HEIC_INPUT_MAX_BYTES / (1024 * 1024) }));
           } else {
             setUploadError(t("messages.heicConvertFailed"));
           }
         } finally {
+          // キャンセル・再選択後に完了した古い変換は、現在の入力状態を変更してはならない。
+          if (!isMountedRef.current || conversionRequestId !== heicConversionRequestId.current) return;
           // 変換完了（成功・失敗とも）で入力を再度有効化し、生の HEIC が
           // フォーム送信に残らないようファイル入力をクリアする
           setIsConvertingHeic(false);
@@ -1146,6 +1169,8 @@ export default function CardManager({
         }
         return;
       }
+      // HEIC変換が発生しない選択でも、念のため変換中表示を解除する。
+      setIsConvertingHeic(false);
       // Only validate file type before cropping (skip size check)
       // Cropped image will be compressed to JPEG, so original size doesn't matter
       // トリミング前はファイルタイプのみ検証（サイズチェックはスキップ）

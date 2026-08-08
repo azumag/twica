@@ -3,8 +3,10 @@ import {
   isHeicUpload,
   convertHeicToJpeg,
   HEIC_INPUT_MAX_BYTES,
+  HEIC_CONVERSION_TIMEOUT_MS,
   HEIC_ERROR_TOO_LARGE,
   HEIC_ERROR_CONVERT_FAILED,
+  HEIC_ERROR_TIMEOUT,
 } from '@/lib/heic-converter'
 
 function makeFile(name: string, type: string, size = 1024): File {
@@ -90,5 +92,25 @@ describe('convertHeicToJpeg (issue #770)', () => {
 
     await expect(convertHeicToJpeg(oversized)).rejects.toThrow(HEIC_ERROR_TOO_LARGE)
     expect(heic2anyMock).not.toHaveBeenCalled()
+  })
+
+  it('変換が応答しない場合はタイムアウトして HEIC_CONVERSION_TIMEOUT を投げる', async () => {
+    vi.useFakeTimers()
+    try {
+      heic2anyMock.mockImplementation(() => new Promise<Blob>(() => undefined))
+
+      const conversion = convertHeicToJpeg(makeFile('photo.heic', 'image/heic'))
+      // rejection handlerを先に接続し、タイマー発火とアサーションの間に
+      // Vitestが一時的な未処理rejectionとして扱わないようにする。
+      const rejection = expect(conversion).rejects.toThrow(HEIC_ERROR_TIMEOUT)
+      // 動的 import のmicrotaskを先に進め、変換Promiseがタイマーを登録してから時間を進める
+      await Promise.resolve()
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(HEIC_CONVERSION_TIMEOUT_MS)
+
+      await rejection
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
