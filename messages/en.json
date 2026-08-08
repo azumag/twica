@@ -1106,7 +1106,8 @@
     "tos": "Terms of Service",
     "about": "About",
     "privacy": "Privacy Policy",
-    "releaseNotes": "Release Notes"
+    "releaseNotes": "Release Notes",
+    "usages": "Usage Ideas"
   },
   "header": {
     "dashboard": "Dashboard",
@@ -1443,5 +1444,50 @@
     "noteVoting": "* We do not ask for proof of voting or anything similar, and this is not for verifying whether you voted. Anyone is welcome, even if you do not currently have voting rights but may gain them in the future.",
     "notePurpose": "* This campaign is run with the hope of increasing voter turnout. It is not intended to support any particular political party or candidate.",
     "dismiss": "Don't show again"
+  },
+  "usagesPage": {
+    "title": "Fun ways to use TwiCa!",
+    "metaDescription": "Looking for card ideas? From topic decks to fan art, here are fun ways to use TwiCa cards.",
+    "lead": "Cards are not just for gacha and collections. Try these ideas to make your streams even more fun!",
+    "topicDeck": {
+      "title": "Topic deck",
+      "description": "Create themed cards around your stream topics and get your viewers excited together.",
+      "example": "Examples: moments from your stream, trending topics, event themes",
+      "feature": "Gacha × Collection"
+    },
+    "foodDiary": {
+      "title": "What you ate today",
+      "description": "Turn your daily meals into cards. Share a \"food diary\" with viewers and aim for completion.",
+      "example": "Examples: today's lunch, favorite cafés, new convenience store finds",
+      "feature": "Gacha × Completion"
+    },
+    "acquaintanceStreamers": {
+      "title": "Fellow streamers",
+      "description": "Turn streamers you know into cards. Use collections to spark collaboration and community.",
+      "example": "Examples: streamer friends, collab partners, streamers you follow",
+      "feature": "Collection × Completion"
+    },
+    "quoteCards": {
+      "title": "Quote cards",
+      "description": "Turn legendary lines and memorable moments from your streams into cards. Your record becomes a collection.",
+      "example": "Examples: famous stream moments, signature catchphrases, legendary fails",
+      "feature": "Gacha"
+    },
+    "fanArt": {
+      "title": "Fan art",
+      "description": "Turn fan art drawn by your viewers into cards. Share the joy of seeing their work become a collection.",
+      "example": "Examples: viewer-submitted illustrations, character art",
+      "feature": "Collection × Completion"
+    },
+    "favoritePlaces": {
+      "title": "Favorite places & travel",
+      "description": "Turn your favorite places and travel destinations into cards. Collect the places you want to visit.",
+      "example": "Examples: great places you've been, dream destinations, local landmarks",
+      "feature": "Gacha × Collection"
+    },
+    "getStarted": {
+      "title": "Getting started",
+      "description": "See the usage guide for details on creating cards and setting them up on your stream."
+    }
   }
 }

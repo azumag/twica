@@ -41,10 +41,19 @@ describe("FAQ page", () => {
     expect(enMessages.faqPage.title).toBe("FAQ");
   });
 
+  it("adds a localized usage ideas route (#852)", () => {
+    const source = readSource("src/app/usages/page.tsx");
+
+    expect(source).toContain('getTranslations("usagesPage")');
+    expect(jaMessages.usagesPage.title).toBe("こんなおすすめの使い方！");
+    expect(enMessages.usagesPage.title).toBe("Fun ways to use TwiCa!");
+  });
+
   it("renders the shared public footer on every public page", () => {
     const pages = [
       "src/app/page.tsx",
       "src/app/guide/page.tsx",
+      "src/app/usages/page.tsx",
       "src/app/about/page.tsx",
       "src/app/privacy/page.tsx",
       "src/app/tos/page.tsx",
@@ -67,6 +76,7 @@ describe("FAQ page", () => {
 
     expect(source).toContain("PUBLIC_FOOTER_LINKS");
     expect(source).toContain('href: "/guide"');
+    expect(source).toContain('href: "/usages"');
     expect(source).toContain('href: "/faq"');
     expect(source).toContain('href: "/tos"');
     expect(source).toContain('href: "/about"');
@@ -215,6 +225,22 @@ describe("streamer enablement documentation", () => {
         }
       }
     }
+
+    // おすすめの使い方ページ（#852）: グリッドの表示順は配列順なので厳密比較する。
+    // メタ情報キー（title/metaDescription/lead/getStarted）は配列対象外。
+    const usageSource = readSource("src/app/usages/page.tsx");
+    const usageKeys = Object.keys(jaMessages.usagesPage).filter(
+      (key) => !["title", "metaDescription", "lead", "getStarted"].includes(key)
+    );
+    expect(listedKeys(usageSource, "usages")).toEqual(usageKeys);
+    for (const { name, messages } of locales) {
+      for (const key of usageKeys) {
+        for (const child of ["title", "description", "example", "feature"] as const) {
+          expect(messages.usagesPage[key][child], `${name}.usagesPage.${key}.${child}`).toBeTruthy();
+        }
+      }
+    }
+    expect(usageSource).toContain("{usages.map(");
   });
 
   it("points non-streamers on the dashboard at the enablement flow", () => {
@@ -267,7 +293,7 @@ describe("streamer enablement documentation", () => {
           ])
         : [];
 
-    for (const scope of ["guidePage", "faqPage", "channelPointsAccess"] as const) {
+    for (const scope of ["guidePage", "faqPage", "usagesPage", "channelPointsAccess"] as const) {
       expect(collectKeys(jaMessages[scope]).sort(), scope).toEqual(collectKeys(enMessages[scope]).sort());
     }
     expect(collectKeys(jaMessages.topPage.streamerInfo).sort()).toEqual(

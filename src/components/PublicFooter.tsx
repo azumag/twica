@@ -3,6 +3,7 @@ import { getTranslations } from "next-intl/server";
 
 export const PUBLIC_FOOTER_LINKS = [
   { href: "/guide", label: "guide" },
+  { href: "/usages", label: "usages" },
   { href: "/faq", label: "faq" },
   { href: "/tos", label: "tos" },
   { href: "/about", label: "about" },
