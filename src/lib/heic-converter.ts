@@ -41,6 +41,11 @@ const HEIC_EXTENSIONS = [".heic", ".heif"];
 async function withTimeout<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const operationPromise = Promise.resolve().then(operation);
+  // タイムアウトが先に成立した場合、operationPromise は Worker 側の処理が
+  // 終わるまで裏で生き続ける。ハンドラを一切繋がないと、後から reject された際に
+  // ブラウザ側で unhandled promise rejection が発生するため、結果を使わない
+  // ダミーの catch を必ず繋いでおく（Promise.race に渡す元の Promise の挙動は変えない）。
+  operationPromise.catch(() => {});
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(HEIC_ERROR_TIMEOUT)), timeoutMs);
   });
