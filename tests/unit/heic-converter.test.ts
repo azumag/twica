@@ -113,4 +113,36 @@ describe('convertHeicToJpeg (issue #770)', () => {
       vi.useRealTimers()
     }
   })
+
+  it('タイムアウト成立後にheic2anyが遅延rejectしてもunhandled rejectionにならない', async () => {
+    vi.useFakeTimers()
+    const unhandledRejections: unknown[] = []
+    const onUnhandledRejection = (reason: unknown) => unhandledRejections.push(reason)
+    process.on('unhandledRejection', onUnhandledRejection)
+    try {
+      let rejectHeic2any: (error: Error) => void = () => undefined
+      heic2anyMock.mockImplementation(
+        () => new Promise<Blob>((_, reject) => { rejectHeic2any = reject })
+      )
+
+      const conversion = convertHeicToJpeg(makeFile('photo.heic', 'image/heic'))
+      const rejection = expect(conversion).rejects.toThrow(HEIC_ERROR_TIMEOUT)
+      await Promise.resolve()
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(HEIC_CONVERSION_TIMEOUT_MS)
+      await rejection
+
+      // タイムアウトで呼び出し側には結果を返した後も、heic2any側のPromiseは
+      // 生きたままなので、ここで実際に遅延rejectさせて検証する
+      rejectHeic2any(new Error('late decode failure'))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(unhandledRejections).toHaveLength(0)
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection)
+      vi.useRealTimers()
+    }
+  })
 })
