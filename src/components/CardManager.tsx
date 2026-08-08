@@ -14,6 +14,7 @@ import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from "@/lib/rarity-weight-calculator";
 import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
+import { isHeicUpload, convertHeicToJpeg, HEIC_INPUT_MAX_BYTES, HEIC_ERROR_TOO_LARGE } from "@/lib/heic-converter";
 import { MAX_ISSUANCE_COUNT_CAP, getIssuanceInfo } from "@/lib/card-issuance";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
@@ -462,6 +463,8 @@ export default function CardManager({
   const isDescriptionTooLong = descriptionCharacterCount > CARD_DESCRIPTION_MAX_CHARACTERS;
   const [saving, setSaving] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Issue #770: HEIC 画像を JPEG へ変換中の状態（変換中は入力を無効化する）
+  const [isConvertingHeic, setIsConvertingHeic] = useState(false);
   // Issue #393再設計: デプロイ窓(card_pack_names列未検出)でパック紐付けだけ
   // 保留された稀なケースの通知。resetForm()がuploadErrorを即座にクリアする
   // ため、フォームの表示状態から独立させる。
@@ -502,6 +505,23 @@ export default function CardManager({
   // 画像サイズ読み取りの非同期コールバック無効化用カウンター
   // Counter to invalidate stale async image dimension callbacks
   const imageDimensionRequestId = useRef(0);
+  // HEIC変換専用の世代。画像寸法読み取り処理とは別に持ち、変換成功時に
+  // processSelectedFile() が画像寸法用IDを進めても、現行変換の finally が
+  // 自分自身を古いリクエストと誤判定しないようにする。
+  const heicConversionRequestId = useRef(0);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    // React Strict Mode は開発時に setup -> cleanup -> setup を再実行するため、
+    // 再マウントされた setup では必ず有効状態へ戻す。これを行わないと、
+    // 初回の検証用 cleanup が残り、実際にはマウント中でも変換結果を破棄してしまう。
+    isMountedRef.current = true;
+    return () => {
+      // 画面遷移などでアンマウントされた後に、保留中の変換Promiseから
+      // state更新やクロップ開始を行わない。Worker自体は停止できないため、
+      // 完了後の各経路でこのフラグを確認して結果だけを無効化する。
+      isMountedRef.current = false;
+    };
+  }, []);
   // Cropped image file ready for upload
   // アップロード準備完了のトリミング済み画像ファイル
   const [croppedFile, setCroppedFile] = useState<File | null>(null);
@@ -1093,6 +1113,9 @@ export default function CardManager({
     // Reset cropping state
     // トリミング状態をリセット
     imageDimensionRequestId.current++;
+    // キャンセル中のHEIC変換を無効化し、古いPromiseが後から状態を戻さないようにする
+    heicConversionRequestId.current++;
+    setIsConvertingHeic(false);
     setCropModalOpen(false);
     setCropModeModalOpen(false);
     setSelectedCropMode("square");
@@ -1111,73 +1134,114 @@ export default function CardManager({
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     setUploadError(null);
     if (file) {
+      // 新しいファイル選択は、前のHEIC変換結果を常に無効化する。
+      const conversionRequestId = ++heicConversionRequestId.current;
+      // Issue #770: HEIC / HEIF はブラウザで表示できないため、選択直後に
+      // クライアント側で JPEG へ変換してから既存フローへ渡す。変換中は入力が
+      // 無効化されるため、世代IDはフォームのキャンセル（resetForm 等）や
+      // 再選択による古い変換結果の無視に使う。
+      if (isHeicUpload(file)) {
+        setIsConvertingHeic(true);
+        try {
+          const converted = await convertHeicToJpeg(file);
+          if (!isMountedRef.current || conversionRequestId !== heicConversionRequestId.current) return;
+          processSelectedFile(converted);
+        } catch (error) {
+          if (!isMountedRef.current || conversionRequestId !== heicConversionRequestId.current) return;
+          if (error instanceof Error && error.message === HEIC_ERROR_TOO_LARGE) {
+            setUploadError(t("messages.heicTooLarge", { mb: HEIC_INPUT_MAX_BYTES / (1024 * 1024) }));
+          } else {
+            setUploadError(t("messages.heicConvertFailed"));
+          }
+        } finally {
+          // キャンセル・再選択後に完了した古い変換は、現在の入力状態を変更してはならない。
+          if (!isMountedRef.current || conversionRequestId !== heicConversionRequestId.current) return;
+          // 変換完了（成功・失敗とも）で入力を再度有効化し、生の HEIC が
+          // フォーム送信に残らないようファイル入力をクリアする
+          setIsConvertingHeic(false);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        }
+        return;
+      }
+      // HEIC変換が発生しない選択でも、念のため変換中表示を解除する。
+      setIsConvertingHeic(false);
       // Only validate file type before cropping (skip size check)
       // Cropped image will be compressed to JPEG, so original size doesn't matter
       // トリミング前はファイルタイプのみ検証（サイズチェックはスキップ）
       // トリミング後はJPEGに圧縮されるため、元のサイズは問題にならない
-      if (!isAllowedCardUploadFile(file)) {
-        setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
-        return;
-      }
-      if (shouldPreserveOriginalCardUpload(file)) {
-        // GIFはトリミング/再圧縮されず原本のままアップロードされるため、
-        // クライアント側でもプラン上限を事前にチェックし UX を早期化する
-        // （サーバ側 validateUpload でも最終的に弾かれるが、無駄なネットワークを避ける）
-        const validation = validateUpload(file, maxUploadSize);
-        if (!validation.valid) {
-          setUploadError(getUploadErrorMessage(validation.error!));
-          return;
-        }
-        imageDimensionRequestId.current++;
-        if (croppedPreviewUrl) {
-          URL.revokeObjectURL(croppedPreviewUrl);
-        }
-        setSelectedFileForCrop(null);
-        setSourceImageWidth(null);
-        setCropModeModalOpen(false);
-        setCropModalOpen(false);
-        setSelectedCropMode("square");
-        setCroppedFile(file);
-        setCroppedPreviewUrl(URL.createObjectURL(file));
-        return;
-      }
-      // 画像の実サイズを読み取ってからモーダルを開く
-      // Read actual image dimensions before opening the modal
-      const requestId = ++imageDimensionRequestId.current;
-      const img = document.createElement("img");
-      const objectUrl = URL.createObjectURL(file);
-      img.onload = () => {
-        URL.revokeObjectURL(objectUrl);
-        // キャンセルや再選択で無効化されたコールバックを無視
-        // Ignore stale callback from cancelled/re-selected file
-        if (requestId !== imageDimensionRequestId.current) return;
-        const imgWidth = img.naturalWidth;
-        setSourceImageWidth(imgWidth);
-        // 画像幅以下の解像度のうち最大のものをデフォルトに設定
-        // Default to the largest resolution that doesn't exceed image width
-        const validWidths = availableWidths.filter((w) => w <= imgWidth);
-        const defaultWidth = validWidths.length > 0
-          ? Math.max(...validWidths)
-          : Math.min(...availableWidths);
-        setSelectedWidth(defaultWidth);
-        setSelectedFileForCrop(file);
-        setCropModeModalOpen(true);
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(objectUrl);
-        if (requestId !== imageDimensionRequestId.current) return;
-        // 読み取り失敗時はフォールバック：従来通り全選択肢を表示
-        setSourceImageWidth(null);
-        setSelectedWidth(maxImageWidth);
-        setSelectedFileForCrop(file);
-        setCropModeModalOpen(true);
-      };
-      img.src = objectUrl;
+      processSelectedFile(file);
     }
+  };
+
+  /**
+   * 検証済みファイルをクロップモード選択へ渡す共通処理（#770 で HEIC 変換後も流用）。
+   * HEIC 変換済み JPEG は通常ファイルと同様に扱う。
+   */
+  const processSelectedFile = (file: File) => {
+    if (!isAllowedCardUploadFile(file)) {
+      setUploadError(getUploadErrorMessage("INVALID_FILE_TYPE"));
+      return;
+    }
+    if (shouldPreserveOriginalCardUpload(file)) {
+      // GIFはトリミング/再圧縮されず原本のままアップロードされるため、
+      // クライアント側でもプラン上限を事前にチェックし UX を早期化する
+      // （サーバ側 validateUpload でも最終的に弾かれるが、無駄なネットワークを避ける）
+      const validation = validateUpload(file, maxUploadSize);
+      if (!validation.valid) {
+        setUploadError(getUploadErrorMessage(validation.error!));
+        return;
+      }
+      imageDimensionRequestId.current++;
+      if (croppedPreviewUrl) {
+        URL.revokeObjectURL(croppedPreviewUrl);
+      }
+      setSelectedFileForCrop(null);
+      setSourceImageWidth(null);
+      setCropModeModalOpen(false);
+      setCropModalOpen(false);
+      setSelectedCropMode("square");
+      setCroppedFile(file);
+      setCroppedPreviewUrl(URL.createObjectURL(file));
+      return;
+    }
+    // 画像の実サイズを読み取ってからモーダルを開く
+    // Read actual image dimensions before opening the modal
+    const requestId = ++imageDimensionRequestId.current;
+    const img = document.createElement("img");
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      // キャンセルや再選択で無効化されたコールバックを無視
+      // Ignore stale callback from cancelled/re-selected file
+      if (requestId !== imageDimensionRequestId.current) return;
+      const imgWidth = img.naturalWidth;
+      setSourceImageWidth(imgWidth);
+      // 画像幅以下の解像度のうち最大のものをデフォルトに設定
+      // Default to the largest resolution that doesn't exceed image width
+      const validWidths = availableWidths.filter((w) => w <= imgWidth);
+      const defaultWidth = validWidths.length > 0
+        ? Math.max(...validWidths)
+        : Math.min(...availableWidths);
+      setSelectedWidth(defaultWidth);
+      setSelectedFileForCrop(file);
+      setCropModeModalOpen(true);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      if (requestId !== imageDimensionRequestId.current) return;
+      // 読み取り失敗時はフォールバック：従来通り全選択肢を表示
+      setSourceImageWidth(null);
+      setSelectedWidth(maxImageWidth);
+      setSelectedFileForCrop(file);
+      setCropModeModalOpen(true);
+    };
+    img.src = objectUrl;
   };
 
   /**
@@ -1976,10 +2040,10 @@ export default function CardManager({
                     <input
                       type="file"
                       name="image"
-                      accept="image/*"
+                      accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif"
                       ref={fileInputRef}
                       onChange={handleFileChange}
-                      disabled={storageStatus?.uploadDisabled}
+                      disabled={storageStatus?.uploadDisabled || isConvertingHeic}
                       className={`w-full min-w-0 text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white ${
                         storageStatus?.uploadDisabled
                           ? 'opacity-50 cursor-not-allowed file:bg-gray-500'
@@ -1999,6 +2063,12 @@ export default function CardManager({
                         maxMb: Math.floor((maxUploadSize ?? 1 * 1024 * 1024) / (1024 * 1024)),
                       })}
                     </p>
+                    {/* Issue #770: HEIC 画像の JPEG 変換中表示 */}
+                    {isConvertingHeic && (
+                      <p className="text-xs text-purple-400" role="status">
+                        {t("messages.heicConverting")}
+                      </p>
+                    )}
                     <input
                       type="url"
                       name="imageUrl"
@@ -2172,7 +2242,7 @@ export default function CardManager({
               <div className="mt-6 flex gap-4">
                 <button
                   type="submit"
-                  disabled={saving || isDescriptionTooLong || isMaintenanceBlocked}
+                  disabled={saving || isConvertingHeic || isDescriptionTooLong || isMaintenanceBlocked}
                   title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                   className="rounded-lg bg-purple-600 px-6 py-2 text-white hover:bg-purple-700 disabled:opacity-50"
                 >

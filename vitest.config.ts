@@ -35,6 +35,13 @@ export default defineConfig({
     // サブエージェント実行時のさらなる安全対策
     isolate: true, // 各テストファイルを完全に分離
     fileParallelism: false, // ファイル並列実行を無効化（より安全）
+    // A `vi.mock` factory is applied after Vite parses imports. The isolated
+    // dependency install therefore still needs a concrete file for
+    // `heic-to/csp` during import analysis; this alias is test-only and does
+    // not alter the production module resolution.
+    alias: {
+      'heic-to/csp': path.resolve(__dirname, './tests/stubs/heic-to-csp.ts'),
+    },
   },
   resolve: {
     alias: {
