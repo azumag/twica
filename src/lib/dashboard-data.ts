@@ -40,7 +40,7 @@ import { withDbRetry } from "@/lib/db/retry";
 // src/app/api/cards/route.ts の fetchCardsFromDBPg で確立したパターン（無指定
 // select → 列欠落エラー検知 → CARDS_SAFE_COLUMNS で再試行）を本モジュールにも
 // 適用する。詳細は cards-safe-columns.ts のコメント参照。
-import { CARDS_SAFE_COLUMNS, withCardsBattleColumnFallback } from "@/lib/db/cards-safe-columns";
+import { CARDS_SAFE_COLUMNS, withCardsBattleColumnFallback, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 // schema のテーブル名（cards / streamers 等）は本モジュールのローカル変数名・
 // 型名と紛らわしいため、Table サフィックスを付けて import する
 // （announcements.ts パイロットと同じ規約）
@@ -1477,26 +1477,43 @@ async function fetchGachaDropStatsFromHistory(
         "dashboard:gachaDropStats:history",
         { idempotent: true },
       ),
-      withDbRetry(
-        async () => {
+      // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color が
+      // migration 未適用の環境では、この明示 select が丸ごと失敗し
+      // Promise.all 全体が catch(1556行目) に落ちて排出統計全体が0件表示に
+      // なっていた(gacha.ts の loadPgCards と同じ deploy-window フォールバック
+      // をここにも揃える)。
+      (async () => {
+        const loadCards = async (includePaddingColor: boolean) => {
           const { db } = await getDb();
-          return db
+          const rows = await db
             .select({
               id: cardsTable.id,
               name: cardsTable.name,
               rarity: cardsTable.rarity,
               image_url: cardsTable.image_url,
-              image_padding_color: cardsTable.image_padding_color,
+              ...(includePaddingColor ? { image_padding_color: cardsTable.image_padding_color } : {}),
               drop_rate: cardsTable.drop_rate,
               created_at: cardsTable.created_at,
             })
             .from(cardsTable)
             .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
             .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at));
-        },
-        "dashboard:gachaDropStats:cards",
-        { idempotent: true },
-      ),
+          return rows.map((row) => ({
+            ...row,
+            image_padding_color: ("image_padding_color" in row ? row.image_padding_color : null) ?? null,
+          }));
+        };
+        try {
+          return await withDbRetry(() => loadCards(true), "dashboard:gachaDropStats:cards", { idempotent: true });
+        } catch (error) {
+          if (!isMissingCardPaddingColorError(error)) throw error;
+          return withDbRetry(
+            () => loadCards(false),
+            "dashboard:gachaDropStats:cards:padding-fallback",
+            { idempotent: true },
+          );
+        }
+      })(),
       // カード別の排出数はSQL側でGROUP BYして正確に取る（#833: 以前はhistoryの
       // LIMIT 10000サンプルから数えていたため、期間内の総排出数が10000件を超える
       // 配信者では全カードのactualRateが黙って過小表示されていた）。
@@ -1843,24 +1860,39 @@ async function fetchCardOwnerStatsFromUserCards(
   let ownerCountRows: Array<{ card_id: string; count: number | string }>;
   try {
     [cards, ownerRows, ownerCountRows] = await Promise.all([
-      withDbRetry(
-        async () => {
+      // Fable厳格レビュー指摘(#899 PR #903)対応: 上のgachaDropStatsと同じ
+      // deploy-window フォールバック(image_padding_color 列欠落時は列を
+      // 落として再試行)。
+      (async () => {
+        const loadCards = async (includePaddingColor: boolean) => {
           const { db } = await getDb();
-          return db
+          const rows = await db
             .select({
               id: cardsTable.id,
               name: cardsTable.name,
               rarity: cardsTable.rarity,
               image_url: cardsTable.image_url,
-              image_padding_color: cardsTable.image_padding_color,
+              ...(includePaddingColor ? { image_padding_color: cardsTable.image_padding_color } : {}),
             })
             .from(cardsTable)
             .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
             .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at));
-        },
-        "dashboard:cardOwnerStats:cards",
-        { idempotent: true },
-      ),
+          return rows.map((row) => ({
+            ...row,
+            image_padding_color: ("image_padding_color" in row ? row.image_padding_color : null) ?? null,
+          }));
+        };
+        try {
+          return await withDbRetry(() => loadCards(true), "dashboard:cardOwnerStats:cards", { idempotent: true });
+        } catch (error) {
+          if (!isMissingCardPaddingColorError(error)) throw error;
+          return withDbRetry(
+            () => loadCards(false),
+            "dashboard:cardOwnerStats:cards:padding-fallback",
+            { idempotent: true },
+          );
+        }
+      })(),
       withDbRetry(
         async () => {
           const { db } = await getDb();
