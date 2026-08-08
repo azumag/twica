@@ -148,4 +148,39 @@ describe('CardManager HEIC conversion (issue #770)', () => {
     expect(screen.queryByText('トリミングサイズを選択')).not.toBeInTheDocument()
     expect(screen.queryByText('HEIC画像を読み込めませんでした。別の画像を選択するか、JPEGへ変換してから再度お試しください。')).not.toBeInTheDocument()
   })
+
+  it('キャンセル後に開き直したフォームの変換状態を、古い変換が解除しない', async () => {
+    stubImageLoad()
+    mocks.isHeicUpload.mockReturnValue(true)
+    let resolveFirst: (file: File) => void
+    let resolveSecond: (file: File) => void
+    let conversionCount = 0
+    mocks.convertHeicToJpeg.mockImplementation(
+      () => new Promise<File>((resolve) => {
+        if (conversionCount++ === 0) {
+          resolveFirst = resolve
+        } else {
+          resolveSecond = resolve
+        }
+      })
+    )
+    const { container } = renderCardManager()
+
+    openFormAndSelectFile(container, heicFile())
+    expect(await screen.findByRole('status')).toHaveTextContent('HEIC画像を変換中…')
+    fireEvent.click(screen.getByText('キャンセル'))
+
+    // 古い変換が未完了でも、キャンセル後は状態を持ち越さず新規フォームを開ける
+    openFormAndSelectFile(container, heicFile())
+    expect(await screen.findByRole('status')).toHaveTextContent('HEIC画像を変換中…')
+
+    // 古い変換の finally が実行されても、現在の変換中表示は維持する
+    resolveFirst!(jpegFile())
+    await waitFor(() => expect(mocks.convertHeicToJpeg).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('status')).toHaveTextContent('HEIC画像を変換中…')
+
+    resolveSecond!(jpegFile())
+    expect(await screen.findByText('トリミングサイズを選択')).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
 })

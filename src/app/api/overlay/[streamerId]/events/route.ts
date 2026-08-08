@@ -166,6 +166,7 @@ async function getOverlayHistoryRows(
           card_name: cardsTable.name,
           card_description: cardsTable.description,
           card_image_url: cardsTable.image_url,
+          card_image_padding_color: cardsTable.image_padding_color,
           card_rarity: cardsTable.rarity,
         })
         .from(gachaHistoryTable)
@@ -207,6 +208,7 @@ async function getOverlayHistoryRows(
                 name: row.card_name as string,
                 description: row.card_description,
                 image_url: row.card_image_url,
+                image_padding_color: row.card_image_padding_color,
                 rarity: row.card_rarity as Rarity,
               },
       }));

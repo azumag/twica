@@ -286,3 +286,24 @@ export function validateChatAnnouncementTemplate(template: unknown): { valid: bo
 
   return { valid: true }
 }
+
+/**
+ * カード画像の余白（fit）色の検証 / issue #899。
+ * この値は表示側の CSS 背景色（backgroundColor）にそのまま入るため、
+ * 任意文字列を許可せず、アプリが生成する4値のみをホワイトリストで許可する。
+ * null / undefined は「余白なし」を意味するため許可。
+ */
+const VALID_PADDING_COLORS = new Set(['black', 'white', 'gray', 'transparent'])
+
+export function validateImagePaddingColor(
+  color: unknown
+): { valid: boolean; error?: string } {
+  // null / undefined / 空文字は「余白なし」を意味するため許可（空文字は API 側で null に変換）
+  if (color === null || color === undefined || color === '') {
+    return { valid: true }
+  }
+  if (typeof color !== 'string' || !VALID_PADDING_COLORS.has(color)) {
+    return { valid: false, error: ERROR_MESSAGES.INVALID_REQUEST }
+  }
+  return { valid: true }
+}

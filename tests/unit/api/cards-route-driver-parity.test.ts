@@ -230,6 +230,49 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       expect(pg.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
     });
 
+    it("imagePaddingColor 指定時は INSERT 値に余白色が含まれる (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [STREAMER_ROW] }],
+        inserts: [{ rows: [CREATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await POST(
+        createPostRequest({ ...REQUEST_BODY, imagePaddingColor: "black" })
+      );
+      expect(pgRes.status).toBe(200);
+      expect(pg.insertCalls[0].values).toMatchObject({
+        image_padding_color: "black",
+      });
+    });
+
+    it("不正な余白色は400で拒否する (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [STREAMER_ROW] }],
+        inserts: [{ rows: [CREATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await POST(
+        createPostRequest({ ...REQUEST_BODY, imagePaddingColor: "url(javascript:alert(1))" })
+      );
+      expect(pgRes.status).toBe(400);
+      expect(pg.insertCalls).toHaveLength(0);
+    });
+
+    it("imagePaddingColor が空文字なら余白色は null として保存される (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [STREAMER_ROW] }],
+        inserts: [{ rows: [CREATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await POST(
+        createPostRequest({ ...REQUEST_BODY, imagePaddingColor: "" })
+      );
+      expect(pgRes.status).toBe(200);
+      expect(pg.insertCalls[0].values).toMatchObject({
+        image_padding_color: null,
+      });
+    });
+
     it("streamer所有権なしでは403を返しINSERTしない", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);

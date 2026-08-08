@@ -12,13 +12,14 @@ import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
+import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from "@/lib/rarity-weight-calculator";
 import { isAllowedCardUploadFile, shouldPreserveOriginalCardUpload } from "@/lib/card-upload-mode";
 import { isHeicUpload, convertHeicToJpeg, HEIC_INPUT_MAX_BYTES, HEIC_ERROR_TOO_LARGE } from "@/lib/heic-converter";
 import { MAX_ISSUANCE_COUNT_CAP, getIssuanceInfo } from "@/lib/card-issuance";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
-import ImageCropper, { type CropMode, getCropModes } from "./ImageCropper";
+import ImageCropper, { type CropMode, type FitColor, getCropModes, FIT_COLORS, CHECKERBOARD_BACKGROUND } from "./ImageCropper";
 import CardViewToggle, { type ViewMode } from "./CardViewToggle";
 import CardList from "./CardList";
 import DropRateSettingsModal from "./DropRateSettingsModal";
@@ -492,6 +493,10 @@ export default function CardManager({
   // Crop mode selection modal state (shown before cropper)
   // トリミングモード選択モーダルの状態（クロッパー表示前に表示）
   const [cropModeModalOpen, setCropModeModalOpen] = useState(false);
+  // Issue #770/899: 余白（fit）モードで選択された余白の色
+  const [fitColor, setFitColor] = useState<FitColor>("black");
+  // 保存対象の余白色（fit モードで確定した場合のみ非 null。カード作成/更新 API へ送る）
+  const [imagePaddingColor, setImagePaddingColor] = useState<string | null>(null);
   // Selected crop mode: square (800x800) or portrait (800x1118)
   // ユーザーが選択した出力解像度（デフォルトはプラン最大幅）
   const [selectedWidth, setSelectedWidth] = useState<number>(maxImageWidth);
@@ -505,6 +510,23 @@ export default function CardManager({
   // 画像サイズ読み取りの非同期コールバック無効化用カウンター
   // Counter to invalidate stale async image dimension callbacks
   const imageDimensionRequestId = useRef(0);
+  // HEIC変換専用の世代。画像寸法読み取り処理とは別に持ち、変換成功時に
+  // processSelectedFile() が画像寸法用IDを進めても、現行変換の finally が
+  // 自分自身を古いリクエストと誤判定しないようにする。
+  const heicConversionRequestId = useRef(0);
+  useEffect(() => {
+    // effectのcleanupが参照するrefをeffect開始時に捕捉し、React Hooks lintの
+    // 「cleanup時にはref値が変わっている可能性がある」という警告を避ける。
+    const heicRequestIdRef = heicConversionRequestId;
+    const imageDimensionRequestIdRef = imageDimensionRequestId;
+    return () => {
+      // 画面遷移などでアンマウントされた後に、保留中の変換Promiseから
+      // state更新やクロップ開始を行わない。Worker自体は停止できないため、
+      // 世代を進めて結果だけを無効化する。
+      heicRequestIdRef.current++;
+      imageDimensionRequestIdRef.current++;
+    };
+  }, []);
   // Cropped image file ready for upload
   // アップロード準備完了のトリミング済み画像ファイル
   const [croppedFile, setCroppedFile] = useState<File | null>(null);
@@ -1096,9 +1118,14 @@ export default function CardManager({
     // Reset cropping state
     // トリミング状態をリセット
     imageDimensionRequestId.current++;
+    // キャンセル中のHEIC変換を無効化し、古いPromiseが後から状態を戻さないようにする
+    heicConversionRequestId.current++;
+    setIsConvertingHeic(false);
     setCropModalOpen(false);
     setCropModeModalOpen(false);
     setSelectedCropMode("square");
+    setFitColor("black");
+    setImagePaddingColor(null);
     setSelectedWidth(maxImageWidth);
     setSelectedFileForCrop(null);
     setSourceImageWidth(null);
@@ -1118,25 +1145,28 @@ export default function CardManager({
     const file = e.target.files?.[0];
     setUploadError(null);
     if (file) {
+      // 新しいファイル選択は、前のHEIC変換結果を常に無効化する。
+      const conversionRequestId = ++heicConversionRequestId.current;
       // Issue #770: HEIC / HEIF はブラウザで表示できないため、選択直後に
       // クライアント側で JPEG へ変換してから既存フローへ渡す。変換中は入力が
-      // 無効化されるため、request id はフォームのキャンセル（resetForm 等）による
-      // 古い変換結果の無視に使う。
+      // 無効化されるため、世代IDはフォームのキャンセル（resetForm 等）や
+      // 再選択による古い変換結果の無視に使う。
       if (isHeicUpload(file)) {
         setIsConvertingHeic(true);
-        const requestId = ++imageDimensionRequestId.current;
         try {
           const converted = await convertHeicToJpeg(file);
-          if (requestId !== imageDimensionRequestId.current) return;
+          if (conversionRequestId !== heicConversionRequestId.current) return;
           processSelectedFile(converted);
         } catch (error) {
-          if (requestId !== imageDimensionRequestId.current) return;
+          if (conversionRequestId !== heicConversionRequestId.current) return;
           if (error instanceof Error && error.message === HEIC_ERROR_TOO_LARGE) {
             setUploadError(t("messages.heicTooLarge", { mb: HEIC_INPUT_MAX_BYTES / (1024 * 1024) }));
           } else {
             setUploadError(t("messages.heicConvertFailed"));
           }
         } finally {
+          // キャンセル・再選択後に完了した古い変換は、現在の入力状態を変更してはならない。
+          if (conversionRequestId !== heicConversionRequestId.current) return;
           // 変換完了（成功・失敗とも）で入力を再度有効化し、生の HEIC が
           // フォーム送信に残らないようファイル入力をクリアする
           setIsConvertingHeic(false);
@@ -1146,6 +1176,8 @@ export default function CardManager({
         }
         return;
       }
+      // HEIC変換が発生しない選択でも、念のため変換中表示を解除する。
+      setIsConvertingHeic(false);
       // Only validate file type before cropping (skip size check)
       // Cropped image will be compressed to JPEG, so original size doesn't matter
       // トリミング前はファイルタイプのみ検証（サイズチェックはスキップ）
@@ -1181,6 +1213,8 @@ export default function CardManager({
       setCropModeModalOpen(false);
       setCropModalOpen(false);
       setSelectedCropMode("square");
+      // #899: クロップ以外の画像経路（GIF原本）では余白設定をリセットする
+      setImagePaddingColor(null);
       setCroppedFile(file);
       setCroppedPreviewUrl(URL.createObjectURL(file));
       return;
@@ -1236,6 +1270,9 @@ export default function CardManager({
   const handleCropModeCancel = () => {
     imageDimensionRequestId.current++;
     setCropModeModalOpen(false);
+    // #899: モーダルを閉じた時点で余白モードの選択を解除し、次回オープン時に
+    // 色選択 UI が残らないようにする
+    setSelectedCropMode("square");
     setSelectedFileForCrop(null);
     setSourceImageWidth(null);
     // Clear the file input
@@ -1251,10 +1288,17 @@ export default function CardManager({
    * @param croppedBlob - The cropped image as a Blob
    */
   const handleCropComplete = (croppedBlob: Blob) => {
+    // Issue #899: 余白（fit）モードで透明を選んだ場合は PNG 出力になる
+    const isTransparentFit = selectedCropMode === "fit" && fitColor === "transparent";
+    const outputExt = isTransparentFit ? "png" : "jpg";
     // Convert Blob to File with a proper filename for upload
     // アップロード用に適切なファイル名でBlobをFileに変換
-    const croppedFileName = `cropped-${Date.now()}.jpg`;
-    const file = new File([croppedBlob], croppedFileName, { type: "image/jpeg" });
+    const croppedFileName = `cropped-${Date.now()}.${outputExt}`;
+    const file = new File([croppedBlob], croppedFileName, {
+      type: isTransparentFit ? "image/png" : "image/jpeg",
+    });
+    // fit モードで確定した場合のみ余白色を保存対象にする（それ以外は従来どおり NULL）
+    setImagePaddingColor(selectedCropMode === "fit" ? fitColor : null);
     setCroppedFile(file);
     // Create preview URL for the cropped image
     // トリミング済み画像のプレビューURLを作成
@@ -1277,6 +1321,8 @@ export default function CardManager({
     imageDimensionRequestId.current++;
     setCropModalOpen(false);
     setSelectedFileForCrop(null);
+    // #899: クロップキャンセル時は余白設定も破棄する（次回の画像選択に引きずらない）
+    setImagePaddingColor(null);
     setSourceImageWidth(null);
     // Clear the file input
     // ファイル入力をクリア
@@ -1367,6 +1413,8 @@ export default function CardManager({
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
     });
     setConfirmedImageUrl(card.image_url || "");
+    // Issue #899: 余白付きカードの編集時は既存の余白色を復元する
+    setImagePaddingColor(card.image_padding_color ?? null);
     // Hide URL input initially only when editing card with existing image
     // 既存画像がある場合のみ、URL入力欄を初期状態で非表示
     setUserModifiedImage(!card.image_url);
@@ -1472,6 +1520,8 @@ export default function CardManager({
           maxIssuanceCount: formData.maxIssuanceCount.trim() === "" ? null : Number(formData.maxIssuanceCount),
           // Issue #393: send the pack name (trimmed "" → null clears it = all cards)
           collectionName: formData.collectionName.trim() === "" ? null : formData.collectionName.trim(),
+          // Issue #899: 余白（fit）モードの余白色（null または未指定は従来のトリミング画像）
+          imagePaddingColor,
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
@@ -1949,7 +1999,8 @@ export default function CardManager({
                       alt={t("form.currentImage")}
                       width={60}
                       height={60}
-                      className="rounded object-cover"
+                      className={`rounded ${cardImageFitClass(editingCard?.image_padding_color)}`}
+                      style={cardImageFitStyle(editingCard?.image_padding_color)}
                       unoptimized
                     />
                     <div className="min-w-0 flex-1">
@@ -1976,7 +2027,8 @@ export default function CardManager({
                     <img
                       src={croppedPreviewUrl}
                       alt={t("form.croppedImage")}
-                      className={`rounded object-cover ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
+                      className={`rounded ${cardImageFitClass(imagePaddingColor)} ${selectedCropMode === "portrait" ? "h-[84px] w-[60px]" : "h-[60px] w-[60px]"}`}
+                      style={cardImageFitStyle(imagePaddingColor)}
                     />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm text-green-300">
@@ -2575,7 +2627,8 @@ export default function CardManager({
                                   alt={card.name}
                                   width={300}
                                   height={300}
-                                  className="w-full h-full object-cover"
+                                  className={`w-full h-full ${cardImageFitClass(card.image_padding_color)}`}
+                                  style={cardImageFitStyle(card.image_padding_color)}
                                   priority={isPriority}
                                   unoptimized
                                 />
@@ -2805,6 +2858,75 @@ export default function CardManager({
                   <p className="text-sm text-gray-400">{planCropModes.portrait.dimensions}px (JPEG)</p>
                 </div>
               </button>
+
+              {/* Fit option (Issue #899) */}
+              {/* 余白（フィット）オプション */}
+              <button
+                type="button"
+                // fit は選択後に余白の色を選んでから確定するため、モーダルを閉じず
+                // 選択状態だけ切り替える（色選択 UI は下に表示される）
+                onClick={() => setSelectedCropMode("fit")}
+                className={`w-full flex items-center gap-4 p-4 rounded-lg border-2 transition ${
+                  selectedCropMode === "fit"
+                    ? "bg-gray-600 border-purple-500"
+                    : "bg-gray-700 hover:bg-gray-600 border-transparent hover:border-purple-500"
+                }`}
+              >
+                <div className="w-12 h-12 bg-purple-600 rounded flex items-center justify-center shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16v12H4z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 3v2M16 3v2M8 19v2M16 19v2" />
+                  </svg>
+                </div>
+                <div className="text-left">
+                  <p className="font-medium text-white">{planCropModes.fit.label}</p>
+                  <p className="text-sm text-gray-400">{planCropModes.fit.dimensions}px · 画像全体を収める</p>
+                </div>
+              </button>
+
+              {/* Fit color selector (Issue #899) */}
+              {/* 余白の色選択 */}
+              {selectedCropMode === "fit" && (
+                <div className="pt-2">
+                  <p className="text-sm text-gray-300 mb-2">{t("form.fitColorLabel")}</p>
+                  <div className="flex gap-2">
+                    {(Object.keys(FIT_COLORS) as Array<keyof typeof FIT_COLORS>).map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        onClick={() => setFitColor(color)}
+                        className={`w-10 h-10 rounded-lg border-2 transition ${
+                          fitColor === color ? "border-purple-500" : "border-gray-600 hover:border-gray-400"
+                        }`}
+                        style={{ backgroundColor: FIT_COLORS[color] }}
+                        aria-label={t(`form.fitColor.${color}`)}
+                      />
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setFitColor("transparent")}
+                      className={`w-10 h-10 rounded-lg border-2 transition flex items-center justify-center ${
+                        fitColor === "transparent" ? "border-purple-500" : "border-gray-600 hover:border-gray-400"
+                      }`}
+                      style={CHECKERBOARD_BACKGROUND}
+                      aria-label={t("form.fitColor.transparent")}
+                    >
+                      <svg className="h-4 w-4 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 5.636a9 9 0 11-12.728 12.728A9 9 0 0118.364 5.636z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">{t("form.fitColorNote")}</p>
+                  {/* 色を選んだらこのボタンでトリッパーへ進む */}
+                  <button
+                    type="button"
+                    onClick={() => handleCropModeSelect("fit")}
+                    className="mt-3 w-full rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700"
+                  >
+                    {t("form.fitProceed")}
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Cancel button */}
@@ -2828,6 +2950,7 @@ export default function CardManager({
         <ImageCropper
           imageFile={selectedFileForCrop}
           cropMode={selectedCropMode}
+          fitColor={fitColor}
           onCropComplete={handleCropComplete}
           onCancel={handleCropCancel}
           maxWidth={selectedWidth}

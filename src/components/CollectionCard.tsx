@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 
 /**
  * Props for the CollectionCard component
@@ -19,6 +20,8 @@ interface CollectionCardProps {
   // Card image URL (optional)
   // カード画像URL（任意）
   imageUrl: string | null;
+  // Issue #899: 余白（fit）モードの余白色（NULL = 余白なし = object-cover 表示）
+  imagePaddingColor?: string | null;
   // Rarity display info (label and color class)
   // レアリティ表示情報（ラベルとカラークラス）
   rarityInfo: {
@@ -67,6 +70,7 @@ export default function CollectionCard({
   streamerId,
   name,
   imageUrl,
+  imagePaddingColor,
   rarityInfo,
   collectionNumberLabel,
   count,
@@ -141,7 +145,8 @@ export default function CollectionCard({
             alt={name}
             width={300}
             height={300}
-            className={`w-full h-full object-cover ${isOwned ? "" : "grayscale opacity-50"} ${isInactive ? "opacity-80 saturate-75" : ""}`}
+            className={`w-full h-full ${cardImageFitClass(imagePaddingColor)} ${isOwned ? "" : "grayscale opacity-50"} ${isInactive ? "opacity-80 saturate-75" : ""}`}
+            style={cardImageFitStyle(imagePaddingColor)}
             priority={priority}
             unoptimized
           />

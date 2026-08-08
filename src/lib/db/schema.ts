@@ -110,6 +110,9 @@ export const cards = pgTable('cards', {
   name: text('name').notNull(),
   description: text('description'),
   image_url: text('image_url'),
+  // #899: 余白（フィット）モードで焼き込んだ余白の色。NULL = 余白なし（従来のトリミング画像）。
+  // 表示側は NULL なら object-cover、非 NULL なら object-contain + この色を背景にする。
+  image_padding_color: text('image_padding_color'),
   // 00001: NOT NULL DEFAULT 'common'（00048 以降は任意のカスタムレアリティ文字列を許容）
   rarity: text('rarity').notNull().default('common'),
   // 00014: GENERATED ALWAYS AS ... STORED（insert / update 不可の生成カラム）。

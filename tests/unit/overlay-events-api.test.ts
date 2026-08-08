@@ -336,6 +336,7 @@ describe("GET /api/overlay/[streamerId]/events", () => {
       name: "Demo card",
       description: null,
       image_url: null,
+      image_padding_color: null,
       rarity: "common",
     });
 

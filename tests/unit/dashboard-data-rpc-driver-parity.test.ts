@@ -802,6 +802,7 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
           name: 'Card A',
           rarity: 'common',
           image_url: null,
+          image_padding_color: null,
         }]],
         [userCardsTable, [
           {
@@ -834,6 +835,7 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
         cardName: 'Card A',
         rarity: 'common',
         imageUrl: null,
+        imagePaddingColor: null,
         ownerCount: 1,
         owners: [{
           userTwitchId: 'viewer-1',

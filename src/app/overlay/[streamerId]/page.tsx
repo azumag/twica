@@ -17,6 +17,7 @@ import {
   OVERLAY_EFFECT_PARTICLE_CONFIG,
 } from "@/lib/overlay-effect";
 import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
+import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 import {
   normalizeGachaSoundRules,
   pickSoundBearingCardIndex,
@@ -1352,7 +1353,8 @@ export default function OverlayPage() {
                       alt={result.card.name}
                       width={shouldUseSmallMode ? 180 : 300}
                       height={shouldUseSmallMode ? 180 : 300}
-                      className="w-full h-full object-cover"
+                      className={`w-full h-full ${cardImageFitClass(result.card.image_padding_color)}`}
+                      style={cardImageFitStyle(result.card.image_padding_color)}
                       unoptimized
                     />
                   ) : (

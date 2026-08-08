@@ -6,6 +6,7 @@ import {
   validateCardDescription,
   validateImageUrl,
   validateRarity,
+  validateImagePaddingColor,
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
@@ -31,7 +32,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
+import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -317,6 +318,12 @@ async function updateCardPg(
     delete updateData.collection_name;
     ({ updatedCard, error } = await attemptUpdate());
   }
+  // #899: image_padding_color 列が migration 未適用の環境では、この列を落として再試行する
+  //（余白情報だけが更新されず、カード更新自体は継続する）
+  if (error && isMissingCardPaddingColorError(error) && "image_padding_color" in updateData) {
+    delete updateData.image_padding_color;
+    ({ updatedCard, error } = await attemptUpdate());
+  }
   // self-review fix: 上記までの入力値フォールバックを尽くしてもなお、無指定
   // RETURNING が本番未デプロイ列(hp/atk/...等)を要求して失敗している場合、
   // 明示列リストで最後にもう一度だけ試す。
@@ -370,7 +377,7 @@ export async function PUT(
   try {
 
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber, maxIssuanceCount } = body;
+    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber, maxIssuanceCount, imagePaddingColor } = body;
 
     // Issue #393: optional card pack name (null clears it = all cards).
     const collectionNameResult = resolveCollectionNameField(body, "collectionName");
@@ -413,6 +420,17 @@ export async function PUT(
       if (!rarityValidation.valid) {
         return NextResponse.json(
           { error: rarityValidation.error },
+          { status: 400 }
+        )
+      }
+    }
+
+    // #899: 余白（fit）モードの色はホワイトリスト検証（表示側の CSS 背景色に使うため）
+    if (imagePaddingColor !== undefined) {
+      const paddingColorValidation = validateImagePaddingColor(imagePaddingColor)
+      if (!paddingColorValidation.valid) {
+        return NextResponse.json(
+          { error: paddingColorValidation.error },
           { status: 400 }
         )
       }
@@ -524,6 +542,8 @@ export async function PUT(
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.image_url = imageUrl;
+    // Issue #899: 余白（fit）モードの余白色（null は余白なしへ戻す、"" も同様にクリア）
+    if (imagePaddingColor !== undefined) updateData.image_padding_color = imagePaddingColor === "" ? null : imagePaddingColor;
     if (rarity !== undefined) updateData.rarity = typeof rarity === "string" ? rarity.trim() : rarity;
     if (collectionNameResult.value !== undefined && !collectionNameSkippedDeployWindow) updateData.collection_name = collectionNameResult.value;
     if (cardNumber !== undefined) updateData.card_number = cardNumber;

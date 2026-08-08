@@ -21,6 +21,7 @@ const CARD_A = {
   name: 'A',
   description: null,
   image_url: null,
+  image_padding_color: null,
   rarity: 'common',
 }
 const CARD_B = { ...CARD_A, id: 'card-b', name: 'B' }

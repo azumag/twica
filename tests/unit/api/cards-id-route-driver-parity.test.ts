@@ -240,6 +240,62 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       updated_at: "2026-01-02T00:00:00Z",
     };
 
+    it("imagePaddingColor 指定時は UPDATE 値に余白色が含まれる (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+        updates: [{ rows: [UPDATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await PUT(
+        createPutRequest({ imagePaddingColor: "white" }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+      expect(pgRes.status).toBe(200);
+      expect(pg.updateCalls[0].values).toMatchObject({ image_padding_color: "white" });
+    });
+
+    it("imagePaddingColor: 空文字は null（余白なし）として保存される (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+        updates: [{ rows: [UPDATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await PUT(
+        createPutRequest({ imagePaddingColor: "" }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+      expect(pgRes.status).toBe(200);
+      expect(pg.updateCalls[0].values).toMatchObject({ image_padding_color: null });
+    });
+
+    it("不正な余白色は400で拒否する (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+        updates: [{ rows: [UPDATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await PUT(
+        createPutRequest({ imagePaddingColor: "url(javascript:alert(1))" }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+      expect(pgRes.status).toBe(400);
+      expect(pg.updateCalls).toHaveLength(0);
+    });
+
+    it("imagePaddingColor: null で余白をクリアできる (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+        updates: [{ rows: [UPDATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await PUT(
+        createPutRequest({ imagePaddingColor: null }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+      expect(pgRes.status).toBe(200);
+      expect(pg.updateCalls[0].values).toMatchObject({ image_padding_color: null });
+    });
+
     it("成功時は正しいUPDATE値と更新結果を返す", async () => {
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNERSHIP_ROW_PG] }],
@@ -289,6 +345,26 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
 
       expect(pgRes.status).toBe(200);
       expect(pgJson).toEqual({ ...UPDATED_ROW, recalculatedCards: null });
+    });
+
+    it("image_padding_color列デプロイ窓では列を落としてUPDATEを再試行する (#899)", async () => {
+      const missingPaddingErrorPg = {
+        code: "42703",
+        message: 'column "image_padding_color" of relation "cards" does not exist',
+      };
+
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+        updates: [{ error: missingPaddingErrorPg }, { rows: [UPDATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await PUT(
+        createPutRequest({ imagePaddingColor: "white" }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+      expect(pgRes.status).toBe(200);
+      expect(pg.updateCalls).toHaveLength(2);
+      expect(pg.updateCalls[1].values).not.toHaveProperty("image_padding_color");
     });
 
     it("card_number列デプロイ窓では列を落としてUPDATEを再試行する", async () => {
