@@ -438,6 +438,51 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(Object.keys(pg.updateCalls[1].returningFields ?? {})).not.toContain("hp");
     });
 
+    // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
+    // isMissingCardsBattleColumnError のみを見る末尾フォールバックが
+    // image_padding_color 欠落エラーを拾えず、imagePaddingColor を一切
+    // 指定しない（=updateDataに含まれない）UPDATEまでもがmigration未適用の
+    // デプロイ窓で全て失敗していた。
+    it("本番未デプロイのimage_padding_color列: imagePaddingColorを指定しないUPDATEでもRETURNING失敗時に明示列リストで再試行し200を返す (#899)", async () => {
+      const missingPaddingErrorPg = {
+        code: "42703",
+        message: 'column "image_padding_color" of relation "cards" does not exist',
+      };
+      const UPDATED_ROW_SAFE = {
+        id: CARD_ID,
+        streamer_id: "streamer-1",
+        name: "Renamed",
+        description: null,
+        image_url: null,
+        rarity: "common",
+        rarity_order: null,
+        max_issuance_count: null,
+        collection_name: null,
+        drop_rate: 0.5,
+        intra_rarity_weight: 1,
+        is_active: true,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-02T00:00:00Z",
+      };
+
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+        updates: [
+          { error: missingPaddingErrorPg }, // attempt1: 無指定RETURNINGがimage_padding_colorで失敗
+          { rows: [UPDATED_ROW_SAFE] }, // attempt2: SAFE_COLUMNSで再試行し成功
+        ],
+      });
+      primePgDb(pg);
+      // imagePaddingColor はリクエストに含めない = updateData に含まれない
+      // ため、途中の「列を落として再試行」フォールバックはスキップされる。
+      const pgRes = await PUT(createPutRequest({ name: "Renamed" }), {
+        params: Promise.resolve({ id: CARD_ID }),
+      });
+      expect(pgRes.status).toBe(200);
+      expect(pg.updateCalls).toHaveLength(2);
+      expect(pg.updateCalls[1].returningFields).toEqual(CARDS_SAFE_COLUMNS);
+    });
+
     it("card_number一意制約違反(23505)は409を返す", async () => {
       const conflictError = {
         code: "23505",

@@ -173,7 +173,16 @@ async function insertCardPg(
   // self-review fix: 上記までの入力値フォールバックを尽くしてもなお、無指定
   // RETURNING が本番未デプロイ列(hp/atk/...等)を要求して失敗している場合、
   // 明示列リストで最後にもう一度だけ試す。
-  if (error && isMissingCardsBattleColumnError(error)) {
+  // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color もこの
+  // 最終フォールバックの対象に含める。無指定 `.returning()` は values() の
+  // 内容と無関係に schema.ts の全列を要求するため、直前の
+  // isMissingCardPaddingColorError フォールバック（insertData から列を削除
+  // するだけ）だけでは RETURNING が同じ理由で再度失敗し続ける。
+  // image_padding_color が insertData に無い場合（未指定リクエスト）は直前の
+  // フォールバックの `"image_padding_color" in insertData` 条件を満たさず
+  // スキップされるため、この分岐が無いと migration 未適用の環境では
+  // imagePaddingColor を送らないカード作成まで含めて全滅していた。
+  if (error && (isMissingCardsBattleColumnError(error) || isMissingCardPaddingColorError(error))) {
     ({ card, error } = await attemptInsert(true));
   }
 

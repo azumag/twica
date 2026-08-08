@@ -16,6 +16,7 @@ import {
   gachaHistory as gachaHistoryTable,
   cards as cardsTable,
 } from "@/lib/db/schema";
+import { isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 import {
   buildPollingRealtimeEvents,
   isValidStreamerId,
@@ -150,74 +151,94 @@ async function getOverlayHistoryRows(
   since: string,
   afterId: string | null
 ): Promise<OverlayHistoryRow[]> {
-  return withDbRetry(
-    async () => {
-      // getDb belongs inside the retry callback so connection acquisition and
-      // the idempotent SELECT share the same bounded retry policy.
-      const { db } = await getDb();
-      const rows = await db
-        .select({
-          id: gachaHistoryTable.id,
-          event_id: gachaHistoryTable.event_id,
-          redeemed_at: gachaHistoryTable.redeemed_at,
-          user_twitch_username: gachaHistoryTable.user_twitch_username,
-          reward_id: gachaHistoryTable.reward_id,
-          card_id: cardsTable.id,
-          card_name: cardsTable.name,
-          card_description: cardsTable.description,
-          card_image_url: cardsTable.image_url,
-          card_image_padding_color: cardsTable.image_padding_color,
-          card_rarity: cardsTable.rarity,
-        })
-        .from(gachaHistoryTable)
-        .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
-        .where(
-          and(
-            eq(gachaHistoryTable.streamer_id, streamerId),
-            afterId
-              ? or(
-                  gt(gachaHistoryTable.redeemed_at, since),
-                  and(
-                    eq(gachaHistoryTable.redeemed_at, since),
-                    gt(gachaHistoryTable.id, afterId)
-                  )
+  // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color を明示 select
+  // に追加すると、当該列が migration 未適用の環境ではこのポーリングエンドポイント
+  // (OBS のガチャ結果表示が依存する gap-recovery poll)が丸ごと失敗していた。
+  // gacha.ts の loadPgCards と同じ「まず新列込みで試す→列欠落エラーなら列を
+  // 落として再試行する」パターンで deploy-window の安全性を揃える。
+  const loadRows = async (includePaddingColor: boolean) => {
+    const { db } = await getDb();
+    const rows = await db
+      .select({
+        id: gachaHistoryTable.id,
+        event_id: gachaHistoryTable.event_id,
+        redeemed_at: gachaHistoryTable.redeemed_at,
+        user_twitch_username: gachaHistoryTable.user_twitch_username,
+        reward_id: gachaHistoryTable.reward_id,
+        card_id: cardsTable.id,
+        card_name: cardsTable.name,
+        card_description: cardsTable.description,
+        card_image_url: cardsTable.image_url,
+        ...(includePaddingColor
+          ? { card_image_padding_color: cardsTable.image_padding_color }
+          : {}),
+        card_rarity: cardsTable.rarity,
+      })
+      .from(gachaHistoryTable)
+      .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+      .where(
+        and(
+          eq(gachaHistoryTable.streamer_id, streamerId),
+          afterId
+            ? or(
+                gt(gachaHistoryTable.redeemed_at, since),
+                and(
+                  eq(gachaHistoryTable.redeemed_at, since),
+                  gt(gachaHistoryTable.id, afterId)
                 )
-              : gt(gachaHistoryTable.redeemed_at, since)
-          )
+              )
+            : gt(gachaHistoryTable.redeemed_at, since)
         )
-        .orderBy(
-          asc(gachaHistoryTable.redeemed_at),
-          asc(gachaHistoryTable.id)
-        )
-        .limit(OVERLAY_EVENT_ROW_LIMIT);
+      )
+      .orderBy(
+        asc(gachaHistoryTable.redeemed_at),
+        asc(gachaHistoryTable.id)
+      )
+      .limit(OVERLAY_EVENT_ROW_LIMIT);
 
-      return rows.map((row) => ({
-        id: row.id,
-        event_id: row.event_id,
-        // The SQL `gt(redeemed_at, since)` predicate excludes NULL. Drizzle
-        // retains schema nullability in the result type, so narrow the proven
-        // query invariant at this single conversion boundary.
-        redeemed_at: row.redeemed_at as string,
-        user_twitch_username: row.user_twitch_username,
-        reward_id: row.reward_id,
-        card:
-          row.card_id === null
-            ? null
-            : {
-                id: row.card_id,
-                name: row.card_name as string,
-                description: row.card_description,
-                image_url: row.card_image_url,
-                image_padding_color: row.card_image_padding_color,
-                rarity: row.card_rarity as Rarity,
-              },
-      }));
-    },
-    "overlayEvents",
-    // This endpoint polls every three seconds. One retry covers brief database
-    // failures without allowing a large request backlog during an outage.
-    { idempotent: true, maxRetries: 1 }
-  );
+    return rows.map((row) => ({
+      id: row.id,
+      event_id: row.event_id,
+      // The SQL `gt(redeemed_at, since)` predicate excludes NULL. Drizzle
+      // retains schema nullability in the result type, so narrow the proven
+      // query invariant at this single conversion boundary.
+      redeemed_at: row.redeemed_at as string,
+      user_twitch_username: row.user_twitch_username,
+      reward_id: row.reward_id,
+      card:
+        row.card_id === null
+          ? null
+          : {
+              id: row.card_id,
+              name: row.card_name as string,
+              description: row.card_description,
+              image_url: row.card_image_url,
+              image_padding_color:
+                "card_image_padding_color" in row
+                  ? row.card_image_padding_color
+                  : null,
+              rarity: row.card_rarity as Rarity,
+            },
+    }));
+  };
+
+  // This endpoint polls every three seconds. One retry covers brief database
+  // failures without allowing a large request backlog during an outage.
+  const retryOptions = { idempotent: true, maxRetries: 1 } as const;
+  try {
+    // getDb belongs inside the retry callback so connection acquisition and
+    // the idempotent SELECT share the same bounded retry policy.
+    return await withDbRetry(() => loadRows(true), "overlayEvents", retryOptions);
+  } catch (error) {
+    if (!isMissingCardPaddingColorError(error)) {
+      throw error;
+    }
+    return withDbRetry(
+      () => loadRows(false),
+      "overlayEvents:padding-fallback",
+      retryOptions
+    );
+  }
 }
 
 /**
