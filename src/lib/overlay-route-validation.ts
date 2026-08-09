@@ -1,4 +1,5 @@
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+import { isCanonicalUuid } from "@/lib/uuid-validation"
+
 const OVERLAY_EVENTS_PATH_PATTERN = /^\/api\/overlay\/([^/]+)\/events\/?$/
 
 /**
@@ -18,5 +19,5 @@ export function hasInvalidOverlayEventsStreamerId(pathname: string): boolean {
     return true
   }
 
-  return !UUID_PATTERN.test(streamerId)
+  return !isCanonicalUuid(streamerId)
 }
