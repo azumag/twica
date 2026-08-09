@@ -14,6 +14,9 @@
  * - location.reload() の実行
  */
 
+import { isValidOverlayHistoryId } from "@/lib/overlay-realtime/contract";
+import { normalizeOverlayHistoryTimestamp } from "@/lib/overlay-history-cursor";
+
 /** sessionStorage に保存するクールダウン記録(直前にリロードしたバージョンと時刻)の型 */
 export interface ReloadCooldownRecord {
   version: string;
@@ -23,6 +26,8 @@ export interface ReloadCooldownRecord {
 /** sessionStorage に退避するポーリング状態のスナップショット */
 export interface OverlayPollStateSnapshot {
   pollCursor: string;
+  /** Tie-breaker for rows that share the exact same redeemed_at value. */
+  pollHistoryId: string;
   seenHistoryIds: string[];
   savedAt: number;
 }
@@ -128,11 +133,15 @@ export function parseReloadCooldownRecord(
  */
 export function serializePollState(state: {
   pollCursor: string;
+  pollHistoryId?: string;
   seenHistoryIds: string[];
   savedAt: number;
 }): string {
   const snapshot: OverlayPollStateSnapshot = {
     pollCursor: state.pollCursor,
+    // Optional input keeps snapshots produced by the previous page contract
+    // readable while every new writer persists the exact DB tie-breaker.
+    pollHistoryId: state.pollHistoryId ?? "",
     seenHistoryIds: state.seenHistoryIds.slice(-MAX_PERSISTED_HISTORY_IDS),
     savedAt: state.savedAt,
   };
@@ -145,8 +154,8 @@ export function serializePollState(state: {
  * 扱う:
  * - raw が null/undefined/空文字列
  * - JSON として parse できない(壊れたデータ)
- * - 期待する形状(pollCursor: string, seenHistoryIds: string[], savedAt: number)
- *   を満たさない
+ * - 期待する形状(pollCursor: string, optional pollHistoryId: string,
+ *   seenHistoryIds: string[], savedAt: number)を満たさない
  * - pollCursor が日付として解釈できない(Date.parse が NaN)
  * - savedAt から now までの経過が ttlMs を超えている(TTL切れ)
  *
@@ -171,16 +180,20 @@ export function parsePollState(
   if (!parsed || typeof parsed !== "object") return null;
   const candidate = parsed as Record<string, unknown>;
 
-  if (typeof candidate.pollCursor !== "string") return null;
+  const normalizedPollCursor = normalizeOverlayHistoryTimestamp(candidate.pollCursor);
+  if (!normalizedPollCursor) return null;
+  if (
+    candidate.pollHistoryId !== undefined
+    && (
+      typeof candidate.pollHistoryId !== "string"
+      || (
+        candidate.pollHistoryId !== ""
+        && !isValidOverlayHistoryId(candidate.pollHistoryId)
+      )
+    )
+  ) return null;
   if (typeof candidate.savedAt !== "number") return null;
   if (!Array.isArray(candidate.seenHistoryIds)) return null;
-
-  // pollCursor は復元後そのまま次回ポーリングの ?since= としてサーバへ送られ、
-  // API 側(normalizeDateParam)は日付として解釈できない since を 400 で拒否する。
-  // 壊れた/外部から書き換えられた sessionStorage から不正な pollCursor を復元して
-  // しまうと以後のポーリングが全て 400 で失敗し続けるため、日付として解釈できない
-  // カーソルはここで捨てて「復元しない(今を起点に再開)」へ安全に倒す。
-  if (!Number.isFinite(Date.parse(candidate.pollCursor))) return null;
 
   if (now - candidate.savedAt > ttlMs) return null;
 
@@ -189,5 +202,16 @@ export function parsePollState(
     (id): id is string => typeof id === "string",
   );
 
-  return { pollCursor: candidate.pollCursor, seenHistoryIds, savedAt: candidate.savedAt };
+  return {
+    pollCursor: normalizedPollCursor,
+    // Old builds wrote timestamp-only snapshots. Preserve compatibility with
+    // an empty tie-breaker; page.tsx rewinds that legacy timestamp slightly so
+    // equal-time rows are re-read and deduped instead of skipped.
+    pollHistoryId:
+      typeof candidate.pollHistoryId === "string"
+        ? candidate.pollHistoryId
+        : "",
+    seenHistoryIds,
+    savedAt: candidate.savedAt,
+  };
 }

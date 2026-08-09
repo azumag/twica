@@ -55,9 +55,10 @@ export function resolveOverlayRealtimeEnabled(streamerId: string): boolean {
 /**
  * Public config version for a streamer.
  *
- * This is the value the events endpoint echoes so a connected overlay can
- * notice a rollout/rollback without polling the config endpoint on its own
- * timer. It is derived from the same predicate as the full config and contains
+ * This is the value the events endpoint echoes so polling-only/disconnected
+ * overlays notice a transport rollout without a second request. Connected
+ * overlays use the room notice plus the infrequent history reconciliation.
+ * The value is derived from the same predicate as the full config and contains
  * no secret material.
  */
 export function resolveOverlayRealtimeConfigVersion(streamerId: string): string {

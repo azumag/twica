@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GET } from '@/app/api/overlay/[streamerId]/realtime-config/route'
+import { MAX_OVERLAY_VERSION_LENGTH } from '@/lib/overlay-realtime/contract'
 
 const STREAMER_ID = '123e4567-e89b-42d3-a456-426614174000'
 
@@ -29,6 +30,7 @@ describe('overlay realtime runtime config', () => {
     vi.stubEnv('OVERLAY_REALTIME_MODE', 'do-primary')
     vi.stubEnv('OVERLAY_REALTIME_STREAMER_ALLOWLIST', STREAMER_ID)
     vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime.example/base?secret=no')
+    vi.stubEnv('NEXT_PUBLIC_OVERLAY_VERSION', 'build-abc123')
     const response = await GET(new Request('https://app.example/config'), params())
     const body = await response.json()
 
@@ -37,7 +39,21 @@ describe('overlay realtime runtime config', () => {
       mode: 'do-primary',
       webSocketUrl: 'https://realtime.example',
       protocolVersion: 1,
+      overlayVersion: 'build-abc123',
     })
+  })
+
+  it('omits an oversized overlay version instead of reflecting unbounded config', async () => {
+    vi.stubEnv(
+      'NEXT_PUBLIC_OVERLAY_VERSION',
+      'v'.repeat(MAX_OVERLAY_VERSION_LENGTH + 1)
+    )
+
+    const response = await GET(new Request('https://app.example/config'), params())
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).not.toHaveProperty('overlayVersion')
   })
 
   it('rejects an invalid public room ID', async () => {
