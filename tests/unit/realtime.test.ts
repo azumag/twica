@@ -8,6 +8,10 @@ import {
   MAX_OVERLAY_VERSION_LENGTH,
   buildPollingRealtimeEvents,
 } from '@/lib/overlay-realtime/contract'
+import {
+  resolveOverlayRealtimeConfig,
+  resolveOverlayRealtimeConfigVersion,
+} from '@/lib/overlay-realtime/resolve-config'
 
 const STREAMER_ID = '123e4567-e89b-42d3-a456-426614174000'
 
@@ -675,6 +679,227 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     // A config endpoint change starts a fresh connection policy, so the next
     // outage uses the initial half-jitter delay (random is stubbed to zero).
     expect(statuses).toContain('DO_RECONNECT_WAIT:50')
+    cleanup()
+  })
+
+  it('reconnects to a URL-only runtime change while the old socket remains healthy', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+    vi.stubEnv('OVERLAY_REALTIME_MODE', 'do-primary')
+    vi.stubEnv('OVERLAY_REALTIME_STREAMER_ALLOWLIST', STREAMER_ID)
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-a.example')
+
+    let configCalls = 0
+    let eventsCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        configCalls += 1
+        return jsonResponse(resolveOverlayRealtimeConfig(STREAMER_ID))
+      }
+      eventsCalls += 1
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        realtimeConfigVersion: resolveOverlayRealtimeConfigVersion(STREAMER_ID),
+      })
+    }))
+
+    const cleanup = subscribeToGachaResults('ignored', vi.fn())
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(ControlledWebSocket.instances[0].url).toContain('realtime-a.example')
+    const oldSocket = ControlledWebSocket.instances[0]
+    oldSocket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-url-a',
+      serverTime: '',
+      seq: 0,
+    })
+    const eventsAfterStartup = eventsCalls
+
+    // This is an environment-only endpoint rotation: mode, allowlist,
+    // protocol, retry policy, and application build all remain unchanged.
+    // Heartbeats prove endpoint A is healthy, so only the public-config token
+    // carried by the ten-minute safety read can move the client to B.
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-b.example')
+    for (let halfMinute = 0; halfMinute < 19; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    expect(configCalls).toBe(1)
+    expect(eventsCalls).toBe(eventsAfterStartup)
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+    await flushPromises()
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+
+    expect(configCalls).toBe(2)
+    expect(ControlledWebSocket.instances).toHaveLength(2)
+    expect(ControlledWebSocket.instances[1].url).toContain('realtime-b.example')
+    cleanup()
+  })
+
+  it('bounds URL-only rotation during a DB outage without hammering config or dropping the healthy socket', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+    vi.stubEnv('OVERLAY_REALTIME_MODE', 'do-primary')
+    vi.stubEnv('OVERLAY_REALTIME_STREAMER_ALLOWLIST', STREAMER_ID)
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-a.example')
+
+    let configCalls = 0
+    let eventsCalls = 0
+    let failHistory = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        configCalls += 1
+        // The first degraded probe also fails at the edge. It must not tear
+        // down a socket that is still proving liveness with heartbeats.
+        if (configCalls === 2) throw new Error('temporary config edge failure')
+        return jsonResponse(resolveOverlayRealtimeConfig(STREAMER_ID))
+      }
+      eventsCalls += 1
+      if (failHistory) throw new Error('PlanetScale unavailable')
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        realtimeConfigVersion: resolveOverlayRealtimeConfigVersion(STREAMER_ID),
+      })
+    }))
+
+    const callback = vi.fn()
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const oldSocket = ControlledWebSocket.instances[0]
+    oldSocket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-db-outage-a',
+      serverTime: '',
+      seq: 0,
+    })
+    failHistory = true
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-b.example')
+
+    // The healthy ten-minute reconciliation fails before it can carry the new
+    // config generation. That failure triggers exactly one DB-independent
+    // config probe; the intentionally failed probe preserves socket A.
+    for (let halfMinute = 0; halfMinute < 20; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+
+    expect(configCalls).toBe(2)
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(statuses).toContain('CONFIG_REFRESH_FAILED:KEEP_CURRENT')
+
+    // History retries continue under their existing serialized backoff, but
+    // they may not turn into a config request every 30 seconds. The next probe
+    // is allowed only at the five-minute degraded-mode floor.
+    for (let halfMinute = 0; halfMinute < 9; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    expect(configCalls).toBe(2)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+
+    expect(configCalls).toBe(3)
+    expect(eventsCalls).toBeGreaterThan(2)
+    expect(ControlledWebSocket.instances).toHaveLength(2)
+    expect(ControlledWebSocket.instances[1].url).toContain('realtime-b.example')
+
+    const [event] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: historyUuid(23),
+      eventId: 'batch-db-outage-url-switch',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      card: CARD_A,
+    }])
+    oldSocket.emit({ type: 'gacha_result', seq: 1, event })
+    expect(callback).not.toHaveBeenCalled()
+    ControlledWebSocket.instances[1].emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-db-outage-b',
+      serverTime: '',
+      seq: 0,
+    })
+    ControlledWebSocket.instances[1].emit({ type: 'gacha_result', seq: 1, event })
+    expect(callback).toHaveBeenCalledTimes(1)
     cleanup()
   })
 
@@ -1382,6 +1607,214 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     await flushPromises()
     expect(historyCalls).toBeGreaterThan(afterConnect)
     expect(statuses).toContain('DO_SEQ_GAP:7->9')
+    cleanup()
+  })
+
+  it('delivers signed demo frames immediately without manufacturing DB reconciliation debt', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    let historyCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      historyCalls += 1
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        realtimeConfigVersion: 'do-primary-v1',
+      })
+    }))
+
+    const callback = vi.fn()
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const historyAfterStartup = historyCalls
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-demo',
+      serverTime: '',
+      seq: 0,
+    })
+
+    // Exercise the exact 512-event threshold that committed socket traffic
+    // uses to request an early DB reconciliation. Demos have only a bounded KV
+    // fallback and no gacha_history row, so even sustained operator previews
+    // must display synchronously without crossing that committed-data guard.
+    for (let index = 1; index <= 512; index += 1) {
+      const [baseEvent] = buildPollingRealtimeEvents(STREAMER_ID, [{
+        id: `demo:history-${index}`,
+        eventId: `demo:event-${index}`,
+        redeemedAt: `2026-07-24T00:00:${String(index % 60).padStart(2, '0')}.000Z`,
+        userTwitchUsername: 'DemoUser',
+        card: { ...CARD_A, id: `demo-card-${index}` },
+      }])
+      socket.emit({
+        type: 'gacha_result',
+        seq: index,
+        event: { ...baseEvent, deliveryKind: 'demo' },
+      })
+    }
+    await flushPromises()
+
+    expect(callback).toHaveBeenCalledTimes(512)
+    expect(callback.mock.calls[0][0].userTwitchUsername).toBe('DemoUser')
+    expect(historyCalls).toBe(historyAfterStartup)
+    expect(statuses.some((status) => status.startsWith('DO_RECONCILE_VOLUME:'))).toBe(false)
+    cleanup()
+  })
+
+  it.each([
+    ['recovers a missed immediate publish from KV at ten minutes', false],
+    ['deduplicates an immediate DO demo against its later KV fallback', true],
+  ])('%s', async (_label, deliverImmediately) => {
+    vi.setSystemTime(new Date('2026-07-24T00:00:00.000Z'))
+
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const demoEvent = {
+      id: 'demo:history-fallback',
+      eventId: 'demo:event-fallback',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'DemoUser',
+      rewardId: null,
+      card: CARD_A,
+    }
+    const [socketEnvelope] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: demoEvent.id,
+      eventId: demoEvent.eventId,
+      redeemedAt: demoEvent.redeemedAt,
+      userTwitchUsername: demoEvent.userTwitchUsername,
+      rewardId: null,
+      card: CARD_A,
+    }])
+    let fallbackAvailable = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        demoEvent: fallbackAvailable ? demoEvent : null,
+        realtimeConfigVersion: 'do-primary-v1',
+      })
+    }))
+
+    const callback = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', callback)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-demo-fallback',
+      serverTime: '',
+      seq: 0,
+    })
+    if (deliverImmediately) {
+      socket.emit({
+        type: 'gacha_result',
+        seq: 1,
+        event: { ...socketEnvelope, deliveryKind: 'demo' },
+      })
+      expect(callback).toHaveBeenCalledTimes(1)
+    }
+    fallbackAvailable = true
+
+    // The normal healthy-socket sweep is the longest client recovery path.
+    // The KV store keeps the same immutable event beyond this deadline; if DO
+    // fanout failed it appears here, and if DO succeeded the shared eventId
+    // makes this response a duplicate instead of a second overlay display.
+    for (let halfMinute = 0; halfMinute < 20; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      socket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+
+    expect(callback).toHaveBeenCalledTimes(1)
+    expect(callback.mock.calls[0][0].userTwitchUsername).toBe('DemoUser')
     cleanup()
   })
 

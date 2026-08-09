@@ -172,6 +172,16 @@ const TRANSPORT_DISABLED_NOTICE = OVERLAY_REALTIME_TRANSPORT_DISABLED
  * change to be picked up on the first pass that observes it.
  */
 const CONFIG_CHANGE_REFETCH_FLOOR_MS = 30_000
+/**
+ * Minimum interval for DB-independent config probes after `/events` fails.
+ *
+ * A healthy old socket can keep heartbeating while its replacement URL has
+ * changed, so a PlanetScale outage must not make endpoint rotation unbounded.
+ * One probe immediately after the ten-minute reconciliation failure, then at
+ * most one per five minutes, preserves that recovery path without replacing
+ * the removed steady-state config poll with a degraded-mode request storm.
+ */
+const HISTORY_FAILURE_CONFIG_REFETCH_FLOOR_MS = 5 * 60_000
 const MAX_CONFIG_VERSION_LENGTH = 128
 const MAX_CONFIG_URL_LENGTH = 2_048
 const MIN_CONFIG_RETRY_DELAY_MS = 100
@@ -528,7 +538,12 @@ export function subscribeToGachaResults(
       if (confirmedSocketDelivery || seenEventIds.has(draw.eventId)) return false
       if (!rememberSeenId(seenEventIds, draw.eventId)) return false
 
-      if (source === 'durable-object') {
+      if (source === 'durable-object' && event.deliveryKind !== 'demo') {
+        // Committed socket events remain pending until the authoritative DB
+        // cursor observes their IDs. Operator demos deliberately have no
+        // gacha_history row (their bounded fallback is KV), so adding one here
+        // would manufacture permanent reconciliation debt and eventually
+        // trigger high-volume /events reads after enough dashboard previews.
         unreconciledSocketEventIds.add(draw.eventId)
         if (unreconciledSocketEventIds.size > MAX_SEEN_EVENT_IDS) {
           // A sustained DB outage must not grow OBS memory without bound. This
@@ -725,6 +740,12 @@ export function subscribeToGachaResults(
     } catch (error) {
       failed = true
       retryCount += 1
+      // `/events` normally carries the config generation for free, but a DB
+      // failure prevents that response from being produced. Probe the DB-free
+      // config endpoint only in this degraded case so a healthy socket on URL A
+      // still moves to B within a bounded interval. The helper is separately
+      // rate-limited and preserves the current socket if the probe itself fails.
+      maybeRefreshConfigAfterHistoryFailure()
       const exhausted = Number.isFinite(maxRetries) && retryCount > maxRetries
       if (exhausted) {
         options.onError?.({
@@ -1018,7 +1039,10 @@ export function subscribeToGachaResults(
     }, delay)
   }
 
-  async function refreshConfig(expectedVersion?: string): Promise<void> {
+  async function refreshConfig(
+    expectedVersion?: string,
+    preserveCurrentOnFailure = false
+  ): Promise<void> {
     if (disposed || configRefreshInFlight) return
     configRefreshInFlight = true
     lastConfigAttemptAt = Date.now()
@@ -1104,6 +1128,14 @@ export function subscribeToGachaResults(
         requestRecoveryPoll(true)
       }
     } catch {
+      if (preserveCurrentOnFailure && currentConfig !== null && socketIsHealthy()) {
+        // This was a DB-outage side probe, not evidence that the last validated
+        // config became invalid. Keep the heartbeating transport alive and let
+        // the bounded degraded retry try again; falling back here would discard
+        // the only working delivery path while both HTTP endpoints are impaired.
+        options.onStatusChange?.('CONFIG_REFRESH_FAILED:KEEP_CURRENT')
+        return
+      }
       const wasDoPrimary = currentConfig?.mode === 'do-primary'
       currentConfig = {
         schemaVersion: 1,
@@ -1129,6 +1161,20 @@ export function subscribeToGachaResults(
         scheduleSafetyRefresh(nextRefreshMs)
       }
     }
+  }
+
+  function maybeRefreshConfigAfterHistoryFailure(): void {
+    if (
+      disposed
+      || !socketIsHealthy()
+      || configRefreshInFlight
+      || Date.now() - lastConfigAttemptAt < HISTORY_FAILURE_CONFIG_REFETCH_FLOOR_MS
+    ) return
+    // Do not await inside the history retry owner. Config has its own in-flight
+    // guard and timer ownership, while pollInFlight continues to serialize all
+    // DB reads. Starting the probe here lets endpoint rotation proceed without
+    // delaying the existing bounded history backoff.
+    void refreshConfig(undefined, true)
   }
 
   /**

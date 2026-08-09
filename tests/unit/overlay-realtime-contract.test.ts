@@ -110,6 +110,26 @@ describe('overlay realtime V1 contract', () => {
     ).toBe('drawIndex must be contiguous')
   })
 
+  it('accepts only the additive demo delivery marker', () => {
+    const [event] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: 'history-demo',
+      eventId: 'demo:event-1',
+      redeemedAt: '2026-07-24T00:00:00.000Z',
+      userTwitchUsername: 'DemoUser',
+      rewardId: null,
+      card: CARD,
+    }])
+
+    expect(validateGachaRealtimeEvent({
+      ...event,
+      deliveryKind: 'demo',
+    }, STREAMER_ID)).toEqual({ ok: true })
+    expect(validateGachaRealtimeEvent({
+      ...event,
+      deliveryKind: 'committed',
+    }, STREAMER_ID).error).toBe('invalid deliveryKind')
+  })
+
   it('rejects oversized attacker-controlled public fields before fanout', () => {
     const [event] = buildPollingRealtimeEvents(STREAMER_ID, [{
       id: 'history-1',

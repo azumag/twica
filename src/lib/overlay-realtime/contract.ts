@@ -110,6 +110,15 @@ export interface GachaRealtimeDrawV1 {
 export interface GachaRealtimeEventV1 {
   schemaVersion: typeof OVERLAY_REALTIME_SCHEMA_VERSION
   type: 'gacha_result'
+  /**
+   * Optional delivery-only event kind.
+   *
+   * `demo` events are operator previews, not committed gacha history. Older
+   * clients safely ignore this additive field, while newer clients use it to
+   * avoid waiting for a DB reconciliation row that intentionally does not
+   * exist. Omission continues to mean authoritative committed history.
+   */
+  deliveryKind?: 'demo'
   /** Dedupe key for the first draw; every draw also carries its own eventId. */
   eventId: string
   /** Stable EventSub message ID or manual-draw ID shared by the whole batch. */
@@ -263,6 +272,9 @@ export function validateGachaRealtimeEvent(
     return { ok: false, error: 'unsupported schemaVersion' }
   }
   if (value.type !== 'gacha_result') return { ok: false, error: 'unsupported event type' }
+  if (value.deliveryKind !== undefined && value.deliveryKind !== 'demo') {
+    return { ok: false, error: 'invalid deliveryKind' }
+  }
   if (!isBoundedString(value.eventId, 256)) return { ok: false, error: 'invalid eventId' }
   if (!isBoundedString(value.batchId, 256)) return { ok: false, error: 'invalid batchId' }
   if (!isBoundedString(value.streamerId, 64) || !isValidStreamerId(value.streamerId)) {

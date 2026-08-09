@@ -15,7 +15,10 @@ vi.mock('@/lib/logger', () => ({
   },
 }))
 
-import { publishCommittedGachaBatch } from '@/lib/overlay-realtime/publisher'
+import {
+  publishCommittedGachaBatch,
+  publishOverlayDemoRealtimeEvent,
+} from '@/lib/overlay-realtime/publisher'
 
 const STREAMER_ID = '123e4567-e89b-42d3-a456-426614174000'
 const ORIGINAL_ENV = { ...process.env }
@@ -109,6 +112,60 @@ describe('publishCommittedGachaBatch', () => {
       { eventId: 'batch-1', historyId: 'history-1' },
       { eventId: 'batch-1:2', historyId: 'history-2' },
     ])
+    const headers = init.headers as Record<string, string>
+    await expect(
+      verifyPublishSignature(
+        process.env.OVERLAY_REALTIME_PUBLISH_SECRET!,
+        url.pathname,
+        body,
+        headers['x-twica-timestamp'],
+        headers['x-twica-nonce'],
+        headers['x-twica-signature']
+      )
+    ).resolves.toBe(true)
+  })
+
+  it('signs a demo envelope without reading nonexistent committed history', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      publishOverlayDemoRealtimeEvent(STREAMER_ID, {
+        id: 'demo:history-1',
+        eventId: 'demo:event-1',
+        redeemedAt: '2026-07-24T01:02:03.000Z',
+        userTwitchUsername: 'DemoUser',
+        rewardId: null,
+        card: {
+          id: 'card-demo',
+          name: 'Demo Card',
+          description: 'Operator preview',
+          image_url: null,
+          image_padding_color: '#000000',
+          rarity: 'rare',
+        },
+      })
+    ).resolves.toEqual({ outcome: 'accepted', attempts: 1 })
+
+    // A demo exists only in the bounded KV fallback. Querying gacha_history
+    // would either fail to publish or create a false durability dependency.
+    expect(getDb).not.toHaveBeenCalled()
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    const body = String(init.body)
+    expect(JSON.parse(body)).toMatchObject({
+      deliveryKind: 'demo',
+      eventId: 'demo:event-1',
+      batchId: 'demo:event-1',
+      streamerId: STREAMER_ID,
+      occurredAt: '2026-07-24T01:02:03.000Z',
+      draws: [{
+        eventId: 'demo:event-1',
+        drawId: 'demo:event-1',
+        historyId: 'demo:history-1',
+      }],
+    })
     const headers = init.headers as Record<string, string>
     await expect(
       verifyPublishSignature(

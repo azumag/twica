@@ -1,11 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { getCloudflareContext } from '@opennextjs/cloudflare'
 import {
   __clearOverlayDemoEventsForTests,
+  createOverlayDemoEvent,
   getOverlayDemoEvent,
   publishOverlayDemoEvent,
+  storeOverlayDemoEvent,
 } from '@/lib/overlay/demo-event-store'
 import { GET } from '@/app/api/overlay/[streamerId]/demo-events/route'
+
+vi.mock('@opennextjs/cloudflare', () => ({
+  getCloudflareContext: vi.fn(),
+}))
+
+const mockGetCloudflareContext = vi.mocked(getCloudflareContext)
 
 const CARD = {
   id: 'card-1',
@@ -19,9 +28,12 @@ const CARD = {
 beforeEach(() => {
   __clearOverlayDemoEventsForTests()
   vi.useRealTimers()
+  mockGetCloudflareContext.mockReset()
+  mockGetCloudflareContext.mockRejectedValue(new Error('not in Workers'))
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllEnvs()
 })
 
@@ -45,6 +57,50 @@ describe('overlay demo event store', () => {
 
     expect(second.id).not.toBe(first.id)
     expect(await getOverlayDemoEvent('streamer-1', first.redeemedAt)).toEqual(second)
+  })
+
+  it('creates a deeply immutable event before either transport receives it', () => {
+    const event = createOverlayDemoEvent(CARD)
+
+    expect(Object.isFrozen(event)).toBe(true)
+    expect(Object.isFrozen(event.card)).toBe(true)
+    expect(event.eventId).toBe(event.id)
+  })
+
+  it('retains the fallback through reconciliation and retry grace, then expires it', async () => {
+    const startedAt = Date.parse('2026-08-09T00:00:00.000Z')
+    vi.useFakeTimers()
+    vi.setSystemTime(startedAt)
+    const cursor = new Date(startedAt - 1).toISOString()
+    const event = await publishOverlayDemoEvent('streamer-1', CARD)
+
+    // The healthy socket's periodic full reconciliation occurs at 10 minutes.
+    vi.setSystemTime(startedAt + 10 * 60 * 1000)
+    expect(await getOverlayDemoEvent('streamer-1', cursor)).toEqual(event)
+
+    // Liveness detection and bounded reconnect retries may add another 150s.
+    vi.setSystemTime(startedAt + (10 * 60 + 150) * 1000)
+    expect(await getOverlayDemoEvent('streamer-1', cursor)).toEqual(event)
+
+    // The latest-value fallback remains bounded and disappears after 15m.
+    vi.setSystemTime(startedAt + 15 * 60 * 1000 + 1)
+    expect(await getOverlayDemoEvent('streamer-1', cursor)).toBeNull()
+  })
+
+  it('configures the shared KV fallback with the same bounded 15-minute TTL', async () => {
+    const put = vi.fn().mockResolvedValue(undefined)
+    mockGetCloudflareContext.mockResolvedValue({
+      env: { RATE_LIMIT_KV: { put } },
+    } as never)
+    const event = createOverlayDemoEvent(CARD)
+
+    await storeOverlayDemoEvent('streamer-1', event)
+
+    expect(put).toHaveBeenCalledWith(
+      'overlay:demo:streamer-1',
+      JSON.stringify(event),
+      { expirationTtl: 15 * 60 }
+    )
   })
 
   it('exposes the latest event through the overlay polling route', async () => {
