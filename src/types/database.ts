@@ -230,6 +230,8 @@ export interface Database {
           name: string
           description: string | null
           image_url: string | null
+          // Issue #899: 余白（fit）モードで焼き込んだ余白の色（NULL = 余白なし）
+          image_padding_color: string | null
           rarity: Rarity
           card_number: number | null
           max_issuance_count: number | null
@@ -256,6 +258,7 @@ export interface Database {
           name: string
           description?: string | null
           image_url?: string | null
+          image_padding_color?: string | null
           rarity?: Rarity
           card_number?: number | null
           max_issuance_count?: number | null
@@ -279,6 +282,7 @@ export interface Database {
           name?: string
           description?: string | null
           image_url?: string | null
+          image_padding_color?: string | null
           rarity?: Rarity
           card_number?: number | null
           max_issuance_count?: number | null

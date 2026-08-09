@@ -23,6 +23,7 @@ import {
   userCards,
 } from '@/lib/db/schema'
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError } from '@/lib/card-issuance'
+import { isMissingCardPaddingColorError } from '@/lib/db/cards-safe-columns'
 import { isMissingCollectionNameColumn } from '@/lib/collections/collection-existence'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from '@/lib/rarity-weight-calculator'
@@ -32,6 +33,8 @@ export interface GachaCard {
   name: string
   description: string | null
   image_url: string | null
+  // #899: 余白（fit）モードの余白色（overlay 表示で object-contain + 背景色に使う）
+  image_padding_color?: string | null
   // migration 00048 で固定 CHECK は撤廃され、配信者定義のカスタムレアリティを
   // 許可している。PG 経路の schema.ts も text として扱うため、旧4種 union に
   // 狭めると正しい DB 行を型上だけ拒否してしまう。
@@ -274,7 +277,9 @@ export class GachaService {
       // max_issuance_count未デプロイ時fallbackで同じpredicate/列定義を共有する。
       // includeIssuanceLimit=false のときだけ当該列をSQLから外し、呼出側contractは
       // nullを補って維持する。これにより片側だけpack条件を直し忘れる事故を防ぐ。
-      const loadPgCards = async (includeIssuanceLimit: boolean) => {
+      // image_padding_color も同様に includePaddingColor で分岐する（#899 列未デプロイ時
+      // にガチャ抽選全体が失敗しないための deploy-window フォールバック）。
+      const loadPgCards = async (includeIssuanceLimit: boolean, includePaddingColor = true) => {
                             const { db } = await getDb()
         const predicates = [
           eq(cardsTable.streamer_id, streamerId),
@@ -290,6 +295,7 @@ export class GachaService {
           name: cardsTable.name,
           description: cardsTable.description,
           image_url: cardsTable.image_url,
+          ...(includePaddingColor ? { image_padding_color: cardsTable.image_padding_color } : {}),
           rarity: cardsTable.rarity,
           drop_rate: cardsTable.drop_rate,
           ...(includeIssuanceLimit ? { max_issuance_count: cardsTable.max_issuance_count } : {}),
@@ -322,6 +328,22 @@ export class GachaService {
           cards = await withDbRetry(
             () => loadPgCards(false),
             'gacha:executeGacha:cards:fallback',
+            { idempotent: true }
+          )
+          cardsError = null
+        } catch (error) {
+          cards = null
+          cardsError = normalizePgReadError(error)
+        }
+      }
+
+      // #899: image_padding_color 列が migration 未適用の環境では、当該列だけを
+      // 落として再試行する（余白情報が欠落するだけで、ガチャ抽選自体は継続）。
+      if (cardsError && isMissingCardPaddingColorError(cardsError)) {
+        try {
+          cards = await withDbRetry(
+            () => loadPgCards(true, false),
+            'gacha:executeGacha:cards:padding-fallback',
             { idempotent: true }
           )
           cardsError = null
@@ -773,6 +795,7 @@ export class GachaService {
       name: string
       description: string | null
       image_url: string | null
+      image_padding_color?: string | null
       rarity: GachaCard['rarity']
       drop_rate: unknown
       max_issuance_count?: number | null
@@ -822,6 +845,7 @@ export class GachaService {
       name: originalCard.name,
       description: originalCard.description,
       image_url: originalCard.image_url,
+      image_padding_color: originalCard.image_padding_color,
       rarity: originalCard.rarity,
       drop_rate: originalCard.drop_rate,
       // Issue #108: 発行上限の再チェックに参照するため、再構築後も必ず引き継ぐ。

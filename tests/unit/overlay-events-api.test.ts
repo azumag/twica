@@ -336,6 +336,7 @@ describe("GET /api/overlay/[streamerId]/events", () => {
       name: "Demo card",
       description: null,
       image_url: null,
+      image_padding_color: null,
       rarity: "common",
     });
 
@@ -495,6 +496,42 @@ describe("GET /api/overlay/[streamerId]/events", () => {
       asc(gachaHistoryTable.id),
     ]);
     expect(call.limitValue).toBe(100);
+  });
+
+  // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
+  // image_padding_color を明示 select に追加しただけでフォールバックが
+  // 無く、migration未適用のデプロイ窓ではこのポーリングエンドポイント
+  // (OBSのガチャ結果表示が依存するgap-recovery poll)が丸ごと失敗していた。
+  it("image_padding_color列デプロイ窓では列を落として再試行する (#899)", async () => {
+    const missingPaddingErrorPg = {
+      code: "42703",
+      message: 'column "image_padding_color" of relation "cards" does not exist',
+    };
+    const db = createDbMock([
+      { error: missingPaddingErrorPg }, // attempt1: 明示selectがimage_padding_colorで失敗
+      { rows: [DISPLAY_ROW] }, // attempt2: 列を落として再試行し成功
+    ]);
+    vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as never);
+
+    const response = await GET(
+      createRequest({ since: SINCE }),
+      routeParams()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(db.calls).toHaveLength(2);
+    expect(db.calls[0].fields).toHaveProperty("card_image_padding_color");
+    expect(db.calls[1].fields).not.toHaveProperty("card_image_padding_color");
+    expect(body.events[0].card).toEqual({
+      id: "card-1",
+      name: "Card",
+      description: null,
+      image_url: null,
+      // 列を落として再試行した結果なので、余白情報は「余白なし」扱いのnullになる
+      image_padding_color: null,
+      rarity: "rare",
+    });
   });
 
   it("恒久DBエラーを既存Database error envelopeで返す", async () => {

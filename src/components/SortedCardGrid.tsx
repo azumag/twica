@@ -120,6 +120,8 @@ export default function SortedCardGrid({
               streamerId={streamerId}
               name={displayName}
               imageUrl={displayImageUrl}
+              // #899: 未所持カードの詳細公開モードでも余白付きカードは全体表示する
+              imagePaddingColor={card.image_padding_color}
               rarityInfo={{
                 label: rarityInfo.label,
                 color: rarityInfo.color,

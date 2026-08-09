@@ -15,7 +15,7 @@ export interface OverlayDemoEvent {
   redeemedAt: string
   userTwitchUsername: string
   rewardId: null
-  card: Pick<Card, 'id' | 'name' | 'description' | 'image_url' | 'rarity'>
+  card: Pick<Card, 'id' | 'name' | 'description' | 'image_url' | 'image_padding_color' | 'rarity'>
 }
 
 interface MemoryRecord {
@@ -78,6 +78,7 @@ function parseEvent(value: string | null): OverlayDemoEvent | null {
         name: parsed.card.name,
         description: parsed.card.description ?? null,
         image_url: parsed.card.image_url ?? null,
+        image_padding_color: parsed.card.image_padding_color ?? null,
         rarity: parsed.card.rarity,
       },
     }
@@ -96,7 +97,7 @@ function parseEvent(value: string | null): OverlayDemoEvent | null {
  */
 export async function publishOverlayDemoEvent(
   streamerId: string,
-  card: Pick<Card, 'id' | 'name' | 'description' | 'image_url' | 'rarity'>
+  card: Pick<Card, 'id' | 'name' | 'description' | 'image_url' | 'image_padding_color' | 'rarity'>
 ): Promise<OverlayDemoEvent> {
   const id = `demo:${crypto.randomUUID()}`
   const event: OverlayDemoEvent = {
@@ -110,6 +111,7 @@ export async function publishOverlayDemoEvent(
       name: card.name,
       description: card.description,
       image_url: card.image_url,
+      image_padding_color: card.image_padding_color ?? null,
       rarity: card.rarity,
     },
   }

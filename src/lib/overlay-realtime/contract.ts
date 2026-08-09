@@ -41,6 +41,8 @@ export interface OverlayRealtimeCard {
   name: string
   description: string | null
   image_url: string | null
+  // #899: 余白（fit）モードの余白色（overlay 表示の object-contain + 背景色に使う）
+  image_padding_color?: string | null
   rarity: string
 }
 
@@ -67,6 +69,9 @@ export function normalizeOverlayRealtimeCard(
       0,
       MAX_PUBLIC_CARD_IMAGE_URL_LENGTH
     ) ?? null,
+    // ホワイトリスト済みの4値（black/white/gray/transparent）のみが入る想定のため、
+    // 上限のみ束縛する（過大な値が入ってもオーバーレイ表示に危険はない）
+    image_padding_color: card.image_padding_color?.slice(0, 16) ?? null,
     rarity: card.rarity.slice(0, 64),
   }
 }
