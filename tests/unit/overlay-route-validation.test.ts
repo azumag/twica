@@ -34,6 +34,12 @@ describe("hasInvalidOverlayEventsStreamerId", () => {
     ).toBe(true);
   });
 
+  it("rejects a URL segment that cannot be decoded", () => {
+    expect(
+      hasInvalidOverlayEventsStreamerId("/api/overlay/%E0%A4%A/events")
+    ).toBe(true);
+  });
+
   it("does not validate unrelated paths", () => {
     expect(
       hasInvalidOverlayEventsStreamerId(
