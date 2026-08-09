@@ -14,6 +14,9 @@ import {
 // 純粋関数群のユニットテスト。sessionStorageやタイマーには一切依存せず、
 // 全て引数として値を注入してテストする。
 
+const historyUuid = (index: number) =>
+  `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+
 describe("shouldScheduleReload", () => {
   it("current/receivedが異なればtrueを返す", () => {
     expect(shouldScheduleReload("abc123def456", "def456abc789")).toBe(true);
@@ -126,6 +129,7 @@ describe("serializePollState / parsePollState (round-trip)", () => {
   it("シリアライズしたものをそのままパースすると同じ内容が復元される", () => {
     const state = {
       pollCursor: "2026-07-04T00:00:00.000Z",
+      pollHistoryId: historyUuid(3),
       seenHistoryIds: ["h1", "h2", "h3"],
       savedAt: 1_700_000_000_000,
     };
@@ -138,6 +142,7 @@ describe("serializePollState / parsePollState (round-trip)", () => {
     const ids = Array.from({ length: MAX_PERSISTED_HISTORY_IDS + 10 }, (_, i) => `h${i}`);
     const serialized = serializePollState({
       pollCursor: "2026-07-04T00:00:00.000Z",
+      pollHistoryId: historyUuid(4),
       seenHistoryIds: ids,
       savedAt: 0,
     });
@@ -149,14 +154,24 @@ describe("serializePollState / parsePollState (round-trip)", () => {
   });
 
   it("savedAtからちょうどttlMs経過した境界ではまだ有効(復元される)", () => {
-    const state = { pollCursor: "2026-07-04T00:00:00.000Z", seenHistoryIds: [], savedAt: 1000 };
+    const state = {
+      pollCursor: "2026-07-04T00:00:00.000Z",
+      pollHistoryId: historyUuid(5),
+      seenHistoryIds: [],
+      savedAt: 1000,
+    };
     const serialized = serializePollState(state);
     const now = 1000 + POLLSTATE_TTL_MS;
     expect(parsePollState(serialized, now, POLLSTATE_TTL_MS)).toEqual(state);
   });
 
   it("savedAtからttlMsを1msでも超えるとTTL切れでnullを返す", () => {
-    const state = { pollCursor: "2026-07-04T00:00:00.000Z", seenHistoryIds: [], savedAt: 1000 };
+    const state = {
+      pollCursor: "2026-07-04T00:00:00.000Z",
+      pollHistoryId: historyUuid(6),
+      seenHistoryIds: [],
+      savedAt: 1000,
+    };
     const serialized = serializePollState(state);
     const now = 1000 + POLLSTATE_TTL_MS + 1;
     expect(parsePollState(serialized, now, POLLSTATE_TTL_MS)).toBeNull();
@@ -233,6 +248,28 @@ describe("parsePollState: 壊れた入力への耐性", () => {
     expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toBeNull();
   });
 
+  it("Date.parse可能でもAPI文法外のpollCursorは400ループを避けるため拒否する", () => {
+    const raw = JSON.stringify({
+      pollCursor: "July 24, 2026",
+      pollHistoryId: historyUuid(8),
+      seenHistoryIds: [],
+      savedAt: 0,
+    });
+    expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toBeNull();
+  });
+
+  it("PostgreSQLのoffset/microsecond cursorをAPIと同じcanonical UTCで復元する", () => {
+    const raw = JSON.stringify({
+      pollCursor: "2026-07-24T09:00:01.123456+09:00",
+      pollHistoryId: historyUuid(9),
+      seenHistoryIds: [],
+      savedAt: 0,
+    });
+    expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)?.pollCursor).toBe(
+      "2026-07-24T00:00:01.123456Z",
+    );
+  });
+
   it("pollCursorが正当なISO日付文字列なら復元される(妥当性検証のデグレ防止)", () => {
     const raw = JSON.stringify({
       pollCursor: "2026-07-04T12:34:56.789Z",
@@ -241,9 +278,43 @@ describe("parsePollState: 壊れた入力への耐性", () => {
     });
     expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toEqual({
       pollCursor: "2026-07-04T12:34:56.789Z",
+      pollHistoryId: "",
       seenHistoryIds: ["h1"],
       savedAt: 0,
     });
+  });
+
+  it("pollHistoryIdがあるsnapshotは同一timestampのtie-breakerを保持する", () => {
+    const raw = JSON.stringify({
+      pollCursor: "2026-07-04T12:34:56.789Z",
+      pollHistoryId: historyUuid(7),
+      seenHistoryIds: [],
+      savedAt: 0,
+    });
+    expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toMatchObject({
+      pollCursor: "2026-07-04T12:34:56.789Z",
+      pollHistoryId: historyUuid(7),
+    });
+  });
+
+  it("oversized pollHistoryIdは汚染snapshotとして拒否する", () => {
+    const raw = JSON.stringify({
+      pollCursor: "2026-07-04T12:34:56.789Z",
+      pollHistoryId: "h".repeat(129),
+      seenHistoryIds: [],
+      savedAt: 0,
+    });
+    expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toBeNull();
+  });
+
+  it("APIが受理しない非UUID pollHistoryIdは400ループを避けるため拒否する", () => {
+    const raw = JSON.stringify({
+      pollCursor: "2026-07-04T12:34:56.789Z",
+      pollHistoryId: "history-not-a-uuid",
+      seenHistoryIds: [],
+      savedAt: 0,
+    });
+    expect(parsePollState(raw, 0, POLLSTATE_TTL_MS)).toBeNull();
   });
 
   it("seenHistoryIds配列内に文字列以外が混じっていても、文字列要素だけを残して復元する", () => {

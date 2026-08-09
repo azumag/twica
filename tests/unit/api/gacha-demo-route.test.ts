@@ -3,17 +3,30 @@ import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/gacha/demo/route'
 import { getSession } from '@/lib/session'
 import { getStreamerIdByTwitchUserId } from '@/lib/user-data'
-import { publishOverlayDemoEvent } from '@/lib/overlay/demo-event-store'
+import {
+  createOverlayDemoEvent,
+  storeOverlayDemoEvent,
+} from '@/lib/overlay/demo-event-store'
+import { publishOverlayDemoRealtimeEvent } from '@/lib/overlay-realtime/publisher'
+import { runInBackground } from '@/lib/background-task'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { logger } from '@/lib/logger.server'
 
-vi.mock('@/lib/logger', () => ({
+vi.mock('@/lib/logger.server', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 vi.mock('@/lib/session')
 vi.mock('@/lib/user-data')
 vi.mock('@/lib/overlay/demo-event-store', () => ({
-  publishOverlayDemoEvent: vi.fn().mockResolvedValue({ id: 'demo:1' }),
+  createOverlayDemoEvent: vi.fn(),
+  storeOverlayDemoEvent: vi.fn(),
+}))
+vi.mock('@/lib/overlay-realtime/publisher', () => ({
+  publishOverlayDemoRealtimeEvent: vi.fn(),
+}))
+vi.mock('@/lib/background-task', () => ({
+  runInBackground: vi.fn(),
 }))
 vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: vi.fn(),
@@ -24,9 +37,29 @@ vi.mock('@/lib/rate-limit', () => ({
 
 const mockGetSession = vi.mocked(getSession)
 const mockGetStreamerIdByTwitchUserId = vi.mocked(getStreamerIdByTwitchUserId)
-const mockPublishOverlayDemoEvent = vi.mocked(publishOverlayDemoEvent)
+const mockCreateOverlayDemoEvent = vi.mocked(createOverlayDemoEvent)
+const mockStoreOverlayDemoEvent = vi.mocked(storeOverlayDemoEvent)
+const mockPublishOverlayDemoRealtimeEvent = vi.mocked(publishOverlayDemoRealtimeEvent)
+const mockRunInBackground = vi.mocked(runInBackground)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockGetRateLimitIdentifier = vi.mocked(getRateLimitIdentifier)
+const mockLogger = vi.mocked(logger)
+
+const DEMO_EVENT = {
+  id: 'demo:history-1',
+  eventId: 'demo:event-1',
+  redeemedAt: '2026-07-24T01:02:03.000Z',
+  userTwitchUsername: 'DemoUser',
+  rewardId: null,
+  card: {
+    id: 'card-demo',
+    name: 'Demo Card',
+    description: null,
+    image_url: null,
+    image_padding_color: null,
+    rarity: 'common',
+  },
+} as const
 
 function makeRequest(body: unknown) {
   return new NextRequest('http://localhost/api/gacha/demo', {
@@ -39,7 +72,15 @@ function makeRequest(body: unknown) {
 describe('POST /api/gacha/demo: KV demo publication authorization', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockPublishOverlayDemoEvent.mockResolvedValue({ id: 'demo:1' } as any)
+    mockCreateOverlayDemoEvent.mockReturnValue(DEMO_EVENT)
+    mockStoreOverlayDemoEvent.mockResolvedValue(undefined)
+    mockPublishOverlayDemoRealtimeEvent.mockResolvedValue({
+      outcome: 'accepted',
+      attempts: 1,
+    })
+    mockRunInBackground.mockImplementation(async (_label, task) => {
+      await task
+    })
     mockGetRateLimitIdentifier.mockResolvedValue('user:twitch-1')
     mockCheckRateLimit.mockResolvedValue({
       success: true,
@@ -59,7 +100,8 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
     expect(response.status).toBe(401)
     expect(await response.json()).toEqual({ error: ERROR_MESSAGES.UNAUTHORIZED })
-    expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
   })
 
   it('returns 403 when the requested streamer belongs to another user', async () => {
@@ -72,7 +114,8 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
 
     const response = await POST(makeRequest({ streamerId: 'streamer-2', broadcast: true }))
     expect(response.status).toBe(403)
-    expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
   })
 
   it('returns 403 for a user without a streamer profile', async () => {
@@ -85,10 +128,11 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
 
     const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
     expect(response.status).toBe(403)
-    expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
   })
 
-  it('publishes an authorized demo to the polling store', async () => {
+  it('publishes an authorized demo to KV and the immediate realtime transport', async () => {
     mockGetSession.mockResolvedValue({
       twitchUserId: 'twitch-1',
       twitchUsername: 'user1',
@@ -101,9 +145,21 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
 
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
-    expect(mockPublishOverlayDemoEvent).toHaveBeenCalledWith(
-      'streamer-1',
+    expect(mockCreateOverlayDemoEvent).toHaveBeenCalledWith(
       expect.objectContaining({ id: expect.any(String), rarity: expect.any(String) })
+    )
+    expect(mockStoreOverlayDemoEvent).toHaveBeenCalledWith('streamer-1', DEMO_EVENT)
+    expect(mockPublishOverlayDemoRealtimeEvent).toHaveBeenCalledWith(
+      'streamer-1',
+      DEMO_EVENT
+    )
+    // Referential identity is intentional: KV and realtime must serialize the
+    // exact same immutable event, not independently generated equivalents.
+    expect(mockStoreOverlayDemoEvent.mock.calls[0]?.[1]).toBe(DEMO_EVENT)
+    expect(mockPublishOverlayDemoRealtimeEvent.mock.calls[0]?.[1]).toBe(DEMO_EVENT)
+    expect(mockRunInBackground).toHaveBeenCalledWith(
+      'overlay demo delivery',
+      expect.any(Promise)
     )
     expect(mockGetRateLimitIdentifier).toHaveBeenCalledWith(
       expect.anything(),
@@ -137,7 +193,77 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     expect(body.error).toBe(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED)
     expect(response.headers.get('X-RateLimit-Limit')).toBe('30')
     expect(response.headers.get('X-RateLimit-Remaining')).toBe('0')
-    expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockPublishOverlayDemoRealtimeEvent).not.toHaveBeenCalled()
+  })
+
+  it('still starts realtime delivery and returns 200 when the KV write rejects', async () => {
+    mockGetSession.mockResolvedValue({
+      twitchUserId: 'twitch-1',
+      twitchUsername: 'user1',
+      broadcasterType: 'affiliate',
+    } as Awaited<ReturnType<typeof getSession>>)
+    mockGetStreamerIdByTwitchUserId.mockResolvedValue({ id: 'streamer-1' })
+    mockStoreOverlayDemoEvent.mockRejectedValue(new Error('KV unavailable'))
+
+    const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
+
+    expect(response.status).toBe(200)
+    expect(mockPublishOverlayDemoRealtimeEvent).toHaveBeenCalledWith(
+      'streamer-1',
+      DEMO_EVENT
+    )
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      'Demo overlay KV fallback failed',
+      { streamerId: 'streamer-1', error: 'Error' }
+    )
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      'Demo overlay realtime publish accepted',
+      { streamerId: 'streamer-1', attempts: 1, errorCode: undefined }
+    )
+  })
+
+  it('still stores the KV fallback and returns 200 when realtime rejects', async () => {
+    mockGetSession.mockResolvedValue({
+      twitchUserId: 'twitch-1',
+      twitchUsername: 'user1',
+      broadcasterType: 'affiliate',
+    } as Awaited<ReturnType<typeof getSession>>)
+    mockGetStreamerIdByTwitchUserId.mockResolvedValue({ id: 'streamer-1' })
+    mockPublishOverlayDemoRealtimeEvent.mockRejectedValue(new Error('DO unavailable'))
+
+    const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
+
+    expect(response.status).toBe(200)
+    expect(mockStoreOverlayDemoEvent).toHaveBeenCalledWith('streamer-1', DEMO_EVENT)
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      'Demo overlay realtime publish rejected',
+      { streamerId: 'streamer-1', error: 'Error' }
+    )
+  })
+
+  it('logs a fulfilled failed outcome while keeping the KV fallback and 200 response', async () => {
+    mockGetSession.mockResolvedValue({
+      twitchUserId: 'twitch-1',
+      twitchUsername: 'user1',
+      broadcasterType: 'affiliate',
+    } as Awaited<ReturnType<typeof getSession>>)
+    mockGetStreamerIdByTwitchUserId.mockResolvedValue({ id: 'streamer-1' })
+    mockPublishOverlayDemoRealtimeEvent.mockResolvedValue({
+      outcome: 'failed',
+      attempts: 3,
+      errorCode: 'network',
+    })
+
+    const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
+
+    expect(response.status).toBe(200)
+    expect(mockStoreOverlayDemoEvent).toHaveBeenCalledWith('streamer-1', DEMO_EVENT)
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      'Demo overlay realtime publish failed',
+      { streamerId: 'streamer-1', attempts: 3, errorCode: 'network' }
+    )
   })
 
   it('keeps the public non-publication demo available without a session', async () => {
@@ -149,7 +275,9 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
     expect(mockGetSession).not.toHaveBeenCalled()
-    expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockPublishOverlayDemoRealtimeEvent).not.toHaveBeenCalled()
     // #735: broadcast専用の制限は通らないが、全リクエスト共通のIPベース制限は通る
     expect(mockCheckRateLimit).toHaveBeenCalledTimes(1)
     expect(mockGetRateLimitIdentifier).toHaveBeenCalledWith(expect.anything())
@@ -162,7 +290,8 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
     expect(mockGetSession).not.toHaveBeenCalled()
-    expect(mockPublishOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
     expect(mockCheckRateLimit).toHaveBeenCalledTimes(1)
   })
 

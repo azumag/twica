@@ -6,6 +6,12 @@ main = ".open-next/worker.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# 2026-08-08時点のCloudflare直近7日計測はCPU P999が372ms、CPU超過が0件。P999の約2.7倍に
+# 当たる1000msなら観測tailへ余裕を残しつつ、既定30秒より暴走範囲を縮小できる。
+# cpu_msは実CPU時間の上限であり、外部I/OやDB応答を待つwall timeは含まれない。
+[limits]
+cpu_ms = 1000
+
 [observability]
 enabled = true
 
