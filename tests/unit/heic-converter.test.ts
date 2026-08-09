@@ -82,7 +82,7 @@ describe('convertHeicToJpeg (issue #770)', () => {
   it('変換が応答しない場合はタイムアウトして HEIC_CONVERSION_TIMEOUT を投げる', async () => {
     vi.useFakeTimers()
     try {
-      heic2anyMock.mockImplementation(() => new Promise<Blob>(() => undefined))
+      heicToMock.mockImplementation(() => new Promise<Blob>(() => undefined))
 
       const conversion = convertHeicToJpeg(makeFile('photo.heic', 'image/heic'))
       // rejection handlerを先に接続し、タイマー発火とアサーションの間に

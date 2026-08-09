@@ -18,9 +18,6 @@
  * - HEIC コンテナに複数画像がある場合、初期対応では primary image のみを使用する。
  */
 export const HEIC_INPUT_MAX_BYTES = 25 * 1024 * 1024; // 25MB（変換前の入力上限。デコード後のメモリ使用量は圧縮時サイズより大幅に増えるため、緩めの安全弁）
-// heic2any 0.0.4 は変換用 Worker を停止する Abort API を公開していないため、
-// 呼び出し側が無期限に待ち続けないよう、import とデコードを合わせた総時間に上限を設ける。
-export const HEIC_CONVERSION_TIMEOUT_MS = 30_000;
 
 // heic-to の変換用 Worker を停止する Abort API は公開されていないため、
 // 呼び出し側が無期限に待ち続けないよう、import とデコードを合わせた総時間に上限を設ける。
