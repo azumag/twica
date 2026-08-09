@@ -2880,7 +2880,7 @@ export default function CardManager({
                 </div>
                 <div className="text-left">
                   <p className="font-medium text-white">{planCropModes.fit.label}</p>
-                  <p className="text-sm text-gray-400">{planCropModes.fit.dimensions}px · 画像全体を収める</p>
+                  <p className="text-sm text-gray-400">{planCropModes.fit.dimensions}px · {t("form.fitDescription")}</p>
                 </div>
               </button>
 

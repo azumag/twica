@@ -100,7 +100,8 @@
         "transparent": "Transparent (PNG)"
       },
       "fitColorNote": "The whole image is fitted into a square card frame, so padding is added depending on the image shape. Transparent is saved as PNG.",
-      "fitProceed": "Add padding with this color"
+      "fitProceed": "Add padding with this color",
+      "fitDescription": "Fits the whole image"
     },
     "fileUpload": {
       "formats": "Supported: JPEG, PNG, GIF, WebP | ",
