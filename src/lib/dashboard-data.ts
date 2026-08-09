@@ -7,6 +7,7 @@ import { reportError } from "@/lib/sentry/error-handler";
 import { RARITY_ORDER } from "@/lib/constants";
 
 import { logPerf, perfStart } from "@/lib/perf";
+import { isCanonicalUuid } from "@/lib/uuid-validation";
 // ---------------------------------------------------------------------------
 // PlanetScale の読み取り実装で使う import。
 // count は既存コードの `const { count } = await ...` 分割代入と名前が衝突する
@@ -2255,10 +2256,16 @@ export const getUserCardsForStreamer = cache(async (
  * getStreamerById の Drizzle（pg 直結）実装 (#571)
  *
  * .maybeSingle() 相当: id は主キーのため最大1行。0行なら null。
- * streamerId は URL パラメータ由来で不正な UUID 文字列が渡りうるが、その場合は
- * null を返すため、pg 版も catch して null に落とす（外部挙動のパリティ）。
+ * streamerId は URL パラメータ由来で不正な UUID 文字列が渡りうる。不正値は
+ * DBアクセス前に null へ落とし、有効だが未登録のIDと同じ404契約を維持する。
+ * 実際のDB障害だけは catch して記録し、null に落とす（外部挙動のパリティ）。
  */
 async function getStreamerByIdPg(streamerId: string): Promise<Streamer | null> {
+  // Issue #908: PostgreSQLのuuid列へ不正文字列を渡すとSQLSTATE 22P02になり、
+  // 期待される404アクセスまでlogger.error経由で本番Issue化されていた。
+  // 外部入力を最初の型境界でallowlistし、DB/retry/error-reporterへ一切流さない。
+  if (!isCanonicalUuid(streamerId)) return null;
+
   try {
     const rows = await withDbRetry(
       async () => {

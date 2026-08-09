@@ -22,6 +22,8 @@ import {
   getUserCardDetail,
 } from '@/lib/dashboard-data'
 import { getDb } from '@/lib/db/client'
+import { logger } from '@/lib/logger'
+import { logErrorFromLogger } from '@/lib/sentry/error-handler'
 import {
   cards as cardsTable,
   collectionCompletions as collectionCompletionsTable,
@@ -495,18 +497,59 @@ describe('dashboard-data: Drizzle 読み取り', () => {
       })
     })
 
-    it('IDで配信者を取得し、0行なら null を返す', async () => {
+    it('標準UUIDで配信者を取得し、0行なら null を返す', async () => {
+      const streamerId = '94cb6927-8733-4f1c-8e7e-0afb89773daa'
+      const missingStreamerId = 'd3f5a9c1-78e4-4f2a-b6d9-10c8e7a54321'
+      const streamer = makeStreamerRow({ id: streamerId })
       const found = await runWithDb(
-        { tables: tableRows([[streamersTable, [STREAMER]]]) },
-        () => getStreamerById('streamer-1')
+        { tables: tableRows([[streamersTable, [streamer]]]) },
+        () => getStreamerById(streamerId)
       )
-      expect(found.result).toEqual(STREAMER)
+      expect(found.result).toEqual(streamer)
 
       const missing = await runWithDb(
         { tables: tableRows([[streamersTable, []]]) },
-        () => getStreamerById('missing')
+        () => getStreamerById(missingStreamerId)
       )
       expect(missing.result).toBeNull()
+    })
+
+    it('不正なUUIDはDBアクセスもエラー記録もせず null を返す (Issue #908)', async () => {
+      // 本番で報告された35文字のstreamerIdをそのまま回帰入力に使う。
+      // 例外をcatchするだけではlogger.serverがerror-reporterへ永続化するため、
+      // getDb()より前に拒否できていることと副作用が無いことを両方確認する。
+      const malformedStreamerId = 'e92022fd-3d30-b840-c78bbea56920'
+      const { result, db } = await runWithDb(
+        { tables: tableRows([[streamersTable, [STREAMER]]]) },
+        () => getStreamerById(malformedStreamerId)
+      )
+
+      expect(result).toBeNull()
+      expect(getDb).not.toHaveBeenCalled()
+      expect(db.select).not.toHaveBeenCalled()
+      expect(logger.error).not.toHaveBeenCalled()
+      expect(logErrorFromLogger).not.toHaveBeenCalled()
+    })
+
+    it('標準UUIDで発生したDB障害は従来どおりエラー記録して null を返す', async () => {
+      const streamerId = '94cb6927-8733-4f1c-8e7e-0afb89773daa'
+      const { result } = await runWithDb(
+        {
+          tables: tableRows([[streamersTable, [STREAMER]]]),
+          errors: new Map([
+            [streamersTable, [Object.assign(new Error('permission denied'), { code: '42501' })]],
+          ]),
+        },
+        () => getStreamerById(streamerId)
+      )
+
+      expect(result).toBeNull()
+      expect(getDb).toHaveBeenCalledTimes(1)
+      expect(logger.error).toHaveBeenCalledWith(
+        'Error in getStreamerById (pg)',
+        expect.objectContaining({ error: expect.any(Error) })
+      )
+      expect(logErrorFromLogger).toHaveBeenCalledTimes(1)
     })
 
     it('所有カードへ配信者と所持数を付与する', async () => {
