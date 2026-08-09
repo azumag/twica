@@ -13,7 +13,6 @@ flowchart LR
   App --> KV[Cloudflare KV]
   App --> R2[Cloudflare R2]
   App --> Twitch[Twitch API / EventSub]
-  App --> Sentry[Sentry]
   Reporter[Error Reporter Cron Worker] --> DB
   Reporter --> GitHub[GitHub Issues]
 ```
@@ -26,7 +25,7 @@ flowchart LR
 | Cloudflare Hyperdrive | Worker から PlanetScale への接続 |
 | Cloudflare KV / R2 | レート制限・短期イベント / 画像・音声保存 |
 | Twitch API / EventSub | ログイン、チャネルポイント、配信イベント |
-| Sentry + Error Reporter | エラー記録と GitHub Issue 作成 |
+| Error Reporter (Cron Worker) | エラー記録（errors テーブル）と GitHub Issue 作成 |
 
 Supabase SDK・CLI・実行時接続・環境変数参照はコードと tracked 設定から撤去済みです。
 新しい実装、CI 設定、運用手順へ再導入しないでください。Cloudflare に残る旧 Secrets は、
@@ -68,7 +67,6 @@ npm run workers:dev
 | `TWITCH_EVENTSUB_SECRET` | EventSub 署名検証 |
 | `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_TWITCH_CLIENT_ID` | 公開ビルド設定 |
 | `CSRF_TOKEN_SALT` | 状態変更 API の CSRF 保護 |
-| `SENTRY_*` | 任意のエラー報告設定 |
 
 ## テストと品質確認
 
