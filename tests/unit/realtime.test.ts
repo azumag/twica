@@ -4,9 +4,20 @@ import {
   type GachaBroadcastPayload,
   type SubscribeOptions,
 } from '@/lib/realtime'
-import { buildPollingRealtimeEvents } from '@/lib/overlay-realtime/contract'
+import {
+  MAX_OVERLAY_VERSION_LENGTH,
+  buildPollingRealtimeEvents,
+} from '@/lib/overlay-realtime/contract'
+import {
+  resolveOverlayRealtimeConfig,
+  resolveOverlayRealtimeConfigVersion,
+} from '@/lib/overlay-realtime/resolve-config'
 
 const STREAMER_ID = '123e4567-e89b-42d3-a456-426614174000'
+
+function historyUuid(index: number): string {
+  return `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
+}
 
 function subscribeToGachaResults(
   _streamerId: string,
@@ -57,11 +68,14 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
 
   it('groups N-draw history rows and consumes a demo from the same polling response', async () => {
     const redeemedAt = '2026-07-24T00:00:01.000Z'
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
-      jsonResponse({
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      // Preserve the argument tuple for URL assertions below; the response is
+      // intentionally identical for config and events in this grouping test.
+      void input
+      return jsonResponse({
         events: [
           {
-            id: 'history-1',
+            id: historyUuid(1),
             eventId: 'event-1',
             redeemedAt,
             userTwitchUsername: 'viewer',
@@ -69,7 +83,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
             card: CARD_A,
           },
           {
-            id: 'history-2',
+            id: historyUuid(2),
             eventId: 'event-1:2',
             redeemedAt,
             userTwitchUsername: 'viewer',
@@ -86,7 +100,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
           card: CARD_A,
         },
       })
-    )
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     const callback = vi.fn()
@@ -119,6 +133,132 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     expect(pollingUrl).toContain('demoSince=')
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/demo-events'))).toBe(false)
 
+    cleanup()
+  })
+
+  it('starts recovery from the restored exact cursor and keeps same-time rows ordered', async () => {
+    const restoredAt = '2026-07-24T00:00:01.000Z'
+    const restoredId = historyUuid(10)
+    const rows = [
+      {
+        id: historyUuid(11),
+        eventId: 'event-same-time-2',
+        redeemedAt: restoredAt,
+        userTwitchUsername: 'viewer',
+        card: CARD_A,
+      },
+      {
+        id: historyUuid(12),
+        eventId: 'event-same-time-3',
+        redeemedAt: restoredAt,
+        userTwitchUsername: 'viewer',
+        card: CARD_B,
+      },
+    ]
+    const requestedEventUrls: URL[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname.includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'polling-v1',
+          overlayVersion: 'build-current',
+        })
+      }
+      requestedEventUrls.push(url)
+      return jsonResponse({
+        realtimeEvents: buildPollingRealtimeEvents(STREAMER_ID, rows),
+        nextCursor: { redeemedAt: restoredAt, historyId: rows[1].id },
+      })
+    }))
+
+    const callback = vi.fn()
+    const onHistoryCursor = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      initialHistoryCursor: { redeemedAt: restoredAt, historyId: restoredId },
+      onHistoryCursor,
+    })
+    await flushPromises()
+
+    expect(requestedEventUrls[0].searchParams.get('since')).toBe(restoredAt)
+    expect(requestedEventUrls[0].searchParams.get('afterId')).toBe(restoredId)
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      CARD_A.id,
+      CARD_B.id,
+    ])
+    expect(onHistoryCursor).toHaveBeenLastCalledWith({
+      redeemedAt: restoredAt,
+      historyId: rows[1].id,
+    })
+    cleanup()
+  })
+
+  it('notifies bounded overlay versions from both valid config and events responses', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'polling-v1',
+          overlayVersion: 'build-from-config',
+        })
+      }
+      return jsonResponse({
+        events: [],
+        overlayVersion: 'build-from-events',
+      })
+    }))
+
+    const onOverlayVersion = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
+      onOverlayVersion,
+    })
+    await flushPromises()
+
+    expect(onOverlayVersion).toHaveBeenCalledTimes(2)
+    expect(onOverlayVersion.mock.calls.map(([version]) => version)).toEqual(
+      expect.arrayContaining(['build-from-config', 'build-from-events'])
+    )
+    cleanup()
+  })
+
+  it('does not notify from an invalid config, its safe fallback, or an unbounded events value', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          // The config itself is invalid even though overlayVersion is valid:
+          // unbounded configVersion must fail the complete response contract.
+          configVersion: 'c'.repeat(129),
+          // A valid-looking auxiliary value must not escape an otherwise
+          // invalid response before the safe fallback is selected.
+          overlayVersion: 'must-not-notify',
+        })
+      }
+      return jsonResponse({
+        events: [],
+        overlayVersion: 'v'.repeat(MAX_OVERLAY_VERSION_LENGTH + 1),
+      })
+    }))
+
+    const onOverlayVersion = vi.fn()
+    const onStatusChange = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
+      onOverlayVersion,
+      onStatusChange,
+    })
+    await flushPromises()
+
+    expect(onOverlayVersion).not.toHaveBeenCalled()
+    expect(onStatusChange).toHaveBeenCalledWith('CONFIG_FALLBACK:POLLING_ONLY')
     cleanup()
   })
 
@@ -197,7 +337,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
 
   it('deduplicates rows returned again by a subsequent poll', async () => {
     const event = {
-      id: 'history-1',
+      id: historyUuid(20),
       eventId: 'event-1',
       redeemedAt: '2026-07-24T00:00:01.000Z',
       userTwitchUsername: 'viewer',
@@ -302,7 +442,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
 
     const pollingRow = {
-      id: 'history-ws-1',
+      id: historyUuid(21),
       eventId: 'batch-ws-1',
       redeemedAt: '2026-07-24T00:00:01.000Z',
       userTwitchUsername: 'viewer',
@@ -350,7 +490,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
-  it('does not start a second polling request while reconnect recovery is in flight', async () => {
+  it('serializes an onopen recovery behind an in-flight snapshot and runs one trailing poll', async () => {
     class OpeningWebSocket {
       static readonly CONNECTING = 0
       static readonly OPEN = 1
@@ -406,6 +546,13 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     expect(historyCalls).toBe(1)
     resolveHistory(jsonResponse({ events: [] }))
     await flushPromises()
+
+    // onopen happened while the first request was unresolved. It must not
+    // start concurrently, but it also must not disappear: the trailing empty
+    // snapshot closes commits that landed after the first DB snapshot.
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(historyCalls).toBe(2)
     cleanup()
   })
 
@@ -446,6 +593,8 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0)
 
     let configCalls = 0
+    let eventsCalls = 0
+    let advertisedConfigVersion = 'test-v1'
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes('/realtime-config')) {
@@ -462,11 +611,15 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
           configVersion: `test-v${configCalls}`,
         })
       }
-      return jsonResponse({ events: [] })
+      eventsCalls += 1
+      return jsonResponse({
+        events: [],
+        realtimeConfigVersion: advertisedConfigVersion,
+      })
     }))
 
     const [event] = buildPollingRealtimeEvents(STREAMER_ID, [{
-      id: 'history-stale-1',
+      id: historyUuid(22),
       eventId: 'batch-stale-1',
       redeemedAt: '2026-07-24T00:00:01.000Z',
       userTwitchUsername: 'viewer',
@@ -481,23 +634,813 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     await flushPromises()
     expect(ControlledWebSocket.instances).toHaveLength(1)
 
-    // Connected overlays no longer poll the config endpoint every 30 seconds;
-    // the change signal normally rides on history polling (covered by the test
-    // below). This case drives the five-minute safety-net refresh, which is the
-    // path that must still work when history polling cannot carry the signal.
+    // Opening the initial socket queues one immediate DB recovery. Drain that
+    // startup task before measuring the safety cadence so it cannot be mistaken
+    // for an early steady-state reconciliation.
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    const eventsAfterStartup = eventsCalls
+    const safetyStartedAt = Date.now()
+
+    // Healthy overlays use one ten-minute history reconciliation as both the
+    // gapless-publish recovery path and the config/build change signal. There
+    // is no parallel steady-state config timer.
     await vi.advanceTimersByTimeAsync(5 * 60_000)
     await flushPromises()
+    expect(configCalls).toBe(1)
+    expect(eventsCalls).toBe(eventsAfterStartup)
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+
+    advertisedConfigVersion = 'test-v2'
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await flushPromises()
+
+    // At the ten-minute deadline the safety callback queues the reconciliation
+    // as a separate zero-delay timer. Advance to that deadline without jumping
+    // to a later liveness timer; Promise flushing alone cannot run timers.
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+    expect(Date.now()).toBeGreaterThanOrEqual(safetyStartedAt + 10 * 60_000)
+    expect(Date.now()).toBeLessThan(safetyStartedAt + 10 * 60_000 + 1_000)
+    // One request detects the version change. Replacing the endpoint opens a
+    // new socket, whose mandatory boundary recovery is the second request.
+    expect(eventsCalls).toBe(eventsAfterStartup + 2)
+    expect(configCalls).toBe(2)
     expect(ControlledWebSocket.instances).toHaveLength(2)
 
     ControlledWebSocket.instances[0].emit({ type: 'gacha_result', event })
     expect(callback).not.toHaveBeenCalled()
     ControlledWebSocket.instances[1].emit({ type: 'gacha_result', event })
+    // The same-deadline endpoint-boundary recovery has already completed, so
+    // only the current socket may deliver this frame now.
     expect(callback).toHaveBeenCalledTimes(1)
 
     ControlledWebSocket.instances[1].onclose?.({ code: 1006 })
     // A config endpoint change starts a fresh connection policy, so the next
     // outage uses the initial half-jitter delay (random is stubbed to zero).
     expect(statuses).toContain('DO_RECONNECT_WAIT:50')
+    cleanup()
+  })
+
+  it('reconnects to a URL-only runtime change while the old socket remains healthy', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+    vi.stubEnv('OVERLAY_REALTIME_MODE', 'do-primary')
+    vi.stubEnv('OVERLAY_REALTIME_STREAMER_ALLOWLIST', STREAMER_ID)
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-a.example')
+
+    let configCalls = 0
+    let eventsCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        configCalls += 1
+        return jsonResponse(resolveOverlayRealtimeConfig(STREAMER_ID))
+      }
+      eventsCalls += 1
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        realtimeConfigVersion: resolveOverlayRealtimeConfigVersion(STREAMER_ID),
+      })
+    }))
+
+    const cleanup = subscribeToGachaResults('ignored', vi.fn())
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(ControlledWebSocket.instances[0].url).toContain('realtime-a.example')
+    const oldSocket = ControlledWebSocket.instances[0]
+    oldSocket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-url-a',
+      serverTime: '',
+      seq: 0,
+    })
+    const eventsAfterStartup = eventsCalls
+
+    // This is an environment-only endpoint rotation: mode, allowlist,
+    // protocol, retry policy, and application build all remain unchanged.
+    // Heartbeats prove endpoint A is healthy, so only the public-config token
+    // carried by the ten-minute safety read can move the client to B.
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-b.example')
+    for (let halfMinute = 0; halfMinute < 19; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    expect(configCalls).toBe(1)
+    expect(eventsCalls).toBe(eventsAfterStartup)
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+    await flushPromises()
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+
+    expect(configCalls).toBe(2)
+    expect(ControlledWebSocket.instances).toHaveLength(2)
+    expect(ControlledWebSocket.instances[1].url).toContain('realtime-b.example')
+    cleanup()
+  })
+
+  it('bounds URL-only rotation during a DB outage without hammering config or dropping the healthy socket', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+    vi.stubEnv('OVERLAY_REALTIME_MODE', 'do-primary')
+    vi.stubEnv('OVERLAY_REALTIME_STREAMER_ALLOWLIST', STREAMER_ID)
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-a.example')
+
+    let configCalls = 0
+    let eventsCalls = 0
+    let failHistory = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        configCalls += 1
+        // The first degraded probe also fails at the edge. It must not tear
+        // down a socket that is still proving liveness with heartbeats.
+        if (configCalls === 2) throw new Error('temporary config edge failure')
+        return jsonResponse(resolveOverlayRealtimeConfig(STREAMER_ID))
+      }
+      eventsCalls += 1
+      if (failHistory) throw new Error('PlanetScale unavailable')
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        realtimeConfigVersion: resolveOverlayRealtimeConfigVersion(STREAMER_ID),
+      })
+    }))
+
+    const callback = vi.fn()
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const oldSocket = ControlledWebSocket.instances[0]
+    oldSocket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-db-outage-a',
+      serverTime: '',
+      seq: 0,
+    })
+    failHistory = true
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-b.example')
+
+    // The healthy ten-minute reconciliation fails before it can carry the new
+    // config generation. That failure triggers exactly one DB-independent
+    // config probe; the intentionally failed probe preserves socket A.
+    for (let halfMinute = 0; halfMinute < 20; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+
+    expect(configCalls).toBe(2)
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(statuses).toContain('CONFIG_REFRESH_FAILED:KEEP_CURRENT')
+
+    // History retries continue under their existing serialized backoff, but
+    // they may not turn into a config request every 30 seconds. The next probe
+    // is allowed only at the five-minute degraded-mode floor.
+    for (let halfMinute = 0; halfMinute < 9; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    expect(configCalls).toBe(2)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    oldSocket.emit({ type: 'server_notice', code: 'heartbeat' })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+
+    expect(configCalls).toBe(3)
+    expect(eventsCalls).toBeGreaterThan(2)
+    expect(ControlledWebSocket.instances).toHaveLength(2)
+    expect(ControlledWebSocket.instances[1].url).toContain('realtime-b.example')
+
+    const [event] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: historyUuid(23),
+      eventId: 'batch-db-outage-url-switch',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      card: CARD_A,
+    }])
+    oldSocket.emit({ type: 'gacha_result', seq: 1, event })
+    expect(callback).not.toHaveBeenCalled()
+    ControlledWebSocket.instances[1].emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-db-outage-b',
+      serverTime: '',
+      seq: 0,
+    })
+    ControlledWebSocket.instances[1].emit({ type: 'gacha_result', seq: 1, event })
+    expect(callback).toHaveBeenCalledTimes(1)
+    cleanup()
+  })
+
+  it('ten-minute reconciliation recovers a gapless failed publish behind a later socket event', async () => {
+    vi.setSystemTime(new Date('2026-07-24T00:00:00.000Z'))
+
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const rows = [
+      {
+        id: historyUuid(40),
+        eventId: 'batch-publish-failed',
+        redeemedAt: '2026-07-24T00:00:01.000Z',
+        userTwitchUsername: 'viewer',
+        card: CARD_A,
+      },
+      {
+        id: historyUuid(41),
+        eventId: 'batch-publish-succeeded',
+        redeemedAt: '2026-07-24T00:00:02.000Z',
+        userTwitchUsername: 'viewer',
+        card: CARD_B,
+      },
+    ]
+    const [missedEvent, liveEvent] = rows.map((row) =>
+      buildPollingRealtimeEvents(STREAMER_ID, [row])[0]
+    )
+    let reconciliationEnabled = false
+    let reconciliationPage = 0
+    let firstReconciliationSince: string | null = null
+    let firstReconciliationAt: number | null = null
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname.includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+          overlayVersion: 'build-current',
+        })
+      }
+      if (!reconciliationEnabled) {
+        return jsonResponse({ realtimeEvents: [], nextCursor: null })
+      }
+
+      reconciliationPage += 1
+      if (reconciliationPage === 1) {
+        firstReconciliationSince = url.searchParams.get('since')
+        firstReconciliationAt = Date.now()
+        return jsonResponse({
+          realtimeEvents: [missedEvent, liveEvent],
+          nextCursor: {
+            redeemedAt: rows[1].redeemedAt,
+            historyId: rows[1].id,
+          },
+        })
+      }
+      return jsonResponse({ realtimeEvents: [], nextCursor: null })
+    }))
+
+    const callback = vi.fn()
+    const onHistoryCursor = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      onHistoryCursor,
+    })
+    await flushPromises()
+    for (let pass = 0; pass < 3; pass += 1) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushPromises()
+    }
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-publisher-recovery',
+      serverTime: '',
+      seq: 0,
+    })
+    socket.emit({ type: 'gacha_result', seq: 1, event: liveEvent })
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      CARD_B.id,
+    ])
+    // Socket delivery is not a durable DB checkpoint: an earlier publish may
+    // have failed before the room could assign a sequence number.
+    expect(onHistoryCursor).not.toHaveBeenCalled()
+
+    reconciliationEnabled = true
+    for (let halfMinute = 0; halfMinute < 19; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      socket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+
+    // A healthy socket must not touch history before the ten-minute safety
+    // deadline, even though liveness is being renewed every thirty seconds.
+    expect(firstReconciliationSince).toBeNull()
+    expect(reconciliationPage).toBe(0)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    socket.emit({ type: 'server_notice', code: 'heartbeat' })
+    await flushPromises()
+
+    // The deadline callback schedules the DB cycle at the next timer deadline.
+    // This avoids jumping to a later liveness deadline while still allowing the
+    // data page and its mandatory terminating empty page to drain together.
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+
+    expect(firstReconciliationSince).toBe('2026-07-24T00:00:00.000Z')
+    expect(firstReconciliationAt).toBeGreaterThanOrEqual(
+      new Date('2026-07-24T00:10:00.000Z').getTime()
+    )
+    expect(firstReconciliationAt).toBeLessThan(
+      new Date('2026-07-24T00:10:01.000Z').getTime()
+    )
+    expect(reconciliationPage).toBe(2)
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      CARD_B.id,
+      CARD_A.id,
+    ])
+    expect(onHistoryCursor).toHaveBeenLastCalledWith({
+      redeemedAt: rows[1].redeemedAt,
+      historyId: rows[1].id,
+    })
+    cleanup()
+  })
+
+  it('reconciles and reload-dedupes 513 socket draws without an eviction cascade', async () => {
+    vi.setSystemTime(new Date('2026-07-24T00:00:00.000Z'))
+
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const rows = Array.from({ length: 513 }, (_, index) => ({
+      id: historyUuid(1_000 + index),
+      eventId: `batch-volume-${index}`,
+      redeemedAt: new Date(
+        new Date('2026-07-24T00:00:01.000Z').getTime() + index * 1_000
+      ).toISOString(),
+      userTwitchUsername: 'viewer',
+      card: { ...CARD_A, id: `card-volume-${index}` },
+    }))
+    const realtimeEvents = rows.map((row) =>
+      buildPollingRealtimeEvents(STREAMER_ID, [row])[0]
+    )
+    let historyReady = false
+    let pageIndex = 0
+    const historyPageSizes: number[] = []
+    let reloaded = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: reloaded ? 'polling-only' : 'do-primary',
+          ...(reloaded ? {} : { webSocketUrl: 'https://realtime.example' }),
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: reloaded ? 'polling-v1' : 'do-primary-v1',
+        })
+      }
+      if (!historyReady) {
+        return jsonResponse({ realtimeEvents: [], nextCursor: null })
+      }
+      const pageEvents = realtimeEvents.slice(pageIndex * 100, (pageIndex + 1) * 100)
+      pageIndex += 1
+      historyPageSizes.push(pageEvents.length)
+      const last = pageEvents.at(-1)
+      return jsonResponse({
+        realtimeEvents: pageEvents,
+        nextCursor: last
+          ? {
+              redeemedAt: last.occurredAt,
+              historyId: last.draws.at(-1)?.historyId,
+            }
+          : null,
+      })
+    }))
+
+    const statuses: string[] = []
+    const callback = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    for (let pass = 0; pass < 3; pass += 1) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushPromises()
+    }
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-volume',
+      serverTime: '',
+      seq: 0,
+    })
+    historyReady = true
+    realtimeEvents.forEach((event, index) => {
+      socket.emit({ type: 'gacha_result', seq: index + 1, event })
+    })
+    expect(callback).toHaveBeenCalledTimes(513)
+    expect(statuses).toContain('DO_RECONCILE_VOLUME:512')
+
+    const expectedHistoryPageSizes = [100, 100, 100, 100, 100, 13, 0]
+    // Same-deadline pages may coalesce within one async timer advance. Stop on
+    // the observed seventh response, rather than advancing seven timers and
+    // crossing into the later liveness or steady-state polling deadlines.
+    const driveExpectedHistoryDrain = async () => {
+      for (
+        let advanceCount = 0;
+        advanceCount < expectedHistoryPageSizes.length
+          && historyPageSizes.length < expectedHistoryPageSizes.length;
+        advanceCount += 1
+      ) {
+        await vi.advanceTimersToNextTimerAsync()
+        await flushPromises()
+      }
+      expect(historyPageSizes).toEqual(expectedHistoryPageSizes)
+      expect(pageIndex).toBe(expectedHistoryPageSizes.length)
+    }
+    await driveExpectedHistoryDrain()
+    expect(callback).toHaveBeenCalledTimes(513)
+    cleanup()
+
+    // A version reload can happen before or after reconciliation. The bounded
+    // session cache must retain the whole >512 live window so restarting from
+    // the older DB checkpoint does not replay any draw.
+    reloaded = true
+    pageIndex = 0
+    historyPageSizes.length = 0
+    const reloadCallback = vi.fn()
+    const reloadCleanup = subscribeToGachaResults('ignored', reloadCallback, {
+      initialHistoryCursor: {
+        redeemedAt: '2026-07-24T00:00:00.000Z',
+        historyId: '',
+      },
+    })
+    await flushPromises()
+    await driveExpectedHistoryDrain()
+    expect(reloadCallback).not.toHaveBeenCalled()
+    reloadCleanup()
+  })
+
+  it('bounds recovery buffering and keeps DB recovery duplicate-free after degradation', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const rows = Array.from({ length: 34 }, (_, index) => ({
+      id: historyUuid(2_000 + index),
+      eventId: `batch-buffer-${index}`,
+      redeemedAt: `2026-07-24T00:00:${String(index + 1).padStart(2, '0')}.000Z`,
+      userTwitchUsername: 'viewer',
+      card: { ...CARD_A, id: `card-buffer-${index}` },
+    }))
+    const realtimeEvents = rows.map((row) =>
+      buildPollingRealtimeEvents(STREAMER_ID, [row])[0]
+    )
+    let recoveryPromise: Promise<Response> | null = null
+    let afterRecovery = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      if (recoveryPromise) {
+        const pending = recoveryPromise
+        recoveryPromise = null
+        return pending
+      }
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        ...(afterRecovery ? { realtimeConfigVersion: 'do-primary-v1' } : {}),
+      })
+    }))
+
+    const callback = vi.fn()
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    for (let pass = 0; pass < 3; pass += 1) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushPromises()
+    }
+
+    let resolveRecovery!: (response: Response) => void
+    recoveryPromise = new Promise<Response>((resolve) => {
+      resolveRecovery = resolve
+    })
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-buffer',
+      serverTime: '',
+      seq: 0,
+    })
+    socket.emit({ type: 'gacha_result', seq: 2, event: realtimeEvents[0] })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    for (let index = 1; index < 33; index += 1) {
+      socket.emit({
+        type: 'gacha_result',
+        seq: index + 2,
+        event: realtimeEvents[index],
+      })
+    }
+    expect(statuses).toContain('DO_RECOVERY_DEGRADED:capacity')
+    expect(callback).toHaveBeenCalledTimes(33)
+
+    afterRecovery = true
+    resolveRecovery(jsonResponse({
+      realtimeEvents: realtimeEvents.slice(0, 33),
+      nextCursor: {
+        redeemedAt: rows[32].redeemedAt,
+        historyId: rows[32].id,
+      },
+    }))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(callback).toHaveBeenCalledTimes(33)
+
+    // A later low-volume recovery proves the independent time bound: one live
+    // frame cannot remain hidden forever merely because its DB read is stuck.
+    recoveryPromise = new Promise<Response>(() => {})
+    // Leave seq 35 missing so this frame starts recovery buffering; a contiguous
+    // seq 35 would be delivered immediately and would not exercise the timeout.
+    socket.emit({ type: 'gacha_result', seq: 36, event: realtimeEvents[33] })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(callback).toHaveBeenCalledTimes(33)
+    expect(statuses).not.toContain('DO_RECOVERY_DEGRADED:timeout')
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(callback).toHaveBeenCalledTimes(33)
+    expect(statuses).not.toContain('DO_RECOVERY_DEGRADED:timeout')
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(statuses).toContain('DO_RECOVERY_DEGRADED:timeout')
+    expect(callback).toHaveBeenCalledTimes(34)
+    cleanup()
+  })
+
+  it('probes legacy events once when a modern connected client reaches a rolled-back config route', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    let configCalls = 0
+    let eventsCalls = 0
+    let rolledBack = false
+    const rolledBackEventCallTimes: number[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        configCalls += 1
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+          ...(configCalls === 1 ? { overlayVersion: 'build-modern' } : {}),
+        })
+      }
+      eventsCalls += 1
+      if (rolledBack) rolledBackEventCallTimes.push(Date.now())
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        overlayVersion: rolledBack ? 'build-rolled-back' : 'build-modern',
+        realtimeConfigVersion: rolledBack ? 'do-primary-v2' : 'do-primary-v1',
+      })
+    }))
+
+    const onOverlayVersion = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      onOverlayVersion,
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    const eventsAfterStartup = eventsCalls
+    const safetyStartedAt = Date.now()
+    onOverlayVersion.mockClear()
+    rolledBack = true
+
+    const socket = ControlledWebSocket.instances[0]
+    for (let halfMinute = 0; halfMinute < 19; halfMinute += 1) {
+      // Keep each heartbeat inside the 150-second liveness deadline so this
+      // remains a healthy connected rollback, not disconnect recovery.
+      await vi.advanceTimersByTimeAsync(30_000)
+      socket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+
+    // The modern client must not reconcile or refetch config before ten minutes.
+    expect(configCalls).toBe(1)
+    expect(eventsCalls).toBe(eventsAfterStartup)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    socket.emit({ type: 'server_notice', code: 'heartbeat' })
+    await flushPromises()
+
+    // Run the history cycle queued by the ten-minute safety callback. Its
+    // version mismatch refetches config; the present-to-absent overlayVersion
+    // transition then queues exactly one same-deadline legacy history probe.
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    expect(configCalls).toBe(2)
+    expect(eventsCalls).toBe(eventsAfterStartup + 2)
+    expect(rolledBackEventCallTimes).toHaveLength(2)
+    expect(rolledBackEventCallTimes[0]).toBeGreaterThanOrEqual(
+      safetyStartedAt + 10 * 60_000
+    )
+    expect(rolledBackEventCallTimes[0]).toBeLessThan(
+      safetyStartedAt + 10 * 60_000 + 1_000
+    )
+    expect(onOverlayVersion).toHaveBeenCalledTimes(2)
+    expect(onOverlayVersion).toHaveBeenNthCalledWith(1, 'build-rolled-back')
+    expect(onOverlayVersion).toHaveBeenNthCalledWith(2, 'build-rolled-back')
     cleanup()
   })
 
@@ -564,7 +1507,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     expect(configCalls).toBe(1)
 
     // Operator enables this streamer. No config poll is scheduled for another
-    // five minutes, so only the history pass can carry this.
+    // ten minutes, so only the history pass can carry this promptly.
     serverVersion = 'do-primary-v1'
 
     await vi.advanceTimersByTimeAsync(30_000)
@@ -627,7 +1570,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     }))
 
     const [event] = buildPollingRealtimeEvents(STREAMER_ID, [{
-      id: 'history-seq-1',
+      id: historyUuid(30),
       eventId: 'batch-seq-1',
       redeemedAt: '2026-07-24T00:00:02.000Z',
       userTwitchUsername: 'viewer',
@@ -664,6 +1607,407 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     await flushPromises()
     expect(historyCalls).toBeGreaterThan(afterConnect)
     expect(statuses).toContain('DO_SEQ_GAP:7->9')
+    cleanup()
+  })
+
+  it('delivers signed demo frames immediately without manufacturing DB reconciliation debt', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    let historyCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      historyCalls += 1
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        realtimeConfigVersion: 'do-primary-v1',
+      })
+    }))
+
+    const callback = vi.fn()
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const historyAfterStartup = historyCalls
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-demo',
+      serverTime: '',
+      seq: 0,
+    })
+
+    // Exercise the exact 512-event threshold that committed socket traffic
+    // uses to request an early DB reconciliation. Demos have only a bounded KV
+    // fallback and no gacha_history row, so even sustained operator previews
+    // must display synchronously without crossing that committed-data guard.
+    for (let index = 1; index <= 512; index += 1) {
+      const [baseEvent] = buildPollingRealtimeEvents(STREAMER_ID, [{
+        id: `demo:history-${index}`,
+        eventId: `demo:event-${index}`,
+        redeemedAt: `2026-07-24T00:00:${String(index % 60).padStart(2, '0')}.000Z`,
+        userTwitchUsername: 'DemoUser',
+        card: { ...CARD_A, id: `demo-card-${index}` },
+      }])
+      socket.emit({
+        type: 'gacha_result',
+        seq: index,
+        event: { ...baseEvent, deliveryKind: 'demo' },
+      })
+    }
+    await flushPromises()
+
+    expect(callback).toHaveBeenCalledTimes(512)
+    expect(callback.mock.calls[0][0].userTwitchUsername).toBe('DemoUser')
+    expect(historyCalls).toBe(historyAfterStartup)
+    expect(statuses.some((status) => status.startsWith('DO_RECONCILE_VOLUME:'))).toBe(false)
+    cleanup()
+  })
+
+  it.each([
+    ['recovers a missed immediate publish from KV at ten minutes', false],
+    ['deduplicates an immediate DO demo against its later KV fallback', true],
+  ])('%s', async (_label, deliverImmediately) => {
+    vi.setSystemTime(new Date('2026-07-24T00:00:00.000Z'))
+
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const demoEvent = {
+      id: 'demo:history-fallback',
+      eventId: 'demo:event-fallback',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'DemoUser',
+      rewardId: null,
+      card: CARD_A,
+    }
+    const [socketEnvelope] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: demoEvent.id,
+      eventId: demoEvent.eventId,
+      redeemedAt: demoEvent.redeemedAt,
+      userTwitchUsername: demoEvent.userTwitchUsername,
+      rewardId: null,
+      card: CARD_A,
+    }])
+    let fallbackAvailable = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      return jsonResponse({
+        realtimeEvents: [],
+        nextCursor: null,
+        demoEvent: fallbackAvailable ? demoEvent : null,
+        realtimeConfigVersion: 'do-primary-v1',
+      })
+    }))
+
+    const callback = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', callback)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-demo-fallback',
+      serverTime: '',
+      seq: 0,
+    })
+    if (deliverImmediately) {
+      socket.emit({
+        type: 'gacha_result',
+        seq: 1,
+        event: { ...socketEnvelope, deliveryKind: 'demo' },
+      })
+      expect(callback).toHaveBeenCalledTimes(1)
+    }
+    fallbackAvailable = true
+
+    // The normal healthy-socket sweep is the longest client recovery path.
+    // The KV store keeps the same immutable event beyond this deadline; if DO
+    // fanout failed it appears here, and if DO succeeded the shared eventId
+    // makes this response a duplicate instead of a second overlay display.
+    for (let halfMinute = 0; halfMinute < 20; halfMinute += 1) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      socket.emit({ type: 'server_notice', code: 'heartbeat' })
+      await flushPromises()
+    }
+    await vi.advanceTimersToNextTimerAsync()
+    await flushPromises()
+
+    expect(callback).toHaveBeenCalledTimes(1)
+    expect(callback.mock.calls[0][0].userTwitchUsername).toBe('DemoUser')
+    cleanup()
+  })
+
+  it('buffers the gap frame until DB recovery displays seq 8 then seq 9 exactly once', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const rows = [
+      {
+        id: historyUuid(38),
+        eventId: 'batch-seq-8',
+        redeemedAt: '2026-07-24T00:00:08.000Z',
+        userTwitchUsername: 'viewer',
+        card: CARD_A,
+      },
+      {
+        id: historyUuid(39),
+        eventId: 'batch-seq-9',
+        redeemedAt: '2026-07-24T00:00:09.000Z',
+        userTwitchUsername: 'viewer',
+        card: CARD_B,
+      },
+    ]
+    const [event8, event9] = rows.map((row) =>
+      buildPollingRealtimeEvents(STREAMER_ID, [row])[0]
+    )
+    let gapRecovery = false
+    let gapPage = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+          overlayVersion: 'build-current',
+        })
+      }
+      if (!gapRecovery) return jsonResponse({ realtimeEvents: [], nextCursor: null })
+      gapPage += 1
+      if (gapPage === 1) {
+        return jsonResponse({
+          realtimeEvents: [event8, event9],
+          nextCursor: {
+            redeemedAt: rows[1].redeemedAt,
+            historyId: rows[1].id,
+          },
+        })
+      }
+      return jsonResponse({ realtimeEvents: [], nextCursor: null })
+    }))
+
+    const callback = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', callback)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-gap',
+      serverTime: '',
+      seq: 7,
+    })
+    gapRecovery = true
+    socket.emit({ type: 'gacha_result', seq: 9, event: event9 })
+    expect(callback).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      CARD_A.id,
+      CARD_B.id,
+    ])
+    cleanup()
+  })
+
+  it('drains a reconnect backlog larger than the 100-row API page in DB order', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const rows = Array.from({ length: 205 }, (_, index) => ({
+      id: historyUuid(100 + index),
+      eventId: `batch-backlog-${String(index).padStart(3, '0')}`,
+      redeemedAt: `2026-07-24T00:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+      userTwitchUsername: 'viewer',
+      card: { ...CARD_A, id: `card-backlog-${index}` },
+    }))
+    let recovering = false
+    let pageIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+          overlayVersion: 'build-current',
+        })
+      }
+      if (!recovering) return jsonResponse({ realtimeEvents: [], nextCursor: null })
+
+      const pageRows = rows.slice(pageIndex * 100, (pageIndex + 1) * 100)
+      pageIndex += 1
+      const last = pageRows.at(-1)
+      return jsonResponse({
+        realtimeEvents: buildPollingRealtimeEvents(STREAMER_ID, pageRows),
+        nextCursor: last
+          ? { redeemedAt: last.redeemedAt, historyId: last.id }
+          : null,
+      })
+    }))
+
+    const callback = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', callback)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    recovering = true
+    ControlledWebSocket.instances[0].close(1006)
+    for (let pass = 0; pass < 4 && pageIndex < 4; pass += 1) {
+      // Each non-empty response queues the next page as a new timer task. Four
+      // responses cover 100 + 100 + 5 rows and the mandatory terminating empty
+      // page. Stop there instead of advancing into the later reconnect timer,
+      // whose onopen correctly starts a separate recovery snapshot.
+      await vi.advanceTimersToNextTimerAsync()
+      await flushPromises()
+    }
+
+    expect(pageIndex).toBe(4)
+    expect(callback).toHaveBeenCalledTimes(205)
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual(
+      rows.map((row) => row.card.id)
+    )
     cleanup()
   })
 
@@ -744,9 +2088,8 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     // produces no new configVersion this client can see. Without a TTL the
     // suppression above never clears and the client is stuck on polling
     // until reloaded — observed in preview (issue #844). Matches
-    // SUPPRESSION_TTL_MS in src/lib/realtime.ts, which reuses the same
-    // 5-minute value as the safety-net config refresh so this piggybacks on
-    // a timer that already exists rather than needing a second one.
+    // DO_SUPPRESSION_TTL_MS in src/lib/realtime.ts. It intentionally remains
+    // 5 minutes even though the normal config safety refresh is now 10 minutes.
     const SUPPRESSION_TTL_MS = 5 * 60_000
 
     class ControlledWebSocket {
@@ -1132,5 +2475,39 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
     await vi.advanceTimersByTimeAsync(100)
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not notify an overlay version from an events request that settles after cleanup', async () => {
+    let resolveEvents!: (response: Response) => void
+    const pendingEvents = new Promise<Response>((resolve) => {
+      resolveEvents = resolve
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'polling-v1',
+        })
+      }
+      return pendingEvents
+    }))
+
+    const onOverlayVersion = vi.fn()
+    const cleanup = subscribeToGachaResults('streamer-1', vi.fn(), {
+      onOverlayVersion,
+    })
+    await flushPromises()
+
+    cleanup()
+    resolveEvents(jsonResponse({
+      events: [],
+      overlayVersion: 'late-build',
+    }))
+    await flushPromises()
+
+    expect(onOverlayVersion).not.toHaveBeenCalled()
   })
 })

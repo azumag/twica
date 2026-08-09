@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { GET as getRealtimeConfig } from '@/app/api/overlay/[streamerId]/realtime-config/route'
 import {
   resolveOverlayRealtimeConfig,
   resolveOverlayRealtimeConfigVersion,
@@ -7,6 +8,10 @@ import {
 
 const STREAMER_ID = '123e4567-e89b-42d3-a456-426614174000'
 const OTHER_STREAMER_ID = '223e4567-e89b-42d3-a456-426614174000'
+
+function params(streamerId = STREAMER_ID) {
+  return { params: Promise.resolve({ streamerId }) }
+}
 
 /**
  * The overlay stopped polling the config endpoint on its own timer and instead
@@ -28,12 +33,19 @@ describe('overlay realtime config change signal', () => {
     vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime.example')
   }
 
-  it('reports the same version the full config carries when enabled', () => {
+  it('reports the same version from the events signal resolver and config route', async () => {
     enableFor(STREAMER_ID)
-    expect(resolveOverlayRealtimeConfigVersion(STREAMER_ID)).toBe(
-      resolveOverlayRealtimeConfig(STREAMER_ID).configVersion
+    const eventsSignalVersion = resolveOverlayRealtimeConfigVersion(STREAMER_ID)
+    const response = await getRealtimeConfig(
+      new Request('https://app.example/config'),
+      params()
     )
-    expect(resolveOverlayRealtimeConfigVersion(STREAMER_ID)).toBe('do-primary-v1')
+    const config = await response.json()
+
+    expect(config.configVersion).toBe(eventsSignalVersion)
+    // Pin the canonical tuple and FNV generation format so an unchanged public
+    // config remains stable across independently deployed Worker processes.
+    expect(eventsSignalVersion).toBe('do-primary-v2-338ed91465e81b6b')
   })
 
   it('reports the same version the full config carries when not allowlisted', () => {
@@ -54,6 +66,49 @@ describe('overlay realtime config change signal', () => {
 
     expect(enabled).not.toBe(disabled)
     expect(disabled).toBe('polling-only-v1')
+  })
+
+  it('changes version when only the effective WebSocket base URL changes', () => {
+    enableFor(STREAMER_ID)
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-a.example/path')
+    const urlA = resolveOverlayRealtimeConfigVersion(STREAMER_ID)
+
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-b.example/path')
+    const urlB = resolveOverlayRealtimeConfigVersion(STREAMER_ID)
+
+    expect(urlA).not.toBe(urlB)
+  })
+
+  it('keeps the same version for the same normalized public config', () => {
+    enableFor(STREAMER_ID)
+    vi.stubEnv(
+      'OVERLAY_REALTIME_WS_URL',
+      'https://REALTIME.example:443/first?ignored=one#fragment'
+    )
+    const first = resolveOverlayRealtimeConfig(STREAMER_ID)
+
+    vi.stubEnv(
+      'OVERLAY_REALTIME_WS_URL',
+      'https://realtime.example/second?ignored=two'
+    )
+    const second = resolveOverlayRealtimeConfig(STREAMER_ID)
+
+    expect(first.webSocketUrl).toBe('https://realtime.example')
+    expect(second.webSocketUrl).toBe(first.webSocketUrl)
+    expect(second.configVersion).toBe(first.configVersion)
+  })
+
+  it('keeps the legacy polling-only version across ineffective URL changes', () => {
+    vi.stubEnv('OVERLAY_REALTIME_MODE', 'polling-only')
+    vi.stubEnv('OVERLAY_REALTIME_STREAMER_ALLOWLIST', STREAMER_ID)
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-a.example')
+    const urlA = resolveOverlayRealtimeConfigVersion(STREAMER_ID)
+
+    vi.stubEnv('OVERLAY_REALTIME_WS_URL', 'https://realtime-b.example')
+    const urlB = resolveOverlayRealtimeConfigVersion(STREAMER_ID)
+
+    expect(urlA).toBe('polling-only-v1')
+    expect(urlB).toBe(urlA)
   })
 
   it('degrades to polling-only when the WebSocket URL is missing or insecure', () => {

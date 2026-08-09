@@ -11,7 +11,12 @@ import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable } from "@/lib/db/schema";
 import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
-import { publishOverlayDemoEvent } from "@/lib/overlay/demo-event-store";
+import {
+  createOverlayDemoEvent,
+  storeOverlayDemoEvent,
+} from "@/lib/overlay/demo-event-store";
+import { publishOverlayDemoRealtimeEvent } from "@/lib/overlay-realtime/publisher";
+import { runInBackground } from "@/lib/background-task";
 
 /**
  * Fetch one card from the authoritative PlanetScale database.
@@ -175,8 +180,9 @@ const DEMO_CARDS: Array<Omit<Card, 'id' | 'created_at' | 'updated_at' | 'streame
 
 /**
  * Public demo-card endpoint. Card reads are always served from PlanetScale.
- * `broadcast=true` publishes a short-lived KV demo event consumed by the same
- * polling endpoint as OBS, so no Supabase Realtime project is required.
+ * `broadcast=true` stores a short-lived KV fallback and sends the same event
+ * through the signed Durable Object transport used by OBS. This preserves an
+ * immediate demo while avoiding a permanent fast polling loop or Supabase.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -253,14 +259,59 @@ export async function POST(request: NextRequest) {
 
     const respondWithCard = async (card: Card, targetStreamerId: string | null) => {
       if (broadcast && targetStreamerId) {
-        try {
-          await publishOverlayDemoEvent(targetStreamerId, card);
-          logger.info(`Demo polling event published for streamer ${targetStreamerId}`);
-        } catch (publishError) {
-          // Demo transport is non-business data; preserve the historical
-          // best-effort response behaviour if KV is temporarily unavailable.
-          logger.error("Failed to publish demo overlay event:", { publishError });
-        }
+        const demoEvent = createOverlayDemoEvent(card);
+
+        // Start both transports before awaiting either one. The KV fallback
+        // and immediate Durable Object fanout are independent best-effort
+        // paths: a rejected KV write must not suppress socket delivery, and a
+        // rejected/failed publisher must not suppress fallback persistence.
+        // Both receive the exact same frozen event, preserving cross-transport
+        // identity and preventing timing-dependent payload divergence.
+        const fallbackTask = storeOverlayDemoEvent(targetStreamerId, demoEvent);
+        const realtimeTask = publishOverlayDemoRealtimeEvent(targetStreamerId, demoEvent);
+        const deliveryTask = Promise.allSettled([fallbackTask, realtimeTask]).then(
+          ([fallbackResult, realtimeResult]) => {
+            if (fallbackResult.status === "fulfilled") {
+              logger.info("Demo overlay KV fallback stored", { streamerId: targetStreamerId });
+            } else {
+              logger.error("Demo overlay KV fallback failed", {
+                streamerId: targetStreamerId,
+                error: fallbackResult.reason instanceof Error
+                  ? fallbackResult.reason.name
+                  : "unknown",
+              });
+            }
+
+            if (realtimeResult.status === "rejected") {
+              logger.error("Demo overlay realtime publish rejected", {
+                streamerId: targetStreamerId,
+                error: realtimeResult.reason instanceof Error
+                  ? realtimeResult.reason.name
+                  : "unknown",
+              });
+              return;
+            }
+
+            const { outcome, attempts, errorCode } = realtimeResult.value;
+            const context = { streamerId: targetStreamerId, attempts, errorCode };
+            if (outcome === "accepted") {
+              logger.info("Demo overlay realtime publish accepted", context);
+            } else if (outcome === "skipped") {
+              logger.warn("Demo overlay realtime publish skipped", context);
+            } else {
+              // The publisher reports exhausted retries and validation errors
+              // as a fulfilled `failed` outcome, not a rejected Promise. Keep
+              // that operational failure out of the success log classification.
+              logger.error("Demo overlay realtime publish failed", context);
+            }
+          },
+        );
+
+        // In Workers this registers already-started delivery with waitUntil and
+        // lets the API response return immediately. Local/test runtimes await
+        // the same all-settled task, which prevents unhandled rejections while
+        // preserving the production response-lifetime boundary.
+        await runInBackground("overlay demo delivery", deliveryTask);
       }
       return NextResponse.json({ card, userTwitchUsername: "DemoUser" });
     };

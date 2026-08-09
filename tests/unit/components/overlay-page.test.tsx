@@ -7,6 +7,9 @@ import { pickSoundBearingCardIndex } from '@/lib/gacha-sound-rules'
 import { OVERLAY_EFFECT_PARTICLE_CONFIG } from '@/lib/overlay-effect'
 import { serializePollState } from '@/lib/overlay-version'
 
+const HISTORY_ID_BEFORE_RELOAD = '00000000-0000-4000-8000-000000000101'
+const HISTORY_ID_RESTORED = '00000000-0000-4000-8000-000000000102'
+
 const { subscribeMock } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
 }))
@@ -767,9 +770,9 @@ describe('OverlayPage', () => {
     const RELOAD_COOLDOWN_STORAGE_KEY = 'twica-overlay-reload'
     const POLLSTATE_STORAGE_KEY = 'twica-overlay-pollstate'
 
-    // page.tsx内部の時間定数(非export)と同じ値をテスト側でも保持する。
-    // 実装側(VERSION_CHECK_INTERVAL_MS/RELOAD_JITTER_MAX_MS/RELOAD_DEFER_RETRY_MS)
-    // を変更した場合は、ここも追随して更新すること。
+    // page.tsx内部のreload時間定数(非export)と同じ値をテスト側でも保持する。
+    // 実装側(RELOAD_JITTER_MAX_MS/RELOAD_DEFER_RETRY_MS)を変更した場合は、
+    // ここも追随して更新すること。
     const RELOAD_JITTER_MAX_MS = 10 * 60 * 1000
     const RELOAD_DEFER_RETRY_MS = 30 * 1000
 
@@ -831,7 +834,7 @@ describe('OverlayPage', () => {
     }
 
     /**
-     * overlay events ポーリング(かつsound-settings取得)の共通fetchレスポンスを
+     * disconnected emergency polling(かつsound-settings取得)の共通responseを
      * 組み立てる。このテストファイルの既存の流儀(fetchはURLを区別せず単一の
      * レスポンス形状を返す)に合わせ、events/overlayVersionとsoundUrl/soundEnabled
      * を同居させる。
@@ -849,6 +852,76 @@ describe('OverlayPage', () => {
       vi.stubGlobal('fetch', fetchMock)
       return fetchMock
     }
+
+    it('subscriptionのonOverlayVersionをref経由で処理し、再subscriptionせずreloadする', async () => {
+      vi.useFakeTimers()
+      vi.spyOn(Math, 'random').mockReturnValue(0)
+      const reloadMock = stubLocationReload()
+      stubEventsFetch('v-a')
+      let onOverlayVersion: SubscribeOptions['onOverlayVersion']
+      let onHistoryCursor: SubscribeOptions['onHistoryCursor']
+
+      subscribeMock.mockImplementation((_streamerId, _callback, options: SubscribeOptions) => {
+        onOverlayVersion = options.onOverlayVersion
+        onHistoryCursor = options.onHistoryCursor
+        options.onSuccess?.()
+        return vi.fn()
+      })
+
+      render(<OverlayPageV />)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      act(() => {
+        onHistoryCursor?.({
+          redeemedAt: '2026-06-01T00:00:00.123Z',
+          historyId: HISTORY_ID_BEFORE_RELOAD,
+        })
+        onOverlayVersion?.('v-b')
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+      expect(subscribeMock).toHaveBeenCalledTimes(1)
+      expect(
+        JSON.parse(
+          sessionStorage.getItem(`${POLLSTATE_STORAGE_KEY}:streamer-1`) ?? '{}'
+        )
+      ).toMatchObject({
+        pollCursor: '2026-06-01T00:00:00.123Z',
+        pollHistoryId: HISTORY_ID_BEFORE_RELOAD,
+      })
+    })
+
+    it('connected中は旧loopを10分以上進めても/eventsへnetwork requestを出さない', async () => {
+      vi.useFakeTimers()
+      const fetchMock = stubEventsFetch('v-a')
+      subscribeMock.mockImplementation((_streamerId, _callback, options: SubscribeOptions) => {
+        options.onSuccess?.()
+        return vi.fn()
+      })
+
+      render(<OverlayPageV />)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 3_000)
+      })
+
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          String(url).includes('/api/overlay/streamer-1/events')
+        )
+      ).toHaveLength(0)
+      expect(subscribeMock).toHaveBeenCalledTimes(1)
+    })
 
     it('フォールバックポーリングでoverlayVersion不一致を検出し、ジッター上限まで進めるとlocation.reloadが呼ばれる', async () => {
       vi.useFakeTimers()
@@ -973,21 +1046,27 @@ describe('OverlayPage', () => {
       expect(reloadMock).not.toHaveBeenCalled()
     })
 
-    it('mount時にsessionStorageのpollstateスナップショットを復元し、次のポーリングのsinceに反映する', async () => {
+    it('mount時にexact pollstateを復元して通常のtransport controllerへ渡す', async () => {
       vi.useFakeTimers()
 
       const restoredCursor = '2026-06-01T00:00:00.000Z'
+      const restoredHistoryId = HISTORY_ID_RESTORED
       sessionStorage.setItem(
-        POLLSTATE_STORAGE_KEY,
+        `${POLLSTATE_STORAGE_KEY}:streamer-1`,
         serializePollState({
           pollCursor: restoredCursor,
+          pollHistoryId: restoredHistoryId,
           seenHistoryIds: ['h-restored-1'],
           savedAt: Date.now(),
         }),
       )
-      // このテストはpollstate復元のみに関心があるため、overlayVersionは現行
-      // ビルド('v-a')と一致させリロード関連の副作用を起こさないようにする
-      const fetchMock = stubEventsFetch('v-a')
+      stubEventsFetch('v-a')
+      let subscriptionOptions: SubscribeOptions | undefined
+      subscribeMock.mockImplementation((_streamerId, _callback, options: SubscribeOptions) => {
+        subscriptionOptions = options
+        options.onSuccess?.()
+        return vi.fn()
+      })
 
       render(<OverlayPageV />)
 
@@ -996,16 +1075,13 @@ describe('OverlayPage', () => {
         await Promise.resolve()
       })
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(3000)
+      expect(subscriptionOptions?.initialHistoryCursor).toEqual({
+        redeemedAt: restoredCursor,
+        historyId: restoredHistoryId,
       })
-
-      const eventsCall = fetchMock.mock.calls.find(([url]) =>
-        String(url).includes('/api/overlay/streamer-1/events'),
-      )
-      expect(eventsCall).toBeDefined()
-      const requestedUrl = new URL(String(eventsCall?.[0]))
-      expect(requestedUrl.searchParams.get('since')).toBe(restoredCursor)
+      expect(
+        sessionStorage.getItem(`${POLLSTATE_STORAGE_KEY}:streamer-1`)
+      ).toBeNull()
     })
   })
 })

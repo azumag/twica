@@ -2,7 +2,18 @@ import type { Card } from '@/types/database'
 
 const KV_BINDING_NAME = 'RATE_LIMIT_KV'
 const KEY_PREFIX = 'overlay:demo:'
-const DEMO_EVENT_TTL_SECONDS = 2 * 60
+// A healthy overlay performs a full HTTP reconciliation every 10 minutes, and
+// realtime liveness detection plus bounded reconnect retries can consume a
+// further 150 seconds before that fallback is consulted. Fifteen minutes is
+// deliberately longer than that 750-second recovery window, leaving another
+// 150 seconds for timer jitter and KV edge propagation, while still bounding
+// storage to one latest-value record per streamer instead of retaining demos.
+const DEMO_EVENT_TTL_SECONDS = 15 * 60
+
+type OverlayDemoCard = Pick<
+  Card,
+  'id' | 'name' | 'description' | 'image_url' | 'image_padding_color' | 'rarity'
+>
 
 interface KVNamespaceLike {
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
@@ -10,12 +21,12 @@ interface KVNamespaceLike {
 }
 
 export interface OverlayDemoEvent {
-  id: string
-  eventId: string
-  redeemedAt: string
-  userTwitchUsername: string
-  rewardId: null
-  card: Pick<Card, 'id' | 'name' | 'description' | 'image_url' | 'image_padding_color' | 'rarity'>
+  readonly id: string
+  readonly eventId: string
+  readonly redeemedAt: string
+  readonly userTwitchUsername: string
+  readonly rewardId: null
+  readonly card: Readonly<OverlayDemoCard>
 }
 
 interface MemoryRecord {
@@ -51,6 +62,18 @@ async function getKvBinding(): Promise<KVNamespaceLike | null> {
   }
 }
 
+/**
+ * Freeze both levels of the transport value so KV serialization and realtime
+ * fanout cannot observe different card fields if a caller accidentally mutates
+ * its object after either asynchronous delivery has started.
+ */
+function freezeOverlayDemoEvent(event: OverlayDemoEvent): OverlayDemoEvent {
+  return Object.freeze({
+    ...event,
+    card: Object.freeze({ ...event.card }),
+  })
+}
+
 function parseEvent(value: string | null): OverlayDemoEvent | null {
   if (!value) return null
   try {
@@ -67,7 +90,7 @@ function parseEvent(value: string | null): OverlayDemoEvent | null {
     ) {
       return null
     }
-    return {
+    return freezeOverlayDemoEvent({
       id: parsed.id,
       eventId: parsed.eventId,
       redeemedAt: parsed.redeemedAt,
@@ -81,26 +104,20 @@ function parseEvent(value: string | null): OverlayDemoEvent | null {
         image_padding_color: parsed.card.image_padding_color ?? null,
         rarity: parsed.card.rarity,
       },
-    }
+    })
   } catch {
     return null
   }
 }
 
 /**
- * Publish the latest OBS demo for a streamer.
- *
- * One latest-value key per streamer is intentional: OBS demo is an operator UI
- * action, not an auditable business event. It avoids unbounded key creation and
- * preserves all real gacha history exclusively in PostgreSQL. The existing
- * endpoint rate limit prevents abusive overwrite loops.
+ * Create the single immutable value shared by fallback and realtime delivery.
+ * Identity and timestamp are sampled exactly once so both transports can be
+ * deduplicated and reconciled as representations of the same operator action.
  */
-export async function publishOverlayDemoEvent(
-  streamerId: string,
-  card: Pick<Card, 'id' | 'name' | 'description' | 'image_url' | 'image_padding_color' | 'rarity'>
-): Promise<OverlayDemoEvent> {
+export function createOverlayDemoEvent(card: OverlayDemoCard): OverlayDemoEvent {
   const id = `demo:${crypto.randomUUID()}`
-  const event: OverlayDemoEvent = {
+  return freezeOverlayDemoEvent({
     id,
     eventId: id,
     redeemedAt: new Date().toISOString(),
@@ -114,8 +131,21 @@ export async function publishOverlayDemoEvent(
       image_padding_color: card.image_padding_color ?? null,
       rarity: card.rarity,
     },
-  }
+  })
+}
 
+/**
+ * Store an already-created OBS demo as the streamer's bounded fallback.
+ *
+ * One latest-value key per streamer is intentional: OBS demo is an operator UI
+ * action, not an auditable business event. It avoids unbounded key creation and
+ * preserves all real gacha history exclusively in PostgreSQL. The existing
+ * endpoint rate limit prevents abusive overwrite loops.
+ */
+export async function storeOverlayDemoEvent(
+  streamerId: string,
+  event: OverlayDemoEvent
+): Promise<void> {
   const kv = await getKvBinding()
   if (kv) {
     await kv.put(buildKey(streamerId), JSON.stringify(event), {
@@ -131,7 +161,18 @@ export async function publishOverlayDemoEvent(
       expiresAt: Date.now() + DEMO_EVENT_TTL_SECONDS * 1000,
     })
   }
+}
 
+/**
+ * Backward-compatible convenience API for callers that still expect creation
+ * and fallback persistence to be one operation.
+ */
+export async function publishOverlayDemoEvent(
+  streamerId: string,
+  card: OverlayDemoCard
+): Promise<OverlayDemoEvent> {
+  const event = createOverlayDemoEvent(card)
+  await storeOverlayDemoEvent(streamerId, event)
   return event
 }
 

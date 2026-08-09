@@ -19,16 +19,16 @@ import {
 import { isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 import {
   buildPollingRealtimeEvents,
+  isValidOverlayHistoryId,
   isValidStreamerId,
 } from "@/lib/overlay-realtime/contract";
 import { resolveOverlayRealtimeConfigVersion } from "@/lib/overlay-realtime/resolve-config";
 import { getOverlayDemoEvent } from "@/lib/overlay/demo-event-store";
+import { normalizeOverlayHistoryTimestamp } from "@/lib/overlay-history-cursor";
 
 // A redemption produces at most 15 rows. The larger bounded page keeps one
 // batch together and gives gap recovery headroom without an unbounded query.
 const OVERLAY_EVENT_ROW_LIMIT = 100;
-const HISTORY_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface RouteParams {
   params: Promise<{ streamerId: string }>;
@@ -49,96 +49,6 @@ interface OverlayHistoryRow {
   user_twitch_username: string | null;
   reward_id: string | null;
   card: OverlayHistoryCard | null;
-}
-
-function normalizeDateParam(value: string | null): string | null {
-  if (!value) return null;
-
-  // PlanetScale/PostgreSQL returns timestamptz cursors with a signed offset
-  // and microseconds (for example `...14.511943+00:00`). Parse that stable
-  // wire shape explicitly instead of depending on Date.parse: the
-  // Cloudflare/OpenNext runtime has rejected the signed-offset form even
-  // though browsers commonly accept it. Once the first row advanced the OBS
-  // cursor to that value, every later poll therefore returned HTTP 400 and no
-  // subsequent gacha result could be displayed.
-  const match = value.match(
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-]| )(\d{2}):(\d{2}))$/
-  );
-  if (!match) return null;
-
-  const [
-    ,
-    yearText,
-    monthText,
-    dayText,
-    hourText,
-    minuteText,
-    secondText,
-    fraction = "",
-    timezone,
-    offsetSign,
-    offsetHourText,
-    offsetMinuteText,
-  ] = match;
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-  const second = Number(secondText);
-  // PostgreSQL represents years before 1 CE with a separate BC suffix rather
-  // than ISO year zero. This public cursor grammar intentionally excludes BC
-  // and extended years so every accepted value remains a four-digit DB value.
-  if (year < 1) return null;
-
-  // Build at whole-second precision. JavaScript Date stores only
-  // milliseconds, while PostgreSQL cursors use up to six fractional digits.
-  // Keeping the fraction outside Date prevents truncating the authoritative
-  // `(redeemed_at, id)` cursor and re-reading the same database row forever.
-  // setUTCFullYear is used instead of Date.UTC so four-digit years below 100
-  // are not implicitly remapped into 1900-1999.
-  const localDate = new Date(0);
-  localDate.setUTCFullYear(year, month - 1, day);
-  localDate.setUTCHours(hour, minute, second, 0);
-
-  // Date setters normalize invalid calendar values (for example February 30)
-  // instead of rejecting them. Compare every component so a malformed public
-  // cursor cannot silently move the polling window to another day.
-  if (
-    localDate.getUTCFullYear() !== year ||
-    localDate.getUTCMonth() !== month - 1 ||
-    localDate.getUTCDate() !== day ||
-    localDate.getUTCHours() !== hour ||
-    localDate.getUTCMinutes() !== minute ||
-    localDate.getUTCSeconds() !== second
-  ) {
-    return null;
-  }
-
-  let offsetMinutes = 0;
-  if (timezone !== "Z") {
-    const offsetHours = Number(offsetHourText);
-    const offsetMinutePart = Number(offsetMinuteText);
-    if (offsetHours > 23 || offsetMinutePart > 59) return null;
-    // A literal plus in a query string can be normalized to a space by an
-    // application/x-www-form-urlencoded parser before NextRequest exposes
-    // the value. In the timezone-sign position only, treat that space as a
-    // positive offset. The strict surrounding timestamp pattern prevents
-    // accepting arbitrary whitespace or a malformed public cursor.
-    offsetMinutes =
-      (offsetSign === "-" ? -1 : 1) *
-      (offsetHours * 60 + offsetMinutePart);
-  }
-
-  const utcDate = new Date(localDate.getTime() - offsetMinutes * 60_000);
-  // A valid four-digit local year can cross into year 0 or 10000 after offset
-  // conversion. Date#toISOString uses an extended signed-year representation
-  // there, which is outside this endpoint's strict cursor grammar and would
-  // make fixed-width canonicalization unsafe.
-  const utcYear = utcDate.getUTCFullYear();
-  if (utcYear < 1 || utcYear > 9999) return null;
-  const utcWholeSecond = utcDate.toISOString().slice(0, 19);
-  return `${utcWholeSecond}${fraction ? `.${fraction}` : ""}Z`;
 }
 
 /**
@@ -262,7 +172,7 @@ export async function GET(
     }
 
     const { searchParams } = new URL(request.url);
-    const since = normalizeDateParam(searchParams.get("since"));
+    const since = normalizeOverlayHistoryTimestamp(searchParams.get("since"));
     if (!since) {
       return NextResponse.json(
         { error: "Invalid since parameter" },
@@ -271,7 +181,7 @@ export async function GET(
     }
     const demoSinceParam = searchParams.get("demoSince");
     const demoSince = demoSinceParam
-      ? normalizeDateParam(demoSinceParam)
+      ? normalizeOverlayHistoryTimestamp(demoSinceParam)
       : null;
     if (demoSinceParam && !demoSince) {
       return NextResponse.json(
@@ -282,7 +192,7 @@ export async function GET(
 
     const afterIdParam = searchParams.get("afterId");
     const afterId =
-      afterIdParam && HISTORY_ID_PATTERN.test(afterIdParam) ? afterIdParam : null;
+      afterIdParam && isValidOverlayHistoryId(afterIdParam) ? afterIdParam : null;
     if (afterIdParam && !afterId) {
       return NextResponse.json(
         { error: "Invalid afterId parameter" },
@@ -362,7 +272,7 @@ export async function GET(
     // same database timestamp contract used by the query predicate, so a
     // normalization failure indicates a server-side invariant violation.
     const normalizedNextCursor = lastHistoryRow
-      ? normalizeDateParam(lastHistoryRow.redeemed_at)
+      ? normalizeOverlayHistoryTimestamp(lastHistoryRow.redeemed_at)
       : null;
     if (lastHistoryRow && !normalizedNextCursor) {
       throw new Error("Invalid redeemed_at value returned by the database");
@@ -384,13 +294,12 @@ export async function GET(
       overlayVersion: process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev",
       // Rollout/rollback signal carried on a request the overlay already makes.
       //
-      // Every overlay polls this endpoint: every ~3s in polling-only mode and
-      // every ~30s as gap recovery while the socket is healthy. Echoing the
-      // effective config version here lets the client drop its separate
-      // 30-second config poll, which was roughly half of all overlay traffic,
-      // without weakening the kill switch: an operator flipping the allowlist
-      // is now noticed on the next pass the client was making anyway (faster in
-      // polling-only mode, unchanged while DO-connected).
+      // Polling-only/disconnected overlays already call this endpoint, so they
+      // can learn a transport change from the same response without a second
+      // config request. A healthy DO connection performs history recovery only
+      // at startup/reconnect or after a sequence gap; its room notice and the
+      // infrequent reconciliation covers steady-state changes and gapless
+      // post-commit publish failures.
       //
       // Computed through the shared resolver so this value can never disagree
       // with what the config endpoint would return.

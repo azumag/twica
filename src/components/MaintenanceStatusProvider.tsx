@@ -21,8 +21,9 @@
  * - 一方で、メンテ解除後にバナーが消えるまで/書き込みボタンが再度有効になるまで
  *   の体感待ち時間は短いほど良い。60秒は「サーバー負荷を抑えつつ、解除後
  *   1分以内にはUIが追従する」という妥当なバランス値として選んだ。
- * - ページロード時に必ず1回即時fetchするため、ページを開いた瞬間の状態は
- *   常に最新（60秒待たされない）。
+ * - 可視状態でページを開いた時と、hiddenからvisibleへ戻った時に即時fetch
+ *   するため、ユーザーが見る状態は60秒待たず最新になる。hidden中は不要な
+ *   Worker invocationを止める。
  */
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { fetchMaintenanceStatus, type MaintenanceStatusResponse } from '@/lib/maintenance/client'
@@ -32,12 +33,20 @@ const POLL_INTERVAL_MS = 60_000
 
 /**
  * fetchMaintenanceStatus() 自体が fail-safe に { mode: 'off' } を返す設計
- * （client.ts参照）なので、Context の初期値も同じ安全側のデフォルトに揃える。
- * これにより、初回fetch完了前の一瞬（またはProviderが無い文脈で誤って
- * useContextした場合）も「通常運用中」として振る舞い、誤ってバナー表示・
- * ボタンdisableが先走ることを防ぐ。
+ * （client.ts参照）なので、Context の初期値も同じデフォルトに揃える。
+ * Provider外と初期visible mountの確認待ちは、既存契約どおり「通常運用中」として
+ * 振る舞う。初回取得失敗時もサーバー側guardWriteが最終的にwriteを拒否するため、
+ * この契約をhidden対応のために広げて変更しない。
  */
 const OFF_STATUS: MaintenanceStatusResponse = { mode: 'off' }
+
+/**
+ * hiddenからvisibleへ戻った直後だけ使う、再確認中のwrite-blocking状態。
+ * MaintenanceStatusResponseへloadingフラグを追加すると全consumerの契約変更になるが、
+ * 既存consumerは例外なく `mode !== 'off'` をwrite不可として扱う。そのため既存型の
+ * read-onlyを一時値に使い、古いoffを最新確認完了まで再提示しない最小変更にする。
+ */
+const VISIBILITY_REFRESH_STATUS: MaintenanceStatusResponse = { mode: 'read-only' }
 
 /**
  * 生の Context をテスト用に export する。アプリケーションコードは
@@ -65,7 +74,7 @@ interface MaintenanceStatusProviderProps {
 
 /**
  * dashboard/layout.tsx に1つだけ配置するプロバイダ。
- * マウント時に即時fetchし、以降 POLL_INTERVAL_MS 間隔でポーリングする。
+ * 可視状態で即時fetchし、以降 POLL_INTERVAL_MS 間隔でポーリングする。
  */
 export function MaintenanceStatusProvider({ children }: MaintenanceStatusProviderProps) {
   const [status, setStatus] = useState<MaintenanceStatusResponse>(OFF_STATUS)
@@ -75,20 +84,71 @@ export function MaintenanceStatusProvider({ children }: MaintenanceStatusProvide
     // のを防ぐためのガード。dashboard内ページ遷移でlayoutごとアンマウントされる
     // ケースを想定。
     let cancelled = false
+    let intervalId: ReturnType<typeof setInterval> | null = null
+    // hidden切替後や新しいvisible refresh後に古いrequestが完了しても、その
+    // responseで最新statusを上書きしないための世代番号。共有fetch helperへ
+    // AbortSignalを追加せず、このProvider内だけで競合を閉じ込める。
+    let requestGeneration = 0
 
-    const load = async () => {
+    const load = async (blockWritesWhileLoading = false) => {
+      const generation = ++requestGeneration
+
+      if (blockWritesWhileLoading) {
+        // visible復帰時はhidden中にサーバーがread-onlyへ変わった可能性があるため、
+        // request完了まで古いoffを公開しない。既に非offならwriteは無効化済みなので、
+        // expectedEndAt等の実status詳細を一時値で消さず、その状態を維持する。
+        setStatus((current) => (
+          current.mode === 'off' ? VISIBILITY_REFRESH_STATUS : current
+        ))
+      }
+
       const next = await fetchMaintenanceStatus()
-      if (!cancelled) {
+      if (!cancelled && generation === requestGeneration) {
         setStatus(next)
       }
     }
 
-    load()
-    const intervalId = setInterval(load, POLL_INTERVAL_MS)
+    const stopPolling = () => {
+      if (intervalId !== null) {
+        clearInterval(intervalId)
+        intervalId = null
+      }
+    }
+
+    const startPolling = (blockWritesWhileLoading = false) => {
+      if (
+        cancelled
+        || document.visibilityState === 'hidden'
+        || intervalId !== null
+      ) {
+        return
+      }
+      void load(blockWritesWhileLoading)
+      intervalId = setInterval(() => void load(), POLL_INTERVAL_MS)
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        stopPolling()
+        // 可視中に開始したrequestがhidden後にsetStateしないよう無効化する。
+        requestGeneration += 1
+        return
+      }
+      // startPollingのintervalId guardで重複visible eventによる多重timerを防ぐ。
+      // 再開時はwriteを一時無効化して即時loadし、既存60秒cadenceへ戻る。
+      startPolling(true)
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    // 初期visible mountはOFF_STATUSを保つ既存Context契約のまま即時取得する。
+    // fail-closedにするのは、既知の状態がhidden中に陳腐化した復帰時だけに限定する。
+    startPolling()
 
     return () => {
       cancelled = true
-      clearInterval(intervalId)
+      requestGeneration += 1
+      stopPolling()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [])
 

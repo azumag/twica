@@ -5,7 +5,14 @@ import { useParams } from "next/navigation";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
 import { logger } from "@/lib/logger";
-import { subscribeToGachaResults } from "@/lib/realtime";
+import {
+  isValidOverlayHistoryId,
+} from "@/lib/overlay-realtime/contract";
+import { normalizeOverlayHistoryTimestamp } from "@/lib/overlay-history-cursor";
+import {
+  subscribeToGachaResults,
+  type OverlayHistoryCursor,
+} from "@/lib/realtime";
 import {
   type OverlayEffectStyle,
   type OverlayEffectParticle,
@@ -137,18 +144,9 @@ interface OverlayOptions {
 // リロード対象外として扱われる(overlay-version.ts 参照)。
 const CURRENT_OVERLAY_VERSION = process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev";
 
-// Issue #569: primary transport稼働中に「バージョン確認だけ」を行う間隔。
-// 接続中は旧フォールバックポーリングでイベント取得を重複させず、
-// この間隔でoverlayVersionだけを軽量に確認する(pollOverlayEvents参照)。
-// レビュー指摘: 以前はリロードジッター上限(RELOAD_JITTER_MAX_MS)と同じ
-// 定数(TEN_MINUTES_MS)を共有していたが、「確認間隔」と「ジッター上限」は
-// 意味の異なる独立したチューニング値であり、結合していると片方だけを
-// 変更したい場合に紛らわしいため分離した。値は据え置き(10分)。
-const VERSION_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 // Issue #569: バージョン不一致検出からリロード実行までのランダムジッター上限。
 // サンダリングハード回避のため、0〜この値の範囲でリロード実行タイミングを
-// 散らす(checkOverlayVersion参照)。VERSION_CHECK_INTERVAL_MSと値はどちらも
-// 10分だが、意味的に独立したチューニング値のため別定数として管理する。
+// 散らす(checkOverlayVersion参照)。
 const RELOAD_JITTER_MAX_MS = 10 * 60 * 1000;
 // 演出中で実行を見送った場合の再試行間隔(演出を壊さないための待ち時間)
 const RELOAD_DEFER_RETRY_MS = 30 * 1000;
@@ -166,6 +164,8 @@ const IMAGE_METADATA_TIMEOUT_MS = 1_500;
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
 const RELOAD_COOLDOWN_STORAGE_KEY = "twica-overlay-reload";
 const POLLSTATE_STORAGE_KEY = "twica-overlay-pollstate";
+const pollStateStorageKey = (streamerId: string) =>
+  `${POLLSTATE_STORAGE_KEY}:${streamerId}`;
 
 export default function OverlayPage() {
   const params = useParams();
@@ -241,19 +241,18 @@ export default function OverlayPage() {
   //  subscriptionが破棄・再作成される問題を回避）
   const displayResultRef = useRef<(data: GachaResult) => void>(() => {});
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
+  // subscription effectはstreamerIdだけに依存させる。displayResult/addDebugLogと
+  // 同じrefミラーで最新版を参照し、callback再生成による再接続を防ぐ。
+  const checkOverlayVersionRef = useRef<(received: string | undefined) => void>(() => {});
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollCursorRef = useRef(new Date().toISOString());
+  const pollHistoryIdRef = useRef("");
   const seenHistoryIdsRef = useRef<Set<string>>(new Set());
   const lastPollingErrorLogRef = useRef(0);
   // Issue #569: バージョン不一致検出＋自動リロード用のref群。
   // showCardは演出中判定にrefで参照する必要がある(setTimeoutコールバック内で
   // stateを直接読むとクロージャ生成時点の古い値のままになるため)。
   const showCardRef = useRef(showCard);
-  // Realtime接続中にバージョン確認だけを行う最終実行時刻(10分に1回に絞るため)。
-  // 0で初期化し、接続後最初のポーリングTickで即座に1回だけ確認を行う(以降は
-  // 10分間隔に絞られる)。Date.now()はレンダー中に呼べない(React Compilerの
-  // purityルールで検出される)ため、ここでは呼ばずrefの初期値は0固定にする。
-  const lastVersionCheckAtRef = useRef(0);
   // ジッター待機中/演出中の再試行待ち(＝リロードが予約済み)かどうか。
   // 二重にsetTimeoutを積んでしまわないようにするフラグ
   const reloadScheduledRef = useRef(false);
@@ -297,21 +296,44 @@ export default function OverlayPage() {
     showCardRef.current = showCard;
   }, [showCard]);
 
-  // Issue #569: マウント時、直前のバージョン起因リロードでpollCursor/
-  // seenHistoryIdsをsessionStorageに退避していた場合はここで復元する。
+  // Issue #569: マウント時、直前のバージョン起因リロードで正確な
+  // (pollCursor, pollHistoryId)/seenHistoryIdsをsessionStorageに退避していた
+  // 場合はここで復元する。
   // TTL(15分)超過や壊れたJSONの場合はparsePollStateがnullを返すため、
   // その場合は何も復元されず通常どおり「今」を起点にポーリングを開始する。
   // このeffectは他のeffect(ポーリングスケジューラ・Realtime購読)より前に
   // 定義しているため、それらが最初に動く前に確実に復元が完了する。
   useEffect(() => {
+    // 同じcomponent instanceでstreamer paramが変わる場合、前streamerのDB位置や
+    // dedupe集合を新しい購読へ持ち込まない。
+    pollCursorRef.current = new Date().toISOString();
+    pollHistoryIdRef.current = "";
+    seenHistoryIdsRef.current = new Set();
     try {
-      const raw = sessionStorage.getItem(POLLSTATE_STORAGE_KEY);
+      const scopedKey = pollStateStorageKey(streamerId);
+      // 新形式はstreamer単位。旧buildがリロード直前に書いた非scoped keyも
+      // 1回だけ読み、rolling deployment中の互換性を保つ。
+      const raw =
+        sessionStorage.getItem(scopedKey)
+        ?? sessionStorage.getItem(POLLSTATE_STORAGE_KEY);
       const restored = parsePollState(raw, Date.now(), POLLSTATE_TTL_MS);
       if (restored) {
-        pollCursorRef.current = restored.pollCursor;
+        if (restored.pollHistoryId) {
+          pollCursorRef.current = restored.pollCursor;
+          pollHistoryIdRef.current = restored.pollHistoryId;
+        } else {
+          // 旧snapshotには同一timestamp行のtie-breakerが無い。1msだけ巻き戻し、
+          // sessionStorageのseen IDで既表示分をdedupeする方が、`gt(since)`で
+          // 同時刻の未表示行を永久に飛ばすより安全。
+          pollCursorRef.current = new Date(
+            Date.parse(restored.pollCursor) - 1,
+          ).toISOString();
+          pollHistoryIdRef.current = "";
+        }
         seenHistoryIdsRef.current = new Set(restored.seenHistoryIds);
       }
       // 復元の成否に関わらず使用後(またはTTL切れ)は必ず削除し、残骸を残さない
+      sessionStorage.removeItem(scopedKey);
       sessionStorage.removeItem(POLLSTATE_STORAGE_KEY);
     } catch {
       // OBSブラウザソース等でsessionStorageが無効/利用不可でも本体動作を壊さない
@@ -323,7 +345,7 @@ export default function OverlayPage() {
         clearTimeout(reloadTimeoutRef.current);
       }
     };
-  }, []);
+  }, [streamerId]);
 
   // 効果音設定を取得し、HTMLAudioElementでプリロード
   // オーバーレイ初期化時にstreamerの効果音設定をAPIから取得
@@ -780,9 +802,10 @@ export default function OverlayPage() {
         JSON.stringify({ version: targetVersion, reloadedAt: Date.now() }),
       );
       sessionStorage.setItem(
-        POLLSTATE_STORAGE_KEY,
+        pollStateStorageKey(streamerId),
         serializePollState({
           pollCursor: pollCursorRef.current,
+          pollHistoryId: pollHistoryIdRef.current,
           seenHistoryIds: Array.from(seenHistoryIdsRef.current),
           savedAt: Date.now(),
         }),
@@ -795,7 +818,7 @@ export default function OverlayPage() {
     // リロード窓での演出取りこぼしを防ぐため、演出中でなくクールダウンもクリアな
     // 「今」のタイミングで遅延せず即座にリロードする
     location.reload();
-  }, []);
+  }, [streamerId]);
 
   // attemptReloadRefを最新のcallbackで更新(processQueueRefと同じパターン)
   useEffect(() => {
@@ -803,8 +826,8 @@ export default function OverlayPage() {
   }, [attemptReload]);
 
   /**
-   * Issue #569: ポーリング応答のoverlayVersionを自身のビルドバージョンと比較し、
-   * 不一致ならリロードをスケジュールする。
+   * Issue #569: transport controllerのconfig/events応答に含まれるoverlayVersionを
+   * 自身のビルドバージョンと比較し、不一致ならリロードをスケジュールする。
    */
   const checkOverlayVersion = useCallback((received: string | undefined) => {
     if (!shouldScheduleReload(CURRENT_OVERLAY_VERSION, received)) {
@@ -826,51 +849,39 @@ export default function OverlayPage() {
     }, jitterMs);
   }, [attemptReload]);
 
+  // transport callbackから常に最新版を呼びつつ、subscription useEffectの
+  // dependencyへcheckOverlayVersionを追加して再購読を誘発しない。
+  useEffect(() => {
+    checkOverlayVersionRef.current = checkOverlayVersion;
+  }, [checkOverlayVersion]);
+
   /**
-   * 旧transportから残すversion-check兼緊急polling loop。
+   * 旧transportから残すdisconnected時限定の緊急polling loop。
    *
    * 現在のtransport controllerはsubscribeToGachaResults内でDOをprimaryとし、
-   * PlanetScale履歴をgap recoveryとして読み、
-   * connectionStatus=connected中はここでeventsを処理しない。これにより二重表示を
-   * 防ぎつつ、旧loopをversion-check専用として安全に残す。
+   * PlanetScale履歴をgap recoveryとして読む。controllerがconnectedを報告して
+   * いる間はnetwork前にreturnし、version通知もcontrollerのconfig/events応答から
+   * 受け取るため、この旧loopはWorker invocationもDB queryも発生させない。
    */
   const pollOverlayEvents = useCallback(async () => {
-    // 3秒おきのポーリングURLは接続中/未接続どちらの経路でも同一なため共通化する
+    if (connectionStatusRef.current === "connected") {
+      return;
+    }
+
     const buildEventsUrl = () => {
       const url = new URL(`/api/overlay/${streamerId}/events`, window.location.origin);
       url.searchParams.set("since", pollCursorRef.current);
+      if (pollHistoryIdRef.current) {
+        url.searchParams.set("afterId", pollHistoryIdRef.current);
+      }
       url.searchParams.set("_", String(Date.now()));
       return url.toString();
     };
 
-    if (connectionStatusRef.current === "connected") {
-      // Issue #569: primary transport接続中もこの関数は3秒おきに呼ばれ続けるが、
-      // 従来は何もせず早期returnしていた。ここに「VERSION_CHECK_INTERVAL_MSに
-      // 1回、バージョン確認だけ行う」経路を追加する。
-      // 理由: primary transportの受信イベントはこの旧loopのseenHistoryIdsRefに
-      // 登録されないため、接続中にevents配列を処理すると同一演出がポーリング
-      // 経路からも再生され二重演出になる。そのため接続中は応答のoverlayVersion
-      // だけを読み、events配列には一切触れない(表示・カーソル前進・seen登録の
-      // いずれも行わない)。
-      const now = Date.now();
-      if (now - lastVersionCheckAtRef.current < VERSION_CHECK_INTERVAL_MS) {
-        return;
-      }
-      lastVersionCheckAtRef.current = now;
-
-      try {
-        const data = await fetchJsonWithXhrFallback<{ overlayVersion?: string }>(buildEventsUrl());
-        checkOverlayVersion(data.overlayVersion);
-      } catch {
-        // バージョン確認専用の背景チェックであり演出表示には無関係なため、
-        // 失敗時はログを出さず静かに次の10分後の機会に委ねる
-      }
-      return;
-    }
-
     try {
       const data = await fetchJsonWithXhrFallback<{
         events?: OverlayPollingEvent[];
+        nextCursor?: OverlayHistoryCursor | null;
         overlayVersion?: string;
       }>(buildEventsUrl());
       checkOverlayVersion(data.overlayVersion);
@@ -880,10 +891,8 @@ export default function OverlayPage() {
           continue;
         }
         seenHistoryIdsRef.current.add(event.id);
-        const redeemedAtMs = Date.parse(event.redeemedAt);
-        pollCursorRef.current = Number.isFinite(redeemedAtMs)
-          ? new Date(redeemedAtMs).toISOString()
-          : event.redeemedAt;
+        pollCursorRef.current = event.redeemedAt;
+        pollHistoryIdRef.current = event.id;
         addDebugLogRef.current(`Polling fallback received: ${event.id}`);
         displayResultRef.current({
           card: event.card as Card,
@@ -892,6 +901,21 @@ export default function OverlayPage() {
           soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
           rewardId: event.rewardId ?? null,
         });
+      }
+      // The server cursor also advances across defensive LEFT JOIN misses that
+      // produce no display event. Prefer it over the last rendered row so a
+      // malformed historical card cannot pin recovery on the same DB page.
+      if (
+        data.nextCursor
+        && isValidOverlayHistoryId(data.nextCursor.historyId)
+      ) {
+        const normalizedCursor = normalizeOverlayHistoryTimestamp(
+          data.nextCursor.redeemedAt,
+        );
+        if (normalizedCursor) {
+          pollCursorRef.current = normalizedCursor;
+          pollHistoryIdRef.current = data.nextCursor.historyId;
+        }
       }
     } catch (error) {
       const now = Date.now();
@@ -1010,14 +1034,6 @@ export default function OverlayPage() {
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
       addDebugLogRef.current(`Received payload: ${payload.type}`);
       if (payload.type === 'gacha' && payload.card) {
-        // Primary polling provides the exact timestamp that its DB query
-        // delivered. Advancing to callback wall-clock time would skip any row
-        // committed between that query and this callback when emergency
-        // fallback takes over. Demo payloads intentionally omit historyCursor
-        // and therefore never advance the business-history cursor.
-        if (payload.historyCursor) {
-          pollCursorRef.current = payload.historyCursor;
-        }
         displayResultRef.current({
           card: payload.card as unknown as Card,
           cards: payload.cards as unknown as Card[] | undefined,
@@ -1030,6 +1046,17 @@ export default function OverlayPage() {
         });
       }
     }, {
+      // Cursor ownership stays inside the transport controller. The page only
+      // mirrors its exact DB pair so a build-version reload can hand the same
+      // position to the next controller instance without a time-only gap.
+      initialHistoryCursor: {
+        redeemedAt: pollCursorRef.current,
+        historyId: pollHistoryIdRef.current,
+      },
+      onHistoryCursor: (cursor) => {
+        pollCursorRef.current = cursor.redeemedAt;
+        pollHistoryIdRef.current = cursor.historyId;
+      },
       onError: (error) => {
         addDebugLogRef.current(`Connection error: ${error.message} (expected: ${error.isExpected})`);
         if (error.isExpected) {
@@ -1050,6 +1077,9 @@ export default function OverlayPage() {
       },
       onStatusChange: (status) => {
         addDebugLogRef.current(`Connection status: ${status}`);
+      },
+      onOverlayVersion: (overlayVersion) => {
+        checkOverlayVersionRef.current(overlayVersion);
       },
     });
 

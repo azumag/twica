@@ -466,9 +466,9 @@ export class OverlayRoom {
     // (polling still recovers every committed event) and retry on the next
     // alarm rather than disconnecting a healthy room on a storage miss.
     if (!streamerId || realtimeEnabled(this.env, streamerId)) {
-      // Still allowed: prove liveness on the same wake. Clients stopped polling
-      // history on a timer, so this is what distinguishes "no gacha happened"
-      // from "this socket died without a close frame".
+      // Still allowed: prove liveness on the same wake. Clients reconcile
+      // history only every ten minutes, so this distinguishes "no gacha
+      // happened" from "this socket died" without waiting for that DB pass.
       const heartbeat = JSON.stringify({
         type: 'server_notice',
         code: OVERLAY_REALTIME_HEARTBEAT,

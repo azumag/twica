@@ -30,6 +30,20 @@ export const OVERLAY_REALTIME_HEARTBEAT = 'heartbeat' as const
 export const OVERLAY_REALTIME_HEARTBEAT_MS = 60_000
 export const MAX_REALTIME_DRAWS = 15
 export const MAX_REALTIME_EVENT_BYTES = 64 * 1024
+/**
+ * Public build identifiers are currently 12-character Git SHAs (or `dev`).
+ * Keep protocol consumers tolerant of future formats while bounding any value
+ * copied into logs, callback state, or sessionStorage by an untrusted response.
+ */
+export const MAX_OVERLAY_VERSION_LENGTH = 128
+/**
+ * `gacha_history.id` is generated as an RFC 4122 UUID. The exact predicate is
+ * shared by the history API and browser checkpoint readers: accepting a value
+ * from sessionStorage that the API later rejects would pin every recovery
+ * request in a permanent HTTP 400 loop.
+ */
+const OVERLAY_HISTORY_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const MAX_PUBLIC_CARD_DESCRIPTION_LENGTH = 1_024
 const MAX_PUBLIC_CARD_IMAGE_URL_LENGTH = 2_048
 
@@ -96,6 +110,15 @@ export interface GachaRealtimeDrawV1 {
 export interface GachaRealtimeEventV1 {
   schemaVersion: typeof OVERLAY_REALTIME_SCHEMA_VERSION
   type: 'gacha_result'
+  /**
+   * Optional delivery-only event kind.
+   *
+   * `demo` events are operator previews, not committed gacha history. Older
+   * clients safely ignore this additive field, while newer clients use it to
+   * avoid waiting for a DB reconciliation row that intentionally does not
+   * exist. Omission continues to mean authoritative committed history.
+   */
+  deliveryKind?: 'demo'
   /** Dedupe key for the first draw; every draw also carries its own eventId. */
   eventId: string
   /** Stable EventSub message ID or manual-draw ID shared by the whole batch. */
@@ -155,6 +178,11 @@ export interface OverlayRealtimeConfigV1 {
     maxDelayMs: number
   }
   configVersion: string
+  /**
+   * App build served by this Worker. Optional so a new browser bundle remains
+   * compatible with an older realtime-config endpoint during deployment.
+   */
+  overlayVersion?: string
 }
 
 export interface PollingContractEvent {
@@ -181,6 +209,23 @@ function isBoundedString(value: unknown, maxLength: number): value is string {
 
 function isNullableBoundedString(value: unknown, maxLength: number): boolean {
   return value === null || (typeof value === 'string' && value.length <= maxLength)
+}
+
+/**
+ * Validate a public overlay build identifier at every network boundary.
+ *
+ * The value is intentionally format-agnostic because deployment systems may
+ * move beyond Git SHAs, but empty, whitespace-padded, and oversized strings are
+ * rejected so an optional compatibility field cannot become an unbounded input.
+ */
+export function isValidOverlayVersion(value: unknown): value is string {
+  return isBoundedString(value, MAX_OVERLAY_VERSION_LENGTH)
+    && value.trim() === value
+}
+
+/** Validate an exact `gacha_history.id` cursor at every public boundary. */
+export function isValidOverlayHistoryId(value: unknown): value is string {
+  return typeof value === 'string' && OVERLAY_HISTORY_ID_PATTERN.test(value)
 }
 
 export function isValidStreamerId(value: string): boolean {
@@ -227,6 +272,9 @@ export function validateGachaRealtimeEvent(
     return { ok: false, error: 'unsupported schemaVersion' }
   }
   if (value.type !== 'gacha_result') return { ok: false, error: 'unsupported event type' }
+  if (value.deliveryKind !== undefined && value.deliveryKind !== 'demo') {
+    return { ok: false, error: 'invalid deliveryKind' }
+  }
   if (!isBoundedString(value.eventId, 256)) return { ok: false, error: 'invalid eventId' }
   if (!isBoundedString(value.batchId, 256)) return { ok: false, error: 'invalid batchId' }
   if (!isBoundedString(value.streamerId, 64) || !isValidStreamerId(value.streamerId)) {
