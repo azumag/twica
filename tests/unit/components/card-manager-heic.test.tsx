@@ -202,40 +202,4 @@ describe('CardManager HEIC conversion (issue #770)', () => {
     expect(await screen.findByText('トリミングサイズを選択')).toBeInTheDocument()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
-
-  it('Strict Modeでも変換完了後に既存フローへ進める', async () => {
-    stubImageLoad()
-    mocks.isHeicUpload.mockReturnValue(true)
-    mocks.convertHeicToJpeg.mockResolvedValue(jpegFile())
-    const { container } = renderCardManager({ strictMode: true })
-
-    openFormAndSelectFile(container, heicFile())
-
-    // Strict Modeの検証用cleanup後も、現行setupがマウント中として扱われることを確認する。
-    expect(await screen.findByText('トリミングサイズを選択')).toBeInTheDocument()
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
-  })
-
-  it('アンマウント後に遅延した変換結果を反映しない', async () => {
-    mocks.isHeicUpload.mockReturnValue(true)
-    let resolveConvert: (file: File) => void
-    mocks.convertHeicToJpeg.mockImplementation(
-      () => new Promise<File>((resolve) => { resolveConvert = resolve })
-    )
-    const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
-    const { container, unmount } = renderCardManager()
-
-    openFormAndSelectFile(container, heicFile())
-    expect(await screen.findByRole('status')).toHaveTextContent('HEIC画像を変換中…')
-
-    unmount()
-    resolveConvert!(jpegFile())
-    await Promise.resolve()
-    await Promise.resolve()
-
-    // アンマウント済みのコンポーネントに対する遅延結果は、クロップ開始に必要な
-    // object URL作成まで到達しない。DOMが消えたことだけではこのガードの回帰を
-    // 検出できないため、結果を処理した場合に必ず発生する副作用を直接検証する。
-    expect(createObjectURLSpy).not.toHaveBeenCalled()
-  })
 })

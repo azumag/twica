@@ -230,6 +230,49 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       expect(pg.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
     });
 
+    it("imagePaddingColor 指定時は INSERT 値に余白色が含まれる (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [STREAMER_ROW] }],
+        inserts: [{ rows: [CREATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await POST(
+        createPostRequest({ ...REQUEST_BODY, imagePaddingColor: "black" })
+      );
+      expect(pgRes.status).toBe(200);
+      expect(pg.insertCalls[0].values).toMatchObject({
+        image_padding_color: "black",
+      });
+    });
+
+    it("不正な余白色は400で拒否する (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [STREAMER_ROW] }],
+        inserts: [{ rows: [CREATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await POST(
+        createPostRequest({ ...REQUEST_BODY, imagePaddingColor: "url(javascript:alert(1))" })
+      );
+      expect(pgRes.status).toBe(400);
+      expect(pg.insertCalls).toHaveLength(0);
+    });
+
+    it("imagePaddingColor が空文字なら余白色は null として保存される (#899)", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [STREAMER_ROW] }],
+        inserts: [{ rows: [CREATED_ROW] }],
+      });
+      primePgDb(pg);
+      const pgRes = await POST(
+        createPostRequest({ ...REQUEST_BODY, imagePaddingColor: "" })
+      );
+      expect(pgRes.status).toBe(200);
+      expect(pg.insertCalls[0].values).toMatchObject({
+        image_padding_color: null,
+      });
+    });
+
     it("streamer所有権なしでは403を返しINSERTしない", async () => {
       const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
       primePgDb(pg);
@@ -322,6 +365,49 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       expect(pg.insertCalls[2].returningFields).toEqual(CARDS_SAFE_COLUMNS);
       expect(Object.keys(pg.insertCalls[2].returningFields ?? {})).not.toContain("card_number");
       expect(Object.keys(pg.insertCalls[2].returningFields ?? {})).not.toContain("hp");
+    });
+
+    // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
+    // isMissingCardsBattleColumnError のみを見る末尾フォールバックが
+    // image_padding_color 欠落エラーを拾えず、imagePaddingColor を一切
+    // 指定しない（=insertDataに含まれない）POSTまでもがmigration未適用の
+    // デプロイ窓で全て失敗していた。
+    it("本番未デプロイのimage_padding_color列: imagePaddingColorを指定しないPOSTでもRETURNING失敗時に明示列リストで再試行し200を返す (#899)", async () => {
+      const missingPaddingErrorPg = {
+        code: "42703",
+        message: 'column "image_padding_color" of relation "cards" does not exist',
+      };
+      const CREATED_ROW_SAFE = {
+        id: "card-1",
+        streamer_id: "streamer-1",
+        name: "Test Card",
+        description: "desc",
+        image_url: "https://example.com/a.png",
+        rarity: "common",
+        rarity_order: null,
+        max_issuance_count: null,
+        collection_name: null,
+        drop_rate: 0.5,
+        intra_rarity_weight: 1,
+        is_active: true,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      };
+
+      const pg = createDrizzleDbMock({
+        selects: [{ rows: [STREAMER_ROW] }],
+        inserts: [
+          { error: missingPaddingErrorPg }, // attempt1: 無指定RETURNINGがimage_padding_colorで失敗
+          { rows: [CREATED_ROW_SAFE] }, // attempt2: SAFE_COLUMNSで再試行し成功
+        ],
+      });
+      primePgDb(pg);
+      // imagePaddingColor はリクエストに含めない = insertData に含まれない
+      // ため、途中の「列を落として再試行」フォールバックはスキップされる。
+      const pgRes = await POST(createPostRequest(REQUEST_BODY));
+      expect(pgRes.status).toBe(200);
+      expect(pg.insertCalls).toHaveLength(2);
+      expect(pg.insertCalls[1].returningFields).toEqual(CARDS_SAFE_COLUMNS);
     });
   });
 

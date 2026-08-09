@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useTranslations, useLocale } from "next-intl";
 import { formatRarityLabel, getRarityColorClass } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 import Pagination from "@/components/Pagination";
 import GachaHistoryFilters from "@/components/GachaHistoryFilters";
 import type { GachaHistory, Card } from "@/types/database";
@@ -15,7 +16,7 @@ import type { GachaUserEntry } from "@/lib/dashboard-data";
  * JOINされたカードデータ付きガチャ履歴エントリ
  */
 type GachaHistoryEntry = GachaHistory & {
-  cards: Pick<Card, "id" | "name" | "image_url" | "rarity">;
+  cards: Pick<Card, "id" | "name" | "image_url" | "rarity" | "image_padding_color">;
   // Streamer info joined for personal history view
   // 自分の履歴表示用にJOINされた配信者情報
   streamers?: { twitch_display_name: string } | null;
@@ -374,7 +375,8 @@ export default function GachaHistoryTable({
                           alt={entry.cards.name}
                           width={48}
                           height={48}
-                          className="h-full w-full object-cover"
+                          className={`h-full w-full ${cardImageFitClass(entry.cards.image_padding_color)}`}
+                          style={cardImageFitStyle(entry.cards.image_padding_color)}
                           unoptimized
                         />
                       ) : (
@@ -531,7 +533,8 @@ export default function GachaHistoryTable({
                             alt={entry.cards.name}
                             width={40}
                             height={40}
-                            className="h-full w-full object-cover"
+                            className={`h-full w-full ${cardImageFitClass(entry.cards.image_padding_color)}`}
+                            style={cardImageFitStyle(entry.cards.image_padding_color)}
                             unoptimized
                           />
                         ) : (

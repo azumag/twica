@@ -159,9 +159,12 @@ describe('OverlayPage', () => {
     playMock.mockClear()
 
     const cards = [
-      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare' },
-      { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common' },
-      { id: 'card-3', name: 'Gamma', description: null, image_url: null, rarity: 'legendary' },
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null,
+  image_padding_color: null, rarity: 'rare' },
+      { id: 'card-2', name: 'Beta', description: null, image_url: null,
+  image_padding_color: null, rarity: 'common' },
+      { id: 'card-3', name: 'Gamma', description: null, image_url: null,
+  image_padding_color: null, rarity: 'legendary' },
     ]
 
     act(() => {
@@ -645,9 +648,12 @@ describe('OverlayPage', () => {
     // 1枚目=rare(不一致)、2枚目=common(不一致)、3枚目=legendary(一致)。
     // 従来実装は1枚目基準で音を決めていたため、この並びでは何も鳴らなかった。
     const cards = [
-      { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare' },
-      { id: 'card-2', name: 'Beta', description: null, image_url: null, rarity: 'common' },
-      { id: 'card-3', name: 'Gamma', description: null, image_url: null, rarity: 'legendary' },
+      { id: 'card-1', name: 'Alpha', description: null, image_url: null,
+  image_padding_color: null, rarity: 'rare' },
+      { id: 'card-2', name: 'Beta', description: null, image_url: null,
+  image_padding_color: null, rarity: 'common' },
+      { id: 'card-3', name: 'Gamma', description: null, image_url: null,
+  image_padding_color: null, rarity: 'legendary' },
     ]
 
     act(() => {

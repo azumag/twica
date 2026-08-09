@@ -12,6 +12,7 @@ const CARD = {
   name: 'Demo card',
   description: null,
   image_url: null,
+  image_padding_color: null,
   rarity: 'common',
 }
 

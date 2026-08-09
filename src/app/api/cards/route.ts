@@ -7,6 +7,7 @@ import {
   validateCardDescription,
   validateImageUrl,
   validateRarity,
+  validateImagePaddingColor,
 } from "@/lib/validations";
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
@@ -33,7 +34,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable, userCards as userCardsTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
+import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -163,10 +164,25 @@ async function insertCardPg(
     delete insertData.collection_name;
     ({ card, error } = await attemptInsert());
   }
+  // #899: image_padding_color 列が migration 未適用の環境では、この列を落として再試行する
+  //（余白情報だけが保存されず、カード作成自体は継続する）
+  if (error && isMissingCardPaddingColorError(error) && "image_padding_color" in insertData) {
+    delete insertData.image_padding_color;
+    ({ card, error } = await attemptInsert());
+  }
   // self-review fix: 上記までの入力値フォールバックを尽くしてもなお、無指定
   // RETURNING が本番未デプロイ列(hp/atk/...等)を要求して失敗している場合、
   // 明示列リストで最後にもう一度だけ試す。
-  if (error && isMissingCardsBattleColumnError(error)) {
+  // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color もこの
+  // 最終フォールバックの対象に含める。無指定 `.returning()` は values() の
+  // 内容と無関係に schema.ts の全列を要求するため、直前の
+  // isMissingCardPaddingColorError フォールバック（insertData から列を削除
+  // するだけ）だけでは RETURNING が同じ理由で再度失敗し続ける。
+  // image_padding_color が insertData に無い場合（未指定リクエスト）は直前の
+  // フォールバックの `"image_padding_color" in insertData` 条件を満たさず
+  // スキップされるため、この分岐が無いと migration 未適用の環境では
+  // imagePaddingColor を送らないカード作成まで含めて全滅していた。
+  if (error && (isMissingCardsBattleColumnError(error) || isMissingCardPaddingColorError(error))) {
     ({ card, error } = await attemptInsert(true));
   }
 
@@ -228,7 +244,7 @@ export async function POST(request: NextRequest) {
 
 
     const body = await request.json();
-    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber, maxIssuanceCount } = body;
+    const { streamerId, name, description, imageUrl, rarity, dropRate, intraRarityWeight, cardNumber, maxIssuanceCount, imagePaddingColor } = body;
 
     // Issue #393: optional card pack name. Centralized helper distinguishes
     // "omitted" from "present-but-invalid" so bad types are rejected, not ignored.
@@ -275,6 +291,15 @@ export async function POST(request: NextRequest) {
     if (!rarityValidation.valid) {
       return NextResponse.json(
         { error: rarityValidation.error },
+        { status: 400 }
+      )
+    }
+
+    // #899: 余白（fit）モードの色はホワイトリスト検証（表示側の CSS 背景色に使うため）
+    const paddingColorValidation = validateImagePaddingColor(imagePaddingColor)
+    if (!paddingColorValidation.valid) {
+      return NextResponse.json(
+        { error: paddingColorValidation.error },
         { status: 400 }
       )
     }
@@ -364,6 +389,11 @@ export async function POST(request: NextRequest) {
       max_issuance_count: parsedIssuanceLimit,
       drop_rate: dropRate,
     };
+    // Issue #899: 余白（fit）モードの余白色。null は「余白なし」（従来のトリミング画像）。
+    // undefined（未指定）と null を区別せず、省略時はそのまま省略する。
+    if (imagePaddingColor !== undefined) {
+      insertData.image_padding_color = imagePaddingColor === "" ? null : imagePaddingColor;
+    }
     // Issue #393: persist the pack name when provided (null clears it = all cards).
     // Issue #393再設計: デプロイ窓でmembership検証ができない場合は書き込み自体を見送る。
     if (collectionNameResult.value !== undefined && !collectionNameSkippedDeployWindow) {

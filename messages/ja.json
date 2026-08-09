@@ -91,7 +91,17 @@
       "resolutionFullHd": "Full HD (1920px)",
       "resolution4k": "4K (3840px)",
       "previewPoolLabel": "「{pack}」パック内での確率",
-      "intraPercentLabel": "{rarity}内: "
+      "intraPercentLabel": "{rarity}内: ",
+      "fitColorLabel": "余白の色",
+      "fitColor": {
+        "black": "黒",
+        "white": "白",
+        "gray": "グレー",
+        "transparent": "透明（PNG）"
+      },
+      "fitColorNote": "画像全体を正方形のカード枠に収めるため、画像の形に応じて余白が追加されます。透明は PNG 形式で保存されます。",
+      "fitProceed": "この色で余白を追加",
+      "fitDescription": "画像全体を収める"
     },
     "fileUpload": {
       "formats": "対応形式: JPEG, PNG, GIF, WebP | ",

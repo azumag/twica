@@ -67,6 +67,14 @@ export const CARDS_SAFE_COLUMNS = {
   updated_at: cardsTable.updated_at,
 } as const;
 
+// 注意（#899）: image_padding_color は意図的に CARDS_SAFE_COLUMNS に含めない。
+// このリストは「8列欠落環境での最終フォールバック」に使われ、ここに含めると
+// 欠落環境（image_padding_color も存在しない）でフォールバック自体が失敗する。
+// PlanetScale 移行後は8列が存在し（issue #834 実測）このフォールバックは
+// 発動しないため、実本番では全列 select に image_padding_color が含まれる。
+// 本番の8列欠落が解消され、このフォールバックを撤去する（#834）際に、
+// あわせて image_padding_color の扱いを見直すこと。
+
 /**
  * 「cards テーブルの本番未デプロイ8列のいずれかが存在しない」ことによる
  * SELECT/RETURNING 失敗を検知する。SQLSTATE 42703 と対象列名を同じ
@@ -98,6 +106,15 @@ export const CARDS_SAFE_COLUMNS = {
  */
 export function isMissingCardsBattleColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, CARDS_MISSING_IN_PRODUCTION_COLUMNS);
+}
+
+/**
+ * image_padding_color 列の欠落（migration 未適用の本番DB）を検知する（#899）。
+ * INSERT/UPDATE にこの列が含まれると、列が未適用の環境では全体が失敗するため、
+ * 列欠落時は該当フィールドを落として再試行する（余白情報だけが保存されない）。
+ */
+export function isMissingCardPaddingColorError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, ["image_padding_color"]);
 }
 
 /**

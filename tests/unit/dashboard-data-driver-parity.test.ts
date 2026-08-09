@@ -89,6 +89,7 @@ function makeCardRow(overrides: Record<string, unknown> = {}) {
     name: 'Card One',
     description: null,
     image_url: 'https://example.com/card1.png',
+    image_padding_color: null,
     rarity: 'common',
     rarity_order: 4,
     drop_rate: 0.25,

@@ -19,6 +19,7 @@ export const baseCard = (overrides: Partial<Card>): Card => ({
   name: 'カードA',
   description: '',
   image_url: null,
+  image_padding_color: null,
   rarity: 'common',
   card_number: null,
   max_issuance_count: null,

@@ -8,6 +8,7 @@ import { RARITIES } from "@/lib/constants";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { logger } from "@/lib/logger";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
@@ -370,7 +371,8 @@ export default function BatchDropRateManualContent({
                             alt={card.name}
                             width={40}
                             height={40}
-                            className="w-full h-full object-cover"
+                            className={`w-full h-full ${cardImageFitClass(card.image_padding_color)}`}
+                            style={cardImageFitStyle(card.image_padding_color)}
                             unoptimized
                           />
                         ) : (

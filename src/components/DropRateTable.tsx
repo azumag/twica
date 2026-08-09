@@ -5,12 +5,14 @@ import Image from "next/image";
 import { useTranslations } from "next-intl";
 import { formatRarityLabel, getRarityColorClass } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
+import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 
 interface CardStat {
   cardId: string;
   cardName: string;
   rarity: string;
   imageUrl: string | null;
+  imagePaddingColor?: string | null;
   configuredRate: number;
   actualCount: number;
   actualRate: number;
@@ -29,6 +31,7 @@ interface CardOwnerStat {
   cardName: string;
   rarity: string;
   imageUrl: string | null;
+  imagePaddingColor?: string | null;
   ownerCount: number;
   owners: Array<{
     userTwitchId: string;
@@ -287,7 +290,8 @@ export default function DropRateTable() {
                             alt={card.cardName}
                             width={32}
                             height={32}
-                            className="h-full w-full object-cover"
+                            className={`h-full w-full ${cardImageFitClass(card.imagePaddingColor)}`}
+                            style={cardImageFitStyle(card.imagePaddingColor)}
                             unoptimized
                           />
                         ) : (
@@ -389,7 +393,8 @@ export default function DropRateTable() {
                           alt={card.cardName}
                           width={32}
                           height={32}
-                          className="h-full w-full object-cover"
+                          className={`h-full w-full ${cardImageFitClass(card.imagePaddingColor)}`}
+                          style={cardImageFitStyle(card.imagePaddingColor)}
                           unoptimized
                         />
                       ) : (

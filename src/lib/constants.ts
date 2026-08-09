@@ -252,8 +252,6 @@ export const ERROR_MESSAGES = {
   // Request validation errors
   MISSING_REQUIRED_FIELDS: 'Missing required fields',
   INVALID_REQUEST: 'Invalid request',
-  INVALID_CARD_ID: 'Invalid card ID',
-  USER_CARD_ID_REQUIRED: 'userCardId is required',
   STREAMER_ID_REQUIRED: 'streamerId is required',
   STREAMER_ID_MISSING: 'Missing streamerId',
   DROP_RATE_INVALID: 'Drop rate must be a number between 0 and 1',
@@ -280,9 +278,6 @@ export const ERROR_MESSAGES = {
   RATE_LIMIT_EXCEEDED: 'Too many requests. Please try again later.',
 
   // Resource errors
-  USER_NOT_FOUND: 'User not found',
-  CARD_NOT_FOUND: 'Card not found',
-  CARD_NOT_OWNED: 'Card not found or not owned by user',
   STREAMER_NOT_FOUND: 'Streamer not found',
   NO_CARDS_AVAILABLE: 'No cards available for this streamer',
   FAILED_TO_SELECT_CARD: 'Failed to select card',
@@ -331,11 +326,9 @@ export const ERROR_MESSAGES = {
 
   // General errors
   INTERNAL_ERROR: 'Internal server error',
-  OPERATION_FAILED: 'Operation failed',
 
   // Additional authentication errors
   TWITCH_TOKEN_REQUIRED: 'Twitch連携が必要です。再ログインしてください。',
-  TWITCH_TOKEN_REFRESH_FAILED: 'Twitchトークンの更新に失敗しました。再ログインしてください。',
 
   // Additional request validation errors
   MISSING_REWARD_ID: 'Missing rewardId',
@@ -345,7 +338,6 @@ export const ERROR_MESSAGES = {
   UNKNOWN_MESSAGE_TYPE: 'Unknown message type',
 
   // Twitch API errors
-  FAILED_TO_GET_SUBSCRIPTIONS: 'Failed to get subscriptions',
 
   // Debug errors
   DEBUG_ENDPOINT_NOT_AVAILABLE: 'Debug endpoint not available in production',
@@ -451,208 +443,4 @@ export const STORAGE_LIMIT_MESSAGES = {
   // サーバーフォールバック（未知のクライアント等）でしか表示されない
   // （#835: 英語ロケールでも制限理由を表示できるよう、APIの error 文言は最終手段）。
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
-} as const
-
-export const UI_STRINGS = {
-  AUTH: {
-    TWITCH_LOGIN: 'Twitchでログイン',
-    LOADING: '読み込み中...',
-    LOGIN_FAILED: 'ログインに失敗しました',
-    NETWORK_ERROR: 'ネットワークエラーが発生しました',
-    LOGOUT: 'ログアウト',
-    REDIRECTING: 'Twitchログインページへ移動中...',
-  },
-
-  CARD_MANAGER: {
-    TITLE: 'カード管理',
-    ADD_NEW_CARD: '新規カード追加',
-    EDIT_CARD: 'カードを編集',
-    NEW_CARD: '新規カード',
-    FORM_LABELS: {
-      NAME: 'カード名',
-      NAME_PLACEHOLDER: 'カード名',
-      IMAGE: '画像 (ファイルまたはURL)',
-      IMAGE_URL_PLACEHOLDER: 'または画像URLを入力',
-      RARITY: 'レアリティ',
-      DROP_RATE: '出現確率',
-      DESCRIPTION: '説明',
-    },
-    FILE_UPLOAD: {
-      FORMATS: '対応形式: JPEG, PNG | ',
-      MAX_SIZE: (mb: string) => `最大サイズ: ${mb}MB`,
-    },
-    BUTTONS: {
-      SAVE: '保存中...',
-      UPDATE: '更新',
-      ADD: '追加',
-      CANCEL: 'キャンセル',
-      EDIT: '編集',
-      DELETE: '削除',
-    },
-    CONFIRMATIONS: {
-      DELETE_CARD: 'このカードを削除しますか？',
-    },
-    MESSAGES: {
-      RATE_LIMIT: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
-      DELETE_FAILED: 'カード削除に失敗しました',
-      DELETE_FAILED_PREFIX: '削除失敗:',
-      NETWORK_ERROR_DELETE: 'ネットワークエラーが発生しました。削除をキャンセルしました。',
-      OPERATION_FAILED: (msg: string) => `操作失敗: ${msg}`,
-      EMPTY_CARDS: 'まだカードがありません。「新規カード追加」から始めましょう。',
-      PROBABILITY: '確率:',
-      NO_IMAGE: 'No Image',
-    },
-  },
-
-  COLLECTION: {
-    TITLE: 'マイコレクション',
-    EMPTY_MESSAGE: {
-      LINE1: 'まだカードを持っていません。',
-      LINE2: '配信者のチャネルポイントを使ってカードをゲットしましょう！',
-    },
-    CARD_TYPES: (count: number) => `(${count} 種類)`,
-    CARD_COUNT: (count: number) => `x${count}`,
-  },
-
-  DASHBOARD: {
-    TITLE: 'ダッシュボード',
-    STREAMER_SETTINGS: '配信者設定',
-    OBS_OVERLAY_URL: 'OBSブラウザソースURL',
-    OBS_OVERLAY_DESCRIPTION: 'OBSのブラウザソースにこのURLを設定してください（推奨サイズ: 800x600）',
-  },
-
-  CHANNEL_POINT_SETTINGS: {
-    TITLE: 'カード引き換え設定',
-    STATUS: {
-      ACTIVE: '接続中',
-      PENDING: '確認中',
-      ERROR: 'エラー',
-      NONE: '未設定',
-    },
-    MESSAGES: {
-      RATE_LIMIT: 'リクエストが多すぎます。しばらく待ってから再試行してください。',
-      FETCH_FAILED: '報酬の取得に失敗しました。再度ログインしてください。',
-      REWARD_CREATED: '報酬を作成しました',
-      ERROR_OCCURRED: 'エラーが発生しました',
-      CREATE_REWARD_FAILED: '報酬の作成に失敗しました',
-      SAVE_FAILED: '設定の保存に失敗しました',
-      SAVE_SUCCESS: '保存しました（EventSub登録完了）',
-      EVENTSUB_FAILED: '設定は保存しましたが、EventSub登録に失敗しました。URLが外部からアクセス可能か確認してください。',
-    },
-    SUCCESS_MESSAGES: [
-      '報酬を作成しました',
-      '保存しました（EventSub登録完了）',
-    ] as const,
-    FORM_LABELS: {
-      SELECT_REWARD: 'カード引き換えに使用するチャネルポイント報酬を選択',
-      NO_REWARDS: 'チャネルポイント報酬がありません。新しく作成しますか？',
-      SELECTED: '選択中:',
-      ID: 'ID:',
-      REWARD_ID: '報酬ID:',
-      ALL_REWARDS: '全報酬',
-      EVENTSUB_STATUS: 'EventSub ステータス',
-      NO_SUBSCRIPTIONS: 'EventSubサブスクリプションがありません。保存ボタンを押して登録してください。',
-      LOCAL_TUNNEL_NOTE: '※ EventSubはローカル環境では利用できません',
-    },
-    BUTTONS: {
-      CREATING: '作成中...',
-      CREATE_REWARD: 'TwiCa用報酬を作成（100ポイント）',
-      SAVING: '保存中...',
-      SAVE: '保存 & EventSub登録',
-      REFRESH: '更新',
-    },
-    OPTIONS: {
-      SELECT_REWARD: '-- 報酬を選択 --',
-      POINTS: 'ポイント',
-      DISABLED: '[無効]',
-    },
-  },
-
-  COPY_BUTTON: {
-    COPIED: 'コピーしました',
-    COPY: 'コピー',
-  },
-
-  GACHA_HISTORY: {
-    TITLE: '最近の獲得情報',
-    EMPTY_MESSAGE: 'まだ獲得情報はありません。',
-    GOT: (username: string, cardName: string) => `${username} が${cardName} を獲得しました！`,
-    GOT_LABEL: ' が ',
-    UNKNOWN: 'Unknown',
-  },
-
-  STATS: {
-    TOTAL_CARDS: '総カード数',
-    UNIQUE: '種類取得',
-    LEGENDARY: 'レジェンダリー',
-    EPIC: 'エピック',
-    RARE: 'レア',
-    COMMON: 'コモン',
-  },
-
-  DEVELOPMENT_NOTICE: {
-    TEXT: '⚠️ このサービスはβテスト中です。一部の機能が正常に動作しない場合があります。',
-  },
-
-  // Dashboard navigation and page strings
-  // ダッシュボードナビゲーションとページの文字列
-  DASHBOARD_NAV: {
-    OVERVIEW: '概要',
-    CARD_MANAGEMENT: 'カード管理',
-    SETTINGS: '配信設定',
-    COLLECTION: 'マイコレクション',
-  },
-
-  // Dashboard overview page strings
-  // ダッシュボード概要ページの文字列
-  DASHBOARD_OVERVIEW: {
-    TITLE: 'ダッシュボード',
-    RECENT_CARDS: '最近のカード',
-    VIEW_ALL_CARDS: 'すべてのカードを見る',
-    VIEW_ALL_COLLECTION: 'コレクションをすべて見る',
-    VIEW_SETTINGS: '配信設定を開く',
-    COLLECTION_SUMMARY: 'コレクション概要',
-    STREAMER_INFO: '配信者機能について',
-    STREAMER_INFO_TEXT: 'チャネルポイント報酬やカード管理機能を使用するには、Twitchアフィリエイトまたはパートナーである必要があります。',
-    NO_CARDS_YET: 'まだカードがありません',
-    CREATE_FIRST_CARD: '最初のカードを作成',
-    QUICK_LINKS: 'クイックリンク',
-  },
-
-  // Card view toggle strings
-  // カード表示切り替えの文字列
-  CARD_VIEW: {
-    THUMBNAIL: 'サムネイル',
-    LIST: 'リスト',
-  },
-
-  // Pagination strings
-  // ページネーションの文字列
-  PAGINATION: {
-    PREVIOUS: '前へ',
-    NEXT: '次へ',
-    PAGE_INFO: (current: number, total: number) => `${current} / ${total}`,
-    ITEMS_PER_PAGE: '件表示',
-  },
-
-  // Settings page strings
-  // 設定ページの文字列
-  SETTINGS_PAGE: {
-    TITLE: '配信設定',
-    DESCRIPTION: 'OBSオーバーレイとチャネルポイント報酬の設定を行います。',
-  },
-
-  // Cards page strings
-  // カードページの文字列
-  CARDS_PAGE: {
-    TITLE: 'カード管理',
-    DESCRIPTION: 'カードの作成、編集、削除を行います。',
-  },
-
-  // Collection page strings
-  // コレクションページの文字列
-  COLLECTION_PAGE: {
-    TITLE: 'マイコレクション',
-    DESCRIPTION: '獲得したカードを確認できます。',
-  },
 } as const

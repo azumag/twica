@@ -6,6 +6,7 @@ import type { Card, Rarity } from "@/types/database";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { getIssuanceInfo } from "@/lib/card-issuance";
+import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 import ExpandableDescription from "./ExpandableDescription";
 
 interface CardListProps {
@@ -164,7 +165,8 @@ export default function CardList({
                                 alt={card.name}
                                 width={48}
                                 height={48}
-                                className="h-full w-full object-cover"
+                                className={`h-full w-full ${cardImageFitClass(card.image_padding_color)}`}
+                                style={cardImageFitStyle(card.image_padding_color)}
                                 priority={isPriority}
                                 unoptimized
                               />
@@ -177,7 +179,8 @@ export default function CardList({
                           alt={card.name}
                           width={48}
                           height={48}
-                          className="h-full w-full object-cover"
+                          className={`h-full w-full ${cardImageFitClass(card.image_padding_color)}`}
+                          style={cardImageFitStyle(card.image_padding_color)}
                           priority={isPriority}
                           unoptimized
                         />
