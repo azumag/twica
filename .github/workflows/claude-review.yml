@@ -1,44 +1,30 @@
 # Claude Auto Review (preview)
 #
-# preview ブランチをターゲットにした PR のたびに、Claude Code（モデル: opus）が
-# 追加された変更を自動レビューし、PR コメントで指摘を報告する。
+# preview をターゲットにした PR のたびに、Claude Code（モデル: opus）が追加された
+# 変更を自動レビューし、PR コメントで指摘を報告する。
 #
 # 経緯: 旧版は `push: branches: [preview]` で発火していたが、
-# anthropics/claude-code-action@v1 が push イベントをサポートしておらず
-# preview への push のたびに失敗していた（PR #915 で一時削除）。
-# 本版は action が対応している `pull_request` イベントへ変更して復活させる。
+# anthropics/claude-code-action@v1 が push イベントに対応しておらず常時失敗して
+# いたため、PR #915 で一時削除。本版は `pull_request` イベントへ変更して復活させる。
 #
-# 前提:
-# - GitHub Secrets に `CLAUDE_CODE_OAUTH_TOKEN`（Claude Code OAuth トークン）を設定。
-#   トークンの発行・更新はオーナーが `claude setup-token` で実施し、
-#   GitHub Secret を自身で差し替えること（Action 側で値を読み書きしない）。
-# - `pull_request` イベントは PR ヘッド側（マージ ref）のワークフロー定義で
-#   実行される。ベースブランチ側の定義が使われるのは `pull_request_target` /
-#   `push` / `schedule` などである。
-#   同一リポジトリのブランチで動く＝PR 作成者がプロンプトやツール許可を
-#   書き換えられる点に注意する（fork では secrets が渡らず実行されない）。
-#   セキュリティ上のリスク受容: 同一リポジトリの write 権限保持者はこの
-#   ワークフローを改変して CLAUDE_CODE_OAUTH_TOKEN を取得できる。より強い
-#   保護には environment + required reviewers が必要になるが、PR のたびに
-#   承認が要って自動レビューが機能しなくなるため、本リポジトリでは
-#   「write 権限保持者は全員トークンを取得可能」というリスクを受容する。
-#   実効的な封じ込めは「fork PR に secrets が渡らない」「read-only
-#   GITHUB_TOKEN」「投稿前のトークン伏字化」の3点に依存している。
-#   非対話モードでは未承認ツールのプロンプトは自動拒否されるが、
-#   --allowedTools / --disallowedTools は Bash の網羅的 allowlist ではない
-#   （承認済みパターンの部分一致で実行されうる。ls/cat 等は実行可能）ため、
-#   curl/wget の deny は迂回可能な緩和に過ぎない。
-#   なお @メンションの置換は意図的に行わない。メンション注入は write 権限
-#   保持者起点（既にトークン取得可能なカテゴリ）でリスク受容済みであり、
-#   無条件置換はコードブロック内の `actions/checkout@v4` 等を壊す実害が
-#   あるため。
+# 前提・リスク受容:
+# - `CLAUDE_CODE_OAUTH_TOKEN` はオーナーが `claude setup-token` で発行し、
+#   GitHub Secret を自身で差し替える（Action 側で値を読み書きしない）。
+# - `pull_request` は PR ヘッド側のワークフロー定義で実行されるため、同一
+#   リポジトリの write 権限保持者はこのワークフローを改変してトークンを取得
+#   できる。より強い保護（environment + required reviewers）は PR ごとの承認が
+#   要って自動レビューが機能しなくなるため受容する。
+# - 実効的な封じ込めは「fork PR に secrets が渡らない」「Claude 実行 job は
+#   read-only GITHUB_TOKEN」「投稿前にトークン伏字化 + 生トークン完全一致チェック」
+#   の3点。--allowedTools / --disallowedTools は Bash の網羅的 allowlist ではなく
+#   （部分一致で ls/cat 等も実行されうる）、curl/wget の deny は迂回可能な緩和に
+#   過ぎない。@メンションの置換は意図的に行わない（write 権限保持者起点の注入は
+#   受容済み。無条件置換はコード引用を壊す実害があるため）。
 #
-# Claude を実行する job とコメントを投稿する job を分離し、Claude 側には
-# 読み取り専用の GITHUB_TOKEN だけを渡す。投稿用の pull-requests: write は
-# Claude の実行終了後に別 job でのみ利用する。
-# なお post_review も PR head 由来の .github/scripts/format-review.mjs を実行する
-# （pull_request では workflow 定義自体も head 由来で実効的な権限拡大はなく、
-#  fork には secrets が渡らず起動条件も満たされないため受容範囲内）。
+# Claude 実行 job と投稿 job を分離し、投稿用の pull-requests: write は Claude の
+# 実行終了後にのみ使う。post_review も PR head 由来の .github/scripts/
+# format-review.mjs を実行するが、workflow 定義自体が head 由来である以上
+# 実効的な権限拡大はなく、fork では secrets が渡らず起動条件も満たされない。
 name: Claude Auto Review (preview)
 
 on:
@@ -150,22 +136,28 @@ jobs:
         if: steps.check-token.outputs.configured == 'true'
         env:
           STRUCTURED_OUTPUT: ${{ steps.review.outputs.structured_output }}
-        # 実績: structured_output → JSON パース → コメント投稿の経路は PR #916 の
-        # round-10 までに実証済み。round-11 からは整形ロジックを
-        # .github/scripts/format-review.mjs（post_review が checkout したファイル）
-        # で行うため、post_review の checkout を忘れると投稿が失敗する（#916 round-11）。
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         # Claude が success で終了しても構造化出力が空のことがある（max-turns
-        # 到達等）。そのままでは後続 job が緑のまま無言になるため、ここで
-        # 明示的に failure にして Checks を赤くする。
+        # 到達等）。そのままでは後続 job が緑のまま無言になるため、明示的に
+        # failure にして Checks を赤くする。
         # 出力を run スクリプトへ直接展開しないこと: Claude の出力は PR diff
         # 由来で攻撃者制御の文字列であり、JSON のダブルクォートや $(...) が
         # シェルを壊し任意コマンド実行の経路になり得るため、必ず env 経由で
         # 受け取ってから参照する。
+        # さらに、正規表現の伏字化は PR diff 由来の誘導で回避され得るため、
+        # この job（トークンへ到達できる唯一の job）で生トークンの完全一致を
+        # 検査し、出力への漏洩を確実にブロックする。
         run: |
           if [ -z "$STRUCTURED_OUTPUT" ]; then
             echo "::error::Claude review structured output is empty"
             exit 1
           fi
+          case "$STRUCTURED_OUTPUT" in
+            *"$CLAUDE_CODE_OAUTH_TOKEN"*)
+              echo "::error::Claude review output contains the OAuth token"
+              exit 1
+              ;;
+          esac
 
   post_review:
     name: Post PR review comment
@@ -199,7 +191,6 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           sparse-checkout: .github/scripts
-          sparse-checkout-cone-mode: false
 
       - name: Create or update Claude review comment
         uses: actions/github-script@v7
@@ -207,11 +198,10 @@ jobs:
           github-token: ${{ github.token }}
           script: |
             // 整形ロジックは .github/scripts/format-review.mjs に切り出し、
-            // tests/unit/claude-review-format.test.ts で検証している（#916 round-10）。
+            // tests/unit/claude-review-format.test.ts で検証している。
             const { pathToFileURL } = require('node:url');
             const {
-              redactSecrets,
-              truncateAndCloseFences,
+              buildReviewCommentBody,
               isOwnReviewComment,
             } = await import(
               pathToFileURL(
@@ -238,19 +228,12 @@ jobs:
               return;
             }
 
-            reviewText = redactSecrets(reviewText);
-            reviewText = truncateAndCloseFences(reviewText);
-
             const commitUrl =
               `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/commit/${process.env.REVIEWED_SHA}`;
-            const body =
-              `${marker}\n## Claude Auto Review\n\n` +
-              `Reviewed commit: [\`${shortSha}\`](${commitUrl})\n\n` +
-              `${reviewText}\n\n` +
-              `*Generated by Claude Code (opus)*`;
+            const body = buildReviewCommentBody({ marker, shortSha, commitUrl, reviewText });
 
             // 全ページから探す。判定ロジックは isOwnReviewComment に切り出し、
-            // テストで検証している（#916 round-12）。
+            // テストで検証している。
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
               repo,
