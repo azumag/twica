@@ -183,8 +183,10 @@ function isMaintenanceMode(value: unknown): value is MaintenanceMode {
  */
 export async function fetchMaintenanceStatus(): Promise<MaintenanceStatusResponse> {
   try {
-    // メンテ解除後に古い status がキャッシュされないよう no-store を明示する
-    // （サーバー側の Cache-Control: private, no-store と対になる指定）。
+    // ブラウザキャッシュを避ける（#906 でサーバー側が Workers Cache 対象になった
+    // ため、この指定はブラウザ/CDN のキャッシュを防ぐ目的。Workers Cache の
+    // HIT 自体は防げないが、サーバー側の max-age=5 が短く、ポーリング間隔(60秒)
+    // との整合で実害はない）。
     const response = await fetch('/api/maintenance-status', { cache: 'no-store' })
     if (!response.ok) {
       return { mode: 'off' }

@@ -29,12 +29,18 @@ import type { MaintenanceStatusResponse } from '@/lib/maintenance/client'
  *   棚卸し対象にする設計。src/middleware.ts の MAINTENANCE_GUARDED_METHODS
  *   と同じ4メソッドのみが対象で、GET専用ルートはスコープ外）。
  *
- * Cache-Control: private, no-store の理由:
- * CDN/ブラウザがこの応答をキャッシュすると、メンテナンス解除後も
- * しばらく古い mode を返し続けてしまう（バナーが消えない・逆に解除直後の
- * 古い 'off' 応答がキャッシュされて新たなメンテ開始が伝わらない、の両方が
- * 起こりうる）。状態が変わるたびに必ず最新値を返す必要があるため、
- * 常にキャッシュを禁止する。
+ * Cache-Control: public, max-age=5, stale-while-revalidate=60 の理由:
+ * Issue #906 で Workers Cache を有効化し、高頻度ポーリング（60秒間隔）の CPU コストを
+ * 削減する。HIT 時は Worker が実行されず CPU 課金ゼロになる。
+ * - max-age=5: クライアントのポーリング間隔（60秒）より十分短い。
+ * - stale-while-revalidate=60: SWR 中は stale を即返しつつバックグラウンドで再検証する。
+ *   クライアントが受け取るデータは最悪で max-age + SWR 分（≈65秒）古くなりうる。
+ *   メンテバナーの表示遅延は最大でポーリング2周期分（≈120秒）に達しうるが、
+ *   書き込みガードは middleware の guard.ts が env を直接読むため、この API の
+ *   キャッシュ遅延に影響されない（バナー表示のみの遅延で、安全に許容できる）。
+ * このエンドポイントは機密情報を返さずセッション非依存のため、公開キャッシュに安全。
+ * キャッシュ HIT 時は middleware のグローバルレートリミットもスキップされるが、
+ * 公開エンドポイントで実害はない。
  */
 export async function GET() {
   const { mode, expectedEndAt, publicMessageKey } = getMaintenanceState()
@@ -46,6 +52,6 @@ export async function GET() {
   }
 
   const response = NextResponse.json(body)
-  response.headers.set('Cache-Control', 'private, no-store')
+  response.headers.set('Cache-Control', 'public, max-age=5, stale-while-revalidate=60')
   return response
 }
