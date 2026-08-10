@@ -6,11 +6,8 @@
 
 // 既知のトークン形式。GitHub のシークレットマスキングはログにのみ効き、
 // API のコメント本文には適用されないため、投稿前に伏字化する。
-// 末尾に否定先読みを置かない: 貪欲マッチと組み合わせると
-// `ghp_..._` や `github_pat_...-` のような実トークンが素通りする
-// fail-open になるため。過剰伏字化は安全側。
-// \b は付けない: 語構成文字直後のトークン（`Xsk-ant-...` 等）が素通りする
-// fail-open になるため。過剰伏字化は安全側。
+// 末尾に否定先読みも \b も付けない: いずれも実トークンが素通りする fail-open に
+// なるため（`ghp_..._` / `github_pat_...-` / `Xsk-ant-...` 等）。過剰伏字化は安全側。
 const SECRET_PATTERN =
   /(sk-ant-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g
 
@@ -61,11 +58,17 @@ export function parseReviewJson(json) {
   return review.trim()
 }
 
+// 投稿本文・Step summary の両方に適用する共通サニタイズ
+// （伏字化 → 切り詰めの順序を1箇所に固定する）。
+export function sanitizeReviewText(reviewText) {
+  return truncateAndCloseFences(redactSecrets(reviewText))
+}
+
 // レビュー本文から投稿コメント本文を組み立てる。伏字化 → 切り詰め → 組み立ての
 // 順序を1箇所に固定する（順序が逆転すると伏字化が効かなくなるため、テストで
 // 回帰を守る）。
 export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, reviewText }) {
-  const safe = truncateAndCloseFences(redactSecrets(reviewText))
+  const safe = sanitizeReviewText(reviewText)
   return (
     `${marker}\n## Claude Auto Review\n\n` +
     `Reviewed commit: [\`${shortSha}\`](${commitUrl})\n\n` +

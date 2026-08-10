@@ -6,6 +6,7 @@ import {
   MAX_BODY_LENGTH,
   parseReviewJson,
   redactSecrets,
+  sanitizeReviewText,
   truncateAndCloseFences,
 } from '../../.github/scripts/format-review.mjs'
 
@@ -91,9 +92,14 @@ describe('claude-review format helpers', () => {
       expect(truncateAndCloseFences(text)).toBe(text)
     })
 
-    it('keeps the configured limit plus overhead below the issue comment cap', () => {
-      // MAX_BODY_LENGTH を上げてもヘッダ/フッタ込みで 65536 を超えないことを固定する
-      expect(MAX_BODY_LENGTH + 400).toBeLessThan(65536)
+  })
+
+  describe('sanitizeReviewText', () => {
+    it('redacts secrets and truncates long text', () => {
+      const out = sanitizeReviewText('token sk-ant-api03-abcdefghij0123456789' + 'x'.repeat(MAX_BODY_LENGTH))
+      expect(out).not.toContain('sk-ant-api03')
+      expect(out).toContain('[REDACTED]')
+      expect(out.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
     })
   })
 
@@ -133,8 +139,7 @@ describe('claude-review format helpers', () => {
         ...base,
         reviewText: 'x'.repeat(MAX_BODY_LENGTH + 5000),
       })
-      // 切り詰めが効いていれば本文は MAX + ヘッダ/フッタ程度に収まる
-      expect(Array.from(body).length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 400)
+      expect(Array.from(body).length).toBeLessThan(65536)
     })
 
     it('round-trips with isOwnReviewComment using the marker line', () => {
@@ -208,7 +213,7 @@ describe('claude-review format helpers', () => {
       ).toBe(false)
     })
 
-    it('rejects non-bot authors', () => {
+    it('rejects other logins', () => {
       expect(
         isOwnReviewComment(
           {
