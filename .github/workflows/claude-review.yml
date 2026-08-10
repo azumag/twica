@@ -15,10 +15,11 @@
 #   できる。より強い保護（environment + required reviewers）は PR ごとの承認が
 #   要って自動レビューが機能しなくなるため受容する。
 # - 実効的な封じ込めは「fork PR に secrets が渡らない」「Claude 実行 job は
-#   read-only GITHUB_TOKEN かつ Read をワークスペース配下に限定」「投稿前に
-#   トークン伏字化 + 生トークン完全一致チェック」の3点。ただし伏字化と完全一致
-#   チェックは「素の文字列で出力された場合」しか防げず、base64 化や文字列分割
-#   を誘導された場合はすり抜ける（残余リスクとして受容）。
+#   read-only GITHUB_TOKEN」「投稿前にトークン伏字化 + 生トークン完全一致チェック」
+#   の3点。ただし伏字化と完全一致チェックは「素の文字列で出力された場合」しか
+#   防げず、base64 化や文字列分割を誘導された場合はすり抜ける（残余リスクとして
+#   受容）。Read のワークスペース制限は Grep / Glob がパス無制限のため実効的で
+#   はない（残余リスクとして受容）。
 #   --allowedTools / --disallowedTools は Bash の網羅的 allowlist ではなく
 #   （部分一致で ls/cat 等も実行されうる）、curl/wget の deny は迂回可能な緩和に
 #   過ぎない。@メンションの置換は意図的に行わない（write 権限保持者起点の注入は
@@ -27,8 +28,7 @@
 #   write 権限保持者（PR 作者）に対する防御ではない（彼らは head の
 #   format-review.mjs を差し替えられる。issue #917 で追跡）。
 #   生トークン完全一致チェックは workflow の run ステップ内にあるため、
-#   伏字化より相対的に強い。Read のワークスペース制限は Grep / Glob が
-#   パス無制限のため実効的ではない（残余リスクとして受容）。
+#   伏字化より相対的に強い。
 #   なおボット作成の PR（Renovate / Dependabot 等）は job 条件
 #   （github.event.pull_request.user.type != 'Bot'）でレビュー対象外。
 #   したがって「write 権限保持者起点」の露出面は人間の権限保持者に限定される。
@@ -261,8 +261,8 @@ jobs:
               buildReviewCommentBody,
               findOwnReviewComment,
               hasReviewMarker,
-              isOwnReviewComment,
               parseReviewJson,
+              REVIEW_COMMENT_AUTHOR,
               sanitizeReviewText,
             } = await import(
               pathToFileURL(
@@ -289,6 +289,7 @@ jobs:
               return;
             }
 
+            const safe = sanitizeReviewText(reviewText);
             const commitUrl =
               `${process.env.SERVER_URL}/${owner}/${repo}/commit/${process.env.REVIEWED_SHA}`;
             const body = buildReviewCommentBody({
@@ -296,14 +297,14 @@ jobs:
               shortSha,
               commitUrl,
               runUrl: process.env.RUN_URL,
-              reviewText,
+              safeText: safe,
             });
             // 単一コメントの上書きでは購読者へ通知されないため、Checks の
-            // Step summary にも本文を残して可視化する。コメントと同様に
-            // sanitizeReviewText を通すこと（素のまま出力すると伏字化を迂回する）。
+            // Step summary にも本文を残して可視化する（整形済みの safe を
+            // コメントと共用するため伏字化の迂回は起きない）。
             require('node:fs').appendFileSync(
               process.env.GITHUB_STEP_SUMMARY,
-              `## Claude Auto Review\n\n${sanitizeReviewText(reviewText)}\n`,
+              `## Claude Auto Review\n\n${safe}\n`,
             );
 
             // 全ページから探す。判定ロジックは isOwnReviewComment / hasReviewMarker
@@ -327,17 +328,18 @@ jobs:
               });
             } else {
               // 投稿者ログインが REVIEW_COMMENT_AUTHOR とズレると常に新規コメントが
-              // 積み上がるサイレント劣化になるため、マーカー付き既存コメントが
-              // あるのに上書き対象が見つからない場合は失敗にして増殖を防ぐ。
-              // マーカーは公開情報のため、ボット以外の投稿はノイズ除外する
+              // 積み上がるサイレント劣化になるため、マーカー付きの自己コメント
+              // （以前の投稿者名）が残っている場合は warning で検知する。
+              // マーカーは公開情報のため、自投稿者名以外（他ボット含む）は除外する。
               const stale = comments.filter(
-                (comment) => comment.user?.type === 'Bot' && hasReviewMarker(comment, marker),
+                (comment) =>
+                  comment.user?.login === REVIEW_COMMENT_AUTHOR &&
+                  hasReviewMarker(comment, marker),
               ).length;
               if (stale > 0) {
-                core.setFailed(
+                core.warning(
                   `${stale} 件のマーカー付きコメントが投稿者不一致のため上書き対象になりません`,
                 );
-                return;
               }
               await github.rest.issues.createComment({
                 owner,

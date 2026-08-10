@@ -94,7 +94,8 @@ describe('claude-review format helpers', () => {
     })
 
     it('does not add a closing fence when fences are balanced after truncation', () => {
-      const text = '```js\n' + 'x'.repeat(MAX_BODY_LENGTH) + '\n```'
+      // 切り詰め後も開閉フェンスが両方残る入力（閉じフェンスが切り落とされない）
+      const text = '```js\n' + 'x'.repeat(MAX_BODY_LENGTH - 20) + '\n```\n' + 'y'.repeat(100)
       const out = truncateAndCloseFences(text)
       expect(out).toContain('（長すぎるため省略）')
       expect(out.match(/```/g)).toHaveLength(2)
@@ -125,7 +126,7 @@ describe('claude-review format helpers', () => {
     }
 
     it('includes marker, reviewed commit link and footer', () => {
-      const body = buildReviewCommentBody({ ...base, reviewText: '指摘なし' })
+      const body = buildReviewCommentBody({ ...base, safeText: '指摘なし' })
       expect(body.startsWith('<!-- claude-auto-review-preview -->\n## Claude Auto Review')).toBe(
         true,
       )
@@ -138,10 +139,10 @@ describe('claude-review format helpers', () => {
       )
     })
 
-    it('redacts secrets before assembling the body (order guard)', () => {
+    it('uses the pre-sanitized text as-is (sanitization is callers responsibility)', () => {
       const body = buildReviewCommentBody({
         ...base,
-        reviewText: 'トークン: sk-ant-api03-abcdefghij0123456789',
+        safeText: sanitizeReviewText('トークン: sk-ant-api03-abcdefghij0123456789'),
       })
       expect(body).not.toContain('sk-ant-api03')
       expect(body).toContain('[REDACTED]')
@@ -150,13 +151,13 @@ describe('claude-review format helpers', () => {
     it('stays far below the issue comment limit even with max-length review text', () => {
       const body = buildReviewCommentBody({
         ...base,
-        reviewText: 'x'.repeat(MAX_BODY_LENGTH + 5000),
+        safeText: sanitizeReviewText('x'.repeat(MAX_BODY_LENGTH + 5000)),
       })
       expect(Array.from(body).length).toBeLessThan(65536)
     })
 
     it('round-trips with isOwnReviewComment using the marker line', () => {
-      const body = buildReviewCommentBody({ ...base, reviewText: '指摘なし' })
+      const body = buildReviewCommentBody({ ...base, safeText: '指摘なし' })
       expect(
         isOwnReviewComment(
           { user: { login: 'github-actions[bot]', type: 'Bot' }, body },
