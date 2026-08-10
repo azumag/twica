@@ -79,7 +79,7 @@ jobs:
     timeout-minutes: 25
     # コスト受容: preview 向け PR の synchronize ごとに opus（最大30ターン）を
     # 回す。fetch-depth: 0 の全履歴取得と合わせ、差分が大きい PR では 25 分
-    # timeout / max-turns 到達で fail-loud する（#916 運用実績で受容）。
+    # timeout / max-turns 到達で fail-loud する。
     permissions:
       contents: read
       pull-requests: read
@@ -122,6 +122,18 @@ jobs:
           # コンフリクト中の PR では refs/pull/N/merge が生成されず checkout が
           # 失敗するため、head SHA を明示する（three-dot diff には影響しない）。
           ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify base and head SHAs exist
+        if: steps.check-token.outputs.configured == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # base 側の force-push 等で base.sha が reachable でない場合、Claude は
+        # 「レビュー不可」を非空の出力として返し、前回の有効レビューを上書き
+        # しつつ Checks が緑になる fail-open になる。ここで早期に失敗させる。
+        run: |
+          git rev-parse -q --verify "$BASE_SHA^{commit}"
+          git rev-parse -q --verify "$HEAD_SHA^{commit}"
 
       - name: Claude Code Review (opus)
         id: review
@@ -232,6 +244,9 @@ jobs:
       REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
       SERVER_URL: ${{ github.server_url }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # github-token でのコメント投稿主。トークンを差し替える場合はここも変更する
+      # （findOwnReviewComment の authorLogin に渡す）。
+      COMMENT_AUTHOR: github-actions[bot]
 
     steps:
       - uses: actions/checkout@v4
@@ -302,7 +317,11 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
-            const existing = findOwnReviewComment(comments, marker);
+            const existing = findOwnReviewComment(
+              comments,
+              marker,
+              process.env.COMMENT_AUTHOR,
+            );
 
             if (existing) {
               await github.rest.issues.updateComment({
@@ -322,7 +341,9 @@ jobs:
             // 単一コメントの上書きでは購読者へ通知されないため、Checks の
             // Step summary にも本文を残して可視化する（投稿成功後に書くことで
             // 未投稿なのに投稿済みに見えるのを防ぐ。整形済みの safe をコメントと共用）。
-            require('node:fs').appendFileSync(
-              process.env.GITHUB_STEP_SUMMARY,
-              `## Claude Auto Review\n\n${safe}\n`,
-            );
+            // summary 書き込み失敗で投稿済みコメントの run を赤くしないよう warning に落とす。
+            try {
+              await core.summary.addRaw(`## Claude Auto Review\n\n${safe}`).write();
+            } catch {
+              core.warning('Step summary の書き込みに失敗しました');
+            }

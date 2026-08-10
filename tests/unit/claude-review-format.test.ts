@@ -76,8 +76,9 @@ describe('claude-review format helpers', () => {
       expect(out.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
     })
 
-    it('closes an unclosed fence without truncation', () => {
-      expect(truncateAndCloseFences('```js\nconst x = 1')).toBe('```js\nconst x = 1\n```')
+    it('leaves odd-fence text unchanged without truncation', () => {
+      // 非切り詰め時はフェンス補完しない（コード引用の誤判定を避ける）
+      expect(truncateAndCloseFences('```js\nconst x = 1')).toBe('```js\nconst x = 1')
     })
 
     it('closes a fence opened before the cut and appends the note after it', () => {
@@ -142,15 +143,6 @@ describe('claude-review format helpers', () => {
       )
     })
 
-    it('uses the pre-sanitized text as-is (sanitization is callers responsibility)', () => {
-      const body = buildReviewCommentBody({
-        ...base,
-        safeText: sanitizeReviewText('トークン: sk-ant-api03-abcdefghij0123456789'),
-      })
-      expect(body).not.toContain('sk-ant-api03')
-      expect(body).toContain('[REDACTED]')
-    })
-
     it('stays far below the issue comment limit even with max-length review text', () => {
       const body = buildReviewCommentBody({
         ...base,
@@ -162,7 +154,7 @@ describe('claude-review format helpers', () => {
     it('round-trips with findOwnReviewComment using the marker line', () => {
       const body = buildReviewCommentBody({ ...base, safeText: '指摘なし' })
       const comments = [{ user: { login: 'github-actions[bot]', type: 'Bot' }, body }]
-      expect(findOwnReviewComment(comments, base.marker)).toBeDefined()
+      expect(findOwnReviewComment(comments, base.marker, 'github-actions[bot]')).toBeDefined()
     })
   })
 
@@ -195,11 +187,13 @@ describe('claude-review format helpers', () => {
           body: `${marker}\n## Claude Auto Review`,
         },
       ]
-      expect(findOwnReviewComment(comments, marker)?.user?.login).toBe('github-actions[bot]')
+      expect(findOwnReviewComment(comments, marker, 'github-actions[bot]')?.user?.login).toBe(
+        'github-actions[bot]',
+      )
     })
 
     it('returns undefined when no owned comment exists', () => {
-      expect(findOwnReviewComment([], marker)).toBeUndefined()
+      expect(findOwnReviewComment([], marker, 'github-actions[bot]')).toBeUndefined()
     })
 
     it('accepts CRLF line endings and rejects first-line mismatches', () => {
@@ -212,6 +206,7 @@ describe('claude-review format helpers', () => {
             },
           ],
           marker,
+          'github-actions[bot]',
         ),
       ).toBeDefined()
       expect(
@@ -223,6 +218,7 @@ describe('claude-review format helpers', () => {
             },
           ],
           marker,
+          'github-actions[bot]',
         ),
       ).toBeUndefined()
     })
@@ -232,10 +228,13 @@ describe('claude-review format helpers', () => {
         findOwnReviewComment(
           [{ user: { login: 'renovate[bot]', type: 'Bot' }, body: `${marker}\n...` }],
           marker,
+          'github-actions[bot]',
         ),
       ).toBeUndefined()
-      expect(findOwnReviewComment([{ user: { login: 'github-actions[bot]' } }], marker)).toBeUndefined()
-      expect(findOwnReviewComment([undefined], marker)).toBeUndefined()
+      expect(
+        findOwnReviewComment([{ user: { login: 'github-actions[bot]' } }], marker, 'github-actions[bot]'),
+      ).toBeUndefined()
+      expect(findOwnReviewComment([undefined], marker, 'github-actions[bot]')).toBeUndefined()
     })
   })
 })

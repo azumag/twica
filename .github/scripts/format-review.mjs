@@ -11,10 +11,9 @@
 const SECRET_PATTERN =
   /(sk-ant-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g
 
-// issue comment 上限 65536 文字に対して余裕を持つしきい値。
-// プロンプトで 6000 字以内を指示しているが出力は強制されないため、
-// 大規模 PR でも実質発火しない大きめの値で安全網として機能させる。
-export const MAX_BODY_LENGTH = 60000
+// プロンプトの 6000 字指示を実質的に守るためのしきい値（2.5 倍の余裕）。
+// issue comment 上限 65536 には余裕を持って収まる。
+export const MAX_BODY_LENGTH = 15000
 
 export function redactSecrets(text) {
   // String.prototype.replace は /g 正規表現の lastIndex を走査前後にリセットする
@@ -29,27 +28,27 @@ export function redactSecrets(text) {
 // （最大 +16 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
 export function truncateAndCloseFences(text) {
   const needsTruncation = text.length > MAX_BODY_LENGTH
-  let result = needsTruncation
-    ? // 末尾が孤立サロゲート（絵文字の片割れ）なら除去し、JSON 化での文字化けを防ぐ
-      text.slice(0, MAX_BODY_LENGTH).replace(/[\uD800-\uDBFF]$/, '')
-    : text
+  let result = text
   if (needsTruncation) {
+    result = text.slice(0, MAX_BODY_LENGTH)
     // 行途中で切れた不完全行を落とす（フェンスの途中切断で補完が破綻するのを防ぐ）
     const lastNewline = result.lastIndexOf('\n')
     if (lastNewline > 0) {
       result = result.slice(0, lastNewline)
     }
-  }
-  // 行頭の ``` のみ数える簡易ヒューリスティック（4連バッククォートの入れ子や
-  // フェンス内の例示は誤判定し得る。4連バッククォートで開いたブロックは
-  // 閉じられずフッターがコードブロックに飲み込まれることもあるが表示崩れのみ）。
-  const fenceCount = result
-    .split('\n')
-    .filter((line) => line.trim().startsWith('```')).length
-  if (fenceCount % 2 === 1) {
-    result += '\n```'
+    // 末尾が孤立サロゲート（絵文字の片割れ）なら除去し、JSON 化での文字化けを防ぐ
+    result = result.replace(/[\uD800-\uDBFF]$/, '')
   }
   if (needsTruncation) {
+    // 切り詰め時のみフェンスを補完する。非切り詰め時はレビュー本文がコード
+    // 引用を多く含み、行頭 ``` の偶奇ヒューリスティックが誤判定しやすいため
+    // 触らない（フッターがコードブロックに飲み込まれるのは表示崩れのみ）。
+    const fenceCount = result
+      .split('\n')
+      .filter((line) => line.trim().startsWith('```')).length
+    if (fenceCount % 2 === 1) {
+      result += '\n```'
+    }
     result += '\n\n（長すぎるため省略）'
   }
   return result
@@ -69,9 +68,8 @@ export function parseReviewJson(json) {
   return review.trim()
 }
 
-// 投稿本文・Step summary の両方に適用する共通サニタイズ。ワークフロー側で
-// 一度だけ実行し、組み立て関数へは整形済みテキストを渡す。
-// （伏字化 → 切り詰めの順序をここに固定する。）
+// 投稿本文・Step summary の両方に適用する共通サニタイズ
+// （伏字化 → 切り詰めの順序をここに固定する）。
 export function sanitizeReviewText(reviewText) {
   return truncateAndCloseFences(redactSecrets(reviewText))
 }
@@ -87,18 +85,15 @@ export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, sa
 }
 
 // コメント一覧からこのワークフローが投稿したレビューコメントを探す。
-// マーカーは誰でも知り得るため、投稿者をワークフローの github-token が生み出す
-// 投稿者ログインに限定して第三者（他のボット含む）コメントの誤上書きを防ぐ。
-// 投稿者は workflow 側の `github-token` で決まるため、トークンを差し替える場合は
-// この定数も変更すること。
-const REVIEW_COMMENT_AUTHOR = 'github-actions[bot]'
-
-export function findOwnReviewComment(comments, marker) {
+// マーカーは誰でも知り得るため、投稿者を呼び出し側（workflow の github-token が
+// 生み出す投稿者ログイン）に限定して第三者（他のボット含む）コメントの誤上書きを
+// 防ぐ。
+export function findOwnReviewComment(comments, marker, authorLogin) {
   // 重複投稿の競合（キャンセルと新 run のタイミング）で古いコメントが残る場合に
   // 最新を更新対象にするため、末尾から探す。
   return comments.findLast(
     (comment) =>
-      comment?.user?.login === REVIEW_COMMENT_AUTHOR &&
+      comment?.user?.login === authorLogin &&
       // 先頭行がマーカーかどうか（GitHub API が \r\n を返し得るため trim する）
       comment.body?.split('\n', 1)[0].trim() === marker,
   )
