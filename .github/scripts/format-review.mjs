@@ -18,23 +18,26 @@ export function redactSecrets(text) {
 }
 
 // 上限超過時は行単位で切り詰める（サロゲートペアを分割しないようコードポイント
-// 単位で数える）。未閉じのコードフェンスは常に判定して補完し、後続のフッターが
-// コードブロックに飲み込まれるのを防ぐ。
+// 単位で数える）。未閉じのコードフェンスは常に判定して補完し、切り詰め時は
+// フェンスを閉じてから省略注記を足す（注記がコードブロックに飲み込まれるのを防ぐ）。
 export function truncateAndCloseFences(text) {
   let result = text
-  if (Array.from(result).length > MAX_BODY_LENGTH) {
+  const needsTruncation = Array.from(result).length > MAX_BODY_LENGTH
+  if (needsTruncation) {
     const truncated = Array.from(result).slice(0, MAX_BODY_LENGTH).join('')
     const lastNewline = truncated.lastIndexOf('\n')
-    result =
-      (lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated) +
-      '\n\n（長すぎるため省略）'
+    result = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated
   }
-  // インラインの ``` を誤カウントしないよう、行頭のフェンスのみ数える。
+  // 行頭の ``` のみ数える簡易ヒューリスティック（4連バッククォートの入れ子や
+  // フェンス内の例示は誤判定し得る）。フッター/注記を守る目的では十分。
   const fenceCount = result
     .split('\n')
     .filter((line) => line.trim().startsWith('```')).length
   if (fenceCount % 2 === 1) {
     result += '\n```'
+  }
+  if (needsTruncation) {
+    result += '\n\n（長すぎるため省略）'
   }
   return result
 }

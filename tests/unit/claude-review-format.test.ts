@@ -45,6 +45,44 @@ describe('claude-review format helpers', () => {
       const out = truncateAndCloseFences('😀'.repeat(MAX_BODY_LENGTH + 10))
       expect(out.includes('\uFFFD')).toBe(false)
     })
+
+    it('cuts at a line boundary when a newline is within the limit', () => {
+      const out = truncateAndCloseFences('a\n'.repeat(MAX_BODY_LENGTH))
+      expect(out.endsWith('（長すぎるため省略）')).toBe(true)
+      // 注記の直前が改行 = 途中の行を残さず行境界で切れている
+      expect(out.slice(0, out.indexOf('（長すぎるため省略）')).endsWith('\n')).toBe(true)
+    })
+
+    it('closes a fence opened before the cut and keeps the note outside', () => {
+      const out = truncateAndCloseFences('```js\n' + 'x\n'.repeat(MAX_BODY_LENGTH))
+      expect(out).toContain('（長すぎるため省略）')
+      // 閉じフェンスが注記より前に来る = 注記はコードブロックの外
+      expect(out.lastIndexOf('```')).toBeLessThan(out.indexOf('（長すぎるため省略）'))
+    })
+
+    it('does not truncate when the length is exactly at the limit', () => {
+      const text = 'a'.repeat(MAX_BODY_LENGTH)
+      expect(truncateAndCloseFences(text)).toBe(text)
+    })
+  })
+
+  describe('redactSecrets edge cases', () => {
+    it('greedily consumes trailing token characters (over-redaction is safe)', () => {
+      const input = 'sk-ant-api03-abcdefghij0123456789X'
+      expect(redactSecrets(input)).toBe('[REDACTED]')
+    })
+
+    it('redacts tokens embedded in multi-line text', () => {
+      const input = 'line1 sk-ant-api03-abcdefghij0123456789\nline2'
+      const out = redactSecrets(input)
+      expect(out).toContain('[REDACTED]')
+      expect(out).not.toContain('sk-ant-api03')
+    })
+
+    it('is idempotent', () => {
+      const once = redactSecrets('sk-ant-api03-abcdefghij0123456789')
+      expect(redactSecrets(once)).toBe(once)
+    })
   })
 
   describe('buildReviewComment', () => {

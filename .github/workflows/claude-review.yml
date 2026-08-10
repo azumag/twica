@@ -144,8 +144,10 @@ jobs:
         if: steps.check-token.outputs.configured == 'true'
         env:
           STRUCTURED_OUTPUT: ${{ steps.review.outputs.structured_output }}
-        # 実績: PR #916 の round-10 以降、この経路（structured_output → JSON パース
-        # → コメント投稿）でレビューコメントが投稿されているため動作実証済み。
+        # 実績: structured_output → JSON パース → コメント投稿の経路は PR #916 の
+        # round-10 までに実証済み。round-11 からは整形ロジックを
+        # .github/scripts/format-review.mjs（post_review が checkout したファイル）
+        # で行うため、post_review の checkout を忘れると投稿が失敗する（#916 round-11）。
         # Claude が success で終了しても構造化出力が空のことがある（max-turns
         # 到達等）。そのままでは後続 job が緑のまま無言になるため、ここで
         # 明示的に failure にして Checks を赤くする。
@@ -173,6 +175,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       pull-requests: write
     env:
       REVIEW_JSON: ${{ needs.claude_review.outputs.review }}
@@ -180,6 +183,17 @@ jobs:
       REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          # 整形ロジック（format-review.mjs）を読み込むために必要。claude_review
+          # job の checkout は別ランナーで共有されない。全ツリーは不要なので
+          # .github/scripts のみ sparse checkout する。pull_request の既定どおり
+          # マージ ref の内容が取得される（PR 作成者による改変は write 権限
+          # 保持者のリスク受容範囲内。ヘッダコメント参照）。
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
       - name: Create or update Claude review comment
         uses: actions/github-script@v7
         with:
