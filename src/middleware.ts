@@ -91,6 +91,15 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
   '/api/auth/twitch/login',
 ]
 
+// Issue #906: Workers Cache でキャッシュする公開エンドポイント。
+// middleware はこのパス以外の全レスポンスに private, no-store をデフォルト付与する
+// （fail-closed）。キャッシュの最終決定権はルート側の Cache-Control にある
+// （Next.js ではルートハンドラが middleware の後に実行され、ヘッダーを上書きできる）。
+// つまり、ここに無いパスでもルートが public を設定すればキャッシュされるため、
+// ルート側の public 設定とこの判定は常に同期させること。
+// 機密情報を返さない・セッション非依存のエンドポイントのみを許可する。
+const CACHEABLE_PUBLIC_PATHS = ['/api/maintenance-status']
+
 /**
  * #694 Stage 3: maintenance mode (off 以外) のとき、/api 配下の write メソッド
  * (POST/PUT/PATCH/DELETE) を一律ブロックする。
@@ -163,6 +172,29 @@ export async function middleware(request: NextRequest) {
   // サーバーコンポーネント用にロケールを検出・設定
   const locale = detectLocale(request)
   response.headers.set('x-locale', locale)
+
+  // Issue #906: Workers Cache 有効化に伴う fail-closed デフォルト。
+  // [cache] enabled = true は Worker 全体に効き、Cache-Control 未設定の GET は
+  // heuristics でキャッシュされる（例: 200 → 2時間）。セッション依存・
+  // リアルタイム性が重要なレスポンスが意図せずキャッシュされないよう、
+  // 明示的にキャッシュを許可した公開パス以外には private, no-store を付与する。
+  // キャッシュ許可パスはルート側で Cache-Control: public を設定する（この middleware は
+  // ルートより先に実行されるため、ルートが最終的にヘッダーを上書きできる）。
+  // 400/429/503 等のエラーレスポンスは Workers Cache のヒューリスティック対象外のため、
+  // 早期 return 経路では Cache-Control を設定しない。
+  // /api/overlay/ 配下は prefix ではなくエンドポイント単位で判定する。
+  // events は OBS オーバーレイの 3 秒間隔ポーリングだが Cache-Control を設定
+  // しないため、prefix 許可だと Workers Caching のヒューリスティック TTL
+  // （200 → 2時間）でキャッシュされ、ガチャ結果の表示が最大2時間止まる。
+  // realtime-config はルート側で `public, max-age=15, stale-while-revalidate=15` を
+  // 明示する意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
+  const isCacheablePublicPath =
+    CACHEABLE_PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
+    (pathname.startsWith('/api/overlay/') &&
+      pathname.endsWith('/realtime-config'))
+  if (!isCacheablePublicPath) {
+    response.headers.set('Cache-Control', 'private, no-store')
+  }
 
   // Ensure pages with session-dependent content are never cached
   // This is especially important for the top page which shows different content

@@ -86,14 +86,18 @@ describe('GET /api/maintenance-status', () => {
     )
   })
 
-  it('Cache-Control: private, no-store を必ず設定する', async () => {
+  it('Cache-Control: public, max-age=5, stale-while-revalidate=60 を設定する（#906 Workers Cache 対象）', async () => {
     const response = await GET()
-    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+    expect(response.headers.get('Cache-Control')).toBe(
+      'public, max-age=5, stale-while-revalidate=60'
+    )
   })
 
   it('mode=off でも Cache-Control は同様に設定される', async () => {
     stubMaintenanceEnv({ MAINTENANCE_MODE: 'off' })
     const response = await GET()
-    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+    expect(response.headers.get('Cache-Control')).toBe(
+      'public, max-age=5, stale-while-revalidate=60'
+    )
   })
 })
