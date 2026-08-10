@@ -67,6 +67,9 @@ jobs:
       github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # コスト受容: preview 向け PR の synchronize ごとに opus（最大30ターン）を
+    # 回す。fetch-depth: 0 の全履歴取得と合わせ、差分が大きい PR では 25 分
+    # timeout / max-turns 到達で fail-loud する（#916 運用実績で受容）。
     permissions:
       contents: read
       pull-requests: read
@@ -80,7 +83,7 @@ jobs:
         # 可用性の境界で壊れやすいため、step output 経由で確実に渡す。
         run: |
           configured=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          fork=${{ github.event.pull_request.head.repo.fork }}
+          same_repo=${{ github.event.pull_request.head.repo.full_name == github.repository }}
           echo "configured=$configured" >> "$GITHUB_OUTPUT"
           if [ "$configured" != "true" ]; then
             # トークン失効・未設定が長期間気付かれず「全緑」になるのを防ぐ。
@@ -88,9 +91,10 @@ jobs:
             echo "CLAUDE_CODE_OAUTH_TOKEN が未設定、または fork PR のため secrets が渡らないため、Claude 自動レビューはスキップされます。" >> "$GITHUB_STEP_SUMMARY"
             # fork PR では secrets が渡らないのが正常なため warning のみ。
             # 同一リポジトリ PR で未設定は設定ミスなので fail-loud にする。
-            # head.repo が null（fork 元リポジトリ削除等）の場合は空文字になるため、
-            # 「確実に同一リポジトリ」と判定できる場合のみ fail-loud にする。
-            if [ "$fork" = "false" ]; then
+            # head.repo.fork は「head リポジトリ自体が fork か」なので使わない
+            # （このリポジトリ自体が fork だと常に true になり fail-loud が効かない）。
+            # full_name 比較で「確実に同一リポジトリ」と判定できる場合のみ fail-loud にする。
+            if [ "$same_repo" = "true" ]; then
               echo "::error::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューを実行できません"
               exit 1
             fi
@@ -154,7 +158,7 @@ jobs:
             コードやGitHub上の状態は変更せず、レビュー本文だけを返してください。
             最終回答は指定されたJSON SchemaのreviewフィールドにMarkdownで格納してください。
           # 注意: コメントを claude_args の折り畳みブロック内に置かないこと
-          # （文字列へ混入して --json-schema 等を壊す。#916 round-18 で実測）。
+          # （文字列へ混入して --json-schema 等を壊す事故を実測済み）。
           claude_args: >-
             --model opus
             --max-turns 30
@@ -181,6 +185,12 @@ jobs:
           # ここは「Claude アクションの structured_output 自体が欠落した場合」を捕捉する。
           if [ -z "$STRUCTURED_OUTPUT" ]; then
             echo "::error::Claude review structured output is empty（max-turns / timeout 到達の可能性）"
+            exit 1
+          fi
+          # JSON として妥当で review フィールドが空でないことを早期に確認する
+          # （post_review 側のパース失敗をトークン到達 job で切り分ける）。
+          if ! echo "$STRUCTURED_OUTPUT" | jq -e -r '.review // empty' >/dev/null; then
+            echo "::error::Claude review structured output is not a valid review JSON"
             exit 1
           fi
           # 生トークンの完全一致チェック（正規表現の網を外れた漏洩をブロック）。
@@ -255,6 +265,7 @@ jobs:
             const issueNumber = Number(process.env.PR_NUMBER);
             const shortSha = process.env.REVIEWED_SHA.slice(0, 7);
 
+            let reviewText;
             try {
               // null = review フィールドが空・空白のみ（ここで捕捉して failure にする）
               reviewText = parseReviewJson(process.env.REVIEW_JSON);
@@ -276,6 +287,12 @@ jobs:
               runUrl: process.env.RUN_URL,
               reviewText,
             });
+            // 単一コメントの上書きでは購読者へ通知されないため、Checks の
+            // Step summary にも本文を残して可視化する。
+            require('node:fs').appendFileSync(
+              process.env.GITHUB_STEP_SUMMARY,
+              `## Claude Auto Review\n\n${reviewText}\n`,
+            );
 
             // 全ページから探す。判定ロジックは isOwnReviewComment / hasReviewMarker
             // に切り出し、テストで検証している。期待投稿者は github-token の

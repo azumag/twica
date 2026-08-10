@@ -31,7 +31,7 @@ describe('claude-review format helpers', () => {
     })
 
     it('redacts tokens that follow a word character (no leading boundary)', () => {
-      // \b を付けない設計判断の回帰テスト（#916 round-19）
+      // \b を付けない設計判断の回帰テスト
       expect(redactSecrets('Xsk-ant-api03-abcdefghij0123456789')).toBe('X[REDACTED]')
     })
 
@@ -89,6 +89,11 @@ describe('claude-review format helpers', () => {
     it('leaves text at exactly the limit unchanged', () => {
       const text = 'a'.repeat(MAX_BODY_LENGTH)
       expect(truncateAndCloseFences(text)).toBe(text)
+    })
+
+    it('keeps the configured limit plus overhead below the issue comment cap', () => {
+      // MAX_BODY_LENGTH を上げてもヘッダ/フッタ込みで 65536 を超えないことを固定する
+      expect(MAX_BODY_LENGTH + 400).toBeLessThan(65536)
     })
   })
 
