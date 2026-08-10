@@ -17,6 +17,11 @@
 #   `push` / `schedule` などである。
 #   同一リポジトリのブランチで動く＝PR 作成者がプロンプトやツール許可を
 #   書き換えられる点に注意する（fork では secrets が渡らず実行されない）。
+#   セキュリティ上のリスク受容: 同一リポジトリの write 権限保持者はこの
+#   ワークフローを改変して CLAUDE_CODE_OAUTH_TOKEN を取得できる。より強い
+#   保護には environment + required reviewers が必要になるが、PR のたびに
+#   承認が要って自動レビューが機能しなくなるため、本リポジトリでは
+#   「write 権限保持者は全員トークンを取得可能」というリスクを受容する。
 #
 # Claude を実行する job とコメントを投稿する job を分離し、Claude 側には
 # 読み取り専用の GITHUB_TOKEN だけを渡す。投稿用の pull-requests: write は
@@ -27,6 +32,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [preview]
+    # ドキュメントのみの変更では opus を回さない（コスト抑制）。
+    # .github/workflows/** は対象外にしない（ワークフロー自身の変更は必ずレビューする）。
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.mdx'
+      - 'docs/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -42,8 +53,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    env:
-      CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
     outputs:
       review: ${{ steps.review.outputs.structured_output }}
       configured: ${{ steps.check-token.outputs.configured }}
@@ -119,7 +128,6 @@ jobs:
     # （先行runの正常レビューを失敗通知で上書きしないため）。
     if: >-
       !cancelled() &&
-      needs.claude_review.result != 'skipped' &&
       needs.claude_review.outputs.configured == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -175,6 +183,15 @@ jobs:
               }
             }
 
+            // プロンプトインジェクションで diff 経由の指示により Claude が
+            // 環境上のシークレット（CLAUDE_CODE_OAUTH_TOKEN 等）を出力に含めて
+            // も、公開 PR コメントへ漏れないよう既知のトークン形式を伏字化する。
+            // GitHub のシークレットマスキングはログにのみ効き、API のコメント
+            // 本文には適用されないため、ここでのサニタイズが必要。
+            const SECRET_PATTERN =
+              /\b(sk-ant-[A-Za-z0-9_-]{10,}|oauth_[A-Za-z0-9_-]{10,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
+            reviewText = reviewText.replace(SECRET_PATTERN, '[REDACTED]');
+
             // GitHub の issue comment は 65536 文字上限。プロンプトで 6000 字以内を
             // 指示しているが、万一長い場合は安全側で行単位に切り詰める
             // （コードフェンスの途中で切れて描画が崩れないように）。
@@ -203,11 +220,14 @@ jobs:
               per_page: 100,
             });
             const existing = comments.find((comment) =>
-              comment.user?.type === 'Bot' &&
               comment.user?.login === 'github-actions[bot]' &&
               comment.body?.split('\n', 1)[0].trim() === marker,
             );
 
+            // 同一コメントを in-place 更新するため、2回目以降の結果は通知が
+            // 飛ばない（意図的なトレードオフ: 更新なら増殖せず、Reviewed commit
+            // 表記でどのコミットの結果か判別できる。通知が必要なら新規コメント
+            // 方式への変更を検討する）。
             if (existing) {
               await github.rest.issues.updateComment({
                 owner,
@@ -224,18 +244,19 @@ jobs:
               });
             }
 
-            // 反対マーカーの自コメント（前回の失敗通知/成功レビュー）を掃除し、
-            // 最新の1件だけが残るようにする。
-            const otherMarker = isFailure ? successMarker : failureMarker;
-            const stale = comments.find((comment) =>
-              comment.user?.type === 'Bot' &&
-              comment.user?.login === 'github-actions[bot]' &&
-              comment.body?.split('\n', 1)[0].trim() === otherMarker,
-            );
-            if (stale && stale.id !== existing?.id) {
-              await github.rest.issues.deleteComment({
-                owner,
-                repo,
-                comment_id: stale.id,
-              });
+            // 成功時のみ、過去の失敗通知コメントを掃除して最新の1件だけ残す。
+            // 失敗時は成功レビューを削除しない（失敗で過去の有効なレビューが
+            // 消えるのを防ぐ。Reviewed commit 表記で新旧を判別できる）。
+            if (!isFailure) {
+              const staleComments = comments.filter((comment) =>
+                comment.user?.login === 'github-actions[bot]' &&
+                comment.body?.split('\n', 1)[0].trim() === failureMarker,
+              );
+              for (const stale of staleComments) {
+                await github.rest.issues.deleteComment({
+                  owner,
+                  repo,
+                  comment_id: stale.id,
+                });
+              }
             }
