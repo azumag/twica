@@ -150,12 +150,14 @@ jobs:
             レビュー本文は日本語で 6000 字以内に収めてください。
             コードやGitHub上の状態は変更せず、レビュー本文だけを返してください。
             最終回答は指定されたJSON SchemaのreviewフィールドにMarkdownで格納してください。
+          # この allowlist は Bash の部分一致による緩い境界（ls/cat 等は実行
+          # されうる）。実効的な封じ込めは Claude Code 側のサンドボックス層
+          # （node/npx/env 等は拒否されることを実測）と read-only token に依存。
+          # 注意: コメントを claude_args の折り畳みブロック内に置かないこと
+          # （文字列へ混入して --json-schema 等を壊す。#916 round-18 で実測）。
           claude_args: >-
             --model opus
             --max-turns 30
-            # この allowlist は Bash の部分一致による緩い境界（ls/cat 等は実行
-            # されうる）。実効的な封じ込めは Claude Code 側のサンドボックス層
-            # （node/npx/env 等は拒否されることを実測）と read-only token に依存。
             --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read($GITHUB_WORKSPACE/**),Grep,Glob"
             --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(gh:*),WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
             --json-schema '{"type":"object","properties":{"review":{"type":"string"}},"required":["review"],"additionalProperties":false}'
