@@ -48,12 +48,13 @@ export function truncateAndCloseFences(text) {
 }
 
 // structured_output の JSON から review 本文を取り出す。
-// review フィールドが空・空白のみの場合は null を返す（呼び出し側で failure にする）。
-// JSON として壊れている場合は throw する。
+// review フィールドが空・空白のみ、または JSON として壊れている場合は throw する
+// （workflow 側で failure にする。空・空白は jq の早期チェックでも弾かれるため、
+//  ここは後段の防御）。
 export function parseReviewJson(json) {
   const { review } = JSON.parse(json)
   if (typeof review !== 'string' || review.trim() === '') {
-    return null
+    throw new Error('empty')
   }
   return review.trim()
 }
@@ -91,4 +92,9 @@ export function hasReviewMarker(comment, marker) {
 
 export function isOwnReviewComment(comment, marker) {
   return comment?.user?.login === REVIEW_COMMENT_AUTHOR && hasReviewMarker(comment, marker)
+}
+
+// コメント一覧からこのワークフローが投稿したレビューコメントを探す。
+export function findOwnReviewComment(comments, marker) {
+  return comments.find((comment) => isOwnReviewComment(comment, marker))
 }

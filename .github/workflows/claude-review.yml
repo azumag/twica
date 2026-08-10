@@ -27,14 +27,17 @@
 #   write 権限保持者（PR 作者）に対する防御ではない（彼らは head の
 #   format-review.mjs を差し替えられる。issue #917 で追跡）。
 #   生トークン完全一致チェックは workflow の run ステップ内にあるため、
-#   伏字化より相対的に強い。
+#   伏字化より相対的に強い。Read のワークスペース制限は Grep / Glob が
+#   パス無制限のため実効的ではない（残余リスクとして受容）。
 #   なおボット作成の PR（Renovate / Dependabot 等）は job 条件
 #   （github.event.pull_request.user.type != 'Bot'）でレビュー対象外。
 #   したがって「write 権限保持者起点」の露出面は人間の権限保持者に限定される。
-#   paths で **.md を除外しているため、md のみの追い push ではレビューが走らず
-#   コメントは古い SHA を指したまま残る。またこの workflow を required check に
-#   する場合は md のみの PR で pending が残りマージ不能になるため、required
-#   check 化はしないこと（いずれも受容）。
+#   paths は PR 全体の変更ファイル集合で評価されるため、md のみの PR では
+#   初回からワークフローが起動せずコメントも作られない。md 以外を含む PR では
+#   md のみの追い push でも起動する。この workflow を required check にする場合は
+#   md のみの PR で pending が残りマージ不能になるため、required check 化は
+#   しないこと。なお GitHub 側の制限として、変更ファイルが極端に多い PR では
+#   paths が無視されて常に実行される（コスト受容の前提）。
 #
 # Claude 実行 job と投稿 job を分離し、投稿用の pull-requests: write は Claude の
 # 実行終了後にのみ使う。post_review も PR head 由来の .github/scripts/
@@ -180,9 +183,6 @@ jobs:
         env:
           STRUCTURED_OUTPUT: ${{ steps.review.outputs.structured_output }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        # Claude が success で終了しても構造化出力が空のことがある（max-turns
-        # 到達等）。そのままでは後続 job が緑のまま無言になるため、明示的に
-        # failure にして Checks を赤くする。
         # 出力を run スクリプトへ直接展開しないこと: Claude の出力は PR diff
         # 由来で攻撃者制御の文字列であり、JSON のダブルクォートや $(...) が
         # シェルを壊し任意コマンド実行の経路になり得るため、必ず env 経由で
@@ -191,14 +191,11 @@ jobs:
         # この job（トークンへ到達できる唯一の job）で生トークンの完全一致を
         # 検査し、出力への漏洩を確実にブロックする。
         run: |
-          # ここは「Claude アクションの structured_output 自体が欠落した場合」を捕捉する。
-          if [ -z "$STRUCTURED_OUTPUT" ]; then
-            echo "::error::Claude review structured output is empty（max-turns / timeout 到達の可能性）"
-            exit 1
-          fi
-          # JSON として妥当で review フィールドが空・空白のみでないことを早期に
-          # 確認する（post_review 側のパース失敗をトークン到達 job で切り分ける）。
-          if ! echo "$STRUCTURED_OUTPUT" | jq -e '.review | select(type == "string" and (gsub("\\s"; "") | length > 0))' >/dev/null; then
+          # 構造化出力が空（max-turns / timeout 到達等）または review フィールドが
+          # 空・空白のみの場合は失敗にして Checks を赤くする。
+          # 空・空白・JSON 破損をまとめて jq で捕捉する（後段の post_review で
+          # パース失敗として再検出される前に、トークン到達 job で切り分ける）。
+          if ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e '.review | select(type == "string" and (gsub("\\s"; "") | length > 0))' >/dev/null; then
             echo "::error::Claude review structured output is not a valid review JSON"
             exit 1
           fi
@@ -262,6 +259,7 @@ jobs:
             const { pathToFileURL } = require('node:url');
             const {
               buildReviewCommentBody,
+              findOwnReviewComment,
               hasReviewMarker,
               isOwnReviewComment,
               parseReviewJson,
@@ -280,15 +278,14 @@ jobs:
 
             let reviewText;
             try {
-              // null = review フィールドが空・空白のみ（ここで捕捉して failure にする）
               reviewText = parseReviewJson(process.env.REVIEW_JSON);
-              if (reviewText === null) {
-                core.setFailed('Claude review output is empty');
-                return;
-              }
             } catch (error) {
               // error.message は入力断片を含み得るため出さない（ログへの漏洩防止）。
-              core.setFailed('Claude review output is not valid JSON');
+              core.setFailed(
+                error.message === 'empty'
+                  ? 'Claude review output is empty'
+                  : 'Claude review output is not valid JSON',
+              );
               return;
             }
 
@@ -319,7 +316,7 @@ jobs:
               issue_number: issueNumber,
               per_page: 100,
             });
-            const existing = comments.find((comment) => isOwnReviewComment(comment, marker));
+            const existing = findOwnReviewComment(comments, marker);
 
             if (existing) {
               await github.rest.issues.updateComment({
@@ -331,15 +328,16 @@ jobs:
             } else {
               // 投稿者ログインが REVIEW_COMMENT_AUTHOR とズレると常に新規コメントが
               // 積み上がるサイレント劣化になるため、マーカー付き既存コメントが
-              // あるのに上書き対象が見つからない場合は warning で検知する。
+              // あるのに上書き対象が見つからない場合は失敗にして増殖を防ぐ。
               // マーカーは公開情報のため、ボット以外の投稿はノイズ除外する
               const stale = comments.filter(
                 (comment) => comment.user?.type === 'Bot' && hasReviewMarker(comment, marker),
               ).length;
               if (stale > 0) {
-                core.warning(
+                core.setFailed(
                   `${stale} 件のマーカー付きコメントが投稿者不一致のため上書き対象になりません`,
                 );
+                return;
               }
               await github.rest.issues.createComment({
                 owner,

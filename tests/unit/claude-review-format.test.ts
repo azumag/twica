@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildReviewCommentBody,
+  findOwnReviewComment,
   hasReviewMarker,
   isOwnReviewComment,
   MAX_BODY_LENGTH,
@@ -92,6 +93,12 @@ describe('claude-review format helpers', () => {
       expect(truncateAndCloseFences(text)).toBe(text)
     })
 
+    it('does not add a closing fence when fences are balanced after truncation', () => {
+      const text = '```js\n' + 'x'.repeat(MAX_BODY_LENGTH) + '\n```'
+      const out = truncateAndCloseFences(text)
+      expect(out).toContain('（長すぎるため省略）')
+      expect(out.match(/```/g)).toHaveLength(2)
+    })
   })
 
   describe('sanitizeReviewText', () => {
@@ -100,6 +107,12 @@ describe('claude-review format helpers', () => {
       expect(out).not.toContain('sk-ant-api03')
       expect(out).toContain('[REDACTED]')
       expect(out.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
+    })
+
+    it('redacts a token that sits across the truncation boundary', () => {
+      const token = 'sk-ant-api03-abcdefghij0123456789'
+      const out = sanitizeReviewText('x'.repeat(MAX_BODY_LENGTH - 10) + token)
+      expect(out).not.toContain('sk-ant-')
     })
   })
 
@@ -158,13 +171,35 @@ describe('claude-review format helpers', () => {
       expect(parseReviewJson('{"review":"  指摘なし  "}')).toBe('指摘なし')
     })
 
-    it('returns null for a missing or whitespace-only review field', () => {
-      expect(parseReviewJson('{"review":""}')).toBeNull()
-      expect(parseReviewJson('{"review":"   "}')).toBeNull()
+    it('throws for a missing, empty, or non-string review field', () => {
+      expect(() => parseReviewJson('{"review":""}')).toThrow()
+      expect(() => parseReviewJson('{"review":"   "}')).toThrow()
+      expect(() => parseReviewJson('{"review":123}')).toThrow()
+      expect(() => parseReviewJson('{}')).toThrow()
     })
 
     it('throws for invalid JSON', () => {
       expect(() => parseReviewJson('not json')).toThrow()
+    })
+  })
+
+  describe('findOwnReviewComment', () => {
+    const marker = '<!-- claude-auto-review-preview -->'
+
+    it('finds the workflow-owned comment and ignores others', () => {
+      const comments = [
+        { user: { login: 'renovate[bot]', type: 'Bot' }, body: `${marker}\n...` },
+        { user: { login: 'azumag', type: 'User' }, body: '普通のコメント' },
+        {
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+          body: `${marker}\n## Claude Auto Review`,
+        },
+      ]
+      expect(findOwnReviewComment(comments, marker)?.user?.login).toBe('github-actions[bot]')
+    })
+
+    it('returns undefined when no owned comment exists', () => {
+      expect(findOwnReviewComment([], marker)).toBeUndefined()
     })
   })
 
