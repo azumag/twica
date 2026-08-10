@@ -25,18 +25,23 @@
 # 実行終了後にのみ使う。post_review も PR head 由来の .github/scripts/
 # format-review.mjs を実行するが、workflow 定義自体が head 由来である以上
 # 実効的な権限拡大はなく、fork では secrets が渡らず起動条件も満たされない。
+# なおコメントは同一コメントを updateComment で上書きする（単一コメント維持
+# 方針）ため、購読者への通知は発生しない。PR ページで確認する運用。
 name: Claude Auto Review (preview)
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [preview]
-    # ドキュメントのみの変更では opus を回さない（コスト抑制）。
-    # .github/workflows/** は対象外にしない（ワークフロー自身の変更は必ずレビューする）。
-    paths-ignore:
-      # `**` は「/ を含む任意の文字列」のため、`**/*.md` はルート直下の
-      # README.md 等にマッチしない解釈になり得る。`**.md` なら全階層にマッチする。
-      - '**.md'
+    # ドキュメントのみの変更では opus を回さない（コスト抑制）。ただし
+    # AGENTS.md / CLAUDE.md はレビュー基準そのものなので対象から外さない。
+    # paths は最後にマッチしたパターンが優先されるため、
+    # 全ファイル含む → md 除外 → 上記2ファイル再含む、の順で書く。
+    paths:
+      - '**'
+      - '!**/*.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
     # main 向け PR は対象外（preview でレビュー済みの内容を昇格するだけのため意図的）
 
 concurrency:
@@ -148,10 +153,12 @@ jobs:
         # この job（トークンへ到達できる唯一の job）で生トークンの完全一致を
         # 検査し、出力への漏洩を確実にブロックする。
         run: |
+          # ここは「Claude アクションの structured_output 自体が欠落した場合」を捕捉する。
           if [ -z "$STRUCTURED_OUTPUT" ]; then
             echo "::error::Claude review structured output is empty"
             exit 1
           fi
+          # 生トークンの完全一致チェック（正規表現の網を外れた漏洩をブロック）。
           case "$STRUCTURED_OUTPUT" in
             *"$CLAUDE_CODE_OAUTH_TOKEN"*)
               echo "::error::Claude review output contains the OAuth token"
@@ -167,6 +174,7 @@ jobs:
     # 失敗は review job の failure（Checks が赤）で通知する。
     # configured が false なら review step はスキップされ outputs.review が空になる
     # ため、review != '' が configured 条件を包含する。
+    # ここは「job 出力（structured_output）が空の場合」を捕捉するゲート。
     if: >-
       needs.claude_review.result == 'success' &&
       needs.claude_review.outputs.review != ''
@@ -179,15 +187,18 @@ jobs:
       REVIEW_JSON: ${{ needs.claude_review.outputs.review }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
+      RUN_URL: ${{ format('{0}/{1}/{2}/{3}', github.server_url, github.repository, 'actions/runs', github.run_id) }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           # 整形ロジック（format-review.mjs）を読み込むために必要。claude_review
-          # job の checkout は別ランナーで共有されない。全ツリーは不要なので
-          # .github/scripts のみ sparse checkout する。head SHA を明示するのは
-          # コンフリクト中の PR で merge ref が無いため（PR 作成者による改変は
-          # write 権限保持者のリスク受容範囲内。ヘッダコメント参照）。
+          # job の checkout は別ランナーで共有されない。cone モード既定の
+          # sparse-checkout で .github/scripts を対象にする（ルート直下の
+          # ファイルは常に展開される）。head SHA を明示するのはコンフリクト中の
+          # PR で merge ref が無いため。初回導入時は base 側にこのファイルが
+          # 存在しないため head を使うが、preview へマージ後は base.sha に
+          # 切り替え、write 権限 job で head 由来コードを実行しないようにする。
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           sparse-checkout: .github/scripts
@@ -218,6 +229,7 @@ jobs:
             let reviewText;
             try {
               const { review } = JSON.parse(process.env.REVIEW_JSON);
+              // ここは「JSON の review フィールドが空白のみの場合」を捕捉する。
               if (typeof review !== 'string' || review.trim() === '') {
                 core.setFailed('Claude review output is empty');
                 return;
@@ -230,7 +242,13 @@ jobs:
 
             const commitUrl =
               `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/commit/${process.env.REVIEWED_SHA}`;
-            const body = buildReviewCommentBody({ marker, shortSha, commitUrl, reviewText });
+            const body = buildReviewCommentBody({
+              marker,
+              shortSha,
+              commitUrl,
+              runUrl: process.env.RUN_URL,
+              reviewText,
+            });
 
             // 全ページから探す。判定ロジックは isOwnReviewComment に切り出し、
             // テストで検証している。
