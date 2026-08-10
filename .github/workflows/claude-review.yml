@@ -12,8 +12,11 @@
 # - GitHub Secrets に `CLAUDE_CODE_OAUTH_TOKEN`（Claude Code OAuth トークン）を設定。
 #   トークンの発行・更新はオーナーが `claude setup-token` で実施し、
 #   GitHub Secret を自身で差し替えること（Action 側で値を読み書きしない）。
-# - ワークフローはベースブランチ（preview）に存在する必要がある
-#   （pull_request イベントはベースブランチのワークフロー定義で処理される）。
+# - `pull_request` イベントは PR ヘッド側（マージ ref）のワークフロー定義で
+#   実行される。ベースブランチ側の定義が使われるのは `pull_request_target` /
+#   `push` / `schedule` などである。
+#   同一リポジトリのブランチで動く＝PR 作成者がプロンプトやツール許可を
+#   書き換えられる点に注意する（fork では secrets が渡らず実行されない）。
 #
 # Claude を実行する job とコメントを投稿する job を分離し、Claude 側には
 # 読み取り専用の GITHUB_TOKEN だけを渡す。投稿用の pull-requests: write は
@@ -26,7 +29,7 @@ on:
     branches: [preview]
 
 concurrency:
-  group: ${{ github.workflow }}-claude-auto-review-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -43,19 +46,31 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
     outputs:
       review: ${{ steps.review.outputs.structured_output }}
-      configured: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED }}
+      configured: ${{ steps.check-token.outputs.configured }}
 
     steps:
+      - name: Check token configured
+        id: check-token
+        # job の env を outputs から参照するのは GitHub Actions のコンテキスト
+        # 可用性の境界で壊れやすいため、step output 経由で確実に渡す。
+        run: echo "configured=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
-        if: env.CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED == 'true'
+        if: steps.check-token.outputs.configured == 'true'
         uses: actions/checkout@v4
         with:
+          # three-dot diff (base...head) は merge-base 解決に双方の履歴が必要。
+          # fetch-depth を絞ると base 側の commit が欠けて diff が失敗しうるため
+          # 全履歴を取得する（チェックアウト時間と安全性のトレードオフ）。
           fetch-depth: 0
           persist-credentials: false
 
       - name: Claude Code Review (opus)
         id: review
-        if: env.CLAUDE_CODE_OAUTH_TOKEN_CONFIGURED == 'true'
+        if: steps.check-token.outputs.configured == 'true'
+        # 供給元タグの更新で挙動が変わり得るため、コミットSHAピンが定石だが、
+        # 本リポジトリの他ワークフロー（actions/checkout@v4 等）が可変タグ運用の
+        # ため、ここも同様にタグ運用とし、将来 actionlint 導入時に SHA ピン化を検討する。
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -74,6 +89,7 @@ jobs:
             `git diff --find-renames ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}`
 
             必要に応じて `git log`、`git show`、関連ソースの読み取りで文脈を確認してください。
+            リポジトリの AGENTS.md がある場合はそれを読み、レビュー観点として従ってください。
 
             レビュー観点（AGENTS.md 準拠）:
             - コード品質とベストプラクティス
@@ -86,13 +102,14 @@ jobs:
 
             指摘は日本語で行い、具体的な問題にはファイルと行を明記してください。
             問題がない場合は「指摘なし」と明記してください。
+            レビュー本文は日本語で 6000 字以内に収めてください。
             コードやGitHub上の状態は変更せず、レビュー本文だけを返してください。
             最終回答は指定されたJSON SchemaのreviewフィールドにMarkdownで格納してください。
           claude_args: >-
             --model opus
             --max-turns 30
             --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read,Grep,Glob"
-            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(gh:*),Bash(curl:*),Bash(wget:*),WebFetch,WebSearch,mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
             --json-schema '{"type":"object","properties":{"review":{"type":"string"}},"required":["review"],"additionalProperties":false}'
 
   post_review:
@@ -127,17 +144,22 @@ jobs:
 
             // 成功系と失敗系で別マーカーを使い、失敗通知が既存の正常レビューを
             // 上書きしないようにする（連続pushキャンセル・APIエラー等での損失防止）。
+            // マーカーは常に本文の1行目に置くため、一致判定も先頭行限定にする
+            // （レビュー本文にマーカー文字列が混入しても取り違えない）。
             const successMarker = '<!-- claude-auto-review-preview -->';
             const failureMarker = '<!-- claude-auto-review-failure -->';
 
             let reviewText;
             let isFailure = false;
-            if (process.env.REVIEW_RESULT !== 'success' || !process.env.REVIEW_JSON) {
+            if (process.env.REVIEW_RESULT !== 'success') {
               isFailure = true;
               reviewText =
                 `レビューを実行できませんでした（job result: \`${process.env.REVIEW_RESULT}\`）。` +
                 `原因の候補: \`--max-turns\` 到達、\`timeout-minutes\` 超過、` +
                 `または構造化出力の生成失敗。`;
+            } else if (!process.env.REVIEW_JSON) {
+              isFailure = true;
+              reviewText = 'レビューを実行できませんでした（Claude の構造化出力が生成されませんでした）。';
             } else {
               try {
                 const { review } = JSON.parse(process.env.REVIEW_JSON);
@@ -153,11 +175,16 @@ jobs:
               }
             }
 
-            // GitHub の issue comment は 65536 文字上限。長文レビューで 422 に
-            // ならないよう安全側で切り詰める。
+            // GitHub の issue comment は 65536 文字上限。プロンプトで 6000 字以内を
+            // 指示しているが、万一長い場合は安全側で行単位に切り詰める
+            // （コードフェンスの途中で切れて描画が崩れないように）。
             const MAX_BODY_LENGTH = 60000;
             if (reviewText.length > MAX_BODY_LENGTH) {
-              reviewText = reviewText.slice(0, MAX_BODY_LENGTH) + '\n\n（長すぎるため省略）';
+              const truncated = reviewText.slice(0, MAX_BODY_LENGTH);
+              const lastNewline = truncated.lastIndexOf('\n');
+              reviewText =
+                (lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated) +
+                '\n\n（長すぎるため省略）';
             }
 
             const marker = isFailure ? failureMarker : successMarker;
@@ -167,19 +194,18 @@ jobs:
               `Reviewed commit: \`${shortSha}\`\n\n` +
               `*Generated by Claude Code (opus)*`;
 
-            // 最近のコメントから探す（投稿者を bot に限定して第三者コメントの
-            // 誤上書きを防ぐ。マーカーは誰でも知り得るため投稿者チェックは必須）。
-            const { data: comments } = await github.rest.issues.listComments({
+            // 全ページから探す（投稿者を bot に限定して第三者コメントの誤上書きを
+            // 防ぐ。マーカーは誰でも知り得るため投稿者チェックは必須）。
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
               repo,
               issue_number: issueNumber,
               per_page: 100,
-              direction: 'desc',
             });
             const existing = comments.find((comment) =>
               comment.user?.type === 'Bot' &&
               comment.user?.login === 'github-actions[bot]' &&
-              comment.body?.includes(marker),
+              comment.body?.split('\n', 1)[0].trim() === marker,
             );
 
             if (existing) {
@@ -195,5 +221,21 @@ jobs:
                 repo,
                 issue_number: issueNumber,
                 body,
+              });
+            }
+
+            // 反対マーカーの自コメント（前回の失敗通知/成功レビュー）を掃除し、
+            // 最新の1件だけが残るようにする。
+            const otherMarker = isFailure ? successMarker : failureMarker;
+            const stale = comments.find((comment) =>
+              comment.user?.type === 'Bot' &&
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.split('\n', 1)[0].trim() === otherMarker,
+            );
+            if (stale && stale.id !== existing?.id) {
+              await github.rest.issues.deleteComment({
+                owner,
+                repo,
+                comment_id: stale.id,
               });
             }
