@@ -12,6 +12,19 @@ compatibility_flags = ["nodejs_compat"]
 [limits]
 cpu_ms = 1000
 
+# Issue #906: 高頻度ポーリングAPI（/api/maintenance-status）のCPU削減のため、
+# Workers Cache（HTTPエッジキャッシュ）を有効化する。HIT時はWorkerが実行されず
+# CPU課金ゼロになる。キャッシュ対象は middleware の CACHEABLE_PUBLIC_PATHS に
+# 明示したパスのみ（fail-closed: それ以外は private, no-store をデフォルト付与）。
+# 注意:
+# - 静的アセットリクエストは「無料」から「リクエスト課金」に変わる（有効化前後の
+#   請求・Analytics を比較して確認すること）。
+# - サービスバインディング呼び出し（OVERLAY_REALTIME_SERVICE）も標準レートで
+#   課金化される。
+# - [env.preview] はこの [cache] 設定を継承する（preview でもキャッシュが効く）。
+[cache]
+enabled = true
+
 [observability]
 enabled = true
 
