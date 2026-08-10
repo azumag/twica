@@ -57,8 +57,21 @@ describe('middleware fail-closed Cache-Control (issue #906)', () => {
   })
 
   it('キャッシュ許可パス（/api/overlay/ 配下の realtime-config）にも no-store を付与しない', async () => {
-    const response = await middleware(makeRequest('/api/overlay/streamer-1/realtime-config'))
+    const response = await middleware(makeRequest('/api/overlay/123e4567-e89b-42d3-a456-426614174000/realtime-config'))
     expect(response.headers.get('Cache-Control')).toBeNull()
+  })
+
+  it('overlay events（3秒間隔ポーリング・Cache-Control 未設定）には private, no-store を付与する', async () => {
+    // /api/overlay/ の prefix 許可だと events が Workers Caching のヒューリスティック
+    // TTL（200 → 2時間）でキャッシュされてしまうため、エンドポイント単位の
+    // 絞り込み（realtime-config のみ）を固定する回帰テスト。
+    const response = await middleware(makeRequest('/api/overlay/123e4567-e89b-42d3-a456-426614174000/events'))
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+  })
+
+  it('overlay demo-events にも private, no-store を付与する（ルート側 no-store と二重防御）', async () => {
+    const response = await middleware(makeRequest('/api/overlay/123e4567-e89b-42d3-a456-426614174000/demo-events'))
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
   })
 
   it('ページルートにも private, no-store を付与する（トップページ以外）', async () => {

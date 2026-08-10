@@ -96,14 +96,9 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 // （fail-closed）。キャッシュの最終決定権はルート側の Cache-Control にある
 // （Next.js ではルートハンドラが middleware の後に実行され、ヘッダーを上書きできる）。
 // つまり、ここに無いパスでもルートが public を設定すればキャッシュされるため、
-// ルート側の public 設定とこのリストは常に同期させること。
+// ルート側の public 設定とこの判定は常に同期させること。
 // 機密情報を返さない・セッション非依存のエンドポイントのみを許可する。
-const CACHEABLE_PUBLIC_PATHS = [
-  '/api/maintenance-status',
-  // realtime-config はルート側で `public, max-age=15, stale-while-revalidate=15` を
-  // 明示しており、意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
-  '/api/overlay/',
-]
+const CACHEABLE_PUBLIC_PATHS = ['/api/maintenance-status']
 
 /**
  * #694 Stage 3: maintenance mode (off 以外) のとき、/api 配下の write メソッド
@@ -187,9 +182,16 @@ export async function middleware(request: NextRequest) {
   // ルートより先に実行されるため、ルートが最終的にヘッダーを上書きできる）。
   // 400/429/503 等のエラーレスポンスは Workers Cache のヒューリスティック対象外のため、
   // 早期 return 経路では Cache-Control を設定しない。
-  const isCacheablePublicPath = CACHEABLE_PUBLIC_PATHS.some((path) =>
-    pathname.startsWith(path)
-  )
+  // /api/overlay/ 配下は prefix ではなくエンドポイント単位で判定する。
+  // events は OBS オーバーレイの 3 秒間隔ポーリングだが Cache-Control を設定
+  // しないため、prefix 許可だと Workers Caching のヒューリスティック TTL
+  // （200 → 2時間）でキャッシュされ、ガチャ結果の表示が最大2時間止まる。
+  // realtime-config はルート側で `public, max-age=15, stale-while-revalidate=15` を
+  // 明示する意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
+  const isCacheablePublicPath =
+    CACHEABLE_PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
+    (pathname.startsWith('/api/overlay/') &&
+      pathname.endsWith('/realtime-config'))
   if (!isCacheablePublicPath) {
     response.headers.set('Cache-Control', 'private, no-store')
   }
