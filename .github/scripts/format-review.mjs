@@ -33,6 +33,13 @@ export function truncateAndCloseFences(text) {
     ? // 末尾が孤立サロゲート（絵文字の片割れ）なら除去し、JSON 化での文字化けを防ぐ
       text.slice(0, MAX_BODY_LENGTH).replace(/[\uD800-\uDBFF]$/, '')
     : text
+  if (needsTruncation) {
+    // 行途中で切れた不完全行を落とす（フェンスの途中切断で補完が破綻するのを防ぐ）
+    const lastNewline = result.lastIndexOf('\n')
+    if (lastNewline > 0) {
+      result = result.slice(0, lastNewline)
+    }
+  }
   // 行頭の ``` のみ数える簡易ヒューリスティック（4連バッククォートの入れ子や
   // フェンス内の例示は誤判定し得る。4連バッククォートで開いたブロックは
   // 閉じられずフッターがコードブロックに飲み込まれることもあるが表示崩れのみ）。
@@ -87,7 +94,9 @@ export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, sa
 const REVIEW_COMMENT_AUTHOR = 'github-actions[bot]'
 
 export function findOwnReviewComment(comments, marker) {
-  return comments.find(
+  // 重複投稿の競合（キャンセルと新 run のタイミング）で古いコメントが残る場合に
+  // 最新を更新対象にするため、末尾から探す。
+  return comments.findLast(
     (comment) =>
       comment?.user?.login === REVIEW_COMMENT_AUTHOR &&
       // 先頭行がマーカーかどうか（GitHub API が \r\n を返し得るため trim する）

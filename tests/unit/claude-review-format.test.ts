@@ -98,6 +98,11 @@ describe('claude-review format helpers', () => {
       expect(out).toContain('（長すぎるため省略）')
       expect(out.match(/```/g)).toHaveLength(2)
     })
+
+    it('drops a lone high surrogate left at the cut', () => {
+      const out = truncateAndCloseFences('a'.repeat(MAX_BODY_LENGTH - 1) + '😀' + 'b'.repeat(10))
+      expect(/[\uD800-\uDBFF]/.test(out)).toBe(false)
+    })
   })
 
   describe('sanitizeReviewText', () => {

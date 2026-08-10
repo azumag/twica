@@ -29,9 +29,8 @@
 #   format-review.mjs を差し替えられる。issue #917 で追跡）。
 #   生トークン完全一致チェックは workflow の run ステップ内にあるため、
 #   伏字化より相対的に強い。
-#   なおボット作成の PR（Renovate / Dependabot 等）は job 条件
-#   （github.event.pull_request.user.type != 'Bot'）でレビュー対象外。
-#   したがって「write 権限保持者起点」の露出面は人間の権限保持者に限定される。
+#   なおボット作成の PR（Renovate / Dependabot / エージェント等）も同一リポジトリ
+#   発火なら secrets が渡るため、露出面は「write 権限保持者（人間・ボット問わず）」。
 #   paths は PR 全体の変更ファイル集合で評価されるため、md のみの PR では
 #   初回からワークフローが起動せずコメントも作られない。md 以外を含む PR では
 #   md のみの追い push でも起動する。この workflow を required check にする場合は
@@ -73,10 +72,9 @@ concurrency:
 jobs:
   claude_review:
     name: Review PR changes
-    # draft PR と bot 作成の PR（Renovate 等）では opus を回さない
-    if: >-
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.user.type != 'Bot'
+    # draft PR では opus を回さない。bot 作成 PR（Renovate / Dependabot /
+    # エージェント等）はレビュー対象に含める（エージェント起点の変更こそ要レビュー）。
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # コスト受容: preview 向け PR の synchronize ごとに opus（最大30ターン）を
@@ -218,7 +216,8 @@ jobs:
     # 失敗は review job の failure（Checks が赤）で通知する。
     # configured が false なら review step はスキップされ outputs.review が空になる
     # ため、review != '' が configured 条件を包含する。
-    # ここは「job 出力（structured_output）が空の場合」を捕捉するゲート。
+    # ここは fork / トークン未設定で claude_review の step が skip された経路で
+    # post_review を起動させないためのゲート（空出力自体は jq チェックで捕捉済み）。
     if: >-
       needs.claude_review.result == 'success' &&
       needs.claude_review.outputs.review != ''
@@ -293,17 +292,9 @@ jobs:
               runUrl: process.env.RUN_URL,
               safeText: safe,
             });
-            // 単一コメントの上書きでは購読者へ通知されないため、Checks の
-            // Step summary にも本文を残して可視化する（整形済みの safe を
-            // コメントと共用するため伏字化の迂回は起きない）。
-            require('node:fs').appendFileSync(
-              process.env.GITHUB_STEP_SUMMARY,
-              `## Claude Auto Review\n\n${safe}\n`,
-            );
-
-            // 全ページから探す。判定ロジックは isOwnReviewComment / hasReviewMarker
-            // に切り出し、テストで検証している。期待投稿者は github-token の
-            // 投稿主（github-actions[bot]）に固定されており、トークン差し替え時は
+            // 全ページから探す。判定ロジックは findOwnReviewComment に切り出し、
+            // テストで検証している。期待投稿者は github-token の投稿主
+            // （github-actions[bot]）に固定されており、トークン差し替え時は
             // format-review.mjs の REVIEW_COMMENT_AUTHOR も変更する。
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
@@ -328,3 +319,10 @@ jobs:
                 body,
               });
             }
+            // 単一コメントの上書きでは購読者へ通知されないため、Checks の
+            // Step summary にも本文を残して可視化する（投稿成功後に書くことで
+            // 未投稿なのに投稿済みに見えるのを防ぐ。整形済みの safe をコメントと共用）。
+            require('node:fs').appendFileSync(
+              process.env.GITHUB_STEP_SUMMARY,
+              `## Claude Auto Review\n\n${safe}\n`,
+            );
