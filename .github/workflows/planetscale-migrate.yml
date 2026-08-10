@@ -82,6 +82,15 @@ name: PlanetScale Migrations
 on:
   push:
     branches: [main, preview]
+    # migration そのものか runner スクリプトに変更が無い push ではスキップする。
+    # 実DBへのDDL適用は migration 変更時のみ必要であり、ドキュメント等だけの
+    # push で毎回 PlanetScale へ接続して適用/検証するのは無駄なため。
+    # （workflow_dispatch は手動実行のためパスフィルタを付けない）
+    paths:
+      - 'supabase/migrations/**'
+      - 'db/planetscale/**'
+      - 'scripts/db-migrate.js'
+      - 'scripts/lib/**'
 
   # 手動再実行ではGitHub UIでmainまたはpreviewのrefを選ぶ。Environmentを別inputで
   # 選ばせると「previewコード + production secret」のような危険な組合せを作れるため、

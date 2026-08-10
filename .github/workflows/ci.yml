@@ -6,8 +6,86 @@ on:
   pull_request:
     branches: [ main, preview ]
 
+# 変更ファイルの検出は job 単位で行う。workflow レベルの paths フィルタは
+# 全 job へ一律適用される上、required check が「報告待ち」で詰まったまま
+# マージをブロックし続ける既知の落とし穴があるため使わない。
+# dorny/paths-filter で job ごとに必要なファイル群を判定し、無関係な変更では
+# その job だけスキップする（skip された required check は成功扱いになる）。
 jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      tests: ${{ steps.filter.outputs.tests }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      migrations: ${{ steps.filter.outputs.migrations }}
+      postgres_fixtures: ${{ steps.filter.outputs.postgres_fixtures }}
+      analysis: ${{ steps.filter.outputs.analysis }}
+      i18n: ${{ steps.filter.outputs.i18n }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # push イベントでは直前コミットとの差分検出に履歴が必要
+          # （PR イベントでは REST API を使うため不要だが、両対応で常に取得する）
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # push: 同一ブランチの直前コミットとの差分 / PR: base ブランチとの差分
+          # （PR イベントではこの入力は無視される）
+          base: ${{ github.ref }}
+          filters: |
+            app:
+              - 'src/**'
+              - 'workers/**'
+              - 'messages/**'
+              - 'public/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig*.json'
+              - 'next.config.*'
+              - 'open-next.config.*'
+              - 'postcss.config.*'
+              - 'eslint*.config.*'
+              - 'vitest.config.*'
+              - 'wrangler.toml'
+            tests:
+              - 'tests/**'
+            scripts:
+              - 'scripts/**'
+              - 'config/**'
+            migrations:
+              - 'supabase/migrations/**'
+              - 'db/planetscale/**'
+              - 'scripts/db-migrate.js'
+              - 'scripts/lib/**'
+              - 'scripts/check-migration-order.js'
+            postgres_fixtures:
+              - 'tests/fixtures/analysis-dashboard-pagination-postgres.sql'
+              - 'tests/fixtures/transactional-chat-outbox-postgres.sql'
+              - 'tests/fixtures/transactional-chat-outbox-concurrency.sh'
+            analysis:
+              - 'analysis/**'
+              - 'scripts/check-analysis-browser-supabase.js'
+            i18n:
+              - 'src/**'
+              - 'eslint.i18n.config.mjs'
+              - 'scripts/i18n-debt-files.js'
+
   test:
+    needs: changes
+    # アプリ/テスト/スクリプト/migration のいずれにも触れない変更
+    # （ドキュメント等）ではスキップする。migration を含めるのは unit test が
+    # migration SQL を読み込むため（tests/unit/migration-filenames.test.ts 等）。
+    if: >-
+      needs.changes.outputs.app == 'true' ||
+      needs.changes.outputs.tests == 'true' ||
+      needs.changes.outputs.scripts == 'true' ||
+      needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -65,8 +143,14 @@ jobs:
 
   supabase-shutdown-build:
     name: Application build without Supabase variables
-    needs: test
-    if: ${{ !failure() && !cancelled() }}
+    needs: [changes, test]
+    # test 成功時のみ（スキップ時も可）。app/scripts に触れない変更ではスキップ。
+    # test がスキップされるのは app/scripts 未変更時なので、結果的に
+    # 元の「test が失敗/キャンセルしたら回さない」を維持する。
+    if: >-
+      needs.test.result == 'success' &&
+      (needs.changes.outputs.app == 'true' ||
+       needs.changes.outputs.scripts == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -106,6 +190,8 @@ jobs:
 
   analysis:
     name: Analysis dashboard (guard / typecheck / build)
+    needs: changes
+    if: needs.changes.outputs.analysis == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -150,7 +236,14 @@ jobs:
           echo "OK: bundleにSupabase文字列は含まれていません (${#bundle_files[@]} ファイルを検証)"
 
   lint:
-    if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref == 'preview'
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'main' &&
+      github.head_ref == 'preview' &&
+      (needs.changes.outputs.app == 'true' ||
+       needs.changes.outputs.tests == 'true' ||
+       needs.changes.outputs.scripts == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -170,9 +263,12 @@ jobs:
 
   lint-i18n:
     name: Lint i18n (Japanese literals)
+    needs: changes
     # PRだけでなく、preview/mainへマージされたpushでも同じガードを実行する。
     # PR側のイベントが欠落した場合でも、デプロイ対象のコミットで回帰を検出できるようにする。
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    if: >-
+      (github.event_name == 'pull_request' || github.event_name == 'push') &&
+      needs.changes.outputs.i18n == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -194,7 +290,8 @@ jobs:
 
   migration-order-check:
     name: Migration order check
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -219,6 +316,10 @@ jobs:
 
   planetscale-migration-postgres:
     name: PlanetScale migration PostgreSQL 17
+    needs: changes
+    if: >-
+      needs.changes.outputs.migrations == 'true' ||
+      needs.changes.outputs.postgres_fixtures == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
