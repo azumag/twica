@@ -26,8 +26,8 @@
     "error-reporter:build:production": "cd workers/error-reporter && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js",
     "error-reporter:build:preview": "cd workers/error-reporter && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js",
     "auxiliary-workers:build": "npm run overlay-realtime:build:production && npm run overlay-realtime:build:preview && npm run error-reporter:build:production && npm run error-reporter:build:preview",
-    "overlay-realtime:deploy": "wrangler deploy --config workers/overlay-realtime/wrangler.toml",
-    "overlay-realtime:deploy:preview": "wrangler deploy --config workers/overlay-realtime/wrangler.toml --env preview",
+    "overlay-realtime:deploy": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/overlay-realtime/wrangler.toml",
+    "overlay-realtime:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/overlay-realtime/wrangler.toml --env preview",
     "cloudflare:deploy:production": "bash scripts/cloudflare-workers-build-deploy.sh production deploy",
     "cloudflare:deploy:preview": "bash scripts/cloudflare-workers-build-deploy.sh preview deploy",
     "cloudflare:upload:production": "bash scripts/cloudflare-workers-build-deploy.sh production upload",
@@ -50,7 +50,7 @@
     "probe:maintenance": "node scripts/probe-maintenance-write-surfaces.js",
     "replay:maintenance-eventsub": "node scripts/replay-maintenance-eventsub.js",
     "smoke-check": "node scripts/smoke-check.js",
-    "error-reporter:deploy": "cd workers/error-reporter && npx wrangler deploy",
+    "error-reporter:deploy": "cd workers/error-reporter && OPEN_NEXT_DEPLOY=true npx wrangler deploy",
     "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail"
   },
   "dependencies": {
