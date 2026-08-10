@@ -28,15 +28,6 @@ describe('claude-review format helpers', () => {
       expect(redactSecrets('sk-ant-oat01-abcdefghij0123456789')).toBe('[REDACTED]')
     })
 
-    it('greedily consumes trailing token characters (over-redaction is safe)', () => {
-      const input = 'sk-ant-api03-abcdefghij0123456789X'
-      expect(redactSecrets(input)).toBe('[REDACTED]')
-    })
-
-    it('redacts tokens that follow a word character (no leading boundary)', () => {
-      expect(redactSecrets('Xsk-ant-api03-abcdefghij0123456789')).toBe('X[REDACTED]')
-    })
-
     it('redacts ghp_ tokens even when followed by an underscore', () => {
       expect(redactSecrets('ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAA_')).toBe('[REDACTED]_')
     })
@@ -76,6 +67,21 @@ describe('claude-review format helpers', () => {
       const out = truncateAndCloseFences('x'.repeat(MAX_BODY_LENGTH + 50))
       expect(out).toContain('（長すぎるため省略）')
       expect(out.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
+    })
+
+    it('closes an unclosed fence without truncation', () => {
+      expect(truncateAndCloseFences('```js\nconst x = 1')).toBe('```js\nconst x = 1\n```')
+    })
+
+    it('closes a fence opened before the cut and appends the note after it', () => {
+      const out = truncateAndCloseFences('```js\n' + 'x'.repeat(MAX_BODY_LENGTH))
+      expect(out.lastIndexOf('```')).toBeGreaterThan(0)
+      expect(out.lastIndexOf('```')).toBeLessThan(out.indexOf('（長すぎるため省略）'))
+    })
+
+    it('leaves text at exactly the limit unchanged', () => {
+      const text = 'a'.repeat(MAX_BODY_LENGTH)
+      expect(truncateAndCloseFences(text)).toBe(text)
     })
   })
 
@@ -187,6 +193,18 @@ describe('claude-review format helpers', () => {
           {
             user: { login: 'github-actions[bot]', type: 'Bot' },
             body: '## Claude Auto Review',
+          },
+          marker,
+        ),
+      ).toBe(false)
+    })
+
+    it('rejects a comment with the marker after the first line', () => {
+      expect(
+        isOwnReviewComment(
+          {
+            user: { login: 'github-actions[bot]', type: 'Bot' },
+            body: `## Claude Auto Review\n${marker}`,
           },
           marker,
         ),

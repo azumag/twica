@@ -79,11 +79,18 @@ jobs:
         # 可用性の境界で壊れやすいため、step output 経由で確実に渡す。
         run: |
           configured=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          fork=${{ github.event.pull_request.head.repo.fork }}
           echo "configured=$configured" >> "$GITHUB_OUTPUT"
           if [ "$configured" != "true" ]; then
             # トークン失効・未設定が長期間気付かれず「全緑」になるのを防ぐ。
             echo "::warning::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューはスキップされます"
             echo "CLAUDE_CODE_OAUTH_TOKEN が未設定、または fork PR のため secrets が渡らないため、Claude 自動レビューはスキップされます。" >> "$GITHUB_STEP_SUMMARY"
+            # fork PR では secrets が渡らないのが正常なため warning のみ。
+            # 同一リポジトリ PR で未設定は設定ミスなので fail-loud にする。
+            if [ "$fork" != "true" ]; then
+              echo "::error::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューを実行できません"
+              exit 1
+            fi
           fi
 
       - name: Checkout repository
@@ -146,6 +153,9 @@ jobs:
           claude_args: >-
             --model opus
             --max-turns 30
+            # この allowlist は Bash の部分一致による緩い境界（ls/cat 等は実行
+            # されうる）。実効的な封じ込めは Claude Code 側のサンドボックス層
+            # （node/npx/env 等は拒否されることを実測）と read-only token に依存。
             --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read($GITHUB_WORKSPACE/**),Grep,Glob"
             --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(gh:*),WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
             --json-schema '{"type":"object","properties":{"review":{"type":"string"}},"required":["review"],"additionalProperties":false}'
@@ -168,7 +178,7 @@ jobs:
         run: |
           # ここは「Claude アクションの structured_output 自体が欠落した場合」を捕捉する。
           if [ -z "$STRUCTURED_OUTPUT" ]; then
-            echo "::error::Claude review structured output is empty"
+            echo "::error::Claude review structured output is empty（max-turns / timeout 到達の可能性）"
             exit 1
           fi
           # 生トークンの完全一致チェック（正規表現の網を外れた漏洩をブロック）。
@@ -276,6 +286,19 @@ jobs:
               per_page: 100,
             });
             const existing = comments.find((comment) => isOwnReviewComment(comment, marker));
+            if (!existing) {
+              // 投稿者ログインが REVIEW_COMMENT_AUTHOR とズレると常に新規コメントが
+              // 積み上がるサイレント劣化になるため、マーカー付き既存コメントが
+              // あるのに上書き対象が見つからない場合は warning で検知する。
+              const stale = comments.filter(
+                (comment) => comment.body?.split('\n', 1)[0].trim() === marker,
+              ).length;
+              if (stale > 0) {
+                core.warning(
+                  `${stale} 件のマーカー付きコメントが投稿者不一致のため上書き対象になりません`,
+                );
+              }
+            }
 
             if (existing) {
               await github.rest.issues.updateComment({

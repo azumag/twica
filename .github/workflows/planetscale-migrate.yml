@@ -23,7 +23,8 @@
 # 構造的に発生しなくなる。
 #
 # Applies `scripts/db-migrate.js apply --provider=planetscale` against the
-# branch-matched PlanetScale logical database on every push to main or preview.
+# branch-matched PlanetScale logical database on every push to main or preview
+# that touches migration-related paths (see the `paths:` filter below).
 #
 # Kept in its own file rather than as a job in deploy-cloudflare.yml because GitHub
 # Actions concurrency cancellation operates at the run level: a workflow-level
@@ -53,6 +54,15 @@
 # デフォルトのGitHub通知）に委ねる。required check化やSlack通知等の追加アラートは
 # 現時点ではYAGNIと判断し導入していない（必要になれば別途追加する）。
 #
+# 【`paths:` フィルタ導入（無関係なpushでの実行を削減）に伴う挙動変化】
+# 以前は対象ブランチへの任意のpushでこのworkflowが走っており、一時的要因
+# （DB接続断等）でmigration適用が失敗しても、次の無関係なpushが実質的な
+# 再試行になっていた。`paths:` 追加後は、migration関連ファイルを含まないpushでは
+# このworkflow自体が起動しないため、その暗黙の再試行は起こらない。
+# 失敗を復旧させるには GitHub UI から `workflow_dispatch`（対象ref指定）で
+# 手動再実行すること。`workflow_dispatch` には `paths:` の絞り込みは掛からない。
+#
+
 # 【運用制約: このパイプラインで自動適用してよいのは additive なmigrationのみ
 # （claude-reviewで指摘、必ず読むこと）】
 # 上記のdeploy-window fallback前提（列欠落時に機能を無効化して縮退する設計）は、
@@ -82,6 +92,16 @@ name: PlanetScale Migrations
 on:
   push:
     branches: [main, preview]
+    # migrationと無関係な変更（フロントエンド実装やdocs等）のpushでも、
+    # 実運用DB（production/preview Environment secret）へ毎回接続していた。
+    # db-migrate.js が読むファイル群だけに反応させ、不要な実行を防ぐ。
+    paths:
+      - 'db/planetscale/**'
+      - 'supabase/migrations/**'
+      - 'scripts/db-migrate.js'
+      - 'scripts/lib/db-migrate-core.js'
+      - 'package-lock.json'
+      - '.github/workflows/planetscale-migrate.yml'
 
   # 手動再実行ではGitHub UIでmainまたはpreviewのrefを選ぶ。Environmentを別inputで
   # 選ばせると「previewコード + production secret」のような危険な組合せを作れるため、

@@ -1,0 +1,55 @@
+# Lint i18n (Japanese literals) — #835
+#
+# ハードコード日本語リテラルの回帰防止（#835）。負債リスト（scripts/i18n-debt-files.js）に
+# 無いファイルで日本語リテラルを追加すると失敗する。
+#
+# 対象は src/** の文字列リテラルのみ（eslint.i18n.config.mjs 参照）なので、
+# それ以外のファイルしか変更しないpush/PRでは走らせない。以前は ci.yml に同居させ、
+# 無条件（全push/PR）で実行していたが、無関係な変更でも常時CI時間を消費していた
+# （#835 実装当初は影響範囲が固まっていなかったための暫定措置）。
+#
+# package.json / package-lock.json は意図的にpathsへ含めていない。eslint本体や
+# 各pluginのバージョン更新で検出結果が変わりうるが、そのpush自体では走らず、
+# 次に src/** を触るPRで初めて顕在化しうる（原因コミットと発覚が乖離する）。
+# lint系の依存更新は頻度が低く、実害が出た実績もまだ無いため、追跡の複雑化
+# より「無関係な変更を減らす」効果を優先した判断。実害が出たら追加する。
+
+name: Lint i18n
+
+on:
+  push:
+    branches: [ main, preview ]
+    paths:
+      - 'src/**'
+      - 'eslint.i18n.config.mjs'
+      - 'scripts/i18n-debt-files.js'
+      - '.github/workflows/lint-i18n.yml'
+  pull_request:
+    branches: [ main, preview ]
+    paths:
+      - 'src/**'
+      - 'eslint.i18n.config.mjs'
+      - 'scripts/i18n-debt-files.js'
+      - '.github/workflows/lint-i18n.yml'
+
+jobs:
+  lint-i18n:
+    name: Lint i18n (Japanese literals)
+    # PRだけでなく、preview/mainへマージされたpushでも同じガードを実行する。
+    # PR側のイベントが欠落した場合でも、デプロイ対象のコミットで回帰を検出できるようにする。
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint i18n
+        run: npm run lint:i18n

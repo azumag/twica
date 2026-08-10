@@ -27,6 +27,9 @@ export function redactSecrets(text) {
 // 上限超過時は単純に切り詰め、未閉じのコードフェンスを補完して省略注記を足す。
 // 返り値は本文部分を MAX_BODY_LENGTH 以内に保ち、閉じフェンスと注記を加算する
 // （最大 +16 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
+// 既知の劣化（いずれも表示崩れのみ）: slice は UTF-16 単位のためサロゲートペアを
+// 分断し得る。また切り詰め位置が ``` の途中に落ちた場合はフェンスとして数えられず、
+// 補完と合わさって表示が崩れ得る。
 export function truncateAndCloseFences(text) {
   const needsTruncation = text.length > MAX_BODY_LENGTH
   let result = needsTruncation ? text.slice(0, MAX_BODY_LENGTH) : text
