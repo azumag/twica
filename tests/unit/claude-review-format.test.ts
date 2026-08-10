@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildReviewCommentBody,
+  hasReviewMarker,
   isOwnReviewComment,
   MAX_BODY_LENGTH,
+  parseReviewJson,
   redactSecrets,
   truncateAndCloseFences,
 } from '../../.github/scripts/format-review.mjs'
@@ -26,6 +28,11 @@ describe('claude-review format helpers', () => {
 
     it('redacts the claude setup-token OAuth format (sk-ant-oat01-)', () => {
       expect(redactSecrets('sk-ant-oat01-abcdefghij0123456789')).toBe('[REDACTED]')
+    })
+
+    it('redacts tokens that follow a word character (no leading boundary)', () => {
+      // \b を付けない設計判断の回帰テスト（#916 round-19）
+      expect(redactSecrets('Xsk-ant-api03-abcdefghij0123456789')).toBe('X[REDACTED]')
     })
 
     it('redacts ghp_ tokens even when followed by an underscore', () => {
@@ -136,8 +143,29 @@ describe('claude-review format helpers', () => {
     })
   })
 
+  describe('parseReviewJson', () => {
+    it('extracts a trimmed review string', () => {
+      expect(parseReviewJson('{"review":"  指摘なし  "}')).toBe('指摘なし')
+    })
+
+    it('returns null for a missing or whitespace-only review field', () => {
+      expect(parseReviewJson('{"review":""}')).toBeNull()
+      expect(parseReviewJson('{"review":"   "}')).toBeNull()
+    })
+
+    it('throws for invalid JSON', () => {
+      expect(() => parseReviewJson('not json')).toThrow()
+    })
+  })
+
   describe('isOwnReviewComment', () => {
     const marker = '<!-- claude-auto-review-preview -->'
+
+    it('hasReviewMarker checks only the first line', () => {
+      expect(hasReviewMarker({ body: `${marker}\n## Claude Auto Review` }, marker)).toBe(true)
+      expect(hasReviewMarker({ body: `## Claude Auto Review\n${marker}` }, marker)).toBe(false)
+      expect(hasReviewMarker({}, marker)).toBe(false)
+    })
 
     it('accepts a bot comment whose first line is the marker', () => {
       expect(

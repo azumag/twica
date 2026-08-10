@@ -23,8 +23,9 @@
 #   （部分一致で ls/cat 等も実行されうる）、curl/wget の deny は迂回可能な緩和に
 #   過ぎない。@メンションの置換は意図的に行わない（write 権限保持者起点の注入は
 #   受容済み。無条件置換はコード引用を壊す実害があるため）。
-#   なお Renovate / Dependabot 等の自動 PR も同一リポジトリ発火なら secrets が
-#   渡るため、「write 権限保持者起点」には自動ボットも含まれる。
+#   なおボット作成の PR（Renovate / Dependabot 等）は job 条件
+#   （github.event.pull_request.user.type != 'Bot'）でレビュー対象外。
+#   したがって「write 権限保持者起点」の露出面は人間の権限保持者に限定される。
 #
 # Claude 実行 job と投稿 job を分離し、投稿用の pull-requests: write は Claude の
 # 実行終了後にのみ使う。post_review も PR head 由来の .github/scripts/
@@ -87,7 +88,9 @@ jobs:
             echo "CLAUDE_CODE_OAUTH_TOKEN が未設定、または fork PR のため secrets が渡らないため、Claude 自動レビューはスキップされます。" >> "$GITHUB_STEP_SUMMARY"
             # fork PR では secrets が渡らないのが正常なため warning のみ。
             # 同一リポジトリ PR で未設定は設定ミスなので fail-loud にする。
-            if [ "$fork" != "true" ]; then
+            # head.repo が null（fork 元リポジトリ削除等）の場合は空文字になるため、
+            # 「確実に同一リポジトリ」と判定できる場合のみ fail-loud にする。
+            if [ "$fork" = "false" ]; then
               echo "::error::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューを実行できません"
               exit 1
             fi
@@ -150,15 +153,12 @@ jobs:
             レビュー本文は日本語で 6000 字以内に収めてください。
             コードやGitHub上の状態は変更せず、レビュー本文だけを返してください。
             最終回答は指定されたJSON SchemaのreviewフィールドにMarkdownで格納してください。
-          # この allowlist は Bash の部分一致による緩い境界（ls/cat 等は実行
-          # されうる）。実効的な封じ込めは Claude Code 側のサンドボックス層
-          # （node/npx/env 等は拒否されることを実測）と read-only token に依存。
           # 注意: コメントを claude_args の折り畳みブロック内に置かないこと
           # （文字列へ混入して --json-schema 等を壊す。#916 round-18 で実測）。
           claude_args: >-
             --model opus
             --max-turns 30
-            --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read($GITHUB_WORKSPACE/**),Grep,Glob"
+            --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read(${{ github.workspace }}/**),Grep,Glob"
             --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(gh:*),WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
             --json-schema '{"type":"object","properties":{"review":{"type":"string"}},"required":["review"],"additionalProperties":false}'
 
@@ -240,7 +240,9 @@ jobs:
             const { pathToFileURL } = require('node:url');
             const {
               buildReviewCommentBody,
+              hasReviewMarker,
               isOwnReviewComment,
+              parseReviewJson,
             } = await import(
               pathToFileURL(
                 `${process.env.GITHUB_WORKSPACE}/.github/scripts/format-review.mjs`
@@ -253,15 +255,13 @@ jobs:
             const issueNumber = Number(process.env.PR_NUMBER);
             const shortSha = process.env.REVIEWED_SHA.slice(0, 7);
 
-            let reviewText;
             try {
-              const { review } = JSON.parse(process.env.REVIEW_JSON);
-              // ここは「JSON の review フィールドが空白のみの場合」を捕捉する。
-              if (typeof review !== 'string' || review.trim() === '') {
+              // null = review フィールドが空・空白のみ（ここで捕捉して failure にする）
+              reviewText = parseReviewJson(process.env.REVIEW_JSON);
+              if (reviewText === null) {
                 core.setFailed('Claude review output is empty');
                 return;
               }
-              reviewText = review.trim();
             } catch (error) {
               core.setFailed('Claude review output is not valid JSON: ' + error.message);
               return;
@@ -277,9 +277,9 @@ jobs:
               reviewText,
             });
 
-            // 全ページから探す。判定ロジックは isOwnReviewComment に切り出し、
-            // テストで検証している。期待投稿者は github-token の投稿主
-            // （github-actions[bot]）に固定されており、トークン差し替え時は
+            // 全ページから探す。判定ロジックは isOwnReviewComment / hasReviewMarker
+            // に切り出し、テストで検証している。期待投稿者は github-token の
+            // 投稿主（github-actions[bot]）に固定されており、トークン差し替え時は
             // format-review.mjs の REVIEW_COMMENT_AUTHOR も変更する。
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
@@ -288,19 +288,6 @@ jobs:
               per_page: 100,
             });
             const existing = comments.find((comment) => isOwnReviewComment(comment, marker));
-            if (!existing) {
-              // 投稿者ログインが REVIEW_COMMENT_AUTHOR とズレると常に新規コメントが
-              // 積み上がるサイレント劣化になるため、マーカー付き既存コメントが
-              // あるのに上書き対象が見つからない場合は warning で検知する。
-              const stale = comments.filter(
-                (comment) => comment.body?.split('\n', 1)[0].trim() === marker,
-              ).length;
-              if (stale > 0) {
-                core.warning(
-                  `${stale} 件のマーカー付きコメントが投稿者不一致のため上書き対象になりません`,
-                );
-              }
-            }
 
             if (existing) {
               await github.rest.issues.updateComment({
@@ -310,6 +297,15 @@ jobs:
                 body,
               });
             } else {
+              // 投稿者ログインが REVIEW_COMMENT_AUTHOR とズレると常に新規コメントが
+              // 積み上がるサイレント劣化になるため、マーカー付き既存コメントが
+              // あるのに上書き対象が見つからない場合は warning で検知する。
+              const stale = comments.filter((comment) => hasReviewMarker(comment, marker)).length;
+              if (stale > 0) {
+                core.warning(
+                  `${stale} 件のマーカー付きコメントが投稿者不一致のため上書き対象になりません`,
+                );
+              }
               await github.rest.issues.createComment({
                 owner,
                 repo,

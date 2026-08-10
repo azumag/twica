@@ -15,8 +15,8 @@ const SECRET_PATTERN =
 
 // issue comment 上限 65536 文字に対して余裕を持つしきい値。
 // プロンプトで 6000 字以内を指示しているが出力は強制されないため、
-// 実運用に近い値で安全網として機能させる。
-export const MAX_BODY_LENGTH = 20000
+// 大規模 PR でも実質発火しない大きめの値で安全網として機能させる。
+export const MAX_BODY_LENGTH = 60000
 
 export function redactSecrets(text) {
   // String.prototype.replace は /g 正規表現の lastIndex を走査前後にリセットする
@@ -48,6 +48,17 @@ export function truncateAndCloseFences(text) {
   return result
 }
 
+// structured_output の JSON から review 本文を取り出す。
+// review フィールドが空・空白のみの場合は null を返す（呼び出し側で failure にする）。
+// JSON として壊れている場合は throw する。
+export function parseReviewJson(json) {
+  const { review } = JSON.parse(json)
+  if (typeof review !== 'string' || review.trim() === '') {
+    return null
+  }
+  return review.trim()
+}
+
 // レビュー本文から投稿コメント本文を組み立てる。伏字化 → 切り詰め → 組み立ての
 // 順序を1箇所に固定する（順序が逆転すると伏字化が効かなくなるため、テストで
 // 回帰を守る）。
@@ -68,9 +79,11 @@ export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, re
 // 差し替える場合は期待ログインも変更すること。
 export const REVIEW_COMMENT_AUTHOR = 'github-actions[bot]'
 
+// 先頭行がマーカーかどうか（GitHub API が \r\n を返し得るため trim する）。
+export function hasReviewMarker(comment, marker) {
+  return comment.body?.split('\n', 1)[0].trim() === marker
+}
+
 export function isOwnReviewComment(comment, marker) {
-  return (
-    comment?.user?.login === REVIEW_COMMENT_AUTHOR &&
-    comment.body?.split('\n', 1)[0].trim() === marker
-  )
+  return comment?.user?.login === REVIEW_COMMENT_AUTHOR && hasReviewMarker(comment, marker)
 }
