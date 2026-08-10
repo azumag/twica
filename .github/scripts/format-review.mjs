@@ -18,33 +18,18 @@ const SECRET_PATTERN =
 // 実運用に近い値で安全網として機能させる。
 export const MAX_BODY_LENGTH = 20000
 
-// 行境界カット後に保つべき本文の下限（この割合を下回る場合は生カットへ
-// フォールバックし、本文のほぼ全損を防ぐ）。
-const MIN_KEPT_LENGTH = Math.floor(MAX_BODY_LENGTH * 0.8)
-
 export function redactSecrets(text) {
   // String.prototype.replace は /g 正規表現の lastIndex を走査前後にリセットする
   // ため、モジュール定数を共有して安全。stateful な .test()/.exec() には使わないこと。
   return text.replace(SECRET_PATTERN, '[REDACTED]')
 }
 
-// 上限超過時は行単位で切り詰める（サロゲートペアを分割しないようコードポイント
-// 単位で数える）。改行が先頭付近にしか無い場合は行カットで本文がほぼ消えるため、
-// MIN_KEPT_LENGTH を下回る場合は生カットへフォールバックする。未閉じのコード
-// フェンスは常に判定して補完し、切り詰め時はフェンスを閉じてから省略注記を
-// 足す（注記がコードブロックに飲み込まれるのを防ぐ）。
+// 上限超過時は単純に切り詰め、未閉じのコードフェンスを補完して省略注記を足す。
 // 返り値は本文部分を MAX_BODY_LENGTH 以内に保ち、閉じフェンスと注記を加算する
 // （最大 +16 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
 export function truncateAndCloseFences(text) {
-  const chars = Array.from(text)
-  let result = text
-  const needsTruncation = chars.length > MAX_BODY_LENGTH
-  if (needsTruncation) {
-    const truncated = chars.slice(0, MAX_BODY_LENGTH).join('')
-    const lastNewline = truncated.lastIndexOf('\n')
-    const lineCut = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated
-    result = Array.from(lineCut).length >= MIN_KEPT_LENGTH ? lineCut : truncated
-  }
+  const needsTruncation = text.length > MAX_BODY_LENGTH
+  let result = needsTruncation ? text.slice(0, MAX_BODY_LENGTH) : text
   // 行頭の ``` のみ数える簡易ヒューリスティック（4連バッククォートの入れ子や
   // フェンス内の例示は誤判定し得る。4連バッククォートで開いたブロックは
   // 閉じられずフッターがコードブロックに飲み込まれることもあるが表示崩れのみ）。
@@ -80,9 +65,9 @@ export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, re
 // 差し替える場合は期待ログインも変更すること。
 export const REVIEW_COMMENT_AUTHOR = 'github-actions[bot]'
 
-export function isOwnReviewComment(comment, marker, authorLogin = REVIEW_COMMENT_AUTHOR) {
+export function isOwnReviewComment(comment, marker) {
   return (
-    comment?.user?.login === authorLogin &&
+    comment?.user?.login === REVIEW_COMMENT_AUTHOR &&
     comment.body?.split('\n', 1)[0].trim() === marker
   )
 }

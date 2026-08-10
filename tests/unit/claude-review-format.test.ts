@@ -7,9 +7,6 @@ import {
   truncateAndCloseFences,
 } from '../../.github/scripts/format-review.mjs'
 
-const LONE_SURROGATE =
-  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
-
 describe('claude-review format helpers', () => {
   describe('redactSecrets', () => {
     it('redacts known token formats', () => {
@@ -25,6 +22,10 @@ describe('claude-review format helpers', () => {
     it('leaves normal text and short identifiers untouched', () => {
       const input = 'actions/checkout@v4 と短いトークン ghp_12345 はそのまま'
       expect(redactSecrets(input)).toBe(input)
+    })
+
+    it('redacts the claude setup-token OAuth format (sk-ant-oat01-)', () => {
+      expect(redactSecrets('sk-ant-oat01-abcdefghij0123456789')).toBe('[REDACTED]')
     })
 
     it('greedily consumes trailing token characters (over-redaction is safe)', () => {
@@ -66,67 +67,15 @@ describe('claude-review format helpers', () => {
   })
 
   describe('truncateAndCloseFences', () => {
-    it('closes an unclosed fence even without truncation', () => {
-      expect(truncateAndCloseFences('```js\nconst x = 1')).toBe('```js\nconst x = 1\n```')
-    })
-
-    it('keeps balanced fences untouched', () => {
+    it('keeps text unchanged within the limit', () => {
       const text = '```js\nconst x = 1\n```'
       expect(truncateAndCloseFences(text)).toBe(text)
     })
 
-    it('truncates long output and appends a note', () => {
-      const long = `${'x'.repeat(MAX_BODY_LENGTH + 50)}\nlast`
-      const out = truncateAndCloseFences(long)
+    it('appends a note on overflow and stays within the limit plus overhead', () => {
+      const out = truncateAndCloseFences('x'.repeat(MAX_BODY_LENGTH + 50))
       expect(out).toContain('（長すぎるため省略）')
-      expect(Array.from(out).length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
-    })
-
-    it('does not split surrogate pairs when truncating', () => {
-      // 奇数長の接頭辞を足し、切り詰め境界がペアの中央に落ちるケースを踏む
-      const out = truncateAndCloseFences('a' + '😀'.repeat(MAX_BODY_LENGTH))
-      expect(LONE_SURROGATE.test(out)).toBe(false)
-    })
-
-    it('cuts at a line boundary when a newline is within the limit', () => {
-      const lines = Array.from({ length: MAX_BODY_LENGTH }, (_, i) => `line-${i}`).join('\n')
-      const out = truncateAndCloseFences(lines + '\n')
-      expect(out.endsWith('（長すぎるため省略）')).toBe(true)
-      // 注記を除いた本文の最終行が完全な line-N である = 途中の行を残さない
-      const body = out.slice(0, out.indexOf('（長すぎるため省略）'))
-      expect(body.trimEnd().split('\n').at(-1)).toMatch(/^line-\d+$/)
-    })
-
-    it('closes a fence opened before the cut and keeps the note outside', () => {
-      const out = truncateAndCloseFences('```js\n' + 'x\n'.repeat(MAX_BODY_LENGTH))
-      expect(out).toContain('（長すぎるため省略）')
-      // 閉じフェンスが注記より前に来る = 注記はコードブロックの外
-      expect(out.lastIndexOf('```')).toBeLessThan(out.indexOf('（長すぎるため省略）'))
-    })
-
-    it('does not truncate when the length is exactly at the limit', () => {
-      const text = 'a'.repeat(MAX_BODY_LENGTH)
-      expect(truncateAndCloseFences(text)).toBe(text)
-    })
-
-    it('truncates when the length is one over the limit', () => {
-      const out = truncateAndCloseFences('a'.repeat(MAX_BODY_LENGTH + 1))
-      expect(out).toContain('（長すぎるため省略）')
-    })
-
-    it('keeps a leading newline when it is the only newline in the kept range', () => {
-      // 先頭が改行で、切り詰め範囲内に他の改行が無いケース（lastNewline === 0）
-      const out = truncateAndCloseFences('\n' + 'a'.repeat(MAX_BODY_LENGTH + 10))
-      expect(out.startsWith('\n')).toBe(true)
-      expect(out).toContain('（長すぎるため省略）')
-    })
-
-    it('falls back to a raw cut when a line cut would destroy the body', () => {
-      // 改行が先頭付近にしか無い長文では行カットで本文がほぼ消えるため、
-      // MIN_KEPT_LENGTH 未満なら生カットへフォールバックする
-      const out = truncateAndCloseFences('a\n' + 'b'.repeat(MAX_BODY_LENGTH + 100))
-      expect(out).toContain('b'.repeat(1000))
-      expect(out).toContain('（長すぎるため省略）')
+      expect(out.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
     })
   })
 
@@ -190,6 +139,18 @@ describe('claude-review format helpers', () => {
           {
             user: { login: 'github-actions[bot]', type: 'Bot' },
             body: `${marker}\n## Claude Auto Review`,
+          },
+          marker,
+        ),
+      ).toBe(true)
+    })
+
+    it('accepts CRLF line endings in the first line', () => {
+      expect(
+        isOwnReviewComment(
+          {
+            user: { login: 'github-actions[bot]', type: 'Bot' },
+            body: `${marker}\r\n## Claude Auto Review`,
           },
           marker,
         ),

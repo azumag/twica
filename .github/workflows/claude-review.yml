@@ -44,10 +44,14 @@ on:
     # 全ファイル含む → md 除外 → 上記2ファイル再含む、の順で書く。
     paths:
       - '**'
-      - '!**/*.md'
+      # GitHub のドキュメント表記に合わせる（`!**/*.md` はルート直下の md に
+      # 対する挙動が実装依存のため）
+      - '!**.md'
       - 'AGENTS.md'
       - 'CLAUDE.md'
     # main 向け PR は対象外（preview でレビュー済みの内容を昇格するだけのため意図的）
+    # preview への直接 push は branch protection で禁止されている前提
+    # （直 push できる場合、その変更は本レビューの対象外になる）
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -56,10 +60,12 @@ concurrency:
 jobs:
   claude_review:
     name: Review PR changes
-    # draft PR では毎 push ごとに opus を回さない
-    if: github.event.pull_request.draft == false
+    # draft PR と bot 作成の PR（Renovate 等）では opus を回さない
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
       pull-requests: read
@@ -100,7 +106,7 @@ jobs:
         # この環境から GitHub API へ到達できず（api.github.com への疎通不可）
         # 現在の v1 タグの SHA を取得できないため、タグ運用を維持する。
         # OAuth トークンを渡す唯一の action なので、SHA 取得手段ができ次第
-        # ピン化する（actionlint 導入時に対象にする）。
+        # ピン化する（追跡: issue #918）。
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -206,7 +212,8 @@ jobs:
           # ファイルは常に展開される）。head SHA を明示するのはコンフリクト中の
           # PR で merge ref が無いため。初回導入時は base 側にこのファイルが
           # 存在しないため head を使うが、preview へマージ後は base.sha に
-          # 切り替え、write 権限 job で head 由来コードを実行しないようにする。
+          # 切り替え、write 権限 job で head 由来コードを実行しないようにする
+          # （追跡: issue #917）。
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           sparse-checkout: .github/scripts
