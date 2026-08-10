@@ -8,13 +8,19 @@
 // 末尾に否定先読みを置かない: 貪欲マッチと組み合わせると
 // `ghp_..._` や `github_pat_...-` のような実トークンが素通りする
 // fail-open になるため。過剰伏字化は安全側。
+// \b は付けない: 語構成文字直後のトークン（`Xsk-ant-...` 等）が素通りする
+// fail-open になるため。過剰伏字化は安全側。
 const SECRET_PATTERN =
-  /\b(sk-ant-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g
+  /(sk-ant-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g
 
 // issue comment 上限 65536 文字に対して余裕を持つしきい値。
 // プロンプトで 6000 字以内を指示しているが出力は強制されないため、
 // 実運用に近い値で安全網として機能させる。
 export const MAX_BODY_LENGTH = 20000
+
+// 行境界カット後に保つべき本文の下限（この割合を下回る場合は生カットへ
+// フォールバックし、本文のほぼ全損を防ぐ）。
+const MIN_KEPT_LENGTH = Math.floor(MAX_BODY_LENGTH * 0.8)
 
 export function redactSecrets(text) {
   // String.prototype.replace は /g 正規表現の lastIndex を走査前後にリセットする
@@ -23,8 +29,10 @@ export function redactSecrets(text) {
 }
 
 // 上限超過時は行単位で切り詰める（サロゲートペアを分割しないようコードポイント
-// 単位で数える）。未閉じのコードフェンスは常に判定して補完し、切り詰め時は
-// フェンスを閉じてから省略注記を足す（注記がコードブロックに飲み込まれるのを防ぐ）。
+// 単位で数える）。改行が先頭付近にしか無い場合は行カットで本文がほぼ消えるため、
+// MIN_KEPT_LENGTH を下回る場合は生カットへフォールバックする。未閉じのコード
+// フェンスは常に判定して補完し、切り詰め時はフェンスを閉じてから省略注記を
+// 足す（注記がコードブロックに飲み込まれるのを防ぐ）。
 // 返り値は本文部分を MAX_BODY_LENGTH 以内に保ち、閉じフェンスと注記を加算する
 // （最大 +16 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
 export function truncateAndCloseFences(text) {
@@ -34,10 +42,12 @@ export function truncateAndCloseFences(text) {
   if (needsTruncation) {
     const truncated = chars.slice(0, MAX_BODY_LENGTH).join('')
     const lastNewline = truncated.lastIndexOf('\n')
-    result = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated
+    const lineCut = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated
+    result = Array.from(lineCut).length >= MIN_KEPT_LENGTH ? lineCut : truncated
   }
   // 行頭の ``` のみ数える簡易ヒューリスティック（4連バッククォートの入れ子や
-  // フェンス内の例示は誤判定し得る）。フッター/注記を守る目的では十分。
+  // フェンス内の例示は誤判定し得る。4連バッククォートで開いたブロックは
+  // 閉じられずフッターがコードブロックに飲み込まれることもあるが表示崩れのみ）。
   const fenceCount = result
     .split('\n')
     .filter((line) => line.trim().startsWith('```')).length
@@ -64,11 +74,15 @@ export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, re
 }
 
 // このワークフローが投稿した既存レビューコメントかを判定する。
-// マーカーは誰でも知り得るため、投稿者を github-actions[bot] に限定して
-// 第三者（他のボット含む）コメントの誤上書きを防ぐ。
-export function isOwnReviewComment(comment, marker) {
+// マーカーは誰でも知り得るため、投稿者をワークフローの github-token が
+// 生み出す投稿者ログインに限定して第三者（他のボット含む）コメントの誤上書きを
+// 防ぐ。投稿者は workflow 側の `github-token` で決まるため、トークンを
+// 差し替える場合は期待ログインも変更すること。
+export const REVIEW_COMMENT_AUTHOR = 'github-actions[bot]'
+
+export function isOwnReviewComment(comment, marker, authorLogin = REVIEW_COMMENT_AUTHOR) {
   return (
-    comment?.user?.login === 'github-actions[bot]' &&
+    comment?.user?.login === authorLogin &&
     comment.body?.split('\n', 1)[0].trim() === marker
   )
 }

@@ -26,6 +26,43 @@ describe('claude-review format helpers', () => {
       const input = 'actions/checkout@v4 と短いトークン ghp_12345 はそのまま'
       expect(redactSecrets(input)).toBe(input)
     })
+
+    it('greedily consumes trailing token characters (over-redaction is safe)', () => {
+      const input = 'sk-ant-api03-abcdefghij0123456789X'
+      expect(redactSecrets(input)).toBe('[REDACTED]')
+    })
+
+    it('redacts tokens that follow a word character (no leading boundary)', () => {
+      expect(redactSecrets('Xsk-ant-api03-abcdefghij0123456789')).toBe('X[REDACTED]')
+    })
+
+    it('redacts ghp_ tokens even when followed by an underscore', () => {
+      expect(redactSecrets('ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAA_')).toBe('[REDACTED]_')
+    })
+
+    it('redacts github_pat_ tokens even when followed by a hyphen', () => {
+      expect(redactSecrets('github_pat_11111_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-')).toBe(
+        '[REDACTED]-',
+      )
+    })
+
+    it('redacts all gh*_ token prefixes (p, o, u, s, r)', () => {
+      for (const prefix of ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_']) {
+        expect(redactSecrets(prefix + 'A'.repeat(24))).toBe('[REDACTED]')
+      }
+    })
+
+    it('redacts tokens embedded in multi-line text', () => {
+      const input = 'line1 sk-ant-api03-abcdefghij0123456789\nline2'
+      const out = redactSecrets(input)
+      expect(out).toContain('[REDACTED]')
+      expect(out).not.toContain('sk-ant-api03')
+    })
+
+    it('is idempotent', () => {
+      const once = redactSecrets('sk-ant-api03-abcdefghij0123456789')
+      expect(redactSecrets(once)).toBe(once)
+    })
   })
 
   describe('truncateAndCloseFences', () => {
@@ -42,7 +79,7 @@ describe('claude-review format helpers', () => {
       const long = `${'x'.repeat(MAX_BODY_LENGTH + 50)}\nlast`
       const out = truncateAndCloseFences(long)
       expect(out).toContain('（長すぎるため省略）')
-      expect(Array.from(out).length).toBeLessThan(MAX_BODY_LENGTH + 50)
+      expect(Array.from(out).length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
     })
 
     it('does not split surrogate pairs when truncating', () => {
@@ -83,40 +120,13 @@ describe('claude-review format helpers', () => {
       expect(out.startsWith('\n')).toBe(true)
       expect(out).toContain('（長すぎるため省略）')
     })
-  })
 
-  describe('redactSecrets edge cases', () => {
-    it('greedily consumes trailing token characters (over-redaction is safe)', () => {
-      const input = 'sk-ant-api03-abcdefghij0123456789X'
-      expect(redactSecrets(input)).toBe('[REDACTED]')
-    })
-
-    it('redacts ghp_ tokens even when followed by an underscore', () => {
-      expect(redactSecrets('ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAA_')).toBe('[REDACTED]_')
-    })
-
-    it('redacts github_pat_ tokens even when followed by a hyphen', () => {
-      expect(redactSecrets('github_pat_11111_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-')).toBe(
-        '[REDACTED]-',
-      )
-    })
-
-    it('redacts all gh*_ token prefixes (p, o, u, s, r)', () => {
-      for (const prefix of ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_']) {
-        expect(redactSecrets(prefix + 'A'.repeat(24))).toBe('[REDACTED]')
-      }
-    })
-
-    it('redacts tokens embedded in multi-line text', () => {
-      const input = 'line1 sk-ant-api03-abcdefghij0123456789\nline2'
-      const out = redactSecrets(input)
-      expect(out).toContain('[REDACTED]')
-      expect(out).not.toContain('sk-ant-api03')
-    })
-
-    it('is idempotent', () => {
-      const once = redactSecrets('sk-ant-api03-abcdefghij0123456789')
-      expect(redactSecrets(once)).toBe(once)
+    it('falls back to a raw cut when a line cut would destroy the body', () => {
+      // 改行が先頭付近にしか無い長文では行カットで本文がほぼ消えるため、
+      // MIN_KEPT_LENGTH 未満なら生カットへフォールバックする
+      const out = truncateAndCloseFences('a\n' + 'b'.repeat(MAX_BODY_LENGTH + 100))
+      expect(out).toContain('b'.repeat(1000))
+      expect(out).toContain('（長すぎるため省略）')
     })
   })
 
@@ -154,9 +164,10 @@ describe('claude-review format helpers', () => {
     it('stays far below the issue comment limit even with max-length review text', () => {
       const body = buildReviewCommentBody({
         ...base,
-        reviewText: 'x'.repeat(MAX_BODY_LENGTH + 100),
+        reviewText: 'x'.repeat(MAX_BODY_LENGTH + 5000),
       })
-      expect(Array.from(body).length).toBeLessThan(65536)
+      // 切り詰めが効いていれば本文は MAX + ヘッダ/フッタ程度に収まる
+      expect(Array.from(body).length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 400)
     })
 
     it('round-trips with isOwnReviewComment using the marker line', () => {

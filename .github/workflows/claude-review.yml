@@ -15,11 +15,16 @@
 #   できる。より強い保護（environment + required reviewers）は PR ごとの承認が
 #   要って自動レビューが機能しなくなるため受容する。
 # - 実効的な封じ込めは「fork PR に secrets が渡らない」「Claude 実行 job は
-#   read-only GITHUB_TOKEN」「投稿前にトークン伏字化 + 生トークン完全一致チェック」
-#   の3点。--allowedTools / --disallowedTools は Bash の網羅的 allowlist ではなく
+#   read-only GITHUB_TOKEN かつ Read をワークスペース配下に限定」「投稿前に
+#   トークン伏字化 + 生トークン完全一致チェック」の3点。ただし伏字化と完全一致
+#   チェックは「素の文字列で出力された場合」しか防げず、base64 化や文字列分割
+#   を誘導された場合はすり抜ける（残余リスクとして受容）。
+#   --allowedTools / --disallowedTools は Bash の網羅的 allowlist ではなく
 #   （部分一致で ls/cat 等も実行されうる）、curl/wget の deny は迂回可能な緩和に
 #   過ぎない。@メンションの置換は意図的に行わない（write 権限保持者起点の注入は
 #   受容済み。無条件置換はコード引用を壊す実害があるため）。
+#   なお Renovate / Dependabot 等の自動 PR も同一リポジトリ発火なら secrets が
+#   渡るため、「write 権限保持者起点」には自動ボットも含まれる。
 #
 # Claude 実行 job と投稿 job を分離し、投稿用の pull-requests: write は Claude の
 # 実行終了後にのみ使う。post_review も PR head 由来の .github/scripts/
@@ -70,6 +75,8 @@ jobs:
           configured=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
           echo "configured=$configured" >> "$GITHUB_OUTPUT"
           if [ "$configured" != "true" ]; then
+            # トークン失効・未設定が長期間気付かれず「全緑」になるのを防ぐ。
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューはスキップされます"
             echo "CLAUDE_CODE_OAUTH_TOKEN が未設定、または fork PR のため secrets が渡らないため、Claude 自動レビューはスキップされます。" >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -133,7 +140,7 @@ jobs:
           claude_args: >-
             --model opus
             --max-turns 30
-            --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read,Grep,Glob"
+            --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read($GITHUB_WORKSPACE/**),Grep,Glob"
             --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(gh:*),WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
             --json-schema '{"type":"object","properties":{"review":{"type":"string"}},"required":["review"],"additionalProperties":false}'
 
@@ -187,7 +194,8 @@ jobs:
       REVIEW_JSON: ${{ needs.claude_review.outputs.review }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
-      RUN_URL: ${{ format('{0}/{1}/{2}/{3}', github.server_url, github.repository, 'actions/runs', github.run_id) }}
+      SERVER_URL: ${{ github.server_url }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     steps:
       - uses: actions/checkout@v4
@@ -241,7 +249,7 @@ jobs:
             }
 
             const commitUrl =
-              `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/commit/${process.env.REVIEWED_SHA}`;
+              `${process.env.SERVER_URL}/${owner}/${repo}/commit/${process.env.REVIEWED_SHA}`;
             const body = buildReviewCommentBody({
               marker,
               shortSha,
@@ -251,7 +259,9 @@ jobs:
             });
 
             // 全ページから探す。判定ロジックは isOwnReviewComment に切り出し、
-            // テストで検証している。
+            // テストで検証している。期待投稿者は github-token の投稿主
+            // （github-actions[bot]）に固定されており、トークン差し替え時は
+            // format-review.mjs の REVIEW_COMMENT_AUTHOR も変更する。
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
               repo,
