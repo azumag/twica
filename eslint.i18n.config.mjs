@@ -24,9 +24,8 @@ const globSafePath = (f) =>
 /**
  * i18n ハードコード日本語の検出専用 ESLint 設定（#835）。
  *
- * 本体の eslint.config.mjs には含めず、`npm run lint:i18n`
- *（`.github/workflows/lint-i18n.yml` の専用ジョブ）でのみ実行する。理由: 既存コードには
- * 大量のハードコード日本語が残っており（負債リスト
+ * 本体の eslint.config.mjs には含めず、`npm run lint:i18n`（ci.yml の専用ジョブ）でのみ
+ * 実行する。理由: 既存コードには大量のハードコード日本語が残っており（負債リスト
  * scripts/i18n-debt-files.js 参照）、本体設定に入れると既存の 16k 件の lint エラーに埋もれる。
  * この設定は「移設完了ファイル = 負債リストに無いファイル」に対してのみ
  * 日本語リテラルがゼロであることを強制する。

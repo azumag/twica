@@ -168,8 +168,148 @@ jobs:
       - name: Lint
         run: npm run lint
 
-  # lint-i18n / migration-order-check / planetscale-migration-postgres は
-  # 対象パスが変わらない限り無意味に走っていた（無関係なファイル更新でも常時実行）。
-  # それぞれ関係ファイルにのみ反応する専用workflowへ分離した:
-  #   - .github/workflows/lint-i18n.yml
-  #   - .github/workflows/migrations-check.yml
+  lint-i18n:
+    name: Lint i18n (Japanese literals)
+    # PRだけでなく、preview/mainへマージされたpushでも同じガードを実行する。
+    # PR側のイベントが欠落した場合でも、デプロイ対象のコミットで回帰を検出できるようにする。
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ハードコード日本語リテラルの回帰防止（#835）。負債リスト
+      # （scripts/i18n-debt-files.js）に無いファイルで日本語リテラルを追加すると失敗する。
+      - name: Lint i18n
+        run: npm run lint:i18n
+
+  migration-order-check:
+    name: Migration order check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Check migration order
+        run: npm run check:migration-order -- --base=origin/${{ github.base_ref }}
+
+  planetscale-migration-postgres:
+    name: PlanetScale migration PostgreSQL 17
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply PlanetScale baseline and additive migrations
+        # SQL文字列テストではPL/pgSQLの構文や三値論理を検証できない。実運用と同じ
+        # PostgreSQL 17へ各ファイルをdescriptorのtransaction指定どおりに
+        # 順序適用し、途中の1ファイルでも失敗したらON_ERROR_STOPでjobを停止する。
+        # CREATE INDEX CONCURRENTLYを含むforbidden migrationだけは
+        # トランザクション外で実行し、実運用のdb-migrate.jsと同じ実行条件を検証する。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/migrations/20260719180000_planetscale_bootstrap.sql
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/migrations/20260719180100_planetscale_public_schema_baseline.sql
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f db/planetscale/grants.sql
+          # runtime migration runnerと同じdescriptor parserで、共通migrationと
+          # PlanetScale専用migrationをマージ・provider filter・名前順sortする。
+          # CIだけ別の対象集合を再実装すると、新しい共通migrationを見落とすため。
+          # process substitution (`done < <(node ...)`)では、nodeがdescriptor解析に
+          # 失敗してもwhile側の終了コードだけが残り、GitHub Actionsの`set -e`が
+          # エラーを見逃す。先にcommand substitutionの代入を完了させることで、
+          # nodeの非0終了をこのstepの失敗として伝播させ、DDL適用へ進ませない。
+          migration_descriptors="$(node -e "
+            const path = require('node:path');
+            const core = require('./scripts/lib/db-migrate-core');
+            const descriptors = core.loadMigrationFilesFromDirs([
+              path.resolve('supabase/migrations'),
+              path.resolve('db/planetscale/migrations'),
+            ]);
+            const errors = core.collectDescriptorErrors(descriptors);
+            if (errors.length > 0) throw new Error(JSON.stringify(errors));
+            for (const descriptor of descriptors) {
+              if (
+                BigInt(descriptor.version) > 20260719180100n
+                && core.isProviderApplicable(descriptor, 'planetscale')
+              ) {
+                console.log(descriptor.transaction + '\\t' + path.join(descriptor.sourceDir, descriptor.filename));
+              }
+            }
+          ")"
+          if [ -n "$migration_descriptors" ]; then
+            while IFS=$'\t' read -r transaction migration; do
+              if [ "$transaction" = "forbidden" ]; then
+                psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+                  -f "$migration"
+              else
+                psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+                  -f "$migration"
+              fi
+            done <<< "$migration_descriptors"
+          fi
+
+      - name: Verify analysis dashboard pagination RPCs
+        # SQLの文字列検査だけでは、ページ行・count・summaryの整合性や
+        # SECURITY DEFINER RPCの実行可否を保証できない。CI用の一時DBへfixtureを
+        # 同一トランザクションで投入し、実際に各RPCを呼び出してからROLLBACKする。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/analysis-dashboard-pagination-postgres.sql
+
+      - name: Verify transactional gacha outbox invariants
+        # 旧RPC互換、single/N連、歯抜け復旧、NULL副作用0、権限、lease fencingを
+        # 実DBで検証し、新RPC欠落による全ガチャfail-closedをPR段階で防ぐ。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/transactional-chat-outbox-postgres.sql
+
+      - name: Verify concurrent duplicate fencing
+        # 先行COMMIT前に同じeventを別接続から実行し、同じcard/別cardのどちらでも
+        # 後続がlimit_reachedではなくduplicateへ収束することを確認する。
+        env:
+          PGPASSWORD: postgres
+        run: bash tests/fixtures/transactional-chat-outbox-concurrency.sh
