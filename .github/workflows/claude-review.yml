@@ -22,6 +22,10 @@
 #   保護には environment + required reviewers が必要になるが、PR のたびに
 #   承認が要って自動レビューが機能しなくなるため、本リポジトリでは
 #   「write 権限保持者は全員トークンを取得可能」というリスクを受容する。
+#   実際の封じ込めは「read-only GITHUB_TOKEN」「非対話モードで承認プロンプトが
+#   通らない」「投稿前にトークン/メンションをサニタイズ」の3点に依存しており、
+#   --allowedTools / --disallowedTools は Bash の網羅的 allowlist ではない
+#   （自動承認リストに過ぎない。ls/cat 等は実行可能）。
 #
 # Claude を実行する job とコメントを投稿する job を分離し、Claude 側には
 # 読み取り専用の GITHUB_TOKEN だけを渡す。投稿用の pull-requests: write は
@@ -36,8 +40,7 @@ on:
     # .github/workflows/** は対象外にしない（ワークフロー自身の変更は必ずレビューする）。
     paths-ignore:
       - '**/*.md'
-      - '**/*.mdx'
-      - 'docs/**'
+    # main 向け PR は対象外（preview でレビュー済みの内容を昇格するだけのため意図的）
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -62,7 +65,12 @@ jobs:
         id: check-token
         # job の env を outputs から参照するのは GitHub Actions のコンテキスト
         # 可用性の境界で壊れやすいため、step output 経由で確実に渡す。
-        run: echo "configured=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+        run: |
+          configured=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+          if [ "$configured" != "true" ]; then
+            echo "CLAUDE_CODE_OAUTH_TOKEN が未設定のため、Claude 自動レビューはスキップされます。" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Checkout repository
         if: steps.check-token.outputs.configured == 'true'
@@ -98,6 +106,8 @@ jobs:
             `git diff --find-renames ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}`
 
             必要に応じて `git log`、`git show`、関連ソースの読み取りで文脈を確認してください。
+            `git diff` が失敗する場合（base が孤立している等）は、その旨を
+            「レビュー不可」として明示してください。
             リポジトリの AGENTS.md がある場合はそれを読み、レビュー観点として従ってください。
 
             レビュー観点（AGENTS.md 準拠）:
@@ -145,40 +155,39 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
+            // 単一マーカー・単一コメント方式: 成功/失敗のどちらも同じコメントを
+            // in-place 更新し、本文の「状態」と「Reviewed commit」で判別する。
+            // これにより失敗コメントの掃除ロジックが不要になり、古い成功レビュー
+            // と失敗通知の併存による誤読も起きない。
+            const marker = '<!-- claude-auto-review-preview -->';
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issueNumber = Number(process.env.PR_NUMBER);
             const shortSha = process.env.REVIEWED_SHA.slice(0, 7);
 
-            // 成功系と失敗系で別マーカーを使い、失敗通知が既存の正常レビューを
-            // 上書きしないようにする（連続pushキャンセル・APIエラー等での損失防止）。
-            // マーカーは常に本文の1行目に置くため、一致判定も先頭行限定にする
-            // （レビュー本文にマーカー文字列が混入しても取り違えない）。
-            const successMarker = '<!-- claude-auto-review-preview -->';
-            const failureMarker = '<!-- claude-auto-review-failure -->';
-
+            let statusLabel;
             let reviewText;
-            let isFailure = false;
             if (process.env.REVIEW_RESULT !== 'success') {
-              isFailure = true;
+              statusLabel = '失敗';
               reviewText =
                 `レビューを実行できませんでした（job result: \`${process.env.REVIEW_RESULT}\`）。` +
                 `原因の候補: \`--max-turns\` 到達、\`timeout-minutes\` 超過、` +
                 `または構造化出力の生成失敗。`;
             } else if (!process.env.REVIEW_JSON) {
-              isFailure = true;
+              statusLabel = '失敗';
               reviewText = 'レビューを実行できませんでした（Claude の構造化出力が生成されませんでした）。';
             } else {
               try {
                 const { review } = JSON.parse(process.env.REVIEW_JSON);
                 if (typeof review !== 'string' || review.trim() === '') {
-                  isFailure = true;
+                  statusLabel = '失敗';
                   reviewText = 'レビューを実行できませんでした（Claude の構造化出力が空でした）。';
                 } else {
+                  statusLabel = '成功';
                   reviewText = review.trim();
                 }
               } catch (error) {
-                isFailure = true;
+                statusLabel = '失敗';
                 reviewText = 'レビューを実行できませんでした（Claude の構造化出力が不正な JSON でした）。';
               }
             }
@@ -189,8 +198,10 @@ jobs:
             // GitHub のシークレットマスキングはログにのみ効き、API のコメント
             // 本文には適用されないため、ここでのサニタイズが必要。
             const SECRET_PATTERN =
-              /\b(sk-ant-[A-Za-z0-9_-]{10,}|oauth_[A-Za-z0-9_-]{10,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
+              /\b(sk-ant-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g;
             reviewText = reviewText.replace(SECRET_PATTERN, '[REDACTED]');
+            // プロンプトインジェクション経由の @メンションで通知スパムを防ぐ。
+            reviewText = reviewText.replace(/@(?=[\w-])/g, '@<!-- -->');
 
             // GitHub の issue comment は 65536 文字上限。プロンプトで 6000 字以内を
             // 指示しているが、万一長い場合は安全側で行単位に切り詰める
@@ -204,11 +215,10 @@ jobs:
                 '\n\n（長すぎるため省略）';
             }
 
-            const marker = isFailure ? failureMarker : successMarker;
             const body =
               `${marker}\n## Claude Auto Review\n\n` +
+              `状態: **${statusLabel}** ／ Reviewed commit: \`${shortSha}\`\n\n` +
               `${reviewText}\n\n` +
-              `Reviewed commit: \`${shortSha}\`\n\n` +
               `*Generated by Claude Code (opus)*`;
 
             // 全ページから探す（投稿者を bot に限定して第三者コメントの誤上書きを
@@ -224,10 +234,6 @@ jobs:
               comment.body?.split('\n', 1)[0].trim() === marker,
             );
 
-            // 同一コメントを in-place 更新するため、2回目以降の結果は通知が
-            // 飛ばない（意図的なトレードオフ: 更新なら増殖せず、Reviewed commit
-            // 表記でどのコミットの結果か判別できる。通知が必要なら新規コメント
-            // 方式への変更を検討する）。
             if (existing) {
               await github.rest.issues.updateComment({
                 owner,
@@ -242,21 +248,4 @@ jobs:
                 issue_number: issueNumber,
                 body,
               });
-            }
-
-            // 成功時のみ、過去の失敗通知コメントを掃除して最新の1件だけ残す。
-            // 失敗時は成功レビューを削除しない（失敗で過去の有効なレビューが
-            // 消えるのを防ぐ。Reviewed commit 表記で新旧を判別できる）。
-            if (!isFailure) {
-              const staleComments = comments.filter((comment) =>
-                comment.user?.login === 'github-actions[bot]' &&
-                comment.body?.split('\n', 1)[0].trim() === failureMarker,
-              );
-              for (const stale of staleComments) {
-                await github.rest.issues.deleteComment({
-                  owner,
-                  repo,
-                  comment_id: stale.id,
-                });
-              }
             }
