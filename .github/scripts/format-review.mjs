@@ -11,9 +11,9 @@
 const SECRET_PATTERN =
   /(sk-ant-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g
 
-// プロンプトの 6000 字指示を実質的に守るためのしきい値（2.5 倍の余裕）。
+// プロンプトの 6000 字指示を実質的に守るためのしきい値（約 1.7 倍の余裕）。
 // issue comment 上限 65536 には余裕を持って収まる。
-export const MAX_BODY_LENGTH = 15000
+export const MAX_BODY_LENGTH = 10000
 
 export function redactSecrets(text) {
   // String.prototype.replace は /g 正規表現の lastIndex を走査前後にリセットする
@@ -21,37 +21,33 @@ export function redactSecrets(text) {
   return text.replace(SECRET_PATTERN, '[REDACTED]')
 }
 
-// 本文長が上限を超えた場合は切り詰める。未閉じのコードフェンス（Claude の出力で
-// 実測される）は切り詰めの有無に関わらず補完し、切り詰め時はフェンスを閉じてから
-// 省略注記を足す。
+// 本文長が上限を超えた場合は切り詰める。行途中で切れた不完全行は末尾500字以内に
+// 改行がある場合のみ落とし、未閉じのコードフェンスは切り詰め時のみ補完してから
+// 省略注記を足す（非切り詰め時はコード引用の誤判定を避けるため触らない）。
 // 返り値は本文部分を MAX_BODY_LENGTH 以内に保ち、閉じフェンスと注記を加算する
 // （最大 +16 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
 export function truncateAndCloseFences(text) {
-  const needsTruncation = text.length > MAX_BODY_LENGTH
-  let result = text
-  if (needsTruncation) {
-    result = text.slice(0, MAX_BODY_LENGTH)
-    // 行途中で切れた不完全行を落とす（フェンスの途中切断で補完が破綻するのを防ぐ）
-    const lastNewline = result.lastIndexOf('\n')
-    if (lastNewline > 0) {
-      result = result.slice(0, lastNewline)
-    }
-    // 末尾が孤立サロゲート（絵文字の片割れ）なら除去し、JSON 化での文字化けを防ぐ
-    result = result.replace(/[\uD800-\uDBFF]$/, '')
+  if (text.length <= MAX_BODY_LENGTH) {
+    return text
   }
-  if (needsTruncation) {
-    // 切り詰め時のみフェンスを補完する。非切り詰め時はレビュー本文がコード
-    // 引用を多く含み、行頭 ``` の偶奇ヒューリスティックが誤判定しやすいため
-    // 触らない（フッターがコードブロックに飲み込まれるのは表示崩れのみ）。
-    const fenceCount = result
-      .split('\n')
-      .filter((line) => line.trim().startsWith('```')).length
-    if (fenceCount % 2 === 1) {
-      result += '\n```'
-    }
-    result += '\n\n（長すぎるため省略）'
+  let result = text.slice(0, MAX_BODY_LENGTH)
+  // 行途中で切れた不完全行を落とす（フェンスの途中切断で補完が破綻するのを防ぐ）。
+  // ただし改行が先頭付近にしか無い長文では本文をほぼ失うため、末尾500字以内に
+  // 改行がある場合のみ行カットする。
+  const lastNewline = result.lastIndexOf('\n')
+  if (lastNewline >= MAX_BODY_LENGTH - 500) {
+    result = result.slice(0, lastNewline)
   }
-  return result
+  // 末尾が孤立サロゲート（絵文字の片割れ）なら除去し、JSON 化での文字化けを防ぐ
+  result = result.replace(/[\uD800-\uDBFF]$/, '')
+  // 切り詰め時のみフェンスを補完する（非切り詰め時はコード引用の誤判定を避ける）
+  const fenceCount = result
+    .split('\n')
+    .filter((line) => line.trim().startsWith('```')).length
+  if (fenceCount % 2 === 1) {
+    result += '\n```'
+  }
+  return result + '\n\n（長すぎるため省略）'
 }
 
 // structured_output の JSON から review 本文を取り出す。

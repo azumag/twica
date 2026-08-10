@@ -24,6 +24,8 @@
 #   （部分一致で ls/cat 等も実行されうる）、curl/wget の deny は迂回可能な緩和に
 #   過ぎない。@メンションの置換は意図的に行わない（write 権限保持者起点の注入は
 #   受容済み。無条件置換はコード引用を壊す実害があるため）。
+#   Bash(git diff:*) は前方一致のため `git diff --output=<path>` でランナー上の
+#   ファイルを書ける（read-only token かつ使い捨てランナーなので実害は限定的）。
 #   伏字化は「Claude が出力事故でトークンを素のまま出した場合」の緩和であり、
 #   write 権限保持者（PR 作者）に対する防御ではない（彼らは head の
 #   format-review.mjs を差し替えられる。issue #917 で追跡）。
@@ -97,8 +99,6 @@ jobs:
           echo "configured=$configured" >> "$GITHUB_OUTPUT"
           if [ "$configured" != "true" ]; then
             # トークン失効・未設定が長期間気付かれず「全緑」になるのを防ぐ。
-            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューはスキップされます"
-            echo "CLAUDE_CODE_OAUTH_TOKEN が未設定、または fork PR のため secrets が渡らないため、Claude 自動レビューはスキップされます。" >> "$GITHUB_STEP_SUMMARY"
             # fork PR では secrets が渡らないのが正常なため warning のみ。
             # 同一リポジトリ PR で未設定は設定ミスなので fail-loud にする。
             # head.repo.fork は「head リポジトリ自体が fork か」なので使わない
@@ -108,6 +108,8 @@ jobs:
               echo "::error::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューを実行できません"
               exit 1
             fi
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューはスキップされます"
+            echo "fork PR のため secrets が渡らない（またはトークン未設定）ため、Claude 自動レビューはスキップされます。" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Checkout repository
@@ -210,10 +212,13 @@ jobs:
             exit 1
           fi
           # 生トークンの完全一致チェック（正規表現の網を外れた漏洩をブロック）。
+          # 投稿されるのは JSON デコード後の review 文字列のため、raw JSON ではなく
+          # jq でデコードした本文に対して検査する（\uXXXX エスケープも解かれる）。
           # この step は `if: configured == 'true'` でガードされており、
           # トークンが空文字の場合は実行されない（*""* が全一致になる前提を
           # 外さないこと）。
-          case "$STRUCTURED_OUTPUT" in
+          review_text="$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.review')"
+          case "$review_text" in
             *"$CLAUDE_CODE_OAUTH_TOKEN"*)
               echo "::error::Claude review output contains the OAuth token"
               exit 1
@@ -310,7 +315,7 @@ jobs:
             // 全ページから探す。判定ロジックは findOwnReviewComment に切り出し、
             // テストで検証している。期待投稿者は github-token の投稿主
             // （github-actions[bot]）に固定されており、トークン差し替え時は
-            // format-review.mjs の REVIEW_COMMENT_AUTHOR も変更する。
+            // この job の COMMENT_AUTHOR env も変更する。
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
               repo,

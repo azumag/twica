@@ -85,6 +85,8 @@ describe('claude-review format helpers', () => {
       const out = truncateAndCloseFences('```js\n' + 'x'.repeat(MAX_BODY_LENGTH))
       expect(out.lastIndexOf('```')).toBeGreaterThan(0)
       expect(out.lastIndexOf('```')).toBeLessThan(out.indexOf('（長すぎるため省略）'))
+      // 改行が先頭付近にしか無い長文でも本文をほぼ失わない（行カットの下限）
+      expect(out.length).toBeGreaterThan(1000)
     })
 
     it('leaves text at exactly the limit unchanged', () => {
@@ -194,6 +196,14 @@ describe('claude-review format helpers', () => {
 
     it('returns undefined when no owned comment exists', () => {
       expect(findOwnReviewComment([], marker, 'github-actions[bot]')).toBeUndefined()
+    })
+
+    it('returns the latest owned comment when duplicates exist', () => {
+      const comments = [
+        { id: 1, user: { login: 'github-actions[bot]', type: 'Bot' }, body: `${marker}\n古い` },
+        { id: 2, user: { login: 'github-actions[bot]', type: 'Bot' }, body: `${marker}\n最新` },
+      ]
+      expect(findOwnReviewComment(comments, marker, 'github-actions[bot]')?.id).toBe(2)
     })
 
     it('accepts CRLF line endings and rejects first-line mismatches', () => {
