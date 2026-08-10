@@ -29,7 +29,10 @@ export function redactSecrets(text) {
 // （最大 +16 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
 export function truncateAndCloseFences(text) {
   const needsTruncation = text.length > MAX_BODY_LENGTH
-  let result = needsTruncation ? text.slice(0, MAX_BODY_LENGTH) : text
+  let result = needsTruncation
+    ? // 末尾が孤立サロゲート（絵文字の片割れ）なら除去し、JSON 化での文字化けを防ぐ
+      text.slice(0, MAX_BODY_LENGTH).replace(/[\uD800-\uDBFF]$/, '')
+    : text
   // 行頭の ``` のみ数える簡易ヒューリスティック（4連バッククォートの入れ子や
   // フェンス内の例示は誤判定し得る。4連バッククォートで開いたブロックは
   // 閉じられずフッターがコードブロックに飲み込まれることもあるが表示崩れのみ）。
@@ -52,7 +55,9 @@ export function truncateAndCloseFences(text) {
 export function parseReviewJson(json) {
   const { review } = JSON.parse(json)
   if (typeof review !== 'string' || review.trim() === '') {
-    throw new Error('empty')
+    // 空・空白・型違いも JSON として不成立扱いにする（jq の早期チェックで
+    // 既に弾かれるため、ここは後段の防御）。
+    throw new Error('invalid')
   }
   return review.trim()
 }
@@ -74,23 +79,18 @@ export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, sa
   )
 }
 
-// このワークフローが投稿した既存レビューコメントかを判定する。
-// マーカーは誰でも知り得るため、投稿者をワークフローの github-token が
-// 生み出す投稿者ログインに限定して第三者（他のボット含む）コメントの誤上書きを
-// 防ぐ。投稿者は workflow 側の `github-token` で決まるため、トークンを
-// 差し替える場合は期待ログインも変更すること。
-export const REVIEW_COMMENT_AUTHOR = 'github-actions[bot]'
-
-// 先頭行がマーカーかどうか（GitHub API が \r\n を返し得るため trim する）。
-export function hasReviewMarker(comment, marker) {
-  return comment.body?.split('\n', 1)[0].trim() === marker
-}
-
-export function isOwnReviewComment(comment, marker) {
-  return comment?.user?.login === REVIEW_COMMENT_AUTHOR && hasReviewMarker(comment, marker)
-}
-
 // コメント一覧からこのワークフローが投稿したレビューコメントを探す。
+// マーカーは誰でも知り得るため、投稿者をワークフローの github-token が生み出す
+// 投稿者ログインに限定して第三者（他のボット含む）コメントの誤上書きを防ぐ。
+// 投稿者は workflow 側の `github-token` で決まるため、トークンを差し替える場合は
+// この定数も変更すること。
+const REVIEW_COMMENT_AUTHOR = 'github-actions[bot]'
+
 export function findOwnReviewComment(comments, marker) {
-  return comments.find((comment) => isOwnReviewComment(comment, marker))
+  return comments.find(
+    (comment) =>
+      comment?.user?.login === REVIEW_COMMENT_AUTHOR &&
+      // 先頭行がマーカーかどうか（GitHub API が \r\n を返し得るため trim する）
+      comment.body?.split('\n', 1)[0].trim() === marker,
+  )
 }

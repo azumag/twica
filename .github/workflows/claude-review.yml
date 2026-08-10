@@ -195,7 +195,7 @@ jobs:
           # 空・空白のみの場合は失敗にして Checks を赤くする。
           # 空・空白・JSON 破損をまとめて jq で捕捉する（後段の post_review で
           # パース失敗として再検出される前に、トークン到達 job で切り分ける）。
-          if ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e '.review | select(type == "string" and (gsub("\\s"; "") | length > 0))' >/dev/null; then
+          if ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e '.review | strings | select(test("\\S"))' >/dev/null; then
             echo "::error::Claude review structured output is not a valid review JSON"
             exit 1
           fi
@@ -260,9 +260,7 @@ jobs:
             const {
               buildReviewCommentBody,
               findOwnReviewComment,
-              hasReviewMarker,
               parseReviewJson,
-              REVIEW_COMMENT_AUTHOR,
               sanitizeReviewText,
             } = await import(
               pathToFileURL(
@@ -281,11 +279,7 @@ jobs:
               reviewText = parseReviewJson(process.env.REVIEW_JSON);
             } catch (error) {
               // error.message は入力断片を含み得るため出さない（ログへの漏洩防止）。
-              core.setFailed(
-                error.message === 'empty'
-                  ? 'Claude review output is empty'
-                  : 'Claude review output is not valid JSON',
-              );
+              core.setFailed('Claude review output is not valid JSON or is empty');
               return;
             }
 
@@ -327,20 +321,6 @@ jobs:
                 body,
               });
             } else {
-              // 投稿者ログインが REVIEW_COMMENT_AUTHOR とズレると常に新規コメントが
-              // 積み上がるサイレント劣化になるため、マーカー付きの自己コメント
-              // （以前の投稿者名）が残っている場合は warning で検知する。
-              // マーカーは公開情報のため、自投稿者名以外（他ボット含む）は除外する。
-              const stale = comments.filter(
-                (comment) =>
-                  comment.user?.login === REVIEW_COMMENT_AUTHOR &&
-                  hasReviewMarker(comment, marker),
-              ).length;
-              if (stale > 0) {
-                core.warning(
-                  `${stale} 件のマーカー付きコメントが投稿者不一致のため上書き対象になりません`,
-                );
-              }
               await github.rest.issues.createComment({
                 owner,
                 repo,

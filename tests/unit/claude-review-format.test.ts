@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   buildReviewCommentBody,
   findOwnReviewComment,
-  hasReviewMarker,
-  isOwnReviewComment,
   MAX_BODY_LENGTH,
   parseReviewJson,
   redactSecrets,
@@ -153,17 +151,13 @@ describe('claude-review format helpers', () => {
         ...base,
         safeText: sanitizeReviewText('x'.repeat(MAX_BODY_LENGTH + 5000)),
       })
-      expect(Array.from(body).length).toBeLessThan(65536)
+      expect(body.length).toBeLessThan(65536)
     })
 
-    it('round-trips with isOwnReviewComment using the marker line', () => {
+    it('round-trips with findOwnReviewComment using the marker line', () => {
       const body = buildReviewCommentBody({ ...base, safeText: '指摘なし' })
-      expect(
-        isOwnReviewComment(
-          { user: { login: 'github-actions[bot]', type: 'Bot' }, body },
-          base.marker,
-        ),
-      ).toBe(true)
+      const comments = [{ user: { login: 'github-actions[bot]', type: 'Bot' }, body }]
+      expect(findOwnReviewComment(comments, base.marker)).toBeDefined()
     })
   })
 
@@ -202,92 +196,41 @@ describe('claude-review format helpers', () => {
     it('returns undefined when no owned comment exists', () => {
       expect(findOwnReviewComment([], marker)).toBeUndefined()
     })
-  })
 
-  describe('isOwnReviewComment', () => {
-    const marker = '<!-- claude-auto-review-preview -->'
-
-    it('hasReviewMarker checks only the first line', () => {
-      expect(hasReviewMarker({ body: `${marker}\n## Claude Auto Review` }, marker)).toBe(true)
-      expect(hasReviewMarker({ body: `## Claude Auto Review\n${marker}` }, marker)).toBe(false)
-      expect(hasReviewMarker({}, marker)).toBe(false)
-    })
-
-    it('accepts a bot comment whose first line is the marker', () => {
+    it('accepts CRLF line endings and rejects first-line mismatches', () => {
       expect(
-        isOwnReviewComment(
-          {
-            user: { login: 'github-actions[bot]', type: 'Bot' },
-            body: `${marker}\n## Claude Auto Review`,
-          },
+        findOwnReviewComment(
+          [
+            {
+              user: { login: 'github-actions[bot]', type: 'Bot' },
+              body: `${marker}\r\n## Claude Auto Review`,
+            },
+          ],
           marker,
         ),
-      ).toBe(true)
-    })
-
-    it('accepts CRLF line endings in the first line', () => {
+      ).toBeDefined()
       expect(
-        isOwnReviewComment(
-          {
-            user: { login: 'github-actions[bot]', type: 'Bot' },
-            body: `${marker}\r\n## Claude Auto Review`,
-          },
+        findOwnReviewComment(
+          [
+            {
+              user: { login: 'github-actions[bot]', type: 'Bot' },
+              body: `## Claude Auto Review\n${marker}`,
+            },
+          ],
           marker,
         ),
-      ).toBe(true)
+      ).toBeUndefined()
     })
 
-    it('rejects other bots even with the marker', () => {
+    it('rejects other logins and missing body safely', () => {
       expect(
-        isOwnReviewComment(
-          {
-            user: { login: 'renovate[bot]', type: 'Bot' },
-            body: `${marker}\n## Claude Auto Review`,
-          },
+        findOwnReviewComment(
+          [{ user: { login: 'renovate[bot]', type: 'Bot' }, body: `${marker}\n...` }],
           marker,
         ),
-      ).toBe(false)
-    })
-
-    it('rejects other logins', () => {
-      expect(
-        isOwnReviewComment(
-          {
-            user: { login: 'azumag', type: 'User' },
-            body: `${marker}\n## Claude Auto Review`,
-          },
-          marker,
-        ),
-      ).toBe(false)
-    })
-
-    it('rejects comments whose first line is not the marker', () => {
-      expect(
-        isOwnReviewComment(
-          {
-            user: { login: 'github-actions[bot]', type: 'Bot' },
-            body: '## Claude Auto Review',
-          },
-          marker,
-        ),
-      ).toBe(false)
-    })
-
-    it('rejects a comment with the marker after the first line', () => {
-      expect(
-        isOwnReviewComment(
-          {
-            user: { login: 'github-actions[bot]', type: 'Bot' },
-            body: `## Claude Auto Review\n${marker}`,
-          },
-          marker,
-        ),
-      ).toBe(false)
-    })
-
-    it('handles missing body or comment safely', () => {
-      expect(isOwnReviewComment({ user: { login: 'github-actions[bot]' } }, marker)).toBe(false)
-      expect(isOwnReviewComment(undefined, marker)).toBe(false)
+      ).toBeUndefined()
+      expect(findOwnReviewComment([{ user: { login: 'github-actions[bot]' } }], marker)).toBeUndefined()
+      expect(findOwnReviewComment([undefined], marker)).toBeUndefined()
     })
   })
 })
