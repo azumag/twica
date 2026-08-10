@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   buildReviewCommentBody,
   findOwnReviewComment,
+  isOverLimit,
   MAX_BODY_LENGTH,
   parseReviewJson,
   redactSecrets,
+  REVIEW_MARKER,
   sanitizeReviewText,
   truncateAndCloseFences,
 } from '../../.github/scripts/format-review.mjs'
@@ -65,6 +67,11 @@ describe('claude-review format helpers', () => {
   })
 
   describe('truncateAndCloseFences', () => {
+    it('isOverLimit reports only lengths above the limit', () => {
+      expect(isOverLimit('a'.repeat(MAX_BODY_LENGTH))).toBe(false)
+      expect(isOverLimit('a'.repeat(MAX_BODY_LENGTH + 1))).toBe(true)
+    })
+
     it('keeps text unchanged within the limit', () => {
       const text = '```js\nconst x = 1\n```'
       expect(truncateAndCloseFences(text)).toBe(text)
@@ -125,7 +132,7 @@ describe('claude-review format helpers', () => {
 
   describe('buildReviewCommentBody', () => {
     const base = {
-      marker: '<!-- claude-auto-review-preview -->',
+      marker: REVIEW_MARKER,
       shortSha: 'abc1234',
       commitUrl: 'https://github.com/azumag/twica/commit/abc1234',
       runUrl: 'https://github.com/azumag/twica/actions/runs/12345',
@@ -165,11 +172,16 @@ describe('claude-review format helpers', () => {
       expect(parseReviewJson('{"review":"  指摘なし  "}')).toBe('指摘なし')
     })
 
-    it('throws for a missing, empty, or non-string review field', () => {
-      expect(() => parseReviewJson('{"review":""}')).toThrow()
-      expect(() => parseReviewJson('{"review":"   "}')).toThrow()
+    it('returns the trimmed value as-is (emptiness is validated by jq upstream)', () => {
+      expect(parseReviewJson('{"review":""}')).toBe('')
+      expect(parseReviewJson('{"review":"   "}')).toBe('')
+    })
+
+    it('throws for non-string or malformed inputs', () => {
       expect(() => parseReviewJson('{"review":123}')).toThrow()
       expect(() => parseReviewJson('{}')).toThrow()
+      expect(() => parseReviewJson('null')).toThrow()
+      expect(() => parseReviewJson('[]')).toThrow()
     })
 
     it('throws for invalid JSON', () => {
@@ -178,7 +190,7 @@ describe('claude-review format helpers', () => {
   })
 
   describe('findOwnReviewComment', () => {
-    const marker = '<!-- claude-auto-review-preview -->'
+    const marker = REVIEW_MARKER
 
     it('finds the workflow-owned comment and ignores others', () => {
       const comments = [

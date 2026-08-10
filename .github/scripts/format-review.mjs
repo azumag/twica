@@ -15,6 +15,13 @@ const SECRET_PATTERN =
 // issue comment 上限 65536 には余裕を持って収まる。
 export const MAX_BODY_LENGTH = 10000
 
+// レビューコメントの識別マーカー（単一の出典。workflow とテストはこれを参照する）。
+export const REVIEW_MARKER = '<!-- claude-auto-review-preview -->'
+
+export function isOverLimit(text) {
+  return text.length > MAX_BODY_LENGTH
+}
+
 export function redactSecrets(text) {
   // String.prototype.replace は /g 正規表現の lastIndex を走査前後にリセットする
   // ため、モジュール定数を共有して安全。stateful な .test()/.exec() には使わないこと。
@@ -56,11 +63,8 @@ export function truncateAndCloseFences(text) {
 //  ここは後段の防御）。
 export function parseReviewJson(json) {
   const { review } = JSON.parse(json)
-  if (typeof review !== 'string' || review.trim() === '') {
-    // 空・空白・型違いも JSON として不成立扱いにする（jq の早期チェックで
-    // 既に弾かれるため、ここは後段の防御）。
-    throw new Error('invalid')
-  }
+  // 空・空白・型違いの検証は claude_review job の jq チェックが担う
+  // （トークン到達 job で切り分けるため）。ここは JSON パースのみ扱う。
   return review.trim()
 }
 

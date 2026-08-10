@@ -20,10 +20,11 @@
 #   防げず、base64 化や文字列分割を誘導された場合はすり抜ける（残余リスクとして
 #   受容）。Read のワークスペース制限は Grep / Glob がパス無制限のため実効的で
 #   はない（残余リスクとして受容）。
-#   --allowedTools / --disallowedTools は Bash の網羅的 allowlist ではなく
-#   （部分一致で ls/cat 等も実行されうる）、curl/wget の deny は迂回可能な緩和に
-#   過ぎない。@メンションの置換は意図的に行わない（write 権限保持者起点の注入は
-#   受容済み。無条件置換はコード引用を壊す実害があるため）。
+#   --allowedTools / --disallowedTools は Bash の網羅的 allowlist ではなく、
+#   curl/wget の deny は迂回可能な緩和に過ぎない。実効的な境界は Claude Code 側の
+#   サンドボックス層と read-only token に依存する。@メンションの置換は意図的に
+#   行わない（write 権限保持者起点の注入は受容済み。無条件置換はコード引用を
+#   壊す実害があるため）。
 #   Bash(git diff:*) は前方一致のため `git diff --output=<path>` でランナー上の
 #   ファイルを書ける（read-only token かつ使い捨てランナーなので実害は限定的）。
 #   伏字化は「Claude が出力事故でトークンを素のまま出した場合」の緩和であり、
@@ -44,8 +45,9 @@
 # 実行終了後にのみ使う。post_review も PR head 由来の .github/scripts/
 # format-review.mjs を実行するが、workflow 定義自体が head 由来である以上
 # 実効的な権限拡大はなく、fork では secrets が渡らず起動条件も満たされない。
-# なおコメントは同一コメントを updateComment で上書きする（単一コメント維持
-# 方針）ため、購読者への通知は発生しない。PR ページで確認する運用。
+# なおコメントは初回のみ createComment（通知あり）、以降は updateComment で
+# 上書きする（単一コメント維持方針）ため、2回目以降の通知は発生しない。
+# PR ページと Step summary で確認する運用。
 name: Claude Auto Review (preview)
 
 on:
@@ -134,8 +136,10 @@ jobs:
         # 「レビュー不可」を非空の出力として返し、前回の有効レビューを上書き
         # しつつ Checks が緑になる fail-open になる。ここで早期に失敗させる。
         run: |
-          git rev-parse -q --verify "$BASE_SHA^{commit}"
-          git rev-parse -q --verify "$HEAD_SHA^{commit}"
+          git rev-parse -q --verify "$BASE_SHA^{commit}" \
+            || { echo "::error::base SHA が見つかりません: $BASE_SHA"; exit 1; }
+          git rev-parse -q --verify "$HEAD_SHA^{commit}" \
+            || { echo "::error::head SHA が見つかりません: $HEAD_SHA"; exit 1; }
 
       - name: Claude Code Review (opus)
         id: review
@@ -279,7 +283,9 @@ jobs:
             const {
               buildReviewCommentBody,
               findOwnReviewComment,
+              isOverLimit,
               parseReviewJson,
+              REVIEW_MARKER,
               sanitizeReviewText,
             } = await import(
               pathToFileURL(
@@ -287,7 +293,6 @@ jobs:
               ).href
             );
 
-            const marker = '<!-- claude-auto-review-preview -->';
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issueNumber = Number(process.env.PR_NUMBER);
@@ -303,10 +308,13 @@ jobs:
             }
 
             const safe = sanitizeReviewText(reviewText);
+            if (isOverLimit(reviewText)) {
+              core.warning('レビュー本文が長すぎるため末尾を切り詰めました');
+            }
             const commitUrl =
               `${process.env.SERVER_URL}/${owner}/${repo}/commit/${process.env.REVIEWED_SHA}`;
             const body = buildReviewCommentBody({
-              marker,
+              marker: REVIEW_MARKER,
               shortSha,
               commitUrl,
               runUrl: process.env.RUN_URL,
@@ -324,7 +332,7 @@ jobs:
             });
             const existing = findOwnReviewComment(
               comments,
-              marker,
+              REVIEW_MARKER,
               process.env.COMMENT_AUTHOR,
             );
 
