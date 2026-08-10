@@ -86,6 +86,14 @@ on:
     # 実DBへのDDL適用は migration 変更時のみ必要であり、ドキュメント等だけの
     # push で毎回 PlanetScale へ接続して適用/検証するのは無駄なため。
     # （workflow_dispatch は手動実行のためパスフィルタを付けない）
+    #
+    # 既知のエッジケース（GitHub公式ドキュメントで確認済み・受容する残余リスク）:
+    # 1回のpushのdiffが3,000ファイルを超え、かつmigration変更がその先頭3,000件に
+    # 含まれない場合、GitHub側の実装上このpathフィルタはfail-closed（実行されない）
+    # になる。本リポジトリの通常のPR/pushでこの規模のdiffは想定していないが、
+    # 万一発生した場合はDDLが未適用のまま気づかず進む。復旧経路は
+    # `workflow_dispatch` による手動再実行、または次のmigration付きpushでの
+    # まとめ適用（`db-migrate.js`は未適用分をすべて追いつかせる）。
     paths:
       - 'supabase/migrations/**'
       - 'db/planetscale/**'

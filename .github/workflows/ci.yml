@@ -44,6 +44,7 @@ jobs:
               - 'workers/**'
               - 'messages/**'
               - 'public/**'
+              - 'types/**'
               - 'package.json'
               - 'package-lock.json'
               - 'tsconfig*.json'
@@ -53,15 +54,26 @@ jobs:
               - 'eslint*.config.*'
               - 'vitest.config.*'
               - 'wrangler.toml'
+              # tests/unit/cloudflare-proxy-migration.test.ts が本文を直接assertする。
+              - 'docs/cloudflare-proxy-migration.md'
             tests:
               - 'tests/**'
             scripts:
               - 'scripts/**'
               - 'config/**'
+              # scripts/check-supabase-shutdown.js（test jobで実行）が走査・assertする
+              # 対象。スクリプト本体だけでなく、これらのpathの変更でも同ガードを
+              # 再実行しないと、退役provider混入チェックが無検査ですり抜ける。
+              - '.github/workflows/**'
+              - '.opencode/plans/**'
+              - '.env.local.example'
             migrations:
               - 'supabase/migrations/**'
               - 'db/planetscale/**'
               - 'scripts/db-migrate.js'
+              # scripts/** と重複するが意図的: scripts カテゴリは test job を、
+              # こちらは migration-order-check / planetscale-migration-postgres を
+              # ゲートしており、それぞれ独立したoutputなので両方に列挙が必要。
               - 'scripts/lib/**'
               - 'scripts/check-migration-order.js'
             postgres_fixtures:
@@ -78,14 +90,17 @@ jobs:
 
   test:
     needs: changes
-    # アプリ/テスト/スクリプト/migration のいずれにも触れない変更
+    # アプリ/テスト/スクリプト/migration/analysis のいずれにも触れない変更
     # （ドキュメント等）ではスキップする。migration を含めるのは unit test が
     # migration SQL を読み込むため（tests/unit/migration-filenames.test.ts 等）。
+    # analysis を含めるのは tests/unit/analysis-dashboard-pagination.test.ts が
+    # analysis/src 配下のソースを直接assertするため。
     if: >-
       needs.changes.outputs.app == 'true' ||
       needs.changes.outputs.tests == 'true' ||
       needs.changes.outputs.scripts == 'true' ||
-      needs.changes.outputs.migrations == 'true'
+      needs.changes.outputs.migrations == 'true' ||
+      needs.changes.outputs.analysis == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -291,7 +306,13 @@ jobs:
   migration-order-check:
     name: Migration order check
     needs: changes
-    if: needs.changes.outputs.migrations == 'true'
+    # ルール2（採番の追い抜き検知）はbase branchとの比較が前提で、pull_request
+    # イベントでしか意味を持たない（push では github.base_ref が空になり、
+    # スクリプト側は警告付きでルール2をスキップするだけの空振りになる）。
+    # 元の実装（PRのみ実行）を維持する。
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
 
     steps:
