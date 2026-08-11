@@ -138,6 +138,8 @@ describe("LiveDirectory", () => {
     expect(twitchLink).toHaveAttribute("href", "https://www.twitch.tv/alpha");
     expect(twitchLink).toHaveAttribute("target", "_blank");
     expect(twitchLink).toHaveAttribute("rel", "noopener noreferrer");
+    expect(twitchLink).not.toHaveAttribute("aria-label");
+    expect(twitchLink).toHaveAccessibleName(/alpha stream/);
     expect(twitchLink.parentElement).toBe(collectionLink.parentElement?.parentElement);
     expect(screen.getByText("LIVE")).toBeInTheDocument();
     expect(screen.getByAltText("Alphaのライブ配信サムネイル")).toBeInTheDocument();

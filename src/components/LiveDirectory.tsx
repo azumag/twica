@@ -177,7 +177,6 @@ function LiveDirectoryCard({
         href={channelUrl}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={t("card.watchOnTwitchNewTab", { name: entry.displayName })}
         className="group block flex-1 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-purple-400"
       >
         <div className="relative aspect-video overflow-hidden bg-gray-950">
@@ -244,6 +243,11 @@ function LiveDirectoryCard({
             {t("card.liveFor", { duration: elapsed })}
           </time>
         </div>
+        {/* aria-label は子孫の可視情報をアクセシブル名から除外するため使わない。
+            新規タブの補足だけを子要素として足し、配信タイトル等を支援技術へ残す。 */}
+        <span className="sr-only">
+          {t("card.watchOnTwitchNewTab", { name: entry.displayName })}
+        </span>
       </a>
 
       <div className="border-t border-gray-700 p-4">
