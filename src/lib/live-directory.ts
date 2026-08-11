@@ -41,7 +41,6 @@ export interface LiveDirectoryEntry {
 interface LiveDirectoryRpcRow {
   streamerId: string;
   twitchUserId: string;
-  twitchUsername: string;
   twitchDisplayName: string;
   twitchProfileImageUrl: string | null;
   publishStats: boolean;
@@ -75,35 +74,26 @@ async function fetchStreamsForUserIds(
 
   for (let i = 0; i < userIds.length; i += HELIX_STREAMS_BATCH_SIZE) {
     const batch = userIds.slice(i, i + HELIX_STREAMS_BATCH_SIZE);
-    // Get Streams の first デフォルトは20件のため、100件バッチでは明示的に
-    // first=100 を付与する。さらに pagination.cursor を辿って同じ user_id 集合の
-    // ライブを全件取得する（同時配信者が21人以上でも欠落させない）。
-    let cursor: string | undefined;
-    do {
-      const params = new URLSearchParams();
-      params.set("first", String(HELIX_STREAMS_BATCH_SIZE));
-      for (const userId of batch) {
-        params.append("user_id", userId);
-      }
-      if (cursor) {
-        params.set("after", cursor);
-      }
+    // Get Streams の first デフォルトは20件のため、明示的に first=100 を付与する。
+    // 1 user_id につきライブは高々1本で user_id は最大100件のため、first=100 の
+    // 初回ページで全件が揃う。cursor 追従は「結果を返し切った後も cursor を返す」
+    // という Twitch の挙動で無限ループの余地があるため行わない（#739 レビュー必須）。
+    const params = new URLSearchParams();
+    params.set("first", String(HELIX_STREAMS_BATCH_SIZE));
+    for (const userId of batch) {
+      params.append("user_id", userId);
+    }
 
-      const response = await fetchTwitchApi(
-        `https://api.twitch.tv/helix/streams?${params.toString()}`,
-      );
-      if (!response.ok) {
-        throw new Error(`Helix GET /streams failed: status=${response.status}`);
-      }
-      const data = (await response.json()) as {
-        data: HelixStream[];
-        pagination?: { cursor?: string };
-      };
-      for (const stream of data.data ?? []) {
-        liveByUserId.set(stream.user_id, stream);
-      }
-      cursor = data.pagination?.cursor;
-    } while (cursor);
+    const response = await fetchTwitchApi(
+      `https://api.twitch.tv/helix/streams?${params.toString()}`,
+    );
+    if (!response.ok) {
+      throw new Error(`Helix GET /streams failed: status=${response.status}`);
+    }
+    const data = (await response.json()) as { data: HelixStream[] };
+    for (const stream of data.data ?? []) {
+      liveByUserId.set(stream.user_id, stream);
+    }
   }
 
   return liveByUserId;
@@ -127,7 +117,7 @@ async function fetchLiveDirectoryUncached(): Promise<LiveDirectoryFetchResult> {
   );
 
   if (rpcError) {
-    reportError(
+    await reportError(
       new Error(`Live directory RPC failed: ${rpcError.message}`),
       { context: "liveDirectory:rpc" },
     );
@@ -148,7 +138,7 @@ async function fetchLiveDirectoryUncached(): Promise<LiveDirectoryFetchResult> {
       streamers.map((s) => s.twitchUserId),
     );
   } catch (error) {
-    reportError(
+    await reportError(
       error instanceof Error ? error : new Error(String(error)),
       { context: "liveDirectory:helix" },
     );
@@ -199,7 +189,7 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
       }
     }
   } catch (error) {
-    reportError(
+    await reportError(
       error instanceof Error ? error : new Error(String(error)),
       { context: "liveDirectory:kvRead" },
     );
@@ -220,7 +210,7 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
         });
       }
     } catch (error) {
-      reportError(
+      await reportError(
         error instanceof Error ? error : new Error(String(error)),
         { context: "liveDirectory:kvWrite" },
       );

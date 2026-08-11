@@ -40,7 +40,6 @@ const RPC_ROWS = [
   {
     streamerId: "s1",
     twitchUserId: "u1",
-    twitchUsername: "live_one",
     twitchDisplayName: "Live One",
     twitchProfileImageUrl: "https://example.com/a.png",
     publishStats: true,
@@ -50,7 +49,6 @@ const RPC_ROWS = [
   {
     streamerId: "s2",
     twitchUserId: "u2",
-    twitchUsername: "offline_two",
     twitchDisplayName: "Offline Two",
     twitchProfileImageUrl: null,
     publishStats: false,
@@ -140,7 +138,6 @@ describe("getLiveDirectory", () => {
     const rows = Array.from({ length: 101 }, (_, i) => ({
       streamerId: `s${i}`,
       twitchUserId: `u${i}`,
-      twitchUsername: `login_${i}`,
       twitchDisplayName: `Name ${i}`,
       twitchProfileImageUrl: null,
       publishStats: true,
@@ -165,7 +162,7 @@ describe("getLiveDirectory", () => {
     expect(new URL(secondUrl).searchParams.get("first")).toBe("100");
   });
 
-  it("同じ user_id 集合で pagination.cursor を辿りライブを全件取得する", async () => {
+  it("レスポンスに cursor が含まれても追加リクエストせず単発で終わる（無限ループ防止）", async () => {
     vi.mocked(fetchTwitchApi)
       .mockResolvedValueOnce(
         new Response(
@@ -175,23 +172,13 @@ describe("getLiveDirectory", () => {
           }),
           { status: 200 },
         ) as never,
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            data: [streamResponse(["u2"]).data[0]],
-            pagination: {},
-          }),
-          { status: 200 },
-        ) as never,
       );
 
     const entries = await getLiveDirectory();
 
-    expect(fetchTwitchApi).toHaveBeenCalledTimes(2);
-    const secondUrl = String(vi.mocked(fetchTwitchApi).mock.calls[1][0]);
-    expect(new URL(secondUrl).searchParams.get("after")).toBe("next-page");
-    expect(entries.map((e) => e.twitchUserId)).toEqual(["u1", "u2"]);
+    // cursor が返っても2回目を呼ばない（#739 レビュー必須: 無限ループ防止）
+    expect(fetchTwitchApi).toHaveBeenCalledTimes(1);
+    expect(entries.map((e) => e.twitchUserId)).toEqual(["u1"]);
   });
 
   it("Helix 障害時は空配列を返し reportError で通知する", async () => {

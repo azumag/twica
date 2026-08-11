@@ -48,7 +48,12 @@ async function issueAppAccessToken(): Promise<CachedAppToken> {
     throw new Error("Failed to get app access token");
   }
 
-  const data = (await response.json()) as { access_token: string; expires_in?: number };
+  const data = (await response.json()) as { access_token?: string; expires_in?: number };
+  if (typeof data.access_token !== "string" || data.access_token.length === 0) {
+    // 200 でも access_token 欠落のボディが返る異常系。不正値を KV へ4時間
+    // キャッシュしない（#739 レビュー指摘）。
+    throw new Error("App access token response is missing access_token");
+  }
   // expires_in 欠落・不正値（0以下 / NaN）は上限TTLへフォールバックする
   // （キャッシュの有効期限が NaN になると毎回再発行されるのを防ぐ）。
   const expiresInSeconds = Number(data.expires_in);

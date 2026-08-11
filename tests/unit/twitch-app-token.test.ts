@@ -76,6 +76,26 @@ describe("Twitch app access token", () => {
     );
   });
 
+  it("KV のトークンをルートをまたいで再利用する（発行せず Authorization に使う）", async () => {
+    kv.get.mockResolvedValue(
+      JSON.stringify({
+        accessToken: "kv-token",
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }) as never,
+    );
+
+    const response = await fetchTwitchApi("https://api.twitch.tv/helix/streams");
+
+    expect(response.status).toBe(200);
+    // 発行 fetch は一切呼ばれない
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sentHeaders = new Headers(fetchMock.mock.calls[0][1]?.headers as HeadersInit);
+    expect(sentHeaders.get("Authorization")).toBe("Bearer kv-token");
+  });
+
   it("KV に有効なトークンがあればそれを返し発行 fetch を呼ばない", async () => {
     kv.get.mockResolvedValue(
       JSON.stringify({
@@ -194,5 +214,16 @@ describe("Twitch app access token", () => {
       expect.any(String),
       expect.objectContaining({ expirationTtl: 60 }),
     );
+  });
+
+  it("200 でも access_token 欠落のボディなら throw してキャッシュしない", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ expires_in: 3600 }), { status: 200 }) as never,
+    );
+
+    await expect(getTwitchAppAccessToken()).rejects.toThrow(
+      "App access token response is missing access_token",
+    );
+    expect(kv.put).not.toHaveBeenCalled();
   });
 });
