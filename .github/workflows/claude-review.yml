@@ -1,0 +1,387 @@
+# Claude Auto Review (preview)
+#
+# preview をターゲットにした PR のたびに、Claude Code（モデル: opus）が追加された
+# 変更を自動レビューし、PR コメントで指摘を報告する。
+#
+# 経緯: 旧版は `push: branches: [preview]` で発火していたが、
+# anthropics/claude-code-action@v1 が push イベントに対応しておらず常時失敗して
+# いたため、PR #915 で一時削除。本版は `pull_request` イベントへ変更して復活させる。
+#
+# 前提・リスク受容:
+# - `CLAUDE_CODE_OAUTH_TOKEN` はオーナーが `claude setup-token` で発行し、
+#   GitHub Secret を自身で差し替える（Action 側で値を読み書きしない）。
+# - `pull_request` は PR ヘッド側のワークフロー定義で実行されるため、同一
+#   リポジトリの write 権限保持者はこのワークフローを改変してトークンを取得
+#   できる。より強い保護（environment + required reviewers）は PR ごとの承認が
+#   要って自動レビューが機能しなくなるため受容する。
+# - 実効的な封じ込めは「fork PR に secrets が渡らない」「Claude 実行 job は
+#   read-only GITHUB_TOKEN」の2点のみ。伏字化・生トークン完全一致チェックは
+#   head 由来コード（workflow YAML 自体も head 由来）のため write 権限保持者に
+#   対する防御ではなく、Claude の出力事故に対する緩和（「素の文字列で出力された
+#   場合」しか防げず、base64 化や文字列分割を誘導された場合はすり抜ける）。
+#   Read のワークスペース制限は Grep / Glob がパス無制限のため実効的ではない。
+#   （受容リスクの詳細は issue #917 / #918）
+#   --allowedTools / --disallowedTools は Bash の網羅的 allowlist ではなく、
+#   curl/wget の deny は迂回可能な緩和に過ぎない。実効的な境界は Claude Code 側の
+#   サンドボックス層と read-only token に依存する。@メンションの置換は意図的に
+#   行わない（write 権限保持者起点の注入は受容済み。無条件置換はコード引用を
+#   壊す実害があるため）。
+#   Bash(git diff:*) は前方一致のため `git diff --output=<path>` でランナー上の
+#   ファイルを書ける（read-only token かつ使い捨てランナーなので実害は限定的）。
+#   ボット作成の PR（Renovate / エージェント等）も同一リポジトリ発火なら secrets
+#   が渡るため、露出面は「write 権限保持者（人間・ボット問わず）」。ただし
+#   Dependabot 起点の PR には通常の Actions secrets が渡らないため、レビュー対象外。
+#   paths は PR 全体の変更ファイル集合で評価されるため、md のみの PR では
+#   初回からワークフローが起動せずコメントも作られない。md 以外を含む PR では
+#   md のみの追い push でも起動する。この workflow を required check にする場合は
+#   md のみの PR で pending が残りマージ不能になるため、required check 化は
+#   しないこと。なお GitHub 側の制限として、変更ファイルが極端に多い PR では
+#   paths が無視されて常に実行される（コスト受容の前提）。
+#
+# Claude 実行 job と投稿 job を分離し、投稿用の pull-requests: write は Claude の
+# 実行終了後にのみ使う。post_review も PR head 由来の .github/scripts/
+# format-review.mjs を実行するが、workflow 定義自体が head 由来である以上
+# 実効的な権限拡大はなく、fork では secrets が渡らず起動条件も満たされない。
+# なおコメントは初回のみ createComment（通知あり）、以降は updateComment で
+# 上書きする（単一コメント維持方針）ため、2回目以降の通知は発生しない。
+# PR ページと Step summary で確認する運用。
+name: Claude Auto Review (preview)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [preview]
+    # ドキュメントのみの変更では opus を回さない（コスト抑制）。ただし
+    # AGENTS.md / CLAUDE.md はレビュー基準そのものなので対象から外さない。
+    # paths は最後にマッチしたパターンが優先されるため、
+    # 全ファイル含む → md 除外 → 上記2ファイル再含む、の順で書く。
+    paths:
+      - '**'
+      # GitHub のドキュメント表記に合わせる（`!**/*.md` はルート直下の md に
+      # 対する挙動が実装依存のため）
+      - '!**.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+    # main 向け PR は対象外（preview でレビュー済みの内容を昇格するだけのため意図的）
+    # preview への直接 push は branch protection で禁止されている前提
+    # （直 push できる場合、その変更は本レビューの対象外になる）
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude_review:
+    name: Review PR changes
+    # draft PR では opus を回さない。bot 作成 PR（Renovate / Dependabot /
+    # エージェント等）はレビュー対象に含める（エージェント起点の変更こそ要レビュー）。
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # コスト受容: preview 向け PR の synchronize ごとに opus（最大30ターン）を
+    # 回す。fetch-depth: 0 の全履歴取得と合わせ、差分が大きい PR では 25 分
+    # timeout / max-turns 到達で fail-loud する。
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      review: ${{ steps.review.outputs.structured_output }}
+
+    steps:
+      - name: Check token configured
+        id: check-token
+        # job の env を outputs から参照するのは GitHub Actions のコンテキスト
+        # 可用性の境界で壊れやすいため、step output 経由で確実に渡す。
+        run: |
+          configured=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          same_repo=${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' }}
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+          if [ "$configured" != "true" ]; then
+            # トークン失効・未設定が長期間気付かれず「全緑」になるのを防ぐ。
+            # fork PR では secrets が渡らないのが正常なため warning のみ。
+            # 同一リポジトリ PR で未設定は設定ミスなので fail-loud にする。
+            # head.repo.fork は「head リポジトリ自体が fork か」なので使わない
+            # （このリポジトリ自体が fork だと常に true になり fail-loud が効かない）。
+            # Dependabot PR は同一リポジトリでも secrets が渡らないため除外する
+            # （fork と同じ扱いで warning のみ）。
+            # full_name 比較で「確実に同一リポジトリ」と判定できる場合のみ fail-loud にする。
+            if [ "$same_repo" = "true" ]; then
+              echo "::error::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューを実行できません"
+              exit 1
+            fi
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューはスキップされます"
+            echo "fork PR のため secrets が渡らない（またはトークン未設定）ため、Claude 自動レビューはスキップされます。" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout repository
+        if: steps.check-token.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          # three-dot diff (base...head) は merge-base 解決に双方の履歴が必要。
+          # fetch-depth を絞ると base 側の commit が欠けて diff が失敗しうるため
+          # 全履歴を取得する（チェックアウト時間と安全性のトレードオフ）。
+          fetch-depth: 0
+          persist-credentials: false
+          # コンフリクト中の PR では refs/pull/N/merge が生成されず checkout が
+          # 失敗するため、head SHA を明示する（three-dot diff には影響しない）。
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify base and head SHAs exist
+        if: steps.check-token.outputs.configured == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # base 側の force-push 等で base.sha が reachable でない場合、Claude は
+        # 「レビュー不可」を非空の出力として返し、前回の有効レビューを上書き
+        # しつつ Checks が緑になる fail-open になる。ここで早期に失敗させる。
+        run: |
+          git rev-parse -q --verify "$BASE_SHA^{commit}" >/dev/null \
+            || { echo "::error::base SHA が見つかりません: $BASE_SHA"; exit 1; }
+          git rev-parse -q --verify "$HEAD_SHA^{commit}" >/dev/null \
+            || { echo "::error::head SHA が見つかりません: $HEAD_SHA"; exit 1; }
+
+      - name: Claude Code Review (opus)
+        id: review
+        if: steps.check-token.outputs.configured == 'true'
+        # 供給元タグの更新で挙動が変わり得るため、コミットSHAピンが定石だが、
+        # この環境から GitHub API へ到達できず（api.github.com への疎通不可）
+        # 現在の v1 タグの SHA を取得できないため、タグ運用を維持する。
+        # OAuth トークンを渡す唯一の action なので、SHA 取得手段ができ次第
+        # ピン化する（追跡: issue #918）。
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Claude GitHub App の書き込み権限ではなく、この job の読み取り専用
+          # GITHUB_TOKEN を明示的に使う。
+          github_token: ${{ github.token }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR: #${{ github.event.pull_request.number }}
+            BASE SHA: ${{ github.event.pull_request.base.sha }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
+
+            この PR で追加された変更を厳しくレビューしてください。
+            対象は PR 全体の差分です。
+
+            `git diff --find-renames ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}`
+
+            必要に応じて `git log`、`git show`、関連ソースの読み取りで文脈を確認してください。
+            `git diff` が失敗する場合（base が孤立している等）は、その旨を
+            「レビュー不可」として明示してください。
+            リポジトリの AGENTS.md がある場合はそれを読み、レビュー観点として従ってください。
+
+            指摘は日本語で行い、具体的な問題にはファイルと行を明記してください。
+            問題がない場合は「指摘なし」と明記してください。
+            レビュー本文は日本語で 6000 字以内に収めてください。
+            差分に含まれる資格情報・シークレット値は本文へ引用しないこと。
+            コードやGitHub上の状態は変更せず、レビュー本文だけを返してください。
+            最終回答は指定されたJSON SchemaのreviewフィールドにMarkdownで格納してください。
+          # 注意: コメントを claude_args の折り畳みブロック内に置かないこと
+          # （文字列へ混入して --json-schema 等を壊す事故を実測済み）。
+          claude_args: >-
+            --model opus
+            --max-turns 30
+            --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read(${{ github.workspace }}/**),Grep,Glob"
+            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(gh:*),WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
+            --json-schema '{"type":"object","properties":{"review":{"type":"string"}},"required":["review"],"additionalProperties":false}'
+
+      - name: Verify structured output
+        if: steps.check-token.outputs.configured == 'true'
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.review.outputs.structured_output }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        # 出力を run スクリプトへ直接展開しないこと: Claude の出力は PR diff
+        # 由来で攻撃者制御の文字列であり、JSON のダブルクォートや $(...) が
+        # シェルを壊し任意コマンド実行の経路になり得るため、必ず env 経由で
+        # 受け取ってから参照する。
+        # さらに、正規表現の伏字化は PR diff 由来の誘導で回避され得るため、
+        # この job（トークンへ到達できる唯一の job）で生トークンの完全一致を
+        # 検査し、出力への漏洩を確実にブロックする。
+        run: |
+          # 構造化出力が空（max-turns / timeout 到達等）または review フィールドが
+          # 空・空白のみの場合は失敗にして Checks を赤くする。
+          # 空・空白・JSON 破損をまとめて jq で捕捉する（後段の post_review で
+          # パース失敗として再検出される前に、トークン到達 job で切り分ける）。
+          if ! printf '%s' "$STRUCTURED_OUTPUT" | jq -e '.review | strings | select(test("\\S"))' >/dev/null; then
+            echo "::error::Claude review structured output is not a valid review JSON"
+            exit 1
+          fi
+          # 生トークンの完全一致チェック（正規表現の網を外れた漏洩をブロック）。
+          # 投稿されるのは JSON デコード後の review 文字列のため、raw JSON ではなく
+          # jq でデコードした本文に対して検査する（\uXXXX エスケープも解かれる）。
+          # この step は `if: configured == 'true'` でガードされており、
+          # トークンが空文字の場合は実行されない（*""* が全一致になる前提を
+          # 外さないこと）。
+          review_text="$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.review')"
+          case "$review_text" in
+            *"$CLAUDE_CODE_OAUTH_TOKEN"*)
+              echo "::error::Claude review output contains the OAuth token"
+              exit 1
+              ;;
+          esac
+
+  post_review:
+    name: Post PR review comment
+    needs: claude_review
+    # 成功時のみ起動する。失敗・キャンセル・skip時は投稿しない:
+    # 前回の成功レビューコメントをそのまま残し（一過性の失敗で消さない）、
+    # 失敗は review job の failure（Checks が赤）で通知する。
+    # configured が false なら review step はスキップされ outputs.review が空になる
+    # ため、review != '' が configured 条件を包含する。
+    # ここは fork / トークン未設定で claude_review の step が skip された経路で
+    # post_review を起動させないためのゲート（空出力自体は jq チェックで捕捉済み）。
+    if: >-
+      needs.claude_review.result == 'success' &&
+      needs.claude_review.outputs.review != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      REVIEW_JSON: ${{ needs.claude_review.outputs.review }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
+      SERVER_URL: ${{ github.server_url }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # github-token でのコメント投稿主。トークンを差し替える場合はここも変更する
+      # （findOwnReviewComment の authorLogin に渡す）。
+      COMMENT_AUTHOR: github-actions[bot]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 整形ロジック（format-review.mjs）を読み込むために必要。claude_review
+          # job の checkout は別ランナーで共有されない。cone モード既定の
+          # sparse-checkout で .github/scripts を対象にする（ルート直下の
+          # ファイルは常に展開される）。head SHA を明示するのはコンフリクト中の
+          # PR で merge ref が無いため。初回導入時は base 側にこのファイルが
+          # 存在しないため head を使うが、preview へマージ後は base.sha に
+          # 切り替え、write 権限 job で head 由来コードを実行しないようにする
+          # （追跡: issue #917。workflow 定義自体も head 由来のため権限拡大は
+          # ないが、多層防御の選択肢として追跡している）。
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: .github/scripts
+
+      - name: Create or update Claude review comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            // 整形ロジックは .github/scripts/format-review.mjs に切り出し、
+            // tests/unit/claude-review-format.test.ts で検証している。
+            const { pathToFileURL } = require('node:url');
+            const {
+              buildReviewCommentBody,
+              findOwnReviewComment,
+              hasReviewMarker,
+              parseReviewJson,
+              REVIEW_MARKER,
+              sanitizeReview,
+            } = await import(
+              pathToFileURL(
+                `${process.env.GITHUB_WORKSPACE}/.github/scripts/format-review.mjs`
+              ).href
+            );
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = Number(process.env.PR_NUMBER);
+            const shortSha = process.env.REVIEWED_SHA.slice(0, 7);
+
+            let reviewText;
+            try {
+              reviewText = parseReviewJson(process.env.REVIEW_JSON);
+            } catch (error) {
+              // error.message は入力断片を含み得るため出さない（ログへの漏洩防止）。
+              core.setFailed('Claude review output is not valid JSON');
+              return;
+            }
+
+            const { text: safe, truncated } = sanitizeReview(reviewText);
+            if (truncated) {
+              core.warning('レビュー本文が長すぎるため末尾を切り詰めました');
+            }
+            if (safe.trim() === '') {
+              // jq の test("\\S") と JS の trim() は空白判定の集合が異なる
+              // （例: U+FEFF）ため、中身のないコメントを投稿しないよう再ガードする。
+              core.setFailed('Claude review output is empty after sanitization');
+              return;
+            }
+            const commitUrl =
+              `${process.env.SERVER_URL}/${owner}/${repo}/commit/${process.env.REVIEWED_SHA}`;
+            const body = buildReviewCommentBody({
+              marker: REVIEW_MARKER,
+              shortSha,
+              commitUrl,
+              runUrl: process.env.RUN_URL,
+              safeText: safe,
+            });
+            // 全ページから探す。判定ロジックは findOwnReviewComment に切り出し、
+            // テストで検証している。期待投稿者は github-token の投稿主
+            // （github-actions[bot]）に固定されており、トークン差し替え時は
+            // この job の COMMENT_AUTHOR env も変更する。
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            const existing = findOwnReviewComment(
+              comments,
+              REVIEW_MARKER,
+              process.env.COMMENT_AUTHOR,
+            );
+
+            if (existing) {
+              try {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } catch (error) {
+                // listComments と updateComment の間に対象コメントが削除された
+                // 場合は 404 になるため、新規投稿へフォールバックする。
+                // error.status は Octokit の RequestError が持つ HTTP ステータスで、
+                // ネットワークエラー等では undefined になるためここでは rethrow する。
+                if (error.status !== 404) {
+                  throw error;
+                }
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  body,
+                });
+              }
+            } else {
+              // マーカー付きの既存コメントがあるのに投稿者不一致で上書き対象が
+              // 見つからない場合、新規コメントが積み上がるサイレント劣化になる。
+              // 誤上書きは login 一致で防げているため、ここでは検知 warning のみ。
+              const markerOnly = comments.filter(
+                (comment) => hasReviewMarker(comment, REVIEW_MARKER),
+              ).length;
+              if (markerOnly > 0) {
+                core.warning(
+                  `${markerOnly} 件のマーカー付きコメントが投稿者不一致のため上書き対象になりません`,
+                );
+              }
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              });
+            }
+            // 単一コメントの上書きでは購読者へ通知されないため、Checks の
+            // Step summary にも本文を残して可視化する（投稿成功後に書くことで
+            // 未投稿なのに投稿済みに見えるのを防ぐ。整形済みの safe をコメントと共用）。
+            // summary 書き込み失敗で投稿済みコメントの run を赤くしないよう warning に落とす。
+            try {
+              await core.summary.addRaw(`## Claude Auto Review\n\n${safe}`).write();
+            } catch {
+              core.warning('Step summary の書き込みに失敗しました');
+            }
