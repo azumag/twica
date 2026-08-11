@@ -14,6 +14,7 @@ import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { getDb } from '@/lib/db/client'
 import { streamers as streamersTable } from '@/lib/db/schema'
+import { __resetTwitchAppTokenForTests } from '@/lib/twitch/app-token'
 
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/session')
@@ -96,6 +97,7 @@ function createDrizzleStreamerErrorDbMock(error: unknown) {
 describe('POST /api/twitch/eventsub/subscribe: PlanetScaleのstreamer存在確認 (#690/#708)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    __resetTwitchAppTokenForTests()
     process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'
     process.env.TWITCH_CLIENT_SECRET = 'client-secret'
     process.env.TWITCH_EVENTSUB_SECRET = 'eventsub-secret'

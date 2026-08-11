@@ -5,6 +5,7 @@ import { validateCSRFToken } from '@/lib/csrf'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { __resetTwitchAppTokenForTests } from '@/lib/twitch/app-token'
 
 // Issue #831: DELETE /api/twitch/eventsub/debug の
 // (1) 所有権検証欠落、(2) CSRF/レートリミット欠落、(3) 全削除のページネーション未対応
@@ -38,12 +39,17 @@ function createDeleteRequest(query = ''): NextRequest {
 }
 
 function mockAppAccessTokenFetch() {
-  return new Response(JSON.stringify({ access_token: 'app-token' }), { status: 200 })
+  // expires_in は app-token ヘルパーのキャッシュTTL計算に使われる（#739）。
+  return new Response(
+    JSON.stringify({ access_token: 'app-token', expires_in: 3600 }),
+    { status: 200 },
+  )
 }
 
 describe('DELETE /api/twitch/eventsub/debug (#831)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    __resetTwitchAppTokenForTests()
     process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'
     process.env.TWITCH_CLIENT_SECRET = 'client-secret'
     mockGetSession.mockResolvedValue({

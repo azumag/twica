@@ -370,7 +370,7 @@ interface DashboardRpcDriverError {
  * 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの回復には
  * クライアント再取得が必要。src/lib/db/retry.ts 参照）。
  */
-async function executeDashboardRpcPg<T>(
+export async function executeDashboardRpcPg<T>(
   context: string,
   runQuery: (sql: DbHandle["sql"]) => Promise<T>,
 ): Promise<{ data: T | null; error: DashboardRpcDriverError | null }> {
