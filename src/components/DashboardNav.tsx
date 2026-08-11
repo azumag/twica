@@ -64,27 +64,6 @@ export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavPr
       ),
     },
     {
-      href: "/live",
-      labelKey: "live",
-      icon: (
-        <svg
-          className="h-5 w-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="2" />
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"
-          />
-        </svg>
-      ),
-    },
-    {
       href: "/dashboard/cards",
       labelKey: "cardManagement",
       streamerOnly: true,
@@ -204,6 +183,30 @@ export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavPr
             strokeLinejoin="round"
             strokeWidth={2}
             d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+          />
+        </svg>
+      ),
+    },
+    {
+      // 公開ページへの導線は、ダッシュボード内の主要な作業フローとは分け、
+      // 補助導線である「お問い合わせ」の隣へ置く。DOM順も表示順と揃えることで、
+      // キーボード操作時にも同じ順序で移動できるようにする。
+      href: "/live",
+      labelKey: "live",
+      icon: (
+        <svg
+          className="h-5 w-5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="2" />
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"
           />
         </svg>
       ),

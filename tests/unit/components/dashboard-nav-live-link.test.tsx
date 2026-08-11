@@ -8,30 +8,28 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/dashboard",
 }));
 
-function renderNav(isStreamer: boolean) {
+function renderNav(isStreamer: boolean, isSupporter = false) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
-      <DashboardNav isStreamer={isStreamer} isSupporter={false} />
+      <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
     </NextIntlClientProvider>,
   );
 }
 
 describe("DashboardNav live directory link", () => {
-  it("places /live between overview and card management on desktop and mobile", () => {
-    renderNav(true);
+  it("places /live after inquiries on desktop and mobile", () => {
+    renderNav(true, true);
     const links = within(screen.getByRole("navigation")).getAllByRole("link");
     const hrefs = links.map((link) => link.getAttribute("href"));
     const half = hrefs.length / 2;
 
-    expect(hrefs.slice(0, 3)).toEqual([
-      "/dashboard",
+    expect(hrefs.slice(half - 2, half)).toEqual([
+      "/dashboard/inquiries",
       "/live",
-      "/dashboard/cards",
     ]);
-    expect(hrefs.slice(half, half + 3)).toEqual([
-      "/dashboard",
+    expect(hrefs.slice(-2)).toEqual([
+      "/dashboard/inquiries",
       "/live",
-      "/dashboard/cards",
     ]);
   });
 
@@ -39,7 +37,7 @@ describe("DashboardNav live directory link", () => {
     renderNav(false);
 
     expect(
-      screen.getAllByRole("link", { name: "チャネル・ランキング" }),
+      screen.getAllByRole("link", { name: "公開チャネル" }),
     ).toHaveLength(2);
     expect(screen.queryByRole("link", { name: "カード管理" })).not.toBeInTheDocument();
   });
