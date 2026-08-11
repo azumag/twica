@@ -98,7 +98,7 @@ jobs:
     # secret」で出力を破棄し、投稿ジョブがスキップされる（#923 round-2 で実測）。
     # 本文は artifact 経由で渡し、ここでは artifact が存在するかのみを output する。
     outputs:
-      artifact_uploaded: ${{ steps.save-review.outputs.uploaded }}
+      review_saved: ${{ steps.save-review.outputs.saved }}
 
     steps:
       - name: Check token configured
@@ -251,16 +251,25 @@ jobs:
           # シェル展開で壊れないよう env 経由でファイルへ書き出す（上記の
           # Verify structured output と同方針）。JSON はそのまま artifact 化する。
           printf '%s' "$STRUCTURED_OUTPUT" > review.json
-          echo "uploaded=true" >> "$GITHUB_OUTPUT"
+          # アップロードの成否は次 step の失敗（= job failure → post_review スキップ）
+          # で判定される。ここでは「ファイルへ保存できた」ことのみを output する。
+          echo "saved=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload review artifact
-        if: steps.save-review.outputs.uploaded == 'true'
+        if: steps.check-token.outputs.configured == 'true' && steps.save-review.outputs.saved == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: claude-review-${{ github.run_id }}
           path: review.json
           retention-days: 1
           if-no-files-found: error
+          # Re-run（attempt をまたぐ）で同名 artifact が残ると Conflict で失敗する
+          # ため上書きを許可（#924 round-2 必須）。artifact は成功時のみアップロード
+          # され、upload 失敗時は claude_review が failure → post_review スキップで
+          # fail-loud になる。なお保存される review.json は伏字化前の生テキストであり、
+          # OAuth トークンは直前の完全一致チェックで遮断されるが、伏字化レイヤは
+          # artifact をすり抜けることを受容する（retention 1日で残存期間も限定）。
+          overwrite: true
 
   post_review:
     name: Post PR review comment
@@ -268,9 +277,11 @@ jobs:
     # 成功時のみ起動する。失敗・キャンセル・skip時は投稿しない:
     # 前回の成功レビューコメントをそのまま残し（一過性の失敗で消さない）、
     # 失敗は review job の failure（Checks が赤）で通知する。
-    # artifact がアップロードされたときのみ起動する（configured=false の fork 等は
-    # save-review が skip され uploaded が空になるため起動しない）。
-    if: needs.claude_review.outputs.artifact_uploaded == 'true'
+    # claude_review 成功かつ artifact が保存されたときのみ起動する（configured=false
+    # の fork 等は save-review が skip され review_saved が空になるため起動しない）。
+    if: >-
+      needs.claude_review.result == 'success' &&
+      needs.claude_review.outputs.review_saved == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -337,13 +348,21 @@ jobs:
             const issueNumber = Number(process.env.PR_NUMBER);
             const shortSha = process.env.REVIEWED_SHA.slice(0, 7);
 
-            let reviewText;
+            let reviewJson;
             try {
               const fs = require('node:fs');
-              const reviewJson = fs.readFileSync(process.env.REVIEW_JSON_PATH, 'utf8');
-              reviewText = parseReviewJson(reviewJson);
+              reviewJson = fs.readFileSync(process.env.REVIEW_JSON_PATH, 'utf8');
             } catch (error) {
               // error.message は入力断片を含み得るため出さない（ログへの漏洩防止）。
+              core.setFailed('Failed to read review artifact');
+              return;
+            }
+
+            let reviewText;
+            try {
+              reviewText = parseReviewJson(reviewJson);
+            } catch (error) {
+              // 同上: JSON パース失敗とファイル読み込み失敗を区別して原因を誤誘導しない。
               core.setFailed('Claude review output is not valid JSON');
               return;
             }
