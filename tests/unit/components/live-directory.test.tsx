@@ -86,12 +86,16 @@ const rankings: LiveDirectoryRankingEntry[] = [
 function renderDirectory(
   streamItems: LiveDirectoryEntry[] = entries,
   rankingItems: LiveDirectoryRankingEntry[] = rankings,
+  recentRankingItems: LiveDirectoryRankingEntry[] = rankingItems,
 ) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <LiveDirectory
         entries={streamItems}
-        rankings={rankingItems}
+        rankings={{
+          last7Days: recentRankingItems,
+          allTime: rankingItems,
+        }}
         referenceTime={REFERENCE_TIME}
       />
     </NextIntlClientProvider>,
@@ -203,6 +207,37 @@ describe("LiveDirectory", () => {
     // 可視名とsr-onlyの操作説明がリンク名を担うため、avatarは三重読み上げを
     // 避ける装飾画像として扱う。
     expect(alphaLink.querySelector("img")).toHaveAttribute("alt", "");
+  });
+
+  it("switches ranking aggregation between all time and the last 7 days", () => {
+    const recentRankings: LiveDirectoryRankingEntry[] = [
+      {
+        identity: rankings[0].identity,
+        cardCount: 1,
+        redemptionCount: 2,
+        totalPoints: 345,
+        rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
+      },
+    ];
+    renderDirectory(entries, rankings, recentRankings);
+    fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
+
+    expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "全期間" })).toBeChecked();
+    expect(screen.getByText("30,000ポイント")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "直近7日間" }));
+
+    expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
+    expect(screen.getByText("345ポイント")).toBeInTheDocument();
+    expect(
+      screen.getByText("直近7日間に記録されたカード引き換えを集計しています。"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "種類数ランキング" }));
+    expect(
+      screen.getByText("直近7日間に追加され、現在も有効なカード種類数です。"),
+    ).toBeInTheDocument();
   });
 
   it("excludes rows outside each metric candidate set before calculating ranks", () => {

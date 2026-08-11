@@ -11,6 +11,7 @@ export const metadata: Metadata = {
 
 /**
  * リリースノートページ
+ * 2026年8月: チャネル・ランキング公開、画像取り込み、ガチャ/Twitch連携、運用保全
  * 2026年7月: カードパック初リリース・支援特典の拡充・内部安定性向上
  * 2026年3月〜6月: v1.31.0以降のカード管理・ガチャ体験・セキュリティ改善
  * v1.31.0: カード排出確率自動設定・コレクションコンプリート・ガチャ履歴フィルタ
@@ -50,6 +51,159 @@ export default async function ReleasesPage() {
           <h1 className="mb-10 text-3xl font-bold text-white">
             TwiCa リリースノート
           </h1>
+
+          {/* 2026年8月 - 前回（7月）以降の変更を、内部実装ではなく利用者成果単位で整理 */}
+          <div className="mb-16">
+            <div className="mb-8">
+              <div className="mb-2 inline-block rounded-full bg-emerald-700 px-3 py-1 text-sm font-medium text-white">
+                2026年8月アップデート
+              </div>
+              <p className="mt-2 text-sm text-gray-500">2026-08-12</p>
+            </div>
+
+            <p className="mb-10 leading-relaxed text-gray-400">
+              前回のリリースノート以降、TwiCaを利用中のチャネルやカードの活動を
+              見つけられる公開ページを追加しました。カード画像の取り込み、ガチャ演出、
+              Twitch連携の復旧導線も改善し、メンテナンスやデータベース切り替え時に
+              引き換えを失わないための仕組みを強化しています。
+            </p>
+
+            <section className="mb-10">
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                新機能と使いやすさ
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    TwiCaチャネルとランキング
+                  </h3>
+                  <p className="text-gray-400">
+                    <Link
+                      href="/live"
+                      className="font-medium text-emerald-300 underline decoration-emerald-500/60 underline-offset-4 hover:text-emerald-200"
+                    >
+                      チャネル・ランキングページ
+                    </Link>
+                    で、掲載を許可したライブ中のチャネルと、カード引き換え数、
+                    使用チャネルポイント、カード種類数のランキングを確認できるようになりました。
+                    ランキングは直近7日間と全期間を切り替えられます。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    ランキングの集計対象は全アクティブチャネルです。チャネル表示を許可して
+                    いない場合も集計値は匿名で掲載し、配信中一覧は明示的に掲載を許可した
+                    チャネルだけを表示します。どちらの設定も既定ではオフです。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    カード画像の取り込みと表示方法
+                  </h3>
+                  <p className="text-gray-400">
+                    iPhoneなどで撮影したHEIC・HEIF画像を、ブラウザ内でJPEGへ変換して
+                    カードへ登録できるようになりました。変換が止まった場合はフォームを
+                    操作可能な状態へ戻し、やり直せるようにしています。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    正方形以外の画像は、切り抜かず全体を見せるフィット表示と余白色を
+                    選べるようになりました。従来どおりのトリミング表示も選択できます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    おすすめの使い方
+                  </h3>
+                  <p className="text-gray-400">
+                    <Link
+                      href="/usages"
+                      className="font-medium text-emerald-300 underline decoration-emerald-500/60 underline-offset-4 hover:text-emerald-200"
+                    >
+                      おすすめの使い方ページ
+                    </Link>
+                    を追加しました。話題デッキ、ファンアート、旅行の記録など、
+                    配信内容に合わせたカード活用例を確認できます。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    配信者機能の利用対象を拡大
+                  </h3>
+                  <p className="text-gray-400">
+                    Twitchの「Monetization for All」に合わせ、アフィリエイト／パートナーで
+                    なくても、Twitch上でチャネルポイントを利用できることを確認できれば、
+                    TwiCaの配信者機能を明示的に有効化できるようになりました。
+                  </p>
+                  <p className="mt-3 text-gray-400">
+                    ユーザー設定の「チャネルポイント / 配信者機能」から確認と有効化を
+                    行えます。詳しい手順は
+                    <Link
+                      href="/guide"
+                      className="ml-1 font-medium text-emerald-300 underline decoration-emerald-500/60 underline-offset-4 hover:text-emerald-200"
+                    >
+                      配信者向け使い方
+                    </Link>
+                    に掲載しています。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    ガチャ演出と連続引き換え
+                  </h3>
+                  <p className="text-gray-400">
+                    レアリティ別の演出設定を追加しました。複数枚の引き換えが途中で失敗した
+                    場合は未完了分から再開でき、初入手カードがない場合もチャット通知の
+                    テンプレートで自然に表現できるようになりました。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="mb-10">
+              <h2 className="mb-6 border-b border-gray-700 pb-3 text-2xl font-bold text-white">
+                安定性と安全性
+              </h2>
+
+              <div className="space-y-6">
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    メンテナンス中の引き換え保全
+                  </h3>
+                  <p className="text-gray-400">
+                    メンテナンス中は変更操作を事前に止めて状態を案内し、その間に届いた
+                    Twitchの引き換え通知は退避して、復旧後に再処理できるようにしました。
+                    データベースをPlanetScaleへ切り替えた後も、カード付与、オーバーレイ、
+                    チャット通知を一貫して処理できる構成へ移行しています。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    Twitch連携の復旧案内
+                  </h3>
+                  <p className="text-gray-400">
+                    チャット送信に必要な権限が不足した場合、ダッシュボードから再認証へ
+                    進めるようになりました。ログイン処理が止まった場合や、Twitchから
+                    不正な応答を受けた場合も、再試行できる状態へ戻るよう改善しています。
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-gray-800 p-6">
+                  <h3 className="mb-2 text-lg font-semibold text-white">
+                    セキュリティと長時間運用
+                  </h3>
+                  <p className="text-gray-400">
+                    アップロード、カード情報、設定API、EventSubの認可と入力検証を
+                    強化しました。オーバーレイのポーリングとキャッシュも見直し、
+                    リアルタイム表示を維持しながら不要な処理を抑えています。
+                  </p>
+                </div>
+              </div>
+            </section>
+          </div>
 
           {/* 2026年7月 - 初リリース機能を支援機能/通常機能で分類し、同じ機能群の改善をまとめて説明 */}
           <div className="mb-16">

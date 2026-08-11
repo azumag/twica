@@ -17,9 +17,15 @@ vi.mock("next-intl/server", () => ({
   getTranslations: mocks.getTranslations,
 }));
 vi.mock("@/components/LiveDirectory", () => ({
-  default: ({ entries, rankings }: { entries: unknown[]; rankings: unknown[] }) => (
+  default: ({
+    entries,
+    rankings,
+  }: {
+    entries: unknown[];
+    rankings: { last7Days: unknown[]; allTime: unknown[] };
+  }) => (
     <div data-testid="live-directory">
-      entries:{entries.length};rankings:{rankings.length}
+      entries:{entries.length};rankings:{rankings.last7Days.length}/{rankings.allTime.length}
     </div>
   ),
 }));
@@ -31,15 +37,15 @@ import LivePage, { generateMetadata } from "@/app/live/page";
 
 const translations: Record<string, Record<string, string>> = {
   livePage: {
-    "metadata.title": "配信中 - TwiCa",
+    "metadata.title": "チャネルとランキング - TwiCa",
     "metadata.description": "metadata description",
     navigationLabel: "navigation",
     home: "ホーム",
-    title: "配信中の配信者",
+    title: "TwiCaチャネルとランキング",
     description: "page description",
     consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
     rankingNotice:
-      "ランキングは全アクティブチャネルを集計対象とし、各指標の上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
+      "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
   },
   header: {
     dashboard: "ダッシュボード",
@@ -56,7 +62,10 @@ describe("LivePage", () => {
       return (key: string) => translations[namespace]?.[key] ?? key;
     });
     mocks.getLiveDirectory.mockResolvedValue([{ streamerId: "streamer-1" }]);
-    mocks.getLiveDirectoryRankings.mockResolvedValue([{ identity: null }]);
+    mocks.getLiveDirectoryRankings.mockResolvedValue({
+      last7Days: [{ identity: null }],
+      allTime: [{ identity: null }, { identity: null }],
+    });
   });
 
   it("renders the full directory without redirecting when no session exists", async () => {
@@ -67,16 +76,18 @@ describe("LivePage", () => {
     expect(mocks.getSession).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectory).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectoryRankings).toHaveBeenCalledOnce();
-    expect(screen.getByRole("heading", { name: "配信中の配信者" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "TwiCaチャネルとランキング" }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("live-directory")).toHaveTextContent(
-      "entries:1;rankings:1",
+      "entries:1;rankings:1/2",
     );
     expect(
       screen.getByText("明示的に掲載を許可したチャネルだけが表示されています。"),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "ランキングは全アクティブチャネルを集計対象とし、各指標の上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
+        "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ホーム" })).toHaveAttribute("href", "/");
@@ -96,7 +107,7 @@ describe("LivePage", () => {
 
   it("builds localized metadata from the livePage namespace", async () => {
     await expect(generateMetadata()).resolves.toEqual({
-      title: "配信中 - TwiCa",
+      title: "チャネルとランキング - TwiCa",
       description: "metadata description",
     });
   });
