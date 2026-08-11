@@ -76,6 +76,8 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     default_card_pack_name: null,
     show_unowned_cards: false,
     show_unowned_card_details: false,
+    publish_live_status: false,
+    publish_stats: false,
     raid_gacha_active_until: null,
     raid_gacha_draw_count: 0,
     created_at: '2025-12-01T00:00:00.000+00:00',
