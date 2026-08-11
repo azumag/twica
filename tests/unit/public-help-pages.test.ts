@@ -98,6 +98,13 @@ describe("FAQ page", () => {
     expect(home).toContain("border-gray-600 bg-gray-800");
     expect(dashboardNav).toContain('href: "/live"');
   });
+
+  it("describes the live-directory CTA as a TwiCa channel directory in both locales", () => {
+    // /live には配信中一覧だけでなく全アクティブチャネルのランキングもあるため、
+    // CTAを「配信中だけを見る」という旧来の意味へ戻さず、ロケール間でも対象を揃える。
+    expect(jaMessages.topPage.hero.liveDirectory).toBe("利用中のチャネルを見る");
+    expect(enMessages.topPage.hero.liveDirectory).toBe("Browse TwiCa channels");
+  });
 });
 
 /**
