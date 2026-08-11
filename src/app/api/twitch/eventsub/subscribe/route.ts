@@ -5,33 +5,12 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { ERROR_MESSAGES, TWITCH_SUBSCRIPTION_TYPE } from "@/lib/constants";
 import { logger } from "@/lib/logger.server";
 import { validateCSRFToken } from "@/lib/csrf";
+import { fetchTwitchApi } from "@/lib/twitch/app-token";
 // 配信者の存在確認は getStreamerIdByTwitchUserId() に集約する。
 // この Route は DB クライアントを直接扱わず、接続方式をヘルパー内へ閉じ込める。
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
-
-// Get app access token for EventSub subscriptions
-async function getAppAccessToken(): Promise<string> {
-  const response = await fetch("https://id.twitch.tv/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      client_id: process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-      client_secret: process.env.TWITCH_CLIENT_SECRET!,
-      grant_type: "client_credentials",
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to get app access token");
-  }
-
-  const data = await response.json();
-  return data.access_token;
-}
 
 // ページネーション対応でEventSubサブスクリプションを取得
 // Twitch APIは一度に最大100件しか返さないため、cursorを使って全ページを取得
@@ -120,21 +99,14 @@ function buildRaidSubscriptionResult(
   };
 }
 
-async function deleteEventSubSubscription(appAccessToken: string, subscriptionId: string) {
-  return fetch(
+async function deleteEventSubSubscription(subscriptionId: string) {
+  return fetchTwitchApi(
     `${TWITCH_API_URL}/eventsub/subscriptions?id=${subscriptionId}`,
-    {
-      method: "DELETE",
-      headers: {
-        "Authorization": `Bearer ${appAccessToken}`,
-        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-      },
-    },
+    { method: "DELETE" },
   );
 }
 
 async function createEventSubSubscription(
-  appAccessToken: string,
   body: {
     type: string;
     version: string;
@@ -142,11 +114,9 @@ async function createEventSubSubscription(
     transport: { method: "webhook"; callback: string; secret: string | undefined };
   },
 ) {
-  return fetch(`${TWITCH_API_URL}/eventsub/subscriptions`, {
+  return fetchTwitchApi(`${TWITCH_API_URL}/eventsub/subscriptions`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${appAccessToken}`,
-      "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
@@ -154,7 +124,6 @@ async function createEventSubSubscription(
 }
 
 async function ensureRaidSubscription(
-  appAccessToken: string,
   userSubscriptions: EventSubSubscription[],
   broadcasterUserId: string,
   callbackUrl: string,
@@ -172,7 +141,7 @@ async function ensureRaidSubscription(
 
   for (const sub of recreatableSubs) {
     logger.info(`Deleting failed raid EventSub before recreation: id=${sub.id}, status=${sub.status}`);
-    const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
+    const deleteResponse = await deleteEventSubSubscription(sub.id);
     if (!deleteResponse.ok && deleteResponse.status !== 404) {
       const error = await deleteResponse.json().catch(() => ({}));
       logger.warn("Failed to delete failed raid EventSub subscription before recreation", {
@@ -200,7 +169,7 @@ async function ensureRaidSubscription(
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 
-  const response = await createEventSubSubscription(appAccessToken, {
+  const response = await createEventSubSubscription({
     type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID,
     version: "1",
     condition: {
@@ -240,7 +209,6 @@ async function ensureRaidSubscription(
 }
 
 async function getSubscriptionsByUserId(
-  appAccessToken: string,
   userId: string
 ): Promise<EventSubSubscription[]> {
   const allData: EventSubSubscription[] = [];
@@ -252,12 +220,7 @@ async function getSubscriptionsByUserId(
     const baseUrl = `${TWITCH_API_URL}/eventsub/subscriptions?user_id=${userId}`;
     const url = cursor ? `${baseUrl}&after=${cursor}` : baseUrl;
 
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${appAccessToken}`,
-        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-      },
-    });
+    const response = await fetchTwitchApi(url);
 
     if (!response.ok) {
       logger.error(`Failed to fetch subscriptions page: ${response.status}`);
@@ -324,16 +287,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
     }
 
-    // Get app access token
-    const appAccessToken = await getAppAccessToken();
-
     // Callback URL for EventSub
     const callbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
 
     // user_idパラメータで対象ユーザーのサブスクリプションのみを取得
     // Twitch API側でフィルタリングされるため、全件取得より効率的
-    const userSubscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
-    const refreshUserSubscriptions = () => getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
+    const userSubscriptions = await getSubscriptionsByUserId(session.twitchUserId);
+    const refreshUserSubscriptions = () => getSubscriptionsByUserId(session.twitchUserId);
 
     // 既存サブスクリプション数と状態をログに記録
     // channel_points_custom_reward_redemption.addタイプのサブスクリプションをフィルタリング
@@ -357,7 +317,7 @@ export async function POST(request: NextRequest) {
     // 対象報酬のサブスクリプションのみ削除
     for (const sub of subscriptionsToDelete) {
       logger.info(`Deleting existing EventSub for target reward: id=${sub.id}, status=${sub.status}, rewardId=${sub.condition.reward_id}, callback=${sub.transport.callback}`);
-      const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
+      const deleteResponse = await deleteEventSubSubscription(sub.id);
 
       // 削除結果を確認（204は成功、404は既に削除済み）
       if (!deleteResponse.ok && deleteResponse.status !== 404) {
@@ -378,7 +338,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create new subscription
-    const subscribeResponse = await createEventSubSubscription(appAccessToken, {
+    const subscribeResponse = await createEventSubSubscription({
       type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD,
       version: "1",
       condition: {
@@ -396,7 +356,7 @@ export async function POST(request: NextRequest) {
       const error = await subscribeResponse.json();
 
       // #788 子E #793 Fableレビュー Major-1: このEventSub作成呼び出しはapp access
-      // token（getAppAccessToken()、L333）で認証しており、配信者本人のUser Access
+      // token（fetchTwitchApi が内部で取得）で認証しており、配信者本人のUser Access
       // Tokenではない。401はアプリ側credentialの問題であって配信者本人のCapabilityとは
       // 無関係のため、ここでrecordChannelPointsApiFailure()を呼ぶとアプリ障害の瞬間に
       // subscribeを叩いた全ユーザーの確定'available'状態を誤って破壊してしまう
@@ -414,7 +374,7 @@ export async function POST(request: NextRequest) {
         );
 
         // user_idパラメータで対象ユーザーのサブスクリプションを再取得
-        const recheckUserSubs = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
+        const recheckUserSubs = await getSubscriptionsByUserId(session.twitchUserId);
 
         // channel_points_custom_reward_redemption.addタイプのサブスクリプションをフィルタリング（デバッグ用）
         const allMySubs = recheckUserSubs.filter(
@@ -436,7 +396,6 @@ export async function POST(request: NextRequest) {
 
         if (existingSub) {
           const raidSubscription = await ensureRaidSubscription(
-            appAccessToken,
             recheckUserSubs,
             session.twitchUserId,
             callbackUrl,
@@ -470,7 +429,7 @@ export async function POST(request: NextRequest) {
           logger.info(`Found ${allMySubs.length} subscriptions for other rewards, attempting cleanup`);
 
           for (const sub of allMySubs) {
-            const delResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
+            const delResponse = await deleteEventSubSubscription(sub.id);
             logger.info(`Cleanup delete: id=${sub.id}, status=${delResponse.status}`);
           }
 
@@ -478,7 +437,7 @@ export async function POST(request: NextRequest) {
           await new Promise(resolve => setTimeout(resolve, 1000));
 
           // 再試行
-          const retryResponse = await createEventSubSubscription(appAccessToken, {
+          const retryResponse = await createEventSubSubscription({
             type: TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD,
             version: "1",
             condition: {
@@ -495,7 +454,6 @@ export async function POST(request: NextRequest) {
           if (retryResponse.ok) {
             const retryData = await retryResponse.json();
             const raidSubscription = await ensureRaidSubscription(
-              appAccessToken,
               recheckUserSubs,
               session.twitchUserId,
               callbackUrl,
@@ -533,7 +491,6 @@ export async function POST(request: NextRequest) {
 
     const subscriptionData = await subscribeResponse.json();
     const raidSubscription = await ensureRaidSubscription(
-      appAccessToken,
       userSubscriptions,
       session.twitchUserId,
       callbackUrl,
@@ -604,14 +561,13 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const appAccessToken = await getAppAccessToken();
     const url = new URL(request.url);
     const specificRewardId = url.searchParams.get("rewardId");
     const callbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
 
     // 対象ユーザーのサブスクリプションを取得
     // Get subscriptions for this user using user_id filter
-    const userSubscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
+    const userSubscriptions = await getSubscriptionsByUserId(session.twitchUserId);
 
     // channel_points_custom_reward_redemption.add タイプのみフィルタ
     // Filter to only channel point redemption subscriptions
@@ -645,7 +601,7 @@ export async function DELETE(request: NextRequest) {
     // Delete each subscription
     const results = [];
     for (const sub of mySubscriptions) {
-      const deleteResponse = await deleteEventSubSubscription(appAccessToken, sub.id);
+      const deleteResponse = await deleteEventSubSubscription(sub.id);
 
       // 204: 成功、404: 既に削除済み（どちらも成功扱い）
       // 204: Success, 404: Already deleted (both count as success)
@@ -706,12 +662,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    const appAccessToken = await getAppAccessToken();
-
     // user_idパラメータで対象ユーザーのサブスクリプションのみを取得
     // Twitch API側でフィルタリングされるため、全件取得→メモリ内フィルタリングが不要
     // これによりAPIコールとデータ転送量を大幅に削減
-    const mySubscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
+    const mySubscriptions = await getSubscriptionsByUserId(session.twitchUserId);
 
     // 現在の設定されているcallback URLをデバッグ情報として追加
     const expectedCallbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
