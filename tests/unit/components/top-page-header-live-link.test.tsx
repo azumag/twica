@@ -22,15 +22,15 @@ function renderHeader(initialSession: Parameters<typeof TopPageHeader>[0]["initi
   );
 }
 
-describe("TopPageHeader live directory navigation", () => {
-  it("shows /live to logged-out visitors", () => {
+describe("TopPageHeader", () => {
+  it("keeps the logged-out top bar limited to the language switcher", () => {
     renderHeader(null);
 
-    expect(screen.getByRole("link", { name: "配信中" })).toHaveAttribute("href", "/live");
+    expect(screen.queryByRole("link", { name: "配信中" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "language" })).toBeInTheDocument();
   });
 
-  it("keeps /live available beside the authenticated dashboard route", () => {
+  it("does not put /live in the authenticated top bar", () => {
     renderHeader({
       twitchUserId: "user-1",
       twitchUsername: "alpha",
@@ -39,7 +39,7 @@ describe("TopPageHeader live directory navigation", () => {
       broadcasterType: "affiliate",
     });
 
-    expect(screen.getByRole("link", { name: "配信中" })).toHaveAttribute("href", "/live");
+    expect(screen.queryByRole("link", { name: "配信中" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ダッシュボード" })).toHaveAttribute(
       "href",
       "/dashboard",

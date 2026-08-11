@@ -721,7 +721,7 @@ describe('POST /api/streamer/settings', () => {
     })
   })
 
-  // Issue #738: 配信中ディレクトリ掲載・統計公開オプトイン
+  // Issue #738/#740: 配信中一覧への掲載・ランキング上のチャネル表示オプトイン
   describe('live directory settings (Issue #738)', () => {
     it('should accept publishLiveStatus/publishStats when both are booleans', async () => {
       const mockDbFixture = createDbFixture()

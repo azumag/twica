@@ -83,8 +83,8 @@ export interface Database {
           // 配信中ディレクトリ(/live)への掲載オプトイン（デフォルトfalse）
           // Whether the streamer opts into the live directory listing (default false)
           publish_live_status: boolean
-          // /liveでのカード統計公開オプトイン（デフォルトfalse）
-          // Whether the streamer publishes card stats on /live (default false)
+          // /liveランキングでチャネル識別情報を表示するオプトイン（デフォルトfalse）
+          // Whether /live rankings identify the streamer channel (default false)
           publish_stats: boolean
           // レイド限定ガチャを受け付ける期限（null/期限切れは不明状態としてブロック）
           // Until when raid-limited gacha rewards are accepted. Null/expired blocks them.

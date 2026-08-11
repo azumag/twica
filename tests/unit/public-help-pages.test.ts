@@ -85,10 +85,18 @@ describe("FAQ page", () => {
     expect(source).toContain('href: "/releases"');
   });
 
-  it("links to the public live directory from authenticated and top-page headers", () => {
-    expect(readSource("src/components/Header.tsx")).toContain('href="/live"');
-    expect(readSource("src/components/TopPageHeader.tsx")).toContain('href="/live"');
-    expect(readSource("src/app/page.tsx")).toContain('href="/live"');
+  it("places the live-directory link in content navigation instead of top bars", () => {
+    const home = readSource("src/app/page.tsx");
+    const dashboardNav = readSource("src/components/DashboardNav.tsx");
+
+    expect(readSource("src/components/Header.tsx")).not.toContain('href="/live"');
+    expect(readSource("src/components/TopPageHeader.tsx")).not.toContain('href="/live"');
+    expect(home).toContain('href="/live"');
+    expect(home.indexOf('t("hero.streamerGuide")')).toBeLessThan(
+      home.indexOf('t("hero.liveDirectory")'),
+    );
+    expect(home).toContain("border-gray-600 bg-gray-800");
+    expect(dashboardNav).toContain('href: "/live"');
   });
 });
 

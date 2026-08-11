@@ -29,6 +29,7 @@
   },
   "navigation": {
     "overview": "概要",
+    "live": "配信中",
     "cardManagement": "カード管理",
     "settings": "配信設定",
     "gachaHistory": "ガチャ履歴",
@@ -849,7 +850,7 @@
         "visibility": "公開設定",
         "visibilityDesc": "未所持カードの見せ方",
         "liveDirectory": "配信中ページ",
-        "liveDirectoryDesc": "/live への掲載と統計公開",
+        "liveDirectoryDesc": "配信中ページへの掲載とランキング表示",
         "share": "共有",
         "shareDesc": "コレクションページのURL"
       }
@@ -1130,8 +1131,7 @@
     "userSettings": "ユーザー設定",
     "logout": "ログアウト",
     "announcements": "お知らせ",
-    "streamerBadge": "配信者",
-    "live": "配信中"
+    "streamerBadge": "配信者"
   },
   "accountPage": {
     "title": "ユーザー設定",
@@ -1510,18 +1510,20 @@
   "livePage": {
     "metadata": {
       "title": "配信中 - TwiCa",
-      "description": "TwiCaを利用している配信者のうち、掲載を許可して現在ライブ配信中のチャンネルです。"
+      "description": "配信中のTwiCaチャネルと、カード利用状況のランキングを確認できます。"
     },
     "navigationLabel": "配信中ページのナビゲーション",
     "home": "ホーム",
     "title": "配信中の配信者",
-    "description": "TwiCaを利用している配信者のうち、掲載を許可して現在ライブ配信中のチャンネルです。",
-    "directoryHeading": "ライブ配信一覧",
-    "sort": {
-      "label": "並び順",
-      "recentlyStarted": "配信開始が新しい順",
-      "cardCount": "カード種類数",
-      "redemptionCount": "チャネルポイント引換数"
+    "description": "配信中のTwiCaチャネルと、カード利用状況のランキングを確認できます。",
+    "consentNotice": "配信中の一覧には、明示的に掲載を許可したチャネルだけが表示されています。",
+    "directoryHeading": "配信中チャネルとランキング",
+    "tabs": {
+      "label": "表示内容",
+      "recentlyStarted": "開始日時順",
+      "redemptionCount": "カード引き換え数ランキング",
+      "totalPoints": "チャネルポイントランキング",
+      "cardCount": "種類数ランキング"
     },
     "card": {
       "live": "LIVE",
@@ -1543,11 +1545,15 @@
       "hoursMinutes": "{hours}時間 {minutes}分",
       "unknown": "開始時刻不明"
     },
-    "stats": {
-      "cardCount": "カード種類数",
-      "redemptionCount": "チャネルポイント引換数",
-      "value": "{count, number}",
-      "private": "統計非公開"
+    "ranking": {
+      "anonymous": "匿名チャネル",
+      "profileAlt": "{name}のプロフィール画像",
+      "channelLink": "{name}をTwitchで見る（新しいタブで開きます）",
+      "rank": "{rank, number}位",
+      "redemptionCount": "{count, number}回",
+      "totalPoints": "{count, number}ポイント",
+      "cardCount": "{count, number}種類",
+      "empty": "ランキングデータはありません"
     },
     "empty": {
       "title": "現在掲載中の配信はありません",
@@ -1559,24 +1565,23 @@
     }
   },
   "liveDirectorySettings": {
-    "title": "配信中ページへの掲載",
-    "description": "この配信者を「配信中ページ」（/live）に掲載するかどうかを設定します。どちらも既定ではオフです。",
+    "title": "配信中ページの設定",
+    "description": "配信を開始したら<link>配信中ページ</link>に表示するかどうかの設定です。どちらも既定ではオフです。",
     "status": {
       "enabled": "掲載中",
       "disabled": "非掲載"
     },
     "form": {
       "publishLiveStatus": "配信中を公表する",
-      "publishLiveStatusHelp": "オンの間、この配信者が現在ライブ配信中の場合に配信中ページ（/live）へ表示されます。",
-      "publishStats": "統計を公開する",
-      "publishStatsHelp": "カード種類数とチャネルポイント引換数を /live に表示します。",
-      "requiresPublishLiveStatus": "「配信中を公表する」が必要"
+      "publishLiveStatusHelp": "オンにすると、配信を開始したときに配信中ページへチャネルを表示します。",
+      "publishStats": "ランキングにチャネルを表示する",
+      "publishStatsHelp": "オンにするとランキングにチャネル名・画像・リンクを表示します。オフでも集計値は匿名チャネルとしてランキングに掲載されます。"
     },
     "messages": {
       "liveEnabled": "配信中ページへの掲載設定をオンにしました",
       "liveDisabled": "配信中ページへの掲載設定をオフにしました",
-      "statsEnabled": "統計公開の設定をオンにしました",
-      "statsDisabled": "統計公開の設定をオフにしました",
+      "statsEnabled": "ランキングのチャネル表示をオンにしました",
+      "statsDisabled": "ランキングのチャネル表示をオフにしました",
       "saving": "保存中..."
     },
     "errors": {

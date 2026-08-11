@@ -14,6 +14,7 @@ function StatusProbe() {
       <span data-testid="mode">{status.mode}</span>
       <span data-testid="expected-end-at">{status.expectedEndAt ?? ''}</span>
       <span data-testid="write-blocked">{String(status.mode !== 'off')}</span>
+      <span data-testid="refreshing">{String(status.isRefreshing === true)}</span>
     </div>
   )
 }
@@ -113,6 +114,7 @@ describe('MaintenanceStatusProvider', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(screen.getByTestId('mode')).toHaveTextContent('read-only')
     expect(screen.getByTestId('write-blocked')).toHaveTextContent('true')
+    expect(screen.getByTestId('refreshing')).toHaveTextContent('true')
     expect(screen.getByTestId('expected-end-at')).toBeEmptyDOMElement()
 
     resolveRefresh(new Response(
@@ -128,6 +130,41 @@ describe('MaintenanceStatusProvider', () => {
       expect(screen.getByTestId('expected-end-at')).toHaveTextContent(
         '2026-08-09T12:00:00.000Z'
       )
+      expect(screen.getByTestId('refreshing')).toHaveTextContent('false')
+    })
+  })
+
+  it('初期hiddenから最初にvisibleになった再確認中も暫定状態を識別できる', async () => {
+    let resolveFetch!: (response: Response) => void
+    const fetchPromise = new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    })
+    const fetchMock = vi.fn().mockReturnValue(fetchPromise)
+    vi.stubGlobal('fetch', fetchMock)
+    visibilityState = 'hidden'
+
+    render(
+      <MaintenanceStatusProvider>
+        <StatusProbe />
+      </MaintenanceStatusProvider>
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(screen.getByTestId('mode')).toHaveTextContent('off')
+
+    visibilityState = 'visible'
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('mode')).toHaveTextContent('read-only')
+    expect(screen.getByTestId('write-blocked')).toHaveTextContent('true')
+    expect(screen.getByTestId('refreshing')).toHaveTextContent('true')
+
+    resolveFetch(new Response(JSON.stringify({ mode: 'off' }), { status: 200 }))
+    await waitFor(() => {
+      expect(screen.getByTestId('mode')).toHaveTextContent('off')
+      expect(screen.getByTestId('refreshing')).toHaveTextContent('false')
     })
   })
 

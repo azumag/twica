@@ -4,19 +4,23 @@ import { render, screen } from "@testing-library/react";
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   getLiveDirectory: vi.fn(),
+  getLiveDirectoryRankings: vi.fn(),
   getTranslations: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSession: mocks.getSession }));
 vi.mock("@/lib/live-directory", () => ({
   getLiveDirectory: mocks.getLiveDirectory,
+  getLiveDirectoryRankings: mocks.getLiveDirectoryRankings,
 }));
 vi.mock("next-intl/server", () => ({
   getTranslations: mocks.getTranslations,
 }));
 vi.mock("@/components/LiveDirectory", () => ({
-  default: ({ entries }: { entries: unknown[] }) => (
-    <div data-testid="live-directory">entries:{entries.length}</div>
+  default: ({ entries, rankings }: { entries: unknown[]; rankings: unknown[] }) => (
+    <div data-testid="live-directory">
+      entries:{entries.length};rankings:{rankings.length}
+    </div>
   ),
 }));
 vi.mock("@/components/PublicFooter", () => ({
@@ -33,6 +37,7 @@ const translations: Record<string, Record<string, string>> = {
     home: "ホーム",
     title: "配信中の配信者",
     description: "page description",
+    consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
   },
   header: {
     dashboard: "ダッシュボード",
@@ -43,11 +48,13 @@ describe("LivePage", () => {
   beforeEach(() => {
     mocks.getSession.mockReset();
     mocks.getLiveDirectory.mockReset();
+    mocks.getLiveDirectoryRankings.mockReset();
     mocks.getTranslations.mockReset();
     mocks.getTranslations.mockImplementation(async (namespace: string) => {
       return (key: string) => translations[namespace]?.[key] ?? key;
     });
     mocks.getLiveDirectory.mockResolvedValue([{ streamerId: "streamer-1" }]);
+    mocks.getLiveDirectoryRankings.mockResolvedValue([{ identity: null }]);
   });
 
   it("renders the full directory without redirecting when no session exists", async () => {
@@ -57,8 +64,14 @@ describe("LivePage", () => {
 
     expect(mocks.getSession).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectory).toHaveBeenCalledOnce();
+    expect(mocks.getLiveDirectoryRankings).toHaveBeenCalledOnce();
     expect(screen.getByRole("heading", { name: "配信中の配信者" })).toBeInTheDocument();
-    expect(screen.getByTestId("live-directory")).toHaveTextContent("entries:1");
+    expect(screen.getByTestId("live-directory")).toHaveTextContent(
+      "entries:1;rankings:1",
+    );
+    expect(
+      screen.getByText("明示的に掲載を許可したチャネルだけが表示されています。"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ホーム" })).toHaveAttribute("href", "/");
     expect(screen.getByText("public footer")).toBeInTheDocument();
   });

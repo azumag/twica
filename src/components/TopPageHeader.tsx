@@ -64,19 +64,6 @@ function LogoutIcon() {
   )
 }
 
-function LiveDirectoryLink({ label }: { label: string }) {
-  return (
-    <Link
-      href="/live"
-      className="inline-flex min-h-10 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-gray-200 transition hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-300 sm:px-3"
-      title={label}
-    >
-      <span className="h-2.5 w-2.5 rounded-full bg-red-500" aria-hidden="true" />
-      <span className="sr-only sm:not-sr-only">{label}</span>
-    </Link>
-  )
-}
-
 export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
   // Trust the server-side session data passed from RSC
   // Don't re-fetch on client side as API routes have different cookie handling
@@ -96,8 +83,6 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
   if (session) {
     return (
       <div className="flex items-center gap-2 sm:gap-4">
-        <LiveDirectoryLink label={t('live')} />
-
         {/* ユーザー名：スマホでは非表示、sm以上で表示 */}
         <span className="hidden text-white sm:block">{session.twitchDisplayName}</span>
 
@@ -134,11 +119,5 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
     )
   }
 
-  // 未ログインでも公開ディレクトリへ移動できる。言語切り替えと同じ共通導線として表示。
-  return (
-    <div className="flex items-center gap-2 sm:gap-4">
-      <LiveDirectoryLink label={t('live')} />
-      <LanguageSwitcherDark />
-    </div>
-  )
+  return <LanguageSwitcherDark />
 }

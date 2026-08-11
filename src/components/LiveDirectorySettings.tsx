@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useState } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
@@ -10,7 +11,7 @@ interface LiveDirectorySettingsProps {
   streamerId: string;
   // /live ディレクトリへの掲載オプトイン（デフォルト false）
   currentPublishLiveStatus: boolean;
-  // /live でのカード統計公開オプトイン（デフォルト false）
+  // DB上の旧名はpublish_statsだが、現在はランキングでのチャネル表示可否を表す。
   currentPublishStats: boolean;
 }
 
@@ -18,11 +19,11 @@ interface LiveDirectorySettingsProps {
  * 配信中ディレクトリ掲載設定コンポーネント (Issue #632 / #738)
  *
  * - 「配信中を公表」 (publishLiveStatus): /live に掲載するか（オプトイン）
- * - 「統計を公開」 (publishStats): カード種類数・チャネルポイント引換数を公開するか
+ * - 「ランキングにチャネルを表示」 (publishStats): ランキングで配信者を識別可能にするか
  *
- * publishStats は publishLiveStatus=true のときだけ意味を持つ（掲載されない限り
- * 統計も公開されない）。CardVisibilitySettings の依存トグル（showDetails は
- * showUnowned 依存）と同じ UX を踏襲する。
+ * ランキングの集計値自体は全配信者を対象とし、publishStats=false の行はDB境界で
+ * 識別情報を除去して「匿名チャネル」として表示する。配信掲載とランキング上の
+ * チャネル表示は別の同意なので、2つのトグルは互いに依存させない。
  */
 export default function LiveDirectorySettings({
   streamerId,
@@ -90,17 +91,11 @@ export default function LiveDirectorySettings({
   const handleTogglePublishLiveStatus = useCallback(async () => {
     const next = !publishLiveStatus;
     setPublishLiveStatus(next);
-    // 掲載OFFに切り替える際は統計公開フラグも同時に false にしておく。
-    // 残しておくと、後で再度ONにした瞬間に意図せず統計が公開状態になってしまうため。
-    const payload = next
-      ? { publishLiveStatus: true }
-      : { publishLiveStatus: false, publishStats: false };
-    const ok = await saveSettings(payload);
+    // 配信一覧とランキングのチャネル表示は独立した同意。掲載OFFで後者まで
+    // 書き換えると、ユーザーが明示的に選んだランキング設定を失うため触らない。
+    const ok = await saveSettings({ publishLiveStatus: next });
     if (ok) {
       setMessage(next ? t("messages.liveEnabled") : t("messages.liveDisabled"));
-      if (!next) {
-        setPublishStats(false);
-      }
     } else {
       setPublishLiveStatus(!next);
     }
@@ -117,8 +112,7 @@ export default function LiveDirectorySettings({
     }
   }, [publishStats, saveSettings, t]);
 
-  // 統計トグルは掲載OFFの場合は事実上意味を持たないため UI を disable
-  const statsDisabled = !publishLiveStatus || saving || isMaintenanceBlocked;
+  const statsDisabled = saving || isMaintenanceBlocked;
   const liveDisabled = saving || isMaintenanceBlocked;
 
   return (
@@ -141,69 +135,72 @@ export default function LiveDirectorySettings({
         </span>
       </div>
 
-      <p className="mb-4 text-sm text-gray-400">{t("description")}</p>
+      <p className="mb-4 text-sm text-gray-400">
+        {t.rich("description", {
+          link: (chunks) => (
+            <Link
+              href="/live"
+              className="text-purple-300 underline decoration-purple-400/60 underline-offset-2 transition hover:text-purple-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+            >
+              {chunks}
+            </Link>
+          ),
+        })}
+      </p>
 
       {isMaintenanceBlocked && (
         <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
       )}
 
       <div className="space-y-4">
-        {/* 配信中を公表 */}
-        <div className="flex items-center gap-3">
+        {/* 可視テキストをinputへ関連付け、スイッチの目的を支援技術にも伝える。 */}
+        <div className="flex items-center">
           <label
-            className="relative inline-flex cursor-pointer items-center"
+            htmlFor="publish-live-status"
+            className="inline-flex cursor-pointer items-center gap-3"
             title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
           >
             <input
+              id="publish-live-status"
               type="checkbox"
               checked={publishLiveStatus}
               onChange={handleTogglePublishLiveStatus}
               disabled={liveDisabled}
+              aria-describedby="publish-live-status-help"
               className="peer sr-only"
             />
-            <div className="h-6 w-11 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-disabled:opacity-50" />
+            <span className="relative h-6 w-11 shrink-0 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-disabled:opacity-50" />
+            <span className="text-sm text-gray-300">
+              {t("form.publishLiveStatus")}
+            </span>
           </label>
-          <span className="text-sm text-gray-300">
-            {t("form.publishLiveStatus")}
-          </span>
         </div>
-        <p className="-mt-2 ml-14 text-xs text-gray-500">
+        <p id="publish-live-status-help" className="-mt-2 ml-14 text-xs text-gray-500">
           {t("form.publishLiveStatusHelp")}
         </p>
 
-        {/* 統計を公開 */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center">
           <label
-            className="relative inline-flex cursor-pointer items-center"
+            htmlFor="publish-ranking-channel"
+            className="inline-flex cursor-pointer items-center gap-3"
             title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
           >
             <input
+              id="publish-ranking-channel"
               type="checkbox"
               checked={publishStats}
               onChange={handleTogglePublishStats}
               disabled={statsDisabled}
+              aria-describedby="publish-ranking-channel-help"
               className="peer sr-only"
             />
-            <div
-              className={`h-6 w-11 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-disabled:opacity-50 ${
-                !publishLiveStatus ? "opacity-50" : ""
-              }`}
-            />
-          </label>
-          <span
-            className={`text-sm ${
-              publishLiveStatus ? "text-gray-300" : "text-gray-500"
-            }`}
-          >
-            {t("form.publishStats")}
-          </span>
-          {!publishLiveStatus && (
-            <span className="text-xs text-gray-500">
-              ({t("form.requiresPublishLiveStatus")})
+            <span className="relative h-6 w-11 shrink-0 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-disabled:opacity-50" />
+            <span className="text-sm text-gray-300">
+              {t("form.publishStats")}
             </span>
-          )}
+          </label>
         </div>
-        <p className="-mt-2 ml-14 text-xs text-gray-500">
+        <p id="publish-ranking-channel-help" className="-mt-2 ml-14 text-xs text-gray-500">
           {t("form.publishStatsHelp")}
         </p>
 
