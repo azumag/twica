@@ -35,7 +35,7 @@ jobs:
           if [ -z "$LATEST_TAG" ]; then
             LATEST_TAG="v0.0.0"
           fi
-          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
           echo "Latest tag: $LATEST_TAG"
 
       - name: Determine version bump
@@ -46,16 +46,16 @@ jobs:
           # タグからバージョン番号を抽出
           # Extract version numbers from tag
           VERSION=${LATEST_TAG#v}
-          MAJOR=$(echo $VERSION | cut -d. -f1)
-          MINOR=$(echo $VERSION | cut -d. -f2)
-          PATCH=$(echo $VERSION | cut -d. -f3)
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
 
           # 前回タグからのコミットメッセージを分析
           # Analyze commit messages since last tag
           if [ "$LATEST_TAG" = "v0.0.0" ]; then
             COMMITS=$(git log --pretty=format:"%s" HEAD)
           else
-            COMMITS=$(git log --pretty=format:"%s" ${LATEST_TAG}..HEAD)
+            COMMITS=$(git log --pretty=format:"%s" "${LATEST_TAG}..HEAD")
           fi
 
           # バージョンバンプの種類を判定
@@ -89,8 +89,8 @@ jobs:
           esac
 
           NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
           echo "New version: $NEW_VERSION (bump: $BUMP_TYPE)"
 
       - name: Check if release needed
@@ -103,16 +103,16 @@ jobs:
           if [ "$LATEST_TAG" = "v0.0.0" ]; then
             COMMIT_COUNT=$(git rev-list --count HEAD)
           else
-            COMMIT_COUNT=$(git rev-list --count ${LATEST_TAG}..HEAD)
+            COMMIT_COUNT=$(git rev-list --count "${LATEST_TAG}..HEAD")
           fi
 
           echo "Commits since last tag: $COMMIT_COUNT"
 
           if [ "$COMMIT_COUNT" -eq 0 ]; then
-            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
             echo "No new commits, skipping release"
           else
-            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "Creating new release"
           fi
 

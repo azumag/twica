@@ -156,12 +156,11 @@ jobs:
       - name: Claude Code Review (opus)
         id: review
         if: steps.check-token.outputs.configured == 'true'
-        # 供給元タグの更新で挙動が変わり得るため、コミットSHAピンが定石だが、
-        # この環境から GitHub API へ到達できず（api.github.com への疎通不可）
-        # 現在の v1 タグの SHA を取得できないため、タグ運用を維持する。
-        # OAuth トークンを渡す唯一の action なので、SHA 取得手段ができ次第
-        # ピン化する（追跡: issue #918）。
-        uses: anthropics/claude-code-action@v1
+        # OAuth トークンを渡す唯一の action のため、可変タグではなくコミット SHA に
+        # ピンする（供給元タグの差し替えによるトークン奪取を防ぐ、issue #918）。
+        # 対象: refs/tags/v1 = 9c41ed18ca8b2b2a17eaef4723d5092ccdebc814
+        # （2026-08-11 時点の v1 先頭。更新時は git ls-remote で取得し直すこと）
+        uses: anthropics/claude-code-action@9c41ed18ca8b2b2a17eaef4723d5092ccdebc814
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Claude GitHub App の書き込み権限ではなく、この job の読み取り専用
