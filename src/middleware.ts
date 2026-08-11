@@ -158,8 +158,10 @@ export async function middleware(request: NextRequest) {
   // 後続の updateSession / route 処理に nonce 付きヘッダーを引き継ぐ。
   // updateSession が NextResponse.next({ request }) を作るため、request を
   // 差し替えたインスタンスで呼ぶ（cookies 等の参照はヘッダー経由のため維持される）。
-  // NextRequest コンストラクタに既存 Request を渡すと method / body が引き継がれ、
-  // init.headers だけが上書きされる（body ストリームの再構築による二重消費を避ける）。
+  // 注意: Fetch 仕様上、body を持つ Request から新 Request を作ると元の body は
+  // locked になる。OpenNext は body を先に Buffer 化するため現状は顕在化しないが、
+  // 将来のランタイム変更で壊れうる依存である（#836 レビュー指摘。実機で POST body
+  // 維持を確認済み）。
   const requestWithNonce = new NextRequest(request, { headers: requestHeaders })
 
   // #694 Stage 3: 他の全処理（ロケール検出・rate limit・security headers 設定）

@@ -15,7 +15,7 @@ import { SECURITY_HEADERS } from './constants'
  *   通るため、実運用でこのフォールバックが使われるのは JSON エラー応答のみで、
  *   スクリプトを含まないため実害はない。
  */
-export function buildScriptSrcCsp(nonce: string | undefined): string {
+function buildScriptSrcCsp(nonce: string | undefined): string {
   if (nonce) {
     return `'self' 'nonce-${nonce}' 'strict-dynamic' https://static.cloudflareinsights.com`
   }
