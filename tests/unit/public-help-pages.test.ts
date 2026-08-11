@@ -60,6 +60,7 @@ describe("FAQ page", () => {
       "src/app/releases/page.tsx",
       "src/app/plans/page.tsx",
       "src/app/faq/page.tsx",
+      "src/app/live/page.tsx",
     ];
 
     for (const page of pages) {
@@ -82,6 +83,12 @@ describe("FAQ page", () => {
     expect(source).toContain('href: "/about"');
     expect(source).toContain('href: "/privacy"');
     expect(source).toContain('href: "/releases"');
+  });
+
+  it("links to the public live directory from authenticated and top-page headers", () => {
+    expect(readSource("src/components/Header.tsx")).toContain('href="/live"');
+    expect(readSource("src/components/TopPageHeader.tsx")).toContain('href="/live"');
+    expect(readSource("src/app/page.tsx")).toContain('href="/live"');
   });
 });
 

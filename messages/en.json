@@ -886,7 +886,8 @@
       "description4": "and build their collection.",
       "viewerGuide": "Viewer Guide",
       "streamerGuide": "Streamer Guide",
-      "viewGuide": "View Guide"
+      "viewGuide": "View Guide",
+      "liveDirectory": "Browse live channels"
     },
     "features": {
       "cardCollection": {
@@ -1129,7 +1130,8 @@
     "userSettings": "User Settings",
     "logout": "Logout",
     "announcements": "Announcements",
-    "streamerBadge": "Streamer"
+    "streamerBadge": "Streamer",
+    "live": "Live now"
   },
   "accountPage": {
     "title": "User Settings",
@@ -1505,16 +1507,68 @@
       "description": "See the usage guide for details on creating cards and setting them up on your stream."
     }
   },
+  "livePage": {
+    "metadata": {
+      "title": "Live now - TwiCa",
+      "description": "Discover TwiCa streamers who have chosen to be listed and are live right now."
+    },
+    "navigationLabel": "Live directory navigation",
+    "home": "Home",
+    "title": "Live now",
+    "description": "Discover TwiCa streamers who have chosen to be listed and are live right now.",
+    "directoryHeading": "Live streams",
+    "sort": {
+      "label": "Sort by",
+      "viewers": "Viewers",
+      "recentlyStarted": "Recently started",
+      "cardCount": "Card types",
+      "redemptionCount": "Channel point redemptions"
+    },
+    "card": {
+      "live": "LIVE",
+      "viewers": "{count, plural, one {# viewer} other {# viewers}}",
+      "thumbnailAlt": "Live stream thumbnail for {name}",
+      "thumbnailUnavailable": "Stream thumbnail unavailable",
+      "profileAlt": "Profile image for {name}",
+      "untitled": "Untitled stream",
+      "uncategorized": "No category",
+      "category": "Category: {name}",
+      "liveFor": "Live for {duration}",
+      "watchOnTwitchNewTab": "Watch {name} on Twitch (opens in a new tab)",
+      "viewCollection": "View collection"
+    },
+    "duration": {
+      "justStarted": "just started",
+      "minutes": "{minutes, plural, one {# min} other {# mins}}",
+      "hours": "{hours, plural, one {# hr} other {# hrs}}",
+      "hoursMinutes": "{hours, plural, one {# hr} other {# hrs}} {minutes, plural, one {# min} other {# mins}}",
+      "unknown": "start time unavailable"
+    },
+    "stats": {
+      "cardCount": "Card types",
+      "redemptionCount": "Channel point redemptions",
+      "value": "{count, number}",
+      "private": "Stats private"
+    },
+    "empty": {
+      "title": "No listed streams are live right now",
+      "description": "Streamers who opt in will appear here when they go live."
+    },
+    "listingCta": {
+      "lead": "Streaming with TwiCa?",
+      "link": "Streamers can opt in from settings"
+    }
+  },
   "liveDirectorySettings": {
     "title": "Live directory listing",
-      "description": "Choose whether this streamer will be listed on the live directory (/live) once it launches. Both toggles are off by default.",
+    "description": "Choose whether this streamer is listed on the live directory (/live). Both toggles are off by default.",
     "status": {
       "enabled": "Listed",
       "disabled": "Hidden"
     },
     "form": {
       "publishLiveStatus": "Publish my live status",
-        "publishLiveStatusHelp": "While on, this streamer will appear on /live once it launches (only while actually live).",
+      "publishLiveStatusHelp": "While on, this streamer appears on /live whenever the channel is live.",
       "publishStats": "Publish stats",
       "publishStatsHelp": "Show card count and channel point redemptions on /live.",
       "requiresPublishLiveStatus": "requires \"Publish my live status\""
@@ -1528,7 +1582,7 @@
     },
     "errors": {
       "saveFailed": "Failed to save settings",
-      "deployWindow": "The live directory feature is not ready yet, so your changes could not be saved. Please try again shortly."
+      "deployWindow": "Live directory settings are temporarily unavailable. Please try again shortly."
     }
   }
 }
