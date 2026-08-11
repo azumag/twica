@@ -99,6 +99,10 @@ on:
       - 'db/planetscale/**'
       - 'scripts/db-migrate.js'
       - 'scripts/lib/**'
+      # runtime runnerはrootのpostgres packageを使う。依存更新で壊れた場合を
+      # 次のDDL適用時まで見逃さないよう、manifestとlockfileも実DBで検証する。
+      - 'package.json'
+      - 'package-lock.json'
 
   # 手動再実行ではGitHub UIでmainまたはpreviewのrefを選ぶ。Environmentを別inputで
   # 選ばせると「previewコード + production secret」のような危険な組合せを作れるため、
