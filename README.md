@@ -120,3 +120,14 @@ Workers Builds の設定、ロールバック前の確認、補助 Worker の責
 - Twitch / Cloudflare / DB の機密値をログ・Issue・ソースコードへ出力しない
 - DB 接続は Hyperdrive（runtime）または限定ロールの直結接続（migration / 管理）に限定する
 - エラー通知は本体処理の commit を巻き戻さない best-effort 処理として扱い、失敗は監視する
+
+## ライセンス
+
+Copyright (C) 2026 azumag
+
+TwiCa は [GNU Affero General Public License v3.0 only](LICENSE)
+（`AGPL-3.0-only`）で提供します。第三者による利用、改変、再配布、ホスティングは
+ライセンス条件に従って可能です。改変版をネットワーク経由で提供する場合は、利用者が
+対応するソースコードを無償で取得できる機会を提供する必要があります。
+
+この説明とライセンス本文が異なる場合は、ライセンス本文が優先されます。
