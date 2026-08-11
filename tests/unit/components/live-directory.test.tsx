@@ -209,7 +209,7 @@ describe("LiveDirectory", () => {
     expect(alphaLink.querySelector("img")).toHaveAttribute("alt", "");
   });
 
-  it("switches ranking aggregation between all time and the last 7 days", () => {
+  it("switches usage ranking periods while card count always uses current values", () => {
     const recentRankings: LiveDirectoryRankingEntry[] = [
       {
         identity: rankings[0].identity,
@@ -235,9 +235,16 @@ describe("LiveDirectory", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "種類数ランキング" }));
-    expect(
-      screen.getByText("直近7日間に追加され、現在も有効なカード種類数です。"),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "集計期間" })).not.toBeInTheDocument();
+    expect(screen.getByText("現在有効なカード種類数です。")).toBeInTheDocument();
+    expect(screen.getAllByText("12種類")).toHaveLength(2);
+    expect(screen.queryByText("1種類")).not.toBeInTheDocument();
+
+    // 種類数は期間設定の対象外だが、利用量タブへ戻ったときの選択状態は保持する。
+    fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
+    expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
+    expect(screen.getByText("345ポイント")).toBeInTheDocument();
   });
 
   it("excludes rows outside each metric candidate set before calculating ranks", () => {
