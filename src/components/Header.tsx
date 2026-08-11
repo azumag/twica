@@ -59,7 +59,7 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
             )}
             {/* LIVE導線と固定幅操作群を同じ行へ収めるため、狭幅では名前を視覚的に隠す。
                 md以上でも長い表示名は上限を持たせ、バッジや操作ボタンを押し出さない。 */}
-            <span className="hidden max-w-48 truncate text-white md:inline">
+            <span className="hidden max-w-48 truncate text-white md:inline-block">
               {session.twitchDisplayName}
             </span>
             <span className="sr-only md:hidden">{session.twitchDisplayName}</span>
