@@ -72,9 +72,10 @@ export default async function LivePage() {
         <div className="mb-10 max-w-3xl">
           <h1 className="text-3xl font-bold text-white sm:text-4xl">{t("title")}</h1>
           <p className="mt-3 text-base leading-7 text-gray-400">{t("description")}</p>
-          <p className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
-            {t("consentNotice")}
-          </p>
+          <div className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
+            <p>{t("consentNotice")}</p>
+            <p className="mt-1">{t("rankingNotice")}</p>
+          </div>
         </div>
 
         <LiveDirectory

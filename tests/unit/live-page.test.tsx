@@ -38,6 +38,8 @@ const translations: Record<string, Record<string, string>> = {
     title: "配信中の配信者",
     description: "page description",
     consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
+    rankingNotice:
+      "ランキングは全アクティブチャネルを集計対象とし、各指標の上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
   },
   header: {
     dashboard: "ダッシュボード",
@@ -71,6 +73,11 @@ describe("LivePage", () => {
     );
     expect(
       screen.getByText("明示的に掲載を許可したチャネルだけが表示されています。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "ランキングは全アクティブチャネルを集計対象とし、各指標の上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ホーム" })).toHaveAttribute("href", "/");
     expect(screen.getByText("public footer")).toBeInTheDocument();

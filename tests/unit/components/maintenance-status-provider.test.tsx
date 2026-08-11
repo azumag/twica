@@ -134,6 +134,64 @@ describe('MaintenanceStatusProvider', () => {
     })
   })
 
+  it('確定済みのメンテナンス表示はvisible復帰の再確認中も維持する', async () => {
+    let resolveRefresh!: (response: Response) => void
+    const refreshPromise = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({
+          mode: 'read-only',
+          expectedEndAt: '2026-08-11T13:00:00.000Z',
+        }),
+        { status: 200 }
+      ))
+      .mockReturnValueOnce(refreshPromise)
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <MaintenanceStatusProvider>
+        <StatusProbe />
+      </MaintenanceStatusProvider>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mode')).toHaveTextContent('read-only')
+      expect(screen.getByTestId('expected-end-at')).toHaveTextContent(
+        '2026-08-11T13:00:00.000Z'
+      )
+    })
+
+    visibilityState = 'hidden'
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    visibilityState = 'visible'
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    // 既に確定した非off状態は一時的なVISIBILITY_REFRESH_STATUSへ置換しない。
+    // これにより、復帰fetchの待機中もバナーが消えず終了予定時刻も維持される。
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('mode')).toHaveTextContent('read-only')
+    expect(screen.getByTestId('expected-end-at')).toHaveTextContent(
+      '2026-08-11T13:00:00.000Z'
+    )
+    expect(screen.getByTestId('refreshing')).toHaveTextContent('false')
+
+    resolveRefresh(new Response(
+      JSON.stringify({ mode: 'incident-read-only' }),
+      { status: 200 }
+    ))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mode')).toHaveTextContent('incident-read-only')
+      expect(screen.getByTestId('expected-end-at')).toBeEmptyDOMElement()
+    })
+  })
+
   it('初期hiddenから最初にvisibleになった再確認中も暫定状態を識別できる', async () => {
     let resolveFetch!: (response: Response) => void
     const fetchPromise = new Promise<Response>((resolve) => {

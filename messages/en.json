@@ -1517,6 +1517,7 @@
     "title": "Live now",
     "description": "See TwiCa channels that are live now and rankings for card activity.",
     "consentNotice": "The live list only shows channels that have explicitly agreed to be listed.",
+    "rankingNotice": "Rankings include all active channels and show the top 100 for each metric. Channels that have not agreed to be identified appear anonymously.",
     "directoryHeading": "Live channels and rankings",
     "tabs": {
       "label": "View",
