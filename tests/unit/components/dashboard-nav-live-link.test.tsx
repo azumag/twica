@@ -38,7 +38,9 @@ describe("DashboardNav live directory link", () => {
   it("keeps the public /live route available to non-streamer users", () => {
     renderNav(false);
 
-    expect(screen.getAllByRole("link", { name: "配信中" })).toHaveLength(2);
+    expect(
+      screen.getAllByRole("link", { name: "チャネル・ランキング" }),
+    ).toHaveLength(2);
     expect(screen.queryByRole("link", { name: "カード管理" })).not.toBeInTheDocument();
   });
 });

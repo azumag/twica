@@ -29,7 +29,7 @@
   },
   "navigation": {
     "overview": "Overview",
-    "live": "Live now",
+    "live": "Channels & Rankings",
     "cardManagement": "Card Management",
     "settings": "Stream Settings",
     "gachaHistory": "Gacha History",
@@ -1509,15 +1509,15 @@
   },
   "livePage": {
     "metadata": {
-      "title": "Live now - TwiCa",
-      "description": "See TwiCa channels that are live now and rankings for card activity."
+      "title": "TwiCa channels and rankings",
+      "description": "Browse channels using TwiCa and rankings for card activity."
     },
-    "navigationLabel": "Live directory navigation",
+    "navigationLabel": "Channel and ranking page navigation",
     "home": "Home",
-    "title": "Live now",
-    "description": "See TwiCa channels that are live now and rankings for card activity.",
+    "title": "TwiCa channels and rankings",
+    "description": "Browse channels using TwiCa and rankings for each streamer's card activity.",
     "consentNotice": "The live list only shows channels that have explicitly agreed to be listed.",
-    "rankingNotice": "Rankings include all active channels and show the top 100 for each metric. Channels that have not agreed to be identified appear anonymously.",
+    "rankingNotice": "Rankings include all active channels and show the top 100 for each metric in the selected period. Channels that have not agreed to be identified appear anonymously.",
     "directoryHeading": "Live channels and rankings",
     "tabs": {
       "label": "View",
@@ -1525,6 +1525,19 @@
       "redemptionCount": "Card redemption ranking",
       "totalPoints": "Channel point ranking",
       "cardCount": "Card type ranking"
+    },
+    "period": {
+      "label": "Ranking period",
+      "last7Days": "Last 7 days",
+      "allTime": "All time",
+      "usageHelp": {
+        "last7Days": "Counts card redemptions recorded in the last 7 days.",
+        "allTime": "Counts card redemptions recorded across all time in TwiCa."
+      },
+      "cardCountHelp": {
+        "last7Days": "Counts active card types added in the last 7 days.",
+        "allTime": "Counts card types that are currently active."
+      }
     },
     "card": {
       "live": "LIVE",
