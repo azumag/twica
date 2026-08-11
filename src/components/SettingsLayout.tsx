@@ -267,9 +267,12 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
   const visibilityStatus: SettingsSection["status"] = data.visibility.showUnowned
     ? "active"
     : "empty";
-  const liveDirectoryStatus: SettingsSection["status"] = data.liveDirectory.publishLiveStatus
-    ? "active"
-    : "empty";
+  // 配信一覧への掲載とランキングでのチャネル表示は独立した設定なので、
+  // どちらか一方でも有効ならセクション全体を設定済みとして示す。
+  const liveDirectoryStatus: SettingsSection["status"] =
+    data.liveDirectory.publishLiveStatus || data.liveDirectory.publishStats
+      ? "active"
+      : "empty";
 
   const sections: SettingsSection[] = [
     {

@@ -748,8 +748,9 @@ export async function POST(request: NextRequest) {
       // Unowned-card visibility settings (optional, Issue #395)
       showUnownedCards,
       showUnownedCardDetails,
-      // 配信中ディレクトリ掲載・統計公開オプトイン（オプション、Issue #632/#738）
-      // Live directory listing / stats publication opt-ins (optional, Issue #632/#738)
+      // 配信中一覧への掲載・ランキング上のチャネル表示オプトイン
+      // （オプション、Issue #632/#738/#740）
+      // Live listing / ranking identity opt-ins (optional, Issue #632/#738/#740)
       publishLiveStatus,
       publishStats,
       // BOTアカウント連携解除（オプション）
@@ -1121,7 +1122,7 @@ export async function POST(request: NextRequest) {
     if (showUnownedCardDetails !== undefined) {
       updateData.show_unowned_card_details = showUnownedCardDetails;
     }
-    // 配信中ディレクトリ掲載・統計公開オプトイン（Issue #632/#738）。
+    // 配信中一覧への掲載・ランキング上のチャネル表示オプトイン（Issue #632/#738/#740）。
     // クライアント送信値がそのまま正（サーバ側の加工・却下シナリオ無し）のため
     // エコーバック不要。デプロイ窓での列欠落時のみ skip フラグを返す。
     if (publishLiveStatus !== undefined) {

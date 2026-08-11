@@ -25,11 +25,14 @@ function renderSettings(
   );
 }
 
-// トグルのラベルテキストは<label>要素の外側（兄弟<span>）にあり、アクセシブルネームが
-// 付いていない既存マークアップ（CardVisibilitySettings 踏襲）のため、表示順
-// （0: 配信中を公表する, 1: 統計を公開する）を前提にインデックスで取得する。
-function getToggles() {
-  return screen.getAllByRole("checkbox");
+// 表示順ではなくユーザーが認識するラベルで取得し、トグルのアクセシビリティ契約も
+// 各操作テストで同時に保証する。
+function getLiveToggle() {
+  return screen.getByRole("checkbox", { name: "配信中を公表する" });
+}
+
+function getRankingToggle() {
+  return screen.getByRole("checkbox", { name: "ランキングにチャネルを表示する" });
 }
 
 describe("LiveDirectorySettings", () => {
@@ -47,24 +50,29 @@ describe("LiveDirectorySettings", () => {
     vi.unstubAllGlobals();
   });
 
-  it("defaults to both toggles off and disables stats until listing is on", () => {
+  it("links the description to the live directory", () => {
     renderSettings({});
-    const [liveToggle, statsToggle] = getToggles();
+
+    expect(screen.getByRole("link", { name: "配信中ページ" })).toHaveAttribute("href", "/live");
+  });
+
+  it("defaults both independent toggles to off and keeps both operable", () => {
+    renderSettings({});
+
+    const liveToggle = getLiveToggle();
+    const rankingToggle = getRankingToggle();
     expect(liveToggle).not.toBeChecked();
-    expect(statsToggle).toBeDisabled();
-    expect(screen.getByText(/「配信中を公表する」が必要/)).toBeInTheDocument();
+    expect(liveToggle).toBeEnabled();
+    expect(rankingToggle).not.toBeChecked();
+    expect(rankingToggle).toBeEnabled();
+    expect(rankingToggle).toHaveAccessibleDescription(
+      /オフでも上位100件に入る集計値は匿名チャネルとしてランキングに掲載されます/,
+    );
   });
 
-  it("enables the stats toggle once listing is on", () => {
-    renderSettings({ publishLiveStatus: true });
-    const [, statsToggle] = getToggles();
-    expect(statsToggle).not.toBeDisabled();
-  });
-
-  it("turning listing on saves publishLiveStatus and enables stats", async () => {
+  it("turning listing on saves only publishLiveStatus", async () => {
     renderSettings({});
-    const [liveToggle] = getToggles();
-    fireEvent.click(liveToggle);
+    fireEvent.click(getLiveToggle());
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
@@ -76,8 +84,8 @@ describe("LiveDirectorySettings", () => {
       );
     });
     expect(screen.getByText("配信中ページへの掲載設定をオンにしました")).toBeInTheDocument();
-    const [, statsToggle] = getToggles();
-    expect(statsToggle).not.toBeDisabled();
+    expect(getRankingToggle()).not.toBeChecked();
+    expect(getRankingToggle()).toBeEnabled();
   });
 
   it("shows an error and keeps the toggle off when the server skips the deploy-window write", async () => {
@@ -89,8 +97,7 @@ describe("LiveDirectorySettings", () => {
       })
     );
     renderSettings({});
-    const [liveToggle] = getToggles();
-    fireEvent.click(liveToggle);
+    fireEvent.click(getLiveToggle());
 
     await waitFor(() => {
       expect(
@@ -98,40 +105,28 @@ describe("LiveDirectorySettings", () => {
       ).toBeInTheDocument();
     });
     expect(screen.queryByText("配信中ページへの掲載設定をオンにしました")).not.toBeInTheDocument();
-    const [liveToggleAfter] = getToggles();
-    expect(liveToggleAfter).not.toBeChecked();
+    expect(getLiveToggle()).not.toBeChecked();
   });
 
-  it("turning listing off also resets stats and disables it", async () => {
+  it("turning listing off preserves the independent ranking setting", async () => {
     renderSettings({ publishLiveStatus: true, publishStats: true });
-    const [liveToggle] = getToggles();
-    fireEvent.click(liveToggle);
+    fireEvent.click(getLiveToggle());
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
         "/api/streamer/settings",
         expect.objectContaining({
-          body: JSON.stringify({
-            streamerId: "streamer-1",
-            publishLiveStatus: false,
-            publishStats: false,
-          }),
+          body: JSON.stringify({ streamerId: "streamer-1", publishLiveStatus: false }),
         })
       );
     });
-    // 保存完了後に publishStats=false が反映されるため、fetch の呼び出しだけでなく
-    // 依存トグルの最終状態まで待って、非同期な UI 契約を検証する。
-    await waitFor(() => {
-      const [, statsToggle] = getToggles();
-      expect(statsToggle).toBeDisabled();
-      expect(statsToggle).not.toBeChecked();
-    });
+    expect(getRankingToggle()).toBeChecked();
+    expect(getRankingToggle()).toBeEnabled();
   });
 
-  it("toggling stats alone sends only publishStats", async () => {
-    renderSettings({ publishLiveStatus: true, publishStats: false });
-    const [, statsToggle] = getToggles();
-    fireEvent.click(statsToggle);
+  it("turning ranking display on while live listing is off sends only publishStats", async () => {
+    renderSettings({ publishLiveStatus: false, publishStats: false });
+    fireEvent.click(getRankingToggle());
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
@@ -145,9 +140,8 @@ describe("LiveDirectorySettings", () => {
 
   it("mode!=off disables both toggles and shows the maintenance notice", () => {
     renderSettings({ publishLiveStatus: true }, { mode: "read-only" });
-    const [liveToggle, statsToggle] = getToggles();
-    expect(liveToggle).toBeDisabled();
-    expect(statsToggle).toBeDisabled();
+    expect(getLiveToggle()).toBeDisabled();
+    expect(getRankingToggle()).toBeDisabled();
     expect(screen.getByText("メンテナンス中は操作できません")).toBeInTheDocument();
   });
 
@@ -160,7 +154,7 @@ describe("LiveDirectorySettings", () => {
       })
     );
     renderSettings({});
-    const [liveToggle] = getToggles();
+    const liveToggle = getLiveToggle();
     fireEvent.click(liveToggle);
 
     await waitFor(() => {

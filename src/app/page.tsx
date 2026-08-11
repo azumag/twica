@@ -75,15 +75,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
           </p>
 
           <div className="flex flex-col items-center gap-4 sm:flex-row sm:flex-wrap sm:justify-center">
-            <Link
-              href="/live"
-              className="inline-flex min-h-12 items-center gap-2 rounded-lg bg-red-600 px-8 py-3 font-medium text-white transition hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
-            >
-              <span className="h-2.5 w-2.5 rounded-full bg-white" aria-hidden="true" />
-              {t("hero.liveDirectory")}
-            </Link>
-
-            {/* ログイン状態に応じて残りの導線を切り替える */}
+            {/* ログイン状態に応じて利用開始・ガイド導線を切り替える */}
             {session ? (
               // ログイン済み: 視聴者/配信者向けガイドへのリンクボタンを表示
               <>
@@ -121,6 +113,14 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
                 </Link>
               </>
             )}
+            {/* 公開ページは主要操作より強く見せず、ログイン時は配信者向けガイドの
+                直後に置く。未ログイン時も使い方リンクの隣で発見可能性を保つ。 */}
+            <Link
+              href="/live"
+              className="inline-flex min-h-12 items-center rounded-lg border border-gray-600 bg-gray-800 px-8 py-3 font-medium text-gray-200 transition hover:border-gray-500 hover:bg-gray-700 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+            >
+              {t("hero.liveDirectory")}
+            </Link>
           </div>
         </div>
 

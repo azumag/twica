@@ -8,7 +8,8 @@ import { fetchTwitchApi } from "@/lib/twitch/app-token";
 /**
  * 配信中ページ（/live）のデータ層（issue #739 / 親 #632）。
  *
- * 「オプトイン配信者のうち現在Twitchでライブ中の一覧 + 公開統計」を返す。
+ * 「オプトイン配信者のうち現在Twitchでライブ中の一覧」と、全アクティブ
+ * 配信者を母集団にした各指標上位100件の匿名化済みランキングを返す。
  * 方式は設計で確定済みの Helix GET /streams ポーリング + KVキャッシュ(60s)。
  * EventSub stream.online/offline は購読ライフサイクル管理が過剰なため不採用。
  *
@@ -34,7 +35,30 @@ export interface LiveDirectoryEntry {
   viewerCount: number;
   startedAt: string;
   thumbnailUrl: string;
-  stats: { cardCount: number; redemptionCount: number } | null;
+}
+
+export interface LiveDirectoryRankingIdentity {
+  twitchLogin: string;
+  displayName: string;
+  profileImageUrl: string;
+}
+
+export const LIVE_DIRECTORY_RANKING_METRICS = [
+  "cardCount",
+  "redemptionCount",
+  "totalPoints",
+] as const;
+export type LiveDirectoryRankingMetric =
+  (typeof LIVE_DIRECTORY_RANKING_METRICS)[number];
+
+export interface LiveDirectoryRankingEntry {
+  /** nullならDB境界で識別情報を除去済みの匿名行。 */
+  identity: LiveDirectoryRankingIdentity | null;
+  cardCount: number;
+  redemptionCount: number;
+  totalPoints: number;
+  /** SQL側の各指標上位100件のうち、この行を表示するランキング。 */
+  rankedMetrics: LiveDirectoryRankingMetric[];
 }
 
 /** RPC get_live_directory_streamers() の返却行（migration 側の JSONB 形状）。 */
@@ -43,9 +67,6 @@ interface LiveDirectoryRpcRow {
   twitchUserId: string;
   twitchDisplayName: string;
   twitchProfileImageUrl: string | null;
-  publishStats: boolean;
-  cardCount: number | null;
-  redemptionCount: number | null;
 }
 
 /** Helix GET /streams の1行（必要なフィールドのみ）。 */
@@ -61,11 +82,16 @@ interface HelixStream {
 }
 
 const LIVE_DIRECTORY_KV_KEY = "live-directory:v1";
+const LIVE_DIRECTORY_RANKINGS_KV_KEY = "live-directory:rankings:v2";
 const LIVE_DIRECTORY_TTL_SECONDS = 60;
 const HELIX_STREAMS_BATCH_SIZE = 100;
 
 /** KV なし環境（ローカル next dev）用のメモリキャッシュ。 */
 let memoryCache: { entries: LiveDirectoryEntry[]; expiresAt: number } | null = null;
+let rankingsMemoryCache: {
+  entries: LiveDirectoryRankingEntry[];
+  expiresAt: number;
+} | null = null;
 
 async function fetchStreamsForUserIds(
   userIds: string[],
@@ -163,13 +189,189 @@ async function fetchLiveDirectoryUncached(): Promise<LiveDirectoryFetchResult> {
           thumbnailUrl: stream.thumbnail_url
             .replace("{width}", "320")
             .replace("{height}", "180"),
-          stats: s.publishStats
-            ? { cardCount: s.cardCount ?? 0, redemptionCount: s.redemptionCount ?? 0 }
-            : null,
         } satisfies LiveDirectoryEntry;
       }),
     ok: true,
   };
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : 0;
+}
+
+/**
+ * KVのライブ一覧を公開型へホワイトリスト変換する。
+ *
+ * 同じKV keyには旧リリースが書いたstats等がTTL中だけ残り得る。TypeScriptの
+ * type assertionは実行時の余分なfieldを削除しないため、RSC payloadへ旧fieldを
+ * 再送しないよう各fieldを明示的に再構築する。識別に必要な3値が壊れた行だけは
+ * リンク先を安全に作れないので破棄し、それ以外の表示値は空文字/0へ正規化する。
+ */
+function normalizeLiveDirectoryEntries(value: unknown): LiveDirectoryEntry[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    if (
+      typeof row.streamerId !== "string" ||
+      typeof row.twitchUserId !== "string" ||
+      typeof row.twitchLogin !== "string"
+    ) {
+      return [];
+    }
+
+    return [{
+      streamerId: row.streamerId,
+      twitchUserId: row.twitchUserId,
+      twitchLogin: row.twitchLogin,
+      displayName: typeof row.displayName === "string" ? row.displayName : "",
+      profileImageUrl:
+        typeof row.profileImageUrl === "string" ? row.profileImageUrl : "",
+      title: typeof row.title === "string" ? row.title : "",
+      gameName: typeof row.gameName === "string" ? row.gameName : "",
+      viewerCount: normalizeNonNegativeInteger(row.viewerCount),
+      startedAt: typeof row.startedAt === "string" ? row.startedAt : "",
+      thumbnailUrl: typeof row.thumbnailUrl === "string" ? row.thumbnailUrl : "",
+    }];
+  });
+}
+
+/**
+ * RPCの戻り値を公開型へホワイトリスト変換する。
+ *
+ * SQLでもpublish_stats=false時にidentityをNULL化しているが、ここでも許可した
+ * 3フィールドだけを再構築する。将来RPCへ内部列が追加されても、RSC payloadへ
+ * 意図せず流出しないようプライバシー境界を二重化する。
+ */
+function normalizeRankingEntries(value: unknown): LiveDirectoryRankingEntry[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item) => {
+    // JSON配列内の壊れたprimitiveを匿名0件として残すと、実在しないランキング行を
+    // 作ってしまう。ライブ一覧の正規化と同じく、objectでない行は破棄する。
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    const rawIdentity = row.identity;
+    let identity: LiveDirectoryRankingIdentity | null = null;
+
+    if (rawIdentity && typeof rawIdentity === "object") {
+      const candidate = rawIdentity as Record<string, unknown>;
+      if (
+        typeof candidate.twitchLogin === "string" &&
+        typeof candidate.displayName === "string"
+      ) {
+        identity = {
+          twitchLogin: candidate.twitchLogin,
+          displayName: candidate.displayName,
+          profileImageUrl:
+            typeof candidate.profileImageUrl === "string"
+              ? candidate.profileImageUrl
+              : "",
+        };
+      }
+    }
+
+    // SQLは各指標の正値上位100件だけを指定する。キャッシュ境界でも列挙した値
+    // だけを許可し、未知のmetricで任意プロパティ参照が起きないようにする。
+    const counters = {
+      cardCount: normalizeNonNegativeInteger(row.cardCount),
+      redemptionCount: normalizeNonNegativeInteger(row.redemptionCount),
+      totalPoints: normalizeNonNegativeInteger(row.totalPoints),
+    };
+    const rawRankedMetrics = Array.isArray(row.rankedMetrics)
+      ? row.rankedMetrics
+      : [];
+    const rankedMetrics = LIVE_DIRECTORY_RANKING_METRICS.filter(
+      (metric) => rawRankedMetrics.includes(metric) && counters[metric] > 0,
+    );
+    if (rankedMetrics.length === 0) return [];
+
+    return [{
+      identity,
+      ...counters,
+      rankedMetrics,
+    }];
+  });
+}
+
+interface LiveDirectoryRankingsFetchResult {
+  entries: LiveDirectoryRankingEntry[];
+  /** falseならRPC障害。障害による空配列はキャッシュしない。 */
+  ok: boolean;
+}
+
+async function fetchLiveDirectoryRankingsUncached(): Promise<LiveDirectoryRankingsFetchResult> {
+  const { data: rpcRows, error: rpcError } = await executeDashboardRpcPg(
+    "get_live_directory_rankings(pg)",
+    async (sql) => {
+      const rows = await sql<Array<{ result: unknown }>>`
+        select get_live_directory_rankings() as result
+      `;
+      return rows[0]?.result;
+    },
+  );
+
+  if (rpcError) {
+    await reportError(
+      new Error(`Live directory rankings RPC failed: ${rpcError.message}`),
+      { context: "liveDirectory:rankingsRpc" },
+    );
+    return { entries: [], ok: false };
+  }
+
+  return { entries: normalizeRankingEntries(rpcRows), ok: true };
+}
+
+/**
+ * 各指標の正値上位100件に入る配信者の匿名化済みランキング集計を返す。
+ * ライブ一覧とはDB同意・障害境界が異なるため別キャッシュにし、新RPCが未反映の
+ * デプロイ窓でも既存のライブ一覧キャッシュを巻き込んで無効化しない。
+ */
+export async function getLiveDirectoryRankings(): Promise<LiveDirectoryRankingEntry[]> {
+  try {
+    const kv = await getKvBinding();
+    if (kv) {
+      const raw = await kv.get(LIVE_DIRECTORY_RANKINGS_KV_KEY);
+      if (raw) {
+        return normalizeRankingEntries(JSON.parse(raw));
+      }
+    }
+  } catch (error) {
+    await reportError(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: "liveDirectory:rankingsKvRead" },
+    );
+  }
+
+  if (rankingsMemoryCache && rankingsMemoryCache.expiresAt > Date.now()) {
+    return rankingsMemoryCache.entries;
+  }
+
+  const { entries, ok } = await fetchLiveDirectoryRankingsUncached();
+  if (ok) {
+    try {
+      const kv = await getKvBinding();
+      if (kv) {
+        await kv.put(LIVE_DIRECTORY_RANKINGS_KV_KEY, JSON.stringify(entries), {
+          expirationTtl: LIVE_DIRECTORY_TTL_SECONDS,
+        });
+      }
+    } catch (error) {
+      await reportError(
+        error instanceof Error ? error : new Error(String(error)),
+        { context: "liveDirectory:rankingsKvWrite" },
+      );
+    }
+    rankingsMemoryCache = {
+      entries,
+      expiresAt: Date.now() + LIVE_DIRECTORY_TTL_SECONDS * 1000,
+    };
+  }
+
+  return entries;
 }
 
 /**
@@ -185,7 +387,7 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
     if (kv) {
       const raw = await kv.get(LIVE_DIRECTORY_KV_KEY);
       if (raw) {
-        return JSON.parse(raw) as LiveDirectoryEntry[];
+        return normalizeLiveDirectoryEntries(JSON.parse(raw));
       }
     }
   } catch (error) {
@@ -227,4 +429,5 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
 /** テスト専用: メモリキャッシュをリセットする。 */
 export function __resetLiveDirectoryCacheForTests(): void {
   memoryCache = null;
+  rankingsMemoryCache = null;
 }

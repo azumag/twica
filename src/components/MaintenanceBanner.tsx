@@ -46,11 +46,11 @@ function formatResumeTime(expectedEndAt: string, locale: string): string | null 
 }
 
 export default function MaintenanceBanner() {
-  const { mode, expectedEndAt, publicMessageKey } = useMaintenanceStatus()
+  const { mode, expectedEndAt, publicMessageKey, isRefreshing } = useMaintenanceStatus()
   const locale = useLocale()
   const t = useTranslations('maintenance')
 
-  if (mode === 'off') {
+  if (mode === 'off' || isRefreshing) {
     // 視覚的なバナーdivは描画しないが、MaintenanceAnnouncer自体は常時マウントし
     // 続ける。MaintenanceAnnouncerのdocコメントが警告する事故（aria-live要素の
     // マウントと同時にテキストが挿入されると、多くの支援技術が初回の変化を
@@ -58,7 +58,10 @@ export default function MaintenanceBanner() {
     // アンマウントを繰り返すと再現してしまう。そのためMaintenanceAnnouncerだけは
     // mode に関わらず常に描画し、「中身（message）だけが空文字←→実際の文言に
     // 変化する」という同コンポーネントが要求する形を維持する。
-    return <MaintenanceAnnouncer mode={mode} />
+    // visible復帰の再確認中はmode='read-only'で書き込みだけfail-closedにするが、
+    // 実メンテナンスとは未確定。一瞬の誤バナーと誤ったaria-live通知を避けるため、
+    // 表示責務にはoffとして渡す。取得後に非offが確定すれば通常経路で通知される。
+    return <MaintenanceAnnouncer mode="off" />
   }
 
   // publicMessageKey が辞書（messages.maintenance.messageKeys.*）に存在すれば

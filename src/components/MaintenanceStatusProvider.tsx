@@ -38,15 +38,27 @@ const POLL_INTERVAL_MS = 60_000
  * 振る舞う。初回取得失敗時もサーバー側guardWriteが最終的にwriteを拒否するため、
  * この契約をhidden対応のために広げて変更しない。
  */
-const OFF_STATUS: MaintenanceStatusResponse = { mode: 'off' }
+export interface MaintenanceStatusContextValue extends MaintenanceStatusResponse {
+  /**
+   * hiddenからvisibleへ戻った直後の再確認中だけtrue。
+   * modeはwriteをfail-closedにするためread-onlyだが、実メンテナンスと確定した
+   * 状態ではないので、バナーやaria-live通知には使わない。
+   */
+  isRefreshing?: boolean
+}
+
+const OFF_STATUS: MaintenanceStatusContextValue = { mode: 'off' }
 
 /**
  * hiddenからvisibleへ戻った直後だけ使う、再確認中のwrite-blocking状態。
- * MaintenanceStatusResponseへloadingフラグを追加すると全consumerの契約変更になるが、
- * 既存consumerは例外なく `mode !== 'off'` をwrite不可として扱う。そのため既存型の
- * read-onlyを一時値に使い、古いoffを最新確認完了まで再提示しない最小変更にする。
+ * 既存consumerは例外なく `mode !== 'off'` をwrite不可として扱うため、modeは
+ * read-onlyのままにする。一方、可視バナーがこの暫定値を実メンテナンスと誤認して
+ * 一瞬表示されないよう、Context内だけのisRefreshingで確定状態と区別する。
  */
-const VISIBILITY_REFRESH_STATUS: MaintenanceStatusResponse = { mode: 'read-only' }
+const VISIBILITY_REFRESH_STATUS: MaintenanceStatusContextValue = {
+  mode: 'read-only',
+  isRefreshing: true,
+}
 
 /**
  * 生の Context をテスト用に export する。アプリケーションコードは
@@ -56,7 +68,7 @@ const VISIBILITY_REFRESH_STATUS: MaintenanceStatusResponse = { mode: 'read-only'
  * `<MaintenanceStatusContext.Provider value={{ mode: 'read-only' }}>` で
  * 直接状態を差し込めるようにするための意図的な公開。
  */
-export const MaintenanceStatusContext = createContext<MaintenanceStatusResponse>(OFF_STATUS)
+export const MaintenanceStatusContext = createContext<MaintenanceStatusContextValue>(OFF_STATUS)
 
 /**
  * 現在の maintenance status を読む hook。
@@ -64,7 +76,7 @@ export const MaintenanceStatusContext = createContext<MaintenanceStatusResponse>
  * （OFF_STATUS）を返す（Provider未設置環境でも「通常運用中」という安全側の
  * 挙動になるだけで、例外にはしない）。
  */
-export function useMaintenanceStatus(): MaintenanceStatusResponse {
+export function useMaintenanceStatus(): MaintenanceStatusContextValue {
   return useContext(MaintenanceStatusContext)
 }
 
@@ -77,7 +89,7 @@ interface MaintenanceStatusProviderProps {
  * 可視状態で即時fetchし、以降 POLL_INTERVAL_MS 間隔でポーリングする。
  */
 export function MaintenanceStatusProvider({ children }: MaintenanceStatusProviderProps) {
-  const [status, setStatus] = useState<MaintenanceStatusResponse>(OFF_STATUS)
+  const [status, setStatus] = useState<MaintenanceStatusContextValue>(OFF_STATUS)
 
   useEffect(() => {
     // アンマウント後にfetch完了してsetStateする（React警告・不要な再レンダー）

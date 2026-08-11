@@ -69,7 +69,7 @@ export default async function SettingsPage({
     Boolean(streamerData.streamer.chat_announcement_enabled) ||
     Boolean(streamerData.streamer.show_unowned_cards) ||
     Boolean(streamerData.streamer.show_unowned_card_details) ||
-    // Issue #738: /live 掲載・統計公開オプトインがONなら詳細設定を使用中とみなす
+    // Issue #738/#740: /live掲載またはランキング上のチャネル表示がONなら使用中とみなす
     Boolean(streamerData.streamer.publish_live_status) ||
     Boolean(streamerData.streamer.publish_stats);
 
