@@ -4,7 +4,7 @@
 
 This document tracks known security vulnerabilities and mitigation strategies in the twica application.
 
-### Current Vulnerabilities
+### Tracked Vulnerabilities
 
 #### undici < 6.23.0 (GHSA-g9mf-h72j-4rw9) - RESOLVED
 
@@ -64,13 +64,17 @@ An unbounded decompression chain in HTTP responses on Node.js Fetch API via Cont
 If you discover a security vulnerability in this application:
 
 1. **Do not create a public GitHub issue**
-2. Email security reports to: [SECURITY_EMAIL]
+2. Use GitHub Private Vulnerability Reporting: open the repository's
+   **Security** tab and select **Report a vulnerability**
 3. Include:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact
    - Suggested fix (if known)
    - Your contact information for follow-up
+
+Private Vulnerability Reporting keeps the report confidential until it is
+triaged, and GitHub can notify the maintainers directly.
 
 ## Security Response Timeline
 
@@ -104,4 +108,4 @@ To automatically audit dependencies as part of CI/CD, consider adding to your wo
 
 ## Last Updated
 
-2026-01-20
+2026-08-12

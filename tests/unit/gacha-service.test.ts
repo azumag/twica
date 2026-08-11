@@ -127,6 +127,23 @@ function omitIssuanceLimit<T extends { max_issuance_count?: unknown }>(card: T) 
   return withoutIssuanceLimit
 }
 
+/**
+ * selectWeightedCard の暗号学的乱数化（crypto.getRandomValues + 剰余）に合わせ、
+ * 従来の Math.random フラクション(f)を「f × 合計重み(totalWeightInt)」の
+ * Uint32 値へ変換してモックする。totalWeightInt は各テストのプール重み合計
+ * （drop_rate × 10000 の合計）を明示指定する。
+ */
+function mockCryptoRandomFraction(fraction: number, totalWeightInt: number) {
+  const value = Math.floor(fraction * totalWeightInt)
+  vi.spyOn(crypto, 'getRandomValues').mockImplementation((buf) => {
+    // 対象は selectWeightedCard が使う Uint32Array(1) のみ
+    if (buf instanceof Uint32Array && buf.length >= 1) {
+      buf[0] = value
+    }
+    return buf
+  })
+}
+
 const testCards = [
   {
     id: 'card-1',
@@ -555,7 +572,8 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
       [0.65, 'rare-1'],
     ])('global重みの境界でカードを選ぶ: random=%s', async (random, expectedId) => {
       installDbFixture({ tables: { cards: [{ value: packCards }] } })
-      vi.spyOn(Math, 'random').mockReturnValue(random)
+      // 有効重み合計 = common(0.3+0.3) + rare(0.4) = 1.0 → ×10000
+      mockCryptoRandomFraction(random, 10_000)
 
       const result = await new GachaService().executeGacha(
         'streamer-1',
@@ -589,7 +607,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      vi.spyOn(Math, 'random').mockReturnValue(0.92)
+      mockCryptoRandomFraction(0.92, 10_000)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-manual', 100, 'weapons',
@@ -611,7 +629,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      vi.spyOn(Math, 'random').mockReturnValue(0.5)
+      mockCryptoRandomFraction(0.5, 10_000)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-pack-weight', 100, DEFAULT_PACK_SENTINEL,
@@ -630,7 +648,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
 
     it('per_packに対象パックが無ければglobal重みを継承する', async () => {
       installDbFixture({ tables: { cards: [{ value: packCards }] } })
-      vi.spyOn(Math, 'random').mockReturnValue(0.65)
+      mockCryptoRandomFraction(0.65, 10_000)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-inherited-weight', 100, 'weapons',
@@ -656,7 +674,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      vi.spyOn(Math, 'random').mockReturnValue(0.92)
+      mockCryptoRandomFraction(0.92, 10_000)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-unrestricted-weight', 100, null,
@@ -1186,7 +1204,7 @@ describe('GachaService.executeGachaForEventSub', () => {
         }],
       },
     })
-    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    mockCryptoRandomFraction(0.5, 10_000)
 
     const result = await new GachaService().executeGachaForEventSub(
       baseEvent,
