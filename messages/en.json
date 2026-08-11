@@ -1527,7 +1527,8 @@
       "saving": "Saving..."
     },
     "errors": {
-      "saveFailed": "Failed to save settings"
+      "saveFailed": "Failed to save settings",
+      "deployWindow": "The live directory feature is not ready yet, so your changes could not be saved. Please try again shortly."
     }
   }
 }

@@ -63,6 +63,16 @@ export default function LiveDirectorySettings({
           setIsError(true);
           return false;
         }
+        // #738: デプロイ窓（migration 未適用）でサーバーが書き込みを見送った場合、
+        // 200 のまま skip フラグが返る。成功扱いにすると楽観反映による
+        // サイレント欠損になるため、GachaSoundSettings と同じパターンで
+        // エラー扱いにしてユーザーへ知らせる。
+        const data = await response.json().catch(() => ({}));
+        if (data.liveDirectorySettingsSkippedDeployWindow === true) {
+          setMessage(t("errors.deployWindow"));
+          setIsError(true);
+          return false;
+        }
         setIsError(false);
         return true;
       } catch (error) {

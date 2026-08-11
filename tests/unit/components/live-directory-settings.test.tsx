@@ -80,6 +80,26 @@ describe("LiveDirectorySettings", () => {
     expect(statsToggle).not.toBeDisabled();
   });
 
+  it("shows an error and keeps the toggle off when the server skips the deploy-window write", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true, liveDirectorySettingsSkippedDeployWindow: true }),
+      })
+    );
+    renderSettings({});
+    const [liveToggle] = getToggles();
+    fireEvent.click(liveToggle);
+
+    await waitFor(() => {
+      expect(screen.getByText(/準備中/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("配信中ページへの掲載を開始しました")).not.toBeInTheDocument();
+    const [liveToggleAfter] = getToggles();
+    expect(liveToggleAfter).not.toBeChecked();
+  });
+
   it("turning listing off also resets stats and disables it", async () => {
     renderSettings({ publishLiveStatus: true, publishStats: true });
     const [liveToggle] = getToggles();
