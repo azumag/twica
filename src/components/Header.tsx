@@ -25,16 +25,27 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
 
   return (
     <header className="border-b border-gray-800 bg-gray-900/95 backdrop-blur">
-      <div className="container mx-auto flex items-center justify-between px-4 py-3">
-        {/* ロゴ */}
-        <Link href="/" className="text-xl font-bold text-white sm:text-2xl">
-          TwiCa
-        </Link>
+      <div className="container mx-auto flex items-center justify-between gap-3 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3 sm:gap-5">
+          {/* ロゴ */}
+          <Link href="/" className="shrink-0 text-xl font-bold text-white sm:text-2xl">
+            TwiCa
+          </Link>
+          {/* mobileは可視のLIVEドット、sm以上はテキストも表示して横幅を安定させる。 */}
+          <Link
+            href="/live"
+            className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-gray-300 transition-colors hover:bg-gray-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+            title={t("live")}
+          >
+            <span className="h-2.5 w-2.5 rounded-full bg-red-500" aria-hidden="true" />
+            <span className="sr-only sm:not-sr-only">{t("live")}</span>
+          </Link>
+        </div>
 
         {/* 右側: ユーザー情報とアイコンボタン */}
         <div className="flex items-center gap-2 sm:gap-4">
           {/* ユーザー情報 */}
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             {session.twitchProfileImageUrl && (
               // unoptimized: Twitch CDNから取得済みの画像のため、Vercel Image Transformationsをスキップしてコスト削減
               <Image
@@ -46,15 +57,16 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
                 unoptimized
               />
             )}
-            {/* モバイルでは名前を短縮表示、PCではフル表示 */}
-            <span className="hidden text-white sm:inline">{session.twitchDisplayName}</span>
-            <span className="max-w-[80px] truncate text-sm text-white sm:hidden">
+            {/* LIVE導線と固定幅操作群を同じ行へ収めるため、狭幅では名前を視覚的に隠す。
+                md以上でも長い表示名は上限を持たせ、バッジや操作ボタンを押し出さない。 */}
+            <span className="hidden max-w-48 truncate text-white md:inline-block">
               {session.twitchDisplayName}
             </span>
+            <span className="sr-only md:hidden">{session.twitchDisplayName}</span>
             {/* 配信者バッジ - PCのみ表示。broadcasterTypeが空(非Affiliateオプトイン)の
                 場合に空文字を表示しないよう、常にi18n済みラベルを使う。 */}
             {isStreamer && (
-              <span className="hidden rounded bg-purple-600 px-2 py-0.5 text-xs text-white sm:inline">
+              <span className="hidden rounded bg-purple-600 px-2 py-0.5 text-xs text-white md:inline">
                 {session.broadcasterType || t("streamerBadge")}
               </span>
             )}

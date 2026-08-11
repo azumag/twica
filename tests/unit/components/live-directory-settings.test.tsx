@@ -93,7 +93,9 @@ describe("LiveDirectorySettings", () => {
     fireEvent.click(liveToggle);
 
     await waitFor(() => {
-      expect(screen.getByText(/準備中/)).toBeInTheDocument();
+      expect(
+        screen.getByText("配信中ページの設定を現在保存できません。しばらくしてから再度お試しください。")
+      ).toBeInTheDocument();
     });
     expect(screen.queryByText("配信中ページへの掲載設定をオンにしました")).not.toBeInTheDocument();
     const [liveToggleAfter] = getToggles();

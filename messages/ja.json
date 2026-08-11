@@ -886,7 +886,8 @@
       "description4": "コレクションを構築できます。",
       "viewerGuide": "視聴者向け使い方",
       "streamerGuide": "配信者向け使い方",
-      "viewGuide": "使い方を見る"
+      "viewGuide": "使い方を見る",
+      "liveDirectory": "配信中を見る"
     },
     "features": {
       "cardCollection": {
@@ -1129,7 +1130,8 @@
     "userSettings": "ユーザー設定",
     "logout": "ログアウト",
     "announcements": "お知らせ",
-    "streamerBadge": "配信者"
+    "streamerBadge": "配信者",
+    "live": "配信中"
   },
   "accountPage": {
     "title": "ユーザー設定",
@@ -1505,16 +1507,68 @@
       "description": "カードの作り方や配信への組み込み方は、使い方ガイドで詳しく説明しています。"
     }
   },
+  "livePage": {
+    "metadata": {
+      "title": "配信中 - TwiCa",
+      "description": "TwiCaを利用している配信者のうち、掲載を許可して現在ライブ配信中のチャンネルです。"
+    },
+    "navigationLabel": "配信中ページのナビゲーション",
+    "home": "ホーム",
+    "title": "配信中の配信者",
+    "description": "TwiCaを利用している配信者のうち、掲載を許可して現在ライブ配信中のチャンネルです。",
+    "directoryHeading": "ライブ配信一覧",
+    "sort": {
+      "label": "並び順",
+      "viewers": "視聴者数",
+      "recentlyStarted": "配信開始が新しい順",
+      "cardCount": "カード種類数",
+      "redemptionCount": "チャネルポイント引換数"
+    },
+    "card": {
+      "live": "LIVE",
+      "viewers": "{count, number}人が視聴中",
+      "thumbnailAlt": "{name}のライブ配信サムネイル",
+      "thumbnailUnavailable": "配信サムネイルを表示できません",
+      "profileAlt": "{name}のプロフィール画像",
+      "untitled": "タイトル未設定",
+      "uncategorized": "カテゴリ未設定",
+      "category": "カテゴリ: {name}",
+      "liveFor": "配信開始から {duration}",
+      "watchOnTwitchNewTab": "{name}の配信をTwitchで見る（新しいタブで開きます）",
+      "viewCollection": "コレクションを見る"
+    },
+    "duration": {
+      "justStarted": "開始したばかり",
+      "minutes": "{minutes}分",
+      "hours": "{hours}時間",
+      "hoursMinutes": "{hours}時間 {minutes}分",
+      "unknown": "開始時刻不明"
+    },
+    "stats": {
+      "cardCount": "カード種類数",
+      "redemptionCount": "チャネルポイント引換数",
+      "value": "{count, number}",
+      "private": "統計非公開"
+    },
+    "empty": {
+      "title": "現在掲載中の配信はありません",
+      "description": "掲載を許可した配信者がライブを開始すると、ここに表示されます。"
+    },
+    "listingCta": {
+      "lead": "TwiCaを利用している配信者の方へ",
+      "link": "配信者の方はこちらから掲載できます"
+    }
+  },
   "liveDirectorySettings": {
     "title": "配信中ページへの掲載",
-      "description": "「配信中ページ」（/live）公開時に、この配信者を掲載するかどうかを設定します。どちらも既定ではオフです。",
+    "description": "この配信者を「配信中ページ」（/live）に掲載するかどうかを設定します。どちらも既定ではオフです。",
     "status": {
       "enabled": "掲載中",
       "disabled": "非掲載"
     },
     "form": {
       "publishLiveStatus": "配信中を公表する",
-        "publishLiveStatusHelp": "オンの間、配信中ページ（/live）公開時にこの配信者が表示されます（現在ライブ配信中のときのみ）。",
+      "publishLiveStatusHelp": "オンの間、この配信者が現在ライブ配信中の場合に配信中ページ（/live）へ表示されます。",
       "publishStats": "統計を公開する",
       "publishStatsHelp": "カード種類数とチャネルポイント引換数を /live に表示します。",
       "requiresPublishLiveStatus": "「配信中を公表する」が必要"
@@ -1528,7 +1582,7 @@
     },
     "errors": {
       "saveFailed": "設定の保存に失敗しました",
-      "deployWindow": "配信中ページ機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。"
+      "deployWindow": "配信中ページの設定を現在保存できません。しばらくしてから再度お試しください。"
     }
   }
 }
