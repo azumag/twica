@@ -9,7 +9,8 @@ import { fetchTwitchApi } from "@/lib/twitch/app-token";
  * 配信中ページ（/live）のデータ層（issue #739 / 親 #632）。
  *
  * 「オプトイン配信者のうち現在Twitchでライブ中の一覧」と、全アクティブ
- * 配信者を母集団にした各指標上位100件の匿名化済みランキングを返す。
+ * 配信者を母集団にした直近7日間・全期間それぞれの各指標上位100件の
+ * 匿名化済みランキングを返す。
  * 方式は設計で確定済みの Helix GET /streams ポーリング + KVキャッシュ(60s)。
  * EventSub stream.online/offline は購読ライフサイクル管理が過剰なため不採用。
  *
@@ -51,6 +52,10 @@ export const LIVE_DIRECTORY_RANKING_METRICS = [
 export type LiveDirectoryRankingMetric =
   (typeof LIVE_DIRECTORY_RANKING_METRICS)[number];
 
+export const LIVE_DIRECTORY_RANKING_PERIODS = ["last7Days", "allTime"] as const;
+export type LiveDirectoryRankingPeriod =
+  (typeof LIVE_DIRECTORY_RANKING_PERIODS)[number];
+
 export interface LiveDirectoryRankingEntry {
   /** nullならDB境界で識別情報を除去済みの匿名行。 */
   identity: LiveDirectoryRankingIdentity | null;
@@ -60,6 +65,11 @@ export interface LiveDirectoryRankingEntry {
   /** SQL側の各指標上位100件のうち、この行を表示するランキング。 */
   rankedMetrics: LiveDirectoryRankingMetric[];
 }
+
+export type LiveDirectoryRankingsByPeriod = Record<
+  LiveDirectoryRankingPeriod,
+  LiveDirectoryRankingEntry[]
+>;
 
 /** RPC get_live_directory_streamers() の返却行（migration 側の JSONB 形状）。 */
 interface LiveDirectoryRpcRow {
@@ -82,14 +92,14 @@ interface HelixStream {
 }
 
 const LIVE_DIRECTORY_KV_KEY = "live-directory:v1";
-const LIVE_DIRECTORY_RANKINGS_KV_KEY = "live-directory:rankings:v2";
+const LIVE_DIRECTORY_RANKINGS_KV_KEY = "live-directory:rankings:v3";
 const LIVE_DIRECTORY_TTL_SECONDS = 60;
 const HELIX_STREAMS_BATCH_SIZE = 100;
 
 /** KV なし環境（ローカル next dev）用のメモリキャッシュ。 */
 let memoryCache: { entries: LiveDirectoryEntry[]; expiresAt: number } | null = null;
 let rankingsMemoryCache: {
-  entries: LiveDirectoryRankingEntry[];
+  entries: LiveDirectoryRankingsByPeriod;
   expiresAt: number;
 } | null = null;
 
@@ -297,18 +307,36 @@ function normalizeRankingEntries(value: unknown): LiveDirectoryRankingEntry[] {
   });
 }
 
+/**
+ * 期間別RPC/KV payloadを、列挙済みの2期間と公開ランキング行だけへ絞り込む。
+ *
+ * Recordへの型assertionだけでは、将来RPCへ追加された期間名や内部fieldがRSCへ
+ * そのまま流れる。期間キーも明示的に再構築し、欠損・破損した期間は空配列として
+ * 公開ページ自体を維持する。
+ */
+function normalizeRankingsByPeriod(value: unknown): LiveDirectoryRankingsByPeriod {
+  const source = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+
+  return {
+    last7Days: normalizeRankingEntries(source.last7Days),
+    allTime: normalizeRankingEntries(source.allTime),
+  };
+}
+
 interface LiveDirectoryRankingsFetchResult {
-  entries: LiveDirectoryRankingEntry[];
+  entries: LiveDirectoryRankingsByPeriod;
   /** falseならRPC障害。障害による空配列はキャッシュしない。 */
   ok: boolean;
 }
 
 async function fetchLiveDirectoryRankingsUncached(): Promise<LiveDirectoryRankingsFetchResult> {
   const { data: rpcRows, error: rpcError } = await executeDashboardRpcPg(
-    "get_live_directory_rankings(pg)",
+    "get_live_directory_rankings_by_period(pg)",
     async (sql) => {
       const rows = await sql<Array<{ result: unknown }>>`
-        select get_live_directory_rankings() as result
+        select get_live_directory_rankings_by_period() as result
       `;
       return rows[0]?.result;
     },
@@ -319,24 +347,28 @@ async function fetchLiveDirectoryRankingsUncached(): Promise<LiveDirectoryRankin
       new Error(`Live directory rankings RPC failed: ${rpcError.message}`),
       { context: "liveDirectory:rankingsRpc" },
     );
-    return { entries: [], ok: false };
+    return {
+      entries: { last7Days: [], allTime: [] },
+      ok: false,
+    };
   }
 
-  return { entries: normalizeRankingEntries(rpcRows), ok: true };
+  return { entries: normalizeRankingsByPeriod(rpcRows), ok: true };
 }
 
 /**
- * 各指標の正値上位100件に入る配信者の匿名化済みランキング集計を返す。
+ * 直近7日間・全期間それぞれについて、各指標の正値上位100件に入る配信者の
+ * 匿名化済みランキング集計を返す。
  * ライブ一覧とはDB同意・障害境界が異なるため別キャッシュにし、新RPCが未反映の
  * デプロイ窓でも既存のライブ一覧キャッシュを巻き込んで無効化しない。
  */
-export async function getLiveDirectoryRankings(): Promise<LiveDirectoryRankingEntry[]> {
+export async function getLiveDirectoryRankings(): Promise<LiveDirectoryRankingsByPeriod> {
   try {
     const kv = await getKvBinding();
     if (kv) {
       const raw = await kv.get(LIVE_DIRECTORY_RANKINGS_KV_KEY);
       if (raw) {
-        return normalizeRankingEntries(JSON.parse(raw));
+        return normalizeRankingsByPeriod(JSON.parse(raw));
       }
     }
   } catch (error) {

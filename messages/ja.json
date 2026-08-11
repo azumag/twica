@@ -29,7 +29,7 @@
   },
   "navigation": {
     "overview": "概要",
-    "live": "配信中",
+    "live": "チャネル・ランキング",
     "cardManagement": "カード管理",
     "settings": "配信設定",
     "gachaHistory": "ガチャ履歴",
@@ -888,7 +888,7 @@
       "viewerGuide": "視聴者向け使い方",
       "streamerGuide": "配信者向け使い方",
       "viewGuide": "使い方を見る",
-      "liveDirectory": "配信中を見る"
+      "liveDirectory": "利用中のチャネルを見る"
     },
     "features": {
       "cardCollection": {
@@ -1509,15 +1509,15 @@
   },
   "livePage": {
     "metadata": {
-      "title": "配信中 - TwiCa",
-      "description": "配信中のTwiCaチャネルと、カード利用状況のランキングを確認できます。"
+      "title": "チャネルとランキング - TwiCa",
+      "description": "TwiCaを利用中のチャネルと、カード利用状況のランキングを確認できます。"
     },
-    "navigationLabel": "配信中ページのナビゲーション",
+    "navigationLabel": "チャネル・ランキングページのナビゲーション",
     "home": "ホーム",
-    "title": "配信中の配信者",
-    "description": "配信中のTwiCaチャネルと、カード利用状況のランキングを確認できます。",
+    "title": "TwiCaチャネルとランキング",
+    "description": "TwiCaを利用中のチャネルと、配信者ごとのカード利用状況ランキングを確認できます。",
     "consentNotice": "配信中の一覧には、明示的に掲載を許可したチャネルだけが表示されています。",
-    "rankingNotice": "ランキングは全アクティブチャネルを集計対象とし、各指標の上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
+    "rankingNotice": "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
     "directoryHeading": "配信中チャネルとランキング",
     "tabs": {
       "label": "表示内容",
@@ -1525,6 +1525,19 @@
       "redemptionCount": "カード引き換え数ランキング",
       "totalPoints": "チャネルポイントランキング",
       "cardCount": "種類数ランキング"
+    },
+    "period": {
+      "label": "集計期間",
+      "last7Days": "直近7日間",
+      "allTime": "全期間",
+      "usageHelp": {
+        "last7Days": "直近7日間に記録されたカード引き換えを集計しています。",
+        "allTime": "TwiCaに記録されている全期間のカード引き換えを集計しています。"
+      },
+      "cardCountHelp": {
+        "last7Days": "直近7日間に追加され、現在も有効なカード種類数です。",
+        "allTime": "現在有効なカード種類数です。"
+      }
     },
     "card": {
       "live": "LIVE",
