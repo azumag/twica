@@ -30,8 +30,9 @@
 #   伏字化は「Claude が出力事故でトークンを素のまま出した場合」の緩和であり、
 #   write 権限保持者（PR 作者）に対する防御ではない（彼らは head の
 #   format-review.mjs を差し替えられる。issue #917 で追跡）。
-#   生トークン完全一致チェックは workflow の run ステップ内にあるため、
-#   伏字化より相対的に強い。
+#   伏字化・生トークン完全一致チェックはいずれも head 由来コード（workflow YAML
+#   自体も head 由来）のため、write 権限保持者に対する防御ではない。実効的な
+#   境界は「fork に secrets を渡さない」ことと read-only GITHUB_TOKEN のみ。
 #   なおボット作成の PR（Renovate / Dependabot / エージェント等）も同一リポジトリ
 #   発火なら secrets が渡るため、露出面は「write 権限保持者（人間・ボット問わず）」。
 #   paths は PR 全体の変更ファイル集合で評価されるため、md のみの PR では
@@ -283,7 +284,6 @@ jobs:
             const {
               buildReviewCommentBody,
               findOwnReviewComment,
-              isOverLimit,
               parseReviewJson,
               REVIEW_MARKER,
               sanitizeReviewText,
@@ -308,7 +308,7 @@ jobs:
             }
 
             const safe = sanitizeReviewText(reviewText);
-            if (isOverLimit(reviewText)) {
+            if (safe.endsWith('（長すぎるため省略）')) {
               core.warning('レビュー本文が長すぎるため末尾を切り詰めました');
             }
             const commitUrl =
@@ -337,12 +337,26 @@ jobs:
             );
 
             if (existing) {
-              await github.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existing.id,
-                body,
-              });
+              try {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } catch (error) {
+                // listComments と updateComment の間に対象コメントが削除された
+                // 場合は 404 になるため、新規投稿へフォールバックする。
+                if (error.status !== 404) {
+                  throw error;
+                }
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  body,
+                });
+              }
             } else {
               await github.rest.issues.createComment({
                 owner,

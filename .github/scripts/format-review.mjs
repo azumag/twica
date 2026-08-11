@@ -11,16 +11,13 @@
 const SECRET_PATTERN =
   /(sk-ant-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g
 
-// プロンプトの 6000 字指示を実質的に守るためのしきい値（約 1.7 倍の余裕）。
-// issue comment 上限 65536 には余裕を持って収まる。
-export const MAX_BODY_LENGTH = 10000
+// issue comment 上限 65536 に対する安全網（外枠を差し引いても余裕を持つ）。
+// プロンプトは 6000 字を指示しているが、超過時に指摘の後半を落とさないよう
+// 実質発火しない大きめの値にする。
+export const MAX_BODY_LENGTH = 60000
 
 // レビューコメントの識別マーカー（単一の出典。workflow とテストはこれを参照する）。
 export const REVIEW_MARKER = '<!-- claude-auto-review-preview -->'
-
-export function isOverLimit(text) {
-  return text.length > MAX_BODY_LENGTH
-}
 
 export function redactSecrets(text) {
   // String.prototype.replace は /g 正規表現の lastIndex を走査前後にリセットする
@@ -63,8 +60,13 @@ export function truncateAndCloseFences(text) {
 //  ここは後段の防御）。
 export function parseReviewJson(json) {
   const { review } = JSON.parse(json)
-  // 空・空白・型違いの検証は claude_review job の jq チェックが担う
-  // （トークン到達 job で切り分けるため）。ここは JSON パースのみ扱う。
+  if (typeof review !== 'string') {
+    // 型違いは TypeError 依存にせず明示的に失敗させる（jq は別ジョブのため
+    // ここでの前提にしない）。
+    throw new TypeError('review field is not a string')
+  }
+  // 空・空白の検証は claude_review job の jq チェックが担う（トークン到達 job で
+  // 切り分けるため）。ここでは型違いの明示チェックと JSON パースのみ扱う。
   return review.trim()
 }
 
