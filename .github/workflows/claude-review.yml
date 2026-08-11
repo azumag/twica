@@ -28,8 +28,9 @@
 #   壊す実害があるため）。
 #   Bash(git diff:*) は前方一致のため `git diff --output=<path>` でランナー上の
 #   ファイルを書ける（read-only token かつ使い捨てランナーなので実害は限定的）。
-#   ボット作成の PR（Renovate / Dependabot / エージェント等）も同一リポジトリ発火
-#   なら secrets が渡るため、露出面は「write 権限保持者（人間・ボット問わず）」。
+#   ボット作成の PR（Renovate / エージェント等）も同一リポジトリ発火なら secrets
+#   が渡るため、露出面は「write 権限保持者（人間・ボット問わず）」。ただし
+#   Dependabot 起点の PR には通常の Actions secrets が渡らないため、レビュー対象外。
 #   paths は PR 全体の変更ファイル集合で評価されるため、md のみの PR では
 #   初回からワークフローが起動せずコメントも作られない。md 以外を含む PR では
 #   md のみの追い push でも起動する。この workflow を required check にする場合は
@@ -93,7 +94,7 @@ jobs:
         # 可用性の境界で壊れやすいため、step output 経由で確実に渡す。
         run: |
           configured=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          same_repo=${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          same_repo=${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' }}
           echo "configured=$configured" >> "$GITHUB_OUTPUT"
           if [ "$configured" != "true" ]; then
             # トークン失効・未設定が長期間気付かれず「全緑」になるのを防ぐ。
@@ -101,6 +102,8 @@ jobs:
             # 同一リポジトリ PR で未設定は設定ミスなので fail-loud にする。
             # head.repo.fork は「head リポジトリ自体が fork か」なので使わない
             # （このリポジトリ自体が fork だと常に true になり fail-loud が効かない）。
+            # Dependabot PR は同一リポジトリでも secrets が渡らないため除外する
+            # （fork と同じ扱いで warning のみ）。
             # full_name 比較で「確実に同一リポジトリ」と判定できる場合のみ fail-loud にする。
             if [ "$same_repo" = "true" ]; then
               echo "::error::CLAUDE_CODE_OAUTH_TOKEN が未設定のため Claude 自動レビューを実行できません"

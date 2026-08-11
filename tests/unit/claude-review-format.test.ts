@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildReviewCommentBody,
   findOwnReviewComment,
+  hasReviewMarker,
   MAX_BODY_LENGTH,
   parseReviewJson,
   redactSecrets,
@@ -153,6 +154,12 @@ describe('claude-review format helpers', () => {
 
   describe('findOwnReviewComment', () => {
     const marker = REVIEW_MARKER
+
+    it('hasReviewMarker checks only the first line', () => {
+      expect(hasReviewMarker({ body: `${marker}\n## Claude Auto Review` }, marker)).toBe(true)
+      expect(hasReviewMarker({ body: `## Claude Auto Review\n${marker}` }, marker)).toBe(false)
+      expect(hasReviewMarker(undefined, marker)).toBe(false)
+    })
 
     it('finds the workflow-owned comment and ignores others', () => {
       const comments = [

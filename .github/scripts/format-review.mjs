@@ -28,6 +28,8 @@ export function redactSecrets(text) {
 // 本文長が上限を超えた場合は切り詰めて省略注記を足す（実質発火しない安全網）。
 // フェンス補完は誤判定の方が害のため行わない（切り詰め位置がコードフェンス内の
 // 場合、注記とフッターがコードブロックに飲み込まれるが表示崩れのみ）。
+// 同様に HTML コメント（<!--）の途中で切れた場合は注記・フッターが不可視になる
+// が、60000 字は実質発火しないため受容する。
 // 返り値は { text, truncated } で、text は本文部分を MAX_BODY_LENGTH 以内に保つ
 // （注記 12 コードポイントを加算。issue comment 上限 65536 に対して十分な余裕がある）。
 export function truncateWithNotice(text) {
@@ -62,7 +64,7 @@ export function sanitizeReview(reviewText) {
   return truncateWithNotice(redactSecrets(reviewText))
 }
 
-// 整形済み本文（sanitizeReviewText の出力）から投稿コメント本文を組み立てる。
+// 整形済み本文（sanitizeReview の出力）から投稿コメント本文を組み立てる。
 export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, safeText }) {
   return (
     `${marker}\n## Claude Auto Review\n\n` +
