@@ -75,7 +75,7 @@ describe("LiveDirectorySettings", () => {
         })
       );
     });
-    expect(screen.getByText("配信中ページへの掲載を開始しました")).toBeInTheDocument();
+    expect(screen.getByText("配信中ページへの掲載設定をオンにしました")).toBeInTheDocument();
     const [, statsToggle] = getToggles();
     expect(statsToggle).not.toBeDisabled();
   });
@@ -95,7 +95,7 @@ describe("LiveDirectorySettings", () => {
     await waitFor(() => {
       expect(screen.getByText(/準備中/)).toBeInTheDocument();
     });
-    expect(screen.queryByText("配信中ページへの掲載を開始しました")).not.toBeInTheDocument();
+    expect(screen.queryByText("配信中ページへの掲載設定をオンにしました")).not.toBeInTheDocument();
     const [liveToggleAfter] = getToggles();
     expect(liveToggleAfter).not.toBeChecked();
   });

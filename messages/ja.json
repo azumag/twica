@@ -1507,23 +1507,23 @@
   },
   "liveDirectorySettings": {
     "title": "配信中ページへの掲載",
-    "description": "twica を設定して配信している人だけが掲載される「配信中ページ」（/live）に、この配信者を掲載するかどうかを設定します。どちらも既定ではオフです。",
+      "description": "「配信中ページ」（/live）公開時に、この配信者を掲載するかどうかを設定します。どちらも既定ではオフです。",
     "status": {
       "enabled": "掲載中",
       "disabled": "非掲載"
     },
     "form": {
       "publishLiveStatus": "配信中を公表する",
-      "publishLiveStatusHelp": "オンの間、/live にこの配信者が表示されます（現在ライブ配信中のときのみ）。",
+        "publishLiveStatusHelp": "オンの間、配信中ページ（/live）公開時にこの配信者が表示されます（現在ライブ配信中のときのみ）。",
       "publishStats": "統計を公開する",
       "publishStatsHelp": "カード種類数とチャネルポイント引換数を /live に表示します。",
       "requiresPublishLiveStatus": "「配信中を公表する」が必要"
     },
     "messages": {
-      "liveEnabled": "配信中ページへの掲載を開始しました",
-      "liveDisabled": "配信中ページへの掲載を停止しました",
-      "statsEnabled": "統計の公開を開始しました",
-      "statsDisabled": "統計の公開を停止しました",
+      "liveEnabled": "配信中ページへの掲載設定をオンにしました",
+      "liveDisabled": "配信中ページへの掲載設定をオフにしました",
+      "statsEnabled": "統計公開の設定をオンにしました",
+      "statsDisabled": "統計公開の設定をオフにしました",
       "saving": "保存中..."
     },
     "errors": {

@@ -1507,23 +1507,23 @@
   },
   "liveDirectorySettings": {
     "title": "Live directory listing",
-    "description": "Choose whether this streamer appears on the live directory (/live), which only lists streamers who have opted in. Both toggles are off by default.",
+      "description": "Choose whether this streamer will be listed on the live directory (/live) once it launches. Both toggles are off by default.",
     "status": {
       "enabled": "Listed",
       "disabled": "Hidden"
     },
     "form": {
       "publishLiveStatus": "Publish my live status",
-      "publishLiveStatusHelp": "While on, this streamer appears on /live (only while actually live).",
+        "publishLiveStatusHelp": "While on, this streamer will appear on /live once it launches (only while actually live).",
       "publishStats": "Publish stats",
       "publishStatsHelp": "Show card count and channel point redemptions on /live.",
       "requiresPublishLiveStatus": "requires \"Publish my live status\""
     },
     "messages": {
-      "liveEnabled": "Listing on the live directory started",
-      "liveDisabled": "Listing on the live directory stopped",
-      "statsEnabled": "Stats publication started",
-      "statsDisabled": "Stats publication stopped",
+      "liveEnabled": "Live directory listing setting turned on",
+      "liveDisabled": "Live directory listing setting turned off",
+      "statsEnabled": "Stats publication setting turned on",
+      "statsDisabled": "Stats publication setting turned off",
       "saving": "Saving..."
     },
     "errors": {
