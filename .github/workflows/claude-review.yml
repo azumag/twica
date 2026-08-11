@@ -287,12 +287,6 @@ jobs:
       COMMENT_AUTHOR: github-actions[bot]
 
     steps:
-      - name: Download review artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: claude-review-${{ github.run_id }}
-          path: review-artifact
-
       - uses: actions/checkout@v4
         with:
           # 整形ロジック（format-review.mjs）を読み込むために必要。claude_review
@@ -307,6 +301,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           sparse-checkout: .github/scripts
+
+      # checkout の clean: true がワークスペースを空にするため、artifact は
+      # checkout の後でダウンロードする（先に download すると消える。
+      # PR #924 の実地検証で確認）。
+      - name: Download review artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: claude-review-${{ github.run_id }}
+          path: review-artifact
 
       - name: Create or update Claude review comment
         uses: actions/github-script@v7
