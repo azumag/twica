@@ -126,18 +126,21 @@ jobs:
         # 公式 install script は latest を取るため、直接バイナリ取得 + 検証とする
         # （行動履歴に残るサプライチェーン保護。GitHub が改ざんされた場合に
         # checksum 照合が効かない前提はあるが、防衛層として追加する）。
+        # sha256sum -c は checksums.txt に書かれたファイル名をそのまま開くため、
+        # 保存名をリネームせず元ファイル名のままにすること（#918 レビュー指摘）。
+        timeout-minutes: 5
         run: |
-          curl -sSfL -o actionlint.tar.gz \
+          curl -sSfL -O \
             https://github.com/rhysd/actionlint/releases/download/v1.7.9/actionlint_1.7.9_linux_amd64.tar.gz
-          curl -sSfL -o checksums.txt \
+          curl -sSfL -O \
             https://github.com/rhysd/actionlint/releases/download/v1.7.9/actionlint_1.7.9_checksums.txt
-          grep 'actionlint_1.7.9_linux_amd64.tar.gz$' checksums.txt | sha256sum -c -
-          tar -xzf actionlint.tar.gz actionlint
+          grep 'actionlint_1.7.9_linux_amd64.tar.gz$' actionlint_1.7.9_checksums.txt | sha256sum -c -
+          tar -xzf actionlint_1.7.9_linux_amd64.tar.gz actionlint
 
       - name: Run actionlint
-        # ubuntu-latest には shellcheck が同梱されており、run: 内のシェルも
-        # 検証される（SC2086 等）。GitHub Actions の式（${{ }}）は actionlint の
-        # 対象外のため、式を含む行は shellcheck の評価から除外される。
+        # actionlint は GitHub Actions の式（${{ }}）を型検査し、run: 内のシェルは
+        # shellcheck（ubuntu-latest 同梱）で検証する。${{ }} は同幅のプレースホルダへ
+        # 置換したうえでスクリプト全体を検査する（#918 レビュー指摘に基づく修正）。
         run: ./actionlint -color
 
   test:

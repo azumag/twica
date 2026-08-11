@@ -160,7 +160,10 @@ jobs:
         # ピンする（供給元タグの差し替えによるトークン奪取を防ぐ、issue #918）。
         # 対象: refs/tags/v1 = 9c41ed18ca8b2b2a17eaef4723d5092ccdebc814
         # （2026-08-11 時点の v1 先頭。更新時は git ls-remote で取得し直すこと）
-        uses: anthropics/claude-code-action@9c41ed18ca8b2b2a17eaef4723d5092ccdebc814
+        # # v1 形式の行末コメントは Dependabot / Renovate がピン更新を認識するための
+        # 機械可読マーカー（#918 レビュー指摘）。更新時は git ls-remote で SHA を取得し、
+        # このコメントと SHA を両方更新すること。
+        uses: anthropics/claude-code-action@9c41ed18ca8b2b2a17eaef4723d5092ccdebc814 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Claude GitHub App の書き込み権限ではなく、この job の読み取り専用
