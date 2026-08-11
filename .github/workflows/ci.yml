@@ -28,6 +28,7 @@ jobs:
       postgres_fixtures: ${{ steps.filter.outputs.postgres_fixtures }}
       analysis: ${{ steps.filter.outputs.analysis }}
       i18n: ${{ steps.filter.outputs.i18n }}
+      ci_workflow: ${{ steps.filter.outputs.ci_workflow }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,6 +63,9 @@ jobs:
               - 'tests/**'
             scripts:
               - 'scripts/**'
+              # tests/unit/claude-review-format.test.ts はレビュー整形処理を
+              # .github/scripts から直接importするため、変更時はunit testが必要。
+              - '.github/scripts/**'
               - 'config/**'
               # scripts/check-supabase-shutdown.js（test jobで実行）が走査・assertする
               # 対象。スクリプト本体だけでなく、これらのpathの変更でも同ガードを
@@ -89,6 +93,11 @@ jobs:
               - 'src/**'
               - 'eslint.i18n.config.mjs'
               - 'scripts/i18n-debt-files.js'
+            ci_workflow:
+              # job定義そのものを変えたPRでは、そのjobを実際に起動しないと
+              # step・env・serviceの誤りを検証できない。ci.ymlの変更は稀なので、
+              # コスト最適化より全jobの自己検証を優先する。
+              - '.github/workflows/ci.yml'
 
   test:
     needs: changes
@@ -104,7 +113,8 @@ jobs:
        needs.changes.outputs.tests == 'true' ||
        needs.changes.outputs.scripts == 'true' ||
        needs.changes.outputs.migrations == 'true' ||
-       needs.changes.outputs.analysis == 'true')
+       needs.changes.outputs.analysis == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -170,7 +180,8 @@ jobs:
       needs.test.result == 'success' &&
       (needs.changes.result != 'success' ||
        needs.changes.outputs.app == 'true' ||
-       needs.changes.outputs.scripts == 'true')
+       needs.changes.outputs.scripts == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -214,7 +225,8 @@ jobs:
     if: >-
       !cancelled() &&
       (needs.changes.result != 'success' ||
-       needs.changes.outputs.analysis == 'true')
+       needs.changes.outputs.analysis == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -268,7 +280,8 @@ jobs:
       (needs.changes.result != 'success' ||
        needs.changes.outputs.app == 'true' ||
        needs.changes.outputs.tests == 'true' ||
-       needs.changes.outputs.scripts == 'true')
+       needs.changes.outputs.scripts == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -295,7 +308,8 @@ jobs:
       !cancelled() &&
       (github.event_name == 'pull_request' || github.event_name == 'push') &&
       (needs.changes.result != 'success' ||
-       needs.changes.outputs.i18n == 'true')
+       needs.changes.outputs.i18n == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -326,7 +340,8 @@ jobs:
       !cancelled() &&
       github.event_name == 'pull_request' &&
       (needs.changes.result != 'success' ||
-       needs.changes.outputs.migrations == 'true')
+       needs.changes.outputs.migrations == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -356,7 +371,8 @@ jobs:
       !cancelled() &&
       (needs.changes.result != 'success' ||
        needs.changes.outputs.migrations == 'true' ||
-       needs.changes.outputs.postgres_fixtures == 'true')
+       needs.changes.outputs.postgres_fixtures == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
     services:
       postgres:
