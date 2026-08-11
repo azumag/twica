@@ -88,13 +88,14 @@ on:
     # pushで毎回PlanetScaleへ接続するのは無駄なため。
     # （workflow_dispatch は手動実行のためパスフィルタを付けない）
     #
-    # 既知のエッジケース（GitHub公式ドキュメントで確認済み・受容する残余リスク）:
-    # 1回のpushのdiffが3,000ファイルを超え、かつmigration変更がその先頭3,000件に
-    # 含まれない場合、GitHub側の実装上このpathフィルタはfail-closed（実行されない）
-    # になる。本リポジトリの通常のPR/pushでこの規模のdiffは想定していないが、
-    # 万一発生した場合はDDLが未適用のまま気づかず進む。復旧経路は
-    # `workflow_dispatch` による手動再実行、または次のmigration付きpushでの
-    # まとめ適用（`db-migrate.js`は未適用分をすべて追いつかせる）。
+    # 既知のエッジケース（GitHub公式ドキュメント間で上限値が一致しないため安全側で運用）:
+    # Workflow Syntaxは先頭3,000ファイル、Troubleshootingは先頭300ファイルまでを
+    # path判定対象と記載している（2026-08-11確認）。低い300を実効上限として扱い、
+    # 1回のpushが300ファイルを超える場合は、migrationが含まれるかにかかわらず
+    # このworkflow runが作成されたことを運用者が確認する。runが無い場合は対象branchで
+    # `workflow_dispatch` を直ちに実行する。未適用分は`db-migrate.js`がまとめて追いつかせる。
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+    # https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#filtering-and-diff-limits
     #
     # また、従来の全push実行では一時的な接続断やadvisory lock待ちでapplyが
     # 失敗しても次のpushが自動リトライになっていたが、path限定後は無関係なpushでは
