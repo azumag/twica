@@ -5,6 +5,7 @@ import { getSession } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { getDb } from '@/lib/db/client'
+import { __resetTwitchAppTokenForTests } from '@/lib/twitch/app-token'
 
 vi.mock('@/lib/csrf')
 vi.mock('@/lib/session')
@@ -49,6 +50,7 @@ function createDbMock(rows: unknown[], updateError?: unknown) {
 describe('POST /api/auth/twitch/disable-subscription', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    __resetTwitchAppTokenForTests()
 
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
     mockGetSession.mockResolvedValue({

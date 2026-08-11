@@ -32,8 +32,10 @@ enabled = true
 directory = ".open-next/assets"
 binding = "ASSETS"
 
-# Distributed rate limiting, maintenance EventSub parking, and short-lived OBS
-# demo events share this namespace with disjoint key prefixes.
+# Distributed rate limiting, maintenance EventSub parking, short-lived OBS
+# demo events, the Twitch app token cache (`twitch:app-token`), and the live
+# directory cache (`live-directory:v1`) share this namespace with disjoint key
+# prefixes.
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
 id = "2dadcd9aa89b466d9c860a8930d458fa"

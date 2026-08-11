@@ -290,6 +290,75 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     expect(pg.updateCalls[1].set).not.toHaveProperty("gacha_sound_rules");
   });
 
+  it("publish_live_status/publish_stats 列欠落 → 2キーまとめて剥がし、liveDirectorySettingsSkippedDeployWindow を返す", async () => {
+    // Issue #738: 2カラムは同一migrationで追加されるため「両方同時に欠落」しか
+    // あり得ない。1段のフォールバックとして両方を剥がして再試行する。
+    // publish フラグ単独だと剥がした後 updateData が空になり2回目のDB呼び出しが
+    // 発生しない（「空になったら error=null」短絡）ため、剥がされない別フィールド
+    // (showUnownedCards) を同時に送って実際にリトライが発火することを検証する。
+    const pg = createDrizzleDbMock({
+      selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
+      updates: [
+        {
+          error: {
+            code: "42703",
+            message: 'column "publish_live_status" of relation "streamers" does not exist',
+          },
+        },
+        { rows: [] },
+      ],
+    });
+    primePgDb(pg);
+
+    const { POST } = await loadRoute();
+    const response = await POST(
+      postRequest({
+        streamerId: "streamer123",
+        publishLiveStatus: true,
+        publishStats: false,
+        showUnownedCards: true,
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.liveDirectorySettingsSkippedDeployWindow).toBe(true);
+    expect(pg.updateCalls).toHaveLength(2);
+    expect(pg.updateCalls[0].set).toEqual({
+      publish_live_status: true,
+      publish_stats: false,
+      show_unowned_cards: true,
+    });
+    // 2回目は両カラムとも剥がされ、別フィールドのみが残る
+    expect(pg.updateCalls[1].set).toEqual({ show_unowned_cards: true });
+  });
+
+  it("publish_live_status/publish_stats を通常保存し、skip フラグを立てない", async () => {
+    const pg = createDrizzleDbMock({
+      selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
+      updates: [{ rows: [] }],
+    });
+    primePgDb(pg);
+
+    const { POST } = await loadRoute();
+    const response = await POST(
+      postRequest({
+        streamerId: "streamer123",
+        publishLiveStatus: true,
+        publishStats: true,
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.liveDirectorySettingsSkippedDeployWindow).toBeUndefined();
+    expect(pg.updateCalls).toHaveLength(1);
+    expect(pg.updateCalls[0].set).toEqual({
+      publish_live_status: true,
+      publish_stats: true,
+    });
+  });
+
   it("disconnectBot=true が UPSERT(onConflictDoUpdate) + DELETE を正しい条件で実行する", async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],

@@ -6,6 +6,7 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { getDb } from '@/lib/db/client'
+import { __resetTwitchAppTokenForTests } from '@/lib/twitch/app-token'
 
 // Issue #399 に対応するテスト: 状態変更 API (EventSub 登録/解除) が CSRF 検証失敗時に 403 を返すこと。
 // 正常系の詳細（Twitch API との連携）は既存 E2E の対象であり、ここでは CSRF ゲートのみ検証する。
@@ -67,6 +68,7 @@ function createDeleteRewardRequest(rewardId: string): NextRequest {
 describe('EventSub subscribe API - CSRF enforcement (issue #399)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    __resetTwitchAppTokenForTests()
     primeStreamerExists()
     mockGetSession.mockResolvedValue({
       twitchUserId: '123456789',

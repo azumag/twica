@@ -29,6 +29,7 @@
   },
   "navigation": {
     "overview": "概要",
+    "live": "配信中",
     "cardManagement": "カード管理",
     "settings": "配信設定",
     "gachaHistory": "ガチャ履歴",
@@ -848,6 +849,8 @@
         "announcementDesc": "獲得時の自動メッセージ",
         "visibility": "公開設定",
         "visibilityDesc": "未所持カードの見せ方",
+        "liveDirectory": "配信中ページ",
+        "liveDirectoryDesc": "配信中ページへの掲載とランキング表示",
         "share": "共有",
         "shareDesc": "コレクションページのURL"
       }
@@ -884,7 +887,8 @@
       "description4": "コレクションを構築できます。",
       "viewerGuide": "視聴者向け使い方",
       "streamerGuide": "配信者向け使い方",
-      "viewGuide": "使い方を見る"
+      "viewGuide": "使い方を見る",
+      "liveDirectory": "配信中を見る"
     },
     "features": {
       "cardCollection": {
@@ -1501,6 +1505,88 @@
     "getStarted": {
       "title": "はじめるには",
       "description": "カードの作り方や配信への組み込み方は、使い方ガイドで詳しく説明しています。"
+    }
+  },
+  "livePage": {
+    "metadata": {
+      "title": "配信中 - TwiCa",
+      "description": "配信中のTwiCaチャネルと、カード利用状況のランキングを確認できます。"
+    },
+    "navigationLabel": "配信中ページのナビゲーション",
+    "home": "ホーム",
+    "title": "配信中の配信者",
+    "description": "配信中のTwiCaチャネルと、カード利用状況のランキングを確認できます。",
+    "consentNotice": "配信中の一覧には、明示的に掲載を許可したチャネルだけが表示されています。",
+    "rankingNotice": "ランキングは全アクティブチャネルを集計対象とし、各指標の上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
+    "directoryHeading": "配信中チャネルとランキング",
+    "tabs": {
+      "label": "表示内容",
+      "recentlyStarted": "開始日時順",
+      "redemptionCount": "カード引き換え数ランキング",
+      "totalPoints": "チャネルポイントランキング",
+      "cardCount": "種類数ランキング"
+    },
+    "card": {
+      "live": "LIVE",
+      "viewers": "{count, number}人が視聴中",
+      "thumbnailAlt": "{name}のライブ配信サムネイル",
+      "thumbnailUnavailable": "配信サムネイルを表示できません",
+      "profileAlt": "{name}のプロフィール画像",
+      "untitled": "タイトル未設定",
+      "uncategorized": "カテゴリ未設定",
+      "category": "カテゴリ: {name}",
+      "liveFor": "配信開始から {duration}",
+      "watchOnTwitchNewTab": "{name}の配信をTwitchで見る（新しいタブで開きます）",
+      "viewCollection": "コレクションを見る"
+    },
+    "duration": {
+      "justStarted": "開始したばかり",
+      "minutes": "{minutes}分",
+      "hours": "{hours}時間",
+      "hoursMinutes": "{hours}時間 {minutes}分",
+      "unknown": "開始時刻不明"
+    },
+    "ranking": {
+      "anonymous": "匿名チャネル",
+      "channelLink": "{name}をTwitchで見る（新しいタブで開きます）",
+      "rank": "{rank, number}位",
+      "redemptionCount": "{count, number}回",
+      "totalPoints": "{count, number}ポイント",
+      "cardCount": "{count, number}種類",
+      "empty": "ランキングデータはありません"
+    },
+    "empty": {
+      "title": "現在掲載中の配信はありません",
+      "description": "掲載を許可した配信者がライブを開始すると、ここに表示されます。"
+    },
+    "listingCta": {
+      "lead": "TwiCaを利用している配信者の方へ",
+      "link": "配信者の方はこちらから掲載できます"
+    }
+  },
+  "liveDirectorySettings": {
+    "title": "配信中ページの設定",
+    "description": "配信を開始したら<link>配信中ページ</link>に表示するかどうかの設定です。どちらも既定ではオフです。",
+    "status": {
+      "enabled": "掲載オン",
+      "disabled": "掲載オフ"
+    },
+    "form": {
+      "publishLiveStatus": "配信中を公表する",
+      "publishLiveStatusHelp": "オンにすると、配信を開始したときに配信中ページへチャネルを表示します。",
+      "publishStats": "ランキングにチャネルを表示する",
+      "publishStatsHelp": "オンにするとランキングにチャネル名・画像・リンクを表示します。オフでも上位100件に入る集計値は匿名チャネルとしてランキングに掲載されます。"
+    },
+    "messages": {
+      "liveEnabled": "配信中ページへの掲載設定をオンにしました",
+      "liveDisabled": "配信中ページへの掲載設定をオフにしました",
+      "statsEnabled": "ランキングのチャネル表示をオンにしました",
+      "statsDisabled": "ランキングのチャネル表示をオフにしました",
+      "saving": "保存中..."
+    },
+    "errors": {
+      "saveFailed": "設定の保存に失敗しました",
+      "deployWindow": "配信中ページの設定を現在保存できません。しばらくしてから再度お試しください。"
     }
   }
 }

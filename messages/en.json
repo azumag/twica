@@ -29,6 +29,7 @@
   },
   "navigation": {
     "overview": "Overview",
+    "live": "Live now",
     "cardManagement": "Card Management",
     "settings": "Stream Settings",
     "gachaHistory": "Gacha History",
@@ -848,6 +849,8 @@
         "announcementDesc": "Auto chat message",
         "visibility": "Visibility",
         "visibilityDesc": "Unowned card display",
+        "liveDirectory": "Live directory",
+        "liveDirectoryDesc": "Live directory listing and ranking identity",
         "share": "Share",
         "shareDesc": "Collection page URL"
       }
@@ -884,7 +887,8 @@
       "description4": "and build their collection.",
       "viewerGuide": "Viewer Guide",
       "streamerGuide": "Streamer Guide",
-      "viewGuide": "View Guide"
+      "viewGuide": "View Guide",
+      "liveDirectory": "Browse live channels"
     },
     "features": {
       "cardCollection": {
@@ -1501,6 +1505,88 @@
     "getStarted": {
       "title": "Getting started",
       "description": "See the usage guide for details on creating cards and setting them up on your stream."
+    }
+  },
+  "livePage": {
+    "metadata": {
+      "title": "Live now - TwiCa",
+      "description": "See TwiCa channels that are live now and rankings for card activity."
+    },
+    "navigationLabel": "Live directory navigation",
+    "home": "Home",
+    "title": "Live now",
+    "description": "See TwiCa channels that are live now and rankings for card activity.",
+    "consentNotice": "The live list only shows channels that have explicitly agreed to be listed.",
+    "rankingNotice": "Rankings include all active channels and show the top 100 for each metric. Channels that have not agreed to be identified appear anonymously.",
+    "directoryHeading": "Live channels and rankings",
+    "tabs": {
+      "label": "View",
+      "recentlyStarted": "Start time",
+      "redemptionCount": "Card redemption ranking",
+      "totalPoints": "Channel point ranking",
+      "cardCount": "Card type ranking"
+    },
+    "card": {
+      "live": "LIVE",
+      "viewers": "{count, plural, one {# viewer} other {# viewers}}",
+      "thumbnailAlt": "Live stream thumbnail for {name}",
+      "thumbnailUnavailable": "Stream thumbnail unavailable",
+      "profileAlt": "Profile image for {name}",
+      "untitled": "Untitled stream",
+      "uncategorized": "No category",
+      "category": "Category: {name}",
+      "liveFor": "Live for {duration}",
+      "watchOnTwitchNewTab": "Watch {name} on Twitch (opens in a new tab)",
+      "viewCollection": "View collection"
+    },
+    "duration": {
+      "justStarted": "just started",
+      "minutes": "{minutes, plural, one {# min} other {# mins}}",
+      "hours": "{hours, plural, one {# hr} other {# hrs}}",
+      "hoursMinutes": "{hours, plural, one {# hr} other {# hrs}} {minutes, plural, one {# min} other {# mins}}",
+      "unknown": "start time unavailable"
+    },
+    "ranking": {
+      "anonymous": "Anonymous channel",
+      "channelLink": "View {name} on Twitch (opens in a new tab)",
+      "rank": "Rank {rank, number}",
+      "redemptionCount": "{count, plural, one {# redemption} other {# redemptions}}",
+      "totalPoints": "{count, plural, one {# point} other {# points}}",
+      "cardCount": "{count, plural, one {# type} other {# types}}",
+      "empty": "No ranking data yet"
+    },
+    "empty": {
+      "title": "No listed streams are live right now",
+      "description": "Streamers who opt in will appear here when they go live."
+    },
+    "listingCta": {
+      "lead": "Streaming with TwiCa?",
+      "link": "Streamers can opt in from settings"
+    }
+  },
+  "liveDirectorySettings": {
+    "title": "Live page settings",
+    "description": "Choose whether to appear on the <link>live page</link> when you start streaming. Both settings are off by default.",
+    "status": {
+      "enabled": "Listing on",
+      "disabled": "Listing off"
+    },
+    "form": {
+      "publishLiveStatus": "Publish my live status",
+      "publishLiveStatusHelp": "When on, your channel appears on the live page while you are streaming.",
+      "publishStats": "Show my channel in rankings",
+      "publishStatsHelp": "When on, rankings show your channel name, image, and link. When off, totals that place in the top 100 still appear as an anonymous channel."
+    },
+    "messages": {
+      "liveEnabled": "Live directory listing setting turned on",
+      "liveDisabled": "Live directory listing setting turned off",
+      "statsEnabled": "Channel identity in rankings turned on",
+      "statsDisabled": "Channel identity in rankings turned off",
+      "saving": "Saving..."
+    },
+    "errors": {
+      "saveFailed": "Failed to save settings",
+      "deployWindow": "Live directory settings are temporarily unavailable. Please try again shortly."
     }
   }
 }

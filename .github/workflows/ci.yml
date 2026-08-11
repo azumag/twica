@@ -11,6 +11,8 @@ on:
 # マージをブロックし続ける既知の落とし穴があるため使わない。
 # dorny/paths-filter で job ごとに必要なファイル群を判定し、無関係な変更では
 # その job だけスキップする（skip された required check は成功扱いになる）。
+# ただし変更検出自体が失敗した場合まで検証をskipするとCIを迂回できるため、
+# 各依存jobは needs.changes.result != 'success' なら従来どおり実行する。
 jobs:
   changes:
     name: Detect changed paths
@@ -26,6 +28,7 @@ jobs:
       postgres_fixtures: ${{ steps.filter.outputs.postgres_fixtures }}
       analysis: ${{ steps.filter.outputs.analysis }}
       i18n: ${{ steps.filter.outputs.i18n }}
+      ci_workflow: ${{ steps.filter.outputs.ci_workflow }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,6 +63,9 @@ jobs:
               - 'tests/**'
             scripts:
               - 'scripts/**'
+              # tests/unit/claude-review-format.test.ts はレビュー整形処理を
+              # .github/scripts から直接importするため、変更時はunit testが必要。
+              - '.github/scripts/**'
               - 'config/**'
               # scripts/check-supabase-shutdown.js（test jobで実行）が走査・assertする
               # 対象。スクリプト本体だけでなく、これらのpathの変更でも同ガードを
@@ -87,6 +93,11 @@ jobs:
               - 'src/**'
               - 'eslint.i18n.config.mjs'
               - 'scripts/i18n-debt-files.js'
+            ci_workflow:
+              # job定義そのものを変えたPRでは、そのjobを実際に起動しないと
+              # step・env・serviceの誤りを検証できない。ci.ymlの変更は稀なので、
+              # コスト最適化より全jobの自己検証を優先する。
+              - '.github/workflows/ci.yml'
 
   test:
     needs: changes
@@ -96,11 +107,14 @@ jobs:
     # analysis を含めるのは tests/unit/analysis-dashboard-pagination.test.ts が
     # analysis/src 配下のソースを直接assertするため。
     if: >-
-      needs.changes.outputs.app == 'true' ||
-      needs.changes.outputs.tests == 'true' ||
-      needs.changes.outputs.scripts == 'true' ||
-      needs.changes.outputs.migrations == 'true' ||
-      needs.changes.outputs.analysis == 'true'
+      !cancelled() &&
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.app == 'true' ||
+       needs.changes.outputs.tests == 'true' ||
+       needs.changes.outputs.scripts == 'true' ||
+       needs.changes.outputs.migrations == 'true' ||
+       needs.changes.outputs.analysis == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -159,13 +173,15 @@ jobs:
   supabase-shutdown-build:
     name: Application build without Supabase variables
     needs: [changes, test]
-    # test 成功時のみ（スキップ時も可）。app/scripts に触れない変更ではスキップ。
-    # test がスキップされるのは app/scripts 未変更時なので、結果的に
-    # 元の「test が失敗/キャンセルしたら回さない」を維持する。
+    # test成功時のみ実行する。変更検出に成功した場合はapp/scripts変更時だけ、
+    # 変更検出自体が失敗した場合は安全側へ倒してbuildも実行する。
     if: >-
+      !cancelled() &&
       needs.test.result == 'success' &&
-      (needs.changes.outputs.app == 'true' ||
-       needs.changes.outputs.scripts == 'true')
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.app == 'true' ||
+       needs.changes.outputs.scripts == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -206,7 +222,11 @@ jobs:
   analysis:
     name: Analysis dashboard (guard / typecheck / build)
     needs: changes
-    if: needs.changes.outputs.analysis == 'true'
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.analysis == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -253,12 +273,15 @@ jobs:
   lint:
     needs: changes
     if: >-
+      !cancelled() &&
       github.event_name == 'pull_request' &&
       github.base_ref == 'main' &&
       github.head_ref == 'preview' &&
-      (needs.changes.outputs.app == 'true' ||
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.app == 'true' ||
        needs.changes.outputs.tests == 'true' ||
-       needs.changes.outputs.scripts == 'true')
+       needs.changes.outputs.scripts == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -282,8 +305,11 @@ jobs:
     # PRだけでなく、preview/mainへマージされたpushでも同じガードを実行する。
     # PR側のイベントが欠落した場合でも、デプロイ対象のコミットで回帰を検出できるようにする。
     if: >-
+      !cancelled() &&
       (github.event_name == 'pull_request' || github.event_name == 'push') &&
-      needs.changes.outputs.i18n == 'true'
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.i18n == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -311,8 +337,11 @@ jobs:
     # スクリプト側は警告付きでルール2をスキップするだけの空振りになる）。
     # 元の実装（PRのみ実行）を維持する。
     if: >-
+      !cancelled() &&
       github.event_name == 'pull_request' &&
-      needs.changes.outputs.migrations == 'true'
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.migrations == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
 
     steps:
@@ -339,8 +368,11 @@ jobs:
     name: PlanetScale migration PostgreSQL 17
     needs: changes
     if: >-
-      needs.changes.outputs.migrations == 'true' ||
-      needs.changes.outputs.postgres_fixtures == 'true'
+      !cancelled() &&
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.migrations == 'true' ||
+       needs.changes.outputs.postgres_fixtures == 'true' ||
+       needs.changes.outputs.ci_workflow == 'true')
     runs-on: ubuntu-latest
     services:
       postgres:

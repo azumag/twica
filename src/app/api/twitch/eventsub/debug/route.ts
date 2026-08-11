@@ -5,6 +5,7 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { logger } from "@/lib/logger.server";
 import { validateCSRFToken } from "@/lib/csrf";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
+import { fetchTwitchApi } from "@/lib/twitch/app-token";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -12,27 +13,6 @@ const TWITCH_API_URL = "https://api.twitch.tv/helix";
  * EventSubサブスクリプションのデバッグ用エンドポイント
  * 現在のサブスクリプション状態を詳細に取得する
  */
-async function getAppAccessToken(): Promise<string> {
-  const response = await fetch("https://id.twitch.tv/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      client_id: process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-      client_secret: process.env.TWITCH_CLIENT_SECRET!,
-      grant_type: "client_credentials",
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to get app access token");
-  }
-
-  const data = await response.json();
-  return data.access_token;
-}
-
 // EventSubサブスクリプションの型定義（デバッグ用）
 type EventSubSubscription = {
   id: string;
@@ -45,7 +25,7 @@ type EventSubSubscription = {
 
 // すべてのEventSubサブスクリプションを取得（デバッグ用・ページネーション対応）
 // subscribe/route.tsと同様に配列を返すように統一
-async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubscription[]> {
+async function getAllSubscriptions(): Promise<EventSubSubscription[]> {
   const allData: EventSubSubscription[] = [];
   let cursor: string | undefined;
 
@@ -54,12 +34,7 @@ async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubs
       ? `${TWITCH_API_URL}/eventsub/subscriptions?after=${cursor}`
       : `${TWITCH_API_URL}/eventsub/subscriptions`;
 
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${appAccessToken}`,
-        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-      },
-    });
+    const response = await fetchTwitchApi(url);
 
     if (!response.ok) {
       throw new Error(`Failed to fetch subscriptions: ${response.status}`);
@@ -81,7 +56,6 @@ async function getAllSubscriptions(appAccessToken: string): Promise<EventSubSubs
 // マッチするため、呼び出し側で condition.broadcaster_user_id の一致を
 // 別途確認すること。
 async function getSubscriptionsByBroadcaster(
-  appAccessToken: string,
   broadcasterUserId: string
 ): Promise<EventSubSubscription[]> {
   const allData: EventSubSubscription[] = [];
@@ -91,12 +65,7 @@ async function getSubscriptionsByBroadcaster(
     const baseUrl = `${TWITCH_API_URL}/eventsub/subscriptions?user_id=${broadcasterUserId}`;
     const url = cursor ? `${baseUrl}&after=${cursor}` : baseUrl;
 
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${appAccessToken}`,
-        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-      },
-    });
+    const response = await fetchTwitchApi(url);
 
     if (!response.ok) {
       throw new Error(`Failed to fetch subscriptions: ${response.status}`);
@@ -110,7 +79,7 @@ async function getSubscriptionsByBroadcaster(
   return allData;
 }
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   const session = await getSession();
 
   if (!session || !canUseStreamerFeatures(session)) {
@@ -118,10 +87,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const appAccessToken = await getAppAccessToken();
-
     // ページネーションを使ってすべてのサブスクリプションを取得
-    const allSubscriptions = await getAllSubscriptions(appAccessToken);
+    const allSubscriptions = await getAllSubscriptions();
 
     // このbroadcasterのサブスクリプションのみフィルタ
     const mySubscriptions = allSubscriptions.filter(
@@ -191,30 +158,22 @@ export async function DELETE(request: NextRequest) {
     const subscriptionId = searchParams.get("id");
     const deleteAll = searchParams.get("all") === "true";
 
-    const appAccessToken = await getAppAccessToken();
-
     if (deleteAll) {
       // すべてのサブスクリプションを削除
       // user_idで絞り込んだページネーション対応の取得を使う (#831)。旧実装は
       // 1ページ分の生fetchのみで、購読数がページ上限を超えると一部しか削除
       // されないのに成功報告してしまっていた。また全app分を取得してから
       // クライアント側フィルタするより、Twitch API側で絞り込む方が効率的。
-      const candidateSubscriptions = await getSubscriptionsByBroadcaster(appAccessToken, session.twitchUserId);
+      const candidateSubscriptions = await getSubscriptionsByBroadcaster(session.twitchUserId);
       const mySubscriptions = candidateSubscriptions.filter(
         (sub) => sub.condition.broadcaster_user_id === session.twitchUserId
       );
 
       const results = [];
       for (const sub of mySubscriptions) {
-        const deleteResponse = await fetch(
+        const deleteResponse = await fetchTwitchApi(
           `${TWITCH_API_URL}/eventsub/subscriptions?id=${sub.id}`,
-          {
-            method: "DELETE",
-            headers: {
-              "Authorization": `Bearer ${appAccessToken}`,
-              "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-            },
-          }
+          { method: "DELETE" },
         );
         results.push({
           id: sub.id,
@@ -240,7 +199,7 @@ export async function DELETE(request: NextRequest) {
     // app access tokenで削除できてしまっていた。
     // user_idで絞り込んだ取得を使うことで、削除対象のid1件を探すためだけに
     // app全体(全streamer分)のサブスクリプションを毎回列挙することを避ける。
-    const candidateSubscriptions = await getSubscriptionsByBroadcaster(appAccessToken, session.twitchUserId);
+    const candidateSubscriptions = await getSubscriptionsByBroadcaster(session.twitchUserId);
     const targetSubscription = candidateSubscriptions.find((sub) => sub.id === subscriptionId);
 
     if (!targetSubscription || targetSubscription.condition.broadcaster_user_id !== session.twitchUserId) {
@@ -249,15 +208,9 @@ export async function DELETE(request: NextRequest) {
     }
 
     // 単一のサブスクリプションを削除
-    const deleteResponse = await fetch(
+    const deleteResponse = await fetchTwitchApi(
       `${TWITCH_API_URL}/eventsub/subscriptions?id=${subscriptionId}`,
-      {
-        method: "DELETE",
-        headers: {
-          "Authorization": `Bearer ${appAccessToken}`,
-          "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-        },
-      }
+      { method: "DELETE" },
     );
 
     if (deleteResponse.status === 204) {
