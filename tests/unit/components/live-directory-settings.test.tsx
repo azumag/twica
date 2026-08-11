@@ -119,9 +119,13 @@ describe("LiveDirectorySettings", () => {
         })
       );
     });
-    const [, statsToggle] = getToggles();
-    expect(statsToggle).toBeDisabled();
-    expect(statsToggle).not.toBeChecked();
+    // 保存完了後に publishStats=false が反映されるため、fetch の呼び出しだけでなく
+    // 依存トグルの最終状態まで待って、非同期な UI 契約を検証する。
+    await waitFor(() => {
+      const [, statsToggle] = getToggles();
+      expect(statsToggle).toBeDisabled();
+      expect(statsToggle).not.toBeChecked();
+    });
   });
 
   it("toggling stats alone sends only publishStats", async () => {
