@@ -848,6 +848,8 @@
         "announcementDesc": "Auto chat message",
         "visibility": "Visibility",
         "visibilityDesc": "Unowned card display",
+        "liveDirectory": "Live directory",
+        "liveDirectoryDesc": "Listing and stats on /live",
         "share": "Share",
         "shareDesc": "Collection page URL"
       }
@@ -1501,6 +1503,31 @@
     "getStarted": {
       "title": "Getting started",
       "description": "See the usage guide for details on creating cards and setting them up on your stream."
+    }
+  },
+  "liveDirectorySettings": {
+    "title": "Live directory listing",
+    "description": "Choose whether this streamer appears on the live directory (/live), which only lists streamers who have opted in. Both toggles are off by default.",
+    "status": {
+      "enabled": "Listed",
+      "disabled": "Hidden"
+    },
+    "form": {
+      "publishLiveStatus": "Publish my live status",
+      "publishLiveStatusHelp": "While on, this streamer appears on /live (only while actually live).",
+      "publishStats": "Publish stats",
+      "publishStatsHelp": "Show card count and channel point redemptions on /live.",
+      "requiresPublishLiveStatus": "requires \"Publish my live status\""
+    },
+    "messages": {
+      "liveEnabled": "Listing on the live directory started",
+      "liveDisabled": "Listing on the live directory stopped",
+      "statsEnabled": "Stats publication started",
+      "statsDisabled": "Stats publication stopped",
+      "saving": "Saving..."
+    },
+    "errors": {
+      "saveFailed": "Failed to save settings"
     }
   }
 }

@@ -50,6 +50,10 @@ const CardVisibilitySettings = dynamic(() => import("@/components/CardVisibility
   ssr: false,
   loading: () => <SettingsPanelSkeleton />,
 });
+const LiveDirectorySettings = dynamic(() => import("@/components/LiveDirectorySettings"), {
+  ssr: false,
+  loading: () => <SettingsPanelSkeleton />,
+});
 
 function SettingsPanelSkeleton() {
   return (
@@ -90,6 +94,10 @@ export interface SettingsLayoutData {
   visibility: {
     showUnowned: boolean;
     showUnownedDetails: boolean;
+  };
+  liveDirectory: {
+    publishLiveStatus: boolean;
+    publishStats: boolean;
   };
   // Issue #554: カードパックのプルダウン表示制御 + デフォルト名。未指定
   // (undefined)の場合は ChannelPointSettings 側が従来どおりの表示にフォール
@@ -259,6 +267,9 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
   const visibilityStatus: SettingsSection["status"] = data.visibility.showUnowned
     ? "active"
     : "empty";
+  const liveDirectoryStatus: SettingsSection["status"] = data.liveDirectory.publishLiveStatus
+    ? "active"
+    : "empty";
 
   const sections: SettingsSection[] = [
     {
@@ -345,6 +356,20 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       ),
     },
     {
+      id: "liveDirectory",
+      label: t("advanced.section.liveDirectory"),
+      description: t("advanced.section.liveDirectoryDesc"),
+      icon: <SectionIcon name="broadcast" />,
+      status: liveDirectoryStatus,
+      content: (
+        <LiveDirectorySettings
+          streamerId={data.streamerId}
+          currentPublishLiveStatus={data.liveDirectory.publishLiveStatus}
+          currentPublishStats={data.liveDirectory.publishStats}
+        />
+      ),
+    },
+    {
       id: "share",
       label: t("advanced.section.share"),
       description: t("advanced.section.shareDesc"),
@@ -402,7 +427,7 @@ function PageHeader({ title, description }: { title: string; description?: strin
 // 一つの <SectionIcon> でラップし、共通の svg 属性を共有することで boilerplate を削減。
 // ---------------------------------------------------------------------------
 
-type IconName = "overlay" | "reward" | "sound" | "chat" | "eye" | "share";
+type IconName = "overlay" | "reward" | "sound" | "chat" | "eye" | "broadcast" | "share";
 
 const ICON_PATHS: Record<IconName, React.ReactNode> = {
   overlay: (
@@ -429,6 +454,12 @@ const ICON_PATHS: Record<IconName, React.ReactNode> = {
     <>
       <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
       <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  broadcast: (
+    <>
+      <circle cx="12" cy="12" r="2" />
+      <path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8" />
     </>
   ),
   share: (

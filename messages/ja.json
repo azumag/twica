@@ -848,6 +848,8 @@
         "announcementDesc": "獲得時の自動メッセージ",
         "visibility": "公開設定",
         "visibilityDesc": "未所持カードの見せ方",
+        "liveDirectory": "配信中ページ",
+        "liveDirectoryDesc": "/live への掲載と統計公開",
         "share": "共有",
         "shareDesc": "コレクションページのURL"
       }
@@ -1501,6 +1503,31 @@
     "getStarted": {
       "title": "はじめるには",
       "description": "カードの作り方や配信への組み込み方は、使い方ガイドで詳しく説明しています。"
+    }
+  },
+  "liveDirectorySettings": {
+    "title": "配信中ページへの掲載",
+    "description": "twica を設定して配信している人だけが掲載される「配信中ページ」（/live）に、この配信者を掲載するかどうかを設定します。どちらも既定ではオフです。",
+    "status": {
+      "enabled": "掲載中",
+      "disabled": "非掲載"
+    },
+    "form": {
+      "publishLiveStatus": "配信中を公表する",
+      "publishLiveStatusHelp": "オンの間、/live にこの配信者が表示されます（現在ライブ配信中のときのみ）。",
+      "publishStats": "統計を公開する",
+      "publishStatsHelp": "カード種類数とチャネルポイント引換数を /live に表示します。",
+      "requiresPublishLiveStatus": "「配信中を公表する」が必要"
+    },
+    "messages": {
+      "liveEnabled": "配信中ページへの掲載を開始しました",
+      "liveDisabled": "配信中ページへの掲載を停止しました",
+      "statsEnabled": "統計の公開を開始しました",
+      "statsDisabled": "統計の公開を停止しました",
+      "saving": "保存中..."
+    },
+    "errors": {
+      "saveFailed": "設定の保存に失敗しました"
     }
   }
 }
