@@ -69,25 +69,33 @@ async function issueAppAccessToken(): Promise<CachedAppToken> {
  * KV の読み書き失敗は発行済みトークンで継続し（旧実装の毎回発行と同じ挙動）、
  * reportError で KV 不調を通知する。
  */
-export async function getTwitchAppAccessToken(): Promise<string> {
-  if (memoryToken && memoryToken.expiresAt > Date.now()) {
-    return memoryToken.accessToken;
-  }
+export async function getTwitchAppAccessToken(options?: {
+  /** キャッシュ（メモリ/KV）を読まず強制的に再発行する（401自己回復用）。 */
+  forceRefresh?: boolean;
+}): Promise<string> {
+  if (!options?.forceRefresh) {
+    if (memoryToken && memoryToken.expiresAt > Date.now()) {
+      return memoryToken.accessToken;
+    }
 
-  try {
-    const kv = await getKvBinding();
-    if (kv) {
-      const raw = await kv.get(APP_TOKEN_KV_KEY);
-      if (raw) {
-        const cached = JSON.parse(raw) as CachedAppToken;
-        if (cached.expiresAt > Date.now()) {
-          memoryToken = cached;
-          return cached.accessToken;
+    try {
+      const kv = await getKvBinding();
+      if (kv) {
+        const raw = await kv.get(APP_TOKEN_KV_KEY);
+        if (raw) {
+          const cached = JSON.parse(raw) as CachedAppToken;
+          if (cached.expiresAt > Date.now()) {
+            memoryToken = cached;
+            return cached.accessToken;
+          }
         }
       }
+    } catch (error) {
+      reportError(
+        error instanceof Error ? error : new Error(String(error)),
+        { context: "twitchAppToken:kvRead" },
+      );
     }
-  } catch (error) {
-    reportError("Twitch app token KV read failed", { error });
   }
 
   const token = await issueAppAccessToken();
@@ -97,11 +105,15 @@ export async function getTwitchAppAccessToken(): Promise<string> {
     const kv = await getKvBinding();
     if (kv) {
       await kv.put(APP_TOKEN_KV_KEY, JSON.stringify(token), {
-        expirationTtl: Math.max(1, Math.floor((token.expiresAt - Date.now()) / 1000)),
+        // Cloudflare KV の expirationTtl 最小値は60秒。
+        expirationTtl: Math.max(60, Math.floor((token.expiresAt - Date.now()) / 1000)),
       });
     }
   } catch (error) {
-    reportError("Twitch app token KV write failed", { error });
+    reportError(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: "twitchAppToken:kvWrite" },
+    );
   }
 
   return token.accessToken;
@@ -116,7 +128,10 @@ export async function invalidateTwitchAppToken(): Promise<void> {
       await kv.delete(APP_TOKEN_KV_KEY);
     }
   } catch (error) {
-    reportError("Twitch app token KV delete failed", { error });
+    reportError(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: "twitchAppToken:kvDelete" },
+    );
   }
 }
 
@@ -144,7 +159,9 @@ export async function fetchTwitchApi(
   const response = await doFetch(await getTwitchAppAccessToken());
   if (response.status === 401) {
     await invalidateTwitchAppToken();
-    return doFetch(await getTwitchAppAccessToken());
+    // 強制再発行: KV の delete がエッジへ伝播していない場合でも、キャッシュを
+    // 読み戻さず新トークンを発行してリトライする（#739 レビュー指摘）。
+    return doFetch(await getTwitchAppAccessToken({ forceRefresh: true }));
   }
   return response;
 }

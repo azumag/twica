@@ -136,7 +136,7 @@ describe("getLiveDirectory", () => {
     });
   });
 
-  it("オプトイン101人を100件ずつ2リクエストに分割する", async () => {
+  it("オプトイン101人を100件ずつ2リクエストに分割し、first=100 を付与する", async () => {
     const rows = Array.from({ length: 101 }, (_, i) => ({
       streamerId: `s${i}`,
       twitchUserId: `u${i}`,
@@ -160,6 +160,38 @@ describe("getLiveDirectory", () => {
     const countParams = (url: string) => new URL(url).searchParams.getAll("user_id").length;
     expect(countParams(firstUrl)).toBe(100);
     expect(countParams(secondUrl)).toBe(1);
+    // Get Streams の first デフォルトは20件のため、明示指定を固定する（#739必須）。
+    expect(new URL(firstUrl).searchParams.get("first")).toBe("100");
+    expect(new URL(secondUrl).searchParams.get("first")).toBe("100");
+  });
+
+  it("同じ user_id 集合で pagination.cursor を辿りライブを全件取得する", async () => {
+    vi.mocked(fetchTwitchApi)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [streamResponse(["u1"]).data[0]],
+            pagination: { cursor: "next-page" },
+          }),
+          { status: 200 },
+        ) as never,
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [streamResponse(["u2"]).data[0]],
+            pagination: {},
+          }),
+          { status: 200 },
+        ) as never,
+      );
+
+    const entries = await getLiveDirectory();
+
+    expect(fetchTwitchApi).toHaveBeenCalledTimes(2);
+    const secondUrl = String(vi.mocked(fetchTwitchApi).mock.calls[1][0]);
+    expect(new URL(secondUrl).searchParams.get("after")).toBe("next-page");
+    expect(entries.map((e) => e.twitchUserId)).toEqual(["u1", "u2"]);
   });
 
   it("Helix 障害時は空配列を返し reportError で通知する", async () => {
@@ -170,10 +202,11 @@ describe("getLiveDirectory", () => {
     const entries = await getLiveDirectory();
 
     expect(entries).toEqual([]);
-    expect(reportError).toHaveBeenCalledWith(
-      "Live directory Helix streams failed",
-      expect.any(Object),
-    );
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
+      context: "liveDirectory:helix",
+    });
+    // 障害による空配列はキャッシュへ書き込まない（瞬断が60秒の「誰もいない」に化けない）
+    expect(kv.put).not.toHaveBeenCalled();
   });
 
   it("RPC 障害（42883）時は空配列を返し Helix を呼ばない", async () => {
@@ -186,20 +219,25 @@ describe("getLiveDirectory", () => {
     const entries = await getLiveDirectory();
 
     expect(entries).toEqual([]);
-    expect(reportError).toHaveBeenCalledWith(
-      "Live directory RPC failed",
-      expect.any(Object),
-    );
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
+      context: "liveDirectory:rpc",
+    });
     expect(fetchTwitchApi).not.toHaveBeenCalled();
+    expect(kv.put).not.toHaveBeenCalled();
   });
 
-  it("オプトイン0件なら Helix を呼ばない", async () => {
+  it("オプトイン0件なら Helix を呼ばず、正常な空状態はキャッシュする", async () => {
     sqlMock.mockResolvedValue([{ result: [] }]);
 
     const entries = await getLiveDirectory();
 
     expect(entries).toEqual([]);
     expect(fetchTwitchApi).not.toHaveBeenCalled();
+    expect(kv.put).toHaveBeenCalledWith(
+      "live-directory:v1",
+      "[]",
+      { expirationTtl: 60 },
+    );
   });
 
   it("KV キャッシュ hit 時は RPC/Helix へ再到達しない", async () => {
@@ -219,10 +257,9 @@ describe("getLiveDirectory", () => {
     const entries = await getLiveDirectory();
 
     expect(entries).toHaveLength(1);
-    expect(reportError).toHaveBeenCalledWith(
-      "Live directory KV read failed",
-      expect.any(Object),
-    );
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
+      context: "liveDirectory:kvRead",
+    });
   });
 
   it("KV なし環境（ローカル）はメモリキャッシュで2回目の再取得を防ぐ", async () => {

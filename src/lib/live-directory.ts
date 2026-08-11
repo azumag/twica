@@ -75,27 +75,47 @@ async function fetchStreamsForUserIds(
 
   for (let i = 0; i < userIds.length; i += HELIX_STREAMS_BATCH_SIZE) {
     const batch = userIds.slice(i, i + HELIX_STREAMS_BATCH_SIZE);
-    const params = new URLSearchParams();
-    for (const userId of batch) {
-      params.append("user_id", userId);
-    }
+    // Get Streams の first デフォルトは20件のため、100件バッチでは明示的に
+    // first=100 を付与する。さらに pagination.cursor を辿って同じ user_id 集合の
+    // ライブを全件取得する（同時配信者が21人以上でも欠落させない）。
+    let cursor: string | undefined;
+    do {
+      const params = new URLSearchParams();
+      params.set("first", String(HELIX_STREAMS_BATCH_SIZE));
+      for (const userId of batch) {
+        params.append("user_id", userId);
+      }
+      if (cursor) {
+        params.set("after", cursor);
+      }
 
-    const response = await fetchTwitchApi(
-      `https://api.twitch.tv/helix/streams?${params.toString()}`,
-    );
-    if (!response.ok) {
-      throw new Error(`Helix GET /streams failed: status=${response.status}`);
-    }
-    const data = (await response.json()) as { data: HelixStream[] };
-    for (const stream of data.data ?? []) {
-      liveByUserId.set(stream.user_id, stream);
-    }
+      const response = await fetchTwitchApi(
+        `https://api.twitch.tv/helix/streams?${params.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error(`Helix GET /streams failed: status=${response.status}`);
+      }
+      const data = (await response.json()) as {
+        data: HelixStream[];
+        pagination?: { cursor?: string };
+      };
+      for (const stream of data.data ?? []) {
+        liveByUserId.set(stream.user_id, stream);
+      }
+      cursor = data.pagination?.cursor;
+    } while (cursor);
   }
 
   return liveByUserId;
 }
 
-async function fetchLiveDirectoryUncached(): Promise<LiveDirectoryEntry[]> {
+interface LiveDirectoryFetchResult {
+  entries: LiveDirectoryEntry[];
+  /** false のときは障害（RPC/Helix）による空配列。キャッシュへ書き込まない。 */
+  ok: boolean;
+}
+
+async function fetchLiveDirectoryUncached(): Promise<LiveDirectoryFetchResult> {
   const { data: rpcRows, error: rpcError } = await executeDashboardRpcPg(
     "get_live_directory_streamers(pg)",
     async (sql) => {
@@ -107,16 +127,19 @@ async function fetchLiveDirectoryUncached(): Promise<LiveDirectoryEntry[]> {
   );
 
   if (rpcError) {
-    reportError("Live directory RPC failed", { error: rpcError });
-    return [];
+    reportError(
+      new Error(`Live directory RPC failed: ${rpcError.message}`),
+      { context: "liveDirectory:rpc" },
+    );
+    return { entries: [], ok: false };
   }
 
   const streamers = Array.isArray(rpcRows)
     ? (rpcRows as LiveDirectoryRpcRow[])
     : [];
   if (streamers.length === 0) {
-    // オプトイン0件: Helix を呼ばない。
-    return [];
+    // オプトイン0件は正常な空状態のためキャッシュしてよい。
+    return { entries: [], ok: true };
   }
 
   let liveByUserId: Map<string, HelixStream>;
@@ -125,38 +148,46 @@ async function fetchLiveDirectoryUncached(): Promise<LiveDirectoryEntry[]> {
       streamers.map((s) => s.twitchUserId),
     );
   } catch (error) {
-    reportError("Live directory Helix streams failed", { error });
-    return [];
+    reportError(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: "liveDirectory:helix" },
+    );
+    return { entries: [], ok: false };
   }
 
-  return streamers
-    .filter((s) => liveByUserId.has(s.twitchUserId))
-    .map((s) => {
-      const stream = liveByUserId.get(s.twitchUserId)!;
-      return {
-        streamerId: s.streamerId,
-        twitchUserId: s.twitchUserId,
-        twitchLogin: stream.user_login,
-        displayName: s.twitchDisplayName,
-        profileImageUrl: s.twitchProfileImageUrl ?? "",
-        title: stream.title,
-        gameName: stream.game_name,
-        viewerCount: stream.viewer_count,
-        startedAt: stream.started_at,
-        thumbnailUrl: stream.thumbnail_url
-          .replace("{width}", "320")
-          .replace("{height}", "180"),
-        stats: s.publishStats
-          ? { cardCount: s.cardCount ?? 0, redemptionCount: s.redemptionCount ?? 0 }
-          : null,
-      } satisfies LiveDirectoryEntry;
-    });
+  return {
+    entries: streamers
+      .filter((s) => liveByUserId.has(s.twitchUserId))
+      .map((s) => {
+        const stream = liveByUserId.get(s.twitchUserId)!;
+        return {
+          streamerId: s.streamerId,
+          twitchUserId: s.twitchUserId,
+          twitchLogin: stream.user_login,
+          displayName: s.twitchDisplayName,
+          profileImageUrl: s.twitchProfileImageUrl ?? "",
+          title: stream.title,
+          gameName: stream.game_name,
+          viewerCount: stream.viewer_count,
+          startedAt: stream.started_at,
+          thumbnailUrl: stream.thumbnail_url
+            .replace("{width}", "320")
+            .replace("{height}", "180"),
+          stats: s.publishStats
+            ? { cardCount: s.cardCount ?? 0, redemptionCount: s.redemptionCount ?? 0 }
+            : null,
+        } satisfies LiveDirectoryEntry;
+      }),
+    ok: true,
+  };
 }
 
 /**
  * ライブ中のオプトイン配信者一覧を返す。KVキャッシュ(60s) → メモリ → 実取得。
  * KV get/put の例外は miss 扱いで続行し reportError で通知する（/live を
  * KV 障害で 500 にしない。キャッシュ前提が崩れたことは Sentry で気づける）。
+ * RPC/Helix 障害による空配列はキャッシュへ書き込まない（瞬断が最大60秒の
+ * 「誰も配信していない」表示に化けるのを防ぐ）。
  */
 export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
   try {
@@ -168,30 +199,38 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
       }
     }
   } catch (error) {
-    reportError("Live directory KV read failed", { error });
+    reportError(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: "liveDirectory:kvRead" },
+    );
   }
 
   if (memoryCache && memoryCache.expiresAt > Date.now()) {
     return memoryCache.entries;
   }
 
-  const entries = await fetchLiveDirectoryUncached();
+  const { entries, ok } = await fetchLiveDirectoryUncached();
 
-  try {
-    const kv = await getKvBinding();
-    if (kv) {
-      await kv.put(LIVE_DIRECTORY_KV_KEY, JSON.stringify(entries), {
-        expirationTtl: LIVE_DIRECTORY_TTL_SECONDS,
-      });
+  if (ok) {
+    try {
+      const kv = await getKvBinding();
+      if (kv) {
+        await kv.put(LIVE_DIRECTORY_KV_KEY, JSON.stringify(entries), {
+          expirationTtl: LIVE_DIRECTORY_TTL_SECONDS,
+        });
+      }
+    } catch (error) {
+      reportError(
+        error instanceof Error ? error : new Error(String(error)),
+        { context: "liveDirectory:kvWrite" },
+      );
     }
-  } catch (error) {
-    reportError("Live directory KV write failed", { error });
+    memoryCache = {
+      entries,
+      expiresAt: Date.now() + LIVE_DIRECTORY_TTL_SECONDS * 1000,
+    };
   }
 
-  memoryCache = {
-    entries,
-    expiresAt: Date.now() + LIVE_DIRECTORY_TTL_SECONDS * 1000,
-  };
   return entries;
 }
 

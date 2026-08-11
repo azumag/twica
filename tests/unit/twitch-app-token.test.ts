@@ -120,6 +120,29 @@ describe("Twitch app access token", () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(4);
     // 401 で KV キャッシュが破棄されている
     expect(kv.delete).toHaveBeenCalledWith("twitch:app-token");
+    // 再発行は強制パス（KV read をバイパス）のため、get は初回のキャッシュ確認1回のみ
+    expect(kv.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("Headers インスタンスを渡しても Authorization / Client-Id を付与できる", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(tokenResponse() as never)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [] }), { status: 200 }) as never,
+      );
+
+    const headers = new Headers({ "Content-Type": "application/json" });
+    const response = await fetchTwitchApi(
+      "https://api.twitch.tv/helix/streams",
+      { headers },
+    );
+
+    expect(response.status).toBe(200);
+    const helixCall = fetchMock.mock.calls[1];
+    const sentHeaders = new Headers(helixCall[1]?.headers as HeadersInit);
+    expect(sentHeaders.get("Authorization")).toBe("Bearer token-1");
+    expect(sentHeaders.get("Client-Id")).toBe("client-id");
+    expect(sentHeaders.get("Content-Type")).toBe("application/json");
   });
 
   it("再発行後も 401 ならそのレスポンスを返し、無限ループしない", async () => {
@@ -150,9 +173,26 @@ describe("Twitch app access token", () => {
     const token = await getTwitchAppAccessToken();
 
     expect(token).toBe("token-1");
-    expect(reportError).toHaveBeenCalledWith(
-      "Twitch app token KV read failed",
-      expect.any(Object),
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
+      context: "twitchAppToken:kvRead",
+    });
+  });
+
+  it("expirationTtl は Cloudflare KV の最小値60秒を下回らない", async () => {
+    // expires_in 30秒（0.8倍で24秒 < 60秒）でも TTL は60秒になる
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ access_token: "token-1", expires_in: 30 }),
+        { status: 200 },
+      ) as never,
+    );
+
+    await getTwitchAppAccessToken();
+
+    expect(kv.put).toHaveBeenCalledWith(
+      "twitch:app-token",
+      expect.any(String),
+      expect.objectContaining({ expirationTtl: 60 }),
     );
   });
 });
