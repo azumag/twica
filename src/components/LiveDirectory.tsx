@@ -7,7 +7,6 @@ import { useTranslations } from "next-intl";
 import type { LiveDirectoryEntry } from "@/lib/live-directory";
 
 export type LiveDirectorySort =
-  | "viewers"
   | "recentlyStarted"
   | "cardCount"
   | "redemptionCount";
@@ -23,11 +22,10 @@ interface LiveDirectoryProps {
 }
 
 function compareFallback(a: LiveDirectoryEntry, b: LiveDirectoryEntry): number {
-  const viewerDifference = b.viewerCount - a.viewerCount;
-  if (viewerDifference !== 0) return viewerDifference;
-
-  // localeCompare() の既定ロケールはNode（SSR）とブラウザで異なり得る。
-  // UTF-16コード単位の比較に固定して、同率カードのhydration順を必ず一致させる。
+  // 視聴者数は変動が大きく、利用者が選択していない順位付けを同率時だけ
+  // 暗黙に行うと表示順の意図が分かりにくい。安定した識別情報だけを使い、
+  // SSRとクライアントで同じ決定的な順序に固定する。
+  // localeCompare() の既定ロケールも実行環境で異なり得るため使わない。
   if (a.displayName !== b.displayName) return a.displayName < b.displayName ? -1 : 1;
   if (a.streamerId !== b.streamerId) return a.streamerId < b.streamerId ? -1 : 1;
   return 0;
@@ -79,16 +77,15 @@ export function sortLiveDirectoryEntries(
         return compareStats(a, b, "cardCount");
       case "redemptionCount":
         return compareStats(a, b, "redemptionCount");
-      case "viewers":
       default:
-        return compareFallback(a, b);
+        return compareStartedAt(a, b);
     }
   });
 }
 
 export default function LiveDirectory({ entries, referenceTime }: LiveDirectoryProps) {
   const t = useTranslations("livePage");
-  const [sort, setSort] = useState<LiveDirectorySort>("viewers");
+  const [sort, setSort] = useState<LiveDirectorySort>("recentlyStarted");
   const sortedEntries = useMemo(
     () => sortLiveDirectoryEntries(entries, sort),
     [entries, sort],
@@ -111,7 +108,6 @@ export default function LiveDirectory({ entries, referenceTime }: LiveDirectoryP
             onChange={(event) => setSort(event.target.value as LiveDirectorySort)}
             className="min-h-11 min-w-0 flex-1 rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white outline-none transition focus:border-purple-400 focus:ring-2 focus:ring-purple-400/30 sm:min-w-64"
           >
-            <option value="viewers">{t("sort.viewers")}</option>
             <option value="recentlyStarted">{t("sort.recentlyStarted")}</option>
             <option value="cardCount">{t("sort.cardCount")}</option>
             <option value="redemptionCount">{t("sort.redemptionCount")}</option>

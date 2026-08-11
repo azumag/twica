@@ -1519,7 +1519,6 @@
     "directoryHeading": "Live streams",
     "sort": {
       "label": "Sort by",
-      "viewers": "Viewers",
       "recentlyStarted": "Recently started",
       "cardCount": "Card types",
       "redemptionCount": "Channel point redemptions"

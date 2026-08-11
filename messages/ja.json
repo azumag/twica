@@ -1519,7 +1519,6 @@
     "directoryHeading": "ライブ配信一覧",
     "sort": {
       "label": "並び順",
-      "viewers": "視聴者数",
       "recentlyStarted": "配信開始が新しい順",
       "cardCount": "カード種類数",
       "redemptionCount": "チャネルポイント引換数"
