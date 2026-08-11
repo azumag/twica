@@ -8,6 +8,8 @@ import type {
   LiveDirectoryEntry,
   LiveDirectoryRankingEntry,
   LiveDirectoryRankingMetric,
+  LiveDirectoryRankingPeriod,
+  LiveDirectoryRankingsByPeriod,
 } from "@/lib/live-directory";
 
 export type LiveDirectoryView =
@@ -18,7 +20,7 @@ export type LiveDirectoryView =
 
 interface LiveDirectoryProps {
   entries: LiveDirectoryEntry[];
-  rankings: LiveDirectoryRankingEntry[];
+  rankings: LiveDirectoryRankingsByPeriod;
   /**
    * Server Component で確定した描画時刻。
    * Client Component 内で Date.now() を呼ぶとSSRとhydrationの分境界で表示が変わり、
@@ -39,6 +41,14 @@ const VIEWS: ReadonlyArray<{
   { id: "redemptionCount", labelKey: "tabs.redemptionCount" },
   { id: "totalPoints", labelKey: "tabs.totalPoints" },
   { id: "cardCount", labelKey: "tabs.cardCount" },
+];
+
+const RANKING_PERIODS: ReadonlyArray<{
+  id: LiveDirectoryRankingPeriod;
+  labelKey: "period.last7Days" | "period.allTime";
+}> = [
+  { id: "last7Days", labelKey: "period.last7Days" },
+  { id: "allTime", labelKey: "period.allTime" },
 ];
 
 function compareFallback(a: LiveDirectoryEntry, b: LiveDirectoryEntry): number {
@@ -123,6 +133,10 @@ export default function LiveDirectory({
 }: LiveDirectoryProps) {
   const t = useTranslations("livePage");
   const [view, setView] = useState<LiveDirectoryView>("recentlyStarted");
+  // 既存ランキングは全期間だったため初期値を維持する。期間を明示して選べるように
+  // しつつ、リリース直後に順位の見え方が突然変わる退行を避ける。
+  const [rankingPeriod, setRankingPeriod] =
+    useState<LiveDirectoryRankingPeriod>("allTime");
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const sortedEntries = useMemo(() => sortLiveDirectoryEntries(entries), [entries]);
 
@@ -197,7 +211,44 @@ export default function LiveDirectory({
         {view === "recentlyStarted" ? (
           <LiveStreamGrid entries={sortedEntries} referenceTime={referenceTime} />
         ) : (
-          <LiveDirectoryRanking entries={rankings} metric={view} />
+          <>
+            <div className="mb-6 flex flex-col gap-3 border-b border-gray-800 pb-5 sm:flex-row sm:items-end sm:justify-between">
+              <fieldset>
+                <legend className="mb-2 text-sm font-medium text-gray-300">
+                  {t("period.label")}
+                </legend>
+                <div className="inline-flex overflow-hidden rounded-lg border border-gray-600 bg-gray-800 p-1">
+                  {RANKING_PERIODS.map((period) => (
+                    <label
+                      key={period.id}
+                      className="relative cursor-pointer rounded-md focus-within:ring-2 focus-within:ring-purple-400"
+                    >
+                      <input
+                        type="radio"
+                        name="live-directory-ranking-period"
+                        value={period.id}
+                        checked={rankingPeriod === period.id}
+                        onChange={() => setRankingPeriod(period.id)}
+                        className="peer sr-only"
+                      />
+                      <span className="flex min-h-9 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">
+                        {t(period.labelKey)}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <p className="max-w-2xl text-xs leading-5 text-gray-400 sm:text-right">
+                {view === "cardCount"
+                  ? t(`period.cardCountHelp.${rankingPeriod}`)
+                  : t(`period.usageHelp.${rankingPeriod}`)}
+              </p>
+            </div>
+            <LiveDirectoryRanking
+              entries={rankings[rankingPeriod]}
+              metric={view}
+            />
+          </>
         )}
       </div>
 

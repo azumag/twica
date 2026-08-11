@@ -300,32 +300,37 @@ describe("getLiveDirectoryRankings", () => {
     vi.mocked(getKvBinding).mockResolvedValue(kv as never);
     sqlMock = vi.fn().mockResolvedValue([
       {
-        result: [
-          null,
-          "malformed-row",
-          {
-            identity: {
-              twitchLogin: "public_login",
-              displayName: "Public Channel",
-              profileImageUrl: "https://example.com/public.png",
-              unexpectedSecret: "drop-me",
+        result: {
+          last7Days: [
+            null,
+            "malformed-row",
+            {
+              identity: {
+                twitchLogin: "public_login",
+                displayName: "Public Channel",
+                profileImageUrl: "https://example.com/public.png",
+                unexpectedSecret: "drop-me",
+              },
+              cardCount: 12,
+              redemptionCount: 34,
+              totalPoints: 5600,
+              rankedMetrics: ["cardCount", "redemptionCount", "totalPoints", "unknownMetric"],
+              unexpectedInternalId: "drop-me-too",
             },
-            cardCount: 12,
-            redemptionCount: 34,
-            totalPoints: 5600,
-            rankedMetrics: ["cardCount", "redemptionCount", "totalPoints", "unknownMetric"],
-            unexpectedInternalId: "drop-me-too",
-          },
-          {
-            identity: null,
-            cardCount: 7,
-            redemptionCount: 8,
-            totalPoints: 900,
-            rankedMetrics: ["redemptionCount", "unknownMetric"],
-            streamerId: "must-not-leak",
-            twitchUserId: "must-not-leak",
-          },
-        ],
+          ],
+          allTime: [
+            {
+              identity: null,
+              cardCount: 7,
+              redemptionCount: 8,
+              totalPoints: 900,
+              rankedMetrics: ["redemptionCount", "unknownMetric"],
+              streamerId: "must-not-leak",
+              twitchUserId: "must-not-leak",
+            },
+          ],
+          unexpectedPeriod: [{ streamerId: "must-not-leak" }],
+        },
       },
     ]);
     vi.mocked(getDb).mockResolvedValue({ db: {}, sql: sqlMock } as never);
@@ -334,29 +339,34 @@ describe("getLiveDirectoryRankings", () => {
   it("whitelists public identity and allowed ranking metrics for every row", async () => {
     const rankings = await getLiveDirectoryRankings();
 
-    expect(rankings).toEqual([
-      {
-        identity: {
-          twitchLogin: "public_login",
-          displayName: "Public Channel",
-          profileImageUrl: "https://example.com/public.png",
+    expect(rankings).toEqual({
+      last7Days: [
+        {
+          identity: {
+            twitchLogin: "public_login",
+            displayName: "Public Channel",
+            profileImageUrl: "https://example.com/public.png",
+          },
+          cardCount: 12,
+          redemptionCount: 34,
+          totalPoints: 5600,
+          rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
         },
-        cardCount: 12,
-        redemptionCount: 34,
-        totalPoints: 5600,
-        rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
-      },
-      {
-        identity: null,
-        cardCount: 7,
-        redemptionCount: 8,
-        totalPoints: 900,
-        rankedMetrics: ["redemptionCount"],
-      },
-    ]);
-    expect(JSON.stringify(rankings[1])).not.toContain("must-not-leak");
+      ],
+      allTime: [
+        {
+          identity: null,
+          cardCount: 7,
+          redemptionCount: 8,
+          totalPoints: 900,
+          rankedMetrics: ["redemptionCount"],
+        },
+      ],
+    });
+    expect(JSON.stringify(rankings)).not.toContain("must-not-leak");
+    expect(JSON.stringify(rankings)).not.toContain("unexpectedPeriod");
     expect(kv.put).toHaveBeenCalledWith(
-      "live-directory:rankings:v2",
+      "live-directory:rankings:v3",
       JSON.stringify(rankings),
       { expirationTtl: 60 },
     );
@@ -365,29 +375,38 @@ describe("getLiveDirectoryRankings", () => {
   it("drops a row when every selected metric normalizes to zero", async () => {
     sqlMock.mockResolvedValue([
       {
-        result: [
-          {
-            identity: null,
-            cardCount: -1,
-            redemptionCount: "12",
-            totalPoints: Number.MAX_SAFE_INTEGER + 1,
-            rankedMetrics: ["cardCount", "notAllowed"],
-          },
-        ],
+        result: {
+          last7Days: [
+            {
+              identity: null,
+              cardCount: -1,
+              redemptionCount: "12",
+              totalPoints: Number.MAX_SAFE_INTEGER + 1,
+              rankedMetrics: ["cardCount", "notAllowed"],
+            },
+          ],
+          allTime: [],
+        },
       },
     ]);
 
-    await expect(getLiveDirectoryRankings()).resolves.toEqual([]);
+    await expect(getLiveDirectoryRankings()).resolves.toEqual({
+      last7Days: [],
+      allTime: [],
+    });
   });
 
   it("does not cache an RPC failure and reports the ranking-specific context", async () => {
     sqlMock.mockRejectedValue(
-      Object.assign(new Error("function get_live_directory_rankings() does not exist"), {
+      Object.assign(new Error("function get_live_directory_rankings_by_period() does not exist"), {
         code: "42883",
       }),
     );
 
-    await expect(getLiveDirectoryRankings()).resolves.toEqual([]);
+    await expect(getLiveDirectoryRankings()).resolves.toEqual({
+      last7Days: [],
+      allTime: [],
+    });
     expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
       context: "liveDirectory:rankingsRpc",
     });
@@ -396,27 +415,34 @@ describe("getLiveDirectoryRankings", () => {
 
   it("normalizes cached rows and avoids an RPC read on a KV hit", async () => {
     kv.get.mockResolvedValue(
-      JSON.stringify([
+      JSON.stringify({
+        last7Days: [
+          {
+            identity: null,
+            cardCount: 1,
+            redemptionCount: 2,
+            totalPoints: 3,
+            rankedMetrics: ["totalPoints", "unknownMetric"],
+            hidden: "not-returned",
+          },
+        ],
+        allTime: [],
+        secretPeriod: [{ identity: { twitchLogin: "hidden" } }],
+      }),
+    );
+
+    await expect(getLiveDirectoryRankings()).resolves.toEqual({
+      last7Days: [
         {
           identity: null,
           cardCount: 1,
           redemptionCount: 2,
           totalPoints: 3,
-          rankedMetrics: ["totalPoints", "unknownMetric"],
-          hidden: "not-returned",
+          rankedMetrics: ["totalPoints"],
         },
-      ]),
-    );
-
-    await expect(getLiveDirectoryRankings()).resolves.toEqual([
-      {
-        identity: null,
-        cardCount: 1,
-        redemptionCount: 2,
-        totalPoints: 3,
-        rankedMetrics: ["totalPoints"],
-      },
-    ]);
+      ],
+      allTime: [],
+    });
     expect(getDb).not.toHaveBeenCalled();
   });
 });
