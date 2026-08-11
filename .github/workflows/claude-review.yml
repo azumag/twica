@@ -40,9 +40,12 @@
 #
 # Claude 実行 job と投稿 job を分離し、投稿用の pull-requests: write は Claude の
 # 実行終了後にのみ使う。post_review は base（preview）由来の .github/scripts/
-# format-review.mjs を実行する（issue #917）。write 権限 job で head 由来コードを
-# 実行しない多層防御として、checkout は base.sha を明示する。fork では secrets が
-# 渡らず起動条件も満たされない。
+# format-review.mjs を実行する（issue #917）。checkout を base.sha にすることで
+# write 権限 job で実行する「外部モジュール」を head 由来にしない多層防御。
+# ただし actions/github-script のインラインスクリプトは workflow YAML 由来＝head
+# 由来のまま（workflow 定義自体が head 由来のため実効的な権限拡大はなく、旧
+# コメントの但し書きは引き続き有効）。fork では secrets が渡らず起動条件も
+# 満たされない。
 # なおコメントは初回のみ createComment（通知あり）、以降は updateComment で
 # 上書きする（単一コメント維持方針）ため、2回目以降の通知は発生しない。
 # PR ページと Step summary で確認する運用。
@@ -305,11 +308,17 @@ jobs:
           # job の checkout は別ランナーで共有されない。cone モード既定の
           # sparse-checkout で .github/scripts を対象にする（ルート直下の
           # ファイルは常に展開される）。base.sha（preview）を明示するのは、
-          # write 権限 job で head 由来コード（PR 作成者が変更可能な
-          # format-review.mjs）を実行しないため（issue #917）。
+          # write 権限 job で実行する外部モジュール（PR 作成者が変更可能な
+          # format-review.mjs）を head 由来にしないため（issue #917）。
+          # インライン github-script は head 由来のままなので、防御は「外部
+          # モジュールのみ base 化」に限定される点に注意。
           # format-review.mjs は preview にマージ済みのため base.sha で取得できる。
           # コンフリクト中の PR では merge ref が無いため、base.sha / head.sha の
           # どちらも checkout 可能な SHA を明示する方式を維持する。
+          # 注意: format-review.mjs を変更する PR では、自 PR の post_review は
+          # base 側の旧版で動く（自 PR では検証されない）。export 名・
+          # REVIEW_MARKER を変える場合は TypeError / コメント重複が起こり得るため、
+          # マージ後に追い PR で実経路を確認すること。
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: .github/scripts
