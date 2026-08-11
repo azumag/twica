@@ -81,9 +81,13 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # コスト受容: preview 向け PR の synchronize ごとに opus（最大30ターン）を
+    # コスト受容: preview 向け PR の synchronize ごとに opus（最大50ターン）を
     # 回す。fetch-depth: 0 の全履歴取得と合わせ、差分が大きい PR では 25 分
     # timeout / max-turns 到達で fail-loud する。
+    # max-turns は #922 の実測（12ファイル/+737行 の差分で 30ターン到達により
+    # structured output 未返却 → error_max_turns が2回連続）を受けて 30→50 に
+    # 引き上げた。収束ルールの導入後もターン切れだけはレビュー本体が一切
+    # 得られず収束不能になるため、レビュー完了を優先する。
     permissions:
       contents: read
       pull-requests: read
@@ -189,7 +193,7 @@ jobs:
           # （文字列へ混入して --json-schema 等を壊す事故を実測済み）。
           claude_args: >-
             --model opus
-            --max-turns 30
+            --max-turns 50
             --allowedTools "Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read(${{ github.workspace }}/**),Grep,Glob"
             --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,Bash(gh:*),WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
             --json-schema '{"type":"object","properties":{"review":{"type":"string"}},"required":["review"],"additionalProperties":false}'
