@@ -139,6 +139,11 @@ export default function LiveDirectory({
     useState<LiveDirectoryRankingPeriod>("allTime");
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const sortedEntries = useMemo(() => sortLiveDirectoryEntries(entries), [entries]);
+  // 種類数は「現在有効なカード種類数」というスナップショット指標であり、
+  // 集計期間によって変わる利用量ではない。期間選択を種類数へ誤適用しないよう、
+  // 種類数だけは常に allTime 側の現在値を参照する。
+  const rankingEntries =
+    view === "cardCount" ? rankings.allTime : rankings[rankingPeriod];
 
   const handleTabKeyDown = (
     event: KeyboardEvent<HTMLButtonElement>,
@@ -213,41 +218,40 @@ export default function LiveDirectory({
         ) : (
           <>
             <div className="mb-6 flex flex-col gap-3 border-b border-gray-800 pb-5 sm:flex-row sm:items-end sm:justify-between">
-              <fieldset>
-                <legend className="mb-2 text-sm font-medium text-gray-300">
-                  {t("period.label")}
-                </legend>
-                <div className="inline-flex overflow-hidden rounded-lg border border-gray-600 bg-gray-800 p-1">
-                  {RANKING_PERIODS.map((period) => (
-                    <label
-                      key={period.id}
-                      className="relative cursor-pointer rounded-md focus-within:ring-2 focus-within:ring-purple-400"
-                    >
-                      <input
-                        type="radio"
-                        name="live-directory-ranking-period"
-                        value={period.id}
-                        checked={rankingPeriod === period.id}
-                        onChange={() => setRankingPeriod(period.id)}
-                        className="peer sr-only"
-                      />
-                      <span className="flex min-h-9 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">
-                        {t(period.labelKey)}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
+              {view !== "cardCount" && (
+                <fieldset>
+                  <legend className="mb-2 text-sm font-medium text-gray-300">
+                    {t("period.label")}
+                  </legend>
+                  <div className="inline-flex overflow-hidden rounded-lg border border-gray-600 bg-gray-800 p-1">
+                    {RANKING_PERIODS.map((period) => (
+                      <label
+                        key={period.id}
+                        className="relative cursor-pointer rounded-md focus-within:ring-2 focus-within:ring-purple-400"
+                      >
+                        <input
+                          type="radio"
+                          name="live-directory-ranking-period"
+                          value={period.id}
+                          checked={rankingPeriod === period.id}
+                          onChange={() => setRankingPeriod(period.id)}
+                          className="peer sr-only"
+                        />
+                        <span className="flex min-h-9 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">
+                          {t(period.labelKey)}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
               <p className="max-w-2xl text-xs leading-5 text-gray-400 sm:text-right">
                 {view === "cardCount"
-                  ? t(`period.cardCountHelp.${rankingPeriod}`)
+                  ? t("period.cardCountHelp")
                   : t(`period.usageHelp.${rankingPeriod}`)}
               </p>
             </div>
-            <LiveDirectoryRanking
-              entries={rankings[rankingPeriod]}
-              metric={view}
-            />
+            <LiveDirectoryRanking entries={rankingEntries} metric={view} />
           </>
         )}
       </div>
