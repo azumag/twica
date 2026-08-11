@@ -7,6 +7,7 @@ import { useTranslations } from "next-intl";
 import type {
   LiveDirectoryEntry,
   LiveDirectoryRankingEntry,
+  LiveDirectoryRankingMetric,
 } from "@/lib/live-directory";
 
 export type LiveDirectoryView =
@@ -14,10 +15,6 @@ export type LiveDirectoryView =
   | "redemptionCount"
   | "totalPoints"
   | "cardCount";
-export type LiveDirectoryRankingMetric = Exclude<
-  LiveDirectoryView,
-  "recentlyStarted"
->;
 
 interface LiveDirectoryProps {
   entries: LiveDirectoryEntry[];
@@ -76,8 +73,8 @@ export function sortLiveDirectoryEntries(
  * ランキングを入力非破壊で降順にする。
  *
  * 同値は同順位として表示するため、比較に別の数値指標を混ぜない。公開identity同士は
- * 表示名で安定化し、匿名同士はRPCの決定的な入力順をstable sortで保つ。内部IDを
- * クライアントへ渡してtie-breakに使うことは匿名化の目的を壊すため行わない。
+ * 表示名と公開Twitch loginで安定化し、匿名同士はRPCの入力順をstable sortで保つ。
+ * 内部IDをクライアントへ渡してtie-breakに使うことは匿名化の目的を壊すため行わない。
  */
 export function sortLiveDirectoryRankings(
   entries: readonly LiveDirectoryRankingEntry[],
@@ -91,8 +88,8 @@ export function sortLiveDirectoryRankings(
       if (a.identity.displayName !== b.identity.displayName) {
         return a.identity.displayName < b.identity.displayName ? -1 : 1;
       }
-      if (a.identity.streamerId !== b.identity.streamerId) {
-        return a.identity.streamerId < b.identity.streamerId ? -1 : 1;
+      if (a.identity.twitchLogin !== b.identity.twitchLogin) {
+        return a.identity.twitchLogin < b.identity.twitchLogin ? -1 : 1;
       }
     }
     if (a.identity !== null && b.identity === null) return -1;
@@ -259,7 +256,11 @@ function LiveDirectoryRanking({
 }) {
   const t = useTranslations("livePage");
   const sorted = useMemo(
-    () => sortLiveDirectoryRankings(entries, metric),
+    () =>
+      sortLiveDirectoryRankings(
+        entries.filter((entry) => entry.rankedMetrics.includes(metric)),
+        metric,
+      ),
     [entries, metric],
   );
   const ranks = useMemo(() => getCompetitionRanks(sorted, metric), [sorted, metric]);
@@ -276,7 +277,7 @@ function LiveDirectoryRanking({
     <ol className="divide-y divide-gray-800 border-y border-gray-800">
       {sorted.map((entry, index) => (
         <li
-          key={entry.identity?.streamerId ?? `anonymous-${index}`}
+          key={entry.identity?.twitchLogin ?? `anonymous-${index}`}
           className="grid min-h-20 grid-cols-[3rem_minmax(0,1fr)_auto] items-center gap-3 py-3 sm:grid-cols-[4rem_minmax(0,1fr)_auto] sm:gap-4"
         >
           <span className="text-center text-lg font-semibold tabular-nums text-gray-300">

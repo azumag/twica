@@ -15,9 +15,10 @@ COMMENT ON COLUMN streamers.publish_stats IS
 -- 返却形状を維持する。新アプリはKV/RSC境界のホワイトリストで旧fieldを除去する。
 -- 不要集計の削除は新アプリが全環境へ反映された後のcontract migrationへ分離する。
 
--- 公開ランキング用read RPC。1配信者につき1行の集計だけを返し、表示側で3指標を
--- 並べ替える。3ランキングをSQL側で別配列にすると同じidentityと集計値を3回返して
--- payloadが膨らむため、単一配列を60秒KVキャッシュしてクライアントで整列する。
+-- 公開ランキング用read RPC。各指標の正値上位100件の和集合を1配信者1行で返し、
+-- rankedMetricsでその行を表示するランキングを指定する。3ランキングをSQL側で
+-- 別配列にすると同じidentityと集計値を3回返してpayloadが膨らむため、単一配列を
+-- 60秒KVキャッシュしてクライアントで整列する。
 --
 -- cardCount: 有効カード種類数
 -- redemptionCount: reward_cost > 0 のカード引き換え累計
@@ -42,34 +43,100 @@ usage_totals AS (
     COALESCE(SUM(us.total_points), 0)::BIGINT AS total_points
   FROM channel_point_usage_stats us
   GROUP BY us.streamer_id
+),
+aggregated AS (
+  SELECT
+    s.publish_stats,
+    s.twitch_username,
+    s.twitch_display_name,
+    s.twitch_profile_image_url,
+    COALESCE(cc.card_count, 0) AS card_count,
+    COALESCE(ut.redemption_count, 0) AS redemption_count,
+    COALESCE(ut.total_points, 0) AS total_points
+  FROM streamers s
+  LEFT JOIN card_counts cc ON cc.streamer_id = s.id
+  LEFT JOIN usage_totals ut ON ut.streamer_id = s.id
+  WHERE s.is_active = TRUE
+),
+ranked AS (
+  SELECT
+    a.*,
+    ROW_NUMBER() OVER (
+      ORDER BY
+        a.card_count DESC,
+        a.redemption_count DESC,
+        a.total_points DESC,
+        CASE WHEN a.publish_stats THEN LOWER(a.twitch_username) END NULLS LAST,
+        CASE WHEN a.publish_stats THEN a.twitch_username END NULLS LAST
+    ) AS card_count_position,
+    ROW_NUMBER() OVER (
+      ORDER BY
+        a.redemption_count DESC,
+        a.total_points DESC,
+        a.card_count DESC,
+        CASE WHEN a.publish_stats THEN LOWER(a.twitch_username) END NULLS LAST,
+        CASE WHEN a.publish_stats THEN a.twitch_username END NULLS LAST
+    ) AS redemption_count_position,
+    ROW_NUMBER() OVER (
+      ORDER BY
+        a.total_points DESC,
+        a.redemption_count DESC,
+        a.card_count DESC,
+        CASE WHEN a.publish_stats THEN LOWER(a.twitch_username) END NULLS LAST,
+        CASE WHEN a.publish_stats THEN a.twitch_username END NULLS LAST
+    ) AS total_points_position
+  FROM aggregated a
+),
+selected AS (
+  SELECT
+    r.*,
+    ARRAY_REMOVE(ARRAY[
+      CASE
+        WHEN r.card_count > 0 AND r.card_count_position <= 100
+        THEN 'cardCount'
+      END,
+      CASE
+        WHEN r.redemption_count > 0 AND r.redemption_count_position <= 100
+        THEN 'redemptionCount'
+      END,
+      CASE
+        WHEN r.total_points > 0 AND r.total_points_position <= 100
+        THEN 'totalPoints'
+      END
+    ]::TEXT[], NULL) AS ranked_metrics
+  FROM ranked r
 )
 SELECT COALESCE(
   jsonb_agg(
     jsonb_build_object(
       'identity',
-        CASE WHEN s.publish_stats THEN jsonb_build_object(
-          'streamerId', s.id,
-          'twitchLogin', s.twitch_username,
-          'displayName', s.twitch_display_name,
-          'profileImageUrl', s.twitch_profile_image_url
+        CASE WHEN selected.publish_stats THEN jsonb_build_object(
+          'twitchLogin', selected.twitch_username,
+          'displayName', selected.twitch_display_name,
+          'profileImageUrl', selected.twitch_profile_image_url
         ) ELSE NULL END,
-      'cardCount', COALESCE(cc.card_count, 0),
-      'redemptionCount', COALESCE(ut.redemption_count, 0),
-      'totalPoints', COALESCE(ut.total_points, 0)
+      'cardCount', selected.card_count,
+      'redemptionCount', selected.redemption_count,
+      'totalPoints', selected.total_points,
+      'rankedMetrics', selected.ranked_metrics
     )
-    -- IDはレスポンスへ含めず、同値行のキャッシュ順を決定するためだけに使う。
-    ORDER BY s.id
+    -- 匿名行を内部ID順にすると、既知IDとの相対位置から本人を絞り込める。
+    -- 集計値が同じ匿名行はレスポンス上も同一なので、公開値のみで順序を決める。
+    ORDER BY
+      selected.card_count DESC,
+      selected.redemption_count DESC,
+      selected.total_points DESC,
+      CASE WHEN selected.publish_stats THEN LOWER(selected.twitch_username) END NULLS LAST,
+      CASE WHEN selected.publish_stats THEN selected.twitch_username END NULLS LAST
   ),
   '[]'::JSONB
 )
-FROM streamers s
-LEFT JOIN card_counts cc ON cc.streamer_id = s.id
-LEFT JOIN usage_totals ut ON ut.streamer_id = s.id
-WHERE s.is_active = TRUE;
+FROM selected
+WHERE CARDINALITY(selected.ranked_metrics) > 0;
 $$;
 
 COMMENT ON FUNCTION get_live_directory_rankings() IS
-  '/live向け全配信者ランキング集計。publish_stats=falseは識別情報を返さない (issue #740)';
+  '/live向け各指標上位100件のランキング集計。publish_stats=falseは識別情報を返さない (issue #740)';
 
 REVOKE ALL ON FUNCTION get_live_directory_rankings() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION get_live_directory_rankings() TO service_role;

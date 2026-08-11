@@ -1574,7 +1574,7 @@
       "publishLiveStatus": "Publish my live status",
       "publishLiveStatusHelp": "When on, your channel appears on the live page while you are streaming.",
       "publishStats": "Show my channel in rankings",
-      "publishStatsHelp": "When on, rankings show your channel name, image, and link. When off, your totals still appear as an anonymous channel."
+      "publishStatsHelp": "When on, rankings show your channel name, image, and link. When off, totals that place in the top 100 still appear as an anonymous channel."
     },
     "messages": {
       "liveEnabled": "Live directory listing setting turned on",

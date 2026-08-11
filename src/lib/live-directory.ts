@@ -9,7 +9,7 @@ import { fetchTwitchApi } from "@/lib/twitch/app-token";
  * 配信中ページ（/live）のデータ層（issue #739 / 親 #632）。
  *
  * 「オプトイン配信者のうち現在Twitchでライブ中の一覧」と、全アクティブ
- * 配信者を対象にした匿名化済みランキングを返す。
+ * 配信者を母集団にした各指標上位100件の匿名化済みランキングを返す。
  * 方式は設計で確定済みの Helix GET /streams ポーリング + KVキャッシュ(60s)。
  * EventSub stream.online/offline は購読ライフサイクル管理が過剰なため不採用。
  *
@@ -38,11 +38,18 @@ export interface LiveDirectoryEntry {
 }
 
 export interface LiveDirectoryRankingIdentity {
-  streamerId: string;
   twitchLogin: string;
   displayName: string;
   profileImageUrl: string;
 }
+
+export const LIVE_DIRECTORY_RANKING_METRICS = [
+  "cardCount",
+  "redemptionCount",
+  "totalPoints",
+] as const;
+export type LiveDirectoryRankingMetric =
+  (typeof LIVE_DIRECTORY_RANKING_METRICS)[number];
 
 export interface LiveDirectoryRankingEntry {
   /** nullならDB境界で識別情報を除去済みの匿名行。 */
@@ -50,6 +57,8 @@ export interface LiveDirectoryRankingEntry {
   cardCount: number;
   redemptionCount: number;
   totalPoints: number;
+  /** SQL側の各指標上位100件のうち、この行を表示するランキング。 */
+  rankedMetrics: LiveDirectoryRankingMetric[];
 }
 
 /** RPC get_live_directory_streamers() の返却行（migration 側の JSONB 形状）。 */
@@ -73,7 +82,7 @@ interface HelixStream {
 }
 
 const LIVE_DIRECTORY_KV_KEY = "live-directory:v1";
-const LIVE_DIRECTORY_RANKINGS_KV_KEY = "live-directory:rankings:v1";
+const LIVE_DIRECTORY_RANKINGS_KV_KEY = "live-directory:rankings:v2";
 const LIVE_DIRECTORY_TTL_SECONDS = 60;
 const HELIX_STREAMS_BATCH_SIZE = 100;
 
@@ -234,7 +243,7 @@ function normalizeLiveDirectoryEntries(value: unknown): LiveDirectoryEntry[] {
  * RPCの戻り値を公開型へホワイトリスト変換する。
  *
  * SQLでもpublish_stats=false時にidentityをNULL化しているが、ここでも許可した
- * 4フィールドだけを再構築する。将来RPCへ内部列が追加されても、RSC payloadへ
+ * 3フィールドだけを再構築する。将来RPCへ内部列が追加されても、RSC payloadへ
  * 意図せず流出しないようプライバシー境界を二重化する。
  */
 function normalizeRankingEntries(value: unknown): LiveDirectoryRankingEntry[] {
@@ -251,12 +260,10 @@ function normalizeRankingEntries(value: unknown): LiveDirectoryRankingEntry[] {
     if (rawIdentity && typeof rawIdentity === "object") {
       const candidate = rawIdentity as Record<string, unknown>;
       if (
-        typeof candidate.streamerId === "string" &&
         typeof candidate.twitchLogin === "string" &&
         typeof candidate.displayName === "string"
       ) {
         identity = {
-          streamerId: candidate.streamerId,
           twitchLogin: candidate.twitchLogin,
           displayName: candidate.displayName,
           profileImageUrl:
@@ -267,11 +274,25 @@ function normalizeRankingEntries(value: unknown): LiveDirectoryRankingEntry[] {
       }
     }
 
-    return [{
-      identity,
+    // SQLは各指標の正値上位100件だけを指定する。キャッシュ境界でも列挙した値
+    // だけを許可し、未知のmetricで任意プロパティ参照が起きないようにする。
+    const counters = {
       cardCount: normalizeNonNegativeInteger(row.cardCount),
       redemptionCount: normalizeNonNegativeInteger(row.redemptionCount),
       totalPoints: normalizeNonNegativeInteger(row.totalPoints),
+    };
+    const rawRankedMetrics = Array.isArray(row.rankedMetrics)
+      ? row.rankedMetrics
+      : [];
+    const rankedMetrics = LIVE_DIRECTORY_RANKING_METRICS.filter(
+      (metric) => rawRankedMetrics.includes(metric) && counters[metric] > 0,
+    );
+    if (rankedMetrics.length === 0) return [];
+
+    return [{
+      identity,
+      ...counters,
+      rankedMetrics,
     }];
   });
 }
@@ -305,7 +326,7 @@ async function fetchLiveDirectoryRankingsUncached(): Promise<LiveDirectoryRankin
 }
 
 /**
- * 全アクティブ配信者の匿名化済みランキング集計を返す。
+ * 各指標の正値上位100件に入る配信者の匿名化済みランキング集計を返す。
  * ライブ一覧とはDB同意・障害境界が異なるため別キャッシュにし、新RPCが未反映の
  * デプロイ窓でも既存のライブ一覧キャッシュを巻き込んで無効化しない。
  */

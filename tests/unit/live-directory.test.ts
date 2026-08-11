@@ -305,7 +305,6 @@ describe("getLiveDirectoryRankings", () => {
           "malformed-row",
           {
             identity: {
-              streamerId: "public-streamer",
               twitchLogin: "public_login",
               displayName: "Public Channel",
               profileImageUrl: "https://example.com/public.png",
@@ -314,6 +313,7 @@ describe("getLiveDirectoryRankings", () => {
             cardCount: 12,
             redemptionCount: 34,
             totalPoints: 5600,
+            rankedMetrics: ["cardCount", "redemptionCount", "totalPoints", "unknownMetric"],
             unexpectedInternalId: "drop-me-too",
           },
           {
@@ -321,6 +321,7 @@ describe("getLiveDirectoryRankings", () => {
             cardCount: 7,
             redemptionCount: 8,
             totalPoints: 900,
+            rankedMetrics: ["redemptionCount", "unknownMetric"],
             streamerId: "must-not-leak",
             twitchUserId: "must-not-leak",
           },
@@ -330,13 +331,12 @@ describe("getLiveDirectoryRankings", () => {
     vi.mocked(getDb).mockResolvedValue({ db: {}, sql: sqlMock } as never);
   });
 
-  it("whitelists public identity and returns opted-out rows without identifiers", async () => {
+  it("whitelists public identity and allowed ranking metrics for every row", async () => {
     const rankings = await getLiveDirectoryRankings();
 
     expect(rankings).toEqual([
       {
         identity: {
-          streamerId: "public-streamer",
           twitchLogin: "public_login",
           displayName: "Public Channel",
           profileImageUrl: "https://example.com/public.png",
@@ -344,23 +344,25 @@ describe("getLiveDirectoryRankings", () => {
         cardCount: 12,
         redemptionCount: 34,
         totalPoints: 5600,
+        rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
       },
       {
         identity: null,
         cardCount: 7,
         redemptionCount: 8,
         totalPoints: 900,
+        rankedMetrics: ["redemptionCount"],
       },
     ]);
     expect(JSON.stringify(rankings[1])).not.toContain("must-not-leak");
     expect(kv.put).toHaveBeenCalledWith(
-      "live-directory:rankings:v1",
+      "live-directory:rankings:v2",
       JSON.stringify(rankings),
       { expirationTtl: 60 },
     );
   });
 
-  it("normalizes invalid or unsafe counters instead of exposing malformed values", async () => {
+  it("drops a row when every selected metric normalizes to zero", async () => {
     sqlMock.mockResolvedValue([
       {
         result: [
@@ -369,14 +371,13 @@ describe("getLiveDirectoryRankings", () => {
             cardCount: -1,
             redemptionCount: "12",
             totalPoints: Number.MAX_SAFE_INTEGER + 1,
+            rankedMetrics: ["cardCount", "notAllowed"],
           },
         ],
       },
     ]);
 
-    await expect(getLiveDirectoryRankings()).resolves.toEqual([
-      { identity: null, cardCount: 0, redemptionCount: 0, totalPoints: 0 },
-    ]);
+    await expect(getLiveDirectoryRankings()).resolves.toEqual([]);
   });
 
   it("does not cache an RPC failure and reports the ranking-specific context", async () => {
@@ -401,13 +402,20 @@ describe("getLiveDirectoryRankings", () => {
           cardCount: 1,
           redemptionCount: 2,
           totalPoints: 3,
+          rankedMetrics: ["totalPoints", "unknownMetric"],
           hidden: "not-returned",
         },
       ]),
     );
 
     await expect(getLiveDirectoryRankings()).resolves.toEqual([
-      { identity: null, cardCount: 1, redemptionCount: 2, totalPoints: 3 },
+      {
+        identity: null,
+        cardCount: 1,
+        redemptionCount: 2,
+        totalPoints: 3,
+        rankedMetrics: ["totalPoints"],
+      },
     ]);
     expect(getDb).not.toHaveBeenCalled();
   });

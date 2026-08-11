@@ -54,7 +54,6 @@ const entries = [
 const rankings: LiveDirectoryRankingEntry[] = [
   {
     identity: {
-      streamerId: "alpha",
       twitchLogin: "alpha",
       displayName: "Alpha",
       profileImageUrl: "https://example.com/alpha-profile.png",
@@ -62,16 +61,17 @@ const rankings: LiveDirectoryRankingEntry[] = [
     cardCount: 4,
     redemptionCount: 90,
     totalPoints: 9000,
+    rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
   },
   {
     identity: null,
     cardCount: 12,
     redemptionCount: 30,
     totalPoints: 30000,
+    rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
   },
   {
     identity: {
-      streamerId: "charlie",
       twitchLogin: "charlie",
       displayName: "Charlie",
       profileImageUrl: "",
@@ -79,6 +79,7 @@ const rankings: LiveDirectoryRankingEntry[] = [
     cardCount: 12,
     redemptionCount: 30,
     totalPoints: 3000,
+    rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
   },
 ];
 
@@ -104,7 +105,7 @@ function renderedCardIds(container: HTMLElement): string[] {
 }
 
 function rankingIds(items: LiveDirectoryRankingEntry[]): string[] {
-  return items.map((item) => item.identity?.streamerId ?? "anonymous");
+  return items.map((item) => item.identity?.twitchLogin ?? "anonymous");
 }
 
 describe("live directory ordering", () => {
@@ -202,6 +203,48 @@ describe("LiveDirectory", () => {
     // 可視名とsr-onlyの操作説明がリンク名を担うため、avatarは三重読み上げを
     // 避ける装飾画像として扱う。
     expect(alphaLink.querySelector("img")).toHaveAttribute("alt", "");
+  });
+
+  it("excludes rows outside each metric candidate set before calculating ranks", () => {
+    const metricScopedRankings: LiveDirectoryRankingEntry[] = [
+      {
+        identity: rankings[0].identity,
+        cardCount: 999,
+        redemptionCount: 10,
+        totalPoints: 999,
+        rankedMetrics: ["redemptionCount"],
+      },
+      {
+        identity: null,
+        cardCount: 999,
+        redemptionCount: 999,
+        totalPoints: 20,
+        rankedMetrics: ["totalPoints"],
+      },
+      {
+        identity: rankings[2].identity,
+        cardCount: 30,
+        redemptionCount: 999,
+        totalPoints: 999,
+        rankedMetrics: ["cardCount"],
+      },
+    ];
+    renderDirectory([], metricScopedRankings);
+
+    fireEvent.click(screen.getByRole("tab", { name: "カード引き換え数ランキング" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByText("1位")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("匿名チャネル")).toBeInTheDocument();
+    expect(screen.getByText("1位")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "種類数ランキング" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("Charlie")).toBeInTheDocument();
+    expect(screen.getByText("1位")).toBeInTheDocument();
   });
 
   it("supports arrow, Home, and End keys with automatic tab activation", () => {

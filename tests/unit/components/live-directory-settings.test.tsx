@@ -65,7 +65,9 @@ describe("LiveDirectorySettings", () => {
     expect(liveToggle).toBeEnabled();
     expect(rankingToggle).not.toBeChecked();
     expect(rankingToggle).toBeEnabled();
-    expect(rankingToggle).toHaveAccessibleDescription(/オフでも.*匿名.*ランキング/);
+    expect(rankingToggle).toHaveAccessibleDescription(
+      /オフでも上位100件に入る集計値は匿名チャネルとしてランキングに掲載されます/,
+    );
   });
 
   it("turning listing on saves only publishLiveStatus", async () => {
