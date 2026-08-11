@@ -301,6 +301,8 @@ describe("getLiveDirectoryRankings", () => {
     sqlMock = vi.fn().mockResolvedValue([
       {
         result: [
+          null,
+          "malformed-row",
           {
             identity: {
               streamerId: "public-streamer",

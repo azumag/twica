@@ -1547,7 +1547,6 @@
     },
     "ranking": {
       "anonymous": "匿名チャネル",
-      "profileAlt": "{name}のプロフィール画像",
       "channelLink": "{name}をTwitchで見る（新しいタブで開きます）",
       "rank": "{rank, number}位",
       "redemptionCount": "{count, number}回",
@@ -1568,8 +1567,8 @@
     "title": "配信中ページの設定",
     "description": "配信を開始したら<link>配信中ページ</link>に表示するかどうかの設定です。どちらも既定ではオフです。",
     "status": {
-      "enabled": "掲載中",
-      "disabled": "非掲載"
+      "enabled": "掲載オン",
+      "disabled": "掲載オフ"
     },
     "form": {
       "publishLiveStatus": "配信中を公表する",

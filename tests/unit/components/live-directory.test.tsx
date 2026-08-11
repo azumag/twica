@@ -199,6 +199,9 @@ describe("LiveDirectory", () => {
     expect(alphaLink).toHaveAttribute("href", "https://www.twitch.tv/alpha");
     expect(alphaLink).toHaveAttribute("target", "_blank");
     expect(alphaLink).toHaveAttribute("rel", "noopener noreferrer");
+    // 可視名とsr-onlyの操作説明がリンク名を担うため、avatarは三重読み上げを
+    // 避ける装飾画像として扱う。
+    expect(alphaLink.querySelector("img")).toHaveAttribute("alt", "");
   });
 
   it("supports arrow, Home, and End keys with automatic tab activation", () => {

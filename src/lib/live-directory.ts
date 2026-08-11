@@ -240,10 +240,11 @@ function normalizeLiveDirectoryEntries(value: unknown): LiveDirectoryEntry[] {
 function normalizeRankingEntries(value: unknown): LiveDirectoryRankingEntry[] {
   if (!Array.isArray(value)) return [];
 
-  return value.map((item) => {
-    const row = item && typeof item === "object"
-      ? (item as Record<string, unknown>)
-      : {};
+  return value.flatMap((item) => {
+    // JSON配列内の壊れたprimitiveを匿名0件として残すと、実在しないランキング行を
+    // 作ってしまう。ライブ一覧の正規化と同じく、objectでない行は破棄する。
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
     const rawIdentity = row.identity;
     let identity: LiveDirectoryRankingIdentity | null = null;
 
@@ -266,12 +267,12 @@ function normalizeRankingEntries(value: unknown): LiveDirectoryRankingEntry[] {
       }
     }
 
-    return {
+    return [{
       identity,
       cardCount: normalizeNonNegativeInteger(row.cardCount),
       redemptionCount: normalizeNonNegativeInteger(row.redemptionCount),
       totalPoints: normalizeNonNegativeInteger(row.totalPoints),
-    };
+    }];
   });
 }
 

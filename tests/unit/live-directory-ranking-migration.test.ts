@@ -9,13 +9,9 @@ const migration = readFileSync(
   ),
   "utf8",
 );
-const liveFunctionStart = migration.indexOf(
-  "CREATE OR REPLACE FUNCTION get_live_directory_streamers()",
-);
 const rankingFunctionStart = migration.indexOf(
   "CREATE OR REPLACE FUNCTION get_live_directory_rankings()",
 );
-const liveFunction = migration.slice(liveFunctionStart, rankingFunctionStart);
 const rankingFunction = migration.slice(rankingFunctionStart);
 
 describe("live directory ranking migration", () => {
@@ -49,13 +45,10 @@ describe("live directory ranking migration", () => {
     );
   });
 
-  it("keeps live consent filtering while removing legacy stats aggregation", () => {
-    expect(liveFunctionStart).toBeGreaterThanOrEqual(0);
-    expect(rankingFunctionStart).toBeGreaterThan(liveFunctionStart);
-    expect(liveFunction).toMatch(/WHERE s\.publish_live_status = TRUE/i);
-    expect(liveFunction).toContain("'twitchUserId', s.twitch_user_id");
-    expect(liveFunction).not.toContain("channel_point_usage_stats");
-    expect(liveFunction).not.toContain("'cardCount'");
-    expect(liveFunction).not.toContain("'publishStats'");
+  it("does not change the existing live RPC shape during the deploy window", () => {
+    expect(rankingFunctionStart).toBeGreaterThanOrEqual(0);
+    expect(migration).not.toContain(
+      "CREATE OR REPLACE FUNCTION get_live_directory_streamers()",
+    );
   });
 });

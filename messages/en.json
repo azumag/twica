@@ -1547,7 +1547,6 @@
     },
     "ranking": {
       "anonymous": "Anonymous channel",
-      "profileAlt": "Profile image for {name}",
       "channelLink": "View {name} on Twitch (opens in a new tab)",
       "rank": "Rank {rank, number}",
       "redemptionCount": "{count, plural, one {# redemption} other {# redemptions}}",
@@ -1568,8 +1567,8 @@
     "title": "Live page settings",
     "description": "Choose whether to appear on the <link>live page</link> when you start streaming. Both settings are off by default.",
     "status": {
-      "enabled": "Listed",
-      "disabled": "Hidden"
+      "enabled": "Listing on",
+      "disabled": "Listing off"
     },
     "form": {
       "publishLiveStatus": "Publish my live status",

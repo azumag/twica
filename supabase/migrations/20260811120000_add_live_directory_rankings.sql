@@ -10,38 +10,10 @@
 COMMENT ON COLUMN streamers.publish_stats IS
   '/liveランキングでチャネル名・画像・リンクを表示するオプトイン (issue #740)';
 
--- 初回/live実装のRPCはカード統計をライブ行へ付けていたが、ランキング分離後は
--- クライアントがその値を使わない。公開同意済みチャネルのTwitch照合に必要な列だけ
--- 返す形へ置換し、/live取得ごとのcards/usage集計と不要なpayloadを解消する。
-CREATE OR REPLACE FUNCTION get_live_directory_streamers()
-RETURNS JSONB
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $$
-SELECT COALESCE(
-  jsonb_agg(
-    jsonb_build_object(
-      'streamerId', s.id,
-      'twitchUserId', s.twitch_user_id,
-      'twitchDisplayName', s.twitch_display_name,
-      'twitchProfileImageUrl', s.twitch_profile_image_url
-    )
-    ORDER BY s.twitch_display_name, s.id
-  ),
-  '[]'::JSONB
-)
-FROM streamers s
-WHERE s.publish_live_status = TRUE
-  AND s.is_active = TRUE;
-$$;
-
-COMMENT ON FUNCTION get_live_directory_streamers() IS
-  '/live向け掲載オプトイン済み配信者。統計集計はランキングRPCへ分離 (issue #740)';
-
-REVOKE ALL ON FUNCTION get_live_directory_streamers() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION get_live_directory_streamers() TO service_role;
+-- 既存get_live_directory_streamers()は、このmigrationがアプリより先に適用される
+-- デプロイ窓で旧アプリがpublishStats/cardCount/redemptionCountを読み続けられるよう
+-- 返却形状を維持する。新アプリはKV/RSC境界のホワイトリストで旧fieldを除去する。
+-- 不要集計の削除は新アプリが全環境へ反映された後のcontract migrationへ分離する。
 
 -- 公開ランキング用read RPC。1配信者につき1行の集計だけを返し、表示側で3指標を
 -- 並べ替える。3ランキングをSQL側で別配列にすると同じidentityと集計値を3回返して

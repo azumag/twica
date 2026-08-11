@@ -271,8 +271,8 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
   // どちらか一方でも有効ならセクション全体を設定済みとして示す。
   const liveDirectoryStatus: SettingsSection["status"] =
     data.liveDirectory.publishLiveStatus || data.liveDirectory.publishStats
-    ? "active"
-    : "empty";
+      ? "active"
+      : "empty";
 
   const sections: SettingsSection[] = [
     {
