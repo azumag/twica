@@ -721,6 +721,93 @@ describe('POST /api/streamer/settings', () => {
     })
   })
 
+  // Issue #738: 配信中ディレクトリ掲載・統計公開オプトイン
+  describe('live directory settings (Issue #738)', () => {
+    it('should accept publishLiveStatus/publishStats when both are booleans', async () => {
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          publishLiveStatus: true,
+          publishStats: false,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.success).toBe(true)
+    })
+
+    it('should reject publishLiveStatus when not a boolean', async () => {
+      const mockDbFixture = createDbFixture().build()
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          publishLiveStatus: 'true',
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+
+    it('should reject publishStats when not a boolean', async () => {
+      const mockDbFixture = createDbFixture().build()
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          publishStats: 1,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+
+    it('should accept independent publishStats toggle without publishLiveStatus', async () => {
+      // 設定UIはトグル単位で部分送信するため、片方だけが届くケースが正常系
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({
+          id: 'streamer123',
+          twitch_user_id: 'streamer123',
+        })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          publishStats: true,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+    })
+  })
+
   describe('gachaSoundRules premium gate', () => {
     it('should return 403 for basic plan users attempting to set gachaSoundRules', async () => {
       mockGetUserPlan.mockResolvedValue('basic')

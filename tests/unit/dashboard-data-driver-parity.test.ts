@@ -33,6 +33,7 @@ import {
   users as usersTable,
 } from '@/lib/db/schema'
 import { CARDS_SAFE_COLUMNS } from '@/lib/db/cards-safe-columns'
+import { STREAMERS_SAFE_COLUMNS } from '@/lib/db/streamers-safe-columns'
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -76,6 +77,8 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     default_card_pack_name: null,
     show_unowned_cards: false,
     show_unowned_card_details: false,
+    publish_live_status: false,
+    publish_stats: false,
     raid_gacha_active_until: null,
     raid_gacha_draw_count: 0,
     created_at: '2025-12-01T00:00:00.000+00:00',
@@ -340,6 +343,26 @@ describe('dashboard-data: Drizzle 読み取り', () => {
       expect(lastSelection?.card).toEqual(CARDS_SAFE_COLUMNS)
     })
 
+    it('streamers の新列が未デプロイなら安全な列集合で再試行する', async () => {
+      const { result, db } = await runWithDb(
+        {
+          tables: tableRows([
+            [streamersTable, [STREAMER]],
+            [cardsTable, [CARD_NEW]],
+          ]),
+          errors: new Map([[streamersTable, [missingColumnError('publish_live_status')]]]),
+        },
+        () => getStreamerData('twitch-user-1')
+      )
+
+      expect(result?.cards[0]).toMatchObject({ id: 'card-new', name: 'Card One' })
+      expect(result?.streamer).toMatchObject({ id: 'streamer-1', twitch_username: 'streamer_one' })
+      expect(result?.streamer).not.toHaveProperty('publish_live_status')
+      expect(result?.streamer).not.toHaveProperty('publish_stats')
+      const lastSelection = db.select.mock.calls.at(-1)?.[0]
+      expect(lastSelection?.streamer).toEqual(STREAMERS_SAFE_COLUMNS)
+    })
+
     it('列欠落以外のDBエラーは null に落とす', async () => {
       const { result } = await runWithDb(
         {
@@ -381,6 +404,24 @@ describe('dashboard-data: Drizzle 読み取り', () => {
       )
       expect(result).toBeNull()
       expect(db.select).toHaveBeenCalledTimes(1)
+    })
+
+    it('配信者取得で streamers の新列が未デプロイなら安全な列集合で再試行する', async () => {
+      const { result, db } = await runWithDb(
+        {
+          tables: tableRows([
+            [streamersTable, [STREAMER]],
+            [cardsTable, [CARD_OLD]],
+          ]),
+          errors: new Map([[streamersTable, [missingColumnError('publish_stats')]]]),
+        },
+        () => getStreamerDataPaginated('twitch-user-1', 1, 2)
+      )
+
+      expect(result?.streamer).toMatchObject({ id: 'streamer-1' })
+      expect(result?.streamer).not.toHaveProperty('publish_stats')
+      // 1回目(全列)が失敗 → 2回目(安全な列集合)で取得成功
+      expect(db.select.mock.calls[1]?.[0]).toEqual(STREAMERS_SAFE_COLUMNS)
     })
 
     it('直近履歴へカードを単一オブジェクトとして埋め込む', async () => {
@@ -552,6 +593,22 @@ describe('dashboard-data: Drizzle 読み取り', () => {
       expect(logErrorFromLogger).toHaveBeenCalledTimes(1)
     })
 
+    it('streamers の新列が未デプロイなら安全な列集合で再試行する', async () => {
+      const streamerId = '94cb6927-8733-4f1c-8e7e-0afb89773daa'
+      const streamer = makeStreamerRow({ id: streamerId })
+      const { result, db } = await runWithDb(
+        {
+          tables: tableRows([[streamersTable, [streamer]]]),
+          errors: new Map([[streamersTable, [missingColumnError('publish_live_status')]]]),
+        },
+        () => getStreamerById(streamerId)
+      )
+
+      expect(result?.id).toBe(streamerId)
+      expect(result).not.toHaveProperty('publish_live_status')
+      expect(db.select.mock.calls.at(-1)?.[0]).toEqual(STREAMERS_SAFE_COLUMNS)
+    })
+
     it('所有カードへ配信者と所持数を付与する', async () => {
       const { result } = await runWithDb(
         {
@@ -588,6 +645,31 @@ describe('dashboard-data: Drizzle 読み取り', () => {
         () => getUserCardDetail('viewer-1', 'streamer-1', 'card-old')
       )
       expect(result).toBeNull()
+    })
+
+    it('streamers の新列が未デプロイなら安全な列集合で再試行する', async () => {
+      const { result, db } = await runWithDb(
+        {
+          tables: tableRows([
+            [cardsTable, [CARD_OLD]],
+            [streamersTable, [STREAMER]],
+            [usersTable, [{ id: 'user-1', twitch_user_id: 'viewer-1' }]],
+            [userCardsTable, []],
+          ]),
+          counts: new Map([[userCardsTable, 2]]),
+          errors: new Map([[cardsTable, [missingColumnError('publish_stats')]]]),
+        },
+        () => getUserCardDetail('viewer-1', 'streamer-1', 'card-old')
+      )
+
+      expect(result).toMatchObject({
+        id: 'card-old',
+        count: 2,
+        streamer: { id: 'streamer-1' },
+      })
+      expect(result?.streamer).not.toHaveProperty('publish_stats')
+      // 1回目(全列)が失敗 → 2回目(streamers のみ安全な列集合)で取得成功
+      expect(db.select.mock.calls[1]?.[0]?.streamers).toEqual(STREAMERS_SAFE_COLUMNS)
     })
   })
 

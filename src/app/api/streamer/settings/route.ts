@@ -506,6 +506,7 @@ interface ApplyStreamerSettingsUpdateResult {
   cardPackNamesWriteSkipped: boolean;
   defaultCardPackNameWriteSkipped: boolean;
   gachaSoundRulesWriteSkipped: boolean;
+  liveDirectorySettingsWriteSkipped: boolean;
 }
 
 /**
@@ -514,6 +515,15 @@ interface ApplyStreamerSettingsUpdateResult {
  */
 function isMissingGachaSoundRulesColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, ["gacha_sound_rules"]);
+}
+
+/**
+ * Issue #738: publish_live_status / publish_stats の列欠落判定。
+ * 2カラムは同一 migration で追加されるため「両方同時に欠落」しかあり得ず、
+ * まとめて1段のフォールバックとして扱う。
+ */
+function isMissingLiveDirectorySettingsColumnsError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, ["publish_live_status", "publish_stats"]);
 }
 
 /**
@@ -540,6 +550,7 @@ async function applyStreamerSettingsUpdatePg(
   let cardPackNamesWriteSkipped = false;
   let defaultCardPackNameWriteSkipped = false;
   let gachaSoundRulesWriteSkipped = false;
+  let liveDirectorySettingsWriteSkipped = false;
 
   const runUpdate = (data: Record<string, unknown>, context: string) =>
     withDbRetry(
@@ -611,6 +622,19 @@ async function applyStreamerSettingsUpdatePg(
     error = await attempt(legacyUpdateData, "applyStreamerSettingsUpdate(legacy gacha sound fallback)");
   }
 
+  if (
+    error
+    && isMissingLiveDirectorySettingsColumnsError(error as GenericDbError)
+    && ("publish_live_status" in updateData || "publish_stats" in updateData)
+  ) {
+    // デプロイ窓: 新カラムが未反映。2キーをまとめて剥がしてリトライし、
+    // クライアントに skip フラグで通知する（楽観反映によるサイレント欠損を防ぐ）。
+    delete updateData.publish_live_status;
+    delete updateData.publish_stats;
+    liveDirectorySettingsWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no live directory settings)");
+  }
+
   return {
     error,
     rarityWeightsScopeWriteSkipped,
@@ -618,6 +642,7 @@ async function applyStreamerSettingsUpdatePg(
     cardPackNamesWriteSkipped,
     defaultCardPackNameWriteSkipped,
     gachaSoundRulesWriteSkipped,
+    liveDirectorySettingsWriteSkipped,
   };
 }
 
@@ -723,6 +748,10 @@ export async function POST(request: NextRequest) {
       // Unowned-card visibility settings (optional, Issue #395)
       showUnownedCards,
       showUnownedCardDetails,
+      // 配信中ディレクトリ掲載・統計公開オプトイン（オプション、Issue #632/#738）
+      // Live directory listing / stats publication opt-ins (optional, Issue #632/#738)
+      publishLiveStatus,
+      publishStats,
       // BOTアカウント連携解除（オプション）
       // Disconnect optional BOT account used for chat announcements
       disconnectBot,
@@ -795,6 +824,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (showUnownedCardDetails !== undefined && typeof showUnownedCardDetails !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (publishLiveStatus !== undefined && typeof publishLiveStatus !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (publishStats !== undefined && typeof publishStats !== "boolean") {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
@@ -1086,6 +1121,15 @@ export async function POST(request: NextRequest) {
     if (showUnownedCardDetails !== undefined) {
       updateData.show_unowned_card_details = showUnownedCardDetails;
     }
+    // 配信中ディレクトリ掲載・統計公開オプトイン（Issue #632/#738）。
+    // クライアント送信値がそのまま正（サーバ側の加工・却下シナリオ無し）のため
+    // エコーバック不要。デプロイ窓での列欠落時のみ skip フラグを返す。
+    if (publishLiveStatus !== undefined) {
+      updateData.publish_live_status = publishLiveStatus;
+    }
+    if (publishStats !== undefined) {
+      updateData.publish_stats = publishStats;
+    }
 
     let botDisconnected = false;
     if (disconnectBot === true) {
@@ -1122,6 +1166,9 @@ export async function POST(request: NextRequest) {
     // グレースフルデグレード(下記)がやっていたが、フラグが立っておらず
     // クライアントには常に「保存できた」と返っていた(=楽観反映によるサイレント欠損)。
     let gachaSoundRulesWriteSkipped = false;
+    // Issue #738: publish_live_status / publish_stats は同一migrationで入るため
+    // 「両方同時に欠落」しかあり得ない。2キーをまとめて剥がす1段のみ追加する。
+    let liveDirectorySettingsWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
@@ -1134,6 +1181,7 @@ export async function POST(request: NextRequest) {
       cardPackNamesWriteSkipped = updateResult.cardPackNamesWriteSkipped;
       defaultCardPackNameWriteSkipped = updateResult.defaultCardPackNameWriteSkipped;
       gachaSoundRulesWriteSkipped = updateResult.gachaSoundRulesWriteSkipped;
+      liveDirectorySettingsWriteSkipped = updateResult.liveDirectorySettingsWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
@@ -1205,6 +1253,7 @@ export async function POST(request: NextRequest) {
           }
         : {}),
       ...(gachaSoundRulesWriteSkipped ? { gachaSoundRulesSkippedDeployWindow: true } : {}),
+      ...(liveDirectorySettingsWriteSkipped ? { liveDirectorySettingsSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");

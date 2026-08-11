@@ -848,6 +848,8 @@
         "announcementDesc": "獲得時の自動メッセージ",
         "visibility": "公開設定",
         "visibilityDesc": "未所持カードの見せ方",
+        "liveDirectory": "配信中ページ",
+        "liveDirectoryDesc": "/live への掲載と統計公開",
         "share": "共有",
         "shareDesc": "コレクションページのURL"
       }
@@ -1501,6 +1503,32 @@
     "getStarted": {
       "title": "はじめるには",
       "description": "カードの作り方や配信への組み込み方は、使い方ガイドで詳しく説明しています。"
+    }
+  },
+  "liveDirectorySettings": {
+    "title": "配信中ページへの掲載",
+      "description": "「配信中ページ」（/live）公開時に、この配信者を掲載するかどうかを設定します。どちらも既定ではオフです。",
+    "status": {
+      "enabled": "掲載中",
+      "disabled": "非掲載"
+    },
+    "form": {
+      "publishLiveStatus": "配信中を公表する",
+        "publishLiveStatusHelp": "オンの間、配信中ページ（/live）公開時にこの配信者が表示されます（現在ライブ配信中のときのみ）。",
+      "publishStats": "統計を公開する",
+      "publishStatsHelp": "カード種類数とチャネルポイント引換数を /live に表示します。",
+      "requiresPublishLiveStatus": "「配信中を公表する」が必要"
+    },
+    "messages": {
+      "liveEnabled": "配信中ページへの掲載設定をオンにしました",
+      "liveDisabled": "配信中ページへの掲載設定をオフにしました",
+      "statsEnabled": "統計公開の設定をオンにしました",
+      "statsDisabled": "統計公開の設定をオフにしました",
+      "saving": "保存中..."
+    },
+    "errors": {
+      "saveFailed": "設定の保存に失敗しました",
+      "deployWindow": "配信中ページ機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。"
     }
   }
 }
