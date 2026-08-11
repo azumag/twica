@@ -25,15 +25,22 @@ export function redactSecrets(text) {
   return text.replace(SECRET_PATTERN, '[REDACTED]')
 }
 
-// 本文長が上限を超えた場合は切り詰めて省略注記を足す（実質発火しない安全網。
-// フェンス補完等のヒューリスティックは誤判定の方が害のため持たない）。
-// 返り値は本文部分を MAX_BODY_LENGTH 以内に保ち、閉じフェンスと注記を加算する
-// （注記は 12 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
-export function truncateAndCloseFences(text) {
+// 本文長が上限を超えた場合は切り詰めて省略注記を足す（実質発火しない安全網）。
+// フェンス補完は誤判定の方が害のため行わない（切り詰め位置がコードフェンス内の
+// 場合、注記とフッターがコードブロックに飲み込まれるが表示崩れのみ）。
+// 返り値は { text, truncated } で、text は本文部分を MAX_BODY_LENGTH 以内に保つ
+// （注記 12 コードポイントを加算。issue comment 上限 65536 に対して十分な余裕がある）。
+export function truncateWithNotice(text) {
   if (text.length <= MAX_BODY_LENGTH) {
-    return text
+    return { text, truncated: false }
   }
-  return text.slice(0, MAX_BODY_LENGTH) + '\n\n（長すぎるため省略）'
+  let cut = text.slice(0, MAX_BODY_LENGTH)
+  // 末尾が孤立 high surrogate（絵文字の片割れ）なら 1 単位戻す
+  const last = cut.charCodeAt(cut.length - 1)
+  if (last >= 0xd800 && last <= 0xdbff) {
+    cut = cut.slice(0, -1)
+  }
+  return { text: cut + '\n\n（長すぎるため省略）', truncated: true }
 }
 
 // structured_output の JSON から review 本文（trim 済み）を取り出す。
@@ -46,15 +53,13 @@ export function parseReviewJson(json) {
     // ここでの前提にしない）。
     throw new TypeError('review field is not a string')
   }
-  // 空・空白の検証は claude_review job の jq チェックが担う（トークン到達 job で
-  // 切り分けるため）。ここでは型違いの明示チェックと JSON パースのみ扱う。
   return review.trim()
 }
 
 // 投稿本文・Step summary の両方に適用する共通サニタイズ
-// （伏字化 → 切り詰めの順序をここに固定する）。
-export function sanitizeReviewText(reviewText) {
-  return truncateAndCloseFences(redactSecrets(reviewText))
+// （伏字化 → 切り詰めの順序をここに固定する。{ text, truncated } を返す）。
+export function sanitizeReview(reviewText) {
+  return truncateWithNotice(redactSecrets(reviewText))
 }
 
 // 整形済み本文（sanitizeReviewText の出力）から投稿コメント本文を組み立てる。
@@ -67,6 +72,11 @@ export function buildReviewCommentBody({ marker, shortSha, commitUrl, runUrl, sa
   )
 }
 
+// 先頭行がマーカーかどうか（GitHub API が \r\n を返し得るため trim する）。
+export function hasReviewMarker(comment, marker) {
+  return comment?.body?.split('\n', 1)[0].trim() === marker
+}
+
 // コメント一覧からこのワークフローが投稿したレビューコメントを探す。
 // マーカーは誰でも知り得るため、投稿者を呼び出し側（workflow の github-token が
 // 生み出す投稿者ログイン）に限定して第三者（他のボット含む）コメントの誤上書きを
@@ -77,7 +87,6 @@ export function findOwnReviewComment(comments, marker, authorLogin) {
   return comments.findLast(
     (comment) =>
       comment?.user?.login === authorLogin &&
-      // 先頭行がマーカーかどうか（GitHub API が \r\n を返し得るため trim する）
-      comment.body?.split('\n', 1)[0].trim() === marker,
+      hasReviewMarker(comment, marker),
   )
 }

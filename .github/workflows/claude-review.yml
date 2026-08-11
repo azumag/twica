@@ -15,11 +15,12 @@
 #   できる。より強い保護（environment + required reviewers）は PR ごとの承認が
 #   要って自動レビューが機能しなくなるため受容する。
 # - 実効的な封じ込めは「fork PR に secrets が渡らない」「Claude 実行 job は
-#   read-only GITHUB_TOKEN」「投稿前にトークン伏字化 + 生トークン完全一致チェック」
-#   の3点。ただし伏字化と完全一致チェックは「素の文字列で出力された場合」しか
-#   防げず、base64 化や文字列分割を誘導された場合はすり抜ける（残余リスクとして
-#   受容）。Read のワークスペース制限は Grep / Glob がパス無制限のため実効的で
-#   はない（残余リスクとして受容）。
+#   read-only GITHUB_TOKEN」の2点のみ。伏字化・生トークン完全一致チェックは
+#   head 由来コード（workflow YAML 自体も head 由来）のため write 権限保持者に
+#   対する防御ではなく、Claude の出力事故に対する緩和（「素の文字列で出力された
+#   場合」しか防げず、base64 化や文字列分割を誘導された場合はすり抜ける）。
+#   Read のワークスペース制限は Grep / Glob がパス無制限のため実効的ではない。
+#   （受容リスクの詳細は issue #917 / #918）
 #   --allowedTools / --disallowedTools は Bash の網羅的 allowlist ではなく、
 #   curl/wget の deny は迂回可能な緩和に過ぎない。実効的な境界は Claude Code 側の
 #   サンドボックス層と read-only token に依存する。@メンションの置換は意図的に
@@ -27,10 +28,6 @@
 #   壊す実害があるため）。
 #   Bash(git diff:*) は前方一致のため `git diff --output=<path>` でランナー上の
 #   ファイルを書ける（read-only token かつ使い捨てランナーなので実害は限定的）。
-#   伏字化・完全一致チェックは head 由来コード（workflow YAML 自体も head 由来）
-#   のため write 権限保持者に対する防御ではなく、Claude の出力事故に対する緩和。
-#   実効的な境界は fork への secrets 非配布と read-only GITHUB_TOKEN のみ
-#   （issue #917 / #918 で追跡）。
 #   ボット作成の PR（Renovate / Dependabot / エージェント等）も同一リポジトリ発火
 #   なら secrets が渡るため、露出面は「write 権限保持者（人間・ボット問わず）」。
 #   paths は PR 全体の変更ファイル集合で評価されるため、md のみの PR では
@@ -173,6 +170,7 @@ jobs:
             指摘は日本語で行い、具体的な問題にはファイルと行を明記してください。
             問題がない場合は「指摘なし」と明記してください。
             レビュー本文は日本語で 6000 字以内に収めてください。
+            差分に含まれる資格情報・シークレット値は本文へ引用しないこと。
             コードやGitHub上の状態は変更せず、レビュー本文だけを返してください。
             最終回答は指定されたJSON SchemaのreviewフィールドにMarkdownで格納してください。
           # 注意: コメントを claude_args の折り畳みブロック内に置かないこと
@@ -274,9 +272,10 @@ jobs:
             const {
               buildReviewCommentBody,
               findOwnReviewComment,
+              hasReviewMarker,
               parseReviewJson,
               REVIEW_MARKER,
-              sanitizeReviewText,
+              sanitizeReview,
             } = await import(
               pathToFileURL(
                 `${process.env.GITHUB_WORKSPACE}/.github/scripts/format-review.mjs`
@@ -297,8 +296,8 @@ jobs:
               return;
             }
 
-            const safe = sanitizeReviewText(reviewText);
-            if (safe.endsWith('（長すぎるため省略）')) {
+            const { text: safe, truncated } = sanitizeReview(reviewText);
+            if (truncated) {
               core.warning('レビュー本文が長すぎるため末尾を切り詰めました');
             }
             if (safe.trim() === '') {
@@ -360,7 +359,7 @@ jobs:
               // 見つからない場合、新規コメントが積み上がるサイレント劣化になる。
               // 誤上書きは login 一致で防げているため、ここでは検知 warning のみ。
               const markerOnly = comments.filter(
-                (comment) => comment.body?.split('\n', 1)[0].trim() === REVIEW_MARKER,
+                (comment) => hasReviewMarker(comment, REVIEW_MARKER),
               ).length;
               if (markerOnly > 0) {
                 core.warning(

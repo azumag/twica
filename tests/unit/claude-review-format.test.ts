@@ -6,8 +6,8 @@ import {
   parseReviewJson,
   redactSecrets,
   REVIEW_MARKER,
-  sanitizeReviewText,
-  truncateAndCloseFences,
+  sanitizeReview,
+  truncateWithNotice,
 } from '../../.github/scripts/format-review.mjs'
 
 describe('claude-review format helpers', () => {
@@ -65,32 +65,37 @@ describe('claude-review format helpers', () => {
     })
   })
 
-  describe('truncateAndCloseFences', () => {
+  describe('truncateWithNotice', () => {
     it('keeps text unchanged within the limit', () => {
       const text = '```js\nconst x = 1\n```'
-      expect(truncateAndCloseFences(text)).toBe(text)
+      expect(truncateWithNotice(text)).toEqual({ text, truncated: false })
     })
 
     it('appends a note on overflow and stays within the limit plus overhead', () => {
-      const out = truncateAndCloseFences('x'.repeat(MAX_BODY_LENGTH + 50))
-      expect(out).toContain('（長すぎるため省略）')
-      expect(out.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
+      const out = truncateWithNotice('x'.repeat(MAX_BODY_LENGTH + 50))
+      expect(out.truncated).toBe(true)
+      expect(out.text).toContain('（長すぎるため省略）')
+      expect(out.text.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
     })
 
+    it('flips the flag exactly at the boundary', () => {
+      expect(truncateWithNotice('a'.repeat(MAX_BODY_LENGTH)).truncated).toBe(false)
+      expect(truncateWithNotice('a'.repeat(MAX_BODY_LENGTH + 1)).truncated).toBe(true)
+    })
   })
 
-  describe('sanitizeReviewText', () => {
+  describe('sanitizeReview', () => {
     it('redacts secrets and truncates long text', () => {
-      const out = sanitizeReviewText('token sk-ant-api03-abcdefghij0123456789' + 'x'.repeat(MAX_BODY_LENGTH))
-      expect(out).not.toContain('sk-ant-api03')
-      expect(out).toContain('[REDACTED]')
-      expect(out.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
+      const out = sanitizeReview('token sk-ant-api03-abcdefghij0123456789' + 'x'.repeat(MAX_BODY_LENGTH))
+      expect(out.text).not.toContain('sk-ant-api03')
+      expect(out.text).toContain('[REDACTED]')
+      expect(out.text.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
     })
 
     it('redacts a token that sits across the truncation boundary', () => {
       const token = 'sk-ant-api03-abcdefghij0123456789'
-      const out = sanitizeReviewText('x'.repeat(MAX_BODY_LENGTH - 10) + token)
-      expect(out).not.toContain('sk-ant-')
+      const out = sanitizeReview('x'.repeat(MAX_BODY_LENGTH - 10) + token)
+      expect(out.text).not.toContain('sk-ant-')
     })
   })
 
@@ -105,9 +110,16 @@ describe('claude-review format helpers', () => {
     it('stays far below the issue comment limit even with max-length review text', () => {
       const body = buildReviewCommentBody({
         ...base,
-        safeText: sanitizeReviewText('x'.repeat(MAX_BODY_LENGTH + 5000)),
+        safeText: sanitizeReview('x'.repeat(MAX_BODY_LENGTH + 5000)).text,
       })
       expect(body.length).toBeLessThan(65536)
+    })
+
+    it('includes the commit link, short SHA, and run link', () => {
+      const body = buildReviewCommentBody({ ...base, safeText: '指摘なし' })
+      expect(body).toContain('https://github.com/azumag/twica/commit/abc1234')
+      expect(body).toContain('`abc1234`')
+      expect(body).toContain('https://github.com/azumag/twica/actions/runs/12345')
     })
 
     it('round-trips with findOwnReviewComment using the marker line', () => {
