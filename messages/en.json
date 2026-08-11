@@ -29,7 +29,7 @@
   },
   "navigation": {
     "overview": "Overview",
-    "live": "Channels & Rankings",
+    "live": "Public Channels",
     "cardManagement": "Card Management",
     "settings": "Stream Settings",
     "gachaHistory": "Gacha History",
@@ -1517,7 +1517,7 @@
     "title": "TwiCa channels and rankings",
     "description": "Browse channels using TwiCa and rankings for each streamer's card activity.",
     "consentNotice": "The live list only shows channels that have explicitly agreed to be listed.",
-    "rankingNotice": "Rankings include all active channels and show the top 100 for each metric in the selected period. Channels that have not agreed to be identified appear anonymously.",
+    "rankingNotice": "Rankings include all active channels. Card redemptions and channel points show the top 100 for the selected period, while card types show the top 100 current values. Channels that have not agreed to be identified appear anonymously.",
     "directoryHeading": "Live channels and rankings",
     "tabs": {
       "label": "View",
@@ -1534,10 +1534,7 @@
         "last7Days": "Counts card redemptions recorded in the last 7 days.",
         "allTime": "Counts card redemptions recorded across all time in TwiCa."
       },
-      "cardCountHelp": {
-        "last7Days": "Counts active card types added in the last 7 days.",
-        "allTime": "Counts card types that are currently active."
-      }
+      "cardCountHelp": "Counts card types that are currently active."
     },
     "card": {
       "live": "LIVE",
