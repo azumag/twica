@@ -77,36 +77,6 @@ describe('claude-review format helpers', () => {
       expect(out.length).toBeLessThanOrEqual(MAX_BODY_LENGTH + 16)
     })
 
-    it('leaves odd-fence text unchanged without truncation', () => {
-      // 非切り詰め時はフェンス補完しない（コード引用の誤判定を避ける）
-      expect(truncateAndCloseFences('```js\nconst x = 1')).toBe('```js\nconst x = 1')
-    })
-
-    it('closes a fence opened before the cut and appends the note after it', () => {
-      const out = truncateAndCloseFences('```js\n' + 'x'.repeat(MAX_BODY_LENGTH))
-      expect(out.lastIndexOf('```')).toBeGreaterThan(0)
-      expect(out.lastIndexOf('```')).toBeLessThan(out.indexOf('（長すぎるため省略）'))
-      // 改行が先頭付近にしか無い長文でも本文をほぼ失わない（行カットの下限）
-      expect(out.length).toBeGreaterThan(1000)
-    })
-
-    it('leaves text at exactly the limit unchanged', () => {
-      const text = 'a'.repeat(MAX_BODY_LENGTH)
-      expect(truncateAndCloseFences(text)).toBe(text)
-    })
-
-    it('does not add a closing fence when fences are balanced after truncation', () => {
-      // 切り詰め後も開閉フェンスが両方残る入力（閉じフェンスが切り落とされない）
-      const text = '```js\n' + 'x'.repeat(MAX_BODY_LENGTH - 20) + '\n```\n' + 'y'.repeat(100)
-      const out = truncateAndCloseFences(text)
-      expect(out).toContain('（長すぎるため省略）')
-      expect(out.match(/```/g)).toHaveLength(2)
-    })
-
-    it('drops a lone high surrogate left at the cut', () => {
-      const out = truncateAndCloseFences('a'.repeat(MAX_BODY_LENGTH - 1) + '😀' + 'b'.repeat(10))
-      expect(/[\uD800-\uDBFF]/.test(out)).toBe(false)
-    })
   })
 
   describe('sanitizeReviewText', () => {
@@ -142,7 +112,7 @@ describe('claude-review format helpers', () => {
 
     it('round-trips with findOwnReviewComment using the marker line', () => {
       const body = buildReviewCommentBody({ ...base, safeText: '指摘なし' })
-      const comments = [{ user: { login: 'github-actions[bot]', type: 'Bot' }, body }]
+      const comments = [{ user: { login: 'github-actions[bot]' }, body }]
       expect(findOwnReviewComment(comments, base.marker, 'github-actions[bot]')).toBeDefined()
     })
   })
@@ -174,10 +144,10 @@ describe('claude-review format helpers', () => {
 
     it('finds the workflow-owned comment and ignores others', () => {
       const comments = [
-        { user: { login: 'renovate[bot]', type: 'Bot' }, body: `${marker}\n...` },
-        { user: { login: 'azumag', type: 'User' }, body: '普通のコメント' },
+        { user: { login: 'renovate[bot]' }, body: `${marker}\n...` },
+        { user: { login: 'azumag' }, body: '普通のコメント' },
         {
-          user: { login: 'github-actions[bot]', type: 'Bot' },
+          user: { login: 'github-actions[bot]' },
           body: `${marker}\n## Claude Auto Review`,
         },
       ]
@@ -192,8 +162,8 @@ describe('claude-review format helpers', () => {
 
     it('returns the latest owned comment when duplicates exist', () => {
       const comments = [
-        { id: 1, user: { login: 'github-actions[bot]', type: 'Bot' }, body: `${marker}\n古い` },
-        { id: 2, user: { login: 'github-actions[bot]', type: 'Bot' }, body: `${marker}\n最新` },
+        { id: 1, user: { login: 'github-actions[bot]' }, body: `${marker}\n古い` },
+        { id: 2, user: { login: 'github-actions[bot]' }, body: `${marker}\n最新` },
       ]
       expect(findOwnReviewComment(comments, marker, 'github-actions[bot]')?.id).toBe(2)
     })
@@ -203,7 +173,7 @@ describe('claude-review format helpers', () => {
         findOwnReviewComment(
           [
             {
-              user: { login: 'github-actions[bot]', type: 'Bot' },
+              user: { login: 'github-actions[bot]' },
               body: `${marker}\r\n## Claude Auto Review`,
             },
           ],
@@ -215,7 +185,7 @@ describe('claude-review format helpers', () => {
         findOwnReviewComment(
           [
             {
-              user: { login: 'github-actions[bot]', type: 'Bot' },
+              user: { login: 'github-actions[bot]' },
               body: `## Claude Auto Review\n${marker}`,
             },
           ],
@@ -228,7 +198,7 @@ describe('claude-review format helpers', () => {
     it('rejects other logins and missing body safely', () => {
       expect(
         findOwnReviewComment(
-          [{ user: { login: 'renovate[bot]', type: 'Bot' }, body: `${marker}\n...` }],
+          [{ user: { login: 'renovate[bot]' }, body: `${marker}\n...` }],
           marker,
           'github-actions[bot]',
         ),

@@ -25,39 +25,20 @@ export function redactSecrets(text) {
   return text.replace(SECRET_PATTERN, '[REDACTED]')
 }
 
-// 本文長が上限を超えた場合は切り詰める。行途中で切れた不完全行は末尾500字以内に
-// 改行がある場合のみ落とし、未閉じのコードフェンスは切り詰め時のみ補完してから
-// 省略注記を足す（非切り詰め時はコード引用の誤判定を避けるため触らない）。
+// 本文長が上限を超えた場合は切り詰めて省略注記を足す（実質発火しない安全網。
+// フェンス補完等のヒューリスティックは誤判定の方が害のため持たない）。
 // 返り値は本文部分を MAX_BODY_LENGTH 以内に保ち、閉じフェンスと注記を加算する
-// （最大 +16 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
+// （注記は 12 コードポイント。issue comment 上限 65536 に対して十分な余裕がある）。
 export function truncateAndCloseFences(text) {
   if (text.length <= MAX_BODY_LENGTH) {
     return text
   }
-  let result = text.slice(0, MAX_BODY_LENGTH)
-  // 行途中で切れた不完全行を落とす（フェンスの途中切断で補完が破綻するのを防ぐ）。
-  // ただし改行が先頭付近にしか無い長文では本文をほぼ失うため、末尾500字以内に
-  // 改行がある場合のみ行カットする。
-  const lastNewline = result.lastIndexOf('\n')
-  if (lastNewline >= MAX_BODY_LENGTH - 500) {
-    result = result.slice(0, lastNewline)
-  }
-  // 末尾が孤立サロゲート（絵文字の片割れ）なら除去し、JSON 化での文字化けを防ぐ
-  result = result.replace(/[\uD800-\uDBFF]$/, '')
-  // 切り詰め時のみフェンスを補完する（非切り詰め時はコード引用の誤判定を避ける）
-  const fenceCount = result
-    .split('\n')
-    .filter((line) => line.trim().startsWith('```')).length
-  if (fenceCount % 2 === 1) {
-    result += '\n```'
-  }
-  return result + '\n\n（長すぎるため省略）'
+  return text.slice(0, MAX_BODY_LENGTH) + '\n\n（長すぎるため省略）'
 }
 
-// structured_output の JSON から review 本文を取り出す。
-// review フィールドが空・空白のみ、または JSON として壊れている場合は throw する
-// （workflow 側で failure にする。空・空白は jq の早期チェックでも弾かれるため、
-//  ここは後段の防御）。
+// structured_output の JSON から review 本文（trim 済み）を取り出す。
+// 空・空白の検証は claude_review job の jq チェックが担う（トークン到達 job で
+// 切り分けるため）。ここでは JSON パースと型チェックのみ行い、壊れていれば throw する。
 export function parseReviewJson(json) {
   const { review } = JSON.parse(json)
   if (typeof review !== 'string') {

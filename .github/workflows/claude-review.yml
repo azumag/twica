@@ -27,14 +27,12 @@
 #   壊す実害があるため）。
 #   Bash(git diff:*) は前方一致のため `git diff --output=<path>` でランナー上の
 #   ファイルを書ける（read-only token かつ使い捨てランナーなので実害は限定的）。
-#   伏字化は「Claude が出力事故でトークンを素のまま出した場合」の緩和であり、
-#   write 権限保持者（PR 作者）に対する防御ではない（彼らは head の
-#   format-review.mjs を差し替えられる。issue #917 で追跡）。
-#   伏字化・生トークン完全一致チェックはいずれも head 由来コード（workflow YAML
-#   自体も head 由来）のため、write 権限保持者に対する防御ではない。実効的な
-#   境界は「fork に secrets を渡さない」ことと read-only GITHUB_TOKEN のみ。
-#   なおボット作成の PR（Renovate / Dependabot / エージェント等）も同一リポジトリ
-#   発火なら secrets が渡るため、露出面は「write 権限保持者（人間・ボット問わず）」。
+#   伏字化・完全一致チェックは head 由来コード（workflow YAML 自体も head 由来）
+#   のため write 権限保持者に対する防御ではなく、Claude の出力事故に対する緩和。
+#   実効的な境界は fork への secrets 非配布と read-only GITHUB_TOKEN のみ
+#   （issue #917 / #918 で追跡）。
+#   ボット作成の PR（Renovate / Dependabot / エージェント等）も同一リポジトリ発火
+#   なら secrets が渡るため、露出面は「write 権限保持者（人間・ボット問わず）」。
 #   paths は PR 全体の変更ファイル集合で評価されるため、md のみの PR では
 #   初回からワークフローが起動せずコメントも作られない。md 以外を含む PR では
 #   md のみの追い push でも起動する。この workflow を required check にする場合は
@@ -137,9 +135,9 @@ jobs:
         # 「レビュー不可」を非空の出力として返し、前回の有効レビューを上書き
         # しつつ Checks が緑になる fail-open になる。ここで早期に失敗させる。
         run: |
-          git rev-parse -q --verify "$BASE_SHA^{commit}" \
+          git rev-parse -q --verify "$BASE_SHA^{commit}" >/dev/null \
             || { echo "::error::base SHA が見つかりません: $BASE_SHA"; exit 1; }
-          git rev-parse -q --verify "$HEAD_SHA^{commit}" \
+          git rev-parse -q --verify "$HEAD_SHA^{commit}" >/dev/null \
             || { echo "::error::head SHA が見つかりません: $HEAD_SHA"; exit 1; }
 
       - name: Claude Code Review (opus)
@@ -171,15 +169,6 @@ jobs:
             `git diff` が失敗する場合（base が孤立している等）は、その旨を
             「レビュー不可」として明示してください。
             リポジトリの AGENTS.md がある場合はそれを読み、レビュー観点として従ってください。
-
-            レビュー観点（AGENTS.md 準拠）:
-            - コード品質とベストプラクティス
-            - 潜在的なバグとエッジケース
-            - パフォーマンスへの影響
-            - セキュリティ考慮
-            - コードの簡潔性（過度な抽象化・複雑化の回避）
-            - 単体テストのカバレッジは十分か
-            - YAGNI（過剰な実装と設計の回避）
 
             指摘は日本語で行い、具体的な問題にはファイルと行を明記してください。
             問題がない場合は「指摘なし」と明記してください。
@@ -268,7 +257,8 @@ jobs:
           # PR で merge ref が無いため。初回導入時は base 側にこのファイルが
           # 存在しないため head を使うが、preview へマージ後は base.sha に
           # 切り替え、write 権限 job で head 由来コードを実行しないようにする
-          # （追跡: issue #917）。
+          # （追跡: issue #917。workflow 定義自体も head 由来のため権限拡大は
+          # ないが、多層防御の選択肢として追跡している）。
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
           sparse-checkout: .github/scripts
@@ -303,13 +293,19 @@ jobs:
               reviewText = parseReviewJson(process.env.REVIEW_JSON);
             } catch (error) {
               // error.message は入力断片を含み得るため出さない（ログへの漏洩防止）。
-              core.setFailed('Claude review output is not valid JSON or is empty');
+              core.setFailed('Claude review output is not valid JSON');
               return;
             }
 
             const safe = sanitizeReviewText(reviewText);
             if (safe.endsWith('（長すぎるため省略）')) {
               core.warning('レビュー本文が長すぎるため末尾を切り詰めました');
+            }
+            if (safe.trim() === '') {
+              // jq の test("\\S") と JS の trim() は空白判定の集合が異なる
+              // （例: U+FEFF）ため、中身のないコメントを投稿しないよう再ガードする。
+              core.setFailed('Claude review output is empty after sanitization');
+              return;
             }
             const commitUrl =
               `${process.env.SERVER_URL}/${owner}/${repo}/commit/${process.env.REVIEWED_SHA}`;
@@ -347,6 +343,8 @@ jobs:
               } catch (error) {
                 // listComments と updateComment の間に対象コメントが削除された
                 // 場合は 404 になるため、新規投稿へフォールバックする。
+                // error.status は Octokit の RequestError が持つ HTTP ステータスで、
+                // ネットワークエラー等では undefined になるためここでは rethrow する。
                 if (error.status !== 404) {
                   throw error;
                 }
@@ -358,6 +356,17 @@ jobs:
                 });
               }
             } else {
+              // マーカー付きの既存コメントがあるのに投稿者不一致で上書き対象が
+              // 見つからない場合、新規コメントが積み上がるサイレント劣化になる。
+              // 誤上書きは login 一致で防げているため、ここでは検知 warning のみ。
+              const markerOnly = comments.filter(
+                (comment) => comment.body?.split('\n', 1)[0].trim() === REVIEW_MARKER,
+              ).length;
+              if (markerOnly > 0) {
+                core.warning(
+                  `${markerOnly} 件のマーカー付きコメントが投稿者不一致のため上書き対象になりません`,
+                );
+              }
               await github.rest.issues.createComment({
                 owner,
                 repo,
