@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { getDb } from '@/lib/db/client'
+import { __resetTwitchAppTokenForTests } from '@/lib/twitch/app-token'
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -52,6 +53,7 @@ function request(url = 'http://localhost:3000/api/twitch/channel-point-bootstrap
 describe('GET /api/twitch/channel-point-bootstrap', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
+    __resetTwitchAppTokenForTests()
     process.env.NEXT_PUBLIC_APP_URL = 'https://example.com'
     vi.stubGlobal('fetch', vi.fn())
     const { getSession, canUseStreamerFeatures } = await import('@/lib/session')

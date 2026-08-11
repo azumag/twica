@@ -12,6 +12,7 @@ import {
 } from "@/lib/twitch/eventsub-status";
 import { logPerf, perfStart } from "@/lib/perf";
 import { logger } from "@/lib/logger.server";
+import { fetchTwitchApi } from "@/lib/twitch/app-token";
 // チャネルポイント連携の読み取りは PlanetScale の単一接続を使う。
 // getDb() は withDbRetry の queryFn 内で取得する。
 import { asc, eq } from "drizzle-orm";
@@ -88,27 +89,7 @@ async function getTwitchRewards(twitchUserId: string): Promise<TwitchRewardsResu
   return { rewards: data.data || [] };
 }
 
-async function getAppAccessToken(): Promise<string> {
-  const response = await fetch("https://id.twitch.tv/oauth2/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-      client_secret: process.env.TWITCH_CLIENT_SECRET!,
-      grant_type: "client_credentials",
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to get app access token");
-  }
-
-  const data = await response.json();
-  return data.access_token;
-}
-
 async function getSubscriptionsByUserId(
-  appAccessToken: string,
   userId: string,
 ): Promise<EventSubSubscriptionForStatus[]> {
   const allData: EventSubSubscriptionForStatus[] = [];
@@ -120,12 +101,7 @@ async function getSubscriptionsByUserId(
     url.searchParams.set("first", "100");
     if (cursor) url.searchParams.set("after", cursor);
 
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${appAccessToken}`,
-        "Client-Id": process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID!,
-      },
-    });
+    const response = await fetchTwitchApi(url.toString());
 
     if (!response.ok) {
       throw new Error(`Failed to fetch EventSub subscriptions: status=${response.status}`);
@@ -377,8 +353,7 @@ export async function GET(request: NextRequest) {
       if (streamerError) return handleDatabaseError(streamerError, "Channel Point Bootstrap API");
       if (!streamer) return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
 
-      const appAccessToken = await getAppAccessToken();
-      const subscriptions = await getSubscriptionsByUserId(appAccessToken, session.twitchUserId);
+      const subscriptions = await getSubscriptionsByUserId(session.twitchUserId);
       const expectedCallbackUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/twitch/eventsub`;
       const subscriptionsWithDebug = subscriptions.map((sub) => ({
         ...sub,

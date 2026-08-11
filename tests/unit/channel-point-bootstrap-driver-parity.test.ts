@@ -23,6 +23,7 @@ import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { hasScope, getTwitchAccessToken } from '@/lib/twitch/token-manager'
 import { getDb } from '@/lib/db/client'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { __resetTwitchAppTokenForTests } from '@/lib/twitch/app-token'
 import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
@@ -190,6 +191,7 @@ function createDrizzleBootstrapDbMock(
 
 beforeEach(() => {
   vi.clearAllMocks()
+  __resetTwitchAppTokenForTests()
   process.env.NEXT_PUBLIC_APP_URL = 'https://example.com'
   process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'client-id'
   vi.stubGlobal('fetch', vi.fn())

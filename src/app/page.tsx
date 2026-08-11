@@ -74,44 +74,54 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
             {t("hero.description4")}
           </p>
 
-          {/* ログイン状態に応じて表示を切り替え */}
-          {session ? (
-            // ログイン済み: 視聴者/配信者向けガイドへのリンクボタンを中央に表示
-            <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
-              <Link
-                href="/guide#viewer"
-                className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-8 py-3 font-medium text-white transition hover:bg-purple-700"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
-                {t("hero.viewerGuide")}
-              </Link>
-              <Link
-                href="/guide#streamer"
-                className="inline-flex items-center gap-2 rounded-lg border border-purple-600 bg-transparent px-8 py-3 font-medium text-purple-400 transition hover:bg-purple-600 hover:text-white"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                {t("hero.streamerGuide")}
-              </Link>
-            </div>
-          ) : (
-            // 未ログイン: Twitchログインボタンと使い方リンクを表示
-            <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
-              <TwitchLoginButtonWithIcon
-                className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-8 py-3 font-medium text-white transition hover:bg-purple-700 disabled:opacity-50"
-              />
-              <Link
-                href="/guide"
-                className="inline-flex items-center gap-2 rounded-lg border border-gray-600 px-8 py-3 font-medium text-gray-300 transition hover:bg-gray-800 hover:text-white"
-              >
-                {t("hero.viewGuide")}
-              </Link>
-            </div>
-          )}
+          <div className="flex flex-col items-center gap-4 sm:flex-row sm:flex-wrap sm:justify-center">
+            {/* ログイン状態に応じて利用開始・ガイド導線を切り替える */}
+            {session ? (
+              // ログイン済み: 視聴者/配信者向けガイドへのリンクボタンを表示
+              <>
+                <Link
+                  href="/guide#viewer"
+                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-8 py-3 font-medium text-white transition hover:bg-purple-700"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                  {t("hero.viewerGuide")}
+                </Link>
+                <Link
+                  href="/guide#streamer"
+                  className="inline-flex items-center gap-2 rounded-lg border border-purple-600 bg-transparent px-8 py-3 font-medium text-purple-400 transition hover:bg-purple-600 hover:text-white"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  {t("hero.streamerGuide")}
+                </Link>
+              </>
+            ) : (
+              // 未ログイン: Twitchログインボタンと使い方リンクを表示
+              <>
+                <TwitchLoginButtonWithIcon
+                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-8 py-3 font-medium text-white transition hover:bg-purple-700 disabled:opacity-50"
+                />
+                <Link
+                  href="/guide"
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-600 px-8 py-3 font-medium text-gray-300 transition hover:bg-gray-800 hover:text-white"
+                >
+                  {t("hero.viewGuide")}
+                </Link>
+              </>
+            )}
+            {/* 公開ページは主要操作より強く見せず、ログイン時は配信者向けガイドの
+                直後に置く。未ログイン時も使い方リンクの隣で発見可能性を保つ。 */}
+            <Link
+              href="/live"
+              className="inline-flex min-h-12 items-center rounded-lg border border-gray-600 bg-gray-800 px-8 py-3 font-medium text-gray-200 transition hover:border-gray-500 hover:bg-gray-700 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+            >
+              {t("hero.liveDirectory")}
+            </Link>
+          </div>
         </div>
 
         <div className="mt-20 grid gap-6 md:grid-cols-2">

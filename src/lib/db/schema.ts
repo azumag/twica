@@ -90,6 +90,9 @@ export const streamers = pgTable('streamers', {
   // 00035
   show_unowned_cards: boolean('show_unowned_cards').notNull().default(false),
   show_unowned_card_details: boolean('show_unowned_card_details').notNull().default(false),
+  // 00074 + 20260811120000: 配信掲載とランキング識別情報のオプトイン（両方OFF）
+  publish_live_status: boolean('publish_live_status').notNull().default(false),
+  publish_stats: boolean('publish_stats').notNull().default(false),
   // 00042: デフォルト無し・NULL 許容
   raid_gacha_active_until: timestamp('raid_gacha_active_until', { withTimezone: true, mode: 'string' }),
   // 00043

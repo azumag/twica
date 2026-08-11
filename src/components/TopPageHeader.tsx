@@ -119,7 +119,5 @@ export default function TopPageHeader({ initialSession }: TopPageHeaderProps) {
     )
   }
 
-  // 未ログインユーザーの場合は言語切り替えのみ表示
-  // For logged-out users, only show the language switcher
   return <LanguageSwitcherDark />
 }

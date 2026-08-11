@@ -60,6 +60,7 @@ describe("FAQ page", () => {
       "src/app/releases/page.tsx",
       "src/app/plans/page.tsx",
       "src/app/faq/page.tsx",
+      "src/app/live/page.tsx",
     ];
 
     for (const page of pages) {
@@ -82,6 +83,20 @@ describe("FAQ page", () => {
     expect(source).toContain('href: "/about"');
     expect(source).toContain('href: "/privacy"');
     expect(source).toContain('href: "/releases"');
+  });
+
+  it("places the live-directory link in content navigation instead of top bars", () => {
+    const home = readSource("src/app/page.tsx");
+    const dashboardNav = readSource("src/components/DashboardNav.tsx");
+
+    expect(readSource("src/components/Header.tsx")).not.toContain('href="/live"');
+    expect(readSource("src/components/TopPageHeader.tsx")).not.toContain('href="/live"');
+    expect(home).toContain('href="/live"');
+    expect(home.indexOf('t("hero.streamerGuide")')).toBeLessThan(
+      home.indexOf('t("hero.liveDirectory")'),
+    );
+    expect(home).toContain("border-gray-600 bg-gray-800");
+    expect(dashboardNav).toContain('href: "/live"');
   });
 });
 

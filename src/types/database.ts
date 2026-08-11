@@ -80,6 +80,12 @@ export interface Database {
           // 未所持カード表示時に画像/説明まで公開するか（false=プレースホルダーのみ）
           // When unowned cards are shown, whether to reveal card image/description
           show_unowned_card_details: boolean
+          // 配信中ディレクトリ(/live)への掲載オプトイン（デフォルトfalse）
+          // Whether the streamer opts into the live directory listing (default false)
+          publish_live_status: boolean
+          // /liveランキングでチャネル識別情報を表示するオプトイン（デフォルトfalse）
+          // Whether /live rankings identify the streamer channel (default false)
+          publish_stats: boolean
           // レイド限定ガチャを受け付ける期限（null/期限切れは不明状態としてブロック）
           // Until when raid-limited gacha rewards are accepted. Null/expired blocks them.
           raid_gacha_active_until: string | null
@@ -114,6 +120,8 @@ export interface Database {
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          publish_live_status?: boolean
+          publish_stats?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
           created_at?: string
@@ -144,6 +152,8 @@ export interface Database {
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          publish_live_status?: boolean
+          publish_stats?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
           created_at?: string

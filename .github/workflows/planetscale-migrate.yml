@@ -23,7 +23,8 @@
 # 構造的に発生しなくなる。
 #
 # Applies `scripts/db-migrate.js apply --provider=planetscale` against the
-# branch-matched PlanetScale logical database on every push to main or preview.
+# branch-matched PlanetScale logical database when migration or runner paths
+# change on main or preview. Operators can retry explicitly with workflow_dispatch.
 #
 # Kept in its own file rather than as a job in deploy-cloudflare.yml because GitHub
 # Actions concurrency cancellation operates at the run level: a workflow-level
@@ -82,23 +83,37 @@ name: PlanetScale Migrations
 on:
   push:
     branches: [main, preview]
-    # migration そのものか runner スクリプトに変更が無い push ではスキップする。
-    # 実DBへのDDL適用は migration 変更時のみ必要であり、ドキュメント等だけの
-    # push で毎回 PlanetScale へ接続して適用/検証するのは無駄なため。
+    # migration・runner依存・workflow自身に関係しないpushではスキップする。
+    # 実DBへのapply/verifyはこれらの変更時に必要であり、無関係なドキュメント等だけの
+    # pushで毎回PlanetScaleへ接続するのは無駄なため。
     # （workflow_dispatch は手動実行のためパスフィルタを付けない）
     #
-    # 既知のエッジケース（GitHub公式ドキュメントで確認済み・受容する残余リスク）:
-    # 1回のpushのdiffが3,000ファイルを超え、かつmigration変更がその先頭3,000件に
-    # 含まれない場合、GitHub側の実装上このpathフィルタはfail-closed（実行されない）
-    # になる。本リポジトリの通常のPR/pushでこの規模のdiffは想定していないが、
-    # 万一発生した場合はDDLが未適用のまま気づかず進む。復旧経路は
-    # `workflow_dispatch` による手動再実行、または次のmigration付きpushでの
-    # まとめ適用（`db-migrate.js`は未適用分をすべて追いつかせる）。
+    # 既知のエッジケース（GitHub公式ドキュメント間で上限値が一致しないため安全側で運用）:
+    # Workflow Syntaxは先頭3,000ファイル、Troubleshootingは先頭300ファイルまでを
+    # path判定対象と記載している（2026-08-11確認）。低い300を実効上限として扱い、
+    # 1回のpushが300ファイルを超える場合は、migrationが含まれるかにかかわらず
+    # このworkflow runが作成されたことを運用者が確認する。runが無い場合は対象branchで
+    # `workflow_dispatch` を直ちに実行する。未適用分は`db-migrate.js`がまとめて追いつかせる。
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+    # https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#filtering-and-diff-limits
+    #
+    # また、従来の全push実行では一時的な接続断やadvisory lock待ちでapplyが
+    # 失敗しても次のpushが自動リトライになっていたが、path限定後は無関係なpushでは
+    # 再実行されない。失敗を確認した運用者は、同じbranchのrunでRe-run failed jobsを
+    # 選ぶかworkflow_dispatchを実行する。アプリは未適用カラムをdeploy-window fallbackで
+    # 機能縮退させるためデータ破損には至らない一方、再実行まで機能無効が長引く残余リスクは
+    # 受容する。定期verify等の追加監視は、実測で必要になった時点の別Issueで検討する。
     paths:
       - 'supabase/migrations/**'
       - 'db/planetscale/**'
       - 'scripts/db-migrate.js'
       - 'scripts/lib/**'
+      # workflowのif/env/step変更を次のmigrationまで未実行にしない。
+      - '.github/workflows/planetscale-migrate.yml'
+      # runtime runnerはrootのpostgres packageを使う。依存更新で壊れた場合を
+      # 次のDDL適用時まで見逃さないよう、manifestとlockfileも実DBで検証する。
+      - 'package.json'
+      - 'package-lock.json'
 
   # 手動再実行ではGitHub UIでmainまたはpreviewのrefを選ぶ。Environmentを別inputで
   # 選ばせると「previewコード + production secret」のような危険な組合せを作れるため、

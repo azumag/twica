@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import MaintenanceBanner from '@/components/MaintenanceBanner'
-import { MaintenanceStatusContext } from '@/components/MaintenanceStatusProvider'
-import type { MaintenanceStatusResponse } from '@/lib/maintenance/client'
+import {
+  MaintenanceStatusContext,
+  type MaintenanceStatusContextValue,
+} from '@/components/MaintenanceStatusProvider'
 import jaMessages from '../../../messages/ja.json'
 import enMessages from '../../../messages/en.json'
 
@@ -11,7 +13,7 @@ import enMessages from '../../../messages/en.json'
 // statusを注入してバナーの表示ロジックだけを検証する（テスト用にexportされた
 // 生Context。MaintenanceStatusProvider.tsx参照）。
 function renderBanner(
-  status: MaintenanceStatusResponse,
+  status: MaintenanceStatusContextValue,
   { locale = 'ja', messages = jaMessages }: { locale?: string; messages?: typeof jaMessages } = {}
 ) {
   return render(
@@ -41,6 +43,13 @@ describe('MaintenanceBanner', () => {
     expect(
       screen.getByText('ただいまメンテナンス中です。しばらくしてから再度お試しください。')
     ).toBeInTheDocument()
+  })
+
+  it('visible復帰の再確認中はwriteを止めても一時的なwarnを表示・通知しない', () => {
+    renderBanner({ mode: 'read-only', isRefreshing: true })
+
+    expect(screen.queryByText(/メンテナンス/)).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('')
   })
 
   it('mode=cutover-validating のときはmodes.cutoverValidatingの文言を表示する', () => {
