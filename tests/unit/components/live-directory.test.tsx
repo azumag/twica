@@ -70,8 +70,7 @@ function renderedCardIds(container: HTMLElement): string[] {
 }
 
 describe("sortLiveDirectoryEntries", () => {
-  it("sorts all four modes and keeps stats=null last for statistical modes", () => {
-    expect(idsFor("viewers")).toEqual(["bravo", "alpha", "charlie"]);
+  it("sorts all three modes and keeps stats=null last for statistical modes", () => {
     expect(idsFor("recentlyStarted")).toEqual(["bravo", "charlie", "alpha"]);
     expect(idsFor("cardCount")).toEqual(["charlie", "alpha", "bravo"]);
     expect(idsFor("redemptionCount")).toEqual(["alpha", "charlie", "bravo"]);
@@ -106,14 +105,29 @@ describe("sortLiveDirectoryEntries", () => {
       ),
     ).toEqual(["valid", "invalid"]);
   });
+
+  it("does not use viewer count as a hidden tie-breaker", () => {
+    const alpha = entry("alpha", { displayName: "Alpha", viewerCount: 1 });
+    const bravo = entry("bravo", { displayName: "Bravo", viewerCount: 999 });
+
+    expect(
+      sortLiveDirectoryEntries([bravo, alpha], "recentlyStarted").map(
+        (item) => item.streamerId,
+      ),
+    ).toEqual(["alpha", "bravo"]);
+  });
 });
 
 describe("LiveDirectory", () => {
-  it("uses viewer count initially and updates the DOM order through the labeled select", () => {
+  it("uses recently-started order initially and omits viewer-count sorting", () => {
     const { container } = renderDirectory();
-    expect(renderedCardIds(container)).toEqual(["bravo", "alpha", "charlie"]);
+    expect(renderedCardIds(container)).toEqual(["bravo", "charlie", "alpha"]);
 
-    fireEvent.change(screen.getByRole("combobox", { name: "並び順" }), {
+    const sortSelect = screen.getByRole("combobox", { name: "並び順" });
+    expect(sortSelect).toHaveValue("recentlyStarted");
+    expect(screen.queryByRole("option", { name: "視聴者数" })).not.toBeInTheDocument();
+
+    fireEvent.change(sortSelect, {
       target: { value: "cardCount" },
     });
     expect(renderedCardIds(container)).toEqual(["charlie", "alpha", "bravo"]);
