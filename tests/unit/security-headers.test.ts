@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { NextResponse } from 'next/server'
-import { setSecurityHeaders } from '@/lib/security-headers'
+import { setSecurityHeaders, buildCsp } from '@/lib/security-headers'
 
 describe('setSecurityHeaders', () => {
   it('X-Content-Type-Optionsヘッダーを設定する', () => {
@@ -59,6 +59,26 @@ describe('setSecurityHeaders', () => {
       // Note: unsafe-inline is currently allowed for script-src and style-src in production
       // This is a known limitation for Next.js inline styles/scripts
       expect(csp).toContain('unsafe-inline')
+      vi.unstubAllEnvs()
+    })
+
+    it('本番環境で nonce を渡すと script-src が nonce ベースになり unsafe-inline を含まない (#836)', () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, undefined, 'abc123')
+      const csp = result.headers.get('Content-Security-Policy')
+      const scriptSrc = csp?.split(';').find((d) => d.trim().startsWith('script-src'))
+      expect(scriptSrc).toContain("'nonce-abc123'")
+      expect(scriptSrc).toContain("'strict-dynamic'")
+      expect(scriptSrc).not.toContain('unsafe-inline')
+      // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
+      expect(csp).toContain("style-src 'self' 'unsafe-inline'")
+      vi.unstubAllEnvs()
+    })
+
+    it('buildCsp は nonce なし本番で従来どおり unsafe-inline を含む（フォールバック）', () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      expect(buildCsp()).toContain('unsafe-inline')
       vi.unstubAllEnvs()
     })
   })

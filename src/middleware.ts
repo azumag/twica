@@ -1,7 +1,7 @@
-import { type NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/session-middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
-import { setSecurityHeaders } from '@/lib/security-headers'
+import { setSecurityHeaders, buildCsp } from '@/lib/security-headers'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { hasInvalidOverlayEventsStreamerId } from '@/lib/overlay-route-validation'
 import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
@@ -144,12 +144,30 @@ export function checkMaintenanceWriteBlock(request: NextRequest): NextResponse |
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
+  // #836 項目5: リクエストごとに CSP nonce を発行する。
+  // Next.js 16 は request の Content-Security-Policy ヘッダーから nonce を自動抽出し、
+  // 自前スクリプトへ適用する（getScriptNonceFromHeader）。middleware で response の
+  // CSP を設定するだけでなく、request ヘッダーにも設定することで、App Router の
+  // サーバーコンポーネント（layout.tsx の Script コンポーネント）からも
+  // x-nonce として参照できるようにする。
+  const nonce = crypto.randomUUID()
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-nonce', nonce)
+  requestHeaders.set('Content-Security-Policy', buildCsp(nonce))
+
+  // 後続の updateSession / route 処理に nonce 付きヘッダーを引き継ぐ。
+  // updateSession が NextResponse.next({ request }) を作るため、request を
+  // 差し替えたインスタンスで呼ぶ（cookies 等の参照はヘッダー経由のため維持される）。
+  // NextRequest コンストラクタに既存 Request を渡すと method / body が引き継がれ、
+  // init.headers だけが上書きされる（body ストリームの再構築による二重消費を避ける）。
+  const requestWithNonce = new NextRequest(request, { headers: requestHeaders })
+
   // #694 Stage 3: 他の全処理（ロケール検出・rate limit・security headers 設定）
   // より先に評価する。rate limit の消費を避けるためと、ブロック対象なら
   // updateSession 等の余分な I/O を一切発生させないため。
   const maintenanceBlockResponse = checkMaintenanceWriteBlock(request)
   if (maintenanceBlockResponse) {
-    return setSecurityHeaders(maintenanceBlockResponse, pathname)
+    return setSecurityHeaders(maintenanceBlockResponse, pathname, nonce)
   }
 
   // Issue #657: 不正な streamerId をDBクエリへ渡す前に拒否する。
@@ -160,13 +178,13 @@ export async function middleware(request: NextRequest) {
       { error: 'Invalid streamer ID' },
       { status: 400 }
     )
-    return setSecurityHeaders(errorResponse, pathname)
+    return setSecurityHeaders(errorResponse, pathname, nonce)
   }
 
-  const response = await updateSession(request)
+  const response = await updateSession(requestWithNonce)
   // パスに基づいて適切なセキュリティヘッダーを設定
   // Set appropriate security headers based on the path
-  setSecurityHeaders(response, pathname)
+  setSecurityHeaders(response, pathname, nonce)
 
   // Detect and set locale for server components
   // サーバーコンポーネント用にロケールを検出・設定
@@ -235,7 +253,7 @@ export async function middleware(request: NextRequest) {
           }
         )
 
-        return setSecurityHeaders(errorResponse, pathname)
+        return setSecurityHeaders(errorResponse, pathname, nonce)
       }
     }
 

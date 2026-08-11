@@ -28,6 +28,7 @@ vi.mock('@/lib/rate-limit', () => ({
 
 vi.mock('@/lib/security-headers', () => ({
   setSecurityHeaders: (response: Response) => response,
+  buildCsp: (nonce?: string) => nonce ? `default-src 'self'; script-src 'self' 'nonce-${nonce}'` : `default-src 'self'; script-src 'self'`,
 }))
 
 // maintenance-status はキャッシュ許可パスのため、middleware が no-store を付けず、

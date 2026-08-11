@@ -2,6 +2,71 @@
  * URL関連のユーティリティ関数
  */
 
+// #836 項目6: getBaseUrl は host ヘッダーを無検証で信頼していた。
+// Cloudflare Workers は workers.dev + カスタムドメイン + preview の複数ホストを
+// 受けるため、ホストヘッダ注入で OAuth redirect_uri / リダイレクト先を混線させる
+// リスクがある。許可 origin（scheme + host + port）以外の host ヘッダーは無視し、
+// NEXT_PUBLIC_APP_URL へフォールバックする。
+//
+// 注意: NEXT_PUBLIC_* は Cloudflare Workers ではビルド時にインライン化されるため、
+// この allowlist もビルド時に確定する。production の NEXT_PUBLIC_APP_URL には
+// カスタムドメイン（https://twica.bluemoon.works）が設定される前提。
+// 念のため workers.dev ドメインも定数として許可する（ビルド設定の漏れに備えた
+// 二重防御）。production Worker（twica.tsubasa-azumagakito.workers.dev）は既存の
+// 公開 URL であり、ここから OAuth を開始した場合も同一 origin で callback が
+// 成立する必要がある（#836 レビュー指摘）。
+const WORKERS_DEV_ALLOWED_ORIGINS = new Set([
+  'https://twica.tsubasa-azumagakito.workers.dev',
+  'https://twica-preview.tsubasa-azumagakito.workers.dev',
+])
+
+const LOCAL_DEV_ORIGINS = new Set([
+  'http://localhost:8787',
+  'http://localhost:3000',
+  'http://127.0.0.1:8787',
+  'http://127.0.0.1:3000',
+])
+
+/**
+ * リクエストから正規化された許可 origin を解決する。
+ * host ヘッダー + x-forwarded-proto から組み立てた origin が許可リスト
+ * （NEXT_PUBLIC_APP_URL / workers.dev / ローカル開発）に完全一致する場合のみ
+ * その origin を返し、それ以外は NEXT_PUBLIC_APP_URL の origin を返す。
+ * port を含む完全一致で検証するため、許可ホストに任意ポートを付けた偽装を拒否する
+ * （#836 レビュー指摘: hostname だけの検証では raw Host / raw proto をそのまま
+ * 返してしまい、非 canonical な redirect_uri を生成できる）。
+ */
+export function resolveAllowedOrigin(
+  host: string | null,
+  forwardedProto: string | null
+): string {
+  const fallback = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:8787'
+
+  // ローカル開発は host ヘッダーのみで判定（wrangler dev は http://localhost:8787）
+  if (host) {
+    const localOrigin = `http://${host}`
+    if (LOCAL_DEV_ORIGINS.has(localOrigin)) return localOrigin
+  }
+
+  // workers.dev は常に https（workers.dev は http を受け付けない）
+  if (host) {
+    const candidate = `https://${host}`
+    if (WORKERS_DEV_ALLOWED_ORIGINS.has(candidate)) return candidate
+  }
+
+  // NEXT_PUBLIC_APP_URL の origin と一致する場合のみ許可（port も含む完全一致）。
+  // x-forwarded-proto が無い場合は https 前提（Cloudflare は本番で https のみ）。
+  // 明示的に http が渡された場合は https と一致しないためフォールバックする。
+  const fallbackOrigin = new URL(fallback).origin
+  if (host) {
+    const proto = forwardedProto ?? 'https'
+    const candidate = `${proto}://${host}`
+    if (candidate === fallbackOrigin) return candidate
+  }
+
+  return fallbackOrigin
+}
+
 /**
  * リクエストからベースURLを取得する
  * リクエストの host ヘッダーから動的に生成する。
@@ -15,33 +80,7 @@
  * @returns ベースURL（例: http://localhost:8787, https://example.com）
  */
 export function getBaseUrl(request: Request): string {
-  // リクエストの host ヘッダーから動的に取得
-  // Cloudflare Workers / Vercel いずれの環境でも正しく動作する
   const host = request.headers.get('host')
-  if (!host) {
-    // フォールバック: NEXT_PUBLIC_APP_URL を使用
-    // Cloudflare Workers のローカル開発サーバーはポート 8787 を使用
-    return process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:8787'
-  }
-
-  // プロトコルを判定
-  // x-forwarded-proto ヘッダーがあればそれを使用（プロキシ経由の場合）
-  // なければホスト名から判定
   const forwardedProto = request.headers.get('x-forwarded-proto')
-  let protocol: string
-
-  if (host.includes('localhost') || host.includes('127.0.0.1') || host.includes('::1')) {
-    // ローカル開発環境は常に HTTP を使用
-    // wrangler dev が内部的に x-forwarded-proto: https を設定するため、
-    // localhost チェックを x-forwarded-proto より優先しないと
-    // redirect_uri が https://localhost:8787/... になりブラウザが接続できない
-    protocol = 'http'
-  } else if (forwardedProto) {
-    protocol = forwardedProto
-  } else {
-    // デフォルトは https
-    protocol = 'https'
-  }
-
-  return `${protocol}://${host}`
+  return resolveAllowedOrigin(host, forwardedProto)
 }

@@ -5,6 +5,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 // next-intl - 国際化サポートのプロバイダーとサーバーサイドユーティリティ
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
+import { headers } from "next/headers";
 
 export const metadata: Metadata = {
   title: "TwiCa - Twitch Channel Point Trading Cards",
@@ -24,6 +25,10 @@ export default async function RootLayout({
   // サーバーサイドでロケールを検出（Cookie/ヘッダーから）
   const locale = await getLocale();
   const messages = await getMessages();
+  // #836 項目5: middleware がリクエストごとに発行した CSP nonce を参照する。
+  // Script コンポーネントへ nonce を渡すことで、CSP の script-src を
+  // 'unsafe-inline' から nonce ベースへ移行しても Cloudflare Insights を読み込める。
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
 
   return (
     <html lang={locale}>
@@ -40,6 +45,7 @@ export default async function RootLayout({
         {process.env.NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN && (
           <Script
             defer
+            nonce={nonce}
             src="https://static.cloudflareinsights.com/beacon.min.js"
             data-cf-beacon={`{"token": "${process.env.NEXT_PUBLIC_CF_WEB_ANALYTICS_TOKEN}"}`}
           />
