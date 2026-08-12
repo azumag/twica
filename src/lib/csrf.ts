@@ -213,17 +213,21 @@ export async function validateCSRFToken(
     return { valid: false, error: 'セッションの有効期限が切れました。再度ログインしてください。' }
   }
 
-  // リクエスト URL 自体が非許可 authority なら fail-closed にする
-  // （expectedOrigin は request.url 由来で攻撃者指定になり得るため、getBaseUrl と
-  // 同じ trusted-origin 判定を通す。workers.dev はここで許可される。Origin/Referer
-  // の有無に関わらず常時判定し、不要なトークン生成・Cookie 書き込み・HMAC 計算を
-  // 避けるために session 取得直後に置く）。
+  // expectedOrigin は request.url ではなく host ヘッダーから解決する。
+  // request.url は OpenNext が再構成するため実機で公開 origin と一致する保証が無く、
+  // ズレると全 CSRF 保護 API が fail-closed で全滅する（#952 レビュー必須指摘）。
+  // host ヘッダーは getBaseUrl と同じ入力で本番実績があり、workers.dev /
+  // カスタムドメイン / ローカルを許可する。非許可 authority は fail-closed にする。
+  // Origin/Referer の有無に関わらず常時判定し、不要なトークン生成・Cookie 書き込み・
+  // HMAC 計算を避けるために session 取得直後に置く。
   const requestUrl = new URL(request.url)
-  const expectedOrigin = `${requestUrl.protocol}//${requestUrl.host}`
-  // ALLOWED_ORIGINS は本来「Origin ヘッダーの許可リスト」（Vercel 系も含む）だが、
-  // この OR が実効するのはローカル wrangler dev（NODE_ENV=production 相当で
-  // localhost:8787）の救済のみ。本番では isTrustedOrigin が NEXT_PUBLIC_APP_URL /
-  // workers.dev を許可するため、Vercel 系が信頼 authority へ昇格することはない。
+  // host ヘッダーは Workers/OpenNext では必ず存在する。テスト環境（undici の
+  // Request）では forbidden header のため取得できないので、その場合のみ
+  // request.url の host へフォールバックする（本番のズレ対策は host 優先で成立）。
+  const authority = request.headers.get('host') ?? requestUrl.host
+  const expectedOrigin = `${requestUrl.protocol}//${authority}`
+  // ALLOWED_ORIGINS は単体テスト（example.com モック）との互換のため残す。
+  // 本番では isTrustedOrigin が NEXT_PUBLIC_APP_URL / workers.dev / ローカルを許可する。
   if (!isTrustedOrigin(expectedOrigin) && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(expectedOrigin)) {
     logger.warn('CSRF validation failed: request URL origin not trusted', {
       userId: session.twitchUserId,

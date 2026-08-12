@@ -40,7 +40,8 @@ function withFrameAncestors(csp: string, pathname?: string): string {
     .replace(/;\s*$/, '')
     .split(';')
     .map((d) => d.trim())
-    .filter((d) => d && !d.startsWith('frame-ancestors'))
+    // CSP の directive 名は case-insensitive のため、大小を問わず除去する
+    .filter((d) => d && !d.toLowerCase().startsWith('frame-ancestors'))
     .join('; ')
   return `${base}; ${directive};`
 }
