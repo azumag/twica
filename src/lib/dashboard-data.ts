@@ -36,12 +36,12 @@ import { getDb, type DbHandle } from "@/lib/db/client";
 import { isPgFunctionNotFoundError, isPgMissingColumnError, isPgUniqueViolationError } from "@/lib/db/errors";
 
 import { withDbRetry } from "@/lib/db/retry";
-// Issue #685: cards テーブルの本番未デプロイ8列（card_number/hp/atk/def/spd/
-// skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバック。
-// src/app/api/cards/route.ts の fetchCardsFromDBPg で確立したパターン（無指定
-// select → 列欠落エラー検知 → CARDS_SAFE_COLUMNS で再試行）を本モジュールにも
-// 適用する。詳細は cards-safe-columns.ts のコメント参照。
-import { CARDS_SAFE_COLUMNS, withCardsBattleColumnFallback, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
+// #834: cards テーブルの「本番未デプロイ8列」（card_number/hp/atk/def/spd/
+// skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバックは、
+// PlanetScale 本番の information_schema.columns への実測で8列とも実在することを
+// 確認したため撤去した（詳細は cards-safe-columns.ts のコメント参照）。
+// 無指定 select の単一経路に戻す。
+import { isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 import {
   STREAMERS_SAFE_COLUMNS,
   withLiveDirectorySettingsColumnFallback,
@@ -130,16 +130,12 @@ async function reportMissingDashboardRpc(
 async function getStreamerDataPg(
   twitchUserId: string
 ): Promise<{ streamer: Streamer; cards: Card[] } | null> {
-  // Issue #685: card: cardsTable のネスト select は cards の全列（本番未デプロイ
-  // 8列を含む）を要求する。まず無指定で試み、列欠落エラーなら CARDS_SAFE_COLUMNS
-  // へ差し替えて再試行する（cards-safe-columns.ts 参照）。
-  // Issue #738: streamer: streamersTable も同様に本PR追加の2列
+  // #834: card: cardsTable のネスト select は cards の全列を要求するが、本番実測
+  // で全列とも実在することを確認済みのため無指定 select の単一経路でよい。
+  // Issue #738: streamer: streamersTable は本PR追加の2列
   // （publish_live_status / publish_stats）を要求するため、デプロイ窓では
   // STREAMERS_SAFE_COLUMNS へ差し替えて再試行する（streamers-safe-columns.ts 参照）。
-  async function selectStreamerWithCards(
-    useStreamerSafeColumns: boolean,
-    useCardSafeColumns: boolean
-  ) {
+  async function selectStreamerWithCards(useStreamerSafeColumns: boolean) {
     return withDbRetry(
       async () => {
         // 規約: getDb() は queryFn の中で呼ぶ（リクエストスコープ破棄からの
@@ -148,7 +144,7 @@ async function getStreamerDataPg(
         return db
           .select({
             streamer: useStreamerSafeColumns ? STREAMERS_SAFE_COLUMNS : streamersTable,
-            card: useCardSafeColumns ? CARDS_SAFE_COLUMNS : cardsTable,
+            card: cardsTable,
           })
           .from(streamersTable)
           .leftJoin(cardsTable, eq(cardsTable.streamer_id, streamersTable.id))
@@ -161,9 +157,7 @@ async function getStreamerDataPg(
 
   try {
     const rows = await withLiveDirectorySettingsColumnFallback((streamerSafe) =>
-      withCardsBattleColumnFallback((cardSafe) =>
-        selectStreamerWithCards(streamerSafe, cardSafe)
-      )
+      selectStreamerWithCards(streamerSafe)
     );
 
     if (rows.length === 0) return null;
@@ -278,14 +272,14 @@ async function getStreamerDataPaginatedPg(
 
   const offset = (page - 1) * perPage;
   let cards: Card[] = [];
-  // Issue #685: 無指定 select() は cards の本番未デプロイ8列を要求する。
-  // 列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
-  async function selectCards(useSafeColumns: boolean) {
+  // #834: 無指定 select() は cards の全列を要求するが、本番実測で全列とも実在
+  // することを確認済みのため単一経路でよい。
+  async function selectCards() {
     return withDbRetry(
       async () => {
         const { db } = await getDb();
-        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-        return query
+        return db
+          .select()
           .from(cardsTable)
           .where(eq(cardsTable.streamer_id, streamerId))
           .orderBy(desc(cardsTable.created_at))
@@ -297,7 +291,7 @@ async function getStreamerDataPaginatedPg(
     );
   }
   try {
-    const rows = await withCardsBattleColumnFallback(selectCards);
+    const rows = await selectCards();
     cards = rows as unknown as Card[];
   } catch (error) {
     // 既存実装は cards エラー時 null → `cards || []` で [] 扱い
@@ -541,16 +535,16 @@ export const getUserCards = cache(async (twitchUserId: string): Promise<CardWith
  * する。card_id は NOT NULL FK のため実データでは常にオブジェクト）。
  * エラー時は既存実装（分割代入で握り潰し → []）と同じ外部挙動。
  */
-// Issue #685: cards: cardsTable のネスト select は cards の本番未デプロイ8列を
-// 要求する。列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
-async function selectRecentGachaHistory(useSafeColumns: boolean) {
+// #834: cards: cardsTable のネスト select は cards の全列を要求するが、本番実測
+// で全列とも実在することを確認済みのため単一経路でよい。
+async function selectRecentGachaHistory() {
   return withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
         .select({
           ...getTableColumns(gachaHistoryTable),
-          cards: useSafeColumns ? CARDS_SAFE_COLUMNS : cardsTable,
+          cards: cardsTable,
         })
         .from(gachaHistoryTable)
         .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
@@ -564,7 +558,7 @@ async function selectRecentGachaHistory(useSafeColumns: boolean) {
 
 async function getRecentGachaHistoryPg(): Promise<GachaHistoryWithCard[]> {
   try {
-    const rows = await withCardsBattleColumnFallback(selectRecentGachaHistory);
+    const rows = await selectRecentGachaHistory();
     // 既存実装と同じく戻り値型へのキャストのみ（値の変換はしない）
     return rows as unknown as GachaHistoryWithCard[];
   } catch (error) {
@@ -659,17 +653,18 @@ async function getGachaHistoryForStreamerPg(
   const whereClause = and(...conditions);
   const offset = (page - 1) * perPage;
 
-  // Issue #685: cards: cardsTable のネスト select は cards の本番未デプロイ8列を
-  // 要求する。count クエリは cards の列を選択しない（leftJoin は行数維持のみ）ため
-  // 対象外。列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
-  async function selectRows(useSafeColumns: boolean) {
+  // #834: cards: cardsTable のネスト select は cards の全列を要求するが、本番実測
+  // で全列とも実在することを確認済みのため単一経路でよい（count クエリは cards の
+  // 列を選択しない（leftJoin は行数維持のみ）ため、そもそもこのフォールバックの
+  // 対象外だった）。
+  async function selectRows() {
     return withDbRetry(
       async () => {
         const { db } = await getDb();
         return db
           .select({
             ...getTableColumns(gachaHistoryTable),
-            cards: useSafeColumns ? CARDS_SAFE_COLUMNS : cardsTable,
+            cards: cardsTable,
           })
           .from(gachaHistoryTable)
           .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
@@ -684,7 +679,7 @@ async function getGachaHistoryForStreamerPg(
   }
   try {
     const [rows, total] = await Promise.all([
-      withCardsBattleColumnFallback(selectRows),
+      selectRows(),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -750,17 +745,17 @@ async function getGachaHistoryForUserPg(
   const { page = 1, perPage = 20 } = filters;
   const offset = (page - 1) * perPage;
 
-  // Issue #685: cards: cardsTable のネスト select は cards の本番未デプロイ8列を
-  // 要求する。count クエリは cards を選択しない（JOINすら行わない）ため対象外。
-  // 列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
-  async function selectRows(useSafeColumns: boolean) {
+  // #834: cards: cardsTable のネスト select は cards の全列を要求するが、本番実測
+  // で全列とも実在することを確認済みのため単一経路でよい（count クエリは cards を
+  // 選択しない（JOINすら行わない）ため、そもそもこのフォールバックの対象外だった）。
+  async function selectRows() {
     return withDbRetry(
       async () => {
         const { db } = await getDb();
         return db
           .select({
             ...getTableColumns(gachaHistoryTable),
-            cards: useSafeColumns ? CARDS_SAFE_COLUMNS : cardsTable,
+            cards: cardsTable,
             streamers: { twitch_display_name: streamersTable.twitch_display_name },
           })
           .from(gachaHistoryTable)
@@ -777,7 +772,7 @@ async function getGachaHistoryForUserPg(
   }
   try {
     const [rows, total] = await Promise.all([
-      withCardsBattleColumnFallback(selectRows),
+      selectRows(),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -2036,14 +2031,14 @@ async function fetchCardOwnerStatsFromUserCards(
  * （挙動パリティ優先。上限撤廃は移行完了後に別途判断する）。
  * エラー時は既存実装（分割代入で握り潰し → cards=null → []）と同じ外部挙動。
  */
-// Issue #685: 無指定 select() は cards の本番未デプロイ8列を要求する。
-// 列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
-async function selectActiveCardsForStreamer(streamerId: string, useSafeColumns: boolean) {
+// #834: 無指定 select() は cards の全列を要求するが、本番実測で全列とも実在する
+// ことを確認済みのため単一経路でよい。
+async function selectActiveCardsForStreamer(streamerId: string) {
   return withDbRetry(
     async () => {
       const { db } = await getDb();
-      const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-      return query
+      return db
+        .select()
         .from(cardsTable)
         .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
         // generated column rarity_order によるレアリティ順の安定ソート
@@ -2060,9 +2055,7 @@ async function fetchActiveCardsForStreamerFromDBPg(streamerId: string): Promise<
   const startTotal = Date.now();
   const startQuery = Date.now();
   try {
-    const cards = await withCardsBattleColumnFallback((useSafeColumns) =>
-      selectActiveCardsForStreamer(streamerId, useSafeColumns)
-    );
+    const cards = await selectActiveCardsForStreamer(streamerId);
     logger.info(`[Perf] getActiveCardsForStreamer query: ${Date.now() - startQuery}ms`);
     logger.info(`[Perf] getActiveCardsForStreamer total: ${Date.now() - startTotal}ms`);
     return normalizeDropRate(cards as unknown as Card[]);
@@ -2341,20 +2334,17 @@ async function getUserCardDetailPg(
 ): Promise<CardWithDetails | null> {
   const start = Date.now();
 
-  // Issue #685: getTableColumns(cardsTable) は cards の本番未デプロイ8列を
-  // 要求する。列欠落エラーなら CARDS_SAFE_COLUMNS へ差し替えて再試行する。
-  // Issue #738: streamers: streamersTable のネスト select も本PR追加の2列を
+  // #834: getTableColumns(cardsTable) は cards の全列を要求するが、本番実測で
+  // 全列とも実在することを確認済みのため単一経路でよい。
+  // Issue #738: streamers: streamersTable のネスト select は本PR追加の2列を
   // 要求するため、デプロイ窓では STREAMERS_SAFE_COLUMNS へ差し替えて再試行する。
-  async function selectCardDetail(
-    useStreamerSafeColumns: boolean,
-    useCardSafeColumns: boolean
-  ) {
+  async function selectCardDetail(useStreamerSafeColumns: boolean) {
     return withDbRetry(
       async () => {
         const { db } = await getDb();
         return db
           .select({
-            ...(useCardSafeColumns ? CARDS_SAFE_COLUMNS : getTableColumns(cardsTable)),
+            ...getTableColumns(cardsTable),
             streamers: useStreamerSafeColumns ? STREAMERS_SAFE_COLUMNS : streamersTable,
           })
           .from(cardsTable)
@@ -2371,7 +2361,7 @@ async function getUserCardDetailPg(
   let card: (Card & { streamers: Streamer }) | null;
   try {
     const rows = await withLiveDirectorySettingsColumnFallback((streamerSafe) =>
-      withCardsBattleColumnFallback((cardSafe) => selectCardDetail(streamerSafe, cardSafe))
+      selectCardDetail(streamerSafe)
     );
     // streamer_id は NOT NULL FK のため streamers は実データで常に非 null。
     // 既存の消費形状（Card & { streamers: Streamer }）へのキャストのみ行う。

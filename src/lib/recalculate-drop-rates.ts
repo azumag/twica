@@ -12,10 +12,6 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable } from "@/lib/db/schema";
-import {
-  CARDS_SAFE_COLUMNS,
-  withCardsBattleColumnFallback,
-} from "@/lib/db/cards-safe-columns";
 
 /**
  * batch_update_card_drop_rates RPC の pg 直結エラーを PostgREST .rpc() の error と
@@ -151,20 +147,19 @@ async function fetchActiveCardsForRecalculationPg(
 
 /**
  * Issue #794: pg更新後のカードも同じ PlanetScale 接続から取得する。
- * cards の無指定 select は本番未デプロイ列を要求しうるため、安全列を明示する。
+ * cards の全列は本番に実在することを実測で確認済みのため（Issue #834）、
+ * 無指定 select をそのまま使う。
  */
 async function fetchRecalculatedCardsPg(
   streamerId: string,
   updatedCardIds: string[]
 ): Promise<Card[]> {
-  async function selectCards(useSafeColumns: boolean) {
+  async function selectCards() {
     return withDbRetry(
       async () => {
         const { db } = await getDb();
-        const query = useSafeColumns
-          ? db.select(CARDS_SAFE_COLUMNS)
-          : db.select();
-        return query
+        return db
+          .select()
           .from(cardsTable)
           .where(
             and(
@@ -178,7 +173,7 @@ async function fetchRecalculatedCardsPg(
     );
   }
 
-  const rows = await withCardsBattleColumnFallback(selectCards);
+  const rows = await selectCards();
   return normalizeDropRate(rows as unknown as Card[]);
 }
 

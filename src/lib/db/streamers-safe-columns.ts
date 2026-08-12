@@ -74,9 +74,14 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
 
 /**
  * 「まず全列で試行 → 列欠落エラー検知 → STREAMERS_SAFE_COLUMNS で再試行」の
- * 共通化（cards-safe-columns.ts の withCardsBattleColumnFallback と同型）。
- * attempt(useSafeColumns) は useSafeColumns に応じて全列 / 明示列を切り替える。
- * 対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に委ねる。
+ * 共通化。attempt(useSafeColumns) は useSafeColumns に応じて全列 / 明示列を
+ * 切り替える。対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に
+ * 委ねる。
+ *
+ * 元々は cards-safe-columns.ts の withCardsBattleColumnFallback と同型の設計
+ * だったが、そちらは本番実測で対象8列とも実在することを確認したため #834 で
+ * 撤去された。streamers の publish_live_status / publish_stats（#738）は本Issue
+ * とは独立した別のデプロイ窓のため、この関数自体は変更しない。
  */
 export async function withLiveDirectorySettingsColumnFallback<T>(
   attempt: (useSafeColumns: boolean) => Promise<T>

@@ -42,14 +42,20 @@ function primeBatchUpdate(options: {
   ];
   let selectIndex = 0;
   const db = {
-    select: vi.fn((fields: Record<string, unknown>) => {
+    // fetchUpdatedCardsForBatchUpdatePg は CARDS_COLUMNS_WITHOUT_PADDING_COLOR
+    // （image_padding_color を除く明示列リスト、#899）を渡して select するため
+    // fields は通常定義されるが、汎用モックとして fields 無指定（行をそのまま
+    // 返す）のケースも安全に扱えるようにしておく。
+    select: vi.fn((fields?: Record<string, unknown>) => {
       const response = responses[Math.min(selectIndex++, responses.length - 1)];
       const resolve = () =>
         response.error
           ? Promise.reject(response.error)
           : Promise.resolve(
               response.rows.map((row) =>
-                Object.fromEntries(Object.keys(fields).map((key) => [key, row[key] ?? null])),
+                fields
+                  ? Object.fromEntries(Object.keys(fields).map((key) => [key, row[key] ?? null]))
+                  : row,
               ),
             );
       const builder: any = {

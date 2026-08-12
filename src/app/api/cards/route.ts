@@ -34,7 +34,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable, userCards as userCardsTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -109,7 +109,7 @@ async function fetchStreamerForCardCreatePg(
 /**
  * POST /api/cards のカード INSERT（card_number → max_issuance_count →
  * collection_name の3段階デプロイ窓フォールバック付き、さらに RETURNING 列の
- * フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
+ * image_padding_color フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
  *
  * - `.insert(...).select().maybeSingle()` は `.insert(...).values(...).returning()`
  *   が等価（RETURNING で挿入行を1回の往復で取得）。
@@ -118,13 +118,13 @@ async function fetchStreamerForCardCreatePg(
  *   （withDbRetry にオプションを渡さない = リトライなし）。
  * - unique_violation (23505) は呼び出し元(POST)で isCardNumberConflictError
  *
- * self-review fix: 無指定 `.returning()` は schema.ts の静的列リストを生成する
- * ため、本番に実在しない8列(card_number/hp/atk/def/spd/skill_*、
- * cards-safe-columns.ts参照)を含む RETURNING は必ず失敗する。card_number を
- * insertData から削除しても RETURNING 自体は無指定のままなので直らない
- * （RETURNING は values() の内容とは無関係にスキーマ全列を要求するため）。
- * 上記3段階フォールバックを終えてもなお失敗する場合、最後に RETURNING を
- * CARDS_SAFE_COLUMNS（8列除外）へ切り替えて再試行する。
+ * #834: 「本番未デプロイ8列」（card_number/hp/atk/def/spd/skill_*）に対する
+ * RETURNING フォールバックは、本番実測で8列とも実在することを確認したため撤去
+ * した。image_padding_color（#899、本Issueとは独立した別デプロイ窓）だけは
+ * 無指定 `.returning()` が失敗しうるため、CARDS_COLUMNS_WITHOUT_PADDING_COLOR
+ * へ切り替えて最後にもう一度だけ再試行する（insertData に無い場合も RETURNING
+ * は values() の内容と無関係に schema.ts の全列を要求するため、この最終
+ * フォールバックが必要）。
  */
 async function insertCardPg(
   insertDataInitial: Record<string, unknown>
@@ -132,14 +132,16 @@ async function insertCardPg(
   const insertData = { ...insertDataInitial };
 
   async function attemptInsert(
-    useSafeReturning = false
+    useColumnsWithoutPaddingColor = false
   ): Promise<{ card: Record<string, unknown> | null; error: unknown }> {
     try {
       const rows = await withDbRetry(
         async () => {
           const { db } = await getDb();
           const query = db.insert(cardsTable).values(insertData as typeof cardsTable.$inferInsert);
-          return useSafeReturning ? query.returning(CARDS_SAFE_COLUMNS) : query.returning();
+          return useColumnsWithoutPaddingColor
+            ? query.returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
+            : query.returning();
         },
         "Cards API POST: insert card"
         // ON CONFLICT の無い INSERT は再実行で二重作成になりうるため非冪等（既定 = リトライなし）
@@ -170,19 +172,14 @@ async function insertCardPg(
     delete insertData.image_padding_color;
     ({ card, error } = await attemptInsert());
   }
-  // self-review fix: 上記までの入力値フォールバックを尽くしてもなお、無指定
-  // RETURNING が本番未デプロイ列(hp/atk/...等)を要求して失敗している場合、
-  // 明示列リストで最後にもう一度だけ試す。
-  // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color もこの
-  // 最終フォールバックの対象に含める。無指定 `.returning()` は values() の
-  // 内容と無関係に schema.ts の全列を要求するため、直前の
-  // isMissingCardPaddingColorError フォールバック（insertData から列を削除
-  // するだけ）だけでは RETURNING が同じ理由で再度失敗し続ける。
-  // image_padding_color が insertData に無い場合（未指定リクエスト）は直前の
-  // フォールバックの `"image_padding_color" in insertData` 条件を満たさず
-  // スキップされるため、この分岐が無いと migration 未適用の環境では
-  // imagePaddingColor を送らないカード作成まで含めて全滅していた。
-  if (error && (isMissingCardsBattleColumnError(error) || isMissingCardPaddingColorError(error))) {
+  // 上記までの入力値フォールバックを尽くしてもなお、無指定 RETURNING が
+  // image_padding_color 列の欠落で失敗している場合、明示列リストで最後にもう
+  // 一度だけ試す。image_padding_color が insertData に無い場合（未指定
+  // リクエスト）は直前のフォールバックの `"image_padding_color" in insertData`
+  // 条件を満たさずスキップされるため、この分岐が無いと migration 未適用の
+  // 環境では imagePaddingColor を送らないカード作成まで含めて全滅していた
+  // （#899 Fable厳格レビュー指摘・PR #903）。
+  if (error && isMissingCardPaddingColorError(error)) {
     ({ card, error } = await attemptInsert(true));
   }
 
@@ -579,11 +576,9 @@ function resolveSortColumn(sortField: SortField): AnyColumn {
  * クエリはソート列を使わないため対象外（元々失敗しない）。行取得クエリのみ
  * created_at 降順へのフォールバックを行う。
  *
- * self-review fix: 行取得クエリの無指定 `.select()` は schema.ts の静的列リスト
- * を生成するため、本番に実在しない8列(card_number/hp/atk/...、
- * cards-safe-columns.ts参照)を含む SELECT は必ず失敗する。ORDER BY 列の
- * フォールバック（card_number→created_at）を終えてもなお失敗する場合、
- * SELECT 列リストを CARDS_SAFE_COLUMNS（8列除外）へ切り替えて再試行する。
+ * #834: 「本番未デプロイ8列」（card_number/hp/atk/...）に対する SELECT 列
+ * リストのフォールバックは、本番実測で8列とも実在することを確認したため撤去
+ * した（cards-safe-columns.ts 参照）。
  */
 async function fetchCardsFromDBPg(
   streamerId: string,
@@ -618,12 +613,12 @@ async function fetchCardsFromDBPg(
     primaryOrderExprs.push(orderByNullsLast(cardsTable.created_at, true));
   }
 
-  async function selectRows(orderExprs: ReturnType<typeof orderByNullsLast>[], useSafeColumns = false) {
+  async function selectRows(orderExprs: ReturnType<typeof orderByNullsLast>[]) {
     return withDbRetry(
       async () => {
         const { db } = await getDb();
-        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-        return query
+        return db
+          .select()
           .from(cardsTable)
           .where(whereCondition)
           .orderBy(...orderExprs)
@@ -636,7 +631,6 @@ async function fetchCardsFromDBPg(
   }
 
   let orderExprs = primaryOrderExprs;
-  let useSafeColumns = false;
   let rows: unknown[];
   let rowsError: unknown = null;
 
@@ -659,15 +653,6 @@ async function fetchCardsFromDBPg(
     } catch (error) {
       rowsError = error;
     }
-  }
-
-  // self-review fix: card_number は「本番未デプロイ8列」にも含まれるため、
-  // 上記 ORDER BY フォールバック後もなお無指定 SELECT が hp/atk 等の欠落で
-  // 失敗し続けることがある。最後に明示列リストへ切り替えて再試行する。
-  if (rowsError && isMissingCardsBattleColumnError(rowsError)) {
-    useSafeColumns = true;
-    rows = await selectRows(orderExprs, useSafeColumns);
-    rowsError = null;
   }
 
   if (rowsError) {

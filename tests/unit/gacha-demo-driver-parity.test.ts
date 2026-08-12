@@ -34,28 +34,6 @@ const CARD_ROW = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-const SAFE_CARD_ROW = {
-  id: 'card-1',
-  streamer_id: 'streamer-1',
-  name: 'カード1',
-  description: null,
-  image_url: null,
-  rarity: 'common',
-  rarity_order: 4,
-  drop_rate: 0.25,
-  intra_rarity_weight: 1,
-  max_issuance_count: null,
-  collection_name: null,
-  is_active: true,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-}
-
-const MISSING_BATTLE_COLUMN_ERROR = {
-  code: '42703',
-  message: 'column "hp" of relation "cards" does not exist',
-}
-
 interface PgResponse {
   rows?: Array<Record<string, unknown>>
   error?: unknown
@@ -181,19 +159,5 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
     expect(body.card.id).not.toBe('inactive-or-foreign-card')
-  })
-
-  it('retries with CARDS_SAFE_COLUMNS when production-only battle columns are absent', async () => {
-    const pg = primePgDb([
-      { error: MISSING_BATTLE_COLUMN_ERROR },
-      { rows: [SAFE_CARD_ROW] },
-    ])
-
-    const response = await POST(request({ cardId: 'card-1', streamerId: 'streamer-1' }))
-    const body = await response.json()
-
-    expect(response.status).toBe(200)
-    expect(body.card.id).toBe('card-1')
-    expect(pg.db.select).toHaveBeenCalledTimes(2)
   })
 })

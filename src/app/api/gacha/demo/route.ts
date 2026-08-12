@@ -10,7 +10,6 @@ import { eq, and } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
 import {
   createOverlayDemoEvent,
   storeOverlayDemoEvent,
@@ -39,26 +38,15 @@ async function fetchCardByIdPg(cardId: string, streamerId: string): Promise<Card
     eq(cardsTable.is_active, true)
   );
 
-  async function selectRow(useSafeColumns: boolean) {
-    return withDbRetry(
+  try {
+    const rows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-        return query.from(cardsTable).where(condition).limit(1);
+        return db.select().from(cardsTable).where(condition).limit(1);
       },
       "gacha/demo(fetch card by id)",
       { idempotent: true },
     );
-  }
-
-  try {
-    let rows;
-    try {
-      rows = await selectRow(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      rows = await selectRow(true);
-    }
     return (rows[0] as unknown as Card) ?? null;
   } catch {
     return null;
@@ -67,28 +55,18 @@ async function fetchCardByIdPg(cardId: string, streamerId: string): Promise<Card
 
 /** Fetch active streamer cards from the authoritative PlanetScale database. */
 async function fetchActiveCardsForStreamerPg(streamerId: string): Promise<Card[]> {
-  async function selectRows(useSafeColumns: boolean) {
-    return withDbRetry(
+  try {
+    const rows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-        return query
+        return db
+          .select()
           .from(cardsTable)
           .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)));
       },
       "gacha/demo(fetch streamer cards)",
       { idempotent: true },
     );
-  }
-
-  try {
-    let rows;
-    try {
-      rows = await selectRows(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      rows = await selectRows(true);
-    }
     return rows as unknown as Card[];
   } catch {
     return [];

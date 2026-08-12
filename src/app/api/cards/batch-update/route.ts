@@ -13,7 +13,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 /**
@@ -97,7 +97,13 @@ async function fetchExistingCardsForBatchUpdatePg(
 
 /**
  * Issue #794: 更新後レスポンスもPlanetScaleから取得する。
- * 無指定selectは本番未デプロイ列を要求しうるためCARDS_SAFE_COLUMNSを使う。
+ * #834: 「本番未デプロイ8列」（card_number/hp/atk/def/spd/skill_*）を理由にした
+ * 列制限は、本番実測で8列とも実在することを確認したため撤去した。ただし
+ * image_padding_color（#899、本Issueとは独立した別デプロイ窓）は無指定 select
+ * だと欠落時に失敗しうるため、この列だけを除いた明示列リスト
+ * （CARDS_COLUMNS_WITHOUT_PADDING_COLOR）を引き続き使う。この関数はレスポンス
+ * 用の読み取り専用フェッチであり、image_padding_color を返さなくても呼び出し元
+ * （POST /api/cards/batch-update）の応答契約に影響しない。
  */
 async function fetchUpdatedCardsForBatchUpdatePg(
   streamerId: string,
@@ -107,7 +113,7 @@ async function fetchUpdatedCardsForBatchUpdatePg(
     async () => {
       const { db } = await getDb();
       return db
-        .select(CARDS_SAFE_COLUMNS)
+        .select(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
         .from(cardsTable)
         .where(
           and(

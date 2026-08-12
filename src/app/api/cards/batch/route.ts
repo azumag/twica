@@ -24,7 +24,7 @@ import type { Rarity } from "@/types/database";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 
@@ -73,36 +73,41 @@ async function selectStreamerForBatchCreatePg(
 
 /**
  * POST /api/cards/batch の一括 INSERT の pg 直結実装 (#663)。
- * cardsToInsert は card_number/hp/atk 等の本番未デプロイ列を最初から
- * 含めない)。
  *
  * - `.insert(cardsToInsert).select()` は `.insert(...).values(...).returning()`
- *   が等価（RETURNING で挿入行を1回の往復で取得）。
- * - ON CONFLICT の無い一括 INSERT のため非冪等（withDbRetry にオプションを
- *   渡さない = リトライなし。二重作成を避けるため）。
+ *   が等価(RETURNING で挿入行を1回の往復で取得)。
+ * - ON CONFLICT の無い一括 INSERT のため非冪等(withDbRetry にオプションを
+ *   渡さない = リトライなし。二重作成を避けるため)。
  *
- * self-review fix: 無指定 `.returning()` は schema.ts の静的列リストを生成する
- * ため、本番に実在しない8列(card_number/hp/atk/def/spd/skill_*、
- * cards-safe-columns.ts参照)を含む RETURNING は必ず失敗する。cardsToInsert
- * 自体はこれらの列を含まないため INSERT の VALUES 自体は成功しうるが、
- * RETURNING が無関係にそれらを要求するため失敗する。検知したら RETURNING を
- * CARDS_SAFE_COLUMNS（8列除外）へ切り替えて一度だけ再試行する。
+ * #834: 以前は無指定 `.returning()` が本番未デプロイの8列(card_number/hp/atk/
+ * def/spd/skill_*)を要求して失敗する前提で、列を絞った明示 RETURNING へ切り替える
+ * 再試行を持っていたが、PlanetScale 本番の実測で8列とも実在することを確認した
+ * ため撤去した(cards-safe-columns.ts 参照)。
+ *
+ * ただし image_padding_color（#899、本Issueとは独立した別デプロイ窓）は
+ * cardsToInsert に一切含まれない列(このエンドポイントはbatchCardInputに
+ * imagePaddingColorを持たない)にもかかわらず、無指定 `.returning()` は
+ * VALUES の内容と無関係に schema.ts の全列を要求するため、この列が未適用の
+ * 環境では一括作成が全滅しうる。検知したら CARDS_COLUMNS_WITHOUT_PADDING_COLOR
+ * へ切り替えて一度だけ再試行する（cards/route.ts の insertCardPg と同じ方針）。
  */
 async function insertCardsBatchPg(
   cardsToInsert: Record<string, unknown>[]
 ): Promise<{ createdCards: Record<string, unknown>[] | null; error: unknown }> {
   async function attemptInsert(
-    useSafeReturning = false
+    useColumnsWithoutPaddingColor = false
   ): Promise<{ createdCards: Record<string, unknown>[] | null; error: unknown }> {
     try {
       const rows = await withDbRetry(
         async () => {
           const { db } = await getDb();
           const query = db.insert(cardsTable).values(cardsToInsert as (typeof cardsTable.$inferInsert)[]);
-          return useSafeReturning ? query.returning(CARDS_SAFE_COLUMNS) : query.returning();
+          return useColumnsWithoutPaddingColor
+            ? query.returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
+            : query.returning();
         },
         "Cards Batch API: bulk insert cards"
-        // ON CONFLICT の無い INSERT は再実行で二重作成になりうるため非冪等（既定 = リトライなし）
+        // ON CONFLICT の無い INSERT は再実行で二重作成になりうるため非冪等(既定 = リトライなし)
       );
       return { createdCards: rows, error: null };
     } catch (error) {
@@ -111,7 +116,7 @@ async function insertCardsBatchPg(
   }
 
   let { createdCards, error } = await attemptInsert();
-  if (error && isMissingCardsBattleColumnError(error)) {
+  if (error && isMissingCardPaddingColorError(error)) {
     ({ createdCards, error } = await attemptInsert(true));
   }
   return { createdCards, error };

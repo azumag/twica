@@ -12,7 +12,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getDb } from "@/lib/db/client";
 import { sha256Prefix } from "@/lib/crypto-utils";
-import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/cards-safe-columns";
 
 // #830: 画像URLの所有権判定は R2 の公開URLに依存するため、テストでは固定値を与える
 const R2_PUBLIC_URL = "https://images.example.test";
@@ -105,9 +105,10 @@ function createDrizzleDbMock(config: { selects?: PgResponse[]; inserts?: PgRespo
       const resolve = () => {
         if (response.error) return Promise.reject(response.error);
         const rows = response.rows ?? [];
-        // self-review fix (#663): .returning(CARDS_SAFE_COLUMNS) のような明示列指定時は
-        // fields のキーだけを持つ行にマップし、本番未デプロイ8列(hp/atk等)が実際に
-        // 応答から除外されることをテストで検証できるようにする。
+        // returning(fields) が指定された場合は select(fields) と同じ「fields の
+        // キーだけを持つ行にマップする」フェイクを行う汎用モック（現状このファイル
+        // の POST /api/cards/batch は無指定 .returning() のみを使うため常に rows
+        // をそのまま返す経路を通る）。
         const fields = call.returningFields;
         return Promise.resolve(
           fields ? rows.map((row) => Object.fromEntries(Object.keys(fields).map((key) => [key, row[key] ?? null]))) : rows
@@ -225,6 +226,34 @@ describe("POST /api/cards/batch: PlanetScale契約 (#663)", () => {
     expect(pg.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
   });
 
+  // #834 自己レビュー指摘: batch route の cardsToInsert は image_padding_color を
+  // 一切含まない(BatchCardInputに無い)が、無指定 `.returning()` は VALUES の内容と
+  // 無関係に schema.ts の全列を要求するため、この列が未適用の環境では一括作成が
+  // 全滅しうる(cards/route.ts の insertCardPg と同じ構造の欠落)。
+  // CARDS_COLUMNS_WITHOUT_PADDING_COLOR への切替フォールバックを検証する。
+  it("本番未デプロイのimage_padding_color列: RETURNING失敗時に明示列リストで再試行し200を返す (#899)", async () => {
+    const missingPaddingErrorPg = {
+      code: "42703",
+      message: 'column "image_padding_color" of relation "cards" does not exist',
+    };
+
+    const pg = createDrizzleDbMock({
+      selects: [{ rows: [STREAMER_ROW] }],
+      inserts: [
+        { error: missingPaddingErrorPg }, // attempt1: 無指定RETURNINGがimage_padding_colorで失敗
+        { rows: CREATED_ROWS }, // attempt2: CARDS_COLUMNS_WITHOUT_PADDING_COLORで再試行し成功
+      ],
+    });
+    primePgDb(pg);
+    const pgRes = await POST(createBatchRequest(REQUEST_BODY));
+    expect(pgRes.status).toBe(200);
+    const pgJson = await pgRes.json();
+
+    expect(pgJson).toMatchObject({ success: true, created: 2 });
+    expect(pg.insertCalls).toHaveLength(2);
+    expect(pg.insertCalls[1].returningFields).toEqual(CARDS_COLUMNS_WITHOUT_PADDING_COLOR);
+  });
+
   it("streamer所有権なしでは403を返しINSERTしない", async () => {
     const pg = createDrizzleDbMock({ selects: [{ rows: [] }] });
     primePgDb(pg);
@@ -243,81 +272,6 @@ describe("POST /api/cards/batch: PlanetScale契約 (#663)", () => {
     primePgDb(pg);
     const pgRes = await POST(createBatchRequest(REQUEST_BODY));
     expect(pgRes.status).toBe(500);
-  });
-
-  // self-review fix (#663): 本番 cards テーブルには card_number/hp/atk/def/spd/
-  // skill_type/skill_name/skill_power の8列が実在しない(Issue #625)。cardsToInsert
-  // 自体はこれらの列を一切含まない(batch route はそもそも card_number 等を
-  // 入力しない)ため INSERT の VALUES 自体は成功しうるが、無指定 `.returning()`
-  // が無条件に全列を要求するため hp 等の欠落で失敗する。このルートには入力値の
-  // デプロイ窓フォールバックチェーンが元々無い(点4: 再試行ロジックが一切
-  // 無かった)ため、RETURNING フォールバックが唯一の再試行経路になる。
-  it("本番未デプロイ8列(hp等)RETURNINGフォールバック: 明示列リストで再試行し200を返す", async () => {
-    const missingHpErrorPg = {
-      code: "42703",
-      message: 'column "hp" of relation "cards" does not exist',
-    };
-    // 応答マッピングは CARDS_SAFE_COLUMNS の全キーを含む(未設定分は null)。
-    // モックの returning(fields) が select(fields) と同じ「fields のキーだけを
-    // 持つ行にマップする」実装のため。
-    const CREATED_ROWS_SAFE = [
-      {
-        id: "card-1",
-        streamer_id: "streamer-1",
-        name: "Card A",
-        description: "",
-        image_url: "https://example.com/a.png",
-        rarity: "common",
-        rarity_order: null,
-        drop_rate: 0.5,
-        intra_rarity_weight: null,
-        max_issuance_count: null,
-        collection_name: null,
-        is_active: null,
-        created_at: null,
-        updated_at: null,
-      },
-      {
-        id: "card-2",
-        streamer_id: "streamer-1",
-        name: "Card B",
-        description: "desc",
-        image_url: "https://example.com/b.png",
-        rarity: "rare",
-        rarity_order: null,
-        drop_rate: 0.2,
-        intra_rarity_weight: null,
-        max_issuance_count: null,
-        collection_name: null,
-        is_active: null,
-        created_at: null,
-        updated_at: null,
-      },
-    ];
-
-    const pg = createDrizzleDbMock({
-      selects: [{ rows: [STREAMER_ROW] }],
-      inserts: [
-        { error: missingHpErrorPg }, // attempt1: 無指定RETURNINGがhpで失敗
-        { rows: CREATED_ROWS_SAFE }, // attempt2: SAFE_COLUMNSで再試行し成功
-      ],
-    });
-    primePgDb(pg);
-    const pgRes = await POST(createBatchRequest(REQUEST_BODY));
-    expect(pgRes.status).toBe(200);
-    const pgJson = await pgRes.json();
-
-    expect(pgJson).toEqual({
-      success: true,
-      created: 2,
-      cards: CREATED_ROWS_SAFE,
-      recalculatedCards: null,
-    });
-    expect(pg.insertCalls).toHaveLength(2);
-    expect(pg.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
-    expect(pg.insertCalls[1].returningFields).toEqual(CARDS_SAFE_COLUMNS);
-    expect(Object.keys(pg.insertCalls[1].returningFields ?? {})).not.toContain("card_number");
-    expect(Object.keys(pg.insertCalls[1].returningFields ?? {})).not.toContain("hp");
   });
 
   // #830: 他人のストレージURLをカードへ紐付けると、以降のカード削除時の
