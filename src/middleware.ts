@@ -100,7 +100,7 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 // 機密情報を返さない・セッション非依存のエンドポイントのみを許可する。
 // 警告: ここへ HTML を返すパスを追加してはならない。エッジキャッシュに nonce 付き
 // CSP が焼き付き、キャッシュ HIT 中の全スクリプトが nonce 不一致でブロックされる
-// （#944 レビュー任意指摘。現状の対象は JSON のみで無害）。
+// （現状の対象は JSON のみで無害）。
 const CACHEABLE_PUBLIC_PATHS = ['/api/maintenance-status']
 
 /**
@@ -152,7 +152,7 @@ export async function middleware(request: NextRequest) {
   // updateSession 等の余分な I/O を一切発生させないため。
   const maintenanceBlockResponse = checkMaintenanceWriteBlock(request)
   if (maintenanceBlockResponse) {
-    return setSecurityHeaders(maintenanceBlockResponse, pathname)
+    return setSecurityHeaders(maintenanceBlockResponse, { pathname })
   }
 
   // Issue #657: 不正な streamerId をDBクエリへ渡す前に拒否する。
@@ -163,7 +163,7 @@ export async function middleware(request: NextRequest) {
       { error: 'Invalid streamer ID' },
       { status: 400 }
     )
-    return setSecurityHeaders(errorResponse, pathname)
+    return setSecurityHeaders(errorResponse, { pathname })
   }
 
   // #836 項目5: リクエストごとに CSP nonce を発行する。
@@ -177,7 +177,7 @@ export async function middleware(request: NextRequest) {
   const nonce = crypto.randomUUID()
   const requestHeaders = new Headers(request.headers)
   // CPU 課金抑制のため CSP 文字列はリクエストごとに 1 回だけ生成し、
-  // request ヘッダーとレスポンスヘッダーの両方へ渡す（#949 レビュー任意指摘）。
+  // request ヘッダーとレスポンスヘッダーの両方へ渡す（nonce 契約）。
   const csp = buildCsp(nonce)
   requestHeaders.set('x-nonce', nonce)
   requestHeaders.set('Content-Security-Policy', csp)
@@ -185,7 +185,7 @@ export async function middleware(request: NextRequest) {
   const response = await updateSession(request, requestHeaders)
   // パスに基づいて適切なセキュリティヘッダーを設定
   // Set appropriate security headers based on the path
-  setSecurityHeaders(response, pathname, csp)
+  setSecurityHeaders(response, { pathname, csp })
 
   // Detect and set locale for server components
   // サーバーコンポーネント用にロケールを検出・設定
@@ -208,7 +208,7 @@ export async function middleware(request: NextRequest) {
   // realtime-config はルート側で `public, max-age=15, stale-while-revalidate=15` を
   // 明示する意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
   // 警告: ここも HTML を返すパスを追加してはならない（CACHEABLE_PUBLIC_PATHS と
-  // 同じ理由で nonce がエッジキャッシュに焼き付く、#949 レビュー任意指摘）。
+  // 同じ理由で nonce がエッジキャッシュに焼き付く）。
   const isCacheablePublicPath =
     CACHEABLE_PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
     (pathname.startsWith('/api/overlay/') &&
@@ -256,7 +256,7 @@ export async function middleware(request: NextRequest) {
           }
         )
 
-        return setSecurityHeaders(errorResponse, pathname, csp)
+        return setSecurityHeaders(errorResponse, { pathname, csp })
       }
     }
 
