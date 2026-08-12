@@ -1,17 +1,8 @@
 // -----------------------------------------------------------------------------
-// cards テーブルの列欠落フォールバック用ヘルパー。
-//
-// 「本番未デプロイ8列」（card_number, hp, atk, def, spd, skill_type, skill_name,
-// skill_power）に対するフォールバック（CARDS_SAFE_COLUMNS /
-// withCardsBattleColumnFallback / isMissingCardsBattleColumnError）は、
-// PlanetScale 本番の information_schema.columns への実測で8列とも実在することを
-// 確認したため撤去した（Issue #834。実測結果は同issueのコメント参照）。列定義
-// 自体は将来のカードバトル機能の土台として schema.ts に残す（#625/#628 の既存
-// 方針どおり）が、本番に実在するため無指定 select/returning は常に成功しており、
-// このフォールバックが担っていた分岐は死に分岐だった。
-//
-// 引き続き必要なのは image_padding_color 列（#899、本Issueとは独立した別の
-// デプロイ窓）に対するフォールバックのみ。
+// cards テーブルの image_padding_color 列（#899）専用のデプロイ窓フォールバック。
+// card-number-errors.ts / card-issuance.ts と同じ粒度の単一列ヘルパー。
+// 旧「本番未デプロイ8列」フォールバックの経緯は Issue #834 参照
+// （2026-08 撤去。ファイルは card-padding-color-errors.ts から改名）。
 // -----------------------------------------------------------------------------
 
 import { getTableColumns } from "drizzle-orm";

@@ -1,22 +1,24 @@
 /**
- * cards-safe-columns.ts の単体テスト。
+ * card-padding-color-errors.ts（旧 cards-safe-columns.ts、#834 で改名）の単体テスト。
  *
  * #834 で「本番未デプロイ8列」フォールバック（CARDS_SAFE_COLUMNS /
  * withCardsBattleColumnFallback / isMissingCardsBattleColumnError）を撤去した後、
  * 残る責務は image_padding_color（#899）専用の isMissingCardPaddingColorError と
  * CARDS_COLUMNS_WITHOUT_PADDING_COLOR のみ。
  *
- * Claude Auto Review 指摘対応: 各ルートの driver-parity テストにあった
+ * 各ルートの driver-parity テストにあった
  * `expect(returningFields).toEqual(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)` は
  * 定数を定数と比較する自己参照的なアサーションで、分割代入のキー名を
  * 間違えても検出できない。ここでは実際の列集合の中身（image_padding_color を
  * 含まない・他の実列は含む）を直接検証する。
  */
 import { describe, it, expect } from "vitest";
+import { getTableColumns } from "drizzle-orm";
 import {
   isMissingCardPaddingColorError,
   CARDS_COLUMNS_WITHOUT_PADDING_COLOR,
-} from "@/lib/db/cards-safe-columns";
+} from "@/lib/db/card-padding-color-errors";
+import { cards as cardsTable } from "@/lib/db/schema";
 
 describe("isMissingCardPaddingColorError", () => {
   it("image_padding_color 列欠落エラー(42703)を検知する", () => {
@@ -83,8 +85,9 @@ describe("CARDS_COLUMNS_WITHOUT_PADDING_COLOR", () => {
         "updated_at",
       ]),
     );
-    // image_padding_color の1列だけを除いた集合であることを列数でも確認する
-    // (cards テーブルの全列数 - 1)。
-    expect(keys).toHaveLength(22);
+    // image_padding_color の1列だけを除いた集合であることを列数でも確認する。
+    // 固定値ではなく cards の実列数から動的に算出し、将来 cards に列が
+    // 増減しても「1列だけ除外」という意図そのものは壊れずに検証できるようにする。
+    expect(keys).toHaveLength(Object.keys(getTableColumns(cardsTable)).length - 1);
   });
 });

@@ -23,7 +23,7 @@ import {
   userCards,
 } from '@/lib/db/schema'
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError } from '@/lib/card-issuance'
-import { isMissingCardPaddingColorError } from '@/lib/db/cards-safe-columns'
+import { isMissingCardPaddingColorError } from '@/lib/db/card-padding-color-errors'
 import { isMissingCollectionNameColumn } from '@/lib/collections/collection-existence'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from '@/lib/rarity-weight-calculator'

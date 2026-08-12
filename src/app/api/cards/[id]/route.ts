@@ -32,7 +32,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /

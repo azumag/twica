@@ -25,7 +25,7 @@ const MAX_CAUSE_CHAIN_DEPTH = 5
  * 背景: Drizzle は postgres.js が throw する PostgresError を
  * `DrizzleQueryError extends Error { query, params, cause }` の形で1段ラップ
  * する（cause が元の PostgresError で、SQLSTATE・詳細メッセージはここにしか
- * 無い）。本ファイル・cards-safe-columns.ts・card-number-errors.ts・
+ * 無い）。本ファイル・card-padding-color-errors.ts・card-number-errors.ts・
  * card-issuance.ts・collections/collection-existence.ts の判定関数は、いずれも
  * トップレベルの `code`/`message`/`details`/`hint` だけを見ていたため、
  * ラップされた本番エラー（SQLSTATE 42703 の cards.card_number 列欠落）を

@@ -154,26 +154,22 @@ async function fetchRecalculatedCardsPg(
   streamerId: string,
   updatedCardIds: string[]
 ): Promise<Card[]> {
-  async function selectCards() {
-    return withDbRetry(
-      async () => {
-        const { db } = await getDb();
-        return db
-          .select()
-          .from(cardsTable)
-          .where(
-            and(
-              eq(cardsTable.streamer_id, streamerId),
-              inArray(cardsTable.id, updatedCardIds)
-            )
-          );
-      },
-      "recalculateIfAutoMode: recalculated cards(pg)",
-      { idempotent: true }
-    );
-  }
-
-  const rows = await selectCards();
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select()
+        .from(cardsTable)
+        .where(
+          and(
+            eq(cardsTable.streamer_id, streamerId),
+            inArray(cardsTable.id, updatedCardIds)
+          )
+        );
+    },
+    "recalculateIfAutoMode: recalculated cards(pg)",
+    { idempotent: true }
+  );
   return normalizeDropRate(rows as unknown as Card[]);
 }
 

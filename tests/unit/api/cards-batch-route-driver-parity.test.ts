@@ -12,7 +12,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getDb } from "@/lib/db/client";
 import { sha256Prefix } from "@/lib/crypto-utils";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
 
 // #830: 画像URLの所有権判定は R2 の公開URLに依存するため、テストでは固定値を与える
 const R2_PUBLIC_URL = "https://images.example.test";

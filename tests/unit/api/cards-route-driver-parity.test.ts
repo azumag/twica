@@ -12,7 +12,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { getDb } from "@/lib/db/client";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");

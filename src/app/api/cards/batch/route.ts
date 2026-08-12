@@ -24,7 +24,7 @@ import type { Rarity } from "@/types/database";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 
@@ -82,7 +82,7 @@ async function selectStreamerForBatchCreatePg(
  * #834: 以前は無指定 `.returning()` が本番未デプロイの8列(card_number/hp/atk/
  * def/spd/skill_*)を要求して失敗する前提で、列を絞った明示 RETURNING へ切り替える
  * 再試行を持っていたが、PlanetScale 本番の実測で8列とも実在することを確認した
- * ため撤去した(cards-safe-columns.ts 参照)。
+ * ため撤去した(card-padding-color-errors.ts 参照)。
  *
  * ただし image_padding_color（#899、本Issueとは独立した別デプロイ窓）は
  * cardsToInsert に一切含まれない列(このエンドポイントはbatchCardInputに

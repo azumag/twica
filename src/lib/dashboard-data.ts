@@ -39,9 +39,9 @@ import { withDbRetry } from "@/lib/db/retry";
 // #834: cards テーブルの「本番未デプロイ8列」（card_number/hp/atk/def/spd/
 // skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバックは、
 // PlanetScale 本番の information_schema.columns への実測で8列とも実在することを
-// 確認したため撤去した（詳細は cards-safe-columns.ts のコメント参照）。
+// 確認したため撤去した（詳細は card-padding-color-errors.ts のコメント参照）。
 // 無指定 select の単一経路に戻す。
-import { isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
+import { isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import {
   STREAMERS_SAFE_COLUMNS,
   withLiveDirectorySettingsColumnFallback,
@@ -272,8 +272,8 @@ async function getStreamerDataPaginatedPg(
   let cards: Card[] = [];
   // #834: 無指定 select() は cards の全列を要求するが、本番実測で全列とも実在
   // することを確認済みのため単一経路でよい。
-  async function selectCards() {
-    return withDbRetry(
+  try {
+    const rows = await withDbRetry(
       async () => {
         const { db } = await getDb();
         return db
@@ -287,9 +287,6 @@ async function getStreamerDataPaginatedPg(
       "getStreamerDataPaginated(cards)",
       { idempotent: true },
     );
-  }
-  try {
-    const rows = await selectCards();
     cards = rows as unknown as Card[];
   } catch (error) {
     // 既存実装は cards エラー時 null → `cards || []` で [] 扱い
@@ -535,28 +532,24 @@ export const getUserCards = cache(async (twitchUserId: string): Promise<CardWith
  */
 // #834: cards: cardsTable のネスト select は cards の全列を要求するが、本番実測
 // で全列とも実在することを確認済みのため単一経路でよい。
-async function selectRecentGachaHistory() {
-  return withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select({
-          ...getTableColumns(gachaHistoryTable),
-          cards: cardsTable,
-        })
-        .from(gachaHistoryTable)
-        .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
-        .orderBy(desc(gachaHistoryTable.redeemed_at))
-        .limit(10);
-    },
-    "getRecentGachaHistory",
-    { idempotent: true },
-  );
-}
-
 async function getRecentGachaHistoryPg(): Promise<GachaHistoryWithCard[]> {
   try {
-    const rows = await selectRecentGachaHistory();
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            ...getTableColumns(gachaHistoryTable),
+            cards: cardsTable,
+          })
+          .from(gachaHistoryTable)
+          .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+          .orderBy(desc(gachaHistoryTable.redeemed_at))
+          .limit(10);
+      },
+      "getRecentGachaHistory",
+      { idempotent: true },
+    );
     // 既存実装と同じく戻り値型へのキャストのみ（値の変換はしない）
     return rows as unknown as GachaHistoryWithCard[];
   } catch (error) {
@@ -655,29 +648,26 @@ async function getGachaHistoryForStreamerPg(
   // で全列とも実在することを確認済みのため単一経路でよい（count クエリは cards の
   // 列を選択しない（leftJoin は行数維持のみ）ため、そもそもこのフォールバックの
   // 対象外だった）。
-  async function selectRows() {
-    return withDbRetry(
-      async () => {
-        const { db } = await getDb();
-        return db
-          .select({
-            ...getTableColumns(gachaHistoryTable),
-            cards: cardsTable,
-          })
-          .from(gachaHistoryTable)
-          .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
-          .where(whereClause)
-          .orderBy(desc(gachaHistoryTable.redeemed_at))
-          .limit(perPage)
-          .offset(offset);
-      },
-      "getGachaHistoryForStreamer(rows)",
-      { idempotent: true },
-    );
-  }
   try {
     const [rows, total] = await Promise.all([
-      selectRows(),
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              ...getTableColumns(gachaHistoryTable),
+              cards: cardsTable,
+            })
+            .from(gachaHistoryTable)
+            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+            .where(whereClause)
+            .orderBy(desc(gachaHistoryTable.redeemed_at))
+            .limit(perPage)
+            .offset(offset);
+        },
+        "getGachaHistoryForStreamer(rows)",
+        { idempotent: true },
+      ),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -746,31 +736,28 @@ async function getGachaHistoryForUserPg(
   // #834: cards: cardsTable のネスト select は cards の全列を要求するが、本番実測
   // で全列とも実在することを確認済みのため単一経路でよい（count クエリは cards を
   // 選択しない（JOINすら行わない）ため、そもそもこのフォールバックの対象外だった）。
-  async function selectRows() {
-    return withDbRetry(
-      async () => {
-        const { db } = await getDb();
-        return db
-          .select({
-            ...getTableColumns(gachaHistoryTable),
-            cards: cardsTable,
-            streamers: { twitch_display_name: streamersTable.twitch_display_name },
-          })
-          .from(gachaHistoryTable)
-          .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
-          .leftJoin(streamersTable, eq(gachaHistoryTable.streamer_id, streamersTable.id))
-          .where(eq(gachaHistoryTable.user_twitch_id, userTwitchId))
-          .orderBy(desc(gachaHistoryTable.redeemed_at))
-          .limit(perPage)
-          .offset(offset);
-      },
-      "getGachaHistoryForUser(rows)",
-      { idempotent: true },
-    );
-  }
   try {
     const [rows, total] = await Promise.all([
-      selectRows(),
+      withDbRetry(
+        async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              ...getTableColumns(gachaHistoryTable),
+              cards: cardsTable,
+              streamers: { twitch_display_name: streamersTable.twitch_display_name },
+            })
+            .from(gachaHistoryTable)
+            .leftJoin(cardsTable, eq(gachaHistoryTable.card_id, cardsTable.id))
+            .leftJoin(streamersTable, eq(gachaHistoryTable.streamer_id, streamersTable.id))
+            .where(eq(gachaHistoryTable.user_twitch_id, userTwitchId))
+            .orderBy(desc(gachaHistoryTable.redeemed_at))
+            .limit(perPage)
+            .offset(offset);
+        },
+        "getGachaHistoryForUser(rows)",
+        { idempotent: true },
+      ),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -2028,32 +2015,29 @@ async function fetchCardOwnerStatsFromUserCards(
  * 超えた場合の挙動も既存経路と一致するよう明示的に LIMIT 1000 を付ける
  * （挙動パリティ優先。上限撤廃は移行完了後に別途判断する）。
  * エラー時は既存実装（分割代入で握り潰し → cards=null → []）と同じ外部挙動。
+ *
+ * #834: 無指定 select() は cards の全列を要求するが、本番実測で全列とも実在する
+ * ことを確認済みのため単一経路でよい。
  */
-// #834: 無指定 select() は cards の全列を要求するが、本番実測で全列とも実在する
-// ことを確認済みのため単一経路でよい。
-async function selectActiveCardsForStreamer(streamerId: string) {
-  return withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select()
-        .from(cardsTable)
-        .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
-        // generated column rarity_order によるレアリティ順の安定ソート
-        // 既定（ASC=NULLS LAST / DESC=NULLS FIRST）で一致する）
-        .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at))
-        .limit(1000);
-    },
-    "getActiveCardsForStreamer",
-    { idempotent: true },
-  );
-}
-
 async function fetchActiveCardsForStreamerFromDBPg(streamerId: string): Promise<Card[]> {
   const startTotal = Date.now();
   const startQuery = Date.now();
   try {
-    const cards = await selectActiveCardsForStreamer(streamerId);
+    const cards = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select()
+          .from(cardsTable)
+          .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
+          // generated column rarity_order によるレアリティ順の安定ソート
+          // 既定（ASC=NULLS LAST / DESC=NULLS FIRST）で一致する）
+          .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at))
+          .limit(1000);
+      },
+      "getActiveCardsForStreamer",
+      { idempotent: true },
+    );
     logger.info(`[Perf] getActiveCardsForStreamer query: ${Date.now() - startQuery}ms`);
     logger.info(`[Perf] getActiveCardsForStreamer total: ${Date.now() - startTotal}ms`);
     return normalizeDropRate(cards as unknown as Card[]);

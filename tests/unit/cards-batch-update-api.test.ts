@@ -153,7 +153,7 @@ describe("POST /api/cards/batch-update", () => {
     expect(await response.json()).toMatchObject({ success: true, updated: 3 });
   });
 
-  // Claude Auto Review 指摘対応の回帰テスト(#834): fetchUpdatedCardsForBatchUpdatePg
+  // 回帰テスト(#834): fetchUpdatedCardsForBatchUpdatePg
   // は無指定 select を先に試し、image_padding_color 列欠落エラーのときだけ
   // CARDS_COLUMNS_WITHOUT_PADDING_COLOR へ切り替えて再試行する。無指定 select が
   // 成功する通常時は image_padding_color を含む全列がそのまま返ることを検証する
