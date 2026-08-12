@@ -74,6 +74,19 @@ describe('setSecurityHeaders', () => {
       )
     })
 
+    it('production nonce 経路は nonce 埋め込み・strict-dynamic・unsafe-inline 不在・host-source 不記載を満たす (#836)', () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      const csp = buildCsp('abc123')
+      const scriptSrc = csp.split(';').find((d) => d.trim().startsWith('script-src'))
+      expect(scriptSrc).toContain("'nonce-abc123'")
+      expect(scriptSrc).toContain("'strict-dynamic'")
+      expect(scriptSrc).not.toContain('unsafe-inline')
+      // strict-dynamic 下では host-source は無効のため記述しない（#944 レビュー）
+      expect(scriptSrc).not.toContain('static.cloudflareinsights.com')
+      // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
+      expect(csp).toContain("style-src 'self' 'unsafe-inline'")
+    })
+
     it('csp 未指定時は buildCsp() の nonce なし production CSP を使う', () => {
       vi.stubEnv('NODE_ENV', 'production')
       const response = NextResponse.json({ test: 'data' })
@@ -122,16 +135,15 @@ describe('setSecurityHeaders', () => {
       ['development nonce あり', () => { vi.stubEnv('NODE_ENV', 'development'); return buildCsp('nonce1') }],
     ])('%s で全 directive が固定されている（乖離防止）', (_label, build) => {
       const csp = build()
-      // directive 名集合を完全一致で比較する。toContain のみだと directive の追加・
-      // 緩和を見逃すため、乖離防止の意図に沿う検証にする（#949 レビュー任意指摘）。
-      const actualDirectives = new Set(
-        csp
-          .split(';')
-          .map((d) => d.trim())
-          .filter(Boolean)
-          .map((d) => d.split(/\s+/)[0])
-      )
-      expect([...actualDirectives].sort()).toEqual([...EXPECTED_DIRECTIVE_NAMES].sort())
+      // directive 名を出現順の配列で完全一致比較する。Set 化すると同名 directive の
+      // 二重出力（後勝ちで事故る典型）を検出できないため、配列のままで順序・重複・
+      // 欠落を同時に固定する（#949 レビュー任意指摘）。
+      const actualDirectives = csp
+        .split(';')
+        .map((d) => d.trim())
+        .filter(Boolean)
+        .map((d) => d.split(/\s+/)[0])
+      expect(actualDirectives).toEqual(EXPECTED_DIRECTIVE_NAMES)
     })
   })
 

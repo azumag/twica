@@ -49,6 +49,9 @@ export function buildCsp(nonce?: string): string {
   }
   // 開発環境でも nonce 経路を再現できるよう、nonce があれば script-src へ含める
   // （Next.js fast refresh 用の unsafe-eval / インライン用の unsafe-inline は維持）。
+  // 注記: CSP 仕様上 nonce-source があると script-src の 'unsafe-inline' は無視される
+  // ため、dev の nonce あり経路は実質 nonce ベースになる（Next.js が nonce を
+  // 伝播するため実害はない。コメントは誤解を避けるための補足、#949 レビュー任意指摘）。
   const scriptSrc = nonce
     ? `'self' 'nonce-${nonce}' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com`
     : `'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com`

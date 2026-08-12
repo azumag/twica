@@ -39,17 +39,25 @@ const WORKERS_DEV_ACCOUNT_SUBDOMAIN = '.tsubasa-azumagakito.workers.dev'
  * 文字種を検証して fail-closed にする（#944 レビュー任意指摘）。
  */
 function isTwicaWorkersDevHost(normalizedHost: string): boolean {
+  // ホスト全体がドット区切りの label（[a-z0-9-]+）で構成されることを確認する。
+  // endsWith だけだと `twica.preview@evil.tsubasa-...` のような userinfo 混入が
+  // 末尾一致で通過し、呼び出し側の `new URL()` が 500 になる（#949 レビューで
+  // 先頭 label 限定を試したが、@ が末尾より前に置けるため全体検証が必須と判明）。
   if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(normalizedHost)) {
     return false
   }
-  return (
-    normalizedHost.endsWith(WORKERS_DEV_ACCOUNT_SUBDOMAIN) &&
-    // worker 名（先頭 label）に twica を含む。Workers Builds は
-    // `<version>-twica-preview` / `<branch>-twica-preview` の形でサブドメインを
-    // 生成するため、先頭 label のみ確認すれば十分（アカウント専有のため部分一致でも
-    // 実害はなく、逆に将来のプレフィックス形式を壊さない）。
-    normalizedHost.split('.')[0].includes('twica')
-  )
+  if (!normalizedHost.endsWith(WORKERS_DEV_ACCOUNT_SUBDOMAIN)) {
+    return false
+  }
+  const workerLabel = normalizedHost.split('.')[0]
+  if (!/^[a-z0-9-]+$/.test(workerLabel)) {
+    return false
+  }
+  // worker 名（先頭 label）に twica を含む。Workers Builds は
+  // `<version>-twica-preview` / `<branch>-twica-preview` の形でサブドメインを
+  // 生成するため、先頭 label のみ確認すれば十分（アカウント専有のため部分一致でも
+  // 実害はなく、逆に将来のプレフィックス形式を壊さない）。
+  return workerLabel.includes('twica')
 }
 
 /** フォールバック先の origin を解決する。production で未設定/不正なら fail-loud。 */
