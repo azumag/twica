@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { getBaseUrl, resolveAllowedOrigin } from '@/lib/url-utils'
+import { getBaseUrl, isTrustedOrigin, resolveAllowedOrigin } from '@/lib/url-utils'
 
 /**
  * #836 項目6: getBaseUrl の host ヘッダー allowlist 検証。
@@ -103,9 +103,19 @@ describe('resolveAllowedOrigin (issue #836)', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      // 従来の includes('twica') では通っていたが、先頭 label（worker 名）限定に
-      // 変更したため拒否される（#949 レビュー任意指摘の意図した締め付け）
+      // worker 名（先頭 label）に twica を含まないサブドメインは拒否する
       expect(resolveAllowedOrigin('evil.twica.tsubasa-azumagakito.workers.dev'))
+        .toBe('https://twica.bluemoon.works')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('workers.dev ホストの非許可 port は拒否する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(resolveAllowedOrigin('twica.tsubasa-azumagakito.workers.dev:8443'))
         .toBe('https://twica.bluemoon.works')
     } finally {
       warnSpy.mockRestore()
@@ -135,6 +145,64 @@ describe('resolveAllowedOrigin (issue #836)', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'not-a-url')
     expect(() => resolveAllowedOrigin('evil.example.com')).toThrow('invalid in production')
     vi.unstubAllEnvs()
+  })
+})
+
+describe('isTrustedOrigin (issue #950)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('カスタムドメインの origin を許可する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('https://twica.bluemoon.works')).toBe(true)
+  })
+
+  it('workers.dev（twica 系）の origin を許可する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('https://twica.tsubasa-azumagakito.workers.dev')).toBe(true)
+    expect(isTrustedOrigin('https://twica-preview.tsubasa-azumagakito.workers.dev')).toBe(true)
+    expect(isTrustedOrigin('https://codex-issue-836-twica-preview.tsubasa-azumagakito.workers.dev')).toBe(true)
+  })
+
+  it('非許可 origin を拒否する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('https://evil.example.com')).toBe(false)
+    expect(isTrustedOrigin('https://twica.bluemoon.works.evil.com')).toBe(false)
+    expect(isTrustedOrigin('https://twica.tsubasa-azumagakito.workers.dev.evil.com')).toBe(false)
+    expect(isTrustedOrigin('not-a-url')).toBe(false)
+  })
+
+  it('path や userinfo 付きの URL は origin 文字列ではないため拒否する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('https://twica.bluemoon.works/evil')).toBe(false)
+    expect(isTrustedOrigin('https://user@twica.bluemoon.works')).toBe(false)
+    expect(isTrustedOrigin('https://twica-preview.tsubasa-azumagakito.workers.dev/evil')).toBe(false)
+    expect(isTrustedOrigin('')).toBe(false)
+    expect(isTrustedOrigin('http://localhost:3000/')).toBe(false)
+  })
+
+  it('workers.dev は https のみ許可する（http は拒否）', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('http://twica.tsubasa-azumagakito.workers.dev')).toBe(false)
+  })
+
+  it('production では localhost origin を拒否する', () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('http://localhost:3000')).toBe(false)
+    expect(isTrustedOrigin('http://localhost:8787')).toBe(false)
+  })
+
+  it('port 付き workers.dev origin を拒否する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('https://twica.tsubasa-azumagakito.workers.dev:8443')).toBe(false)
+  })
+
+  it('開発環境では localhost origin を許可する', () => {
+    vi.stubEnv('NODE_ENV', 'development')
+    expect(isTrustedOrigin('http://localhost:3000')).toBe(true)
+    expect(isTrustedOrigin('http://localhost:8787')).toBe(true)
   })
 })
 

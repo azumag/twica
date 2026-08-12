@@ -13,6 +13,12 @@ describe('setSecurityHeaders', () => {
     expect(result.headers.get('X-Content-Type-Options')).toBe('nosniff')
   })
 
+  it('X-XSS-Protectionヘッダーを 0 で設定する（旧 UA の auditor 無効化）', () => {
+    const response = NextResponse.json({ test: 'data' })
+    const result = setSecurityHeaders(response)
+    expect(result.headers.get('X-XSS-Protection')).toBe('0')
+  })
+
   it('X-Frame-Optionsヘッダーを設定する（デフォルトはDENY）', () => {
     const response = NextResponse.json({ test: 'data' })
     const result = setSecurityHeaders(response)
@@ -22,20 +28,14 @@ describe('setSecurityHeaders', () => {
   it('overlayルートではX-Frame-OptionsがSAMEORIGINになる', () => {
     // overlay ルートは同一オリジンからの iframe 埋め込みを許可（プレビュー機能用）
     const response = NextResponse.json({ test: 'data' })
-    const result = setSecurityHeaders(response, '/overlay/123')
+    const result = setSecurityHeaders(response, { pathname: '/overlay/123' })
     expect(result.headers.get('X-Frame-Options')).toBe('SAMEORIGIN')
   })
 
   it('overlay以外のルートではX-Frame-OptionsがDENYのまま', () => {
     const response = NextResponse.json({ test: 'data' })
-    const result = setSecurityHeaders(response, '/dashboard/settings')
+    const result = setSecurityHeaders(response, { pathname: '/dashboard/settings' })
     expect(result.headers.get('X-Frame-Options')).toBe('DENY')
-  })
-
-  it('X-XSS-Protectionヘッダーを設定する', () => {
-    const response = NextResponse.json({ test: 'data' })
-    const result = setSecurityHeaders(response)
-    expect(result.headers.get('X-XSS-Protection')).toBe('1; mode=block')
   })
 
   describe('Content-Security-Policy', () => {
@@ -59,29 +59,38 @@ describe('setSecurityHeaders', () => {
       expect(csp).toContain('connect-src \'self\' https: wss:;')
       expect(csp).not.toContain('localhost')
       expect(csp).not.toContain('unsafe-eval')
-      // production の script-src に unsafe-inline は含まれない（nonce ベース、
-      // #836）。style-src の unsafe-inline は Next.js のインラインスタイル用に維持。
+      // production の script-src に unsafe-inline は含まれない（nonce ベース）。
+      // style-src の unsafe-inline は Next.js のインラインスタイル用に維持。
       const scriptSrc = csp?.split(';').find((d) => d.trim().startsWith('script-src'))
       expect(scriptSrc).not.toContain('unsafe-inline')
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
     })
 
-    it('生成済み CSP 文字列を渡すとそれを採用する（middleware との nonce 契約）', () => {
+    it('生成済み CSP 文字列を渡すとそれをそのまま採用する（middleware は buildCsp で生成済み）', () => {
       const response = NextResponse.json({ test: 'data' })
-      const result = setSecurityHeaders(response, undefined, "default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';")
-      expect(result.headers.get('Content-Security-Policy')).toBe(
-        "default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';"
-      )
+      const result = setSecurityHeaders(response, { csp: "default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';" })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';")
     })
 
-    it('production nonce 経路は nonce 埋め込み・strict-dynamic・unsafe-inline 不在・host-source 不記載を満たす (#836)', () => {
+    it('csp が空文字列の場合は buildCsp() へフォールバックする（fail-closed）', () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { csp: '' })
+      const csp = result.headers.get('Content-Security-Policy')
+      const scriptSrc = csp?.split(';').find((d) => d.trim().startsWith('script-src'))
+      expect(scriptSrc).not.toContain('unsafe-inline')
+      expect(csp).toContain("default-src 'self'")
+    })
+
+    it('production nonce 経路は nonce 埋め込み・strict-dynamic・unsafe-inline 不在・host-source 不記載を満たす', () => {
       vi.stubEnv('NODE_ENV', 'production')
       const csp = buildCsp('abc123')
       const scriptSrc = csp.split(';').find((d) => d.trim().startsWith('script-src'))
       expect(scriptSrc).toContain("'nonce-abc123'")
       expect(scriptSrc).toContain("'strict-dynamic'")
       expect(scriptSrc).not.toContain('unsafe-inline')
-      // strict-dynamic 下では host-source は無効のため記述しない（#944 レビュー）
+      // strict-dynamic 下では host-source は無効のため記述しない
       expect(scriptSrc).not.toContain('static.cloudflareinsights.com')
       // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
@@ -126,6 +135,21 @@ describe('setSecurityHeaders', () => {
       'worker-src',
       'object-src',
       'form-action',
+      'frame-ancestors',
+    ]
+
+    // variant 非依存の directive は値込みで固定する。名前のみだと
+    // `object-src 'self'` への緩和などを検出できない。
+    const COMMON_DIRECTIVE_VALUES = [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: https: blob:",
+      "media-src 'self' https:",
+      "font-src 'self' data:",
+      "worker-src 'self' blob:",
+      "object-src 'none'",
+      "form-action 'self'",
     ]
 
     it.each([
@@ -137,13 +161,52 @@ describe('setSecurityHeaders', () => {
       const csp = build()
       // directive 名を出現順の配列で完全一致比較する。Set 化すると同名 directive の
       // 二重出力（後勝ちで事故る典型）を検出できないため、配列のままで順序・重複・
-      // 欠落を同時に固定する（#949 レビュー任意指摘）。
+      // 欠落を同時に固定する。
       const actualDirectives = csp
         .split(';')
         .map((d) => d.trim())
         .filter(Boolean)
         .map((d) => d.split(/\s+/)[0])
       expect(actualDirectives).toEqual(EXPECTED_DIRECTIVE_NAMES)
+      // variant 非依存 directive は値込みで検証
+      for (const directive of COMMON_DIRECTIVE_VALUES) {
+        expect(csp).toContain(`${directive};`)
+      }
+    })
+
+    it('非 overlay ルートは frame-ancestors none を付与する（DENY と同値）', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { pathname: '/dashboard/settings' })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("frame-ancestors 'none';")
+      expect(csp).not.toContain("frame-ancestors 'self'")
+    })
+
+    it('overlay ルートは frame-ancestors self を付与する（SAMEORIGIN と同値）', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { pathname: '/overlay/123' })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("frame-ancestors 'self';")
+    })
+
+    it('/overlay-foo のような前方一致は overlay として扱わない', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { pathname: '/overlay-foo' })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("frame-ancestors 'none';")
+      expect(result.headers.get('X-Frame-Options')).toBe('DENY')
+    })
+
+    it('配信されるヘッダー値（setSecurityHeaders 経由）でも directive が重複しない', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { pathname: '/dashboard' })
+      const csp = result.headers.get('Content-Security-Policy')
+      const names = csp
+        ?.split(';')
+        .map((d) => d.trim())
+        .filter(Boolean)
+        .map((d) => d.split(/\s+/)[0])
+      expect(names).toEqual(EXPECTED_DIRECTIVE_NAMES)
     })
   })
 

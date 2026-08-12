@@ -35,29 +35,22 @@ const WORKERS_DEV_ACCOUNT_SUBDOMAIN = '.tsubasa-azumagakito.workers.dev'
 /**
  * workers.dev の host がこのアカウントの twica 系 Worker に属するか判定する。
  * アカウント専有サブドメインであるため第三者は偽装できないが、不正な Host
- * （空白・記号入り）が誤って通ると呼び出し側の `new URL()` が 500 になる。
- * 文字種を検証して fail-closed にする（#944 レビュー任意指摘）。
+ * （空白・記号・userinfo 混入）が誤って通ると、呼び出し側の `new URL()` が
+ * 500 になるか origin が別ホストへすり替わる。文字種を検証して fail-closed にする。
  */
 function isTwicaWorkersDevHost(normalizedHost: string): boolean {
-  // ホスト全体がドット区切りの label（[a-z0-9-]+）で構成されることを確認する。
   // endsWith だけだと `twica.preview@evil.tsubasa-...` のような userinfo 混入が
-  // 末尾一致で通過し、呼び出し側の `new URL()` が 500 になる（#949 レビューで
-  // 先頭 label 限定を試したが、@ が末尾より前に置けるため全体検証が必須と判明）。
+  // 末尾一致で通過するため、ホスト全体がドット区切り label であることを確認する。
   if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(normalizedHost)) {
     return false
   }
   if (!normalizedHost.endsWith(WORKERS_DEV_ACCOUNT_SUBDOMAIN)) {
     return false
   }
-  const workerLabel = normalizedHost.split('.')[0]
-  if (!/^[a-z0-9-]+$/.test(workerLabel)) {
-    return false
-  }
   // worker 名（先頭 label）に twica を含む。Workers Builds は
-  // `<version>-twica-preview` / `<branch>-twica-preview` の形でサブドメインを
-  // 生成するため、先頭 label のみ確認すれば十分（アカウント専有のため部分一致でも
-  // 実害はなく、逆に将来のプレフィックス形式を壊さない）。
-  return workerLabel.includes('twica')
+  // `<version>-twica-preview` / `<branch>-twica-preview` の形でサブドメインを生成する。
+  // 全体の文字種検証が済んでいるため先頭 label の再検証は不要。
+  return normalizedHost.split('.')[0].includes('twica')
 }
 
 /** フォールバック先の origin を解決する。production で未設定/不正なら fail-loud。 */
@@ -82,10 +75,49 @@ function resolveFallbackOrigin(): string {
 }
 
 /**
+ * origin 文字列（scheme+host+port）がこのアプリの正規 origin か判定する。
+ * getBaseUrl と同じ allowlist 判定を CSRF 検証（src/lib/csrf.ts）と共有し、
+ * 非許可 authority からの状態変更リクエストを fail-closed にする（#950）。
+ */
+export function isTrustedOrigin(origin: string): boolean {
+  let url: URL
+  try {
+    url = new URL(origin)
+  } catch {
+    return false
+  }
+  // origin 文字列（scheme+host+port）だけを受理する（path や userinfo 付きは拒否）
+  if (url.origin !== origin) {
+    return false
+  }
+  const normalizedHost = url.host.toLowerCase()
+
+  // ローカル開発は host ヘッダーのみで判定。この分岐は NODE_ENV !== 'production'
+  // （next dev / vitest）でだけ通り、npm run dev（wrangler dev）は production 相当。
+  if (process.env.NODE_ENV !== 'production' && LOCAL_DEV_ORIGINS.has(url.origin)) {
+    return true
+  }
+  // workers.dev は常に https
+  if (url.protocol === 'https:' && isTwicaWorkersDevHost(normalizedHost)) {
+    return true
+  }
+  // カスタムドメイン（NEXT_PUBLIC_APP_URL）
+  const fallback = process.env.NEXT_PUBLIC_APP_URL
+  if (fallback) {
+    try {
+      if (url.origin === new URL(fallback).origin) return true
+    } catch {
+      // NEXT_PUBLIC_APP_URL が不正な場合は workers.dev 判定のみで fail-closed
+    }
+  }
+  return false
+}
+
+/**
  * リクエストから正規化された許可 origin を解決する。
  * 許可 origin（ローカル開発 / カスタムドメイン / workers.dev）に一致する host のみ採用し、
  * それ以外は NEXT_PUBLIC_APP_URL の origin を返す（fail-closed）。port を含む完全一致で
- * 検証するため、許可ホストに任意ポートを付けた偽装を拒否する（#836 レビュー指摘）。
+ * 検証するため、許可ホストに任意ポートを付けた偽装を拒否する。
  *
  * NEXT_PUBLIC_APP_URL の解決は allowlist 判定後の遅延評価。production で設定漏れが
  * あっても workers.dev からの正規アクセスは維持される（ビルド設定漏れに備えた二重防御）。
@@ -94,12 +126,8 @@ export function resolveAllowedOrigin(host: string | null): string {
   if (!host) return resolveFallbackOrigin()
 
   const normalizedHost = host.toLowerCase()
-  // ローカル開発は host ヘッダーのみで判定。この分岐は `dev:next`（next dev）で
-  // NODE_ENV=development のときにだけ通り、`npm run dev`（wrangler dev）は next build
-  // 済みバンドルを実行するため production 相当になり通らない。:8787 は wrangler dev
-  // のポートだが、この分岐が通るのは next dev の既定 3000 のみ（-p 8787 等の指定を
-  // 含めて両ポートを残す）。production ビルドでは localhost を許可しない
-  // （Host ヘッダ注入の抜け穴を塞ぐ）。
+  // ローカル開発は host ヘッダーのみで判定（LOCAL_DEV_ORIGINS 完全一致のみ許可）。
+  // production ビルドでは localhost を許可しない（Host ヘッダ注入の抜け穴を塞ぐ）。
   if (process.env.NODE_ENV !== 'production') {
     const localOrigin = `http://${normalizedHost}`
     if (LOCAL_DEV_ORIGINS.has(localOrigin)) return localOrigin
@@ -118,7 +146,7 @@ export function resolveAllowedOrigin(host: string | null): string {
   }
 
   // 許可外ホストを無言でフォールバックすると、NEXT_PUBLIC_APP_URL と実配信ホストの
-  // ズレに気付けず OAuth が全滅する（#836 レビュー指摘）。warn ログで手掛かりを残す。
+  // ズレに気付けず OAuth が全滅する。warn ログで手掛かりを残す。
   // host は外部入力のため、制御文字を除去し長さを制限してから出力する（ログ汚染対策）。
   const sanitizedHost = host.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 128)
   logger.warn(`[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL: ${sanitizedHost}`)
