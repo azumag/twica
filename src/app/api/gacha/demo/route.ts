@@ -10,7 +10,6 @@ import { eq, and } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError } from "@/lib/db/cards-safe-columns";
 import {
   createOverlayDemoEvent,
   storeOverlayDemoEvent,
@@ -39,58 +38,44 @@ async function fetchCardByIdPg(cardId: string, streamerId: string): Promise<Card
     eq(cardsTable.is_active, true)
   );
 
-  async function selectRow(useSafeColumns: boolean) {
-    return withDbRetry(
+  try {
+    const rows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-        return query.from(cardsTable).where(condition).limit(1);
+        return db.select().from(cardsTable).where(condition).limit(1);
       },
       "gacha/demo(fetch card by id)",
       { idempotent: true },
     );
-  }
-
-  try {
-    let rows;
-    try {
-      rows = await selectRow(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      rows = await selectRow(true);
-    }
     return (rows[0] as unknown as Card) ?? null;
-  } catch {
+  } catch (error) {
+    // #834 でこの分岐の列欠落フォールバック（本番未デプロイ8列）は撤去済み。
+    // 撤去後は列欠落を含むあらゆる失敗がここに到達し、呼び出し元の縮退chain
+    // （streamerId のランダムカード → 組み込みデモカード）へ黙って倒れるため、
+    // 調査可能性のためログだけは残す（挙動自体は変更しない）。
+    logger.error("gacha/demo: fetchCardByIdPg failed", { error });
     return null;
   }
 }
 
 /** Fetch active streamer cards from the authoritative PlanetScale database. */
 async function fetchActiveCardsForStreamerPg(streamerId: string): Promise<Card[]> {
-  async function selectRows(useSafeColumns: boolean) {
-    return withDbRetry(
+  try {
+    const rows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        const query = useSafeColumns ? db.select(CARDS_SAFE_COLUMNS) : db.select();
-        return query
+        return db
+          .select()
           .from(cardsTable)
           .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)));
       },
       "gacha/demo(fetch streamer cards)",
       { idempotent: true },
     );
-  }
-
-  try {
-    let rows;
-    try {
-      rows = await selectRows(false);
-    } catch (error) {
-      if (!isMissingCardsBattleColumnError(error)) throw error;
-      rows = await selectRows(true);
-    }
     return rows as unknown as Card[];
-  } catch {
+  } catch (error) {
+    // fetchCardByIdPg と同じ理由でログを残す（#834 で列欠落フォールバックを撤去済み）。
+    logger.error("gacha/demo: fetchActiveCardsForStreamerPg failed", { error });
     return [];
   }
 }

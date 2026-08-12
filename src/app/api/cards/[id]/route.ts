@@ -32,7 +32,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_SAFE_COLUMNS, isMissingCardsBattleColumnError, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -258,7 +258,7 @@ async function fetchCardForUpdatePg(id: string): Promise<{
 /**
  * PUT /api/cards/[id] のカード UPDATE（card_number → max_issuance_count →
  * collection_name の3段階デプロイ窓フォールバック付き、さらに RETURNING 列の
- * フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
+ * image_padding_color フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
  *
  * - `.update(...).eq("id", id).select().maybeSingle()` は
  *   `.update(...).set(...).where(eq(id, ...)).returning()` が等価。
@@ -267,13 +267,13 @@ async function fetchCardForUpdatePg(id: string): Promise<{
  * - リクエストボディの明示的な最終値を書き込む UPDATE のため冪等（リトライ可）。
  * - unique_violation (23505) は呼び出し元(PUT)で isCardNumberConflictError
  *
- * self-review fix: 無指定 `.returning()` は schema.ts の静的列リストを生成する
- * ため、本番に実在しない8列(card_number/hp/atk/def/spd/skill_*、
- * cards-safe-columns.ts参照)を含む RETURNING は必ず失敗する。updateData に
- * card_number 等が一切含まれていない（=リクエストで変更していない）場合でも
- * RETURNING は無関係に全列を要求するため、常にこの失敗が起こりうる。
- * 上記3段階フォールバックを終えてもなお失敗する場合、最後に RETURNING を
- * CARDS_SAFE_COLUMNS（8列除外）へ切り替えて再試行する。
+ * #834: 「本番未デプロイ8列」（card_number/hp/atk/def/spd/skill_*）に対する
+ * RETURNING フォールバックは、本番実測で8列とも実在することを確認したため撤去
+ * した。image_padding_color（#899、本Issueとは独立した別デプロイ窓）だけは
+ * 無指定 `.returning()` が失敗しうるため、CARDS_COLUMNS_WITHOUT_PADDING_COLOR
+ * へ切り替えて最後にもう一度だけ再試行する（updateData に無い場合も RETURNING
+ * は set() の内容と無関係に schema.ts の全列を要求するため、この最終
+ * フォールバックが必要）。
  */
 async function updateCardPg(
   id: string,
@@ -282,7 +282,7 @@ async function updateCardPg(
   const updateData = { ...updateDataInitial };
 
   async function attemptUpdate(
-    useSafeReturning = false
+    useColumnsWithoutPaddingColor = false
   ): Promise<{ updatedCard: Record<string, unknown> | null; error: unknown }> {
     try {
       const rows = await withDbRetry(
@@ -292,7 +292,9 @@ async function updateCardPg(
             .update(cardsTable)
             .set(updateData as Partial<typeof cardsTable.$inferInsert>)
             .where(eq(cardsTable.id, id));
-          return useSafeReturning ? query.returning(CARDS_SAFE_COLUMNS) : query.returning();
+          return useColumnsWithoutPaddingColor
+            ? query.returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
+            : query.returning();
         },
         "Cards API PUT: update card",
         // 明示的な最終値を書く UPDATE のため冪等（リトライ可）
@@ -324,19 +326,14 @@ async function updateCardPg(
     delete updateData.image_padding_color;
     ({ updatedCard, error } = await attemptUpdate());
   }
-  // self-review fix: 上記までの入力値フォールバックを尽くしてもなお、無指定
-  // RETURNING が本番未デプロイ列(hp/atk/...等)を要求して失敗している場合、
-  // 明示列リストで最後にもう一度だけ試す。
-  // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color もこの
-  // 最終フォールバックの対象に含める。無指定 `.returning()` は set() の内容と
-  // 無関係に schema.ts の全列を要求するため、直前の isMissingCardPaddingColorError
-  // フォールバック（updateData から列を削除するだけ）だけでは RETURNING が
-  // 同じ理由で再度失敗し続ける。image_padding_color が updateData に無い場合
-  // （未指定リクエスト）は直前のフォールバックの
-  // `"image_padding_color" in updateData` 条件を満たさずスキップされるため、
-  // この分岐が無いと migration 未適用の環境では imagePaddingColor を送らない
-  // カード更新まで含めて全滅していた。
-  if (error && (isMissingCardsBattleColumnError(error) || isMissingCardPaddingColorError(error))) {
+  // 上記までの入力値フォールバックを尽くしてもなお、無指定 RETURNING が
+  // image_padding_color 列の欠落で失敗している場合、明示列リストで最後にもう
+  // 一度だけ試す。image_padding_color が updateData に無い場合（未指定
+  // リクエスト）は直前のフォールバックの `"image_padding_color" in updateData`
+  // 条件を満たさずスキップされるため、この分岐が無いと migration 未適用の
+  // 環境では imagePaddingColor を送らないカード更新まで含めて全滅していた
+  // （#899 Fable厳格レビュー指摘・PR #903）。
+  if (error && isMissingCardPaddingColorError(error)) {
     ({ updatedCard, error } = await attemptUpdate(true));
   }
 

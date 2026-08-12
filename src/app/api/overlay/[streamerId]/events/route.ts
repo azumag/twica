@@ -16,7 +16,7 @@ import {
   gachaHistory as gachaHistoryTable,
   cards as cardsTable,
 } from "@/lib/db/schema";
-import { isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
+import { isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import {
   buildPollingRealtimeEvents,
   isValidOverlayHistoryId,

@@ -85,7 +85,8 @@ describe("isMissingCollectionNameColumn", () => {
   // Drizzle エラーをそのまま isMissingCollectionNameColumn 等に渡す。Drizzle は
   // postgres.js のエラーを `{ query, params, cause }` で1段ラップするため、
   // トップレベルの code/message だけを見ていると pg 経路でこのフォールバックが
-  // 機能しない（cards-safe-columns.ts / card-number-errors.ts と同じ原因）。
+  // 機能しない（src/lib/db/errors.ts の getErrorChain が対応する、他モジュール
+  // （card-padding-color-errors.ts / card-number-errors.ts 等）と同じ原因）。
   it("detects the READ shape (42703) even when wrapped by Drizzle ({ query, params, cause })", () => {
     const wrapped = {
       query: 'select "collection_name" from "cards" where ...',

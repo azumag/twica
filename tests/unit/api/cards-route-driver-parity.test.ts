@@ -12,7 +12,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { getDb } from "@/lib/db/client";
-import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
@@ -119,9 +119,9 @@ function createDrizzleDbMock(
       const resolve = () => {
         if (response.error) return Promise.reject(response.error);
         const rows = response.rows ?? [];
-        // self-review fix (#663): .returning(CARDS_SAFE_COLUMNS) のような明示列指定時は、
+        // #899: .returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR) のような明示列指定時は、
         // select(fields) と同じ「fields のキーだけを持つ行にマップする」フェイクを行い、
-        // 本番未デプロイ8列(hp/atk等)が実際に応答から除外されることをテストで検証できるようにする。
+        // image_padding_color が実際に応答から除外されることをテストで検証できるようにする。
         const fields = call.returningFields;
         return Promise.resolve(
           fields ? rows.map((row) => Object.fromEntries(Object.keys(fields).map((key) => [key, row[key] ?? null]))) : rows
@@ -313,65 +313,13 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       expect(pgRes.status).toBe(409);
     });
 
-    // self-review fix (#663): 本番 cards テーブルには card_number/hp/atk/def/spd/
-    // skill_type/skill_name/skill_power の8列が実在しない(Issue #625)。無指定
-    // `.returning()` は schema.ts の静的列リストを生成するため、card_number の
-    // 入力値フォールバック(既存3段階)を尽くしてもなお RETURNING 自体が
-    // hp 等の欠落で失敗し続ける。この末尾フォールバック(SAFE_COLUMNS への
-    // 切替)が正しく発動することを検証する。
-    it("本番未デプロイ8列(hp等)RETURNINGフォールバック: card_number除去後もRETURNINGが失敗する場合、明示列リストで再試行し200を返す", async () => {
-      const missingCardNumberErrorPg = {
-        code: "42703",
-        message: 'column "card_number" of relation "cards" does not exist',
-      };
-      const missingHpErrorPg = {
-        code: "42703",
-        message: 'column "hp" of relation "cards" does not exist',
-      };
-      // 本番相当: card_number/hp/atk 等を含まない安全な行（実際に返る形）
-      const CREATED_ROW_SAFE = {
-        id: "card-1",
-        streamer_id: "streamer-1",
-        name: "Test Card",
-        description: "desc",
-        image_url: "https://example.com/a.png",
-        rarity: "common",
-        rarity_order: null,
-        max_issuance_count: null,
-        collection_name: null,
-        drop_rate: 0.5,
-        intra_rarity_weight: 1,
-        is_active: true,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-01T00:00:00Z",
-      };
-
-      const pg = createDrizzleDbMock({
-        selects: [{ rows: [STREAMER_ROW] }],
-        inserts: [
-          { error: missingCardNumberErrorPg }, // attempt1: card_number がVALUES+RETURNING両方で失敗
-          { error: missingHpErrorPg }, // attempt2: card_number除去後もRETURNING無指定がhpで失敗
-          { rows: [CREATED_ROW_SAFE] }, // attempt3: SAFE_COLUMNSで再試行し成功
-        ],
-      });
-      primePgDb(pg);
-      const pgRes = await POST(createPostRequest(REQUEST_BODY));
-      expect(pgRes.status).toBe(200);
-      const pgJson = await pgRes.json();
-
-      expect(pgJson).toEqual({ ...CREATED_ROW_SAFE, recalculatedCards: null });
-      expect(pg.insertCalls).toHaveLength(3);
-      expect(pg.insertCalls[1].values).not.toHaveProperty("card_number");
-      expect(pg.insertCalls[2].returningFields).toEqual(CARDS_SAFE_COLUMNS);
-      expect(Object.keys(pg.insertCalls[2].returningFields ?? {})).not.toContain("card_number");
-      expect(Object.keys(pg.insertCalls[2].returningFields ?? {})).not.toContain("hp");
-    });
-
     // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
     // isMissingCardsBattleColumnError のみを見る末尾フォールバックが
     // image_padding_color 欠落エラーを拾えず、imagePaddingColor を一切
     // 指定しない（=insertDataに含まれない）POSTまでもがmigration未適用の
-    // デプロイ窓で全て失敗していた。
+    // デプロイ窓で全て失敗していた。#834 で「本番未デプロイ8列」フォールバック
+    // 自体は撤去されたが、image_padding_color 専用の末尾フォールバック
+    // （CARDS_COLUMNS_WITHOUT_PADDING_COLOR への切替）は引き続き必要なため残す。
     it("本番未デプロイのimage_padding_color列: imagePaddingColorを指定しないPOSTでもRETURNING失敗時に明示列リストで再試行し200を返す (#899)", async () => {
       const missingPaddingErrorPg = {
         code: "42703",
@@ -407,7 +355,7 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       const pgRes = await POST(createPostRequest(REQUEST_BODY));
       expect(pgRes.status).toBe(200);
       expect(pg.insertCalls).toHaveLength(2);
-      expect(pg.insertCalls[1].returningFields).toEqual(CARDS_SAFE_COLUMNS);
+      expect(pg.insertCalls[1].returningFields).toEqual(CARDS_COLUMNS_WITHOUT_PADDING_COLOR);
     });
   });
 
@@ -491,43 +439,6 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
 
       expect(pgJson.cards).toHaveLength(2);
       expect(pgJson.pagination.total).toBe(2);
-    });
-
-    // self-review fix (#663): 本番 cards テーブルには card_number/hp/atk/def/spd/
-    // skill_type/skill_name/skill_power の8列が実在しない(Issue #625)。無指定
-    // `.select()` は schema.ts の静的列リストを生成するため、ソート列
-    // フォールバック(card_number→created_at)を伴わないケース(sortField が
-    // created_at 等)でも、hp 等の欠落で SELECT 自体が失敗しうる。明示列リスト
-    // (CARDS_SAFE_COLUMNS)への切替フォールバックが正しく発動することを検証する。
-    it("本番未デプロイ8列(hp等)SELECTフォールバック: 列を落とした明示列リストで再試行し200を返す", async () => {
-      const missingHpErrorPg = {
-        code: "42703",
-        message: 'column "hp" of relation "cards" does not exist',
-      };
-
-      const pg = createDrizzleDbMock({
-        selects: [
-          { rows: [STREAMER_OWNERSHIP_ROW] }, // streamer ownership
-          { rows: [{ count: 2 }] }, // count
-          { error: missingHpErrorPg }, // rows attempt1: unqualified select fails on hp
-          { rows: CARD_ROWS }, // rows attempt2: CARDS_SAFE_COLUMNS select succeeds
-        ],
-      });
-      primePgDb(pg);
-      const pgRes = await GET(createGetRequest({ streamerId: "streamer-1" }));
-      expect(pgRes.status).toBe(200);
-      const pgJson = await pgRes.json();
-
-      expect(pgJson.pagination.total).toBe(2);
-      expect(pgJson.cards).toHaveLength(2);
-      // CARDS_SAFE_COLUMNS は card_number を含まないため、フォールバック後の
-      // 行には card_number キー自体が存在しない（production の select("*") と同じ）。
-      expect(pgJson.cards[0]).not.toHaveProperty("card_number");
-      expect(pgJson.cards[1]).not.toHaveProperty("card_number");
-      expect(pgJson.cards[0]).toMatchObject({ id: "card-1", name: "Card A" });
-      // 3回目(最後)の select 呼び出しが CARDS_SAFE_COLUMNS の明示列リストであることを確認
-      const lastSelectFields = pg.db.select.mock.calls[pg.db.select.mock.calls.length - 1][0];
-      expect(lastSelectFields).toEqual(CARDS_SAFE_COLUMNS);
     });
 
   });
