@@ -144,32 +144,12 @@ export function checkMaintenanceWriteBlock(request: NextRequest): NextResponse |
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // #836 項目5: リクエストごとに CSP nonce を発行する。
-  // Next.js 16 は request の Content-Security-Policy ヘッダーから nonce を自動抽出し、
-  // 自前スクリプトへ適用する（getScriptNonceFromHeader）。middleware で response の
-  // CSP を設定するだけでなく、request ヘッダーにも設定することで、App Router の
-  // サーバーコンポーネント（layout.tsx の Script コンポーネント）からも
-  // x-nonce として参照できるようにする。
-  const nonce = crypto.randomUUID()
-  const requestHeaders = new Headers(request.headers)
-  requestHeaders.set('x-nonce', nonce)
-  requestHeaders.set('Content-Security-Policy', buildCsp(nonce))
-
-  // 後続の updateSession / route 処理に nonce 付きヘッダーを引き継ぐ。
-  // updateSession が NextResponse.next({ request }) を作るため、request を
-  // 差し替えたインスタンスで呼ぶ（cookies 等の参照はヘッダー経由のため維持される）。
-  // 注意: Fetch 仕様上、body を持つ Request から新 Request を作ると元の body は
-  // locked になる。OpenNext は body を先に Buffer 化するため現状は顕在化しないが、
-  // 将来のランタイム変更で壊れうる依存である（#836 レビュー指摘。実機で POST body
-  // 維持を確認済み）。
-  const requestWithNonce = new NextRequest(request, { headers: requestHeaders })
-
   // #694 Stage 3: 他の全処理（ロケール検出・rate limit・security headers 設定）
   // より先に評価する。rate limit の消費を避けるためと、ブロック対象なら
   // updateSession 等の余分な I/O を一切発生させないため。
   const maintenanceBlockResponse = checkMaintenanceWriteBlock(request)
   if (maintenanceBlockResponse) {
-    return setSecurityHeaders(maintenanceBlockResponse, pathname, nonce)
+    return setSecurityHeaders(maintenanceBlockResponse, pathname)
   }
 
   // Issue #657: 不正な streamerId をDBクエリへ渡す前に拒否する。
@@ -180,10 +160,23 @@ export async function middleware(request: NextRequest) {
       { error: 'Invalid streamer ID' },
       { status: 400 }
     )
-    return setSecurityHeaders(errorResponse, pathname, nonce)
+    return setSecurityHeaders(errorResponse, pathname)
   }
 
-  const response = await updateSession(requestWithNonce)
+  // #836 項目5: リクエストごとに CSP nonce を発行する。
+  // Next.js 16 は request の Content-Security-Policy ヘッダーから nonce を自動抽出し、
+  // 自前スクリプトへ適用する（getScriptNonceFromHeader）。middleware で response の
+  // CSP を設定するだけでなく、request ヘッダーにも設定することで、App Router の
+  // サーバーコンポーネント（layout.tsx の Script コンポーネント）からも
+  // x-nonce として参照できるようにする。
+  // request は再構築せず、NextResponse.next({ request: { headers } }) の追加
+  // ヘッダー経由でレンダラへ渡す（body 複製リスクを避ける公式パターン、#836）。
+  const nonce = crypto.randomUUID()
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-nonce', nonce)
+  requestHeaders.set('Content-Security-Policy', buildCsp(nonce))
+
+  const response = await updateSession(request, requestHeaders)
   // パスに基づいて適切なセキュリティヘッダーを設定
   // Set appropriate security headers based on the path
   setSecurityHeaders(response, pathname, nonce)

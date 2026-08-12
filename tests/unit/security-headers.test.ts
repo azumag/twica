@@ -76,9 +76,13 @@ describe('setSecurityHeaders', () => {
       vi.unstubAllEnvs()
     })
 
-    it('buildCsp は nonce なし本番で従来どおり unsafe-inline を含む（フォールバック）', () => {
+    it('buildCsp は nonce なし本番で unsafe-inline を含まない（早期 return 経路はスクリプトなし）', () => {
       vi.stubEnv('NODE_ENV', 'production')
-      expect(buildCsp()).toContain('unsafe-inline')
+      const csp = buildCsp()
+      const scriptSrc = csp.split(';').find((d) => d.trim().startsWith('script-src'))
+      expect(scriptSrc).not.toContain('unsafe-inline')
+      // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
+      expect(csp).toContain("style-src 'self' 'unsafe-inline'")
       vi.unstubAllEnvs()
     })
   })

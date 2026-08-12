@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { middleware } from '@/middleware'
 
+const { updateSessionMock } = vi.hoisted(() => ({
+  updateSessionMock: vi.fn(
+    async () => new Response(null, { status: 200 })
+  ),
+}))
+
 /**
  * middleware の fail-closed Cache-Control デフォルト（#906）のテスト。
  *
@@ -10,10 +16,7 @@ import { middleware } from '@/middleware'
  * に private, no-store を付与することを検証する。
  */
 vi.mock('@/lib/session-middleware', () => ({
-  updateSession: vi.fn(async () => {
-    const res = new Response(null, { status: 200 })
-    return res
-  }),
+  updateSession: updateSessionMock,
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -78,5 +81,15 @@ describe('middleware fail-closed Cache-Control (issue #906)', () => {
   it('ページルートにも private, no-store を付与する（トップページ以外）', async () => {
     const response = await middleware(makeRequest('/guide'))
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+  })
+
+  it('request ヘッダーに x-nonce と CSP を積む（layout との nonce 契約、#836）', async () => {
+    await middleware(makeRequest('/guide'))
+    const [, requestHeaders] = updateSessionMock.mock.calls[0] as unknown as [unknown, Headers | undefined]
+    if (!requestHeaders) throw new Error('middleware must pass request headers to updateSession')
+    const nonce = requestHeaders.get('x-nonce')
+    expect(nonce).toBeTruthy()
+    // buildCsp モックは nonce を CSP へ埋め込むため、同じ nonce が CSP に含まれること
+    expect(requestHeaders.get('Content-Security-Policy')).toContain(`nonce-${nonce}`)
   })
 })

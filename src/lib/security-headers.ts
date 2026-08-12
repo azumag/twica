@@ -8,18 +8,17 @@ import { SECURITY_HEADERS } from './constants'
  *   `'self' 'nonce-<nonce>' 'strict-dynamic' https://static.cloudflareinsights.com`
  *   - 'strict-dynamic' により、nonce 付きスクリプトから読み込まれる子スクリプトも
  *     許可される（Next.js の動的チャンク読み込みを壊さない）。
- *   - 外部ホスト（Cloudflare Insights beacon）は明示的に残す（nonce 属性付き
- *     Script コンポーネントで読み込まれるため、strict-dynamic 下でも問題ない）。
- * nonce がない場合（middleware を通らない直接呼び出し・エラー応答のフォールバック）:
- *   従来どおり 'unsafe-inline' を残す。HTML を返す通常経路は必ず middleware を
- *   通るため、実運用でこのフォールバックが使われるのは JSON エラー応答のみで、
- *   スクリプトを含まないため実害はない。
+ *   - CSP Level 3 では 'strict-dynamic' が存在すると 'self' とホストソースは
+ *     無視されるため、Cloudflare Insights beacon の許可は nonce 付きスクリプト
+ *     からの動的読み込み（伝播トラスト）に依存する。
+ * nonce がない場合（maintenance block / invalid streamer 等の早期 return 経路）:
+ *   'unsafe-inline' は付けない（JSON エラー応答はスクリプトを含まず実害なし）。
  */
 function buildScriptSrcCsp(nonce: string | undefined): string {
   if (nonce) {
     return `'self' 'nonce-${nonce}' 'strict-dynamic' https://static.cloudflareinsights.com`
   }
-  return `'self' 'unsafe-inline' https://static.cloudflareinsights.com`
+  return `'self' https://static.cloudflareinsights.com`
 }
 
 /** nonce 付き CSP を組み立てる（開発環境は従来どおり unsafe-eval を許可）。 */

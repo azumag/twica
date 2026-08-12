@@ -51,8 +51,9 @@ export function resolveAllowedOrigin(
     fallbackOrigin = 'http://localhost:8787'
   }
 
-  // ローカル開発は host ヘッダーのみで判定（wrangler dev は http://localhost:8787）
-  if (host) {
+  // ローカル開発は host ヘッダーのみで判定（wrangler dev は http://localhost:8787）。
+  // production ビルドでは localhost を許可しない（Host ヘッダ注入の抜け穴を塞ぐ）。
+  if (host && process.env.NODE_ENV !== 'production') {
     const localOrigin = `http://${host.toLowerCase()}`
     if (LOCAL_DEV_ORIGINS.has(localOrigin)) return localOrigin
   }
@@ -72,7 +73,7 @@ export function resolveAllowedOrigin(
     if (candidate === fallbackOrigin) return candidate
   }
 
-  if (host && !LOCAL_DEV_ORIGINS.has(`http://${host.toLowerCase()}`)) {
+  if (host) {
     // 許可外ホストを無言でフォールバックすると、NEXT_PUBLIC_APP_URL と実配信ホストの
     // ズレに気付けず OAuth が全滅する（#836 レビュー指摘）。warn ログで手掛かりを残す。
     console.warn('[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL:', host)

@@ -11,9 +11,19 @@ describe('resolveAllowedOrigin (issue #836)', () => {
   })
 
   it('ローカル開発 origin を許可する', () => {
+    vi.stubEnv('NODE_ENV', 'development')
     expect(resolveAllowedOrigin('localhost:8787', null)).toBe('http://localhost:8787')
     expect(resolveAllowedOrigin('localhost:3000', null)).toBe('http://localhost:3000')
     expect(resolveAllowedOrigin('127.0.0.1:8787', null)).toBe('http://127.0.0.1:8787')
+    vi.unstubAllEnvs()
+  })
+
+  it('production では localhost origin を拒否する（Host ヘッダ注入の抜け穴を塞ぐ）', () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(resolveAllowedOrigin('localhost:3000', null)).toBe('https://twica.bluemoon.works')
+    expect(resolveAllowedOrigin('127.0.0.1:8787', null)).toBe('https://twica.bluemoon.works')
+    vi.unstubAllEnvs()
   })
 
   it('NEXT_PUBLIC_APP_URL のホストを許可する', () => {
@@ -80,7 +90,9 @@ describe('getBaseUrl (issue #836)', () => {
   })
 
   it('ローカル開発は http で返す（x-forwarded-proto より優先）', () => {
+    vi.stubEnv('NODE_ENV', 'development')
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
     expect(getBaseUrl(makeRequest('localhost:8787', 'https'))).toBe('http://localhost:8787')
+    vi.unstubAllEnvs()
   })
 })
