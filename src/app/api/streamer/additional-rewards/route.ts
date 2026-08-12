@@ -45,8 +45,8 @@ type GenericDbError = { message?: string; code?: string; details?: string; hint?
  * ここでは SQLSTATE 42703 (undefined_column) **かつ** 対象列名を含む、という
  * より厳密な条件にする。getErrorChain の各階層を独立に評価する（中4対応:
  * 全階層を連結したテキストで判定すると、無関係な階層の SQL 文に列名が偶然
- * 含まれているだけで誤検知するため。詳細は collection-existence.ts /
- * cards-safe-columns.ts のコメント参照）。
+ * 含まれているだけで誤検知するため。詳細は src/lib/db/errors.ts の
+ * isPgMissingNamedColumnError のコメント参照）。
  */
 function isRaidOptionsSchemaErrorPg(error: unknown): boolean {
   return getErrorChain(error).some((layer) => {

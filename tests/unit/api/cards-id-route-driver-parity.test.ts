@@ -18,7 +18,7 @@ import { getDb } from "@/lib/db/client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { deleteFromR2 } from "@/lib/r2-client";
 import { sha256Prefix } from "@/lib/crypto-utils";
-import { CARDS_SAFE_COLUMNS } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
 
 // #830: 画像削除経路で参照される R2 の公開URL・削除操作を差し替える
 const R2_PUBLIC_URL = "https://images.example.test";
@@ -129,8 +129,8 @@ function createDrizzleDbMock(
       const resolve = () => {
         if (response.error) return Promise.reject(response.error);
         const rows = response.rows ?? [];
-        // self-review fix (#663): .returning(CARDS_SAFE_COLUMNS) のような明示列指定時は
-        // fields のキーだけを持つ行にマップし、本番未デプロイ8列(hp/atk等)が実際に
+        // #899: .returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR) のような明示列指定時は
+        // fields のキーだけを持つ行にマップし、image_padding_color が実際に
         // 応答から除外されることをテストで検証できるようにする。
         const fields = call.returningFields;
         return Promise.resolve(
@@ -386,63 +386,13 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(pg.updateCalls[1].values).not.toHaveProperty("card_number");
     });
 
-    // self-review fix (#663): 本番 cards テーブルには card_number/hp/atk/def/spd/
-    // skill_type/skill_name/skill_power の8列が実在しない(Issue #625)。無指定
-    // `.returning()` は schema.ts の静的列リストを生成するため、リクエストが
-    // card_number/max_issuance_count/collection_name のどれも変更していない
-    // （updateData に含まれない）場合でも、RETURNING 自体は無条件に全列を
-    // 要求するため hp 等の欠落で失敗する。この末尾フォールバック(SAFE_COLUMNS
-    // への切替)が正しく発動することを検証する。
-    it("本番未デプロイ8列(hp等)RETURNINGフォールバック: card_number等を一切変更しないUPDATEでもRETURNING失敗時に明示列リストで再試行し200を返す", async () => {
-      const missingHpErrorPg = {
-        code: "42703",
-        message: 'column "hp" of relation "cards" does not exist',
-      };
-      const UPDATED_ROW_SAFE = {
-        id: CARD_ID,
-        streamer_id: "streamer-1",
-        name: "Renamed",
-        description: null,
-        image_url: null,
-        rarity: "common",
-        rarity_order: null,
-        max_issuance_count: null,
-        collection_name: null,
-        drop_rate: 0.5,
-        intra_rarity_weight: 1,
-        is_active: true,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-02T00:00:00Z",
-      };
-
-      const pg = createDrizzleDbMock({
-        selects: [{ rows: [OWNERSHIP_ROW_PG] }],
-        updates: [
-          { error: missingHpErrorPg }, // attempt1: 無指定RETURNINGがhpで失敗（updateDataはcard_number等を含まない）
-          { rows: [UPDATED_ROW_SAFE] }, // attempt2: SAFE_COLUMNSで再試行し成功
-        ],
-      });
-      primePgDb(pg);
-      // name のみ変更。card_number/max_issuance_count/collection_name は
-      // リクエストに含めない = updateData に含まれない。
-      const pgRes = await PUT(createPutRequest({ name: "Renamed" }), {
-        params: Promise.resolve({ id: CARD_ID }),
-      });
-      expect(pgRes.status).toBe(200);
-      const pgJson = await pgRes.json();
-
-      expect(pgJson).toEqual({ ...UPDATED_ROW_SAFE, recalculatedCards: null });
-      expect(pg.updateCalls).toHaveLength(2);
-      expect(pg.updateCalls[1].returningFields).toEqual(CARDS_SAFE_COLUMNS);
-      expect(Object.keys(pg.updateCalls[1].returningFields ?? {})).not.toContain("card_number");
-      expect(Object.keys(pg.updateCalls[1].returningFields ?? {})).not.toContain("hp");
-    });
-
     // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
     // isMissingCardsBattleColumnError のみを見る末尾フォールバックが
     // image_padding_color 欠落エラーを拾えず、imagePaddingColor を一切
     // 指定しない（=updateDataに含まれない）UPDATEまでもがmigration未適用の
-    // デプロイ窓で全て失敗していた。
+    // デプロイ窓で全て失敗していた。#834 で「本番未デプロイ8列」フォールバック
+    // 自体は撤去されたが、image_padding_color 専用の末尾フォールバック
+    // （CARDS_COLUMNS_WITHOUT_PADDING_COLOR への切替）は引き続き必要なため残す。
     it("本番未デプロイのimage_padding_color列: imagePaddingColorを指定しないUPDATEでもRETURNING失敗時に明示列リストで再試行し200を返す (#899)", async () => {
       const missingPaddingErrorPg = {
         code: "42703",
@@ -480,7 +430,7 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       });
       expect(pgRes.status).toBe(200);
       expect(pg.updateCalls).toHaveLength(2);
-      expect(pg.updateCalls[1].returningFields).toEqual(CARDS_SAFE_COLUMNS);
+      expect(pg.updateCalls[1].returningFields).toEqual(CARDS_COLUMNS_WITHOUT_PADDING_COLOR);
     });
 
     it("card_number一意制約違反(23505)は409を返す", async () => {

@@ -39,9 +39,13 @@
 #   paths が無視されて常に実行される（コスト受容の前提）。
 #
 # Claude 実行 job と投稿 job を分離し、投稿用の pull-requests: write は Claude の
-# 実行終了後にのみ使う。post_review も PR head 由来の .github/scripts/
-# format-review.mjs を実行するが、workflow 定義自体が head 由来である以上
-# 実効的な権限拡大はなく、fork では secrets が渡らず起動条件も満たされない。
+# 実行終了後にのみ使う。post_review は base（preview）由来の .github/scripts/
+# format-review.mjs を実行する（issue #917）。checkout を base.sha にすることで
+# write 権限 job で実行する「外部モジュール」を head 由来にしない多層防御。
+# ただし actions/github-script のインラインスクリプトは workflow YAML 由来＝head
+# 由来のまま（workflow 定義自体が head 由来のため実効的な権限拡大はなく、旧
+# コメントの但し書きは引き続き有効）。fork では secrets が渡らず起動条件も
+# 満たされない。
 # なおコメントは初回のみ createComment（通知あり）、以降は updateComment で
 # 上書きする（単一コメント維持方針）ため、2回目以降の通知は発生しない。
 # PR ページと Step summary で確認する運用。
@@ -156,12 +160,18 @@ jobs:
       - name: Claude Code Review (opus)
         id: review
         if: steps.check-token.outputs.configured == 'true'
-        # 供給元タグの更新で挙動が変わり得るため、コミットSHAピンが定石だが、
-        # この環境から GitHub API へ到達できず（api.github.com への疎通不可）
-        # 現在の v1 タグの SHA を取得できないため、タグ運用を維持する。
-        # OAuth トークンを渡す唯一の action なので、SHA 取得手段ができ次第
-        # ピン化する（追跡: issue #918）。
-        uses: anthropics/claude-code-action@v1
+        # OAuth トークンを渡す唯一の action のため、可変タグではなくコミット SHA に
+        # ピンする（供給元タグの差し替えによるトークン奪取を防ぐ、issue #918）。
+        # SHA は git ls-remote https://github.com/anthropics/claude-code-action 'refs/tags/v1^{}'
+        # で取得する（v1 は annotated tag のため、refs/tags/v1 はタグオブジェクト SHA を
+        # 返す。uses: はコミット SHA しか解決できないので peel した側を使うこと）。
+        # 現行ピン: v1^{} = 239e3a730883eeb5c53db12b0fc9573b3024b126（実在確認済み）
+        # # v1 の行末マーカーは Dependabot / Renovate がピン更新を認識するための
+        # 機械可読形式。本リポジトリは Dependabot / Renovate 未導入のため、当面は
+        # 手動で更新する（上記 git ls-remote で SHA を取得し直すこと）。
+        # なお SHA ピンは action 自体の改ざんを防ぐが、action が実行時に取得する
+        # @anthropic-ai/claude-code までは固定しない（防衛層としての位置づけ）。
+        uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Claude GitHub App の書き込み権限ではなく、この job の読み取り専用
@@ -303,14 +313,20 @@ jobs:
           # 整形ロジック（format-review.mjs）を読み込むために必要。claude_review
           # job の checkout は別ランナーで共有されない。cone モード既定の
           # sparse-checkout で .github/scripts を対象にする（ルート直下の
-          # ファイルは常に展開される）。head SHA を明示するのはコンフリクト中の
-          # PR で merge ref が無いため。初回導入時は base 側にこのファイルが
-          # 存在しないため head を使うが、preview へマージ後は base.sha に
-          # 切り替え、write 権限 job で head 由来コードを実行しないようにする
-          # （追跡: issue #917。workflow 定義自体も head 由来のため権限拡大は
-          # ないが、多層防御の選択肢として追跡している）。
+          # ファイルは常に展開される）。base.sha（preview）を明示するのは、
+          # write 権限 job で実行する外部モジュール（PR 作成者が変更可能な
+          # format-review.mjs）を head 由来にしないため（issue #917）。
+          # インライン github-script は head 由来のままなので、防御は「外部
+          # モジュールのみ base 化」に限定される点に注意。
+          # format-review.mjs は preview にマージ済みのため base.sha で取得できる。
+          # コンフリクト中の PR では merge ref が無いため、base.sha / head.sha の
+          # どちらも checkout 可能な SHA を明示する方式を維持する。
+          # 注意: format-review.mjs を変更する PR では、自 PR の post_review は
+          # base 側の旧版で動く（自 PR では検証されない）。export 名・
+          # REVIEW_MARKER を変える場合は TypeError / コメント重複が起こり得るため、
+          # マージ後に追い PR で実経路を確認すること。
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: .github/scripts
 
       # checkout の clean: true がワークスペースを空にするため、artifact は

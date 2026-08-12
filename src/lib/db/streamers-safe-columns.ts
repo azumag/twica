@@ -6,14 +6,16 @@
 // streamersTable })` は schema.ts の静的列リストから SELECT 列を生成するため、
 // migration 未適用の環境（preview マージ後にアプリデプロイと planetscale-migrate
 // が並行実行される窓）では `column "publish_live_status" does not exist` で
-// streamers の全列 SELECT が失敗する。cards の本番未デプロイ8列（cards-safe-
-// columns.ts、issue #625/#685）と同種のリスクであり、同じ「まず全列で試行 →
-// 列欠落エラー検知 → 明示列リストで再試行」パターンを適用する。
+// streamers の全列 SELECT が失敗する。cards の本番未デプロイ8列（issue #625/#685。
+// 該当フォールバックは本番実測を経て #834 で撤去済み）と同種のリスクであり、
+// 同じ「まず全列で試行 → 列欠落エラー検知 → 明示列リストで再試行」パターンを適用する。
 //
 // デプロイ窓では2列は常にまとめて欠落する（同一 migration で追加）ため、
 // いずれか1列分の 42703 エラーを検知できれば明示列リストへの再試行で2列とも
 // 解決される。migration 適用後は全列 SELECT が成功し、このフォールバックへは
-// 到達しない（cards-safe-columns.ts と同じ挙動）。
+// 到達しない（同じ「デプロイ窓が閉じれば死に分岐になる」設計は
+// src/app/api/cards/route.ts 等の image_padding_color フォールバックにも
+// 見られる）。
 // -----------------------------------------------------------------------------
 
 import { streamers as streamersTable } from "@/lib/db/schema";
@@ -64,9 +66,9 @@ export const STREAMERS_SAFE_COLUMNS = {
 
 /**
  * streamers の新2列（publish_live_status / publish_stats）の欠落を検知する。
- * SQLSTATE 42703 と対象列名を同じエラー階層で確認する（cards-safe-columns.ts と
- * 同じ設計。Drizzle は postgres.js の PostgresError を DrizzleQueryError で
- * ラップするため cause チェーンも辿る）。
+ * SQLSTATE 42703 と対象列名を同じエラー階層で確認する（src/lib/db/errors.ts の
+ * isPgMissingNamedColumnError に委譲。Drizzle は postgres.js の PostgresError を
+ * DrizzleQueryError でラップするため、同関数内部で cause チェーンも辿る）。
  */
 export function isMissingLiveDirectorySettingsColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, LIVE_DIRECTORY_SETTINGS_COLUMNS);
@@ -74,9 +76,16 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
 
 /**
  * 「まず全列で試行 → 列欠落エラー検知 → STREAMERS_SAFE_COLUMNS で再試行」の
- * 共通化（cards-safe-columns.ts の withCardsBattleColumnFallback と同型）。
- * attempt(useSafeColumns) は useSafeColumns に応じて全列 / 明示列を切り替える。
- * 対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に委ねる。
+ * 共通化。attempt(useSafeColumns) は useSafeColumns に応じて全列 / 明示列を
+ * 切り替える。対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に
+ * 委ねる。
+ *
+ * 元々は cards テーブルの「本番未デプロイ8列」フォールバック
+ * （旧 cards-safe-columns.ts の withCardsBattleColumnFallback）と同型の設計
+ * だったが、そちらは本番実測で対象8列とも実在することを確認したため #834 で
+ * 撤去された（撤去後のファイルは card-padding-color-errors.ts に改名・縮小）。
+ * streamers の publish_live_status / publish_stats（#738）は本Issueとは独立した
+ * 別のデプロイ窓のため、この関数自体は変更しない。
  */
 export async function withLiveDirectorySettingsColumnFallback<T>(
   attempt: (useSafeColumns: boolean) => Promise<T>

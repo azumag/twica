@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/session-middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
-import { setSecurityHeaders } from '@/lib/security-headers'
+import { setSecurityHeaders, buildCsp } from '@/lib/security-headers'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { hasInvalidOverlayEventsStreamerId } from '@/lib/overlay-route-validation'
 import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
@@ -25,12 +25,12 @@ const MAINTENANCE_GUARDED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 // with no opt-out: setting `export const config = { runtime: 'edge' }` in a
 // proxy.ts file throws "Proxy always runs on Node.js runtime" at build time.
 // (https://nextjs.org/docs/messages/middleware-to-proxy)
-// @opennextjs/cloudflare (currently ^1.16.1) hard-fails `workers:build` with
+// @opennextjs/cloudflare (pinned 1.20.2 in this repo) hard-fails `workers:build` with
 // "Node.js middleware is not currently supported. Consider switching to Edge
 // Middleware." whenever it detects Node.js-runtime middleware/proxy output
 // (see useNodeMiddleware() in its build.js). This is still true as of
-// @opennextjs/cloudflare 1.20.1, the latest published version as of this
-// writing (2026-07-03) — confirmed by inspecting that version's published
+// @opennextjs/cloudflare 1.20.2, the version pinned in this repo — confirmed
+// by inspecting that version's published
 // build.js, which contains the identical check.
 // Upstream tracking: opennextjs/opennextjs-cloudflare maintainers say real
 // proxy.ts support is planned only via Next.js's "Adapters API"
@@ -98,6 +98,9 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 // つまり、ここに無いパスでもルートが public を設定すればキャッシュされるため、
 // ルート側の public 設定とこの判定は常に同期させること。
 // 機密情報を返さない・セッション非依存のエンドポイントのみを許可する。
+// 警告: ここへ HTML を返すパスを追加してはならない。エッジキャッシュに nonce 付き
+// CSP が焼き付き、キャッシュ HIT 中の全スクリプトが nonce 不一致でブロックされる
+// （現状の対象は JSON のみで無害）。
 const CACHEABLE_PUBLIC_PATHS = ['/api/maintenance-status']
 
 /**
@@ -149,7 +152,7 @@ export async function middleware(request: NextRequest) {
   // updateSession 等の余分な I/O を一切発生させないため。
   const maintenanceBlockResponse = checkMaintenanceWriteBlock(request)
   if (maintenanceBlockResponse) {
-    return setSecurityHeaders(maintenanceBlockResponse, pathname)
+    return setSecurityHeaders(maintenanceBlockResponse, { pathname })
   }
 
   // Issue #657: 不正な streamerId をDBクエリへ渡す前に拒否する。
@@ -160,13 +163,29 @@ export async function middleware(request: NextRequest) {
       { error: 'Invalid streamer ID' },
       { status: 400 }
     )
-    return setSecurityHeaders(errorResponse, pathname)
+    return setSecurityHeaders(errorResponse, { pathname })
   }
 
-  const response = await updateSession(request)
+  // #836 項目5: リクエストごとに CSP nonce を発行する。
+  // Next.js 16 は request の Content-Security-Policy ヘッダーから nonce を自動抽出し、
+  // 自前スクリプトへ適用する（getScriptNonceFromHeader）。middleware で response の
+  // CSP を設定するだけでなく、request ヘッダーにも設定することで、App Router の
+  // サーバーコンポーネント（layout.tsx の Script コンポーネント）からも
+  // x-nonce として参照できるようにする。
+  // request は再構築せず、NextResponse.next({ request: { headers } }) の追加
+  // ヘッダー経由でレンダラへ渡す（body 複製リスクを避ける公式パターン、#836）。
+  const nonce = crypto.randomUUID()
+  const requestHeaders = new Headers(request.headers)
+  // CPU 課金抑制のため CSP 文字列はリクエストごとに 1 回だけ生成し、
+  // request ヘッダーとレスポンスヘッダーの両方へ渡す（nonce 契約）。
+  const csp = buildCsp(nonce, pathname)
+  requestHeaders.set('x-nonce', nonce)
+  requestHeaders.set('Content-Security-Policy', csp)
+
+  const response = await updateSession(request, requestHeaders)
   // パスに基づいて適切なセキュリティヘッダーを設定
   // Set appropriate security headers based on the path
-  setSecurityHeaders(response, pathname)
+  setSecurityHeaders(response, { pathname, csp })
 
   // Detect and set locale for server components
   // サーバーコンポーネント用にロケールを検出・設定
@@ -188,6 +207,8 @@ export async function middleware(request: NextRequest) {
   // （200 → 2時間）でキャッシュされ、ガチャ結果の表示が最大2時間止まる。
   // realtime-config はルート側で `public, max-age=15, stale-while-revalidate=15` を
   // 明示する意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
+  // 警告: ここも HTML を返すパスを追加してはならない（CACHEABLE_PUBLIC_PATHS と
+  // 同じ理由で nonce がエッジキャッシュに焼き付く）。
   const isCacheablePublicPath =
     CACHEABLE_PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
     (pathname.startsWith('/api/overlay/') &&
@@ -235,7 +256,7 @@ export async function middleware(request: NextRequest) {
           }
         )
 
-        return setSecurityHeaders(errorResponse, pathname)
+        return setSecurityHeaders(errorResponse, { pathname, csp })
       }
     }
 

@@ -248,6 +248,7 @@ export const ERROR_MESSAGES = {
   FORBIDDEN: 'Forbidden',
   CSRF_TOKEN_INVALID: 'Invalid or missing CSRF token',
   CSRF_TOKEN_MISSING: 'CSRF token is required for this request',
+  CSRF_ORIGIN_NOT_TRUSTED: 'リクエストのオリジンが許可されていません',
 
   // Request validation errors
   MISSING_REQUIRED_FIELDS: 'Missing required fields',
@@ -347,14 +348,12 @@ export const ERROR_MESSAGES = {
 export const SECURITY_HEADERS = {
   X_CONTENT_TYPE_OPTIONS: 'nosniff',
   X_FRAME_OPTIONS: 'DENY',
-  X_XSS_PROTECTION: '1; mode=block',
-  // Development CSP includes 'unsafe-eval' for Next.js fast refresh and dev tools
-  // 開発用CSPにはNext.jsのfast refreshと開発ツールのため'unsafe-eval'を含む
-  // media-src: R2バケットからの効果音再生を許可
-  // Cloudflare Insights (static.cloudflareinsights.com) のビーコンスクリプトを許可
-  // Allow Cloudflare Insights beacon script from static.cloudflareinsights.com
-  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
-  CSP_PRODUCTION: "default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: wss:; font-src 'self' data:; worker-src 'self' blob:;",
+  // 旧 UA の XSS auditor を明示的に無効化（auditor 自体を悪用する既知手法への対策。
+  // 現行ブラウザは auditor 自体が廃止済みで、XSS 対策は CSP が担う）。
+  X_XSS_PROTECTION: '0',
+  // CSP 文字列は buildCsp()（src/lib/security-headers.ts）の共通テーブルからのみ
+  // 組み立てる。ここに定数を置くと buildCsp と乖離し、テストが自己参照になるため
+  // 定数は持たない（乖離防止は directive 単位のテストで担保）。
   HSTS: 'max-age=31536000; includeSubDomains; preload',
 } as const
 

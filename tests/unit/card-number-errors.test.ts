@@ -49,7 +49,8 @@ describe("isMissingCardNumberColumnError", () => {
 // isCardNumberConflictError にそのまま渡す。Drizzle は postgres.js のエラーを
 // `{ query, params, cause }` で1段ラップするため、トップレベルの
 // code/message/details だけを見ていると pg 経路でこのフォールバックが
-// 機能しない（cards-safe-columns.ts の同種バグと同じ原因）。
+// 機能しない（src/lib/db/errors.ts の getErrorChain が対応する、同種バグと
+// 同じ原因）。
 describe("Drizzle にラップされたエラー（cause チェーン）", () => {
   it("isMissingCardNumberColumnError: ラップされた 42703 (does not exist 文言) を検知する", () => {
     const cause = { code: "42703", message: 'column "card_number" of relation "cards" does not exist' };

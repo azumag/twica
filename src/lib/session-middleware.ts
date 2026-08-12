@@ -11,8 +11,12 @@ import { parseSession, verifySession } from '@/lib/session-cookie'
  * cookie is removed when the session expires, while malformed/tampered session
  * cookies are removed immediately.
  */
-export async function updateSession(request: NextRequest) {
-  const response = NextResponse.next({ request })
+export async function updateSession(request: NextRequest, requestHeaders: Headers) {
+  // 追加ヘッダー（CSP nonce 等）は request を再構築せず NextResponse.next の
+  // request.headers 経由で渡す（#836: body を持つ Request を new NextRequest で
+  // 複製すると Fetch 仕様上 body が tee され、未消費ブランチのバッファリングが
+  // 発生しうるため）。
+  const response = NextResponse.next({ request: { headers: requestHeaders } })
 
   const sessionCookie = request.cookies.get(COOKIE_NAMES.SESSION)?.value
   if (sessionCookie) {

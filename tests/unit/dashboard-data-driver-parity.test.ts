@@ -32,7 +32,6 @@ import {
   userCards as userCardsTable,
   users as usersTable,
 } from '@/lib/db/schema'
-import { CARDS_SAFE_COLUMNS } from '@/lib/db/cards-safe-columns'
 import { STREAMERS_SAFE_COLUMNS } from '@/lib/db/streamers-safe-columns'
 
 vi.mock('@/lib/logger', () => ({
@@ -325,24 +324,6 @@ describe('dashboard-data: Drizzle 読み取り', () => {
       expect(result).toBeNull()
     })
 
-    it('cards の新列が未デプロイなら安全な列集合で再試行する', async () => {
-      const { result, db } = await runWithDb(
-        {
-          tables: tableRows([
-            [streamersTable, [STREAMER]],
-            [cardsTable, [CARD_NEW]],
-          ]),
-          errors: new Map([[streamersTable, [missingColumnError()]]]),
-        },
-        () => getStreamerData('twitch-user-1')
-      )
-
-      expect(result?.cards[0]).toMatchObject({ id: 'card-new', name: 'Card One' })
-      expect(result?.cards[0]).not.toHaveProperty('hp')
-      const lastSelection = db.select.mock.calls.at(-1)?.[0]
-      expect(lastSelection?.card).toEqual(CARDS_SAFE_COLUMNS)
-    })
-
     it('streamers の新列が未デプロイなら安全な列集合で再試行する', async () => {
       const { result, db } = await runWithDb(
         {
@@ -507,18 +488,14 @@ describe('dashboard-data: Drizzle 読み取り', () => {
   })
 
   describe('カード・配信者の個別読み取り', () => {
-    it('アクティブカードを返し、列欠落時は安全な列集合へ切り替える', async () => {
+    it('配信者のアクティブカードを取得する (#834: cards の列欠落フォールバックは撤去済みのため単一の select で完結する)', async () => {
       const { result, db } = await runWithDb(
-        {
-          tables: tableRows([[cardsTable, [CARD_NEW]]]),
-          errors: new Map([[cardsTable, [missingColumnError('skill_power')]]]),
-        },
+        { tables: tableRows([[cardsTable, [CARD_NEW]]]) },
         () => getActiveCardsForStreamer('streamer-1')
       )
 
       expect(result[0]).toMatchObject({ id: 'card-new', drop_rate: 0.25 })
-      expect(result[0]).not.toHaveProperty('skill_power')
-      expect(db.select.mock.calls.at(-1)?.[0]).toEqual(CARDS_SAFE_COLUMNS)
+      expect(db.select).toHaveBeenCalledTimes(1)
     })
 
     it('複数配信者のアクティブカードを配信者ごとに集計する', async () => {
