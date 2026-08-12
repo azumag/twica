@@ -3,6 +3,12 @@
 // card-number-errors.ts / card-issuance.ts と同じ粒度の単一列ヘルパー。
 // 旧「本番未デプロイ8列」フォールバックの経緯は Issue #834 参照
 // （2026-08 撤去。ファイルは cards-safe-columns.ts から改名）。
+//
+// 適用範囲は cards の書き込み経路（POST/PUT /api/cards, /api/cards/batch,
+// /api/cards/batch-update）のみで、読み取り経路（GET /api/cards,
+// dashboard-data.ts の各種取得関数, gacha/demo 等）には意図的に適用していない。
+// この非対称・および card_number 等の別系統フォールバックとあわせた要否整理は
+// Issue #954 で追跡する。
 // -----------------------------------------------------------------------------
 
 import { getTableColumns } from "drizzle-orm";

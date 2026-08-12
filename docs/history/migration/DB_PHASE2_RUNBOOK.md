@@ -1112,8 +1112,9 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
         migration は追記専用・履歴改変をしない運用のため、既存の 00002 を
         書き換えたり再適用したりはしない）。この方針で問題ないかオーナー最終確認
       - `cards` の 8 列（card_number は採番用・残り 7 列が battle 系。列名一覧は
-        `src/lib/db/cards-safe-columns.ts`、経緯は #625）: **解消済み（2026-07-20
-        追記）。** `supabase/migrations/20260718000000_repair_cards_missing_columns.sql`
+        `src/lib/db/schema.ts` の cards テーブル定義、経緯は #625。旧
+        `src/lib/db/cards-safe-columns.ts` は #834 で `card-padding-color-errors.ts`
+        へ改名・縮小済み）: **解消済み（2026-07-20 追記）。** `supabase/migrations/20260718000000_repair_cards_missing_columns.sql`
         により prod へ列追加済みで、`db/planetscale/public-schema.sql` にも
         修復後の8列が反映済みであることを確認した（6章6項の訂正メモ参照）。
         本項目のオーナー判断待ちは解消済み。`CARDS_SAFE_COLUMNS` フォールバック

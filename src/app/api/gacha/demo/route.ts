@@ -48,7 +48,12 @@ async function fetchCardByIdPg(cardId: string, streamerId: string): Promise<Card
       { idempotent: true },
     );
     return (rows[0] as unknown as Card) ?? null;
-  } catch {
+  } catch (error) {
+    // #834 でこの分岐の列欠落フォールバック（本番未デプロイ8列）は撤去済み。
+    // 撤去後は列欠落を含むあらゆる失敗がここに到達し、呼び出し元の縮退chain
+    // （streamerId のランダムカード → 組み込みデモカード）へ黙って倒れるため、
+    // 調査可能性のためログだけは残す（挙動自体は変更しない）。
+    logger.error("gacha/demo: fetchCardByIdPg failed", { error });
     return null;
   }
 }
@@ -68,7 +73,9 @@ async function fetchActiveCardsForStreamerPg(streamerId: string): Promise<Card[]
       { idempotent: true },
     );
     return rows as unknown as Card[];
-  } catch {
+  } catch (error) {
+    // fetchCardByIdPg と同じ理由でログを残す（#834 で列欠落フォールバックを撤去済み）。
+    logger.error("gacha/demo: fetchActiveCardsForStreamerPg failed", { error });
     return [];
   }
 }

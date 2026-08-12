@@ -587,6 +587,12 @@ function resolveSortColumn(sortField: SortField): AnyColumn {
  * #834: 「本番未デプロイ8列」（card_number/hp/atk/...）に対する SELECT 列
  * リストのフォールバックは、本番実測で8列とも実在することを確認したため撤去
  * した（card-padding-color-errors.ts 参照）。
+ *
+ * image_padding_color（#899）のフォールバックはこの読み取り経路には意図的に
+ * 適用していない。書き込み側（insertCardPg 等）とは異なり、この無指定
+ * `db.select()` が image_padding_color 欠落で失敗した場合の救済が無いため、
+ * その列のデプロイ窓が実際に開けばここは失敗する（現状は書き込み側のみ保護
+ * された非対称な状態）。要否の整理は #954 で追跡する。
  */
 async function fetchCardsFromDBPg(
   streamerId: string,
