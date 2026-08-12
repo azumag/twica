@@ -178,7 +178,7 @@ export async function middleware(request: NextRequest) {
   const requestHeaders = new Headers(request.headers)
   // CPU 課金抑制のため CSP 文字列はリクエストごとに 1 回だけ生成し、
   // request ヘッダーとレスポンスヘッダーの両方へ渡す（nonce 契約）。
-  const csp = buildCsp(nonce)
+  const csp = buildCsp(nonce, pathname)
   requestHeaders.set('x-nonce', nonce)
   requestHeaders.set('Content-Security-Policy', csp)
 

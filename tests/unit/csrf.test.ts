@@ -494,6 +494,46 @@ describe('CSRF Protection', () => {
       expect(result.valid).toBe(true)
     })
 
+    it('host ヘッダーが正規ドメインなら request.url が別ホストでも許可する（#952 レビュー）', async () => {
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: tokenHash,
+        version: 1
+      }
+      const mockCookieStore = createMockCookieStore({
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: JSON.stringify(sessionData) }
+          }
+          if (name === COOKIE_NAMES.CSRF_TOKEN) {
+            return { value: token }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+      })
+      mockCookies.mockResolvedValue(mockCookieStore as any)
+
+      // undici の Request では host が forbidden のため headers.get をスパイして注入する
+      const request = new Request('https://evil.example.com')
+      const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
+        if (name === 'host') return 'TWICA-PREVIEW.tsubasa-azumagakito.workers.dev'
+        return null
+      })
+
+      const result = await validateCSRFToken(request)
+
+      expect(result.valid).toBe(true)
+      getSpy.mockRestore()
+    })
+
     it('should reject request URL from untrusted authority even with matching origin header (#950)', async () => {
       const token = 'a'.repeat(64)
       const tokenHash = await hashToken(token)

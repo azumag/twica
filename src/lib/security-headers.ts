@@ -5,7 +5,7 @@ import { SECURITY_HEADERS } from './constants'
  * script-src / connect-src 以外は全 variant 共通のため、1箇所の表から組み立てる
  * （文字列の三重複による乖離を防ぐ）。
  */
-function composeCsp(scriptSrc: string, connectSrc: string): string {
+function composeCsp(scriptSrc: string, connectSrc: string, frameAncestors: string): string {
   return [
     "default-src 'self'",
     "base-uri 'self'",
@@ -18,32 +18,8 @@ function composeCsp(scriptSrc: string, connectSrc: string): string {
     "worker-src 'self' blob:",
     "object-src 'none'",
     "form-action 'self'",
+    `frame-ancestors ${frameAncestors}`,
   ].join('; ') + ';'
-}
-
-/**
- * frame-ancestors は pathname 依存で付与する。frame-ancestors を含むポリシーが
- * 配信されると UA は X-Frame-Options を無視するため、全ルートに 'self' を付けると
- * DENY が実効的に緩和される（#952 レビュー必須指摘）。
- * - overlay ルート: 同一オリジン iframe 埋め込みを許可（X-Frame-Options SAMEORIGIN と同値）
- * - その他: 'none'（X-Frame-Options DENY と同値）
- * X-Frame-Options も併記し続けるのは、CSP Level 2 非対応の旧 UA 向けフォールバック。
- */
-function withFrameAncestors(csp: string, pathname?: string): string {
-  const directive = isOverlayPath(pathname)
-    ? "frame-ancestors 'self'"
-    : "frame-ancestors 'none'"
-  // csp は外部から渡せる引数のため、';' 終端を仮定せず正規化し、既存の
-  // frame-ancestors を除去してから付与する（CSP は重複 directive が先勝ちのため、
-  // 入力に残っていると overlay 用の 'self' が黙って無効化される）。
-  const base = csp
-    .replace(/;\s*$/, '')
-    .split(';')
-    .map((d) => d.trim())
-    // CSP の directive 名は case-insensitive のため、大小を問わず除去する
-    .filter((d) => d && !d.toLowerCase().startsWith('frame-ancestors'))
-    .join('; ')
-  return `${base}; ${directive};`
 }
 
 /** overlay ルート（同一オリジン iframe 埋め込みを許可する）の判定を1箇所に集約。 */
@@ -68,7 +44,13 @@ function isOverlayPath(pathname?: string): boolean {
  *   'unsafe-inline' は付けず、strict-dynamic も無いため host-source は有効
  *   （JSON エラー応答はスクリプトを含まず実害なし）。
  */
-export function buildCsp(nonce?: string): string {
+export function buildCsp(nonce?: string, pathname?: string): string {
+  // frame-ancestors は pathname 依存で付与する。frame-ancestors を含むポリシーが
+  // 配信されると UA は X-Frame-Options を無視するため、全ルートに 'self' を付けると
+  // DENY が実効的に緩和される。overlay は同一オリジン iframe 埋め込みを許可
+  // （X-Frame-Options SAMEORIGIN と同値）、その他は 'none'（DENY と同値）。
+  // X-Frame-Options も併記し続けるのは、CSP Level 2 非対応の旧 UA 向けフォールバック。
+  const frameAncestors = isOverlayPath(pathname) ? "'self'" : "'none'"
   const isProduction = process.env.NODE_ENV === 'production'
   if (isProduction) {
     // CSP Level 2 対応ブラウザは nonce を外部スクリプトにも適用するため、beacon に
@@ -77,7 +59,7 @@ export function buildCsp(nonce?: string): string {
     const scriptSrc = nonce
       ? `'self' 'nonce-${nonce}' 'strict-dynamic'`
       : `'self' https://static.cloudflareinsights.com`
-    return composeCsp(scriptSrc, "'self' https: wss:")
+    return composeCsp(scriptSrc, "'self' https: wss:", frameAncestors)
   }
   // 開発環境でも nonce 経路を再現できるよう、nonce があれば script-src へ含める
   // （Next.js fast refresh 用の unsafe-eval / インライン用の unsafe-inline は維持）。
@@ -87,7 +69,7 @@ export function buildCsp(nonce?: string): string {
   const scriptSrc = nonce
     ? `'self' 'nonce-${nonce}' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com`
     : `'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com`
-  return composeCsp(scriptSrc, "'self' https: localhost:* wss:")
+  return composeCsp(scriptSrc, "'self' https: localhost:* wss:", frameAncestors)
 }
 
 /**
@@ -118,7 +100,7 @@ export function setSecurityHeaders(
 
   // 空文字列の csp は「無制限 CSP」と同義になるため || でフォールバックする
   // （?? だと空文字が素通しになり fail-open）。
-  response.headers.set('Content-Security-Policy', withFrameAncestors(csp || buildCsp(), pathname))
+  response.headers.set('Content-Security-Policy', csp || buildCsp(undefined, pathname))
 
   if (process.env.NODE_ENV === 'production') {
     response.headers.set('Strict-Transport-Security', SECURITY_HEADERS.HSTS)

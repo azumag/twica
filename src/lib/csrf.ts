@@ -224,14 +224,22 @@ export async function validateCSRFToken(
   // host ヘッダーは Workers/OpenNext では必ず存在する。テスト環境（undici の
   // Request）では forbidden header のため取得できないので、その場合のみ
   // request.url の host へフォールバックする（本番のズレ対策は host 優先で成立）。
-  const authority = request.headers.get('host') ?? requestUrl.host
-  const expectedOrigin = `${requestUrl.protocol}//${authority}`
+  // スキームは request.url に依存せず、localhost / 127.0.0.1 のみ http、それ以外は
+  // https とする（request.url が http に再構成される環境でも全 API が fail-closed
+  // にならないようにする）。
+  const authority = (request.headers.get('host') ?? requestUrl.host).toLowerCase()
+  const isLoopback =
+    /^localhost(:\d+)?$/.test(authority) || /^127\.0\.0\.1(:\d+)?$/.test(authority)
+  const expectedOrigin = `${isLoopback ? 'http:' : 'https:'}//${authority}`
   // ALLOWED_ORIGINS は単体テスト（example.com モック）との互換のため残す。
   // 本番では isTrustedOrigin が NEXT_PUBLIC_APP_URL / workers.dev / ローカルを許可する。
   if (!isTrustedOrigin(expectedOrigin) && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(expectedOrigin)) {
+    // expectedOrigin は外部入力（host ヘッダー）を含むため、制御文字除去・長さ制限を
+    // してからログへ出す（url-utils と同じサニタイズ方針）。
+    const sanitizedOrigin = expectedOrigin.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 128)
     logger.warn('CSRF validation failed: request URL origin not trusted', {
       userId: session.twitchUserId,
-      expectedOrigin,
+      expectedOrigin: sanitizedOrigin,
       endpoint: sanitizeURL(request.url),
     })
     return { valid: false, error: ERROR_MESSAGES.CSRF_ORIGIN_NOT_TRUSTED }
