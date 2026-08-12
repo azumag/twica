@@ -32,12 +32,32 @@ const LOCAL_DEV_ORIGINS = new Set([
 
 const WORKERS_DEV_ACCOUNT_SUBDOMAIN = '.tsubasa-azumagakito.workers.dev'
 
-/** workers.dev の host がこのアカウントの twica 系 Worker に属するか判定する。 */
+/**
+ * workers.dev の host がこのアカウントの twica 系 Worker に属するか判定する。
+ * アカウント専有サブドメインであるため第三者は偽装できないが、不正な Host
+ * （空白・記号入り）が誤って通ると呼び出し側の `new URL()` が 500 になる。
+ * 文字種を検証して fail-closed にする（#944 レビュー任意指摘）。
+ */
 function isTwicaWorkersDevHost(normalizedHost: string): boolean {
-  return (
-    normalizedHost.endsWith(WORKERS_DEV_ACCOUNT_SUBDOMAIN) &&
-    normalizedHost.includes('twica')
-  )
+  // ホスト全体がドット区切りの label（[a-z0-9-]+）で構成されることを確認する。
+  // endsWith だけだと `twica.preview@evil.tsubasa-...` のような userinfo 混入が
+  // 末尾一致で通過し、呼び出し側の `new URL()` が 500 になる（#949 レビューで
+  // 先頭 label 限定を試したが、@ が末尾より前に置けるため全体検証が必須と判明）。
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(normalizedHost)) {
+    return false
+  }
+  if (!normalizedHost.endsWith(WORKERS_DEV_ACCOUNT_SUBDOMAIN)) {
+    return false
+  }
+  const workerLabel = normalizedHost.split('.')[0]
+  if (!/^[a-z0-9-]+$/.test(workerLabel)) {
+    return false
+  }
+  // worker 名（先頭 label）に twica を含む。Workers Builds は
+  // `<version>-twica-preview` / `<branch>-twica-preview` の形でサブドメインを
+  // 生成するため、先頭 label のみ確認すれば十分（アカウント専有のため部分一致でも
+  // 実害はなく、逆に将来のプレフィックス形式を壊さない）。
+  return workerLabel.includes('twica')
 }
 
 /** フォールバック先の origin を解決する。production で未設定/不正なら fail-loud。 */
@@ -74,8 +94,12 @@ export function resolveAllowedOrigin(host: string | null): string {
   if (!host) return resolveFallbackOrigin()
 
   const normalizedHost = host.toLowerCase()
-  // ローカル開発は host ヘッダーのみで判定（wrangler dev は http://localhost:8787）。
-  // production ビルドでは localhost を許可しない（Host ヘッダ注入の抜け穴を塞ぐ）。
+  // ローカル開発は host ヘッダーのみで判定。この分岐は `dev:next`（next dev）で
+  // NODE_ENV=development のときにだけ通り、`npm run dev`（wrangler dev）は next build
+  // 済みバンドルを実行するため production 相当になり通らない。:8787 は wrangler dev
+  // のポートだが、この分岐が通るのは next dev の既定 3000 のみ（-p 8787 等の指定を
+  // 含めて両ポートを残す）。production ビルドでは localhost を許可しない
+  // （Host ヘッダ注入の抜け穴を塞ぐ）。
   if (process.env.NODE_ENV !== 'production') {
     const localOrigin = `http://${normalizedHost}`
     if (LOCAL_DEV_ORIGINS.has(localOrigin)) return localOrigin

@@ -98,6 +98,9 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 // つまり、ここに無いパスでもルートが public を設定すればキャッシュされるため、
 // ルート側の public 設定とこの判定は常に同期させること。
 // 機密情報を返さない・セッション非依存のエンドポイントのみを許可する。
+// 警告: ここへ HTML を返すパスを追加してはならない。エッジキャッシュに nonce 付き
+// CSP が焼き付き、キャッシュ HIT 中の全スクリプトが nonce 不一致でブロックされる
+// （#944 レビュー任意指摘。現状の対象は JSON のみで無害）。
 const CACHEABLE_PUBLIC_PATHS = ['/api/maintenance-status']
 
 /**
@@ -173,13 +176,16 @@ export async function middleware(request: NextRequest) {
   // ヘッダー経由でレンダラへ渡す（body 複製リスクを避ける公式パターン、#836）。
   const nonce = crypto.randomUUID()
   const requestHeaders = new Headers(request.headers)
+  // CPU 課金抑制のため CSP 文字列はリクエストごとに 1 回だけ生成し、
+  // request ヘッダーとレスポンスヘッダーの両方へ渡す（#949 レビュー任意指摘）。
+  const csp = buildCsp(nonce)
   requestHeaders.set('x-nonce', nonce)
-  requestHeaders.set('Content-Security-Policy', buildCsp(nonce))
+  requestHeaders.set('Content-Security-Policy', csp)
 
   const response = await updateSession(request, requestHeaders)
   // パスに基づいて適切なセキュリティヘッダーを設定
   // Set appropriate security headers based on the path
-  setSecurityHeaders(response, pathname, nonce)
+  setSecurityHeaders(response, pathname, csp)
 
   // Detect and set locale for server components
   // サーバーコンポーネント用にロケールを検出・設定
@@ -201,6 +207,8 @@ export async function middleware(request: NextRequest) {
   // （200 → 2時間）でキャッシュされ、ガチャ結果の表示が最大2時間止まる。
   // realtime-config はルート側で `public, max-age=15, stale-while-revalidate=15` を
   // 明示する意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
+  // 警告: ここも HTML を返すパスを追加してはならない（CACHEABLE_PUBLIC_PATHS と
+  // 同じ理由で nonce がエッジキャッシュに焼き付く、#949 レビュー任意指摘）。
   const isCacheablePublicPath =
     CACHEABLE_PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
     (pathname.startsWith('/api/overlay/') &&
@@ -248,7 +256,7 @@ export async function middleware(request: NextRequest) {
           }
         )
 
-        return setSecurityHeaders(errorResponse, pathname, nonce)
+        return setSecurityHeaders(errorResponse, pathname, csp)
       }
     }
 

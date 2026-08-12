@@ -348,16 +348,9 @@ export const SECURITY_HEADERS = {
   X_CONTENT_TYPE_OPTIONS: 'nosniff',
   X_FRAME_OPTIONS: 'DENY',
   X_XSS_PROTECTION: '1; mode=block',
-  // Development CSP includes 'unsafe-eval' for Next.js fast refresh and dev tools
-  // 開発用CSPにはNext.jsのfast refreshと開発ツールのため'unsafe-eval'を含む
-  // media-src: R2バケットからの効果音再生を許可
-  // Cloudflare Insights (static.cloudflareinsights.com) のビーコンスクリプトを許可
-  // Allow Cloudflare Insights beacon script from static.cloudflareinsights.com
-  // buildCsp()（security-headers.ts）の共通テーブルと一致させること（乖離防止テストあり）
-  CSP_DEVELOPMENT: "default-src 'self'; base-uri 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
-  // production の CSP は buildCsp()（src/lib/security-headers.ts）が nonce 付きで
-  // 組み立てるため、ここには定数を持たない（#836: nonce 化に伴い unsafe-inline を
-  // 除去。定数を残すと buildCsp と乖離するため廃止）。
+  // CSP 文字列は buildCsp()（src/lib/security-headers.ts）の共通テーブルからのみ
+  // 組み立てる。ここに定数を置くと buildCsp と乖離し、テストが自己参照になるため
+  // 定数は持たない（#944 レビュー指摘: 乖離防止は directive 単位のテストで担保）。
   HSTS: 'max-age=31536000; includeSubDomains; preload',
 } as const
 

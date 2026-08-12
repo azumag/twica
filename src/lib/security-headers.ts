@@ -16,6 +16,8 @@ function composeCsp(scriptSrc: string, connectSrc: string): string {
     `connect-src ${connectSrc}`,
     "font-src 'self' data:",
     "worker-src 'self' blob:",
+    "object-src 'none'",
+    "form-action 'self'",
   ].join('; ') + ';'
 }
 
@@ -36,6 +38,10 @@ function composeCsp(scriptSrc: string, connectSrc: string): string {
 export function buildCsp(nonce?: string): string {
   const isProduction = process.env.NODE_ENV === 'production'
   if (isProduction) {
+    // CSP Level 2 対応ブラウザは nonce を外部スクリプトにも適用するため、beacon に
+    // nonce を渡している以上（layout.tsx）読み込める。beacon だけが落ちるのは
+    // nonce 自体を解さない CSP Level 1 のみ。影響はアナリティクス欠損のみで許容する
+    // （#949 レビュー任意指摘。判断根拠として nonce 分岐の直近に残す）。
     const scriptSrc = nonce
       ? `'self' 'nonce-${nonce}' 'strict-dynamic'`
       : `'self' https://static.cloudflareinsights.com`
@@ -43,6 +49,9 @@ export function buildCsp(nonce?: string): string {
   }
   // 開発環境でも nonce 経路を再現できるよう、nonce があれば script-src へ含める
   // （Next.js fast refresh 用の unsafe-eval / インライン用の unsafe-inline は維持）。
+  // 注記: CSP 仕様上 nonce-source があると script-src の 'unsafe-inline' は無視される
+  // ため、dev の nonce あり経路は実質 nonce ベースになる（Next.js が nonce を
+  // 伝播するため実害はない。コメントは誤解を避けるための補足、#949 レビュー任意指摘）。
   const scriptSrc = nonce
     ? `'self' 'nonce-${nonce}' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com`
     : `'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com`
@@ -54,12 +63,15 @@ export function buildCsp(nonce?: string): string {
  * レスポンスにセキュリティヘッダーを設定
  * @param response - NextResponse object to modify
  * @param pathname - Request pathname (optional, used for route-specific headers)
- * @param nonce - CSP nonce (optional, issued by middleware per request, #836)
+ * @param csp - 生成済み CSP 文字列（省略時は buildCsp() で nonce なしを組み立てる）。
+ *   middleware はリクエストごとに 1 回だけ buildCsp(nonce) を呼び、request ヘッダーと
+ *   response ヘッダーの両方へ同じ csp を渡す（nonce 契約、#836）。呼び出し側で
+ *   buildCsp を再実行しないことで nonce と CSP の二重真実源を避ける（#949 レビュー）。
  */
 export function setSecurityHeaders(
   response: NextResponse,
   pathname?: string,
-  nonce?: string
+  csp?: string
 ): NextResponse {
   response.headers.set('X-Content-Type-Options', SECURITY_HEADERS.X_CONTENT_TYPE_OPTIONS)
 
@@ -73,7 +85,9 @@ export function setSecurityHeaders(
 
   response.headers.set('X-XSS-Protection', SECURITY_HEADERS.X_XSS_PROTECTION)
 
-  response.headers.set('Content-Security-Policy', buildCsp(nonce))
+  // 空文字列の csp は「無制限 CSP」と同義になるため || でフォールバックする
+  // （?? だと空文字が素通しになり fail-open、#949 レビュー任意指摘3）。
+  response.headers.set('Content-Security-Policy', csp || buildCsp())
 
   if (process.env.NODE_ENV === 'production') {
     response.headers.set('Strict-Transport-Security', SECURITY_HEADERS.HSTS)
