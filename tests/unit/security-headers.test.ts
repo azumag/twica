@@ -13,6 +13,12 @@ describe('setSecurityHeaders', () => {
     expect(result.headers.get('X-Content-Type-Options')).toBe('nosniff')
   })
 
+  it('X-XSS-Protectionヘッダーを 0 で設定する（旧 UA の auditor 無効化）', () => {
+    const response = NextResponse.json({ test: 'data' })
+    const result = setSecurityHeaders(response)
+    expect(result.headers.get('X-XSS-Protection')).toBe('0')
+  })
+
   it('X-Frame-Optionsヘッダーを設定する（デフォルトはDENY）', () => {
     const response = NextResponse.json({ test: 'data' })
     const result = setSecurityHeaders(response)
@@ -76,6 +82,33 @@ describe('setSecurityHeaders', () => {
       const scriptSrc = csp?.split(';').find((d) => d.trim().startsWith('script-src'))
       expect(scriptSrc).not.toContain('unsafe-inline')
       expect(csp).toContain("default-src 'self'")
+    })
+
+    it('終端 ; なしの csp を渡しても frame-ancestors が正しく連結される', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { csp: "default-src 'self'; script-src 'self'" })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("script-src 'self'; frame-ancestors 'none';")
+    })
+
+    it('入力 csp に frame-ancestors が含まれていても上書きされる（重複先勝ち対策）', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, {
+        pathname: '/overlay/123',
+        csp: "default-src 'self'; frame-ancestors 'none';",
+      })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("frame-ancestors 'self';")
+      expect(csp?.split('frame-ancestors').length).toBe(2)
+    })
+
+    it('pathname と csp を同時に渡すと pathname に応じた frame-ancestors が付与される', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const overlay = setSecurityHeaders(response, {
+        pathname: '/overlay/123',
+        csp: "default-src 'self';",
+      })
+      expect(overlay.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'self';")
     })
 
     it('production nonce 経路は nonce 埋め込み・strict-dynamic・unsafe-inline 不在・host-source 不記載を満たす', () => {
@@ -181,6 +214,14 @@ describe('setSecurityHeaders', () => {
       const result = setSecurityHeaders(response, { pathname: '/overlay/123' })
       const csp = result.headers.get('Content-Security-Policy')
       expect(csp).toContain("frame-ancestors 'self';")
+    })
+
+    it('/overlay-foo のような前方一致は overlay として扱わない', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { pathname: '/overlay-foo' })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("frame-ancestors 'none';")
+      expect(result.headers.get('X-Frame-Options')).toBe('DENY')
     })
 
     it('配信されるヘッダー値（setSecurityHeaders 経由）でも directive が重複しない', () => {

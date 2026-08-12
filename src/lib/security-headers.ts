@@ -33,14 +33,24 @@ function withFrameAncestors(csp: string, pathname?: string): string {
   const directive = isOverlayPath(pathname)
     ? "frame-ancestors 'self'"
     : "frame-ancestors 'none'"
-  // csp は外部から渡せる引数のため、';' 終端を仮定せず正規化してから連結する
-  // （終端なしだと直前 directive の値へ融合し frame-ancestors が無効化される）。
-  return `${csp.replace(/;\s*$/, '')}; ${directive};`
+  // csp は外部から渡せる引数のため、';' 終端を仮定せず正規化し、既存の
+  // frame-ancestors を除去してから付与する（CSP は重複 directive が先勝ちのため、
+  // 入力に残っていると overlay 用の 'self' が黙って無効化される）。
+  const base = csp
+    .replace(/;\s*$/, '')
+    .split(';')
+    .map((d) => d.trim())
+    .filter((d) => d && !d.startsWith('frame-ancestors'))
+    .join('; ')
+  return `${base}; ${directive};`
 }
 
 /** overlay ルート（同一オリジン iframe 埋め込みを許可する）の判定を1箇所に集約。 */
 function isOverlayPath(pathname?: string): boolean {
-  return pathname?.startsWith('/overlay') ?? false
+  if (!pathname) return false
+  // フレーム許可は緩和側の判定のため、前方一致ではなくルート境界で判定する
+  // （/overlay-foo や /overlays は対象外）。
+  return pathname === '/overlay' || pathname.startsWith('/overlay/')
 }
 
 /**
@@ -95,6 +105,7 @@ export function setSecurityHeaders(
 ): NextResponse {
   const { pathname, csp } = options ?? {}
   response.headers.set('X-Content-Type-Options', SECURITY_HEADERS.X_CONTENT_TYPE_OPTIONS)
+  response.headers.set('X-XSS-Protection', SECURITY_HEADERS.X_XSS_PROTECTION)
 
   // overlay ルートは同一オリジンからの iframe 埋め込みを許可（プレビュー機能用）
   // Allow same-origin iframe embedding for overlay routes (for preview functionality)

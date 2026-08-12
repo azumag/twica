@@ -348,6 +348,9 @@ export const ERROR_MESSAGES = {
 export const SECURITY_HEADERS = {
   X_CONTENT_TYPE_OPTIONS: 'nosniff',
   X_FRAME_OPTIONS: 'DENY',
+  // 旧 UA の XSS auditor を明示的に無効化（auditor 自体を悪用する既知手法への対策。
+  // 現行ブラウザは auditor 自体が廃止済みで、XSS 対策は CSP が担う）。
+  X_XSS_PROTECTION: '0',
   // CSP 文字列は buildCsp()（src/lib/security-headers.ts）の共通テーブルからのみ
   // 組み立てる。ここに定数を置くと buildCsp と乖離し、テストが自己参照になるため
   // 定数は持たない（乖離防止は directive 単位のテストで担保）。

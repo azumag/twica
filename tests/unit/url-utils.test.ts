@@ -178,6 +178,8 @@ describe('isTrustedOrigin (issue #950)', () => {
     expect(isTrustedOrigin('https://twica.bluemoon.works/evil')).toBe(false)
     expect(isTrustedOrigin('https://user@twica.bluemoon.works')).toBe(false)
     expect(isTrustedOrigin('https://twica-preview.tsubasa-azumagakito.workers.dev/evil')).toBe(false)
+    expect(isTrustedOrigin('')).toBe(false)
+    expect(isTrustedOrigin('http://localhost:3000/')).toBe(false)
   })
 
   it('workers.dev は https のみ許可する（http は拒否）', () => {
