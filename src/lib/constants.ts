@@ -348,11 +348,6 @@ export const SECURITY_HEADERS = {
   X_CONTENT_TYPE_OPTIONS: 'nosniff',
   X_FRAME_OPTIONS: 'DENY',
   X_XSS_PROTECTION: '1; mode=block',
-  // Development CSP includes 'unsafe-eval' for Next.js fast refresh and dev tools
-  // 開発用CSPにはNext.jsのfast refreshと開発ツールのため'unsafe-eval'を含む
-  // media-src: R2バケットからの効果音再生を許可
-  // Cloudflare Insights (static.cloudflareinsights.com) のビーコンスクリプトを許可
-  // Allow Cloudflare Insights beacon script from static.cloudflareinsights.com
   // CSP 文字列は buildCsp()（src/lib/security-headers.ts）の共通テーブルからのみ
   // 組み立てる。ここに定数を置くと buildCsp と乖離し、テストが自己参照になるため
   // 定数は持たない（#944 レビュー指摘: 乖離防止は directive 単位のテストで担保）。

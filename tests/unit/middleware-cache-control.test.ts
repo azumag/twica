@@ -85,8 +85,7 @@ describe('middleware fail-closed Cache-Control (issue #906)', () => {
 
   it('request ヘッダーに x-nonce と CSP を積む（layout との nonce 契約、#836）', async () => {
     await middleware(makeRequest('/guide'))
-    const [, requestHeaders] = updateSessionMock.mock.calls[0] as unknown as [unknown, Headers | undefined]
-    if (!requestHeaders) throw new Error('middleware must pass request headers to updateSession')
+    const [, requestHeaders] = updateSessionMock.mock.calls[0] as unknown as [unknown, Headers]
     const nonce = requestHeaders.get('x-nonce')
     expect(nonce).toBeTruthy()
     // buildCsp モックは nonce を CSP へ埋め込むため、同じ nonce が CSP に含まれること

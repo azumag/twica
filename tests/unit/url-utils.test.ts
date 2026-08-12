@@ -81,11 +81,20 @@ describe('resolveAllowedOrigin (issue #836)', () => {
 
   it('workers.dev サブドメインの文字種が不正な host は拒否する（500 化を防ぐ）', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
-    // 空白・記号入りはアカウント専有ドメインに該当しないため fail-closed
-    expect(resolveAllowedOrigin('twica preview.tsubasa-azumagakito.workers.dev'))
-      .toBe('https://twica.bluemoon.works')
-    expect(resolveAllowedOrigin('twica.preview@evil.tsubasa-azumagakito.workers.dev'))
-      .toBe('https://twica.bluemoon.works')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // 空白・記号入りはアカウント専有ドメインに該当しないため fail-closed
+      expect(resolveAllowedOrigin('twica preview.tsubasa-azumagakito.workers.dev'))
+        .toBe('https://twica.bluemoon.works')
+      expect(resolveAllowedOrigin('twica.preview@evil.tsubasa-azumagakito.workers.dev'))
+        .toBe('https://twica.bluemoon.works')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('大文字の workers.dev ホストは小文字化して許可する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
     expect(resolveAllowedOrigin('TWICA-preview.tsubasa-azumagakito.workers.dev'))
       .toBe('https://twica-preview.tsubasa-azumagakito.workers.dev')
   })

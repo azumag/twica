@@ -98,18 +98,28 @@ describe('setSecurityHeaders', () => {
       expect(csp).toContain('unsafe-eval')
     })
 
-    it('全 variant で base-uri / object-src / form-action を固定する（乖離防止）', () => {
-      vi.stubEnv('NODE_ENV', 'production')
-      expect(buildCsp()).toContain("base-uri 'self';")
-      expect(buildCsp()).toContain("object-src 'none';")
-      expect(buildCsp()).toContain("form-action 'self';")
-      expect(buildCsp('nonce1')).toContain("base-uri 'self';")
-      expect(buildCsp('nonce1')).toContain("object-src 'none';")
-      expect(buildCsp('nonce1')).toContain("form-action 'self';")
-      vi.stubEnv('NODE_ENV', 'development')
-      expect(buildCsp()).toContain("base-uri 'self';")
-      expect(buildCsp()).toContain("object-src 'none';")
-      expect(buildCsp()).toContain("form-action 'self';")
+    const COMMON_DIRECTIVES = [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: https: blob:",
+      "media-src 'self' https:",
+      "font-src 'self' data:",
+      "worker-src 'self' blob:",
+      "object-src 'none'",
+      "form-action 'self'",
+    ]
+
+    it.each([
+      ['production nonce なし', () => { vi.stubEnv('NODE_ENV', 'production'); return buildCsp() }],
+      ['production nonce あり', () => { vi.stubEnv('NODE_ENV', 'production'); return buildCsp('nonce1') }],
+      ['development nonce なし', () => { vi.stubEnv('NODE_ENV', 'development'); return buildCsp() }],
+      ['development nonce あり', () => { vi.stubEnv('NODE_ENV', 'development'); return buildCsp('nonce1') }],
+    ])('%s で全 directive が固定されている（乖離防止）', (_label, build) => {
+      const csp = build()
+      for (const directive of COMMON_DIRECTIVES) {
+        expect(csp).toContain(`${directive};`)
+      }
     })
   })
 

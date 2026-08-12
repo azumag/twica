@@ -176,13 +176,16 @@ export async function middleware(request: NextRequest) {
   // ヘッダー経由でレンダラへ渡す（body 複製リスクを避ける公式パターン、#836）。
   const nonce = crypto.randomUUID()
   const requestHeaders = new Headers(request.headers)
+  // CPU 課金抑制のため CSP 文字列はリクエストごとに 1 回だけ生成し、
+  // request ヘッダーとレスポンスヘッダーの両方へ渡す（#949 レビュー任意指摘）。
+  const csp = buildCsp(nonce)
   requestHeaders.set('x-nonce', nonce)
-  requestHeaders.set('Content-Security-Policy', buildCsp(nonce))
+  requestHeaders.set('Content-Security-Policy', csp)
 
   const response = await updateSession(request, requestHeaders)
   // パスに基づいて適切なセキュリティヘッダーを設定
   // Set appropriate security headers based on the path
-  setSecurityHeaders(response, pathname, nonce)
+  setSecurityHeaders(response, pathname, nonce, csp)
 
   // Detect and set locale for server components
   // サーバーコンポーネント用にロケールを検出・設定
@@ -204,6 +207,8 @@ export async function middleware(request: NextRequest) {
   // （200 → 2時間）でキャッシュされ、ガチャ結果の表示が最大2時間止まる。
   // realtime-config はルート側で `public, max-age=15, stale-while-revalidate=15` を
   // 明示する意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
+  // 警告: ここも HTML を返すパスを追加してはならない（CACHEABLE_PUBLIC_PATHS と
+  // 同じ理由で nonce がエッジキャッシュに焼き付く、#949 レビュー任意指摘）。
   const isCacheablePublicPath =
     CACHEABLE_PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
     (pathname.startsWith('/api/overlay/') &&
