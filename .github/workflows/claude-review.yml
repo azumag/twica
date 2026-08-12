@@ -156,12 +156,18 @@ jobs:
       - name: Claude Code Review (opus)
         id: review
         if: steps.check-token.outputs.configured == 'true'
-        # 供給元タグの更新で挙動が変わり得るため、コミットSHAピンが定石だが、
-        # この環境から GitHub API へ到達できず（api.github.com への疎通不可）
-        # 現在の v1 タグの SHA を取得できないため、タグ運用を維持する。
-        # OAuth トークンを渡す唯一の action なので、SHA 取得手段ができ次第
-        # ピン化する（追跡: issue #918）。
-        uses: anthropics/claude-code-action@v1
+        # OAuth トークンを渡す唯一の action のため、可変タグではなくコミット SHA に
+        # ピンする（供給元タグの差し替えによるトークン奪取を防ぐ、issue #918）。
+        # SHA は git ls-remote https://github.com/anthropics/claude-code-action 'refs/tags/v1^{}'
+        # で取得する（v1 は annotated tag のため、refs/tags/v1 はタグオブジェクト SHA を
+        # 返す。uses: はコミット SHA しか解決できないので peel した側を使うこと）。
+        # 現行ピン: v1^{} = 239e3a730883eeb5c53db12b0fc9573b3024b126（実在確認済み）
+        # # v1 の行末マーカーは Dependabot / Renovate がピン更新を認識するための
+        # 機械可読形式。本リポジトリは Dependabot / Renovate 未導入のため、当面は
+        # 手動で更新する（上記 git ls-remote で SHA を取得し直すこと）。
+        # なお SHA ピンは action 自体の改ざんを防ぐが、action が実行時に取得する
+        # @anthropic-ai/claude-code までは固定しない（防衛層としての位置づけ）。
+        uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Claude GitHub App の書き込み権限ではなく、この job の読み取り専用

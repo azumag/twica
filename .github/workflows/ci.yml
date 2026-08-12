@@ -29,6 +29,7 @@ jobs:
       analysis: ${{ steps.filter.outputs.analysis }}
       i18n: ${{ steps.filter.outputs.i18n }}
       ci_workflow: ${{ steps.filter.outputs.ci_workflow }}
+      workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,6 +99,58 @@ jobs:
               # step・env・serviceの誤りを検証できない。ci.ymlの変更は稀なので、
               # コスト最適化より全jobの自己検証を優先する。
               - '.github/workflows/ci.yml'
+            workflows:
+              # 全ワークフローの YAML / シェルスクリプトを actionlint で静的検証する。
+              # ci.yml 自身の変更は ci_workflow 側でも全 job を起動するため、
+              # ここでは actionlint 専用のゲートとして使う。
+              - '.github/workflows/**'
+
+  actionlint:
+    name: Lint GitHub Actions workflows
+    needs: changes
+    env:
+      ACTIONLINT_VERSION: 1.7.9
+    # workflows の変更時のみ実行する（それ以外の変更ではスキップ）。ただし
+    # 変更検出自体が失敗した場合は安全側へ倒して実行する（CI 迂回防止の既存方針）。
+    if: >-
+      !cancelled() &&
+      (needs.changes.result != 'success' ||
+       needs.changes.outputs.workflows == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download actionlint (v${{ env.ACTIONLINT_VERSION }})
+        # バージョンを固定し、リリース同梱の checksums と照合する。
+        # 公式 install script は latest を取るため、直接バイナリ取得 + 検証とする
+        # （行動履歴に残るサプライチェーン保護。GitHub が改ざんされた場合に
+        # checksum 照合が効かない前提はあるが、防衛層として追加する）。
+        # sha256sum -c は checksums.txt に書かれたファイル名をそのまま開くため、
+        # 保存名をリネームせず元ファイル名のままにすること（#918 レビュー指摘）。
+        timeout-minutes: 5
+        run: |
+          curl -sSfL --retry 3 --retry-all-errors -O \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL --retry 3 --retry-all-errors -O \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          # 対象ファイルが1つも検証されなければ非0終了する（fail-closed）
+          sha256sum --ignore-missing -c "actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          tar -xzf "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" actionlint
+
+      - name: Verify shellcheck is available
+        # actionlint は shellcheck が PATH に無い場合、エラーにせずルールを
+        # 無効化する（debug ログのみ）。shell 検証が無検査で緑になるのを防ぐため、
+        # 存在確認を明示する（#918 レビュー指摘）。
+        run: shellcheck --version
+
+      - name: Run actionlint
+        # actionlint は GitHub Actions の式（${{ }}）を型検査し、run: 内のシェルは
+        # shellcheck（ubuntu-latest 同梱）で検証する。${{ }} は同幅のプレースホルダへ
+        # 置換したうえでスクリプト全体を検査する（#918 レビュー指摘に基づく修正）。
+        run: ./actionlint -color
 
   test:
     needs: changes

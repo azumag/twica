@@ -97,9 +97,9 @@ jobs:
         id: env
         run: |
           if [ "${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}" = "preview" ]; then
-            echo "deploy_cmd=npm run workers:deploy:preview" >> $GITHUB_OUTPUT
+            echo "deploy_cmd=npm run workers:deploy:preview" >> "$GITHUB_OUTPUT"
           else
-            echo "deploy_cmd=npm run workers:deploy" >> $GITHUB_OUTPUT
+            echo "deploy_cmd=npm run workers:deploy" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout
