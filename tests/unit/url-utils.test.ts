@@ -99,6 +99,19 @@ describe('resolveAllowedOrigin (issue #836)', () => {
       .toBe('https://twica-preview.tsubasa-azumagakito.workers.dev')
   })
 
+  it('twica が先頭 label にない workers.dev サブドメインは拒否する（締め付け）', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // 従来の includes('twica') では通っていたが、先頭 label（worker 名）限定に
+      // 変更したため拒否される（#949 レビュー任意指摘の意図した締め付け）
+      expect(resolveAllowedOrigin('evil.twica.tsubasa-azumagakito.workers.dev'))
+        .toBe('https://twica.bluemoon.works')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
   it('非許可ホストは warn を1回だけ出力してフォールバックする', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})

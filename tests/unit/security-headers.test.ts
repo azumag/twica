@@ -66,18 +66,21 @@ describe('setSecurityHeaders', () => {
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
     })
 
-    it('本番環境で nonce を渡すと script-src が nonce ベースになり unsafe-inline を含まない (#836)', () => {
+    it('生成済み CSP 文字列を渡すとそれを採用する（middleware との nonce 契約）', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, undefined, "default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';")
+      expect(result.headers.get('Content-Security-Policy')).toBe(
+        "default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';"
+      )
+    })
+
+    it('csp 未指定時は buildCsp() の nonce なし production CSP を使う', () => {
       vi.stubEnv('NODE_ENV', 'production')
       const response = NextResponse.json({ test: 'data' })
-      const result = setSecurityHeaders(response, undefined, 'abc123')
+      const result = setSecurityHeaders(response)
       const csp = result.headers.get('Content-Security-Policy')
       const scriptSrc = csp?.split(';').find((d) => d.trim().startsWith('script-src'))
-      expect(scriptSrc).toContain("'nonce-abc123'")
-      expect(scriptSrc).toContain("'strict-dynamic'")
       expect(scriptSrc).not.toContain('unsafe-inline')
-      // strict-dynamic 下では host-source は無効のため記述しない
-      expect(scriptSrc).not.toContain('static.cloudflareinsights.com')
-      // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
     })
 
@@ -98,16 +101,18 @@ describe('setSecurityHeaders', () => {
       expect(csp).toContain('unsafe-eval')
     })
 
-    const COMMON_DIRECTIVES = [
-      "default-src 'self'",
-      "base-uri 'self'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: https: blob:",
-      "media-src 'self' https:",
-      "font-src 'self' data:",
-      "worker-src 'self' blob:",
-      "object-src 'none'",
-      "form-action 'self'",
+    const EXPECTED_DIRECTIVE_NAMES = [
+      'default-src',
+      'base-uri',
+      'script-src',
+      'style-src',
+      'img-src',
+      'media-src',
+      'connect-src',
+      'font-src',
+      'worker-src',
+      'object-src',
+      'form-action',
     ]
 
     it.each([
@@ -117,9 +122,16 @@ describe('setSecurityHeaders', () => {
       ['development nonce あり', () => { vi.stubEnv('NODE_ENV', 'development'); return buildCsp('nonce1') }],
     ])('%s で全 directive が固定されている（乖離防止）', (_label, build) => {
       const csp = build()
-      for (const directive of COMMON_DIRECTIVES) {
-        expect(csp).toContain(`${directive};`)
-      }
+      // directive 名集合を完全一致で比較する。toContain のみだと directive の追加・
+      // 緩和を見逃すため、乖離防止の意図に沿う検証にする（#949 レビュー任意指摘）。
+      const actualDirectives = new Set(
+        csp
+          .split(';')
+          .map((d) => d.trim())
+          .filter(Boolean)
+          .map((d) => d.split(/\s+/)[0])
+      )
+      expect([...actualDirectives].sort()).toEqual([...EXPECTED_DIRECTIVE_NAMES].sort())
     })
   })
 

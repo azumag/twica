@@ -86,10 +86,11 @@ export function resolveAllowedOrigin(host: string | null): string {
   if (!host) return resolveFallbackOrigin()
 
   const normalizedHost = host.toLowerCase()
-  // ローカル開発は host ヘッダーのみで判定（wrangler dev は http://localhost:8787）。
-  // 注意: `npm run dev`（wrangler dev）は next build 済みバンドルを実行するため
-  // NODE_ENV === 'production' が畳み込まれ、この分岐は通らない。LOCAL_DEV_ORIGINS は
-  // `dev:next`（next dev）専用。production ビルドでは localhost を許可しない
+  // ローカル開発は host ヘッダーのみで判定。この分岐は `dev:next`（next dev）で
+  // NODE_ENV=development のときにだけ通り、`npm run dev`（wrangler dev）は next build
+  // 済みバンドルを実行するため production 相当になり通らない。:8787 は wrangler dev
+  // のポートだが、この分岐が通るのは next dev の既定 3000 のみ（-p 8787 等の指定を
+  // 含めて両ポートを残す）。production ビルドでは localhost を許可しない
   // （Host ヘッダ注入の抜け穴を塞ぐ）。
   if (process.env.NODE_ENV !== 'production') {
     const localOrigin = `http://${normalizedHost}`
