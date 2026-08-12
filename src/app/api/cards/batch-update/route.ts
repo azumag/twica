@@ -109,6 +109,15 @@ async function fetchExistingCardsForBatchUpdatePg(
  * 場合のみ CARDS_COLUMNS_WITHOUT_PADDING_COLOR へ切り替えて再試行する」方針に
  * 揃える。列が存在する環境（本番・preview とも実測済み）では無指定 select が
  * そのまま成功するため、余白色も含めて返る。
+ *
+ * 意図した応答契約の変更（Claude Auto Review 再指摘）: この関数は変更前、
+ * 常時 CARDS_SAFE_COLUMNS（image_padding_color に加え card_number/hp/atk 等
+ * バトル7列も除外）を使っていたため、POST /api/cards/batch-update のレスポンス
+ * cards には card_number 等も常に欠落していた。無指定 select への変更により、
+ * これらの列も image_padding_color と同様にレスポンスへ含まれるようになる
+ * （副次効果として、確率一括保存直後のローカル state から card_number が消える
+ * 問題も解消する）。呼び出し元（recalculateIfAutoMode 経由の recalculatedCards、
+ * 既に #834 で無指定 select 化済み）とも列構成が揃う。
  */
 async function fetchUpdatedCardsForBatchUpdatePg(
   streamerId: string,

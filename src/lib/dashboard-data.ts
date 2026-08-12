@@ -156,9 +156,7 @@ async function getStreamerDataPg(
   }
 
   try {
-    const rows = await withLiveDirectorySettingsColumnFallback((streamerSafe) =>
-      selectStreamerWithCards(streamerSafe)
-    );
+    const rows = await withLiveDirectorySettingsColumnFallback(selectStreamerWithCards);
 
     if (rows.length === 0) return null;
 
@@ -2360,9 +2358,7 @@ async function getUserCardDetailPg(
 
   let card: (Card & { streamers: Streamer }) | null;
   try {
-    const rows = await withLiveDirectorySettingsColumnFallback((streamerSafe) =>
-      selectCardDetail(streamerSafe)
-    );
+    const rows = await withLiveDirectorySettingsColumnFallback(selectCardDetail);
     // streamer_id は NOT NULL FK のため streamers は実データで常に非 null。
     // 既存の消費形状（Card & { streamers: Streamer }）へのキャストのみ行う。
     card = (rows[0] ?? null) as unknown as (Card & { streamers: Streamer }) | null;
