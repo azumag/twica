@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cookies } from 'next/headers'
 import { logger } from '@/lib/logger.server'
 
-import { COOKIE_NAMES, ERROR_MESSAGES } from '@/lib/constants'
+import { COOKIE_NAMES, CSRF_CONFIG, ERROR_MESSAGES } from '@/lib/constants'
 import { setCSRFToken, validateCSRFToken, hashToken, clearCSRFToken, hashIP, sanitizeURL } from '@/lib/csrf'
 import { signSession, verifySession } from '@/lib/session'
 
@@ -531,6 +531,138 @@ describe('CSRF Protection', () => {
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(true)
+      getSpy.mockRestore()
+    })
+
+    it('ALLOW_LOCAL_ORIGINS 有効時は LAN IP のホストを許可する（#952 レビュー必須指摘）', async () => {
+      const config = CSRF_CONFIG as unknown as { ALLOW_LOCAL_ORIGINS: boolean }
+      config.ALLOW_LOCAL_ORIGINS = true
+      try {
+        const token = 'a'.repeat(64)
+        const tokenHash = await hashToken(token)
+        const sessionData = {
+          twitchUserId: 'user123',
+          twitchUsername: 'testuser',
+          twitchDisplayName: 'Test User',
+          twitchProfileImageUrl: 'https://example.com/image.png',
+          broadcasterType: 'affiliate',
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+          csrfTokenHash: tokenHash,
+          version: 1
+        }
+        const mockCookieStore = createMockCookieStore({
+          get: vi.fn((name) => {
+            if (name === COOKIE_NAMES.SESSION) {
+              return { value: JSON.stringify(sessionData) }
+            }
+            if (name === COOKIE_NAMES.CSRF_TOKEN) {
+              return { value: token }
+            }
+            return undefined
+          }),
+          set: vi.fn(),
+        })
+        mockCookies.mockResolvedValue(mockCookieStore as any)
+
+        const request = new Request('https://evil.example.com')
+        const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
+          if (name === 'host') return '192.168.1.5:3000'
+          return null
+        })
+
+        const result = await validateCSRFToken(request)
+
+        expect(result.valid).toBe(true)
+        getSpy.mockRestore()
+      } finally {
+        config.ALLOW_LOCAL_ORIGINS = false
+      }
+    })
+
+    it('ALLOW_LOCAL_ORIGINS 有効時は ::1 と任意ポートの localhost も許可する（#952 レビュー必須指摘）', async () => {
+      const config = CSRF_CONFIG as unknown as { ALLOW_LOCAL_ORIGINS: boolean }
+      config.ALLOW_LOCAL_ORIGINS = true
+      try {
+        const token = 'a'.repeat(64)
+        const tokenHash = await hashToken(token)
+        const sessionData = {
+          twitchUserId: 'user123',
+          twitchUsername: 'testuser',
+          twitchDisplayName: 'Test User',
+          twitchProfileImageUrl: 'https://example.com/image.png',
+          broadcasterType: 'affiliate',
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+          csrfTokenHash: tokenHash,
+          version: 1
+        }
+        const mockCookieStore = createMockCookieStore({
+          get: vi.fn((name) => {
+            if (name === COOKIE_NAMES.SESSION) {
+              return { value: JSON.stringify(sessionData) }
+            }
+            if (name === COOKIE_NAMES.CSRF_TOKEN) {
+              return { value: token }
+            }
+            return undefined
+          }),
+          set: vi.fn(),
+        })
+        mockCookies.mockResolvedValue(mockCookieStore as any)
+
+        for (const host of ['[::1]:3000', 'localhost:4000']) {
+          const request = new Request('https://evil.example.com')
+          const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
+            if (name === 'host') return host
+            return null
+          })
+
+          const result = await validateCSRFToken(request)
+
+          expect(result.valid).toBe(true)
+          getSpy.mockRestore()
+        }
+      } finally {
+        config.ALLOW_LOCAL_ORIGINS = false
+      }
+    })
+
+    it('ALLOW_LOCAL_ORIGINS 無効時は LAN IP のホストを拒否する（fail-closed）', async () => {
+      const token = 'a'.repeat(64)
+      const tokenHash = await hashToken(token)
+      const sessionData = {
+        twitchUserId: 'user123',
+        twitchUsername: 'testuser',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/image.png',
+        broadcasterType: 'affiliate',
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+        csrfTokenHash: tokenHash,
+        version: 1
+      }
+      const mockCookieStore = createMockCookieStore({
+        get: vi.fn((name) => {
+          if (name === COOKIE_NAMES.SESSION) {
+            return { value: JSON.stringify(sessionData) }
+          }
+          if (name === COOKIE_NAMES.CSRF_TOKEN) {
+            return { value: token }
+          }
+          return undefined
+        }),
+        set: vi.fn(),
+      })
+      mockCookies.mockResolvedValue(mockCookieStore as any)
+
+      const request = new Request('https://evil.example.com')
+      const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
+        if (name === 'host') return '192.168.1.5:3000'
+        return null
+      })
+
+      const result = await validateCSRFToken(request)
+
+      expect(result.valid).toBe(false)
+      expect(result.error).toBe(ERROR_MESSAGES.CSRF_ORIGIN_NOT_TRUSTED)
       getSpy.mockRestore()
     })
 

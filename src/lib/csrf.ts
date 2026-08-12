@@ -55,6 +55,34 @@ export function sanitizeURL(url: string): string {
 }
 
 /**
+ * ローカル開発・実機確認で使う origin（ループバック + RFC1918 プライベートレンジ）を
+ * 判定する。CSRF_ALLOW_ALL_LOCAL が有効な開発環境（ALLOW_LOCAL_ORIGINS）でのみ
+ * 許可される。事前ゲートと Origin ヘッダー検査の両方で同じ関数を使い、ゲートを
+ * 通過しても後段で拒否される経路（デッドコード）を作らない（#952 レビュー必須指摘）。
+ */
+function isLocalOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin)
+    // URL.hostname は IPv6 を [::1] の形式で返すため、比較前に角括弧を除去する
+    const hostname = url.hostname.replace(/^\[|\]$/g, '')
+
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      return true
+    }
+
+    const localNetworkPatterns = [
+      /^192\.168\.\d+\.\d+$/,
+      /^10\.\d+\.\d+\.\d+$/,
+      /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
+    ]
+
+    return localNetworkPatterns.some(pattern => pattern.test(hostname))
+  } catch {
+    return false
+  }
+}
+
+/**
  * CSRFトークンを生成 (Web Crypto API)
  */
 function generateCSRFToken(): string {
@@ -224,16 +252,24 @@ export async function validateCSRFToken(
   // host ヘッダーは Workers/OpenNext では必ず存在する。テスト環境（undici の
   // Request）では forbidden header のため取得できないので、その場合のみ
   // request.url の host へフォールバックする（本番のズレ対策は host 優先で成立）。
-  // スキームは request.url に依存せず、localhost / 127.0.0.1 のみ http、それ以外は
-  // https とする（request.url が http に再構成される環境でも全 API が fail-closed
-  // にならないようにする）。
-  const authority = (request.headers.get('host') ?? requestUrl.host).toLowerCase()
-  const isLoopback =
-    /^localhost(:\d+)?$/.test(authority) || /^127\.0\.0\.1(:\d+)?$/.test(authority)
-  const expectedOrigin = `${isLoopback ? 'http:' : 'https:'}//${authority}`
-  // ALLOWED_ORIGINS は単体テスト（example.com モック）との互換のため残す。
-  // 本番では isTrustedOrigin が NEXT_PUBLIC_APP_URL / workers.dev / ローカルを許可する。
-  if (!isTrustedOrigin(expectedOrigin) && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(expectedOrigin)) {
+  // 空文字は fail-open になるので ?? ではなく || でフォールバックする。
+  // スキームは request.url に依存せず、ローカル origin（localhost / 127.0.0.1 /
+  // ::1 / プライベートレンジ）のみ http、それ以外は https とする（request.url が
+  // http に再構成される環境でも全 API が fail-closed にならないようにする）。
+  const authority = (request.headers.get('host') || requestUrl.host).toLowerCase()
+  const isLocal = isLocalOrigin(`http://${authority}`)
+  const expectedOrigin = `${isLocal ? 'http:' : 'https:'}//${authority}`
+  // 許可集合は後段の Origin ヘッダー検査と同一にする（#952 レビュー必須指摘）。
+  // isTrustedOrigin（workers.dev / カスタムドメイン / ローカル開発）と
+  // ALLOWED_ORIGINS（NEXT_PUBLIC_APP_URL / Vercel / 開発 localhost）に加え、
+  // ALLOW_LOCAL_ORIGINS が有効な環境では ::1 やプライベートレンジも許可する。
+  // これにより next dev -p 4000 や LAN IP 実機確認が事前ゲートで 403 になる退行を防ぐ。
+  const localAllowed = CSRF_CONFIG.ALLOW_LOCAL_ORIGINS && isLocal
+  if (
+    !isTrustedOrigin(expectedOrigin) &&
+    !CSRF_CONFIG.ALLOWED_ORIGINS.includes(expectedOrigin) &&
+    !localAllowed
+  ) {
     // expectedOrigin は外部入力（host ヘッダー）を含むため、制御文字除去・長さ制限を
     // してからログへ出す（url-utils と同じサニタイズ方針）。
     const sanitizedOrigin = expectedOrigin.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 128)
@@ -290,27 +326,6 @@ export async function validateCSRFToken(
   // Originヘッダーの検証（多層防御として）
   const origin = request.headers.get('origin')
   const referer = request.headers.get('referer')
-
-  function isLocalOrigin(origin: string): boolean {
-    try {
-      const url = new URL(origin)
-      const hostname = url.hostname
-      
-      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
-        return true
-      }
-      
-      const localNetworkPatterns = [
-        /^192\.168\.\d+\.\d+$/,
-        /^10\.\d+\.\d+\.\d+$/,
-        /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
-      ]
-      
-      return localNetworkPatterns.some(pattern => pattern.test(hostname))
-    } catch {
-      return false
-    }
-  }
 
   // リクエストURL自体のoriginと一致する場合は同一オリジンリクエストなので許可する
   // （例: workers.dev URLからのリクエストでNEXT_PUBLIC_APP_URLがカスタムドメインの場合）
