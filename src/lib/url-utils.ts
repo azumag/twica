@@ -47,7 +47,7 @@ export function resolveAllowedOrigin(
   } catch {
     // NEXT_PUBLIC_APP_URL が不正な場合はビルド設定ミス。リクエストごとに throw して
     // 全導線を落とすより、ローカル開発のデフォルトへ倒してログで気付けるようにする。
-    console.warn('[url-utils] NEXT_PUBLIC_APP_URL が不正なため localhost へフォールバック:', fallback)
+    console.warn('[url-utils] Invalid NEXT_PUBLIC_APP_URL, falling back to localhost:', fallback)
     fallbackOrigin = 'http://localhost:8787'
   }
 
@@ -75,7 +75,7 @@ export function resolveAllowedOrigin(
   if (host && !LOCAL_DEV_ORIGINS.has(`http://${host.toLowerCase()}`)) {
     // 許可外ホストを無言でフォールバックすると、NEXT_PUBLIC_APP_URL と実配信ホストの
     // ズレに気付けず OAuth が全滅する（#836 レビュー指摘）。warn ログで手掛かりを残す。
-    console.warn('[url-utils] 非許可ホストを検出し NEXT_PUBLIC_APP_URL へフォールバック:', host)
+    console.warn('[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL:', host)
   }
 
   return fallbackOrigin

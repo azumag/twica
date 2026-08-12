@@ -65,7 +65,7 @@
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.972.0",
-    "@cloudflare/workers-types": "^5.20260804.1",
+    "@cloudflare/workers-types": "4.20260702.1",
     "@formatjs/icu-messageformat-parser": "^2.11.4",
     "@opennextjs/cloudflare": "1.20.2",
     "@swc/helpers": "^0.5.23",
@@ -84,6 +84,6 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^3.2.4",
-    "wrangler": "^4.86.0"
+    "wrangler": "4.86.0"
   }
 }
