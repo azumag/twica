@@ -2,7 +2,25 @@ import { NextResponse } from 'next/server'
 import { SECURITY_HEADERS } from './constants'
 
 /**
- * CSP の script-src を nonce 付きで組み立てる（#836 項目5）。
+ * script-src / connect-src 以外は全 variant 共通のため、1箇所の表から組み立てる
+ * （#944 レビュー指摘: 文字列の三重複による乖離を防ぐ）。
+ */
+function composeCsp(scriptSrc: string, connectSrc: string): string {
+  return [
+    "default-src 'self'",
+    "base-uri 'self'",
+    `script-src ${scriptSrc}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https: blob:",
+    "media-src 'self' https:",
+    `connect-src ${connectSrc}`,
+    "font-src 'self' data:",
+    "worker-src 'self' blob:",
+  ].join('; ') + ';'
+}
+
+/**
+ * nonce 付き CSP を組み立てる（#836 項目5）。
  *
  * nonce がある場合（middleware がリクエストごとに発行）:
  *   `'self' 'nonce-<nonce>' 'strict-dynamic'`
@@ -15,25 +33,20 @@ import { SECURITY_HEADERS } from './constants'
  *   'unsafe-inline' は付けず、strict-dynamic も無いため host-source は有効
  *   （JSON エラー応答はスクリプトを含まず実害なし）。
  */
-function buildScriptSrcCsp(nonce: string | undefined): string {
-  if (nonce) {
-    return `'self' 'nonce-${nonce}' 'strict-dynamic'`
-  }
-  return `'self' https://static.cloudflareinsights.com`
-}
-
-/** nonce 付き CSP を組み立てる（開発環境は従来どおり unsafe-eval を許可）。 */
 export function buildCsp(nonce?: string): string {
   const isProduction = process.env.NODE_ENV === 'production'
   if (isProduction) {
-    return `default-src 'self'; base-uri 'self'; script-src ${buildScriptSrcCsp(nonce)}; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: wss:; font-src 'self' data:; worker-src 'self' blob:;`
+    const scriptSrc = nonce
+      ? `'self' 'nonce-${nonce}' 'strict-dynamic'`
+      : `'self' https://static.cloudflareinsights.com`
+    return composeCsp(scriptSrc, "'self' https: wss:")
   }
   // 開発環境でも nonce 経路を再現できるよう、nonce があれば script-src へ含める
   // （Next.js fast refresh 用の unsafe-eval / インライン用の unsafe-inline は維持）。
-  if (nonce) {
-    return `default-src 'self'; base-uri 'self'; script-src 'self' 'nonce-${nonce}' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;`
-  }
-  return SECURITY_HEADERS.CSP_DEVELOPMENT
+  const scriptSrc = nonce
+    ? `'self' 'nonce-${nonce}' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com`
+    : `'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com`
+  return composeCsp(scriptSrc, "'self' https: localhost:* wss:")
 }
 
 /**

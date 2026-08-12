@@ -353,7 +353,8 @@ export const SECURITY_HEADERS = {
   // media-src: R2バケットからの効果音再生を許可
   // Cloudflare Insights (static.cloudflareinsights.com) のビーコンスクリプトを許可
   // Allow Cloudflare Insights beacon script from static.cloudflareinsights.com
-  CSP_DEVELOPMENT: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
+  // buildCsp()（security-headers.ts）の共通テーブルと一致させること（乖離防止テストあり）
+  CSP_DEVELOPMENT: "default-src 'self'; base-uri 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' https:; connect-src 'self' https: localhost:* wss:; font-src 'self' data:; worker-src 'self' blob:;",
   // production の CSP は buildCsp()（src/lib/security-headers.ts）が nonce 付きで
   // 組み立てるため、ここには定数を持たない（#836: nonce 化に伴い unsafe-inline を
   // 除去。定数を残すと buildCsp と乖離するため廃止）。

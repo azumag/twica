@@ -2,6 +2,8 @@
  * URL関連のユーティリティ関数
  */
 
+import { logger } from './logger'
+
 // #836 項目6: getBaseUrl は host ヘッダーを無検証で信頼していた。
 // Cloudflare Workers は workers.dev + カスタムドメイン + preview の複数ホストを
 // 受けるため、ホストヘッダ注入で OAuth redirect_uri / リダイレクト先を混線させる
@@ -9,16 +11,17 @@
 // NEXT_PUBLIC_APP_URL へフォールバックする。
 //
 // 注意: NEXT_PUBLIC_* は Cloudflare Workers ではビルド時にインライン化されるため、
-// この allowlist もビルド時に確定する。production の NEXT_PUBLIC_APP_URL には
-// カスタムドメイン（https://twica.bluemoon.works）が設定される前提。
-// 念のため workers.dev ドメインも定数として許可する（ビルド設定の漏れに備えた
-// 二重防御）。production Worker（twica.tsubasa-azumagakito.workers.dev）は既存の
-// 公開 URL であり、ここから OAuth を開始した場合も同一 origin で callback が
-// 成立する必要がある（#836 レビュー指摘）。
-const WORKERS_DEV_ALLOWED_ORIGINS = new Set([
-  'https://twica.tsubasa-azumagakito.workers.dev',
-  'https://twica-preview.tsubasa-azumagakito.workers.dev',
-])
+// この allowlist もビルド時に確定する。許可 host は次の3系統。
+// 1. ローカル開発（NODE_ENV !== 'production' のときだけ）
+// 2. カスタムドメイン（NEXT_PUBLIC_APP_URL の origin。warn を出さない正規 origin）
+// 3. workers.dev（tsubasa-azumagakito.workers.dev 配下。suffix 一致でまとめて許可）
+//    - 本番 Worker: twica.tsubasa-azumagakito.workers.dev（既存の公開 URL。ここから
+//      OAuth を開始しても同一 origin で callback が成立する必要がある）
+//    - 安定 preview: twica-preview.tsubasa-azumagakito.workers.dev
+//    - Workers Builds が生成するブランチ/コミット単位の preview Worker:
+//      <branch>-twica-preview.<subdomain>.workers.dev / <version>-twica.<subdomain>.workers.dev 等
+//    - workers.dev のサブドメインはアカウント専有（このアカウント以外はデプロイ
+//      できない）ため、suffix 一致で第三者が偽装することはできない。
 
 const LOCAL_DEV_ORIGINS = new Set([
   'http://localhost:8787',
@@ -26,6 +29,16 @@ const LOCAL_DEV_ORIGINS = new Set([
   'http://127.0.0.1:8787',
   'http://127.0.0.1:3000',
 ])
+
+const WORKERS_DEV_ACCOUNT_SUBDOMAIN = '.tsubasa-azumagakito.workers.dev'
+
+/** workers.dev の host がこのアカウントの twica 系 Worker に属するか判定する。 */
+function isTwicaWorkersDevHost(normalizedHost: string): boolean {
+  return (
+    normalizedHost.endsWith(WORKERS_DEV_ACCOUNT_SUBDOMAIN) &&
+    normalizedHost.includes('twica')
+  )
+}
 
 /** フォールバック先の origin を解決する。production で未設定/不正なら fail-loud。 */
 function resolveFallbackOrigin(): string {
@@ -50,13 +63,15 @@ function resolveFallbackOrigin(): string {
 
 /**
  * リクエストから正規化された許可 origin を解決する。
- * 許可 origin（ローカル開発 / workers.dev）に一致する host のみ採用し、それ以外は
- * NEXT_PUBLIC_APP_URL の origin を返す（fail-closed）。port を含む完全一致で検証する
- * ため、許可ホストに任意ポートを付けた偽装を拒否する（#836 レビュー指摘）。
+ * 許可 origin（ローカル開発 / カスタムドメイン / workers.dev）に一致する host のみ採用し、
+ * それ以外は NEXT_PUBLIC_APP_URL の origin を返す（fail-closed）。port を含む完全一致で
+ * 検証するため、許可ホストに任意ポートを付けた偽装を拒否する（#836 レビュー指摘）。
+ *
+ * NEXT_PUBLIC_APP_URL の解決は allowlist 判定後の遅延評価。production で設定漏れが
+ * あっても workers.dev からの正規アクセスは維持される（ビルド設定漏れに備えた二重防御）。
  */
 export function resolveAllowedOrigin(host: string | null): string {
-  const fallbackOrigin = resolveFallbackOrigin()
-  if (!host) return fallbackOrigin
+  if (!host) return resolveFallbackOrigin()
 
   const normalizedHost = host.toLowerCase()
   // ローカル開発は host ヘッダーのみで判定（wrangler dev は http://localhost:8787）。
@@ -67,23 +82,29 @@ export function resolveAllowedOrigin(host: string | null): string {
   }
 
   // workers.dev は常に https（workers.dev は http を受け付けない）
-  if (WORKERS_DEV_ALLOWED_ORIGINS.has(`https://${normalizedHost}`)) {
+  if (isTwicaWorkersDevHost(normalizedHost)) {
     return `https://${normalizedHost}`
+  }
+
+  const fallbackOrigin = resolveFallbackOrigin()
+  // カスタムドメイン（NEXT_PUBLIC_APP_URL）は正規 origin のため warn を出さない
+  // （異常検知シグナルの false positive を防ぐ）。
+  if (new URL(fallbackOrigin).host === normalizedHost) {
+    return fallbackOrigin
   }
 
   // 許可外ホストを無言でフォールバックすると、NEXT_PUBLIC_APP_URL と実配信ホストの
   // ズレに気付けず OAuth が全滅する（#836 レビュー指摘）。warn ログで手掛かりを残す。
   // host は外部入力のため、制御文字を除去し長さを制限してから出力する（ログ汚染対策）。
   const sanitizedHost = host.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 128)
-  console.warn(`[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL: ${sanitizedHost}`)
+  logger.warn(`[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL: ${sanitizedHost}`)
   return fallbackOrigin
 }
 
 /**
  * リクエストからベースURLを取得する
- * 許可リスト（ローカル開発 / workers.dev）に一致する host のみ採用し、それ以外は
- * NEXT_PUBLIC_APP_URL の origin を返す（fail-closed）。Worker 名変更・ドメイン追加時は
- * WORKERS_DEV_ALLOWED_ORIGINS の更新が必要。
+ * 許可リスト（ローカル開発 / カスタムドメイン / workers.dev）に一致する host のみ採用し、
+ * それ以外は NEXT_PUBLIC_APP_URL の origin を返す（fail-closed）。
  *
  * @param request - HTTPリクエスト
  * @returns ベースURL（例: http://localhost:8787, https://example.com）

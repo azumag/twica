@@ -25,12 +25,12 @@ const MAINTENANCE_GUARDED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 // with no opt-out: setting `export const config = { runtime: 'edge' }` in a
 // proxy.ts file throws "Proxy always runs on Node.js runtime" at build time.
 // (https://nextjs.org/docs/messages/middleware-to-proxy)
-// @opennextjs/cloudflare (currently ^1.16.1) hard-fails `workers:build` with
+// @opennextjs/cloudflare (pinned 1.20.2 in this repo) hard-fails `workers:build` with
 // "Node.js middleware is not currently supported. Consider switching to Edge
 // Middleware." whenever it detects Node.js-runtime middleware/proxy output
 // (see useNodeMiddleware() in its build.js). This is still true as of
-// @opennextjs/cloudflare 1.20.1, the latest published version as of this
-// writing (2026-07-03) — confirmed by inspecting that version's published
+// @opennextjs/cloudflare 1.20.2, the version pinned in this repo — confirmed
+// by inspecting that version's published
 // build.js, which contains the identical check.
 // Upstream tracking: opennextjs/opennextjs-cloudflare maintainers say real
 // proxy.ts support is planned only via Next.js's "Adapters API"

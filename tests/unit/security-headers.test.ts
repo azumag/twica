@@ -1,6 +1,11 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { NextResponse } from 'next/server'
 import { setSecurityHeaders, buildCsp } from '@/lib/security-headers'
+import { SECURITY_HEADERS } from '@/lib/constants'
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
 
 describe('setSecurityHeaders', () => {
   it('X-Content-Type-Optionsヘッダーを設定する', () => {
@@ -45,7 +50,6 @@ describe('setSecurityHeaders', () => {
       // 開発環境では Next.js の fast refresh と開発ツールのため 'unsafe-eval' が必要
       expect(csp).toContain('unsafe-eval')
       expect(csp).toContain('unsafe-inline')
-      vi.unstubAllEnvs()
     })
 
     it('本番環境ではlocalhostへの接続を許可しない', () => {
@@ -59,7 +63,6 @@ describe('setSecurityHeaders', () => {
       // Note: unsafe-inline is currently allowed for script-src and style-src in production
       // This is a known limitation for Next.js inline styles/scripts
       expect(csp).toContain('unsafe-inline')
-      vi.unstubAllEnvs()
     })
 
     it('本番環境で nonce を渡すと script-src が nonce ベースになり unsafe-inline を含まない (#836)', () => {
@@ -75,7 +78,6 @@ describe('setSecurityHeaders', () => {
       expect(scriptSrc).not.toContain('static.cloudflareinsights.com')
       // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
-      vi.unstubAllEnvs()
     })
 
     it('buildCsp は nonce なし本番で unsafe-inline を含まない（早期 return 経路はスクリプトなし）', () => {
@@ -85,7 +87,6 @@ describe('setSecurityHeaders', () => {
       expect(scriptSrc).not.toContain('unsafe-inline')
       // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
-      vi.unstubAllEnvs()
     })
 
     it('開発環境でも nonce を script-src へ含める（dev で nonce 経路を再現）', () => {
@@ -94,7 +95,11 @@ describe('setSecurityHeaders', () => {
       expect(csp).toContain("'nonce-devnonce123'")
       // dev では fast refresh 用の unsafe-eval とインライン用 unsafe-inline を維持
       expect(csp).toContain('unsafe-eval')
-      vi.unstubAllEnvs()
+    })
+
+    it('開発環境の nonce なし CSP は constants の CSP_DEVELOPMENT と一致する（乖離防止）', () => {
+      vi.stubEnv('NODE_ENV', 'development')
+      expect(buildCsp()).toBe(SECURITY_HEADERS.CSP_DEVELOPMENT)
     })
   })
 
@@ -104,7 +109,6 @@ describe('setSecurityHeaders', () => {
       const response = NextResponse.json({ test: 'data' })
       const result = setSecurityHeaders(response)
       expect(result.headers.get('Strict-Transport-Security')).toBe('max-age=31536000; includeSubDomains; preload')
-      vi.unstubAllEnvs()
     })
 
     it('開発環境ではHSTSを設定しない', () => {
@@ -112,7 +116,6 @@ describe('setSecurityHeaders', () => {
       const response = NextResponse.json({ test: 'data' })
       const result = setSecurityHeaders(response)
       expect(result.headers.get('Strict-Transport-Security')).toBeNull()
-      vi.unstubAllEnvs()
     })
   })
 })
