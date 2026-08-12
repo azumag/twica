@@ -13,7 +13,9 @@
 // デプロイ窓では2列は常にまとめて欠落する（同一 migration で追加）ため、
 // いずれか1列分の 42703 エラーを検知できれば明示列リストへの再試行で2列とも
 // 解決される。migration 適用後は全列 SELECT が成功し、このフォールバックへは
-// 到達しない（card-padding-color-errors.ts と同じ挙動）。
+// 到達しない（同じ「デプロイ窓が閉じれば死に分岐になる」設計は
+// src/app/api/cards/route.ts 等の image_padding_color フォールバックにも
+// 見られる）。
 // -----------------------------------------------------------------------------
 
 import { streamers as streamersTable } from "@/lib/db/schema";
@@ -64,9 +66,9 @@ export const STREAMERS_SAFE_COLUMNS = {
 
 /**
  * streamers の新2列（publish_live_status / publish_stats）の欠落を検知する。
- * SQLSTATE 42703 と対象列名を同じエラー階層で確認する（card-padding-color-errors.ts と
- * 同じ設計。Drizzle は postgres.js の PostgresError を DrizzleQueryError で
- * ラップするため cause チェーンも辿る）。
+ * SQLSTATE 42703 と対象列名を同じエラー階層で確認する（src/lib/db/errors.ts の
+ * isPgMissingNamedColumnError に委譲。Drizzle は postgres.js の PostgresError を
+ * DrizzleQueryError でラップするため、同関数内部で cause チェーンも辿る）。
  */
 export function isMissingLiveDirectorySettingsColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, LIVE_DIRECTORY_SETTINGS_COLUMNS);
@@ -78,10 +80,12 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
  * 切り替える。対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に
  * 委ねる。
  *
- * 元々は card-padding-color-errors.ts の withCardsBattleColumnFallback と同型の設計
+ * 元々は cards テーブルの「本番未デプロイ8列」フォールバック
+ * （旧 cards-safe-columns.ts の withCardsBattleColumnFallback）と同型の設計
  * だったが、そちらは本番実測で対象8列とも実在することを確認したため #834 で
- * 撤去された。streamers の publish_live_status / publish_stats（#738）は本Issue
- * とは独立した別のデプロイ窓のため、この関数自体は変更しない。
+ * 撤去された（撤去後のファイルは card-padding-color-errors.ts に改名・縮小）。
+ * streamers の publish_live_status / publish_stats（#738）は本Issueとは独立した
+ * 別のデプロイ窓のため、この関数自体は変更しない。
  */
 export async function withLiveDirectorySettingsColumnFallback<T>(
   attempt: (useSafeColumns: boolean) => Promise<T>

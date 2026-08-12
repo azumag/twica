@@ -106,9 +106,11 @@ function createDrizzleDbMock(config: { selects?: PgResponse[]; inserts?: PgRespo
         if (response.error) return Promise.reject(response.error);
         const rows = response.rows ?? [];
         // returning(fields) が指定された場合は select(fields) と同じ「fields の
-        // キーだけを持つ行にマップする」フェイクを行う汎用モック（現状このファイル
-        // の POST /api/cards/batch は無指定 .returning() のみを使うため常に rows
-        // をそのまま返す経路を通る）。
+        // キーだけを持つ行にマップする」フェイクを行う汎用モック。通常の一括作成は
+        // 無指定 .returning() で rows をそのまま返すが、image_padding_color 列
+        // 欠落時のフォールバック（下記テスト参照）は
+        // .returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR) を通るため、この分岐も
+        // 実際に使われる。
         const fields = call.returningFields;
         return Promise.resolve(
           fields ? rows.map((row) => Object.fromEntries(Object.keys(fields).map((key) => [key, row[key] ?? null]))) : rows

@@ -2,7 +2,7 @@
 // cards テーブルの image_padding_color 列（#899）専用のデプロイ窓フォールバック。
 // card-number-errors.ts / card-issuance.ts と同じ粒度の単一列ヘルパー。
 // 旧「本番未デプロイ8列」フォールバックの経緯は Issue #834 参照
-// （2026-08 撤去。ファイルは card-padding-color-errors.ts から改名）。
+// （2026-08 撤去。ファイルは cards-safe-columns.ts から改名）。
 // -----------------------------------------------------------------------------
 
 import { getTableColumns } from "drizzle-orm";

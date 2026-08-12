@@ -21,7 +21,8 @@ export const CARD_NUMBER_MESSAGES = {
 // （cause が実際は unique_violation ではなく全く別の理由でも、SQL 文に
 // "card_number" が写っているだけで isCardNumberConflictError が true になる
 // 等）。各階層の自分自身の code/message/details だけで旧判定を適用し、
-// どこか1階層でも満たせば true とする（card-padding-color-errors.ts と同じ設計）。
+// どこか1階層でも満たせば true とする（src/lib/db/errors.ts の
+// isPgMissingNamedColumnError / getErrorChain に委譲する他モジュールと同じ設計）。
 
 export function isCardNumberConflictError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
