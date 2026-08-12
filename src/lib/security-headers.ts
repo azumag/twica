@@ -6,6 +6,10 @@ import { SECURITY_HEADERS } from './constants'
  * （#944 レビュー指摘: 文字列の三重複による乖離を防ぐ）。
  */
 function composeCsp(scriptSrc: string, connectSrc: string): string {
+  // strict-dynamic 非対応ブラウザ（旧 Safari 等）ではトークンが無視され
+  // `'self' 'nonce-…'` として評価されるため、static.cloudflareinsights.com の
+  // beacon だけが読めなくなる。影響はアナリティクス欠損のみで許容する
+  // （#944 レビュー任意指摘。判断根拠としてコメントに残す）。
   return [
     "default-src 'self'",
     "base-uri 'self'",
@@ -16,6 +20,8 @@ function composeCsp(scriptSrc: string, connectSrc: string): string {
     `connect-src ${connectSrc}`,
     "font-src 'self' data:",
     "worker-src 'self' blob:",
+    "object-src 'none'",
+    "form-action 'self'",
   ].join('; ') + ';'
 }
 

@@ -98,6 +98,9 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 // つまり、ここに無いパスでもルートが public を設定すればキャッシュされるため、
 // ルート側の public 設定とこの判定は常に同期させること。
 // 機密情報を返さない・セッション非依存のエンドポイントのみを許可する。
+// 警告: ここへ HTML を返すパスを追加してはならない。エッジキャッシュに nonce 付き
+// CSP が焼き付き、キャッシュ HIT 中の全スクリプトが nonce 不一致でブロックされる
+// （#944 レビュー任意指摘。現状の対象は JSON のみで無害）。
 const CACHEABLE_PUBLIC_PATHS = ['/api/maintenance-status']
 
 /**

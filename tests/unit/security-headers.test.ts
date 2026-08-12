@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { NextResponse } from 'next/server'
 import { setSecurityHeaders, buildCsp } from '@/lib/security-headers'
-import { SECURITY_HEADERS } from '@/lib/constants'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -60,9 +59,11 @@ describe('setSecurityHeaders', () => {
       expect(csp).toContain('connect-src \'self\' https: wss:;')
       expect(csp).not.toContain('localhost')
       expect(csp).not.toContain('unsafe-eval')
-      // Note: unsafe-inline is currently allowed for script-src and style-src in production
-      // This is a known limitation for Next.js inline styles/scripts
-      expect(csp).toContain('unsafe-inline')
+      // production の script-src に unsafe-inline は含まれない（nonce ベース、
+      // #836）。style-src の unsafe-inline は Next.js のインラインスタイル用に維持。
+      const scriptSrc = csp?.split(';').find((d) => d.trim().startsWith('script-src'))
+      expect(scriptSrc).not.toContain('unsafe-inline')
+      expect(csp).toContain("style-src 'self' 'unsafe-inline'")
     })
 
     it('本番環境で nonce を渡すと script-src が nonce ベースになり unsafe-inline を含まない (#836)', () => {
@@ -97,9 +98,18 @@ describe('setSecurityHeaders', () => {
       expect(csp).toContain('unsafe-eval')
     })
 
-    it('開発環境の nonce なし CSP は constants の CSP_DEVELOPMENT と一致する（乖離防止）', () => {
+    it('全 variant で base-uri / object-src / form-action を固定する（乖離防止）', () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      expect(buildCsp()).toContain("base-uri 'self';")
+      expect(buildCsp()).toContain("object-src 'none';")
+      expect(buildCsp()).toContain("form-action 'self';")
+      expect(buildCsp('nonce1')).toContain("base-uri 'self';")
+      expect(buildCsp('nonce1')).toContain("object-src 'none';")
+      expect(buildCsp('nonce1')).toContain("form-action 'self';")
       vi.stubEnv('NODE_ENV', 'development')
-      expect(buildCsp()).toBe(SECURITY_HEADERS.CSP_DEVELOPMENT)
+      expect(buildCsp()).toContain("base-uri 'self';")
+      expect(buildCsp()).toContain("object-src 'none';")
+      expect(buildCsp()).toContain("form-action 'self';")
     })
   })
 

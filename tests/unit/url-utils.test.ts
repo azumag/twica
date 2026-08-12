@@ -79,6 +79,17 @@ describe('resolveAllowedOrigin (issue #836)', () => {
     expect(resolveAllowedOrigin('')).toBe('https://twica.bluemoon.works')
   })
 
+  it('workers.dev サブドメインの文字種が不正な host は拒否する（500 化を防ぐ）', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    // 空白・記号入りはアカウント専有ドメインに該当しないため fail-closed
+    expect(resolveAllowedOrigin('twica preview.tsubasa-azumagakito.workers.dev'))
+      .toBe('https://twica.bluemoon.works')
+    expect(resolveAllowedOrigin('twica.preview@evil.tsubasa-azumagakito.workers.dev'))
+      .toBe('https://twica.bluemoon.works')
+    expect(resolveAllowedOrigin('TWICA-preview.tsubasa-azumagakito.workers.dev'))
+      .toBe('https://twica-preview.tsubasa-azumagakito.workers.dev')
+  })
+
   it('非許可ホストは warn を1回だけ出力してフォールバックする', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})

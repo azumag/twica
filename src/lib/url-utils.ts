@@ -32,11 +32,23 @@ const LOCAL_DEV_ORIGINS = new Set([
 
 const WORKERS_DEV_ACCOUNT_SUBDOMAIN = '.tsubasa-azumagakito.workers.dev'
 
-/** workers.dev の host がこのアカウントの twica 系 Worker に属するか判定する。 */
+/**
+ * workers.dev の host がこのアカウントの twica 系 Worker に属するか判定する。
+ * アカウント専有サブドメインであるため第三者は偽装できないが、不正な Host
+ * （空白・記号入り）が誤って通ると呼び出し側の `new URL()` が 500 になる。
+ * 文字種を検証して fail-closed にする（#944 レビュー任意指摘）。
+ */
 function isTwicaWorkersDevHost(normalizedHost: string): boolean {
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(normalizedHost)) {
+    return false
+  }
   return (
     normalizedHost.endsWith(WORKERS_DEV_ACCOUNT_SUBDOMAIN) &&
-    normalizedHost.includes('twica')
+    // worker 名（先頭 label）に twica を含む。Workers Builds は
+    // `<version>-twica-preview` / `<branch>-twica-preview` の形でサブドメインを
+    // 生成するため、先頭 label のみ確認すれば十分（アカウント専有のため部分一致でも
+    // 実害はなく、逆に将来のプレフィックス形式を壊さない）。
+    normalizedHost.split('.')[0].includes('twica')
   )
 }
 
@@ -75,7 +87,10 @@ export function resolveAllowedOrigin(host: string | null): string {
 
   const normalizedHost = host.toLowerCase()
   // ローカル開発は host ヘッダーのみで判定（wrangler dev は http://localhost:8787）。
-  // production ビルドでは localhost を許可しない（Host ヘッダ注入の抜け穴を塞ぐ）。
+  // 注意: `npm run dev`（wrangler dev）は next build 済みバンドルを実行するため
+  // NODE_ENV === 'production' が畳み込まれ、この分岐は通らない。LOCAL_DEV_ORIGINS は
+  // `dev:next`（next dev）専用。production ビルドでは localhost を許可しない
+  // （Host ヘッダ注入の抜け穴を塞ぐ）。
   if (process.env.NODE_ENV !== 'production') {
     const localOrigin = `http://${normalizedHost}`
     if (LOCAL_DEV_ORIGINS.has(localOrigin)) return localOrigin

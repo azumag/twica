@@ -52,7 +52,7 @@ describe('updateSession middleware', () => {
 
   it('should pass through request when no session cookie exists', async () => {
     const request = createRequest()
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     // No Set-Cookie headers should be added
     const setCookieHeader = response.headers.get('set-cookie')
@@ -63,7 +63,7 @@ describe('updateSession middleware', () => {
     const request = createRequest({
       [COOKIE_NAMES.SESSION]: JSON.stringify(validSession),
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     // No Set-Cookie headers should be added for valid sessions
     const setCookieHeader = response.headers.get('set-cookie')
@@ -80,7 +80,7 @@ describe('updateSession middleware', () => {
       [COOKIE_NAMES.SESSION]: JSON.stringify(expiredSession),
       [COOKIE_NAMES.CSRF_TOKEN]: 'existing-csrf-token',
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     // セッションCookieは保持（スコープ保持のため）
     const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
@@ -100,7 +100,7 @@ describe('updateSession middleware', () => {
     const request = createRequest({
       [COOKIE_NAMES.SESSION]: JSON.stringify(expiredSession),
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     // Set-Cookieヘッダが一切出ないことを確認
     const setCookieHeader = response.headers.get('set-cookie')
@@ -112,7 +112,7 @@ describe('updateSession middleware', () => {
       [COOKIE_NAMES.SESSION]: 'invalid-json-value',
       [COOKIE_NAMES.CSRF_TOKEN]: 'some-csrf-token',
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     // Verify both cookies are cleared for unparseable values
     const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
@@ -129,7 +129,7 @@ describe('updateSession middleware', () => {
     const request = createRequest({
       [COOKIE_NAMES.SESSION]: JSON.stringify(sessionWithoutExpiry),
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
     expect(sessionCookie?.value).toBe('')
@@ -145,7 +145,7 @@ describe('updateSession middleware', () => {
       [COOKIE_NAMES.SESSION]: JSON.stringify(longExpiredSession),
       [COOKIE_NAMES.CSRF_TOKEN]: 'old-csrf-token',
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     // セッションCookieは保持
     const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
@@ -161,7 +161,7 @@ describe('updateSession middleware', () => {
     const request = createRequest({
       [COOKIE_NAMES.SESSION]: 'invalid-json-value',
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     // セッションCookieは削除される
     const sessionCookie = response.cookies.get(COOKIE_NAMES.SESSION)
@@ -179,7 +179,7 @@ describe('updateSession middleware', () => {
     const request = createRequest({
       [COOKIE_NAMES.SESSION]: signedSession,
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     expect(response.headers.get('set-cookie')).toBeNull()
   })
@@ -190,7 +190,7 @@ describe('updateSession middleware', () => {
     const request = createRequest({
       [COOKIE_NAMES.SESSION]: JSON.stringify(validSession),
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     expect(response.headers.get('set-cookie')).toBeNull()
   })
@@ -202,7 +202,7 @@ describe('updateSession middleware', () => {
       [COOKIE_NAMES.SESSION]: `${JSON.stringify(validSession)}.${'a'.repeat(64)}`,
       [COOKIE_NAMES.CSRF_TOKEN]: 'some-csrf-token',
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     expect(response.cookies.get(COOKIE_NAMES.SESSION)?.value).toBe('')
     expect(response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)?.value).toBe('')
@@ -217,7 +217,7 @@ describe('updateSession middleware', () => {
       [COOKIE_NAMES.SESSION]: tamperedSession,
       [COOKIE_NAMES.CSRF_TOKEN]: 'some-csrf-token',
     })
-    const response = await updateSession(request)
+    const response = await updateSession(request, new Headers())
 
     expect(response.cookies.get(COOKIE_NAMES.SESSION)?.value).toBe('')
     expect(response.cookies.get(COOKIE_NAMES.CSRF_TOKEN)?.value).toBe('')
