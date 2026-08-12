@@ -71,6 +71,8 @@ describe('setSecurityHeaders', () => {
       expect(scriptSrc).toContain("'nonce-abc123'")
       expect(scriptSrc).toContain("'strict-dynamic'")
       expect(scriptSrc).not.toContain('unsafe-inline')
+      // strict-dynamic 下では host-source は無効のため記述しない
+      expect(scriptSrc).not.toContain('static.cloudflareinsights.com')
       // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
       vi.unstubAllEnvs()
@@ -83,6 +85,15 @@ describe('setSecurityHeaders', () => {
       expect(scriptSrc).not.toContain('unsafe-inline')
       // style-src の unsafe-inline は Next.js のインラインスタイル用に維持する
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
+      vi.unstubAllEnvs()
+    })
+
+    it('開発環境でも nonce を script-src へ含める（dev で nonce 経路を再現）', () => {
+      vi.stubEnv('NODE_ENV', 'development')
+      const csp = buildCsp('devnonce123')
+      expect(csp).toContain("'nonce-devnonce123'")
+      // dev では fast refresh 用の unsafe-eval とインライン用 unsafe-inline を維持
+      expect(csp).toContain('unsafe-eval')
       vi.unstubAllEnvs()
     })
   })

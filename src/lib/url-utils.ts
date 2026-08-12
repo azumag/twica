@@ -27,75 +27,67 @@ const LOCAL_DEV_ORIGINS = new Set([
   'http://127.0.0.1:3000',
 ])
 
+/** フォールバック先の origin を解決する。production で未設定/不正なら fail-loud。 */
+function resolveFallbackOrigin(): string {
+  const raw = process.env.NEXT_PUBLIC_APP_URL
+  if (!raw) {
+    if (process.env.NODE_ENV === 'production') {
+      // サイレントに localhost へ倒すと OAuth redirect_uri が全滅し、気付く手段が
+      // 無い。設定ミスはリクエスト時に即座に検知する（#836 レビュー指摘）。
+      throw new Error('NEXT_PUBLIC_APP_URL is required in production')
+    }
+    return 'http://localhost:8787'
+  }
+  try {
+    return new URL(raw).origin
+  } catch {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(`NEXT_PUBLIC_APP_URL is invalid in production: ${raw}`)
+    }
+    return 'http://localhost:8787'
+  }
+}
+
 /**
  * リクエストから正規化された許可 origin を解決する。
- * host ヘッダー + x-forwarded-proto から組み立てた origin が許可リスト
- * （NEXT_PUBLIC_APP_URL / workers.dev / ローカル開発）に完全一致する場合のみ
- * その origin を返し、それ以外は NEXT_PUBLIC_APP_URL の origin を返す。
- * port を含む完全一致で検証するため、許可ホストに任意ポートを付けた偽装を拒否する
- * （#836 レビュー指摘: hostname だけの検証では raw Host / raw proto をそのまま
- * 返してしまい、非 canonical な redirect_uri を生成できる）。
+ * 許可 origin（ローカル開発 / workers.dev）に一致する host のみ採用し、それ以外は
+ * NEXT_PUBLIC_APP_URL の origin を返す（fail-closed）。port を含む完全一致で検証する
+ * ため、許可ホストに任意ポートを付けた偽装を拒否する（#836 レビュー指摘）。
  */
-export function resolveAllowedOrigin(
-  host: string | null,
-  forwardedProto: string | null
-): string {
-  const fallback = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:8787'
-  let fallbackOrigin: string
-  try {
-    fallbackOrigin = new URL(fallback).origin
-  } catch {
-    // NEXT_PUBLIC_APP_URL が不正な場合はビルド設定ミス。リクエストごとに throw して
-    // 全導線を落とすより、ローカル開発のデフォルトへ倒してログで気付けるようにする。
-    console.warn('[url-utils] Invalid NEXT_PUBLIC_APP_URL, falling back to localhost:', fallback)
-    fallbackOrigin = 'http://localhost:8787'
-  }
+export function resolveAllowedOrigin(host: string | null): string {
+  const fallbackOrigin = resolveFallbackOrigin()
+  if (!host) return fallbackOrigin
 
+  const normalizedHost = host.toLowerCase()
   // ローカル開発は host ヘッダーのみで判定（wrangler dev は http://localhost:8787）。
   // production ビルドでは localhost を許可しない（Host ヘッダ注入の抜け穴を塞ぐ）。
-  if (host && process.env.NODE_ENV !== 'production') {
-    const localOrigin = `http://${host.toLowerCase()}`
+  if (process.env.NODE_ENV !== 'production') {
+    const localOrigin = `http://${normalizedHost}`
     if (LOCAL_DEV_ORIGINS.has(localOrigin)) return localOrigin
   }
 
   // workers.dev は常に https（workers.dev は http を受け付けない）
-  if (host) {
-    const candidate = `https://${host.toLowerCase()}`
-    if (WORKERS_DEV_ALLOWED_ORIGINS.has(candidate)) return candidate
+  if (WORKERS_DEV_ALLOWED_ORIGINS.has(`https://${normalizedHost}`)) {
+    return `https://${normalizedHost}`
   }
 
-  // NEXT_PUBLIC_APP_URL の origin と一致する場合のみ許可（port も含む完全一致）。
-  // x-forwarded-proto が無い場合は https 前提（Cloudflare は本番で https のみ）。
-  // 明示的に http が渡された場合は https と一致しないためフォールバックする。
-  if (host) {
-    const proto = forwardedProto ?? 'https'
-    const candidate = `${proto}://${host.toLowerCase()}`
-    if (candidate === fallbackOrigin) return candidate
-  }
-
-  if (host) {
-    // 許可外ホストを無言でフォールバックすると、NEXT_PUBLIC_APP_URL と実配信ホストの
-    // ズレに気付けず OAuth が全滅する（#836 レビュー指摘）。warn ログで手掛かりを残す。
-    console.warn('[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL:', host)
-  }
-
+  // 許可外ホストを無言でフォールバックすると、NEXT_PUBLIC_APP_URL と実配信ホストの
+  // ズレに気付けず OAuth が全滅する（#836 レビュー指摘）。warn ログで手掛かりを残す。
+  // host は外部入力のため、制御文字を除去し長さを制限してから出力する（ログ汚染対策）。
+  const sanitizedHost = host.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 128)
+  console.warn(`[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL: ${sanitizedHost}`)
   return fallbackOrigin
 }
 
 /**
  * リクエストからベースURLを取得する
- * リクエストの host ヘッダーから動的に生成する。
- * host ヘッダーが取得できない場合は NEXT_PUBLIC_APP_URL にフォールバック。
- *
- * Cloudflare Workers 環境では NEXT_PUBLIC_* 変数はビルド時にインライン化されるため、
- * ランタイムのシークレットで上書きできない。そのためリクエストヘッダーから
- * 動的に取得することで、プレビュー環境・本番環境を問わず正しいURLを返す。
+ * 許可リスト（ローカル開発 / workers.dev）に一致する host のみ採用し、それ以外は
+ * NEXT_PUBLIC_APP_URL の origin を返す（fail-closed）。Worker 名変更・ドメイン追加時は
+ * WORKERS_DEV_ALLOWED_ORIGINS の更新が必要。
  *
  * @param request - HTTPリクエスト
  * @returns ベースURL（例: http://localhost:8787, https://example.com）
  */
 export function getBaseUrl(request: Request): string {
-  const host = request.headers.get('host')
-  const forwardedProto = request.headers.get('x-forwarded-proto')
-  return resolveAllowedOrigin(host, forwardedProto)
+  return resolveAllowedOrigin(request.headers.get('host'))
 }

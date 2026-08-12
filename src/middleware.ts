@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/session-middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setSecurityHeaders, buildCsp } from '@/lib/security-headers'
