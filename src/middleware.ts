@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/session-middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
-import { setSecurityHeaders } from '@/lib/security-headers'
+import { setSecurityHeaders, buildCsp } from '@/lib/security-headers'
 import { ERROR_MESSAGES } from '@/lib/constants'
 import { hasInvalidOverlayEventsStreamerId } from '@/lib/overlay-route-validation'
 import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
@@ -25,12 +25,12 @@ const MAINTENANCE_GUARDED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 // with no opt-out: setting `export const config = { runtime: 'edge' }` in a
 // proxy.ts file throws "Proxy always runs on Node.js runtime" at build time.
 // (https://nextjs.org/docs/messages/middleware-to-proxy)
-// @opennextjs/cloudflare (currently ^1.16.1) hard-fails `workers:build` with
+// @opennextjs/cloudflare (pinned 1.20.2 in this repo) hard-fails `workers:build` with
 // "Node.js middleware is not currently supported. Consider switching to Edge
 // Middleware." whenever it detects Node.js-runtime middleware/proxy output
 // (see useNodeMiddleware() in its build.js). This is still true as of
-// @opennextjs/cloudflare 1.20.1, the latest published version as of this
-// writing (2026-07-03) — confirmed by inspecting that version's published
+// @opennextjs/cloudflare 1.20.2, the version pinned in this repo — confirmed
+// by inspecting that version's published
 // build.js, which contains the identical check.
 // Upstream tracking: opennextjs/opennextjs-cloudflare maintainers say real
 // proxy.ts support is planned only via Next.js's "Adapters API"
@@ -163,10 +163,23 @@ export async function middleware(request: NextRequest) {
     return setSecurityHeaders(errorResponse, pathname)
   }
 
-  const response = await updateSession(request)
+  // #836 項目5: リクエストごとに CSP nonce を発行する。
+  // Next.js 16 は request の Content-Security-Policy ヘッダーから nonce を自動抽出し、
+  // 自前スクリプトへ適用する（getScriptNonceFromHeader）。middleware で response の
+  // CSP を設定するだけでなく、request ヘッダーにも設定することで、App Router の
+  // サーバーコンポーネント（layout.tsx の Script コンポーネント）からも
+  // x-nonce として参照できるようにする。
+  // request は再構築せず、NextResponse.next({ request: { headers } }) の追加
+  // ヘッダー経由でレンダラへ渡す（body 複製リスクを避ける公式パターン、#836）。
+  const nonce = crypto.randomUUID()
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-nonce', nonce)
+  requestHeaders.set('Content-Security-Policy', buildCsp(nonce))
+
+  const response = await updateSession(request, requestHeaders)
   // パスに基づいて適切なセキュリティヘッダーを設定
   // Set appropriate security headers based on the path
-  setSecurityHeaders(response, pathname)
+  setSecurityHeaders(response, pathname, nonce)
 
   // Detect and set locale for server components
   // サーバーコンポーネント用にロケールを検出・設定
@@ -235,7 +248,7 @@ export async function middleware(request: NextRequest) {
           }
         )
 
-        return setSecurityHeaders(errorResponse, pathname)
+        return setSecurityHeaders(errorResponse, pathname, nonce)
       }
     }
 
