@@ -13,7 +13,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/cards-safe-columns";
+import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/cards-safe-columns";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 /**
@@ -98,33 +98,49 @@ async function fetchExistingCardsForBatchUpdatePg(
 /**
  * Issue #794: 更新後レスポンスもPlanetScaleから取得する。
  * #834: 「本番未デプロイ8列」（card_number/hp/atk/def/spd/skill_*）を理由にした
- * 列制限は、本番実測で8列とも実在することを確認したため撤去した。ただし
- * image_padding_color（#899、本Issueとは独立した別デプロイ窓）は無指定 select
- * だと欠落時に失敗しうるため、この列だけを除いた明示列リスト
- * （CARDS_COLUMNS_WITHOUT_PADDING_COLOR）を引き続き使う。この関数はレスポンス
- * 用の読み取り専用フェッチであり、image_padding_color を返さなくても呼び出し元
- * （POST /api/cards/batch-update）の応答契約に影響しない。
+ * 列制限は、本番実測で8列とも実在することを確認したため撤去した。
+ *
+ * Claude Auto Review 指摘対応: この関数のレスポンスはクライアントの
+ * handleBatchDropRateSave（CardManager.tsx）でカードオブジェクトごと置換され、
+ * SortedCardGrid.tsx 等の描画で image_padding_color を使うため、この列を
+ * 返さないと保存直後の画面上で余白色が既定に戻って見える（再読み込みで復旧）。
+ * そこで cards/route.ts の insertCardPg 等と同じ「まず無指定 select を試し、
+ * image_padding_color 列欠落（#899、本Issueとは独立した別デプロイ窓）を検知した
+ * 場合のみ CARDS_COLUMNS_WITHOUT_PADDING_COLOR へ切り替えて再試行する」方針に
+ * 揃える。列が存在する環境（本番・preview とも実測済み）では無指定 select が
+ * そのまま成功するため、余白色も含めて返る。
  */
 async function fetchUpdatedCardsForBatchUpdatePg(
   streamerId: string,
   cardIds: string[]
 ) {
-  return withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
-        .from(cardsTable)
-        .where(
-          and(
-            eq(cardsTable.streamer_id, streamerId),
-            inArray(cardsTable.id, cardIds)
-          )
-        );
-    },
-    "Cards Batch Update API: fetch updated cards(pg)",
-    { idempotent: true }
-  );
+  async function selectCards(useColumnsWithoutPaddingColor = false) {
+    return withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        const query = useColumnsWithoutPaddingColor
+          ? db.select(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
+          : db.select();
+        return query
+          .from(cardsTable)
+          .where(
+            and(
+              eq(cardsTable.streamer_id, streamerId),
+              inArray(cardsTable.id, cardIds)
+            )
+          );
+      },
+      "Cards Batch Update API: fetch updated cards(pg)",
+      { idempotent: true }
+    );
+  }
+
+  try {
+    return await selectCards();
+  } catch (error) {
+    if (!isMissingCardPaddingColorError(error)) throw error;
+    return selectCards(true);
+  }
 }
 
 /**

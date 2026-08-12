@@ -154,6 +154,14 @@ async function insertCardPg(
 
   let { card, error } = await attemptInsert();
 
+  // Claude Auto Review 指摘: card_number は #393/#548 由来の独立したデプロイ窓
+  // フォールバック（card-number-errors.ts、本Issue #834 のスコープ外）で、
+  // insertData から列を削るだけで RETURNING 自体は無指定のまま card_number を
+  // 要求し続ける。#834 撤去前は末尾の CARDS_SAFE_COLUMNS（card_number も除外）が
+  // これを最終的に救済していたが、card_number は本番・preview 実測済み（#834）
+  // のため通常はこの分岐へ到達しない。真に card_number が欠落する環境では
+  // このフォールバックは単独では完結しない点に注意（card-number-errors.ts 側の
+  // 対応が必要。本Issueでは意図的に手を加えない）。
   if (error && isMissingCardNumberColumnError(error)) {
     delete insertData.card_number;
     ({ card, error } = await attemptInsert());
@@ -641,6 +649,10 @@ async function fetchCardsFromDBPg(
     rowsError = error;
   }
 
+  // Claude Auto Review 指摘: card_number ソート列のこのフォールバックも
+  // insertCardPg 側と同じ理由で、card_number が真に欠落する環境では単独では
+  // 完結しない（#834 のスコープ外。card-number-errors.ts 側の対応が必要）。
+  // card_number は本番・preview 実測済み（#834）のため通常はここへ到達しない。
   if (
     rowsError &&
     (sortField === "card_number" || sortField === "display_order") &&

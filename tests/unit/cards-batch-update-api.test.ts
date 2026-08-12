@@ -32,6 +32,11 @@ function primeBatchUpdate(options: {
   rpcError?: Error | null;
   updatedCards?: Array<Record<string, unknown>>;
   updatedCardsError?: Error | null;
+  // #834 自己レビュー指摘対応の回帰テスト用: updatedCardsError が
+  // image_padding_color 欠落エラーの場合、fetchUpdatedCardsForBatchUpdatePg は
+  // CARDS_COLUMNS_WITHOUT_PADDING_COLOR で1回だけ再試行する。その再試行分の
+  // レスポンスをここに渡す(4回目の select 呼び出しとして消費される)。
+  updatedCardsAfterPaddingFallback?: Array<Record<string, unknown>>;
 }) {
   const responses = [
     { rows: options.streamer ? [options.streamer] : [] },
@@ -39,6 +44,9 @@ function primeBatchUpdate(options: {
     options.updatedCardsError
       ? { error: options.updatedCardsError, rows: [] }
       : { rows: options.updatedCards ?? [] },
+    ...(options.updatedCardsAfterPaddingFallback
+      ? [{ rows: options.updatedCardsAfterPaddingFallback }]
+      : []),
   ];
   let selectIndex = 0;
   const db = {
@@ -143,6 +151,52 @@ describe("POST /api/cards/batch-update", () => {
     }));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ success: true, updated: 3 });
+  });
+
+  // Claude Auto Review 指摘対応の回帰テスト(#834): fetchUpdatedCardsForBatchUpdatePg
+  // は無指定 select を先に試し、image_padding_color 列欠落エラーのときだけ
+  // CARDS_COLUMNS_WITHOUT_PADDING_COLOR へ切り替えて再試行する。無指定 select が
+  // 成功する通常時は image_padding_color を含む全列がそのまま返ることを検証する
+  // (CardManager.tsx の handleBatchDropRateSave がカードオブジェクトごと置換する
+  // ため、この列が欠けると保存直後の画面表示で余白色が既定に戻って見えていた)。
+  it("returns image_padding_color in updated cards when the column exists (default path)", async () => {
+    primeBatchUpdate({
+      streamer: STREAMER,
+      existingCards: [{ id: "card-1" }],
+      rpcResult: { updated_count: 1 },
+      updatedCards: [{ id: "card-1", streamer_id: "streamer-1", drop_rate: 0.5, image_padding_color: "black" }],
+    });
+    const response = await POST(createRequest({
+      streamerId: "streamer-1",
+      updates: [{ id: "card-1", dropRate: 0.5 }],
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.cards).toEqual([
+      { id: "card-1", streamer_id: "streamer-1", drop_rate: 0.5, image_padding_color: "black" },
+    ]);
+  });
+
+  it("falls back to CARDS_COLUMNS_WITHOUT_PADDING_COLOR when image_padding_color is undeployed", async () => {
+    const missingPaddingErrorPg = Object.assign(
+      new Error('column "image_padding_color" of relation "cards" does not exist'),
+      { code: "42703" },
+    );
+    primeBatchUpdate({
+      streamer: STREAMER,
+      existingCards: [{ id: "card-1" }],
+      rpcResult: { updated_count: 1 },
+      updatedCardsError: missingPaddingErrorPg,
+      updatedCardsAfterPaddingFallback: [{ id: "card-1", streamer_id: "streamer-1", drop_rate: 0.5 }],
+    });
+    const response = await POST(createRequest({
+      streamerId: "streamer-1",
+      updates: [{ id: "card-1", dropRate: 0.5 }],
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.cards[0]).not.toHaveProperty("image_padding_color");
+    expect(body.cards[0]).toMatchObject({ id: "card-1", drop_rate: 0.5 });
   });
 
   it("passes the exact normalized payload to batch_update_card_drop_rates", async () => {
