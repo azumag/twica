@@ -85,7 +85,9 @@ export function setSecurityHeaders(
 
   response.headers.set('X-XSS-Protection', SECURITY_HEADERS.X_XSS_PROTECTION)
 
-  response.headers.set('Content-Security-Policy', csp ?? buildCsp())
+  // 空文字列の csp は「無制限 CSP」と同義になるため || でフォールバックする
+  // （?? だと空文字が素通しになり fail-open、#949 レビュー任意指摘3）。
+  response.headers.set('Content-Security-Policy', csp || buildCsp())
 
   if (process.env.NODE_ENV === 'production') {
     response.headers.set('Strict-Transport-Security', SECURITY_HEADERS.HSTS)
