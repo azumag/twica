@@ -213,6 +213,26 @@ export async function validateCSRFToken(
     return { valid: false, error: 'セッションの有効期限が切れました。再度ログインしてください。' }
   }
 
+  // リクエスト URL 自体が非許可 authority なら fail-closed にする
+  // （expectedOrigin は request.url 由来で攻撃者指定になり得るため、getBaseUrl と
+  // 同じ trusted-origin 判定を通す。workers.dev はここで許可される。Origin/Referer
+  // の有無に関わらず常時判定し、不要なトークン生成・Cookie 書き込み・HMAC 計算を
+  // 避けるために session 取得直後に置く）。
+  const requestUrl = new URL(request.url)
+  const expectedOrigin = `${requestUrl.protocol}//${requestUrl.host}`
+  // ALLOWED_ORIGINS は本来「Origin ヘッダーの許可リスト」（Vercel 系も含む）だが、
+  // この OR が実効するのはローカル wrangler dev（NODE_ENV=production 相当で
+  // localhost:8787）の救済のみ。本番では isTrustedOrigin が NEXT_PUBLIC_APP_URL /
+  // workers.dev を許可するため、Vercel 系が信頼 authority へ昇格することはない。
+  if (!isTrustedOrigin(expectedOrigin) && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(expectedOrigin)) {
+    logger.warn('CSRF validation failed: request URL origin not trusted', {
+      userId: session.twitchUserId,
+      expectedOrigin,
+      endpoint: sanitizeURL(request.url),
+    })
+    return { valid: false, error: ERROR_MESSAGES.CSRF_ORIGIN_NOT_TRUSTED }
+  }
+
   let sessionTokenHash = session.csrfTokenHash
   let generatedToken: string | null = null
 
@@ -258,8 +278,6 @@ export async function validateCSRFToken(
   // Originヘッダーの検証（多層防御として）
   const origin = request.headers.get('origin')
   const referer = request.headers.get('referer')
-  const requestUrl = new URL(request.url)
-  const expectedOrigin = `${requestUrl.protocol}//${requestUrl.host}`
 
   function isLocalOrigin(origin: string): boolean {
     try {
@@ -280,19 +298,6 @@ export async function validateCSRFToken(
     } catch {
       return false
     }
-  }
-
-  // リクエスト URL 自体が非許可 authority なら fail-closed にする
-  // （expectedOrigin は request.url 由来で攻撃者指定になり得るため、getBaseUrl と
-  // 同じ trusted-origin 判定を通す。workers.dev はここで許可される。Origin/Referer
-  // の有無に関わらず常時判定する）。
-  if (!isTrustedOrigin(expectedOrigin) && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(expectedOrigin)) {
-    logger.warn('CSRF validation failed: request URL origin not trusted', {
-      userId: session.twitchUserId,
-      expectedOrigin,
-      endpoint: sanitizeURL(request.url),
-    })
-    return { valid: false, error: ERROR_MESSAGES.CSRF_ORIGIN_NOT_TRUSTED }
   }
 
   // リクエストURL自体のoriginと一致する場合は同一オリジンリクエストなので許可する

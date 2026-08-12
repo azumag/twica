@@ -180,6 +180,23 @@ describe('isTrustedOrigin (issue #950)', () => {
     expect(isTrustedOrigin('https://twica-preview.tsubasa-azumagakito.workers.dev/evil')).toBe(false)
   })
 
+  it('workers.dev は https のみ許可する（http は拒否）', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('http://twica.tsubasa-azumagakito.workers.dev')).toBe(false)
+  })
+
+  it('production では localhost origin を拒否する', () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('http://localhost:3000')).toBe(false)
+    expect(isTrustedOrigin('http://localhost:8787')).toBe(false)
+  })
+
+  it('port 付き workers.dev origin を拒否する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('https://twica.tsubasa-azumagakito.workers.dev:8443')).toBe(false)
+  })
+
   it('開発環境では localhost origin を許可する', () => {
     vi.stubEnv('NODE_ENV', 'development')
     expect(isTrustedOrigin('http://localhost:3000')).toBe(true)

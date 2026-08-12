@@ -27,12 +27,20 @@ function composeCsp(scriptSrc: string, connectSrc: string): string {
  * DENY が実効的に緩和される（#952 レビュー必須指摘）。
  * - overlay ルート: 同一オリジン iframe 埋め込みを許可（X-Frame-Options SAMEORIGIN と同値）
  * - その他: 'none'（X-Frame-Options DENY と同値）
+ * X-Frame-Options も併記し続けるのは、CSP Level 2 非対応の旧 UA 向けフォールバック。
  */
 function withFrameAncestors(csp: string, pathname?: string): string {
-  const directive = pathname?.startsWith('/overlay')
+  const directive = isOverlayPath(pathname)
     ? "frame-ancestors 'self'"
     : "frame-ancestors 'none'"
-  return `${csp}${directive};`
+  // csp は外部から渡せる引数のため、';' 終端を仮定せず正規化してから連結する
+  // （終端なしだと直前 directive の値へ融合し frame-ancestors が無効化される）。
+  return `${csp.replace(/;\s*$/, '')}; ${directive};`
+}
+
+/** overlay ルート（同一オリジン iframe 埋め込みを許可する）の判定を1箇所に集約。 */
+function isOverlayPath(pathname?: string): boolean {
+  return pathname?.startsWith('/overlay') ?? false
 }
 
 /**
@@ -90,7 +98,7 @@ export function setSecurityHeaders(
 
   // overlay ルートは同一オリジンからの iframe 埋め込みを許可（プレビュー機能用）
   // Allow same-origin iframe embedding for overlay routes (for preview functionality)
-  if (pathname?.startsWith('/overlay')) {
+  if (isOverlayPath(pathname)) {
     response.headers.set('X-Frame-Options', 'SAMEORIGIN')
   } else {
     response.headers.set('X-Frame-Options', SECURITY_HEADERS.X_FRAME_OPTIONS)

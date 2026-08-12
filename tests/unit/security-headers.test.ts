@@ -182,6 +182,18 @@ describe('setSecurityHeaders', () => {
       const csp = result.headers.get('Content-Security-Policy')
       expect(csp).toContain("frame-ancestors 'self';")
     })
+
+    it('配信されるヘッダー値（setSecurityHeaders 経由）でも directive が重複しない', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { pathname: '/dashboard' })
+      const csp = result.headers.get('Content-Security-Policy')
+      const names = csp
+        ?.split(';')
+        .map((d) => d.trim())
+        .filter(Boolean)
+        .map((d) => d.split(/\s+/)[0])
+      expect(names).toEqual([...EXPECTED_DIRECTIVE_NAMES, 'frame-ancestors'])
+    })
   })
 
   describe('Strict-Transport-Security', () => {
