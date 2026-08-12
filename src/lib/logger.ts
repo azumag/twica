@@ -21,11 +21,6 @@ import { sanitizeLogArg } from './log-sanitizer'
  * developer-authored strings and are assumed not to contain secrets.
  */
 export const logger = {
-  debug: (message: string, ...args: unknown[]) => {
-    // Workers Logs のコスト抑制のため、検知シグナルとしては重要だが毎回の出力が
-    // 不要な経路（非許可 Host のフォールバック等）は debug で残す（#950）。
-    console.debug(`[DEBUG] ${message}`, ...args.map(sanitizeLogArg))
-  },
   info: (message: string, ...args: unknown[]) => {
     console.log(`[INFO] ${message}`, ...args.map(sanitizeLogArg))
   },

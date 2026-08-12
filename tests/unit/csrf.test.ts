@@ -487,18 +487,11 @@ describe('CSRF Protection', () => {
       })
       mockCookies.mockResolvedValue(mockCookieStore as any)
 
-      // Origin は forbidden header のため headers.get をスパイして注入する
       const request = new Request('https://twica-preview.tsubasa-azumagakito.workers.dev')
-      const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
-        if (name === 'origin') return 'https://twica-preview.tsubasa-azumagakito.workers.dev'
-        if (name === 'referer') return null
-        return null
-      })
 
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(true)
-      getSpy.mockRestore()
     })
 
     it('should reject request URL from untrusted authority even with matching origin header (#950)', async () => {
@@ -528,19 +521,12 @@ describe('CSRF Protection', () => {
       })
       mockCookies.mockResolvedValue(mockCookieStore as any)
 
-      // Origin は forbidden header のため headers.get をスパイして注入する
       const request = new Request('https://evil.example.com')
-      const getSpy = vi.spyOn(request.headers, 'get').mockImplementation((name) => {
-        if (name === 'origin') return 'https://evil.example.com'
-        if (name === 'referer') return null
-        return null
-      })
 
       const result = await validateCSRFToken(request)
 
       expect(result.valid).toBe(false)
-      expect(result.error).toBe('リクエストのオリジンが許可されていません')
-      getSpy.mockRestore()
+      expect(result.error).toBe(ERROR_MESSAGES.CSRF_ORIGIN_NOT_TRUSTED)
     })
 
     it('should reject invalid origin header', async () => {

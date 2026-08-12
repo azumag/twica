@@ -86,6 +86,10 @@ export function isTrustedOrigin(origin: string): boolean {
   } catch {
     return false
   }
+  // origin 文字列（scheme+host+port）だけを受理する（path や userinfo 付きは拒否）
+  if (url.origin !== origin) {
+    return false
+  }
   const normalizedHost = url.host.toLowerCase()
 
   // ローカル開発は host ヘッダーのみで判定。この分岐は NODE_ENV !== 'production'
@@ -142,11 +146,10 @@ export function resolveAllowedOrigin(host: string | null): string {
   }
 
   // 許可外ホストを無言でフォールバックすると、NEXT_PUBLIC_APP_URL と実配信ホストの
-  // ズレに気付けず OAuth が全滅する。Cloudflare は Host でルーティングするため大量
-  // 発生はしにくいが、Workers Logs のコストを抑えるため debug で手掛かりを残す。
+  // ズレに気付けず OAuth が全滅する。warn ログで手掛かりを残す。
   // host は外部入力のため、制御文字を除去し長さを制限してから出力する（ログ汚染対策）。
   const sanitizedHost = host.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 128)
-  logger.debug(`[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL: ${sanitizedHost}`)
+  logger.warn(`[url-utils] Disallowed host detected, falling back to NEXT_PUBLIC_APP_URL: ${sanitizedHost}`)
   return fallbackOrigin
 }
 

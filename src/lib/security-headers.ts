@@ -18,10 +18,21 @@ function composeCsp(scriptSrc: string, connectSrc: string): string {
     "worker-src 'self' blob:",
     "object-src 'none'",
     "form-action 'self'",
-    // overlay は同一オリジン iframe 埋め込みのみ許可（X-Frame-Options SAMEORIGIN と
-    // 同じ意味。frame-ancestors は CSP ヘッダーのみ有効で meta では無効）。
-    "frame-ancestors 'self'",
   ].join('; ') + ';'
+}
+
+/**
+ * frame-ancestors は pathname 依存で付与する。frame-ancestors を含むポリシーが
+ * 配信されると UA は X-Frame-Options を無視するため、全ルートに 'self' を付けると
+ * DENY が実効的に緩和される（#952 レビュー必須指摘）。
+ * - overlay ルート: 同一オリジン iframe 埋め込みを許可（X-Frame-Options SAMEORIGIN と同値）
+ * - その他: 'none'（X-Frame-Options DENY と同値）
+ */
+function withFrameAncestors(csp: string, pathname?: string): string {
+  const directive = pathname?.startsWith('/overlay')
+    ? "frame-ancestors 'self'"
+    : "frame-ancestors 'none'"
+  return `${csp}${directive};`
 }
 
 /**
@@ -87,7 +98,7 @@ export function setSecurityHeaders(
 
   // 空文字列の csp は「無制限 CSP」と同義になるため || でフォールバックする
   // （?? だと空文字が素通しになり fail-open）。
-  response.headers.set('Content-Security-Policy', csp || buildCsp())
+  response.headers.set('Content-Security-Policy', withFrameAncestors(csp || buildCsp(), pathname))
 
   if (process.env.NODE_ENV === 'production') {
     response.headers.set('Strict-Transport-Security', SECURITY_HEADERS.HSTS)

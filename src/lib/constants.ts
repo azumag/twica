@@ -248,6 +248,7 @@ export const ERROR_MESSAGES = {
   FORBIDDEN: 'Forbidden',
   CSRF_TOKEN_INVALID: 'Invalid or missing CSRF token',
   CSRF_TOKEN_MISSING: 'CSRF token is required for this request',
+  CSRF_ORIGIN_NOT_TRUSTED: 'Request origin is not trusted',
 
   // Request validation errors
   MISSING_REQUIRED_FIELDS: 'Missing required fields',

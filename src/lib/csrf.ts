@@ -282,21 +282,22 @@ export async function validateCSRFToken(
     }
   }
 
-  // Origin ヘッダーがある場合、リクエスト URL 自体が非許可 authority なら
-  // fail-closed にする（expectedOrigin は request.url 由来で攻撃者指定になり得るため、
-  // getBaseUrl と同じ trusted-origin 判定を通す。workers.dev はここで許可される）。
-  if (origin && !isTrustedOrigin(expectedOrigin) && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(expectedOrigin)) {
+  // リクエスト URL 自体が非許可 authority なら fail-closed にする
+  // （expectedOrigin は request.url 由来で攻撃者指定になり得るため、getBaseUrl と
+  // 同じ trusted-origin 判定を通す。workers.dev はここで許可される。Origin/Referer
+  // の有無に関わらず常時判定する）。
+  if (!isTrustedOrigin(expectedOrigin) && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(expectedOrigin)) {
     logger.warn('CSRF validation failed: request URL origin not trusted', {
       userId: session.twitchUserId,
       expectedOrigin,
       endpoint: sanitizeURL(request.url),
     })
-    return { valid: false, error: 'リクエストのオリジンが許可されていません' }
+    return { valid: false, error: ERROR_MESSAGES.CSRF_ORIGIN_NOT_TRUSTED }
   }
 
   // リクエストURL自体のoriginと一致する場合は同一オリジンリクエストなので許可する
   // （例: workers.dev URLからのリクエストでNEXT_PUBLIC_APP_URLがカスタムドメインの場合）
-  if (origin && origin !== expectedOrigin && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(origin) && !isTrustedOrigin(origin)) {
+  if (origin && origin !== expectedOrigin && !CSRF_CONFIG.ALLOWED_ORIGINS.includes(origin)) {
     const isLocal = CSRF_CONFIG.ALLOW_LOCAL_ORIGINS && isLocalOrigin(origin)
 
     if (!isLocal) {

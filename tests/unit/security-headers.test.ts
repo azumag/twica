@@ -60,12 +60,12 @@ describe('setSecurityHeaders', () => {
       expect(csp).toContain("style-src 'self' 'unsafe-inline'")
     })
 
-    it('生成済み CSP 文字列を渡すとそれを採用する（middleware との nonce 契約）', () => {
+    it('生成済み CSP 文字列を渡すとそれを採用し frame-ancestors を付与する（middleware との nonce 契約）', () => {
       const response = NextResponse.json({ test: 'data' })
       const result = setSecurityHeaders(response, { csp: "default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';" })
-      expect(result.headers.get('Content-Security-Policy')).toBe(
-        "default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';"
-      )
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic';")
+      expect(csp).toContain("frame-ancestors 'none';")
     })
 
     it('csp が空文字列の場合は buildCsp() へフォールバックする（fail-closed）', () => {
@@ -130,7 +130,6 @@ describe('setSecurityHeaders', () => {
       'worker-src',
       'object-src',
       'form-action',
-      'frame-ancestors',
     ]
 
     // variant 非依存の directive は値込みで固定する。名前のみだと
@@ -145,7 +144,6 @@ describe('setSecurityHeaders', () => {
       "worker-src 'self' blob:",
       "object-src 'none'",
       "form-action 'self'",
-      "frame-ancestors 'self'",
     ]
 
     it.each([
@@ -168,6 +166,21 @@ describe('setSecurityHeaders', () => {
       for (const directive of COMMON_DIRECTIVE_VALUES) {
         expect(csp).toContain(`${directive};`)
       }
+    })
+
+    it('非 overlay ルートは frame-ancestors none を付与する（DENY と同値）', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { pathname: '/dashboard/settings' })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("frame-ancestors 'none';")
+      expect(csp).not.toContain("frame-ancestors 'self'")
+    })
+
+    it('overlay ルートは frame-ancestors self を付与する（SAMEORIGIN と同値）', () => {
+      const response = NextResponse.json({ test: 'data' })
+      const result = setSecurityHeaders(response, { pathname: '/overlay/123' })
+      const csp = result.headers.get('Content-Security-Policy')
+      expect(csp).toContain("frame-ancestors 'self';")
     })
   })
 

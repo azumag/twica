@@ -81,7 +81,7 @@ describe('resolveAllowedOrigin (issue #836)', () => {
 
   it('workers.dev サブドメインの文字種が不正な host は拒否する（500 化を防ぐ）', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       // 空白・記号入りはアカウント専有ドメインに該当しないため fail-closed
       expect(resolveAllowedOrigin('twica preview.tsubasa-azumagakito.workers.dev'))
@@ -89,7 +89,7 @@ describe('resolveAllowedOrigin (issue #836)', () => {
       expect(resolveAllowedOrigin('twica.preview@evil.tsubasa-azumagakito.workers.dev'))
         .toBe('https://twica.bluemoon.works')
     } finally {
-      debugSpy.mockRestore()
+      warnSpy.mockRestore()
     }
   })
 
@@ -101,36 +101,35 @@ describe('resolveAllowedOrigin (issue #836)', () => {
 
   it('twica が先頭 label にない workers.dev サブドメインは拒否する（締め付け）', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      // 従来の includes('twica') では通っていたが、先頭 label（worker 名）限定に
-      // 変更したため拒否される
+      // worker 名（先頭 label）に twica を含まないサブドメインは拒否する
       expect(resolveAllowedOrigin('evil.twica.tsubasa-azumagakito.workers.dev'))
         .toBe('https://twica.bluemoon.works')
     } finally {
-      debugSpy.mockRestore()
+      warnSpy.mockRestore()
     }
   })
 
   it('workers.dev ホストの非許可 port は拒否する', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       expect(resolveAllowedOrigin('twica.tsubasa-azumagakito.workers.dev:8443'))
         .toBe('https://twica.bluemoon.works')
     } finally {
-      debugSpy.mockRestore()
+      warnSpy.mockRestore()
     }
   })
 
-  it('非許可ホストは debug を1回だけ出力してフォールバックする', () => {
+  it('非許可ホストは warn を1回だけ出力してフォールバックする', () => {
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
-    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       expect(resolveAllowedOrigin('evil.example.com')).toBe('https://twica.bluemoon.works')
-      expect(debugSpy).toHaveBeenCalledTimes(1)
+      expect(warnSpy).toHaveBeenCalledTimes(1)
     } finally {
-      debugSpy.mockRestore()
+      warnSpy.mockRestore()
     }
   })
 
@@ -172,6 +171,13 @@ describe('isTrustedOrigin (issue #950)', () => {
     expect(isTrustedOrigin('https://twica.bluemoon.works.evil.com')).toBe(false)
     expect(isTrustedOrigin('https://twica.tsubasa-azumagakito.workers.dev.evil.com')).toBe(false)
     expect(isTrustedOrigin('not-a-url')).toBe(false)
+  })
+
+  it('path や userinfo 付きの URL は origin 文字列ではないため拒否する', () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://twica.bluemoon.works')
+    expect(isTrustedOrigin('https://twica.bluemoon.works/evil')).toBe(false)
+    expect(isTrustedOrigin('https://user@twica.bluemoon.works')).toBe(false)
+    expect(isTrustedOrigin('https://twica-preview.tsubasa-azumagakito.workers.dev/evil')).toBe(false)
   })
 
   it('開発環境では localhost origin を許可する', () => {
