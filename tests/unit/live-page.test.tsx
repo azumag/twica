@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   getLiveDirectory: vi.fn(),
+  getLiveDirectoryCount: vi.fn(),
   getLiveDirectoryRankings: vi.fn(),
   getTranslations: vi.fn(),
 }));
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/session", () => ({ getSession: mocks.getSession }));
 vi.mock("@/lib/live-directory", () => ({
   getLiveDirectory: mocks.getLiveDirectory,
+  getLiveDirectoryCount: mocks.getLiveDirectoryCount,
   getLiveDirectoryRankings: mocks.getLiveDirectoryRankings,
 }));
 vi.mock("next-intl/server", () => ({
@@ -46,6 +48,7 @@ const translations: Record<string, Record<string, string>> = {
     consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
     rankingNotice:
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
+    liveCount: "現在 {count, number} 人が配信中です",
   },
   header: {
     dashboard: "ダッシュボード",
@@ -56,12 +59,14 @@ describe("LivePage", () => {
   beforeEach(() => {
     mocks.getSession.mockReset();
     mocks.getLiveDirectory.mockReset();
+    mocks.getLiveDirectoryCount.mockReset();
     mocks.getLiveDirectoryRankings.mockReset();
     mocks.getTranslations.mockReset();
     mocks.getTranslations.mockImplementation(async (namespace: string) => {
       return (key: string) => translations[namespace]?.[key] ?? key;
     });
     mocks.getLiveDirectory.mockResolvedValue([{ streamerId: "streamer-1" }]);
+    mocks.getLiveDirectoryCount.mockResolvedValue(3);
     mocks.getLiveDirectoryRankings.mockResolvedValue({
       last7Days: [{ identity: null }],
       allTime: [{ identity: null }, { identity: null }],
@@ -75,6 +80,7 @@ describe("LivePage", () => {
 
     expect(mocks.getSession).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectory).toHaveBeenCalledOnce();
+    expect(mocks.getLiveDirectoryCount).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectoryRankings).toHaveBeenCalledOnce();
     expect(
       screen.getByRole("heading", { name: "TwiCaチャネルとランキング" }),
@@ -103,6 +109,24 @@ describe("LivePage", () => {
       "href",
       "/dashboard",
     );
+  });
+
+  it("shows the live count when the count is available", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getLiveDirectoryCount.mockResolvedValue(3);
+
+    render(await LivePage());
+
+    expect(screen.getByText(/現在 .* 人が配信中です/)).toBeInTheDocument();
+  });
+
+  it("omits the live count when the count is unavailable", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getLiveDirectoryCount.mockResolvedValue(null);
+
+    render(await LivePage());
+
+    expect(screen.queryByText(/人が配信中です/)).not.toBeInTheDocument();
   });
 
   it("builds localized metadata from the livePage namespace", async () => {
