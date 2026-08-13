@@ -4,6 +4,7 @@ import { getTranslations } from "next-intl/server";
 import LiveDirectory from "@/components/LiveDirectory";
 import PublicFooter from "@/components/PublicFooter";
 import {
+  getLiveDirectoryCount,
   getLiveDirectory,
   getLiveDirectoryRankings,
 } from "@/lib/live-directory";
@@ -26,10 +27,11 @@ export async function generateMetadata(): Promise<Metadata> {
  * 各データ関数のCloudflare KV 60秒キャッシュへ一元化している。
  */
 export default async function LivePage() {
-  const [session, entries, rankings, t, tHeader] = await Promise.all([
+  const [session, entries, rankings, liveCount, t, tHeader] = await Promise.all([
     getSession(),
     getLiveDirectory(),
     getLiveDirectoryRankings(),
+    getLiveDirectoryCount(),
     getTranslations("livePage"),
     getTranslations("header"),
   ]);
@@ -76,6 +78,11 @@ export default async function LivePage() {
             <p>{t("consentNotice")}</p>
             <p className="mt-1">{t("rankingNotice")}</p>
           </div>
+          {liveCount !== null && (
+            <p className="mt-4 text-sm font-medium text-gray-200">
+              {t("liveCount", { count: liveCount })}
+            </p>
+          )}
         </div>
 
         <LiveDirectory

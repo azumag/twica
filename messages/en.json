@@ -1519,6 +1519,7 @@
     "description": "Browse channels using TwiCa and rankings for each streamer's card activity.",
     "consentNotice": "The live list only shows channels that have explicitly agreed to be listed.",
     "rankingNotice": "Rankings include all active channels. Card redemptions and channel points show the top 100 for the selected period, while card types show the top 100 current values. Channels that have not agreed to be identified appear anonymously.",
+    "liveCount": "{count, plural, one {# streamer is} other {# streamers are}} live right now",
     "directoryHeading": "Live channels and rankings",
     "tabs": {
       "label": "View",
