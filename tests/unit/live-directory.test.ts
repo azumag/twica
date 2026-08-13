@@ -465,6 +465,31 @@ describe("getLiveDirectoryCount (#951)", () => {
     vi.unstubAllGlobals();
   });
 
+  it("returns null without RPC/Helix when opted out via env flag", async () => {
+    vi.stubEnv("LIVE_DIRECTORY_COUNT_ENABLED", "false");
+
+    await expect(getLiveDirectoryCount()).resolves.toBeNull();
+    expect(getDb).not.toHaveBeenCalled();
+    expect(fetchTwitchApi).not.toHaveBeenCalled();
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+
+  it("treats 0 as an opt-out and an unset env as enabled", async () => {
+    vi.stubEnv("LIVE_DIRECTORY_COUNT_ENABLED", "0");
+
+    await expect(getLiveDirectoryCount()).resolves.toBeNull();
+    expect(fetchTwitchApi).not.toHaveBeenCalled();
+
+    // 未設定（デフォルト）に戻すと通常どおり Helix 判定が走る。
+    vi.unstubAllEnvs();
+    vi.mocked(fetchTwitchApi).mockResolvedValue(
+      new Response(JSON.stringify(streamResponse(["u1"])), { status: 200 }) as never,
+    );
+
+    await expect(getLiveDirectoryCount()).resolves.toBe(1);
+    expect(fetchTwitchApi).toHaveBeenCalledTimes(1);
+  });
+
   it("returns the number of live active streamers regardless of opt-in", async () => {
     vi.mocked(fetchTwitchApi).mockResolvedValue(
       new Response(JSON.stringify(streamResponse(["u1"])), { status: 200 }) as never,

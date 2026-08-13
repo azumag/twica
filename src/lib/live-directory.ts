@@ -461,11 +461,32 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
 }
 
 /**
+ * 匿名配信者数カウント（#951）のオプトアウト判定。
+ *
+ * 未設定（または "true"/"1"）なら現行挙動のまま有効、明示的な "false"/"0" のみ
+ * 無効化する。未知の値は有効として扱う（明示的に無効化した環境だけが対象のため、
+ * タイポで機能が消える事故を防ぐ）。判定は関数内で毎回 process.env を読むため、
+ * テストでは vi.stubEnv で切り替えられる。
+ */
+function isLiveDirectoryCountEnabled(): boolean {
+  const raw = process.env.LIVE_DIRECTORY_COUNT_ENABLED?.trim();
+  if (raw === undefined || raw === "") return true;
+  const normalized = raw.toLowerCase();
+  return normalized !== "false" && normalized !== "0";
+}
+
+/**
  * 現在ライブ中の active 配信者数を返す。KVキャッシュ(60s) → メモリ → 実取得。
  *
  * オプトイン（publish_live_status）の有無に関わらず全 active 配信者を母集団にし、
  * Helix でライブ判定した人数だけを返す（#951）。identity はこの関数から返さず、
  * RSC payload を通過するのは整数のみ。
+ *
+ * Helix GET /streams は active 配信者100人ごとに1リクエスト飛ぶため、登録者数の
+ * 増加に比例してキャッシュミス時のページ表示1回あたりのリクエスト数が増える。
+ * 費用・レートリミット対策として環境変数 LIVE_DIRECTORY_COUNT_ENABLED による
+ * コード変更を伴わないオプトアウト（kill switch）を用意する。無効時は後述の通り
+ * null を返し、RPC/Helix/KV を一切呼ばない。
  *
  * 障害時は null を返して人数行自体を非表示にする。「0人」は「誰も配信していない」
  * という正常値を意味し、RPC/Helix 障害と区別する。障害による空結果はキャッシュへ
@@ -473,6 +494,12 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
  * しない方針は既存 getLiveDirectory() と同じ。
  */
 export async function getLiveDirectoryCount(): Promise<number | null> {
+  // オプトアウト中は人数行ごと非表示にする。ページ側は liveCount !== null で
+  // ガードしており、null は「表示しない」、0 は「正常な0人」と区別される。
+  if (!isLiveDirectoryCountEnabled()) {
+    return null;
+  }
+
   try {
     const kv = await getKvBinding();
     if (kv) {
