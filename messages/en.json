@@ -141,7 +141,8 @@
       "imageUrlValidating": "Validating image...",
       "heicConverting": "Converting HEIC image...",
       "heicConvertFailed": "Could not read the HEIC image. Please choose another image or convert it to JPEG and try again.",
-      "heicTooLarge": "The HEIC image is too large. Please choose an image under {mb}MB."
+      "heicTooLarge": "The HEIC image is too large. Please choose an image under {mb}MB.",
+      "imageDecodeFailed": "Could not read the image. Please choose a different image."
     },
     "cardNumberEditor": {
       "title": "Edit Card Numbers",
