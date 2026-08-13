@@ -8,7 +8,11 @@ vi.mock('@/lib/logger')
 
 // happy-dom は blob URL に対する img の読み込みイベントを発火しないため、
 // src 設定時に onload を呼び出すスタブで、クロップモード選択モーダルまでのフローを再現する。
+// issue #947 以降は naturalWidth/naturalHeight が 0 だとデコード失敗として扱われるため、
+// 正常系のスタブでは非0寸法を返す。
 function stubImageLoad() {
+  vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(800)
+  vi.spyOn(HTMLImageElement.prototype, 'naturalHeight', 'get').mockReturnValue(800)
   vi.spyOn(HTMLImageElement.prototype, 'src', 'set').mockImplementation(function (
     this: HTMLImageElement
   ) {
