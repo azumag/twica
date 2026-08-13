@@ -1261,13 +1261,13 @@ export async function sendChatAnnouncement(
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://twica.live';
   const collectionUrl = `${baseUrl}/collection/${streamer.id}`;
 
-  // Issue #597: {packName} 用に、抽選が絞られたパックの表示名を解決する。
-  // DBクエリ不要（collectionName/default_card_pack_name は既に取得済み）のため
-  // 他プレースホルダーのような needsX ガードは不要。
-  // Resolve the {packName} display name. No extra DB query needed (both inputs
-  // are already fetched), unlike the other placeholders gated behind needsX.
+  // Issue #948: {packName} は「抽選スコープ」でなく「獲得カード自身のパック」を
+  // 優先して解決する。メイン報酬＝全カード抽選では抽選スコープ（collectionName）が
+  // 常に null になり、名前付きパックのカードでも {packName} が空文字になるため。
+  // 旧 outbox 行（カード payload に collection_name が無い）は従来どおり
+  // 抽選スコープへフォールバックして後方互換を保つ。
   const packName = resolvePackDisplayName(
-    collectionName,
+    card.collection_name ?? collectionName ?? null,
     streamer.default_card_pack_name ?? null,
     DEFAULT_PACK_CHAT_FALLBACK_LABEL
   );
