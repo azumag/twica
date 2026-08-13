@@ -1230,6 +1230,15 @@ export default function CardManager({
       // Ignore stale callback from cancelled/re-selected file
       if (requestId !== imageDimensionRequestId.current) return;
       const imgWidth = img.naturalWidth;
+      const imgHeight = img.naturalHeight;
+      // 実ブラウザでは Blob URL のデコードに失敗しても onload が発火し、
+      // naturalWidth/naturalHeight が 0 になることがある。0 寸法を読み込み失敗
+      // として扱い、ファイル名・MIME・サイズを含まない安全なエラーだけを表示して
+      // トリミングモーダルへ進めない（issue #947）。
+      if (imgWidth === 0 || imgHeight === 0) {
+        setUploadError(t("messages.imageDecodeFailed"));
+        return;
+      }
       setSourceImageWidth(imgWidth);
       // 画像幅以下の解像度のうち最大のものをデフォルトに設定
       // Default to the largest resolution that doesn't exceed image width
@@ -1244,11 +1253,9 @@ export default function CardManager({
     img.onerror = () => {
       URL.revokeObjectURL(objectUrl);
       if (requestId !== imageDimensionRequestId.current) return;
-      // 読み取り失敗時はフォールバック：従来通り全選択肢を表示
-      setSourceImageWidth(null);
-      setSelectedWidth(maxImageWidth);
-      setSelectedFileForCrop(file);
-      setCropModeModalOpen(true);
+      // 読み取り失敗時は従来のフォールバック（全選択肢を出してモーダルを開く）を
+      // やめ、トリミングへ進まず安全なエラーを表示する（issue #947）。
+      setUploadError(t("messages.imageDecodeFailed"));
     };
     img.src = objectUrl;
   };
