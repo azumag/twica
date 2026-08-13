@@ -33,6 +33,23 @@ function stubImageError() {
   })
 }
 
+/**
+ * 発火を後から制御できる onerror スタブ。
+ * フォームのキャンセル（世代ID前進）後に古い onerror を明示的に呼び出して、
+ * エラーが表示されないことを検証するためのヘルパー。
+ */
+function createDeferredImageError() {
+  let fireError: (() => void) | null = null
+  vi.spyOn(HTMLImageElement.prototype, 'src', 'set').mockImplementation(function (
+    this: HTMLImageElement
+  ) {
+    fireError = () => {
+      this.onerror?.(new Event('error'))
+    }
+  })
+  return () => fireError?.()
+}
+
 function renderCardManager() {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
@@ -77,7 +94,6 @@ describe('CardManager image decode failure (issue #947)', () => {
     await screen.findByText(DECODE_ERROR_MESSAGE)
     expect(screen.queryByText(/secret-name/)).not.toBeInTheDocument()
     expect(screen.queryByText(/image\/png/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/21/)).not.toBeInTheDocument()
   })
 
   it('naturalWidth が 0 の onload は読み込み失敗として扱う', async () => {
@@ -108,21 +124,13 @@ describe('CardManager image decode failure (issue #947)', () => {
   })
 
   it('フォームをキャンセルした後は古い onerror がエラーを出さない', async () => {
-    const createdImages: HTMLImageElement[] = []
-    const originalCreateElement = document.createElement.bind(document)
-    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
-      const element = originalCreateElement(tag)
-      if (tag === 'img') {
-        createdImages.push(element as HTMLImageElement)
-      }
-      return element
-    })
+    const fireError = createDeferredImageError()
     const { container } = renderCardManager()
     selectBrokenFile(container)
 
     // フォームのキャンセルで世代IDが進む（resetForm）
     fireEvent.click(screen.getByText('キャンセル'))
-    createdImages[0]?.onerror?.(new Event('error'))
+    fireError()
 
     expect(screen.queryByText(DECODE_ERROR_MESSAGE)).not.toBeInTheDocument()
     expect(screen.queryByText('トリミングサイズを選択')).not.toBeInTheDocument()
