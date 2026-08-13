@@ -93,7 +93,6 @@ interface HelixStream {
 
 const LIVE_DIRECTORY_KV_KEY = "live-directory:v1";
 const LIVE_DIRECTORY_RANKINGS_KV_KEY = "live-directory:rankings:v3";
-const LIVE_DIRECTORY_COUNT_KV_KEY = "live-directory:count:v1";
 const LIVE_DIRECTORY_TTL_SECONDS = 60;
 const HELIX_STREAMS_BATCH_SIZE = 100;
 
@@ -103,7 +102,6 @@ let rankingsMemoryCache: {
   entries: LiveDirectoryRankingsByPeriod;
   expiresAt: number;
 } | null = null;
-let countMemoryCache: { count: number; expiresAt: number } | null = null;
 
 async function fetchStreamsForUserIds(
   userIds: string[],
@@ -460,137 +458,8 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
   return entries;
 }
 
-/**
- * 匿名配信者数カウント（#951）のオプトアウト判定。
- *
- * 未設定（または "true"/"1"）なら現行挙動のまま有効、明示的な "false"/"0" のみ
- * 無効化する。未知の値は有効として扱う（明示的に無効化した環境だけが対象のため、
- * タイポで機能が消える事故を防ぐ）。判定は関数内で毎回 process.env を読むため、
- * テストでは vi.stubEnv で切り替えられる。
- */
-function isLiveDirectoryCountEnabled(): boolean {
-  const raw = process.env.LIVE_DIRECTORY_COUNT_ENABLED?.trim();
-  if (raw === undefined || raw === "") return true;
-  const normalized = raw.toLowerCase();
-  return normalized !== "false" && normalized !== "0";
-}
-
-/**
- * 現在ライブ中の active 配信者数を返す。KVキャッシュ(60s) → メモリ → 実取得。
- *
- * オプトイン（publish_live_status）の有無に関わらず全 active 配信者を母集団にし、
- * Helix でライブ判定した人数だけを返す（#951）。identity はこの関数から返さず、
- * RSC payload を通過するのは整数のみ。
- *
- * Helix GET /streams は active 配信者100人ごとに1リクエスト飛ぶため、登録者数の
- * 増加に比例してキャッシュミス時のページ表示1回あたりのリクエスト数が増える。
- * 費用・レートリミット対策として環境変数 LIVE_DIRECTORY_COUNT_ENABLED による
- * コード変更を伴わないオプトアウト（kill switch）を用意する。無効時は後述の通り
- * null を返し、RPC/Helix/KV を一切呼ばない。
- *
- * 障害時は null を返して人数行自体を非表示にする。「0人」は「誰も配信していない」
- * という正常値を意味し、RPC/Helix 障害と区別する。障害による空結果はキャッシュへ
- * 書かない（瞬断が最大60秒の「0人」表示に化けるのを防ぐ）。公開ページを 500 に
- * しない方針は既存 getLiveDirectory() と同じ。
- */
-export async function getLiveDirectoryCount(): Promise<number | null> {
-  // オプトアウト中は人数行ごと非表示にする。ページ側は liveCount !== null で
-  // ガードしており、null は「表示しない」、0 は「正常な0人」と区別される。
-  if (!isLiveDirectoryCountEnabled()) {
-    return null;
-  }
-
-  try {
-    const kv = await getKvBinding();
-    if (kv) {
-      const raw = await kv.get(LIVE_DIRECTORY_COUNT_KV_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { count?: unknown };
-        if (
-          parsed !== null &&
-          typeof parsed === "object" &&
-          typeof parsed.count === "number" &&
-          Number.isSafeInteger(parsed.count) &&
-          parsed.count >= 0
-        ) {
-          return parsed.count;
-        }
-      }
-    }
-  } catch (error) {
-    await reportError(
-      error instanceof Error ? error : new Error(String(error)),
-      { context: "liveDirectory:countKvRead" },
-    );
-  }
-
-  if (countMemoryCache && countMemoryCache.expiresAt > Date.now()) {
-    return countMemoryCache.count;
-  }
-
-  const { data: rpcRows, error: rpcError } = await executeDashboardRpcPg(
-    "get_live_directory_active_streamer_ids(pg)",
-    async (sql) => {
-      const rows = await sql<Array<{ result: unknown }>>`
-        select get_live_directory_active_streamer_ids() as result
-      `;
-      return rows[0]?.result;
-    },
-  );
-
-  if (rpcError) {
-    await reportError(
-      new Error(`Live directory count RPC failed: ${rpcError.message}`),
-      { context: "liveDirectory:countRpc" },
-    );
-    return null;
-  }
-
-  // RPC は twitch_user_id の文字列配列を返す。壊れた行は母集団に数えない。
-  const userIds = Array.isArray(rpcRows)
-    ? (rpcRows as unknown[]).filter(
-        (id): id is string => typeof id === "string" && id.length > 0,
-      )
-    : [];
-
-  let liveCount: number;
-  try {
-    const liveByUserId = await fetchStreamsForUserIds(userIds);
-    liveCount = liveByUserId.size;
-  } catch (error) {
-    await reportError(
-      error instanceof Error ? error : new Error(String(error)),
-      { context: "liveDirectory:countHelix" },
-    );
-    return null;
-  }
-
-  try {
-    const kv = await getKvBinding();
-    if (kv) {
-      await kv.put(
-        LIVE_DIRECTORY_COUNT_KV_KEY,
-        JSON.stringify({ count: liveCount }),
-        { expirationTtl: LIVE_DIRECTORY_TTL_SECONDS },
-      );
-    }
-  } catch (error) {
-    await reportError(
-      error instanceof Error ? error : new Error(String(error)),
-      { context: "liveDirectory:countKvWrite" },
-    );
-  }
-  countMemoryCache = {
-    count: liveCount,
-    expiresAt: Date.now() + LIVE_DIRECTORY_TTL_SECONDS * 1000,
-  };
-
-  return liveCount;
-}
-
 /** テスト専用: メモリキャッシュをリセットする。 */
 export function __resetLiveDirectoryCacheForTests(): void {
   memoryCache = null;
   rankingsMemoryCache = null;
-  countMemoryCache = null;
 }

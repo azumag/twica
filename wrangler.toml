@@ -76,10 +76,6 @@ service = "twica-overlay-realtime"
 # Public value that must survive dashboard-only configuration overwrites.
 [vars]
 NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
-# #951 匿名配信者数カウントは active 配信者100人ごとに Helix GET /streams が
-# 飛ぶため、登録者数の増加に伴う費用・レートリミット対策として一旦無効化する。
-# 再開時は "true" に戻してデプロイする（コード変更不要の kill switch）。
-LIVE_DIRECTORY_COUNT_ENABLED = "false"
 
 # Server secrets are configured with `wrangler secret put` or in the
 # Cloudflare dashboard. NEXT_PUBLIC_* build-time values are supplied by Workers
@@ -99,8 +95,6 @@ enabled = true
 
 [env.preview.vars]
 NEXT_PUBLIC_TWITCH_CLIENT_ID = "k40qdqew0buz3cjshwp6fbr5pmuayw"
-# 本番と同じくオプトアウトを適用し、preview でも Helix 呼び出しを抑える。
-LIVE_DIRECTORY_COUNT_ENABLED = "false"
 
 [[env.preview.kv_namespaces]]
 binding = "RATE_LIMIT_KV"
