@@ -528,6 +528,20 @@ describe("getLiveDirectoryCount (#951)", () => {
     expect(fetchTwitchApi).not.toHaveBeenCalled();
   });
 
+  it("uses the in-memory cache on a second call while the TTL is fresh", async () => {
+    // KV は常に miss のままにし、初回実取得後にメモリキャッシュが効くことを確認する
+    vi.mocked(fetchTwitchApi).mockResolvedValue(
+      new Response(JSON.stringify(streamResponse(["u1"])), { status: 200 }) as never,
+    );
+
+    await expect(getLiveDirectoryCount()).resolves.toBe(1);
+    expect(fetchTwitchApi).toHaveBeenCalledTimes(1);
+
+    await expect(getLiveDirectoryCount()).resolves.toBe(1);
+    expect(fetchTwitchApi).toHaveBeenCalledTimes(1);
+    expect(getDb).toHaveBeenCalledTimes(1);
+  });
+
   it("treats a broken cached payload as a miss and refetches", async () => {
     kv.get.mockResolvedValue(JSON.stringify({ count: "not-a-number" }));
     vi.mocked(fetchTwitchApi).mockResolvedValue(

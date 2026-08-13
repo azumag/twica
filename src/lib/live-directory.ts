@@ -480,6 +480,8 @@ export async function getLiveDirectoryCount(): Promise<number | null> {
       if (raw) {
         const parsed = JSON.parse(raw) as { count?: unknown };
         if (
+          parsed !== null &&
+          typeof parsed === "object" &&
           typeof parsed.count === "number" &&
           Number.isSafeInteger(parsed.count) &&
           parsed.count >= 0
