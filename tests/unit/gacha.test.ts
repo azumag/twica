@@ -192,6 +192,49 @@ describe('selectWeightedCard', () => {
     })
   })
 
+  it('生の乱数ビットが正しいスケールで [0,1) へ写像される', () => {
+    // secureRandomUnit は非公開なので、抽選結果を通して写像を固定する。
+    // χ²検定は確率的で、シフト量の取り違えのような中規模の劣化は見逃しうる
+    // ため、写像そのものはフレーキー率ゼロの決定的テストで守る。
+    //
+    // 均等4枚なので各カードが unit の 0.25 幅の帯を受け持つ。どのカードが
+    // 返るかで unit の値が一意に判別できる。
+    const cards: WeightedCard[] = [
+      { id: 'q1', drop_rate: 0.25 },
+      { id: 'q2', drop_rate: 0.25 },
+      { id: 'q3', drop_rate: 0.25 },
+      { id: 'q4', drop_rate: 0.25 },
+    ]
+    const setRawBits = (high: number, low: number) => {
+      vi.spyOn(crypto, 'getRandomValues').mockImplementation((buf) => {
+        if (buf instanceof Uint32Array && buf.length >= 2) {
+          buf[0] = high
+          buf[1] = low
+        }
+        return buf
+      })
+    }
+
+    // 全ビット0 → unit = 0 → 先頭の帯
+    setRawBits(0x00000000, 0x00000000)
+    expect(selectWeightedCard(cards)?.id).toBe('q1')
+
+    // buf[0] = 0x40000000 → (>>> 6) = 2^24 → 2^24 × 2^27 / 2^53 = 0.25
+    // シフト量を1つ誤る(>>> 5)と 0.5 になり q3 が返るため、取り違えを検出できる。
+    setRawBits(0x40000000, 0x00000000)
+    expect(selectWeightedCard(cards)?.id).toBe('q2')
+
+    // buf[0] = 0x80000000 → (>>> 6) = 2^25 → 0.5。誤って >>> 5 にすると
+    // unit = 1.0 となり区間を踏み外して q4 が返る。
+    setRawBits(0x80000000, 0x00000000)
+    expect(selectWeightedCard(cards)?.id).toBe('q3')
+
+    // 全ビット1 → unit = 1 - 2^-53（1 未満）→ 末尾の帯に収まり、区間を
+    // 超えて null になったりフォールバックへ落ちたりしない
+    setRawBits(0xffffffff, 0xffffffff)
+    expect(selectWeightedCard(cards)?.id).toBe('q4')
+  })
+
   it('カイ二乗検定で設計どおりの分布になっている', () => {
     // 重みは「1e-4 の整数倍でない小さな値」を選ぶ。0.01/0.09/0.3/0.6 のような
     // キリのよい値は 1e-4 で量子化しても比が完全に保たれるため、旧実装の

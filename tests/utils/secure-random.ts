@@ -23,7 +23,9 @@ export function mockSecureRandomUnit(fraction: number) {
     throw new RangeError(`mockSecureRandomUnit: fraction must be in [0, 1), got ${fraction}`)
   }
 
-  const scaled = Math.min(Math.floor(fraction * 0x20000000000000), 0x1fffffffffffff)
+  // 上のガードで fraction < 1 が保証されるため floor(fraction × 2^53) は
+  // 必ず 2^53-1 以下に収まる。追加のクランプは不要。
+  const scaled = Math.floor(fraction * 0x20000000000000)
   const high = Math.floor(scaled / 0x8000000)
   const low = scaled % 0x8000000
 
