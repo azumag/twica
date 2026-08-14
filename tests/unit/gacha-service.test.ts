@@ -5,6 +5,7 @@ import { getDb } from '@/lib/db/client'
 import { reportError } from '@/lib/sentry/error-handler'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { CARD_ISSUANCE_MESSAGES } from '@/lib/card-issuance'
+import { mockSecureRandomUnit } from '../utils/secure-random'
 
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn(),
@@ -125,32 +126,6 @@ function omitIssuanceLimit<T extends { max_issuance_count?: unknown }>(card: T) 
   const { max_issuance_count: omitted, ...withoutIssuanceLimit } = card
   void omitted
   return withoutIssuanceLimit
-}
-
-/**
- * selectWeightedCard が使う secureRandomUnit（crypto.getRandomValues から
- * 53bit の [0,1) 一様乱数を合成する）を、指定したフラクション(f)を返すように
- * モックする。
- *
- * secureRandomUnit は Uint32Array(2) を 1 本引き、
- *   unit = ((buf[0] >>> 6) * 2^27 + (buf[1] >>> 5)) / 2^53
- * を返す。ここではその逆変換で 53bit 整数 f × 2^53 を上位 26bit / 下位 27bit へ
- * 分解して書き戻す。抽選側は「unit × プール重み合計」を閾値に使うため、
- * 呼び出し側は重みのスケール（旧実装の drop_rate × 10000 のような量子化単位）を
- * 意識する必要がない。
- */
-function mockCryptoRandomFraction(fraction: number) {
-  const scaled = Math.min(Math.floor(fraction * 0x20000000000000), 0x1fffffffffffff)
-  const high = Math.floor(scaled / 0x8000000)
-  const low = scaled % 0x8000000
-  vi.spyOn(crypto, 'getRandomValues').mockImplementation((buf) => {
-    // 対象は secureRandomUnit が使う Uint32Array(2) のみ
-    if (buf instanceof Uint32Array && buf.length >= 2) {
-      buf[0] = high << 6
-      buf[1] = low << 5
-    }
-    return buf
-  })
 }
 
 const testCards = [
@@ -581,8 +556,8 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
       [0.65, 'rare-1'],
     ])('global重みの境界でカードを選ぶ: random=%s', async (random, expectedId) => {
       installDbFixture({ tables: { cards: [{ value: packCards }] } })
-      // 有効重み合計 = common(0.3+0.3) + rare(0.4) = 1.0 → ×10000
-      mockCryptoRandomFraction(random)
+      // 有効重み合計 = common(0.3+0.3) + rare(0.4) = 1.0
+      mockSecureRandomUnit(random)
 
       const result = await new GachaService().executeGacha(
         'streamer-1',
@@ -616,7 +591,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      mockCryptoRandomFraction(0.92)
+      mockSecureRandomUnit(0.92)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-manual', 100, 'weapons',
@@ -638,7 +613,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      mockCryptoRandomFraction(0.5)
+      mockSecureRandomUnit(0.5)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-pack-weight', 100, DEFAULT_PACK_SENTINEL,
@@ -657,7 +632,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
 
     it('per_packに対象パックが無ければglobal重みを継承する', async () => {
       installDbFixture({ tables: { cards: [{ value: packCards }] } })
-      mockCryptoRandomFraction(0.65)
+      mockSecureRandomUnit(0.65)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-inherited-weight', 100, 'weapons',
@@ -683,7 +658,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      mockCryptoRandomFraction(0.92)
+      mockSecureRandomUnit(0.92)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-unrestricted-weight', 100, null,
@@ -1213,7 +1188,7 @@ describe('GachaService.executeGachaForEventSub', () => {
         }],
       },
     })
-    mockCryptoRandomFraction(0.5)
+    mockSecureRandomUnit(0.5)
 
     const result = await new GachaService().executeGachaForEventSub(
       baseEvent,

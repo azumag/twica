@@ -23,8 +23,11 @@ function secureRandomUnit(): number {
 /**
  * drop_rate を抽選重みとして安全に number 化する。
  *
- * DB ドライバや履歴 fixture が DECIMAL を文字列で返す場合があるため
- * (card-utils.ts の normalizeDropRate と同じ理由)、ここでも Number() を通す。
+ * 本番経路の呼び出し元 (services/gacha.ts の selectCardFromPool) は
+ * normalizeDropRate / computeEffectiveWeights を通した number しか渡さないが、
+ * DB ドライバや fixture が DECIMAL を文字列で返しうる以上 (card-utils.ts の
+ * normalizeDropRate と同じ理由)、この関数が単体で直接呼ばれた場合に備えて
+ * ここでも Number() を通しておく。
  * NaN・負値・null は「抽選対象外」を意味する 0 に倒す。負値をそのまま
  * 累積和へ入れると、後続カードの当選区間を食い潰して分布が壊れるため。
  */
@@ -51,9 +54,19 @@ function toWeight(value: unknown): number {
  * 2. 1 枚あたりの実効重みが 0.00005 未満になると量子化結果が 0 になり、
  *    そのカードは設定上は排出対象なのに永久に当たらなくなる。
  *
- * 浮動小数点の累積和には桁落ちがあるため、閾値が最後まで到達しなかった場合の
- * 保険として「重みが正だった最後のカード」を返す（items が空、または全カードの
- * 重みが 0 のときのみ null）。
+ * 末尾の `return lastWeighted` は安全網であり、通常経路では到達しない。到達
+ * しないことは次の不変条件に依存している:
+ *   (a) 合計を求める第1ループと当選区間を走る第2ループは、同じ配列を同じ順序で
+ *       加算する。第2ループは重み 0 のカードを飛ばすが、浮動小数点の +0 加算は
+ *       厳密に値を変えないため、最終 cumulative は totalWeight とビット単位で
+ *       一致する（608枚プール 300万回の実測でも不一致・フォールバック発動は0件）。
+ *   (b) secureRandomUnit の最大値は 1 - 2^-53 なので、threshold =
+ *       fl(unit × totalWeight) は必ず totalWeight 未満になる。
+ * したがって「桁落ちで閾値が末尾を超える」ことは起きない。将来 (a) を崩す
+ * リファクタ（合計を別順序で求める、filter を挟む等）や、重み合計が Infinity
+ * へオーバーフローする異常値が入った場合に null を返して抽選失敗
+ * (= チャネルポイントを消費したのにカードが出ない)にしないための保険として残す。
+ * null を返すのは items が空、または全カードの重みが 0 のときだけ。
  */
 export function selectWeightedCard<T extends WeightedCard>(items: T[]): T | null {
   if (items.length === 0) return null
