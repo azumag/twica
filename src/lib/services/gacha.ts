@@ -41,6 +41,10 @@ export interface GachaCard {
   rarity: string
   drop_rate: number
   max_issuance_count?: number | null
+  // Issue #948: 獲得カード自身が属するパック名（未分類カードは null）。
+  // チャット通知 {packName} を抽選スコープでなくカードの実パックから解決する
+  // ために追加した additive field。旧 outbox payload では undefined。
+  collection_name?: string | null
 }
 
 /**

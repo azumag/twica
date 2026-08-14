@@ -430,3 +430,101 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=')
   })
 })
+
+describe('sendChatAnnouncement: {packName} はカード自身のパックを優先する (#948)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const packStreamer = {
+    id: 'streamer-1',
+    chat_announcement_enabled: true,
+    chat_announcement_template: 'pack={packName}',
+    chat_announcement_multi_template: null,
+    chat_announcement_multi_show_cards: false,
+    default_card_pack_name: 'デフォルトパック',
+  }
+  const card = {
+    id: 'card-1',
+    name: 'Alpha',
+    description: null,
+    image_url: null,
+    rarity: 'common',
+    drop_rate: 1,
+  }
+  const snapshot = {
+    cardCount: 1,
+    uniqueCount: 1,
+    allCount: 10,
+    newCardNames: [],
+    newCardNamesResolved: true,
+  }
+
+  it('全カード抽選でも、カードが名前付きパックに属していればそのパック名を表示する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const packedCard = {
+      ...card,
+      collection_name: 'レアパック',
+    }
+
+    // 抽選スコープ（collectionName）は未指定のまま、カードのパックだけが解決される
+    await sendChatAnnouncement(
+      '130871908', packStreamer, packedCard, 'Viewer', 'viewer-1',
+      undefined, undefined, snapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=レアパック')
+  })
+
+  it('旧outbox行（カードのcollection_name無し）は抽選スコープへフォールバックする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const legacyCard = { ...card }
+
+    await sendChatAnnouncement(
+      '130871908', packStreamer, legacyCard, 'Viewer', 'viewer-1',
+      undefined, '抽選パック', snapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=抽選パック')
+  })
+
+  it('未分類カードで抽選スコープも未指定なら空文字のまま（従来挙動を維持）', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const unclassifiedCard = {
+      ...card,
+      collection_name: null,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', packStreamer, unclassifiedCard, 'Viewer', 'viewer-1',
+      undefined, undefined, snapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=')
+  })
+
+  it('デフォルトパック指定抽選はカードのパックを優先しつつ、未分類ならデフォルト名を表示する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const unclassifiedCard = {
+      ...card,
+      collection_name: null,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', packStreamer, unclassifiedCard, 'Viewer', 'viewer-1',
+      undefined, '__default__', snapshot,
+    )
+
+    // カードが未分類のため抽選スコープ（デフォルトパック）へ fallback し、
+    // default_card_pack_name が表示される（#597 の従来挙動を壊さない）
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=デフォルトパック')
+  })
+})
