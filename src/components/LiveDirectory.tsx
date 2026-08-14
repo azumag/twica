@@ -51,9 +51,8 @@ const RANKING_PERIODS: ReadonlyArray<{
   { id: "allTime", labelKey: "period.allTime" },
 ];
 
-// RANKING_PERIODSはラジオボタンの表示順を決めるための配列であり、既定選択の
-// 正本ではない。表示順の並べ替えが既定値まで無言で変えてしまわないよう、
-// 独立した定数として明示する。
+// 既定の集計期間は表示順（RANKING_PERIODS）とは独立した製品判断のため、
+// 定数として明示する。
 const DEFAULT_RANKING_PERIOD: LiveDirectoryRankingPeriod = "last7Days";
 
 function compareFallback(a: LiveDirectoryEntry, b: LiveDirectoryEntry): number {

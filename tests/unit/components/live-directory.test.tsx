@@ -95,10 +95,8 @@ const recentRankings: LiveDirectoryRankingEntry[] = [
 ];
 
 // recentRankingItemsの既定値はrankingItemsと同一（=last7DaysとallTimeが同じ
-// 内容）にしている。期間ごとの表示差を検証したいテストは、専用の recentRankings
-// フィクスチャを明示的に渡すこと（例: "defaults the usage ranking period..." /
-// "switches usage ranking periods..."）。それ以外のテストは期間非依存の検証に
-// 限定する前提で、この既定値のままにしている。
+// 内容）。期間ごとの表示差を検証したいテストは、専用の recentRankings
+// フィクスチャを明示的に渡すこと。
 function renderDirectory(
   streamItems: LiveDirectoryEntry[] = entries,
   rankingItems: LiveDirectoryRankingEntry[] = rankings,
@@ -225,7 +223,9 @@ describe("LiveDirectory", () => {
     expect(alphaLink.querySelector("img")).toHaveAttribute("alt", "");
   });
 
-  it("defaults the usage ranking period to last7Days when the usage ranking tab is first opened", () => {
+  // rankingPeriod は利用量タブ間で共有される単一state（本ファイル上部の
+  // LiveDirectory実装参照）なので、1タブでの検証で全タブ分の既定値を保証する。
+  it("defaults the shared ranking period state to last7Days, verified via the channel points tab", () => {
     renderDirectory(entries, rankings, recentRankings);
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
 
