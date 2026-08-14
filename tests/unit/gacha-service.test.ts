@@ -5,6 +5,7 @@ import { getDb } from '@/lib/db/client'
 import { reportError } from '@/lib/sentry/error-handler'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { CARD_ISSUANCE_MESSAGES } from '@/lib/card-issuance'
+import { mockSecureRandomUnit } from '../utils/secure-random'
 
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportError: vi.fn(),
@@ -555,7 +556,8 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
       [0.65, 'rare-1'],
     ])('global重みの境界でカードを選ぶ: random=%s', async (random, expectedId) => {
       installDbFixture({ tables: { cards: [{ value: packCards }] } })
-      vi.spyOn(Math, 'random').mockReturnValue(random)
+      // 有効重み合計 = common(0.3+0.3) + rare(0.4) = 1.0
+      mockSecureRandomUnit(random)
 
       const result = await new GachaService().executeGacha(
         'streamer-1',
@@ -589,7 +591,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      vi.spyOn(Math, 'random').mockReturnValue(0.92)
+      mockSecureRandomUnit(0.92)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-manual', 100, 'weapons',
@@ -611,7 +613,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      vi.spyOn(Math, 'random').mockReturnValue(0.5)
+      mockSecureRandomUnit(0.5)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-pack-weight', 100, DEFAULT_PACK_SENTINEL,
@@ -630,7 +632,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
 
     it('per_packに対象パックが無ければglobal重みを継承する', async () => {
       installDbFixture({ tables: { cards: [{ value: packCards }] } })
-      vi.spyOn(Math, 'random').mockReturnValue(0.65)
+      mockSecureRandomUnit(0.65)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-inherited-weight', 100, 'weapons',
@@ -656,7 +658,7 @@ describe('GachaService.executeGacha: PlanetScale read/write', () => {
           }],
         },
       })
-      vi.spyOn(Math, 'random').mockReturnValue(0.92)
+      mockSecureRandomUnit(0.92)
 
       const result = await new GachaService().executeGacha(
         'streamer-1', 'user-1', 'Viewer', 'event-unrestricted-weight', 100, null,
@@ -1186,7 +1188,7 @@ describe('GachaService.executeGachaForEventSub', () => {
         }],
       },
     })
-    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    mockSecureRandomUnit(0.5)
 
     const result = await new GachaService().executeGachaForEventSub(
       baseEvent,

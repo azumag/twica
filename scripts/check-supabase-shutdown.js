@@ -471,7 +471,6 @@ assertRawAbsent('src/lib/services/gacha.ts', [
 // 正当なので、現在のproduction実行面だけを明示列挙する。
 for (const file of [
   'scripts/cloudflare-workers-build-deploy.sh',
-  'scripts/smoke-check.js',
   'scripts/replay-maintenance-eventsub.js',
   'scripts/probe-maintenance-write-surfaces.js',
 ]) {

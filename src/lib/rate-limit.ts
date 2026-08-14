@@ -166,6 +166,37 @@ interface KVNamespace {
 let currentStorage: RateLimitStorage = new MemoryRateLimitStorage();
 
 /**
+ * KV ストレージへの初期化（一度だけ実行し、以後は結果を再利用する）。
+ *
+ * Cloudflare Workers（本番）では RATE_LIMIT_KV バインディングを解決して
+ * 分散環境で共有される KV ストレージへ切り替える。バインディングが無い環境
+ * （ローカル dev / 単体テスト）では解決に失敗して null が返るため、メモリ
+ * 実装をそのまま使う。初期化は冪等で、初回 checkRateLimitInternal 呼び出し時
+ * に一度だけ走る。
+ */
+let storageInitPromise: Promise<void> | null = null;
+
+async function ensureKvRateLimitStorage(): Promise<void> {
+  if (storageInitPromise) {
+    return storageInitPromise;
+  }
+  storageInitPromise = (async () => {
+    try {
+      const { getKvBinding } = await import("@/lib/cloudflare-kv");
+      const kv = await getKvBinding();
+      if (kv) {
+        // KVNamespaceLike は get/put/delete の最小契約のみ持つため、
+        // 実装上必要になる 'json' 型指定付き get を持つ形へ型を寄せる。
+        currentStorage = new KVRateLimitStorage(kv as unknown as KVNamespace);
+      }
+    } catch {
+      // バインディング解決失敗時はメモリ実装のまま継続（fail-open 契約を維持）
+    }
+  })();
+  return storageInitPromise;
+}
+
+/**
  * Set the rate limit storage backend
  * レート制限ストレージバックエンドを設定
  *
@@ -209,6 +240,10 @@ async function checkRateLimitInternal(
   windowMs: number,
   identifier: string
 ): Promise<RateLimitResult> {
+  // 初回呼び出し時に KV バインディングを確認し、利用可能なら KV ストレージへ
+  // 切り替える（分散環境でのレート制限共有。無ければメモリ実装のまま）。
+  await ensureKvRateLimitStorage();
+
   const now = Date.now();
   // エンドポイント名をキーに含めることで、異なるエンドポイント間でカウンタが共有されないようにする
   // Include endpoint name in key so counters are not shared across different endpoints

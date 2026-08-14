@@ -2,6 +2,7 @@
   "name": "twica",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "npx wrangler dev",
     "dev:next": "TURBOPACK=0 next dev",
@@ -49,7 +50,6 @@
     "check:maintenance-surfaces": "node scripts/check-maintenance-surfaces.js",
     "probe:maintenance": "node scripts/probe-maintenance-write-surfaces.js",
     "replay:maintenance-eventsub": "node scripts/replay-maintenance-eventsub.js",
-    "smoke-check": "node scripts/smoke-check.js",
     "error-reporter:deploy": "cd workers/error-reporter && OPEN_NEXT_DEPLOY=true npx wrangler deploy",
     "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail"
   },

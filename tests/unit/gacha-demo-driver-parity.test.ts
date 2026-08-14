@@ -101,7 +101,13 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
 
   it('selects an active streamer card', async () => {
     primePgDb([{ rows: [CARD_ROW] }])
-    vi.spyOn(Math, 'random').mockReturnValue(0)
+    // 単一カードプールなので crypto 乱数の値は結果に影響しない（0で固定）
+    vi.spyOn(crypto, 'getRandomValues').mockImplementation((buf) => {
+      if (buf instanceof Uint32Array && buf.length >= 1) {
+        buf[0] = 0
+      }
+      return buf
+    })
 
     const response = await POST(request({ streamerId: 'streamer-1' }))
     const body = await response.json()
