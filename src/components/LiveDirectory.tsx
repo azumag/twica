@@ -51,6 +51,11 @@ const RANKING_PERIODS: ReadonlyArray<{
   { id: "allTime", labelKey: "period.allTime" },
 ];
 
+// RANKING_PERIODSはラジオボタンの表示順を決めるための配列であり、既定選択の
+// 正本ではない。表示順の並べ替えが既定値まで無言で変えてしまわないよう、
+// 独立した定数として明示する。
+const DEFAULT_RANKING_PERIOD: LiveDirectoryRankingPeriod = "last7Days";
+
 function compareFallback(a: LiveDirectoryEntry, b: LiveDirectoryEntry): number {
   // 視聴者数は変動が大きく、利用者が選択していない順位付けを同率時だけ
   // 暗黙に行うと表示順の意図が分かりにくい。安定した識別情報だけを使い、
@@ -134,11 +139,9 @@ export default function LiveDirectory({
   const t = useTranslations("livePage");
   const [view, setView] = useState<LiveDirectoryView>("recentlyStarted");
   // 「今アクティブなチャネル」を探す利用者の意図に合わせ、既定は直近7日間。
-  // 全期間も引き続き選択可能。RANKING_PERIODSの並びと初期選択がずれないよう、
-  // 個別のリテラルではなく配列の先頭要素から導出する。
-  const [rankingPeriod, setRankingPeriod] = useState<LiveDirectoryRankingPeriod>(
-    RANKING_PERIODS[0].id,
-  );
+  // 全期間も引き続き選択可能。
+  const [rankingPeriod, setRankingPeriod] =
+    useState<LiveDirectoryRankingPeriod>(DEFAULT_RANKING_PERIOD);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const sortedEntries = useMemo(() => sortLiveDirectoryEntries(entries), [entries]);
   // 種類数は「現在有効なカード種類数」というスナップショット指標であり、

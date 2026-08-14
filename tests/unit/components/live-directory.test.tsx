@@ -94,6 +94,11 @@ const recentRankings: LiveDirectoryRankingEntry[] = [
   },
 ];
 
+// recentRankingItemsの既定値はrankingItemsと同一（=last7DaysとallTimeが同じ
+// 内容）にしている。期間ごとの表示差を検証したいテストは、専用の recentRankings
+// フィクスチャを明示的に渡すこと（例: "defaults the usage ranking period..." /
+// "switches usage ranking periods..."）。それ以外のテストは期間非依存の検証に
+// 限定する前提で、この既定値のままにしている。
 function renderDirectory(
   streamItems: LiveDirectoryEntry[] = entries,
   rankingItems: LiveDirectoryRankingEntry[] = rankings,
