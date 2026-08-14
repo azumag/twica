@@ -133,10 +133,10 @@ export default function LiveDirectory({
 }: LiveDirectoryProps) {
   const t = useTranslations("livePage");
   const [view, setView] = useState<LiveDirectoryView>("recentlyStarted");
-  // 既存ランキングは全期間だったため初期値を維持する。期間を明示して選べるように
-  // しつつ、リリース直後に順位の見え方が突然変わる退行を避ける。
+  // 直近の活動を反映した順位のほうが「今アクティブなチャネル」を探す利用者の
+  // 意図に合うため、初期表示は直近7日間にする。全期間は引き続き選択可能。
   const [rankingPeriod, setRankingPeriod] =
-    useState<LiveDirectoryRankingPeriod>("allTime");
+    useState<LiveDirectoryRankingPeriod>("last7Days");
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const sortedEntries = useMemo(() => sortLiveDirectoryEntries(entries), [entries]);
   // 種類数は「現在有効なカード種類数」というスナップショット指標であり、

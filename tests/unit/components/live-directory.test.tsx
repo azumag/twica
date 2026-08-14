@@ -223,16 +223,16 @@ describe("LiveDirectory", () => {
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
 
     expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "全期間" })).toBeChecked();
-    expect(screen.getByText("30,000ポイント")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("radio", { name: "直近7日間" }));
-
     expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
     expect(screen.getByText("345ポイント")).toBeInTheDocument();
     expect(
       screen.getByText("直近7日間に記録されたカード引き換えを集計しています。"),
     ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "全期間" }));
+
+    expect(screen.getByRole("radio", { name: "全期間" })).toBeChecked();
+    expect(screen.getByText("30,000ポイント")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "種類数ランキング" }));
     expect(screen.queryByRole("group", { name: "集計期間" })).not.toBeInTheDocument();
@@ -243,8 +243,8 @@ describe("LiveDirectory", () => {
     // 種類数は期間設定の対象外だが、利用量タブへ戻ったときの選択状態は保持する。
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
     expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
-    expect(screen.getByText("345ポイント")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "全期間" })).toBeChecked();
+    expect(screen.getByText("30,000ポイント")).toBeInTheDocument();
   });
 
   it("excludes rows outside each metric candidate set before calculating ranks", () => {
