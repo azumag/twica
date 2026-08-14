@@ -51,6 +51,11 @@ const RANKING_PERIODS: ReadonlyArray<{
   { id: "allTime", labelKey: "period.allTime" },
 ];
 
+// 「今アクティブなチャネル」を探す利用者の意図に合わせ、既定は直近7日間
+// （全期間も引き続き選択可能）。表示順（RANKING_PERIODS）とは独立した
+// 製品判断のため、定数として明示する。
+const DEFAULT_RANKING_PERIOD: LiveDirectoryRankingPeriod = "last7Days";
+
 function compareFallback(a: LiveDirectoryEntry, b: LiveDirectoryEntry): number {
   // 視聴者数は変動が大きく、利用者が選択していない順位付けを同率時だけ
   // 暗黙に行うと表示順の意図が分かりにくい。安定した識別情報だけを使い、
@@ -133,10 +138,8 @@ export default function LiveDirectory({
 }: LiveDirectoryProps) {
   const t = useTranslations("livePage");
   const [view, setView] = useState<LiveDirectoryView>("recentlyStarted");
-  // 既存ランキングは全期間だったため初期値を維持する。期間を明示して選べるように
-  // しつつ、リリース直後に順位の見え方が突然変わる退行を避ける。
   const [rankingPeriod, setRankingPeriod] =
-    useState<LiveDirectoryRankingPeriod>("allTime");
+    useState<LiveDirectoryRankingPeriod>(DEFAULT_RANKING_PERIOD);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const sortedEntries = useMemo(() => sortLiveDirectoryEntries(entries), [entries]);
   // 種類数は「現在有効なカード種類数」というスナップショット指標であり、
