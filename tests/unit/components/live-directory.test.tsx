@@ -83,6 +83,17 @@ const rankings: LiveDirectoryRankingEntry[] = [
   },
 ];
 
+/** allTime（rankings）とは別の値を持つ、直近7日間ランキング用フィクスチャ。 */
+const recentRankings: LiveDirectoryRankingEntry[] = [
+  {
+    identity: rankings[0].identity,
+    cardCount: 1,
+    redemptionCount: 2,
+    totalPoints: 345,
+    rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
+  },
+];
+
 function renderDirectory(
   streamItems: LiveDirectoryEntry[] = entries,
   rankingItems: LiveDirectoryRankingEntry[] = rankings,
@@ -209,16 +220,7 @@ describe("LiveDirectory", () => {
     expect(alphaLink.querySelector("img")).toHaveAttribute("alt", "");
   });
 
-  it("defaults the usage ranking period to last7Days on first render", () => {
-    const recentRankings: LiveDirectoryRankingEntry[] = [
-      {
-        identity: rankings[0].identity,
-        cardCount: 1,
-        redemptionCount: 2,
-        totalPoints: 345,
-        rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
-      },
-    ];
+  it("defaults the usage ranking period to last7Days when the usage ranking tab is first opened", () => {
     renderDirectory(entries, rankings, recentRankings);
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
 
@@ -232,15 +234,6 @@ describe("LiveDirectory", () => {
   });
 
   it("switches usage ranking periods while card count always uses current values", () => {
-    const recentRankings: LiveDirectoryRankingEntry[] = [
-      {
-        identity: rankings[0].identity,
-        cardCount: 1,
-        redemptionCount: 2,
-        totalPoints: 345,
-        rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
-      },
-    ];
     renderDirectory(entries, rankings, recentRankings);
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
 
@@ -260,6 +253,11 @@ describe("LiveDirectory", () => {
     expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "全期間" })).toBeChecked();
     expect(screen.getByText("30,000ポイント")).toBeInTheDocument();
+
+    // 全期間 → 直近7日間へ戻す経路も検証する（切り替えは双方向）。
+    fireEvent.click(screen.getByRole("radio", { name: "直近7日間" }));
+    expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
+    expect(screen.getByText("345ポイント")).toBeInTheDocument();
   });
 
   it("excludes rows outside each metric candidate set before calculating ranks", () => {
