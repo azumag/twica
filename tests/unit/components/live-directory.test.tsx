@@ -223,8 +223,9 @@ describe("LiveDirectory", () => {
     expect(alphaLink.querySelector("img")).toHaveAttribute("alt", "");
   });
 
-  // rankingPeriod は利用量タブ間で共有される単一state（本ファイル上部の
-  // LiveDirectory実装参照）なので、1タブでの検証で全タブ分の既定値を保証する。
+  // rankingPeriod は利用量タブ間で共有される単一state
+  // （src/components/LiveDirectory.tsx の useState 1本）なので、
+  // 1タブでの検証で全タブ分の既定値を保証する。
   it("defaults the shared ranking period state to last7Days, verified via the channel points tab", () => {
     renderDirectory(entries, rankings, recentRankings);
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
@@ -242,11 +243,11 @@ describe("LiveDirectory", () => {
     renderDirectory(entries, rankings, recentRankings);
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
 
-    fireEvent.click(screen.getByRole("radio", { name: "全期間" }));
-
-    expect(screen.getByRole("radio", { name: "全期間" })).toBeChecked();
-    expect(screen.getByText("30,000ポイント")).toBeInTheDocument();
-
+    // 種類数タブは既定値変更後もrankingPeriod（ここではlast7Days）を無視して
+    // allTimeだけを参照することを検証する。rankingPeriodがallTimeへ切り替わった
+    // 後にこの分岐を確認すると、rankings[rankingPeriod]とrankings.allTimeが
+    // 一致してしまい、誤って分岐を削っても検知できない回帰ガードになるため、
+    // last7Days選択中に確認する。
     fireEvent.click(screen.getByRole("tab", { name: "種類数ランキング" }));
     expect(screen.queryByRole("group", { name: "集計期間" })).not.toBeInTheDocument();
     expect(screen.getByText("現在有効なカード種類数です。")).toBeInTheDocument();
@@ -254,6 +255,24 @@ describe("LiveDirectory", () => {
     expect(screen.queryByText("1種類")).not.toBeInTheDocument();
 
     // 種類数は期間設定の対象外だが、利用量タブへ戻ったときの選択状態は保持する。
+    fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
+    expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
+    expect(screen.getByText("345ポイント")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "全期間" }));
+
+    expect(screen.getByRole("radio", { name: "全期間" })).toBeChecked();
+    expect(screen.getByText("30,000ポイント")).toBeInTheDocument();
+    expect(
+      screen.getByText("TwiCaに記録されている全期間のカード引き換えを集計しています。"),
+    ).toBeInTheDocument();
+
+    // 全期間へ切り替えた後も、種類数タブは同じallTimeを参照し続ける
+    // （タブ往復による二重フェッチや不整合がないことの確認）。
+    fireEvent.click(screen.getByRole("tab", { name: "種類数ランキング" }));
+    expect(screen.getAllByText("12種類")).toHaveLength(2);
+
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
     expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "全期間" })).toBeChecked();

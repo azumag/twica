@@ -51,8 +51,9 @@ const RANKING_PERIODS: ReadonlyArray<{
   { id: "allTime", labelKey: "period.allTime" },
 ];
 
-// 既定の集計期間は表示順（RANKING_PERIODS）とは独立した製品判断のため、
-// 定数として明示する。
+// 「今アクティブなチャネル」を探す利用者の意図に合わせ、既定は直近7日間
+// （全期間も引き続き選択可能）。表示順（RANKING_PERIODS）とは独立した
+// 製品判断のため、定数として明示する。
 const DEFAULT_RANKING_PERIOD: LiveDirectoryRankingPeriod = "last7Days";
 
 function compareFallback(a: LiveDirectoryEntry, b: LiveDirectoryEntry): number {
@@ -137,8 +138,6 @@ export default function LiveDirectory({
 }: LiveDirectoryProps) {
   const t = useTranslations("livePage");
   const [view, setView] = useState<LiveDirectoryView>("recentlyStarted");
-  // 「今アクティブなチャネル」を探す利用者の意図に合わせ、既定は直近7日間。
-  // 全期間も引き続き選択可能。
   const [rankingPeriod, setRankingPeriod] =
     useState<LiveDirectoryRankingPeriod>(DEFAULT_RANKING_PERIOD);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
