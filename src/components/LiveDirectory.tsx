@@ -133,8 +133,10 @@ export default function LiveDirectory({
 }: LiveDirectoryProps) {
   const t = useTranslations("livePage");
   const [view, setView] = useState<LiveDirectoryView>("recentlyStarted");
-  // 直近の活動を反映した順位のほうが「今アクティブなチャネル」を探す利用者の
-  // 意図に合うため、初期表示は直近7日間にする。全期間は引き続き選択可能。
+  // 当初は「ランキング公開直後に順位が急変する退行を避ける」ため全期間を初期値に
+  // していたが、公開から日数が経ち初期表示が急変する懸念は解消したため、直近の
+  // 活動を反映した順位のほうが「今アクティブなチャネル」を探す利用者の意図に
+  // 合う直近7日間へ切り替える。全期間は引き続き選択可能。
   const [rankingPeriod, setRankingPeriod] =
     useState<LiveDirectoryRankingPeriod>("last7Days");
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);

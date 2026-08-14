@@ -209,7 +209,7 @@ describe("LiveDirectory", () => {
     expect(alphaLink.querySelector("img")).toHaveAttribute("alt", "");
   });
 
-  it("switches usage ranking periods while card count always uses current values", () => {
+  it("defaults the usage ranking period to last7Days on first render", () => {
     const recentRankings: LiveDirectoryRankingEntry[] = [
       {
         identity: rankings[0].identity,
@@ -222,12 +222,27 @@ describe("LiveDirectory", () => {
     renderDirectory(entries, rankings, recentRankings);
     fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
 
+    // 初期選択は直近7日間。全期間へは明示的な操作でのみ切り替わる（regression guard）。
     expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
     expect(screen.getByText("345ポイント")).toBeInTheDocument();
     expect(
       screen.getByText("直近7日間に記録されたカード引き換えを集計しています。"),
     ).toBeInTheDocument();
+  });
+
+  it("switches usage ranking periods while card count always uses current values", () => {
+    const recentRankings: LiveDirectoryRankingEntry[] = [
+      {
+        identity: rankings[0].identity,
+        cardCount: 1,
+        redemptionCount: 2,
+        totalPoints: 345,
+        rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
+      },
+    ];
+    renderDirectory(entries, rankings, recentRankings);
+    fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
 
     fireEvent.click(screen.getByRole("radio", { name: "全期間" }));
 
