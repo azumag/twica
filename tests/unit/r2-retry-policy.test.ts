@@ -1,36 +1,20 @@
-import { describe, expect, it, vi } from 'vitest'
-import { isTransientCloudflareR2Error, retryCloudflareR2Upload } from '@/lib/r2-retry-policy'
+import { describe, expect, it } from 'vitest'
+import { CLOUDFLARE_R2_TRANSIENT_MARKERS } from '@/lib/r2-retry-policy'
 
-describe('R2 retry policy', () => {
-  it('Cloudflare R2 error 10043を一時障害として扱う', () => {
-    expect(isTransientCloudflareR2Error('put: Please look at https://www.cloudflarestatus.com for issues or contact customer support. (10043)')).toBe(true)
+// CLOUDFLARE_R2_TRANSIENT_MARKERS は、Cloudflare R2固有のエラーコードのうち
+// 「一時障害としてリトライすべきもの」の単一の情報源(single source of truth)。
+// 実際の判定ロジック（isTransientR2Error）はr2-client.ts側に一本化されている
+// （Issue #980でこのファイルにあった isTransientCloudflareR2Error / retryCloudflareR2Upload
+// は撤去済み）。ここではマーカー一覧という「データ」自体の内容だけを検証する。
+// このマーカーを使った判定の実際の挙動（isTransientR2Errorが真を返すか）は
+// tests/unit/r2-client-transient-error.test.ts に委ね、同じ判定ロジックを
+// 2箇所でテストする重複を避ける。
+describe('CLOUDFLARE_R2_TRANSIENT_MARKERS', () => {
+  it('Cloudflare R2のInternalError (10001) を含む (Issue #976/#977)', () => {
+    expect(CLOUDFLARE_R2_TRANSIENT_MARKERS).toContain('(10001)')
   })
 
-  it('Cloudflare R2 error 10001（InternalError）を一時障害として扱う (Issue #976/#977)', () => {
-    expect(isTransientCloudflareR2Error('put: We encountered an internal error. Please try again. (10001)')).toBe(true)
-  })
-
-  it('認証エラーなど恒久障害は再試行対象にしない', () => {
-    expect(isTransientCloudflareR2Error('AccessDenied: invalid credentials')).toBe(false)
-  })
-
-  it('10043の後に成功した場合は再実行する', async () => {
-    const upload = vi.fn<() => Promise<{ url?: string; error?: string }>>()
-      .mockResolvedValueOnce({ error: 'put failed (10043)' })
-      .mockResolvedValueOnce({ url: 'https://example.test/image.png' })
-    const sleep = vi.fn().mockResolvedValue(undefined)
-
-    await expect(retryCloudflareR2Upload(upload, 2, sleep)).resolves.toEqual({ url: 'https://example.test/image.png' })
-    expect(upload).toHaveBeenCalledTimes(2)
-    expect(sleep).toHaveBeenCalledWith(500)
-  })
-
-  it('非一時エラーは再試行しない', async () => {
-    const upload = vi.fn().mockResolvedValue({ error: 'AccessDenied' })
-    const sleep = vi.fn().mockResolvedValue(undefined)
-
-    await expect(retryCloudflareR2Upload(upload, 2, sleep)).resolves.toEqual({ error: 'AccessDenied' })
-    expect(upload).toHaveBeenCalledTimes(1)
-    expect(sleep).not.toHaveBeenCalled()
+  it('Cloudflare R2のServiceUnavailable (10043) を含む', () => {
+    expect(CLOUDFLARE_R2_TRANSIENT_MARKERS).toContain('(10043)')
   })
 })
