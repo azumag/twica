@@ -198,6 +198,112 @@ describe('transactional chat outbox claim/ack', () => {
     })).toEqual(unresolvedPayload)
   })
 
+  it('Issue #948: card.collection_nameのundefined/null/文字列を受理し、不正型はDLQへ拒否する', () => {
+    const basePayload = {
+      batchId: 'batch-1',
+      broadcasterTwitchUserId: 'broadcaster-1',
+      userId: 'viewer-1',
+      streamer: {
+        id: 'streamer-1',
+        chat_announcement_enabled: true,
+        chat_announcement_template: null,
+        chat_announcement_multi_template: null,
+        chat_announcement_multi_show_cards: true,
+        default_card_pack_name: null,
+      },
+      gachaResult: {
+        type: 'gacha',
+        userTwitchUsername: 'Viewer',
+        rewardId: 'reward-1',
+        collectionName: null,
+        card: {
+          id: 'card-1', name: 'Alpha', description: null, image_url: null,
+          rarity: 'rare', drop_rate: 1,
+        },
+        cards: [{
+          id: 'card-1', name: 'Alpha', description: null, image_url: null,
+          rarity: 'rare', drop_rate: 1,
+        }],
+      },
+      chatSnapshot: {
+        cardCount: 1,
+        uniqueCount: 1,
+        allCount: 10,
+        newCardNames: ['Alpha'],
+        newCardNamesResolved: true,
+      },
+    }
+
+    // 旧payload（キー欠落 = undefined）はマイグレーション前の実データそのもの。
+    // 引き続きdecode可能でなければ、既存backlogが軒並みDLQに落ちてしまう。
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: basePayload,
+    })).toEqual(basePayload)
+
+    // 新payloadの未分類カード（collection_name: null）も同様に受理する。
+    const unclassifiedPayload = {
+      ...basePayload,
+      gachaResult: {
+        ...basePayload.gachaResult,
+        card: { ...basePayload.gachaResult.card, collection_name: null },
+      },
+    }
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: unclassifiedPayload,
+    })).toEqual(unclassifiedPayload)
+
+    // 名前付きパックのカード（collection_name: string）も受理する。
+    const packedPayload = {
+      ...basePayload,
+      gachaResult: {
+        ...basePayload.gachaResult,
+        card: { ...basePayload.gachaResult.card, collection_name: 'レアパック' },
+      },
+    }
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: packedPayload,
+    })).toEqual(packedPayload)
+
+    // 不正型（number）は、他のoptional string系フィールドと同じ水準でDLQへ拒否する。
+    const invalidPayload = {
+      ...basePayload,
+      gachaResult: {
+        ...basePayload.gachaResult,
+        card: { ...basePayload.gachaResult.card, collection_name: 42 },
+      },
+    }
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: invalidPayload,
+    })).toBeNull()
+
+    // 検証は`gachaResult.card`だけでなく`cards[]`（N連の全カード）にも及ぶ。
+    // RPC生成payloadでは発生し得ないが、N連の1枚でも型不正なら通知全体が
+    // DLQ化される検証パスを固定する。
+    const invalidCardsArrayPayload = {
+      ...basePayload,
+      gachaResult: {
+        ...basePayload.gachaResult,
+        cards: [
+          { ...basePayload.gachaResult.cards[0], collection_name: 'レアパック' },
+          { ...basePayload.gachaResult.cards[0], id: 'card-2', collection_name: 42 },
+        ],
+      },
+    }
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: invalidCardsArrayPayload,
+    })).toBeNull()
+  })
+
   it('sent更新はidとlease_idの両方でfenceする', async () => {
     const sqlMock = createSqlMock([[{ id: CLAIM_ROW.id }]])
     vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })

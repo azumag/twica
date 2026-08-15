@@ -3,6 +3,7 @@ import {
   cardMatchesPackKey,
   computePackProgress,
   deriveCollectionPackGroups,
+  resolveCardPackKey,
   resolvePackDisplayName,
 } from "@/lib/collection-packs";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
@@ -115,6 +116,32 @@ describe("collection-packs", () => {
         owned: 0,
         total: 0,
       });
+    });
+  });
+
+  // Issue #948: {packName} 用に、獲得カード自身のパックキーを解決する（旧payload
+  // は抽選スコープへフォールバック）。PR #972 レビュー指摘: eventsub-redemption.ts
+  // 内の三項＋??混在の可読性・空文字collection_nameのエッジケースを、純粋関数へ
+  // 切り出して直接テストできるようにした。
+  describe("resolveCardPackKey", () => {
+    it("falls back to the draw scope when the card's collection_name is undefined (legacy payload)", () => {
+      expect(resolveCardPackKey(undefined, "抽選パック")).toBe("抽選パック");
+      expect(resolveCardPackKey(undefined, null)).toBeNull();
+      expect(resolveCardPackKey(undefined, undefined)).toBeUndefined();
+    });
+
+    it("resolves to DEFAULT_PACK_SENTINEL when the card is unclassified (null), ignoring the draw scope", () => {
+      expect(resolveCardPackKey(null, "抽選パック")).toBe(DEFAULT_PACK_SENTINEL);
+      expect(resolveCardPackKey(null, undefined)).toBe(DEFAULT_PACK_SENTINEL);
+    });
+
+    it("treats an empty string the same as null (defensive: normalizeCollectionName blanks to null at write time)", () => {
+      expect(resolveCardPackKey("", "抽選パック")).toBe(DEFAULT_PACK_SENTINEL);
+    });
+
+    it("returns the card's own named pack verbatim, ignoring the draw scope", () => {
+      expect(resolveCardPackKey("レアパック", "抽選パック")).toBe("レアパック");
+      expect(resolveCardPackKey("レアパック", null)).toBe("レアパック");
     });
   });
 

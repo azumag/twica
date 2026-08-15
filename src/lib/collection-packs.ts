@@ -122,14 +122,49 @@ export function computePackProgress(
 }
 
 /**
- * Issue #597: resolve the display name of the pack a gacha draw was scoped
- * to, for the `{packName}` chat announcement placeholder.
+ * Issue #948: resolve which pack key a gacha card should be looked up under
+ * for the `{packName}` chat announcement placeholder — the card's OWN pack
+ * takes priority over the pack the draw was scoped to.
+ *
+ * - `cardCollectionName === undefined` — pre-#948 outbox payload (built
+ *   before the migration that added `collection_name` to the card payload).
+ *   Falls back to `drawScopeCollectionName`, i.e. the original #597 behavior.
+ * - `cardCollectionName` is `null` or `''` — the card is unclassified.
+ *   Resolves to `DEFAULT_PACK_SENTINEL` so the caller shows the default
+ *   pack's display name instead of leaving `{packName}` blank. (The first
+ *   #948 fix left unclassified cards blank; on catalogs where most cards are
+ *   unclassified, `{packName}` stayed empty almost always, so the reported
+ *   symptom persisted.) `''` is defensive — `normalizeCollectionName` blanks
+ *   to `null` at write time, so only `null` is expected in practice.
+ * - any other string — the card's own named pack, verbatim.
+ *
+ * `null`/`''` mapping to `DEFAULT_PACK_SENTINEL` is safe because real pack
+ * names can't start with `__` (rejected at registration, see
+ * `validation/collection-name.ts`), so the sentinel can never collide with
+ * an actual pack name.
+ */
+export function resolveCardPackKey(
+  cardCollectionName: string | null | undefined,
+  drawScopeCollectionName: string | null | undefined
+): string | null | undefined {
+  if (cardCollectionName === undefined) return drawScopeCollectionName;
+  return cardCollectionName || DEFAULT_PACK_SENTINEL;
+}
+
+/**
+ * Issue #597: resolve the display name of a pack key for the `{packName}`
+ * chat announcement placeholder.
+ *
+ * The caller decides which pack key to resolve — originally (#597) always
+ * the pack the gacha draw was SCOPED to; since #948, `resolveCardPackKey`
+ * above prefers the obtained card's own pack instead. This helper stays
+ * agnostic to that choice: it just maps a pack key to a display name.
  *
  * Mirrors the 3 states the collection page (page.tsx) already distinguishes
  * for `CollectionPackDisplay.displayName`, just resolved eagerly instead of
  * being left for a client component to fall back on:
- * - `collectionName` is null/undefined — the draw was NOT restricted to any
- *   pack (unrestricted gacha) → `''` (stripped by chat-service's optional
+ * - `collectionName` is null/undefined — no pack information (legacy payload
+ *   with unrestricted draw) → `''` (stripped by chat-service's optional
  *   placeholder handling, same convention as `{newCards}` when absent).
  * - `collectionName === DEFAULT_PACK_SENTINEL` — restricted to the default
  *   (unclassified) pseudo-pack → the streamer's override (`defaultPackName`,

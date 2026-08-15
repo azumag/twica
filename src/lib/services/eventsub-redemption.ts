@@ -37,7 +37,7 @@ import { cancelRedemption } from "@/lib/twitch/channel-points";
 
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
-import { resolvePackDisplayName } from "@/lib/collection-packs";
+import { resolveCardPackKey, resolvePackDisplayName } from "@/lib/collection-packs";
 import { runInBackground } from "@/lib/background-task";
 import {
   claimChatNotificationBatch,
@@ -86,7 +86,7 @@ async function reportNotificationError(
 // Issue #597: {packName} でデフォルト(未分類)パックの表示名オーバーライドが
 // 未設定の場合のフォールバックラベル。チャット文言は他の箇所(rarityMap等)と
 // 同様に i18n非対応でハードコードする。messages/*.json の
-// "collections.defaultOnlyName"（コレクションページのパックタブ用ラベル）と
+// "collections.defaultOnlyName"（ダッシュボードのパック設定用ラベル）と
 // 同じ文言に揃えている。
 export const DEFAULT_PACK_CHAT_FALLBACK_LABEL = "デフォルトパック";
 
@@ -1043,7 +1043,8 @@ async function fetchActiveCardCountPg(
  *
  * @param broadcasterTwitchUserId - 配信者のTwitchユーザーID
  * @param streamer - 配信者の設定情報
- * @param card - 獲得したカード（GachaCard型 - gacha serviceから返される）
+ * @param card - 獲得したカード（GachaCard型 - gacha serviceから返される）。N連時は
+ *   先頭カード（{card}/{packName} 等の単発系placeholderが参照するのはこの1枚のみ）
  * @param userName - ガチャを引いたユーザー名
  * @param userId - ガチャを引いたユーザーのTwitch ID
  * @param cards - 複数枚ガチャ時の獲得カード一覧
@@ -1261,13 +1262,14 @@ export async function sendChatAnnouncement(
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://twica.live';
   const collectionUrl = `${baseUrl}/collection/${streamer.id}`;
 
-  // Issue #948: {packName} は「抽選スコープ」でなく「獲得カード自身のパック」を
-  // 優先して解決する。メイン報酬＝全カード抽選では抽選スコープ（collectionName）が
-  // 常に null になり、名前付きパックのカードでも {packName} が空文字になるため。
-  // 旧 outbox 行（カード payload に collection_name が無い）は従来どおり
-  // 抽選スコープへフォールバックして後方互換を保つ。
+  // Issue #948: {packName} は獲得カード自身のパックを優先して解決する（未分類
+  // カードもデフォルトパック名で埋める）。resolveCardPackKey / resolvePackDisplayName
+  // のdocstringに解決規則の詳細と旧payloadへのフォールバック根拠がある。
+  //
+  // フォールバックラベル「デフォルトパック」とビューアページタブの汎用ラベル
+  // 「デフォルト」の1語差は既知の設計判断（#973で追跡、コード変更なしで据え置き）。
   const packName = resolvePackDisplayName(
-    card.collection_name ?? collectionName ?? null,
+    resolveCardPackKey(card.collection_name, collectionName),
     streamer.default_card_pack_name ?? null,
     DEFAULT_PACK_CHAT_FALLBACK_LABEL
   );
