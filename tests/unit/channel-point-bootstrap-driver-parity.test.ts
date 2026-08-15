@@ -44,6 +44,11 @@ vi.mock('@/lib/rate-limit', () => ({
 vi.mock('@/lib/twitch/token-manager', () => ({
   hasScope: vi.fn(),
   getTwitchAccessToken: vi.fn(),
+  // Issue #653/#670: route handlerのcatchが常に呼ぶため、固定モックにも
+  // 用意する必要がある。このファイルの検証対象(streamers/rewards SQL契約)
+  // とは無関係な非TwitchTokenError系エラーしか経由しないため、常にundefinedを
+  // 返す実装で十分(handleApiErrorのadditionalInfoが常にundefinedになるだけ)。
+  twitchTokenErrorReportContext: vi.fn().mockReturnValue(undefined),
 }))
 // #788: capability probe の永続化状態を読む/書くヘルパー。このテストファイルは
 // getOwnedStreamer/getAdditionalRewards の SQL 契約だけを検証対象としており、

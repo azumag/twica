@@ -18,6 +18,8 @@ vi.mock('@/lib/rate-limit', () => ({
 vi.mock('@/lib/twitch/token-manager', () => ({
   hasScope: vi.fn(),
   getTwitchAccessToken: vi.fn(),
+  // Issue #653/#670: route handlerのcatchが常に呼ぶため固定モックにも必要。
+  twitchTokenErrorReportContext: vi.fn().mockReturnValue(undefined),
 }))
 vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
 // #788: GET ハンドラは早期returnも含め常に getChannelPointsAccessState を呼ぶため、

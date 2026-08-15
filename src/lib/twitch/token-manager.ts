@@ -21,7 +21,14 @@ export class TwitchTokenError extends Error {
   constructor(
     message: string,
     public readonly code: 'NO_TOKEN' | 'REFRESH_FAILED' | 'DATABASE_ERROR' | 'USER_NOT_FOUND',
-    public readonly originalError?: Error
+    public readonly originalError?: Error,
+    // Issue #653/#670/#654/#655: TwitchTokenRefreshErrorのstatus/kind/retryable
+    // (安全な要約値のみ)をAPI境界(handleApiError)まで橋渡しするための追加フィールド。
+    // 生のoriginalErrorをここに載せない理由はtwitchTokenRefreshFailureContextの
+    // doc参照(lease/CAS更新のDBエラーがbind paramsごと混入し得るため)。
+    public readonly refreshStatus?: number,
+    public readonly refreshErrorKind?: TwitchTokenRefreshError['kind'],
+    public readonly refreshRetryable?: boolean,
   ) {
     super(message);
     this.name = 'TwitchTokenError';
@@ -40,9 +47,14 @@ export class TwitchTokenError extends Error {
  * プロバイダが入力値を反射し得るため意図的に保持しない設計)ため、ここでは
  * 単にその値をログ経路へ橋渡しするだけで、新しい機密情報は増えない。
  *
- * 戻り値をlogger呼び出しへspreadする用途のみを想定するため、該当しない
- * errorに対しては空オブジェクトを返す(該当フィールドがログへ出ないだけで、
- * 呼び出し側のログ呼び出し自体を分岐させる必要をなくす)。
+ * error instanceof TwitchTokenRefreshError でない場合(lease取得やCAS保存の
+ * DBエラー等)は空オブジェクトを返す。drizzle-ormはpostgres.jsのエラーを
+ * `DrizzleQueryError { query, params, cause }` で1段ラップし、paramsには
+ * このモジュールが書き込むtwitch_access_token/twitch_refresh_tokenの実値が
+ * bindされる(src/lib/db/errors.ts参照)。このためDBエラーはoriginalErrorは
+ * おろかここでも一切値を読まず、TwitchTokenRefreshError以外は無条件に
+ * 空オブジェクトへ倒す。呼び出し側のログ呼び出し自体を分岐させる必要をなくす
+ * ため、戻り値は常にspread可能なオブジェクトにする。
  */
 function twitchTokenRefreshFailureContext(error: unknown): {
   refreshStatus?: number;
@@ -54,6 +66,34 @@ function twitchTokenRefreshFailureContext(error: unknown): {
     refreshStatus: error.status,
     refreshErrorKind: error.kind,
     refreshRetryable: error.retryable,
+  };
+}
+
+/**
+ * TwitchTokenError(REFRESH_FAILED)から、API境界(handleApiError等)がPlanetScale
+ * errorsテーブルのcontextへ載せるための安全な診断summaryを抽出する
+ * (Issue #653/#670/#654/#655)。
+ *
+ * 背景: 下位層(refreshTwitchAccessTokenPg)はlogger.warnで診断フィールドを
+ * console出力するが、logger.server.tsの設計上warnはPlanetScaleのerrorsテーブルへ
+ * 永続化されない(永続化はlogger.errorのみ。永続化責任をAPI境界へ一元化し、
+ * 同じ障害を下位層と境界の双方でIssue化しない方針のため)。auto-generated bug
+ * reportのContextを実際に埋めるには、この関数の戻り値をhandleApiErrorの
+ * additionalInfoへ明示的に渡す必要がある(handleApiError呼び出し元のroute
+ * handlerで使用)。
+ *
+ * error が TwitchTokenError(REFRESH_FAILED) でない場合、または診断フィールドが
+ * 無い場合(DBエラー等、twitchTokenRefreshFailureContextが空を返したケース)は
+ * undefined を返す。handleApiError の additionalInfo は optional のため、
+ * undefined を渡せば従来どおり context 無しの記録になる。
+ */
+export function twitchTokenErrorReportContext(error: unknown): Record<string, unknown> | undefined {
+  if (!(error instanceof TwitchTokenError) || error.code !== 'REFRESH_FAILED') return undefined;
+  if (error.refreshStatus === undefined && error.refreshErrorKind === undefined) return undefined;
+  return {
+    refreshStatus: error.refreshStatus,
+    refreshErrorKind: error.refreshErrorKind,
+    refreshRetryable: error.refreshRetryable,
   };
 }
 
@@ -1088,17 +1128,29 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
     // 永続化責任は bootstrap/rewards/callback 等の API 境界に統一する。ここで
     // logger.error を使うと同じ例外を下位層と境界の双方が errors へ書く。
     // Issue #653/#670: refreshStatus/refreshErrorKindをcontextへ含めることで、
-    // auto-generated bug reportのContextが空のまま「恒久エラーか一時エラーか
-    // 判別できない」という状態を解消する(twitchTokenRefreshFailureContext参照)。
-    // originalErrorも保持し、上位で必要になった際に握りつぶさず参照できるようにする。
+    // wrangler tail等のconsole診断でも恒久エラーか一時エラーかを判別できる
+    // ようにする(twitchTokenRefreshFailureContext参照)。auto-generated bug
+    // reportのContext自体は、この診断値をTwitchTokenErrorのフィールド経由で
+    // 受け取ったAPI境界がhandleApiErrorのadditionalInfoへ渡して初めて埋まる
+    // (twitchTokenErrorReportContext参照)。
+    //
+    // originalErrorは意図的に渡さない: このcatchはTwitchTokenRefreshError
+    // だけでなくlease取得/CAS保存のDBエラーも受け取るが、drizzle-ormが
+    // ラップするDBエラーにはtwitch_access_token/twitch_refresh_tokenの実値を
+    // 含むbind paramsが載り得る。originalErrorは現状どこからも読まれておらず
+    // (grep済み)、安全性が確認できないDBエラーをここで新たに保持する理由が無い。
+    const diagnostic = twitchTokenRefreshFailureContext(error);
     logger.warn('Failed to refresh Twitch access token', {
       twitchUserId,
-      ...twitchTokenRefreshFailureContext(error),
+      ...diagnostic,
     });
     throw new TwitchTokenError(
       'Failed to refresh Twitch access token',
       'REFRESH_FAILED',
-      error instanceof Error ? error : undefined,
+      undefined,
+      diagnostic.refreshStatus,
+      diagnostic.refreshErrorKind,
+      diagnostic.refreshRetryable,
     );
   }
 }
