@@ -7,6 +7,7 @@ import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } f
 import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client';
+import { retryCloudflareR2Upload } from '@/lib/r2-retry-policy';
 import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
 
@@ -155,7 +156,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     fileName = `sound_${userPrefix}_${uniqueSuffix}.${ext}`;
 
     // R2効果音バケットにアップロード（リトライ付き）
-    const uploadResult = await uploadSoundToR2WithRetry(fileName, buffer, actualType);
+    // R2の既知の一時障害コード（10001/10043等）は画像アップロードと同じ
+    // retryCloudflareR2Uploadでさらに再試行する (Issue #976, #977と同型の障害に対応)
+    const uploadResult = await retryCloudflareR2Upload(
+      () => uploadSoundToR2WithRetry(fileName!, buffer!, actualType)
+    );
 
     if ('error' in uploadResult) {
       return handleBlobError(

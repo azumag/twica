@@ -5,6 +5,11 @@ export interface R2UploadResult {
 
 const CLOUDFLARE_R2_TRANSIENT_MARKERS = [
   '(10043)',
+  // R2の内部エラー(InternalError)。Cloudflare側の一時障害で、
+  // メッセージは "We encountered an internal error. Please try again. (10001)"
+  // 固定文言のため、将来コードが変わっても拾えるようフレーズでも判定する (Issue #976, #977)
+  '(10001)',
+  'we encountered an internal error',
   'cloudflarestatus.com',
   'contact customer support',
 ]

@@ -10,6 +10,14 @@ describe('R2 retry policy', () => {
     expect(isTransientCloudflareR2Error('AccessDenied: invalid credentials')).toBe(false)
   })
 
+  it('Cloudflare R2 error 10001（InternalError）を一時障害として扱う (#976, #977)', () => {
+    expect(isTransientCloudflareR2Error('put: We encountered an internal error. Please try again. (10001)')).toBe(true)
+  })
+
+  it('10001のコードが変わっても定型フレーズで一時障害と判定する', () => {
+    expect(isTransientCloudflareR2Error('We encountered an internal error. Please try again. (99999)')).toBe(true)
+  })
+
   it('10043の後に成功した場合は再実行する', async () => {
     const upload = vi.fn<() => Promise<{ url?: string; error?: string }>>()
       .mockResolvedValueOnce({ error: 'put failed (10043)' })
