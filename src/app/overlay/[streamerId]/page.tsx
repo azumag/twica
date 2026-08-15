@@ -666,8 +666,42 @@ export default function OverlayPage() {
     // `if (!isDisplayingRef.current)` ガードが常に偽になって、後続の
     // 実イベントを受信してもキューに積まれるだけで二度と画面へ反映
     // されなくなっていた（1件でも例外が起きるとそのOBSセッションが
-    // 恒久的に沈黙する）。try/catchで囲み、失敗したカード1件分だけ
-    // 諦めて後続カードの処理を継続できるようにする。
+    // 恒久的に沈黙する）。
+    //
+    // レビュー指摘#1対応: 単純に外側をtry/catchで囲むだけでは不十分
+    // だった。下の3段のsetTimeoutコールバック（表示後の音声再生・次
+    // カードへの再帰呼び出しを含む）は、それをスケジュールした関数の
+    // try/catchの動的スコープに含まれない別タスクとして実行される
+    // ため、その中で投げた例外は外側のcatchに伝播せず、同じロック
+    // 固着バグが再現してしまう。runProtectedで各コールバック本体を
+    // 個別に保護し、どの区間で例外が起きても同じ経路（handleQueueError）
+    // でロックを解放できるようにする。
+    //
+    // レビュー指摘#2対応: catch側の再継続を同期的な直接呼び出しに
+    // すると、同一の例外がキュー内の全アイテムで連続して起きた場合に
+    // 同期呼び出しの連鎖でコールスタックを消費し続け、RangeError
+    // (Maximum call stack size exceeded)で落ちてロックが解放されない
+    // まま終わりうる（実測で約8000件連続でスタックオーバーフローを
+    // 確認済み）。setTimeout(..., 0)でマクロタスクへ逃がし、各
+    // イテレーションで確実にコールスタックを巻き戻す。
+    const handleQueueError = (error: unknown) => {
+      logger.error("Error processing gacha display queue:", error);
+      addDebugLogRef.current(
+        `processQueue error: ${error instanceof Error ? error.message : String(error)}`
+      );
+      // ロックを握ったまま関数を抜けないよう、失敗したカードは諦めて
+      // 残りのキューを継続する。キューが尽きていれば冒頭の `if (!next)`
+      // 分岐でロックが解放される。
+      setTimeout(() => processQueueRef.current(), 0);
+    };
+    const runProtected = (fn: () => void) => {
+      try {
+        fn();
+      } catch (error) {
+        handleQueueError(error);
+      }
+    };
+
     try {
       // 画像のアスペクト比をチェック（autoPortraitモード用）
       await checkImageAspectRatio(next.card.image_url);
@@ -689,7 +723,7 @@ export default function OverlayPage() {
       setShowCard(false);
 
       // Show card after brief delay
-      animationTimeoutRef.current = setTimeout(() => {
+      animationTimeoutRef.current = setTimeout(() => runProtected(() => {
         setShowCard(true);
         if (next.shouldPlaySound !== false) {
           if (next.soundGroupId) {
@@ -703,24 +737,17 @@ export default function OverlayPage() {
         }
 
         // Hide after display, then process next queued item
-        animationTimeoutRef.current = setTimeout(() => {
+        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
           setShowCard(false);
-          animationTimeoutRef.current = setTimeout(() => {
+          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
             setResult(null);
             // ref経由で最新のprocessQueueを呼び出し（再帰）
             processQueueRef.current();
-          }, 500);
-        }, options.displayDuration * 1000);
-      }, 100);
+          }), 500);
+        }), options.displayDuration * 1000);
+      }), 100);
     } catch (error) {
-      logger.error("Error processing gacha display queue:", error);
-      addDebugLogRef.current(
-        `processQueue error: ${error instanceof Error ? error.message : String(error)}`
-      );
-      // ロックを握ったまま関数を抜けないよう、失敗したカードは諦めて
-      // 残りのキューを継続する。キューが尽きていれば冒頭の `if (!next)`
-      // 分岐でロックが解放される。
-      processQueueRef.current();
+      handleQueueError(error);
     }
   }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap]);
 
@@ -1074,9 +1101,12 @@ export default function OverlayPage() {
         // card が欠落していて表示ゲートを通らなかったケースと、実際に表示
         // まで進んだケースを区別できない（無音の分岐だった）。実引き換えで
         // カードが表示されない不具合の一次切り分けを実機ログだけで行える
-        // ようにするため、card 欠落時だけ明示的に記録する。
+        // ようにするため、card 欠落時だけ明示的に記録する。cards（N連の
+        // 残り）の件数も併記し、「card だけ欠けている」のか「両方欠けて
+        // いる」のかを実機ログから区別できるようにする（レビュー指摘）。
         addDebugLogRef.current(
-          `Gacha payload missing card (rewardId=${payload.rewardId ?? 'null'})`
+          `Gacha payload missing card (rewardId=${payload.rewardId ?? 'null'}, `
+          + `cardsCount=${payload.cards?.length ?? 0})`
         );
       }
     }, {
