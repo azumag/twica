@@ -306,6 +306,161 @@ describe('OverlayPage', () => {
     expect(screen.getByText('Gamma')).toBeInTheDocument()
   })
 
+  // Issue #999調査メモ: R2/CDN側の画像取得失敗（404・CORS拒否等）は、上の
+  // 「無応答のままタイムアウトを待つ」ケースとは別に、ブラウザが即座に
+  // `error` イベントを発火させるケースがある。checkImageAspectRatioの
+  // onerrorハンドラがタイムアウトを待たず正しく解決し、カード表示自体を
+  // ブロックしないことを確認する。
+  it('実画像URLの取得がonerrorで即座に失敗しても、タイムアウトを待たずカードを表示する', async () => {
+    vi.useFakeTimers()
+
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 0
+      height = 0
+
+      set src(value: string) {
+        void value
+        // 実際のブラウザがCORS拒否・404等で即座にerrorイベントを発火する
+        // 挙動を模擬する（無応答のタイムアウトケースとは別経路）。
+        queueMicrotask(() => this.onerror?.())
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-real', name: 'RealCard', description: null,
+          image_url: 'https://r2.example.com/real-card.png', rarity: 'epic',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    // onerrorはmicrotaskで即座に発火するため、1.5秒のタイムアウトを進めなくても
+    // 表示まで到達するはず。タイムアウト直前まで進めても早すぎないことを確認する。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('RealCard')).toBeInTheDocument()
+  })
+
+  // Issue #999: previewの実引き換えで、実イベント受信(`Received payload: gacha`)
+  // までは記録されるのにカードが一切画面に表示されない不具合が発生した。
+  // processQueue内で想定外の例外（実カードデータ特有の値・画像取得エラー等、
+  // 原因は特定できないがコード上あらゆる箇所で起こりうる）が発生すると、
+  // 従来はtry/catchが無かったため isDisplayingRef のロックが解放されず、
+  // 以後どれだけ実イベントを受信しても enqueueResult() の
+  // `if (!isDisplayingRef.current) processQueue()` ガードが常に偽になり、
+  // そのOBSセッションが恒久的に沈黙していた（1件でも例外が起きれば、
+  // 残り全件が巻き込まれて表示されなくなる）。この回帰を防ぐテスト。
+  it('processQueue中に例外が発生してもロックが残らず、後続カードの表示を継続する(Issue #999回帰)', async () => {
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // image_url アクセス時に例外を投げるカード。実データ特有の未知の不具合を
+    // 一般化して模擬する（原因箇所を問わず、processQueue中のどの例外でも
+    // ロックが残ってはならないことを検証する）。
+    const throwingCard = {
+      id: 'card-broken',
+      name: 'Broken',
+      description: null,
+      rarity: 'rare',
+      get image_url(): string | null {
+        throw new Error('unexpected runtime failure');
+      },
+    };
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: throwingCard as unknown as GachaBroadcastPayload['card'],
+        userTwitchUsername: 'Viewer',
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 1枚目が例外で失敗した後に受信した2枚目。ロックが解放されていれば
+    // 通常どおり表示される。
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-ok', name: 'Recovered', description: null,
+          image_url: null, rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText('Recovered')).toBeInTheDocument();
+  });
+
+  // Issue #999の調査メモ: WSコールバックで `Received payload: gacha` は記録
+  // されるが、payload.card が無ければ以前は無音で無視され、実機ログだけでは
+  // 「cardが来ていないのか」「来ているが表示に失敗しているのか」を判別
+  // できなかった。card欠落時に診断ログを残すことを確認する。
+  it('gachaペイロードにcardが無い場合、無視するだけでなく診断ログを残す(Issue #999)', async () => {
+    window.history.replaceState({}, '', '/overlay/streamer-1?debug=true');
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined;
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void;
+      options.onSuccess?.();
+      return vi.fn();
+    });
+
+    render(<OverlayPage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: undefined as unknown as GachaBroadcastPayload['card'],
+        userTwitchUsername: 'Viewer',
+        rewardId: 'reward-1',
+      });
+    });
+
+    expect(
+      await screen.findByText(/Gacha payload missing card \(rewardId=reward-1\)/)
+    ).toBeInTheDocument();
+  });
+
   it('画像メタデータ待機中にunmountすると、タイムアウト後も後続カードを開始しない', async () => {
     vi.useFakeTimers()
 
@@ -382,6 +537,84 @@ describe('OverlayPage', () => {
     // 行わない。インスタンス数は後続の画像判定が起きていないことの決定的な観測点。
     expect(imageInstances).toHaveLength(2)
     expect(playMock).toHaveBeenCalledTimes(playsBeforeUnmount)
+  })
+
+  // Issue #999の受入条件: 「画像待機中の generation/unmount 分岐で表示ロックが
+  // 戻らず、以後のキューが停止しないか」を確認する。上のテストは unmount 後に
+  // 何も起きないことだけを検証しており、OBSがブラウザソースを再読み込みして
+  // 新しい overlay インスタンスが接続し直した後、次のイベントが問題なく
+  // 表示できることまでは確認していなかった。
+  it('画像待機中にunmountしても、再mount後の新しいoverlayインスタンスは次のイベントを正常に表示する(Issue #999)', async () => {
+    vi.useFakeTimers()
+
+    class StalledImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+      set src(value: string) {
+        void value
+        // 常に無応答（unmount時点で画像待機が保留状態になることを保証する）。
+      }
+    }
+    vi.stubGlobal('Image', StalledImage)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: null, soundEnabled: false }),
+    }))
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const firstView = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-stalled', name: 'Stalled', description: null,
+          image_url: 'https://example.com/stalled.png', rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    // 画像判定が完了する前（1.5秒のタイムアウト前）にunmountする。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    firstView.unmount()
+
+    // OBSがブラウザソースを再読み込みした状況を模擬し、新しいoverlayインスタンス
+    // として再mountする（refはコンポーネントごとに新規生成されるため、前の
+    // インスタンスの状態を引き継がない）。
+    const secondView = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-next', name: 'NextAfterRemount', description: null,
+          image_url: null, rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(secondView.getByText('NextAfterRemount')).toBeInTheDocument()
   })
 
   // エフェクト演出を1枚のカードで発火させる共通ヘルパ

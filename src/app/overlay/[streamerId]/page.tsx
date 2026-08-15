@@ -661,49 +661,67 @@ export default function OverlayPage() {
     }
     isDisplayingRef.current = true;
 
-    // 画像のアスペクト比をチェック（autoPortraitモード用）
-    await checkImageAspectRatio(next.card.image_url);
-    if (
-      !isOverlayMountedRef.current
-      || queueGeneration !== queueGenerationRef.current
-    ) {
-      return;
-    }
-
-    // このカードのレアリティに紐づくエフェクトを解決する。
-    // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
-    const resolvedStyle = options.effects
-      ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
-      : "none";
-    setActiveEffectStyle(resolvedStyle);
-    setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
-    setResult(next);
-    setShowCard(false);
-
-    // Show card after brief delay
-    animationTimeoutRef.current = setTimeout(() => {
-      setShowCard(true);
-      if (next.shouldPlaySound !== false) {
-        if (next.soundGroupId) {
-          if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
-            playedSoundGroupIdsRef.current.add(next.soundGroupId);
-            playGachaSound(next);
-          }
-        } else {
-          playGachaSound(next);
-        }
+    // Issue #999: 以前はここから先で想定外の例外が発生すると
+    // isDisplayingRef が true のまま戻らず、以後 enqueueResult() の
+    // `if (!isDisplayingRef.current)` ガードが常に偽になって、後続の
+    // 実イベントを受信してもキューに積まれるだけで二度と画面へ反映
+    // されなくなっていた（1件でも例外が起きるとそのOBSセッションが
+    // 恒久的に沈黙する）。try/catchで囲み、失敗したカード1件分だけ
+    // 諦めて後続カードの処理を継続できるようにする。
+    try {
+      // 画像のアスペクト比をチェック（autoPortraitモード用）
+      await checkImageAspectRatio(next.card.image_url);
+      if (
+        !isOverlayMountedRef.current
+        || queueGeneration !== queueGenerationRef.current
+      ) {
+        return;
       }
 
-      // Hide after display, then process next queued item
+      // このカードのレアリティに紐づくエフェクトを解決する。
+      // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
+      const resolvedStyle = options.effects
+        ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
+        : "none";
+      setActiveEffectStyle(resolvedStyle);
+      setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
+      setResult(next);
+      setShowCard(false);
+
+      // Show card after brief delay
       animationTimeoutRef.current = setTimeout(() => {
-        setShowCard(false);
+        setShowCard(true);
+        if (next.shouldPlaySound !== false) {
+          if (next.soundGroupId) {
+            if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+              playedSoundGroupIdsRef.current.add(next.soundGroupId);
+              playGachaSound(next);
+            }
+          } else {
+            playGachaSound(next);
+          }
+        }
+
+        // Hide after display, then process next queued item
         animationTimeoutRef.current = setTimeout(() => {
-          setResult(null);
-          // ref経由で最新のprocessQueueを呼び出し（再帰）
-          processQueueRef.current();
-        }, 500);
-      }, options.displayDuration * 1000);
-    }, 100);
+          setShowCard(false);
+          animationTimeoutRef.current = setTimeout(() => {
+            setResult(null);
+            // ref経由で最新のprocessQueueを呼び出し（再帰）
+            processQueueRef.current();
+          }, 500);
+        }, options.displayDuration * 1000);
+      }, 100);
+    } catch (error) {
+      logger.error("Error processing gacha display queue:", error);
+      addDebugLogRef.current(
+        `processQueue error: ${error instanceof Error ? error.message : String(error)}`
+      );
+      // ロックを握ったまま関数を抜けないよう、失敗したカードは諦めて
+      // 残りのキューを継続する。キューが尽きていれば冒頭の `if (!next)`
+      // 分岐でロックが解放される。
+      processQueueRef.current();
+    }
   }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap]);
 
   // processQueueRefを最新のcallbackで更新
@@ -1051,6 +1069,15 @@ export default function OverlayPage() {
           // replay the same N-draw sound even though their cards still render.
           soundGroupId: payload.soundGroupId,
         });
+      } else if (payload.type === 'gacha') {
+        // Issue #999: 「Received payload: gacha」のログだけでは、payload に
+        // card が欠落していて表示ゲートを通らなかったケースと、実際に表示
+        // まで進んだケースを区別できない（無音の分岐だった）。実引き換えで
+        // カードが表示されない不具合の一次切り分けを実機ログだけで行える
+        // ようにするため、card 欠落時だけ明示的に記録する。
+        addDebugLogRef.current(
+          `Gacha payload missing card (rewardId=${payload.rewardId ?? 'null'})`
+        );
       }
     }, {
       // Cursor ownership stays inside the transport controller. The page only
