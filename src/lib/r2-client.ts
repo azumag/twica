@@ -152,12 +152,16 @@ async function s3Delete(bucket: string, key: string, clientType: 'images' | 'sou
  * 決まり、最大試行回数は maxRetries+1 回、最大累計待機時間は指数バックオフの合計
  * （デフォルト値なら 1s+2s+4s=7秒）に明示的に収まる。
  */
-const TRANSIENT_R2_ERROR_PATTERNS = [
+const TRANSIENT_R2_ERROR_PATTERNS: Array<string | RegExp> = [
   'ECONNRESET',
   'ETIMEDOUT',
   'ENOTFOUND',
   'service unavailable',
-  '503',
+  // 【Issue #984】裸の'503'部分文字列は、キー名やリクエストIDにたまたま'503'という
+  // 数字列が含まれる場合（例: 'photo-503.png' 等）に恒久エラーを一時障害と誤判定し、
+  // 無駄なリトライ（最大 maxRetries+1 回・最大約7秒）を発生させるリスクがあった。
+  // 'http'/'status'という文脈語が近傍にある場合のみHTTP 503相当として扱うよう限定する。
+  /\b(?:http|status)\D{0,10}503\b/i,
   'NetworkingError',
   'Unspecified error',
   ...CLOUDFLARE_R2_TRANSIENT_MARKERS,
@@ -166,7 +170,9 @@ const TRANSIENT_R2_ERROR_PATTERNS = [
 // テストから直接検証できるようexport
 export function isTransientR2Error(errorMessage: string): boolean {
   return TRANSIENT_R2_ERROR_PATTERNS.some(pattern =>
-    errorMessage.toLowerCase().includes(pattern.toLowerCase())
+    typeof pattern === 'string'
+      ? errorMessage.toLowerCase().includes(pattern.toLowerCase())
+      : pattern.test(errorMessage)
   );
 }
 
