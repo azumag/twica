@@ -941,19 +941,22 @@ async function resolveBotAccountForChatPg(
     // terminal/retryableの根拠を後から確認できないため付与する
     // (twitchTokenRefreshFailureContext参照。terminal自体の判定は
     // shouldDisableBotCredential内で既にstatus/kindを見ているため変更しない)。
-    const logContext = {
+    // terminalも併記することで、ログ単体でどちらの結末になったかを判別できる
+    // ようにする(PR #997レビュー指摘: 両分岐が同一メッセージ・同一contextだと
+    // ログからstatus/kindを再推論しない限り区別できなかった)。warn呼び出しも
+    // 1箇所へ統合する(重複コード削減)。
+    logger.warn('Failed to refresh BOT Twitch access token', {
       broadcasterTwitchUserId,
       accountId: account.id,
+      terminal,
       ...twitchTokenRefreshFailureContext(error),
-    };
+    });
     if (terminal) {
-      logger.warn('Failed to refresh BOT Twitch access token', logContext);
       return {
         status: 'terminal-unavailable',
         reason: 'configured BOT credential requires reauthorization',
       };
     }
-    logger.warn('Failed to refresh BOT Twitch access token', logContext);
     return {
       status: 'retryable-unavailable',
       reason: 'configured BOT credential is temporarily unavailable',
