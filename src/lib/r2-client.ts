@@ -132,10 +132,24 @@ async function s3Delete(bucket: string, key: string, clientType: 'images' | 'sou
 // ============================================================================
 
 /**
- * リトライ対象とする一時的なネットワーク/S3 SDKエラーのパターン（画像・効果音共通）。
+ * リトライ対象とする一時的なR2/ネットワーク/S3 SDKエラーのパターン（画像・効果音アップロード共通）。
  * "Unspecified error" はR2ネイティブバインディングの一時障害 (Issue #349/#348)。
+ * Cloudflare R2固有のエラーコード（'(10001)' InternalError / '(10043)' ServiceUnavailable等）は
+ * r2-retry-policy.ts の CLOUDFLARE_R2_TRANSIENT_MARKERS を単一の情報源としてimportする
+ * （ここに直接書くと今回のバグ=片方のリストにしか登録されない、が再発するため）。
+ *
+ * 【Issue #980】以前は画像アップロード（uploadToR2WithRetry）だけ、呼び出し元
+ * （src/app/api/upload/route.ts）で r2-retry-policy.ts の retryCloudflareR2Upload に
+ * さらに二重ラップされており、CLOUDFLARE_R2_TRANSIENT_MARKERS 該当エラーを
+ * 内側・外側の両方でリトライすると最大試行回数・待ち時間が最悪ケースで約4倍
+ * （12回・合計約22秒）に肥大化する上限のないリスクがあった。その二重ラップ自体を撤去し、
+ * 画像・効果音とも「このモジュールの1本のリトライループだけがリトライを担う」構成に
+ * 統一したため、二重リトライは構造的に発生し得ない。リトライの上限は
+ * uploadToR2WithRetry/uploadSoundToR2WithRetry の maxRetries（デフォルト3）1箇所だけで
+ * 決まり、最大試行回数は maxRetries+1 回、最大累計待機時間は指数バックオフの合計
+ * （デフォルト値なら 1s+2s+4s=7秒）に明示的に収まる。
  */
-const BASE_TRANSIENT_R2_ERROR_PATTERNS = [
+const TRANSIENT_R2_ERROR_PATTERNS = [
   'ECONNRESET',
   'ETIMEDOUT',
   'ENOTFOUND',
@@ -143,40 +157,14 @@ const BASE_TRANSIENT_R2_ERROR_PATTERNS = [
   '503',
   'NetworkingError',
   'Unspecified error',
-];
-
-/**
- * Cloudflare R2固有のエラーコード（'(10001)' InternalError / '(10043)' ServiceUnavailable等、
- * 詳細は r2-retry-policy.ts の CLOUDFLARE_R2_TRANSIENT_MARKERS を参照）を含む一時障害パターン。
- *
- * 画像アップロード（uploadToR2WithRetry）は呼び出し元（src/app/api/upload/route.ts）で
- * さらに retryCloudflareR2Upload（r2-retry-policy.ts）に包まれ、そちらが同じコードを
- * 別途リトライする。ここにも同じコードを含めると「内側リトライ×外側リトライ」で
- * 待ち時間が数倍に肥大化するため、画像側の一時障害判定にはこのR2固有コードを含めない。
- * 効果音アップロード（uploadSoundToR2WithRetry）は外側のラップが無く、このリトライが
- * 唯一の再試行機構なので、R2固有コードもここで判定する（Issue #976, #977 と同種の
- * 未リトライ失敗を防ぐ）。
- *
- * マーカー文字列自体はr2-retry-policy.tsからimportし、二重管理（今回のバグの原因）を避ける。
- */
-const SOUND_TRANSIENT_R2_ERROR_PATTERNS = [
-  ...BASE_TRANSIENT_R2_ERROR_PATTERNS,
   ...CLOUDFLARE_R2_TRANSIENT_MARKERS,
 ];
 
-function matchesTransientPattern(errorMessage: string, patterns: readonly string[]): boolean {
-  return patterns.some(pattern =>
+// テストから直接検証できるようexport（r2-retry-policy.tsのisTransientCloudflareR2Errorと同じ方針）
+export function isTransientR2Error(errorMessage: string): boolean {
+  return TRANSIENT_R2_ERROR_PATTERNS.some(pattern =>
     errorMessage.toLowerCase().includes(pattern.toLowerCase())
   );
-}
-
-// テストから直接検証できるようexport（r2-retry-policy.tsのisTransientCloudflareR2Errorと同じ方針）
-export function isTransientR2UploadError(errorMessage: string): boolean {
-  return matchesTransientPattern(errorMessage, BASE_TRANSIENT_R2_ERROR_PATTERNS);
-}
-
-export function isTransientR2SoundUploadError(errorMessage: string): boolean {
-  return matchesTransientPattern(errorMessage, SOUND_TRANSIENT_R2_ERROR_PATTERNS);
 }
 
 /**
@@ -324,11 +312,8 @@ export async function uploadToR2WithRetry(
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
-      // 一時的なエラーかどうかを判定
-      // R2固有のエラーコード（10001/10043等）は呼び出し元のretryCloudflareR2Upload
-      // （r2-retry-policy.ts）側でリトライするため、ここでは含めない（二重リトライによる
-      // 待ち時間の肥大化を防ぐため。詳細はSOUND_TRANSIENT_R2_ERROR_PATTERNSのコメント参照）
-      const isTransient = isTransientR2UploadError(errorMessage);
+      // 一時的なエラーかどうかを判定（R2固有コード・ネットワークエラーとも、ここが唯一のリトライ層）
+      const isTransient = isTransientR2Error(errorMessage);
 
       if (!isTransient || attempt === maxRetries) {
         return { error: errorMessage };
@@ -367,10 +352,8 @@ export async function uploadSoundToR2WithRetry(
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
-      // 一時的なエラーかどうかを判定
-      // 効果音アップロードは呼び出し元に外側のリトライラッパーが無いため、
-      // R2固有のエラーコード（10001/10043等）もここで一時障害として扱う
-      const isTransient = isTransientR2SoundUploadError(errorMessage);
+      // 一時的なエラーかどうかを判定（R2固有コード・ネットワークエラーとも、ここが唯一のリトライ層）
+      const isTransient = isTransientR2Error(errorMessage);
 
       if (!isTransient || attempt === maxRetries) {
         return { error: errorMessage };
