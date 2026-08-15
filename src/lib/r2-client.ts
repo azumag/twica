@@ -131,18 +131,10 @@ async function s3Delete(bucket: string, key: string, clientType: 'images' | 'sou
 // ============================================================================
 
 /**
- * リトライ対象とする一時的なR2/ネットワークエラーのパターン。
- * uploadToR2WithRetry / uploadSoundToR2WithRetry で共通利用する（重複防止のため一元化）。
- *
- * '(10001)' は Cloudflare R2 の InternalError（HTTP 500）で、公式ドキュメントが
- * リトライを推奨している一時障害:
- * https://developers.cloudflare.com/r2/api/error-codes/
- * これが未登録だったため、本番で本来リトライ可能なアップロード失敗が即座にエラー化していた
- * (Issue #976, #977)。
- * '(10043)' は同じくR2のServiceUnavailable（HTTP 503）で、R2ネイティブバインディング用の
- * リトライ判定（r2-retry-policy.ts）にも同種のマーカーを保持している。
+ * リトライ対象とする一時的なネットワーク/S3 SDKエラーのパターン（画像・効果音共通）。
+ * "Unspecified error" はR2ネイティブバインディングの一時障害 (Issue #349/#348)。
  */
-const TRANSIENT_R2_ERROR_PATTERNS = [
+const BASE_TRANSIENT_R2_ERROR_PATTERNS = [
   'ECONNRESET',
   'ETIMEDOUT',
   'ENOTFOUND',
@@ -150,15 +142,40 @@ const TRANSIENT_R2_ERROR_PATTERNS = [
   '503',
   'NetworkingError',
   'Unspecified error',
+];
+
+/**
+ * Cloudflare R2固有のエラーコードのうち、公式にリトライ推奨とされている一時障害:
+ * https://developers.cloudflare.com/r2/api/error-codes/
+ * '(10001)' InternalError（HTTP 500）/ '(10043)' ServiceUnavailable（HTTP 503）
+ *
+ * 画像アップロード（uploadToR2WithRetry）は呼び出し元（src/app/api/upload/route.ts）で
+ * さらに retryCloudflareR2Upload（r2-retry-policy.ts）に包まれ、そちらが同じコードを
+ * 別途リトライする。ここにも同じコードを含めると「内側リトライ×外側リトライ」で
+ * 待ち時間が数倍に肥大化するため、画像側の一時障害判定にはこのR2固有コードを含めない。
+ * 効果音アップロード（uploadSoundToR2WithRetry）は外側のラップが無く、このリトライが
+ * 唯一の再試行機構なので、R2固有コードもここで判定する（Issue #976, #977 と同種の
+ * 未リトライ失敗を防ぐ）。
+ */
+const SOUND_TRANSIENT_R2_ERROR_PATTERNS = [
+  ...BASE_TRANSIENT_R2_ERROR_PATTERNS,
   '(10001)',
   '(10043)',
 ];
 
-// テストから直接検証できるようexport（r2-retry-policy.tsのisTransientCloudflareR2Errorと同じ方針）
-export function isTransientR2Error(errorMessage: string): boolean {
-  return TRANSIENT_R2_ERROR_PATTERNS.some(pattern =>
+function matchesTransientPattern(errorMessage: string, patterns: readonly string[]): boolean {
+  return patterns.some(pattern =>
     errorMessage.toLowerCase().includes(pattern.toLowerCase())
   );
+}
+
+// テストから直接検証できるようexport（r2-retry-policy.tsのisTransientCloudflareR2Errorと同じ方針）
+export function isTransientR2UploadError(errorMessage: string): boolean {
+  return matchesTransientPattern(errorMessage, BASE_TRANSIENT_R2_ERROR_PATTERNS);
+}
+
+export function isTransientR2SoundUploadError(errorMessage: string): boolean {
+  return matchesTransientPattern(errorMessage, SOUND_TRANSIENT_R2_ERROR_PATTERNS);
 }
 
 /**
@@ -307,9 +324,10 @@ export async function uploadToR2WithRetry(
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       // 一時的なエラーかどうかを判定
-      // "Unspecified error" はR2ネイティブバインディングの一時障害 (Issue #349/#348)
-      // "(10001)" はR2のInternalError (Issue #976/#977)
-      const isTransient = isTransientR2Error(errorMessage);
+      // R2固有のエラーコード（10001/10043等）は呼び出し元のretryCloudflareR2Upload
+      // （r2-retry-policy.ts）側でリトライするため、ここでは含めない（二重リトライによる
+      // 待ち時間の肥大化を防ぐため。詳細はSOUND_TRANSIENT_R2_ERROR_PATTERNSのコメント参照）
+      const isTransient = isTransientR2UploadError(errorMessage);
 
       if (!isTransient || attempt === maxRetries) {
         return { error: errorMessage };
@@ -349,9 +367,9 @@ export async function uploadSoundToR2WithRetry(
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       // 一時的なエラーかどうかを判定
-      // "Unspecified error" はR2ネイティブバインディングの一時障害 (Issue #349/#348)
-      // "(10001)" はR2のInternalError (Issue #976/#977)
-      const isTransient = isTransientR2Error(errorMessage);
+      // 効果音アップロードは呼び出し元に外側のリトライラッパーが無いため、
+      // R2固有のエラーコード（10001/10043等）もここで一時障害として扱う
+      const isTransient = isTransientR2SoundUploadError(errorMessage);
 
       if (!isTransient || attempt === maxRetries) {
         return { error: errorMessage };
