@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { cookies } from 'next/headers'
 import { POST } from '@/app/api/upload/sound/route'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
@@ -8,8 +7,9 @@ import { validateCSRFToken } from '@/lib/csrf'
 import { uploadSoundToR2WithRetry } from '@/lib/r2-client'
 
 // Mock dependencies
-// tests/unit/upload.test.ts (画像アップロード) と同じモック構成
-vi.mock('next/headers')
+// tests/unit/upload.test.ts (画像アップロード) と同じモック構成。ただし
+// next/headersのcookies()は、このルートが依存するgetSession/validateCSRFToken
+// を丸ごとモックしているため実体を経由せず不要（cookies()を直接呼ぶ経路がない）
 vi.mock('@/lib/session')
 vi.mock('@/lib/rate-limit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/rate-limit')>()
@@ -25,7 +25,6 @@ vi.mock('@/lib/r2-client', () => ({
   deleteSoundFromR2: vi.fn(),
 }))
 
-const mockCookies = vi.mocked(cookies)
 const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
@@ -45,9 +44,6 @@ describe('POST /api/upload/sound', () => {
     vi.clearAllMocks()
     mockValidateCSRFToken.mockResolvedValue({ valid: true })
     mockCanUseStreamerFeatures.mockReturnValue(true)
-    mockCookies.mockResolvedValue({
-      get: vi.fn().mockReturnValue(undefined),
-    } as unknown as Awaited<ReturnType<typeof cookies>>)
     mockCheckRateLimit.mockResolvedValue({
       success: true,
       limit: 10,
