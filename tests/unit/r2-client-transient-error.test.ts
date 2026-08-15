@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isTransientR2Error } from '@/lib/r2-client'
+import { CLOUDFLARE_R2_TRANSIENT_MARKERS } from '@/lib/r2-retry-policy'
 
 // uploadToR2WithRetry / uploadSoundToR2WithRetry の一時障害判定ロジック。
 // Issue #976/#977: R2のInternalError(10001)が未登録だったため、本番で
@@ -19,15 +20,15 @@ describe('isTransientR2Error', () => {
     expect(isTransientR2Error('Unspecified error')).toBe(true)
   })
 
-  it('R2のInternalError (10001) を一時障害として扱う (Issue #976/#977)', () => {
-    expect(isTransientR2Error('put: We encountered an internal error. Please try again. (10001)')).toBe(true)
-  })
-
-  it('R2のServiceUnavailable (10043) を一時障害として扱う', () => {
-    expect(isTransientR2Error('put: Please look at https://www.cloudflarestatus.com (10043)')).toBe(true)
-  })
-
   it('認証エラーなど恒久障害は一時障害として扱わない', () => {
     expect(isTransientR2Error('AccessDenied: invalid credentials')).toBe(false)
+  })
+
+  // r2-retry-policy.tsのCLOUDFLARE_R2_TRANSIENT_MARKERSをここから直接importして
+  // 全要素をループ検証する。ハードコピーした文字列リテラルではなく実際にimportした
+  // 配列を使うことで、「単一の情報源をimportして使っている」こと自体を検証する
+  // （マーカーを追加してもここを更新し忘れない、二重管理の再発防止）。
+  it.each(CLOUDFLARE_R2_TRANSIENT_MARKERS)('Cloudflare R2固有のマーカー%sを一時障害として扱う (Issue #976/#977)', (marker) => {
+    expect(isTransientR2Error(`put: error ${marker}`)).toBe(true)
   })
 })

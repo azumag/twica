@@ -13,14 +13,10 @@ export const CLOUDFLARE_R2_TRANSIENT_MARKERS = [
   'contact customer support',
 ]
 
-// 【Issue #980】このモジュールは以前 isTransientCloudflareR2Error（一時障害判定の関数版）と
-// retryCloudflareR2Upload（それを使うリトライラッパー）も提供しており、
-// src/app/api/upload/route.ts が r2-client.ts の uploadToR2WithRetry
-// （それ自体が独立したリトライループを持つ）をさらにこれで二重に包んでいた。
-// CLOUDFLARE_R2_TRANSIENT_MARKERS 該当エラーは両方の層がリトライ対象と判定するため、
-// 最悪ケースで試行回数・待ち時間が約3倍（4回→12回・約22秒）に肥大化しうる、
-// 明示的な上限のないリトライ構成になっていた。
-// 再試行はr2-client.ts側の1ループに一本化し、判定関数もr2-client.tsのisTransientR2Errorに
-// 統合した（この2つを別々に持つと、この一覧を判定に使うロジックが2箇所に分裂し、
-// 今回の教訓に反する）。ここは CLOUDFLARE_R2_TRANSIENT_MARKERS という
-// 「何が一時障害か」のデータだけを提供するsingle source of truthとして残す。
+// 【Issue #980】以前このファイルは isTransientCloudflareR2Error（判定関数）と
+// retryCloudflareR2Upload（二重リトライの原因になった外側リトライラッパー）も
+// 提供していたが撤去済み。判定ロジック・リトライループはr2-client.tsの
+// isTransientR2Error / withR2UploadRetry に一本化した。経緯・撤去理由の詳細は
+// src/lib/r2-client.ts の TRANSIENT_R2_ERROR_PATTERNS のコメントとIssue #980を参照
+// （同じ説明をファイル間で重複させない）。ここは CLOUDFLARE_R2_TRANSIENT_MARKERS
+// という「何が一時障害か」のデータだけを提供するsingle source of truthとして残す。

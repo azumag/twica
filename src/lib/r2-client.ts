@@ -140,11 +140,14 @@ async function s3Delete(bucket: string, key: string, clientType: 'images' | 'sou
  *
  * 【Issue #980】以前は画像アップロード（uploadToR2WithRetry）だけ、呼び出し元
  * （src/app/api/upload/route.ts）で r2-retry-policy.ts の retryCloudflareR2Upload に
- * さらに二重ラップされており、CLOUDFLARE_R2_TRANSIENT_MARKERS 該当エラーを
- * 内側・外側の両方でリトライすると最大試行回数・待ち時間が最悪ケースで約3倍
- * （4回→12回・7秒→約22秒）に肥大化する上限のないリスクがあった。その二重ラップ自体を撤去し、
- * 画像・効果音とも「このモジュールの1本のリトライループだけがリトライを担う」構成に
- * 統一したため、二重リトライは構造的に発生し得ない。リトライの上限は
+ * さらに二重ラップされていた。旧・画像用の内側リストはCLOUDFLARE_R2_TRANSIENT_MARKERSを
+ * 意図的に除外していたため、単発のR2固有エラーコードだけでは二重にリトライされなかったが、
+ * 「内側が判定するネットワーク系エラーが複数回続いた末に、内側の最大試行到達で返した
+ * 最終エラーがたまたまCLOUDFLARE_R2_TRANSIENT_MARKERSにも該当する」という系列が起きると、
+ * 外側もそれを一時障害と判定して再試行し、理論上の最悪ケースで試行回数・待ち時間が
+ * 約3倍（4回→12回・7秒→約22秒）に肥大化しうる、上限が明示されていないリトライ構成だった。
+ * その二重ラップ自体を撤去し、画像・効果音とも「このモジュールの1本のリトライループだけが
+ * リトライを担う」構成に統一したため、二重リトライは構造的に発生し得ない。リトライの上限は
  * uploadToR2WithRetry/uploadSoundToR2WithRetry の maxRetries（デフォルト3）1箇所だけで
  * 決まり、最大試行回数は maxRetries+1 回、最大累計待機時間は指数バックオフの合計
  * （デフォルト値なら 1s+2s+4s=7秒）に明示的に収まる。
@@ -305,28 +308,7 @@ export async function uploadToR2WithRetry(
   contentType: string,
   maxRetries: number = 3
 ): Promise<{ url: string } | { error: string }> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const url = await uploadToR2(fileName, buffer, contentType);
-      return { url };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
-      // 一時的なエラーかどうかを判定（R2固有コード・ネットワークエラーとも、ここが唯一のリトライ層）
-      const isTransient = isTransientR2Error(errorMessage);
-
-      if (!isTransient || attempt === maxRetries) {
-        return { error: errorMessage };
-      }
-
-      // 指数バックオフでリトライ
-      const delay = Math.pow(2, attempt) * 1000;
-      logger.warn(`[R2] Upload failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms:`, errorMessage);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-
-  return { error: 'Max retries exceeded' };
+  return withR2UploadRetry('[R2]', () => uploadToR2(fileName, buffer, contentType), maxRetries);
 }
 
 /**
@@ -345,9 +327,34 @@ export async function uploadSoundToR2WithRetry(
   contentType: string,
   maxRetries: number = 3
 ): Promise<{ url: string } | { error: string }> {
+  return withR2UploadRetry('[R2 Sound]', () => uploadSoundToR2(fileName, buffer, contentType), maxRetries);
+}
+
+/**
+ * uploadToR2WithRetry / uploadSoundToR2WithRetry の共通リトライループ本体。
+ * ログの接頭辞（'[R2]' / '[R2 Sound]'）とアップロード呼び出し以外は完全に同一だった
+ * 2つのループを1本化した（自動レビュー(PR #983)の指摘を反映）。
+ *
+ * sleepを引数として注入可能にしているのは、テストから実際の待機（最大7秒）なしに
+ * リトライ回数・バックオフ時間・打ち切り条件を検証できるようにするため
+ * （r2-retry-policy.tsの旧retryCloudflareR2Uploadと同じ設計。テストは
+ * tests/unit/r2-client-retry-loop.test.ts を参照）。本番呼び出し元（上記2関数）は
+ * 常にデフォルトの実setTimeoutを使う。
+ *
+ * @param logPrefix - ログメッセージの接頭辞
+ * @param upload - 実際のアップロード処理（1回分）。R2の公開URLを返すかthrowする
+ * @param maxRetries - 最大リトライ回数
+ * @param sleep - バックオフ待機の実装（テスト用に差し替え可能。デフォルトは実setTimeout）
+ */
+async function withR2UploadRetry(
+  logPrefix: string,
+  upload: () => Promise<string>,
+  maxRetries: number,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+): Promise<{ url: string } | { error: string }> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const url = await uploadSoundToR2(fileName, buffer, contentType);
+      const url = await upload();
       return { url };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -361,10 +368,13 @@ export async function uploadSoundToR2WithRetry(
 
       // 指数バックオフでリトライ
       const delay = Math.pow(2, attempt) * 1000;
-      logger.warn(`[R2 Sound] Upload failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms:`, errorMessage);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      logger.warn(`${logPrefix} Upload failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms:`, errorMessage);
+      await sleep(delay);
     }
   }
 
   return { error: 'Max retries exceeded' };
 }
+
+// テストから直接検証できるようexport（本番呼び出し元は上記2関数経由でのみ使う）
+export { withR2UploadRetry };
