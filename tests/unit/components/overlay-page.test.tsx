@@ -767,7 +767,7 @@ describe('OverlayPage', () => {
     // overlay-version.tsの純粋関数群とは異なりpage.tsx内部の実装詳細のため
     // 非exportになっている。ここでは実装と同じリテラル値を直接指定する
     // (page.tsx側でキー名を変更した場合はこのテストも追随して更新が必要)。
-    const RELOAD_COOLDOWN_STORAGE_KEY = 'twica-overlay-reload'
+    const RELOAD_COOLDOWN_STORAGE_KEY = 'twica-overlay-reload-v2'
     const POLLSTATE_STORAGE_KEY = 'twica-overlay-pollstate'
 
     // page.tsx内部のreload時間定数(非export)と同じ値をテスト側でも保持する。
@@ -895,6 +895,53 @@ describe('OverlayPage', () => {
         pollCursor: '2026-06-01T00:00:00.123Z',
         pollHistoryId: HISTORY_ID_BEFORE_RELOAD,
       })
+    })
+
+    it('リロード実行後、sessionStorageへ書き込まれるクールダウン記録に既存エントリと新規エントリが両方含まれる(Issue #634、自動レビュー指摘への対応)', async () => {
+      // upsertReloadCooldownRecord(cooldownRecords, ...)の第1引数に、実際に
+      // sessionStorageから読み取った既存記録を渡し忘れて誤ってnull/[]を渡す
+      // ような結線バグが混入しても、純粋関数単体のテストや「クールダウン中は
+      // スキップされる」ことしか見ないテストでは検知できない。ここでは実際の
+      // リロード実行後にsessionStorageへ書き込まれた内容そのものを検証し、
+      // mount前から存在した別バージョン('v-z')の記録が消えずに残ったまま
+      // 新規バージョン('v-b')が追記されることを直接確認する。
+      vi.useFakeTimers()
+      vi.spyOn(Math, 'random').mockReturnValue(0)
+      const reloadMock = stubLocationReload()
+      stubEventsFetch('v-a')
+
+      const existingReloadedAt = Date.now() - 1000
+      sessionStorage.setItem(
+        RELOAD_COOLDOWN_STORAGE_KEY,
+        JSON.stringify([{ version: 'v-z', reloadedAt: existingReloadedAt }]),
+      )
+
+      let onOverlayVersion: SubscribeOptions['onOverlayVersion']
+      subscribeMock.mockImplementation((_streamerId, _callback, options: SubscribeOptions) => {
+        onOverlayVersion = options.onOverlayVersion
+        options.onSuccess?.()
+        return vi.fn()
+      })
+
+      render(<OverlayPageV />)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      act(() => {
+        onOverlayVersion?.('v-b')
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+      const written = JSON.parse(sessionStorage.getItem(RELOAD_COOLDOWN_STORAGE_KEY) ?? 'null')
+      expect(written).toEqual([
+        { version: 'v-z', reloadedAt: existingReloadedAt },
+        { version: 'v-b', reloadedAt: expect.any(Number) },
+      ])
     })
 
     it('connected中は旧loopを10分以上進めても/eventsへnetwork requestを出さない', async () => {
@@ -1025,7 +1072,7 @@ describe('OverlayPage', () => {
       // 記録を仕込んでおく(60分クールダウン中なのでスキップされるはず)
       sessionStorage.setItem(
         RELOAD_COOLDOWN_STORAGE_KEY,
-        JSON.stringify({ version: 'v-b', reloadedAt: Date.now() }),
+        JSON.stringify([{ version: 'v-b', reloadedAt: Date.now() }]),
       )
       stubEventsFetch('v-b')
 
