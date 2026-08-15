@@ -45,6 +45,28 @@ export interface OverlayPollStateSnapshot {
 export const RELOAD_COOLDOWN_MS = 60 * 60 * 1000; // 60分
 
 /**
+ * クールダウン記録として保持する直近バージョンの最大件数(Issue #634)。
+ *
+ * 旧設計は「直前に1回リロードした先のバージョン」だけを記録していたため、
+ * Cloudflare Workersのローリングデプロイ中に新旧バージョンが混在する
+ * ウィンドウで、overlayクライアントが受信するoverlayVersionが A→B→A→B の
+ * ように往復すると、各方向がその都度「記録に無い別バージョンへの初回リロード」
+ * として扱われ、クールダウンが実質機能せず短時間に複数回 location.reload()
+ * され得た。
+ *
+ * 直近見た複数バージョンをセットとして保持することで、A/B間の往復が一巡した
+ * 後は双方向ともクールダウン対象になり、それ以降の余分なリロードを防げる
+ * (1巡目のA→Bおよびその直後のB→Aは、そのバージョンへの初回リロードとして
+ * 想定通り許可される。往復を検知してから抑止する設計であり、1回も
+ * リロードせずに往復を予知することはできない)。
+ *
+ * ローリングデプロイで同時に混在するバージョンは通常2つ(旧/新)だが、
+ * 短時間に連続するデプロイも考慮し、多少の余裕を持たせて4件まで保持する
+ * (無制限保持によるsessionStorage肥大化・直近判定の希薄化を避ける)。
+ */
+export const MAX_RELOAD_COOLDOWN_RECORDS = 4;
+
+/**
  * sessionStorage に退避したポーリング状態(pollCursor/seenHistoryIds)を
  * 有効とみなす最長時間(ミリ秒)。これを超えて放置された古い状態は捨てて、
  * 通常どおり「今」を起点にポーリングを再開する(古いカーソルを使い続けて
@@ -81,32 +103,66 @@ export function shouldScheduleReload(current: string, received: string | undefin
  * targetVersion へのリロードが現在クールダウン中(＝直近 cooldownMs 以内に
  * 同じバージョンへ既にリロード済み)かどうかを判定する。
  *
- * record が null(まだ一度もリロード記録が無い)、または記録されている
- * バージョンが targetVersion と異なる(＝別バージョンへのリロードなので
- * 独立してカウントする)場合は常に false を返す。
+ * records は直近リロードした(複数の)バージョンの記録の配列(Issue #634)。
+ * targetVersion と一致するエントリが records 内のいずれかに存在し、かつ
+ * その reloadedAt から cooldownMs 未満しか経過していなければクールダウン中と
+ * みなす。records が null・空配列、または targetVersion と一致するエントリが
+ * 一件も無い場合は常に false を返す(そのバージョンへの初回リロードとして
+ * 独立にカウントする)。
  */
 export function isReloadCooldownActive(
-  record: ReloadCooldownRecord | null,
+  records: ReloadCooldownRecord[] | null,
   targetVersion: string,
   now: number,
   cooldownMs: number,
 ): boolean {
-  if (!record) return false;
-  if (record.version !== targetVersion) return false;
-  return now - record.reloadedAt < cooldownMs;
+  if (!records) return false;
+  return records.some(
+    (record) => record.version === targetVersion && now - record.reloadedAt < cooldownMs,
+  );
+}
+
+/**
+ * targetVersion へのリロード実行をクールダウン記録へ追記する純粋関数(Issue #634)。
+ *
+ * 同一バージョンの既存エントリがあれば取り除いてから追記する(重複を持たず、
+ * 常に最新の reloadedAt だけを保持する＝そのバージョンへ再訪した時点で
+ * クールダウンの起点も更新される)。MAX_RELOAD_COOLDOWN_RECORDS を超える場合は
+ * 最も古い(挿入順で先頭側の)エントリから破棄する(往復検出には直近見た
+ * バージョンほど有用なため)。
+ */
+export function appendReloadCooldownRecord(
+  records: ReloadCooldownRecord[] | null,
+  version: string,
+  reloadedAt: number,
+): ReloadCooldownRecord[] {
+  const withoutSameVersion = (records ?? []).filter((record) => record.version !== version);
+  const appended = [...withoutSameVersion, { version, reloadedAt }];
+  return appended.slice(-MAX_RELOAD_COOLDOWN_RECORDS);
 }
 
 /**
  * sessionStorage に保存されたクールダウン記録(JSON文字列)をパースする。
+ *
+ * Issue #634 より前のクライアントは単一の { version, reloadedAt } オブジェクト
+ * を書き込んでいた。ローリングデプロイで新旧コードが混在する間、既に開いている
+ * OBS タブが旧形式の値を書き込んだ直後に新コードへ切り替わるウィンドウが
+ * あり得るため、旧形式(単一オブジェクト)も 1 件配列として読み込めるようにし、
+ * デプロイ境界をまたいでクールダウン記録が失われないようにする。
+ *
  * parsePollState と同様、以下のいずれかに該当する場合は例外を投げず null を
  * 返す(呼び出し側は「クールダウン記録なし」として扱い、安全側に倒れる):
  * - raw が null/undefined/空文字列
  * - JSON として parse できない(壊れたデータ)
- * - 期待する形状(version: string, reloadedAt: number)を満たさない
+ * - 配列でも { version, reloadedAt } 形状のオブジェクト(旧形式)でもない
+ * - 配列内の個々のエントリが期待する形状(version: string, reloadedAt: number)
+ *   を満たさない場合はそのエントリだけを無視する(parsePollState の
+ *   seenHistoryIds フィルタと同じ「壊れた要素だけ捨てる」方針)。結果として
+ *   有効なエントリが 1 件も残らなければ null を返す。
  */
-export function parseReloadCooldownRecord(
+export function parseReloadCooldownRecords(
   raw: string | null | undefined,
-): ReloadCooldownRecord | null {
+): ReloadCooldownRecord[] | null {
   if (!raw) return null;
 
   let parsed: unknown;
@@ -117,12 +173,24 @@ export function parseReloadCooldownRecord(
   }
 
   if (!parsed || typeof parsed !== "object") return null;
-  const candidate = parsed as Record<string, unknown>;
 
-  if (typeof candidate.version !== "string") return null;
-  if (typeof candidate.reloadedAt !== "number") return null;
+  // 旧形式(Issue #634 より前): 単一オブジェクトを 1 件配列として扱う。
+  const rawEntries: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
 
-  return { version: candidate.version, reloadedAt: candidate.reloadedAt };
+  const validEntries: ReloadCooldownRecord[] = [];
+  for (const entry of rawEntries) {
+    if (!entry || typeof entry !== "object") continue;
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate.version !== "string") continue;
+    if (typeof candidate.reloadedAt !== "number") continue;
+    validEntries.push({ version: candidate.version, reloadedAt: candidate.reloadedAt });
+  }
+
+  if (validEntries.length === 0) return null;
+
+  // 自前の書き込み(appendReloadCooldownRecord)は常に上限内に収まるが、
+  // 外部からの汚染や将来の互換性崩れに備え読み取り側でも直近側だけへ切り詰める。
+  return validEntries.slice(-MAX_RELOAD_COOLDOWN_RECORDS);
 }
 
 /**

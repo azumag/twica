@@ -1046,6 +1046,39 @@ describe('OverlayPage', () => {
       expect(reloadMock).not.toHaveBeenCalled()
     })
 
+    it('ローリングデプロイの往復で複数バージョンのクールダウン記録がある場合も、該当エントリでリロードがスキップされる(Issue #634)', async () => {
+      vi.useFakeTimers()
+      vi.spyOn(Math, 'random').mockReturnValue(0.999999)
+      const reloadMock = stubLocationReload()
+
+      // A→B→Aと往復した後の状態を模し、直近リロード記録として複数バージョンを
+      // 配列で仕込んでおく('v-b'は最新エントリではなく1つ前のエントリ)。
+      sessionStorage.setItem(
+        RELOAD_COOLDOWN_STORAGE_KEY,
+        JSON.stringify([
+          { version: 'v-b', reloadedAt: Date.now() },
+          { version: 'v-a', reloadedAt: Date.now() },
+        ]),
+      )
+      stubEventsFetch('v-b')
+
+      render(<OverlayPageV />)
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RELOAD_JITTER_MAX_MS)
+      })
+
+      expect(reloadMock).not.toHaveBeenCalled()
+    })
+
     it('mount時にexact pollstateを復元して通常のtransport controllerへ渡す', async () => {
       vi.useFakeTimers()
 

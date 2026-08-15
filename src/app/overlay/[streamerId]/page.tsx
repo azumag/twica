@@ -36,7 +36,8 @@ import {
   isReloadCooldownActive,
   serializePollState,
   parsePollState,
-  parseReloadCooldownRecord,
+  parseReloadCooldownRecords,
+  appendReloadCooldownRecord,
   RELOAD_COOLDOWN_MS,
   POLLSTATE_TTL_MS,
 } from "@/lib/overlay-version";
@@ -777,16 +778,19 @@ export default function OverlayPage() {
 
     // 実行直前にクールダウン判定(sessionStorageアクセスはOBS等で無効な場合に
     // 備えtry/catchで包む。読み取り失敗時はクールダウン無しとして扱う。
-    // JSONの形状検証はparseReloadCooldownRecord(overlay-version.ts)に委譲し、
+    // JSONの形状検証はparseReloadCooldownRecords(overlay-version.ts)に委譲し、
     // parsePollStateと同じ「壊れたデータでも例外を投げずnullを返す」方針に揃える)
-    let cooldownRecord: ReturnType<typeof parseReloadCooldownRecord> = null;
+    // Issue #634: 単一の直前記録ではなく直近見た複数バージョンの配列を保持し、
+    // ローリングデプロイ中のバージョン往復(A→B→A→B)でもクールダウンが機能する
+    // ようにする(詳細はoverlay-version.tsのMAX_RELOAD_COOLDOWN_RECORDS doc参照)。
+    let cooldownRecords: ReturnType<typeof parseReloadCooldownRecords> = null;
     try {
-      cooldownRecord = parseReloadCooldownRecord(sessionStorage.getItem(RELOAD_COOLDOWN_STORAGE_KEY));
+      cooldownRecords = parseReloadCooldownRecords(sessionStorage.getItem(RELOAD_COOLDOWN_STORAGE_KEY));
     } catch {
-      cooldownRecord = null;
+      cooldownRecords = null;
     }
 
-    if (isReloadCooldownActive(cooldownRecord, targetVersion, Date.now(), RELOAD_COOLDOWN_MS)) {
+    if (isReloadCooldownActive(cooldownRecords, targetVersion, Date.now(), RELOAD_COOLDOWN_MS)) {
       addDebugLogRef.current(`[version] reload skipped: cooldown active for ${targetVersion}`);
       // クールダウン明け後にもう一度チャンスを与えるため予約フラグを解除する。
       // 次のポーリング/バージョン確認サイクルで不一致が再検出されれば再スケジュールされる。
@@ -799,7 +803,7 @@ export default function OverlayPage() {
     try {
       sessionStorage.setItem(
         RELOAD_COOLDOWN_STORAGE_KEY,
-        JSON.stringify({ version: targetVersion, reloadedAt: Date.now() }),
+        JSON.stringify(appendReloadCooldownRecord(cooldownRecords, targetVersion, Date.now())),
       );
       sessionStorage.setItem(
         pollStateStorageKey(streamerId),
