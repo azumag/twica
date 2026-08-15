@@ -156,8 +156,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     fileName = `sound_${userPrefix}_${uniqueSuffix}.${ext}`;
 
     // R2効果音バケットにアップロード（リトライ付き）
-    // R2の既知の一時障害コード（10001/10043等）は画像アップロードと同じ
-    // retryCloudflareR2Uploadでさらに再試行する (Issue #976, #977と同型の障害に対応)
+    // uploadSoundToR2WithRetry自体のtransientErrors判定はネットワークエラー用で、
+    // R2のCloudflare固有エラーコード（10001/10043等）は対象外のため1回で確定する。
+    // それらはretryCloudflareR2Uploadが外側で拾って再試行する（画像アップロードと
+    // 同じ構成、Issue #976, #977と同型の障害に対応）
     const uploadResult = await retryCloudflareR2Upload(
       () => uploadSoundToR2WithRetry(fileName!, buffer!, actualType)
     );

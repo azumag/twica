@@ -459,6 +459,50 @@ describe('POST /api/upload', () => {
     })
   })
 
+  describe('R2一時障害からのリトライ (#976, #977)', () => {
+    it('R2内部エラー(10001)は再試行して成功する', async () => {
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+        version: 1,
+      })
+
+      // uploadToR2WithRetry自体は1回で確定させ(ネットワークエラー用の内側リトライは
+      // 対象外)、r2-retry-policyの外側retryCloudflareR2Uploadが10001を拾って
+      // 再試行することを固定する
+      mockUploadToR2WithRetry
+        .mockResolvedValueOnce({ error: 'put: We encountered an internal error. Please try again. (10001)' })
+        .mockResolvedValueOnce({ url: 'https://blob.vercel-storage.com/test-image.jpg' })
+
+      const imageFile = new File([createMinimalJpegBuffer()], 'test.jpg', {
+        type: 'image/jpeg',
+      })
+
+      const formData = new FormData()
+      formData.append('file', imageFile)
+
+      const request = new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      // retryCloudflareR2Uploadの初回バックオフ(実時間500ms)を挟んで再試行が
+      // 行われる。getUserPlan等がDBリトライ用に独自のタイマーを持つため、
+      // fake timersと組み合わせるとハングする(タイムアウト)。実タイマーのまま
+      // 待つ方が安全でテスト全体への影響も小さい。
+      const response = await POST(request)
+
+      expect(response.status).toBe(200)
+      const body = await response.json()
+      expect(body.url).toBe('https://blob.vercel-storage.com/test-image.jpg')
+      expect(mockUploadToR2WithRetry).toHaveBeenCalledTimes(2)
+    })
+  })
+
   describe('Vercel Blob エラー時', () => {
     it('500 エラーを返す', async () => {
       mockGetSession.mockResolvedValue({

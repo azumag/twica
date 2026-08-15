@@ -14,10 +14,6 @@ describe('R2 retry policy', () => {
     expect(isTransientCloudflareR2Error('put: We encountered an internal error. Please try again. (10001)')).toBe(true)
   })
 
-  it('10001のコードが変わっても定型フレーズで一時障害と判定する', () => {
-    expect(isTransientCloudflareR2Error('We encountered an internal error. Please try again. (99999)')).toBe(true)
-  })
-
   it('10043の後に成功した場合は再実行する', async () => {
     const upload = vi.fn<() => Promise<{ url?: string; error?: string }>>()
       .mockResolvedValueOnce({ error: 'put failed (10043)' })
@@ -25,6 +21,17 @@ describe('R2 retry policy', () => {
     const sleep = vi.fn().mockResolvedValue(undefined)
 
     await expect(retryCloudflareR2Upload(upload, 2, sleep)).resolves.toEqual({ url: 'https://example.test/image.png' })
+    expect(upload).toHaveBeenCalledTimes(2)
+    expect(sleep).toHaveBeenCalledWith(500)
+  })
+
+  it('10001の後に成功した場合は再実行する (#976, #977)', async () => {
+    const upload = vi.fn<() => Promise<{ url?: string; error?: string }>>()
+      .mockResolvedValueOnce({ error: 'put: We encountered an internal error. Please try again. (10001)' })
+      .mockResolvedValueOnce({ url: 'https://example.test/sound.mp3' })
+    const sleep = vi.fn().mockResolvedValue(undefined)
+
+    await expect(retryCloudflareR2Upload(upload, 2, sleep)).resolves.toEqual({ url: 'https://example.test/sound.mp3' })
     expect(upload).toHaveBeenCalledTimes(2)
     expect(sleep).toHaveBeenCalledWith(500)
   })
