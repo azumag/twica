@@ -141,8 +141,8 @@ async function s3Delete(bucket: string, key: string, clientType: 'images' | 'sou
  * 【Issue #980】以前は画像アップロード（uploadToR2WithRetry）だけ、呼び出し元
  * （src/app/api/upload/route.ts）で r2-retry-policy.ts の retryCloudflareR2Upload に
  * さらに二重ラップされており、CLOUDFLARE_R2_TRANSIENT_MARKERS 該当エラーを
- * 内側・外側の両方でリトライすると最大試行回数・待ち時間が最悪ケースで約4倍
- * （12回・合計約22秒）に肥大化する上限のないリスクがあった。その二重ラップ自体を撤去し、
+ * 内側・外側の両方でリトライすると最大試行回数・待ち時間が最悪ケースで約3倍
+ * （4回→12回・7秒→約22秒）に肥大化する上限のないリスクがあった。その二重ラップ自体を撤去し、
  * 画像・効果音とも「このモジュールの1本のリトライループだけがリトライを担う」構成に
  * 統一したため、二重リトライは構造的に発生し得ない。リトライの上限は
  * uploadToR2WithRetry/uploadSoundToR2WithRetry の maxRetries（デフォルト3）1箇所だけで
