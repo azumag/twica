@@ -574,4 +574,37 @@ describe('sendChatAnnouncement: {packName} はカード自身のパックを優�
 
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=基本セット')
   })
+
+  it('N連でパックが混在していても {packName} は先頭カード（card引数）のパックだけを見る', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    // N連時はchat_announcement_multi_templateが使われる（未設定ならデフォルトの
+    // N連テンプレートに落ちて{packName}を含まない）ため、単発用のpackStreamerを
+    // そのまま使わず、N連テンプレートにも{packName}を持つstreamerを別途用意する。
+    const multiPackStreamer = {
+      ...packStreamer,
+      chat_announcement_multi_template: 'pack={packName}',
+    }
+    const unclassifiedFirstCard = {
+      ...card,
+      collection_name: null,
+    }
+    const packedSecondCard = {
+      ...card,
+      id: 'card-2',
+      name: 'Beta',
+      collection_name: 'レアパック',
+    }
+
+    // 2枚目（cards[1]）が名前付きパックでも、{packName} は先頭カードの解決結果
+    // （未分類→デフォルトパック名）のまま。将来「全カードのパックを結合する」
+    // 等の変更が入った際に、この「先頭カード優先」契約への退行を検知する。
+    await sendChatAnnouncement(
+      '130871908', multiPackStreamer, unclassifiedFirstCard, 'Viewer', 'viewer-1',
+      [unclassifiedFirstCard, packedSecondCard], undefined, snapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=基本セット')
+  })
 })
