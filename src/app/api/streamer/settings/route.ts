@@ -518,6 +518,49 @@ function isMissingGachaSoundRulesColumnError(error: unknown): boolean {
 }
 
 /**
+ * Issue #946: basicプランのゲート（1件・targetType==="all"のみ）を、今回の
+ * リクエストで送られてきた配列全体にではなく「新規追加分」だけに適用するための、
+ * 更新前の永続化済みルール一覧を読む。
+ *
+ * あえて getStreamerForSettingsUpdate の3段階フォールバックチェインには含めない。
+ * あのチェインの selectFull() に gacha_sound_rules を足すと、この列だけが
+ * デプロイ窓で未反映な環境では既存のどの isMissing*ColumnError にも一致せず
+ * currentError が残ったまま最終的に null を返す = 「gachaSoundRulesを一切
+ * 含まないリクエストも含め、全ての設定保存が403になる」という、この issue の
+ * スコープを大きく超える退行を生みかねない。
+ *
+ * そのため gachaSoundRules が実際に送られてきた時だけ呼ぶ独立したクエリとし、
+ * 列欠落・その他のエラー時は空配列にフォールバックする。空配列扱いになっても
+ * 「既存ルールが1件も無い（＝今回の送信は全て新規追加）」という保守的側に倒れる
+ * だけで、既存データを誤って残す・喪失させる方向のリスクは無い。
+ */
+async function getCurrentGachaSoundRules(streamerId: string): Promise<GachaSoundRule[]> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ gacha_sound_rules: streamersTable.gacha_sound_rules })
+          .from(streamersTable)
+          .where(eq(streamersTable.id, streamerId))
+          .limit(1);
+      },
+      "getCurrentGachaSoundRules",
+      { idempotent: true },
+    );
+    return normalizeGachaSoundRules(rows[0]?.gacha_sound_rules);
+  } catch (error) {
+    if (!isMissingGachaSoundRulesColumnError(error)) {
+      // 列欠落以外（接続断・タイムアウト等）は原因調査のためログに残す。
+      // ただし保守的に空配列へフォールバックする方針自体は変えない
+      // （新規追加分としてbasicゲートが適用されるだけで、安全側に倒れる）。
+      logger.warn("getCurrentGachaSoundRules failed; treating as no existing rules", error);
+    }
+    return [];
+  }
+}
+
+/**
  * Issue #738: publish_live_status / publish_stats の列欠落判定。
  * 2カラムは同一 migration で追加されるため「両方同時に欠落」しかあり得ず、
  * まとめて1段のフォールバックとして扱う。
@@ -1014,6 +1057,10 @@ export async function POST(request: NextRequest) {
     // レスポンスでエコーバックするため、if ブロックの外側に持ち出しておく
     // (F5: 楽観反映によるサイレント欠損対策。cardPackNames と同じパターン)。
     let persistedGachaSoundRules: GachaSoundRule[] | undefined;
+    // Issue #946: basicプランの制限（1件・targetType==="all"のみ）を超える
+    // ルールが送られ、一部または全部が保存されずに落とされた場合に true。
+    // cardPackNamesPremiumRequired と同じ「レスポンスでのみ知らせる」パターン。
+    let gachaSoundRulesPremiumRequired = false;
 
     // チャネルポイント報酬設定（従来の機能）
     if (channelPointRewardId !== undefined) {
@@ -1041,13 +1088,78 @@ export async function POST(request: NextRequest) {
       updateData.gacha_sound_enabled = gachaSoundEnabled;
     }
     if (gachaSoundRules !== undefined) {
-      // 複数ルール・ターゲット指定は支援プラン以上限定の機能
-      // Multi-rule and targeting are premium features; reject for basic plan users
+      // Issue #946: 複数ルール・ターゲット指定（レアリティ／報酬別）は支援プラン以上
+      // 限定の機能だが、単一の効果音（targetType==="all"のルール1件のみ）は
+      // 全プランで設定できる想定の機能。以前は gachaSoundRules が送られた時点で
+      // basicプランを一律403拒否しており、「1つの効果音すら設定できない」という
+      // 意図しない制限になっていた（フロント側の GachaSoundSettings.tsx も
+      // アップロードUIごと丸ごと inert にしていたため、この403は普段は露見せず、
+      // グレーアウトされたUIとして現れていた）。
+      //
+      // 【自動レビュー指摘（必須）】cardPackNames（#269再設計）と同じ「静かに落とす」
+      // パターンを踏襲する際、最初の実装は「今回送信された配列全体」に対して
+      // basicゲートを適用していた。しかしクライアント(GachaSoundSettings.tsx)は
+      // ルールを1件トグル・編集・削除するだけでも rules 配列全体を毎回再送信する
+      // ため、プレミアム時代に正当に保存された複数ルール・ターゲット指定ルールが
+      // 残ったまま該当ユーザーのプランが basic になった場合（本当のダウングレード、
+      // または getUserPlan が一時的に basic へフォールバックした場合）、
+      // 「無関係なルールのチェックボックスを1つ切り替えただけ」で他の既存ルールが
+      // まとめて削除される、というデータ喪失を起こしうる欠陥があった。
+      //
+      // cardPackNames の addedNames（更新前のcurrentCardPackNamesとの差分）に倣い、
+      // 「更新前から既に永続化されていたルール（idが一致）」は常に温存し、
+      // 「今回新たに追加されたルール（idが更新前に無い）」だけをbasicゲートの対象にする。
+      //
+      // 【自動レビュー指摘（必須・修正済み・セキュリティ）】最初の実装は「idが一致
+      // すれば温存する」だけで、そのルールの中身（targetType/rarity/rewardId等の
+      // プレミアム限定フィールド）が実際にDB上の値と一致するかを検証していなかった。
+      // これにより、basicプランのユーザーが既存"all"ルールのidを使い回しつつ
+      // targetTypeをrarity/rewardへ書き換えて送信するだけで、プラン制限を完全に
+      // バイパスできてしまうセキュリティホールになっていた（既存"all"ルールの
+      // targetTypeを変えるとhasAllRuleAlreadyがfalseになり、同一リクエストで
+      // 新規のall対象ルールをもう1件追加することまで可能だった）。
+      // 対策として、「idが一致」かつ「プレミアム限定フィールドがDB上の値と完全一致」
+      // の場合のみ温存対象とする。urlやlabel、enabledの変更（プランに関係なく
+      // 常に許可すべき編集）は温存判定に影響しない。idを再利用しつつ
+      // targetType等を書き換えた場合は、新規ルールと同じゲート判定に回される
+      // （targetTypeがall以外ならその場で破棄される）。
+      const allNormalizedRules = normalizeGachaSoundRules(gachaSoundRules);
       const plan = await getUserPlan(session.twitchUserId);
-      if (plan === "basic") {
-        return NextResponse.json({ error: ERROR_MESSAGES.PLAN_UPGRADE_REQUIRED }, { status: 403 });
+      const isPremiumPlan = plan !== "basic";
+      let rules: GachaSoundRule[];
+      if (isPremiumPlan) {
+        rules = allNormalizedRules;
+      } else {
+        const currentRules = await getCurrentGachaSoundRules(streamerId);
+        const currentRulesById = new Map(currentRules.map((rule) => [rule.id, rule]));
+        const hasUnchangedGatedFields = (rule: GachaSoundRule, existing: GachaSoundRule) =>
+          rule.targetType === existing.targetType
+          && rule.rarity === existing.rarity
+          && rule.rewardId === existing.rewardId
+          && rule.rewardName === existing.rewardName;
+
+        // 既存ルールは、今回の編集内容（有効/無効・ラベル・URL等）をそのまま尊重して
+        // 温存する。削除（=送信配列に含まれない）はそのまま反映される。
+        const preservedExisting: GachaSoundRule[] = [];
+        const newRules: GachaSoundRule[] = [];
+        for (const rule of allNormalizedRules) {
+          const existing = currentRulesById.get(rule.id);
+          if (existing && hasUnchangedGatedFields(rule, existing)) {
+            preservedExisting.push(rule);
+          } else {
+            newRules.push(rule);
+          }
+        }
+        // 新規追加分は、温存された既存ルールに"all"対象が1件も無い場合に限り、
+        // "all"対象の新規ルール1件だけを追加で許可する（合計で常に高々1件の
+        // "all"対象ルールに収める）。
+        const hasAllRuleAlready = preservedExisting.some((rule) => rule.targetType === "all");
+        const allowedNewRule = hasAllRuleAlready
+          ? undefined
+          : newRules.find((rule) => rule.targetType === "all");
+        rules = allowedNewRule ? [...preservedExisting, allowedNewRule] : preservedExisting;
       }
-      const rules = normalizeGachaSoundRules(gachaSoundRules);
+      gachaSoundRulesPremiumRequired = !isPremiumPlan && rules.length < allNormalizedRules.length;
       updateData.gacha_sound_rules = rules;
       persistedGachaSoundRules = rules;
       // PR #451 レビュー指摘(F1): gacha_sound_url/gacha_sound_enabled は
@@ -1254,6 +1366,7 @@ export async function POST(request: NextRequest) {
           }
         : {}),
       ...(gachaSoundRulesWriteSkipped ? { gachaSoundRulesSkippedDeployWindow: true } : {}),
+      ...(gachaSoundRulesPremiumRequired ? { gachaSoundRulesPremiumRequired: true } : {}),
       ...(liveDirectorySettingsWriteSkipped ? { liveDirectorySettingsSkippedDeployWindow: true } : {}),
     });
   } catch (error) {

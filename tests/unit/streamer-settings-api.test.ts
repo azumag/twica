@@ -808,8 +808,19 @@ describe('POST /api/streamer/settings', () => {
     })
   })
 
-  describe('gachaSoundRules premium gate', () => {
-    it('should return 403 for basic plan users attempting to set gachaSoundRules', async () => {
+  describe('gachaSoundRules premium gate (Issue #946)', () => {
+    // Issue #946: 以前は gachaSoundRules が送られた時点でbasicプランを一律403拒否
+    // しており、「単一のall対象ルール1件」すら設定できない意図しない制限になって
+    // いた。cardPackNames(#269再設計)と同じ「超過分だけ静かに落とし200で返す」
+    // パターンへ変更した。以下は新しいゲート挙動の回帰テスト。
+    //
+    // 【自動レビュー指摘（必須・修正済み）】最初の実装は「今回送信された配列全体」に
+    // basicゲートを適用しており、プレミアム時代に保存された複数ルールを持つ
+    // ユーザーが、無関係なルールを1件トグルするだけの操作で他の既存ルールを
+    // まとめて失うデータ喪失バグがあった。以下の "preserves"/"drops a genuinely
+    // new rule" の2ケースがこの修正の直接の回帰テスト（更新前のDB状態を
+    // gacha_sound_rules 付きでfixtureに含める）。
+    it('basic plan users can save a single all-target sound rule (200, persisted as-is)', async () => {
       mockGetUserPlan.mockResolvedValue('basic')
 
       const mockDbFixture = createDbFixture()
@@ -828,9 +839,263 @@ describe('POST /api/streamer/settings', () => {
       })
 
       const response = await POST(request)
-      expect(response.status).toBe(403)
+      expect(response.status).toBe(200)
       const data = await response.json()
-      expect(data.error).toBe('この機能は助力プラン以上が必要です')
+      expect(data.gachaSoundRules).toHaveLength(1)
+      expect(data.gachaSoundRules[0]).toMatchObject({ id: 'rule1' })
+      expect(data.gachaSoundRulesPremiumRequired).toBeUndefined()
+    })
+
+    it('basic plan users submitting a 2nd rule get only the first all-target rule persisted, with gachaSoundRulesPremiumRequired flagged', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'first', url: 'https://example.com/a.mp3', enabled: true, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+            { id: 'second', url: 'https://example.com/b.mp3', enabled: true, label: 'B', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.gachaSoundRules).toHaveLength(1)
+      expect(data.gachaSoundRules[0]).toMatchObject({ id: 'first' })
+      expect(data.gachaSoundRulesPremiumRequired).toBe(true)
+    })
+
+    it('basic plan users submitting a rarity-targeted rule get it dropped entirely (not silently downgraded to all), with gachaSoundRulesPremiumRequired flagged', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'legendary-only', url: 'https://example.com/legendary.mp3', enabled: true, label: 'L', targetType: 'rarity', rarity: 'legendary', rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.gachaSoundRules).toHaveLength(0)
+      expect(data.gachaSoundRulesPremiumRequired).toBe(true)
+    })
+
+    it('basic plan users can still clear all rules (empty array never gated)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundRules: [] }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.gachaSoundRules).toHaveLength(0)
+      expect(data.gachaSoundRulesPremiumRequired).toBeUndefined()
+    })
+
+    it('getUserPlan resolving to basic (its own internal fail-safe) still applies basic-tier gating rather than full premium pass-through', async () => {
+      // plan.ts 自身の「例外時はbasicへフォールバック」自体はplan-twitch-sub.test.tsで
+      // 別途検証済み。ここでは「basicとして扱われた場合に、本当にプレミアム機能
+      // （複数ルール・ターゲット指定）が通ってしまわないか」というこのルート側の
+      // ゲート実装の健全性を検証する(フェイルセーフの意味を保つ回帰テスト)。
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'a', url: 'https://example.com/a.mp3', enabled: true, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+            { id: 'b', url: 'https://example.com/b.mp3', enabled: true, label: 'B', targetType: 'rarity', rarity: 'legendary', rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      // premiumでないため、2件目(rarity指定)は保存されない
+      expect(data.gachaSoundRules).toHaveLength(1)
+      expect(data.gachaSoundRules[0]).toMatchObject({ id: 'a', targetType: 'all' })
+      expect(data.gachaSoundRulesPremiumRequired).toBe(true)
+    })
+
+    it('preserves pre-existing premium-era rules untouched when a basic-plan user makes an unrelated edit (regression test for the data-loss bug found in review)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      // 更新前のDBには、premium時代に保存された「rarity指定1件 + all対象1件」の
+      // 2ルールが既に存在する。
+      const existingRules = [
+        { id: 'legendary-rule', url: 'https://example.com/legendary.mp3', enabled: true, label: 'L', targetType: 'rarity', rarity: 'legendary', rewardId: null, rewardName: null },
+        { id: 'catch-all', url: 'https://example.com/all.mp3', enabled: true, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+      ]
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123', gacha_sound_rules: existingRules })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      // ユーザーは "legendary-rule" を無効化しただけ(無関係な単純トグル)で、
+      // クライアントの仕様どおり配列全体(既存2件)をそのまま再送信する。
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { ...existingRules[0], enabled: false },
+            existingRules[1],
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      // 両方のルールが残っており、legendary-ruleのenabledだけが変わっている
+      // (basicプランだからといって、既存のrarity指定ルールが消えてはいけない)
+      expect(data.gachaSoundRules).toHaveLength(2)
+      expect(data.gachaSoundRules.find((r: { id: string }) => r.id === 'legendary-rule')).toMatchObject({
+        enabled: false,
+        targetType: 'rarity',
+      })
+      expect(data.gachaSoundRules.find((r: { id: string }) => r.id === 'catch-all')).toMatchObject({
+        enabled: true,
+        targetType: 'all',
+      })
+      expect(data.gachaSoundRulesPremiumRequired).toBeUndefined()
+    })
+
+    it('drops a genuinely new rule for basic-plan users while still preserving pre-existing (non-all-target) rules untouched', async () => {
+      // 【自動レビュー指摘（任意）】既存ルールも新規ルールもtargetType"all"だと、
+      // getCurrentGachaSoundRulesが壊れて常に[]を返す場合でも結果的に同じ
+      // ("先頭のallルールが残るだけ")になり、DB読み取りパスが実際に使われて
+      // いることを判別できない弱いテストだった。既存ルールをrarity指定にする
+      // ことで、DB読み取りが機能しているかどうかで結果が明確に分岐するようにした
+      // （壊れていれば既存ルールごと失われ新規ルールだけが残ってしまう）。
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const existingRules = [
+        { id: 'legendary-rule', url: 'https://example.com/legendary.mp3', enabled: true, label: 'L', targetType: 'rarity', rarity: 'legendary', rewardId: null, rewardName: null },
+      ]
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123', gacha_sound_rules: existingRules })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { ...existingRules[0], enabled: false },
+            { id: 'new-all', url: 'https://example.com/new.mp3', enabled: true, label: 'N', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      // 既存のrarity指定ルールは(all対象ではないため上限に影響せず)そのまま温存され、
+      // かつ既存にall対象ルールが無いため新規のall対象ルールも追加で許可される。
+      // DB読み取りが壊れていれば、legendary-ruleが消え new-all だけが残るはず。
+      expect(data.gachaSoundRules).toHaveLength(2)
+      expect(data.gachaSoundRules.find((r: { id: string }) => r.id === 'legendary-rule')).toMatchObject({
+        enabled: false,
+        targetType: 'rarity',
+      })
+      expect(data.gachaSoundRules.find((r: { id: string }) => r.id === 'new-all')).toMatchObject({
+        targetType: 'all',
+      })
+      expect(data.gachaSoundRulesPremiumRequired).toBeUndefined()
+    })
+
+    it('rejects reusing an existing rule id while changing its plan-gated fields (targetType/rarity), rather than silently bypassing the plan gate (Issue #946 security fix)', async () => {
+      // 【自動レビュー指摘（必須・修正済み）】idが一致するだけで温存すると、basic
+      // プランのユーザーが既存の"all"ルールのidを再利用しつつtargetTypeを
+      // rarity/rewardへ書き換えて送信するだけでプラン制限を完全にバイパスできて
+      // しまう脆弱性があった。この回帰テストは、既存"all"ルールのidを再利用して
+      // targetTypeをrarityへ書き換えつつ、同一リクエストで新規のall対象ルールも
+      // 追加しようとするケースを固定する。
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const existingRules = [
+        { id: 'was-all', url: 'https://example.com/all.mp3', enabled: true, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+      ]
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123', gacha_sound_rules: existingRules })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            // 既存のidを再利用しつつtargetTypeをrarityへ書き換える(プラン制限バイパス試行)
+            { id: 'was-all', url: 'https://example.com/all.mp3', enabled: true, label: 'A', targetType: 'rarity', rarity: 'legendary', rewardId: null, rewardName: null },
+            // 同時に新規のall対象ルールも追加しようとする
+            { id: 'new-all', url: 'https://example.com/new.mp3', enabled: true, label: 'N', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      // targetTypeを書き換えた"was-all"は温存対象にならず(新規ルール扱いとなり、
+      // targetTypeがall以外なので破棄される)、"new-all"だけが新規のall対象ルール
+      // として1件許可される。2件とも保存される・rarity指定が生き残る、はいずれも
+      // プラン制限のバイパスになるため NG。
+      expect(data.gachaSoundRules).toHaveLength(1)
+      expect(data.gachaSoundRules[0]).toMatchObject({ id: 'new-all', targetType: 'all' })
+      expect(data.gachaSoundRulesPremiumRequired).toBe(true)
     })
 
     it('should allow support plan users to set gachaSoundRules', async () => {
@@ -874,26 +1139,6 @@ describe('POST /api/streamer/settings', () => {
       expect(response.status).toBe(200)
     })
 
-    it('getUserPlan エラー時は basic フォールバックで 403 を返す（セキュリティ正方向）', async () => {
-      // getUserPlan 内で例外が発生した場合、plan.ts が 'basic' にフォールバックするため
-      // gachaSoundRules リクエストは 403 になる（プレミアム機能を誤って許可しない方向のフェイルセーフ）
-      mockGetUserPlan.mockResolvedValue('basic')
-
-      const mockDbFixture = createDbFixture()
-        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-        .build()
-
-      installDbFixture(mockDbFixture)
-
-      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ streamerId: 'streamer123', gachaSoundRules: [] }),
-      })
-
-      const response = await POST(request)
-      expect(response.status).toBe(403)
-    })
   })
 
   describe('gachaSoundRules legacy mirror + save echo (Issue #451 followup F1/F5)', () => {

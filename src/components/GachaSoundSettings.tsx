@@ -89,6 +89,12 @@ export default function GachaSoundSettings({
 
   const enabledRule = rules.find((rule) => rule.enabled);
 
+  // Issue #946: 複数効果音・ターゲット指定(レアリティ/報酬別)は支援プラン以上限定の
+  // 機能だが、単一の効果音(targetType==="all")は全プランで設定できる。
+  // basicプランでは既に1件あれば追加をブロックする(サーバー側の
+  // gachaSoundRulesPremiumRequired ゲートと対になる、UI側の事前ガード)。
+  const canAddSound = isPremium || rules.length === 0;
+
   // basicプランでは効果音ルールUI全体が inert（操作不可）になるため、
   // 取得しても無駄になるTwitch APIコールを避ける。プランがアップグレード
   // されて isPremium が true になった時点で改めて取得する。
@@ -169,6 +175,16 @@ export default function GachaSoundSettings({
         // (実際にはルール保存されていない)ケース。成功扱いにはせず、
         // 他のフィールドの deploy-window 案内と同様にユーザーへ知らせる。
         setMessage(t("errors.deployWindow"));
+        setIsError(true);
+        return false;
+      }
+
+      // Issue #946: basicプランの制限（1件・targetType==="all"のみ）を超える
+      // ルールがサーバー側で保存されず落とされた場合。上のsetRules(persisted)で
+      // 実際に保存された内容へは既に再同期済みなので、ここでは「一部が保存されな
+      // かった」ことをユーザーへ知らせるだけでよい。
+      if (data?.gachaSoundRulesPremiumRequired) {
+        setMessage(t("premiumRequired"));
         setIsError(true);
         return false;
       }
@@ -378,15 +394,15 @@ export default function GachaSoundSettings({
         </p>
       )}
 
-      {isPremium && isMaintenanceBlocked && (
+      {isMaintenanceBlocked && (
         <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
       )}
 
-      {/* #694 Stage 6c: maintenance中もisPremiumと同じinert機構で書き込みUI
-          （アップロード・ルール編集・削除）を丸ごと無効化する。既存の
-          !isPremium ゲートと同じ「まとめて無効化」方針を踏襲する
-          （個別要素ごとに disabled を積み上げるより単純で漏れにくい）。 */}
-      <div className={`space-y-4 ${!isPremium || isMaintenanceBlocked ? "opacity-50" : ""}`} inert={!isPremium || isMaintenanceBlocked || undefined}>
+      {/* #694 Stage 6c: maintenance中は書き込みUI（アップロード・ルール編集・削除）
+          を丸ごと無効化する。Issue #946: basicプランは「1件のみ・all対象」の制限は
+          あるが機能自体は使えるため、!isPremium はここでは無効化条件にしない
+          （プラン制限は canAddSound / targetType select の個別 disabled で表現する）。 */}
+      <div className={`space-y-4 ${isMaintenanceBlocked ? "opacity-50" : ""}`} inert={isMaintenanceBlocked || undefined}>
         <div>
           <label className="mb-1 block text-sm text-gray-300">{t("form.selectFile")}</label>
           <input
@@ -394,8 +410,14 @@ export default function GachaSoundSettings({
             type="file"
             accept={SOUND_UPLOAD_CONFIG.ALLOWED_EXTENSIONS.map(ext => `.${ext}`).join(",")}
             onChange={handleFileUpload}
-            disabled={uploading || isMaintenanceBlocked}
-            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+            disabled={uploading || isMaintenanceBlocked || !canAddSound}
+            title={
+              isMaintenanceBlocked
+                ? tMaintenance("writeDisabled")
+                : !canAddSound
+                  ? t("premiumRequired")
+                  : undefined
+            }
             className="block w-full text-sm text-gray-400 file:mr-4 file:rounded-lg file:border-0 file:bg-purple-600 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-purple-700 file:disabled:opacity-50"
           />
           <p className="mt-1 text-xs text-gray-500">
@@ -433,10 +455,15 @@ export default function GachaSoundSettings({
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
+              {/* Issue #946: ターゲット指定(rarity/reward)は支援プラン以上限定の機能。
+                  basicプランでは常に"all"のままにするため選択そのものを無効化する
+                  （サーバー側もbasicプランでは"all"以外のルールを保存しない）。 */}
               <select
                 value={rule.targetType}
                 onChange={(event) => updateRule(rule.id, { targetType: event.target.value as GachaSoundTargetType })}
-                className="rounded-lg bg-gray-800 px-3 py-2 text-sm text-white"
+                disabled={!isPremium}
+                title={!isPremium ? t("premiumRequired") : undefined}
+                className="rounded-lg bg-gray-800 px-3 py-2 text-sm text-white disabled:opacity-50"
                 aria-label={t("form.targetType")}
               >
                 <option value="all">{t("targets.all")}</option>
