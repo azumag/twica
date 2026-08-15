@@ -100,3 +100,13 @@ EVENTSUB_REPLAY_SECRET=... npm run replay:maintenance-eventsub -- \
 CIはPostgreSQL 17 serviceへPlanetScale baselineと全追加migrationを順次適用し、
 旧/新RPC、single/N連、歯抜け復旧、NULL副作用0、権限、lease fencingを実SQLで検証します。
 SQL本文の文字列検査だけをmigration構文のgateにしてはいけません。
+
+
+## Preview昇格時の累積変更テスト
+
+previewからmainへ昇格する際のテスト対象は、起点となった単一PRではなく、同じpreview HEADに含まれる昇格対象**全PRの累積変更**とする。
+
+- mainとの差分およびpreview→main昇格PRの差分を固定し、含まれる全PR番号・各HEAD SHA・preview merge SHAを記録する。
+- 各PRの呼び出し元、共有契約、DB/キュー/Worker/overlay経路を横断して確認し、PR同士の組み合わせによる退行も対象にする。
+- いずれかの構成PRがEventSub、gacha、overlay、chat、アップロードなど実引き換え経路に影響する場合、累積変更全体を対象に実引き換え、履歴、チャット、overlay、Workerログを相関させる。単一PRだけのテスト成功や合成demo表示は代替にならない。
+- 累積変更のいずれかに必須レビュー・必須CI・実経路ゲートの未達があれば、昇格を止め、原因と対象PRをIssueまたは昇格PRへ記録する。
