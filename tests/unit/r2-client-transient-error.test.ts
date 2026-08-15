@@ -24,6 +24,25 @@ describe('isTransientR2Error', () => {
     expect(isTransientR2Error('AccessDenied: invalid credentials')).toBe(false)
   })
 
+  it('service unavailableという文言を一時障害として扱う', () => {
+    expect(isTransientR2Error('put: service unavailable, please retry')).toBe(true)
+  })
+
+  it('HTTPステータス表記の503（"HTTP 503"）を一時障害として扱う', () => {
+    expect(isTransientR2Error('Request failed with HTTP 503')).toBe(true)
+  })
+
+  it('HTTPステータス表記の503（"status: 503"）を一時障害として扱う', () => {
+    expect(isTransientR2Error('put: status: 503, please retry later')).toBe(true)
+  })
+
+  // 【Issue #984】裸の'503'部分文字列マッチは、キー名やリクエストIDに偶然'503'を含む
+  // 恒久エラーを誤って一時障害と判定するリスクがあった。'http'/'status'という文脈語が
+  // 近傍に無い'503'は一時障害として扱わないことを確認する回帰テスト。
+  it('キー名にたまたま503を含む恒久エラーは一時障害として扱わない (Issue #984)', () => {
+    expect(isTransientR2Error("AccessDenied: key 'photo-503.png' is not permitted")).toBe(false)
+  })
+
   // r2-retry-policy.tsのCLOUDFLARE_R2_TRANSIENT_MARKERSをここから直接importして
   // 全要素をループ検証する。ハードコピーした文字列リテラルではなく実際にimportした
   // 配列を使うことで、「単一の情報源をimportして使っている」こと自体を検証する
