@@ -20,8 +20,11 @@ describe('CLOUDFLARE_R2_TRANSIENT_MARKERS', () => {
 
   it('r2-client.tsのisTransientR2Errorがこのマーカー一覧をimportして使っている（単一の情報源であることの回帰確認）', () => {
     // マーカー一覧に無い架空のコードは一時障害と判定されないはずだが、
-    // 一覧に追加すればisTransientR2Error側の判定にも反映される（二重管理の再発防止）
+    // 一覧のどの要素を追加してもisTransientR2Error側の判定に反映される必要がある
+    // （二重管理の再発防止。先頭要素だけでなく全要素を検証する）
     expect(isTransientR2Error('put: unrecognized error (99999)')).toBe(false)
-    expect(isTransientR2Error(`put: internal error ${CLOUDFLARE_R2_TRANSIENT_MARKERS[0]}`)).toBe(true)
+    for (const marker of CLOUDFLARE_R2_TRANSIENT_MARKERS) {
+      expect(isTransientR2Error(`put: error ${marker}`)).toBe(true)
+    }
   })
 })
