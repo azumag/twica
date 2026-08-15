@@ -160,7 +160,7 @@ const TRANSIENT_R2_ERROR_PATTERNS = [
   ...CLOUDFLARE_R2_TRANSIENT_MARKERS,
 ];
 
-// テストから直接検証できるようexport（r2-retry-policy.tsのisTransientCloudflareR2Errorと同じ方針）
+// テストから直接検証できるようexport
 export function isTransientR2Error(errorMessage: string): boolean {
   return TRANSIENT_R2_ERROR_PATTERNS.some(pattern =>
     errorMessage.toLowerCase().includes(pattern.toLowerCase())
