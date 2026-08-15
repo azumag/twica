@@ -71,6 +71,10 @@ function isGachaCard(value: unknown): boolean {
     && typeof card.drop_rate === 'number'
     && (card.description === null || typeof card.description === 'string')
     && (card.image_url === null || typeof card.image_url === 'string')
+    // Issue #948 の additive field。旧 payload はキー欠落（undefined）を許容し、
+    // 新 payload は text 列由来の string|null のみ通す。rewardId 等の他 optional
+    // string と同じ検証水準に揃える防御であり、正当な行を DLQ 化する余地はない。
+    && isOptionalNullableString(card.collection_name)
 }
 
 function isOptionalNullableString(value: unknown): boolean {
