@@ -6,6 +6,10 @@ describe('R2 retry policy', () => {
     expect(isTransientCloudflareR2Error('put: Please look at https://www.cloudflarestatus.com for issues or contact customer support. (10043)')).toBe(true)
   })
 
+  it('Cloudflare R2 error 10001（InternalError）を一時障害として扱う (Issue #976/#977)', () => {
+    expect(isTransientCloudflareR2Error('put: We encountered an internal error. Please try again. (10001)')).toBe(true)
+  })
+
   it('認証エラーなど恒久障害は再試行対象にしない', () => {
     expect(isTransientCloudflareR2Error('AccessDenied: invalid credentials')).toBe(false)
   })

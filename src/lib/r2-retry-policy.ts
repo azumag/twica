@@ -4,6 +4,11 @@ export interface R2UploadResult {
 }
 
 const CLOUDFLARE_R2_TRANSIENT_MARKERS = [
+  // 10001: InternalError (HTTP 500)。公式にリトライ推奨の一時障害
+  // (https://developers.cloudflare.com/r2/api/error-codes/)。
+  // 未登録だったため本番のR2アップロード失敗が即座にエラー化していた (Issue #976, #977)。
+  '(10001)',
+  // 10043: ServiceUnavailable (HTTP 503)。
   '(10043)',
   'cloudflarestatus.com',
   'contact customer support',
