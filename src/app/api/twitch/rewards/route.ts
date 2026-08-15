@@ -3,7 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { getTwitchAccessToken } from "@/lib/twitch/token-manager";
+import { getTwitchAccessToken, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
 import { validateCSRFToken } from "@/lib/csrf";
 import { recordChannelPointsApiFailure } from "@/lib/twitch/channel-points-access";
 
@@ -80,7 +80,9 @@ export async function GET(request: Request) {
         { status: 401 }
       );
     }
-    return handleApiError(error, "Twitch rewards fetch");
+    // Issue #653: refresh失敗(REFRESH_FAILED)の場合、diagnostics(status/kind)を
+    // auto-generated bug reportのContextへ載せる(twitchTokenErrorReportContext参照)。
+    return handleApiError(error, "Twitch rewards fetch", twitchTokenErrorReportContext(error));
   }
 }
 
@@ -153,6 +155,6 @@ export async function POST(request: Request) {
         { status: 401 }
       );
     }
-    return handleApiError(error, "Twitch reward creation");
+    return handleApiError(error, "Twitch reward creation", twitchTokenErrorReportContext(error));
   }
 }

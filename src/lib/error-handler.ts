@@ -22,8 +22,12 @@ async function logAndRecordError(
   await logErrorFromLogger(message, args)
 }
 
-export async function handleApiError(error: unknown, context: string): Promise<NextResponse> {
-  await logAndRecordError(`${context}:`, error)
+export async function handleApiError(
+  error: unknown,
+  context: string,
+  additionalInfo?: Record<string, unknown>
+): Promise<NextResponse> {
+  await logAndRecordError(`${context}:`, error, additionalInfo)
   return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
 }
 

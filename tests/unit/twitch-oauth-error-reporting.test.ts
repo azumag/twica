@@ -220,6 +220,16 @@ describe('OAuth error reporting has exactly one durable writer', () => {
       expect(mocks.reportAuthError).not.toHaveBeenCalled()
       expect(mocks.logErrorFromLogger).toHaveBeenCalledTimes(1)
       expect(allPersistedArguments()).not.toContain(SECRET)
+      // Issue #653/#670(PR #997レビュー指摘#5): token-manager側の診断フィールド
+      // 付与とhandleApiError側のadditionalInfo対応が別々にテストされているだけでは、
+      // route.tsのcatchでtwitchTokenErrorReportContext(error)を渡し忘れる結線
+      // バグを検知できない。実際のroute handler(rewardsGet)を通し、
+      // logErrorFromLoggerへ渡るargsにrefreshStatus/refreshErrorKindが実際に
+      // 含まれることを直接確認する。
+      const [, loggedArgs] = mocks.logErrorFromLogger.mock.calls[0]
+      expect(loggedArgs).toContainEqual(
+        expect.objectContaining({ refreshStatus: 522, refreshErrorKind: 'http' }),
+      )
     } finally {
       fetchMock.mockRestore()
     }
@@ -259,6 +269,11 @@ describe('OAuth error reporting has exactly one durable writer', () => {
       expect(mocks.reportAuthError).not.toHaveBeenCalled()
       expect(mocks.logErrorFromLogger).toHaveBeenCalledTimes(1)
       expect(allPersistedArguments()).not.toContain(SECRET)
+      // Issue #670(PR #997レビュー指摘#5): bootstrap route側でも同じ結線を固定する。
+      const [, loggedArgs] = mocks.logErrorFromLogger.mock.calls[0]
+      expect(loggedArgs).toContainEqual(
+        expect.objectContaining({ refreshStatus: 522, refreshErrorKind: 'http' }),
+      )
     } finally {
       fetchMock.mockRestore()
     }

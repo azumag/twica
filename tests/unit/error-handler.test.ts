@@ -28,6 +28,27 @@ describe('error-handler', () => {
       expect(response.status).toBe(500);
       expect(body.error).toBeTruthy();
     });
+
+    // Issue #653/#670: TwitchTokenError(REFRESH_FAILED)のような、API境界で
+    // 診断summaryを付与したいケース向け。handleBlobErrorと同じadditionalInfo契約。
+    it('additionalInfo が logErrorFromLogger に正しく渡される', async () => {
+      const additionalInfo = { refreshStatus: 401, refreshErrorKind: 'http' };
+      await handleApiError(new Error('fail'), 'test context', additionalInfo);
+
+      expect(logErrorFromLogger).toHaveBeenCalledWith(
+        'test context:',
+        [expect.any(Error), additionalInfo]
+      );
+    });
+
+    it('additionalInfo が未指定の場合は error のみ渡される(既存呼び出し元との後方互換)', async () => {
+      await handleApiError(new Error('fail'), 'test context');
+
+      expect(logErrorFromLogger).toHaveBeenCalledWith(
+        'test context:',
+        [expect.any(Error)]
+      );
+    });
   });
 
   describe('handleDatabaseError', () => {

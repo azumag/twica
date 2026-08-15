@@ -9,12 +9,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getTwitchAccessToken,
+  TwitchTokenError,
+  twitchTokenErrorReportContext,
   validateTokenScopes,
 } from '@/lib/twitch/token-manager'
 import { getDb } from '@/lib/db/client'
-import { refreshTwitchToken } from '@/lib/twitch/auth'
+import { refreshTwitchToken, TwitchTokenRefreshError } from '@/lib/twitch/auth'
+import { logger } from '@/lib/logger'
 
-vi.mock('@/lib/twitch/auth')
+// refreshTwitchTokenだけをvi.fn()へ置き換え、TwitchTokenRefreshError等の他の
+// exportは実装のまま残す(Issue #653/#670系テスト用)。token-manager.tsの
+// `error instanceof TwitchTokenRefreshError` はこのモジュール経由で同じ
+// クラス参照を見るため、自動モックでconstructorのstatus/kind/retryable代入が
+// 保持されるかに依存せず、確実に本来のフィールド値で判定できる。
+vi.mock('@/lib/twitch/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/twitch/auth')>()
+  return { ...actual, refreshTwitchToken: vi.fn() }
+})
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
@@ -219,6 +230,93 @@ describe('Twitch Token Manager: PlanetScale/Drizzle', () => {
       expect(fixture.refreshState.twitch_access_token).toBe('access-token')
     })
 
+    // Issue #653/#670/#654/#655: これらのauto-generated bug reportは、refresh
+    // 失敗のContextが空で、恒久エラー(無効なrefresh token等)か一時エラー
+    // (429/5xx/network)かを区別できず、着手可能な修正案を出せないと判定
+    // されていた。この2件はその「着手可能条件」(診断情報の記録)を固定する。
+    it('Twitch APIが401を返してrefresh失敗した場合、status/kind/retryableをログとTwitchTokenErrorの両方へ記録する(originalErrorへは生のDBエラー混入を避けるため保持しない)', async () => {
+      const refreshError = new TwitchTokenRefreshError(401)
+      vi.mocked(refreshTwitchToken).mockRejectedValue(refreshError)
+      const fixture = createDrizzleDbMock({
+        selects: [
+          { rows: [tokenRow({ expiresAt: pastIso() })] },
+          // refreshAndPersist失敗後、runWithRefreshLeaseはreadUserRefreshWinner()で
+          // 「並行request/callbackが既に新トークンを保存済みでないか」を再確認する
+          // (token-manager.ts:145)。空行を返し、winnerなし=注入したエラーがそのまま
+          // 伝播することを検証する(fixtureの既定フォールバックは常に既存の
+          // 'access-token'を返してしまい、winnerありと誤認してエラーを隠蔽するため)。
+          { rows: [] },
+        ],
+      })
+      primeDb(fixture)
+
+      await expect(getTwitchAccessToken('user-1')).rejects.toMatchObject({
+        code: 'REFRESH_FAILED',
+        // originalErrorはこのcatchがDBエラー(lease/CAS更新、bind paramsに
+        // token実値を含み得る)も受け取るため意図的に付与しない
+        // (token-manager.tsのtwitchTokenRefreshFailureContext doc参照)。
+        originalError: undefined,
+        refreshStatus: 401,
+        refreshErrorKind: 'http',
+        refreshRetryable: false,
+      })
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Failed to refresh Twitch access token',
+        expect.objectContaining({
+          twitchUserId: 'user-1',
+          refreshStatus: 401,
+          refreshErrorKind: 'http',
+          refreshRetryable: false,
+        }),
+      )
+    })
+
+    it('Twitch APIがネットワークエラー(status無し)でrefresh失敗した場合、一時エラーとして記録する', async () => {
+      const refreshError = new TwitchTokenRefreshError(undefined)
+      vi.mocked(refreshTwitchToken).mockRejectedValue(refreshError)
+      const fixture = createDrizzleDbMock({
+        selects: [
+          { rows: [tokenRow({ expiresAt: pastIso() })] },
+          { rows: [] }, // readUserRefreshWinner: winnerなし(上のテストの注記参照)
+        ],
+      })
+      primeDb(fixture)
+
+      await expect(getTwitchAccessToken('user-1')).rejects.toMatchObject({
+        code: 'REFRESH_FAILED',
+      })
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Failed to refresh Twitch access token',
+        expect.objectContaining({
+          refreshStatus: undefined,
+          refreshErrorKind: 'network',
+          refreshRetryable: true,
+        }),
+      )
+    })
+
+    it('DB保存エラー(TwitchTokenRefreshErrorではない)でrefresh失敗した場合、診断フィールドを付与しない', async () => {
+      vi.mocked(refreshTwitchToken).mockResolvedValue({
+        access_token: 'new-token',
+        refresh_token: 'new-refresh-token',
+        expires_in: 3600,
+        token_type: 'bearer',
+        scope: ['scope:new'],
+      })
+      const fixture = createDrizzleDbMock({
+        selects: [{ rows: [tokenRow({ expiresAt: pastIso() })] }],
+        refreshUpdateError: { code: '23505', message: 'CAS save failed' },
+      })
+      primeDb(fixture)
+
+      await expect(getTwitchAccessToken('user-1')).rejects.toMatchObject({
+        code: 'REFRESH_FAILED',
+      })
+      const [, loggedContext] = vi.mocked(logger.warn).mock.calls.at(-1) ?? []
+      expect(loggedContext).not.toHaveProperty('refreshStatus')
+      expect(loggedContext).not.toHaveProperty('refreshErrorKind')
+    })
+
     it('空scopeも同じCAS UPDATEへ保存する', async () => {
       vi.mocked(refreshTwitchToken).mockResolvedValue({
         access_token: 'new-token',
@@ -331,6 +429,50 @@ describe('Twitch Token Manager: PlanetScale/Drizzle', () => {
       primeDb(fixture)
 
       await expect(validateTokenScopes('user-1')).resolves.toBeNull()
+    })
+  })
+
+  // Issue #653/#670: API境界(handleApiError)がPlanetScale errorsテーブルの
+  // contextへ載せるための診断summaryを抽出する純粋関数。getTwitchAccessToken
+  // 経由の統合テストとは別に、境界条件を直接固定する。
+  describe('twitchTokenErrorReportContext', () => {
+    it('REFRESH_FAILED かつ refreshStatus/refreshErrorKind を持つ TwitchTokenError から診断summaryを返す', () => {
+      const error = new TwitchTokenError(
+        'Failed to refresh Twitch access token',
+        'REFRESH_FAILED',
+        undefined,
+        401,
+        'http',
+        false,
+      )
+      expect(twitchTokenErrorReportContext(error)).toEqual({
+        refreshStatus: 401,
+        refreshErrorKind: 'http',
+        refreshRetryable: false,
+      })
+    })
+
+    it('REFRESH_FAILED でも診断フィールドが無ければ undefined を返す(DBエラー由来のケース)', () => {
+      const error = new TwitchTokenError('Failed to refresh Twitch access token', 'REFRESH_FAILED')
+      expect(twitchTokenErrorReportContext(error)).toBeUndefined()
+    })
+
+    it('REFRESH_FAILED以外のcode(DATABASE_ERROR等)ではundefinedを返す', () => {
+      const error = new TwitchTokenError(
+        'Failed to fetch user tokens from database',
+        'DATABASE_ERROR',
+        undefined,
+        401,
+        'http',
+        false,
+      )
+      expect(twitchTokenErrorReportContext(error)).toBeUndefined()
+    })
+
+    it('TwitchTokenErrorではないerrorに対してはundefinedを返す', () => {
+      expect(twitchTokenErrorReportContext(new Error('plain error'))).toBeUndefined()
+      expect(twitchTokenErrorReportContext('string error')).toBeUndefined()
+      expect(twitchTokenErrorReportContext(null)).toBeUndefined()
     })
   })
 })
