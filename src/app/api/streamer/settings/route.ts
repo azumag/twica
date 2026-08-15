@@ -550,13 +550,20 @@ async function getCurrentGachaSoundRules(streamerId: string): Promise<GachaSound
     );
     return normalizeGachaSoundRules(rows[0]?.gacha_sound_rules);
   } catch (error) {
-    if (!isMissingGachaSoundRulesColumnError(error)) {
-      // 列欠落以外（接続断・タイムアウト等）は原因調査のためログに残す。
-      // ただし保守的に空配列へフォールバックする方針自体は変えない
-      // （新規追加分としてbasicゲートが適用されるだけで、安全側に倒れる）。
-      logger.warn("getCurrentGachaSoundRules failed; treating as no existing rules", error);
+    // 列がまだデプロイされていない場合のみ、安全に「既存ルールなし」とみなせる
+    // （列自体が無いのでそもそも失うデータが存在しない）。
+    if (isMissingGachaSoundRulesColumnError(error)) {
+      return [];
     }
-    return [];
+    // 【自動レビュー指摘（必須・修正済み）】列欠落以外（接続断・タイムアウト等の
+    // 一過性エラー）でも一律 [] にフォールバックしていたが、これは危険側の
+    // デグレードだった。UPDATE自体はこの後も実行されるため、[]を返すと
+    // basicプランの既存ルールが全て「新規」とみなされ、"all"1件を除いて
+    // 誤って削除されてしまう（Issue #946が解決しようとしたデータ喪失の再発）。
+    // 「何が既存か判定できない」場合は温存すべきデータを推測せず、
+    // このリクエスト全体を失敗させる（呼び出し元の try/catch がAPIエラーとして
+    // 処理し、ユーザーは変更なしで再試行できる）。
+    throw error;
   }
 }
 
@@ -1088,45 +1095,28 @@ export async function POST(request: NextRequest) {
       updateData.gacha_sound_enabled = gachaSoundEnabled;
     }
     if (gachaSoundRules !== undefined) {
-      // Issue #946: 複数ルール・ターゲット指定（レアリティ／報酬別）は支援プラン以上
-      // 限定の機能だが、単一の効果音（targetType==="all"のルール1件のみ）は
-      // 全プランで設定できる想定の機能。以前は gachaSoundRules が送られた時点で
-      // basicプランを一律403拒否しており、「1つの効果音すら設定できない」という
-      // 意図しない制限になっていた（フロント側の GachaSoundSettings.tsx も
-      // アップロードUIごと丸ごと inert にしていたため、この403は普段は露見せず、
-      // グレーアウトされたUIとして現れていた）。
-      //
-      // 【自動レビュー指摘（必須）】cardPackNames（#269再設計）と同じ「静かに落とす」
-      // パターンを踏襲する際、最初の実装は「今回送信された配列全体」に対して
-      // basicゲートを適用していた。しかしクライアント(GachaSoundSettings.tsx)は
-      // ルールを1件トグル・編集・削除するだけでも rules 配列全体を毎回再送信する
-      // ため、プレミアム時代に正当に保存された複数ルール・ターゲット指定ルールが
-      // 残ったまま該当ユーザーのプランが basic になった場合（本当のダウングレード、
-      // または getUserPlan が一時的に basic へフォールバックした場合）、
-      // 「無関係なルールのチェックボックスを1つ切り替えただけ」で他の既存ルールが
-      // まとめて削除される、というデータ喪失を起こしうる欠陥があった。
-      //
-      // cardPackNames の addedNames（更新前のcurrentCardPackNamesとの差分）に倣い、
-      // 「更新前から既に永続化されていたルール（idが一致）」は常に温存し、
-      // 「今回新たに追加されたルール（idが更新前に無い）」だけをbasicゲートの対象にする。
-      //
-      // 【自動レビュー指摘（必須・修正済み・セキュリティ）】最初の実装は「idが一致
-      // すれば温存する」だけで、そのルールの中身（targetType/rarity/rewardId等の
-      // プレミアム限定フィールド）が実際にDB上の値と一致するかを検証していなかった。
-      // これにより、basicプランのユーザーが既存"all"ルールのidを使い回しつつ
-      // targetTypeをrarity/rewardへ書き換えて送信するだけで、プラン制限を完全に
-      // バイパスできてしまうセキュリティホールになっていた（既存"all"ルールの
-      // targetTypeを変えるとhasAllRuleAlreadyがfalseになり、同一リクエストで
-      // 新規のall対象ルールをもう1件追加することまで可能だった）。
-      // 対策として、「idが一致」かつ「プレミアム限定フィールドがDB上の値と完全一致」
-      // の場合のみ温存対象とする。urlやlabel、enabledの変更（プランに関係なく
-      // 常に許可すべき編集）は温存判定に影響しない。idを再利用しつつ
-      // targetType等を書き換えた場合は、新規ルールと同じゲート判定に回される
-      // （targetTypeがall以外ならその場で破棄される）。
+      // Issue #946: 単一の効果音（targetType==="all"のルール1件のみ）は全プランで
+      // 設定できるが、複数ルール・ターゲット指定（レアリティ／報酬別）は支援プラン
+      // 以上限定の機能。basicプランのゲートは cardPackNames（#269再設計）と同じ
+      // 「超過分だけ静かに落として200で返す」方式で、以下の不変条件を守る:
+      //   1. 更新前から永続化されていた既存ルールは、プランに関わらず常に温存する
+      //      （削除・enabled切替・label/url編集は自由。他のルールを編集しただけで
+      //      無関係な既存ルールが消えてはいけない — クライアントは1件の編集でも
+      //      rules配列全体を毎回再送信するため）
+      //   2. ただし「idは既存と一致するがtargetType/rarity/rewardId/rewardName
+      //      （プレミアム限定フィールド）が既存と異なる」送信は、idの使い回しに
+      //      よるプラン制限バイパス試行とみなし、そのプレミアム限定フィールドは
+      //      DB上の既存値へ差し戻す（ルールそのものは消さない。他の自由編集
+      //      フィールドは送信値を反映する）
+      //   3. 新規に追加されたルール（idが既存に無い）は、温存後の状態に"all"対象が
+      //      1件も無い場合に限り、"all"対象の1件だけを追加で許可する
+      //   4. 同一idの重複送信は1件に正規化する（正当な既存ルールの複製による
+      //      「合計高々1件」の水増しを防ぐ）
       const allNormalizedRules = normalizeGachaSoundRules(gachaSoundRules);
       const plan = await getUserPlan(session.twitchUserId);
       const isPremiumPlan = plan !== "basic";
       let rules: GachaSoundRule[];
+      let anyRuleGated = false;
       if (isPremiumPlan) {
         rules = allNormalizedRules;
       } else {
@@ -1138,28 +1128,39 @@ export async function POST(request: NextRequest) {
           && rule.rewardId === existing.rewardId
           && rule.rewardName === existing.rewardName;
 
-        // 既存ルールは、今回の編集内容（有効/無効・ラベル・URL等）をそのまま尊重して
-        // 温存する。削除（=送信配列に含まれない）はそのまま反映される。
         const preservedExisting: GachaSoundRule[] = [];
         const newRules: GachaSoundRule[] = [];
+        const preservedIds = new Set<string>();
         for (const rule of allNormalizedRules) {
           const existing = currentRulesById.get(rule.id);
-          if (existing && hasUnchangedGatedFields(rule, existing)) {
-            preservedExisting.push(rule);
+          if (existing && !preservedIds.has(rule.id)) {
+            if (hasUnchangedGatedFields(rule, existing)) {
+              preservedExisting.push(rule);
+            } else {
+              anyRuleGated = true;
+              preservedExisting.push({
+                ...rule,
+                targetType: existing.targetType,
+                rarity: existing.rarity,
+                rewardId: existing.rewardId,
+                rewardName: existing.rewardName,
+              });
+            }
+            preservedIds.add(rule.id);
           } else {
             newRules.push(rule);
           }
         }
-        // 新規追加分は、温存された既存ルールに"all"対象が1件も無い場合に限り、
-        // "all"対象の新規ルール1件だけを追加で許可する（合計で常に高々1件の
-        // "all"対象ルールに収める）。
         const hasAllRuleAlready = preservedExisting.some((rule) => rule.targetType === "all");
         const allowedNewRule = hasAllRuleAlready
           ? undefined
           : newRules.find((rule) => rule.targetType === "all");
+        if (newRules.length > (allowedNewRule ? 1 : 0)) {
+          anyRuleGated = true;
+        }
         rules = allowedNewRule ? [...preservedExisting, allowedNewRule] : preservedExisting;
       }
-      gachaSoundRulesPremiumRequired = !isPremiumPlan && rules.length < allNormalizedRules.length;
+      gachaSoundRulesPremiumRequired = !isPremiumPlan && anyRuleGated;
       updateData.gacha_sound_rules = rules;
       persistedGachaSoundRules = rules;
       // PR #451 レビュー指摘(F1): gacha_sound_url/gacha_sound_enabled は

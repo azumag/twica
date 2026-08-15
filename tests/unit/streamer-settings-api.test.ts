@@ -1053,7 +1053,7 @@ describe('POST /api/streamer/settings', () => {
       expect(data.gachaSoundRulesPremiumRequired).toBeUndefined()
     })
 
-    it('rejects reusing an existing rule id while changing its plan-gated fields (targetType/rarity), rather than silently bypassing the plan gate (Issue #946 security fix)', async () => {
+    it('reverts an existing rule id whose plan-gated fields were changed back to the DB value, rather than silently bypassing the plan gate (Issue #946 security fix)', async () => {
       // 【自動レビュー指摘（必須・修正済み）】idが一致するだけで温存すると、basic
       // プランのユーザーが既存の"all"ルールのidを再利用しつつtargetTypeを
       // rarity/rewardへ書き換えて送信するだけでプラン制限を完全にバイパスできて
@@ -1089,13 +1089,132 @@ describe('POST /api/streamer/settings', () => {
       const response = await POST(request)
       expect(response.status).toBe(200)
       const data = await response.json()
-      // targetTypeを書き換えた"was-all"は温存対象にならず(新規ルール扱いとなり、
-      // targetTypeがall以外なので破棄される)、"new-all"だけが新規のall対象ルール
-      // として1件許可される。2件とも保存される・rarity指定が生き残る、はいずれも
-      // プラン制限のバイパスになるため NG。
+      // "was-all"のtargetType変更はDB上の元の値("all")へ差し戻され、ルール自体は
+      // 消えない(単純な編集で既存ルールが失われるIssue #946のデータ喪失バグの
+      // 再発防止)。差し戻し後は既にall対象ルールが1件あるとみなされるため、
+      // 新規の"new-all"は追加されない(rarity指定が生き残る・2件とも保存される、
+      // はいずれもプラン制限のバイパスになるためNG)。
       expect(data.gachaSoundRules).toHaveLength(1)
-      expect(data.gachaSoundRules[0]).toMatchObject({ id: 'new-all', targetType: 'all' })
+      expect(data.gachaSoundRules[0]).toMatchObject({ id: 'was-all', targetType: 'all', rarity: null })
       expect(data.gachaSoundRulesPremiumRequired).toBe(true)
+    })
+
+    it('rejects duplicate submission of the same existing rule id, rather than persisting it twice (Issue #946 security fix)', async () => {
+      // 【自動レビュー指摘（必須・修正済み）】idごとの重複除去が無かったため、
+      // 同じidを持つ(かつgated fieldsが既存と一致する)ルールを配列内に複数回
+      // 含めて送信すると、両方ともpreservedExistingへ積み上がり、
+      // 「合計高々1件のall対象ルール」という不変条件を、正当な既存ルールの
+      // 複製によって突破できてしまっていた。
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const existingRules = [
+        { id: 'catch-all', url: 'https://example.com/all.mp3', enabled: true, label: 'A', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+      ]
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123', gacha_sound_rules: existingRules })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          // 同じidのルールを2回含める(gated fieldsは既存と一致)
+          gachaSoundRules: [existingRules[0], existingRules[0]],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      // 複製されず、1件だけが保存される
+      expect(data.gachaSoundRules).toHaveLength(1)
+      expect(data.gachaSoundRules[0]).toMatchObject({ id: 'catch-all' })
+      expect(data.gachaSoundRulesPremiumRequired).toBe(true)
+    })
+
+    it('rejects duplicate submission of an existing non-all rule combined with a new all-target rule, rather than persisting 3 rules total (Issue #946 security fix)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const existingRules = [
+        { id: 'legendary-rule', url: 'https://example.com/legendary.mp3', enabled: true, label: 'L', targetType: 'rarity', rarity: 'legendary', rewardId: null, rewardName: null },
+      ]
+
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123', gacha_sound_rules: existingRules })
+        .build()
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            // 既存のrarity指定ルールを2回重複させる
+            existingRules[0],
+            existingRules[0],
+            // 新規のall対象ルールも追加する
+            { id: 'new-all', url: 'https://example.com/new.mp3', enabled: true, label: 'N', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      // 重複が1件に正規化された上で、新規のall対象ルールも1件だけ追加される(合計2件)
+      expect(data.gachaSoundRules).toHaveLength(2)
+      expect(data.gachaSoundRules.filter((r: { id: string }) => r.id === 'legendary-rule')).toHaveLength(1)
+      expect(data.gachaSoundRules.find((r: { id: string }) => r.id === 'new-all')).toMatchObject({ targetType: 'all' })
+      expect(data.gachaSoundRulesPremiumRequired).toBe(true)
+    })
+
+    it('fails the whole request rather than silently treating existing rules as new when reading current state fails for a non-missing-column reason (Issue #946 security fix)', async () => {
+      // 【自動レビュー指摘（必須・修正済み）】getCurrentGachaSoundRulesが、列欠落
+      // 以外のエラー(接続断・タイムアウト等)でも一律[]にフォールバックしていた。
+      // これだとUPDATE自体は実行されてしまうため、basicプランの既存ルールが
+      // 全て「新規」とみなされ、"all"1件を除いて誤って削除されうる
+      // (Issue #946が解決しようとしたデータ喪失の再発)。「何が既存か判定できない」
+      // 場合はリクエスト全体を失敗させ、変更なしで再試行できる方が安全。
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const builder = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockDbFixture = builder.build()
+      const query = builder.getQueryBuilder()
+      // 1回目(getStreamerForSettingsUpdate)は成功、2回目(getCurrentGachaSoundRules)
+      // だけ列欠落ではないエラーを返す。withDbRetryのリトライ対象コード
+      // （08006等）だとリトライで消費されモックのキューが尽きて既定値
+      // (エラー無し)にフォールバックしてしまうため、意図的にリトライ対象外の
+      // 恒久的エラーコードを使う。
+      query.maybeSingle.mockResolvedValueOnce({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+        error: null,
+      })
+      query.maybeSingle.mockResolvedValueOnce({
+        data: null,
+        error: { code: '42P01', message: 'undefined table' },
+      })
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [{ id: 'rule1', url: 'https://example.com/s.mp3', enabled: true, label: 'a', targetType: 'all', rarity: null, rewardId: null, rewardName: null }],
+        }),
+      })
+
+      const response = await POST(request)
+      // 200で静かにデータを失うのではなく、エラーとして扱われるべき
+      expect(response.status).not.toBe(200)
     })
 
     it('should allow support plan users to set gachaSoundRules', async () => {

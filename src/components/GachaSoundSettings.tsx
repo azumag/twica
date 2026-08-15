@@ -91,13 +91,16 @@ export default function GachaSoundSettings({
 
   // Issue #946: 複数効果音・ターゲット指定(レアリティ/報酬別)は支援プラン以上限定の
   // 機能だが、単一の効果音(targetType==="all")は全プランで設定できる。
-  // basicプランでは既に1件あれば追加をブロックする(サーバー側の
-  // gachaSoundRulesPremiumRequired ゲートと対になる、UI側の事前ガード)。
-  const canAddSound = isPremium || rules.length === 0;
+  // basicプランでは「all対象のルールを既に1件持っている」場合だけ追加を
+  // ブロックする（サーバー側のゲート条件と揃える。rarity/reward指定のみ持つ
+  // ダウングレード済みユーザーが、まだ持っていないall対象1件を追加できるように
+  // する必要があるため、単純な rules.length === 0 では不足する）。
+  const canAddSound = isPremium || !rules.some((rule) => rule.targetType === "all");
 
-  // basicプランでは効果音ルールUI全体が inert（操作不可）になるため、
-  // 取得しても無駄になるTwitch APIコールを避ける。プランがアップグレード
-  // されて isPremium が true になった時点で改めて取得する。
+  // レアリティ/報酬別ターゲット指定は支援プラン以上限定の機能で、basicプランでは
+  // 対象selectを常にdisableする（下記JSX参照）ため、報酬一覧を取得しても
+  // 使い道が無い。プランがアップグレードされて isPremium が true になった
+  // 時点で改めて取得する。
   useEffect(() => {
     if (!isPremium) return;
 
@@ -475,7 +478,9 @@ export default function GachaSoundSettings({
                 <select
                   value={rule.rarity ?? "common"}
                   onChange={(event) => updateRule(rule.id, { rarity: event.target.value as GachaSoundRule["rarity"] })}
-                  className="rounded-lg bg-gray-800 px-3 py-2 text-sm text-white"
+                  disabled={!isPremium}
+                  title={!isPremium ? t("premiumRequired") : undefined}
+                  className="rounded-lg bg-gray-800 px-3 py-2 text-sm text-white disabled:opacity-50"
                   aria-label={t("form.rarity")}
                 >
                   {RARITIES.map((rarity) => (
@@ -510,7 +515,9 @@ export default function GachaSoundSettings({
                             : null,
                       });
                     }}
-                    className="min-w-0 rounded-lg bg-gray-800 px-3 py-2 text-sm text-white"
+                    disabled={!isPremium}
+                    title={!isPremium ? t("premiumRequired") : undefined}
+                    className="min-w-0 rounded-lg bg-gray-800 px-3 py-2 text-sm text-white disabled:opacity-50"
                     aria-label={t("form.reward")}
                   >
                     <option value="">{t("form.rewardUnset")}</option>
@@ -540,8 +547,10 @@ export default function GachaSoundSettings({
                         rewardId: event.target.value.trim(),
                         rewardName: event.target.value.trim() === currentRewardId ? currentRewardName ?? null : rule.rewardName,
                       })}
+                      disabled={!isPremium}
+                      title={!isPremium ? t("premiumRequired") : undefined}
                       placeholder={currentRewardId ? `${currentRewardName || "Reward"} (${currentRewardId})` : t("form.rewardPlaceholder")}
-                      className="min-w-0 rounded-lg bg-gray-800 px-3 py-2 text-sm text-white"
+                      className="min-w-0 rounded-lg bg-gray-800 px-3 py-2 text-sm text-white disabled:opacity-50"
                       aria-label={t("form.rewardId")}
                     />
                     {/* 取得失敗時のみヒントを出す。ロード中/未取得(basicプラン)では
