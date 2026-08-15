@@ -198,7 +198,10 @@ describe('transactional chat outbox claim/ack', () => {
     })).toEqual(unresolvedPayload)
   })
 
-  it('Issue #948: card.collection_nameのundefined/null/文字列を受理し、不正型はDLQへ拒否する', () => {
+  // Issue #948: card.collection_name のスキーマ検証。ケースごとに`it`を分け、
+  // 失敗時にどの状態が壊れたかを行番号でなくテスト名で特定できるようにする
+  // （PR #972 レビュー指摘: 単一testへの詰め込みは切り分けを妨げる）。
+  describe('Issue #948: card.collection_nameのスキーマ検証', () => {
     const basePayload = {
       batchId: 'batch-1',
       broadcasterTwitchUserId: 'broadcaster-1',
@@ -234,74 +237,63 @@ describe('transactional chat outbox claim/ack', () => {
       },
     }
 
-    // 旧payload（キー欠落 = undefined）はマイグレーション前の実データそのもの。
-    // 引き続きdecode可能でなければ、既存backlogが軒並みDLQに落ちてしまう。
-    expect(decodeChatNotificationPayload({
-      batchId: 'batch-1',
-      payloadVersion: 1,
-      payload: basePayload,
-    })).toEqual(basePayload)
+    it.each([
+      // [label, collection_name on gachaResult.card]
+      ['キー欠落 = undefined（マイグレーション前の実データそのもの）', undefined],
+      ['null（新payloadの未分類カード）', null],
+      ['文字列（名前付きパック）', 'レアパック'],
+    ])('%s は受理する', (_label, collectionName) => {
+      const payload = collectionName === undefined
+        ? basePayload
+        : {
+            ...basePayload,
+            gachaResult: {
+              ...basePayload.gachaResult,
+              card: { ...basePayload.gachaResult.card, collection_name: collectionName },
+            },
+          }
 
-    // 新payloadの未分類カード（collection_name: null）も同様に受理する。
-    const unclassifiedPayload = {
-      ...basePayload,
-      gachaResult: {
-        ...basePayload.gachaResult,
-        card: { ...basePayload.gachaResult.card, collection_name: null },
-      },
-    }
-    expect(decodeChatNotificationPayload({
-      batchId: 'batch-1',
-      payloadVersion: 1,
-      payload: unclassifiedPayload,
-    })).toEqual(unclassifiedPayload)
+      expect(decodeChatNotificationPayload({
+        batchId: 'batch-1',
+        payloadVersion: 1,
+        payload,
+      })).toEqual(payload)
+    })
 
-    // 名前付きパックのカード（collection_name: string）も受理する。
-    const packedPayload = {
-      ...basePayload,
-      gachaResult: {
-        ...basePayload.gachaResult,
-        card: { ...basePayload.gachaResult.card, collection_name: 'レアパック' },
-      },
-    }
-    expect(decodeChatNotificationPayload({
-      batchId: 'batch-1',
-      payloadVersion: 1,
-      payload: packedPayload,
-    })).toEqual(packedPayload)
+    it('不正型（number）は、他のoptional string系フィールドと同じ水準でDLQへ拒否する', () => {
+      const invalidPayload = {
+        ...basePayload,
+        gachaResult: {
+          ...basePayload.gachaResult,
+          card: { ...basePayload.gachaResult.card, collection_name: 42 },
+        },
+      }
+      expect(decodeChatNotificationPayload({
+        batchId: 'batch-1',
+        payloadVersion: 1,
+        payload: invalidPayload,
+      })).toBeNull()
+    })
 
-    // 不正型（number）は、他のoptional string系フィールドと同じ水準でDLQへ拒否する。
-    const invalidPayload = {
-      ...basePayload,
-      gachaResult: {
-        ...basePayload.gachaResult,
-        card: { ...basePayload.gachaResult.card, collection_name: 42 },
-      },
-    }
-    expect(decodeChatNotificationPayload({
-      batchId: 'batch-1',
-      payloadVersion: 1,
-      payload: invalidPayload,
-    })).toBeNull()
-
-    // 検証は`gachaResult.card`だけでなく`cards[]`（N連の全カード）にも及ぶ。
-    // RPC生成payloadでは発生し得ないが、N連の1枚でも型不正なら通知全体が
-    // DLQ化される検証パスを固定する。
-    const invalidCardsArrayPayload = {
-      ...basePayload,
-      gachaResult: {
-        ...basePayload.gachaResult,
-        cards: [
-          { ...basePayload.gachaResult.cards[0], collection_name: 'レアパック' },
-          { ...basePayload.gachaResult.cards[0], id: 'card-2', collection_name: 42 },
-        ],
-      },
-    }
-    expect(decodeChatNotificationPayload({
-      batchId: 'batch-1',
-      payloadVersion: 1,
-      payload: invalidCardsArrayPayload,
-    })).toBeNull()
+    it('検証は`gachaResult.card`だけでなく`cards[]`（N連の全カード）にも及ぶ', () => {
+      // RPC生成payloadでは発生し得ないが、N連の1枚でも型不正なら通知全体が
+      // DLQ化される検証パスを固定する。
+      const invalidCardsArrayPayload = {
+        ...basePayload,
+        gachaResult: {
+          ...basePayload.gachaResult,
+          cards: [
+            { ...basePayload.gachaResult.cards[0], collection_name: 'レアパック' },
+            { ...basePayload.gachaResult.cards[0], id: 'card-2', collection_name: 42 },
+          ],
+        },
+      }
+      expect(decodeChatNotificationPayload({
+        batchId: 'batch-1',
+        payloadVersion: 1,
+        payload: invalidCardsArrayPayload,
+      })).toBeNull()
+    })
   })
 
   it('sent更新はidとlease_idの両方でfenceする', async () => {

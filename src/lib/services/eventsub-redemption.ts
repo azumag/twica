@@ -1266,8 +1266,10 @@ export async function sendChatAnnouncement(
   // カードもデフォルトパック名で埋める）。resolveCardPackKey / resolvePackDisplayName
   // のdocstringに解決規則の詳細と旧payloadへのフォールバック根拠がある。
   //
-  // フォールバックラベル「デフォルトパック」とビューアページタブの汎用ラベル
-  // 「デフォルト」の1語差は既知の設計判断（#973で追跡、コード変更なしで据え置き）。
+  // DEFAULT_PACK_CHAT_FALLBACK_LABEL は override 未設定時、ビューアページタブの
+  // 汎用ラベル「デフォルト」（packFilter.defaultName）とは1語異なる「デフォルト
+  // パック」を返す。ダッシュボードのパック設定ラベル（collections.defaultOnlyName）
+  // に意図的に揃えたためで、統一するかは別途プロダクト判断が必要（issue #973）。
   const packName = resolvePackDisplayName(
     resolveCardPackKey(card.collection_name, collectionName),
     streamer.default_card_pack_name ?? null,
