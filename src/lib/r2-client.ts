@@ -333,20 +333,21 @@ export async function uploadSoundToR2WithRetry(
 /**
  * uploadToR2WithRetry / uploadSoundToR2WithRetry の共通リトライループ本体。
  * ログの接頭辞（'[R2]' / '[R2 Sound]'）とアップロード呼び出し以外は完全に同一だった
- * 2つのループを1本化した（自動レビュー(PR #983)の指摘を反映）。
+ * 2つのループの重複を解消するために1本化した。
  *
  * sleepを引数として注入可能にしているのは、テストから実際の待機（最大7秒）なしに
  * リトライ回数・バックオフ時間・打ち切り条件を検証できるようにするため
  * （r2-retry-policy.tsの旧retryCloudflareR2Uploadと同じ設計。テストは
  * tests/unit/r2-client-retry-loop.test.ts を参照）。本番呼び出し元（上記2関数）は
- * 常にデフォルトの実setTimeoutを使う。
+ * 常にデフォルトの実setTimeoutを使う。テスト専用のexportなので、本番からは
+ * 上記2関数を経由してのみ呼ぶこと。
  *
  * @param logPrefix - ログメッセージの接頭辞
  * @param upload - 実際のアップロード処理（1回分）。R2の公開URLを返すかthrowする
  * @param maxRetries - 最大リトライ回数
  * @param sleep - バックオフ待機の実装（テスト用に差し替え可能。デフォルトは実setTimeout）
  */
-async function withR2UploadRetry(
+export async function withR2UploadRetry(
   logPrefix: string,
   upload: () => Promise<string>,
   maxRetries: number,
@@ -375,6 +376,3 @@ async function withR2UploadRetry(
 
   return { error: 'Max retries exceeded' };
 }
-
-// テストから直接検証できるようexport（本番呼び出し元は上記2関数経由でのみ使う）
-export { withR2UploadRetry };
