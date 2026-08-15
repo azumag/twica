@@ -10,8 +10,12 @@ import { serializePollState } from '@/lib/overlay-version'
 const HISTORY_ID_BEFORE_RELOAD = '00000000-0000-4000-8000-000000000101'
 const HISTORY_ID_RESTORED = '00000000-0000-4000-8000-000000000102'
 
-const { subscribeMock } = vi.hoisted(() => ({
+const { subscribeMock, resolvePlayableGachaSoundMock } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
+  // 既定では実装(actual)へ委譲するdelegateとして下のvi.mockファクトリ内で
+  // 設定する。個々のテストはmockImplementationOnce()で1回だけ差し替え、
+  // それ以外の全テストへは実際のsound-rulesロジックがそのまま使われる。
+  resolvePlayableGachaSoundMock: vi.fn(),
 }))
 
 vi.mock('next/navigation', () => ({
@@ -25,6 +29,19 @@ vi.mock('@/lib/realtime', () => ({
     options: SubscribeOptions,
   ) => subscribeMock(streamerId, callback, options),
 }))
+
+// Issue #999 レビュー指摘#1回帰用: resolvePlayableGachaSoundだけを差し替え
+// 可能にし、pickSoundBearingCardIndex等それ以外のexportは実装のまま使う。
+// 「setTimeoutコールバック内でだけ例外を起こす」ことをcard/payloadの
+// getterトリックではなく明示的に制御するための部分モック。
+vi.mock('@/lib/gacha-sound-rules', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/gacha-sound-rules')>()
+  resolvePlayableGachaSoundMock.mockImplementation(actual.resolvePlayableGachaSound)
+  return {
+    ...actual,
+    resolvePlayableGachaSound: resolvePlayableGachaSoundMock,
+  }
+})
 
 const connectionError: RealtimeError = {
   type: 'connection',
@@ -305,6 +322,315 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Gamma')).toBeInTheDocument()
   })
+
+  // Issue #999調査メモ: 「onerrorが正しく解決されず表示がブロックされて
+  // いるのでは」という仮説を検討する過程で追加したテスト。実際には
+  // checkImageAspectRatio自体は本Issueの修正で変更しておらず（onerror
+  // ハンドラは元から存在し、この仮説は棄却済み）、このテストは本diffの
+  // 回帰検出用ではなく「R2/CDN側の画像取得失敗（404・CORS拒否等）で
+  // ブラウザが即座に`error`イベントを発火するケースでも、無応答タイム
+  // アウトのケースとは別経路として正しく解決されタイムアウトを待たず
+  // カード表示へ進む」という既存動作の確認・調査記録として残す。
+  it('実画像URLの取得がonerrorで即座に失敗しても、タイムアウトを待たずカードを表示する', async () => {
+    vi.useFakeTimers()
+
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 0
+      height = 0
+
+      set src(value: string) {
+        void value
+        // 実際のブラウザがCORS拒否・404等で即座にerrorイベントを発火する
+        // 挙動を模擬する（無応答のタイムアウトケースとは別経路）。
+        queueMicrotask(() => this.onerror?.())
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-real', name: 'RealCard', description: null,
+          image_url: 'https://r2.example.com/real-card.png', rarity: 'epic',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    // onerrorはmicrotaskで即座に発火するため、1.5秒のタイムアウトを進めなくても
+    // 表示まで到達するはず。タイムアウト直前まで進めても早すぎないことを確認する。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('RealCard')).toBeInTheDocument()
+  })
+
+  // Issue #999: previewの実引き換えで、実イベント受信(`Received payload: gacha`)
+  // までは記録されるのにカードが一切画面に表示されない不具合が発生した。
+  // processQueue内で想定外の例外（実カードデータ特有の値・画像取得エラー等、
+  // 原因は特定できないがコード上あらゆる箇所で起こりうる）が発生すると、
+  // 従来はtry/catchが無かったため isDisplayingRef のロックが解放されず、
+  // 以後どれだけ実イベントを受信しても enqueueResult() の
+  // `if (!isDisplayingRef.current) processQueue()` ガードが常に偽になり、
+  // そのOBSセッションが恒久的に沈黙していた（1件でも例外が起きれば、
+  // 残り全件が巻き込まれて表示されなくなる）。この回帰を防ぐテスト。
+  it('processQueue中に例外が発生してもロックが残らず、後続カードの表示を継続する(Issue #999回帰)', async () => {
+    // GitHub自動レビュー指摘: 2枚目が表示されることだけでなく、catchが
+    // 実際に通ってhandleQueueErrorの診断ログが出力されたこと自体も固定
+    // する（「別経路でたまたま2枚目が出た」という誤検知を防ぐため）。
+    window.history.replaceState({}, '', '/overlay/streamer-1?debug=true')
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // image_url アクセス時に例外を投げるカード。実データ特有の未知の不具合を
+    // 一般化して模擬する（原因箇所を問わず、processQueue中のどの例外でも
+    // ロックが残ってはならないことを検証する）。
+    const throwingCard = {
+      id: 'card-broken',
+      name: 'Broken',
+      description: null,
+      rarity: 'rare',
+      get image_url(): string | null {
+        throw new Error('unexpected runtime failure');
+      },
+    };
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: throwingCard as unknown as GachaBroadcastPayload['card'],
+        userTwitchUsername: 'Viewer',
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // catchが実際に通り、handleQueueErrorの診断ログが出力されたことを固定する。
+    expect(
+      await screen.findByText(/processQueue error: unexpected runtime failure/)
+    ).toBeInTheDocument();
+
+    // 1枚目が例外で失敗した後に受信した2枚目。ロックが解放されていれば
+    // 通常どおり表示される。
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-ok', name: 'Recovered', description: null,
+          image_url: null, rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText('Recovered')).toBeInTheDocument();
+  });
+
+  // Issue #999 レビュー指摘#1回帰（GitHub自動レビュー・subagentレビュー
+  // 双方が指摘): 上のテストは processQueue の外側の try/catch（await
+  // checkImageAspectRatio 完了まで〜setResult/setShowCard まで）で捕捉
+  // される例外だけを検証していた。しかし setTimeout でスケジュールされる
+  // 後半の表示チェーン（音声再生・次カードへの再帰呼び出しを含む）は、
+  // それをスケジュールした関数の try/catch の動的スコープに含まれない
+  // 別タスクであり、素朴に外側をtry/catchで囲んだだけではその中の例外は
+  // 捕捉できない。カード自体のgetterで例外を起こす方式は、
+  // rarity/image_url等がReact再レンダー時にも読まれてしまい、setTimeout
+  // に到達する前に別経路（レンダー）で先に例外化してしまうため使えない。
+  // 代わりに、setTimeoutコールバック内でのみ呼ばれるplayGachaSound経由の
+  // resolvePlayableGachaSoundをモックし、1回だけ例外を投げさせることで
+  // 「setTimeoutコールバックの中で起きた例外」を確実に再現する。
+  it('setTimeoutでスケジュールされる表示チェーン内の例外でもロックが残らない(Issue #999レビュー指摘#1回帰)', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: 'https://example.com/gacha.mp3', soundEnabled: true }),
+    }))
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // 次にresolvePlayableGachaSoundが呼ばれたときだけ例外を投げる
+    // （playGachaSoundはこの呼び出し結果を待たずにthrowを伝播するため、
+    // setTimeoutコールバックの中で例外が発生する状況を直接再現できる）。
+    resolvePlayableGachaSoundMock.mockImplementationOnce(() => {
+      throw new Error('failure inside setTimeout chain')
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: { id: 'card-timer-throw', name: 'TimerThrow', description: null, image_url: null, rarity: 'rare' },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    // 100ms後の1段目のsetTimeoutコールバック内でplayGachaSoundが呼ばれ、
+    // resolvePlayableGachaSoundが例外を投げる。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
+
+    // 例外がhandleQueueErrorへ届いていれば、setTimeout(0)経由でロックが
+    // 解放され、次のカードが表示されるはず。届いていなければ(=レビュー
+    // 指摘の再発)、isDisplayingRefがtrueのまま残り、これは表示されない。
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: { id: 'card-ok2', name: 'RecoveredFromTimer', description: null, image_url: null, rarity: 'common' },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
+  })
+
+  // Issue #999 レビュー指摘#2回帰: catch側の再継続を同期的な直接呼び出し
+  // にすると、同一の例外がキュー内の全アイテムで連続して起きた場合に
+  // 同期呼び出しの連鎖でコールスタックを消費し続け、スタックオーバー
+  // フローで落ちてロックが解放されないまま終わりうる（実測で約8000件
+  // 連続でRangeErrorを確認）。setTimeout(0)でマクロタスクへ逃がして
+  // いれば、大量の連続例外でもクラッシュせず、各イテレーションの間に
+  // タイマーの巻き戻し（=非同期の一拍）が必要になるはず。ここでは
+  // 「タイマーを進めない限り最後まで到達しない」ことを検証することで、
+  // 同期再帰ではなくマクロタスク経由の反復になっていることを確認する。
+  it('連続する例外がマクロタスク経由で処理され、同期再帰でスタックを消費しない(Issue #999レビュー指摘#2回帰)', async () => {
+    vi.useFakeTimers()
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const THROWING_COUNT = 50
+    const throwingCard = () => ({
+      id: 'card-throw', name: 'Throw', description: null, rarity: 'rare',
+      get image_url(): string | null {
+        throw new Error('always fails');
+      },
+    })
+    const goodCard = {
+      id: 'card-final', name: 'FinalSurvivor', description: null,
+      image_url: null, rarity: 'common',
+    }
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: throwingCard() as unknown as GachaBroadcastPayload['card'],
+        cards: [
+          ...Array.from({ length: THROWING_COUNT }, () => throwingCard() as unknown as GachaBroadcastPayload['card']),
+          goodCard,
+        ],
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    // 同期的な直接再帰なら、この時点(タイマーを一切進めていない)で全50件の
+    // 例外処理が呼び出しスタック上で完結してしまうはず。マクロタスク経由
+    // なら、1件処理するごとにイベントループへ一度制御を返す必要があるため、
+    // タイマーを進めない限り最後のカードまで到達しない。
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.queryByText('FinalSurvivor')).not.toBeInTheDocument()
+
+    // マクロタスクを十分な回数進めれば、クラッシュせずに最後まで到達する。
+    // 1msずつ進めるのは、advanceTimersByTimeAsync(0)の繰り返し呼び出しでは
+    // 直前の呼び出し中に新規スケジュールされた0ms先のタイマーを後続の
+    // 呼び出しが拾わない（フェイクタイマー実装が"今と同時刻"の新規タイマーを
+    // 拾わない）ため、クロックを確実に進めて毎回拾わせるための実装都合。
+    await act(async () => {
+      for (let i = 0; i < THROWING_COUNT + 5; i += 1) {
+        await vi.advanceTimersByTimeAsync(1)
+      }
+    })
+    expect(screen.getByText('FinalSurvivor')).toBeInTheDocument()
+  })
+
+  // Issue #999の調査メモ: WSコールバックで `Received payload: gacha` は記録
+  // されるが、payload.card が無ければ以前は無音で無視され、実機ログだけでは
+  // 「cardが来ていないのか」「来ているが表示に失敗しているのか」を判別
+  // できなかった。card欠落時に診断ログを残すことを確認する。
+  it('gachaペイロードにcardが無い場合、無視するだけでなく診断ログを残す(Issue #999)', async () => {
+    window.history.replaceState({}, '', '/overlay/streamer-1?debug=true');
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined;
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void;
+      options.onSuccess?.();
+      return vi.fn();
+    });
+
+    render(<OverlayPage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: undefined as unknown as GachaBroadcastPayload['card'],
+        userTwitchUsername: 'Viewer',
+        rewardId: 'reward-1',
+      });
+    });
+
+    expect(
+      await screen.findByText(/Gacha payload missing card \(rewardId=reward-1, cardsCount=0\)/)
+    ).toBeInTheDocument();
+  });
 
   it('画像メタデータ待機中にunmountすると、タイムアウト後も後続カードを開始しない', async () => {
     vi.useFakeTimers()
