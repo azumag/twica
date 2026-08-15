@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   shouldScheduleReload,
   isReloadCooldownActive,
-  appendReloadCooldownRecord,
+  upsertReloadCooldownRecord,
   serializePollState,
   parsePollState,
   parseReloadCooldownRecords,
@@ -107,29 +107,29 @@ describe("isReloadCooldownActive", () => {
   });
 });
 
-describe("appendReloadCooldownRecord (Issue #634)", () => {
+describe("upsertReloadCooldownRecord (Issue #634)", () => {
   it("recordsがnullの場合は新規エントリ1件の配列を返す", () => {
-    expect(appendReloadCooldownRecord(null, "v1", 100)).toEqual([
+    expect(upsertReloadCooldownRecord(null, "v1", 100)).toEqual([
       { version: "v1", reloadedAt: 100 },
     ]);
   });
 
   it("既存の空配列に追記できる", () => {
-    expect(appendReloadCooldownRecord([], "v1", 100)).toEqual([
+    expect(upsertReloadCooldownRecord([], "v1", 100)).toEqual([
       { version: "v1", reloadedAt: 100 },
     ]);
   });
 
   it("同一バージョンの既存エントリは古いものを置き換える(重複を持たない)", () => {
     const records: ReloadCooldownRecord[] = [{ version: "v1", reloadedAt: 100 }];
-    expect(appendReloadCooldownRecord(records, "v1", 200)).toEqual([
+    expect(upsertReloadCooldownRecord(records, "v1", 200)).toEqual([
       { version: "v1", reloadedAt: 200 },
     ]);
   });
 
   it("異なるバージョンは既存エントリを保持したまま追記される", () => {
     const records: ReloadCooldownRecord[] = [{ version: "v1", reloadedAt: 100 }];
-    expect(appendReloadCooldownRecord(records, "v2", 200)).toEqual([
+    expect(upsertReloadCooldownRecord(records, "v2", 200)).toEqual([
       { version: "v1", reloadedAt: 100 },
       { version: "v2", reloadedAt: 200 },
     ]);
@@ -138,7 +138,7 @@ describe("appendReloadCooldownRecord (Issue #634)", () => {
   it(`MAX_RELOAD_COOLDOWN_RECORDS(${MAX_RELOAD_COOLDOWN_RECORDS}件)を超える場合は最も古いエントリから破棄する`, () => {
     let records: ReloadCooldownRecord[] | null = null;
     for (let i = 0; i < MAX_RELOAD_COOLDOWN_RECORDS + 2; i++) {
-      records = appendReloadCooldownRecord(records, `v${i}`, i);
+      records = upsertReloadCooldownRecord(records, `v${i}`, i);
     }
     expect(records).toHaveLength(MAX_RELOAD_COOLDOWN_RECORDS);
     // 直近MAX_RELOAD_COOLDOWN_RECORDS件だけが残る(先頭の古いものが破棄される)
@@ -158,12 +158,12 @@ describe("ローリングデプロイ中のバージョン往復への耐性(Iss
 
     // 初回: current=A, received=B(未記録) → リロード許可、実行して記録
     expect(isReloadCooldownActive(records, "v-b", now, cooldownMs)).toBe(false);
-    records = appendReloadCooldownRecord(records, "v-b", now);
+    records = upsertReloadCooldownRecord(records, "v-b", now);
 
     // ローリングデプロイの混在ウィンドウで別エッジからv-aが返る(未記録)→リロード許可、実行して記録
     now += 1000;
     expect(isReloadCooldownActive(records, "v-a", now, cooldownMs)).toBe(false);
-    records = appendReloadCooldownRecord(records, "v-a", now);
+    records = upsertReloadCooldownRecord(records, "v-a", now);
 
     // 再度v-bが返る → 直前のv-b記録がクールダウン中のため、往復2巡目以降は抑止される
     now += 1000;
@@ -185,12 +185,12 @@ describe("ローリングデプロイ中のバージョン往復への耐性(Iss
   it("往復ではない一度きりのロールバックでは、既存挙動どおり新バージョンへ即座に切り替わる", () => {
     // v-bへ一度だけリロードした後、これまで一度も見ていないv-cへロールバックされた場合、
     // v-cは記録に無いため即座にリロード許可される(#634受け入れ条件3番目: 既存挙動を壊さない)。
-    const records = appendReloadCooldownRecord(null, "v-b", 0);
+    const records = upsertReloadCooldownRecord(null, "v-b", 0);
     expect(isReloadCooldownActive(records, "v-c", 1000, RELOAD_COOLDOWN_MS)).toBe(false);
   });
 
   it("クールダウン明け後は往復した同一バージョンへも再度リロードできる(恒久ガードにしない)", () => {
-    const records = appendReloadCooldownRecord(null, "v-b", 0);
+    const records = upsertReloadCooldownRecord(null, "v-b", 0);
     const now = RELOAD_COOLDOWN_MS; // ちょうどクールダウン明けの境界
     expect(isReloadCooldownActive(records, "v-b", now, RELOAD_COOLDOWN_MS)).toBe(false);
   });
@@ -208,13 +208,6 @@ describe("parseReloadCooldownRecords", () => {
     ]);
   });
 
-  it("旧形式(Issue #634より前の単一オブジェクト)を1件配列として復元する(後方互換)", () => {
-    // ローリングデプロイの混在ウィンドウで、旧コードが書き込んだ値を新コードが
-    // 読む可能性があるため、単一オブジェクトも読めなければならない。
-    const raw = JSON.stringify({ version: "v2", reloadedAt: 12345 });
-    expect(parseReloadCooldownRecords(raw)).toEqual([{ version: "v2", reloadedAt: 12345 }]);
-  });
-
   it("rawがnull/undefined/空文字列ならnullを返す", () => {
     expect(parseReloadCooldownRecords(null)).toBeNull();
     expect(parseReloadCooldownRecords(undefined)).toBeNull();
@@ -226,28 +219,18 @@ describe("parseReloadCooldownRecords", () => {
     expect(parseReloadCooldownRecords("{broken")).toBeNull();
   });
 
-  it("JSONとして正当だがオブジェクトでも配列でもない場合はnullを返す", () => {
+  it("トップレベルが配列でない場合はnullを返す(数値・null・文字列)", () => {
     expect(parseReloadCooldownRecords("42")).toBeNull();
     expect(parseReloadCooldownRecords("null")).toBeNull();
     expect(parseReloadCooldownRecords('"v2"')).toBeNull();
   });
 
+  it("トップレベルが単一オブジェクト(旧形式相当)の場合もnullを返す(Issue #634でキーをv2へ分離したため、新キーの下に単一オブジェクトが書かれる正常経路は無い。汚染データへの防御として配列以外は一律拒否する)", () => {
+    expect(parseReloadCooldownRecords(JSON.stringify({ version: "v2", reloadedAt: 12345 }))).toBeNull();
+  });
+
   it("空配列はnullを返す(有効なエントリなし)", () => {
     expect(parseReloadCooldownRecords("[]")).toBeNull();
-  });
-
-  it("versionが欠けている/文字列でない要素はnullを返す(単一オブジェクト形式)", () => {
-    expect(parseReloadCooldownRecords(JSON.stringify({ reloadedAt: 1 }))).toBeNull();
-    expect(
-      parseReloadCooldownRecords(JSON.stringify({ version: 123, reloadedAt: 1 })),
-    ).toBeNull();
-  });
-
-  it("reloadedAtが欠けている/数値でない要素はnullを返す(単一オブジェクト形式)", () => {
-    expect(parseReloadCooldownRecords(JSON.stringify({ version: "v2" }))).toBeNull();
-    expect(
-      parseReloadCooldownRecords(JSON.stringify({ version: "v2", reloadedAt: "not-a-number" })),
-    ).toBeNull();
   });
 
   it("配列内の不正な要素だけを無視し、有効な要素は復元する(parsePollStateのフィルタ方針と同じ)", () => {
@@ -278,6 +261,26 @@ describe("parseReloadCooldownRecords", () => {
     expect(parsed).toHaveLength(MAX_RELOAD_COOLDOWN_RECORDS);
     expect(parsed?.[0].version).toBe("v3");
     expect(parsed?.at(-1)?.version).toBe(`v${entries.length - 1}`);
+  });
+
+  // page.tsxの実際の書き込み経路(JSON.stringify(upsertReloadCooldownRecord(...)))を
+  // そのまま再現するround-tripテスト。自動レビュー指摘: 純粋関数単体のテストだけでは
+  // 「既存記録を引数に渡し忘れて実質nullのまま追記してしまう」ような呼び出し側の
+  // 結線バグ(Issue #634の本質的な修正対象)を検知できない。upsert→serialize→parseを
+  // 連鎖させることで、page.tsx側の呼び出しパターンに近い形で検証する
+  // (コンポーネントレベルの検証は tests/unit/components/overlay-page.test.tsx 側で
+  // 実際のsessionStorage書き込み結果を直接アサートする形でも行う)。
+  it("upsertした結果をシリアライズしてパースすると、複数バージョンの履歴を保持したまま復元される", () => {
+    let records: ReloadCooldownRecord[] | null = null;
+    records = upsertReloadCooldownRecord(records, "v-b", 1000);
+    records = parseReloadCooldownRecords(JSON.stringify(records));
+    records = upsertReloadCooldownRecord(records, "v-a", 2000);
+    records = parseReloadCooldownRecords(JSON.stringify(records));
+
+    expect(records).toEqual([
+      { version: "v-b", reloadedAt: 1000 },
+      { version: "v-a", reloadedAt: 2000 },
+    ]);
   });
 });
 

@@ -17,7 +17,12 @@
 import { isValidOverlayHistoryId } from "@/lib/overlay-realtime/contract";
 import { normalizeOverlayHistoryTimestamp } from "@/lib/overlay-history-cursor";
 
-/** sessionStorage に保存するクールダウン記録(直前にリロードしたバージョンと時刻)の型 */
+/**
+ * クールダウン記録1件分の型(あるバージョンへ最後にリロードした時刻)。
+ * Issue #634 より、sessionStorage には単体ではなくこの型の配列
+ * (ReloadCooldownRecord[])を保持する。直近見た複数バージョンを保持する
+ * 理由は MAX_RELOAD_COOLDOWN_RECORDS の doc を参照。
+ */
 export interface ReloadCooldownRecord {
   version: string;
   reloadedAt: number;
@@ -63,6 +68,16 @@ export const RELOAD_COOLDOWN_MS = 60 * 60 * 1000; // 60分
  * ローリングデプロイで同時に混在するバージョンは通常2つ(旧/新)だが、
  * 短時間に連続するデプロイも考慮し、多少の余裕を持たせて4件まで保持する
  * (無制限保持によるsessionStorage肥大化・直近判定の希薄化を避ける)。
+ *
+ * トレードオフ(自動レビューで指摘): 保持対象が「直前の1件」から「直近N件」へ
+ * 広がったことで、60分以内に一度リロード先となったバージョンへ戻る正規の
+ * 再デプロイ(ロールバック後のfix-forwardで同一アーティファクトを再配信する等)
+ * も、往復と区別できずクールダウン対象になる。旧設計では直前の1件と一致
+ * しない限り即座に追従できていたため、この点は挙動変更である。往復リロード
+ * 連発(配信画面の破壊)を防ぐ利益の方が明確に大きいため許容するが、運用者は
+ * 「同一バージョンへの再デプロイは直近リロードから最大60分反映が遅れ得る」
+ * ことを認識しておく必要がある(RELOAD_COOLDOWN_MSのdocにある「恒久ガードに
+ * しない」方針により、60分を超えれば自然に追従する)。
  */
 export const MAX_RELOAD_COOLDOWN_RECORDS = 4;
 
@@ -123,7 +138,9 @@ export function isReloadCooldownActive(
 }
 
 /**
- * targetVersion へのリロード実行をクールダウン記録へ追記する純粋関数(Issue #634)。
+ * targetVersion へのリロード実行をクールダウン記録へ反映する純粋関数(Issue #634)。
+ * 同一バージョンの既存エントリを更新するか、無ければ新規追加するupsertであり、
+ * 単純な追記ではない(この関数名はその意図を明示する)。
  *
  * 同一バージョンの既存エントリがあれば取り除いてから追記する(重複を持たず、
  * 常に最新の reloadedAt だけを保持する＝そのバージョンへ再訪した時点で
@@ -131,38 +148,40 @@ export function isReloadCooldownActive(
  * 最も古い(挿入順で先頭側の)エントリから破棄する(往復検出には直近見た
  * バージョンほど有用なため)。
  */
-export function appendReloadCooldownRecord(
+export function upsertReloadCooldownRecord(
   records: ReloadCooldownRecord[] | null,
   version: string,
   reloadedAt: number,
 ): ReloadCooldownRecord[] {
   const withoutSameVersion = (records ?? []).filter((record) => record.version !== version);
-  const appended = [...withoutSameVersion, { version, reloadedAt }];
-  return appended.slice(-MAX_RELOAD_COOLDOWN_RECORDS);
+  const upserted = [...withoutSameVersion, { version, reloadedAt }];
+  return upserted.slice(-MAX_RELOAD_COOLDOWN_RECORDS);
 }
 
 /**
- * sessionStorage に保存されたクールダウン記録(JSON文字列)をパースする。
+ * sessionStorage に保存されたクールダウン記録(JSON文字列の配列)をパースする。
  *
- * Issue #634 より前のクライアントは単一の { version, reloadedAt } オブジェクト
- * を書き込んでいた。ローリングデプロイで新旧コードが混在する間、既に開いている
- * OBS タブが旧形式の値を書き込んだ直後に新コードへ切り替わるウィンドウが
- * あり得るため、旧形式(単一オブジェクト)も 1 件配列として読み込めるようにし、
- * デプロイ境界をまたいでクールダウン記録が失われないようにする。
- *
- * 逆方向(新コードが配列形式で書き込んだ直後に、混在ウィンドウ中の別タブが
- * 旧コードのまま location.reload() し、旧コードの単一オブジェクト専用パーサが
- * 同じキーを読む)も起こり得るが、旧コードの実装は candidate.version が
- * 配列には存在しないため型不一致で null を返す(例外は投げない)。この場合は
- * クールダウン記録なし = そのバージョンへの初回リロードとして扱われるだけで、
- * 本 Issue が元々許容していた「往復1巡目相当」の余分なリロードが最大1回
- * 発生する程度に縮退し、無限リロードや例外には至らない。
+ * Issue #634 より前のクライアントは、同じ目的のsessionStorageキーへ単一の
+ * { version, reloadedAt } オブジェクトを書き込んでいた。ここで新旧の形式を
+ * 両対応させる代わりに、page.tsx側でストレージキー自体を新バージョン用
+ * ("twica-overlay-reload-v2")へ切り替えている(自動レビュー指摘: 同一キーを
+ * 新旧コードで奪い合うと、ローリングデプロイの混在ウィンドウ中に同一タブが
+ * 旧コードのビルドへ着地するたびクールダウン記録が単一オブジェクトへ巻き戻され
+ * 続ける恐れがあった。sessionStorageはタブ単位で独立しているため「別タブが
+ * 読む」ことはないが、「同一タブが旧コードのビルドへ着地する」ことは起こり
+ * 得る)。キーを分けることで新コードは常に自分が書いた配列形式だけを読み、
+ * 旧コードは自分の旧キーだけを読み書きするため、双方が干渉し合わない。
+ * 旧キーへ残る単一オブジェクトのデータは新コードから一切参照されず無害に
+ * 取り残されるだけで、そのユーザーの次回リロードが1回クールダウンなしで
+ * 発生する(＝そのユーザーにとって初回リロードと同じ扱い)以外の影響はない。
  *
  * parsePollState と同様、以下のいずれかに該当する場合は例外を投げず null を
  * 返す(呼び出し側は「クールダウン記録なし」として扱い、安全側に倒れる):
  * - raw が null/undefined/空文字列
  * - JSON として parse できない(壊れたデータ)
- * - 配列でも { version, reloadedAt } 形状のオブジェクト(旧形式)でもない
+ * - トップレベルが配列でない(上記の旧キー使用により、新キーの下に単一
+ *   オブジェクトが書き込まれることは正常経路では起こらないが、汚染された
+ *   sessionStorageに対する防御として配列以外は一律nullにする)
  * - 配列内の個々のエントリが期待する形状(version: string, reloadedAt: number)
  *   を満たさない場合はそのエントリだけを無視する(parsePollState の
  *   seenHistoryIds フィルタと同じ「壊れた要素だけ捨てる」方針)。結果として
@@ -180,13 +199,10 @@ export function parseReloadCooldownRecords(
     return null;
   }
 
-  if (!parsed || typeof parsed !== "object") return null;
-
-  // 旧形式(Issue #634 より前): 単一オブジェクトを 1 件配列として扱う。
-  const rawEntries: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+  if (!Array.isArray(parsed)) return null;
 
   const validEntries: ReloadCooldownRecord[] = [];
-  for (const entry of rawEntries) {
+  for (const entry of parsed) {
     if (!entry || typeof entry !== "object") continue;
     const candidate = entry as Record<string, unknown>;
     if (typeof candidate.version !== "string") continue;
@@ -196,8 +212,8 @@ export function parseReloadCooldownRecords(
 
   if (validEntries.length === 0) return null;
 
-  // 自前の書き込み(appendReloadCooldownRecord)は常に上限内に収まるが、
-  // 外部からの汚染や将来の互換性崩れに備え読み取り側でも直近側だけへ切り詰める。
+  // 自前の書き込み(upsertReloadCooldownRecord)は常に上限内に収まるが、
+  // 外部からの汚染に備え読み取り側でも直近側だけへ切り詰める。
   return validEntries.slice(-MAX_RELOAD_COOLDOWN_RECORDS);
 }
 
