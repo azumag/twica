@@ -897,7 +897,7 @@ describe('OverlayPage', () => {
       })
     })
 
-    it('リロード実行後、sessionStorageへ書き込まれるクールダウン記録に既存エントリと新規エントリが両方含まれる(Issue #634、自動レビュー指摘への対応)', async () => {
+    it('リロード実行後、sessionStorageへ書き込まれるクールダウン記録に既存エントリと新規エントリが両方含まれる(Issue #634、PR #994レビュー指摘#995対応)', async () => {
       // upsertReloadCooldownRecord(cooldownRecords, ...)の第1引数に、実際に
       // sessionStorageから読み取った既存記録を渡し忘れて誤ってnull/[]を渡す
       // ような結線バグが混入しても、純粋関数単体のテストや「クールダウン中は
@@ -906,11 +906,16 @@ describe('OverlayPage', () => {
       // mount前から存在した別バージョン('v-z')の記録が消えずに残ったまま
       // 新規バージョン('v-b')が追記されることを直接確認する。
       vi.useFakeTimers()
+      // vi.useFakeTimers()直後のDate.now()はここで凍結される(以降0ms分の
+      // advanceしか行わないため、書き込み時刻も同じ値になるはず)。
+      // expect.any(Number)ではなく厳密値を検証し、「既存記録を保持しつつ
+      // 現在時刻で追記する」ところまで固定する。
+      const frozenNow = Date.now()
       vi.spyOn(Math, 'random').mockReturnValue(0)
       const reloadMock = stubLocationReload()
       stubEventsFetch('v-a')
 
-      const existingReloadedAt = Date.now() - 1000
+      const existingReloadedAt = frozenNow - 1000
       sessionStorage.setItem(
         RELOAD_COOLDOWN_STORAGE_KEY,
         JSON.stringify([{ version: 'v-z', reloadedAt: existingReloadedAt }]),
@@ -940,7 +945,7 @@ describe('OverlayPage', () => {
       const written = JSON.parse(sessionStorage.getItem(RELOAD_COOLDOWN_STORAGE_KEY) ?? 'null')
       expect(written).toEqual([
         { version: 'v-z', reloadedAt: existingReloadedAt },
-        { version: 'v-b', reloadedAt: expect.any(Number) },
+        { version: 'v-b', reloadedAt: frozenNow },
       ])
     })
 
