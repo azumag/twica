@@ -122,16 +122,43 @@ export function computePackProgress(
 }
 
 /**
+ * Issue #948: resolve which pack key a gacha card should be looked up under
+ * for the `{packName}` chat announcement placeholder — the card's OWN pack
+ * takes priority over the pack the draw was scoped to.
+ *
+ * - `cardCollectionName === undefined` — pre-#948 outbox payload (built
+ *   before the migration that added `collection_name` to the card payload).
+ *   Falls back to `drawScopeCollectionName`, i.e. the original #597 behavior.
+ * - `cardCollectionName` is `null` or `''` — the card is unclassified.
+ *   Resolves to `DEFAULT_PACK_SENTINEL` so the caller shows the default
+ *   pack's display name instead of leaving `{packName}` blank. (The first
+ *   #948 fix left unclassified cards blank; on catalogs where most cards are
+ *   unclassified, `{packName}` stayed empty almost always, so the reported
+ *   symptom persisted.) `''` is defensive — `normalizeCollectionName` blanks
+ *   to `null` at write time, so only `null` is expected in practice.
+ * - any other string — the card's own named pack, verbatim.
+ *
+ * `null`/`''` mapping to `DEFAULT_PACK_SENTINEL` is safe because real pack
+ * names can't start with `__` (rejected at registration, see
+ * `validation/collection-name.ts`), so the sentinel can never collide with
+ * an actual pack name.
+ */
+export function resolveCardPackKey(
+  cardCollectionName: string | null | undefined,
+  drawScopeCollectionName: string | null | undefined
+): string | null | undefined {
+  if (cardCollectionName === undefined) return drawScopeCollectionName;
+  return cardCollectionName || DEFAULT_PACK_SENTINEL;
+}
+
+/**
  * Issue #597: resolve the display name of a pack key for the `{packName}`
  * chat announcement placeholder.
  *
- * Originally (#597) the caller always passed the pack the gacha draw was
- * SCOPED to. Since #948 the chat caller (sendChatAnnouncement) passes the
- * obtained card's own pack key instead — `DEFAULT_PACK_SENTINEL` for
- * unclassified cards — and only falls back to the draw scope for
- * pre-migration outbox payloads that lack the card's `collection_name`.
- * This helper stays agnostic to that choice: it just maps a pack key to a
- * display name.
+ * The caller decides which pack key to resolve — originally (#597) always
+ * the pack the gacha draw was SCOPED to; since #948, `resolveCardPackKey`
+ * above prefers the obtained card's own pack instead. This helper stays
+ * agnostic to that choice: it just maps a pack key to a display name.
  *
  * Mirrors the 3 states the collection page (page.tsx) already distinguishes
  * for `CollectionPackDisplay.displayName`, just resolved eagerly instead of

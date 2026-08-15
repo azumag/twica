@@ -37,8 +37,7 @@ import { cancelRedemption } from "@/lib/twitch/channel-points";
 
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
-import { resolvePackDisplayName } from "@/lib/collection-packs";
-import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import { resolveCardPackKey, resolvePackDisplayName } from "@/lib/collection-packs";
 import { runInBackground } from "@/lib/background-task";
 import {
   claimChatNotificationBatch,
@@ -1263,32 +1262,14 @@ export async function sendChatAnnouncement(
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://twica.live';
   const collectionUrl = `${baseUrl}/collection/${streamer.id}`;
 
-  // Issue #948: {packName} は「抽選スコープ」でなく「獲得カード自身のパック」を
-  // 優先して解決する。メイン報酬＝全カード抽選では抽選スコープ（collectionName）が
-  // 常に null になり、名前付きパックのカードでも {packName} が空文字になるため。
+  // Issue #948: {packName} は獲得カード自身のパックを優先して解決する（未分類
+  // カードもデフォルトパック名で埋める）。resolveCardPackKey / resolvePackDisplayName
+  // のdocstringに解決規則の詳細と旧payloadへのフォールバック根拠がある。
   //
-  // Issue #948 再修正: 未分類カード（collection_name === null）は「パック無し」では
-  // なくデフォルトパックの所属として扱い、その表示名を差し込む。override
-  // （streamers.default_card_pack_name）設定時はビューアのコレクションページの
-  // パックタブ名と完全に一致する。未設定時の固定ラベル「デフォルトパック」は
-  // ダッシュボードのパック設定ラベル（collections.defaultOnlyName）に揃えており、
-  // ビューアページタブの汎用フォールバック「デフォルト」（packFilter.defaultName）
-  // とは1語異なる点に注意。初回修正（#964）は未分類カードを空文字にしていたが、
-  // カードの大半が未分類のチャンネルでは {packName} がほぼ常に空になり、テンプレート
-  // 内のラベル（例:「シリーズ: {packName}」）が欠けたままとなって #948 の報告症状が
-  // 解消されなかった。null → DEFAULT_PACK_SENTINEL の写像が安全なのは、実パック名は
-  // `__` 始まりを予約語として登録拒否しており（validation/collection-name.ts）、
-  // センチネルと実名が衝突しないため。
-  //
-  // 後方互換: 旧 outbox 行（カード payload に collection_name キー自体が無い =
-  // undefined）は従来どおり抽選スコープへフォールバックする。undefined と null を
-  // 区別するのは、新 payload では jsonb_build_object が未分類カードにも必ず
-  // collection_name: null を含める一方、旧 payload ではキーが欠落しているため。
-  const cardPackKey = card.collection_name === undefined
-    ? collectionName
-    : card.collection_name ?? DEFAULT_PACK_SENTINEL;
+  // フォールバックラベル「デフォルトパック」とビューアページタブの汎用ラベル
+  // 「デフォルト」の1語差は既知の設計判断（#973で追跡、コード変更なしで据え置き）。
   const packName = resolvePackDisplayName(
-    cardPackKey,
+    resolveCardPackKey(card.collection_name, collectionName),
     streamer.default_card_pack_name ?? null,
     DEFAULT_PACK_CHAT_FALLBACK_LABEL
   );

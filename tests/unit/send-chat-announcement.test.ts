@@ -504,10 +504,9 @@ describe('sendChatAnnouncement: {packName} はカード自身のパックを優�
       collection_name: null,
     }
 
-    // 初回修正（#964）は未分類カードを空文字にしていたが、カードの大半が未分類の
-    // チャンネルでは {packName} がほぼ常に空になり #948 の症状が残った。
-    // packStreamer は override 設定済みのため、コレクションページのパックタブと
-    // 完全に一致する default_card_pack_name が表示される。
+    // 経緯は resolveCardPackKey のdocstring参照。packStreamer は override 設定済み
+    // のため、コレクションページのパックタブと完全に一致する default_card_pack_name
+    // が表示される。
     await sendChatAnnouncement(
       '130871908', packStreamer, unclassifiedCard, 'Viewer', 'viewer-1',
       undefined, undefined, snapshot,
