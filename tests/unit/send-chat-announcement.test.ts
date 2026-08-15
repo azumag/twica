@@ -436,13 +436,16 @@ describe('sendChatAnnouncement: {packName} はカード自身のパックを優�
     vi.restoreAllMocks()
   })
 
+  // default_card_pack_name はフォールバックラベル（「デフォルトパック」）と紛れない
+  // 独自名にする。同名だと「override が効いた」のか「フォールバックに落ちた」のかを
+  // アサーションで区別できない。
   const packStreamer = {
     id: 'streamer-1',
     chat_announcement_enabled: true,
     chat_announcement_template: 'pack={packName}',
     chat_announcement_multi_template: null,
     chat_announcement_multi_show_cards: false,
-    default_card_pack_name: 'デフォルトパック',
+    default_card_pack_name: '基本セット',
   }
   const card = {
     id: 'card-1',
@@ -492,7 +495,7 @@ describe('sendChatAnnouncement: {packName} はカード自身のパックを優�
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=抽選パック')
   })
 
-  it('未分類カードで抽選スコープも未指定なら空文字のまま（従来挙動を維持）', async () => {
+  it('未分類カード（collection_name: null）はデフォルトパックの表示名を差し込む（#948 再修正）', async () => {
     const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
       outcome: 'sent',
     })
@@ -501,15 +504,58 @@ describe('sendChatAnnouncement: {packName} はカード自身のパックを優�
       collection_name: null,
     }
 
+    // 初回修正（#964）は未分類カードを空文字にしていたが、カードの大半が未分類の
+    // チャンネルでは {packName} がほぼ常に空になり #948 の症状が残った。
+    // packStreamer は override 設定済みのため、コレクションページのパックタブと
+    // 完全に一致する default_card_pack_name が表示される。
     await sendChatAnnouncement(
       '130871908', packStreamer, unclassifiedCard, 'Viewer', 'viewer-1',
+      undefined, undefined, snapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=基本セット')
+  })
+
+  it('未分類カードで default_card_pack_name 未設定なら固定ラベル「デフォルトパック」を差し込む', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const noOverrideStreamer = {
+      ...packStreamer,
+      default_card_pack_name: null,
+    }
+    const unclassifiedCard = {
+      ...card,
+      collection_name: null,
+    }
+
+    // ダッシュボードのパック設定ラベル（collections.defaultOnlyName）と同じ
+    // フォールバックラベルに揃える。
+    await sendChatAnnouncement(
+      '130871908', noOverrideStreamer, unclassifiedCard, 'Viewer', 'viewer-1',
+      undefined, undefined, snapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=デフォルトパック')
+  })
+
+  it('旧outbox行（collection_nameキー欠落）でスコープも未指定なら従来どおり空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const legacyCard = { ...card }
+
+    // 後方互換バリア: 移行前 payload では「未分類」と「パック情報なし」を区別
+    // できないため、デフォルトパック名を推測で差し込まず旧挙動（空文字）を保つ。
+    await sendChatAnnouncement(
+      '130871908', packStreamer, legacyCard, 'Viewer', 'viewer-1',
       undefined, undefined, snapshot,
     )
 
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=')
   })
 
-  it('デフォルトパック指定抽選はカードのパックを優先しつつ、未分類ならデフォルト名を表示する', async () => {
+  it('デフォルトパック指定抽選の未分類カードもデフォルト名を表示する（#597 の挙動を維持）', async () => {
     const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
       outcome: 'sent',
     })
@@ -518,13 +564,14 @@ describe('sendChatAnnouncement: {packName} はカード自身のパックを優�
       collection_name: null,
     }
 
+    // 従来は抽選スコープ（__default__）へのフォールバック経由、再修正後はカード
+    // 自身の未分類判定で直接デフォルトパック名に解決される。経路は変わるが
+    // 出力は #597 当時から不変であることを固定する。
     await sendChatAnnouncement(
       '130871908', packStreamer, unclassifiedCard, 'Viewer', 'viewer-1',
       undefined, '__default__', snapshot,
     )
 
-    // カードが未分類のため抽選スコープ（デフォルトパック）へ fallback し、
-    // default_card_pack_name が表示される（#597 の従来挙動を壊さない）
-    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=デフォルトパック')
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=基本セット')
   })
 })

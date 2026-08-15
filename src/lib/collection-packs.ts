@@ -122,14 +122,22 @@ export function computePackProgress(
 }
 
 /**
- * Issue #597: resolve the display name of the pack a gacha draw was scoped
- * to, for the `{packName}` chat announcement placeholder.
+ * Issue #597: resolve the display name of a pack key for the `{packName}`
+ * chat announcement placeholder.
+ *
+ * Originally (#597) the caller always passed the pack the gacha draw was
+ * SCOPED to. Since #948 the chat caller (sendChatAnnouncement) passes the
+ * obtained card's own pack key instead — `DEFAULT_PACK_SENTINEL` for
+ * unclassified cards — and only falls back to the draw scope for
+ * pre-migration outbox payloads that lack the card's `collection_name`.
+ * This helper stays agnostic to that choice: it just maps a pack key to a
+ * display name.
  *
  * Mirrors the 3 states the collection page (page.tsx) already distinguishes
  * for `CollectionPackDisplay.displayName`, just resolved eagerly instead of
  * being left for a client component to fall back on:
- * - `collectionName` is null/undefined — the draw was NOT restricted to any
- *   pack (unrestricted gacha) → `''` (stripped by chat-service's optional
+ * - `collectionName` is null/undefined — no pack information (legacy payload
+ *   with unrestricted draw) → `''` (stripped by chat-service's optional
  *   placeholder handling, same convention as `{newCards}` when absent).
  * - `collectionName === DEFAULT_PACK_SENTINEL` — restricted to the default
  *   (unclassified) pseudo-pack → the streamer's override (`defaultPackName`,

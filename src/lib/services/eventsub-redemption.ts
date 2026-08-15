@@ -38,6 +38,7 @@ import { cancelRedemption } from "@/lib/twitch/channel-points";
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolvePackDisplayName } from "@/lib/collection-packs";
+import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import { runInBackground } from "@/lib/background-task";
 import {
   claimChatNotificationBatch,
@@ -86,7 +87,7 @@ async function reportNotificationError(
 // Issue #597: {packName} でデフォルト(未分類)パックの表示名オーバーライドが
 // 未設定の場合のフォールバックラベル。チャット文言は他の箇所(rarityMap等)と
 // 同様に i18n非対応でハードコードする。messages/*.json の
-// "collections.defaultOnlyName"（コレクションページのパックタブ用ラベル）と
+// "collections.defaultOnlyName"（ダッシュボードのパック設定用ラベル）と
 // 同じ文言に揃えている。
 export const DEFAULT_PACK_CHAT_FALLBACK_LABEL = "デフォルトパック";
 
@@ -1264,10 +1265,29 @@ export async function sendChatAnnouncement(
   // Issue #948: {packName} は「抽選スコープ」でなく「獲得カード自身のパック」を
   // 優先して解決する。メイン報酬＝全カード抽選では抽選スコープ（collectionName）が
   // 常に null になり、名前付きパックのカードでも {packName} が空文字になるため。
-  // 旧 outbox 行（カード payload に collection_name が無い）は従来どおり
-  // 抽選スコープへフォールバックして後方互換を保つ。
+  //
+  // Issue #948 再修正: 未分類カード（collection_name === null）は「パック無し」では
+  // なくデフォルトパックの所属として扱い、その表示名を差し込む。override
+  // （streamers.default_card_pack_name）設定時はビューアのコレクションページの
+  // パックタブ名と完全に一致する。未設定時の固定ラベル「デフォルトパック」は
+  // ダッシュボードのパック設定ラベル（collections.defaultOnlyName）に揃えており、
+  // ビューアページタブの汎用フォールバック「デフォルト」（packFilter.defaultName）
+  // とは1語異なる点に注意。初回修正（f987fdf）は未分類カードを空文字にしていたが、
+  // カードの大半が未分類のチャンネルでは {packName} がほぼ常に空になり、テンプレート
+  // 内のラベル（例:「シリーズ: {packName}」）が欠けたままとなって #948 の報告症状が
+  // 解消されなかった。null → DEFAULT_PACK_SENTINEL の写像が安全なのは、実パック名は
+  // `__` 始まりを予約語として登録拒否しており（validation/collection-name.ts）、
+  // センチネルと実名が衝突しないため。
+  //
+  // 後方互換: 旧 outbox 行（カード payload に collection_name キー自体が無い =
+  // undefined）は従来どおり抽選スコープへフォールバックする。undefined と null を
+  // 区別するのは、新 payload では jsonb_build_object が未分類カードにも必ず
+  // collection_name: null を含める一方、旧 payload ではキーが欠落しているため。
+  const cardPackKey = card.collection_name === undefined
+    ? collectionName
+    : card.collection_name ?? DEFAULT_PACK_SENTINEL;
   const packName = resolvePackDisplayName(
-    card.collection_name ?? collectionName ?? null,
+    cardPackKey,
     streamer.default_card_pack_name ?? null,
     DEFAULT_PACK_CHAT_FALLBACK_LABEL
   );
