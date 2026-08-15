@@ -163,14 +163,9 @@ const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
 const IMAGE_METADATA_TIMEOUT_MS = 1_500;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
-// Issue #634: クールダウン記録の保存形式を単一オブジェクトから配列へ変更した際、
-// キー名も"-v2"へ変更した(自動レビュー指摘: 同じキーのままだと、ローリング
-// デプロイの混在ウィンドウ中に同一タブが旧コードのビルドへ着地するたびに、
-// 旧コードの単一オブジェクト専用パーサ/ライターがクールダウン記録を巻き戻して
-// しまう恐れがあった)。新旧コードが別々のキーだけを読み書きすることで、
-// この干渉を構造的に無くしている。旧キーに残るデータは新コードから一切
-// 参照されず、次回リロードが1回クールダウンなしで発生する以外の影響はない
-// (詳細はoverlay-version.tsのparseReloadCooldownRecords doc参照)。
+// Issue #634 (PR #995): 新旧コードが同じキーを奪い合わないよう"-v2"へ改称した。
+// 経緯・設計判断はoverlay-version.tsのparseReloadCooldownRecords docへ集約
+// (このファイルとの重複記述を避けるため、詳細説明はそちら側だけに置く)。
 const RELOAD_COOLDOWN_STORAGE_KEY = "twica-overlay-reload-v2";
 const POLLSTATE_STORAGE_KEY = "twica-overlay-pollstate";
 const pollStateStorageKey = (streamerId: string) =>

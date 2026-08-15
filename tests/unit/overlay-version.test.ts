@@ -225,7 +225,11 @@ describe("parseReloadCooldownRecords", () => {
     expect(parseReloadCooldownRecords('"v2"')).toBeNull();
   });
 
-  it("トップレベルが単一オブジェクト(旧形式相当)の場合もnullを返す(Issue #634でキーをv2へ分離したため、新キーの下に単一オブジェクトが書かれる正常経路は無い。汚染データへの防御として配列以外は一律拒否する)", () => {
+  // Issue #634でストレージキーをv2へ分離したため、新キーの下に単一オブジェクト
+  // (旧形式)が書かれる正常経路は無い。それでも汚染データへの防御として
+  // 配列以外は一律nullで拒否する(overlay-version.tsのparseReloadCooldownRecords
+  // doc参照)。
+  it("トップレベルが単一オブジェクト(旧形式相当)ならnullを返す", () => {
     expect(parseReloadCooldownRecords(JSON.stringify({ version: "v2", reloadedAt: 12345 }))).toBeNull();
   });
 
@@ -238,6 +242,7 @@ describe("parseReloadCooldownRecords", () => {
       { version: "v1", reloadedAt: 1 },
       "garbage",
       { version: "v2" }, // reloadedAt欠落
+      { version: "v2b", reloadedAt: "not-a-number" }, // reloadedAtが数値でない
       { version: 123, reloadedAt: 2 }, // versionが文字列でない
       { version: "v3", reloadedAt: 3 },
     ]);
@@ -264,10 +269,10 @@ describe("parseReloadCooldownRecords", () => {
   });
 
   // page.tsxの実際の書き込み経路(JSON.stringify(upsertReloadCooldownRecord(...)))を
-  // そのまま再現するround-tripテスト。自動レビュー指摘: 純粋関数単体のテストだけでは
-  // 「既存記録を引数に渡し忘れて実質nullのまま追記してしまう」ような呼び出し側の
-  // 結線バグ(Issue #634の本質的な修正対象)を検知できない。upsert→serialize→parseを
-  // 連鎖させることで、page.tsx側の呼び出しパターンに近い形で検証する
+  // そのまま再現するround-tripテスト。PR #994レビュー指摘: 純粋関数単体のテストだけ
+  // では「既存記録を引数に渡し忘れて実質nullのまま追記してしまう」ような呼び出し
+  // 側の結線バグ(Issue #634の本質的な修正対象)を検知できない。upsert→serialize→
+  // parseを連鎖させることで、page.tsx側の呼び出しパターンに近い形で検証する
   // (コンポーネントレベルの検証は tests/unit/components/overlay-page.test.tsx 側で
   // 実際のsessionStorage書き込み結果を直接アサートする形でも行う)。
   it("upsertした結果をシリアライズしてパースすると、複数バージョンの履歴を保持したまま復元される", () => {
