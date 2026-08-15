@@ -1044,7 +1044,8 @@ async function fetchActiveCardCountPg(
  *
  * @param broadcasterTwitchUserId - 配信者のTwitchユーザーID
  * @param streamer - 配信者の設定情報
- * @param card - 獲得したカード（GachaCard型 - gacha serviceから返される）
+ * @param card - 獲得したカード（GachaCard型 - gacha serviceから返される）。N連時は
+ *   先頭カード（{card}/{packName} 等の単発系placeholderが参照するのはこの1枚のみ）
  * @param userName - ガチャを引いたユーザー名
  * @param userId - ガチャを引いたユーザーのTwitch ID
  * @param cards - 複数枚ガチャ時の獲得カード一覧
@@ -1272,7 +1273,7 @@ export async function sendChatAnnouncement(
   // パックタブ名と完全に一致する。未設定時の固定ラベル「デフォルトパック」は
   // ダッシュボードのパック設定ラベル（collections.defaultOnlyName）に揃えており、
   // ビューアページタブの汎用フォールバック「デフォルト」（packFilter.defaultName）
-  // とは1語異なる点に注意。初回修正（f987fdf）は未分類カードを空文字にしていたが、
+  // とは1語異なる点に注意。初回修正（#964）は未分類カードを空文字にしていたが、
   // カードの大半が未分類のチャンネルでは {packName} がほぼ常に空になり、テンプレート
   // 内のラベル（例:「シリーズ: {packName}」）が欠けたままとなって #948 の報告症状が
   // 解消されなかった。null → DEFAULT_PACK_SENTINEL の写像が安全なのは、実パック名は

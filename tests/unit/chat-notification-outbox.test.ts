@@ -283,6 +283,25 @@ describe('transactional chat outbox claim/ack', () => {
       payloadVersion: 1,
       payload: invalidPayload,
     })).toBeNull()
+
+    // 検証は`gachaResult.card`だけでなく`cards[]`（N連の全カード）にも及ぶ。
+    // RPC生成payloadでは発生し得ないが、N連の1枚でも型不正なら通知全体が
+    // DLQ化される検証パスを固定する。
+    const invalidCardsArrayPayload = {
+      ...basePayload,
+      gachaResult: {
+        ...basePayload.gachaResult,
+        cards: [
+          { ...basePayload.gachaResult.cards[0], collection_name: 'レアパック' },
+          { ...basePayload.gachaResult.cards[0], id: 'card-2', collection_name: 42 },
+        ],
+      },
+    }
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 1,
+      payload: invalidCardsArrayPayload,
+    })).toBeNull()
   })
 
   it('sent更新はidとlease_idの両方でfenceする', async () => {
