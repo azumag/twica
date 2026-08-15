@@ -2,12 +2,15 @@ import { describe, it, expect } from "vitest";
 import {
   shouldScheduleReload,
   isReloadCooldownActive,
+  appendReloadCooldownRecord,
   serializePollState,
   parsePollState,
-  parseReloadCooldownRecord,
+  parseReloadCooldownRecords,
   RELOAD_COOLDOWN_MS,
   POLLSTATE_TTL_MS,
   MAX_PERSISTED_HISTORY_IDS,
+  MAX_RELOAD_COOLDOWN_RECORDS,
+  type ReloadCooldownRecord,
 } from "@/lib/overlay-version";
 
 // Issue #569: overlay のバージョン不一致検出＋アイドル時自動リロード機構の
@@ -52,76 +55,229 @@ describe("shouldScheduleReload", () => {
 });
 
 describe("isReloadCooldownActive", () => {
-  it("recordがnull(未リロード)ならfalseを返す", () => {
+  it("recordsがnull(未リロード)ならfalseを返す", () => {
     expect(isReloadCooldownActive(null, "v2", 100000, RELOAD_COOLDOWN_MS)).toBe(false);
   });
 
-  it("recordのバージョンがtargetVersionと異なればfalseを返す(別バージョンは独立してカウント)", () => {
-    const record = { version: "v1", reloadedAt: 100000 };
-    expect(isReloadCooldownActive(record, "v2", 100000 + 1000, RELOAD_COOLDOWN_MS)).toBe(false);
+  it("recordsが空配列ならfalseを返す", () => {
+    expect(isReloadCooldownActive([], "v2", 100000, RELOAD_COOLDOWN_MS)).toBe(false);
+  });
+
+  it("記録内のバージョンがどれもtargetVersionと異なればfalseを返す(別バージョンは独立してカウント)", () => {
+    const records = [{ version: "v1", reloadedAt: 100000 }];
+    expect(isReloadCooldownActive(records, "v2", 100000 + 1000, RELOAD_COOLDOWN_MS)).toBe(false);
   });
 
   it("同一バージョンでcooldownMs未満ならtrueを返す(クールダウン中)", () => {
-    const record = { version: "v2", reloadedAt: 100000 };
+    const records = [{ version: "v2", reloadedAt: 100000 }];
     const now = 100000 + RELOAD_COOLDOWN_MS - 1;
-    expect(isReloadCooldownActive(record, "v2", now, RELOAD_COOLDOWN_MS)).toBe(true);
+    expect(isReloadCooldownActive(records, "v2", now, RELOAD_COOLDOWN_MS)).toBe(true);
   });
 
   it("同一バージョンでちょうどcooldownMs経過した境界ではfalseを返す(クールダウン明け)", () => {
-    const record = { version: "v2", reloadedAt: 100000 };
+    const records = [{ version: "v2", reloadedAt: 100000 }];
     const now = 100000 + RELOAD_COOLDOWN_MS;
-    expect(isReloadCooldownActive(record, "v2", now, RELOAD_COOLDOWN_MS)).toBe(false);
+    expect(isReloadCooldownActive(records, "v2", now, RELOAD_COOLDOWN_MS)).toBe(false);
   });
 
   it("同一バージョンでcooldownMsを超えて経過していればfalseを返す", () => {
-    const record = { version: "v2", reloadedAt: 100000 };
+    const records = [{ version: "v2", reloadedAt: 100000 }];
     const now = 100000 + RELOAD_COOLDOWN_MS + 1;
-    expect(isReloadCooldownActive(record, "v2", now, RELOAD_COOLDOWN_MS)).toBe(false);
+    expect(isReloadCooldownActive(records, "v2", now, RELOAD_COOLDOWN_MS)).toBe(false);
   });
 
-  it("ロールバック相当のシナリオ: 旧バージョンへ戻る場合は直前の記録と別バージョン扱いになり即座にリロード可能", () => {
-    // v1(現行) -> v2(新版)へリロード済みの直後に、本番がv1へロールバックされたケース。
-    // v1向けのクールダウン記録はまだ無い(前回はv2への記録のみ)ため、
-    // v1への再リロードはクールダウンの影響を受けない。
-    const record = { version: "v2", reloadedAt: 100000 };
+  it("ロールバック相当のシナリオ: これまで一度も記録されていない全く別のバージョンへは即座にリロード可能", () => {
+    // v1(現行) -> v2(新版)へリロード済みの直後に、本番がv3(v1/v2いずれとも異なる版)へ
+    // ロールバックされたケース。v3向けのクールダウン記録はまだ無いため、
+    // v3への再リロードはクールダウンの影響を受けない。
+    const records = [{ version: "v2", reloadedAt: 100000 }];
     const now = 100000 + 1000; // v2へのクールダウン期間内
-    expect(isReloadCooldownActive(record, "v1", now, RELOAD_COOLDOWN_MS)).toBe(false);
+    expect(isReloadCooldownActive(records, "v3", now, RELOAD_COOLDOWN_MS)).toBe(false);
+  });
+
+  it("記録が複数件ある場合、いずれかのエントリがクールダウン中ならtrueを返す(Issue #634)", () => {
+    // ローリングデプロイ中にv1→v2→v1と往復した後の状態を模した複数エントリ。
+    const records: ReloadCooldownRecord[] = [
+      { version: "v2", reloadedAt: 100000 },
+      { version: "v1", reloadedAt: 101000 },
+    ];
+    // v2は直前ではなく1つ前のエントリだが、cooldownMs以内であれば引き続き検出される
+    expect(isReloadCooldownActive(records, "v2", 101500, RELOAD_COOLDOWN_MS)).toBe(true);
+    expect(isReloadCooldownActive(records, "v1", 101500, RELOAD_COOLDOWN_MS)).toBe(true);
   });
 });
 
-describe("parseReloadCooldownRecord", () => {
-  it("正当なJSONを{version, reloadedAt}として復元する", () => {
+describe("appendReloadCooldownRecord (Issue #634)", () => {
+  it("recordsがnullの場合は新規エントリ1件の配列を返す", () => {
+    expect(appendReloadCooldownRecord(null, "v1", 100)).toEqual([
+      { version: "v1", reloadedAt: 100 },
+    ]);
+  });
+
+  it("既存の空配列に追記できる", () => {
+    expect(appendReloadCooldownRecord([], "v1", 100)).toEqual([
+      { version: "v1", reloadedAt: 100 },
+    ]);
+  });
+
+  it("同一バージョンの既存エントリは古いものを置き換える(重複を持たない)", () => {
+    const records: ReloadCooldownRecord[] = [{ version: "v1", reloadedAt: 100 }];
+    expect(appendReloadCooldownRecord(records, "v1", 200)).toEqual([
+      { version: "v1", reloadedAt: 200 },
+    ]);
+  });
+
+  it("異なるバージョンは既存エントリを保持したまま追記される", () => {
+    const records: ReloadCooldownRecord[] = [{ version: "v1", reloadedAt: 100 }];
+    expect(appendReloadCooldownRecord(records, "v2", 200)).toEqual([
+      { version: "v1", reloadedAt: 100 },
+      { version: "v2", reloadedAt: 200 },
+    ]);
+  });
+
+  it(`MAX_RELOAD_COOLDOWN_RECORDS(${MAX_RELOAD_COOLDOWN_RECORDS}件)を超える場合は最も古いエントリから破棄する`, () => {
+    let records: ReloadCooldownRecord[] | null = null;
+    for (let i = 0; i < MAX_RELOAD_COOLDOWN_RECORDS + 2; i++) {
+      records = appendReloadCooldownRecord(records, `v${i}`, i);
+    }
+    expect(records).toHaveLength(MAX_RELOAD_COOLDOWN_RECORDS);
+    // 直近MAX_RELOAD_COOLDOWN_RECORDS件だけが残る(先頭の古いものが破棄される)
+    const expectedVersions = Array.from(
+      { length: MAX_RELOAD_COOLDOWN_RECORDS },
+      (_, i) => `v${i + 2}`,
+    );
+    expect(records?.map((r) => r.version)).toEqual(expectedVersions);
+  });
+});
+
+describe("ローリングデプロイ中のバージョン往復への耐性(Issue #634)", () => {
+  it("A→B→A→Bと往復しても、双方向とも一度記録された後の再訪問はクールダウンで抑止される", () => {
+    const cooldownMs = RELOAD_COOLDOWN_MS;
+    let records: ReloadCooldownRecord[] | null = null;
+    let now = 0;
+
+    // 初回: current=A, received=B(未記録) → リロード許可、実行して記録
+    expect(isReloadCooldownActive(records, "v-b", now, cooldownMs)).toBe(false);
+    records = appendReloadCooldownRecord(records, "v-b", now);
+
+    // ローリングデプロイの混在ウィンドウで別エッジからv-aが返る(未記録)→リロード許可、実行して記録
+    now += 1000;
+    expect(isReloadCooldownActive(records, "v-a", now, cooldownMs)).toBe(false);
+    records = appendReloadCooldownRecord(records, "v-a", now);
+
+    // 再度v-bが返る → 直前のv-b記録がクールダウン中のため、往復2巡目以降は抑止される
+    now += 1000;
+    expect(isReloadCooldownActive(records, "v-b", now, cooldownMs)).toBe(true);
+
+    // 再度v-aが返る → 同様に抑止される
+    now += 1000;
+    expect(isReloadCooldownActive(records, "v-a", now, cooldownMs)).toBe(true);
+
+    // 何度往復してもクールダウン中は追加リロードが発生しないことを確認
+    for (let i = 0; i < 5; i++) {
+      now += 1000;
+      expect(isReloadCooldownActive(records, i % 2 === 0 ? "v-a" : "v-b", now, cooldownMs)).toBe(
+        true,
+      );
+    }
+  });
+
+  it("往復ではない一度きりのロールバックでは、既存挙動どおり新バージョンへ即座に切り替わる", () => {
+    // v-bへ一度だけリロードした後、これまで一度も見ていないv-cへロールバックされた場合、
+    // v-cは記録に無いため即座にリロード許可される(#634受け入れ条件3番目: 既存挙動を壊さない)。
+    const records = appendReloadCooldownRecord(null, "v-b", 0);
+    expect(isReloadCooldownActive(records, "v-c", 1000, RELOAD_COOLDOWN_MS)).toBe(false);
+  });
+
+  it("クールダウン明け後は往復した同一バージョンへも再度リロードできる(恒久ガードにしない)", () => {
+    const records = appendReloadCooldownRecord(null, "v-b", 0);
+    const now = RELOAD_COOLDOWN_MS; // ちょうどクールダウン明けの境界
+    expect(isReloadCooldownActive(records, "v-b", now, RELOAD_COOLDOWN_MS)).toBe(false);
+  });
+});
+
+describe("parseReloadCooldownRecords", () => {
+  it("新形式(配列)のJSONをReloadCooldownRecord[]として復元する", () => {
+    const raw = JSON.stringify([
+      { version: "v1", reloadedAt: 100 },
+      { version: "v2", reloadedAt: 12345 },
+    ]);
+    expect(parseReloadCooldownRecords(raw)).toEqual([
+      { version: "v1", reloadedAt: 100 },
+      { version: "v2", reloadedAt: 12345 },
+    ]);
+  });
+
+  it("旧形式(Issue #634より前の単一オブジェクト)を1件配列として復元する(後方互換)", () => {
+    // ローリングデプロイの混在ウィンドウで、旧コードが書き込んだ値を新コードが
+    // 読む可能性があるため、単一オブジェクトも読めなければならない。
     const raw = JSON.stringify({ version: "v2", reloadedAt: 12345 });
-    expect(parseReloadCooldownRecord(raw)).toEqual({ version: "v2", reloadedAt: 12345 });
+    expect(parseReloadCooldownRecords(raw)).toEqual([{ version: "v2", reloadedAt: 12345 }]);
   });
 
   it("rawがnull/undefined/空文字列ならnullを返す", () => {
-    expect(parseReloadCooldownRecord(null)).toBeNull();
-    expect(parseReloadCooldownRecord(undefined)).toBeNull();
-    expect(parseReloadCooldownRecord("")).toBeNull();
+    expect(parseReloadCooldownRecords(null)).toBeNull();
+    expect(parseReloadCooldownRecords(undefined)).toBeNull();
+    expect(parseReloadCooldownRecords("")).toBeNull();
   });
 
   it("JSONとしてparseできない壊れた文字列でも例外を投げずnullを返す", () => {
-    expect(() => parseReloadCooldownRecord("{broken")).not.toThrow();
-    expect(parseReloadCooldownRecord("{broken")).toBeNull();
+    expect(() => parseReloadCooldownRecords("{broken")).not.toThrow();
+    expect(parseReloadCooldownRecords("{broken")).toBeNull();
   });
 
-  it("JSONとして正当だがオブジェクトでない場合はnullを返す", () => {
-    expect(parseReloadCooldownRecord("42")).toBeNull();
-    expect(parseReloadCooldownRecord("null")).toBeNull();
-    expect(parseReloadCooldownRecord('"v2"')).toBeNull();
+  it("JSONとして正当だがオブジェクトでも配列でもない場合はnullを返す", () => {
+    expect(parseReloadCooldownRecords("42")).toBeNull();
+    expect(parseReloadCooldownRecords("null")).toBeNull();
+    expect(parseReloadCooldownRecords('"v2"')).toBeNull();
   });
 
-  it("versionが欠けている/文字列でない場合はnullを返す", () => {
-    expect(parseReloadCooldownRecord(JSON.stringify({ reloadedAt: 1 }))).toBeNull();
-    expect(parseReloadCooldownRecord(JSON.stringify({ version: 123, reloadedAt: 1 }))).toBeNull();
+  it("空配列はnullを返す(有効なエントリなし)", () => {
+    expect(parseReloadCooldownRecords("[]")).toBeNull();
   });
 
-  it("reloadedAtが欠けている/数値でない場合はnullを返す", () => {
-    expect(parseReloadCooldownRecord(JSON.stringify({ version: "v2" }))).toBeNull();
+  it("versionが欠けている/文字列でない要素はnullを返す(単一オブジェクト形式)", () => {
+    expect(parseReloadCooldownRecords(JSON.stringify({ reloadedAt: 1 }))).toBeNull();
     expect(
-      parseReloadCooldownRecord(JSON.stringify({ version: "v2", reloadedAt: "not-a-number" })),
+      parseReloadCooldownRecords(JSON.stringify({ version: 123, reloadedAt: 1 })),
     ).toBeNull();
+  });
+
+  it("reloadedAtが欠けている/数値でない要素はnullを返す(単一オブジェクト形式)", () => {
+    expect(parseReloadCooldownRecords(JSON.stringify({ version: "v2" }))).toBeNull();
+    expect(
+      parseReloadCooldownRecords(JSON.stringify({ version: "v2", reloadedAt: "not-a-number" })),
+    ).toBeNull();
+  });
+
+  it("配列内の不正な要素だけを無視し、有効な要素は復元する(parsePollStateのフィルタ方針と同じ)", () => {
+    const raw = JSON.stringify([
+      { version: "v1", reloadedAt: 1 },
+      "garbage",
+      { version: "v2" }, // reloadedAt欠落
+      { version: 123, reloadedAt: 2 }, // versionが文字列でない
+      { version: "v3", reloadedAt: 3 },
+    ]);
+    expect(parseReloadCooldownRecords(raw)).toEqual([
+      { version: "v1", reloadedAt: 1 },
+      { version: "v3", reloadedAt: 3 },
+    ]);
+  });
+
+  it("全要素が不正な配列はnullを返す", () => {
+    const raw = JSON.stringify(["garbage", { version: 1 }, null]);
+    expect(parseReloadCooldownRecords(raw)).toBeNull();
+  });
+
+  it(`MAX_RELOAD_COOLDOWN_RECORDS(${MAX_RELOAD_COOLDOWN_RECORDS}件)を超える配列は直近側だけへ切り詰める(読み取り側の防御)`, () => {
+    const entries = Array.from({ length: MAX_RELOAD_COOLDOWN_RECORDS + 3 }, (_, i) => ({
+      version: `v${i}`,
+      reloadedAt: i,
+    }));
+    const parsed = parseReloadCooldownRecords(JSON.stringify(entries));
+    expect(parsed).toHaveLength(MAX_RELOAD_COOLDOWN_RECORDS);
+    expect(parsed?.[0].version).toBe("v3");
+    expect(parsed?.at(-1)?.version).toBe(`v${entries.length - 1}`);
   });
 });
 
