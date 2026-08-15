@@ -28,6 +28,35 @@ export class TwitchTokenError extends Error {
   }
 }
 
+/**
+ * TwitchTokenRefreshError が持つ診断情報のうち、ログへ出しても安全な部分だけを
+ * 抽出する(Issue #653/#670/#654/#655)。
+ *
+ * これらのIssueは、Twitchトークンrefresh失敗のauto-generated bug reportに
+ * HTTP status・エラー種別が一切記録されておらず、恒久エラー(無効なrefresh
+ * token等)と一時エラー(429/5xx/network)を区別できないため、根拠のある
+ * retry/reauth設計に着手できないと判定されていた。TwitchTokenRefreshError
+ * 自体は既に response.status を保持している(auth.ts参照。応答本文は
+ * プロバイダが入力値を反射し得るため意図的に保持しない設計)ため、ここでは
+ * 単にその値をログ経路へ橋渡しするだけで、新しい機密情報は増えない。
+ *
+ * 戻り値をlogger呼び出しへspreadする用途のみを想定するため、該当しない
+ * errorに対しては空オブジェクトを返す(該当フィールドがログへ出ないだけで、
+ * 呼び出し側のログ呼び出し自体を分岐させる必要をなくす)。
+ */
+function twitchTokenRefreshFailureContext(error: unknown): {
+  refreshStatus?: number;
+  refreshErrorKind?: TwitchTokenRefreshError['kind'];
+  refreshRetryable?: boolean;
+} {
+  if (!(error instanceof TwitchTokenRefreshError)) return {};
+  return {
+    refreshStatus: error.status,
+    refreshErrorKind: error.kind,
+    refreshRetryable: error.retryable,
+  };
+}
+
 // Workersのfetch/DB I/Oはrequest contextに所属するため、pending Promiseをmodule
 // scopeへ保存して別requestからawaitしてはいけない。同じcredential行の短期leaseを
 // DB時刻で取得し、Twitch endpointを呼ぶrequestをisolate横断で1件に絞る。外部APIは
@@ -868,9 +897,14 @@ async function resolveBotAccountForChatPg(
     // この層はtyped結果を返す責務に限定する。logger.server.errorはerrors永続化を伴い、
     // legacy/live/replayの所有境界でも同じterminalを報告すると二重Issue候補になる。
     // retryable・terminalともここではwarn、呼び出し境界で最終状態と合わせて1回報告する。
+    // Issue #653/#670系と同様、status/kindが無いとContextだけでは
+    // terminal/retryableの根拠を後から確認できないため付与する
+    // (twitchTokenRefreshFailureContext参照。terminal自体の判定は
+    // shouldDisableBotCredential内で既にstatus/kindを見ているため変更しない)。
     const logContext = {
       broadcasterTwitchUserId,
       accountId: account.id,
+      ...twitchTokenRefreshFailureContext(error),
     };
     if (terminal) {
       logger.warn('Failed to refresh BOT Twitch access token', logContext);
@@ -1053,10 +1087,18 @@ async function refreshTwitchAccessTokenPg(twitchUserId: string, refreshToken: st
     if (isPgMissingColumnError(error)) throw error
     // 永続化責任は bootstrap/rewards/callback 等の API 境界に統一する。ここで
     // logger.error を使うと同じ例外を下位層と境界の双方が errors へ書く。
-    logger.warn('Failed to refresh Twitch access token', { twitchUserId });
+    // Issue #653/#670: refreshStatus/refreshErrorKindをcontextへ含めることで、
+    // auto-generated bug reportのContextが空のまま「恒久エラーか一時エラーか
+    // 判別できない」という状態を解消する(twitchTokenRefreshFailureContext参照)。
+    // originalErrorも保持し、上位で必要になった際に握りつぶさず参照できるようにする。
+    logger.warn('Failed to refresh Twitch access token', {
+      twitchUserId,
+      ...twitchTokenRefreshFailureContext(error),
+    });
     throw new TwitchTokenError(
       'Failed to refresh Twitch access token',
-      'REFRESH_FAILED'
+      'REFRESH_FAILED',
+      error instanceof Error ? error : undefined,
     );
   }
 }
