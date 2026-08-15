@@ -12,17 +12,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // （同一モジュール内呼び出しはexportされたbindingを経由しないため）。
 //
 // そこで2種類のテストで公開関数を実際に実行し、内部の結線を検証する:
-// 1. R2バインディング・環境変数がどちらも無い状態（テスト環境のデフォルト）で呼び出し、
+// 1. R2バインディング・環境変数がどちらも無い状態（下記の明示的なモックで再現）で呼び出し、
 //    実際のuploadToR2/uploadSoundToR2が投げる「環境変数が無い」という恒久エラーが
 //    1回の試行だけでそのまま返ることを確認する（バックオフ待機が発生しないため高速）。
 // 2. @aws-sdk/client-s3をモックし、Issue #976/#977で問題になった「(10001)」エラーを
 //    2回返した後に成功するシナリオで、uploadToR2WithRetryが実際にリトライして
 //    最終的に成功を返すことを確認する（実際のsetTimeoutを使うため数秒かかる）。
-const sendMock = vi.fn()
+//
+// @opennextjs/cloudflareはgetR2Bindingが動的importする（src/lib/r2-client.ts）。
+// モックしないと、Node.js実行環境（Vitest）でgetCloudflareContext({async:true})が
+// wranglerのgetPlatformProxy()へフォールバックしてworkerdを起動しうる（バージョンや
+// 実行環境によって挙動が変わり得る、暗黙の外部依存）。他のgetCloudflareContext到達
+// テスト全て（tests/unit/db-client.test.ts等）と同じ規約に合わせ、常にバインディング
+// 不在（空のenv）を明示的にモックすることで、このテストの前提を固定する。
+const mocks = vi.hoisted(() => ({
+  sendMock: vi.fn(),
+  getCloudflareContext: vi.fn(async () => ({ env: {} })),
+}))
+vi.mock('@opennextjs/cloudflare', () => ({
+  getCloudflareContext: mocks.getCloudflareContext,
+}))
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn().mockImplementation(() => ({ send: sendMock })),
+  S3Client: vi.fn().mockImplementation(() => ({ send: mocks.sendMock })),
   PutObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
 }))
+const sendMock = mocks.sendMock
 
 describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
   const ORIGINAL_ENV = { ...process.env }
