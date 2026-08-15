@@ -17,6 +17,7 @@
 // 実行時に判定するが、このモジュール自体を Edge middleware から import してよいことを
 // 意味しないため、middleware 到達コードとの境界は静的テストで固定している。
 import { logger } from './logger.server';
+import { CLOUDFLARE_R2_TRANSIENT_MARKERS } from './r2-retry-policy';
 
 /**
  * Minimal R2Bucket interface matching Cloudflare Workers R2 API.
@@ -145,9 +146,8 @@ const BASE_TRANSIENT_R2_ERROR_PATTERNS = [
 ];
 
 /**
- * Cloudflare R2固有のエラーコードのうち、公式にリトライ推奨とされている一時障害:
- * https://developers.cloudflare.com/r2/api/error-codes/
- * '(10001)' InternalError（HTTP 500）/ '(10043)' ServiceUnavailable（HTTP 503）
+ * Cloudflare R2固有のエラーコード（'(10001)' InternalError / '(10043)' ServiceUnavailable等、
+ * 詳細は r2-retry-policy.ts の CLOUDFLARE_R2_TRANSIENT_MARKERS を参照）を含む一時障害パターン。
  *
  * 画像アップロード（uploadToR2WithRetry）は呼び出し元（src/app/api/upload/route.ts）で
  * さらに retryCloudflareR2Upload（r2-retry-policy.ts）に包まれ、そちらが同じコードを
@@ -156,11 +156,12 @@ const BASE_TRANSIENT_R2_ERROR_PATTERNS = [
  * 効果音アップロード（uploadSoundToR2WithRetry）は外側のラップが無く、このリトライが
  * 唯一の再試行機構なので、R2固有コードもここで判定する（Issue #976, #977 と同種の
  * 未リトライ失敗を防ぐ）。
+ *
+ * マーカー文字列自体はr2-retry-policy.tsからimportし、二重管理（今回のバグの原因）を避ける。
  */
 const SOUND_TRANSIENT_R2_ERROR_PATTERNS = [
   ...BASE_TRANSIENT_R2_ERROR_PATTERNS,
-  '(10001)',
-  '(10043)',
+  ...CLOUDFLARE_R2_TRANSIENT_MARKERS,
 ];
 
 function matchesTransientPattern(errorMessage: string, patterns: readonly string[]): boolean {
