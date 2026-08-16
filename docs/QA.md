@@ -49,7 +49,7 @@ Secret access がゼロであることを観測してから旧 Secret を削除�
 
 previewからmainへ昇格する際のテスト対象は、起点となった単一PRではなく、同じpreview HEADに含まれる昇格対象**全PRの累積変更**とする。
 
-- ここでいう「実行時のGitHub認証ログイン」はAPI `/user`の戻り値を意味しない。GitHub Actionsではワークフローコンテキストの`github.actor`（自動実行は`github-actions[bot]`）をallow-listのログインと完全一致で照合し、手動実行でも同じ`github.actor`を使う。actorを取得できない、allow-list外、または実行コンテキストが曖昧な場合はコメントを書き込まず`blocked`とし、書き込み後はコメントの`user.login`を読み戻して照合したactorとの一致を確認する。
+- ここでいう実行主体は`trigger_actor`と`writer_login`を分離する。`trigger_actor`はワークフローコンテキストの`github.actor`として記録し、`writer_login`は実際に書き込みへ使う認証主体として決める。GITHUB_TOKENを使うGitHub Actionsでは`writer_login=github-actions[bot]`をallow-listと完全一致で照合し、`trigger_actor`との一致は要求しない。手動実行でも同様に起動者とwriterを別々に検証し、writerを取得できない、allow-list外、または実行コンテキストが曖昧な場合はコメントを書き込まず`blocked`とする。書き込み後はコメントの`user.login`を読み戻し、照合した`writer_login`との一致を確認する。
 - 以下でいう「累積release-unit一覧」はpreview→main昇格PR本文の一覧を指し、Issue本文の`Release units`一覧とは別物とする。`cancelled`化では昇格PR本文の累積一覧から対象PR/旧HEADを除外する一方、Issue本文の旧`release-unit`行は`cancelled`として保持し、Issue本文の全SHA保持・一行性のreadback不変条件を満たす。
 - 「記録が無い」ことによる`blocked`は、リリース記録の初期化・回復条件に該当しない場合にだけ適用する。空markerのbootstrapではrecord行の作成・対象PRコメントのreadbackをキー行のseedより先に完了し、canonical移送では旧canonical leaseを保持したまま新canonical leaseを取得してから新recordを正規化し、最終readbackまで両leaseを保持する。
 - 通常のcanonical marker更新でも、対象キー以外の全`preview-gate-release-record`・lease・moved・他キー状態行を保持してread-modify-writeし、recordの欠落や重複を読み戻しで検証する。
