@@ -39,7 +39,10 @@ previewからmainへ昇格する際のテスト対象は、起点となった単
 - いずれかの構成PRがEventSub、gacha、overlay、chat、アップロードなど実引き換え経路に影響する場合、累積変更全体を対象に実引き換え、履歴、チャット、overlay、Workerログを相関させる。単一PRだけのテスト成功や合成demo表示は代替にならない。
 - 累積変更のいずれかに必須レビュー・必須CI・実経路ゲートの未達があれば、昇格を止め、原因と対象PRをIssueまたは昇格PRへ記録する。
 - 構成PRを切り離す場合は、対象PRをrevertする変更をpreviewへ反映して新しいHEADを作り、残りのPRだけを新しいリリース単位として再レビュー・再テストする。未達ゲートを飛ばして部分昇格してはならない。
-- Issueを作成する場合はタイトルを `[preview-gate] <対象環境>: <正規化した事象名>` とし、重複判定キーは対象環境と正規化した事象名だけにする。HEAD/merge SHAはキーに含めず、Issue本文の観測メタデータとして追記する。同一事象の新しいSHAは既存Issueへコメント追記する。必須ラベルは `auto-generated` と `bug`。証拠を記録する前に、アクセストークン、リフレッシュトークン、client_secret、Cookie、session_id、個人識別値を `(redacted)` に置換し、未加工のログやスクリーンショットを添付しない。
+- 構成PRを再投入する場合は、revertのrevertを含む新しいPRとして、累積変更全体を再レビュー・再テストする。
+- Issueを作成する場合は、対象環境を `preview` または `production` のいずれかに固定し、事象名を次の閉じた集合から選ぶ: `ci-failure`、`workers-build-failure`、`deploy-failure`、`health-check-failure`、`real-path-eventsub`、`real-path-gacha`、`real-path-overlay`、`real-path-chat`、`real-path-upload`、`real-path-queue-replay`、`real-path-websocket-gap-recovery`、`real-path-analysis-dashboard`、`unknown-failure`。該当しない場合は `unknown-failure` とする。タイトルは `[preview-gate] <対象環境>: <事象名>` とし、重複判定キーはこのタイトルの対象環境と事象名だけにする。HEAD/merge SHAはキーに含めず、Issue本文の観測メタデータとして追記する。
+- 起票前に `auto-generated` と `bug` の両ラベルの存在を確認し、無ければ作成する。同一事象の検索は `is:issue is:open label:auto-generated in:title "[preview-gate] <対象環境>: <事象名>"` で候補を絞り、取得したIssueのタイトル完全一致を確認する。新しいSHAの同一事象は重複起票せず、既存Issueへコメント追記する。
+- 証拠を記録する前に、種別を問わず資格情報・認証情報・署名鍵・接続文字列・署名付きURL・個人識別値をすべて `(redacted)` に置換する。代表例はアクセストークン、リフレッシュトークン、`client_secret`、Cookie、`session_id`、`EVENTSUB_REPLAY_SECRET`、PlanetScale接続文字列、Cloudflare APIトークン、Twitch EventSub署名シークレット、OAuthの`code`/`state`である。未加工のログやスクリーンショットは添付せず、redaction済みの抜粋だけを証拠として記録する。
 - 通常のリリースは、レビュー判定、必須CI、preview検証、必要な実経路確認、main昇格、productionデプロイ、タグとリリース本文の確認を順に満たしてから完了とする。緊急本番修正だけは明示的な例外として、最小テストと静的検証後に復旧を優先できるが、復旧後に独立レビューと未達ゲートの充足を終えるまで成功扱いにしない。
 
 ## Transactional chat outbox
