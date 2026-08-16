@@ -23,8 +23,8 @@ analysis dashboard は `analysis/` で `npm ci`, `npx tsc --noEmit`, `npm run bu
 - DB または OAuth: 1, 2, 3, 4, 5, 6, 7
 - Worker または queue の共有基盤（下記の個別経路に分類できない変更）: 1, 2, 3, 4, 5, 6, 7
 - EventSub または gacha: 1, 2, 3, 4, 5
-- overlay: 1, 2, 5
-- chat: 1, 3
+- overlay: 1, 2, 4, 5
+- chat: 1, 3, 4
 - queue replay: 1, 4
 - WebSocket または polling gap recovery: 1, 5
 - analysis dashboard またはその集計: 6
