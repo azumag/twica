@@ -18,7 +18,7 @@ analysis dashboard は `analysis/` で `npm ci`, `npx tsc --noEmit`, `npm run bu
 
 ## Preview 実経路ゲート
 
-DB、OAuth、EventSub、overlay、chat に触れる変更は preview へ配備し、次を確認します。
+DB、OAuth、EventSub、overlay、chat、アップロード（保存先・権限境界）に触れる変更は preview へ配備し、次を確認します。
 
 1. Twitch の実チャネルポイント報酬を複数回引き換える。
 2. 各結果が順番どおり overlay に表示される。
@@ -46,7 +46,7 @@ previewからmainへ昇格する際のテスト対象は、起点となった単
 - GitHub Searchは補助であり、重複判定の唯一のガードにしない。マーカーの正本は、同じpreview HEADのpreview→main昇格PRが存在する場合はそのPR、存在しない場合は同じHEADに含まれる起点PRのうち最小のPR番号とし、選択したPR番号をリリース記録へ記載する。マーカーは正本PRの**1つの機械可読コメントを更新**して管理し、コメント内にキーごとの状態行を置き、各キーについて常に最新状態だけを有効とする。状態は次のいずれかである: `<!-- preview-gate-key: <対象環境>: <事象名>; state=pending; lease_until=<ISO8601> -->`、`<!-- preview-gate-key: <対象環境>: <事象名>; state=created; issue=#<番号> -->`、`<!-- preview-gate-key: <対象環境>: <事象名>; state=retired; issue=#<番号> -->`、`<!-- preview-gate-key: <対象環境>: <事象名>; state=blocked; reason=<redacted>; at=<ISO8601> -->`。昇格PRが後から作られた場合は、起点PRの最新マーカー状態を昇格PRへ移送し、起点PR側には移送先PR番号を記録する。両方を同時に正本として扱わない。
 - まずREST Issues List APIで完全一致Issueを確認し、見つかれば`created`マーカーを設定してそのIssueへコメントする。Issueが無く`pending`のリースが期限内なら新規起票せず、期限とキーを阻害理由として記録する。期限切れならREST APIで再確認し、なお無ければ新しい10分間の`pending`マーカーを設定してからIssueを作成する。マーカーが無い場合も同じ順序で`pending`を設定してから作成する。`created`マーカーのIssueがクローズ済み・削除済みなら、そのマーカーを`retired`へ更新し、同じキーの新しいリリース単位として`pending`から再起票する。
 - `release-unit` は固定したpreview HEAD SHAを使う `preview-head:<SHA>` とし、preview merge SHA・昇格PR番号はその単位の観測メタデータとして同じIssueへ記録する。Issue本文またはコメントには、各単位を`release-unit: preview-head:<SHA>; status=<open|resolved>`の形式で一度だけ記録する。新しいSHAの同一事象でも重複起票せず、同じIssueへ新しいリリース単位の証拠を追記する。Issueは**現在列挙されている未解消のリリース単位がゼロ**になった時だけクローズし、未解消単位が一つでもある間はクローズしてはならない。クローズ済みIssueに同じキーが再発した場合は、`retired`マーカーから新しいリリース単位の`pending`へ進み、新しいIssueを作成する。クローズ時は対応するマーカーを`retired`へ更新する。
-- Issue作成に成功したら直ちに`created; issue=#<番号>`マーカーを設定する。作成応答が不明、または作成後のマーカー更新に失敗した場合でも、次回の同じリリースゲート実行はREST Issues List APIの完全一致を先に行い、見つかったIssueへ追記してマーカーを修復する。完全一致Issueが無く、`pending`リースが期限切れになった場合だけ再起票を許可する。REST、ラベル、マーカー、Issue作成のいずれかが失敗した場合は正本PRのマーカーを`blocked`へ更新し、キー・失敗した操作・時刻・(redacted)済みエラー概要を記録する。次回の同じリリースゲート実行がこの`blocked`を再確認して、成功すれば`pending`または`created`へ遷移させて再試行する。マーカー更新自体に失敗した場合は起票せず、その失敗を最終報告の阻害理由として残す。10分間の`pending`リースはIssue作成操作だけを保護し、実経路テスト全体の期限ではない。Search APIの障害・インデックス遅延・プロセス停止でも、同一事象を重複起票せず、Issue起票が永続的に失われない。
+- Issue作成直前にREST Issues List APIでタイトル完全一致をもう一度確認し、既存Issueがあれば作成せず追記する。作成に成功したら直ちに`created; issue=#<番号>`マーカーを設定する。作成応答が不明、または作成後のマーカー更新に失敗した場合でも、次回の同じリリースゲート実行はREST Issues List APIの完全一致を先に行い、見つかったIssueへ追記してマーカーを修復する。完全一致Issueが無く、`pending`リースが期限切れになった場合だけ再起票を許可する。REST、ラベル、マーカー、Issue作成のいずれかが失敗した場合は正本PRのマーカーを`blocked`へ更新し、キー・失敗した操作・時刻・(redacted)済みエラー概要を記録する。次回の同じリリースゲート実行がこの`blocked`を再確認して、成功すれば`pending`または`created`へ遷移させて再試行する。マーカー更新自体に失敗した場合は起票せず、その失敗を最終報告の阻害理由として残す。10分間の`pending`リースはIssue作成操作だけを保護し、実経路テスト全体の期限ではない。通常のスケジュール実行は同一リリース単位を直列処理し、競合で重複Issueが生じた場合は次回のREST完全一致で最古のIssueを正本にして重複Issueへ統合コメントを付け、重複Issueをクローズする。したがって重複起票を保証しないのではなく、直前再確認と競合後の統合で最小化する。Search APIの障害・インデックス遅延・プロセス停止でも、Issue起票が永続的に失われない。
 - 証拠を記録する前に、種別を問わず資格情報・認証情報・署名鍵・接続文字列・署名付きURL・個人識別値をすべて `(redacted)` に置換する。代表例はアクセストークン、リフレッシュトークン、`client_secret`、Cookie、`session_id`、`EVENTSUB_REPLAY_SECRET`、PlanetScale接続文字列、Cloudflare APIトークン、Twitch EventSub署名シークレット、OAuthの`code`/`state`である。未加工のログやスクリーンショットは添付せず、redaction済みの抜粋だけを証拠として記録する。
 - 通常のリリースは、レビュー判定、必須CI、preview検証、必要な実経路確認、main昇格、productionデプロイ、タグとリリース本文の確認を順に満たしてから完了とする。緊急本番修正だけは明示的な例外として、最小テストと静的検証後に復旧を優先できるが、復旧後に独立レビューと未達ゲートの充足を終えるまで成功扱いにしない。
 
