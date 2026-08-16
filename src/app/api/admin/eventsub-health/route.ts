@@ -56,8 +56,15 @@ import {
  * (workers/error-reporter/src/index.ts の generateSignature 参照)。
  * count や subscription id 等の可変値をメッセージ本文に含めると、値が変わる
  * 度に別シグネチャ扱いとなり、同じ障害で毎回新規 Issue が乱立してしまう。
- * 可変情報は必ず reportError の第2引数(context、JSON化されてIssue本文には
- * 出力されないが `errors.context` 列には残る)側に渡すこと。 */
+ * 可変情報は必ず reportError の第2引数(context)側に渡すこと。
+ * 注意: context は `errors.context` 列に残るだけでなく、
+ * workers/error-reporter/src/index.ts の createErrorIssue が
+ * `JSON.stringify(first.context, null, 2).slice(0, 2000)` として Issue 本文の
+ * 「### Context」節にも出力する（Issue本文に出ない、という誤解をしないこと）。
+ * ここへ渡す値は sanitizeContext（src/lib/log-sanitizer.ts）で機密キーが
+ * `[REDACTED]` 化された後にDB永続化されるため、渡す前提でセンシティブな値を
+ * 混ぜない（isSensitiveKeyの許可リストに乗らない独自のトークン等を追加する
+ * 場合は特に注意）。 */
 const UNHEALTHY_ALERT_MESSAGE = "[EventSub Health] Unhealthy EventSub subscription(s) detected";
 
 interface EventSubHealthResponse {
@@ -153,11 +160,17 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     // Twitch API 呼び出し自体の失敗（app token発行失敗・Helix障害等）。
     // db-health/route.ts と異なりホスト名等の機密情報を含む余地は無いため、
-    // メッセージをそのままログへ残す（レスポンスは汎用メッセージのみ）。
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error("[eventsub-health] Failed to check EventSub subscription health", {
-      error: message,
-    });
+    // エラーの message/stack をそのまま reportError に渡す（レスポンスは
+    // 汎用メッセージのみ）。
+    //
+    // logger.error（fire-and-forget）ではなく reportError を直接 await する
+    // 理由: 上の UNHEALTHY_ALERT_MESSAGE 分岐と同じ（このコメント冒頭の
+    // JSDoc「アラート方式」節参照）。この catch は Twitch API/app token 自体の
+    // 障害という、本エンドポイントの目的（#527 のような無音の失敗を確実に
+    // 検知する）そのものに関わる経路であり、fire-and-forget にすると
+    // レスポンス返却後の isolate 回収でDB書き込みが完走しない恐れがある。
+    const err = error instanceof Error ? error : new Error(String(error));
+    await reportError(err, { context: "eventsub-health:fetchFailed" });
     return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 502 });
   }
 }

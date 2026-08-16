@@ -33,11 +33,15 @@ errors テーブル → 自動 GitHub Issue化」パイプラインにそのま�
 
 ## アラートが来たら何をするか
 
-作成される GitHub Issue の本文（`errors.context` 由来、Issue本文には出力
-されないが Cloudflare Workers Observability / `wrangler tail` のログには
-`[eventsub-health] Unhealthy EventSub subscription(s) detected` として要約が
-残る）には、影響を受けている `broadcasterUserId` / `rewardId` / `type` /
-`status` が含まれる。
+作成される GitHub Issue のタイトルは `[EventSub Health] Unhealthy EventSub
+subscription(s) detected`（固定文字列。重複 Issue を防ぐため、可変値は含めない。
+詳細は `src/app/api/admin/eventsub-health/route.ts` の
+`UNHEALTHY_ALERT_MESSAGE` 冒頭コメント参照）。本文の「### Context」節には
+`reportError()` の第2引数（`errors.context` 列にも残る）が JSON でそのまま
+出力されるため、影響を受けている `broadcasterUserId` / `rewardId` / `type` /
+`status` を Issue 本文から直接確認できる（最大2000文字。件数が多い場合は
+切り詰められるため、詳細は Cloudflare Workers Observability / `wrangler tail`
+のログも合わせて確認する）。
 
 ### 手動での再登録手順
 

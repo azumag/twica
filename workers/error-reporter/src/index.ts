@@ -1643,9 +1643,12 @@ export default {
    * 2つのトリガーを `event.cron` で判別し、完全に独立した処理へ分岐する:
    *   - EVENTSUB_AUTO_DRAIN_CRON（20分毎）: EventSub 退避 backlog 自動ドレインのみ
    *   - それ以外（既定の5分毎トリガー、テスト等で cron 未設定の場合を含む）:
-   *     従来どおり errors/inquiries/backlog監視の3処理
-   * 自動ドレインを既存3処理と混在させない理由は
-   * processEventSubParkAutoDrain セクション冒頭のコメント参照。
+   *     EventSub サブスクリプション健全性監視（processEventSubSubscriptionHealth）
+   *     ＋ 従来どおり errors/inquiries/backlog監視の3処理
+   * 自動ドレイン・健全性監視を既存3処理の環境変数バリデーションより前に置く
+   * 理由は processEventSubParkAutoDrain / processEventSubSubscriptionHealth
+   * 各セクション冒頭のコメント参照（どちらも HYPERDRIVE_PLANETSCALE/GITHUB_TOKEN
+   * に依存しないため、それらの設定ミスに巻き込まれてはならない）。
    */
   async scheduled(
     event: ScheduledController,
@@ -1662,6 +1665,21 @@ export default {
         console.error('[EventSub Auto Drain] Cron job failed:', err)
       }
       return
+    }
+
+    // EventSub サブスクリプション健全性監視も、自動ドレインと同じ理由で
+    // HYPERDRIVE_PLANETSCALE/GITHUB_TOKEN 等、既存3処理専用の binding/secrets に
+    // 依存しない（アプリ本体の eventsub-health route を HTTP 経由で叩くだけ）。
+    // レビュー指摘: 当初は下の環境変数バリデーションより後に置いていたため、
+    // PlanetScale/GitHub 側の secret 設定ミスで既存3処理が早期リターンすると
+    // この健全性監視まで道連れで止まってしまっていた（Issue #540 が対処したい
+    // 「気づかれないまま失敗し続ける」状態を、監視機能自身が再現してしまう
+    // 本末転倒なバグ）。processEventSubParkAutoDrain と同様に、既存3処理の
+    // 環境変数バリデーションより前で独立して実行する。
+    try {
+      await processEventSubSubscriptionHealth(env)
+    } catch (err) {
+      console.error('[EventSub Health Check] Cron job failed:', err)
     }
 
     // 環境変数バリデーション（既存3処理共通）: 必須 binding/secret が
@@ -1692,12 +1710,6 @@ export default {
       await processEventSubParkBacklog(env)
     } catch (err) {
       console.error('[EventSub Park Monitor] Cron job failed:', err)
-    }
-
-    try {
-      await processEventSubSubscriptionHealth(env)
-    } catch (err) {
-      console.error('[EventSub Health Check] Cron job failed:', err)
     }
   },
 }

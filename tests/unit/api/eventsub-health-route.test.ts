@@ -233,10 +233,14 @@ describe("GET /api/admin/eventsub-health", () => {
     expect(firstMessage).toBe(secondMessage);
   });
 
-  it("Twitch API呼び出しが失敗したら502を返しreportErrorは呼ばない", async () => {
-    mocks.listAllEventSubSubscriptions.mockRejectedValue(
-      new Error("Failed to fetch EventSub subscriptions: 503")
-    );
+  it("Twitch API呼び出しが失敗したら502を返し、reportErrorをawaitして記録を保証する", async () => {
+    // レビュー指摘の修正: この失敗経路も「レスポンス前に永続化を保証する必要が
+    // ある経路」（logger.server.ts 冒頭コメント）に該当する。fire-and-forget の
+    // logger.error だと、Cloudflare Workers の isolate 回収タイミング次第で
+    // DB書き込みが完走しないまま失われうるため、reportError を直接 await する
+    // （unhealthy 検知時の分岐と同じ設計）。
+    const apiError = new Error("Failed to fetch EventSub subscriptions: 503");
+    mocks.listAllEventSubSubscriptions.mockRejectedValue(apiError);
     const { GET } = await import("@/app/api/admin/eventsub-health/route");
 
     const response = await GET(createHealthRequest());
@@ -244,6 +248,9 @@ describe("GET /api/admin/eventsub-health", () => {
     expect(response.status).toBe(502);
     const body = await response.json();
     expect(body.error).toBe(ERROR_MESSAGES.INTERNAL_ERROR);
-    expect(mocks.reportError).not.toHaveBeenCalled();
+    expect(mocks.reportError).toHaveBeenCalledTimes(1);
+    const [error, context] = mocks.reportError.mock.calls[0];
+    expect(error).toBe(apiError);
+    expect(context).toMatchObject({ context: "eventsub-health:fetchFailed" });
   });
 });
