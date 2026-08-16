@@ -20,15 +20,18 @@ analysis dashboard は `analysis/` で `npm ci`, `npx tsc --noEmit`, `npm run bu
 
 DB、OAuth、EventSub、overlay、chat、アップロード（保存先・権限境界）に触れる変更は preview へ配備し、次の対応表で決まる**すべての確認必須項目**を実行します。複数の経路にまたがる変更は項目番号の和集合とし、共有 DB/OAuth/Worker/queue の影響経路を特定できない場合は 1-7 をすべて対象にします。
 
+- DB または OAuth: 1, 2, 3, 4, 5, 6, 7
 - EventSub または gacha: 1, 2, 3, 4, 5
-- overlay: 2, 5
-- chat: 3
-- queue replay: 4
-- WebSocket または polling gap recovery: 5
+- overlay: 1, 2, 5
+- chat: 1, 3
+- queue replay: 1, 4
+- WebSocket または polling gap recovery: 1, 5
 - analysis dashboard またはその集計: 6
 - upload: 7
 
 対応表にない影響を対象外とする場合は、影響しない項目とその判断理由を昇格PRへ明記し、未記録のまま省略してはなりません。
+
+この対応表は `docs/E2E_SCENARIO.md` に定義された Preview Twitch 実経路の必須シナリオを置き換えません。変更が同シナリオの対象になる場合は、対応表の項目と併せて該当シナリオも実行します。
 
 1. Twitch の実チャネルポイント報酬を複数回引き換える。
 2. 各結果が順番どおり overlay に表示される。
@@ -51,7 +54,7 @@ previewからmainへ昇格する際のテスト対象は、起点となった単
 - 累積変更のいずれかに必須レビュー・必須CI・実経路ゲートの未達があれば、（緊急本番修正の例外を除き）昇格を止め、原因と対象PRをIssueまたは昇格PRへ記録する。
 - 構成PRを切り離す場合は、対象PRをrevertする変更をpreviewへ反映して新しいHEADを作り、残りのPRだけを新しいリリース単位として再レビュー・再テストする。未達ゲートを飛ばして部分昇格してはならない。
 - 構成PRを再投入する場合は、revertのrevertを含む新しいPRとして、累積変更全体を再レビュー・再テストする。
-- Issueを作成する場合は、対象環境を `preview` または `production` のいずれかに固定し、事象名を次の閉じた集合から選ぶ: `ci-failure`、`workers-build-failure`、`deploy-failure`、`health-check-failure`、`real-path-eventsub`、`real-path-gacha`、`real-path-overlay`、`real-path-chat`、`real-path-upload`、`real-path-queue-replay`、`real-path-websocket-gap-recovery`、`real-path-analysis-dashboard`、`unknown-failure`。該当しない場合は `unknown-failure` とする。タイトルは `[preview-gate] <対象環境>: <事象名>` とし、重複判定キーはこのタイトルの対象環境と事象名だけにする。HEAD/merge SHAはキーに含めず、Issue本文の観測メタデータとして追記する。
+- Issueを作成する場合は、対象環境を `preview` または `production` のいずれかに固定し、事象名を次の閉じた集合から選ぶ: `ci-failure`、`workers-build-failure`、`deploy-failure`、`health-check-failure`、`real-path-db`、`real-path-oauth`、`real-path-eventsub`、`real-path-gacha`、`real-path-overlay`、`real-path-chat`、`real-path-upload`、`real-path-queue-replay`、`real-path-websocket-gap-recovery`、`real-path-analysis-dashboard`、`unknown-failure`。該当しない場合は `unknown-failure` とする。タイトルは `[preview-gate] <対象環境>: <事象名>` とし、重複判定キーはこのタイトルの対象環境と事象名だけにする。HEAD/merge SHAはキーに含めず、Issue本文の観測メタデータとして追記する。
 - 起票前に `auto-generated` と `bug` の両ラベルの存在を確認し、無ければ作成する。ラベルの作成・付与に失敗した場合は起票せず、阻害理由を記録する。**Issue作成時には必ず両ラベルを付与する。**重複判定の本命は、`GET /repos/azumag/twica/issues?state=open&per_page=100&page=<n>` を`Link: rel="next"`が無くなるまで全ページ走査して得た項目のうち、`pull_request`フィールドを持たないIssueのタイトル完全一致である。完全一致Issueのラベルが欠けていれば両ラベルを修復してから使用する。REST Issues List APIが失敗した場合は起票せず、阻害状態を記録して次回の同じリリースゲート実行で再試行する。GitHub Searchを使う場合も `repo:azumag/twica is:issue is:open in:title "[preview-gate] <対象環境>: <事象名>"` に限定し、候補取得後にタイトル完全一致を確認する。Searchはラベル欠損Issueを見落とし得るため、REST結果を常に優先する。
 - GitHub Searchは補助であり、重複判定の唯一のガードにしない。マーカーの正本は、同じpreview HEADのpreview→main昇格PRが存在する場合はそのPR、存在しない場合は同じHEADに含まれる起点PRのうち最小のPR番号とし、選択したPR番号をリリース記録へ記載する。マーカーは正本PRの**1つの機械可読コメントを更新**して管理し、コメント内にキーごとの状態行を置き、各キーについて常に最新状態だけを有効とする。状態は次のいずれかである: `<!-- preview-gate-key: <対象環境>: <事象名>; state=pending; lease_until=<ISO8601> -->`、`<!-- preview-gate-key: <対象環境>: <事象名>; state=created; issue=#<番号> -->`、`<!-- preview-gate-key: <対象環境>: <事象名>; state=retired; issue=#<番号> -->`、`<!-- preview-gate-key: <対象環境>: <事象名>; state=blocked; reason=<redacted-summary>; at=<ISO8601> -->`。昇格PRが後から作られた場合は、起点PRの最新マーカー状態を昇格PRへ移送し、起点PR側には移送先PR番号を記録する。両方を同時に正本として扱わない。
 - まずREST Issues List APIで完全一致Issueを確認し、見つかれば`created`マーカーを設定してそのIssueへコメントする。Issueが無く`pending`のリースが期限内なら新規起票せず、期限とキーを阻害理由として記録する。期限切れならREST APIで再確認し、なお無ければ新しい10分間の`pending`マーカーを設定してからIssueを作成する。マーカーが無い場合も同じ順序で`pending`を設定してから作成する。`created`マーカーのIssueがクローズ済み・削除済みなら、そのマーカーを`retired`へ更新し、同じキーの新しいリリース単位として`pending`から再起票する。
