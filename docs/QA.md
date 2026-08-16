@@ -36,12 +36,14 @@ previewからmainへ昇格する際のテスト対象は、起点となった単
 
 - mainとの差分およびpreview→main昇格PRの差分を固定し、含まれる全PR番号・各HEAD SHA・preview merge SHAを記録する。
 - 各PRの呼び出し元、共有契約、DB/キュー/Worker/overlay経路を横断して確認し、PR同士の組み合わせによる退行も対象にする。
-- いずれかの構成PRがEventSub、gacha、overlay、chat、アップロードなど実引き換え経路に影響する場合、累積変更全体を対象に実引き換え、履歴、チャット、overlay、Workerログを相関させる。単一PRだけのテスト成功や合成demo表示は代替にならない。
-- 累積変更のいずれかに必須レビュー・必須CI・実経路ゲートの未達があれば、昇格を止め、原因と対象PRをIssueまたは昇格PRへ記録する。
+- いずれかの構成PRがEventSub、gacha、overlay、chat、アップロードなど実引き換え経路に影響する場合、上記「Preview 実経路ゲート」1-6の該当項目を累積変更全体に対して再実行し、履歴、チャット、overlay、Workerログを相関させる。単一PRだけのテスト成功や合成demo表示は代替にならない。
+- 累積変更のいずれかに必須レビュー・必須CI・実経路ゲートの未達があれば、（緊急本番修正の例外を除き）昇格を止め、原因と対象PRをIssueまたは昇格PRへ記録する。
 - 構成PRを切り離す場合は、対象PRをrevertする変更をpreviewへ反映して新しいHEADを作り、残りのPRだけを新しいリリース単位として再レビュー・再テストする。未達ゲートを飛ばして部分昇格してはならない。
 - 構成PRを再投入する場合は、revertのrevertを含む新しいPRとして、累積変更全体を再レビュー・再テストする。
 - Issueを作成する場合は、対象環境を `preview` または `production` のいずれかに固定し、事象名を次の閉じた集合から選ぶ: `ci-failure`、`workers-build-failure`、`deploy-failure`、`health-check-failure`、`real-path-eventsub`、`real-path-gacha`、`real-path-overlay`、`real-path-chat`、`real-path-upload`、`real-path-queue-replay`、`real-path-websocket-gap-recovery`、`real-path-analysis-dashboard`、`unknown-failure`。該当しない場合は `unknown-failure` とする。タイトルは `[preview-gate] <対象環境>: <事象名>` とし、重複判定キーはこのタイトルの対象環境と事象名だけにする。HEAD/merge SHAはキーに含めず、Issue本文の観測メタデータとして追記する。
-- 起票前に `auto-generated` と `bug` の両ラベルの存在を確認し、無ければ作成する。同一事象の検索は `is:issue is:open label:auto-generated in:title "[preview-gate] <対象環境>: <事象名>"` で候補を絞り、取得したIssueのタイトル完全一致を確認する。新しいSHAの同一事象は重複起票せず、既存Issueへコメント追記する。
+- 起票前に `auto-generated` と `bug` の両ラベルの存在を確認し、無ければ作成する。**Issue作成時には必ず両ラベルを付与する。**同一事象の検索は `repo:azumag/twica is:issue is:open label:auto-generated in:title "[preview-gate] <対象環境>: <事象名>"` で候補を絞り、取得したIssueのタイトル完全一致を確認する。
+- GitHub Searchは補助であり、重複判定の唯一のガードにしない。同じ昇格PRまたはリリース記録に、`<!-- preview-gate-key: <対象環境>: <事象名> -->` マーカーを一件ずつ記録し、同一リリース単位を直列処理する。検索でIssueが見つからない場合も、まずマーカーを確認する。マーカーが既にあればそのIssueへ追記し、`pending` のマーカーなら新規起票せず既存処理を再確認する。マーカーが無い場合はマーカーの記録に成功してからIssueを作成し、作成後にIssue番号をマーカーへ追記する。マーカーの記録または更新に失敗した場合は起票せず、次回へ持ち越す。これによりSearch APIの障害・インデックス遅延でも同一事象を重複起票しない。
+- 新しいSHAの同一事象は重複起票せず、既存Issueへコメント追記する。対象リリース単位の解消と確認が完了したら、Issueをクローズする。
 - 証拠を記録する前に、種別を問わず資格情報・認証情報・署名鍵・接続文字列・署名付きURL・個人識別値をすべて `(redacted)` に置換する。代表例はアクセストークン、リフレッシュトークン、`client_secret`、Cookie、`session_id`、`EVENTSUB_REPLAY_SECRET`、PlanetScale接続文字列、Cloudflare APIトークン、Twitch EventSub署名シークレット、OAuthの`code`/`state`である。未加工のログやスクリーンショットは添付せず、redaction済みの抜粋だけを証拠として記録する。
 - 通常のリリースは、レビュー判定、必須CI、preview検証、必要な実経路確認、main昇格、productionデプロイ、タグとリリース本文の確認を順に満たしてから完了とする。緊急本番修正だけは明示的な例外として、最小テストと静的検証後に復旧を優先できるが、復旧後に独立レビューと未達ゲートの充足を終えるまで成功扱いにしない。
 
