@@ -1,0 +1,4 @@
+# One exact GitHub login per line; only these identities may write preview-gate state.
+github-actions[bot]
+claude[bot]
+azumag

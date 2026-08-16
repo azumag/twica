@@ -17,7 +17,12 @@
 import { isValidOverlayHistoryId } from "@/lib/overlay-realtime/contract";
 import { normalizeOverlayHistoryTimestamp } from "@/lib/overlay-history-cursor";
 
-/** sessionStorage に保存するクールダウン記録(直前にリロードしたバージョンと時刻)の型 */
+/**
+ * クールダウン記録1件分の型(あるバージョンへ最後にリロードした時刻)。
+ * Issue #634 より、sessionStorage には単体ではなくこの型の配列
+ * (ReloadCooldownRecord[])を保持する。直近見た複数バージョンを保持する
+ * 理由は MAX_RELOAD_COOLDOWN_RECORDS の doc を参照。
+ */
 export interface ReloadCooldownRecord {
   version: string;
   reloadedAt: number;
@@ -43,6 +48,38 @@ export interface OverlayPollStateSnapshot {
  * つつ、一定時間が経てば何度でも追従できるようにする。
  */
 export const RELOAD_COOLDOWN_MS = 60 * 60 * 1000; // 60分
+
+/**
+ * クールダウン記録として保持する直近バージョンの最大件数(Issue #634)。
+ *
+ * 旧設計は「直前に1回リロードした先のバージョン」だけを記録していたため、
+ * Cloudflare Workersのローリングデプロイ中に新旧バージョンが混在する
+ * ウィンドウで、overlayクライアントが受信するoverlayVersionが A→B→A→B の
+ * ように往復すると、各方向がその都度「記録に無い別バージョンへの初回リロード」
+ * として扱われ、クールダウンが実質機能せず短時間に複数回 location.reload()
+ * され得た。
+ *
+ * 直近見た複数バージョンをセットとして保持することで、A/B間の往復が一巡した
+ * 後は双方向ともクールダウン対象になり、それ以降の余分なリロードを防げる
+ * (1巡目のA→Bおよびその直後のB→Aは、そのバージョンへの初回リロードとして
+ * 想定通り許可される。往復を検知してから抑止する設計であり、1回も
+ * リロードせずに往復を予知することはできない)。
+ *
+ * ローリングデプロイで同時に混在するバージョンは通常2つ(旧/新)だが、
+ * 短時間に連続するデプロイも考慮し、多少の余裕を持たせて4件まで保持する
+ * (無制限保持によるsessionStorage肥大化・直近判定の希薄化を避ける)。
+ *
+ * トレードオフ(PR #994レビューで指摘): 保持対象が「直前の1件」から「直近N件」へ
+ * 広がったことで、60分以内に一度リロード先となったバージョンへ戻る正規の
+ * 再デプロイ(ロールバック後のfix-forwardで同一アーティファクトを再配信する等)
+ * も、往復と区別できずクールダウン対象になる。旧設計では直前の1件と一致
+ * しない限り即座に追従できていたため、この点は挙動変更である。往復リロード
+ * 連発(配信画面の破壊)を防ぐ利益の方が明確に大きいため許容するが、運用者は
+ * 「同一バージョンへの再デプロイは直近リロードから最大60分反映が遅れ得る」
+ * ことを認識しておく必要がある(RELOAD_COOLDOWN_MSのdocにある「恒久ガードに
+ * しない」方針により、60分を超えれば自然に追従する)。
+ */
+export const MAX_RELOAD_COOLDOWN_RECORDS = 4;
 
 /**
  * sessionStorage に退避したポーリング状態(pollCursor/seenHistoryIds)を
@@ -81,32 +118,81 @@ export function shouldScheduleReload(current: string, received: string | undefin
  * targetVersion へのリロードが現在クールダウン中(＝直近 cooldownMs 以内に
  * 同じバージョンへ既にリロード済み)かどうかを判定する。
  *
- * record が null(まだ一度もリロード記録が無い)、または記録されている
- * バージョンが targetVersion と異なる(＝別バージョンへのリロードなので
- * 独立してカウントする)場合は常に false を返す。
+ * records は直近リロードした(複数の)バージョンの記録の配列(Issue #634)。
+ * targetVersion と一致するエントリが records 内のいずれかに存在し、かつ
+ * その reloadedAt から cooldownMs 未満しか経過していなければクールダウン中と
+ * みなす。records が null・空配列、または targetVersion と一致するエントリが
+ * 一件も無い場合は常に false を返す(そのバージョンへの初回リロードとして
+ * 独立にカウントする)。
  */
 export function isReloadCooldownActive(
-  record: ReloadCooldownRecord | null,
+  records: ReloadCooldownRecord[] | null,
   targetVersion: string,
   now: number,
   cooldownMs: number,
 ): boolean {
-  if (!record) return false;
-  if (record.version !== targetVersion) return false;
-  return now - record.reloadedAt < cooldownMs;
+  if (!records) return false;
+  return records.some(
+    (record) => record.version === targetVersion && now - record.reloadedAt < cooldownMs,
+  );
 }
 
 /**
- * sessionStorage に保存されたクールダウン記録(JSON文字列)をパースする。
+ * targetVersion へのリロード実行をクールダウン記録へ反映する純粋関数(Issue #634)。
+ * 同一バージョンの既存エントリを更新するか、無ければ新規追加するupsertであり、
+ * 単純な追記ではない(この関数名はその意図を明示する)。
+ *
+ * 同一バージョンの既存エントリがあれば取り除いてから追記する(重複を持たず、
+ * 常に最新の reloadedAt だけを保持する＝そのバージョンへ再訪した時点で
+ * クールダウンの起点も更新される)。MAX_RELOAD_COOLDOWN_RECORDS を超える場合は
+ * 最も古い(挿入順で先頭側の)エントリから破棄する(往復検出には直近見た
+ * バージョンほど有用なため)。
+ */
+export function upsertReloadCooldownRecord(
+  records: ReloadCooldownRecord[] | null,
+  version: string,
+  reloadedAt: number,
+): ReloadCooldownRecord[] {
+  const withoutSameVersion = (records ?? []).filter((record) => record.version !== version);
+  const upserted = [...withoutSameVersion, { version, reloadedAt }];
+  return upserted.slice(-MAX_RELOAD_COOLDOWN_RECORDS);
+}
+
+/**
+ * sessionStorage に保存されたクールダウン記録(JSON文字列の配列)をパースする。
+ *
+ * Issue #634 より前のクライアントは、同じ目的のsessionStorageキーへ単一の
+ * { version, reloadedAt } オブジェクトを書き込んでいた。ここで新旧の形式を
+ * 両対応させる代わりに、page.tsx側でストレージキー自体を新バージョン用
+ * ("twica-overlay-reload-v2")へ切り替えている(PR #994マージ後のレビュー指摘
+ * #995対応: 同一キーを新旧コードで奪い合うと、ローリングデプロイの混在
+ * ウィンドウ中に同一タブが旧コードのビルドへ着地するたびクールダウン記録が
+ * 単一オブジェクトへ巻き戻され続ける恐れがあった。sessionStorageはタブ単位で
+ * 独立しているため「別タブが読む」ことはないが、「同一タブが旧コードの
+ * ビルドへ着地する」ことは起こり得る)。キーを分けることで新コードは常に
+ * 自分が書いた配列形式だけを読み、旧コードは自分の旧キーだけを読み書き
+ * するため、双方が干渉し合わない。旧キーへ残る単一オブジェクトのデータは
+ * 新コードから一切参照されず無害に取り残されるだけで、そのユーザーの次回
+ * リロードが1回クールダウンなしで発生する(＝そのユーザーにとって初回
+ * リロードと同じ扱い)以外の影響はない。この設計上、旧キーを能動的に
+ * removeItemで掃除することもしない(掃除すると新ビルドが旧ビルドの台帳を
+ * 壊し、直そうとした干渉が再発するため)。
+ *
  * parsePollState と同様、以下のいずれかに該当する場合は例外を投げず null を
  * 返す(呼び出し側は「クールダウン記録なし」として扱い、安全側に倒れる):
  * - raw が null/undefined/空文字列
  * - JSON として parse できない(壊れたデータ)
- * - 期待する形状(version: string, reloadedAt: number)を満たさない
+ * - トップレベルが配列でない(上記の旧キー使用により、新キーの下に単一
+ *   オブジェクトが書き込まれることは正常経路では起こらないが、汚染された
+ *   sessionStorageに対する防御として配列以外は一律nullにする)
+ * - 配列内の個々のエントリが期待する形状(version: string, reloadedAt: number)
+ *   を満たさない場合はそのエントリだけを無視する(parsePollState の
+ *   seenHistoryIds フィルタと同じ「壊れた要素だけ捨てる」方針)。結果として
+ *   有効なエントリが 1 件も残らなければ null を返す。
  */
-export function parseReloadCooldownRecord(
+export function parseReloadCooldownRecords(
   raw: string | null | undefined,
-): ReloadCooldownRecord | null {
+): ReloadCooldownRecord[] | null {
   if (!raw) return null;
 
   let parsed: unknown;
@@ -116,13 +202,22 @@ export function parseReloadCooldownRecord(
     return null;
   }
 
-  if (!parsed || typeof parsed !== "object") return null;
-  const candidate = parsed as Record<string, unknown>;
+  if (!Array.isArray(parsed)) return null;
 
-  if (typeof candidate.version !== "string") return null;
-  if (typeof candidate.reloadedAt !== "number") return null;
+  const validEntries: ReloadCooldownRecord[] = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") continue;
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate.version !== "string") continue;
+    if (typeof candidate.reloadedAt !== "number") continue;
+    validEntries.push({ version: candidate.version, reloadedAt: candidate.reloadedAt });
+  }
 
-  return { version: candidate.version, reloadedAt: candidate.reloadedAt };
+  if (validEntries.length === 0) return null;
+
+  // 自前の書き込み(upsertReloadCooldownRecord)は常に上限内に収まるが、
+  // 外部からの汚染に備え読み取り側でも直近側だけへ切り詰める。
+  return validEntries.slice(-MAX_RELOAD_COOLDOWN_RECORDS);
 }
 
 /**

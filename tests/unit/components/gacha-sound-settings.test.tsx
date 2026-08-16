@@ -147,18 +147,52 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("GachaSoundSettings premium gate UI state (Issue #547)", () => {
-  it("marks the rule-settings section inert and dimmed for basic-plan (non-premium) users", () => {
+describe("GachaSoundSettings premium gate UI state (Issue #547, revised by Issue #946)", () => {
+  // Issue #946: 以前はbasicプランで rule-settings セクション全体を inert にしており、
+  // 「単一のall対象の効果音」すら設定できなかった。この一括ブロックは撤去し、
+  // 個別の制御（アップロードの1件上限・ターゲット指定selectの無効化）に置き換えた。
+  it("keeps the rule-settings section interactive (not inert) for basic-plan users, while still showing the premium-required banner", () => {
     vi.stubGlobal("fetch", mockFetch());
     const { container } = renderComponent({ plan: "basic" });
 
     const section = container.querySelector("div.space-y-4") as HTMLElement;
     expect(section).not.toBeNull();
-    expect(section.hasAttribute("inert")).toBe(true);
-    expect(section.className).toContain("opacity-50");
+    expect(section.hasAttribute("inert")).toBe(false);
+    expect(section.className).not.toContain("opacity-50");
+    // バナー自体は「複数・ターゲット指定は上位プラン限定」の説明として引き続き表示する
     expect(
       screen.getByText("複数効果音・ターゲット指定は助力プラン以上の機能です。")
     ).toBeInTheDocument();
+  });
+
+  it("disables the file upload input for basic-plan users once a sound rule already exists (1件上限)", () => {
+    vi.stubGlobal("fetch", mockFetch());
+    // デフォルトfixtureは currentSoundRules に1件持つ
+    const { container } = renderComponent({ plan: "basic" });
+
+    const fileInput = getFileInput(container);
+    expect(fileInput.disabled).toBe(true);
+  });
+
+  it("allows basic-plan users to upload a sound via the file input when no rule exists yet", () => {
+    vi.stubGlobal("fetch", mockFetch());
+    const { container } = renderComponent({
+      plan: "basic",
+      currentSoundUrl: null,
+      currentSoundEnabled: false,
+      currentSoundRules: undefined,
+    });
+
+    const fileInput = getFileInput(container);
+    expect(fileInput.disabled).toBe(false);
+  });
+
+  it("disables the target-type select for basic-plan users (targeting stays fixed at 'all')", () => {
+    vi.stubGlobal("fetch", mockFetch());
+    renderComponent({ plan: "basic" });
+
+    const targetTypeSelect = screen.getByLabelText("再生条件") as HTMLSelectElement;
+    expect(targetTypeSelect.disabled).toBe(true);
   });
 
   it("keeps the rule-settings section interactive (not inert) for premium (support-plan) users", async () => {

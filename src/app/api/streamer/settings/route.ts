@@ -518,6 +518,56 @@ function isMissingGachaSoundRulesColumnError(error: unknown): boolean {
 }
 
 /**
+ * Issue #946: basicプランのゲート（1件・targetType==="all"のみ）を、今回の
+ * リクエストで送られてきた配列全体にではなく「新規追加分」だけに適用するための、
+ * 更新前の永続化済みルール一覧を読む。
+ *
+ * あえて getStreamerForSettingsUpdate の3段階フォールバックチェインには含めない。
+ * あのチェインの selectFull() に gacha_sound_rules を足すと、この列だけが
+ * デプロイ窓で未反映な環境では既存のどの isMissing*ColumnError にも一致せず
+ * currentError が残ったまま最終的に null を返す = 「gachaSoundRulesを一切
+ * 含まないリクエストも含め、全ての設定保存が403になる」という、この issue の
+ * スコープを大きく超える退行を生みかねない。
+ *
+ * そのため gachaSoundRules が実際に送られてきた時だけ呼ぶ独立したクエリとし、
+ * 列欠落・その他のエラー時は空配列にフォールバックする。空配列扱いになっても
+ * 「既存ルールが1件も無い（＝今回の送信は全て新規追加）」という保守的側に倒れる
+ * だけで、既存データを誤って残す・喪失させる方向のリスクは無い。
+ */
+async function getCurrentGachaSoundRules(streamerId: string): Promise<GachaSoundRule[]> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ gacha_sound_rules: streamersTable.gacha_sound_rules })
+          .from(streamersTable)
+          .where(eq(streamersTable.id, streamerId))
+          .limit(1);
+      },
+      "getCurrentGachaSoundRules",
+      { idempotent: true },
+    );
+    return normalizeGachaSoundRules(rows[0]?.gacha_sound_rules);
+  } catch (error) {
+    // 列がまだデプロイされていない場合のみ、安全に「既存ルールなし」とみなせる
+    // （列自体が無いのでそもそも失うデータが存在しない）。
+    if (isMissingGachaSoundRulesColumnError(error)) {
+      return [];
+    }
+    // 【自動レビュー指摘（必須・修正済み）】列欠落以外（接続断・タイムアウト等の
+    // 一過性エラー）でも一律 [] にフォールバックしていたが、これは危険側の
+    // デグレードだった。UPDATE自体はこの後も実行されるため、[]を返すと
+    // basicプランの既存ルールが全て「新規」とみなされ、"all"1件を除いて
+    // 誤って削除されてしまう（Issue #946が解決しようとしたデータ喪失の再発）。
+    // 「何が既存か判定できない」場合は温存すべきデータを推測せず、
+    // このリクエスト全体を失敗させる（呼び出し元の try/catch がAPIエラーとして
+    // 処理し、ユーザーは変更なしで再試行できる）。
+    throw error;
+  }
+}
+
+/**
  * Issue #738: publish_live_status / publish_stats の列欠落判定。
  * 2カラムは同一 migration で追加されるため「両方同時に欠落」しかあり得ず、
  * まとめて1段のフォールバックとして扱う。
@@ -1014,6 +1064,10 @@ export async function POST(request: NextRequest) {
     // レスポンスでエコーバックするため、if ブロックの外側に持ち出しておく
     // (F5: 楽観反映によるサイレント欠損対策。cardPackNames と同じパターン)。
     let persistedGachaSoundRules: GachaSoundRule[] | undefined;
+    // Issue #946: basicプランの制限（1件・targetType==="all"のみ）を超える
+    // ルールが送られ、一部または全部が保存されずに落とされた場合に true。
+    // cardPackNamesPremiumRequired と同じ「レスポンスでのみ知らせる」パターン。
+    let gachaSoundRulesPremiumRequired = false;
 
     // チャネルポイント報酬設定（従来の機能）
     if (channelPointRewardId !== undefined) {
@@ -1041,13 +1095,72 @@ export async function POST(request: NextRequest) {
       updateData.gacha_sound_enabled = gachaSoundEnabled;
     }
     if (gachaSoundRules !== undefined) {
-      // 複数ルール・ターゲット指定は支援プラン以上限定の機能
-      // Multi-rule and targeting are premium features; reject for basic plan users
+      // Issue #946: 単一の効果音（targetType==="all"のルール1件のみ）は全プランで
+      // 設定できるが、複数ルール・ターゲット指定（レアリティ／報酬別）は支援プラン
+      // 以上限定の機能。basicプランのゲートは cardPackNames（#269再設計）と同じ
+      // 「超過分だけ静かに落として200で返す」方式で、以下の不変条件を守る:
+      //   1. 更新前から永続化されていた既存ルールは、プランに関わらず常に温存する
+      //      （削除・enabled切替・label/url編集は自由。他のルールを編集しただけで
+      //      無関係な既存ルールが消えてはいけない — クライアントは1件の編集でも
+      //      rules配列全体を毎回再送信するため）
+      //   2. ただし「idは既存と一致するがtargetType/rarity/rewardId/rewardName
+      //      （プレミアム限定フィールド）が既存と異なる」送信は、idの使い回しに
+      //      よるプラン制限バイパス試行とみなし、そのプレミアム限定フィールドは
+      //      DB上の既存値へ差し戻す（ルールそのものは消さない。他の自由編集
+      //      フィールドは送信値を反映する）
+      //   3. 新規に追加されたルール（idが既存に無い）は、温存後の状態に"all"対象が
+      //      1件も無い場合に限り、"all"対象の1件だけを追加で許可する
+      //   4. 同一idの重複送信は1件に正規化する（正当な既存ルールの複製による
+      //      「合計高々1件」の水増しを防ぐ）
+      const allNormalizedRules = normalizeGachaSoundRules(gachaSoundRules);
       const plan = await getUserPlan(session.twitchUserId);
-      if (plan === "basic") {
-        return NextResponse.json({ error: ERROR_MESSAGES.PLAN_UPGRADE_REQUIRED }, { status: 403 });
+      const isPremiumPlan = plan !== "basic";
+      let rules: GachaSoundRule[];
+      let anyRuleGated = false;
+      if (isPremiumPlan) {
+        rules = allNormalizedRules;
+      } else {
+        const currentRules = await getCurrentGachaSoundRules(streamerId);
+        const currentRulesById = new Map(currentRules.map((rule) => [rule.id, rule]));
+        const hasUnchangedGatedFields = (rule: GachaSoundRule, existing: GachaSoundRule) =>
+          rule.targetType === existing.targetType
+          && rule.rarity === existing.rarity
+          && rule.rewardId === existing.rewardId
+          && rule.rewardName === existing.rewardName;
+
+        const preservedExisting: GachaSoundRule[] = [];
+        const newRules: GachaSoundRule[] = [];
+        const preservedIds = new Set<string>();
+        for (const rule of allNormalizedRules) {
+          const existing = currentRulesById.get(rule.id);
+          if (existing && !preservedIds.has(rule.id)) {
+            if (hasUnchangedGatedFields(rule, existing)) {
+              preservedExisting.push(rule);
+            } else {
+              anyRuleGated = true;
+              preservedExisting.push({
+                ...rule,
+                targetType: existing.targetType,
+                rarity: existing.rarity,
+                rewardId: existing.rewardId,
+                rewardName: existing.rewardName,
+              });
+            }
+            preservedIds.add(rule.id);
+          } else {
+            newRules.push(rule);
+          }
+        }
+        const hasAllRuleAlready = preservedExisting.some((rule) => rule.targetType === "all");
+        const allowedNewRule = hasAllRuleAlready
+          ? undefined
+          : newRules.find((rule) => rule.targetType === "all");
+        if (newRules.length > (allowedNewRule ? 1 : 0)) {
+          anyRuleGated = true;
+        }
+        rules = allowedNewRule ? [...preservedExisting, allowedNewRule] : preservedExisting;
       }
-      const rules = normalizeGachaSoundRules(gachaSoundRules);
+      gachaSoundRulesPremiumRequired = !isPremiumPlan && anyRuleGated;
       updateData.gacha_sound_rules = rules;
       persistedGachaSoundRules = rules;
       // PR #451 レビュー指摘(F1): gacha_sound_url/gacha_sound_enabled は
@@ -1254,6 +1367,7 @@ export async function POST(request: NextRequest) {
           }
         : {}),
       ...(gachaSoundRulesWriteSkipped ? { gachaSoundRulesSkippedDeployWindow: true } : {}),
+      ...(gachaSoundRulesPremiumRequired ? { gachaSoundRulesPremiumRequired: true } : {}),
       ...(liveDirectorySettingsWriteSkipped ? { liveDirectorySettingsSkippedDeployWindow: true } : {}),
     });
   } catch (error) {

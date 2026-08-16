@@ -5,7 +5,7 @@ import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
-import { getTwitchAccessToken, hasScope } from "@/lib/twitch/token-manager";
+import { getTwitchAccessToken, hasScope, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
 import {
   deriveEventSubStatus,
   type EventSubSubscriptionForStatus,
@@ -376,7 +376,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(responsePayload);
   } catch (error) {
-    return handleApiError(error, "Channel Point Bootstrap API");
+    // Issue #670: refresh失敗(REFRESH_FAILED)の場合、diagnostics(status/kind)を
+    // auto-generated bug reportのContextへ載せる(twitchTokenErrorReportContext参照)。
+    return handleApiError(error, "Channel Point Bootstrap API", twitchTokenErrorReportContext(error));
   } finally {
     logPerf("api", "channel-point-bootstrap", startedAt, { diagnostics });
   }

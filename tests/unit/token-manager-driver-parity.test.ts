@@ -757,7 +757,18 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       expect(fixture.refreshState.status).toBe('active')
       expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
         'Failed to refresh BOT Twitch access token',
-        { broadcasterTwitchUserId: 'broadcaster-1', accountId: 'bot-account-1' },
+        {
+          broadcasterTwitchUserId: 'broadcaster-1',
+          accountId: 'bot-account-1',
+          // PR #997レビュー指摘: ログ単体でterminal/retryableを判別できるよう
+          // terminalも併記する(shouldDisableBotCredentialの判定結果)。
+          terminal: false,
+          // Issue #653/#670系: 診断情報(twitchTokenRefreshFailureContext)。
+          // 522はREFRESH_RETRYABLE_STATUSESに含まれるためretryable=true。
+          refreshStatus: 522,
+          refreshErrorKind: 'http',
+          refreshRetryable: true,
+        },
       )
       expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
     })
@@ -820,7 +831,15 @@ describe('token-manager: PlanetScale/Drizzle 契約 (#803)', () => {
       expect(fixture.refreshState.status).toBe('error')
       expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
         'Failed to refresh BOT Twitch access token',
-        { broadcasterTwitchUserId: 'broadcaster-1', accountId: 'bot-account-1' },
+        {
+          broadcasterTwitchUserId: 'broadcaster-1',
+          accountId: 'bot-account-1',
+          terminal: true,
+          // 401はREFRESH_RETRYABLE_STATUSESに含まれないためretryable=false。
+          refreshStatus: 401,
+          refreshErrorKind: 'http',
+          refreshRetryable: false,
+        },
       )
       expect(vi.mocked(logger.error)).not.toHaveBeenCalled()
     })
