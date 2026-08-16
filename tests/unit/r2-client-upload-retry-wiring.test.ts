@@ -11,13 +11,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // 同一モジュール内の関数として直接呼ぶため、vi.spyOn等でのモック差し替えは効かない
 // （同一モジュール内呼び出しはexportされたbindingを経由しないため）。
 //
-// そこで2種類のテストで公開関数を実際に実行し、内部の結線を検証する:
+// そこで4種類5件のテストで公開関数を実際に実行し、内部の結線を検証する:
 // 1. R2バインディング・環境変数がどちらも無い状態（下記の明示的なモックで再現）で呼び出し、
 //    実際のuploadToR2/uploadSoundToR2が投げる「環境変数が無い」という恒久エラーが
-//    1回の試行だけでそのまま返ることを確認する（バックオフ待機が発生しないため高速）。
+//    1回の試行だけでそのまま返ることを確認する（画像・効果音の2件。バックオフ
+//    待機が発生しないため高速）。
 // 2. @aws-sdk/client-s3をモックし、Issue #976/#977で問題になった「(10001)」エラーを
-//    2回返した後に成功するシナリオで、uploadToR2WithRetryが実際にリトライして
-//    最終的に成功を返すことを確認する（実際のsetTimeoutを使うため数秒かかる）。
+//    2回返した後に成功するシナリオで、uploadToR2WithRetry/uploadSoundToR2WithRetryが
+//    実際にリトライして最終的に成功を返すことを確認する（画像・効果音の2件。
+//    PutObjectCommandへ渡るBucket/Key/Body/ContentTypeも検証し、リトライ中に引数や
+//    bufferを取り違えていないことを確認する）。
+// 3. 恒久エラー（AccessDenied）はS3 SDK経由でも1回の試行で打ち切り、リトライ
+//    しないことを確認する。
+// 4. リトライ間の指数バックオフは vi.useFakeTimers() + advanceTimersByTimeAsync で
+//    進め、実setTimeoutによる待機時間（約3秒）をテスト実行時間に乗せない。
 //
 // @opennextjs/cloudflareはgetR2Bindingが動的importする（src/lib/r2-client.ts）。
 // モックしないと、Node.js実行環境（Vitest）でgetCloudflareContext({async:true})が
@@ -39,19 +46,21 @@ vi.mock('@aws-sdk/client-s3', () => ({
 const sendMock = mocks.sendMock
 
 describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
-  const ORIGINAL_ENV = { ...process.env }
-
   beforeEach(() => {
     sendMock.mockReset()
   })
 
   afterEach(() => {
-    process.env = { ...ORIGINAL_ENV }
+    // 環境変数はテストごとに vi.stubEnv で設定・削除し、ここで必ず元へ戻す。
+    vi.unstubAllEnvs()
+    // リトライ系テストは fake timers を使うため、後続テストへ影響を残さない。
+    vi.useRealTimers()
   })
 
   it('R2バインディング・環境変数がどちらも無い場合、実際のuploadToR2が投げる恒久エラーを1回の試行で返す', async () => {
-    delete process.env.R2_BUCKET_NAME
-    process.env.R2_PUBLIC_URL = 'https://example.test'
+    // R2_BUCKET_NAME は「未設定」を再現するため明示的に削除する
+    vi.stubEnv('R2_BUCKET_NAME', undefined)
+    vi.stubEnv('R2_PUBLIC_URL', 'https://example.test')
 
     const { uploadToR2WithRetry } = await import('@/lib/r2-client')
     const result = await uploadToR2WithRetry('f.png', Buffer.from('x'), 'image/png', 3)
@@ -61,8 +70,8 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
   })
 
   it('R2バインディング・環境変数がどちらも無い場合、実際のuploadSoundToR2が投げる恒久エラーを1回の試行で返す', async () => {
-    delete process.env.R2_SOUND_BUCKET_NAME
-    process.env.R2_SOUND_PUBLIC_URL = 'https://example.test'
+    vi.stubEnv('R2_SOUND_BUCKET_NAME', undefined)
+    vi.stubEnv('R2_SOUND_PUBLIC_URL', 'https://example.test')
 
     const { uploadSoundToR2WithRetry } = await import('@/lib/r2-client')
     const result = await uploadSoundToR2WithRetry('f.mp3', Buffer.from('x'), 'audio/mpeg', 3)
@@ -72,33 +81,62 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
   })
 
   it('R2固有のInternalError(10001)が2回続いた後に成功すれば、uploadToR2WithRetryは実際にリトライして成功を返す (Issue #976/#977/#980の回帰防止)', async () => {
-    process.env.R2_PUBLIC_URL = 'https://example.test'
-    process.env.R2_BUCKET_NAME = 'test-bucket'
-    process.env.R2_ENDPOINT = 'https://example.r2.test'
-    process.env.R2_ACCESS_KEY_ID = 'fake-key'
-    process.env.R2_SECRET_ACCESS_KEY = 'fake-secret'
+    vi.useFakeTimers()
+    vi.stubEnv('R2_PUBLIC_URL', 'https://example.test')
+    vi.stubEnv('R2_BUCKET_NAME', 'test-bucket')
+    vi.stubEnv('R2_ENDPOINT', 'https://example.r2.test')
+    vi.stubEnv('R2_ACCESS_KEY_ID', 'fake-key')
+    vi.stubEnv('R2_SECRET_ACCESS_KEY', 'fake-secret')
     sendMock
       .mockRejectedValueOnce(new Error('put: We encountered an internal error. Please try again. (10001)'))
       .mockRejectedValueOnce(new Error('put: We encountered an internal error. Please try again. (10001)'))
       .mockResolvedValueOnce({})
 
     const { uploadToR2WithRetry } = await import('@/lib/r2-client')
-    const result = await uploadToR2WithRetry('f.png', Buffer.from('x'), 'image/png', 3)
+    const pending = uploadToR2WithRetry('f.png', Buffer.from('x'), 'image/png', 3)
+    // 指数バックオフ（1s + 2s）を実時間で待たずに進める
+    await vi.advanceTimersByTimeAsync(3000)
+    const result = await pending
 
     expect(result).toEqual({ url: 'https://example.test/f.png' })
     expect(sendMock).toHaveBeenCalledTimes(3)
-    // fileName/contentTypeが最後まで正しく引き継がれてPutObjectCommandへ渡っていることを確認する
-    // （リトライのたびに引数を取り違えていないことの検証）
+    // fileName/buffer/contentTypeが最後まで正しく引き継がれてPutObjectCommandへ渡っていることを確認する
+    // （リトライのたびに引数やbufferを取り違えていないことの検証）
     const lastCallInput = sendMock.mock.calls[2][0].input
     expect(lastCallInput).toMatchObject({ Bucket: 'test-bucket', Key: 'f.png', ContentType: 'image/png' })
-  }, 15000)
+    expect(lastCallInput.Body).toEqual(Buffer.from('x'))
+  })
+
+  it('効果音側もR2固有のInternalError(10001)が2回続いた後に成功すれば、uploadSoundToR2WithRetryはリトライして成功し、sound用のenvとURLを使う', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('R2_SOUND_PUBLIC_URL', 'https://sounds.example.test')
+    vi.stubEnv('R2_SOUND_BUCKET_NAME', 'sound-bucket')
+    vi.stubEnv('R2_ENDPOINT', 'https://example.r2.test')
+    vi.stubEnv('R2_SOUND_ACCESS_KEY_ID', 'fake-key')
+    vi.stubEnv('R2_SOUND_SECRET_ACCESS_KEY', 'fake-secret')
+    sendMock
+      .mockRejectedValueOnce(new Error('put: We encountered an internal error. Please try again. (10001)'))
+      .mockRejectedValueOnce(new Error('put: We encountered an internal error. Please try again. (10001)'))
+      .mockResolvedValueOnce({})
+
+    const { uploadSoundToR2WithRetry } = await import('@/lib/r2-client')
+    const pending = uploadSoundToR2WithRetry('f.mp3', Buffer.from('x'), 'audio/mpeg', 3)
+    await vi.advanceTimersByTimeAsync(3000)
+    const result = await pending
+
+    expect(result).toEqual({ url: 'https://sounds.example.test/f.mp3' })
+    expect(sendMock).toHaveBeenCalledTimes(3)
+    const lastCallInput = sendMock.mock.calls[2][0].input
+    expect(lastCallInput).toMatchObject({ Bucket: 'sound-bucket', Key: 'f.mp3', ContentType: 'audio/mpeg' })
+    expect(lastCallInput.Body).toEqual(Buffer.from('x'))
+  })
 
   it('恒久エラー（AccessDenied）はS3 SDK経由でも1回の試行で打ち切り、リトライしない', async () => {
-    process.env.R2_PUBLIC_URL = 'https://example.test'
-    process.env.R2_BUCKET_NAME = 'test-bucket'
-    process.env.R2_ENDPOINT = 'https://example.r2.test'
-    process.env.R2_ACCESS_KEY_ID = 'fake-key'
-    process.env.R2_SECRET_ACCESS_KEY = 'fake-secret'
+    vi.stubEnv('R2_PUBLIC_URL', 'https://example.test')
+    vi.stubEnv('R2_BUCKET_NAME', 'test-bucket')
+    vi.stubEnv('R2_ENDPOINT', 'https://example.r2.test')
+    vi.stubEnv('R2_ACCESS_KEY_ID', 'fake-key')
+    vi.stubEnv('R2_SECRET_ACCESS_KEY', 'fake-secret')
     sendMock.mockRejectedValue(new Error('AccessDenied: invalid credentials'))
 
     const { uploadToR2WithRetry } = await import('@/lib/r2-client')
