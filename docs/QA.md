@@ -30,6 +30,18 @@ DB、OAuth、EventSub、overlay、chat に触れる変更は preview へ配備�
 production 反映後は同じ主要経路を smoke test し、旧 provider の outbound request と
 Secret access がゼロであることを観測してから旧 Secret を削除します。
 
+## Preview昇格時の累積変更テスト
+
+previewからmainへ昇格する際のテスト対象は、起点となった単一PRではなく、同じpreview HEADに含まれる昇格対象**全PRの累積変更**とする。
+
+- mainとの差分およびpreview→main昇格PRの差分を固定し、含まれる全PR番号・各HEAD SHA・preview merge SHAを記録する。
+- 各PRの呼び出し元、共有契約、DB/キュー/Worker/overlay経路を横断して確認し、PR同士の組み合わせによる退行も対象にする。
+- いずれかの構成PRがEventSub、gacha、overlay、chat、アップロードなど実引き換え経路に影響する場合、累積変更全体を対象に実引き換え、履歴、チャット、overlay、Workerログを相関させる。単一PRだけのテスト成功や合成demo表示は代替にならない。
+- 累積変更のいずれかに必須レビュー・必須CI・実経路ゲートの未達があれば、昇格を止め、原因と対象PRをIssueまたは昇格PRへ記録する。
+- 構成PRを切り離す場合は、対象PRをrevertする変更をpreviewへ反映して新しいHEADを作り、残りのPRだけを新しいリリース単位として再レビュー・再テストする。未達ゲートを飛ばして部分昇格してはならない。
+- Issueを作成する場合はタイトルに `[preview-gate]` を付け、対象環境・正規化した事象名・HEAD/merge SHAを重複判定キーにする。必須ラベルは `auto-generated` と `bug`。証拠を記録する前に、アクセストークン、リフレッシュトークン、client_secret、Cookie、session_id、個人識別値を `(redacted)` に置換し、未加工のログやスクリーンショットを添付しない。
+- 通常のリリースは、レビュー判定、必須CI、preview検証、必要な実経路確認、main昇格、productionデプロイ、タグとリリース本文の確認を順に満たしてから完了とする。緊急本番修正だけは明示的な例外として、最小テストと静的検証後に復旧を優先できるが、復旧後に独立レビューと未達ゲートの充足を終えるまで成功扱いにしない。
+
 ## Transactional chat outbox
 
 ガチャ確定とチャット通知payloadは
@@ -100,13 +112,3 @@ EVENTSUB_REPLAY_SECRET=... npm run replay:maintenance-eventsub -- \
 CIはPostgreSQL 17 serviceへPlanetScale baselineと全追加migrationを順次適用し、
 旧/新RPC、single/N連、歯抜け復旧、NULL副作用0、権限、lease fencingを実SQLで検証します。
 SQL本文の文字列検査だけをmigration構文のgateにしてはいけません。
-
-
-## Preview昇格時の累積変更テスト
-
-previewからmainへ昇格する際のテスト対象は、起点となった単一PRではなく、同じpreview HEADに含まれる昇格対象**全PRの累積変更**とする。
-
-- mainとの差分およびpreview→main昇格PRの差分を固定し、含まれる全PR番号・各HEAD SHA・preview merge SHAを記録する。
-- 各PRの呼び出し元、共有契約、DB/キュー/Worker/overlay経路を横断して確認し、PR同士の組み合わせによる退行も対象にする。
-- いずれかの構成PRがEventSub、gacha、overlay、chat、アップロードなど実引き換え経路に影響する場合、累積変更全体を対象に実引き換え、履歴、チャット、overlay、Workerログを相関させる。単一PRだけのテスト成功や合成demo表示は代替にならない。
-- 累積変更のいずれかに必須レビュー・必須CI・実経路ゲートの未達があれば、昇格を止め、原因と対象PRをIssueまたは昇格PRへ記録する。
