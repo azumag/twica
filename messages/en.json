@@ -718,8 +718,8 @@
       "notificationFailuresItem2": "Re-register with the \"Save & Register EventSub\" button",
       "authorizationRevokedTitle": "Authorization revoked",
       "authorizationRevokedDescription": "The subscription was disabled because Twitch authorization was revoked.",
-      "authorizationRevokedItem1": "Please log in again",
-      "authorizationRevokedItem2": "Re-register with the \"Save & Register EventSub\" button",
+      "authorizationRevokedItem1": "Re-authorize TwiCa on Twitch (if the \"Enable Channel Points integration\" button is not shown in Stream Settings, log out and log in again)",
+      "authorizationRevokedItem2": "Then re-register with the \"Save & Register EventSub\" button",
       "callbackMismatchTitle": "Callback URL mismatch",
       "callbackMismatchDescription": "The registered callback URL does not match the current app URL. Please re-register EventSub.",
       "callbackMismatchCurrent": "Current: {callback}",
@@ -1039,7 +1039,7 @@
       "title": "Troubleshooting",
       "eventsub": {
         "question": "Gacha does not run after a channel point redemption",
-        "answer": "Check the EventSub status under \"Connection Status\" in Stream Settings. If it is not \"Connected\", use \"Save & Register EventSub\" to re-register. If TwiCa's connection to Twitch gets removed, redemptions still look successful to viewers, but the gacha stops running. No error is shown on stream or the overlay, but Stream Settings' Connection Status will show \"Authorization revoked\". This has been reported especially right after becoming a Twitch Affiliate, even when the streamer didn't unlink it themselves, so check this even if nothing seems wrong. Logging in to TwiCa again may not be enough to fix this. Re-link with Twitch using the re-link button in Stream Settings, then use \"Save & Register EventSub\" again. Also confirm that channel point redemption is enabled on Twitch."
+        "answer": "Check the EventSub status under \"Connection Status\" in Stream Settings, and if it is not \"Connected\", re-register with \"Save & Register EventSub\". If TwiCa's authorization is revoked on Twitch, redemptions still look successful to viewers but the gacha stops running. No error appears on stream or in the overlay; only Stream Settings shows \"Authorization revoked\" or a prompt to re-link. This has been reported right after becoming a Twitch Affiliate, so check it even if you did not unlink anything. If the \"Enable Channel Points integration\" button is shown in Stream Settings, press it to re-link with Twitch, then press \"Save & Register EventSub\". If no button is shown, or a red \"Please log in again\" error appears, log out of TwiCa and log in again, then always press \"Save & Register EventSub\". If it still does not work, contact the operator. Also confirm that channel point redemption is enabled on Twitch."
       },
       "channelPointsUnavailable": {
         "question": "It says Channel Points are not available on Twitch",
