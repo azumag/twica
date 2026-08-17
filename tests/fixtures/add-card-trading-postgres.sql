@@ -113,7 +113,18 @@ BEGIN
 END
 $$;
 
-CREATE ROLE twica_ci INHERIT BYPASSRLS;
+-- ジョブ内の他ステップ(transactional-chat-outbox-postgres.sql等)と
+-- postgresサービスコンテナを共有するため、twica_ciが既に作成済みの
+-- 可能性がある。CREATE ROLEはIF NOT EXISTSを持たない(bootstrap.sqlと
+-- 同じ理由)ため、pg_rolesを確認してから作成する冪等な形にする。
+-- GRANT ROLEは既に付与済みのメンバーシップへ再実行してもエラーにならない。
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'twica_ci') THEN
+    CREATE ROLE twica_ci INHERIT BYPASSRLS;
+  END IF;
+END
+$$;
 GRANT service_role TO twica_ci;
 
 SET ROLE twica_ci;
