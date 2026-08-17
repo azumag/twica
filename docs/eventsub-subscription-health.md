@@ -28,7 +28,15 @@
 3. unhealthy が1件以上あれば `reportError()` を呼ぶ。このリポジトリは #235 で
    Sentry SDK を削除済みで、`reportError` が
    console出力 + PlanetScale `errors` テーブルへの永続化を担う後継実装になって
-   いる（`src/lib/sentry/error-handler.ts`）。
+   いる（`src/lib/sentry/error-handler.ts`）。ただし無条件には呼ばない —
+   KV（`RATE_LIMIT_KV` を disjoint な key prefix で共用）にアラート済みの
+   unhealthy subscription ID集合と時刻を記録し、(a) 同じ集合のままクール
+   ダウン期間（1時間）内ならスキップ、(b) 集合が変化(悪化/一部回復)すれば
+   クールダウン中でも即座に再アラート、(c) クールダウンを過ぎれば同じ集合
+   でも生存確認として再アラート、という頻度制御を行う（詳細は
+   `src/app/api/admin/eventsub-health/route.ts` の `shouldSendUnhealthyAlert`
+   参照）。これが無いと、5分毎のCronの度に無条件でreportErrorしてしまい、
+   次項のGitHub Issueへ最大12コメント/時のスパムが発生する。
 4. `errors` テーブルに積まれた行は、同じ Cron Worker の既存処理
    （`processErrors`）が5分毎に読み出し、GitHub Issue を自動作成・再発時は
    既存 Issue へコメント追記する（`bug` / `auto-generated` ラベル）。
@@ -55,9 +63,10 @@ count 等の可変値は含めない。environment ごとに文字列を分け�
 場合でも、error-reporter の重複防止ロジックが close 済みの本 Issue を
 見つけてコメントを追記するだけで再オープンしない（signature が
 environment 単位で完全固定のため）。**このアラートの Issue は close せず
-open のまま放置してよい**（`webhook_callback_verification_pending` のような
-一過性状態は最初から unhealthy 判定されないため、通常運用で不要な
-コメントが積み上がることはない）。恒久対策は #1010 で検討中。
+open のまま放置してよい**。上記のクールダウンにより、障害が続いている間も
+コメントは最大1時間に1回（+ 状態が悪化した場合の即時分）に抑えられており、
+放置しても際限なく積み上がることはない。恒久対策（closeしても正しく
+再アラートできるようにする）は #1010 で検討中。
 
 ### 手動での再登録手順
 

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   getRateLimitIdentifier: vi.fn(),
   listAllEventSubSubscriptions: vi.fn(),
   reportError: vi.fn(),
+  getKvBinding: vi.fn(),
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
@@ -21,12 +22,27 @@ vi.mock("@/lib/rate-limit", () => ({
   rateLimits: { eventsubHealth: {} },
 }));
 
-vi.mock("@/lib/logger", () => ({
+// route.ts が実際に import しているのは @/lib/logger.server（@/lib/logger では
+// ない）。ここを丸ごとモックに差し替えることで、route内のlogger.error/warn
+// 呼び出しをテスト出力に混ぜず、かつ実装（内部でlogErrorFromLoggerを呼ぶ
+// fire-and-forget経路）を経由させない。reportErrorはdirect awaitされる別経路
+// (下のvi.mock("@/lib/sentry/error-handler")参照)なのでここには含まれない。
+vi.mock("@/lib/logger.server", () => ({
   logger: {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
   },
+}));
+
+// #540 PR #1009 レビュー指摘(必須): unhealthy検知の度に無条件でreportErrorすると
+// error-reporterが同一Issueへクールダウン無しでコメントを積み続けてしまうため、
+// route.ts は KV ベースのクールダウン+変化検知ゲートを持つ。既定では
+// getKvBinding が null を返す(=KV binding無し)ことでfail-open（常にアラート）
+// させ、既存の大半のテストは cooldown を意識せず動く。cooldown 自体の挙動は
+// 専用の describe ブロックで検証する。
+vi.mock("@/lib/cloudflare-kv", () => ({
+  getKvBinding: mocks.getKvBinding,
 }));
 
 vi.mock("@/lib/twitch/eventsub-subscriptions", async () => {
@@ -94,6 +110,9 @@ describe("GET /api/admin/eventsub-health", () => {
     mocks.getRateLimitIdentifier.mockResolvedValue("ip:127.0.0.1");
     mocks.listAllEventSubSubscriptions.mockResolvedValue([healthySubscription("sub-1")]);
     mocks.reportError.mockResolvedValue(undefined);
+    // 既定はKV bindingが無い状態(fail-open=常にアラート)。cooldown自体の
+    // 挙動を検証するテストだけ、下の describe 内で個別に上書きする。
+    mocks.getKvBinding.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -296,5 +315,138 @@ describe("GET /api/admin/eventsub-health", () => {
     const [error, context] = mocks.reportError.mock.calls[0];
     expect(error).toBe(apiError);
     expect(context).toMatchObject({ context: "eventsub-health:fetchFailed" });
+  });
+});
+
+// ===========================================================================
+// PR #1009 レビュー指摘(必須): KVベースのアラートクールダウン/変化検知ゲート。
+// 5分毎に無条件でreportErrorすると、error-reporterが同一Issueへクールダウン
+// 無しでコメントを積み続けるスパムになるため、これを防ぐゲートを検証する。
+// ===========================================================================
+describe("GET /api/admin/eventsub-health のアラートクールダウン", () => {
+  const FIXED_NOW = new Date("2026-01-01T12:00:00.000Z");
+
+  let kvGet: ReturnType<typeof vi.fn>;
+  let kvPut: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+    process.env.EVENTSUB_HEALTH_SECRET = TEST_SECRET;
+    mocks.checkRateLimit.mockResolvedValue({
+      success: true,
+      limit: 20,
+      remaining: 19,
+      reset: Date.now() + 60000,
+    });
+    mocks.getRateLimitIdentifier.mockResolvedValue("ip:127.0.0.1");
+    mocks.reportError.mockResolvedValue(undefined);
+
+    kvGet = vi.fn();
+    kvPut = vi.fn().mockResolvedValue(undefined);
+    mocks.getKvBinding.mockResolvedValue({ get: kvGet, put: kvPut });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env.EVENTSUB_HEALTH_SECRET;
+  });
+
+  const agoIso = (minutesAgo: number) => FIXED_NOW.getTime() - minutesAgo * 60_000;
+
+  it("前回状態がKVに無ければ(初回検知)アラートし、状態をKVへ記録する", async () => {
+    kvGet.mockResolvedValue(null);
+    mocks.listAllEventSubSubscriptions.mockResolvedValue([
+      unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
+    ]);
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    await GET(createHealthRequest());
+
+    expect(mocks.reportError).toHaveBeenCalledTimes(1);
+    expect(kvPut).toHaveBeenCalledTimes(1);
+    const [key, value, options] = kvPut.mock.calls[0];
+    expect(key).toBe("eventsub-health:alert-state:production");
+    expect(JSON.parse(value)).toEqual({ subscriptionIds: ["sub-1"], alertedAt: FIXED_NOW.getTime() });
+    expect(options).toEqual({ expirationTtl: 7200 });
+  });
+
+  it("同じsubscription ID集合のままクールダウン期間内なら再アラートしない", async () => {
+    kvGet.mockResolvedValue(
+      JSON.stringify({ subscriptionIds: ["sub-1"], alertedAt: agoIso(10) }) // 10分前(60分未満)
+    );
+    mocks.listAllEventSubSubscriptions.mockResolvedValue([
+      unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
+    ]);
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    const response = await GET(createHealthRequest());
+
+    expect(mocks.reportError).not.toHaveBeenCalled();
+    expect(kvPut).not.toHaveBeenCalled();
+    // アラート自体は間引かれても、レスポンスは常に現在の健全性を正確に返す。
+    const body = await response.json();
+    expect(body.unhealthyCount).toBe(1);
+  });
+
+  it("同じ集合でもクールダウン期間(60分)を過ぎていれば生存確認として再アラートする", async () => {
+    kvGet.mockResolvedValue(
+      JSON.stringify({ subscriptionIds: ["sub-1"], alertedAt: agoIso(61) }) // 61分前
+    );
+    mocks.listAllEventSubSubscriptions.mockResolvedValue([
+      unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
+    ]);
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    await GET(createHealthRequest());
+
+    expect(mocks.reportError).toHaveBeenCalledTimes(1);
+    expect(kvPut).toHaveBeenCalledTimes(1);
+  });
+
+  it("unhealthyなsubscription集合が変化していればクールダウン中でも即座に再アラートする(悪化を見逃さない)", async () => {
+    kvGet.mockResolvedValue(
+      JSON.stringify({ subscriptionIds: ["sub-1"], alertedAt: agoIso(5) }) // 5分前(60分未満)
+    );
+    mocks.listAllEventSubSubscriptions.mockResolvedValue([
+      unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
+      unhealthySubscription("sub-2", "notification_failures_exceeded"), // 新たに壊れた
+    ]);
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    await GET(createHealthRequest());
+
+    expect(mocks.reportError).toHaveBeenCalledTimes(1);
+    const [, context] = mocks.reportError.mock.calls[0];
+    expect(context).toMatchObject({ count: 2 });
+    const [, value] = kvPut.mock.calls[0];
+    expect(JSON.parse(value).subscriptionIds).toEqual(["sub-1", "sub-2"]);
+  });
+
+  it("KV読み取りが失敗した場合はfail-openで常にアラートする", async () => {
+    kvGet.mockRejectedValue(new Error("KV unavailable"));
+    mocks.listAllEventSubSubscriptions.mockResolvedValue([
+      unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
+    ]);
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    await GET(createHealthRequest());
+
+    expect(mocks.reportError).toHaveBeenCalledTimes(1);
+  });
+
+  it("KV書き込みが失敗してもreportError自体は成功として扱う(ベストエフォート)", async () => {
+    kvGet.mockResolvedValue(null);
+    kvPut.mockRejectedValue(new Error("KV unavailable"));
+    mocks.listAllEventSubSubscriptions.mockResolvedValue([
+      unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
+    ]);
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    const response = await GET(createHealthRequest());
+
+    expect(response.status).toBe(200);
+    expect(mocks.reportError).toHaveBeenCalledTimes(1);
   });
 });

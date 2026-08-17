@@ -4,6 +4,7 @@ import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-l
 import { logger } from "@/lib/logger.server";
 import { constantTimeEqual } from "@/lib/crypto-utils";
 import { reportError } from "@/lib/sentry/error-handler";
+import { getKvBinding, type KVNamespaceLike } from "@/lib/cloudflare-kv";
 import {
   listAllEventSubSubscriptions,
   isUnhealthyEventSubStatus,
@@ -49,6 +50,33 @@ import {
  * サブスクリプションの自動削除・再作成）は挙動リスクが高いため、本routeでは
  * 検知・アラートのみ行い、実装しない。再登録手順は
  * docs/eventsub-subscription-health.md を参照。
+ *
+ * アラート頻度制御（PR #1009 レビュー指摘・必須）: 本routeは5分毎に呼ばれる
+ * ため、対策が反映されるまで unhealthy が続く限り、対策なしでは
+ * `reportError` を毎tick呼び続けてしまう。error-reporter の
+ * `processErrors` は同一signatureのOpen Issueへ**クールダウン無しで**
+ * コメント追記するため、これは同じファイル内の processEventSubParkBacklog
+ * が明示的に否定した「5分に1回コメントが増え続けるスパム」に該当する
+ * （processEventSubParkBacklog はこれを避けるため reportError を経由せず
+ * Worker側で直接 GitHub Issues API を叩き、Open Issueがあればスキップする
+ * 設計を選んでいる）。
+ * 本routeでも同じ「Open Issueがあればスキップ」方式へ寄せることは可能だが、
+ * それには GitHub Issues API 呼び出しロジックをWorker側からroute側へ複製する
+ * (または逆にWorker側へアラート判定ロジックを複製し戻す)必要があり、
+ * 「判定・アラートをroute側へ集約しWorkerをトリガーに徹させる」という
+ * 本機能の分離設計（このJSDoc冒頭参照）を崩してしまう。
+ * 代わりに、KV（RATE_LIMIT_KVを他の用途と同じくdisjointなキーprefixで共用。
+ * root wrangler.tomlのコメント参照）へ「直近でアラート済みのunhealthy
+ * subscription ID集合とその時刻」を保存し、
+ *   (a) 前回と同じID集合のままクールダウン期間内 → 再アラートをスキップ
+ *   (b) ID集合が変化した(新たに壊れた/一部回復した) → クールダウン中でも
+ *       即座に再アラート(悪化・変化を見逃さない)
+ *   (c) クールダウン期間を過ぎた → 同じID集合でも再アラート
+ *       (「まだ直っていない」ことを示す生存確認、無音で放置されるのを防ぐ)
+ * という3条件のいずれかで reportError を呼ぶ。KV読み書きに失敗した場合は
+ * fail-open（判定不能として常にアラートする）にする — 監視機能が「サイレント
+ * に沈黙する」方向の失敗より「多少うるさい」方向の失敗の方が安全なため
+ * （src/lib/twitch/app-token.ts の getTwitchAppAccessToken と同じ思想）。
  */
 
 /**
@@ -100,6 +128,100 @@ function buildUnhealthyAlertMessage(environment: "production" | "preview"): stri
  * 重複実装。フォローアップissueで共通化を検討）。 */
 function resolveEnvironment(): "production" | "preview" {
   return (process.env.NEXT_PUBLIC_APP_URL || "").includes("preview") ? "preview" : "production";
+}
+
+/** KV上のアラート状態キーのprefix。root wrangler.tomlのRATE_LIMIT_KVコメント
+ * が列挙する既存用途（レート制限・maintenance EventSub parking・OBSデモ
+ * イベント・Twitch app tokenキャッシュ）と衝突しないdisjointな新規prefix。 */
+const EVENTSUB_HEALTH_ALERT_KV_PREFIX = "eventsub-health:alert-state:";
+
+/** 同じunhealthy集合が続く間、再アラートを間引くクールダウン期間。
+ * 短すぎると本findingが指摘したスパムが再発し、長すぎると「まだ直っていない」
+ * ことに運用者が気づく頻度が下がる。1時間毎の生存確認+即時エスカレーション
+ * (集合変化時は無条件即時アラート)の組み合わせで、5分毎の12件/時から
+ * 1件/時へ抑えつつ沈黙はさせない。 */
+const EVENTSUB_HEALTH_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
+
+/** KVエントリのTTL。クールダウンより長く取り、問題が解消してから
+ * 十分な時間が経てば状態キー自体が自然消滅するようにする(手動delete不要)。 */
+const EVENTSUB_HEALTH_ALERT_KV_TTL_SECONDS = (EVENTSUB_HEALTH_ALERT_COOLDOWN_MS / 1000) * 2;
+
+interface EventSubHealthAlertState {
+  /** 直近のアラート時点でunhealthyだったsubscription idの集合（ソート済み）。 */
+  subscriptionIds: string[];
+  /** 直近にアラートした時刻（epoch ms）。 */
+  alertedAt: number;
+}
+
+/**
+ * 今回のunhealthy集合についてアラート(reportError)すべきかを判定する。
+ * KVの読み取りに失敗した場合はfail-open（true）で返す — 判定不能を理由に
+ * 監視が沈黙する方が、多少アラートが増えるより悪い（このコメント冒頭の
+ * JSDoc「アラート頻度制御」節参照）。
+ *
+ * @param currentIds 今回unhealthyと判定されたsubscription idの配列(順不同)。
+ */
+async function shouldSendUnhealthyAlert(
+  kv: KVNamespaceLike | null,
+  environment: "production" | "preview",
+  currentIds: string[],
+  now: number
+): Promise<boolean> {
+  if (!kv) return true; // ローカル開発等でKV bindingが無い場合はfail-open。
+
+  const sortedCurrentIds = [...currentIds].sort();
+  try {
+    const raw = await kv.get(`${EVENTSUB_HEALTH_ALERT_KV_PREFIX}${environment}`);
+    if (!raw) return true; // 前回状態が無い(初回検知 or TTL失効) → アラートする。
+
+    const cached = JSON.parse(raw) as EventSubHealthAlertState;
+    const sameSet =
+      Array.isArray(cached.subscriptionIds) &&
+      cached.subscriptionIds.length === sortedCurrentIds.length &&
+      cached.subscriptionIds.every((id, i) => id === sortedCurrentIds[i]);
+    if (!sameSet) return true; // 集合が変化(悪化/一部回復) → 即座にアラート。
+
+    const cooldownExpired =
+      typeof cached.alertedAt !== "number" ||
+      now - cached.alertedAt >= EVENTSUB_HEALTH_ALERT_COOLDOWN_MS;
+    return cooldownExpired; // 同じ集合でもクールダウンを過ぎていれば生存確認として再アラート。
+  } catch (err) {
+    logger.warn("[eventsub-health] Failed to read alert cooldown state from KV, defaulting to alert", {
+      environment,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return true;
+  }
+}
+
+/**
+ * アラート送信後に、今回のunhealthy集合と時刻をKVへ記録する。
+ * 書き込み失敗はreportError自体の成否に影響させない(ベストエフォート) —
+ * 次回tickでKVが復旧すれば追従する。書き込み失敗時に次回もアラートが
+ * 飛ぶ(＝多少うるさくなる)のは、上記shouldSendUnhealthyAlertと同じ
+ * fail-open方針と整合する安全側の失敗モード。
+ */
+async function recordUnhealthyAlertState(
+  kv: KVNamespaceLike | null,
+  environment: "production" | "preview",
+  currentIds: string[],
+  now: number
+): Promise<void> {
+  if (!kv) return;
+  const state: EventSubHealthAlertState = {
+    subscriptionIds: [...currentIds].sort(),
+    alertedAt: now,
+  };
+  try {
+    await kv.put(`${EVENTSUB_HEALTH_ALERT_KV_PREFIX}${environment}`, JSON.stringify(state), {
+      expirationTtl: EVENTSUB_HEALTH_ALERT_KV_TTL_SECONDS,
+    });
+  } catch (err) {
+    logger.warn("[eventsub-health] Failed to persist alert cooldown state to KV", {
+      environment,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 interface EventSubHealthResponse {
@@ -158,22 +280,32 @@ export async function GET(request: NextRequest) {
 
     if (unhealthy.length > 0) {
       const environment = resolveEnvironment();
-      // reportError が console.error 出力とDB永続化（→GitHub Issue化）の両方を
-      // 担うため、ここで別途 logger.warn を挟むと同じ検知内容を2箇所へ重複
-      // ログすることになる。メッセージ文字列は environment ごとに固定
-      // （buildUnhealthyAlertMessage のコメント参照）。可変情報はcontext側にのみ渡す。
-      await reportError(new Error(buildUnhealthyAlertMessage(environment)), {
-        environment,
-        count: unhealthy.length,
-        subscriptions: unhealthy.map((sub) => ({
-          id: sub.id,
-          type: sub.type,
-          status: sub.status,
-          broadcasterUserId: sub.condition.broadcaster_user_id ?? sub.condition.to_broadcaster_user_id,
-          rewardId: sub.condition.reward_id,
-          createdAt: sub.created_at,
-        })),
-      });
+      const unhealthyIds = unhealthy.map((sub) => sub.id);
+      const now = Date.now();
+      // 5分毎に無条件でreportErrorすると、error-reporterがクールダウン無しで
+      // 同一Issueへコメントを積み続けてしまう（このファイル冒頭のJSDoc
+      // 「アラート頻度制御」節参照）。KVベースのクールダウン+変化検知ゲートを
+      // 挟み、状況が変わらない限り最大1時間に1回まで間引く。
+      const kv = await getKvBinding();
+      if (await shouldSendUnhealthyAlert(kv, environment, unhealthyIds, now)) {
+        // reportError が console.error 出力とDB永続化（→GitHub Issue化）の両方を
+        // 担うため、ここで別途 logger.warn を挟むと同じ検知内容を2箇所へ重複
+        // ログすることになる。メッセージ文字列は environment ごとに固定
+        // （buildUnhealthyAlertMessage のコメント参照）。可変情報はcontext側にのみ渡す。
+        await reportError(new Error(buildUnhealthyAlertMessage(environment)), {
+          environment,
+          count: unhealthy.length,
+          subscriptions: unhealthy.map((sub) => ({
+            id: sub.id,
+            type: sub.type,
+            status: sub.status,
+            broadcasterUserId: sub.condition.broadcaster_user_id ?? sub.condition.to_broadcaster_user_id,
+            rewardId: sub.condition.reward_id,
+            createdAt: sub.created_at,
+          })),
+        });
+        await recordUnhealthyAlertState(kv, environment, unhealthyIds, now);
+      }
     }
 
     const body: EventSubHealthResponse = {
