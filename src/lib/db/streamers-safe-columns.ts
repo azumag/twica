@@ -87,13 +87,39 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
  * streamers の publish_live_status / publish_stats（#738）は本Issueとは独立した
  * 別のデプロイ窓のため、この関数自体は変更しない。
  */
+// trade_enabled / cross_channel_trade_enabled の欠落もこの関数で一緒に拾う
+// （再投影先が同じ STREAMERS_SAFE_COLUMNS のため。詳細は下記
+// TRADE_SETTINGS_COLUMNS / isMissingTradeSettingsColumnError のコメントを参照）。
 export async function withLiveDirectorySettingsColumnFallback<T>(
   attempt: (useSafeColumns: boolean) => Promise<T>
 ): Promise<T> {
   try {
     return await attempt(false);
   } catch (error) {
-    if (!isMissingLiveDirectorySettingsColumnError(error)) throw error;
+    if (!isMissingLiveDirectorySettingsColumnError(error) && !isMissingTradeSettingsColumnError(error)) throw error;
     return attempt(true);
   }
+}
+
+/**
+ * デプロイ窓で欠落しうる streamers の新列(20260817100000 の migration で追加。
+ * Issue #722, #715 子2)。publish_live_status / publish_stats (#738) と同じ
+ * 「アプリデプロイとmigration適用が独立したタイミングで完了する」リスクを
+ * 持つため、同型のフォールバックを追加する。
+ *
+ * STREAMERS_SAFE_COLUMNS は #738 より前の列だけの固定リストであり、
+ * この2列も元々含まれていない。そのため再投影先(STREAMERS_SAFE_COLUMNS)は
+ * 変更不要で、検知条件だけをこの2列にも広げればよい。
+ */
+export const TRADE_SETTINGS_COLUMNS = [
+  "trade_enabled",
+  "cross_channel_trade_enabled",
+] as const;
+
+/**
+ * streamers の trade_enabled / cross_channel_trade_enabled 列の欠落
+ * (20260817100000 の migration 未適用の環境)を検知する。
+ */
+export function isMissingTradeSettingsColumnError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, TRADE_SETTINGS_COLUMNS);
 }
