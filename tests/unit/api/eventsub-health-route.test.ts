@@ -98,6 +98,8 @@ describe("GET /api/admin/eventsub-health", () => {
 
   afterEach(() => {
     delete process.env.EVENTSUB_HEALTH_SECRET;
+    // environmentテストが例外で中断した場合でも次のテストへ漏れないようにする。
+    delete process.env.NEXT_PUBLIC_APP_URL;
   });
 
   it("EVENTSUB_HEALTH_SECRET未設定なら500でfail-closedする", async () => {
@@ -169,7 +171,7 @@ describe("GET /api/admin/eventsub-health", () => {
     expect(mocks.reportError).not.toHaveBeenCalled();
   });
 
-  it("unhealthyなサブスクリプションを検知したらreportErrorを固定メッセージで呼ぶ", async () => {
+  it("unhealthyなサブスクリプションを検知したらreportErrorをenvironment付き固定メッセージで呼ぶ", async () => {
     mocks.listAllEventSubSubscriptions.mockResolvedValue([
       healthySubscription("sub-1"),
       unhealthySubscription("sub-2", "webhook_callback_verification_failed"),
@@ -196,10 +198,11 @@ describe("GET /api/admin/eventsub-health", () => {
     expect(mocks.reportError).toHaveBeenCalledTimes(1);
     const [error, context] = mocks.reportError.mock.calls[0];
     expect(error).toBeInstanceOf(Error);
+    // NEXT_PUBLIC_APP_URL未設定時はproduction扱い（resolveEnvironment参照）。
     expect((error as Error).message).toBe(
-      "[EventSub Health] Unhealthy EventSub subscription(s) detected"
+      "[EventSub Health][production] Unhealthy EventSub subscription(s) detected"
     );
-    expect(context).toMatchObject({ count: 1 });
+    expect(context).toMatchObject({ count: 1, environment: "production" });
   });
 
   it("webhook_callback_verification_pending（作成直後の一過性状態）はunhealthy扱いしない", async () => {
@@ -215,11 +218,28 @@ describe("GET /api/admin/eventsub-health", () => {
     expect(mocks.reportError).not.toHaveBeenCalled();
   });
 
-  it("同じ検知が繰り返されてもメッセージ文字列は常に固定（GitHub Issueグルーピング用シグネチャの安定性）", async () => {
+  // PR #1009 レビュー指摘(必須): Issue #285 の方針との整合性。配信者が
+  // 自分の意思でapp連携を解除しただけの状態を、健全性監視が「対応が必要な
+  // 障害」として報告してはならない。
+  it.each(["authorization_revoked", "user_removed"])(
+    "%s（ユーザー起因の期待される終端状態）はunhealthy扱いせずreportErrorを呼ばない(Issue #285)",
+    async (status) => {
+      mocks.listAllEventSubSubscriptions.mockResolvedValue([unhealthySubscription("sub-1", status)]);
+      const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+      const response = await GET(createHealthRequest());
+
+      const body = await response.json();
+      expect(body.unhealthyCount).toBe(0);
+      expect(mocks.reportError).not.toHaveBeenCalled();
+    }
+  );
+
+  it("同じenvironmentでの検知が繰り返されてもメッセージ文字列は常に固定（GitHub Issueグルーピング用シグネチャの安定性）", async () => {
     mocks.listAllEventSubSubscriptions
-      .mockResolvedValueOnce([unhealthySubscription("sub-1", "authorization_revoked")])
+      .mockResolvedValueOnce([unhealthySubscription("sub-1", "webhook_callback_verification_failed")])
       .mockResolvedValueOnce([
-        unhealthySubscription("sub-1", "authorization_revoked"),
+        unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
         unhealthySubscription("sub-2", "notification_failures_exceeded"),
       ]);
     const { GET } = await import("@/app/api/admin/eventsub-health/route");
@@ -231,6 +251,30 @@ describe("GET /api/admin/eventsub-health", () => {
     const firstMessage = (mocks.reportError.mock.calls[0][0] as Error).message;
     const secondMessage = (mocks.reportError.mock.calls[1][0] as Error).message;
     expect(firstMessage).toBe(secondMessage);
+  });
+
+  // PR #1009 レビュー指摘(必須): environmentごとにメッセージ(=GitHub Issue
+  // グルーピング用signatureの元)を分けないと、prod/previewの検知が同一
+  // signatureに潰れて1つのIssueに混在し、どちらの環境の障害か本文から
+  // 判別できなくなる。
+  it("environmentが異なればメッセージも異なる（prod/previewのGitHub Issue混在を防ぐ）", async () => {
+    mocks.listAllEventSubSubscriptions.mockResolvedValue([
+      unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
+    ]);
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    await GET(createHealthRequest());
+    const productionMessage = (mocks.reportError.mock.calls[0][0] as Error).message;
+
+    mocks.reportError.mockClear();
+    process.env.NEXT_PUBLIC_APP_URL = "https://twica-preview.example.workers.dev";
+    await GET(createHealthRequest());
+    const previewMessage = (mocks.reportError.mock.calls[0][0] as Error).message;
+    delete process.env.NEXT_PUBLIC_APP_URL;
+
+    expect(productionMessage).not.toBe(previewMessage);
+    expect(productionMessage).toContain("[production]");
+    expect(previewMessage).toContain("[preview]");
   });
 
   it("Twitch API呼び出しが失敗したら502を返し、reportErrorをawaitして記録を保証する", async () => {

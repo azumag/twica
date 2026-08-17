@@ -77,21 +77,55 @@ export async function listAllEventSubSubscriptions(): Promise<EventSubSubscripti
  *   これを unhealthy に含めると、購読作成直後にたまたま健全性チェックの
  *   cronが走った場合に誤検知してしまう。
  *
- * 上記2つ以外の status（`webhook_callback_verification_failed` /
- * `notification_failures_exceeded` / `authorization_revoked` /
- * `moderator_removed` / `user_removed` / `chat_user_banned` /
- * `version_removed` / `beta_maintenance` 等）はいずれも Twitch 側で
- * サブスクリプションが終端状態に落ちたことを示し、放置しても自然回復しない。
- * この状態のまま気づかずにいると、該当streamerの視聴者はガチャ交換ボタンを
- * 押してもチャンネルポイントだけ消費されカードが付与されない、という無音の
- * 失敗が起き続ける（issue #540 背景の #527 参照）。
+ * 上記2つ・および下記 EXPECTED_USER_INITIATED_EVENTSUB_STATUSES 以外の
+ * status（`webhook_callback_verification_failed` /
+ * `notification_failures_exceeded` / `moderator_removed` /
+ * `chat_user_banned` / `version_removed` / `beta_maintenance` 等）は
+ * いずれも Twitch 側でサブスクリプションが終端状態に落ちたことを示し、
+ * 放置しても自然回復しない。この状態のまま気づかずにいると、該当streamerの
+ * 視聴者はガチャ交換ボタンを押してもチャンネルポイントだけ消費されカードが
+ * 付与されない、という無音の失敗が起き続ける（issue #540 背景の #527 参照）。
  */
 const HEALTHY_OR_TRANSIENT_EVENTSUB_STATUSES = new Set([
   "enabled",
   "webhook_callback_verification_pending",
 ]);
 
-/** 上記の健全/一過性 status 以外を unhealthy と判定する。 */
+/**
+ * ユーザー起因で「期待される」EventSub 終端状態の集合。
+ *
+ * `src/app/api/twitch/eventsub/route.ts` の revocation webhook ハンドラは
+ * Issue #285 の方針により、この2つを「ユーザー起因のrevocationは期待される
+ * 挙動であり bug ではない」として reportError（GitHub Issue化）の対象外に
+ * している（同route.tsの EXPECTED_REVOCATIONS 参照）。健全性監視も同じ判定
+ * 基準を使わないと、#285 で意図的に黙らせている状態を本機能が再びアラート化
+ * してしまう退行になる（PR #1009 レビュー指摘）。加えてこれらは配信者が
+ * 自分の意思でapp連携を解除した結果であり、5分毎のcronで検知され続ける限り
+ * 恒久的に unhealthy のままになる — インフラ障害と違って「対応すれば直る」
+ * 性質の状態ではないため、繰り返しアラートを鳴らす価値が薄いことも #285 と
+ * 同じ理由。
+ *
+ * ここへ値を追加・変更する場合は eventsub/route.ts の EXPECTED_REVOCATIONS
+ * とドリフトしないよう、必ず両方を同時に確認すること（2箇所とも同じ配列
+ * リテラルを持つ独立実装であり、片方を lib 側の import へ寄せる統合は
+ * eventsub/route.ts 側の既存動作へ手を入れることになるため、本PRではあえて
+ * 行わない。代わりに、wrangler.toml crons と EVENTSUB_AUTO_DRAIN_CRON の
+ * ドリフト検知テスト（tests/unit/error-reporter-worker.test.ts）と同じ
+ * 「ソースをreadFileSync + 正規表現で読んで値を突き合わせる」方式の契約
+ * テストを tests/unit/twitch-eventsub-subscriptions.test.ts に用意し、
+ * どちらかだけが変更されたらテストが赤くなるようにしている）。
+ */
+export const EXPECTED_USER_INITIATED_EVENTSUB_STATUSES = new Set([
+  "authorization_revoked",
+  "user_removed",
+]);
+
+/**
+ * 上記の健全/一過性/期待される終端状態のいずれでもない status を unhealthy と
+ * 判定する。
+ */
 export function isUnhealthyEventSubStatus(status: string): boolean {
-  return !HEALTHY_OR_TRANSIENT_EVENTSUB_STATUSES.has(status);
+  if (HEALTHY_OR_TRANSIENT_EVENTSUB_STATUSES.has(status)) return false;
+  if (EXPECTED_USER_INITIATED_EVENTSUB_STATUSES.has(status)) return false;
+  return true;
 }

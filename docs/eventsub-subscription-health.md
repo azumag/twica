@@ -3,9 +3,9 @@
 ## 背景
 
 本番障害 #527 で、EventSub サブスクリプションが `disabled` 相当の終端状態
-（`webhook_callback_verification_failed` / `notification_failures_exceeded` /
-`authorization_revoked` 等）に落ちても、検知手段が「Twitch Developer Console
-を手動確認する」という運用依存の手順しかなかった。Twitch は webhook
+（`webhook_callback_verification_failed` / `notification_failures_exceeded` 等）
+に落ちても、検知手段が「Twitch Developer Console を手動確認する」という
+運用依存の手順しかなかった。Twitch は webhook
 コールバック検証やnotification配信に連続失敗すると自動でサブスクリプションを
 終端状態へ落とすため、気づかれないまま該当streamerの視聴者はガチャ交換ボタンを
 押してもチャンネルポイントだけ消費されカードが付与されない、という無音の失敗が
@@ -19,7 +19,12 @@
 2. `src/app/api/admin/eventsub-health/route.ts` が Twitch Helix
    `GET /helix/eventsub/subscriptions` を app access token で全ページ取得し、
    `enabled` / `webhook_callback_verification_pending`（作成直後の一過性状態）
-   以外の status を unhealthy と判定する。
+   以外の status を unhealthy と判定する。ただし `authorization_revoked` /
+   `user_removed` は対象外（`src/app/api/twitch/eventsub/route.ts` の
+   revocation webhook ハンドラが Issue #285 の方針で「ユーザー起因の期待
+   される挙動であり bug ではない」として扱っているのと同じ基準。配信者が
+   自分の意思でapp連携を解除しただけの状態を、インフラ障害と同様に
+   繰り返しアラートしない）。
 3. unhealthy が1件以上あれば `reportError()` を呼ぶ。このリポジトリは #235 で
    Sentry SDK を削除済みで、`reportError` が
    console出力 + PlanetScale `errors` テーブルへの永続化を担う後継実装になって
@@ -33,15 +38,26 @@ errors テーブル → 自動 GitHub Issue化」パイプラインにそのま�
 
 ## アラートが来たら何をするか
 
-作成される GitHub Issue のタイトルは `[EventSub Health] Unhealthy EventSub
-subscription(s) detected`（固定文字列。重複 Issue を防ぐため、可変値は含めない。
-詳細は `src/app/api/admin/eventsub-health/route.ts` の
-`UNHEALTHY_ALERT_MESSAGE` 冒頭コメント参照）。本文の「### Context」節には
-`reportError()` の第2引数（`errors.context` 列にも残る）が JSON でそのまま
+作成される GitHub Issue のタイトルは `[EventSub Health][production]` または
+`[EventSub Health][preview]` で始まる固定文字列（重複 Issue を防ぐため、
+count 等の可変値は含めない。environment ごとに文字列を分けている理由は
+`src/app/api/admin/eventsub-health/route.ts` の `buildUnhealthyAlertMessage`
+冒頭コメント参照 — prod/preview を同じメッセージにすると同一 Issue に混在し、
+どちらの環境の障害か本文から判別できなくなるため）。本文の「### Context」節
+には `reportError()` の第2引数（`errors.context` 列にも残る）が JSON でそのまま
 出力されるため、影響を受けている `broadcasterUserId` / `rewardId` / `type` /
 `status` を Issue 本文から直接確認できる（最大2000文字。件数が多い場合は
 切り詰められるため、詳細は Cloudflare Workers Observability / `wrangler tail`
 のログも合わせて確認する）。
+
+**既知の制限（closeする前に必ず確認）**: 対応が終わった Issue を close すると、
+同じ environment で将来まったく別のサブスクリプションが unhealthy になった
+場合でも、error-reporter の重複防止ロジックが close 済みの本 Issue を
+見つけてコメントを追記するだけで再オープンしない（signature が
+environment 単位で完全固定のため）。**このアラートの Issue は close せず
+open のまま放置してよい**（`webhook_callback_verification_pending` のような
+一過性状態は最初から unhealthy 判定されないため、通常運用で不要な
+コメントが積み上がることはない）。恒久対策は #1010 で検討中。
 
 ### 手動での再登録手順
 
@@ -82,3 +98,4 @@ subscription(s) detected`（固定文字列。重複 Issue を防ぐため、可
 
 - disabled サブスクリプションの自動削除・再作成（理想要件、別issueで段階導入）
 - デプロイ後スモークテストへの組み込み
+- その他のノンブロッキング改善事項（closeされたIssueの永久ミュート問題を含む）は #1010 に集約
