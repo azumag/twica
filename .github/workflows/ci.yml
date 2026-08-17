@@ -534,9 +534,11 @@ jobs:
             -f tests/fixtures/add-card-trading-postgres.sql
 
       - name: Verify card trading concurrent accept fencing
-        # PRレビューで発見されたレース(同一応諾者が同じ支払いカード種別を
-        # 要求する2オファーを並行acceptすると1枚のカードで2件成立しうる)の
-        # 再発防止。実際の2接続同時実行でしか再現できない。
+        # 支払いカードが1枚しかない場合、同一応諾者が同じカード種別を要求する
+        # 2オファーを並行acceptしても二重に使われないという不変条件を、
+        # 実際の2接続同時実行で検証する(単一トランザクションのfixtureでは
+        # 接続間の行ロック競合を再現できない)。検証範囲の詳細は
+        # tests/fixtures/add-card-trading-concurrency.sh 冒頭コメント参照。
         env:
           PGPASSWORD: postgres
         run: bash tests/fixtures/add-card-trading-concurrency.sh

@@ -254,14 +254,17 @@ BEGIN
   FOR UPDATE;
 
   -- この2段目のSELECTは意図的に FOR UPDATE を付けない(付けると240-244で避けた
-  -- 「LIMIT 1 + FOR UPDATE が繰り上がらない」問題を再導入する)。そのため
-  -- READ COMMITTED では245-253のPERFORM(スナップショットA)とこのSELECT
-  -- (スナップショットB)の間に、応諾者が同じwanted_card_idの新規コピーを
-  -- 別トランザクション(ガチャ・別トレード成立等)で取得してcommitする余地があり、
-  -- そのコピーは253まででロックされていない。同一応諾者が同じカード種別を
-  -- 要求する2件のオファーを並行accept_trade_offerした場合、両方がこの
-  -- ロックなしSELECTで同一の未ロック行を選定しうる。そのため、この行を
-  -- 「選定候補」に過ぎないものとして扱い、実際の所有権移転(下記UPDATE)を
+  -- 「LIMIT 1 + FOR UPDATE が繰り上がらない」問題を再導入する)。245-253の
+  -- PERFORM(LIMITなし・応諾者が保有する候補行を全ロック)は、事前に存在する
+  -- 候補行を巡る単純な2並行accept_trade_offer同士は正しく直列化する
+  -- (先着1件がロックを取り、後着はブロック後EvalPlanQualで対象から外れるか
+  -- 別候補へ繰り上がる。2接続同時実行での実測でも確認済み)。それでも
+  -- READ COMMITTED ではこのPERFORMとこのSELECTの間(スナップショットAと
+  -- スナップショットBの間)に、応諾者が同じwanted_card_idの新規コピーを
+  -- 第三のトランザクション(ガチャ・別トレード成立等、この応諾処理と無関係な
+  -- 経路)で取得してcommitする余地が理論上残り、そのコピーは253までの
+  -- PERFORMには含まれない(存在しなかったため)。この行を「選定候補」に
+  -- 過ぎないものとして扱い、実際の所有権移転(下記UPDATE)を
   -- user_id条件付き・行数チェック付きにすることで最終防御する
   -- (Claude Auto Reviewレビュー指摘: PRレビューで検出)。
   SELECT id INTO v_payer_user_card_id
@@ -286,15 +289,32 @@ BEGIN
   -- 支払いカード側を先に更新する(出品カード側より先)。支払いカード候補は
   -- 267-276で意図的にロックなしSELECTのため、`AND user_id = v_user_id` を
   -- 付けた条件付きUPDATE + GET DIAGNOSTICS の行数チェックで最終防御する
-  -- (Claude Auto Reviewレビュー指摘: PRレビューで検出。同一応諾者が同じ
-  -- カード種別を要求する2件のオファーを並行acceptした場合、両方が267-276の
-  -- ロックなしSELECTで同一の未ロック行を選定しうるため)。0件なら
-  -- 「選定後に応諾者自身の並行acceptに先に奪われた」ことを意味する。
-  -- ここではまだ出品カード側(offered_user_card_id)もオファー行のstatusも
-  -- 更新していないため、この時点でJSONBをRETURNしても部分的な副作用は残らず
-  -- (RAISE EXCEPTIONによるロールバックを使わずに)安全にCARD_NOT_OWNEDへ
-  -- fail-closedできる。出品カード側(226-230で既にFOR UPDATE済みの行)は
-  -- 対称に条件を付けなくても安全なため、無条件UPDATEのままでよい。
+  -- (Claude Auto Reviewレビュー指摘: PRレビューで検出)。
+  --
+  -- 到達条件についての注記: 245-253のPERFORM(LIMITなし・候補行を全ロック)が
+  -- 既に大半のケースを直列化するため、単純に「同一応諾者が同じカード種別を
+  -- 要求する2件のオファーを並行accept」しただけでは、事前に存在する候補行を
+  -- 巡る競合はPERFORMの時点でブロック→EvalPlanQualにより解消され、この
+  -- 行数チェックには到達しない(2接続同時実行での実測で確認済み。
+  -- tests/fixtures/add-card-trading-concurrency.sh 参照)。この行数チェックが
+  -- 実際に0件を検出しうるのは、応諾者自身のPERFORM実行後・このSELECT実行前の
+  -- 間に、この応諾処理と無関係な第三のトランザクション(ガチャ・別トレード
+  -- 成立等)が新規コピーをcommitし、かつそのコピーを複数の並行acceptが
+  -- ロックなしSELECTで同一に選定してしまう、という極めて狭いタイミングの
+  -- 場合に限られる。この狭い窓を2接続の黒箱テストで決定的に再現することは
+  -- 実務上困難だったため、直接の再現テストは無い。それでも
+  -- 「stage 2のSELECTはロックを持たない」という事実自体は変わらないため、
+  -- コストがほぼ0のこのfail-closedガードは保持する(00059/00060と同じ
+  -- 「選定はロックなしでも、移転はロック相当の確認をしてから行う」防御的
+  -- 多重化の考え方)。
+  --
+  -- 0件なら「選定後に何らかの経路で対象コピーの所有権が変わった」ことを
+  -- 意味する。ここではまだ出品カード側(offered_user_card_id)もオファー行の
+  -- statusも更新していないため、この時点でJSONBをRETURNしても部分的な
+  -- 副作用は残らず(RAISE EXCEPTIONによるロールバックを使わずに)安全に
+  -- CARD_NOT_OWNEDへfail-closedできる。出品カード側(226-230で既に
+  -- FOR UPDATE済みの行)は対称に条件を付けなくても安全なため、無条件
+  -- UPDATEのままでよい。
   UPDATE user_cards SET user_id = v_offer.offerer_user_id, obtained_at = now()
     WHERE id = v_payer_user_card_id AND user_id = v_user_id;
   GET DIAGNOSTICS v_payer_update_count = ROW_COUNT;

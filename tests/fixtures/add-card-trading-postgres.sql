@@ -16,9 +16,20 @@ INSERT INTO public.streamers (
     true, true
   ),
   (
+    -- trade_enabled=true だが cross_channel_trade_enabled=false。
+    -- 「両配信者ともtrade_enabled=trueだがcross_channel_trade_enabled側だけが
+    -- falseで拒否される」ケースをstreamer1との組で検証するために使う
+    -- (シナリオ11)。
     '30000000-0000-4000-8000-000000000003',
     'trade-streamer-3', 'trade-streamer-3', 'Trade Streamer 3',
-    false, false
+    true, false
+  ),
+  (
+    -- 両フラグtrue。streamer1との組でクロスチャンネルの正常系(is_cross_channel
+    -- 生成列の評価)を検証するために使う(シナリオ10)。
+    '30000000-0000-4000-8000-000000000002',
+    'trade-streamer-2', 'trade-streamer-2', 'Trade Streamer 2',
+    true, true
   );
 
 INSERT INTO public.users (id, twitch_user_id, twitch_username, twitch_display_name)
@@ -43,6 +54,16 @@ VALUES
     '30000000-0000-4000-8000-0000000000c2',
     '30000000-0000-4000-8000-000000000001',
     'Card B', 'rare', 0.3, true
+  ),
+  (
+    '30000000-0000-4000-8000-0000000000c3',
+    '30000000-0000-4000-8000-000000000002',
+    'Card X', 'common', 0.5, true
+  ),
+  (
+    '30000000-0000-4000-8000-0000000000c4',
+    '30000000-0000-4000-8000-000000000003',
+    'Card Y', 'common', 0.5, true
   );
 
 -- u1(出品者)がCardAを1枚、u2(応諾者)がCardBを2枚所持。CardBの2枚は
@@ -342,6 +363,81 @@ BEGIN
     -- 期待どおり idx_trade_offers_open_user_card に弾かれた。
     NULL;
   END;
+END
+$$;
+
+-- 10. is_cross_channel生成列: 異なる配信者間のオファーはtrue、同一配信者間は
+-- false。RPCを呼ばず生成列の評価だけを直接検証する
+-- (Claude Auto Reviewレビュー指摘: streamer3を作成したのに一度も使っていな
+-- かった点、is_cross_channelとクロスチャンネルゲートが未検証だった点への対応)。
+INSERT INTO public.trade_offers (
+  id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+  wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot
+) VALUES (
+  '30000000-0000-4000-8000-0000000000e4',
+  '30000000-0000-4000-8000-0000000000a1',
+  '30000000-0000-4000-8000-0000000000d5',
+  '30000000-0000-4000-8000-0000000000c1',
+  '30000000-0000-4000-8000-000000000001',
+  '30000000-0000-4000-8000-0000000000c3',
+  '30000000-0000-4000-8000-000000000002',
+  '{"name": "Card A", "rarity": "common", "imageUrl": null}'::jsonb,
+  '{"name": "Card X", "rarity": "common", "imageUrl": null}'::jsonb
+);
+
+DO $$
+DECLARE
+  v_is_cross boolean;
+BEGIN
+  -- streamer1(offered) → streamer2(wanted): 異なる配信者間なのでtrue。
+  SELECT is_cross_channel INTO v_is_cross FROM public.trade_offers
+    WHERE id = '30000000-0000-4000-8000-0000000000e4';
+  IF v_is_cross IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'cross-streamer offer was not flagged is_cross_channel: %', v_is_cross;
+  END IF;
+
+  -- streamer1(offered) → streamer1(wanted)(シナリオ1〜5で使ったオファーO1):
+  -- 同一配信者間なのでfalse。
+  SELECT is_cross_channel INTO v_is_cross FROM public.trade_offers
+    WHERE id = '30000000-0000-4000-8000-0000000000e1';
+  IF v_is_cross IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'same-streamer offer was flagged is_cross_channel: %', v_is_cross;
+  END IF;
+END
+$$;
+
+-- 11. クロスチャンネルゲート: 両配信者ともtrade_enabled=trueだが、片方の
+-- cross_channel_trade_enabledがfalseならTRADE_DISABLEDで拒否される
+-- (streamer3はtrade_enabled=true/cross_channel_trade_enabled=false)。
+-- ゲート判定は出品カード実在チェック・支払いカード選定より前に行われるため、
+-- 応諾者がwanted_card_idを実際に所持している必要はない。
+INSERT INTO public.trade_offers (
+  id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+  wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot
+) VALUES (
+  '30000000-0000-4000-8000-0000000000e5',
+  '30000000-0000-4000-8000-0000000000a1',
+  '30000000-0000-4000-8000-0000000000d6',
+  '30000000-0000-4000-8000-0000000000c1',
+  '30000000-0000-4000-8000-000000000001',
+  '30000000-0000-4000-8000-0000000000c4',
+  '30000000-0000-4000-8000-000000000003',
+  '{"name": "Card A", "rarity": "common", "imageUrl": null}'::jsonb,
+  '{"name": "Card Y", "rarity": "common", "imageUrl": null}'::jsonb
+);
+
+DO $$
+DECLARE
+  v_result jsonb;
+BEGIN
+  v_result := public.accept_trade_offer(
+    'trade-acceptor',
+    '30000000-0000-4000-8000-0000000000e5'::uuid,
+    '30000000-0000-4000-8000-0000000000f7'::uuid
+  );
+  IF v_result <> '{"success": false, "error": "TRADE_DISABLED"}'::jsonb THEN
+    RAISE EXCEPTION 'cross-channel offer with cross_channel_trade_enabled=false was not rejected as TRADE_DISABLED: %', v_result;
+  END IF;
 END
 $$;
 
