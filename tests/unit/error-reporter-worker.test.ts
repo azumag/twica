@@ -6,6 +6,7 @@ import worker, {
   processInquiries,
   processEventSubParkBacklog,
   processEventSubParkAutoDrain,
+  processEventSubSubscriptionHealth,
   EVENTSUB_PARK_KEY_PREFIX,
   EVENTSUB_AUTO_DRAIN_CRON,
   parseParkedEventSubKeyReceivedAt,
@@ -1400,6 +1401,133 @@ describe('reporter worker', () => {
       await processEventSubParkAutoDrain(env);
 
       expect(fetchMock.mock.calls[0][0]).toBe('https://prod.example.com/api/maintenance-status');
+    });
+  });
+
+  // ===========================================================================
+  // processEventSubSubscriptionHealth（Issue #540: EventSub サブスクリプション
+  // 健全性監視）
+  //
+  // アラート発行（reportError → errors テーブル → GitHub Issue化）自体は
+  // アプリ本体の src/app/api/admin/eventsub-health/route.ts 側の責務のため、
+  // このテストでは Worker が正しいURL/ヘッダーでヘルスチェックを叩くこと・
+  // 未設定時に安全にスキップすること・呼び出し失敗が他ターゲットへ波及しない
+  // ことだけを検証する（processEventSubParkAutoDrain のテストと同じ観点）。
+  // ===========================================================================
+  describe('processEventSubSubscriptionHealth', () => {
+    const healthEnv = {
+      ...mockEnv,
+      APP_BASE_URL_PROD: 'https://prod.example.com',
+      APP_BASE_URL_PREVIEW: 'https://preview.example.com',
+      EVENTSUB_HEALTH_SECRET_PROD: 'prod-health-secret',
+      EVENTSUB_HEALTH_SECRET_PREVIEW: 'preview-health-secret',
+    };
+
+    const healthyResponse = (total = 3) => ({
+      ok: true,
+      json: () =>
+        Promise.resolve({ total, unhealthyCount: 0, unhealthy: [], checkedAt: '2026-01-01T00:00:00.000Z' }),
+    });
+
+    const unhealthyResponse = (total: number, unhealthyCount: number) => ({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          total,
+          unhealthyCount,
+          unhealthy: Array.from({ length: unhealthyCount }, (_, i) => ({
+            id: `sub-${i}`,
+            type: 'channel.channel_points_custom_reward_redemption.add',
+            status: 'authorization_revoked',
+          })),
+          checkedAt: '2026-01-01T00:00:00.000Z',
+        }),
+    });
+
+    it('baseUrl が未設定のターゲットは warn ログのみで fetch しない', async () => {
+      const env = { ...mockEnv }; // APP_BASE_URL_PROD/PREVIEW ともに無し
+
+      await processEventSubSubscriptionHealth(env);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Missing base URL for production')
+      );
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Missing base URL for preview')
+      );
+    });
+
+    it('health secret が未設定のターゲットは fetch せず warn ログのみ', async () => {
+      const env = {
+        ...mockEnv,
+        APP_BASE_URL_PROD: 'https://prod.example.com',
+        APP_BASE_URL_PREVIEW: 'https://preview.example.com',
+        // secret 両方未設定
+      };
+
+      await processEventSubSubscriptionHealth(env);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Missing health secret for production')
+      );
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Missing health secret for preview')
+      );
+    });
+
+    it('両ターゲットへ正しいURL・ヘッダーでGETし、全件健全ならlogのみ出す', async () => {
+      fetchMock.mockResolvedValueOnce(healthyResponse(3));
+      fetchMock.mockResolvedValueOnce(healthyResponse(1));
+
+      await processEventSubSubscriptionHealth(healthEnv);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][0]).toBe('https://prod.example.com/api/admin/eventsub-health');
+      expect(fetchMock.mock.calls[0][1].headers).toEqual({ 'X-EventSub-Health-Secret': 'prod-health-secret' });
+      expect(fetchMock.mock.calls[1][0]).toBe('https://preview.example.com/api/admin/eventsub-health');
+      expect(fetchMock.mock.calls[1][1].headers).toEqual({ 'X-EventSub-Health-Secret': 'preview-health-secret' });
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('production: all 3 subscription(s) healthy')
+      );
+    });
+
+    it('unhealthyCount>0の場合はwarnログを出す（GitHub Issue化はroute側の責務のためfetch結果を要約するだけ）', async () => {
+      fetchMock.mockResolvedValueOnce(unhealthyResponse(5, 2));
+      fetchMock.mockResolvedValueOnce(healthyResponse(1));
+
+      await processEventSubSubscriptionHealth(healthEnv);
+
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('production: 2/5 subscription(s) unhealthy')
+      );
+    });
+
+    it('非2xxレスポンスはエラーログのみで例外を投げず、他ターゲットの処理は続く', async () => {
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: () => Promise.resolve('boom') });
+      fetchMock.mockResolvedValueOnce(healthyResponse(1));
+
+      await expect(processEventSubSubscriptionHealth(healthEnv)).resolves.toBeUndefined();
+
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('eventsub-health returned 500 for production: boom')
+      );
+      // preview 側の呼び出しまで到達している(独立性の確認)
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('fetch がネットワークエラーで reject してもエラーログのみで他ターゲットは続行する', async () => {
+      fetchMock.mockRejectedValueOnce(new Error('network down'));
+      fetchMock.mockResolvedValueOnce(healthyResponse(1));
+
+      await expect(processEventSubSubscriptionHealth(healthEnv)).resolves.toBeUndefined();
+
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringContaining('failed to call eventsub-health for production'),
+        expect.any(Error)
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
 

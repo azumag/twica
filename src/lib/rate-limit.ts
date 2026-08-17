@@ -398,6 +398,10 @@ export const rateLimits = {
   // リプレイ実行）より低リスクな読み取り専用のため、監視ツールからの定期ポーリング
   // （数分おき等）にも耐えられるようやや緩めの水準（分あたり20回）にする。
   dbHealth: createRatelimit("dbHealth", 20, 60 * 1000),
+  // Issue #540: EventSub サブスクリプション健全性監視エンドポイント。
+  // dbHealth と同じ「共有シークレット認証・読み取り専用」の運用エンドポイントで、
+  // 5分毎のCron Workerからの定期ポーリングに耐えられるよう同水準（分あたり20回）にする。
+  eventsubHealth: createRatelimit("eventsubHealth", 20, 60 * 1000),
 } as const;
 
 /**

@@ -133,3 +133,12 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 # どちらも未設定の場合、該当ターゲットへの自動ドレインのみを安全にスキップし
 # 警告ログを出す（他方のターゲットや既存の errors/inquiries/backlog監視には
 # 影響しない）。デプロイ後にオーナーが設定する想定。
+#
+# EventSub サブスクリプション健全性監視（Issue #540）用の追加 secrets:
+# - EVENTSUB_HEALTH_SECRET_PROD: 本番アプリ（twica）の EVENTSUB_HEALTH_SECRET と
+#   同じ値を `wrangler secret put EVENTSUB_HEALTH_SECRET_PROD` で設定すること
+#   （EVENTSUB_REPLAY_SECRET_PROD と同じ理由。新しい値を生成しない）。
+# - EVENTSUB_HEALTH_SECRET_PREVIEW: preview アプリ（twica-preview）の
+#   EVENTSUB_HEALTH_SECRET と同じ値。上記と同様に設定すること。
+# どちらも未設定の場合、該当ターゲットへのヘルスチェックのみを安全にスキップし
+# 警告ログを出す。デプロイ後にオーナーが設定する想定。
