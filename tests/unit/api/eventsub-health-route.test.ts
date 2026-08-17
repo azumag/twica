@@ -296,12 +296,16 @@ describe("GET /api/admin/eventsub-health", () => {
     expect(previewMessage).toContain("[preview]");
   });
 
-  it("Twitch API呼び出しが失敗したら502を返し、reportErrorをawaitして記録を保証する", async () => {
+  it("Twitch API呼び出しが失敗したら502を返し、reportErrorをenvironment付き固定メッセージでawaitして記録を保証する", async () => {
     // レビュー指摘の修正: この失敗経路も「レスポンス前に永続化を保証する必要が
     // ある経路」（logger.server.ts 冒頭コメント）に該当する。fire-and-forget の
     // logger.error だと、Cloudflare Workers の isolate 回収タイミング次第で
     // DB書き込みが完走しないまま失われうるため、reportError を直接 await する
     // （unhealthy 検知時の分岐と同じ設計）。
+    //
+    // PR #1009 3回目のレビュー指摘(必須): 当初は err をそのまま渡していたため
+    // status codeごとにmessageが変わりsignatureが割れていた。今はmessageを
+    // environmentごとに固定し、エラー詳細はcontext側にのみ渡す。
     const apiError = new Error("Failed to fetch EventSub subscriptions: 503");
     mocks.listAllEventSubSubscriptions.mockRejectedValue(apiError);
     const { GET } = await import("@/app/api/admin/eventsub-health/route");
@@ -313,8 +317,30 @@ describe("GET /api/admin/eventsub-health", () => {
     expect(body.error).toBe(ERROR_MESSAGES.INTERNAL_ERROR);
     expect(mocks.reportError).toHaveBeenCalledTimes(1);
     const [error, context] = mocks.reportError.mock.calls[0];
-    expect(error).toBe(apiError);
-    expect(context).toMatchObject({ context: "eventsub-health:fetchFailed" });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "[EventSub Health][production] Failed to check EventSub subscription health"
+    );
+    expect(context).toMatchObject({
+      environment: "production",
+      context: "eventsub-health:fetchFailed",
+      error: apiError.message,
+    });
+  });
+
+  it("status codeが異なるTwitch API失敗を繰り返してもメッセージは常に固定（signature安定性）", async () => {
+    mocks.listAllEventSubSubscriptions
+      .mockRejectedValueOnce(new Error("Failed to fetch EventSub subscriptions: 503"))
+      .mockRejectedValueOnce(new Error("Failed to fetch EventSub subscriptions: 500"));
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    await GET(createHealthRequest());
+    await GET(createHealthRequest());
+
+    expect(mocks.reportError).toHaveBeenCalledTimes(2);
+    const firstMessage = (mocks.reportError.mock.calls[0][0] as Error).message;
+    const secondMessage = (mocks.reportError.mock.calls[1][0] as Error).message;
+    expect(firstMessage).toBe(secondMessage);
   });
 });
 
@@ -367,14 +393,14 @@ describe("GET /api/admin/eventsub-health のアラートクールダウン", () 
     expect(mocks.reportError).toHaveBeenCalledTimes(1);
     expect(kvPut).toHaveBeenCalledTimes(1);
     const [key, value, options] = kvPut.mock.calls[0];
-    expect(key).toBe("eventsub-health:alert-state:production");
-    expect(JSON.parse(value)).toEqual({ subscriptionIds: ["sub-1"], alertedAt: FIXED_NOW.getTime() });
+    expect(key).toBe("eventsub-health:alert-state:unhealthy:production");
+    expect(JSON.parse(value)).toEqual({ fingerprint: "sub-1", alertedAt: FIXED_NOW.getTime() });
     expect(options).toEqual({ expirationTtl: 7200 });
   });
 
   it("同じsubscription ID集合のままクールダウン期間内なら再アラートしない", async () => {
     kvGet.mockResolvedValue(
-      JSON.stringify({ subscriptionIds: ["sub-1"], alertedAt: agoIso(10) }) // 10分前(60分未満)
+      JSON.stringify({ fingerprint: "sub-1", alertedAt: agoIso(10) }) // 10分前(60分未満)
     );
     mocks.listAllEventSubSubscriptions.mockResolvedValue([
       unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
@@ -392,7 +418,7 @@ describe("GET /api/admin/eventsub-health のアラートクールダウン", () 
 
   it("同じ集合でもクールダウン期間(60分)を過ぎていれば生存確認として再アラートする", async () => {
     kvGet.mockResolvedValue(
-      JSON.stringify({ subscriptionIds: ["sub-1"], alertedAt: agoIso(61) }) // 61分前
+      JSON.stringify({ fingerprint: "sub-1", alertedAt: agoIso(61) }) // 61分前
     );
     mocks.listAllEventSubSubscriptions.mockResolvedValue([
       unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
@@ -407,7 +433,7 @@ describe("GET /api/admin/eventsub-health のアラートクールダウン", () 
 
   it("unhealthyなsubscription集合が変化していればクールダウン中でも即座に再アラートする(悪化を見逃さない)", async () => {
     kvGet.mockResolvedValue(
-      JSON.stringify({ subscriptionIds: ["sub-1"], alertedAt: agoIso(5) }) // 5分前(60分未満)
+      JSON.stringify({ fingerprint: "sub-1", alertedAt: agoIso(5) }) // 5分前(60分未満)
     );
     mocks.listAllEventSubSubscriptions.mockResolvedValue([
       unhealthySubscription("sub-1", "webhook_callback_verification_failed"),
@@ -421,7 +447,7 @@ describe("GET /api/admin/eventsub-health のアラートクールダウン", () 
     const [, context] = mocks.reportError.mock.calls[0];
     expect(context).toMatchObject({ count: 2 });
     const [, value] = kvPut.mock.calls[0];
-    expect(JSON.parse(value).subscriptionIds).toEqual(["sub-1", "sub-2"]);
+    expect(JSON.parse(value).fingerprint).toBe("sub-1,sub-2");
   });
 
   it("KV読み取りが失敗した場合はfail-openで常にアラートする", async () => {
@@ -448,5 +474,101 @@ describe("GET /api/admin/eventsub-health のアラートクールダウン", () 
 
     expect(response.status).toBe(200);
     expect(mocks.reportError).toHaveBeenCalledTimes(1);
+  });
+
+  // PR #1009 レビュー指摘(任意): flapping対策。復旧時にKV状態を消さないと、
+  // 「壊れて通知→復旧→同じ集合で再発」のケースがクールダウンに握り潰される。
+  it("unhealthyが0件に戻ったらKVのクールダウン状態を消す(flapping対策)", async () => {
+    kvGet.mockResolvedValue(JSON.stringify({ fingerprint: "sub-1", alertedAt: agoIso(5) }));
+    mocks.listAllEventSubSubscriptions.mockResolvedValue([healthySubscription("sub-1")]);
+    const kvDelete = vi.fn().mockResolvedValue(undefined);
+    mocks.getKvBinding.mockResolvedValue({ get: kvGet, put: kvPut, delete: kvDelete });
+    const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+    await GET(createHealthRequest());
+
+    expect(kvDelete).toHaveBeenCalledWith("eventsub-health:alert-state:unhealthy:production");
+    expect(mocks.reportError).not.toHaveBeenCalled();
+  });
+
+  // PR #1009 3回目のレビュー指摘(必須): Twitch API/app token呼び出し失敗経路にも
+  // 同じクールダウンゲートを適用する。当初はunhealthy検知側にしか適用しておらず、
+  // この経路だけ無条件でreportErrorし続けるスパムが残っていた。
+  describe("fetch失敗経路のクールダウン", () => {
+    it("同じfetch失敗が続く間はクールダウン期間内なら再アラートしない", async () => {
+      kvGet.mockResolvedValue(
+        JSON.stringify({ fingerprint: "fetch-failed", alertedAt: agoIso(10) })
+      );
+      mocks.listAllEventSubSubscriptions.mockRejectedValue(
+        new Error("Failed to fetch EventSub subscriptions: 503")
+      );
+      const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+      const response = await GET(createHealthRequest());
+
+      expect(response.status).toBe(502);
+      expect(mocks.reportError).not.toHaveBeenCalled();
+      // unhealthy検知用とは独立したキーを使う(片方のクールダウンがもう片方を
+      // 巻き込んで抑制しない)。
+      expect(kvGet).toHaveBeenCalledWith("eventsub-health:alert-state:fetch-failed:production");
+    });
+
+    it("クールダウンを過ぎていればfetch失敗も再アラートする", async () => {
+      kvGet.mockResolvedValue(
+        JSON.stringify({ fingerprint: "fetch-failed", alertedAt: agoIso(61) })
+      );
+      mocks.listAllEventSubSubscriptions.mockRejectedValue(
+        new Error("Failed to fetch EventSub subscriptions: 500")
+      );
+      const { GET } = await import("@/app/api/admin/eventsub-health/route");
+
+      await GET(createHealthRequest());
+
+      expect(mocks.reportError).toHaveBeenCalledTimes(1);
+      expect(kvPut).toHaveBeenCalledWith(
+        "eventsub-health:alert-state:fetch-failed:production",
+        expect.any(String),
+        { expirationTtl: 7200 }
+      );
+    });
+  });
+
+  // PR #1009 3回目のレビュー指摘(必須): EVENTSUB_HEALTH_SECRET未設定(500)経路にも
+  // 同じクールダウンゲートを適用する。Worker側secretだけ先に設定されアプリ側が
+  // 未設定という一時的なデプロイ順序の過渡期でも、5分毎のスパムを防ぐ。
+  describe("secret未設定経路のクールダウン", () => {
+    it("secret未設定が続く間はクールダウン期間内ならlogger.errorを再度呼ばない", async () => {
+      delete process.env.EVENTSUB_HEALTH_SECRET;
+      kvGet.mockResolvedValue(
+        JSON.stringify({ fingerprint: "secret-missing", alertedAt: agoIso(10) })
+      );
+      const { GET } = await import("@/app/api/admin/eventsub-health/route");
+      const { logger } = await import("@/lib/logger.server");
+
+      const response = await GET(createHealthRequest());
+
+      expect(response.status).toBe(500);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(kvGet).toHaveBeenCalledWith("eventsub-health:alert-state:secret-missing:production");
+    });
+
+    it("クールダウンを過ぎていればsecret未設定も再度logger.errorする", async () => {
+      delete process.env.EVENTSUB_HEALTH_SECRET;
+      kvGet.mockResolvedValue(
+        JSON.stringify({ fingerprint: "secret-missing", alertedAt: agoIso(61) })
+      );
+      const { GET } = await import("@/app/api/admin/eventsub-health/route");
+      const { logger } = await import("@/lib/logger.server");
+
+      const response = await GET(createHealthRequest());
+
+      expect(response.status).toBe(500);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(kvPut).toHaveBeenCalledWith(
+        "eventsub-health:alert-state:secret-missing:production",
+        expect.any(String),
+        { expirationTtl: 7200 }
+      );
+    });
   });
 });

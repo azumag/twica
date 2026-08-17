@@ -29,14 +29,23 @@
    Sentry SDK を削除済みで、`reportError` が
    console出力 + PlanetScale `errors` テーブルへの永続化を担う後継実装になって
    いる（`src/lib/sentry/error-handler.ts`）。ただし無条件には呼ばない —
-   KV（`RATE_LIMIT_KV` を disjoint な key prefix で共用）にアラート済みの
-   unhealthy subscription ID集合と時刻を記録し、(a) 同じ集合のままクール
-   ダウン期間（1時間）内ならスキップ、(b) 集合が変化(悪化/一部回復)すれば
-   クールダウン中でも即座に再アラート、(c) クールダウンを過ぎれば同じ集合
-   でも生存確認として再アラート、という頻度制御を行う（詳細は
-   `src/app/api/admin/eventsub-health/route.ts` の `shouldSendUnhealthyAlert`
-   参照）。これが無いと、5分毎のCronの度に無条件でreportErrorしてしまい、
-   次項のGitHub Issueへ最大12コメント/時のスパムが発生する。
+   KV（`RATE_LIMIT_KV` を disjoint な key prefix で共用）に「直近でアラート
+   済みの問題の形（fingerprint）」と時刻を記録し、(a) 前回と同じ内容のまま
+   クールダウン期間（1時間）内ならスキップ、(b) 内容が変化(悪化/一部回復)
+   すればクールダウン中でも即座に再アラート、(c) クールダウンを過ぎれば
+   同じ内容でも生存確認として再アラート、という頻度制御を行う（詳細は
+   `src/app/api/admin/eventsub-health/route.ts` の `shouldSendAlert`
+   参照）。この頻度制御は次の3経路すべてに独立に適用する（経路ごとに別々の
+   KVキー・クールダウンを持つため、1経路の障害が他経路の通知を巻き込んで
+   抑制することはない）:
+   - unhealthy サブスクリプション検知（fingerprint = 対象 subscription id
+     集合）
+   - Twitch API/app token 呼び出し失敗（fingerprint は固定。status code等の
+     詳細で signature が割れないようにするため）
+   - `EVENTSUB_HEALTH_SECRET` 未設定（Worker側secretだけ先に設定されアプリ
+     側が未設定という一時的なデプロイ順序の過渡期を想定）
+   これが無いと、5分毎のCronの度に無条件で通知してしまい、次項のGitHub
+   Issueへ最大12コメント/時/経路のスパムが発生する。
 4. `errors` テーブルに積まれた行は、同じ Cron Worker の既存処理
    （`processErrors`）が5分毎に読み出し、GitHub Issue を自動作成・再発時は
    既存 Issue へコメント追記する（`bug` / `auto-generated` ラベル）。

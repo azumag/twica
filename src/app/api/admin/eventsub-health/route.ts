@@ -37,8 +37,9 @@ import {
  * (src/lib/sentry/error-handler.ts 冒頭コメント参照)。`errors` テーブルに
  * 積まれた行は既存の `twica-error-reporter` Cron Worker が5分毎に読み出し、
  * 同一シグネチャ（今回は environment ごとに固定したメッセージ文字列。
- * buildUnhealthyAlertMessage 参照）でグルーピングしながら GitHub Issue を
- * 自動作成・再発時はコメント追記する。そのため本routeは
+ * buildUnhealthyAlertMessage / buildFetchFailedAlertMessage 参照）で
+ * グルーピングしながら GitHub Issue を自動作成・再発時はコメント追記する。
+ * そのため本routeは
  * 独自にGitHub Issueを作らず、`reportError` を呼ぶだけで既存のアラート
  * パイプラインにそのまま乗る。`logger.error`（fire-and-forget実装）ではなく
  * `reportError` を直接 await する理由: logger.server.ts 冒頭コメントの指示
@@ -66,17 +67,30 @@ import {
  * 「判定・アラートをroute側へ集約しWorkerをトリガーに徹させる」という
  * 本機能の分離設計（このJSDoc冒頭参照）を崩してしまう。
  * 代わりに、KV（RATE_LIMIT_KVを他の用途と同じくdisjointなキーprefixで共用。
- * root wrangler.tomlのコメント参照）へ「直近でアラート済みのunhealthy
- * subscription ID集合とその時刻」を保存し、
- *   (a) 前回と同じID集合のままクールダウン期間内 → 再アラートをスキップ
- *   (b) ID集合が変化した(新たに壊れた/一部回復した) → クールダウン中でも
+ * root wrangler.tomlのコメント参照）へ「直近でアラート済みの問題の
+ * fingerprint（何が起きているかを表す文字列）とその時刻」を保存し、
+ *   (a) 前回と同じfingerprintのままクールダウン期間内 → 再アラートをスキップ
+ *   (b) fingerprintが変化した(新たに壊れた/一部回復した) → クールダウン中でも
  *       即座に再アラート(悪化・変化を見逃さない)
- *   (c) クールダウン期間を過ぎた → 同じID集合でも再アラート
+ *   (c) クールダウン期間を過ぎた → 同じfingerprintでも再アラート
  *       (「まだ直っていない」ことを示す生存確認、無音で放置されるのを防ぐ)
- * という3条件のいずれかで reportError を呼ぶ。KV読み書きに失敗した場合は
- * fail-open（判定不能として常にアラートする）にする — 監視機能が「サイレント
- * に沈黙する」方向の失敗より「多少うるさい」方向の失敗の方が安全なため
- * （src/lib/twitch/app-token.ts の getTwitchAppAccessToken と同じ思想）。
+ * という3条件のいずれかで通知(reportError/logger.error)を呼ぶ。KV読み書きに
+ * 失敗した場合は fail-open（判定不能として常にアラートする）にする —
+ * 監視機能が「サイレントに沈黙する」方向の失敗より「多少うるさい」方向の
+ * 失敗の方が安全なため（src/lib/twitch/app-token.ts の
+ * getTwitchAppAccessToken と同じ思想）。
+ *
+ * このゲートは3つの独立した通知経路すべてに適用する（PR #1009 3回目の
+ * レビュー指摘・必須。当初はunhealthy検知側にしか適用しておらず、fetch失敗
+ * ・secret未設定の2経路が同じスパムパターンを起こしたまま残っていた）:
+ *   1. unhealthy検知（fingerprint = ソート済みsubscription id集合）
+ *   2. Twitch API/app token呼び出し失敗（fingerprint = 固定文字列。エラー
+ *      詳細ごとに区別すると status code 違いだけでシグネチャが割れ、
+ *      buildFetchFailedAlertMessage が防ごうとしている可変メッセージ問題を
+ *      文字列は直っても実質的に再現してしまうため、あえて区別しない）
+ *   3. EVENTSUB_HEALTH_SECRET 未設定（fingerprint = 固定文字列。Workerの
+ *      secretだけ先に設定されアプリ側が未設定という一時的なデプロイ順序の
+ *      過渡期で5分毎に発生しうる）
  */
 
 /**
@@ -122,6 +136,18 @@ function buildUnhealthyAlertMessage(environment: "production" | "preview"): stri
   return `[EventSub Health][${environment}] Unhealthy EventSub subscription(s) detected`;
 }
 
+/**
+ * Twitch API/app token 呼び出し自体が失敗した場合のアラートメッセージ。
+ * buildUnhealthyAlertMessage と同じ理由でenvironmentごとに固定する。
+ * 実際のエラー内容（status code・message等、fetch失敗の詳細で可変）は
+ * context側にのみ渡し、message自体には含めない（PR #1009 3回目のレビュー
+ * 指摘・必須: 当初は err をそのまま渡していたため、status code違いだけで
+ * signatureが割れ、環境が混在するだけでなくIssueも乱立していた）。
+ */
+function buildFetchFailedAlertMessage(environment: "production" | "preview"): string {
+  return `[EventSub Health][${environment}] Failed to check EventSub subscription health`;
+}
+
 /** `process.env.NEXT_PUBLIC_APP_URL` から environment を判定する。
  * `src/lib/sentry/error-handler.ts` の persistErrorToDatabase と同じロジック
  * （errors.environment 列の算出方法と一致させておく必要があるため、意図的な
@@ -147,47 +173,52 @@ const EVENTSUB_HEALTH_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 const EVENTSUB_HEALTH_ALERT_KV_TTL_SECONDS = (EVENTSUB_HEALTH_ALERT_COOLDOWN_MS / 1000) * 2;
 
 interface EventSubHealthAlertState {
-  /** 直近のアラート時点でunhealthyだったsubscription idの集合（ソート済み）。 */
-  subscriptionIds: string[];
+  /** 直近のアラート時点での「問題の形」を表す文字列（等価比較にのみ使う）。 */
+  fingerprint: string;
   /** 直近にアラートした時刻（epoch ms）。 */
   alertedAt: number;
 }
 
+/** unhealthy検知の fingerprint（ソート済みsubscription id集合をjoin）を作る。 */
+function unhealthyFingerprint(subscriptionIds: string[]): string {
+  return [...subscriptionIds].sort().join(",");
+}
+
 /**
- * 今回のunhealthy集合についてアラート(reportError)すべきかを判定する。
- * KVの読み取りに失敗した場合はfail-open（true）で返す — 判定不能を理由に
- * 監視が沈黙する方が、多少アラートが増えるより悪い（このコメント冒頭の
- * JSDoc「アラート頻度制御」節参照）。
+ * 今回のfingerprintについてアラート(reportError/logger.error)すべきかを
+ * 判定する。KVの読み取りに失敗した場合はfail-open（true）で返す —
+ * 判定不能を理由に監視が沈黙する方が、多少アラートが増えるより悪い
+ * （このファイル冒頭のJSDoc「アラート頻度制御」節参照）。
  *
- * @param currentIds 今回unhealthyと判定されたsubscription idの配列(順不同)。
+ * @param kvKey 通知経路ごとに独立したクールダウンを持たせるためのKVキー
+ *   （unhealthy検知・fetch失敗・secret未設定の3経路はそれぞれ別キーを使う。
+ *   同じキーを共有すると、例えばfetch失敗中にunhealthy検知の再アラートまで
+ *   巻き込んで抑制してしまう）。
+ * @param fingerprint 今回の「問題の形」を表す文字列。前回と異なればクール
+ *   ダウン中でも即座にtrueを返す。
  */
-async function shouldSendUnhealthyAlert(
+async function shouldSendAlert(
   kv: KVNamespaceLike | null,
-  environment: "production" | "preview",
-  currentIds: string[],
+  kvKey: string,
+  fingerprint: string,
   now: number
 ): Promise<boolean> {
   if (!kv) return true; // ローカル開発等でKV bindingが無い場合はfail-open。
 
-  const sortedCurrentIds = [...currentIds].sort();
   try {
-    const raw = await kv.get(`${EVENTSUB_HEALTH_ALERT_KV_PREFIX}${environment}`);
+    const raw = await kv.get(kvKey);
     if (!raw) return true; // 前回状態が無い(初回検知 or TTL失効) → アラートする。
 
     const cached = JSON.parse(raw) as EventSubHealthAlertState;
-    const sameSet =
-      Array.isArray(cached.subscriptionIds) &&
-      cached.subscriptionIds.length === sortedCurrentIds.length &&
-      cached.subscriptionIds.every((id, i) => id === sortedCurrentIds[i]);
-    if (!sameSet) return true; // 集合が変化(悪化/一部回復) → 即座にアラート。
+    if (cached.fingerprint !== fingerprint) return true; // 状態が変化 → 即座にアラート。
 
     const cooldownExpired =
       typeof cached.alertedAt !== "number" ||
       now - cached.alertedAt >= EVENTSUB_HEALTH_ALERT_COOLDOWN_MS;
-    return cooldownExpired; // 同じ集合でもクールダウンを過ぎていれば生存確認として再アラート。
+    return cooldownExpired; // 同じ状態でもクールダウンを過ぎていれば生存確認として再アラート。
   } catch (err) {
     logger.warn("[eventsub-health] Failed to read alert cooldown state from KV, defaulting to alert", {
-      environment,
+      kvKey,
       error: err instanceof Error ? err.message : String(err),
     });
     return true;
@@ -195,33 +226,56 @@ async function shouldSendUnhealthyAlert(
 }
 
 /**
- * アラート送信後に、今回のunhealthy集合と時刻をKVへ記録する。
- * 書き込み失敗はreportError自体の成否に影響させない(ベストエフォート) —
+ * アラート送信後に、今回のfingerprintと時刻をKVへ記録する。
+ * 書き込み失敗は呼び出し元の通知自体の成否に影響させない(ベストエフォート) —
  * 次回tickでKVが復旧すれば追従する。書き込み失敗時に次回もアラートが
- * 飛ぶ(＝多少うるさくなる)のは、上記shouldSendUnhealthyAlertと同じ
- * fail-open方針と整合する安全側の失敗モード。
+ * 飛ぶ(＝多少うるさくなる)のは、上記shouldSendAlertと同じfail-open方針と
+ * 整合する安全側の失敗モード。
  */
-async function recordUnhealthyAlertState(
+async function recordAlertState(
   kv: KVNamespaceLike | null,
-  environment: "production" | "preview",
-  currentIds: string[],
+  kvKey: string,
+  fingerprint: string,
   now: number
 ): Promise<void> {
   if (!kv) return;
-  const state: EventSubHealthAlertState = {
-    subscriptionIds: [...currentIds].sort(),
-    alertedAt: now,
-  };
+  const state: EventSubHealthAlertState = { fingerprint, alertedAt: now };
   try {
-    await kv.put(`${EVENTSUB_HEALTH_ALERT_KV_PREFIX}${environment}`, JSON.stringify(state), {
+    await kv.put(kvKey, JSON.stringify(state), {
       expirationTtl: EVENTSUB_HEALTH_ALERT_KV_TTL_SECONDS,
     });
   } catch (err) {
     logger.warn("[eventsub-health] Failed to persist alert cooldown state to KV", {
-      environment,
+      kvKey,
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+/**
+ * unhealthy検知が解消した(0件になった)場合にクールダウン状態を消す。
+ * PR #1009 レビュー指摘(任意、フォローアップissue #1010から本PRへ前倒し):
+ * これを呼ばないと「壊れて通知→復旧→再び壊れる」というflapping時に、KVへ
+ * 残った前回のfingerprintと偶然一致してクールダウンに握り潰されうる
+ * （例: 同じsubscription集合が一時的に復旧してから再発した場合）。
+ * 削除失敗はベストエフォート（次回のexpirationTtlで自然消滅するため実害は
+ * 軽微）。
+ */
+async function clearAlertState(kv: KVNamespaceLike | null, kvKey: string): Promise<void> {
+  if (!kv) return;
+  try {
+    await kv.delete(kvKey);
+  } catch (err) {
+    logger.warn("[eventsub-health] Failed to clear alert cooldown state in KV", {
+      kvKey,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** 通知経路ごとに独立したKVキーを組み立てる（shouldSendAlertのJSDoc参照）。 */
+function alertStateKvKey(kind: "unhealthy" | "fetch-failed" | "secret-missing", environment: "production" | "preview"): string {
+  return `${EVENTSUB_HEALTH_ALERT_KV_PREFIX}${kind}:${environment}`;
 }
 
 interface EventSubHealthResponse {
@@ -243,7 +297,17 @@ export async function GET(request: NextRequest) {
   // できてしまう事故を防ぐため 500 を返す（db-health/route.ts と同じ設計）。
   const expectedSecret = process.env.EVENTSUB_HEALTH_SECRET;
   if (!expectedSecret) {
-    logger.error("[eventsub-health] EVENTSUB_HEALTH_SECRET is not configured");
+    // Worker側secretだけ先に設定されアプリ側が未設定、という一時的な
+    // デプロイ順序の過渡期でも5分毎に呼ばれうるため、他の通知経路と同じ
+    // クールダウンゲートを通す（PR #1009 3回目のレビュー指摘・必須）。
+    const environment = resolveEnvironment();
+    const kv = await getKvBinding();
+    const kvKey = alertStateKvKey("secret-missing", environment);
+    const now = Date.now();
+    if (await shouldSendAlert(kv, kvKey, "secret-missing", now)) {
+      logger.error("[eventsub-health] EVENTSUB_HEALTH_SECRET is not configured");
+      await recordAlertState(kv, kvKey, "secret-missing", now);
+    }
     return NextResponse.json(
       { error: ERROR_MESSAGES.INTERNAL_ERROR },
       { status: 500 }
@@ -274,20 +338,30 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const environment = resolveEnvironment();
+  const kv = await getKvBinding();
+
   try {
     const subscriptions = await listAllEventSubSubscriptions();
     const unhealthy = subscriptions.filter((sub) => isUnhealthyEventSubStatus(sub.status));
+    const unhealthyDetails = unhealthy.map((sub) => ({
+      id: sub.id,
+      type: sub.type,
+      status: sub.status,
+      broadcasterUserId: sub.condition.broadcaster_user_id ?? sub.condition.to_broadcaster_user_id,
+      rewardId: sub.condition.reward_id,
+      createdAt: sub.created_at,
+    }));
+    const unhealthyAlertKey = alertStateKvKey("unhealthy", environment);
+    const now = Date.now();
 
     if (unhealthy.length > 0) {
-      const environment = resolveEnvironment();
-      const unhealthyIds = unhealthy.map((sub) => sub.id);
-      const now = Date.now();
       // 5分毎に無条件でreportErrorすると、error-reporterがクールダウン無しで
       // 同一Issueへコメントを積み続けてしまう（このファイル冒頭のJSDoc
       // 「アラート頻度制御」節参照）。KVベースのクールダウン+変化検知ゲートを
       // 挟み、状況が変わらない限り最大1時間に1回まで間引く。
-      const kv = await getKvBinding();
-      if (await shouldSendUnhealthyAlert(kv, environment, unhealthyIds, now)) {
+      const fingerprint = unhealthyFingerprint(unhealthy.map((sub) => sub.id));
+      if (await shouldSendAlert(kv, unhealthyAlertKey, fingerprint, now)) {
         // reportError が console.error 出力とDB永続化（→GitHub Issue化）の両方を
         // 担うため、ここで別途 logger.warn を挟むと同じ検知内容を2箇所へ重複
         // ログすることになる。メッセージ文字列は environment ごとに固定
@@ -295,47 +369,55 @@ export async function GET(request: NextRequest) {
         await reportError(new Error(buildUnhealthyAlertMessage(environment)), {
           environment,
           count: unhealthy.length,
-          subscriptions: unhealthy.map((sub) => ({
-            id: sub.id,
-            type: sub.type,
-            status: sub.status,
-            broadcasterUserId: sub.condition.broadcaster_user_id ?? sub.condition.to_broadcaster_user_id,
-            rewardId: sub.condition.reward_id,
-            createdAt: sub.created_at,
-          })),
+          subscriptions: unhealthyDetails,
         });
-        await recordUnhealthyAlertState(kv, environment, unhealthyIds, now);
+        await recordAlertState(kv, unhealthyAlertKey, fingerprint, now);
       }
+    } else {
+      // 復旧した。KVへ前回のfingerprintを残したままにすると、後で同じ集合が
+      // 再発(flapping)した際に「変化なし」と誤判定してクールダウンに握り
+      // 潰されてしまうため、クールダウン状態自体を消しておく
+      // （PR #1009 3回目のレビュー指摘・任意。TTLでも自然消滅するが、
+      // flapping間隔がTTLより短いケースを塞ぐために即時clearする）。
+      await clearAlertState(kv, unhealthyAlertKey);
     }
 
     const body: EventSubHealthResponse = {
       total: subscriptions.length,
       unhealthyCount: unhealthy.length,
-      unhealthy: unhealthy.map((sub) => ({
-        id: sub.id,
-        type: sub.type,
-        status: sub.status,
-        broadcasterUserId: sub.condition.broadcaster_user_id ?? sub.condition.to_broadcaster_user_id,
-        rewardId: sub.condition.reward_id,
-        createdAt: sub.created_at,
-      })),
+      unhealthy: unhealthyDetails,
       checkedAt: new Date().toISOString(),
     };
     return NextResponse.json(body);
   } catch (error) {
     // Twitch API 呼び出し自体の失敗（app token発行失敗・Helix障害等）。
     // db-health/route.ts と異なりホスト名等の機密情報を含む余地は無いため、
-    // エラーの message/stack をそのまま reportError に渡す（レスポンスは
-    // 汎用メッセージのみ）。
+    // エラーの message/stack はそのまま reportError の第2引数(context)に渡す
+    // （レスポンスは汎用メッセージのみ）。message自体は environment ごとに
+    // 固定する（buildFetchFailedAlertMessage 参照。fetch失敗の詳細ごとに
+    // signatureを割らないため）。
     //
     // logger.error（fire-and-forget）ではなく reportError を直接 await する
-    // 理由: 上の UNHEALTHY_ALERT_MESSAGE 分岐と同じ（このコメント冒頭の
-    // JSDoc「アラート方式」節参照）。この catch は Twitch API/app token 自体の
-    // 障害という、本エンドポイントの目的（#527 のような無音の失敗を確実に
-    // 検知する）そのものに関わる経路であり、fire-and-forget にすると
-    // レスポンス返却後の isolate 回収でDB書き込みが完走しない恐れがある。
+    // 理由: 上のunhealthy検知分岐と同じ（このファイル冒頭のJSDoc「アラート
+    // 方式」節参照）。この catch は Twitch API/app token 自体の障害という、
+    // 本エンドポイントの目的（#527 のような無音の失敗を確実に検知する）
+    // そのものに関わる経路であり、fire-and-forget にするとレスポンス返却後の
+    // isolate 回収でDB書き込みが完走しない恐れがある。
     const err = error instanceof Error ? error : new Error(String(error));
-    await reportError(err, { context: "eventsub-health:fetchFailed" });
+    const now = Date.now();
+    const fetchFailedAlertKey = alertStateKvKey("fetch-failed", environment);
+    // fetch失敗はunhealthy検知と独立したクールダウンキーを使う（fingerprintは
+    // 固定文字列。JSDoc「アラート頻度制御」節参照）ため、片方のスパム対策が
+    // もう片方の再アラートまで巻き込んで抑制することはない。
+    if (await shouldSendAlert(kv, fetchFailedAlertKey, "fetch-failed", now)) {
+      await reportError(new Error(buildFetchFailedAlertMessage(environment)), {
+        environment,
+        context: "eventsub-health:fetchFailed",
+        error: err.message,
+        stack: err.stack,
+      });
+      await recordAlertState(kv, fetchFailedAlertKey, "fetch-failed", now);
+    }
     return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 502 });
   }
 }
