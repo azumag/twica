@@ -80,6 +80,8 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     publish_stats: false,
     raid_gacha_active_until: null,
     raid_gacha_draw_count: 0,
+    trade_enabled: false,
+    cross_channel_trade_enabled: false,
     created_at: '2025-12-01T00:00:00.000+00:00',
     updated_at: '2025-12-01T00:00:00.000+00:00',
     ...overrides,
