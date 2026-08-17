@@ -126,6 +126,7 @@ DECLARE
   v_wanted_streamer_cross_enabled boolean;
   v_offered_card_owner_check uuid;
   v_payer_user_card_id uuid;
+  v_payer_update_count integer;
 BEGIN
   -- 引数欠落は呼び出し側(API層)の契約違反であり、通常運用では起こり得ない。
   -- 00060 の REQUEST_ID_REQUIRED / USER_NOT_FOUND と同じく RAISE EXCEPTION とする
@@ -252,6 +253,17 @@ BEGIN
     )
   FOR UPDATE;
 
+  -- この2段目のSELECTは意図的に FOR UPDATE を付けない(付けると240-244で避けた
+  -- 「LIMIT 1 + FOR UPDATE が繰り上がらない」問題を再導入する)。そのため
+  -- READ COMMITTED では245-253のPERFORM(スナップショットA)とこのSELECT
+  -- (スナップショットB)の間に、応諾者が同じwanted_card_idの新規コピーを
+  -- 別トランザクション(ガチャ・別トレード成立等)で取得してcommitする余地があり、
+  -- そのコピーは253まででロックされていない。同一応諾者が同じカード種別を
+  -- 要求する2件のオファーを並行accept_trade_offerした場合、両方がこの
+  -- ロックなしSELECTで同一の未ロック行を選定しうる。そのため、この行を
+  -- 「選定候補」に過ぎないものとして扱い、実際の所有権移転(下記UPDATE)を
+  -- user_id条件付き・行数チェック付きにすることで最終防御する
+  -- (Claude Auto Reviewレビュー指摘: PRレビューで検出)。
   SELECT id INTO v_payer_user_card_id
   FROM user_cards
   WHERE user_id = v_user_id
@@ -270,10 +282,29 @@ BEGIN
   -- 4. 所有権移転(row-per-copyなのでUPDATEでuser_idを付け替える。新規発行では
   -- ないためmax_issuance_countには影響せず、card_owner_statsトリガー(00051)は
   -- OLD/NEW双方を再集計するためuser_id付け替えと整合する)
+  --
+  -- 支払いカード側を先に更新する(出品カード側より先)。支払いカード候補は
+  -- 267-276で意図的にロックなしSELECTのため、`AND user_id = v_user_id` を
+  -- 付けた条件付きUPDATE + GET DIAGNOSTICS の行数チェックで最終防御する
+  -- (Claude Auto Reviewレビュー指摘: PRレビューで検出。同一応諾者が同じ
+  -- カード種別を要求する2件のオファーを並行acceptした場合、両方が267-276の
+  -- ロックなしSELECTで同一の未ロック行を選定しうるため)。0件なら
+  -- 「選定後に応諾者自身の並行acceptに先に奪われた」ことを意味する。
+  -- ここではまだ出品カード側(offered_user_card_id)もオファー行のstatusも
+  -- 更新していないため、この時点でJSONBをRETURNしても部分的な副作用は残らず
+  -- (RAISE EXCEPTIONによるロールバックを使わずに)安全にCARD_NOT_OWNEDへ
+  -- fail-closedできる。出品カード側(226-230で既にFOR UPDATE済みの行)は
+  -- 対称に条件を付けなくても安全なため、無条件UPDATEのままでよい。
+  UPDATE user_cards SET user_id = v_offer.offerer_user_id, obtained_at = now()
+    WHERE id = v_payer_user_card_id AND user_id = v_user_id;
+  GET DIAGNOSTICS v_payer_update_count = ROW_COUNT;
+
+  IF v_payer_update_count = 0 THEN
+    RETURN jsonb_build_object('success', false, 'error', 'CARD_NOT_OWNED');
+  END IF;
+
   UPDATE user_cards SET user_id = v_user_id, obtained_at = now()
     WHERE id = v_offer.offered_user_card_id;
-  UPDATE user_cards SET user_id = v_offer.offerer_user_id, obtained_at = now()
-    WHERE id = v_payer_user_card_id;
 
   -- 5. オファーをcompletedに更新
   UPDATE public.trade_offers SET

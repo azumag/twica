@@ -87,6 +87,8 @@ jobs:
               - 'tests/fixtures/analysis-dashboard-pagination-postgres.sql'
               - 'tests/fixtures/transactional-chat-outbox-postgres.sql'
               - 'tests/fixtures/transactional-chat-outbox-concurrency.sh'
+              - 'tests/fixtures/add-card-trading-postgres.sql'
+              - 'tests/fixtures/add-card-trading-concurrency.sh'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
@@ -520,3 +522,21 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: bash tests/fixtures/transactional-chat-outbox-concurrency.sh
+
+      - name: Verify card trading invariants
+        # trade_offers/accept_trade_offerはSQL文字列テストでは冪等リプレイ・
+        # 二重成立防止・設定ゲート・cancelled更新のコミット・支払いカード選定を
+        # 検証できない。実DBでRPCを呼び出して検証する。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/add-card-trading-postgres.sql
+
+      - name: Verify card trading concurrent accept fencing
+        # PRレビューで発見されたレース(同一応諾者が同じ支払いカード種別を
+        # 要求する2オファーを並行acceptすると1枚のカードで2件成立しうる)の
+        # 再発防止。実際の2接続同時実行でしか再現できない。
+        env:
+          PGPASSWORD: postgres
+        run: bash tests/fixtures/add-card-trading-concurrency.sh
