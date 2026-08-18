@@ -41,15 +41,35 @@ vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: vi.fn(),
   rateLimits: { twitchRewardsGet: { windowMs: 60000, max: 30 } },
 }))
-vi.mock('@/lib/twitch/token-manager', () => ({
-  hasScope: vi.fn(),
-  getTwitchAccessToken: vi.fn(),
-  // Issue #653/#670: route handlerのcatchが常に呼ぶため、固定モックにも
-  // 用意する必要がある。このファイルの検証対象(streamers/rewards SQL契約)
-  // とは無関係な非TwitchTokenError系エラーしか経由しないため、常にundefinedを
-  // 返す実装で十分(handleApiErrorのadditionalInfoが常にundefinedになるだけ)。
-  twitchTokenErrorReportContext: vi.fn().mockReturnValue(undefined),
-}))
+vi.mock('@/lib/twitch/token-manager', () => {
+  // Issue #1018: routeのcatchはTwitchTokenErrorのinstanceof判定を行うため、
+  // 固定モックにもクラス本体を供給する必要がある（無いとinstanceofが
+  // TypeError）。このファイルの検証対象(streamers/rewards SQL契約)には
+  // 非TwitchTokenError系エラーしか経由しないため、最小クラスで十分。
+  class TwitchTokenError extends Error {
+    constructor(
+      message: string,
+      public readonly code: string,
+      public readonly originalError?: Error,
+      public readonly refreshStatus?: number,
+      public readonly refreshErrorKind?: string,
+      public readonly refreshRetryable?: boolean,
+    ) {
+      super(message)
+      this.name = 'TwitchTokenError'
+    }
+  }
+  return {
+    TwitchTokenError,
+    hasScope: vi.fn(),
+    getTwitchAccessToken: vi.fn(),
+    // Issue #653/#670: route handlerのcatchが常に呼ぶため、固定モックにも
+    // 用意する必要がある。このファイルの検証対象(streamers/rewards SQL契約)
+    // とは無関係な非TwitchTokenError系エラーしか経由しないため、常にundefinedを
+    // 返す実装で十分(handleApiErrorのadditionalInfoが常にundefinedになるだけ)。
+    twitchTokenErrorReportContext: vi.fn().mockReturnValue(undefined),
+  }
+})
 // #788: capability probe の永続化状態を読む/書くヘルパー。このテストファイルは
 // getOwnedStreamer/getAdditionalRewards の SQL 契約だけを検証対象としており、
 // capability state 自体は channel-points-access.ts 側の責務。ここをモックせず

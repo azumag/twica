@@ -150,6 +150,19 @@ export default function ChannelPointSettings({
         { credentials: "include" },
       );
       if (!response.ok) {
+        // Issue #1018: トークン恒久失効時はバックエンドが401で
+        // { error, requiresReauth: true } を返す。再認証導線(step-up CTA)は
+        // body側にあるため、!response.okでもbodyを読みrequiresReauthを
+        // 判定する。JSONでなければ従来どおり汎用エラー表示にフォールバック。
+        const errorData = await response.json().catch(() => null);
+        if (errorData && errorData.requiresReauth === true) {
+          // 直前にセットするはずの「取得に失敗しました」文言は再認証導線と
+          // 矛盾するためクリアし、needsReauthバナー(scopeRequired+CTA)のみ
+          // を表示する。
+          setError("");
+          setNeedsReauth(true);
+          return;
+        }
         setError(t("messages.fetchFailed"));
         return;
       }
