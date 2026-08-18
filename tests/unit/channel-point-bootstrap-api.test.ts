@@ -41,7 +41,7 @@ vi.mock('@/lib/twitch/token-manager', () => {
     error.code === 'REFRESH_FAILED' &&
     error.refreshErrorKind === 'http' &&
     error.refreshStatus !== undefined &&
-    [400, 401, 403].includes(error.refreshStatus)
+    [400, 401].includes(error.refreshStatus)
   return {
     TwitchTokenError,
     hasScope: vi.fn(),
@@ -353,7 +353,7 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
   })
 
   // Issue #1018: トークン恒久失効(REFRESH_FAILEDかつkind='http'でstatusが
-  // {400,401,403}のホワイトリストに属する)は汎用500ではなく、rewards/emotes
+  // {400,401}のホワイトリストに属する)は汎用500ではなく、rewards/emotes
   // ルートと同じbody契約の401+requiresReauthを返し、クライアントがstep-up
   // 再認証CTAを表示できるようにする。
   it('REFRESH_FAILED(恒久失効: 400, kind=http)は401+requiresReauthを返し、エラー記録とcapability(401)同期を行う', async () => {

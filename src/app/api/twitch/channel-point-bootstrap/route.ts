@@ -97,9 +97,10 @@ async function getTwitchRewards(twitchUserId: string): Promise<TwitchRewardsResu
  *   getTwitchAccessTokenがnullを返すため到達しない防御的経路だが、
  *   将来throw方式へ戻っても同じ401契約になるようにここで集約する。
  * - REFRESH_FAILED かつ恒久失効: refreshがTwitchのtoken endpointから恒久
- *   エラー(invalid_grant・refresh token失効等の400/401/403)で拒否された
+ *   エラー(invalid_grant・refresh token失効等の400/401)で拒否された
  *   ケース。判定は isPermanentRefreshFailure(token-manager.ts) に委譲し、
- *   kind='http' かつ status ∈ {400,401,403} のホワイトリストに絞る。
+ *   kind='http' かつ status ∈ {400,401} のホワイトリストに絞る。
+ *   403はWAF・client設定起因の一過性障害になり得るため対象外。
  *
  * 一過性の5xx(429/5xx、520/521/525/526/530等のCloudflare系を含む)、network
  * エラー、invalid_response、DB障害起因のrefresh失敗(diagnostic未付与)は再認証
@@ -404,11 +405,13 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(responsePayload);
   } catch (error) {
-    // Issue #1018: トークン恒久失効(REFRESH_FAILEDでrefreshRetryable === false /
+    // Issue #1018: トークン恒久失効(REFRESH_FAILEDで恒久status {400,401} /
     // NO_TOKEN)は汎用500ではなく401+requiresReauthを返す。rewards/emotesルートと
     // 同一のbody契約で、クライアント側(ChannelPointSettings)がstep-up再認証CTAを
-    // 表示できる。エラー記録経路(recordApiError→errorsテーブル→auto-generated
-    // bug report)は維持し、capability確定状態もreauth_requiredへ同期する
+    // 表示できる。一過性5xx/network/DB起因のrefresh失敗は再認証で回復しないため
+    // 500を維持する(isReauthRequiredTokenError参照)。エラー記録経路
+    // (recordApiError→errorsテーブル→auto-generated bug report)は維持し、
+    // capability確定状態もreauth_requiredへ同期する
     // (recordChannelPointsApiFailureは内部で失敗を吸収するため応答に影響しない)。
     if (session && isReauthRequiredTokenError(error)) {
       await recordApiError(error, "Channel Point Bootstrap API", twitchTokenErrorReportContext(error));

@@ -496,10 +496,9 @@ describe('Twitch Token Manager: PlanetScale/Drizzle', () => {
       )
     }
 
-    it('kind=httpかつstatusが400/401/403(恒久失効)の場合はtrueを返す', () => {
+    it('kind=httpかつstatusが400/401(恒久失効)の場合はtrueを返す', () => {
       expect(isPermanentRefreshFailure(makeRefreshError(400, 'http', false))).toBe(true)
       expect(isPermanentRefreshFailure(makeRefreshError(401, 'http', false))).toBe(true)
-      expect(isPermanentRefreshFailure(makeRefreshError(403, 'http', false))).toBe(true)
     })
 
     it('一過性失敗(429/5xx)はrefreshRetryable=falseでもfalseを返す', () => {
@@ -513,6 +512,9 @@ describe('Twitch Token Manager: PlanetScale/Drizzle', () => {
       for (const status of [501, 505, 520, 521, 525, 526, 530]) {
         expect(isPermanentRefreshFailure(makeRefreshError(status, 'http', false))).toBe(false)
       }
+      // 403もWAF・client設定・上流機能起因の一過性障害になり得るため恒久失効と
+      // 断定できない(shouldDisableBotCredential と同一方針)。
+      expect(isPermanentRefreshFailure(makeRefreshError(403, 'http', false))).toBe(false)
     })
 
     it('networkエラー(kind=network、status未定義)はfalseを返す', () => {
