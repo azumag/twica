@@ -718,8 +718,8 @@
       "notificationFailuresItem2": "「保存 & EventSub登録」ボタンで再登録してください",
       "authorizationRevokedTitle": "認証が取り消されました",
       "authorizationRevokedDescription": "Twitchの認証が取り消されたため、サブスクリプションが無効化されました。",
-      "authorizationRevokedItem1": "再度ログインしてください",
-      "authorizationRevokedItem2": "「保存 & EventSub登録」ボタンで再登録してください",
+      "authorizationRevokedItem1": "一度TwiCaからログアウトしてから、Twitchと連携してログインし直してください（この画面に「チャネルポイント連携を有効化」ボタンが表示されている場合は、ログアウトの代わりにそちらを押しても構いません）",
+      "authorizationRevokedItem2": "そのうえで「保存 & EventSub登録」ボタンで登録し直してください",
       "callbackMismatchTitle": "Callback URL不一致",
       "callbackMismatchDescription": "登録されているCallback URLと現在のアプリURLが一致しません。EventSubを再登録してください。",
       "callbackMismatchCurrent": "現在: {callback}",
@@ -1039,7 +1039,7 @@
       "title": "トラブル対応",
       "eventsub": {
         "question": "チャネルポイントを使ってもガチャが動きません",
-        "answer": "配信設定でEventSubの状態を確認し、接続されていない場合は保存と登録をやり直してください。Twitch側でチャネルポイント引き換えが有効かも確認してください。"
+        "answer": "配信設定を開き、「チャネルポイント連携を有効化」ボタンが表示されている場合は、まずそれを押してください（または一度TwiCaからログアウトして、Twitchと連携してログインし直してください）。その後、表示切り替えを「詳細」にして左の「引き換え」を開き、「接続状況」でEventSubの表示を確認します。「有効」でなければ「保存 & EventSub登録」で登録し直してください。Twitch側でTwiCaとの連携が解除されると、視聴者の引き換えは成功して見えるのにガチャだけが動かなくなります。配信画面やオーバーレイにはエラーが出ず、配信設定にだけ「認証が取り消されました」や再連携の案内が表示されます。アフィリエイト昇格の直後に解除されていた事例もあるので、心当たりがなくても確認してください。それでも直らなければ運営へお問い合わせください。Twitch側でチャネルポイント引き換えが有効かどうかも確認してください。"
       },
       "channelPointsUnavailable": {
         "question": "「現在Twitch上でチャネルポイントを利用できません」と表示されます",

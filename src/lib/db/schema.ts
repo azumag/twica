@@ -48,7 +48,8 @@ import type { Json } from '@/types/database'
 //       00043 raid_gacha_draw_count, 00044 chat_announcement_multi_*,
 //       00049 custom_rarities, 00061 channel_point_collection_name,
 //       00062 card_pack_names, 00063 default_card_pack_name,
-//       00065 rarity_weights_scope / pack_rarity_weights, 00066 gacha_sound_rules
+//       00065 rarity_weights_scope / pack_rarity_weights, 00066 gacha_sound_rules,
+//       20260817100000 trade_enabled / cross_channel_trade_enabled (#722)
 // -----------------------------------------------------------------------------
 export const streamers = pgTable('streamers', {
   id: uuid('id').primaryKey().default(sql`uuid_generate_v4()`),
@@ -97,6 +98,9 @@ export const streamers = pgTable('streamers', {
   raid_gacha_active_until: timestamp('raid_gacha_active_until', { withTimezone: true, mode: 'string' }),
   // 00043
   raid_gacha_draw_count: integer('raid_gacha_draw_count').notNull().default(0),
+  // 20260817100000 (#722): トレード機能の配信者オプトイン（両方デフォルトOFF）
+  trade_enabled: boolean('trade_enabled').notNull().default(false),
+  cross_channel_trade_enabled: boolean('cross_channel_trade_enabled').notNull().default(false),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
 })
@@ -585,6 +589,40 @@ export const cardStoneTransactions = pgTable('card_stone_transactions', {
   // 00060: クライアント生成の冪等性キー（旧レコードは NULL）
   request_id: uuid('request_id'),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
+})
+
+// -----------------------------------------------------------------------------
+// trade_offers（カードトレードのオープンオファー。completed 行がそのまま履歴になる）
+// 根拠: 20260817100000 初版（Issue #722, #715 子2）
+// -----------------------------------------------------------------------------
+export const tradeOffers = pgTable('trade_offers', {
+  id: uuid('id').primaryKey().default(sql`extensions.uuid_generate_v4()`),
+  offerer_user_id: uuid('offerer_user_id').notNull(),
+  // 意図的に FK なし（migration のコメント参照。user_cards 行はカードストーン交換で
+  // DELETE されうるため、FK CASCADE にすると completed 行=履歴が消えてしまう）
+  offered_user_card_id: uuid('offered_user_card_id').notNull(),
+  // ON DELETE SET NULL のため NULL 許容（カード定義削除後は snapshot 側で表示）
+  offered_card_id: uuid('offered_card_id'),
+  offered_streamer_id: uuid('offered_streamer_id').notNull(),
+  wanted_card_id: uuid('wanted_card_id'),
+  wanted_streamer_id: uuid('wanted_streamer_id').notNull(),
+  offered_card_snapshot: jsonb('offered_card_snapshot').$type<Json>().notNull(),
+  wanted_card_snapshot: jsonb('wanted_card_snapshot').$type<Json>().notNull(),
+  // GENERATED ALWAYS AS (offered_streamer_id <> wanted_streamer_id) STORED。insert / update 不可
+  is_cross_channel: boolean('is_cross_channel').generatedAlwaysAs(
+    sql`offered_streamer_id <> wanted_streamer_id`
+  ),
+  // 'open' | 'completed' | 'cancelled'（CHECK 制約は DB 側で担保）
+  status: text('status').notNull().default('open'),
+  accepted_by_user_id: uuid('accepted_by_user_id'),
+  // FK なし（所有権移転後も成立時点の記録として残す）
+  accepted_user_card_id: uuid('accepted_user_card_id'),
+  completed_at: timestamp('completed_at', { withTimezone: true, mode: 'string' }),
+  // 冪等性キー: 作成用（request_id）と応諾用（accepted_request_id）を分離
+  request_id: uuid('request_id'),
+  accepted_request_id: uuid('accepted_request_id'),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
 })
 
 // =============================================================================

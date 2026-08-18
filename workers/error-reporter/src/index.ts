@@ -106,6 +106,19 @@ interface Env {
   EVENTSUB_REPLAY_SECRET_PROD?: string
   /** preview アプリの `EVENTSUB_REPLAY_SECRET` と同じ値。上記コメント参照。 */
   EVENTSUB_REPLAY_SECRET_PREVIEW?: string
+
+  /**
+   * Issue #540: EventSub サブスクリプション健全性監視で使う共有シークレット。
+   * 本番アプリの `EVENTSUB_HEALTH_SECRET`（`src/app/api/admin/eventsub-health/
+   * route.ts` が検証する共有シークレット）と同じ値を、このワーカー用にも
+   * `wrangler secret put EVENTSUB_HEALTH_SECRET_PROD` で設定する想定。
+   * EVENTSUB_REPLAY_SECRET_PROD/PREVIEW と同じ理由で prod/preview を分ける。
+   * 未設定の場合は該当ターゲットへのヘルスチェックのみを安全にスキップする
+   * （processEventSubSubscriptionHealth 参照）。
+   */
+  EVENTSUB_HEALTH_SECRET_PROD?: string
+  /** preview アプリの `EVENTSUB_HEALTH_SECRET` と同じ値。上記コメント参照。 */
+  EVENTSUB_HEALTH_SECRET_PREVIEW?: string
 }
 
 /**
@@ -1183,6 +1196,120 @@ export async function processEventSubParkBacklog(env: Env): Promise<void> {
 }
 
 // =============================================================================
+// EventSub サブスクリプション健全性監視（HTTP経由でアプリ本体のAPIを叩く）
+//
+// Issue #540: EventSub サブスクリプションが disabled 相当の終端状態に落ちても、
+// これまで検知手段が「Twitch Developer Console を手動確認する」という運用依存の
+// 手順しかなかった。上の processEventSubParkBacklog（KVのbacklog監視）とは別の
+// 関心事（こちらはTwitch側のサブスクリプション状態そのものを見る）だが、同じ
+// 5分毎のCron Triggerに相乗りする形で定期実行する。
+//
+// processEventSubParkAutoDrain と同じ設計判断（KVやTwitch API を直接叩かず、
+// アプリ本体の API を HTTP 経由で呼ぶ）を踏襲する: 実際の健全性判定・
+// アラート発行（reportError → errors テーブル → 既存の error-reporter パイプライン
+// でGitHub Issue化）は `src/app/api/admin/eventsub-health/route.ts` 側に集約されて
+// おり、この Worker 側はそれを定期的に叩く「トリガー」の役割に徹する。
+// Twitch app access token の発行・キャッシュ・401時の自己回復ロジック
+// (`src/lib/twitch/app-token.ts`) をこの Worker で複製しないためでもある。
+// =============================================================================
+
+/** ヘルスチェック route のパス（`src/app/api/admin/eventsub-health/route.ts`）。 */
+const EVENTSUB_HEALTH_PATH = '/api/admin/eventsub-health'
+
+/**
+ * fetch のタイムアウト（ミリ秒）。GET一発の軽い呼び出しのため、
+ * EVENTSUB_AUTO_DRAIN_PEEK_TIMEOUT_MS と同水準に揃える。
+ */
+const EVENTSUB_HEALTH_CHECK_TIMEOUT_MS = 30_000
+
+/** eventsub-health route のレスポンス形状（route.ts の戻り値と一致させる）。 */
+interface EventSubHealthResponse {
+  total: number
+  unhealthyCount: number
+  unhealthy: Array<{ id: string; type: string; status: string }>
+  checkedAt: string
+}
+
+/** 1ターゲット（prod または preview）分の設定。 */
+interface EventSubHealthTarget {
+  /** ログに出す環境名。 */
+  name: string
+  baseUrl: string | undefined
+  healthSecret: string | undefined
+}
+
+/**
+ * 1ターゲットに対する健全性チェックを呼び出す。
+ * アラート発行自体は route.ts 側が担うため、ここでは「呼び出しが成功したか」
+ * のログを残すだけに徹する（drainEventSubParkBacklogForTargetと同じく例外を
+ * 投げない設計。呼び出し元processEventSubSubscriptionHealthのtry/catchは
+ * 防御的な保険として残す）。
+ */
+async function checkEventSubSubscriptionHealthForTarget(target: EventSubHealthTarget): Promise<void> {
+  const { name, healthSecret } = target
+  const baseUrl = target.baseUrl ? stripTrailingSlash(target.baseUrl) : undefined
+
+  if (!baseUrl) {
+    console.warn(`[EventSub Health Check] Missing base URL for ${name}, skipping`)
+    return
+  }
+  if (!healthSecret) {
+    console.warn(`[EventSub Health Check] Missing health secret for ${name}, skipping (set it via wrangler secret put)`)
+    return
+  }
+
+  try {
+    const res = await fetch(`${baseUrl}${EVENTSUB_HEALTH_PATH}`, {
+      headers: { 'X-EventSub-Health-Secret': healthSecret },
+      signal: AbortSignal.timeout(EVENTSUB_HEALTH_CHECK_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      console.error(`[EventSub Health Check] eventsub-health returned ${res.status} for ${name}: ${text}`)
+      return
+    }
+    const body = (await res.json()) as EventSubHealthResponse
+    if (body.unhealthyCount > 0) {
+      // アラート（GitHub Issue化）自体は route.ts 側の reportError が既に完了させて
+      // いる。ここは Cron Worker 側のログ（wrangler tail）にも要約を残すだけ。
+      console.warn(
+        `[EventSub Health Check] ${name}: ${body.unhealthyCount}/${body.total} subscription(s) unhealthy ` +
+        `(alert already reported via errors table)`
+      )
+    } else {
+      console.log(`[EventSub Health Check] ${name}: all ${body.total} subscription(s) healthy`)
+    }
+  } catch (err) {
+    console.error(`[EventSub Health Check] failed to call eventsub-health for ${name}:`, err)
+  }
+}
+
+/**
+ * EventSub サブスクリプション健全性監視本体。prod/preview 両ターゲットを
+ * 独立した try/catch で処理する（既存の processErrors/processInquiries/
+ * processEventSubParkBacklog/processEventSubParkAutoDrain 間の独立性と同じ
+ * パターン）。
+ */
+export async function processEventSubSubscriptionHealth(env: Env): Promise<void> {
+  console.log('[EventSub Health Check] Started')
+
+  const targets: EventSubHealthTarget[] = [
+    { name: 'production', baseUrl: env.APP_BASE_URL_PROD, healthSecret: env.EVENTSUB_HEALTH_SECRET_PROD },
+    { name: 'preview', baseUrl: env.APP_BASE_URL_PREVIEW, healthSecret: env.EVENTSUB_HEALTH_SECRET_PREVIEW },
+  ]
+
+  for (const target of targets) {
+    try {
+      await checkEventSubSubscriptionHealthForTarget(target)
+    } catch (err) {
+      console.error(`[EventSub Health Check] ${target.name} failed:`, err)
+    }
+  }
+
+  console.log('[EventSub Health Check] Completed')
+}
+
+// =============================================================================
 // EventSub退避/chat outbox自動ドレイン（DB + RATE_LIMIT_KV → replay API）
 //
 // Issue #695（EventSub の Cloudflare Queue 化）の代替として承認された、
@@ -1516,9 +1643,12 @@ export default {
    * 2つのトリガーを `event.cron` で判別し、完全に独立した処理へ分岐する:
    *   - EVENTSUB_AUTO_DRAIN_CRON（20分毎）: EventSub 退避 backlog 自動ドレインのみ
    *   - それ以外（既定の5分毎トリガー、テスト等で cron 未設定の場合を含む）:
-   *     従来どおり errors/inquiries/backlog監視の3処理
-   * 自動ドレインを既存3処理と混在させない理由は
-   * processEventSubParkAutoDrain セクション冒頭のコメント参照。
+   *     EventSub サブスクリプション健全性監視（processEventSubSubscriptionHealth）
+   *     ＋ 従来どおり errors/inquiries/backlog監視の3処理
+   * 自動ドレイン・健全性監視を既存3処理の環境変数バリデーションより前に置く
+   * 理由は processEventSubParkAutoDrain / processEventSubSubscriptionHealth
+   * 各セクション冒頭のコメント参照（どちらも HYPERDRIVE_PLANETSCALE/GITHUB_TOKEN
+   * に依存しないため、それらの設定ミスに巻き込まれてはならない）。
    */
   async scheduled(
     event: ScheduledController,
@@ -1535,6 +1665,21 @@ export default {
         console.error('[EventSub Auto Drain] Cron job failed:', err)
       }
       return
+    }
+
+    // EventSub サブスクリプション健全性監視も、自動ドレインと同じ理由で
+    // HYPERDRIVE_PLANETSCALE/GITHUB_TOKEN 等、既存3処理専用の binding/secrets に
+    // 依存しない（アプリ本体の eventsub-health route を HTTP 経由で叩くだけ）。
+    // レビュー指摘: 当初は下の環境変数バリデーションより後に置いていたため、
+    // PlanetScale/GitHub 側の secret 設定ミスで既存3処理が早期リターンすると
+    // この健全性監視まで道連れで止まってしまっていた（Issue #540 が対処したい
+    // 「気づかれないまま失敗し続ける」状態を、監視機能自身が再現してしまう
+    // 本末転倒なバグ）。processEventSubParkAutoDrain と同様に、既存3処理の
+    // 環境変数バリデーションより前で独立して実行する。
+    try {
+      await processEventSubSubscriptionHealth(env)
+    } catch (err) {
+      console.error('[EventSub Health Check] Cron job failed:', err)
     }
 
     // 環境変数バリデーション（既存3処理共通）: 必須 binding/secret が
