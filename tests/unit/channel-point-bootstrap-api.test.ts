@@ -33,10 +33,20 @@ vi.mock('@/lib/twitch/token-manager', () => {
       this.name = 'TwitchTokenError'
     }
   }
+  // Issue #1018: routeは恒久失効判定をisPermanentRefreshFailureへ委譲するため、
+  // 実装と同语义の判定をモッククラスに対して供給する。実装本体の判定は
+  // twitch-token-manager.test.tsで直接検証する。
+  const isPermanentRefreshFailure = (error: unknown) =>
+    error instanceof TwitchTokenError &&
+    error.code === 'REFRESH_FAILED' &&
+    error.refreshErrorKind === 'http' &&
+    error.refreshStatus !== undefined &&
+    [400, 401, 403].includes(error.refreshStatus)
   return {
     TwitchTokenError,
     hasScope: vi.fn(),
     getTwitchAccessToken: vi.fn(),
+    isPermanentRefreshFailure: vi.fn(isPermanentRefreshFailure),
     // Issue #653/#670: route handlerのcatchが常に呼ぶため固定モックにも必要。
     twitchTokenErrorReportContext: vi.fn().mockReturnValue(undefined),
   }
@@ -342,10 +352,11 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
     expect(body.rewards).toHaveLength(1)
   })
 
-  // Issue #1018: トークン恒久失効(REFRESH_FAILEDかつrefreshRetryable ===
-  // false)は汎用500ではなく、rewards/emotesルートと同じbody契約の
-  // 401+requiresReauthを返し、クライアントがstep-up再認証CTAを表示できるようにする。
-  it('REFRESH_FAILED(refreshRetryable=false)は401+requiresReauthを返し、エラー記録とcapability(401)同期を行う', async () => {
+  // Issue #1018: トークン恒久失効(REFRESH_FAILEDかつkind='http'でstatusが
+  // {400,401,403}のホワイトリストに属する)は汎用500ではなく、rewards/emotes
+  // ルートと同じbody契約の401+requiresReauthを返し、クライアントがstep-up
+  // 再認証CTAを表示できるようにする。
+  it('REFRESH_FAILED(恒久失効: 400, kind=http)は401+requiresReauthを返し、エラー記録とcapability(401)同期を行う', async () => {
     const { hasScope, getTwitchAccessToken, TwitchTokenError } = await import('@/lib/twitch/token-manager')
     const { recordApiError, handleApiError } = await import('@/lib/error-handler')
     const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
@@ -386,6 +397,36 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
         429,
         'http',
         true,
+      ),
+    )
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+
+    expect(response.status).toBe(500)
+    expect(handleApiError).toHaveBeenCalled()
+    expect(recordApiError).not.toHaveBeenCalled()
+    expect(recordChannelPointsApiFailure).not.toHaveBeenCalled()
+  })
+
+  // Issue #1018(自動レビュー必須指摘の修正): 520/521/525/526/530等のCloudflare系
+  // 一過性5xx(および501/505)はREFRESH_RETRYABLE_STATUSESに含まれず
+  // refreshRetryable === false になるが、一時障害であり再認証では回復しない。
+  // 旧来の補集合判定(refreshRetryable === false)では恒久失効と誤判定し、
+  // capabilityをreauth_requiredへ誤確定させるため、500維持を固定する。
+  it('REFRESH_FAILED(一過性5xx: 520, refreshRetryable=false)は500(handleApiError)を返しcapabilityは同期しない', async () => {
+    const { hasScope, getTwitchAccessToken, TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    const { recordApiError, handleApiError } = await import('@/lib/error-handler')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(
+      new TwitchTokenError(
+        'Failed to refresh Twitch access token',
+        'REFRESH_FAILED',
+        undefined,
+        520,
+        'http',
+        false,
       ),
     )
 

@@ -35,6 +35,45 @@ export class TwitchTokenError extends Error {
   }
 }
 
+// refresh が Twitch の token endpoint から「step-up再認証でしか回復しない恒久失効」
+// と断定できるHTTP statusのホワイトリスト。auth.ts:449(「400/401は失効したrefresh
+// token等の恒久エラー」)とIssue #1018の期待動作(invalid_grant・refresh token失効
+// 等の400/401/403)に基づく。
+//
+// 重要: auth.ts の REFRESH_RETRYABLE_STATUSES の「補集合」は恒久失効とは限らない。
+// 520/521/525/526/530等のCloudflare系一過性5xxや501/505はretryable集合に含まれず
+// refreshRetryable === false になるが、それらは一時障害であり再認証では回復しない。
+// そのためここでは retryable の否定形ではなく、恒久と断定できるstatusをホワイト
+// リストで明示的に絞る(一時障害の窓でcapabilityをreauth_requiredへ誤確定させない)。
+const PERMANENT_REFRESH_STATUSES = new Set([400, 401, 403]);
+
+/**
+ * TwitchTokenError(REFRESH_FAILED)が「step-up再認証でしか回復しない恒久トークン
+ * 失効」に該当するかを判定する(Issue #1018)。
+ *
+ * 判定は refreshErrorKind === 'http' かつ refreshStatus が PERMANENT_REFRESH_STATUSES
+ * (400/401/403)に属する場合のみtrue。
+ *
+ * - networkエラー(kind='network', status未定義)・DB障害起因(diagnostic未付与のため
+ *   refreshErrorKind/refreshStatusがundefined)・invalid_response・一過性5xx
+ *   (429/5xx等)は再認証で回復しないためfalse。これらをfalseに保つことで、一時障害
+ *   の窓で channel_points_capability を reauth_required (definitive) へ誤って確定
+ *   させない(persistChannelPointsCapability の「一時失敗で確定状態を破壊しない」
+ *   不変条件を守り、401リテラルによるガード迂回を防止する)。
+ *
+ * 判定の正本はこの1箇所に集約する。rewards/emotesルート等の同型401経路(follow-up)
+ * でも再利用できるようにエクスポートする。
+ */
+export function isPermanentRefreshFailure(error: unknown): boolean {
+  return (
+    error instanceof TwitchTokenError &&
+    error.code === 'REFRESH_FAILED' &&
+    error.refreshErrorKind === 'http' &&
+    error.refreshStatus !== undefined &&
+    PERMANENT_REFRESH_STATUSES.has(error.refreshStatus)
+  );
+}
+
 /**
  * TwitchTokenRefreshError が持つ診断情報のうち、ログへ出しても安全な部分だけを
  * 抽出する(Issue #653/#670/#654/#655)。

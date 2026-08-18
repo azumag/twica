@@ -5,7 +5,7 @@ import { handleApiError, handleDatabaseError, recordApiError } from "@/lib/error
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
-import { TwitchTokenError, getTwitchAccessToken, hasScope, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
+import { TwitchTokenError, getTwitchAccessToken, hasScope, isPermanentRefreshFailure, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
 import {
   deriveEventSubStatus,
   type EventSubSubscriptionForStatus,
@@ -96,20 +96,21 @@ async function getTwitchRewards(twitchUserId: string): Promise<TwitchRewardsResu
  * - NO_TOKEN: DBにrefresh可能なトークンが一切無い状態。現在の実装では
  *   getTwitchAccessTokenがnullを返すため到達しない防御的経路だが、
  *   将来throw方式へ戻っても同じ401契約になるようにここで集約する。
- * - REFRESH_FAILED かつ refreshRetryable === false: refreshがTwitchから
- *   恒久エラー(invalid_grant・refresh token失効等の400/401/403)で拒否され
- *   たケース。auth.tsのREFRESH_RETRYABLE_STATUSESは429/5xxとnetwork
- *   エラー(status undefined)をretryable=trueとするため、=== falseだけが
- *   恒久失効を指す。
+ * - REFRESH_FAILED かつ恒久失効: refreshがTwitchのtoken endpointから恒久
+ *   エラー(invalid_grant・refresh token失効等の400/401/403)で拒否された
+ *   ケース。判定は isPermanentRefreshFailure(token-manager.ts) に委譲し、
+ *   kind='http' かつ status ∈ {400,401,403} のホワイトリストに絞る。
  *
- * DB障害起因のrefresh失敗(diagnostic未付与のためrefreshRetryable ===
- * undefined)と一時失敗(retryable === true)は再認証で回復しないため
- * 対象外とし、従来どおりhandleApiErrorの500を維持する。
+ * 一過性の5xx(429/5xx、520/521/525/526/530等のCloudflare系を含む)、network
+ * エラー、invalid_response、DB障害起因のrefresh失敗(diagnostic未付与)は再認証
+ * で回復しないため対象外(false)とし、従来どおりhandleApiErrorの500を維持する。
+ * これにより一時障害を恒久失効と誤判定してcapabilityをreauth_requiredへ
+ * 誤確定させるのを防ぐ。
  */
 function isReauthRequiredTokenError(error: unknown): boolean {
   if (!(error instanceof TwitchTokenError)) return false;
   if (error.code === "NO_TOKEN") return true;
-  return error.code === "REFRESH_FAILED" && error.refreshRetryable === false;
+  return isPermanentRefreshFailure(error);
 }
 
 async function getSubscriptionsByUserId(
