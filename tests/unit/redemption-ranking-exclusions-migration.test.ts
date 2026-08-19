@@ -53,9 +53,14 @@ describe("redemption ranking exclusions migration (streamer/bot exclusion + N連
     expect(body.match(/\)\s*OR EXISTS \(/g)).toHaveLength(2);
     expect(body).not.toMatch(/\)\s*AND EXISTS \(/);
 
-    // SECURITY DEFINER も SET search_path も付けない(インライン展開維持のため)
+    // SECURITY DEFINERは付けない(呼び出し元が既にその文脈で実行されるため不要)。
+    // SET search_path = public は付ける(レビュー指摘・実測訂正: 当初「付けると
+    // インライン展開が無効化される」という理由で外していたが、本関数はEXISTS
+    // (SubLink)を含みそもそも常にインライン展開されない(実測確認済み、
+    // db/planetscale/migrations/20260819120000_...のファイル冒頭コメント参照)。
+    // 付ける実害が無いため、他の3関数と揃える)。
     expect(fn![0]).not.toMatch(/SECURITY DEFINER/);
-    expect(fn![0]).not.toMatch(/SET search_path/);
+    expect(fn![0]).toMatch(/SET search_path = public/);
   });
 
   it("applies the new predicate (reward_cost > 0 OR reward_id IS NOT NULL) everywhere N連 is counted, and drops the old predicate from executable SQL", () => {
@@ -115,17 +120,37 @@ describe("redemption ranking exclusions migration (streamer/bot exclusion + N連
     expect(codeOnly).toContain("GROUP BY per_user.streamer_id");
   });
 
+  it("fences every is_redemption_ranking_excluded call site with OFFSET 0 so the predicate evaluates per group, not per history row", () => {
+    // レビュー指摘・実測訂正: is_redemption_ranking_excluded はEXISTS(SubLink)を含むため
+    // 常にインライン展開されない(is_redemption_ranking_excluded関数のコメント参照)。
+    // 呼び出し元が「GROUP BYキーのみに依存する述語」を素朴にWHERE/HAVINGへ書くと、
+    // PostgreSQLのプランナがその述語をGROUP BY実行前のスキャンへpushdownし、
+    // 履歴行1件ごとに関数呼び出しが発生する(EXPLAIN ANALYZE実測で確認済み)。
+    // OFFSET 0はLIMIT/OFFSET句を持つサブクエリがPostgreSQLの最適化フェンスになる
+    // 挙動を利用した対策で、返す行・順序には影響しない(no-op)。4箇所すべてに
+    // 付いていることを固定する: last_7_days_usage内側集計・get_channel_point_usage_stats
+    // ELSE分岐の2クエリ(total_points/ranking)・一回限りのバックフィル。
+    const offsetZeroCount = (codeOnly.match(/GROUP BY [^\n]+\n\s*OFFSET 0\n/g) ?? []).length;
+    expect(offsetZeroCount).toBe(4);
+  });
+
   it("actually applies is_redemption_ranking_excluded at every read site (RPC total/ranking, /live), not just defines it", () => {
     // マイグレーションの主目的そのものなので、呼び出し箇所自体が消えていないか
-    // (例えば関数定義だけ追加してHAVING/WHERE適用を消す退行)を直接固定する。
+    // (例えば関数定義だけ追加してWHERE適用を消す退行)を直接固定する。
     // get_channel_point_usage_stats: 総合計サブクエリ側の除外
     expect(codeOnly).toContain(
       "WHERE NOT is_redemption_ranking_excluded(p_streamer_id, per_user.user_twitch_id);",
     );
-    // get_channel_point_usage_stats: ranking側はGROUP BY後のHAVINGで除外
+    // get_channel_point_usage_stats: ranking側は「OFFSET 0で確定させたGROUP BY結果」
+    // へのWHEREで除外する(レビュー指摘・実測訂正: 当初HAVINGを使っていたが、
+    // 集約を含まないHAVING条件はPostgreSQLのプランナがGROUP BY実行前のWHERE相当へ
+    // 押し下げてしまい、履歴行ごとに評価される実行計画になることをEXPLAINで確認した。
+    // total_pointsサブクエリ・last_7_days_usage CTEと同じ「素の集計をOFFSET 0で
+    // 確定 → 外側WHEREで除外」の2段構成に統一した)。
     expect(codeOnly).toContain(
-      "HAVING NOT is_redemption_ranking_excluded(p_streamer_id, user_twitch_id)",
+      "WHERE NOT is_redemption_ranking_excluded(p_streamer_id, grouped.user_twitch_id)",
     );
+    expect(codeOnly).not.toMatch(/HAVING NOT is_redemption_ranking_excluded/);
     // /live: 2段GROUP BYの外側WHEREで除外
     expect(codeOnly).toContain(
       "WHERE NOT is_redemption_ranking_excluded(per_user.streamer_id, per_user.user_twitch_id)",

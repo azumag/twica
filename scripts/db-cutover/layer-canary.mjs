@@ -108,16 +108,31 @@ const ISO8601_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+
 /**
  * fixture識別子をrun uuidから組み立てる純粋関数（DB接続なし、単体テスト対象）。
  * 設計書「fixture値の衝突回避」節の形式（`cutover-canary-<uuid>`/`cutover-canary:<uuid>`）を
- * そのまま実装する。streamers.twitch_user_id / users.twitch_user_id は同一文字列を使う
- * （別テーブルの独立したUNIQUE制約のため衝突しない。設計書の形式が単一である以上、
- * あえて`-streamer`/`-user`のようなsuffixで分ける変更は行わない）。
+ * そのまま実装する。
+ *
+ * streamerTwitchUserId と userTwitchUserId を異なる文字列にする理由（レビュー指摘・
+ * 20260819120000_exclude_streamer_and_bot_from_redemption_rankings.sql 対応、重要）:
+ * 当初は「別テーブルの独立したUNIQUE制約のため衝突しない」という理由で同一文字列
+ * （`cutover-canary-<uuid>`）を使っていたが、これは意図せず「配信者が自分のチャンネルで
+ * 引き換える」ケース（streamers.twitch_user_id = gacha_history.user_twitch_id）を
+ * 模擬してしまっていた。上記migrationが導入した is_redemption_ranking_excluded は
+ * まさにこのパターン（配信者本人による引き換え）を channel_point_usage_stats から
+ * 除外するため、canary-gacha-rpc が作るfixture行がこの除外ロジックに引っかかり、
+ * channel_point_usage_stats に集計行が作られなくなる。結果、
+ * CANARY_GACHA_RPC_TRIGGER_CHANNEL_POINT_USAGE_MISSING
+ * （trg_sync_channel_point_usage_statトリガー不発の疑い、というfinding文言）が
+ * 健全なtarget DBに対しても常にfailする偽陽性を引き起こす。
+ * viewer側にだけ `-viewer` サフィックスを付けて配信者と別人物にすることで、
+ * canaryが検証したい「通常の視聴者による引き換え」を正しく模擬する
+ * （streamers.twitch_user_id と users.twitch_user_id は別テーブルの独立した
+ * UNIQUE制約のため、値を分けても衝突は起こらない）。
  * @param {string} runId `crypto.randomUUID()`等で生成された一意のuuid文字列
  */
 export function buildFixtureIdentifiers(runId) {
   return {
     runId,
     streamerTwitchUserId: `cutover-canary-${runId}`,
-    userTwitchUserId: `cutover-canary-${runId}`,
+    userTwitchUserId: `cutover-canary-viewer-${runId}`,
     eventId: `cutover-canary:${runId}`,
   }
 }

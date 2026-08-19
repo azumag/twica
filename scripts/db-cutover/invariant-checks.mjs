@@ -336,11 +336,38 @@ WHERE c.max_issuance_count IS NOT NULL
   // スナップショット特性上、同一(streamer_id, user_twitch_id)への並行引き換えでlost updateが
   // 構造的に起こりうるためTier B（設計書rev2レビューMajor-1(a)）。
   // 値比較（total_points/redemption_count/last_redeemed_at）は全てSQL側 IS DISTINCT FROM。
+  //
+  // 述語・除外ロジックの更新について（レビュー指摘対応、db/planetscale/migrations/
+  // 20260819120000_exclude_streamer_and_bot_from_redemption_rankings.sql）:
+  // refresh_channel_point_usage_stat が (a) 新述語 `(reward_cost > 0 OR reward_id IS NOT NULL)`
+  // でN連2枚目以降も数える、(b) 配信者本人・登録済みBOTアカウントを除外する、の2点で
+  // 変わったため、本checkの再計算もそれに合わせないと、N連履歴を持つユーザーや
+  // 除外対象アカウントが「driftあり」として恒常的に偽陽性報告される
+  // （新ロジック適用後のchannel_point_usage_statsとの比較になるため）。
+  //
+  // is_redemption_ranking_excluded関数を呼ばず、EXISTS 3条件をそのままインライン展開する
+  // 理由（重要、レビュー指摘の追加検討事項）: 本invariantはsource/target双方の接続に対して
+  // 同一SQLを発行する（readSideInvariants）。is_redemption_ranking_excluded は
+  // `-- migration-providers: planetscale` 宣言のとおりPlanetScale限定のmigrationが
+  // 定義する関数であり、source側にSupabase（本ツールの主要ユースケース、cli-args.mjsの
+  // 使用例参照）を指定した場合はそのDBに関数自体が存在せず、
+  // 関数呼び出しが即座にSQLエラー（INVARIANT_RUNTIME_ERROR）になる。一方 streamers /
+  // twitch_bot_accounts テーブル自体は00040等でSupabase側にも存在する（実測: 両ディレクトリの
+  // migrationsを確認済み）ため、関数を経由せずテーブルを直接参照するEXISTS条件を
+  // 展開すれば、migration適用状況に関わらずsource/target双方で同じ結果が得られる
+  // （他のinvariant同様、requiredTablesでテーブル不在時は自動的にallowlist/fail判定へ回る
+  // 既存の枠組みにも自然に乗る）。
+  //
+  // OFFSET 0について: last_7_days_usage CTE等（migrationファイル参照）と同じ理由で、
+  // 素の集計(recalced)をGROUP BY直後のOFFSET 0で確定させてから除外フィルタを適用する
+  // （EXISTS 3条件がGROUP BYキーのみに依存するため、PostgreSQLのプランナが未fenceの場合
+  // 履歴行ごとに評価しうる。cutoverのwrite freeze時間短縮のため、大規模gacha_historyに
+  // 対しても不要な行ごとの評価を避ける）。
   // ---------------------------------------------------------------------
   {
     id: 'channel-point-usage-recalc',
-    description: 'gacha_history(reward_cost>0)からの再計算 vs channel_point_usage_stats。refreshが絶対値上書き型でlost update raceがあるため両側一致型（Tier B）。',
-    requiredTables: ['gacha_history', 'channel_point_usage_stats'],
+    description: 'gacha_history((reward_cost>0 OR reward_id IS NOT NULL)、配信者本人/登録済みBOT除外)からの再計算 vs channel_point_usage_stats。refreshが絶対値上書き型でlost update raceがあるため両側一致型（Tier B）。',
+    requiredTables: ['gacha_history', 'channel_point_usage_stats', 'streamers', 'twitch_bot_accounts'],
     checks: [
       buildCheck(
         'CHANNEL_POINT_USAGE_RECALC_MISMATCH',
@@ -351,11 +378,30 @@ WHERE c.max_issuance_count IS NOT NULL
     COUNT(*)::int AS redemption_count,
     MAX(redeemed_at) AS last_redeemed_at
   FROM gacha_history
-  WHERE reward_cost IS NOT NULL AND reward_cost > 0
+  WHERE (reward_cost > 0 OR reward_id IS NOT NULL)
   GROUP BY streamer_id, user_twitch_id
+  OFFSET 0
+),
+recalced_included AS (
+  SELECT r.*
+  FROM recalced r
+  WHERE NOT (
+    EXISTS (
+      SELECT 1 FROM streamers s
+      WHERE s.id = r.streamer_id AND s.twitch_user_id = r.user_twitch_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM twitch_bot_accounts b
+      WHERE b.owner_type = 'streamer' AND b.streamer_id = r.streamer_id AND b.twitch_user_id = r.user_twitch_id
+    )
+    OR EXISTS (
+      SELECT 1 FROM twitch_bot_accounts b
+      WHERE b.owner_type = 'system' AND b.twitch_user_id = r.user_twitch_id
+    )
+  )
 )
 SELECT COALESCE(r.streamer_id, s.streamer_id)::text || ':' || COALESCE(r.user_twitch_id, s.user_twitch_id) AS identifier
-FROM recalced r
+FROM recalced_included r
 FULL OUTER JOIN channel_point_usage_stats s
   ON s.streamer_id = r.streamer_id AND s.user_twitch_id = r.user_twitch_id
 WHERE r.total_points IS DISTINCT FROM s.total_points

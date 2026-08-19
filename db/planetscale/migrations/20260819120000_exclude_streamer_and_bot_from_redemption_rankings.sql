@@ -32,16 +32,32 @@ SET LOCAL statement_timeout = 0;
 -- ---------------------------------------------------------------------------
 -- 1) 除外判定の唯一の正本（新規関数）
 -- ---------------------------------------------------------------------------
--- SECURITY DEFINER も SET search_path も付けない: 呼び出し元(refresh_channel_point_
--- usage_stat 等)が既にその文脈で実行されるため不要であり、付けるとSQL関数の
--- インライン展開が無効化されるため（LANGUAGE sql関数はプランナがインライン化
--- できて初めてインデックスを使った実行計画になる）。
+-- インライン展開について（レビュー指摘・実測訂正、Docker実機PostgreSQL 17で
+-- EXPLAIN ANALYZE実測済み）:
+-- 当初「SECURITY DEFINERもSET search_pathも付けなければSQL関数がインライン展開され、
+-- 呼び出し回数がグループ単位に抑えられる」というコメントを書いたが、実測の結果は逆
+-- だった。本関数の本体はEXISTS（SubLink）を3つ含むため、PostgreSQLのプランナが
+-- インライン化の可否を判定する`inline_function()`（src/backend/optimizer/util/clauses.c）
+-- は、SQL関数本体にSubLinkが含まれる場合は常にインライン化を諦める（実装上の制約。
+-- SECURITY DEFINER/SET search_pathの有無とは無関係）。そのためこの関数は
+-- SECURITY DEFINER・SET search_pathの有無に関わらずインライン展開されず、述語として
+-- 素朴にpushdownされる。呼び出し元（last_7_days_usage CTE・
+-- get_channel_point_usage_statsのELSE分岐）側で述語のpushdownを止める対策
+-- （OFFSET 0による最適化フェンス、両クエリのコメント参照）を別途行っている。
+-- SET search_path = public は付けても付けなくてもインライン展開には影響しない
+-- （上記の理由により、そもそも常に非インライン化）ため、他の3関数（
+-- refresh_channel_point_usage_stat / sync_channel_point_usage_stat_for_bot_account /
+-- get_live_directory_rankings_by_period）と揃えて安全側に倒す（search_path固定は
+-- SECURITY DEFINER関数における検索パス汚染対策の定石。本関数はSECURITY DEFINERでは
+-- ないため必須ではないが、付ける実害も無い）。SECURITY DEFINERは付けない: 呼び出し元
+-- (refresh_channel_point_usage_stat等)が既にその文脈で実行されるため不要。
 CREATE OR REPLACE FUNCTION public.is_redemption_ranking_excluded(
   p_streamer_id uuid,
   p_user_twitch_id text
 ) RETURNS boolean
 LANGUAGE sql
 STABLE
+SET search_path = public
 AS $$
   SELECT
     EXISTS (
@@ -241,6 +257,9 @@ BEGIN
       LIMIT GREATEST(1, p_limit)
     ) ranked;
   ELSE
+    -- OFFSET 0 は last_7_days_usage CTE（本migration上部）と同じ理由で必要
+    -- （最適化フェンスとしてGROUP BY直後に置き、is_redemption_ranking_excludedの
+    -- pushdownを止める。詳細コメントはそちら参照。EXPLAIN実測で確認済み）。
     SELECT COALESCE(SUM(per_user.total_points), 0)::BIGINT
     INTO v_total_points
     FROM (
@@ -252,9 +271,22 @@ BEGIN
         AND redeemed_at >= p_from_date
         AND (reward_cost > 0 OR reward_id IS NOT NULL)
       GROUP BY user_twitch_id
+      OFFSET 0
     ) per_user
     WHERE NOT is_redemption_ranking_excluded(p_streamer_id, per_user.user_twitch_id);
 
+    -- HAVING NOT is_redemption_ranking_excluded(...) について（レビュー指摘・実測訂正）:
+    -- 当初「HAVINGはGROUP BY結果に対して評価されるため元々グループ単位」という想定
+    -- だったが、実測（Docker実機PostgreSQL 17、EXPLAIN ANALYZE）では誤りだった。
+    -- HAVING句の条件が集約関数を含まずGROUP BYキーのみを参照する場合、PostgreSQL
+    -- プランナは意味的に安全な変形として、その条件をGROUP BY実行前のWHERE相当の
+    -- フィルタへ昇格させる（`grouping_planner`の前処理でHAVING quals のうち
+    -- 集約を含まないものをscan/joinレベルへ引き下げる最適化。標準的なPostgreSQLの
+    -- 挙動で、バグではない）。実際にEXPLAINでも本クエリのis_redemption_ranking_excluded
+    -- 呼び出しがgacha_historyのBitmap Heap ScanのFilterに現れ、GROUP BYより前・
+    -- 履歴行ごとに評価されていることを確認した。そのため下記のように「素の集計を
+    -- OFFSET 0で確定させたサブクエリ」+「その結果へのWHERE」という2段構成へ変更し、
+    -- last_7_days_usage CTE・上のtotal_pointsサブクエリと同じ手法で対処する。
     SELECT COALESCE(jsonb_agg(
       jsonb_build_object(
         'user_twitch_id', ranked.user_twitch_id,
@@ -268,17 +300,26 @@ BEGIN
     INTO v_ranking
     FROM (
       SELECT
-        user_twitch_id,
-        COALESCE(MAX(user_twitch_username), user_twitch_id) AS username,
-        COALESCE(SUM(reward_cost), 0)::BIGINT AS total_points,
-        COUNT(*)::INTEGER AS redemption_count,
-        MAX(redeemed_at)::TEXT AS last_redeemed_at
-      FROM gacha_history
-      WHERE streamer_id = p_streamer_id
-        AND redeemed_at >= p_from_date
-        AND (reward_cost > 0 OR reward_id IS NOT NULL)
-      GROUP BY user_twitch_id
-      HAVING NOT is_redemption_ranking_excluded(p_streamer_id, user_twitch_id)
+        grouped.user_twitch_id,
+        grouped.username,
+        grouped.total_points,
+        grouped.redemption_count,
+        grouped.last_redeemed_at
+      FROM (
+        SELECT
+          user_twitch_id,
+          COALESCE(MAX(user_twitch_username), user_twitch_id) AS username,
+          COALESCE(SUM(reward_cost), 0)::BIGINT AS total_points,
+          COUNT(*)::INTEGER AS redemption_count,
+          MAX(redeemed_at)::TEXT AS last_redeemed_at
+        FROM gacha_history
+        WHERE streamer_id = p_streamer_id
+          AND redeemed_at >= p_from_date
+          AND (reward_cost > 0 OR reward_id IS NOT NULL)
+        GROUP BY user_twitch_id
+        OFFSET 0
+      ) grouped
+      WHERE NOT is_redemption_ranking_excluded(p_streamer_id, grouped.user_twitch_id)
       ORDER BY total_points DESC, redemption_count DESC, last_redeemed_at DESC
       LIMIT GREATEST(1, p_limit)
     ) ranked;
@@ -330,9 +371,24 @@ all_time_usage AS (
   GROUP BY usage.streamer_id
 ),
 last_7_days_usage AS (
-  -- 2段GROUP BY。1段目でユーザー単位に畳んでから除外判定するため、
-  -- is_redemption_ranking_excluded の呼び出し回数は「7日間にアクティブだった
-  -- (配信者, 視聴者) ペア数」に抑えられる（履歴行数ではない）。
+  -- 2段GROUP BY + OFFSET 0（レビュー指摘・実測訂正）。
+  -- 当初「1段目でユーザー単位に畳んでから除外判定するため、is_redemption_ranking_excluded
+  -- の呼び出し回数は(配信者,視聴者)ペア数に抑えられる」と書いたが、実測（Docker実機
+  -- PostgreSQL 17、EXPLAIN ANALYZE）では誤りだった。GROUP BYキー(streamer_id,
+  -- user_twitch_id)のみに依存する述語は、グループ化後の値とグループ化前の値が
+  -- 1対1で対応するためプランナにとって意味的に安全な変形であり、外側WHEREの述語が
+  -- 内側サブクエリのSeq Scanまでpushdownされ、gacha_historyの行ごとに評価される
+  -- （履歴行数ぶん呼ばれる。ペア数ではない）実行計画になることをEXPLAINで確認した。
+  -- 対策として、内側サブクエリのGROUP BY直後に`OFFSET 0`を置く。LIMIT/OFFSET句を持つ
+  -- サブクエリはPostgreSQLプランナにとって最適化フェンスであり（LIMIT/OFFSETの結果は
+  -- 「行を絞ってから」評価する必要があるため、外側の述語をその内側へ押し込むと結果が
+  -- 変わりうる。これはCTEのインライン化可否とは独立した、PostgreSQL全バージョンで
+  -- 昔から安定した挙動）、`OFFSET 0`自体は返す行数・順序に一切影響を与えない
+  -- no-opでありながら、この境界を強制してGROUP BY結果を独立に確定させる。これにより
+  -- 外側WHEREのis_redemption_ranking_excluded呼び出しはGROUP BY後の結果行
+  -- （(配信者,視聴者)ペア単位）に対してのみ評価される。修正後の実行計画をEXPLAIN
+  -- ANALYZEで確認済み（is_redemption_ranking_excludedがper_userのHashAggregate結果に
+  -- 対してのみ評価され、Seq Scanのfilterには現れない）。
   SELECT
     per_user.streamer_id,
     SUM(per_user.redemption_count)::BIGINT AS redemption_count,
@@ -348,6 +404,7 @@ last_7_days_usage AS (
     WHERE (history.reward_cost > 0 OR history.reward_id IS NOT NULL)
       AND history.redeemed_at >= parameters.last_7_days_start
     GROUP BY history.streamer_id, history.user_twitch_id
+    OFFSET 0
   ) per_user
   WHERE NOT is_redemption_ranking_excluded(per_user.streamer_id, per_user.user_twitch_id)
   GROUP BY per_user.streamer_id
@@ -514,6 +571,14 @@ WHERE is_redemption_ranking_excluded(s.streamer_id, s.user_twitch_id);
 -- (b) 残りを新述語で再集計する（N連の過少カウント是正）。
 --     新述語は旧述語 (reward_cost > 0) の真の上位集合なので、
 --     「既存行が0件になって消える」ケースは発生しない（DELETEは(a)だけで十分）。
+--     OFFSET 0 は他の呼び出し箇所（last_7_days_usage CTE等、上部コメント参照）と
+--     同じ理由で付与する。一回限りのバックフィルで本番gacha_history全件を
+--     スキャンするため、is_redemption_ranking_excludedが履歴行ごとに呼ばれる
+--     プランのままだと、このmigrationファイル全体を包むトランザクション
+--     （ファイル冒頭 migration-transaction: required）が不必要に長時間化し、
+--     channel_point_usage_stats等へのロック保持時間が伸びるリスクがある
+--     （EXPLAIN実測でOFFSET 0無しだと述語がSeq Scanのfilterへpushdownされ
+--     履歴行数ぶん呼ばれることを確認済み）。
 INSERT INTO channel_point_usage_stats (
   streamer_id, user_twitch_id, username,
   total_points, redemption_count, last_redeemed_at
@@ -532,6 +597,7 @@ FROM (
   FROM gacha_history h
   WHERE h.reward_cost > 0 OR h.reward_id IS NOT NULL
   GROUP BY h.streamer_id, h.user_twitch_id
+  OFFSET 0
 ) agg
 WHERE NOT is_redemption_ranking_excluded(agg.streamer_id, agg.user_twitch_id)
 ON CONFLICT (streamer_id, user_twitch_id) DO UPDATE SET
