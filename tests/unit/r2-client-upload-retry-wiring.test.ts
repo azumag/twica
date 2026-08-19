@@ -30,6 +30,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 // アサーションで1回打ち切りを固定する。将来、恒久エラーが誤ってtransient判定へ回帰した
 // 場合は1s+2s+4sの最大約7秒を実時間で待ってから失敗するが、現行testTimeout（30秒）内で
 // 確実に検知できるため、通常系へ不要なfake timers前提を増やさない簡潔性を優先する。
+// withR2UploadRetry のバックオフ式や既定リトライ回数を変更する場合は、この30秒以内という
+// 前提も併せて見直し、必要なら恒久エラー系をfake timers化するかtestTimeoutを再設定する。
 //
 // @opennextjs/cloudflareはgetR2Bindingが動的importする（src/lib/r2-client.ts）。
 // モックしないと、Node.js実行環境（Vitest）でgetCloudflareContext({async:true})が
@@ -207,6 +209,10 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     const result = await uploadToR2WithRetry('f.png', Buffer.from('x'), 'image/png', 3)
 
     expect(result).toEqual({ error: 'AccessDenied: invalid credentials' })
-    expect(sendMock).toHaveBeenCalledTimes(1)
+    expectAllAttemptsUsedConfig(1, {
+      region: 'auto',
+      endpoint: 'https://example.r2.test',
+      credentials: { accessKeyId: 'image-key', secretAccessKey: 'image-secret' },
+    })
   })
 })
