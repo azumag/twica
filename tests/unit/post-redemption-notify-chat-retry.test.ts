@@ -94,7 +94,9 @@ const claim = {
   payload: {},
   leaseId: 'lease-1',
   attemptCount: 1,
-  createdAt: new Date().toISOString(),
+  // レビュー指摘: 期待値に使わない非決定値(new Date())はテストの再現性を
+  // 落とすだけなので、固定文字列にする。
+  createdAt: '2026-01-01T00:00:00.000Z',
 }
 
 describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到達可否 (#1033)', () => {
@@ -120,6 +122,9 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
 
     await postRedemptionNotify(notifyData)
 
+    // レビュー指摘: 呼び出し回数も固定し、将来early returnを外してcatch経路と
+    // 二重にretryChatNotificationを叩く退行(deliveryStatePersistedの扱いミス)を検知する。
+    expect(mockRetry).toHaveBeenCalledTimes(1)
     expect(mockRetry).toHaveBeenCalledWith(
       claim,
       expect.stringContaining('too quickly'),
@@ -150,6 +155,12 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
         streamerId: 'streamer-1',
       }),
     )
+    // レビュー指摘: pending分岐の判定条件が誤って広がる退行(例: retryState !== 'dead'
+    // のような反転ミス)を検知するため、pending専用のwarnログが出ないことも固定する。
+    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+      '[postRedemptionNotify] chat announcement retry scheduled',
+      expect.anything(),
+    )
   })
 
   it('lost-lease（lease競合で更新不能）の場合も従来通りreportErrorを呼ぶ', async () => {
@@ -166,6 +177,10 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
         context: 'eventsub:postRedemptionNotify:chatAnnouncement',
         streamerId: 'streamer-1',
       }),
+    )
+    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+      '[postRedemptionNotify] chat announcement retry scheduled',
+      expect.anything(),
     )
   })
 })

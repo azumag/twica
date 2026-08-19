@@ -533,9 +533,11 @@ export async function postRedemptionNotify(
         return;
       }
       // 失敗系outcomeにもdegradation（設定BOT恒久失効）が付与される。token-managerは
-      // 永続報告せず所有境界の1回報告へ委ねる契約のため、DLQ reason・retry reason・
-      // throw経由のreportErrorへ畳み込み、本人credential障害と同時発生しても
-      // 「設定BOTが要再認証」の直接シグナルを欠落させない。
+      // 永続報告せず所有境界の1回報告へ委ねる契約のため、DLQ reason・retry reasonへ
+      // 畳み込む。Issue #1033以降、retryable + degradationがpendingへ戻る経路は
+      // 下のpending分岐でreportErrorへ到達しなくなったため、「設定BOTが要再認証」の
+      // シグナルはこの経路では欠落しないが即時ではなくなり、最終的にdead化した時
+      // （またはfallback送信成功時のchatDegradation通報）まで遅延する。
       const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation);
       if (outcome.outcome === 'terminal') {
         const persisted = await deadLetterChatNotification(claim, failureReason);
