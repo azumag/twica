@@ -222,14 +222,20 @@ DECLARE
   v_s1 RECORD;
   v_s2 RECORD;
 BEGIN
+  -- Auto Review必須指摘対応: plpgsqlのFOUNDは直前のSELECT INTO(v_s2)だけを
+  -- 指すため、「NOT FOUND OR v_s1...」ではv_s1側が未復帰でもFOUND=true
+  -- (v_s2は見つかる)かつv_s1.total_pointsがNULLで比較がNULLになり、
+  -- OR全体がNULLとなってIFが成立せず例外が発生しない(この検証が実質no-opに
+  -- なっていた)。IS DISTINCT FROMはNULL同士・NULLと非NULLのどちらでもtrueを
+  -- 返すため、レコードが見つからない場合も含めて確実に検知できる。
   SELECT * INTO v_s1 FROM channel_point_usage_stats
   WHERE streamer_id = '40000000-0000-4000-8000-000000000001' AND user_twitch_id = 'rrx-bot-shared';
   SELECT * INTO v_s2 FROM channel_point_usage_stats
   WHERE streamer_id = '40000000-0000-4000-8000-000000000002' AND user_twitch_id = 'rrx-bot-shared';
-  IF NOT FOUND OR v_s1.total_points <> 400 THEN
+  IF v_s1.total_points IS DISTINCT FROM 400 OR v_s1.redemption_count IS DISTINCT FROM 1 THEN
     RAISE EXCEPTION '共有system BOT解除後、配信者1側が復帰していない: %', row_to_json(v_s1);
   END IF;
-  IF v_s2.total_points IS DISTINCT FROM 500 THEN
+  IF v_s2.total_points IS DISTINCT FROM 500 OR v_s2.redemption_count IS DISTINCT FROM 1 THEN
     RAISE EXCEPTION '共有system BOT解除後、配信者2側が復帰していない(全配信者展開の回帰): %', row_to_json(v_s2);
   END IF;
 END $$;

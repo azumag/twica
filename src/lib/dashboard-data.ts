@@ -1368,7 +1368,7 @@ async function fetchChannelPointUsageStatsFromHistory(
         // `OFFSET 0`を使うが、Drizzleの`.offset(0)`はfalsy値としてOFFSET句自体を
         // 生成しない(pg-core/dialect.jsの`offset ? ... : void 0`。実測確認済み、
         // 未修正のDrizzle側の挙動)。そのためここでは同じフェンス効果を持つ
-        // `.limit(PG_INT4_MAX)`(実質無制限のLIMIT。0以上なら必ずLIMIT句を生成する
+        // `.limit(PG_OPTIMIZATION_FENCE_LIMIT)`(実質無制限のLIMIT。0以上なら必ずLIMIT句を生成する
         // ため`.limit(0)`のような結果0件化のリスクは無い)を使う。
         const groupedHistory = db
           .select({
