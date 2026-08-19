@@ -1,0 +1,391 @@
+name: Agent one-shot fix for PR 1032
+
+on:
+  push:
+    branches:
+      - fix/redemption-ranking-streamer-bot-exclusion
+    paths:
+      - .github/workflows/agent-fix-1032.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/redemption-ranking-streamer-bot-exclusion
+          fetch-depth: 0
+      - name: Apply mandatory review fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Drizzle fallback: aggregate behind an OFFSET 0 subquery, then apply
+          # exclusion in the outer WHERE so PostgreSQL cannot push correlated EXISTS
+          # down to gacha_history rows.
+          path = Path('src/lib/dashboard-data.ts')
+          text = path.read_text()
+          start = text.index('        // Auto Review必須指摘への対応: 新述語')
+          end_marker = '          .limit(Math.max(1, limit));'
+          end = text.index(end_marker, start) + len(end_marker)
+          replacement = r'''        // Auto Review必須指摘への対応: 新述語(reward_cost > 0 OR reward_id IS
+        // NOT NULL)により、グループ内の全行がreward_cost IS NULL(N連の2枚目
+        // 以降のみが残るケース)になり得る。sum()はNULLのみのグループでSQL
+        // NULLを返すため、RPC側と同じくCOALESCE(..., 0)で0へ正規化する。
+        //
+        // また、除外述語を単純なHAVINGへ置くと、PostgreSQLはGROUP BYキーだけに
+        // 依存する条件をscan側へpushdownし得る。migration側のPostgreSQL 17
+        // EXPLAIN実測で、is_redemption_ranking_excluded相当のEXISTSが履歴行ごとに
+        // 評価されることを確認済み。そこでSQL側と同じく、まずユーザー別集計を
+        // OFFSET 0付きサブクエリで確定させ(OFFSET 0は結果不変の最適化フェンス)、
+        // 外側WHEREで配信者本人/BOTを除外する。これにより相関EXISTSは履歴行数では
+        // なく集計後のユーザー数に対してのみ評価される。
+        const groupedUsage = db
+          .select({
+            userTwitchId: gachaHistoryTable.user_twitch_id,
+            username: sql<string>`coalesce(max(${gachaHistoryTable.user_twitch_username}), ${gachaHistoryTable.user_twitch_id})`.as("username"),
+            totalPoints: sql<number | string>`coalesce(sum(${gachaHistoryTable.reward_cost}), 0)`.as("total_points"),
+            redemptionCount: countRows().as("redemption_count"),
+            lastRedeemedAt: max(gachaHistoryTable.redeemed_at).as("last_redeemed_at"),
+          })
+          .from(gachaHistoryTable)
+          .where(historyFilter)
+          .groupBy(gachaHistoryTable.user_twitch_id)
+          .offset(0)
+          .as("grouped_usage");
+
+        // window関数は外側WHERE後・ORDER BY/LIMIT前に評価されるため、除外対象を
+        // 取り除いた全ユーザーのポイント総計を1 statement / 1 snapshotで得られる。
+        const totalPointsAllUsers =
+          sql<number | string>`sum(${groupedUsage.totalPoints}) over ()`;
+
+        const excludeStreamerSelf = notExists(
+          db
+            .select({ one: sql`1` })
+            .from(streamersTable)
+            .where(
+              and(
+                eq(streamersTable.id, streamerId),
+                eq(streamersTable.twitch_user_id, groupedUsage.userTwitchId),
+              ),
+            ),
+        );
+        const excludeBotAccount = notExists(
+          db
+            .select({ one: sql`1` })
+            .from(twitchBotAccountsTable)
+            .where(
+              and(
+                eq(twitchBotAccountsTable.twitch_user_id, groupedUsage.userTwitchId),
+                or(
+                  and(
+                    eq(twitchBotAccountsTable.owner_type, "streamer"),
+                    eq(twitchBotAccountsTable.streamer_id, streamerId),
+                  ),
+                  eq(twitchBotAccountsTable.owner_type, "system"),
+                ),
+              ),
+            ),
+        );
+
+        return db
+          .select({
+            user_twitch_id: groupedUsage.userTwitchId,
+            username: groupedUsage.username,
+            total_points: groupedUsage.totalPoints,
+            redemption_count: groupedUsage.redemptionCount,
+            last_redeemed_at: groupedUsage.lastRedeemedAt,
+            total_points_all_users: totalPointsAllUsers,
+          })
+          .from(groupedUsage)
+          .where(and(excludeStreamerSelf, excludeBotAccount))
+          .orderBy(
+            desc(groupedUsage.totalPoints),
+            desc(groupedUsage.redemptionCount),
+            desc(groupedUsage.lastRedeemedAt),
+          )
+          .limit(Math.max(1, limit));'''
+          path.write_text(text[:start] + replacement + text[end:])
+
+          # 2) Update SQL-generation tests to assert the optimization fence and outer
+          # exclusion instead of the disproven HAVING assumption.
+          path = Path('tests/unit/dashboard-data-rpc-driver-parity.test.ts')
+          text = path.read_text()
+          start = text.index('    // Issue: N連ガチャ2枚目以降(reward_id is not null)をORで受け')
+          end_marker = "    expect(generated.sql).toMatch(/limit \\$7/i)"
+          end = text.index(end_marker, start) + len(end_marker)
+          replacement = r'''    // N連2枚目以降(reward_id is not null)をORで受ける。除外は
+    // GROUP BY + OFFSET 0 の集計サブクエリを確定した後、外側WHEREで適用する。
+    expect(generated.params[0]).toBe('streamer-1')
+    expect(generated.params).toContain('streamer')
+    expect(generated.params).toContain('system')
+    expect(generated.params.at(-1)).toBe(10)
+    expect(generated.sql).toMatch(/from \(select .* from "gacha_history"/i)
+    expect(generated.sql).toMatch(/"gacha_history"\."streamer_id" = \$1/i)
+    expect(generated.sql).toMatch(
+      /\("gacha_history"\."reward_cost" > \$2 or "gacha_history"\."reward_id" is not null\)/i,
+    )
+    expect(generated.sql).toMatch(/coalesce\(max\("user_twitch_username"\), "user_twitch_id"\)/i)
+    expect(generated.sql).toMatch(/coalesce\(sum\("reward_cost"\), 0\)/i)
+    expect(generated.sql).toMatch(/count\(\*\)/i)
+    expect(generated.sql).toMatch(/max\("redeemed_at"\)/i)
+    expect(generated.sql).toMatch(/group by "gacha_history"\."user_twitch_id" offset \$\d+\) "grouped_usage"/i)
+    expect(generated.sql).not.toMatch(/ having /i)
+    expect(generated.sql).toMatch(/from \(select .* offset \$\d+\) "grouped_usage" where \(not exists/i)
+    expect(generated.sql).toMatch(/sum\("grouped_usage"\."total_points"\) over \(\)/i)
+    expect(generated.sql).toMatch(/order by "grouped_usage"\."total_points" desc, "grouped_usage"\."redemption_count" desc, "grouped_usage"\."last_redeemed_at" desc/i)
+    expect(generated.sql).toMatch(/limit \$\d+/i)'''
+          text = text[:start] + replacement + text[end:]
+
+          start = text.index("  it('channel point fallbackの除外はGROUP BY確定後のHAVINGで適用される(WHEREではない)'")
+          end = text.index("  it('channel point fallbackは共有BOT(owner_type=system)も配信者固有BOTと同様に除外する'", start)
+          replacement = r'''  it('channel point fallbackの除外はOFFSET 0で集計を確定した外側WHEREに適用される', async () => {
+    const sql = createSqlMock([
+      { rows: [{ result: dropStatsResult }] },
+      { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
+    ])
+    const { db, queries } = createCapturingPgProxyDb([])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    await getGachaStats('streamer-1', '30d')
+
+    const generated = queries[0]
+    const lower = generated.sql.toLowerCase()
+    const groupByIndex = lower.indexOf('group by')
+    const offsetIndex = lower.indexOf('offset', groupByIndex)
+    const aliasIndex = lower.indexOf('"grouped_usage"', offsetIndex)
+    const outerWhereIndex = lower.indexOf(' where ', aliasIndex)
+    const orderByIndex = lower.indexOf('order by', outerWhereIndex)
+    expect(groupByIndex).toBeGreaterThan(-1)
+    expect(offsetIndex).toBeGreaterThan(groupByIndex)
+    expect(aliasIndex).toBeGreaterThan(offsetIndex)
+    expect(outerWhereIndex).toBeGreaterThan(aliasIndex)
+    expect(orderByIndex).toBeGreaterThan(outerWhereIndex)
+    expect(lower.slice(0, offsetIndex)).not.toContain('not exists')
+    expect(lower.slice(outerWhereIndex, orderByIndex)).toContain('not exists')
+    expect(lower).not.toContain(' having ')
+  })
+
+'''
+          path.write_text(text[:start] + replacement + text[end:])
+
+          # 3) Real PostgreSQL behavior fixture. It re-runs the migration after inserting
+          # intentionally stale rows so the destructive backfill is exercised, then runs
+          # it a second time to prove idempotency. Trigger DELETE recovery and the
+          # OFFSET-0 plan fence are checked on PostgreSQL 17 itself.
+          fixture = r'''-- PR #1032: 引き換えランキング除外・N連集計migrationの実DB回帰fixture。
+-- CIのPostgreSQL 17で、文字列一致では検証できないトリガー、早期DELETE、
+-- 破壊的バックフィルの対象範囲/冪等性、OFFSET 0最適化フェンスを実行する。
+BEGIN;
+
+INSERT INTO streamers (id, twitch_user_id, twitch_username, twitch_display_name, created_at, updated_at)
+VALUES
+  ('00000000-0000-0000-0000-000000009001', 'fixture-streamer-self', 'fixture-streamer-self', 'Fixture Streamer', NOW(), NOW()),
+  ('00000000-0000-0000-0000-000000009002', 'fixture-streamer-2', 'fixture-streamer-2', 'Fixture Streamer 2', NOW(), NOW());
+
+INSERT INTO cards (id, streamer_id, name, rarity)
+VALUES
+  ('00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009001', 'Fixture Card', 'common'),
+  ('00000000-0000-0000-0000-000000009102', '00000000-0000-0000-0000-000000009002', 'Fixture Card 2', 'common');
+
+-- viewer-normal: N連3枚(100ptは先頭のみ) + reward_id導入前の旧1件(50pt)
+INSERT INTO gacha_history (id, event_id, user_twitch_id, user_twitch_username, card_id, streamer_id, reward_cost, reward_id, redeemed_at)
+VALUES
+  ('00000000-0000-0000-0000-000000009201', 'fixture-n-1', 'viewer-normal', 'Viewer Normal', '00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009001', 100, 'reward-n', NOW() - INTERVAL '3 minutes'),
+  ('00000000-0000-0000-0000-000000009202', 'fixture-n-2', 'viewer-normal', 'Viewer Normal', '00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009001', NULL, 'reward-n', NOW() - INTERVAL '2 minutes'),
+  ('00000000-0000-0000-0000-000000009203', 'fixture-n-3', 'viewer-normal', 'Viewer Normal', '00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009001', NULL, 'reward-n', NOW() - INTERVAL '1 minute'),
+  ('00000000-0000-0000-0000-000000009204', 'fixture-legacy', 'viewer-normal', 'Viewer Normal', '00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009001', 50, NULL, NOW()),
+  ('00000000-0000-0000-0000-000000009205', 'fixture-bot-1', 'viewer-bot', 'Viewer Bot', '00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009001', 200, 'reward-bot', NOW()),
+  ('00000000-0000-0000-0000-000000009206', 'fixture-bot-2', 'viewer-bot', 'Viewer Bot', '00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009001', NULL, 'reward-bot', NOW()),
+  ('00000000-0000-0000-0000-000000009207', 'fixture-self', 'fixture-streamer-self', 'Fixture Streamer', '00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009001', 300, 'reward-self', NOW()),
+  ('00000000-0000-0000-0000-000000009208', 'fixture-other', 'viewer-other', 'Viewer Other', '00000000-0000-0000-0000-000000009102', '00000000-0000-0000-0000-000000009002', 70, 'reward-other', NOW());
+
+INSERT INTO twitch_bot_accounts (
+  id, owner_type, streamer_id, twitch_user_id, twitch_username,
+  twitch_access_token, twitch_refresh_token, twitch_token_expires_at, status
+) VALUES (
+  '00000000-0000-0000-0000-000000009301', 'streamer',
+  '00000000-0000-0000-0000-000000009001', 'viewer-bot', 'viewer-bot',
+  'fixture-access', 'fixture-refresh', NOW() + INTERVAL '1 hour', 'active'
+);
+
+-- 現行triggerの自己修復を意図的に汚して、migration再実行のバックフィルを検証する。
+INSERT INTO channel_point_usage_stats (
+  streamer_id, user_twitch_id, username, total_points, redemption_count, last_redeemed_at
+) VALUES
+  ('00000000-0000-0000-0000-000000009001', 'viewer-bot', 'stale-bot', 999, 99, NOW()),
+  ('00000000-0000-0000-0000-000000009001', 'fixture-streamer-self', 'stale-self', 999, 99, NOW())
+ON CONFLICT (streamer_id, user_twitch_id) DO UPDATE SET
+  username = EXCLUDED.username,
+  total_points = EXCLUDED.total_points,
+  redemption_count = EXCLUDED.redemption_count,
+  last_redeemed_at = EXCLUDED.last_redeemed_at;
+
+UPDATE channel_point_usage_stats
+SET total_points = 1, redemption_count = 1
+WHERE streamer_id = '00000000-0000-0000-0000-000000009001'
+  AND user_twitch_id = 'viewer-normal';
+UPDATE channel_point_usage_stats
+SET total_points = 1, redemption_count = 1
+WHERE streamer_id = '00000000-0000-0000-0000-000000009002'
+  AND user_twitch_id = 'viewer-other';
+
+\ir ../../db/planetscale/migrations/20260819120000_exclude_streamer_and_bot_from_redemption_rankings.sql
+
+DO $$
+DECLARE
+  v_points BIGINT;
+  v_count INTEGER;
+BEGIN
+  SELECT total_points, redemption_count INTO v_points, v_count
+  FROM channel_point_usage_stats
+  WHERE streamer_id = '00000000-0000-0000-0000-000000009001' AND user_twitch_id = 'viewer-normal';
+  IF v_points <> 150 OR v_count <> 4 THEN
+    RAISE EXCEPTION 'normal viewer backfill mismatch: points %, count %', v_points, v_count;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM channel_point_usage_stats
+    WHERE streamer_id = '00000000-0000-0000-0000-000000009001'
+      AND user_twitch_id IN ('viewer-bot', 'fixture-streamer-self')
+  ) THEN
+    RAISE EXCEPTION 'excluded bot/self rows survived destructive backfill';
+  END IF;
+
+  SELECT total_points, redemption_count INTO v_points, v_count
+  FROM channel_point_usage_stats
+  WHERE streamer_id = '00000000-0000-0000-0000-000000009002' AND user_twitch_id = 'viewer-other';
+  IF v_points <> 70 OR v_count <> 1 THEN
+    RAISE EXCEPTION 'unrelated streamer backfill mismatch: points %, count %', v_points, v_count;
+  END IF;
+END $$;
+
+-- 同じmigrationを再実行しても結果が変わらないことを実DBで固定する。
+\ir ../../db/planetscale/migrations/20260819120000_exclude_streamer_and_bot_from_redemption_rankings.sql
+
+DO $$
+DECLARE
+  v_rows INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO v_rows FROM channel_point_usage_stats
+  WHERE (streamer_id, user_twitch_id) IN (
+    ('00000000-0000-0000-0000-000000009001'::uuid, 'viewer-normal'),
+    ('00000000-0000-0000-0000-000000009002'::uuid, 'viewer-other')
+  );
+  IF v_rows <> 2 THEN
+    RAISE EXCEPTION 'idempotent rerun changed expected row set: %', v_rows;
+  END IF;
+END $$;
+
+-- refresh_channel_point_usage_stat の除外早期DELETE+RETURNを直接検証する。
+INSERT INTO channel_point_usage_stats (
+  streamer_id, user_twitch_id, username, total_points, redemption_count, last_redeemed_at
+) VALUES (
+  '00000000-0000-0000-0000-000000009001', 'fixture-streamer-self', 'stale-self', 1, 1, NOW()
+);
+SELECT refresh_channel_point_usage_stat(
+  '00000000-0000-0000-0000-000000009001', 'fixture-streamer-self'
+);
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM channel_point_usage_stats
+    WHERE streamer_id = '00000000-0000-0000-0000-000000009001'
+      AND user_twitch_id = 'fixture-streamer-self'
+  ) THEN
+    RAISE EXCEPTION 'excluded self row was not deleted by refresh early return';
+  END IF;
+END $$;
+
+-- BOT物理DELETEで除外解除され、既存履歴から即時に復帰することを検証する。
+DELETE FROM twitch_bot_accounts WHERE id = '00000000-0000-0000-0000-000000009301';
+DO $$
+DECLARE
+  v_points BIGINT;
+  v_count INTEGER;
+BEGIN
+  SELECT total_points, redemption_count INTO v_points, v_count
+  FROM channel_point_usage_stats
+  WHERE streamer_id = '00000000-0000-0000-0000-000000009001' AND user_twitch_id = 'viewer-bot';
+  IF v_points <> 200 OR v_count <> 2 THEN
+    RAISE EXCEPTION 'bot DELETE trigger did not restore aggregate: points %, count %', v_points, v_count;
+  END IF;
+END $$;
+
+-- OFFSET 0 が実際に最適化フェンスとして機能し、除外関数がgacha_history scanへ
+-- pushdownされないことを PostgreSQL 17 の実行計画で確認する。
+DO $$
+DECLARE
+  v_plan JSON;
+  v_pushed_to_history BOOLEAN;
+  v_outer_filter BOOLEAN;
+BEGIN
+  EXECUTE $q$
+    EXPLAIN (FORMAT JSON)
+    SELECT grouped.user_twitch_id
+    FROM (
+      SELECT h.user_twitch_id, COUNT(*) AS redemption_count
+      FROM gacha_history h
+      WHERE h.streamer_id = '00000000-0000-0000-0000-000000009001'
+        AND (h.reward_cost > 0 OR h.reward_id IS NOT NULL)
+      GROUP BY h.user_twitch_id
+      OFFSET 0
+    ) grouped
+    WHERE NOT is_redemption_ranking_excluded(
+      '00000000-0000-0000-0000-000000009001', grouped.user_twitch_id
+    )
+  $q$ INTO v_plan;
+
+  SELECT COALESCE(bool_or(
+    node ->> 'Relation Name' = 'gacha_history'
+    AND COALESCE(node ->> 'Filter', '') LIKE '%is_redemption_ranking_excluded%'
+  ), FALSE)
+  INTO v_pushed_to_history
+  FROM jsonb_path_query(v_plan::jsonb, '$.**') AS nodes(node);
+
+  SELECT COALESCE(bool_or(
+    node ->> 'Node Type' = 'Subquery Scan'
+    AND COALESCE(node ->> 'Filter', '') LIKE '%is_redemption_ranking_excluded%'
+  ), FALSE)
+  INTO v_outer_filter
+  FROM jsonb_path_query(v_plan::jsonb, '$.**') AS nodes(node);
+
+  IF v_pushed_to_history OR NOT v_outer_filter THEN
+    RAISE EXCEPTION 'OFFSET 0 fence plan regression: pushed %, outer %; plan %',
+      v_pushed_to_history, v_outer_filter, v_plan;
+  END IF;
+END $$;
+
+ROLLBACK;
+'''
+          Path('tests/fixtures/redemption-ranking-exclusions-postgres.sql').write_text(fixture)
+
+          # 4) Wire the behavior fixture into the existing PostgreSQL 17 migration job.
+          path = Path('.github/workflows/ci.yml')
+          text = path.read_text()
+          marker = '      - name: Verify transactional gacha outbox invariants\n'
+          insert = '''      - name: Verify redemption ranking exclusion migration behavior
+        # PR #1032: destructive backfill / BOT DELETE trigger / early DELETE+RETURN /
+        # OFFSET 0 optimization fence must be exercised on real PostgreSQL, not regex only.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \\
+            -f tests/fixtures/redemption-ranking-exclusions-postgres.sql
+
+'''
+          if marker not in text:
+            raise SystemExit('CI insertion marker not found')
+          path.write_text(text.replace(marker, insert + marker, 1))
+          PY
+
+      - name: Commit and push fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/lib/dashboard-data.ts tests/unit/dashboard-data-rpc-driver-parity.test.ts tests/fixtures/redemption-ranking-exclusions-postgres.sql .github/workflows/ci.yml
+          git rm .github/workflows/agent-fix-1032.yml
+          git commit -m "fix: address mandatory ranking review findings"
+          git push origin HEAD:fix/redemption-ranking-streamer-bot-exclusion
