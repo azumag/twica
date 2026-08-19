@@ -570,6 +570,22 @@ export async function postRedemptionNotify(
       }
       const retryState = await retryChatNotification(claim, failureReason);
       deliveryStatePersisted = true;
+      if (retryState === 'pending') {
+        // Issue #1033: Twitch 429（レート制限）等の一時障害は、指数backoffで最大
+        // CHAT_OUTBOX_MAX_ATTEMPTS回まで自動再試行される正常系の一部である。
+        // ここでthrowしてreportErrorへ回すと、自己回復するはずの一時障害が
+        // 再試行のたびに[Error]としてGitHub Issueを量産してしまう
+        // （実際に本番で429が1回発生しただけで自動Issueが起票された）。
+        // 再試行を使い切ってdead化した場合・lease競合でlost-leaseになった場合のみ
+        // 下のthrow/reportErrorへ回し、pendingはwarnログに留めて正常終了する。
+        logger.warn('[postRedemptionNotify] chat announcement retry scheduled', {
+          streamerId: data.streamer.id,
+          broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+          outboxId: claim.id,
+          reason: failureReason,
+        });
+        return;
+      }
       throw new Error(`Chat announcement ${retryState}: ${failureReason}`);
     } catch (error) {
       // sendChatAnnouncement自体の予期しないthrowも一時障害として上限付き再試行へ戻す。
@@ -594,7 +610,9 @@ export async function postRedemptionNotify(
   // 通知失敗をログ出力 + エラー追跡
   // Note: publishCommittedGachaBatch (i=0) は失敗を結果へ閉じ込め、polling回収へ
   // 委ねる設計のため rejected にならない。詳細はpublisher側の構造化warnで追跡する。
-  // chatAnnouncement (i=1) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
+  // chatAnnouncement (i=1) はterminal/aborted/dead/lost-lease時のみthrowするため
+  // reportErrorが機能する。pending（自動再試行予定の一時障害）はchatTask内でwarn
+  // ログのみに留めて正常終了するため、ここには到達しない（Issue #1033）。
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
       const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
