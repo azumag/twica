@@ -33,7 +33,6 @@ import {
   notLike,
   or,
   sql,
-  sum,
 } from "drizzle-orm";
 import { getDb, type DbHandle } from "@/lib/db/client";
 import { isPgFunctionNotFoundError, isPgMissingColumnError, isPgUniqueViolationError } from "@/lib/db/errors";
@@ -1338,7 +1337,17 @@ async function fetchChannelPointUsageStatsFromHistory(
     rankingRows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        const totalPoints = sum(gachaHistoryTable.reward_cost);
+        // Auto Review必須指摘への対応: 新述語(reward_cost > 0 OR reward_id IS
+        // NOT NULL)により、グループ内の全行がreward_cost IS NULL(N連の2枚目
+        // 以降のみが残るケース)になり得る。sum()はNULLのみのグループでSQL
+        // NULLを返し、orderBy(desc(totalPoints))はPostgreSQL既定でDESC =
+        // NULLS FIRSTのため、そのユーザーが0ポイント表示のまま1位に混入し
+        // LIMIT枠を1つ消費してしまう(migration側は既にCOALESCEで対処済みの
+        // 同一欠陥。#1032レビュー参照)。RPC本体
+        // (get_channel_point_usage_stats / refresh_channel_point_usage_stat)
+        // は0を書くため、COALESCEを合わせないとRPC経路とこのフォールバック
+        // 経路で順位が食い違う(driver parity崩れ)。
+        const totalPoints = sql<number | string>`coalesce(sum(${gachaHistoryTable.reward_cost}), 0)`;
         const redemptionCount = countRows();
         const lastRedeemedAt = max(gachaHistoryTable.redeemed_at);
         // GROUP BY後のユーザー別SUMをwindow SUMすることで、ランキングLIMITの

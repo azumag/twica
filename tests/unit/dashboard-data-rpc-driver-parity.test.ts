@@ -763,7 +763,10 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     expect(generated.sql).toMatch(
       /having \(not exists \(select 1 from "streamers" where \("streamers"\."id" = \$3 and "streamers"\."twitch_user_id" = "gacha_history"\."user_twitch_id"\)\) and not exists \(select 1 from "twitch_bot_accounts" where \("twitch_bot_accounts"\."twitch_user_id" = "gacha_history"\."user_twitch_id" and \(\("twitch_bot_accounts"\."owner_type" = \$4 and "twitch_bot_accounts"\."streamer_id" = \$5\) or "twitch_bot_accounts"\."owner_type" = \$6\)\)\)\)/i,
     )
-    expect(generated.sql).toMatch(/order by sum\("gacha_history"\."reward_cost"\) desc, count\(\*\) desc, max\("gacha_history"\."redeemed_at"\) desc/i)
+    // Auto Review必須指摘対応(#1032): totalPointsがNULLのみのグループでSQL
+    // NULLにならないよう coalesce(sum(...), 0) を使う。DESC既定のNULLS FIRSTで
+    // 0ポイントユーザーが1位に混入する退行を防ぐ。
+    expect(generated.sql).toMatch(/order by coalesce\(sum\("gacha_history"\."reward_cost"\), 0\) desc, count\(\*\) desc, max\("gacha_history"\."redeemed_at"\) desc/i)
     expect(generated.sql).toMatch(/limit \$7/i)
   })
 
