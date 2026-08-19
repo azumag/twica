@@ -720,6 +720,7 @@
       "authorizationRevokedDescription": "The subscription was disabled because Twitch authorization was revoked.",
       "authorizationRevokedItem1": "Log out of TwiCa, then log back in via Twitch to restore the connection (if this screen shows an \"Enable Channel Points integration\" button, you can press that instead of logging out)",
       "authorizationRevokedItem2": "Then re-register with the \"Save & Register EventSub\" button",
+      "authorizationRevokedConfirm": "Starting re-authentication will temporarily disconnect your Twitch integration. Channel Points and chat notifications will be paused until you complete approval on Twitch. Continue?",
       "callbackMismatchTitle": "Callback URL mismatch",
       "callbackMismatchDescription": "The registered callback URL does not match the current app URL. Please re-register EventSub.",
       "callbackMismatchCurrent": "Current: {callback}",
