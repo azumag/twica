@@ -89,6 +89,7 @@ jobs:
               - 'tests/fixtures/transactional-chat-outbox-concurrency.sh'
               - 'tests/fixtures/add-card-trading-postgres.sql'
               - 'tests/fixtures/add-card-trading-concurrency.sh'
+              - 'tests/fixtures/redemption-ranking-exclusions-postgres.sql'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
@@ -542,3 +543,14 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: bash tests/fixtures/add-card-trading-concurrency.sh
+
+      - name: Verify redemption ranking exclusions
+        # #1034/#1032 Auto Review必須指摘: SQL文字列の正規表現テストだけでは、
+        # BOTアカウント連携解除(物理DELETE)によるtrg_sync_channel_point_usage_stat_bot_account
+        # 経由の自己修復、配信者本人の早期DELETE+RETURN、一回限りバックフィルの
+        # 是正・冪等性を検証できない。実DBでトリガー・関数を実行して検証する。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/redemption-ranking-exclusions-postgres.sql
