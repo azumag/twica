@@ -209,6 +209,7 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     const result = await uploadToR2WithRetry('f.png', Buffer.from('x'), 'image/png', 3)
 
     expect(result).toEqual({ error: 'AccessDenied: invalid credentials' })
+    // expectedAttempts=1 は「1回だけ試行 = リトライなし」を明示する契約。
     expectAllAttemptsUsedConfig(1, {
       region: 'auto',
       endpoint: 'https://example.r2.test',
