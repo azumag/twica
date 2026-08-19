@@ -374,7 +374,12 @@ WHERE c.max_issuance_count IS NOT NULL
         TIER_B,
         `WITH recalced AS (
   SELECT streamer_id, user_twitch_id,
-    SUM(reward_cost)::bigint AS total_points,
+    -- 再レビュー指摘(必須-A): 新述語 (reward_cost>0 OR reward_id IS NOT NULL) では
+    -- グループ内の全行が reward_cost IS NULL になりうる(N連2枚目以降のみが残る等、
+    -- 例えばカード削除でON DELETE CASCADEにより1枚目の行だけ消えるケースが実在する)。
+    -- COALESCEが無いとSUM結果がNULLになり、必ず0を書くrefresh_channel_point_usage_stat/
+    -- バックフィル側とIS DISTINCT FROMで食い違い、偽陽性のdriftを報告してしまう。
+    COALESCE(SUM(reward_cost), 0)::bigint AS total_points,
     COUNT(*)::int AS redemption_count,
     MAX(redeemed_at) AS last_redeemed_at
   FROM gacha_history
