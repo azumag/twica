@@ -119,10 +119,11 @@ export default function ChannelPointSettings({
   const [raidEventSubStatus, setRaidEventSubStatus] = useState<EventSubStatus>("none");
   const [raidEventSubWarning, setRaidEventSubWarning] = useState("");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscriptionForStatus[]>([]);
-  // Issue #1019: authorization_revoked バナー表示時は外側の汎用エラーボックスで接続状況セクション全体を置き換えない。
-  // バナー内の再認証ボタン押下失敗で setError すると、外側 error ? <red> が真になりバナーごと消えるデッドコードを防ぐ。
-  // 判定は subscriptions の実データに基づく（fetchFailed 等の初期ロード失敗時は subscriptions 空のため従来どおり赤箱を表示）。
-  const hasAuthorizationRevoked = subscriptions.some((sub) => sub.status === "authorization_revoked");
+  // Issue #1019: 再認証（step-up）失敗の表示は bootstrap 系の汎用 error と分離する。
+  // 従来 error を流用すると、外側の `error ? <赤箱>` が真になり authorization_revoked バナーごと
+  // 置き換わるデッドコードや、再認証と無関係な bootstrap 失敗文言がボタン直下に誤帰属する問題が出る。
+  // そのため再認証専用の state を持ち、外側の赤箱は従来どおり error のみに反応させる。
+  const [reauthError, setReauthError] = useState("");
   // チャネルポイント用スコープ不足でstep-up再認証が必要かどうか
   // Whether step-up reauth is needed because channel point scopes are missing
   const [needsReauth, setNeedsReauth] = useState(false);
@@ -763,7 +764,7 @@ export default function ChannelPointSettings({
    */
   const handleReauthorize = useCallback(async () => {
     setReauthorizing(true);
-    setError("");
+    setReauthError("");
     setMessage("");
 
     try {
@@ -785,7 +786,7 @@ export default function ChannelPointSettings({
         // （Issue #865フォローアップ）。
         const authorization = parseTwitchAuthorizationResponse(data);
         if (!authorization) {
-          setError(t("messages.reauthorizeFailed"));
+          setReauthError(t("messages.reauthorizeFailed"));
           return;
         }
         // state をCookieに保存してからリダイレクト（callbackでの検証用）
@@ -797,10 +798,10 @@ export default function ChannelPointSettings({
 
       const errorData = await response.json().catch(() => ({}));
       const maintenanceError = parseMaintenanceError(response, errorData);
-      setError(maintenanceError?.message || errorData.error || t("messages.reauthorizeFailed"));
+      setReauthError(maintenanceError?.message || errorData.error || t("messages.reauthorizeFailed"));
     } catch (err) {
       logger.error("Failed to reauthorize for channel points:", err);
-      setError(t("messages.reauthorizeFailed"));
+      setReauthError(t("messages.reauthorizeFailed"));
     } finally {
       setReauthorizing(false);
     }
@@ -943,21 +944,21 @@ export default function ChannelPointSettings({
            <p className="mb-3 text-sm text-yellow-300">
              {t("messages.scopeRequired")}
            </p>
-           <button
-             onClick={handleReauthorize}
-             disabled={reauthorizing || isMaintenanceBlocked}
-             title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
-             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
-           >
-             {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
-           </button>
-           {error && (
-             <p className="mt-3 text-sm text-red-400">
-               {error}
-             </p>
-           )}
-         </div>
-        ) : error && !hasAuthorizationRevoked ? (
+            <button
+              onClick={handleReauthorize}
+              disabled={reauthorizing || isMaintenanceBlocked}
+              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+              className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+            >
+              {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
+            </button>
+            {reauthError && (
+              <p className="mt-3 text-sm text-red-400" role="alert">
+                {reauthError}
+              </p>
+            )}
+          </div>
+        ) : error ? (
           <div className="rounded-lg bg-red-500/20 p-4 text-red-300">
             {error}
           </div>
@@ -1092,8 +1093,10 @@ export default function ChannelPointSettings({
                           >
                             {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
                           </button>
-                          {error && (
-                            <p className="mt-2 text-xs text-red-400">{error}</p>
+                          {reauthError && (
+                            <p className="mt-2 text-xs text-red-400" role="alert">
+                              {reauthError}
+                            </p>
                           )}
                         </div>
                       )}
