@@ -220,4 +220,63 @@ describe("ChannelPointSettings maintenance integration", () => {
     expect(saveButton).toBeDisabled();
     expect(saveButton).toHaveAttribute("title", "メンテナンス中は操作できません");
   });
+
+  it("authorization_revoked のサブスクリプションがあるとき、バナー内に再連携ボタンを表示する（Issue #1019）", async () => {
+    fetchMock = mockFetch({
+      bootstrapBody: {
+        hasRequiredScope: true,
+        rewards: [{ id: "reward-1", title: "Reward1", cost: 100, is_enabled: true }],
+        subscriptions: [
+          {
+            id: "sub-1",
+            status: "authorization_revoked",
+            type: "channel.channel_points_custom_reward_redemption.add",
+            condition: { broadcaster_user_id: "user-1", reward_id: "reward-1" },
+            transport: { callback: "https://example.com/api/twitch/eventsub" },
+          },
+        ],
+        additionalRewards: [],
+        eventSubStatus: "error",
+        raidEventSubStatus: "active",
+        raidGiftDrawCount: 0,
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderComponent({ mode: "off" }, { currentRewardId: "reward-1", currentRewardName: "Reward1" });
+
+    // バナー本文が表示される
+    expect(await screen.findByText("認証が取り消されました")).toBeInTheDocument();
+    // 同一バナー内に再連携CTAが存在する（従来はボタン無しだった）
+    const button = await screen.findByRole("button", { name: "チャネルポイント連携を有効化" });
+    expect(button).toBeInTheDocument();
+    expect(button).not.toBeDisabled();
+  });
+
+  it("authorization_revoked バナー内の再連携ボタンは maintenance 中は disable される（Issue #1019）", async () => {
+    fetchMock = mockFetch({
+      bootstrapBody: {
+        hasRequiredScope: true,
+        rewards: [{ id: "reward-1", title: "Reward1", cost: 100, is_enabled: true }],
+        subscriptions: [
+          {
+            id: "sub-1",
+            status: "authorization_revoked",
+            type: "channel.channel_points_custom_reward_redemption.add",
+            condition: { broadcaster_user_id: "user-1", reward_id: "reward-1" },
+            transport: { callback: "https://example.com/api/twitch/eventsub" },
+          },
+        ],
+        additionalRewards: [],
+        eventSubStatus: "error",
+        raidEventSubStatus: "active",
+        raidGiftDrawCount: 0,
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderComponent({ mode: "read-only" }, { currentRewardId: "reward-1", currentRewardName: "Reward1" });
+
+    const button = await screen.findByRole("button", { name: "チャネルポイント連携を有効化" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "メンテナンス中は操作できません");
+  });
 });

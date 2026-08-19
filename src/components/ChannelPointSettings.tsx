@@ -1074,6 +1074,23 @@ export default function ChannelPointSettings({
                             <li>{t("eventSubStatus.authorizationRevokedItem1")}</li>
                             <li>{t("eventSubStatus.authorizationRevokedItem2")}</li>
                           </ul>
+                          {/* Issue #1019: authorization_revoked バナー内に再認証ボタンを配置。
+                              従来はこのバナーにボタンが無く、再連携ボタン(needsReauth分岐)は
+                              接続状況セクション全体を置き換えるため同時に見えなかった。
+                              ボタン押下で step-up 再認証(handleReauthorize)を起動し、
+                              権限復旧後は「保存 & EventSub登録」が必要(再認証callbackは
+                              EventSubを再登録しないため item2 の文言と整合)。 */}
+                          <button
+                            onClick={handleReauthorize}
+                            disabled={reauthorizing || isMaintenanceBlocked}
+                            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+                            className="mt-3 rounded-lg bg-purple-600 px-4 py-2 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+                          >
+                            {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
+                          </button>
+                          {error && (
+                            <p className="mt-2 text-xs text-red-400">{error}</p>
+                          )}
                         </div>
                       )}
                       {/* Callback URL mismatch warning */}
