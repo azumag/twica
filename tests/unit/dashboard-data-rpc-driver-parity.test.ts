@@ -738,11 +738,14 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     const generated = queries[0]
     expect(generated.method).toBe('all')
     // Issue: N連ガチャ2枚目以降(reward_id is not null)をORで受け、配信者本人・
-    // 登録済みBOTアカウント(streamer固有 $4/$5, 共有system $6)をHAVINGで除外する
-    // ようになったため、bind paramsは従来の3個(streamerId, 0, limit)から
-    // 7個に増える。実際にpg-proxyへ生成させた値をそのまま固定する。
+    // 登録済みBOTアカウント(streamer固有 $5/$6, 共有system $7)を除外するように
+    // なったため、bind paramsは従来の3個(streamerId, 0, limit)から8個に増える。
+    // $3は最適化フェンス(内側サブクエリのLIMIT。#1032/#1034 Auto Review必須
+    // 指摘対応: Drizzleの.offset(0)はfalsy値としてOFFSET句を生成しないため
+    // (pg-core/dialect.js実測確認済み)、常にLIMIT句を生成する大きなLIMITで
+    // 代用する)。実際にpg-proxyへ生成させた値をそのまま固定する。
     expect(generated.params).toEqual([
-      'streamer-1', 0, 'streamer-1', 'streamer', 'streamer-1', 'system', 10,
+      'streamer-1', 0, 2147483647, 'streamer-1', 'streamer', 'streamer-1', 'system', 10,
     ])
     expect(generated.sql).toMatch(/from "gacha_history"/i)
     expect(generated.sql).toMatch(/"gacha_history"\."streamer_id" = \$1/i)
@@ -752,22 +755,28 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     )
     // PostgreSQL dialectはSELECT式の同一テーブル列を非修飾で出力する一方、
     // WHERE/GROUP BY/ORDER BYでは修飾する。実際の生成SQLをそのまま固定する。
-    expect(generated.sql).toMatch(/coalesce\(max\("user_twitch_username"\), "user_twitch_id"\)/i)
-    expect(generated.sql).toMatch(/sum\("reward_cost"\)/i)
-    expect(generated.sql).toMatch(/count\(\*\)/i)
-    expect(generated.sql).toMatch(/max\("redeemed_at"\)/i)
-    expect(generated.sql).toMatch(/sum\(sum\("reward_cost"\)\) over \(\)/i)
-    expect(generated.sql).toMatch(/group by "gacha_history"\."user_twitch_id"/i)
-    // HAVING: 配信者本人 / BOTアカウント(配信者固有 or 共有system)をGROUP BY後に除外する。
-    // notExists(streamers)とnotExists(twitch_bot_accounts)の2つをANDで結合する。
-    expect(generated.sql).toMatch(
-      /having \(not exists \(select 1 from "streamers" where \("streamers"\."id" = \$3 and "streamers"\."twitch_user_id" = "gacha_history"\."user_twitch_id"\)\) and not exists \(select 1 from "twitch_bot_accounts" where \("twitch_bot_accounts"\."twitch_user_id" = "gacha_history"\."user_twitch_id" and \(\("twitch_bot_accounts"\."owner_type" = \$4 and "twitch_bot_accounts"\."streamer_id" = \$5\) or "twitch_bot_accounts"\."owner_type" = \$6\)\)\)\)/i,
-    )
+    expect(generated.sql).toMatch(/coalesce\(max\("user_twitch_username"\), "user_twitch_id"\) as "username"/i)
+    expect(generated.sql).toMatch(/count\(\*\) as "redemption_count"/i)
+    expect(generated.sql).toMatch(/max\("redeemed_at"\) as "last_redeemed_at"/i)
+    // 最適化フェンス: 内側サブクエリをLIMIT $3で確定させる(GROUP BYの直後、
+    // 外側WHEREより前)。
+    expect(generated.sql).toMatch(/group by "gacha_history"\."user_twitch_id" limit \$3\)/i)
     // Auto Review必須指摘対応(#1032): totalPointsがNULLのみのグループでSQL
     // NULLにならないよう coalesce(sum(...), 0) を使う。DESC既定のNULLS FIRSTで
     // 0ポイントユーザーが1位に混入する退行を防ぐ。
-    expect(generated.sql).toMatch(/order by coalesce\(sum\("gacha_history"\."reward_cost"\), 0\) desc, count\(\*\) desc, max\("gacha_history"\."redeemed_at"\) desc/i)
-    expect(generated.sql).toMatch(/limit \$7/i)
+    expect(generated.sql).toMatch(/coalesce\(sum\("reward_cost"\), 0\) as "total_points"/i)
+    // 全ユーザー総計のwindow SUM(#1032/#1034 Auto Review必須指摘対応: HAVINGでは
+    // なく除外WHERE通過後のサブクエリ結果に対して評価される、集計済み"total_points"
+    // 列のwindow SUM)。
+    expect(generated.sql).toMatch(/sum\("total_points"\) over \(\)/i)
+    // WHERE: 配信者本人 / BOTアカウント(配信者固有 or 共有system)を、集計済み
+    // サブクエリ(grouped_history)の結果へ適用する。notExists(streamers)と
+    // notExists(twitch_bot_accounts)の2つをANDで結合する。
+    expect(generated.sql).toMatch(
+      /\) "grouped_history" where \(not exists \(select 1 from "streamers" where \("streamers"\."id" = \$4 and "streamers"\."twitch_user_id" = "grouped_history"\."user_twitch_id"\)\) and not exists \(select 1 from "twitch_bot_accounts" where \("twitch_bot_accounts"\."twitch_user_id" = "grouped_history"\."user_twitch_id" and \(\("twitch_bot_accounts"\."owner_type" = \$5 and "twitch_bot_accounts"\."streamer_id" = \$6\) or "twitch_bot_accounts"\."owner_type" = \$7\)\)\)\)/i,
+    )
+    expect(generated.sql).toMatch(/order by "total_points" desc, "redemption_count" desc, "last_redeemed_at" desc/i)
+    expect(generated.sql).toMatch(/limit \$8/i)
   })
 
   it('channel point fallbackは対象履歴が空なら0ポイント・空ランキングを返す', async () => {
@@ -818,10 +827,15 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     )
   })
 
-  it('channel point fallbackの除外はGROUP BY確定後のHAVINGで適用される(WHEREではない)', async () => {
-    // 除外はユーザー単位の集計(SUM/COUNT/MAX)が確定した後の行フィルタである
-    // 必要がある(WHEREで先に弾くと同じユーザーの集計そのものが成立しない)。
-    // 生成SQLの句の並び順(WHERE→GROUP BY→HAVING→ORDER BY)を直接検証する。
+  it('channel point fallbackの除外はGROUP BY確定後の外側WHEREで適用される(内側WHEREではない)', async () => {
+    // #1032/#1034 Auto Review必須指摘対応: 当初は「GROUP BY後のHAVINGで判定
+    // すればEXISTS呼び出しがユーザー数に抑えられる」としていたが、除外述語が
+    // GROUP BYキーのみに依存するためプランナがscan/join段へ押し下げてしまう
+    // ことが実測(EXPLAIN ANALYZE)で判明した(migration側のis_redemption_ranking_excluded
+    // と同型の問題)。対策として「素の集計を最適化フェンス付きサブクエリで
+    // 確定させる」+「その結果への外側WHERE」の2段構成に変更した。生成SQLが
+    // 内側サブクエリ(GROUP BY・フェンス用LIMIT)→外側WHERE(not exists)→
+    // ORDER BYの順になっていることを直接検証する。
     const sql = createSqlMock([
       { rows: [{ result: dropStatsResult }] },
       { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
@@ -832,17 +846,19 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     await getGachaStats('streamer-1', '30d')
 
     const generated = queries[0]
-    const whereIndex = generated.sql.toLowerCase().indexOf(' where ')
+    const innerWhereIndex = generated.sql.toLowerCase().indexOf(' where ')
     const groupByIndex = generated.sql.toLowerCase().indexOf('group by')
-    const havingIndex = generated.sql.toLowerCase().indexOf('having')
+    const innerLimitIndex = generated.sql.toLowerCase().indexOf('limit', groupByIndex)
+    const outerWhereIndex = generated.sql.toLowerCase().indexOf('"grouped_history" where')
     const orderByIndex = generated.sql.toLowerCase().indexOf('order by')
-    expect(whereIndex).toBeGreaterThan(-1)
-    expect(groupByIndex).toBeGreaterThan(whereIndex)
-    expect(havingIndex).toBeGreaterThan(groupByIndex)
-    expect(orderByIndex).toBeGreaterThan(havingIndex)
-    // WHERE句自体にはnot existsが含まれない(除外はHAVING側だけ)
-    expect(generated.sql.slice(whereIndex, groupByIndex)).not.toContain('not exists')
-    expect(generated.sql.slice(havingIndex, orderByIndex)).toContain('not exists')
+    expect(innerWhereIndex).toBeGreaterThan(-1)
+    expect(groupByIndex).toBeGreaterThan(innerWhereIndex)
+    expect(innerLimitIndex).toBeGreaterThan(groupByIndex)
+    expect(outerWhereIndex).toBeGreaterThan(innerLimitIndex)
+    expect(orderByIndex).toBeGreaterThan(outerWhereIndex)
+    // 内側WHERE(GROUP BYより前)にはnot existsが含まれない(除外は外側WHEREだけ)
+    expect(generated.sql.slice(innerWhereIndex, groupByIndex)).not.toContain('not exists')
+    expect(generated.sql.slice(outerWhereIndex, orderByIndex)).toContain('not exists')
   })
 
   it('channel point fallbackは共有BOT(owner_type=system)も配信者固有BOTと同様に除外する', async () => {
@@ -859,17 +875,18 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     await getGachaStats('streamer-1', '30d')
 
     const generated = queries[0]
-    expect(generated.sql).toMatch(/"twitch_bot_accounts"\."owner_type" = \$4/i)
-    expect(generated.sql).toMatch(/"twitch_bot_accounts"\."owner_type" = \$6/i)
-    // $4('streamer')はstreamer_id一致とAND、$6('system')は単独でOR分岐
-    expect(generated.params[3]).toBe('streamer')
-    expect(generated.params[5]).toBe('system')
+    expect(generated.sql).toMatch(/"twitch_bot_accounts"\."owner_type" = \$5/i)
+    expect(generated.sql).toMatch(/"twitch_bot_accounts"\."owner_type" = \$7/i)
+    // $5('streamer')はstreamer_id一致とAND、$7('system')は単独でOR分岐
+    // ($3は最適化フェンス用LIMITの追加により従来から2つ後ろへずれている)。
+    expect(generated.params[4]).toBe('streamer')
+    expect(generated.params[6]).toBe('system')
   })
 
   it('channel point fallbackは一般視聴者のみのデータでは除外なしの結果と非退行で一致する', async () => {
-    // 配信者本人・BOTが1件も混ざらないケースでは、除外HAVINGが常にtrueを
-    // 通すだけになり、返り値の型・形状・値は除外導入前と変わらないことを確認する
-    // (非退行の固定)。
+    // 配信者本人・BOTが1件も混ざらないケースでは、除外WHERE(not exists)が
+    // 常にtrueを通すだけになり、返り値の型・形状・値は除外導入前と変わらない
+    // ことを確認する(非退行の固定)。
     const sql = createSqlMock([
       { rows: [{ result: dropStatsResult }] },
       { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
