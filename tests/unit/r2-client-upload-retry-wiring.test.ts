@@ -24,9 +24,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 // 3. 恒久エラー（AccessDenied）はS3 SDK経由でも1回の試行で打ち切り、リトライ
 //    しないことを確認する。
 //
-// なお、リトライを通り得るケースは vi.useFakeTimers() + runAllTimersAsync() で進め、
-// 回帰で恒久エラーが transient 扱いになっても実setTimeoutの待機をCIへ持ち込まない。
-// 待機値へ依存しないため、バックオフの基数や試行回数が変わってもアサーションは壊れない。
+// 実際に指数バックオフを通るリトライ成功ケースだけは vi.useFakeTimers() +
+// runAllTimersAsync() で進め、実setTimeoutによる待機をテスト時間へ乗せない。
+// 恒久エラーケースは通常タイマーを登録しないため real timers のまま実行し、試行回数の
+// アサーションで1回打ち切りを固定する。不要なfake timers前提を増やさないための使い分け。
 //
 // @opennextjs/cloudflareはgetR2Bindingが動的importする（src/lib/r2-client.ts）。
 // モックしないと、Node.js実行環境（Vitest）でgetCloudflareContext({async:true})が
@@ -52,7 +53,7 @@ vi.mock('@aws-sdk/client-s3', () => ({
   PutObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
 }))
 const sendMock = mocks.sendMock
-const getCloudflareContext = mocks.getCloudflareContext
+const getCloudflareContextMock = mocks.getCloudflareContext
 const s3ClientConfigs = mocks.s3ClientConfigs
 
 // 画像・効果音それぞれに必要な env をまとめてスタブする。各テストで vi.stubEnv
@@ -79,10 +80,11 @@ function stubSoundEnv(): void {
   vi.stubEnv('R2_SECRET_ACCESS_KEY', undefined)
 }
 
-function expectAllClientConfigs(expectedConfig: Record<string, unknown>): void {
-  // 「全送信試行で同じ設定を使う」ことが契約なので、現行の試行回数3を直書きせず
-  // 実際のsend回数へ追従させる。S3Client再利用へ実装変更した場合はこの契約自体を見直す。
-  expect(s3ClientConfigs).toHaveLength(sendMock.mock.calls.length)
+function expectAllClientConfigs(expectedAttempts: number, expectedConfig: Record<string, unknown>): void {
+  // 送信試行とS3Client生成の双方が期待回数に達していることをこのヘルパ単体で固定する。
+  // これにより、両配列が0件のまま「件数が一致する」だけで空振り通過することを防ぐ。
+  expect(sendMock).toHaveBeenCalledTimes(expectedAttempts)
+  expect(s3ClientConfigs).toHaveLength(expectedAttempts)
   for (const config of s3ClientConfigs) {
     expect(config).toEqual(expect.objectContaining(expectedConfig))
   }
@@ -100,14 +102,14 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
 
   beforeEach(() => {
     sendMock.mockReset()
-    getCloudflareContext.mockClear()
+    getCloudflareContextMock.mockClear()
     s3ClientConfigs.length = 0
   })
 
   afterEach(() => {
     // 環境変数はテストごとに vi.stubEnv で設定・削除し、ここで必ず元へ戻す。
     vi.unstubAllEnvs()
-    // リトライ系テストは fake timers を使うため、後続テストへ影響を残さない。
+    // リトライ成功テストは fake timers を使うため、後続テストへ影響を残さない。
     vi.useRealTimers()
   })
 
@@ -117,18 +119,14 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     vi.stubEnv('R2_PUBLIC_URL', 'https://example.test')
 
     const { uploadToR2WithRetry } = await import('@/lib/r2-client')
-    vi.useFakeTimers()
-    const pending = uploadToR2WithRetry('f.png', Buffer.from('x'), 'image/png', 3)
-    // 誤ってtransient判定へ回帰しても指数バックオフを実時間で待たずに完走させる。
-    await vi.runAllTimersAsync()
-    const result = await pending
+    const result = await uploadToR2WithRetry('f.png', Buffer.from('x'), 'image/png', 3)
 
     expect(result).toEqual({ error: 'Missing R2_BUCKET_NAME environment variable' })
     expect(sendMock).not.toHaveBeenCalled()
     // getR2Binding() は現行実装で1試行につき1回だけ到達するため、恒久エラーを誤って
     // transient 扱いしてリトライする回帰を試行回数として直接検知する。将来
     // getCloudflareContextをメモ化する場合は、この代理指標を別の試行回数指標へ置き換える。
-    expect(getCloudflareContext).toHaveBeenCalledTimes(1)
+    expect(getCloudflareContextMock).toHaveBeenCalledTimes(1)
   })
 
   it('R2バインディング・環境変数がどちらも無い場合、実際のuploadSoundToR2が投げる恒久エラーを1回の試行で返す', async () => {
@@ -136,14 +134,11 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     vi.stubEnv('R2_SOUND_PUBLIC_URL', 'https://example.test')
 
     const { uploadSoundToR2WithRetry } = await import('@/lib/r2-client')
-    vi.useFakeTimers()
-    const pending = uploadSoundToR2WithRetry('f.mp3', Buffer.from('x'), 'audio/mpeg', 3)
-    await vi.runAllTimersAsync()
-    const result = await pending
+    const result = await uploadSoundToR2WithRetry('f.mp3', Buffer.from('x'), 'audio/mpeg', 3)
 
     expect(result).toEqual({ error: 'Missing R2_SOUND_BUCKET_NAME environment variable' })
     expect(sendMock).not.toHaveBeenCalled()
-    expect(getCloudflareContext).toHaveBeenCalledTimes(1)
+    expect(getCloudflareContextMock).toHaveBeenCalledTimes(1)
   })
 
   it('R2固有のInternalError(10001)が2回続いた後に成功すれば、uploadToR2WithRetryは実際にリトライして成功を返す (Issue #976/#977/#980の回帰防止)', async () => {
@@ -161,7 +156,6 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     const result = await pending
 
     expect(result).toEqual({ url: 'https://example.test/f.png' })
-    expect(sendMock).toHaveBeenCalledTimes(3)
     // 全試行の入力が常に正しいことを確認する（リトライのたびに引数やbufferを
     // 取り違えていないことの検証。最終試行だけを見ると途中の取り違えが素通りする）
     for (const call of sendMock.mock.calls) {
@@ -169,7 +163,7 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
       expect(input).toMatchObject({ Bucket: 'test-bucket', Key: 'f.png', ContentType: 'image/png' })
       expect(input.Body).toEqual(Buffer.from('img'))
     }
-    expectAllClientConfigs({
+    expectAllClientConfigs(3, {
       region: 'auto',
       endpoint: 'https://example.r2.test',
       credentials: { accessKeyId: 'image-key', secretAccessKey: 'image-secret' },
@@ -190,13 +184,12 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     const result = await pending
 
     expect(result).toEqual({ url: 'https://sounds.example.test/f.mp3' })
-    expect(sendMock).toHaveBeenCalledTimes(3)
     for (const call of sendMock.mock.calls) {
       const input = call[0].input
       expect(input).toMatchObject({ Bucket: 'sound-bucket', Key: 'f.mp3', ContentType: 'audio/mpeg' })
       expect(input.Body).toEqual(Buffer.from('snd'))
     }
-    expectAllClientConfigs({
+    expectAllClientConfigs(3, {
       region: 'auto',
       endpoint: 'https://example.r2.test',
       credentials: { accessKeyId: 'sound-key', secretAccessKey: 'sound-secret' },
