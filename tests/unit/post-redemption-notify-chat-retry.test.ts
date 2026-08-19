@@ -138,8 +138,13 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
 
     await postRedemptionNotify(notifyData)
 
+    // レビュー指摘: expect.any(Error)だけだとretryStateの文字列連結が壊れても
+    // 検知できないため、メッセージ本文と呼び出し回数まで固定する。
+    expect(mockReportError).toHaveBeenCalledTimes(1)
     expect(mockReportError).toHaveBeenCalledWith(
-      expect.any(Error),
+      expect.objectContaining({
+        message: expect.stringContaining('Chat announcement dead: '),
+      }),
       expect.objectContaining({
         context: 'eventsub:postRedemptionNotify:chatAnnouncement',
         streamerId: 'streamer-1',
@@ -152,8 +157,11 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
 
     await postRedemptionNotify(notifyData)
 
+    expect(mockReportError).toHaveBeenCalledTimes(1)
     expect(mockReportError).toHaveBeenCalledWith(
-      expect.any(Error),
+      expect.objectContaining({
+        message: expect.stringContaining('Chat announcement lost-lease: '),
+      }),
       expect.objectContaining({
         context: 'eventsub:postRedemptionNotify:chatAnnouncement',
         streamerId: 'streamer-1',

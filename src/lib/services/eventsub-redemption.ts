@@ -610,9 +610,13 @@ export async function postRedemptionNotify(
   // 通知失敗をログ出力 + エラー追跡
   // Note: publishCommittedGachaBatch (i=0) は失敗を結果へ閉じ込め、polling回収へ
   // 委ねる設計のため rejected にならない。詳細はpublisher側の構造化warnで追跡する。
-  // chatAnnouncement (i=1) はterminal/aborted/dead/lost-lease時のみthrowするため
-  // reportErrorが機能する。pending（自動再試行予定の一時障害）はchatTask内でwarn
-  // ログのみに留めて正常終了するため、ここには到達しない（Issue #1033）。
+  // chatAnnouncement (i=1): retryable outcome経由でretryChatNotificationが'pending'を
+  // 返した場合はchatTask内でwarnログのみに留めて正常終了するため、ここには到達しない
+  // （Issue #1033）。一方、sendChatAnnouncement自体が予期せずthrowした場合の catch
+  // ブロックは、行を'pending'へ戻したうえでそのままrethrowする契約を維持しており
+  // （呼び出し元コード自体のバグを揉み消さないため）、この経路はoutbox行がpendingで
+  // あってもreportErrorに到達する。したがってterminal/aborted/dead/lost-lease時に
+  // 加え、この「想定外throw」時にもreportErrorが機能する。
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
       const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
