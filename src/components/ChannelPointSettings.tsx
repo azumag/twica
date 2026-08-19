@@ -210,6 +210,7 @@ export default function ChannelPointSettings({
   const fetchRewards = async () => {
     setLoading(true);
     setError("");
+    setReauthError("");
 
     try {
       await fetchChannelPointBootstrap(!compact);
@@ -776,6 +777,10 @@ export default function ChannelPointSettings({
         },
         body: JSON.stringify({
           additionalScopes: CHANNEL_POINT_SCOPES,
+          // Issue #1019: 再認証後に配信設定へ戻し「保存 & EventSub登録」を続行できるようにする。
+          // ChannelPointsAccessSection と同様に returnTo を明示し、callback の既定 /dashboard 遷移で
+          // 復旧が未完のまま放置されるのを防ぐ。
+          returnTo: "/dashboard/settings",
         }),
       });
 
@@ -1086,7 +1091,16 @@ export default function ChannelPointSettings({
                               権限復旧後は「保存 & EventSub登録」が必要(再認証callbackは
                               EventSubを再登録しないため item2 の文言と整合)。 */}
                           <button
-                            onClick={handleReauthorize}
+                            onClick={() => {
+                              // Issue #1019 必須指摘: bootstrap 200 (トークン有効) の状態で
+                              // authorization_revoked バナーが出ているとき、当該ボタンを押すと
+                              // サーバ側で deleteTwitchTokens が走り（reauth/route.ts:149）、
+                              // Twitch 側でキャンセル/失敗するとトークンが消えたまま連携停止する。
+                              // needsReauth（既にトークン無効）では無害だが、本バナーは有効トークン
+                              // でも表示され得るため、破壊的操作の前に確認ダイアログを挟む。
+                              if (!window.confirm(t("eventSubStatus.authorizationRevokedConfirm"))) return;
+                              void handleReauthorize();
+                            }}
                             disabled={reauthorizing || isMaintenanceBlocked}
                             title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                             className="mt-3 rounded-lg bg-purple-600 px-4 py-2 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
