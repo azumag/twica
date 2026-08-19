@@ -14,13 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      REPOSITORY: ${{ github.repository }}
+      REPOSITORY_NAME: ${{ github.event.repository.name }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_URL: ${{ github.event.pull_request.html_url }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
 
     steps:
       - name: Validate webhook configuration
@@ -35,28 +34,22 @@ jobs:
         shell: bash
         run: |
           payload=$(jq -n \
-            --arg repository "$REPOSITORY" \
+            --arg repository "$REPOSITORY_NAME" \
             --arg number "$PR_NUMBER" \
             --arg title "$PR_TITLE" \
             --arg url "$PR_URL" \
             --arg author "$PR_AUTHOR" \
             --arg head_ref "$HEAD_REF" \
-            --arg merge_sha "$MERGE_SHA" \
             '{
               username: "twica GitHub",
-              content: ("✅ **" + $repository + "** の `main` に PR #" + $number + " がマージされました。"),
-              allowed_mentions: {parse: []},
-              embeds: [
-                {
-                  title: $title,
-                  url: $url,
-                  fields: [
-                    {name: "Author", value: ("@" + $author), inline: true},
-                    {name: "Source", value: ("`" + $head_ref + "` → `main`"), inline: true},
-                    {name: "Merge commit", value: ("`" + $merge_sha + "`"), inline: false}
-                  ]
-                }
-              ]
+              content: (
+                "🚀 **" + $repository + " が更新されました**\n\n" +
+                "**#" + $number + " " + $title + "**\n" +
+                "`" + $head_ref + " → main`\n" +
+                "by " + $author + "\n\n" +
+                "🔗 [Pull Requestを見る](" + $url + ")"
+              ),
+              allowed_mentions: {parse: []}
             }')
 
           curl \
