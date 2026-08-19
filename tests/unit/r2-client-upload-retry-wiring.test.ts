@@ -27,7 +27,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 // 実際に指数バックオフを通るリトライ成功ケースだけは vi.useFakeTimers() +
 // runAllTimersAsync() で進め、実setTimeoutによる待機をテスト時間へ乗せない。
 // 恒久エラーケースは通常タイマーを登録しないため real timers のまま実行し、試行回数の
-// アサーションで1回打ち切りを固定する。不要なfake timers前提を増やさないための使い分け。
+// アサーションで1回打ち切りを固定する。将来、恒久エラーが誤ってtransient判定へ回帰した
+// 場合は1s+2s+4sの最大約7秒を実時間で待ってから失敗するが、現行testTimeout（30秒）内で
+// 確実に検知できるため、通常系へ不要なfake timers前提を増やさない簡潔性を優先する。
 //
 // @opennextjs/cloudflareはgetR2Bindingが動的importする（src/lib/r2-client.ts）。
 // モックしないと、Node.js実行環境（Vitest）でgetCloudflareContext({async:true})が
@@ -80,9 +82,10 @@ function stubSoundEnv(): void {
   vi.stubEnv('R2_SECRET_ACCESS_KEY', undefined)
 }
 
-function expectAllClientConfigs(expectedAttempts: number, expectedConfig: Record<string, unknown>): void {
-  // 送信試行とS3Client生成の双方が期待回数に達していることをこのヘルパ単体で固定する。
-  // これにより、両配列が0件のまま「件数が一致する」だけで空振り通過することを防ぐ。
+function expectAllAttemptsUsedConfig(expectedAttempts: number, expectedConfig: Record<string, unknown>): void {
+  // PR #1030で呼び出し側にあった送信試行数のassertをこのヘルパへ集約したため、
+  // 「期待回数だけ試行し、その各試行で期待configを使う」までを1つの契約として検証する。
+  // 件数契約を呼び出し側と二重管理せず、ヘルパ名と責務を一致させる。
   expect(sendMock).toHaveBeenCalledTimes(expectedAttempts)
   expect(s3ClientConfigs).toHaveLength(expectedAttempts)
   for (const config of s3ClientConfigs) {
@@ -163,7 +166,7 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
       expect(input).toMatchObject({ Bucket: 'test-bucket', Key: 'f.png', ContentType: 'image/png' })
       expect(input.Body).toEqual(Buffer.from('img'))
     }
-    expectAllClientConfigs(3, {
+    expectAllAttemptsUsedConfig(3, {
       region: 'auto',
       endpoint: 'https://example.r2.test',
       credentials: { accessKeyId: 'image-key', secretAccessKey: 'image-secret' },
@@ -189,7 +192,7 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
       expect(input).toMatchObject({ Bucket: 'sound-bucket', Key: 'f.mp3', ContentType: 'audio/mpeg' })
       expect(input.Body).toEqual(Buffer.from('snd'))
     }
-    expectAllClientConfigs(3, {
+    expectAllAttemptsUsedConfig(3, {
       region: 'auto',
       endpoint: 'https://example.r2.test',
       credentials: { accessKeyId: 'sound-key', secretAccessKey: 'sound-secret' },
