@@ -533,9 +533,11 @@ export async function postRedemptionNotify(
         return;
       }
       // 失敗系outcomeにもdegradation（設定BOT恒久失効）が付与される。token-managerは
-      // 永続報告せず所有境界の1回報告へ委ねる契約のため、DLQ reason・retry reason・
-      // throw経由のreportErrorへ畳み込み、本人credential障害と同時発生しても
-      // 「設定BOTが要再認証」の直接シグナルを欠落させない。
+      // 永続報告せず所有境界の1回報告へ委ねる契約のため、DLQ reason・retry reasonへ
+      // 畳み込む。Issue #1033以降、retryable + degradationがpendingへ戻る経路は
+      // 下のpending分岐でreportErrorへ到達しなくなったため、「設定BOTが要再認証」の
+      // シグナルはこの経路では欠落しないが即時ではなくなり、最終的にdead化した時
+      // （またはfallback送信成功時のchatDegradation通報）まで遅延する。
       const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation);
       if (outcome.outcome === 'terminal') {
         const persisted = await deadLetterChatNotification(claim, failureReason);
@@ -570,6 +572,22 @@ export async function postRedemptionNotify(
       }
       const retryState = await retryChatNotification(claim, failureReason);
       deliveryStatePersisted = true;
+      if (retryState === 'pending') {
+        // Issue #1033: Twitch 429（レート制限）等の一時障害は、指数backoffで最大
+        // CHAT_OUTBOX_MAX_ATTEMPTS回まで自動再試行される正常系の一部である。
+        // ここでthrowしてreportErrorへ回すと、自己回復するはずの一時障害が
+        // 再試行のたびに[Error]としてGitHub Issueを量産してしまう
+        // （実際に本番で429が1回発生しただけで自動Issueが起票された）。
+        // 再試行を使い切ってdead化した場合・lease競合でlost-leaseになった場合のみ
+        // 下のthrow/reportErrorへ回し、pendingはwarnログに留めて正常終了する。
+        logger.warn('[postRedemptionNotify] chat announcement retry scheduled', {
+          streamerId: data.streamer.id,
+          broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+          outboxId: claim.id,
+          reason: failureReason,
+        });
+        return;
+      }
       throw new Error(`Chat announcement ${retryState}: ${failureReason}`);
     } catch (error) {
       // sendChatAnnouncement自体の予期しないthrowも一時障害として上限付き再試行へ戻す。
@@ -594,7 +612,13 @@ export async function postRedemptionNotify(
   // 通知失敗をログ出力 + エラー追跡
   // Note: publishCommittedGachaBatch (i=0) は失敗を結果へ閉じ込め、polling回収へ
   // 委ねる設計のため rejected にならない。詳細はpublisher側の構造化warnで追跡する。
-  // chatAnnouncement (i=1) は引き続きエラー時に throw するため、こちらのみ reportError が機能する
+  // chatAnnouncement (i=1): retryable outcome経由でretryChatNotificationが'pending'を
+  // 返した場合はchatTask内でwarnログのみに留めて正常終了するため、ここには到達しない
+  // （Issue #1033）。一方、sendChatAnnouncement自体が予期せずthrowした場合の catch
+  // ブロックは、行を'pending'へ戻したうえでそのままrethrowする契約を維持しており
+  // （呼び出し元コード自体のバグを揉み消さないため）、この経路はoutbox行がpendingで
+  // あってもreportErrorに到達する。したがってterminal/aborted/dead/lost-lease時に
+  // 加え、この「想定外throw」時にもreportErrorが機能する。
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
       const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
