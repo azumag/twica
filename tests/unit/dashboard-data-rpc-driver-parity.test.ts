@@ -737,10 +737,19 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     expect(queries).toHaveLength(1)
     const generated = queries[0]
     expect(generated.method).toBe('all')
-    expect(generated.params).toEqual(['streamer-1', 0, 10])
+    // Issue: N連ガチャ2枚目以降(reward_id is not null)をORで受け、配信者本人・
+    // 登録済みBOTアカウント(streamer固有 $4/$5, 共有system $6)をHAVINGで除外する
+    // ようになったため、bind paramsは従来の3個(streamerId, 0, limit)から
+    // 7個に増える。実際にpg-proxyへ生成させた値をそのまま固定する。
+    expect(generated.params).toEqual([
+      'streamer-1', 0, 'streamer-1', 'streamer', 'streamer-1', 'system', 10,
+    ])
     expect(generated.sql).toMatch(/from "gacha_history"/i)
     expect(generated.sql).toMatch(/"gacha_history"\."streamer_id" = \$1/i)
-    expect(generated.sql).toMatch(/"gacha_history"\."reward_cost" > \$2/i)
+    // 新述語: reward_cost > 0 OR reward_id IS NOT NULL (N連2枚目以降を拾う)
+    expect(generated.sql).toMatch(
+      /\("gacha_history"\."reward_cost" > \$2 or "gacha_history"\."reward_id" is not null\)/i,
+    )
     // PostgreSQL dialectはSELECT式の同一テーブル列を非修飾で出力する一方、
     // WHERE/GROUP BY/ORDER BYでは修飾する。実際の生成SQLをそのまま固定する。
     expect(generated.sql).toMatch(/coalesce\(max\("user_twitch_username"\), "user_twitch_id"\)/i)
@@ -749,8 +758,13 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     expect(generated.sql).toMatch(/max\("redeemed_at"\)/i)
     expect(generated.sql).toMatch(/sum\(sum\("reward_cost"\)\) over \(\)/i)
     expect(generated.sql).toMatch(/group by "gacha_history"\."user_twitch_id"/i)
+    // HAVING: 配信者本人 / BOTアカウント(配信者固有 or 共有system)をGROUP BY後に除外する。
+    // notExists(streamers)とnotExists(twitch_bot_accounts)の2つをANDで結合する。
+    expect(generated.sql).toMatch(
+      /having \(not exists \(select 1 from "streamers" where \("streamers"\."id" = \$3 and "streamers"\."twitch_user_id" = "gacha_history"\."user_twitch_id"\)\) and not exists \(select 1 from "twitch_bot_accounts" where \("twitch_bot_accounts"\."twitch_user_id" = "gacha_history"\."user_twitch_id" and \(\("twitch_bot_accounts"\."owner_type" = \$4 and "twitch_bot_accounts"\."streamer_id" = \$5\) or "twitch_bot_accounts"\."owner_type" = \$6\)\)\)\)/i,
+    )
     expect(generated.sql).toMatch(/order by sum\("gacha_history"\."reward_cost"\) desc, count\(\*\) desc, max\("gacha_history"\."redeemed_at"\) desc/i)
-    expect(generated.sql).toMatch(/limit \$3/i)
+    expect(generated.sql).toMatch(/limit \$7/i)
   })
 
   it('channel point fallbackは対象履歴が空なら0ポイント・空ランキングを返す', async () => {
@@ -764,6 +778,126 @@ describe('dashboard-data: PlanetScale読み取りRPC契約 (#803)', () => {
     const result = await getGachaStats('streamer-1', '30d')
 
     expect(result.channelPointStats).toEqual({ totalPoints: 0, ranking: [] })
+    expect(queries).toHaveLength(1)
+  })
+
+  it('channel point fallbackはreward_cost=NULLでもreward_id非NULLならN連2枚目以降として数える', async () => {
+    // Issue本体: executeGachaDrawsはN連の2枚目以降でreward_costをNULLのまま
+    // reward_idだけforwardする。旧述語(reward_cost > 0)だとこの行がWHEREで
+    // 落ちてCOUNT(*)が1のままになっていた不具合の直接的な回帰確認。
+    // ここではDB(pg-proxy)側は素通しモックなので、生成SQLの述語自体を
+    // 検証することで「2枚目以降を拾うWHERE句が生成されているか」を固定する。
+    const sql = createSqlMock([
+      { rows: [{ result: dropStatsResult }] },
+      { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
+    ])
+    const { db, queries } = createCapturingPgProxyDb([
+      [
+        'viewer-1', 'Viewer One', '500', '2',
+        '2026-03-03T00:00:00+00:00', '500',
+      ],
+    ])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    const result = await getGachaStats('streamer-1', '30d')
+
+    // redemption_count=2 は「reward_cost > 0の1行 + reward_id IS NOT NULLの
+    // 1行」をDBがCOUNT(*)で合算した値を模している(N連2枚目以降が1回として
+    // 数えられている状態)。
+    expect(result.channelPointStats.ranking[0]).toMatchObject({
+      userTwitchId: 'viewer-1',
+      totalPoints: 500,
+      redemptionCount: 2,
+    })
+    const generated = queries[0]
+    expect(generated.sql).toMatch(
+      /\("gacha_history"\."reward_cost" > \$2 or "gacha_history"\."reward_id" is not null\)/i,
+    )
+  })
+
+  it('channel point fallbackの除外はGROUP BY確定後のHAVINGで適用される(WHEREではない)', async () => {
+    // 除外はユーザー単位の集計(SUM/COUNT/MAX)が確定した後の行フィルタである
+    // 必要がある(WHEREで先に弾くと同じユーザーの集計そのものが成立しない)。
+    // 生成SQLの句の並び順(WHERE→GROUP BY→HAVING→ORDER BY)を直接検証する。
+    const sql = createSqlMock([
+      { rows: [{ result: dropStatsResult }] },
+      { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
+    ])
+    const { db, queries } = createCapturingPgProxyDb([])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    await getGachaStats('streamer-1', '30d')
+
+    const generated = queries[0]
+    const whereIndex = generated.sql.toLowerCase().indexOf(' where ')
+    const groupByIndex = generated.sql.toLowerCase().indexOf('group by')
+    const havingIndex = generated.sql.toLowerCase().indexOf('having')
+    const orderByIndex = generated.sql.toLowerCase().indexOf('order by')
+    expect(whereIndex).toBeGreaterThan(-1)
+    expect(groupByIndex).toBeGreaterThan(whereIndex)
+    expect(havingIndex).toBeGreaterThan(groupByIndex)
+    expect(orderByIndex).toBeGreaterThan(havingIndex)
+    // WHERE句自体にはnot existsが含まれない(除外はHAVING側だけ)
+    expect(generated.sql.slice(whereIndex, groupByIndex)).not.toContain('not exists')
+    expect(generated.sql.slice(havingIndex, orderByIndex)).toContain('not exists')
+  })
+
+  it('channel point fallbackは共有BOT(owner_type=system)も配信者固有BOTと同様に除外する', async () => {
+    // owner_type='system'の行はstreamer_idがNULL(全配信者共有)のため、
+    // 配信者固有BOTの条件(owner_type='streamer' AND streamer_id一致)とは
+    // 別のOR分岐として判定する必要がある。生成SQLでその分岐が実在することを固定する。
+    const sql = createSqlMock([
+      { rows: [{ result: dropStatsResult }] },
+      { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
+    ])
+    const { db, queries } = createCapturingPgProxyDb([])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    await getGachaStats('streamer-1', '30d')
+
+    const generated = queries[0]
+    expect(generated.sql).toMatch(/"twitch_bot_accounts"\."owner_type" = \$4/i)
+    expect(generated.sql).toMatch(/"twitch_bot_accounts"\."owner_type" = \$6/i)
+    // $4('streamer')はstreamer_id一致とAND、$6('system')は単独でOR分岐
+    expect(generated.params[3]).toBe('streamer')
+    expect(generated.params[5]).toBe('system')
+  })
+
+  it('channel point fallbackは一般視聴者のみのデータでは除外なしの結果と非退行で一致する', async () => {
+    // 配信者本人・BOTが1件も混ざらないケースでは、除外HAVINGが常にtrueを
+    // 通すだけになり、返り値の型・形状・値は除外導入前と変わらないことを確認する
+    // (非退行の固定)。
+    const sql = createSqlMock([
+      { rows: [{ result: dropStatsResult }] },
+      { error: pgError('42883', 'get_channel_point_usage_stats does not exist') },
+    ])
+    const { db, queries } = createCapturingPgProxyDb([
+      [
+        'viewer-a', 'Viewer A', '300', '3',
+        '2026-03-03T00:00:00+00:00', '500',
+      ],
+      [
+        'viewer-b', 'Viewer B', '200', '2',
+        '2026-03-02T00:00:00+00:00', '500',
+      ],
+    ])
+    vi.mocked(getDb).mockResolvedValue({ db, sql } as any)
+
+    const result = await getGachaStats('streamer-1', '30d')
+
+    expect(result.channelPointStats).toEqual({
+      totalPoints: 500,
+      ranking: [
+        {
+          userTwitchId: 'viewer-a', username: 'Viewer A', totalPoints: 300,
+          redemptionCount: 3, lastRedeemedAt: '2026-03-03T00:00:00+00:00',
+        },
+        {
+          userTwitchId: 'viewer-b', username: 'Viewer B', totalPoints: 200,
+          redemptionCount: 2, lastRedeemedAt: '2026-03-02T00:00:00+00:00',
+        },
+      ],
+    })
     expect(queries).toHaveLength(1)
   })
 

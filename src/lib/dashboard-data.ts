@@ -26,9 +26,12 @@ import {
   gte,
   ilike,
   inArray,
+  isNotNull,
   lt,
   max,
+  notExists,
   notLike,
+  or,
   sql,
   sum,
 } from "drizzle-orm";
@@ -54,6 +57,7 @@ import {
   collectionCompletions as collectionCompletionsTable,
   gachaHistory as gachaHistoryTable,
   streamers as streamersTable,
+  twitchBotAccounts as twitchBotAccountsTable,
   userCards as userCardsTable,
   users as usersTable,
 } from "@/lib/db/schema";
@@ -1313,9 +1317,21 @@ async function fetchChannelPointUsageStatsFromHistory(
   streamerId: string,
   limit = 10
 ): Promise<GachaStatsResult["channelPointStats"]> {
+  // 引き換えランキングのN連過少カウント修正: executeGachaDraws
+  // (src/lib/services/gacha.ts) はN連ガチャのreward_costを先頭行(index===0)
+  // にだけ載せる(Twitch EventSubが「引き換え
+  // 1回あたりの合計コスト」しか通知しないための二重計上回避)。一方reward_idは
+  // 全行にforwardされる。reward_cost > 0単独だと2枚目以降が落ちてN連が1回に
+  // 数えられてしまうため、reward_id IS NOT NULLをORで受ける。reward_idは
+  // migration 00070(2026-07-04)以降のみ設定されるため、reward_cost > 0は
+  // それ以前の正当な引き換えを拾うために残す(SUM(reward_cost)自体はNULLを
+  // 無視するのでポイント合計は影響を受けない)。
   const historyFilter = and(
     eq(gachaHistoryTable.streamer_id, streamerId),
-    gt(gachaHistoryTable.reward_cost, 0),
+    or(
+      gt(gachaHistoryTable.reward_cost, 0),
+      isNotNull(gachaHistoryTable.reward_id),
+    ),
   );
   let rankingRows: ChannelPointUsageHistoryRankingRow[];
   try {
@@ -1332,8 +1348,48 @@ async function fetchChannelPointUsageStatsFromHistory(
         // 別SQLにすると更新の途中で異なるsnapshotを読む可能性と二重走査が生じるが、
         // この形なら単一snapshot・単一走査でRPC migration 00036/00039と同じ集計を
         // 得られる。該当行が0件なら結果行自体が無く、呼び出し側で0/空配列へ戻す。
+        // window関数はHAVINGフィルタ後の行を対象に評価される(PostgreSQL仕様)ため、
+        // 下記の除外HAVINGを通過したユーザーだけがtotal_points_all_usersに含まれる。
         const totalPointsAllUsers =
           sql<number | string>`sum(sum(${gachaHistoryTable.reward_cost})) over ()`;
+
+        // 除外対象: 配信者本人 / 登録済みBOTアカウント(配信者固有 or 共有system)。
+        // このRPCフォールバックはmigration 20260819120000で追加したSQL関数
+        // is_redemption_ranking_excluded には依存しない独立実装である
+        // (get_channel_point_usage_stats RPCが未デプロイ/実行時エラーの場合の
+        // 救済経路であり、RPC自身がその関数を呼ぶため、フォールバック側は
+        // Drizzleクエリだけで同じ除外判定を再現する必要がある)。
+        // GROUP BY後のHAVINGで判定することで、EXISTS呼び出し回数を
+        // 「この配信者でアクティブだったユーザー数」に抑える(履歴行数ではない)。
+        const excludeStreamerSelf = notExists(
+          db
+            .select({ one: sql`1` })
+            .from(streamersTable)
+            .where(
+              and(
+                eq(streamersTable.id, streamerId),
+                eq(streamersTable.twitch_user_id, gachaHistoryTable.user_twitch_id),
+              ),
+            ),
+        );
+        const excludeBotAccount = notExists(
+          db
+            .select({ one: sql`1` })
+            .from(twitchBotAccountsTable)
+            .where(
+              and(
+                eq(twitchBotAccountsTable.twitch_user_id, gachaHistoryTable.user_twitch_id),
+                or(
+                  and(
+                    eq(twitchBotAccountsTable.owner_type, "streamer"),
+                    eq(twitchBotAccountsTable.streamer_id, streamerId),
+                  ),
+                  eq(twitchBotAccountsTable.owner_type, "system"),
+                ),
+              ),
+            ),
+        );
+
         return db
           .select({
             user_twitch_id: gachaHistoryTable.user_twitch_id,
@@ -1346,12 +1402,13 @@ async function fetchChannelPointUsageStatsFromHistory(
           .from(gachaHistoryTable)
           .where(historyFilter)
           .groupBy(gachaHistoryTable.user_twitch_id)
+          .having(and(excludeStreamerSelf, excludeBotAccount))
           .orderBy(
             desc(totalPoints),
             desc(redemptionCount),
             desc(lastRedeemedAt),
           )
-          // LIMITは必ずGROUP BY・window集計・順位確定後にだけ適用する。
+          // LIMITは必ずGROUP BY・HAVING・window集計・順位確定後にだけ適用する。
           .limit(Math.max(1, limit));
       },
       "dashboard:channelPointUsageHistory",
