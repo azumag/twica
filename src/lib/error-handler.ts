@@ -31,6 +31,22 @@ export async function handleApiError(
   return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
 }
 
+/**
+ * エラーのconsole出力とPlanetScale記録のみ行いレスポンスを返さない。
+ *
+ * Issue #1018: 呼び出し側がhandleApiErrorの固定500ではなく状況に応じた
+ * ステータス(例: トークン恒久失効の401+requiresReauth)を返す必要がある
+ * 境界で、auto-generated bug reportへの記録経路を維持するための分離。
+ * レスポンス生成の責任は呼び出し側へ移るため、本関数が返すレスポンスは無い。
+ */
+export async function recordApiError(
+  error: unknown,
+  context: string,
+  additionalInfo?: Record<string, unknown>
+): Promise<void> {
+  await logAndRecordError(`${context}:`, error, additionalInfo)
+}
+
 export async function handleDatabaseError(error: unknown, context: string): Promise<NextResponse> {
   await logAndRecordError(`${context}:`, error)
   return NextResponse.json({ error: 'Database error' }, { status: 500 })
