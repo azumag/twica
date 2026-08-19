@@ -1,0 +1,65 @@
+name: Notify Discord on main merge
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      REPOSITORY_NAME: ${{ github.event.repository.name }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+
+    steps:
+      - name: Validate webhook configuration
+        shell: bash
+        run: |
+          if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
+            echo "::error::Repository secret DISCORD_WEBHOOK_URL is not configured."
+            exit 1
+          fi
+
+      - name: Send merge notification to Discord
+        shell: bash
+        run: |
+          payload=$(jq -n \
+            --arg repository "$REPOSITORY_NAME" \
+            --arg number "$PR_NUMBER" \
+            --arg title "$PR_TITLE" \
+            --arg url "$PR_URL" \
+            --arg author "$PR_AUTHOR" \
+            --arg head_ref "$HEAD_REF" \
+            '{
+              username: "twica GitHub",
+              content: (
+                "🚀 **" + $repository + " が更新されました**\n\n" +
+                "**#" + $number + " " + $title + "**\n" +
+                "`" + $head_ref + " → main`\n" +
+                "by " + $author + "\n\n" +
+                "🔗 [Pull Requestを見る](" + $url + ")"
+              ),
+              allowed_mentions: {parse: []}
+            }')
+
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -H 'Content-Type: application/json' \
+            -d "$payload" \
+            "$DISCORD_WEBHOOK_URL"
