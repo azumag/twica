@@ -279,4 +279,40 @@ describe("ChannelPointSettings maintenance integration", () => {
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("title", "メンテナンス中は操作できません");
   });
+
+  it("authorization_revoked バナー内の再連携ボタン押下失敗時もバナーが消えずエラーを表示する（Issue #1019 必須指摘）", async () => {
+    stubLocationHref();
+    const originalHref = window.location.href;
+    fetchMock = mockFetch({
+      bootstrapBody: {
+        hasRequiredScope: true,
+        rewards: [{ id: "reward-1", title: "Reward1", cost: 100, is_enabled: true }],
+        subscriptions: [
+          {
+            id: "sub-1",
+            status: "authorization_revoked",
+            type: "channel.channel_points_custom_reward_redemption.add",
+            condition: { broadcaster_user_id: "user-1", reward_id: "reward-1" },
+            transport: { callback: "https://example.com/api/twitch/eventsub" },
+          },
+        ],
+        additionalRewards: [],
+        eventSubStatus: "error",
+        raidEventSubStatus: "active",
+        raidGiftDrawCount: 0,
+      },
+      reauthBody: { loginUrl: "https://evil.example.com/phish", state: "state-1234" },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderComponent({ mode: "off" }, { currentRewardId: "reward-1", currentRewardName: "Reward1" });
+
+    const button = await screen.findByRole("button", { name: "チャネルポイント連携を有効化" });
+    fireEvent.click(button);
+
+    // バナー自体は消えず、inline エラーが表示される（外側の赤いエラーボックスで置き換わらない）
+    expect(await screen.findByText("再認証に失敗しました。時間をおいて再度お試しください。")).toBeInTheDocument();
+    expect(screen.getByText("認証が取り消されました")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "チャネルポイント連携を有効化" })).toBeInTheDocument();
+    expect(window.location.href).toBe(originalHref);
+  });
 });

@@ -119,6 +119,10 @@ export default function ChannelPointSettings({
   const [raidEventSubStatus, setRaidEventSubStatus] = useState<EventSubStatus>("none");
   const [raidEventSubWarning, setRaidEventSubWarning] = useState("");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscriptionForStatus[]>([]);
+  // Issue #1019: authorization_revoked バナー表示時は外側の汎用エラーボックスで接続状況セクション全体を置き換えない。
+  // バナー内の再認証ボタン押下失敗で setError すると、外側 error ? <red> が真になりバナーごと消えるデッドコードを防ぐ。
+  // 判定は subscriptions の実データに基づく（fetchFailed 等の初期ロード失敗時は subscriptions 空のため従来どおり赤箱を表示）。
+  const hasAuthorizationRevoked = subscriptions.some((sub) => sub.status === "authorization_revoked");
   // チャネルポイント用スコープ不足でstep-up再認証が必要かどうか
   // Whether step-up reauth is needed because channel point scopes are missing
   const [needsReauth, setNeedsReauth] = useState(false);
@@ -953,11 +957,11 @@ export default function ChannelPointSettings({
              </p>
            )}
          </div>
-       ) : error ? (
-         <div className="rounded-lg bg-red-500/20 p-4 text-red-300">
-           {error}
-         </div>
-       ) : loading ? (
+        ) : error && !hasAuthorizationRevoked ? (
+          <div className="rounded-lg bg-red-500/20 p-4 text-red-300">
+            {error}
+          </div>
+        ) : loading ? (
          <div className="text-gray-400">{tCommon("loading")}</div>
        ) : (
          <div className={compact ? "space-y-4" : "space-y-6"}>
