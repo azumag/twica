@@ -147,7 +147,6 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
   })
 
   it('R2固有のInternalError(10001)が2回続いた後に成功すれば、uploadToR2WithRetryは実際にリトライして成功を返す (Issue #976/#977/#980の回帰防止)', async () => {
-    vi.useFakeTimers()
     stubImageEnv()
     sendMock
       .mockRejectedValueOnce(new Error('put: We encountered an internal error. Please try again. (10001)'))
@@ -155,6 +154,7 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
       .mockResolvedValueOnce({})
 
     const { uploadToR2WithRetry } = await import('@/lib/r2-client')
+    vi.useFakeTimers()
     const pending = uploadToR2WithRetry('f.png', Buffer.from('img'), 'image/png', 3)
     // 保留中の指数バックオフを実時間で待たずに全て進める
     await vi.runAllTimersAsync()
@@ -177,7 +177,6 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
   })
 
   it('効果音側もR2固有のInternalError(10001)が2回続いた後に成功すれば、uploadSoundToR2WithRetryはリトライして成功し、sound用のenvとURLを使う', async () => {
-    vi.useFakeTimers()
     stubSoundEnv()
     sendMock
       .mockRejectedValueOnce(new Error('put: We encountered an internal error. Please try again. (10001)'))
@@ -185,6 +184,7 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
       .mockResolvedValueOnce({})
 
     const { uploadSoundToR2WithRetry } = await import('@/lib/r2-client')
+    vi.useFakeTimers()
     const pending = uploadSoundToR2WithRetry('f.mp3', Buffer.from('snd'), 'audio/mpeg', 3)
     await vi.runAllTimersAsync()
     const result = await pending
