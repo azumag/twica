@@ -34,7 +34,7 @@ vi.mock('@/lib/twitch/token-manager', () => {
     }
   }
   // Issue #1018: routeは恒久失効判定をisPermanentRefreshFailureへ委譲するため、
-  // 実装と同语义の判定をモッククラスに対して供給する。実装本体の判定は
+  // 実装と同一セマンティクスの判定をモッククラスに対して供給する。実装本体の判定は
   // twitch-token-manager.test.tsで直接検証する。
   const isPermanentRefreshFailure = (error: unknown) =>
     error instanceof TwitchTokenError &&
