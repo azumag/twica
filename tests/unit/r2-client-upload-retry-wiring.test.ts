@@ -5,11 +5,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 // 【Issue #982】tests/unit/r2-client-retry-loop.test.ts は共通リトライループ本体
 // （withR2UploadRetry）を upload/sleep を注入して直接テストしているが、公開関数
 // uploadToR2WithRetry / uploadSoundToR2WithRetry が実際に withR2UploadRetry へ
-// 正しく結線されている（fileName/buffer/contentTypeを正しく渡す）ことは、それ単体
-// では検証できない（maxRetriesの境界値そのものはr2-client-retry-loop.test.ts側で
-// 検証済みなのでここでは繰り返さない）。r2-client.tsは内部でuploadToR2/uploadSoundToR2を
-// 同一モジュール内の関数として直接呼ぶため、vi.spyOn等でのモック差し替えは効かない
-// （同一モジュール内呼び出しはexportされたbindingを経由しないため）。
+// 正しく結線されている（fileName/buffer/contentType、S3Client の endpoint/credentials を
+// 正しく渡す）ことは、それ単体では検証できない（maxRetriesの境界値そのものは
+// r2-client-retry-loop.test.ts側で検証済みなのでここでは繰り返さない）。r2-client.tsは
+// 内部でuploadToR2/uploadSoundToR2を同一モジュール内の関数として直接呼ぶため、
+// vi.spyOn等でのモック差し替えは効かない（同一モジュール内呼び出しはexportされた
+// bindingを経由しないため）。
 //
 // そこで3種類のテストで公開関数を実際に実行し、内部の結線を検証する:
 // 1. R2バインディング・環境変数がどちらも無い状態（下記の明示的なモックで再現）で呼び出し、
@@ -18,12 +19,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 // 2. @aws-sdk/client-s3をモックし、Issue #976/#977で問題になった「(10001)」エラーを
 //    2回返した後に成功するシナリオで、uploadToR2WithRetry/uploadSoundToR2WithRetryが
 //    実際にリトライして最終的に成功を返すことを確認する（画像・効果音の2件。
-//    PutObjectCommandへ渡るBucket/Key/Body/ContentTypeも検証し、リトライ中に引数や
-//    bufferを取り違えていないことを確認する）。
+//    PutObjectCommandへ渡るBucket/Key/Body/ContentTypeと、各試行のS3Clientへ渡る
+//    endpoint/credentialsを検証し、リトライ中に引数や資格情報を取り違えていないことを確認する）。
 // 3. 恒久エラー（AccessDenied）はS3 SDK経由でも1回の試行で打ち切り、リトライ
 //    しないことを確認する。
 //
-// なお、リトライ間の指数バックオフは vi.useFakeTimers() + runAllTimersAsync() で
+// なお、リトライ成功ケースの指数バックオフは vi.useFakeTimers() + runAllTimersAsync() で
 // 進め、実setTimeoutによる待機時間をテスト実行時間に乗せない。待機値へ依存しない
 // ため、バックオフの基数や試行回数が変わってもアサーションは壊れない。
 //
@@ -79,15 +80,15 @@ function stubSoundEnv(): void {
 
 describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
   beforeAll(async () => {
-    // #1008: fake timers を有効にする前に @aws-sdk/client-s3 を一度解決しておき、
-    // s3Upload() 内の初回動的 import が1マクロタスクを超えて解決されるケースに
-    // 起因する runAllTimersAsync のハング（testTimeout 30秒で失敗しうる flaky）を
-    // 回避する。
-    await import('@aws-sdk/client-s3')
+    // #1017: r2-client.ts が動的 import する2モジュールを fake timers 有効化前に
+    // 一度解決しておく。先行テストの実行順に依存せず、runAllTimersAsync() が動的
+    // import の完了前に抜けて pending が30秒タイムアウトする flaky を防ぐ。
+    await Promise.all([import('@aws-sdk/client-s3'), import('@opennextjs/cloudflare')])
   })
 
   beforeEach(() => {
     sendMock.mockReset()
+    mocks.getCloudflareContext.mockClear()
     s3ClientConfigs.length = 0
   })
 
@@ -102,28 +103,27 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     // R2_BUCKET_NAME は「未設定」を再現するため明示的に削除する
     vi.stubEnv('R2_BUCKET_NAME', undefined)
     vi.stubEnv('R2_PUBLIC_URL', 'https://example.test')
-    // 恒久エラー時はリトライのバックオフ sleep が登録されないことを「試行回数」の代わりに検証する。
-    vi.useFakeTimers()
 
     const { uploadToR2WithRetry } = await import('@/lib/r2-client')
     const result = await uploadToR2WithRetry('f.png', Buffer.from('x'), 'image/png', 3)
 
     expect(result).toEqual({ error: 'Missing R2_BUCKET_NAME environment variable' })
     expect(sendMock).not.toHaveBeenCalled()
-    expect(vi.getTimerCount()).toBe(0)
+    // getR2Binding() は1試行につき1回だけ到達するため、恒久エラーを誤って
+    // transient 扱いしてリトライする回帰を、タイマーの有無ではなく試行回数で直接検知する。
+    expect(mocks.getCloudflareContext).toHaveBeenCalledTimes(1)
   })
 
   it('R2バインディング・環境変数がどちらも無い場合、実際のuploadSoundToR2が投げる恒久エラーを1回の試行で返す', async () => {
     vi.stubEnv('R2_SOUND_BUCKET_NAME', undefined)
     vi.stubEnv('R2_SOUND_PUBLIC_URL', 'https://example.test')
-    vi.useFakeTimers()
 
     const { uploadSoundToR2WithRetry } = await import('@/lib/r2-client')
     const result = await uploadSoundToR2WithRetry('f.mp3', Buffer.from('x'), 'audio/mpeg', 3)
 
     expect(result).toEqual({ error: 'Missing R2_SOUND_BUCKET_NAME environment variable' })
     expect(sendMock).not.toHaveBeenCalled()
-    expect(vi.getTimerCount()).toBe(0)
+    expect(mocks.getCloudflareContext).toHaveBeenCalledTimes(1)
   })
 
   it('R2固有のInternalError(10001)が2回続いた後に成功すれば、uploadToR2WithRetryは実際にリトライして成功を返す (Issue #976/#977/#980の回帰防止)', async () => {
@@ -149,14 +149,18 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
       expect(input).toMatchObject({ Bucket: 'test-bucket', Key: 'f.png', ContentType: 'image/png' })
       expect(input.Body).toEqual(Buffer.from('img'))
     }
-    // 画像分岐が画像用の資格情報キー名を選ぶことを直接検証する（キー名の対応を明示）。
-    expect(s3ClientConfigs[0]).toEqual(
-      expect.objectContaining({
-        region: 'auto',
-        endpoint: 'https://example.r2.test',
-        credentials: { accessKeyId: 'image-key', secretAccessKey: 'image-secret' },
-      }),
-    )
+    // S3Client は試行ごとに生成される。先頭だけでなく3試行すべてが画像用の
+    // endpoint / credentials を受け取ることを固定し、途中試行だけの取り違えも検知する。
+    expect(s3ClientConfigs).toHaveLength(3)
+    for (const config of s3ClientConfigs) {
+      expect(config).toEqual(
+        expect.objectContaining({
+          region: 'auto',
+          endpoint: 'https://example.r2.test',
+          credentials: { accessKeyId: 'image-key', secretAccessKey: 'image-secret' },
+        }),
+      )
+    }
   })
 
   it('効果音側もR2固有のInternalError(10001)が2回続いた後に成功すれば、uploadSoundToR2WithRetryはリトライして成功し、sound用のenvとURLを使う', async () => {
@@ -179,14 +183,17 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
       expect(input).toMatchObject({ Bucket: 'sound-bucket', Key: 'f.mp3', ContentType: 'audio/mpeg' })
       expect(input.Body).toEqual(Buffer.from('snd'))
     }
-    // sound分岐がsound用の資格情報キー名を選ぶことを直接検証する（アンビエント環境へ依存しない）。
-    expect(s3ClientConfigs[0]).toEqual(
-      expect.objectContaining({
-        region: 'auto',
-        endpoint: 'https://example.r2.test',
-        credentials: { accessKeyId: 'sound-key', secretAccessKey: 'sound-secret' },
-      }),
-    )
+    // sound側も全試行を検証し、画像用credentialsへの誤フォールバックを見逃さない。
+    expect(s3ClientConfigs).toHaveLength(3)
+    for (const config of s3ClientConfigs) {
+      expect(config).toEqual(
+        expect.objectContaining({
+          region: 'auto',
+          endpoint: 'https://example.r2.test',
+          credentials: { accessKeyId: 'sound-key', secretAccessKey: 'sound-secret' },
+        }),
+      )
+    }
   })
 
   it('恒久エラー（AccessDenied）はS3 SDK経由でも1回の試行で打ち切り、リトライしない', async () => {
