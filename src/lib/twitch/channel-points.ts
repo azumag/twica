@@ -1,5 +1,5 @@
 import { getEnvVar } from '@/lib/env-validation'
-import { getTwitchAccessToken } from './token-manager'
+import { getTwitchAccessToken, isPermanentRefreshFailure, TwitchTokenError } from './token-manager'
 import { logger } from '@/lib/logger.server'
 
 const TWITCH_API_URL = 'https://api.twitch.tv/helix'
@@ -19,6 +19,8 @@ export type ChannelPointsCapabilityReason =
   | 'twitch_server_error'
   | 'unexpected_status'
   | 'network_error'
+  | 'token_refresh_failed'
+  | 'token_refresh_temporarily_failed'
 
 export interface ChannelPointsCapabilityResult {
   capability: ChannelPointsCapability
@@ -165,7 +167,41 @@ export async function cancelRedemption(params: CancelRedemptionParams): Promise<
 export async function probeChannelPointsCapability(
   broadcasterTwitchUserId: string
 ): Promise<ChannelPointsCapabilityResult> {
-  const accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
+  let accessToken: string | null
+  try {
+    accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
+  } catch (error) {
+    // getTwitchAccessToken は「トークンが未保存」ならnullを返すが、期限切れ
+    // トークンのrefreshに失敗した場合はTwitchTokenErrorをthrowする(token-manager.ts
+    // getTwitchAccessTokenPg参照)。ここでcatchしないと、この関数の他の失敗経路
+    // （fetch自体の例外・非2xxステータス）と違って結果オブジェクトへ変換されず、
+    // 呼び出し元(POST /api/account/channel-points等)のtry/catchまで未捕捉例外として
+    // 伝播し、handleApiErrorが「REFRESH_FAILED」を500として誤ってauto-generated
+    // bug reportに記録していた(Issue #1064)。
+    //
+    // 恒久失効かどうかの判定は、退行を避けるため必ず token-manager.ts の正本
+    // isPermanentRefreshFailure() (Issue #1018) へ委譲する。retryableの否定形で
+    // 自前判定すると、Cloudflare由来の一過性5xx(520/521/525/526等)・
+    // kind='invalid_response'・403(WAF等)まで「恒久失効」に誤分類され、一時障害の
+    // 窓でDBの確定capability(available)をreauth_requiredへ誤って上書きしてしまう
+    // (isPermanentRefreshFailureのdoc・PERMANENT_REFRESH_STATUSESのコメント参照)。
+    // 恒久(400/401のhttp)以外 — DB障害・network・その他statusを含む — は
+    // すべて一時障害として扱い、definitive:falseで既存の確定状態を保持する。
+    const permanent = isPermanentRefreshFailure(error)
+    logger.warn('[probeChannelPointsCapability] getTwitchAccessToken failed', {
+      broadcasterTwitchUserId,
+      error: error instanceof Error ? error.message : String(error),
+      refreshErrorKind: error instanceof TwitchTokenError ? error.refreshErrorKind : undefined,
+      refreshRetryable: error instanceof TwitchTokenError ? error.refreshRetryable : undefined,
+    })
+    if (permanent) {
+      return { capability: 'reauth_required', reason: 'token_refresh_failed', definitive: true }
+    }
+    // 'unavailable'は既存語彙で「403確定でChannel Points機能自体が無い」を意味する
+    // ため、reasonを'token_refresh_unavailable'にすると意味が逆(一時的に判定不能)に
+    // 読まれかねない。ログ・集計での混同を避けるため、一時性を明示する名前にする。
+    return { capability: 'unknown', reason: 'token_refresh_temporarily_failed', definitive: false }
+  }
   if (!accessToken) {
     return { capability: 'reauth_required', reason: 'no_access_token', definitive: true }
   }
