@@ -159,6 +159,7 @@ export default function CardVisibilitySettings({
           >
             <input
               type="checkbox"
+              aria-label={t("form.showUnowned")}
               checked={showUnowned}
               onChange={handleToggleShowUnowned}
               disabled={showUnownedDisabled}
@@ -182,6 +183,7 @@ export default function CardVisibilitySettings({
           >
             <input
               type="checkbox"
+              aria-label={t("form.showDetails")}
               checked={showDetails}
               onChange={handleToggleShowDetails}
               disabled={detailsDisabled}
