@@ -26,7 +26,7 @@ jobs:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          python3 - <<PY
+          python3 - <<'PY'
           import os
           import re
 
