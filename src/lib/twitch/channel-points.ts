@@ -1,5 +1,5 @@
 import { getEnvVar } from '@/lib/env-validation'
-import { getTwitchAccessToken } from './token-manager'
+import { getTwitchAccessToken, TwitchTokenError } from './token-manager'
 import { logger } from '@/lib/logger.server'
 
 const TWITCH_API_URL = 'https://api.twitch.tv/helix'
@@ -19,6 +19,8 @@ export type ChannelPointsCapabilityReason =
   | 'twitch_server_error'
   | 'unexpected_status'
   | 'network_error'
+  | 'token_refresh_failed'
+  | 'token_refresh_unavailable'
 
 export interface ChannelPointsCapabilityResult {
   capability: ChannelPointsCapability
@@ -165,7 +167,39 @@ export async function cancelRedemption(params: CancelRedemptionParams): Promise<
 export async function probeChannelPointsCapability(
   broadcasterTwitchUserId: string
 ): Promise<ChannelPointsCapabilityResult> {
-  const accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
+  let accessToken: string | null
+  try {
+    accessToken = await getTwitchAccessToken(broadcasterTwitchUserId)
+  } catch (error) {
+    // getTwitchAccessToken は「トークンが未保存」ならnullを返すが、期限切れ
+    // トークンのrefreshに失敗した場合はTwitchTokenErrorをthrowする(token-manager.ts
+    // getTwitchAccessTokenPg参照)。ここでcatchしないと、この関数の他の失敗経路
+    // （fetch自体の例外・非2xxステータス）と違って結果オブジェクトへ変換されず、
+    // 呼び出し元(POST /api/account/channel-points等)のtry/catchまで未捕捉例外として
+    // 伝播し、handleApiErrorが「REFRESH_FAILED」を500として誤ってauto-generated
+    // bug reportに記録していた(Issue #1064)。
+    //
+    // refresh tokenが無効化・失効済み(invalid_grant等の非retryable HTTPエラー)な
+    // 場合は再認証以外に復旧手段が無いため、恒久障害として reauth_required/
+    // definitive:true を返す（!accessTokenの分岐と同じ扱い）。429/5xx/networkの
+    // ような一時障害まで reauth_required 化すると、DBに保存済みの確定capability
+    // (available等)を誤って破壊してしまうため、definitive:false の unknown として
+    // 返し、呼び出し元が既存の確定状態を保持できるようにする。
+    const isPermanentRefreshFailure =
+      error instanceof TwitchTokenError &&
+      error.code === 'REFRESH_FAILED' &&
+      error.refreshRetryable === false
+    logger.warn('[probeChannelPointsCapability] getTwitchAccessToken failed', {
+      broadcasterTwitchUserId,
+      error: error instanceof Error ? error.message : String(error),
+      refreshErrorKind: error instanceof TwitchTokenError ? error.refreshErrorKind : undefined,
+      refreshRetryable: error instanceof TwitchTokenError ? error.refreshRetryable : undefined,
+    })
+    if (isPermanentRefreshFailure) {
+      return { capability: 'reauth_required', reason: 'token_refresh_failed', definitive: true }
+    }
+    return { capability: 'unknown', reason: 'token_refresh_unavailable', definitive: false }
+  }
   if (!accessToken) {
     return { capability: 'reauth_required', reason: 'no_access_token', definitive: true }
   }
