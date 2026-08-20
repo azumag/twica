@@ -119,7 +119,7 @@ describe("LivePage", () => {
     );
   });
 
-  it("shows the estimate only when the presence snapshot is available", async () => {
+  it("shows the estimate only when the presence snapshot is positive", async () => {
     mocks.getSession.mockResolvedValue(null);
     mocks.getLiveDirectoryPresence.mockResolvedValue({
       count: 7,
@@ -134,6 +134,19 @@ describe("LivePage", () => {
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
       "polling-onlyは含まれず、設定画面のプレビューや残留タブは含まれる",
     );
+  });
+
+  it("hides a zero overlay estimate that could contradict polling-only live entries", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getLiveDirectoryPresence.mockResolvedValue({
+      count: 0,
+      observedAt: "2026-08-21T00:00:00.000Z",
+    });
+
+    render(await LivePage());
+
+    expect(screen.queryByTestId("live-presence-estimate")).not.toBeInTheDocument();
+    expect(screen.getByTestId("live-directory")).toHaveTextContent("entries:1");
   });
 
   it("builds localized metadata from the livePage namespace", async () => {
