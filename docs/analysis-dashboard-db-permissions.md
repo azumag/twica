@@ -40,6 +40,25 @@ Cloudflare Worker の Hyperdrive binding を共有しません。接続先は
 2. 読み取り endpoint で集計 RPC が成功することを確認する。
 3. 必要な管理操作だけを実施し、許可していない DML が拒否されることを確認する。
 4. `permission denied`、RPC 欠落、接続失敗を成功扱いにしていないことをログとテストで確認する。
+5. `get_analysis_*()` RPC 自体の集計が正しいことは、`npm run check:analysis-dashboard-vs-sql`
+   （`scripts/compare-analysis-dashboard-vs-sql.mjs`, #1077）で検証する。RPCを経由しない
+   素朴な COUNT/GROUP BY を独立に発行し、`get_analysis_overview` /
+   `get_analysis_users_summary` / `get_analysis_streamers_summary` /
+   `get_analysis_gacha_summary` の戻り値（users/streamers/cards、
+   today/week/month/total gacha、unique users、rarity）と突き合わせる。
+   `DASHBOARD_DATABASE_URL` にのみ対象環境の限定readロール接続文字列を設定して実行する
+   （`DATABASE_URL_PLANETSCALE`/`PLANETSCALE_DATABASE_URL` はそれぞれ用途・権限が別の
+   接続文字列のためフォールバックしない。誤って management ロールで preview を検証したつもりが
+   production に接続するような事故を防ぐため）。全クエリは単一の read-only スナップショット
+   （`REPEATABLE READ READ ONLY`）内で発行するため、比較の途中に書き込みが挟まっても
+   誤検知しない。出力はその場の差分調査用であり、Issue/PR/ログへ実数値を転記しない。
+   全期間の `gacha_history` を走査する集計は production 規模では本スクリプトの既定値
+   （30秒。PostgreSQL自体の既定は無制限）を超えうる。その場合は不一致ではなくタイムアウト
+   である旨が出力されるので、`DASHBOARD_COMPARE_STATEMENT_TIMEOUT`（例: `"2min"`。`0`は
+   タイムアウト自体を無効化してしまうため拒否される）で上限を延ばして
+   再実行する。なお today/week/month の境界式は RPC 側の定義をほぼ書き写しているため、
+   境界定義そのものが最初から誤っているケース（両側が同じ誤りを持つ）はこの比較では
+   検出できない。
 
 新しい dashboard endpoint を追加するときは、SQL を文字列連結で組み立てず、
 postgres.js のパラメータ化を使います。権限追加は endpoint ごとに必要性を説明し、
