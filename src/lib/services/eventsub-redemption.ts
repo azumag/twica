@@ -622,7 +622,7 @@ export async function postRedemptionNotify(
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
       const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
-      logger.warn(`[postRedemptionNotify] ${label} failed`, {
+      logger.warn(`[postRedemptionNotify] ${i === 0 ? 'broadcast' : 'chat announcement'} failed`, {
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         streamerId: data.streamer.id,
       });
