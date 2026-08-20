@@ -76,6 +76,7 @@ jobs:
 
           discovery_complete=true
           commit_shas=()
+          total_commits=0
           page_size=100
           max_pages=5
           for page in $(seq 1 "$max_pages"); do
@@ -95,13 +96,25 @@ jobs:
               break
             fi
 
-            page_count=$(jq '.commits | length' "$response_file")
-            total_commits=$(jq '.total_commits // 0' "$response_file")
+            if ! page_metadata=$(jq -r '[.commits | length, (.total_commits // 0)] | @tsv' "$response_file"); then
+              echo "::warning::Failed to parse release commit comparison metadata."
+              discovery_complete=false
+              rm -f "$response_file"
+              break
+            fi
+            IFS=$'\t' read -r page_count total_commits <<<"$page_metadata"
+
+            if ! page_commit_shas=$(jq -r '.commits[]?.sha' "$response_file"); then
+              echo "::warning::Failed to parse release commit SHAs."
+              discovery_complete=false
+              rm -f "$response_file"
+              break
+            fi
             while IFS= read -r commit_sha; do
               if [[ -n "$commit_sha" ]]; then
                 commit_shas+=("$commit_sha")
               fi
-            done < <(jq -r '.commits[].sha' "$response_file")
+            done <<<"$page_commit_shas"
             rm -f "$response_file"
 
             if [[ "$page_count" -lt "$page_size" ]]; then
@@ -113,6 +126,11 @@ jobs:
               discovery_complete=false
             fi
           done
+
+          if [[ "$discovery_complete" == "true" && ${#commit_shas[@]} -lt "$total_commits" ]]; then
+            echo "::warning::GitHub compare API returned ${#commit_shas[@]} of $total_commits commits; Discord change discovery is incomplete."
+            discovery_complete=false
+          fi
 
           changes_json='[]'
           seen_numbers=' '
@@ -201,22 +219,49 @@ jobs:
             change_heading="**今回の変更（取得できた${CHANGE_COUNT}件・一部取得失敗）**"
           fi
 
+          # Discord limits message content to 2000 UTF-16 code units. Keep the
+          # full count in the heading, but drop whole change-list lines if the
+          # rendered message would exceed that limit so the webhook still lands.
+          content=$(CHANGE_HEADING="$change_heading" python3 - <<'PY'
+          import os
+
+          limit = 2000
+          marker = "- 文字数上限のため一部省略"
+          lines = os.environ.get("CHANGE_LIST", "").splitlines()
+          if not lines:
+              lines = ["- 更新内容をGitHubから取得できませんでした"]
+
+          def build(change_lines):
+              return (
+                  f"🚀 **{os.environ['REPOSITORY_NAME']} が更新されました**\n\n"
+                  f"{os.environ['CHANGE_HEADING']}\n"
+                  f"{'\n'.join(change_lines)}\n\n"
+                  f"`{os.environ['HEAD_REF']} → main`\n"
+                  f"by {os.environ['PR_AUTHOR']}\n\n"
+                  f"🔗 [リリース内容を見る]({os.environ['PR_URL']})"
+              )
+
+          def discord_length(value):
+              return len(value.encode("utf-16-le")) // 2
+
+          content = build(lines)
+          if discord_length(content) > limit:
+              while lines and discord_length(build(lines + [marker])) > limit:
+                  lines.pop()
+              content = build(lines + [marker])
+
+          if discord_length(content) > limit:
+              raise SystemExit("Discord notification still exceeds 2000 characters after trimming")
+
+          print(content, end="")
+          PY
+          )
+
           payload=$(jq -n \
-            --arg repository "$REPOSITORY_NAME" \
-            --arg url "$PR_URL" \
-            --arg author "$PR_AUTHOR" \
-            --arg head_ref "$HEAD_REF" \
-            --arg change_heading "$change_heading" \
-            --arg change_list "$CHANGE_LIST" \
+            --arg content "$content" \
             '{
               username: "twica GitHub",
-              content: (
-                "🚀 **" + $repository + " が更新されました**\n\n" +
-                $change_heading + "\n" + $change_list + "\n\n" +
-                "`" + $head_ref + " → main`\n" +
-                "by " + $author + "\n\n" +
-                "🔗 [リリース内容を見る](" + $url + ")"
-              ),
+              content: $content,
               allowed_mentions: {parse: []}
             }')
 
