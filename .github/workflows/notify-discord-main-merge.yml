@@ -109,14 +109,7 @@ jobs:
 
             # Escape Discord Markdown control characters in PR-controlled
             # titles while keeping the generated GitHub link clickable.
-            safe_title=$(TITLE="$title" python3 - <<'PY'
-import os
-import re
-
-value = os.environ["TITLE"]
-print(re.sub(r"([\\`*_~|>\[\]\(\)])", r"\\\1", value), end="")
-PY
-            )
+            safe_title=$(TITLE="$title" python3 -c 'import os,re; value=os.environ["TITLE"]; print(re.sub(r"([\\`*_~|>\[\]\(\)])", r"\\\1", value), end="")')
 
             changes_json=$(jq -c \
               --arg number "$candidate" \
@@ -130,14 +123,7 @@ PY
           if [[ "$change_count" -eq 0 ]]; then
             # Keep the notification useful even if an old/custom promotion PR
             # body does not expose its component PRs in a recognizable form.
-            safe_fallback_title=$(TITLE="$PR_TITLE" python3 - <<'PY'
-import os
-import re
-
-value = os.environ["TITLE"][:80]
-print(re.sub(r"([\\`*_~|>\[\]\(\)])", r"\\\1", value), end="")
-PY
-            )
+            safe_fallback_title=$(TITLE="$PR_TITLE" python3 -c 'import os,re; value=os.environ["TITLE"][:80]; print(re.sub(r"([\\`*_~|>\[\]\(\)])", r"\\\1", value), end="")')
             change_count=1
             change_list="- [#$PR_NUMBER $safe_fallback_title]($PR_URL)"
           else
