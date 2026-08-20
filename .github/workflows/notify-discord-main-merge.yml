@@ -52,9 +52,13 @@ jobs:
           def strip_markdown_links(value):
               value = re.sub(r"!\[([^]]*)\]\([^)]*\)", r"\1", value)
               value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
-              value = re.sub(r"<https?://[^>]+>", "", value)
+              value = re.sub(r"<https?://[^>\n]+>", "", value)
               value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
-              value = re.sub(r"(?i)</?[a-zA-Z!][^>]*>", "", value)
+              value = re.sub(
+                  r"(?i)</?(?:!doctype|a|abbr|b|br|code|div|em|i|img|li|ol|p|pre|s|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul|h[1-6]|hr)(?:\\s[^>\\n]*)?/?>",
+                  "",
+                  value,
+              )
               value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
               return value
 
@@ -127,9 +131,13 @@ jobs:
           def strip_markdown_links(value):
               value = re.sub(r"!\[([^]]*)\]\([^)]*\)", r"\1", value)
               value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
-              value = re.sub(r"<https?://[^>]+>", "", value)
+              value = re.sub(r"<https?://[^>\n]+>", "", value)
               value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
-              value = re.sub(r"(?i)</?[a-zA-Z!][^>]*>", "", value)
+              value = re.sub(
+                  r"(?i)</?(?:!doctype|a|abbr|b|br|code|div|em|i|img|li|ol|p|pre|s|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul|h[1-6]|hr)(?:\\s[^>\\n]*)?/?>",
+                  "",
+                  value,
+              )
               value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
               return value
 
