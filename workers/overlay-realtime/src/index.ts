@@ -93,6 +93,7 @@ const PRESENCE_KEY_PREFIX = 'room:'
 const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
 const PRESENCE_LAST_ATTEMPT_AT_KEY = 'presence-last-attempt-at'
 const PRESENCE_SNAPSHOT_KEY = 'presence-snapshot'
+const PRESENCE_DELETE_BATCH_SIZE = 128
 
 /**
  * Room identity, needed only so the kill-switch alarm can re-evaluate the
@@ -896,13 +897,11 @@ export class OverlayPresence {
   /**
    * Count and clean leases in bounded pages. Durable Object list() has no
    * server-side TTL, so an alarm keeps historical rooms from accumulating;
-   * paging also avoids materializing the entire key history at once. The page
-   * size stays within Durable Object storage.delete(keys)'s 128-key limit so a
-   * page containing only expired leases can always be removed in one call.
+   * paging also avoids materializing the entire key history at once.
    */
   private async countActiveLeases(now: number): Promise<number> {
     const cutoff = now - PRESENCE_LEASE_TTL_MS
-    const pageSize = 128
+    const pageSize = 1_000
     let startAfter: string | undefined
     let count = 0
 
@@ -921,8 +920,10 @@ export class OverlayPresence {
           expiredKeys.push(key)
         }
       }
-      if (expiredKeys.length > 0) {
-        await this.state.storage.delete(expiredKeys)
+      for (let index = 0; index < expiredKeys.length; index += PRESENCE_DELETE_BATCH_SIZE) {
+        await this.state.storage.delete(
+          expiredKeys.slice(index, index + PRESENCE_DELETE_BATCH_SIZE)
+        )
       }
 
       // The page is ordered by key. Deleting expired rows does not alter the
