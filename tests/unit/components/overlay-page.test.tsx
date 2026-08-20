@@ -381,15 +381,24 @@ describe('OverlayPage', () => {
     expect(screen.getByText('RealCard')).toBeInTheDocument()
   })
 
-  // Issue #1076回帰: overlay publish・イベント受信(Received payload: gacha)は成功する
-  // のに実引き換えでカード画素が一切表示されない(黒画面)不具合が発生した。原因は
-  // next/imageのデフォルトlazy loading(IntersectionObserver依存)で、OBSブラウザ
-  // ソース(CEF)がソース追加直後の不定なビューポートでobserverを初期化した場合、
-  // 以後リサイズされても再判定されず画像が永久に読み込まれない実例があったため。
-  // オーバーレイの単一カード画像は常に画面いっぱいに即時表示する用途で遅延読み込みの
-  // 利点が無いため、priorityでlazy loadingを無効化した。この回帰を固定する。
-  it('カード画像はlazy loadingではなく即時読み込みになる(Issue #1076回帰)', async () => {
-    vi.useFakeTimers()
+  // Issue #1076回帰: preview実引き換えで、overlay publish・イベント受信
+  // (Received payload: gacha)・showCard切り替えは全て成功するのに、OBS上で
+  // カード画素だけが一切表示されない(黒画面)事象が観測された。next/imageは
+  // priority未指定だと既定でloading="lazy"(ブラウザネイティブの遅延読み込みに
+  // 委譲)になり、native lazy loadingの発火条件はOBSブラウザソース(CEF)の
+  // 特殊なビューポート初期化と噛み合わない可能性がある。オーバーレイの単体
+  // カード画像は常に画面いっぱいに即時表示する用途で遅延読み込みの利点が
+  // 無いため、priorityでlazy loadingを無効化した。この回帰を固定する。
+  //
+  // priority指定時、next/imageはimg要素にloading属性自体を付与しない
+  // (undefinedのまま、"eager"という値になるわけではない)ことを実装読解と
+  // 実測の両方で確認済み。そのため「loading="lazy"ではない」ではなく
+  // 「loading属性が存在しない」という、より直接的で正確な形で固定する。
+  it.each([
+    { label: '通常表示モード', query: '', altText: 'RealCard' },
+    { label: '画像のみモード(imageOnly=true)', query: '?imageOnly=true', altText: 'RealCard' },
+  ])('カード画像はlazy loadingではなく即時読み込みになる($label)(Issue #1076回帰)', async ({ query, altText }) => {
+    window.history.replaceState({}, '', `/overlay/streamer-1${query}`)
 
     class MockImage {
       onload: (() => void) | null = null
@@ -398,8 +407,10 @@ describe('OverlayPage', () => {
       height = 0
       set src(value: string) {
         void value
-        // このテストではアスペクト比判定の結果自体は無関係なので応答させない。
-        // 1.5秒のタイムアウト経由でも通常表示モードへ到達することを確認する。
+        // アスペクト比判定の結果自体はこのテストの関心事ではない。既存の
+        // 「onerrorで即座に失敗」テスト(上記)と同じ即時失敗パターンに揃え、
+        // 1.5秒のタイムアウト待ちを経由せず直接カード表示へ進める。
+        queueMicrotask(() => this.onerror?.())
       }
     }
     vi.stubGlobal('Image', MockImage)
@@ -428,17 +439,8 @@ describe('OverlayPage', () => {
       })
     })
 
-    await act(async () => {
-      // checkImageAspectRatioのIMAGE_METADATA_TIMEOUT_MS(1.5秒)を超えてから
-      // 表示開始のsetTimeout(100ms)分を進める
-      await vi.advanceTimersByTimeAsync(1_600)
-    })
-    const img = screen.getByAltText('RealCard')
-    // next/imageはpriority未指定だとloading="lazy"を付与し、IntersectionObserverが
-    // 「表示中」と判定するまで画像取得を開始しない。OBSブラウザソースのような
-    // ビューポート不定環境ではこの判定が永久に来ず黒画面になり得るため、
-    // loading="lazy"が付いていないこと(=即時読み込み)を固定する。
-    expect(img).not.toHaveAttribute('loading', 'lazy')
+    const img = await screen.findByAltText(altText)
+    expect(img).not.toHaveAttribute('loading')
   })
 
   // Issue #999: previewの実引き換えで、実イベント受信(`Received payload: gacha`)
