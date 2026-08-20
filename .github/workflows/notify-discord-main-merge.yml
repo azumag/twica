@@ -54,7 +54,7 @@ jobs:
               value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
               value = re.sub(r"<https?://[^>]+>", "", value)
               value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
-              value = re.sub(r"(?i)<[^>]+>", "", value)
+              value = re.sub(r"(?i)</?[a-zA-Z!][^>]*>", "", value)
               value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
               return value
 
@@ -129,7 +129,7 @@ jobs:
               value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
               value = re.sub(r"<https?://[^>]+>", "", value)
               value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
-              value = re.sub(r"(?i)<[^>]+>", "", value)
+              value = re.sub(r"(?i)</?[a-zA-Z!][^>]*>", "", value)
               value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
               return value
 
@@ -216,7 +216,7 @@ jobs:
             -d "$payload" \
             "$DISCORD_WEBHOOK_URL"
       - name: Fail after notifying missing promotion summary
-        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+        if: success() && github.event.action == 'closed' && github.event.pull_request.merged == true
         shell: bash
         run: |
           if [[ "$PROMOTION_SUMMARY_MISSING" == "true" ]]; then
