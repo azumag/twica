@@ -658,7 +658,7 @@ export async function getLiveDirectoryPresence(): Promise<LiveDirectoryPresenceS
     if (kv) {
       await kv.put(
         LIVE_DIRECTORY_PRESENCE_KV_KEY,
-        cachedValue,
+        JSON.stringify(snapshot),
         { expirationTtl: LIVE_DIRECTORY_TTL_SECONDS },
       );
     }
