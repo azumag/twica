@@ -3,7 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { getTwitchAccessToken } from "@/lib/twitch/token-manager";
+import { getTwitchAccessToken, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -116,6 +116,6 @@ export async function GET(request: Request) {
         { status: 401 }
       );
     }
-    return handleApiError(error, "Twitch emotes fetch");
+    return handleApiError(error, "Twitch emotes fetch", twitchTokenErrorReportContext(error));
   }
 }
