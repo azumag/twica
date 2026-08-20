@@ -896,11 +896,13 @@ export class OverlayPresence {
   /**
    * Count and clean leases in bounded pages. Durable Object list() has no
    * server-side TTL, so an alarm keeps historical rooms from accumulating;
-   * paging also avoids materializing the entire key history at once.
+   * paging also avoids materializing the entire key history at once. The page
+   * size stays within Durable Object storage.delete(keys)'s 128-key limit so a
+   * page containing only expired leases can always be removed in one call.
    */
   private async countActiveLeases(now: number): Promise<number> {
     const cutoff = now - PRESENCE_LEASE_TTL_MS
-    const pageSize = 1_000
+    const pageSize = 128
     let startAfter: string | undefined
     let count = 0
 
