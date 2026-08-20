@@ -1,5 +1,8 @@
 name: Notify Discord on main merge
 
+# Security contract: pull_request_target lets a merged PR notification read the
+# repository webhook secret from the trusted base context. Never checkout or
+# execute code from the PR head in this workflow.
 on:
   pull_request_target:
     types: [closed]
@@ -12,6 +15,8 @@ jobs:
   notify:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    # PR-controlled strings stay in env and are passed to jq via --arg below;
+    # do not interpolate them directly into the shell script.
     env:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       REPOSITORY_NAME: ${{ github.event.repository.name }}
