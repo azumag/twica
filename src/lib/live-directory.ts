@@ -104,6 +104,7 @@ interface HelixStream {
 const LIVE_DIRECTORY_KV_KEY = "live-directory:v1";
 const LIVE_DIRECTORY_RANKINGS_KV_KEY = "live-directory:rankings:v3";
 const LIVE_DIRECTORY_PRESENCE_KV_KEY = "live-directory:presence:v1";
+const LIVE_DIRECTORY_PRESENCE_UNAVAILABLE = "__unavailable__";
 const LIVE_DIRECTORY_TTL_SECONDS = 60;
 const HELIX_STREAMS_BATCH_SIZE = 100;
 
@@ -114,7 +115,7 @@ let rankingsMemoryCache: {
   expiresAt: number;
 } | null = null;
 let presenceMemoryCache: {
-  snapshot: LiveDirectoryPresenceSnapshot;
+  snapshot: LiveDirectoryPresenceSnapshot | null;
   expiresAt: number;
 } | null = null;
 
@@ -169,6 +170,9 @@ async function fetchLiveDirectoryPresenceUncached(): Promise<LiveDirectoryPresen
     const response = await service.fetch(
       new Request("https://overlay-realtime/presence"),
     );
+    // Staged deployments and a temporarily unavailable presence registry are
+    // expected states for this optional estimate, not Sentry-worthy failures.
+    if (response.status === 404 || response.status === 503) return null;
     if (!response.ok) {
       throw new Error(`Overlay presence request failed: status=${response.status}`);
     }
@@ -546,7 +550,8 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
  * this second 60-second KV cache prevents every page request from waking the
  * registry. A missing binding or a failed snapshot is represented by null so
  * the UI can omit the estimate instead of claiming that zero channels are
- * live.
+ * live. Unavailable states are negative-cached for the same short TTL so a
+ * staged Worker rollout cannot fan out one service call per public page view.
  */
 export async function getLiveDirectoryPresence(): Promise<LiveDirectoryPresenceSnapshot | null> {
   try {
@@ -554,6 +559,7 @@ export async function getLiveDirectoryPresence(): Promise<LiveDirectoryPresenceS
     if (kv) {
       const raw = await kv.get(LIVE_DIRECTORY_PRESENCE_KV_KEY);
       if (raw) {
+        if (raw === LIVE_DIRECTORY_PRESENCE_UNAVAILABLE) return null;
         const snapshot = normalizeLiveDirectoryPresence(JSON.parse(raw));
         if (snapshot) return snapshot;
         await reportError(new Error("Cached overlay presence was invalid"), {
@@ -576,14 +582,16 @@ export async function getLiveDirectoryPresence(): Promise<LiveDirectoryPresenceS
   }
 
   const snapshot = await fetchLiveDirectoryPresenceUncached();
-  if (!snapshot) return null;
+  const cachedValue = snapshot
+    ? JSON.stringify(snapshot)
+    : LIVE_DIRECTORY_PRESENCE_UNAVAILABLE;
 
   try {
     const kv = await getKvBinding();
     if (kv) {
       await kv.put(
         LIVE_DIRECTORY_PRESENCE_KV_KEY,
-        JSON.stringify(snapshot),
+        cachedValue,
         { expirationTtl: LIVE_DIRECTORY_TTL_SECONDS },
       );
     }
