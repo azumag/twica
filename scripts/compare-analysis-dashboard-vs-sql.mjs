@@ -256,6 +256,13 @@ function printDiffTable(diffs) {
   }
 }
 
+function redactError(error, connectionString) {
+  return core.redactSecretsFromText(
+    error instanceof Error ? error.message : String(error),
+    connectionString
+  )
+}
+
 async function main() {
   const connectionString = resolveDashboardDatabaseUrl(process.env)
   if (!connectionString) {
@@ -270,13 +277,17 @@ async function main() {
     return
   }
 
-  const sql = postgres(core.stripPostgresJsIncompatibleSslParams(connectionString), {
-    max: 1,
-    connect_timeout: 15,
-  })
-
+  let sql
   let exitCode = 0
   try {
+    // 接続文字列のparse自体が失敗するケースもredaction対象に含めるため、postgres()の生成を
+    // 必ずtry内で行う。ERR_INVALID_URLは入力URLをown propertyとして保持しうるため、
+    // 生のErrorオブジェクトをconsole.errorへ渡さない。
+    sql = postgres(core.stripPostgresJsIncompatibleSslParams(connectionString), {
+      max: 1,
+      connect_timeout: 15,
+    })
+
     const diffs = await withReadOnlySnapshot(sql, async (tx) => {
       // 全期間のgacha_historyを走査する get_analysis_gacha_summary(NULL, NULL) は
       // ダッシュボードUIの既定（直近7日）より重いクエリになりうるため、検証スクリプトが
@@ -295,22 +306,28 @@ async function main() {
       exitCode = 1
     }
   } catch (error) {
-    const message = core.redactSecretsFromText(
-      error instanceof Error ? error.message : String(error),
-      connectionString
-    )
     console.error('analysis dashboard の集計比較に失敗しました:')
-    console.error(message)
+    console.error(redactError(error, connectionString))
     exitCode = 2
   } finally {
-    await sql.end({ timeout: 5 })
+    if (sql) {
+      try {
+        await sql.end({ timeout: 5 })
+      } catch (error) {
+        console.error('analysis dashboard のDB接続終了処理に失敗しました:')
+        console.error(redactError(error, connectionString))
+        exitCode = 2
+      }
+    }
   }
   process.exitCode = exitCode
 }
 
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    console.error(error)
+  main().catch(() => {
+    // main内で接続文字列をredactできる経路はすべて処理する。ここは想定外の最終安全弁なので、
+    // Errorオブジェクト自体は出力せずcredential混入の可能性を排除する。
+    console.error('analysis dashboard の集計比較で想定外のエラーが発生しました。')
     process.exitCode = 2
   })
 }
