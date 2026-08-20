@@ -34,22 +34,36 @@ jobs:
               raise SystemExit("Promotion PR must originate from the repository preview branch")
 
           body = os.environ.get("PR_BODY", "")
-          body = body.replace(chr(13) + chr(10), chr(10)).replace(chr(13), chr(10))
           body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)
           lines = body.splitlines()
-          heading = "## このリリースで変わること"
+          section_heading = "## このリリースで変わること"
+          release_lines = []
+          start = None
           for index, line in enumerate(lines):
-              if line.strip() == heading:
-                  for candidate in lines[index + 1:]:
-                      if candidate.strip().startswith("## "):
-                          break
-                      if candidate.strip():
-                          raise SystemExit(0)
+              if line.strip() == section_heading:
+                  start = index + 1
                   break
-          raise SystemExit("Promotion PR must include a non-empty promotion summary section")
+          if start is not None:
+              for line in lines[start:]:
+                  if line.strip().startswith("## "):
+                      break
+                  release_lines.append(line)
+
+          def strip_markdown_links(value):
+              value = re.sub(r"!\[([^]]*)\]\([^)]*\)", r"\1", value)
+              value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
+              value = re.sub(r"<https?://[^>]+>", "", value)
+              value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
+              value = re.sub(r"(?i)<[^>]+>", "", value)
+              value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
+              return value
+
+          release_text = strip_markdown_links(nl.join(release_lines).strip())
+          if not release_text:
+              raise SystemExit("Promotion PR must include a non-empty promotion summary section")
           PY
   notify:
-    if: github.event.pull_request.merged == true
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     # PR-controlled strings stay in env and are consumed as data by Python/jq;
     # do not interpolate them directly into the shell script.
