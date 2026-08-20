@@ -67,7 +67,8 @@ describe('streamers デプロイ窓の列集合契約', () => {
 
   it('デプロイ窓の対象列集合を明示的に固定する', () => {
     // 各列の検知経路自体は上の it.each で直接検証している。
-    // ここでは対象列の追加・削除を意図せず見落とさないよう列集合そのものを固定する。
+    // `cross_channel_trade_enabled` は `trade_enabled` を部分文字列として含むため、
+    // 検知テストだけでは前者の登録漏れを見逃しうる。ここで列集合そのものを固定する。
     expect(LIVE_DIRECTORY_SETTINGS_COLUMNS).toEqual([
       'publish_live_status',
       'publish_stats',
@@ -76,14 +77,6 @@ describe('streamers デプロイ窓の列集合契約', () => {
       'trade_enabled',
       'cross_channel_trade_enabled',
     ])
-  })
-
-  it('安全な列集合の投影キーと実SQL列名が一致する', () => {
-    const mismatches = Object.entries(STREAMERS_SAFE_COLUMNS)
-      .filter(([key, column]) => key !== column.name)
-      .map(([key, column]) => [key, column.name])
-
-    expect(mismatches).toEqual([])
   })
 
   it('安全な列集合にはデプロイ窓で欠落しうる実SQL列を含めない', () => {
@@ -96,17 +89,21 @@ describe('streamers デプロイ窓の列集合契約', () => {
     }
   })
 
-  it('安全な列集合は streamers 全列からデプロイ窓対象だけを除いた集合と一致する', () => {
-    // schema に新列を追加してこのテストが失敗した場合は、その列が未デプロイの窓を
-    // 持つなら *_SETTINGS_COLUMNS 側へ、既にデプロイ済みの通常列なら
-    // STREAMERS_SAFE_COLUMNS 側へ追加し、フォールバック時の投影漏れを防ぐ。
+  it('安全な列集合は streamers 全列からデプロイ窓対象だけを除いた投影キーと実SQL列の対応に一致する', () => {
+    // schema に新列を追加してこのテストが失敗した場合は、その実SQL列が未デプロイの窓を
+    // 持つなら *_SETTINGS_COLUMNS 側へ、既にデプロイ済みの通常列なら Drizzle の投影キーと
+    // 対応する列オブジェクトを STREAMERS_SAFE_COLUMNS 側へ追加し、フォールバック時の返却行形状と
+    // キー↔実SQL列の対応を維持する。
     const deployWindowColumnNames = new Set<string>(DEPLOY_WINDOW_COLUMNS)
-    const allColumnNames = Object.values(getTableColumns(streamersTable)).map((column) => column.name)
-    const expectedSafeColumnNames = allColumnNames.filter(
-      (column) => !deployWindowColumnNames.has(column),
+    const toProjectionPairs = (entries: [string, { name: string }][]) =>
+      entries.map(([key, column]) => `${key}=${column.name}`).sort()
+    const expectedSafeProjectionPairs = toProjectionPairs(
+      Object.entries(getTableColumns(streamersTable)).filter(
+        ([, column]) => !deployWindowColumnNames.has(column.name),
+      ),
     )
-    const safeColumnNames = Object.values(STREAMERS_SAFE_COLUMNS).map((column) => column.name)
+    const safeProjectionPairs = toProjectionPairs(Object.entries(STREAMERS_SAFE_COLUMNS))
 
-    expect(safeColumnNames.sort()).toEqual(expectedSafeColumnNames.sort())
+    expect(safeProjectionPairs).toEqual(expectedSafeProjectionPairs)
   })
 })
