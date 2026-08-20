@@ -34,6 +34,22 @@ Cloudflare Worker の Hyperdrive binding を共有しません。接続先は
 `db/planetscale/` と現行 migration です。運用ドキュメントに固定パスワードや接続文字列を
 記録しません。
 
+## 限定 read 接続の準備責任
+
+Preview 実経路ゲート #6（#1077）を実行する前に、**PlanetScale の管理接続を持つ担当者**が
+対象環境専用の限定 read ロールを用意し、その接続文字列を検証を実行する環境の
+`DASHBOARD_DATABASE_URL` にだけ安全に注入します。比較スクリプトの実行担当者が、
+管理接続や production 用アプリ接続を代用して検証を続行してはいけません。
+
+- preview と production の限定 read ロール・接続文字列は必ず分離する。
+- `DATABASE_URL_PLANETSCALE` / `PLANETSCALE_DATABASE_URL` を代替値として使わない。
+- `DASHBOARD_DATABASE_URL` が未準備なら比較を実行せず、管理接続を持つ担当者へ払い出しを依頼する。
+- 接続文字列そのものは Issue / PR / CI ログ / チャットへ転記しない。実行結果を共有する場合も数値と secret は記録しない。
+- ロール払い出し後は、下記「確認手順」で権限不足・RPC 欠落・接続先取り違えを fail-closed で確認する。
+
+この分担により、「限定 read 接続が無いため同じ preview-gate Issue を再起票する」状態と、
+検証のために広い権限の接続を流用する状態の両方を避けます。
+
 ## 確認手順
 
 1. dashboard を対象環境と同じ限定ロールで起動する。
