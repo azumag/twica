@@ -112,6 +112,10 @@ export async function getTwitchAppAccessToken(options?: {
       await kv.put(APP_TOKEN_KV_KEY, JSON.stringify(token), {
         // floorはtoken有効期限を跨がないための意図的な選択（rate-limit.tsの
         // KVRateLimitStorage.setはwindow終端をceilする用途が異なるため丸め方も異なる）。
+        // Math.maxで下限をKV_MIN_EXPIRATION_TTL_SECONDS(Cloudflare KVの
+        // expirationTtl最小値)にクランプするため、token残り寿命が60秒未満の
+        // ときはKVエントリがtoken有効期限を跨いで残り得るが、読み出し側は
+        // `cached.expiresAt > Date.now()` を検証してから使うため実害はない。
         expirationTtl: Math.max(
           KV_MIN_EXPIRATION_TTL_SECONDS,
           Math.floor((token.expiresAt - Date.now()) / 1000),
