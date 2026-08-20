@@ -76,21 +76,39 @@ describe("getLiveDirectoryPresence", () => {
     expect(serviceFetch).not.toHaveBeenCalled();
   });
 
-  it("does not turn a registry failure into a cached zero", async () => {
+  it("negative-caches an expected registry outage without reporting every page view", async () => {
     serviceFetch.mockResolvedValue(new Response(null, { status: 503 }));
 
     await expect(getLiveDirectoryPresence()).resolves.toBeNull();
-    expect(kv.put).not.toHaveBeenCalled();
-    expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
-      context: "liveDirectory:presence",
-    });
+    await expect(getLiveDirectoryPresence()).resolves.toBeNull();
+
+    expect(serviceFetch).toHaveBeenCalledTimes(1);
+    expect(kv.put).toHaveBeenCalledWith(
+      "live-directory:presence:v1",
+      "__unavailable__",
+      { expirationTtl: 60 },
+    );
+    expect(reportError).not.toHaveBeenCalled();
   });
 
-  it("omits the estimate locally when the service binding is absent", async () => {
+  it("uses a cached unavailable marker without waking the realtime Worker", async () => {
+    kv.get.mockResolvedValue("__unavailable__");
+
+    await expect(getLiveDirectoryPresence()).resolves.toBeNull();
+    expect(serviceFetch).not.toHaveBeenCalled();
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it("omits and negative-caches the estimate locally when the service binding is absent", async () => {
     vi.mocked(getCloudflareContext).mockResolvedValue({ env: {} } as never);
 
     await expect(getLiveDirectoryPresence()).resolves.toBeNull();
     expect(serviceFetch).not.toHaveBeenCalled();
+    expect(kv.put).toHaveBeenCalledWith(
+      "live-directory:presence:v1",
+      "__unavailable__",
+      { expirationTtl: 60 },
+    );
     expect(reportError).not.toHaveBeenCalled();
   });
 
