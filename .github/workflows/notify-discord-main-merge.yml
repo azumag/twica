@@ -75,8 +75,8 @@ jobs:
                   release_lines.append(line)
 
           def strip_markdown_links(value):
-              value = re.sub(r"!\\[([^]]*)\\]\\([^)]*\\)", r"\\1", value)
-              value = re.sub(r"\\[([^]]+)\\]\\([^)]*\\)", r"\\1", value)
+              value = re.sub(r"!\[([^]]*)\]\([^)]*\)", r"\1", value)
+              value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
               value = re.sub(r"<https?://[^>]+>", "", value)
               return value
 
