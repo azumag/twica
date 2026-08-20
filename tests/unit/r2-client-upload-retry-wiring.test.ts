@@ -16,8 +16,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 // 1. R2バインディング・環境変数がどちらも無い状態（下記の明示的なモックで再現）で呼び出し、
 //    実際のuploadToR2/uploadSoundToR2が投げる「環境変数が無い」という恒久エラーが
 //    1回の試行だけでそのまま返ることを確認する（画像・効果音の2件）。
-// 2. @aws-sdk/client-s3をモックし、Issue #976/#977で問題になった「(10001)」エラーを
-//    2回返した後に成功するシナリオで、uploadToR2WithRetry/uploadSoundToR2WithRetryが
+// 2. @aws-sdk/client-s3をモックし、Issue #976/#977で問題になった「(10001)」エラーによる
+//    一時失敗を挟んだ後に、uploadToR2WithRetry/uploadSoundToR2WithRetryが
 //    実際にリトライして最終的に成功を返すことを確認する（画像・効果音の2件。
 //    PutObjectCommandへ渡るBucket/Key/Body/ContentTypeと、各試行のS3Clientへ渡る
 //    endpoint/credentialsを検証し、リトライ中に引数や資格情報を取り違えていないことを確認する）。
@@ -90,11 +90,12 @@ const MAX_RETRIES = 3
 const SINGLE_ATTEMPT_NO_RETRY = 1
 const TRANSIENT_FAILURES_BEFORE_SUCCESS = 2
 const RETRY_SUCCESS_ATTEMPTS = TRANSIENT_FAILURES_BEFORE_SUCCESS + 1
-const R2_INTERNAL_ERROR = 'put: We encountered an internal error. Please try again. (10001)'
+// 成功fixtureを到達可能に保つため、値を変える場合も TRANSIENT_FAILURES_BEFORE_SUCCESS <= MAX_RETRIES を維持する。
+const R2_INTERNAL_ERROR_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)'
 
 function mockTransientFailuresThenSuccess(): void {
-  for (let attempt = 0; attempt < TRANSIENT_FAILURES_BEFORE_SUCCESS; attempt += 1) {
-    sendMock.mockRejectedValueOnce(new Error(R2_INTERNAL_ERROR))
+  for (let i = 0; i < TRANSIENT_FAILURES_BEFORE_SUCCESS; i += 1) {
+    sendMock.mockRejectedValueOnce(new Error(R2_INTERNAL_ERROR_MESSAGE))
   }
   sendMock.mockResolvedValueOnce({})
 }
@@ -161,7 +162,7 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     expect(getCloudflareContextMock).toHaveBeenCalledTimes(1)
   })
 
-  it('R2固有のInternalError(10001)が2回続いた後に成功すれば、uploadToR2WithRetryは実際にリトライして成功を返す (Issue #976/#977/#980の回帰防止)', async () => {
+  it('R2固有のInternalError(10001)による一時失敗後に成功すれば、uploadToR2WithRetryは実際にリトライして成功を返す (Issue #976/#977/#980の回帰防止)', async () => {
     stubImageEnv()
     mockTransientFailuresThenSuccess()
 
@@ -187,7 +188,7 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     })
   })
 
-  it('効果音側もR2固有のInternalError(10001)が2回続いた後に成功すれば、uploadSoundToR2WithRetryはリトライして成功し、sound用のenvとURLを使う', async () => {
+  it('効果音側もR2固有のInternalError(10001)による一時失敗後に成功すれば、uploadSoundToR2WithRetryはリトライして成功し、sound用のenvとURLを使う', async () => {
     stubSoundEnv()
     mockTransientFailuresThenSuccess()
 
