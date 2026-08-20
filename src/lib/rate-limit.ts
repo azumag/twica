@@ -5,6 +5,7 @@
 // compatibility・遅延・障害時の fail-open 契約を同時に損なう。詳細な永続化が必要な
 // server-only Route Handler は、その境界で logger.server を別途使用する。
 import { logger } from "./logger";
+import { KV_MIN_EXPIRATION_TTL_SECONDS } from "./cloudflare-kv";
 
 /**
  * Rate limit store data structure
@@ -135,19 +136,15 @@ export class KVRateLimitStorage implements RateLimitStorage {
     // KV uses seconds for TTL, so convert from milliseconds
     // KVはTTLに秒を使用するため、ミリ秒から変換
     //
-    // Cloudflare KV の expirationTtl 最小値は60秒。rate-limit windowの終端付近
-    // (残り1ms〜59秒など)ではceil後の値が60秒未満になり得る(残り0msなら
-    // Math.ceil(0/1000)=0にもなる)ため、60秒未満を60秒へクランプする。
-    // クランプしないと `KV PUT failed: 400 Invalid expiration_ttl` でストレージ
-    // 書き込みが失敗し、fail-open(レート制限を素通り)してしまう。
-    // (issue #1062: preview Worker tailで実際に再現した warning)
+    // rate-limit windowの終端付近ではceil後の値がKV_MIN_EXPIRATION_TTL_SECONDS
+    // (60秒)未満になり得る(残り0msならMath.ceil(0/1000)=0)。クランプしないと
+    // 下のcatchでfail-open(レート制限を素通り)する側に落ちる
+    // (issue #1062: preview Worker tailで `Invalid expiration_ttl` warningを実際に再現)。
     //
-    // クランプにより KV エントリの生存期間は本来の残りwindowより最大60秒
-    // 長くなり得るが、過剰ブロックはしない: レート制限のwindow判定はTTLでは
-    // なく `checkRateLimitInternal` の `now > existing.resetTime` 比較で行う
-    // ため、TTL延長分はカウンタの有効期限にのみ影響し、正しいタイミングで
-    // リセットされる（このクランプは上限としてのみ働く）。
-    const ttlSeconds = Math.max(60, Math.ceil(ttlMs / 1000));
+    // クランプでKVエントリの生存期間は本来の残りwindowより最大60秒延びるが、
+    // window判定はTTLではなく`checkRateLimitInternal`の`resetTime`比較で行う
+    // ため過剰ブロックにはならない（このクランプは上限としてのみ働く）。
+    const ttlSeconds = Math.max(KV_MIN_EXPIRATION_TTL_SECONDS, Math.ceil(ttlMs / 1000));
     await this.kv.put(key, JSON.stringify(value), {
       expirationTtl: ttlSeconds,
     });

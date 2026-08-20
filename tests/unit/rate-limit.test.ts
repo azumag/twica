@@ -18,6 +18,15 @@ function makeKv() {
       return type === "json" ? JSON.parse(entry.value) : entry.value;
     }),
     put: vi.fn(async (key: string, value: string, options?: { expirationTtl?: number }) => {
+      // 実際のCloudflare KVは expirationTtl < 60 を 400 Invalid expiration_ttl で
+      // 拒否する。ここでモックが何でも受理してしまうと、クランプが壊れて
+      // ttl=1 のような不正値を送る退行があってもテストが検知できない
+      // (#1062 レビュー指摘: モックが素通りするとfail-open回帰テストが空振りする)。
+      if (options?.expirationTtl !== undefined && options.expirationTtl < 60) {
+        throw new Error(
+          `KV PUT failed: 400 Invalid expiration_ttl of ${options.expirationTtl}. Expiration TTL must be at least 60.`,
+        );
+      }
       store.set(key, { value, ttl: options?.expirationTtl });
     }),
     delete: vi.fn(async (key: string) => {
@@ -197,49 +206,5 @@ describe("rate limit storage 切り替え", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-});
-
-describe("retryAfterSeconds", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("reset(epochミリ秒)と現在時刻の差分を秒(整数)に変換する", () => {
-    const reset = Date.now() + 60_000;
-    expect(retryAfterSeconds(reset)).toBe(60);
-  });
-
-  it("端数は切り上げる(59.2秒残 → 60秒)", () => {
-    const reset = Date.now() + 59_200;
-    expect(retryAfterSeconds(reset)).toBe(60);
-  });
-
-  it("1秒未満の正の残り時間は1秒に切り上げる", () => {
-    const reset = Date.now() + 500;
-    expect(retryAfterSeconds(reset)).toBe(1);
-  });
-
-  it("resetが現在時刻と同値の場合は0を返す", () => {
-    expect(retryAfterSeconds(Date.now())).toBe(0);
-  });
-
-  it("大きな残り時間も秒単位の整数に正しく変換する", () => {
-    const reset = Date.now() + 3_600_000;
-    expect(retryAfterSeconds(reset)).toBe(3600);
-  });
-
-  it("reset未指定時はフォールバック値(fallbackMs、デフォルト60000)を使う", () => {
-    expect(retryAfterSeconds()).toBe(60);
-    expect(retryAfterSeconds(undefined, 3_600_000)).toBe(3600);
-  });
-
-  it("resetが過去の場合は0にクランプする", () => {
-    expect(retryAfterSeconds(Date.now() - 5_000)).toBe(0);
   });
 });

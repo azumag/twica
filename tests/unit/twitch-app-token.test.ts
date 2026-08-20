@@ -15,6 +15,7 @@ import {
 
 vi.mock("@/lib/cloudflare-kv", () => ({
   getKvBinding: vi.fn(),
+  KV_MIN_EXPIRATION_TTL_SECONDS: 60,
 }));
 vi.mock("@/lib/sentry/error-handler", () => ({
   reportError: vi.fn(),

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getKvBinding } from "@/lib/cloudflare-kv";
+import { getKvBinding, KV_MIN_EXPIRATION_TTL_SECONDS } from "@/lib/cloudflare-kv";
 import { reportError } from "@/lib/sentry/error-handler";
 
 /**
@@ -110,8 +110,12 @@ export async function getTwitchAppAccessToken(options?: {
     const kv = await getKvBinding();
     if (kv) {
       await kv.put(APP_TOKEN_KV_KEY, JSON.stringify(token), {
-        // Cloudflare KV の expirationTtl 最小値は60秒。
-        expirationTtl: Math.max(60, Math.floor((token.expiresAt - Date.now()) / 1000)),
+        // floorはtoken有効期限を跨がないための意図的な選択（rate-limit.tsの
+        // KVRateLimitStorage.setはwindow終端をceilする用途が異なるため丸め方も異なる）。
+        expirationTtl: Math.max(
+          KV_MIN_EXPIRATION_TTL_SECONDS,
+          Math.floor((token.expiresAt - Date.now()) / 1000),
+        ),
       });
     }
   } catch (error) {

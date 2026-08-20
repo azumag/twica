@@ -7,6 +7,15 @@
  * メモリキャッシュ等へフォールバックする。
  */
 
+/**
+ * Cloudflare KV の `expirationTtl` に指定できる最小値（秒）。これを下回る値を
+ * PUT すると `400 Invalid expiration_ttl` で拒否される。呼び出し側は自身の
+ * TTL計算（切り上げ/切り捨てなど丸め方は用途により異なる）の結果をこの定数で
+ * クランプすること（例: rate-limit.ts, twitch/app-token.ts）。
+ * 参照: https://developers.cloudflare.com/kv/api/write-key-value-pairs/
+ */
+export const KV_MIN_EXPIRATION_TTL_SECONDS = 60
+
 /** Cloudflare Workers KV API の最小インターフェース（tsconfig に型を要求しない）。 */
 export interface KVNamespaceLike {
   get(key: string): Promise<string | null>
