@@ -119,7 +119,7 @@ describe("LivePage", () => {
     );
   });
 
-  it("shows the estimate only when the presence snapshot is available", async () => {
+  it("shows the estimate only when the presence snapshot is positive", async () => {
     mocks.getSession.mockResolvedValue(null);
     mocks.getLiveDirectoryPresence.mockResolvedValue({
       count: 7,
@@ -136,7 +136,7 @@ describe("LivePage", () => {
     );
   });
 
-  it("omits a zero estimate so it cannot contradict the opted-in directory", async () => {
+  it("hides a zero overlay estimate that could contradict polling-only live entries", async () => {
     mocks.getSession.mockResolvedValue(null);
     mocks.getLiveDirectoryPresence.mockResolvedValue({
       count: 0,
@@ -146,6 +146,7 @@ describe("LivePage", () => {
     render(await LivePage());
 
     expect(screen.queryByTestId("live-presence-estimate")).not.toBeInTheDocument();
+    expect(screen.getByTestId("live-directory")).toHaveTextContent("entries:1");
   });
 
   it("builds localized metadata from the livePage namespace", async () => {

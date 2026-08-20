@@ -115,7 +115,7 @@ let rankingsMemoryCache: {
   expiresAt: number;
 } | null = null;
 let presenceMemoryCache: {
-  snapshot: LiveDirectoryPresenceSnapshot;
+  snapshot: LiveDirectoryPresenceSnapshot | null;
   expiresAt: number;
 } | null = null;
 let presenceUnavailableCache: { expiresAt: number } | null = null;
@@ -571,7 +571,8 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
  * this second 60-second KV cache prevents every page request from waking the
  * registry. A missing binding or a failed snapshot is represented by null so
  * the UI can omit the estimate instead of claiming that zero channels are
- * live.
+ * live. Unavailable states are negative-cached for the same short TTL so a
+ * staged Worker rollout cannot fan out one service call per public page view.
  */
 export async function getLiveDirectoryPresence(): Promise<LiveDirectoryPresenceSnapshot | null> {
   const now = Date.now();
@@ -657,7 +658,7 @@ export async function getLiveDirectoryPresence(): Promise<LiveDirectoryPresenceS
     if (kv) {
       await kv.put(
         LIVE_DIRECTORY_PRESENCE_KV_KEY,
-        JSON.stringify(snapshot),
+        cachedValue,
         { expirationTtl: LIVE_DIRECTORY_TTL_SECONDS },
       );
     }

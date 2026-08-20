@@ -88,12 +88,12 @@ const PRESENCE_REPORT_TIMEOUT_MS = 2_000
 const PRESENCE_LEASE_TTL_MS = 10 * 60_000
 const PRESENCE_SNAPSHOT_TTL_MS = 60_000
 const PRESENCE_SWEEP_INTERVAL_MS = 5 * 60_000
-const PRESENCE_STORAGE_DELETE_BATCH_SIZE = 128
 const PRESENCE_REGISTRY_NAME = 'all'
 const PRESENCE_KEY_PREFIX = 'room:'
 const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
 const PRESENCE_LAST_ATTEMPT_AT_KEY = 'presence-last-attempt-at'
 const PRESENCE_SNAPSHOT_KEY = 'presence-snapshot'
+const PRESENCE_DELETE_BATCH_SIZE = 128
 
 /**
  * Room identity, needed only so the kill-switch alarm can re-evaluate the
@@ -920,16 +920,10 @@ export class OverlayPresence {
           expiredKeys.push(key)
         }
       }
-      if (expiredKeys.length > 0) {
-        for (
-          let offset = 0;
-          offset < expiredKeys.length;
-          offset += PRESENCE_STORAGE_DELETE_BATCH_SIZE
-        ) {
-          await this.state.storage.delete(
-            expiredKeys.slice(offset, offset + PRESENCE_STORAGE_DELETE_BATCH_SIZE),
-          )
-        }
+      for (let index = 0; index < expiredKeys.length; index += PRESENCE_DELETE_BATCH_SIZE) {
+        await this.state.storage.delete(
+          expiredKeys.slice(index, index + PRESENCE_DELETE_BATCH_SIZE)
+        )
       }
 
       // The page is ordered by key. Deleting expired rows does not alter the
