@@ -43,11 +43,16 @@ jobs:
           # instead of rediscovering component PRs through the GitHub API.
           content=$(python3 - <<'PY'
           import os
+          import re
           import sys
 
           limit = 2000
           section_heading = "## このリリースで変わること"
           body = os.environ.get("PR_BODY", "").replace("\r\n", "\n").replace("\r", "\n")
+          # Template guidance and other HTML comments are not user-facing release
+          # text. Strip them before section extraction so comments-only input is
+          # treated as empty and falls back to the PR title.
+          body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
           lines = body.splitlines()
 
           release_lines = []
