@@ -133,8 +133,10 @@ export class KVRateLimitStorage implements RateLimitStorage {
 
   async set(key: string, value: RateLimitStore, ttlMs: number): Promise<void> {
     // KV uses seconds for TTL, so convert from milliseconds
-    // KVはTTLに秒を使用するため、ミリ秒から変換
-    const ttlSeconds = Math.ceil(ttlMs / 1000);
+    // KVはTTLに秒を使用し、expirationTtlの最小値は60秒。rate-limit windowの
+    // 終端では残り時間が1秒未満になるため、単純な切り上げだとCloudflareが
+    // expirationTtl: 1を400で拒否し、レート制限がfail-openになる。
+    const ttlSeconds = Math.max(60, Math.ceil(ttlMs / 1000));
     await this.kv.put(key, JSON.stringify(value), {
       expirationTtl: ttlSeconds,
     });

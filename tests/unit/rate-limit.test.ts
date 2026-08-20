@@ -88,13 +88,13 @@ describe("KVRateLimitStorage", () => {
     );
   });
 
-  it("TTLはミリ秒から秒へ切り上げる", async () => {
+  it("TTLは秒へ切り上げ、Cloudflare KVの最小60秒を下回らない", async () => {
     const storage = new KVRateLimitStorage(kv as never);
     await storage.set("ratelimit:test", { count: 1, resetTime: 1 }, 1);
     expect(kv.put).toHaveBeenCalledWith(
       "ratelimit:test",
       JSON.stringify({ count: 1, resetTime: 1 }),
-      { expirationTtl: 1 },
+      { expirationTtl: 60 },
     );
   });
 
