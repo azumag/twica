@@ -136,10 +136,17 @@ export class KVRateLimitStorage implements RateLimitStorage {
     // KVはTTLに秒を使用するため、ミリ秒から変換
     //
     // Cloudflare KV の expirationTtl 最小値は60秒。rate-limit windowの終端付近
-    // (残りが1msなど)ではceilしても1秒未満になり得るため、60秒未満を60秒へ
-    // クランプする。クランプしないと `KV PUT failed: 400 Invalid expiration_ttl`
-    // でストレージ書き込みが失敗し、fail-open(レート制限を素通り)してしまう。
+    // (残り1ms〜59秒など)ではceil後の値が60秒未満になり得る(残り0msなら
+    // Math.ceil(0/1000)=0にもなる)ため、60秒未満を60秒へクランプする。
+    // クランプしないと `KV PUT failed: 400 Invalid expiration_ttl` でストレージ
+    // 書き込みが失敗し、fail-open(レート制限を素通り)してしまう。
     // (issue #1062: preview Worker tailで実際に再現した warning)
+    //
+    // クランプにより KV エントリの生存期間は本来の残りwindowより最大60秒
+    // 長くなり得るが、過剰ブロックはしない: レート制限のwindow判定はTTLでは
+    // なく `checkRateLimitInternal` の `now > existing.resetTime` 比較で行う
+    // ため、TTL延長分はカウンタの有効期限にのみ影響し、正しいタイミングで
+    // リセットされる（このクランプは上限としてのみ働く）。
     const ttlSeconds = Math.max(60, Math.ceil(ttlMs / 1000));
     await this.kv.put(key, JSON.stringify(value), {
       expirationTtl: ttlSeconds,

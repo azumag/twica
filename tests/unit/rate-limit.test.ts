@@ -88,12 +88,15 @@ describe("KVRateLimitStorage", () => {
     );
   });
 
-  it("TTLはミリ秒から秒へ切り上げる", async () => {
+  it("TTLはミリ秒から秒へ切り上げる(クランプが切り上げ結果を潰さないことも確認)", async () => {
     const storage = new KVRateLimitStorage(kv as never);
-    await storage.set("ratelimit:test", { count: 1, resetTime: 61_000 }, 61_000);
+    // 60_001msは割り切れないため、切り上げが働けば61秒、
+    // 働かなければ60秒(切り捨て)になり、両者を区別できる。
+    // さらに61 > 60なので、60秒クランプの影響を受けていないことも同時に確認する。
+    await storage.set("ratelimit:test", { count: 1, resetTime: 60_001 }, 60_001);
     expect(kv.put).toHaveBeenCalledWith(
       "ratelimit:test",
-      JSON.stringify({ count: 1, resetTime: 61_000 }),
+      JSON.stringify({ count: 1, resetTime: 60_001 }),
       { expirationTtl: 61 },
     );
   });
@@ -160,6 +163,40 @@ describe("rate limit storage 切り替え", () => {
     }
     const blocked = await checkRateLimit(rateLimits.authLogin, "user:test");
     expect(blocked.success).toBe(false);
+  });
+
+  it("window終端直前のインクリメントでもKV PUTがfail-openせず正しく増分する(#1062回帰テスト)", async () => {
+    // 本番で実際に壊れていたのはKVRateLimitStorage.set単体ではなく、
+    // checkRateLimitInternalのインクリメント経路(existing.resetTime - nowを
+    // ttlMsとして渡す箇所)。window終端直前までfake timerで進め、その経路を
+    // 直接通してfail-openしないことを確認する。
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      setRateLimitStorage(new KVRateLimitStorage(kv as never));
+
+      // 1回目: 新規カウンタ作成(count: 1, window: 60秒)
+      const first = await checkRateLimit(rateLimits.authLogin, "user:almost-expired");
+      expect(first.success).toBe(true);
+
+      // window終端の1ms前まで進める(残りTTLが1msの状態を作る)
+      vi.setSystemTime(new Date("2026-01-01T00:00:59.999Z"));
+
+      const second = await checkRateLimit(rateLimits.authLogin, "user:almost-expired");
+
+      // fail-open(ストレージエラーによる無条件許可)ではなく、正しく
+      // カウントアップした上で成功していることを確認する。fail-open時は
+      // remainingがlimit-1(定数)に戻ってしまうため、remainingの値でも区別する。
+      expect(second.success).toBe(true);
+      expect(second.remaining).toBe(3); // limit(5) - count(2)
+
+      // 直近のKV PUTはクランプ後の60秒であり、400を返すはずの値
+      // (Math.ceil(1/1000) = 1)ではないことを確認する。
+      const lastCall = kv.put.mock.calls.at(-1);
+      expect(lastCall?.[2]).toEqual({ expirationTtl: 60 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
