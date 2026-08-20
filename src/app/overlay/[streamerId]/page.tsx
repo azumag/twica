@@ -1359,6 +1359,16 @@ export default function OverlayPage() {
             )}
 
             {/* 画像 */}
+            {/* Issue #1076: next/image はデフォルトで loading="lazy"（IntersectionObserver
+                依存）になる。OBSブラウザソース(CEF)はソース追加直後や解像度確定前に
+                0x0に近いビューポートで初期化されることがあり、その状態でobserverが
+                「画面外」と判定すると、以後リサイズされても再判定されず画像が永久に
+                読み込まれない実例が確認されている(実引き換えで overlay publish・
+                イベント受信は成功するのにカード画素が一切表示されない黒画面)。
+                オーバーレイは常に画面いっぱいに1枚だけ即時表示する用途で、遅延読み込みの
+                利点(スクロール外画像の節約)が無い一方この失敗モードのリスクだけがある
+                ため、他のカード単体表示箇所(CardDetail.tsx等)と同様に priority で
+                lazy loadingを無効化し、受信直後に読み込みを開始させる。 */}
             {result.card.image_url ? (
               <Image
                 src={result.card.image_url}
@@ -1367,6 +1377,7 @@ export default function OverlayPage() {
                 height={shouldUseSmallMode ? 268 : 448}
                 className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
                 unoptimized
+                priority
               />
             ) : (
               <div className={`flex items-center justify-center bg-gray-700 rounded-lg ${shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80"}`}>
@@ -1442,6 +1453,9 @@ export default function OverlayPage() {
                 <div className="aspect-square bg-gray-600">
                   {result.card.image_url ? (
                     // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
+                    // priority: Issue #1076参照(画像のみモード側の同コメント参照)。
+                    // OBSブラウザソースの初期ビューポート不定によるlazy loading未発火の
+                    // 黒画面回帰を避けるため、通常モードのカード画像も即時読み込みにする。
                     <Image
                       src={result.card.image_url}
                       alt={result.card.name}
@@ -1450,6 +1464,7 @@ export default function OverlayPage() {
                       className={`w-full h-full ${cardImageFitClass(result.card.image_padding_color)}`}
                       style={cardImageFitStyle(result.card.image_padding_color)}
                       unoptimized
+                      priority
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center">

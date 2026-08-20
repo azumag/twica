@@ -381,6 +381,66 @@ describe('OverlayPage', () => {
     expect(screen.getByText('RealCard')).toBeInTheDocument()
   })
 
+  // Issue #1076回帰: overlay publish・イベント受信(Received payload: gacha)は成功する
+  // のに実引き換えでカード画素が一切表示されない(黒画面)不具合が発生した。原因は
+  // next/imageのデフォルトlazy loading(IntersectionObserver依存)で、OBSブラウザ
+  // ソース(CEF)がソース追加直後の不定なビューポートでobserverを初期化した場合、
+  // 以後リサイズされても再判定されず画像が永久に読み込まれない実例があったため。
+  // オーバーレイの単一カード画像は常に画面いっぱいに即時表示する用途で遅延読み込みの
+  // 利点が無いため、priorityでlazy loadingを無効化した。この回帰を固定する。
+  it('カード画像はlazy loadingではなく即時読み込みになる(Issue #1076回帰)', async () => {
+    vi.useFakeTimers()
+
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 0
+      height = 0
+      set src(value: string) {
+        void value
+        // このテストではアスペクト比判定の結果自体は無関係なので応答させない。
+        // 1.5秒のタイムアウト経由でも通常表示モードへ到達することを確認する。
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-real', name: 'RealCard', description: null,
+          image_url: 'https://r2.example.com/real-card.png', rarity: 'epic',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      // checkImageAspectRatioのIMAGE_METADATA_TIMEOUT_MS(1.5秒)を超えてから
+      // 表示開始のsetTimeout(100ms)分を進める
+      await vi.advanceTimersByTimeAsync(1_600)
+    })
+    const img = screen.getByAltText('RealCard')
+    // next/imageはpriority未指定だとloading="lazy"を付与し、IntersectionObserverが
+    // 「表示中」と判定するまで画像取得を開始しない。OBSブラウザソースのような
+    // ビューポート不定環境ではこの判定が永久に来ず黒画面になり得るため、
+    // loading="lazy"が付いていないこと(=即時読み込み)を固定する。
+    expect(img).not.toHaveAttribute('loading', 'lazy')
+  })
+
   // Issue #999: previewの実引き換えで、実イベント受信(`Received payload: gacha`)
   // までは記録されるのにカードが一切画面に表示されない不具合が発生した。
   // processQueue内で想定外の例外（実カードデータ特有の値・画像取得エラー等、
