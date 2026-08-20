@@ -149,19 +149,18 @@ jobs:
                   release_text = strip_markdown_links(
                       os.environ.get("PR_TITLE", "").strip()
                   ).strip()
-                  if not release_text:
+                  if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
                       release_text = "リリース内容の説明が未記入です"
                   with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
                       env.write("PROMOTION_SUMMARY_MISSING=true" + chr(10))
-              # Non-promotion main merges may use a sanitized title fallback,
-              # but keep the omission visible in Actions logs.
-              print(
-                  "::warning::Merged PR is missing a non-empty "
-                  "'## このリリースで変わること' section; using PR title in Discord.",
-                  file=sys.stderr,
-              )
-              release_text = strip_markdown_links(os.environ.get("PR_TITLE", "").strip())
-
+              else:
+                  print(
+                      "::warning::Merged PR is missing a non-empty promotion summary; using PR title in Discord.",
+                      file=sys.stderr,
+                  )
+                  release_text = strip_markdown_links(
+                      os.environ.get("PR_TITLE", "").strip()
+                  ).strip()
           prefix = f"🚀 **{os.environ['REPOSITORY_NAME']} が更新されました**\n\n"
           suffix = (
               f"\n\n`{os.environ['HEAD_REF']} → main`\n"
