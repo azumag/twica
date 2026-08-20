@@ -15,6 +15,15 @@
  *   RPC の戻り値と数値が一致するかを機械的に検証する（#1077 Issueの
  *   「既存の自動比較workflow/scriptはありません」を埋める）。
  *
+ * 検証範囲の限界 (#1081 PR 2回目レビュー【任意】指摘):
+ *   `fetchBasicAggregates` の today/week/month 境界式は RPC 側の定義をほぼ逐語的に
+ *   書き写している。そのため検出できるのは主に「RPCの欠落・戻り値の形状変化・
+ *   実装ドリフト（RPCだけが後から書き換わり基礎集計とズレるケース）」であり、
+ *   境界定義そのものが最初から両側で同じ誤りを持っていた場合（例: `weekGacha`の
+ *   意図が実は暦週であるべきなのに両方とも直近7日で実装されている、等）は
+ *   この比較では検出できない。totalUsers/totalStreamers/totalCards等の単純な
+ *   全件COUNTは書き写しの余地がほぼ無いため、この限界は主に日次境界系の指標に限られる。
+ *
  * 対象外:
  *   本スクリプトは接続文字列を要求するだけで、preview専用の限定readロールを
  *   自動で払い出すものではない。preview用ロールの発行・接続文字列の安全な
@@ -52,8 +61,6 @@
  *   同じ理由）。エラーメッセージは`redactSecretsFromText`で接続文字列のパスワード部分を
  *   除去してから出力する。
  */
-
-'use strict'
 
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
@@ -137,15 +144,18 @@ async function fetchBasicAggregates(tx) {
 /**
  * ダッシュボードが実際に呼ぶ `get_analysis_*()` RPCから同じ形の値を抽出する。
  * `fetchBasicAggregates` と同じ`tx`（`withReadOnlySnapshot`のcallback引数）で呼ぶこと。
+ *
+ * 4本のRPCは`Promise.all`で並行発行せず逐次`await`する（#1081 PR 2回目レビュー
+ * 【任意】指摘: `max: 1`の単一接続・単一トランザクションでは`scripts/db-cutover/
+ * layer-invariants.mjs`が明記するとおり並行発行しても直列実行されるだけで見た目上の
+ * 並行化に意味が無い。逆に1文が失敗すると後続が`current transaction is aborted`に
+ * なり、`permission denied for function`等の本来の原因が読み取りにくくなる副作用がある）。
  */
 async function fetchRpcAggregates(tx) {
-  const [[overviewRow], [usersSummaryRow], [streamersSummaryRow], [gachaTotalRow]] =
-    await Promise.all([
-      tx`SELECT get_analysis_overview() AS result`,
-      tx`SELECT get_analysis_users_summary() AS result`,
-      tx`SELECT get_analysis_streamers_summary() AS result`,
-      tx`SELECT get_analysis_gacha_summary(NULL, NULL) AS result`,
-    ])
+  const [overviewRow] = await tx`SELECT get_analysis_overview() AS result`
+  const [usersSummaryRow] = await tx`SELECT get_analysis_users_summary() AS result`
+  const [streamersSummaryRow] = await tx`SELECT get_analysis_streamers_summary() AS result`
+  const [gachaTotalRow] = await tx`SELECT get_analysis_gacha_summary(NULL, NULL) AS result`
 
   const overview = overviewRow.result
   const usersSummary = usersSummaryRow.result
@@ -169,8 +179,12 @@ async function fetchRpcAggregates(tx) {
     weekGacha: overview.stats.weekGacha,
     monthGacha: overview.stats.monthGacha,
     rarityDistribution,
-    // streamersSummaryのtotalStreamers/totalCardsはget_analysis_streamers_summary()の
-    // 独立計算経路のため、overview.stats由来の値と別に併記して食い違いも検出する。
+    // usersSummary/streamersSummaryのtotalUsers・totalStreamers・totalCardsは
+    // get_analysis_users_summary()/get_analysis_streamers_summary()という独立計算経路の
+    // ため、overview.stats由来の値と別に併記して食い違いも検出する
+    // （#1081 PR 2回目レビュー【任意】指摘: streamersSummaryだけ併記してusersSummaryを
+    // 併記しないのは非対称だった）。
+    usersSummaryTotalUsers: usersSummary.totalUsers,
     streamersSummaryTotalStreamers: streamersSummary.totalStreamers,
     streamersSummaryTotalCards: streamersSummary.totalCards,
   }
@@ -213,6 +227,14 @@ function diffAggregates(basic, rpc) {
     }
   }
 
+  if (basic.totalUsers !== rpc.usersSummaryTotalUsers) {
+    diffs.push({
+      metric: 'usersSummary.totalUsers',
+      expected: basic.totalUsers,
+      actual: rpc.usersSummaryTotalUsers,
+    })
+  }
+
   if (basic.totalStreamers !== rpc.streamersSummaryTotalStreamers) {
     diffs.push({
       metric: 'streamersSummary.totalStreamers',
@@ -241,6 +263,34 @@ function diffAggregates(basic, rpc) {
   }
 
   return diffs
+}
+
+// PostgreSQLがstatement_timeoutで文を強制キャンセルした際のSQLSTATE（query_canceled）。
+// 57014はstatement_timeout以外（pg_cancel_backend等）でも使われるが、本スクリプトは
+// 自分でtimeoutを設定した直後のクエリでしか使わないため、実質的にtimeout起因と同定できる。
+const QUERY_CANCELED_SQLSTATE = '57014'
+
+// PostgreSQLのGUC時間値として妥当な形式（例: '30s', '2min', '500ms'）。単位省略時は
+// ミリ秒扱い（PostgreSQLの既定）。
+const STATEMENT_TIMEOUT_PATTERN = /^\d+(ms|s|min|h|d)?$/
+
+/**
+ * `get_analysis_gacha_summary(NULL, NULL)` の statement_timeout を環境変数で上書き
+ * できるようにする（#1081 PR 2回目レビュー【任意】指摘: production規模では全期間走査が
+ * 既定の30秒を超えうり、その場合「不一致」ではなく「タイムアウト」なのに見分けが
+ * つきにくい）。`tx.unsafe()` へそのまま埋め込むため、PostgreSQLのGUC時間値として
+ * 妥当な形式であることを検証してから返す（任意の文字列をSQLへ混入させないための
+ * 安全側の入力検証。DB接続なしで単体テストできるよう純粋関数として切り出す）。
+ */
+function resolveStatementTimeout(env) {
+  const raw = env.DASHBOARD_COMPARE_STATEMENT_TIMEOUT?.trim()
+  if (!raw) return '30s'
+  if (!STATEMENT_TIMEOUT_PATTERN.test(raw)) {
+    throw new Error(
+      `DASHBOARD_COMPARE_STATEMENT_TIMEOUT の形式が不正です（例: "30s", "2min"）: "${raw}"`
+    )
+  }
+  return raw
 }
 
 function printDiffTable(diffs) {
@@ -277,24 +327,38 @@ async function main() {
     return
   }
 
+  // postgres(...) の呼び出しも含めて全てtry内に置く（#1081 PR 2回目レビュー【必須】指摘:
+  // 以前はpostgres(...)がtryの外にあり、接続文字列の形式不正等でここが同期的に
+  // throwすると`main().catch`側の生の`console.error(error)`にそのまま渡っていた。
+  // Node標準のURL解析エラー（ERR_INVALID_URL）は入力文字列自体をエラーオブジェクトの
+  // プロパティとして保持するため、util.inspect経由でconsole.errorに渡すと接続文字列
+  // （パスワード含む）がそのまま端末へ出てしまう。tryの内側に置くことで、この経路も
+  // 下記catchのredactErrorを必ず通す）。
   let sql
   let exitCode = 0
   try {
-    // 接続文字列のparse自体が失敗するケースもredaction対象に含めるため、postgres()の生成を
-    // 必ずtry内で行う。ERR_INVALID_URLは入力URLをown propertyとして保持しうるため、
-    // 生のErrorオブジェクトをconsole.errorへ渡さない。
+    // 全期間のgacha_historyを走査する get_analysis_gacha_summary(NULL, NULL) は
+    // ダッシュボードUIの既定（直近7日）より重いクエリになりうるため、想定外に長時間
+    // ブロックしないよう安全弁を固定する（scripts/db-cutover/snapshot.mjsの
+    // withRollbackOnlyTransactionと同じ理由・同じ方式）。production規模では既定値の
+    // 30秒を超えうるため、DASHBOARD_COMPARE_STATEMENT_TIMEOUTで上書きできるようにする
+    // （#1081 PR 2回目レビュー【任意】指摘）。不正な形式は接続前にfail fastする。
+    const statementTimeout = resolveStatementTimeout(process.env)
+
     sql = postgres(core.stripPostgresJsIncompatibleSslParams(connectionString), {
       max: 1,
       connect_timeout: 15,
     })
 
     const diffs = await withReadOnlySnapshot(sql, async (tx) => {
-      // 全期間のgacha_historyを走査する get_analysis_gacha_summary(NULL, NULL) は
-      // ダッシュボードUIの既定（直近7日）より重いクエリになりうるため、検証スクリプトが
-      // 想定外に長時間ブロックしないよう安全弁を固定する
-      // （scripts/db-cutover/snapshot.mjsのwithRollbackOnlyTransactionと同じ理由・同じ方式）。
-      await tx.unsafe(`SET LOCAL statement_timeout = '30s'`)
-      const [basic, rpc] = await Promise.all([fetchBasicAggregates(tx), fetchRpcAggregates(tx)])
+      await tx.unsafe(`SET LOCAL statement_timeout = '${statementTimeout}'`)
+      // 単一接続（max: 1）の単一トランザクション内では並行発行しても直列実行される
+      // だけで意味が無く、1文の失敗が後続を`current transaction is aborted`にして
+      // 本来のエラー原因を読み取りにくくする副作用があるため逐次awaitする
+      // （#1081 PR 2回目レビュー【任意】指摘、scripts/db-cutover/layer-invariants.mjs
+      // と同じ方針）。
+      const basic = await fetchBasicAggregates(tx)
+      const rpc = await fetchRpcAggregates(tx)
       return diffAggregates(basic, rpc)
     })
 
@@ -306,8 +370,22 @@ async function main() {
       exitCode = 1
     }
   } catch (error) {
+    const message = redactError(error, connectionString)
+    const code =
+      error && typeof error === 'object' && typeof error.code === 'string' ? error.code : undefined
+
     console.error('analysis dashboard の集計比較に失敗しました:')
-    console.error(redactError(error, connectionString))
+    if (code === QUERY_CANCELED_SQLSTATE) {
+      // #1081 PR 2回目レビュー【任意】指摘: タイムアウトを「不一致」と混同しないよう
+      // 明示的に区別する（RPCのバグではなく実行時間の問題であることを示す）。
+      console.error(
+        'クエリがタイムアウトしました（RPCの不一致ではなく実行時間の問題です）。DASHBOARD_COMPARE_STATEMENT_TIMEOUT で上限を延ばして再実行してください。'
+      )
+    }
+    // postgres.jsのエラーはcode/detail/hintを持つ。「ロールにEXECUTEが無い」
+    // 「RPC未適用」等の切り分けにcodeが有用なため付記する（#1081 PR 2回目レビュー
+    // 【任意】指摘）。
+    console.error(code ? `[${code}] ${message}` : message)
     exitCode = 2
   } finally {
     if (sql) {
@@ -326,10 +404,16 @@ async function main() {
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch(() => {
     // main内で接続文字列をredactできる経路はすべて処理する。ここは想定外の最終安全弁なので、
-    // Errorオブジェクト自体は出力せずcredential混入の可能性を排除する。
+    // Errorオブジェクト自体（stackも含め）は出力せずcredential混入の可能性を排除する。
     console.error('analysis dashboard の集計比較で想定外のエラーが発生しました。')
     process.exitCode = 2
   })
 }
 
-export { resolveDashboardDatabaseUrl, fetchBasicAggregates, fetchRpcAggregates, diffAggregates }
+export {
+  resolveDashboardDatabaseUrl,
+  resolveStatementTimeout,
+  fetchBasicAggregates,
+  fetchRpcAggregates,
+  diffAggregates,
+}
