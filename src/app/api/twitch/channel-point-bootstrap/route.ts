@@ -1,11 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { getSession, canUseStreamerFeatures } from "@/lib/session";
+import { getSession, canUseStreamerFeatures, type Session } from "@/lib/session";
 
-import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
+import { handleApiError, handleDatabaseError, recordApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
-import { getTwitchAccessToken, hasScope, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
+import { TwitchTokenError, getTwitchAccessToken, hasScope, isPermanentRefreshFailure, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
 import {
   deriveEventSubStatus,
   type EventSubSubscriptionForStatus,
@@ -87,6 +87,31 @@ async function getTwitchRewards(twitchUserId: string): Promise<TwitchRewardsResu
 
   const data = await response.json();
   return { rewards: data.data || [] };
+}
+
+/**
+ * Issue #1018: TwitchTokenErrorのうち「step-up再認証でしか回復しない
+ * 恒久トークン失効」に該当するかを判定する。
+ *
+ * - NO_TOKEN: DBにrefresh可能なトークンが一切無い状態。現在の実装では
+ *   getTwitchAccessTokenがnullを返すため到達しない防御的経路だが、
+ *   将来throw方式へ戻っても同じ401契約になるようにここで集約する。
+ * - REFRESH_FAILED かつ恒久失効: refreshがTwitchのtoken endpointから恒久
+ *   エラー(invalid_grant・refresh token失効等の400/401)で拒否された
+ *   ケース。判定は isPermanentRefreshFailure(token-manager.ts) に委譲し、
+ *   kind='http' かつ status ∈ {400,401} のホワイトリストに絞る。
+ *   403はWAF・client設定起因の一過性障害になり得るため対象外。
+ *
+ * 一過性の5xx(429/5xx、520/521/525/526/530等のCloudflare系を含む)、network
+ * エラー、invalid_response、DB障害起因のrefresh失敗(diagnostic未付与)は再認証
+ * で回復しないため対象外(false)とし、従来どおりhandleApiErrorの500を維持する。
+ * これにより一時障害を恒久失効と誤判定してcapabilityをreauth_requiredへ
+ * 誤確定させるのを防ぐ。
+ */
+function isReauthRequiredTokenError(error: unknown): boolean {
+  if (!(error instanceof TwitchTokenError)) return false;
+  if (error.code === "NO_TOKEN") return true;
+  return isPermanentRefreshFailure(error);
 }
 
 async function getSubscriptionsByUserId(
@@ -272,9 +297,13 @@ async function getOwnedStreamer(twitchUserId: string) {
 export async function GET(request: NextRequest) {
   const startedAt = perfStart();
   const diagnostics = request.nextUrl.searchParams.get("diagnostics") === "1";
+  // Issue #1018: catch内で「ログイン済み配信者の恒久トークン失効か」を判定する
+  // ためにtry外までsessionを保持する。getSession()自体の失敗は従来どおり
+  // catchへ伝播し500になる。
+  let session: Session | null = null;
 
   try {
-    const session = await getSession();
+    session = await getSession();
     const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
     const rateLimitResult = await checkRateLimit(rateLimits.twitchRewardsGet, identifier);
 
@@ -376,6 +405,22 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(responsePayload);
   } catch (error) {
+    // Issue #1018: トークン恒久失効(REFRESH_FAILEDで恒久status {400,401} /
+    // NO_TOKEN)は汎用500ではなく401+requiresReauthを返す。rewards/emotesルートと
+    // 同一のbody契約で、クライアント側(ChannelPointSettings)がstep-up再認証CTAを
+    // 表示できる。一過性5xx/network/DB起因のrefresh失敗は再認証で回復しないため
+    // 500を維持する(isReauthRequiredTokenError参照)。エラー記録経路
+    // (recordApiError→errorsテーブル→auto-generated bug report)は維持し、
+    // capability確定状態もreauth_requiredへ同期する
+    // (recordChannelPointsApiFailureは内部で失敗を吸収するため応答に影響しない)。
+    if (session && isReauthRequiredTokenError(error)) {
+      await recordApiError(error, "Channel Point Bootstrap API", twitchTokenErrorReportContext(error));
+      await recordChannelPointsApiFailure(session.twitchUserId, 401);
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED, requiresReauth: true },
+        { status: 401 }
+      );
+    }
     // Issue #670: refresh失敗(REFRESH_FAILED)の場合、diagnostics(status/kind)を
     // auto-generated bug reportのContextへ載せる(twitchTokenErrorReportContext参照)。
     return handleApiError(error, "Channel Point Bootstrap API", twitchTokenErrorReportContext(error));

@@ -381,6 +381,72 @@ describe('OverlayPage', () => {
     expect(screen.getByText('RealCard')).toBeInTheDocument()
   })
 
+  // Issue #1076: 接続・イベント受信・演出切り替えは全て成功するのにOBS上で
+  // カード画素だけが表示されない(黒画面)事象への対策。next/imageの既定
+  // loading="lazy"がOBSブラウザソースで発火しない恐れがあるため即時読み込みに
+  // した(詳細な調査経緯・対抗仮説はIssue #1076参照)。通常モード・画像のみ
+  // モードの両方の`<Image>`にloading="eager"を適用したことをこの回帰テストで
+  // 固定する。
+  it.each([
+    { label: '通常表示モード', query: '', expectUsernameHeader: true },
+    { label: '画像のみモード(imageOnly=true)', query: '?imageOnly=true', expectUsernameHeader: false },
+  ])('カード画像はlazy loadingではなく即時読み込みになる($label)(Issue #1076回帰)', async ({ query, expectUsernameHeader }) => {
+    window.history.replaceState({}, '', `/overlay/streamer-1${query}`)
+
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 0
+      height = 0
+      set src(value: string) {
+        void value
+        // アスペクト比判定の結果自体はこのテストの関心事ではない。既存の
+        // 「onerrorで即座に失敗」テスト(上記)と同じ即時失敗パターンに揃え、
+        // 1.5秒のタイムアウト待ちを経由せず直接カード表示へ進める。
+        queueMicrotask(() => this.onerror?.())
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-real', name: 'RealCard', description: null,
+          image_url: 'https://r2.example.com/real-card.png', rarity: 'epic',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    const img = await screen.findByAltText('RealCard')
+    expect(img).toHaveAttribute('loading', 'eager')
+
+    // レビュー指摘対応: it.eachの2ケースが実際に異なる分岐(通常モード/
+    // 画像のみモード)へ到達していることを確認する。通常モードは常にユーザー名
+    // 見出し「〜が引いたカード」を表示するが、画像のみモードはpUser未指定
+    // (既定false)のため表示しない。imageOnly URLパラメータの解釈が壊れて
+    // 常に通常モードへフォールバックしても、この差分が無ければ検知できない。
+    if (expectUsernameHeader) {
+      expect(screen.getByText(/が引いたカード/)).toBeInTheDocument()
+    } else {
+      expect(screen.queryByText(/が引いたカード/)).not.toBeInTheDocument()
+    }
+  })
+
   // Issue #999: previewの実引き換えで、実イベント受信(`Received payload: gacha`)
   // までは記録されるのにカードが一切画面に表示されない不具合が発生した。
   // processQueue内で想定外の例外（実カードデータ特有の値・画像取得エラー等、

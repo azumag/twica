@@ -34,12 +34,47 @@ Cloudflare Worker の Hyperdrive binding を共有しません。接続先は
 `db/planetscale/` と現行 migration です。運用ドキュメントに固定パスワードや接続文字列を
 記録しません。
 
+## 限定 read 接続の準備責任
+
+Preview 実経路ゲート #6（#1077）を実行する前に、**PlanetScale の管理接続を持つ担当者**が
+対象環境専用の限定 read ロールを用意し、その接続文字列を検証を実行する環境の
+`DASHBOARD_DATABASE_URL` にだけ安全に注入します。比較スクリプトの実行担当者が、
+管理接続や production 用アプリ接続を代用して検証を続行してはいけません。
+
+- preview と production の限定 read ロール・接続文字列は必ず分離する。
+- `DATABASE_URL_PLANETSCALE` / `PLANETSCALE_DATABASE_URL` を代替値として使わない。
+- `DASHBOARD_DATABASE_URL` が未準備なら比較を実行せず、管理接続を持つ担当者へ払い出しを依頼する。
+- 接続文字列そのものは Issue / PR / CI ログ / チャットへ転記しない。実行結果を共有する場合も数値と secret は記録しない。
+- ロール払い出し後は、下記「確認手順」で権限不足・RPC 欠落・接続先取り違えを fail-closed で確認する。
+
+この分担により、「限定 read 接続が無いため同じ preview-gate Issue を再起票する」状態と、
+検証のために広い権限の接続を流用する状態の両方を避けます。
+
 ## 確認手順
 
 1. dashboard を対象環境と同じ限定ロールで起動する。
 2. 読み取り endpoint で集計 RPC が成功することを確認する。
 3. 必要な管理操作だけを実施し、許可していない DML が拒否されることを確認する。
 4. `permission denied`、RPC 欠落、接続失敗を成功扱いにしていないことをログとテストで確認する。
+5. `get_analysis_*()` RPC 自体の集計が正しいことは、`npm run check:analysis-dashboard-vs-sql`
+   （`scripts/compare-analysis-dashboard-vs-sql.mjs`, #1077）で検証する。RPCを経由しない
+   素朴な COUNT/GROUP BY を独立に発行し、`get_analysis_overview` /
+   `get_analysis_users_summary` / `get_analysis_streamers_summary` /
+   `get_analysis_gacha_summary` の戻り値（users/streamers/cards、
+   today/week/month/total gacha、unique users、rarity）と突き合わせる。
+   `DASHBOARD_DATABASE_URL` にのみ対象環境の限定readロール接続文字列を設定して実行する
+   （`DATABASE_URL_PLANETSCALE`/`PLANETSCALE_DATABASE_URL` はそれぞれ用途・権限が別の
+   接続文字列のためフォールバックしない。誤って management ロールで preview を検証したつもりが
+   production に接続するような事故を防ぐため）。全クエリは単一の read-only スナップショット
+   （`REPEATABLE READ READ ONLY`）内で発行するため、比較の途中に書き込みが挟まっても
+   誤検知しない。出力はその場の差分調査用であり、Issue/PR/ログへ実数値を転記しない。
+   全期間の `gacha_history` を走査する集計は production 規模では本スクリプトの既定値
+   （30秒。PostgreSQL自体の既定は無制限）を超えうる。その場合は不一致ではなくタイムアウト
+   である旨が出力されるので、`DASHBOARD_COMPARE_STATEMENT_TIMEOUT`（例: `"2min"`。`0`は
+   タイムアウト自体を無効化してしまうため拒否される）で上限を延ばして
+   再実行する。なお today/week/month の境界式は RPC 側の定義をほぼ書き写しているため、
+   境界定義そのものが最初から誤っているケース（両側が同じ誤りを持つ）はこの比較では
+   検出できない。
 
 新しい dashboard endpoint を追加するときは、SQL を文字列連結で組み立てず、
 postgres.js のパラメータ化を使います。権限追加は endpoint ごとに必要性を説明し、

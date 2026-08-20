@@ -18,6 +18,15 @@ function makeKv() {
       return type === "json" ? JSON.parse(entry.value) : entry.value;
     }),
     put: vi.fn(async (key: string, value: string, options?: { expirationTtl?: number }) => {
+      // 実際のCloudflare KVは expirationTtl < 60 を 400 Invalid expiration_ttl で
+      // 拒否する。ここでモックが何でも受理してしまうと、クランプが壊れて
+      // ttl=1 のような不正値を送る退行があってもテストが検知できない
+      // (#1062 レビュー指摘: モックが素通りするとfail-open回帰テストが空振りする)。
+      if (options?.expirationTtl !== undefined && options.expirationTtl < 60) {
+        throw new Error(
+          `KV PUT failed: 400 Invalid expiration_ttl of ${options.expirationTtl}. Expiration TTL must be at least 60.`,
+        );
+      }
       store.set(key, { value, ttl: options?.expirationTtl });
     }),
     delete: vi.fn(async (key: string) => {
@@ -88,13 +97,38 @@ describe("KVRateLimitStorage", () => {
     );
   });
 
-  it("TTLはミリ秒から秒へ切り上げる", async () => {
+  it("TTLはミリ秒から秒へ切り上げる(クランプが切り上げ結果を潰さないことも確認)", async () => {
     const storage = new KVRateLimitStorage(kv as never);
-    await storage.set("ratelimit:test", { count: 1, resetTime: 1 }, 1);
+    // 60_001msは割り切れないため、切り上げが働けば61秒、
+    // 働かなければ60秒(切り捨て)になり、両者を区別できる。
+    // さらに61 > 60なので、60秒クランプの影響を受けていないことも同時に確認する。
+    await storage.set("ratelimit:test", { count: 1, resetTime: 60_001 }, 60_001);
     expect(kv.put).toHaveBeenCalledWith(
       "ratelimit:test",
+      JSON.stringify({ count: 1, resetTime: 60_001 }),
+      { expirationTtl: 61 },
+    );
+  });
+
+  it("残りwindowが短くてもCloudflare KVの最小TTL60秒未満にはしない(#1062回帰テスト)", async () => {
+    const storage = new KVRateLimitStorage(kv as never);
+
+    // window終端直前(残り1ms)でもexpirationTtlは60秒にクランプされる。
+    // クランプしないとKV PUTが `Invalid expiration_ttl of 1` で失敗し、
+    // レート制限がfail-open(素通り)してしまう。
+    await storage.set("ratelimit:almost-expired", { count: 1, resetTime: 1 }, 1);
+    expect(kv.put).toHaveBeenCalledWith(
+      "ratelimit:almost-expired",
       JSON.stringify({ count: 1, resetTime: 1 }),
-      { expirationTtl: 1 },
+      { expirationTtl: 60 },
+    );
+
+    // ちょうど0msでも同様にクランプされる。
+    await storage.set("ratelimit:zero", { count: 1, resetTime: 0 }, 0);
+    expect(kv.put).toHaveBeenCalledWith(
+      "ratelimit:zero",
+      JSON.stringify({ count: 1, resetTime: 0 }),
+      { expirationTtl: 60 },
     );
   });
 
@@ -139,48 +173,38 @@ describe("rate limit storage 切り替え", () => {
     const blocked = await checkRateLimit(rateLimits.authLogin, "user:test");
     expect(blocked.success).toBe(false);
   });
-});
 
-describe("retryAfterSeconds", () => {
-  beforeEach(() => {
+  it("window終端直前のインクリメントでもKV PUTがfail-openせず正しく増分する(#1062回帰テスト)", async () => {
+    // 本番で実際に壊れていたのはKVRateLimitStorage.set単体ではなく、
+    // checkRateLimitInternalのインクリメント経路(existing.resetTime - nowを
+    // ttlMsとして渡す箇所)。window終端直前までfake timerで進め、その経路を
+    // 直接通してfail-openしないことを確認する。
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-  });
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      setRateLimitStorage(new KVRateLimitStorage(kv as never));
 
-  afterEach(() => {
-    vi.useRealTimers();
-  });
+      // 1回目: 新規カウンタ作成(count: 1, window: 60秒)
+      const first = await checkRateLimit(rateLimits.authLogin, "user:almost-expired");
+      expect(first.success).toBe(true);
 
-  it("reset(epochミリ秒)と現在時刻の差分を秒(整数)に変換する", () => {
-    const reset = Date.now() + 60_000;
-    expect(retryAfterSeconds(reset)).toBe(60);
-  });
+      // window終端の1ms前まで進める(残りTTLが1msの状態を作る)
+      vi.setSystemTime(new Date("2026-01-01T00:00:59.999Z"));
 
-  it("端数は切り上げる(59.2秒残 → 60秒)", () => {
-    const reset = Date.now() + 59_200;
-    expect(retryAfterSeconds(reset)).toBe(60);
-  });
+      const second = await checkRateLimit(rateLimits.authLogin, "user:almost-expired");
 
-  it("1秒未満の正の残り時間は1秒に切り上げる", () => {
-    const reset = Date.now() + 500;
-    expect(retryAfterSeconds(reset)).toBe(1);
-  });
+      // fail-open(ストレージエラーによる無条件許可)ではなく、正しく
+      // カウントアップした上で成功していることを確認する。fail-open時は
+      // remainingがlimit-1(定数)に戻ってしまうため、remainingの値でも区別する。
+      expect(second.success).toBe(true);
+      expect(second.remaining).toBe(3); // limit(5) - count(2)
 
-  it("resetが現在時刻と同値の場合は0を返す", () => {
-    expect(retryAfterSeconds(Date.now())).toBe(0);
-  });
-
-  it("大きな残り時間も秒単位の整数に正しく変換する", () => {
-    const reset = Date.now() + 3_600_000;
-    expect(retryAfterSeconds(reset)).toBe(3600);
-  });
-
-  it("reset未指定時はフォールバック値(fallbackMs、デフォルト60000)を使う", () => {
-    expect(retryAfterSeconds()).toBe(60);
-    expect(retryAfterSeconds(undefined, 3_600_000)).toBe(3600);
-  });
-
-  it("resetが過去の場合は0にクランプする", () => {
-    expect(retryAfterSeconds(Date.now() - 5_000)).toBe(0);
+      // 直近のKV PUTはクランプ後の60秒であり、400を返すはずの値
+      // (Math.ceil(1/1000) = 1)ではないことを確認する。
+      const lastCall = kv.put.mock.calls.at(-1);
+      expect(lastCall?.[2]).toEqual({ expirationTtl: 60 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

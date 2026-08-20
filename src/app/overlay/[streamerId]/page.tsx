@@ -1359,6 +1359,17 @@ export default function OverlayPage() {
             )}
 
             {/* 画像 */}
+            {/* Issue #1076: 接続・イベント受信・演出切り替えは全て成功するのに
+                OBS上でカード画素だけが表示されない(黒画面)事象への対策。
+                next/imageは既定でloading="lazy"になり、OBSブラウザソース(CEF)
+                ではその発火条件が満たされず永久に読み込まれない恐れがあるため、
+                単体カード画像を即時読み込みにする。詳細な調査経緯・対抗仮説は
+                Issue #1076参照。
+                loading="eager"（`priority`ではなく）を使うのは、この画像が
+                「カード表示が決まった瞬間に初めてマウントされる」ため、
+                `priority`が付随して出すpreloadリンクの先読み効果が無く、
+                長時間開きっぱなしのOBSページのheadへ不要なリンクを溜める
+                だけになるため。 */}
             {result.card.image_url ? (
               <Image
                 src={result.card.image_url}
@@ -1367,6 +1378,7 @@ export default function OverlayPage() {
                 height={shouldUseSmallMode ? 268 : 448}
                 className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
                 unoptimized
+                loading="eager"
               />
             ) : (
               <div className={`flex items-center justify-center bg-gray-700 rounded-lg ${shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80"}`}>
@@ -1442,6 +1454,8 @@ export default function OverlayPage() {
                 <div className="aspect-square bg-gray-600">
                   {result.card.image_url ? (
                     // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
+                    // loading="eager": Issue #1076参照(画像のみモード側の同コメント参照)。
+                    // 通常モードのカード画像も同じ理由で即時読み込みにする。
                     <Image
                       src={result.card.image_url}
                       alt={result.card.name}
@@ -1450,6 +1464,7 @@ export default function OverlayPage() {
                       className={`w-full h-full ${cardImageFitClass(result.card.image_padding_color)}`}
                       style={cardImageFitStyle(result.card.image_padding_color)}
                       unoptimized
+                      loading="eager"
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center">

@@ -119,6 +119,11 @@ export default function ChannelPointSettings({
   const [raidEventSubStatus, setRaidEventSubStatus] = useState<EventSubStatus>("none");
   const [raidEventSubWarning, setRaidEventSubWarning] = useState("");
   const [subscriptions, setSubscriptions] = useState<EventSubSubscriptionForStatus[]>([]);
+  // Issue #1019: 再認証（step-up）失敗の表示は bootstrap 系の汎用 error と分離する。
+  // 従来 error を流用すると、外側の `error ? <赤箱>` が真になり authorization_revoked バナーごと
+  // 置き換わるデッドコードや、再認証と無関係な bootstrap 失敗文言がボタン直下に誤帰属する問題が出る。
+  // そのため再認証専用の state を持ち、外側の赤箱は従来どおり error のみに反応させる。
+  const [reauthError, setReauthError] = useState("");
   // チャネルポイント用スコープ不足でstep-up再認証が必要かどうか
   // Whether step-up reauth is needed because channel point scopes are missing
   const [needsReauth, setNeedsReauth] = useState(false);
@@ -150,6 +155,19 @@ export default function ChannelPointSettings({
         { credentials: "include" },
       );
       if (!response.ok) {
+        // Issue #1018: トークン恒久失効時はバックエンドが401で
+        // { error, requiresReauth: true } を返す。再認証導線(step-up CTA)は
+        // body側にあるため、!response.okでもbodyを読みrequiresReauthを
+        // 判定する。JSONでなければ従来どおり汎用エラー表示にフォールバック。
+        const errorData = await response.json().catch(() => null);
+        if (errorData && errorData.requiresReauth === true) {
+          // 直前にセットするはずの「取得に失敗しました」文言は再認証導線と
+          // 矛盾するためクリアし、needsReauthバナー(scopeRequired+CTA)のみ
+          // を表示する。
+          setError("");
+          setNeedsReauth(true);
+          return;
+        }
         setError(t("messages.fetchFailed"));
         return;
       }
@@ -192,6 +210,7 @@ export default function ChannelPointSettings({
   const fetchRewards = async () => {
     setLoading(true);
     setError("");
+    setReauthError("");
 
     try {
       await fetchChannelPointBootstrap(!compact);
@@ -746,7 +765,7 @@ export default function ChannelPointSettings({
    */
   const handleReauthorize = useCallback(async () => {
     setReauthorizing(true);
-    setError("");
+    setReauthError("");
     setMessage("");
 
     try {
@@ -758,6 +777,10 @@ export default function ChannelPointSettings({
         },
         body: JSON.stringify({
           additionalScopes: CHANNEL_POINT_SCOPES,
+          // Issue #1019: 再認証後に配信設定へ戻し「保存 & EventSub登録」を続行できるようにする。
+          // ChannelPointsAccessSection と同様に returnTo を明示し、callback の既定 /dashboard 遷移で
+          // 復旧が未完のまま放置されるのを防ぐ。
+          returnTo: "/dashboard/settings",
         }),
       });
 
@@ -768,7 +791,7 @@ export default function ChannelPointSettings({
         // （Issue #865フォローアップ）。
         const authorization = parseTwitchAuthorizationResponse(data);
         if (!authorization) {
-          setError(t("messages.reauthorizeFailed"));
+          setReauthError(t("messages.reauthorizeFailed"));
           return;
         }
         // state をCookieに保存してからリダイレクト（callbackでの検証用）
@@ -780,10 +803,10 @@ export default function ChannelPointSettings({
 
       const errorData = await response.json().catch(() => ({}));
       const maintenanceError = parseMaintenanceError(response, errorData);
-      setError(maintenanceError?.message || errorData.error || t("messages.reauthorizeFailed"));
+      setReauthError(maintenanceError?.message || errorData.error || t("messages.reauthorizeFailed"));
     } catch (err) {
       logger.error("Failed to reauthorize for channel points:", err);
-      setError(t("messages.reauthorizeFailed"));
+      setReauthError(t("messages.reauthorizeFailed"));
     } finally {
       setReauthorizing(false);
     }
@@ -926,25 +949,25 @@ export default function ChannelPointSettings({
            <p className="mb-3 text-sm text-yellow-300">
              {t("messages.scopeRequired")}
            </p>
-           <button
-             onClick={handleReauthorize}
-             disabled={reauthorizing || isMaintenanceBlocked}
-             title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
-             className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
-           >
-             {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
-           </button>
-           {error && (
-             <p className="mt-3 text-sm text-red-400">
-               {error}
-             </p>
-           )}
-         </div>
-       ) : error ? (
-         <div className="rounded-lg bg-red-500/20 p-4 text-red-300">
-           {error}
-         </div>
-       ) : loading ? (
+            <button
+              onClick={handleReauthorize}
+              disabled={reauthorizing || isMaintenanceBlocked}
+              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+              className="rounded-lg bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:opacity-50"
+            >
+              {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
+            </button>
+            {reauthError && (
+              <p className="mt-3 text-sm text-red-400" role="alert">
+                {reauthError}
+              </p>
+            )}
+          </div>
+        ) : error ? (
+          <div className="rounded-lg bg-red-500/20 p-4 text-red-300">
+            {error}
+          </div>
+        ) : loading ? (
          <div className="text-gray-400">{tCommon("loading")}</div>
        ) : (
          <div className={compact ? "space-y-4" : "space-y-6"}>
@@ -1061,6 +1084,34 @@ export default function ChannelPointSettings({
                             <li>{t("eventSubStatus.authorizationRevokedItem1")}</li>
                             <li>{t("eventSubStatus.authorizationRevokedItem2")}</li>
                           </ul>
+                          {/* Issue #1019: authorization_revoked バナー内に再認証ボタンを配置。
+                              従来はこのバナーにボタンが無く、再連携ボタン(needsReauth分岐)は
+                              接続状況セクション全体を置き換えるため同時に見えなかった。
+                              ボタン押下で step-up 再認証(handleReauthorize)を起動し、
+                              権限復旧後は「保存 & EventSub登録」が必要(再認証callbackは
+                              EventSubを再登録しないため item2 の文言と整合)。 */}
+                          <button
+                            onClick={() => {
+                              // Issue #1019 必須指摘: bootstrap 200 (トークン有効) の状態で
+                              // authorization_revoked バナーが出ているとき、当該ボタンを押すと
+                              // サーバ側で deleteTwitchTokens が走り（reauth/route.ts:149）、
+                              // Twitch 側でキャンセル/失敗するとトークンが消えたまま連携停止する。
+                              // needsReauth（既にトークン無効）では無害だが、本バナーは有効トークン
+                              // でも表示され得るため、破壊的操作の前に確認ダイアログを挟む。
+                              if (!window.confirm(t("eventSubStatus.authorizationRevokedConfirm"))) return;
+                              void handleReauthorize();
+                            }}
+                            disabled={reauthorizing || isMaintenanceBlocked}
+                            title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+                            className="mt-3 rounded-lg bg-purple-600 px-4 py-2 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+                          >
+                            {reauthorizing ? t("buttons.reauthorizing") : t("buttons.reauthorize")}
+                          </button>
+                          {reauthError && (
+                            <p className="mt-2 text-xs text-red-400" role="alert">
+                              {reauthError}
+                            </p>
+                          )}
                         </div>
                       )}
                       {/* Callback URL mismatch warning */}

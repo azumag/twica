@@ -1,0 +1,51 @@
+import { describe, expect, it } from 'vitest'
+
+import {
+  INVARIANTS,
+  TIER_A,
+  TIER_B,
+  buildViolationCountSql,
+  buildViolationDigestSql,
+  buildViolationSampleSql,
+} from '../../scripts/db-cutover/invariant-checks.mjs'
+
+const VIOLATORS_CTE = `SELECT 'fixture'::text AS identifier`
+
+describe('db cutover invariant checks', () => {
+  it('違反件数・サンプル・digestのSQL契約を固定する', () => {
+    expect(buildViolationCountSql(VIOLATORS_CTE)).toBe(
+      `WITH violators AS (\n${VIOLATORS_CTE}\n)\nSELECT COUNT(*)::int AS count FROM violators`,
+    )
+    expect(buildViolationSampleSql(VIOLATORS_CTE)).toBe(
+      `WITH violators AS (\n${VIOLATORS_CTE}\n)\nSELECT identifier FROM violators ORDER BY identifier COLLATE "C" LIMIT 10`,
+    )
+    expect(buildViolationDigestSql(VIOLATORS_CTE)).toBe(
+      `WITH violators AS (\n${VIOLATORS_CTE}\n)\nSELECT md5(string_agg(identifier, ',' ORDER BY identifier COLLATE "C")) AS digest FROM violators`,
+    )
+  })
+
+  it('Tier Aはdigestを持たず、Tier Bだけが決定的なdigest SQLを持つ', () => {
+    const checks = INVARIANTS.flatMap((invariant) => invariant.checks)
+
+    expect(checks.length).toBeGreaterThan(0)
+    for (const check of checks) {
+      if (check.tier === TIER_A) {
+        expect(check.digestSql).toBeNull()
+        continue
+      }
+
+      expect(check.tier).toBe(TIER_B)
+      expect(check.digestSql).toContain(
+        `ORDER BY identifier COLLATE "C"`,
+      )
+    }
+  })
+
+  it('finding識別に使うcheck codeが重複しない', () => {
+    const codes = INVARIANTS.flatMap((invariant) =>
+      invariant.checks.map((check) => check.code),
+    )
+
+    expect(new Set(codes).size).toBe(codes.length)
+  })
+})

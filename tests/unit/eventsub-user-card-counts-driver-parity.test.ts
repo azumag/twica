@@ -572,13 +572,20 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     )
   })
 
+  // Issue #1033: pending（自動再試行予定の一時障害）はもうreportErrorしない。
+  // 旧実装は retryChatNotification が 'pending' を返しても常にthrowしており、
+  // Twitch 429のような自己回復するレート制限が1回起きるだけで
+  // reportError経由の自動GitHub Issueが量産されていた（本番実測で確認）。
+  // pendingはbackoffで自動再試行される正常系のため、warnログのみに留め
+  // reportErrorには到達しないことをここで固定する。
   it.each([
     ['scope確認不能', 'eventsub-chat-scope-unavailable', 'unable to verify user:write:chat scope'],
     ['BOT一時解決不能', 'eventsub-chat-bot-unavailable', 'configured BOT credential is temporarily unavailable'],
     ['本人token DB障害', 'eventsub-chat-token-unavailable', 'chat sender credential is temporarily unavailable'],
     ['Twitch 503', 'eventsub-chat-503', 'Twitch API 503'],
     ['network障害', 'eventsub-chat-network', 'ECONNRESET'],
-  ])('%sはlive outboxを再試行へ戻し、DLQ化せずreportErrorする', async (_label, batchId, reason) => {
+    ['Twitch 429 (#1033)', 'eventsub-chat-429', 'Twitch API 429: Your message was not sent because you are sending messages too quickly.'],
+  ])('%sはlive outboxを再試行へ戻し、DLQ化もreportErrorもしない', async (_label, batchId, reason) => {
     mocks.sendChatMessageDetailed.mockResolvedValueOnce({
       outcome: 'retryable',
       reason,
@@ -607,13 +614,11 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     )
     expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
     expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
-    expect(mockReportError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        message: `Chat announcement pending: ${reason}`,
-      }),
-      expect.objectContaining({ context: 'eventsub:postRedemptionNotify:chatAnnouncement' }),
+    expect(mockReportError).not.toHaveBeenCalled()
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      '[postRedemptionNotify] chat announcement retry scheduled',
+      expect.objectContaining({ streamerId: 'streamer-1', reason }),
     )
-    expect(mockReportError).toHaveBeenCalledTimes(1)
   })
 
   it('missing_scopeでもlive DLQ更新がleaseを失った場合はreportErrorする', async () => {

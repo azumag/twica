@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { __resetTwitchAppTokenForTests } from '@/lib/twitch/app-token'
+import { ERROR_MESSAGES } from '@/lib/constants'
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -15,11 +16,53 @@ vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: vi.fn(),
   rateLimits: { twitchRewardsGet: { windowMs: 60000, max: 30 } },
 }))
-vi.mock('@/lib/twitch/token-manager', () => ({
-  hasScope: vi.fn(),
-  getTwitchAccessToken: vi.fn(),
-  // Issue #653/#670: route handlerのcatchが常に呼ぶため固定モックにも必要。
-  twitchTokenErrorReportContext: vi.fn().mockReturnValue(undefined),
+vi.mock('@/lib/twitch/token-manager', () => {
+  // Issue #1018: routeはinstanceofで再認証要エラーを判定するため、モックにも
+  // 実クラスと同形のTwitchTokenErrorを供給する（無いとinstanceof undefinedで
+  // TypeErrorになる）。
+  class TwitchTokenError extends Error {
+    constructor(
+      message: string,
+      public readonly code: 'NO_TOKEN' | 'REFRESH_FAILED' | 'DATABASE_ERROR' | 'USER_NOT_FOUND',
+      public readonly originalError?: Error,
+      public readonly refreshStatus?: number,
+      public readonly refreshErrorKind?: string,
+      public readonly refreshRetryable?: boolean,
+    ) {
+      super(message)
+      this.name = 'TwitchTokenError'
+    }
+  }
+  // Issue #1018: routeは恒久失効判定をisPermanentRefreshFailureへ委譲するため、
+  // 実装と同一セマンティクスの判定をモッククラスに対して供給する。実装本体の判定は
+  // twitch-token-manager.test.tsで直接検証する。
+  const isPermanentRefreshFailure = (error: unknown) =>
+    error instanceof TwitchTokenError &&
+    error.code === 'REFRESH_FAILED' &&
+    error.refreshErrorKind === 'http' &&
+    error.refreshStatus !== undefined &&
+    [400, 401].includes(error.refreshStatus)
+  return {
+    TwitchTokenError,
+    hasScope: vi.fn(),
+    getTwitchAccessToken: vi.fn(),
+    isPermanentRefreshFailure: vi.fn(isPermanentRefreshFailure),
+    // Issue #653/#670: route handlerのcatchが常に呼ぶため固定モックにも必要。
+    twitchTokenErrorReportContext: vi.fn().mockReturnValue(undefined),
+  }
+})
+// Issue #1018: catch経路はrecordApiError（記録のみ）またはhandleApiError
+// （500）を返す。両者の呼び分けを検証するためモック化する。DB永続化は
+// recordApiErrorの内部（sentry/error-handler）で行われるが、テスト環境では
+// NEXT_RUNTIME未設定でno-opになるため、モックによる呼び出し検証で代替する。
+vi.mock('@/lib/error-handler', () => ({
+  handleApiError: vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ error: 'Internal Server Error' }), { status: 500 })
+  ),
+  handleDatabaseError: vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ error: 'Database error' }), { status: 500 })
+  ),
+  recordApiError: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
 // #788: GET ハンドラは早期returnも含め常に getChannelPointsAccessState を呼ぶため、
@@ -307,5 +350,149 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
 
     expect(response.status).toBe(200)
     expect(body.rewards).toHaveLength(1)
+  })
+
+  // Issue #1018: トークン恒久失効(REFRESH_FAILEDかつkind='http'でstatusが
+  // {400,401}のホワイトリストに属する)は汎用500ではなく、rewards/emotes
+  // ルートと同じbody契約の401+requiresReauthを返し、クライアントがstep-up
+  // 再認証CTAを表示できるようにする。
+  it('REFRESH_FAILED(恒久失効: 400, kind=http)は401+requiresReauthを返し、エラー記録とcapability(401)同期を行う', async () => {
+    const { hasScope, getTwitchAccessToken, TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    const { recordApiError, handleApiError } = await import('@/lib/error-handler')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    const tokenError = new TwitchTokenError(
+      'Failed to refresh Twitch access token',
+      'REFRESH_FAILED',
+      undefined,
+      400,
+      'http',
+      false,
+    )
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(tokenError)
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+    const body = await response.json()
+
+    expect(response.status).toBe(401)
+    expect(body).toEqual({ error: ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED, requiresReauth: true })
+    expect(recordApiError).toHaveBeenCalledWith(tokenError, 'Channel Point Bootstrap API', undefined)
+    expect(handleApiError).not.toHaveBeenCalled()
+    expect(recordChannelPointsApiFailure).toHaveBeenCalledWith('streamer-1', 401)
+  })
+
+  // Issue #1018: refreshRetryable === true(429/5xx/network)は再認証では回復しない
+  // 一時失敗のため、従来どおりhandleApiErrorの500を維持しcapability確定状態を壊さない。
+  it('REFRESH_FAILED(refreshRetryable=true)は一時失敗のため500(handleApiError)を返しcapabilityは同期しない', async () => {
+    const { hasScope, getTwitchAccessToken, TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    const { recordApiError, handleApiError } = await import('@/lib/error-handler')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(
+      new TwitchTokenError(
+        'Failed to refresh Twitch access token',
+        'REFRESH_FAILED',
+        undefined,
+        429,
+        'http',
+        true,
+      ),
+    )
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+
+    expect(response.status).toBe(500)
+    expect(handleApiError).toHaveBeenCalled()
+    expect(recordApiError).not.toHaveBeenCalled()
+    expect(recordChannelPointsApiFailure).not.toHaveBeenCalled()
+  })
+
+  // Issue #1018(自動レビュー必須指摘の修正): 520/521/525/526/530等のCloudflare系
+  // 一過性5xx(および501/505)はREFRESH_RETRYABLE_STATUSESに含まれず
+  // refreshRetryable === false になるが、一時障害であり再認証では回復しない。
+  // 旧来の補集合判定(refreshRetryable === false)では恒久失効と誤判定し、
+  // capabilityをreauth_requiredへ誤確定させるため、500維持を固定する。
+  it('REFRESH_FAILED(一過性5xx: 520, refreshRetryable=false)は500(handleApiError)を返しcapabilityは同期しない', async () => {
+    const { hasScope, getTwitchAccessToken, TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    const { recordApiError, handleApiError } = await import('@/lib/error-handler')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(
+      new TwitchTokenError(
+        'Failed to refresh Twitch access token',
+        'REFRESH_FAILED',
+        undefined,
+        520,
+        'http',
+        false,
+      ),
+    )
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+
+    expect(response.status).toBe(500)
+    expect(handleApiError).toHaveBeenCalled()
+    expect(recordApiError).not.toHaveBeenCalled()
+    expect(recordChannelPointsApiFailure).not.toHaveBeenCalled()
+  })
+
+  // Issue #1018: DB障害起因のrefresh失敗はdiagnosticが未付与(refreshRetryable ===
+  // undefined)になるため再認証要エラーと判定できず、500を維持する。
+  it('REFRESH_FAILEDでdiagnostic未付与(DB起因失敗)は500(handleApiError)を返しcapabilityは同期しない', async () => {
+    const { hasScope, getTwitchAccessToken, TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    const { recordApiError, handleApiError } = await import('@/lib/error-handler')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(
+      new TwitchTokenError('Failed to refresh Twitch access token', 'REFRESH_FAILED', new Error('db down')),
+    )
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+
+    expect(response.status).toBe(500)
+    expect(handleApiError).toHaveBeenCalled()
+    expect(recordApiError).not.toHaveBeenCalled()
+    expect(recordChannelPointsApiFailure).not.toHaveBeenCalled()
+  })
+
+  // Issue #1018: NO_TOKENは現在の実装では到達しない防御的経路だが、
+  // 401+requiresReauthの契約をここで固定する。
+  it('NO_TOKEN(防御的経路)は401+requiresReauthを返す', async () => {
+    const { hasScope, getTwitchAccessToken, TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(
+      new TwitchTokenError('No Twitch token found', 'NO_TOKEN'),
+    )
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+    const body = await response.json()
+
+    expect(response.status).toBe(401)
+    expect(body).toEqual({ error: ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED, requiresReauth: true })
+    expect(recordChannelPointsApiFailure).toHaveBeenCalledWith('streamer-1', 401)
+  })
+
+  // Issue #1018 リグレッションガード: トークンエラー以外(汎用Error等)は
+  // 従来どおり500を維持し、誤って401+requiresReauthにしない。
+  it('非トークンエラー(汎用Error)は500(handleApiError)を維持する', async () => {
+    const { hasScope, getTwitchAccessToken } = await import('@/lib/twitch/token-manager')
+    const { recordApiError, handleApiError } = await import('@/lib/error-handler')
+    const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+    vi.mocked(hasScope).mockResolvedValue(true)
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(new Error('unexpected db failure'))
+
+    const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+    const response = await GET(request())
+
+    expect(response.status).toBe(500)
+    expect(handleApiError).toHaveBeenCalled()
+    expect(recordApiError).not.toHaveBeenCalled()
+    expect(recordChannelPointsApiFailure).not.toHaveBeenCalled()
   })
 })

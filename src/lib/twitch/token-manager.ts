@@ -35,6 +35,46 @@ export class TwitchTokenError extends Error {
   }
 }
 
+// refresh が Twitch の token endpoint から「step-up再認証でしか回復しない恒久失効」
+// と断定できるHTTP statusのホワイトリスト。auth.ts:449(「400/401は失効したrefresh
+// token等の恒久エラー」)とIssue #1018(invalid_grant・refresh token失効等の400/401)
+// に基づく。403はWAF・client設定・上流機能の問題でも起こり得るため恒久失効と
+// 断定できない(shouldDisableBotCredential と同一方針・同一集合を共有する)。
+//
+// 重要: auth.ts の REFRESH_RETRYABLE_STATUSES の「補集合」は恒久失効とは限らない。
+// 520/521/525/526/530等のCloudflare系一過性5xxや501/505はretryable集合に含まれず
+// refreshRetryable === false になるが、それらは一時障害であり再認証では回復しない。
+// そのためここでは retryable の否定形ではなく、恒久と断定できるstatusをホワイト
+// リストで明示的に絞る(一時障害の窓でcapabilityをreauth_requiredへ誤確定させない)。
+export const PERMANENT_REFRESH_STATUSES = new Set([400, 401]);
+
+/**
+ * TwitchTokenError(REFRESH_FAILED)が「step-up再認証でしか回復しない恒久トークン
+ * 失効」に該当するかを判定する(Issue #1018)。
+ *
+ * 判定は refreshErrorKind === 'http' かつ refreshStatus が PERMANENT_REFRESH_STATUSES
+ * (400/401)に属する場合のみtrue。
+ *
+ * - networkエラー(kind='network', status未定義)・DB障害起因(diagnostic未付与のため
+ *   refreshErrorKind/refreshStatusがundefined)・invalid_response・一過性5xx
+ *   (429/5xx等)は再認証で回復しないためfalse。これらをfalseに保つことで、一時障害
+ *   の窓で channel_points_capability を reauth_required (definitive) へ誤って確定
+ *   させない(persistChannelPointsCapability の「一時失敗で確定状態を破壊しない」
+ *   不変条件を守り、401リテラルによるガード迂回を防止する)。
+ *
+ * 判定の正本はこの1箇所に集約する。rewards/emotesルート等の同型401経路(follow-up)
+ * でも再利用できるようにエクスポートする。
+ */
+export function isPermanentRefreshFailure(error: unknown): boolean {
+  return (
+    error instanceof TwitchTokenError &&
+    error.code === 'REFRESH_FAILED' &&
+    error.refreshErrorKind === 'http' &&
+    error.refreshStatus !== undefined &&
+    PERMANENT_REFRESH_STATUSES.has(error.refreshStatus)
+  );
+}
+
 /**
  * TwitchTokenRefreshError が持つ診断情報のうち、ログへ出しても安全な部分だけを
  * 抽出する(Issue #653/#670/#654/#655)。
@@ -399,9 +439,12 @@ function shouldDisableBotCredential(error: unknown): boolean {
   // BOTを無効化してはいけない（retry方針とcredential失効判定は別の責務）。
   // 522/network/壊れた2xx応答やDB保存障害でstatus='error'にすると、取得クエリの
   // active filterから外れ、上流復旧後も自動再試行できなくなる。
+  // 恒久失効のstatus集合は PERMANENT_REFRESH_STATUSES と共有し、ユーザー側
+  // (isPermanentRefreshFailure)とBOT側の判定が別々に乖離しないようにする。
   return error instanceof TwitchTokenRefreshError
     && error.kind === 'http'
-    && (error.status === 400 || error.status === 401);
+    && error.status !== undefined
+    && PERMANENT_REFRESH_STATUSES.has(error.status);
 }
 
 async function readUserRefreshWinner(

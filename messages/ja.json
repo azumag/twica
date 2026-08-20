@@ -720,6 +720,7 @@
       "authorizationRevokedDescription": "Twitchの認証が取り消されたため、サブスクリプションが無効化されました。",
       "authorizationRevokedItem1": "一度TwiCaからログアウトしてから、Twitchと連携してログインし直してください（この画面に「チャネルポイント連携を有効化」ボタンが表示されている場合は、ログアウトの代わりにそちらを押しても構いません）",
       "authorizationRevokedItem2": "そのうえで「保存 & EventSub登録」ボタンで登録し直してください",
+      "authorizationRevokedConfirm": "再認証を開始すると、現在のTwitch連携が一度解除され、Twitchで承認を完了するまでチャネルポイント連携やチャット通知が一時的に停止します。続行しますか？",
       "callbackMismatchTitle": "Callback URL不一致",
       "callbackMismatchDescription": "登録されているCallback URLと現在のアプリURLが一致しません。EventSubを再登録してください。",
       "callbackMismatchCurrent": "現在: {callback}",

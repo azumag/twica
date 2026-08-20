@@ -769,13 +769,14 @@ pg 直結経路（`DB_DRIVER=pg-read`/`pg`）が実際にどの DB へ接続す�
    ROLLBACKする設計〔`withRollbackOnlyTransaction`〕のため通常は発生しないはずの
    異常系だが、万一の場合の復旧手順）:
    1. report findings内の `CANARY_ROLLBACK_TRACE_*` コードのfinding message
-      から、残存しているfixture識別子（`cutover-canary-<uuid>` 形式の
-      `twitch_user_id`、`cutover-canary:<uuid>` 形式の `event_id`）を確認する。
+      から、残存しているfixture識別子（streamersは`cutover-canary-<uuid>`、
+      usersは`cutover-canary-viewer-<uuid>`形式の`twitch_user_id`、
+      `cutover-canary:<uuid>`形式の`event_id`）の**実際の完全な値**を確認する。
    2. target側で該当識別子のfixture streamers行を削除する（`cards`/`gacha_history`
       はON DELETE CASCADEで連鎖的に除去される）:
       `DELETE FROM streamers WHERE twitch_user_id = '<cutover-canary-<uuid>形式の値>';`
    3. fixture users行は`user_cards`経由でのみcascadeするため、別途削除する:
-      `DELETE FROM users WHERE twitch_user_id = '<同上>';`
+      `DELETE FROM users WHERE twitch_user_id = '<cutover-canary-viewer-<uuid>形式の値>';`
    4. 削除後、再度同じ識別子でSELECTし0件になったことを確認する。
    5. **この異常が実際に発生した場合、`withRollbackOnlyTransaction`のROLLBACK保証が
       何らかの理由で機能しなかった可能性がある。単にfixtureを消して手順を続行せず、

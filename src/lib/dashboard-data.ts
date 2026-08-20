@@ -26,11 +26,13 @@ import {
   gte,
   ilike,
   inArray,
+  isNotNull,
   lt,
   max,
+  notExists,
   notLike,
+  or,
   sql,
-  sum,
 } from "drizzle-orm";
 import { getDb, type DbHandle } from "@/lib/db/client";
 import { isPgFunctionNotFoundError, isPgMissingColumnError, isPgUniqueViolationError } from "@/lib/db/errors";
@@ -54,6 +56,7 @@ import {
   collectionCompletions as collectionCompletionsTable,
   gachaHistory as gachaHistoryTable,
   streamers as streamersTable,
+  twitchBotAccounts as twitchBotAccountsTable,
   userCards as userCardsTable,
   users as usersTable,
 } from "@/lib/db/schema";
@@ -1309,49 +1312,158 @@ const EMPTY_CHANNEL_POINT_STATS: GachaStatsResult["channelPointStats"] = {
   ranking: [],
 };
 
+// PostgreSQLのinteger(int4)最大値。Drizzleの集計サブクエリへ「実質無制限の
+// LIMIT」を付与し、GROUP BYキーのみに依存する外側WHERE述語がサブクエリ内部へ
+// pushdownされるのを防ぐ最適化フェンスとして使う(fetchChannelPointUsageStatsFromHistory
+// 参照。詳細な経緯コメントは呼び出し箇所)。
+const PG_OPTIMIZATION_FENCE_LIMIT = 2147483647;
+
 async function fetchChannelPointUsageStatsFromHistory(
   streamerId: string,
   limit = 10
 ): Promise<GachaStatsResult["channelPointStats"]> {
+  // 引き換えランキングのN連過少カウント修正: executeGachaDraws
+  // (src/lib/services/gacha.ts) はN連ガチャのreward_costを先頭行(index===0)
+  // にだけ載せる(Twitch EventSubが「引き換え
+  // 1回あたりの合計コスト」しか通知しないための二重計上回避)。一方reward_idは
+  // 全行にforwardされる。reward_cost > 0単独だと2枚目以降が落ちてN連が1回に
+  // 数えられてしまうため、reward_id IS NOT NULLをORで受ける。reward_idは
+  // migration 00070(2026-07-04)以降のみ設定されるため、reward_cost > 0は
+  // それ以前の正当な引き換えを拾うために残す(SUM(reward_cost)自体はNULLを
+  // 無視するのでポイント合計は影響を受けない)。
   const historyFilter = and(
     eq(gachaHistoryTable.streamer_id, streamerId),
-    gt(gachaHistoryTable.reward_cost, 0),
+    or(
+      gt(gachaHistoryTable.reward_cost, 0),
+      isNotNull(gachaHistoryTable.reward_id),
+    ),
   );
   let rankingRows: ChannelPointUsageHistoryRankingRow[];
   try {
     rankingRows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        const totalPoints = sum(gachaHistoryTable.reward_cost);
-        const redemptionCount = countRows();
-        const lastRedeemedAt = max(gachaHistoryTable.redeemed_at);
-        // GROUP BY後のユーザー別SUMをwindow SUMすることで、ランキングLIMITの
-        // 対象外ユーザーも含む全ポイントを同じ1 statement内で算出する。
-        // PostgreSQLではwindow関数はGROUP BY集計後・ORDER BY/LIMIT前に評価される
-        // ため、上位N行だけを返しても値は全ユーザー分の合計になる。総合計と順位を
-        // 別SQLにすると更新の途中で異なるsnapshotを読む可能性と二重走査が生じるが、
-        // この形なら単一snapshot・単一走査でRPC migration 00036/00039と同じ集計を
-        // 得られる。該当行が0件なら結果行自体が無く、呼び出し側で0/空配列へ戻す。
-        const totalPointsAllUsers =
-          sql<number | string>`sum(sum(${gachaHistoryTable.reward_cost})) over ()`;
-        return db
+        // Auto Review必須指摘への対応: 新述語(reward_cost > 0 OR reward_id IS
+        // NOT NULL)により、グループ内の全行がreward_cost IS NULL(N連の2枚目
+        // 以降のみが残るケース)になり得る。sum()はNULLのみのグループでSQL
+        // NULLを返し、orderBy(desc(totalPoints))はPostgreSQL既定でDESC =
+        // NULLS FIRSTのため、そのユーザーが0ポイント表示のまま1位に混入し
+        // LIMIT枠を1つ消費してしまう(migration側は既にCOALESCEで対処済みの
+        // 同一欠陥。#1032レビュー参照)。RPC本体
+        // (get_channel_point_usage_stats / refresh_channel_point_usage_stat)
+        // は0を書くため、COALESCEを合わせないとRPC経路とこのフォールバック
+        // 経路で順位が食い違う(driver parity崩れ)。
+        // GROUP BY直後に最適化フェンスを置く理由について(レビュー指摘・実測訂正、
+        // #1032/#1034参照): 当初「GROUP BY後のHAVINGで判定することでEXISTS
+        // 呼び出し回数をユーザー数に抑える」と書いていたが、これはmigration
+        // 20260819120000側でDocker実機PostgreSQL 17のEXPLAIN ANALYZEにより
+        // 否定された主張と同型の誤りだった。除外述語がGROUP BYキー
+        // (user_twitch_id)のみに依存する場合、プランナは意味的に安全な変形として
+        // その述語をGROUP BY実行前のスキャン/JOIN段へ押し下げてしまうため、
+        // 素朴なHAVINGでは履歴行ごとに評価される(SQL側のis_redemption_ranking_excluded
+        // と同じ実装上の理由。詳細コメントはmigration側のlast_7_days_usage CTE参照)。
+        // SQL側と同じ対策として、「素の集計を確定させたサブクエリ」+「その結果への
+        // WHERE」の2段構成にする。SQL側はLIMIT/OFFSET句を持つサブクエリに対する
+        // PostgreSQLの最適化フェンス(結果行数・順序への影響は無いno-op)として
+        // `OFFSET 0`を使うが、Drizzleの`.offset(0)`はfalsy値としてOFFSET句自体を
+        // 生成しない(pg-core/dialect.jsの`offset ? ... : void 0`。実測確認済み、
+        // 未修正のDrizzle側の挙動)。そのためここでは同じフェンス効果を持つ
+        // `.limit(PG_OPTIMIZATION_FENCE_LIMIT)`(実質無制限のLIMIT。0以上なら必ずLIMIT句を生成する
+        // ため`.limit(0)`のような結果0件化のリスクは無い)を使う。
+        const groupedHistory = db
           .select({
             user_twitch_id: gachaHistoryTable.user_twitch_id,
-            username: sql<string>`coalesce(max(${gachaHistoryTable.user_twitch_username}), ${gachaHistoryTable.user_twitch_id})`,
-            total_points: totalPoints,
-            redemption_count: redemptionCount,
-            last_redeemed_at: lastRedeemedAt,
-            total_points_all_users: totalPointsAllUsers,
+            // サブクエリ内の生SQLフィールドはDrizzleが外側から参照するために
+            // 明示的なaliasを要求する(.as()を付けないと「You tried to
+            // reference "X" field from a subquery, which is a raw SQL field,
+            // but it doesn't have an alias declared」で実行時エラーになる。
+            // 実装時に実測確認済み)。
+            username: sql<string>`coalesce(max(${gachaHistoryTable.user_twitch_username}), ${gachaHistoryTable.user_twitch_id})`.as("username"),
+            // #1032必須指摘: 新述語(reward_cost > 0 OR reward_id IS NOT NULL)では
+            // グループ内の全行がreward_cost IS NULL(N連の2枚目以降のみが残る
+            // ケース)になり得る。COALESCEが無いとsum()がSQL NULLを返し、
+            // orderBy(desc(total_points))はPostgreSQL既定でDESC = NULLS FIRSTの
+            // ため、そのユーザーが0ポイント表示のまま1位に混入しLIMIT枠を1つ
+            // 消費してしまう。RPC本体(get_channel_point_usage_stats /
+            // refresh_channel_point_usage_stat)は既にCOALESCEで0を書くため、
+            // 揃えないとRPC経路とこのフォールバック経路で順位が食い違う
+            // (driver parity崩れ)。
+            total_points: sql<number | string>`coalesce(sum(${gachaHistoryTable.reward_cost}), 0)`.as("total_points"),
+            redemption_count: countRows().as("redemption_count"),
+            last_redeemed_at: max(gachaHistoryTable.redeemed_at).as("last_redeemed_at"),
           })
           .from(gachaHistoryTable)
           .where(historyFilter)
           .groupBy(gachaHistoryTable.user_twitch_id)
+          .limit(PG_OPTIMIZATION_FENCE_LIMIT)
+          .as("grouped_history");
+
+        // 除外対象: 配信者本人 / 登録済みBOTアカウント(配信者固有 or 共有system)。
+        // このRPCフォールバックはmigration 20260819120000で追加したSQL関数
+        // is_redemption_ranking_excluded には依存しない独立実装である
+        // (get_channel_point_usage_stats RPCが未デプロイ/実行時エラーの場合の
+        // 救済経路であり、RPC自身がその関数を呼ぶため、フォールバック側は
+        // Drizzleクエリだけで同じ除外判定を再現する必要がある)。groupedHistory
+        // (集計済みサブクエリ)のuser_twitch_idを参照するため、EXISTS呼び出しは
+        // 「この配信者でアクティブだったユーザー数」ぶんに抑えられる
+        // (上記フェンスにより外側WHEREとしてのみ評価される)。
+        const excludeStreamerSelf = notExists(
+          db
+            .select({ one: sql`1` })
+            .from(streamersTable)
+            .where(
+              and(
+                eq(streamersTable.id, streamerId),
+                eq(streamersTable.twitch_user_id, groupedHistory.user_twitch_id),
+              ),
+            ),
+        );
+        const excludeBotAccount = notExists(
+          db
+            .select({ one: sql`1` })
+            .from(twitchBotAccountsTable)
+            .where(
+              and(
+                eq(twitchBotAccountsTable.twitch_user_id, groupedHistory.user_twitch_id),
+                or(
+                  and(
+                    eq(twitchBotAccountsTable.owner_type, "streamer"),
+                    eq(twitchBotAccountsTable.streamer_id, streamerId),
+                  ),
+                  eq(twitchBotAccountsTable.owner_type, "system"),
+                ),
+              ),
+            ),
+        );
+
+        // GROUP BY後のユーザー別SUMをwindow SUMすることで、ランキングLIMITの
+        // 対象外ユーザーも含む全ポイントを同じ1 statement内で算出する。
+        // PostgreSQLではwindow関数はWHERE適用後・ORDER BY/LIMIT前に評価される
+        // ため、上位N行だけを返しても値は全ユーザー分の合計になる。総合計と順位を
+        // 別SQLにすると更新の途中で異なるsnapshotを読む可能性と二重走査が生じるが、
+        // この形なら単一snapshot・単一走査でRPC migration 00036/00039と同じ集計を
+        // 得られる。該当行が0件なら結果行自体が無く、呼び出し側で0/空配列へ戻す。
+        // 下記の除外WHEREを通過したユーザーだけがtotal_points_all_usersに含まれる。
+        const totalPointsAllUsers =
+          sql<number | string>`sum(${groupedHistory.total_points}) over ()`;
+
+        return db
+          .select({
+            user_twitch_id: groupedHistory.user_twitch_id,
+            username: groupedHistory.username,
+            total_points: groupedHistory.total_points,
+            redemption_count: groupedHistory.redemption_count,
+            last_redeemed_at: groupedHistory.last_redeemed_at,
+            total_points_all_users: totalPointsAllUsers,
+          })
+          .from(groupedHistory)
+          .where(and(excludeStreamerSelf, excludeBotAccount))
           .orderBy(
-            desc(totalPoints),
-            desc(redemptionCount),
-            desc(lastRedeemedAt),
+            desc(groupedHistory.total_points),
+            desc(groupedHistory.redemption_count),
+            desc(groupedHistory.last_redeemed_at),
           )
-          // LIMITは必ずGROUP BY・window集計・順位確定後にだけ適用する。
+          // LIMITは必ずGROUP BY・除外WHERE・window集計・順位確定後にだけ適用する。
           .limit(Math.max(1, limit));
       },
       "dashboard:channelPointUsageHistory",

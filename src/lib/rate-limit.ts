@@ -5,6 +5,7 @@
 // compatibility・遅延・障害時の fail-open 契約を同時に損なう。詳細な永続化が必要な
 // server-only Route Handler は、その境界で logger.server を別途使用する。
 import { logger } from "./logger";
+import { getKvBinding, KV_MIN_EXPIRATION_TTL_SECONDS } from "./cloudflare-kv";
 
 /**
  * Rate limit store data structure
@@ -134,7 +135,17 @@ export class KVRateLimitStorage implements RateLimitStorage {
   async set(key: string, value: RateLimitStore, ttlMs: number): Promise<void> {
     // KV uses seconds for TTL, so convert from milliseconds
     // KVはTTLに秒を使用するため、ミリ秒から変換
-    const ttlSeconds = Math.ceil(ttlMs / 1000);
+    //
+    // rate-limit windowの終端付近ではceil後の値がKV_MIN_EXPIRATION_TTL_SECONDS
+    // (60秒)未満になり得る(残り0msならMath.ceil(0/1000)=0)。クランプしないと
+    // 下のcatchでfail-open(レート制限を素通り)する側に落ちる
+    // (issue #1062: preview Worker tailで `Invalid expiration_ttl` warningを実際に再現)。
+    //
+    // クランプでKVエントリの生存期間は本来の残りwindowより最大60秒延びるが、
+    // window判定はTTLではなく`checkRateLimitInternal`の`resetTime`比較で行う
+    // ため過剰ブロックにはならない（Math.maxはTTLに「下限」を課すだけで、
+    // window判定そのものには影響しない）。
+    const ttlSeconds = Math.max(KV_MIN_EXPIRATION_TTL_SECONDS, Math.ceil(ttlMs / 1000));
     await this.kv.put(key, JSON.stringify(value), {
       expirationTtl: ttlSeconds,
     });
@@ -182,7 +193,9 @@ async function ensureKvRateLimitStorage(): Promise<void> {
   }
   storageInitPromise = (async () => {
     try {
-      const { getKvBinding } = await import("@/lib/cloudflare-kv");
+      // getKvBinding自体はファイル先頭で静的importしているためここでの動的
+      // importは不要(cloudflare-kv.tsは@opennextjs/cloudflareを関数内でのみ
+      // 動的importしており、静的importしても余分な依存は引き込まない)。
       const kv = await getKvBinding();
       if (kv) {
         // KVNamespaceLike は get/put/delete の最小契約のみ持つため、

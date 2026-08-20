@@ -13,9 +13,17 @@ import {
   getTwitchAppAccessToken,
 } from "@/lib/twitch/app-token";
 
-vi.mock("@/lib/cloudflare-kv", () => ({
-  getKvBinding: vi.fn(),
-}));
+vi.mock("@/lib/cloudflare-kv", async (importOriginal) => {
+  // KV_MIN_EXPIRATION_TTL_SECONDSは実装側の定数をそのまま使う。ここで値を
+  // 直書きすると、実装の定数が変わってもテストが追随せず「最小値60秒を
+  // 下回らない」というテストの意図が形骸化するため、importOriginalで
+  // 実体を継承し getKvBinding だけ差し替える。
+  const actual = await importOriginal<typeof import("@/lib/cloudflare-kv")>();
+  return {
+    ...actual,
+    getKvBinding: vi.fn(),
+  };
+});
 vi.mock("@/lib/sentry/error-handler", () => ({
   reportError: vi.fn(),
 }));
