@@ -33,10 +33,8 @@ jobs:
           if os.environ["HEAD_REPOSITORY"] != os.environ["GITHUB_REPOSITORY"]:
               raise SystemExit("Promotion PR must originate from the repository preview branch")
 
-          body = os.environ.get("PR_BODY", "").replace("
-", "
-").replace("", "
-")
+          body = os.environ.get("PR_BODY", "")
+          body = body.replace(chr(13) + chr(10), chr(10)).replace(chr(13), chr(10))
           body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)
           lines = body.splitlines()
           heading = "## このリリースで変わること"
