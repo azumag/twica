@@ -50,7 +50,7 @@
     "check:maintenance-surfaces": "node scripts/check-maintenance-surfaces.js",
     "probe:maintenance": "node scripts/probe-maintenance-write-surfaces.js",
     "replay:maintenance-eventsub": "node scripts/replay-maintenance-eventsub.js",
-    "check:analysis-dashboard-vs-sql": "node scripts/compare-analysis-dashboard-vs-sql.js",
+    "check:analysis-dashboard-vs-sql": "node scripts/compare-analysis-dashboard-vs-sql.mjs",
     "error-reporter:deploy": "cd workers/error-reporter && OPEN_NEXT_DEPLOY=true npx wrangler deploy",
     "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail"
   },
