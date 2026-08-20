@@ -15,8 +15,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 //    （ソースコードのコメントで明示されている契約）
 // 6. getTwitchAccessToken自体が例外(refresh失敗)をthrowした場合も、未捕捉のまま
 //    呼び出し元(API route)へ伝播させず、結果オブジェクトへ変換する(Issue #1064)
-//    - refreshが非retryable(invalid_grant等)で恒久的に失敗 → reauth_required/definitive:true
-//    - refreshがretryable(429/5xx/network)で一時的に失敗 → unknown/definitive:false
+//    - 恒久失効(token-manager.isPermanentRefreshFailure=true。400/401のhttp)
+//      → reauth_required/definitive:true
+//    - それ以外は全て一時障害として扱う(definitive:false)。retryableの否定形では
+//      なく恒久statusのホワイトリストで判定するため(Issue #1018)、520/501/505等の
+//      一過性5xxや403(WAF等)、kind='invalid_response'はretryable=falseでも
+//      恒久扱いにしてはならない — 誤って恒久化するとDBの確定capability(available)を
+//      一時障害中にreauth_requiredへ上書きしてしまう
 
 const mocks = vi.hoisted(() => ({
   getTwitchAccessToken: vi.fn(),
@@ -101,7 +106,7 @@ describe('probeChannelPointsCapability', () => {
     expect(global.fetch).not.toHaveBeenCalled()
   })
 
-  it('getTwitchAccessTokenがretryableなrefresh失敗(TwitchTokenError)をthrowした場合、fetchを呼ばずunknown/token_refresh_unavailableを返す（definitive:false。既存確定状態を破壊してはならない）', async () => {
+  it('getTwitchAccessTokenがretryableなrefresh失敗(TwitchTokenError)をthrowした場合、fetchを呼ばずunknown/token_refresh_temporarily_failedを返す（definitive:false。既存確定状態を破壊してはならない）', async () => {
     const { TwitchTokenError } = await import('@/lib/twitch/token-manager')
     mocks.getTwitchAccessToken.mockRejectedValue(
       new TwitchTokenError('Failed to refresh Twitch access token', 'REFRESH_FAILED', undefined, 503, 'http', true)
@@ -112,7 +117,7 @@ describe('probeChannelPointsCapability', () => {
 
     expect(result).toEqual({
       capability: 'unknown',
-      reason: 'token_refresh_unavailable',
+      reason: 'token_refresh_temporarily_failed',
       definitive: false,
     })
     expect(global.fetch).not.toHaveBeenCalled()
@@ -129,7 +134,55 @@ describe('probeChannelPointsCapability', () => {
 
     expect(result).toEqual({
       capability: 'unknown',
-      reason: 'token_refresh_unavailable',
+      reason: 'token_refresh_temporarily_failed',
+      definitive: false,
+    })
+  })
+
+  it('getTwitchAccessTokenがrefreshStatus=520(retryable=falseだがPERMANENT_REFRESH_STATUSES外)のTwitchTokenErrorをthrowした場合、恒久扱いせずunknown/definitive:falseを返す（Issue #1018: retryableの否定形で恒久判定してはならない）', async () => {
+    const { TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    mocks.getTwitchAccessToken.mockRejectedValue(
+      new TwitchTokenError('Failed to refresh Twitch access token', 'REFRESH_FAILED', undefined, 520, 'http', false)
+    )
+
+    const { probeChannelPointsCapability } = await import('@/lib/twitch/channel-points')
+    const result = await probeChannelPointsCapability(BROADCASTER_ID)
+
+    expect(result).toEqual({
+      capability: 'unknown',
+      reason: 'token_refresh_temporarily_failed',
+      definitive: false,
+    })
+  })
+
+  it('getTwitchAccessTokenがrefreshStatus=403(retryable=falseだが#1018で恒久失効から意図的に除外)のTwitchTokenErrorをthrowした場合も一時障害として扱う（definitive:false）', async () => {
+    const { TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    mocks.getTwitchAccessToken.mockRejectedValue(
+      new TwitchTokenError('Failed to refresh Twitch access token', 'REFRESH_FAILED', undefined, 403, 'http', false)
+    )
+
+    const { probeChannelPointsCapability } = await import('@/lib/twitch/channel-points')
+    const result = await probeChannelPointsCapability(BROADCASTER_ID)
+
+    expect(result).toEqual({
+      capability: 'unknown',
+      reason: 'token_refresh_temporarily_failed',
+      definitive: false,
+    })
+  })
+
+  it('getTwitchAccessTokenがkind=invalid_response(status 200で本文不正)のTwitchTokenErrorをthrowした場合も一時障害として扱う（definitive:false）', async () => {
+    const { TwitchTokenError } = await import('@/lib/twitch/token-manager')
+    mocks.getTwitchAccessToken.mockRejectedValue(
+      new TwitchTokenError('Failed to refresh Twitch access token', 'REFRESH_FAILED', undefined, undefined, 'invalid_response', false)
+    )
+
+    const { probeChannelPointsCapability } = await import('@/lib/twitch/channel-points')
+    const result = await probeChannelPointsCapability(BROADCASTER_ID)
+
+    expect(result).toEqual({
+      capability: 'unknown',
+      reason: 'token_refresh_temporarily_failed',
       definitive: false,
     })
   })
