@@ -2,8 +2,7 @@ name: Notify Discord on main merge
 
 # Security contract: pull_request_target lets a merged PR notification read the
 # repository webhook secret from the trusted base context. Never checkout or
-# execute code from the PR head in this workflow. GitHub API access below is
-# read-only and is used only to resolve merged preview PR metadata.
+# execute code from the PR head in this workflow.
 on:
   pull_request_target:
     types: [closed]
@@ -11,24 +10,21 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   notify:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    # PR-controlled strings stay in env and are passed to jq / shell commands
-    # as quoted data; do not interpolate them directly into the shell script.
+    # PR-controlled strings stay in env and are consumed as data by Python/jq;
+    # do not interpolate them directly into the shell script.
     env:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       REPOSITORY_NAME: ${{ github.event.repository.name }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
       PR_URL: ${{ github.event.pull_request.html_url }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
     steps:
       - name: Validate webhook configuration
@@ -39,219 +35,67 @@ jobs:
             exit 1
           fi
 
-      - name: Build release change list
-        id: changes
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Resolve the actual commits contained by the merged promotion PR,
-          # then ask GitHub which preview PR introduced each commit. This avoids
-          # trusting free-form promotion PR prose, which can mention unrelated
-          # historical PRs in QA/review notes.
-          api_get() {
-            local url="$1"
-            local output_file="$2"
-            curl \
-              --silent \
-              --show-error \
-              --retry 2 \
-              --retry-delay 1 \
-              --connect-timeout 5 \
-              --max-time 15 \
-              --output "$output_file" \
-              --write-out '%{http_code}' \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "$url"
-          }
-
-          escape_title() {
-            # Normalize line breaks before the value can reach GITHUB_OUTPUT,
-            # truncate by Unicode characters (not bytes), then escape only
-            # Markdown controls that can affect link text rendering.
-            TITLE="$1" python3 -c 'import os,re; value=os.environ["TITLE"].replace("\r", " ").replace("\n", " ")[:80]; print(re.sub(r"([\\`*_~|\[\]])", r"\\\1", value), end="")'
-          }
-
-          discovery_complete=true
-          commit_shas=()
-          total_commits=0
-          page_size=100
-          max_pages=5
-          for page in $(seq 1 "$max_pages"); do
-            response_file=$(mktemp)
-            compare_url="https://api.github.com/repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA?per_page=$page_size&page=$page"
-            if ! http_code=$(api_get "$compare_url" "$response_file"); then
-              echo "::warning::Failed to fetch release commit comparison from GitHub."
-              discovery_complete=false
-              rm -f "$response_file"
-              break
-            fi
-
-            if [[ "$http_code" != "200" ]]; then
-              echo "::warning::GitHub compare API returned HTTP $http_code."
-              discovery_complete=false
-              rm -f "$response_file"
-              break
-            fi
-
-            if ! page_metadata=$(jq -r '[.commits | length, (.total_commits // 0)] | @tsv' "$response_file"); then
-              echo "::warning::Failed to parse release commit comparison metadata."
-              discovery_complete=false
-              rm -f "$response_file"
-              break
-            fi
-            IFS=$'\t' read -r page_count total_commits <<<"$page_metadata"
-
-            if ! page_commit_shas=$(jq -r '.commits[]?.sha' "$response_file"); then
-              echo "::warning::Failed to parse release commit SHAs."
-              discovery_complete=false
-              rm -f "$response_file"
-              break
-            fi
-            while IFS= read -r commit_sha; do
-              if [[ -n "$commit_sha" ]]; then
-                commit_shas+=("$commit_sha")
-              fi
-            done <<<"$page_commit_shas"
-            rm -f "$response_file"
-
-            if [[ "$page_count" -lt "$page_size" ]]; then
-              break
-            fi
-
-            if [[ "$page" -eq "$max_pages" && "$total_commits" -gt $((max_pages * page_size)) ]]; then
-              echo "::warning::Release comparison exceeded $((max_pages * page_size)) commits; Discord change discovery was truncated."
-              discovery_complete=false
-            fi
-          done
-
-          if [[ "$discovery_complete" == "true" && ${#commit_shas[@]} -lt "$total_commits" ]]; then
-            echo "::warning::GitHub compare API returned ${#commit_shas[@]} of $total_commits commits; Discord change discovery is incomplete."
-            discovery_complete=false
-          fi
-
-          changes_json='[]'
-          seen_numbers=' '
-          for commit_sha in "${commit_shas[@]}"; do
-            response_file=$(mktemp)
-            pulls_url="https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$commit_sha/pulls"
-            if ! http_code=$(api_get "$pulls_url" "$response_file"); then
-              echo "::warning::Failed to resolve PRs associated with commit $commit_sha."
-              discovery_complete=false
-              rm -f "$response_file"
-              continue
-            fi
-
-            if [[ "$http_code" != "200" ]]; then
-              echo "::warning::GitHub commit-pulls API returned HTTP $http_code for $commit_sha."
-              discovery_complete=false
-              rm -f "$response_file"
-              continue
-            fi
-
-            while IFS= read -r pr_json; do
-              number=$(jq -r '.number | tostring' <<<"$pr_json")
-              if [[ "$seen_numbers" == *" $number "* ]]; then
-                continue
-              fi
-
-              title=$(jq -r '.title // ""' <<<"$pr_json")
-              url=$(jq -r '.url // ""' <<<"$pr_json")
-              safe_title=$(escape_title "$title")
-
-              changes_json=$(jq -c \
-                --arg number "$number" \
-                --arg title "$safe_title" \
-                --arg url "$url" \
-                '. + [{number: $number, title: $title, url: $url}]' \
-                <<<"$changes_json")
-              seen_numbers+="$number "
-            done < <(jq -c \
-              '.[] | select(.base.ref == "preview" and (.merged_at // "") != "") | {number, title, url: .html_url}' \
-              "$response_file")
-            rm -f "$response_file"
-          done
-
-          change_count=$(jq 'length' <<<"$changes_json")
-          if [[ "$change_count" -eq 0 && "$discovery_complete" == "true" ]]; then
-            # A direct-to-main PR has no preview-origin PRs, so preserve the
-            # previous useful notification by showing the merged PR itself.
-            safe_fallback_title=$(escape_title "$PR_TITLE")
-            change_count=1
-            change_list="- [#$PR_NUMBER $safe_fallback_title]($PR_URL)"
-          elif [[ "$change_count" -eq 0 ]]; then
-            change_list='- 更新内容をGitHubから完全には取得できませんでした'
-          else
-            change_list=$(jq -r \
-              '.[:10][] | "- [#\(.number) \(.title)](\(.url))"' \
-              <<<"$changes_json")
-
-            if [[ "$change_count" -gt 10 ]]; then
-              change_list+=$'\n'"- ほか $((change_count - 10)) 件"
-            fi
-          fi
-
-          # GitHub recommends a unique delimiter for multiline outputs when
-          # values can contain externally controlled text.
-          delimiter="EOF_$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
-          {
-            echo "count=$change_count"
-            echo "complete=$discovery_complete"
-            echo "change_list<<$delimiter"
-            printf '%s\n' "$change_list"
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Send merge notification to Discord
         shell: bash
-        env:
-          CHANGE_COUNT: ${{ steps.changes.outputs.count }}
-          CHANGE_LIST: ${{ steps.changes.outputs.change_list }}
-          DISCOVERY_COMPLETE: ${{ steps.changes.outputs.complete }}
         run: |
-          if [[ "$DISCOVERY_COMPLETE" == "true" ]]; then
-            change_heading="**今回の変更（全${CHANGE_COUNT}件）**"
-          elif [[ "$CHANGE_COUNT" -eq 0 ]]; then
-            change_heading='**今回の変更（取得失敗）**'
-          else
-            change_heading="**今回の変更（取得できた${CHANGE_COUNT}件・一部取得失敗）**"
-          fi
-
-          # Discord limits message content to 2000 UTF-16 code units. Keep the
-          # full count in the heading, but drop whole change-list lines if the
-          # rendered message would exceed that limit so the webhook still lands.
-          content=$(CHANGE_HEADING="$change_heading" python3 - <<'PY'
+          # Promotion PRs keep the human-facing release summary in the first
+          # `## このリリースで変わること` section. Reuse that text directly
+          # instead of rediscovering component PRs through the GitHub API.
+          content=$(python3 - <<'PY'
           import os
 
           limit = 2000
-          marker = "- 文字数上限のため一部省略"
-          lines = os.environ.get("CHANGE_LIST", "").splitlines()
-          if not lines:
-              lines = ["- 更新内容をGitHubから取得できませんでした"]
+          section_heading = "## このリリースで変わること"
+          body = os.environ.get("PR_BODY", "").replace("\r\n", "\n").replace("\r", "\n")
+          lines = body.splitlines()
 
-          def build(change_lines):
-              return (
-                  f"🚀 **{os.environ['REPOSITORY_NAME']} が更新されました**\n\n"
-                  f"{os.environ['CHANGE_HEADING']}\n"
-                  f"{'\n'.join(change_lines)}\n\n"
-                  f"`{os.environ['HEAD_REF']} → main`\n"
-                  f"by {os.environ['PR_AUTHOR']}\n\n"
-                  f"🔗 [リリース内容を見る]({os.environ['PR_URL']})"
-              )
+          release_lines = []
+          start = None
+          for index, line in enumerate(lines):
+              if line.strip() == section_heading:
+                  start = index + 1
+                  break
+
+          if start is not None:
+              for line in lines[start:]:
+                  if line.startswith("## "):
+                      break
+                  release_lines.append(line)
+
+          release_text = "\n".join(release_lines).strip()
+          if not release_text:
+              release_text = os.environ.get("PR_TITLE", "").strip()
+
+          prefix = f"🚀 **{os.environ['REPOSITORY_NAME']} が更新されました**\n\n"
+          suffix = (
+              f"\n\n`{os.environ['HEAD_REF']} → main`\n"
+              f"by {os.environ['PR_AUTHOR']}\n\n"
+              f"🔗 [リリース内容を見る]({os.environ['PR_URL']})"
+          )
 
           def discord_length(value):
               return len(value.encode("utf-16-le")) // 2
 
-          content = build(lines)
+          def truncate_utf16(value, max_units):
+              result = []
+              used = 0
+              for char in value:
+                  units = len(char.encode("utf-16-le")) // 2
+                  if used + units > max_units:
+                      break
+                  result.append(char)
+                  used += units
+              return "".join(result)
+
+          content = prefix + release_text + suffix
           if discord_length(content) > limit:
-              while lines and discord_length(build(lines + [marker])) > limit:
-                  lines.pop()
-              content = build(lines + [marker])
+              marker = "\n\n…"
+              available = limit - discord_length(prefix + marker + suffix)
+              release_text = truncate_utf16(release_text, max(0, available)).rstrip()
+              content = prefix + release_text + marker + suffix
 
           if discord_length(content) > limit:
-              raise SystemExit("Discord notification still exceeds 2000 characters after trimming")
+              raise SystemExit("Discord notification exceeds 2000 characters after trimming")
 
           print(content, end="")
           PY
