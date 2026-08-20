@@ -25,6 +25,8 @@ jobs:
       PR_URL: ${{ github.event.pull_request.html_url }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
 
     steps:
       - name: Validate webhook configuration
@@ -49,6 +51,10 @@ jobs:
           limit = 2000
           section_heading = "## このリリースで変わること"
           body = os.environ.get("PR_BODY", "").replace("\r\n", "\n").replace("\r", "\n")
+          # Only same-repository promotion text is trusted as notification input.
+          # Fork PRs fall back to a sanitized title below.
+          if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"):
+              body = ""
           # Template guidance and other HTML comments are not user-facing release
           # text. Strip them before section extraction so comments-only input is
           # treated as empty and falls back to the PR title.
@@ -68,16 +74,31 @@ jobs:
                       break
                   release_lines.append(line)
 
-          release_text = "\n".join(release_lines).strip()
+          def strip_markdown_links(value):
+              value = re.sub(r"!\\[([^]]*)\\]\\([^)]*\\)", r"\\1", value)
+              value = re.sub(r"\\[([^]]+)\\]\\([^)]*\\)", r"\\1", value)
+              value = re.sub(r"<https?://[^>]+>", "", value)
+              return value
+
+          release_text = strip_markdown_links("\n".join(release_lines).strip())
           if not release_text:
-              # Keep internal diagnostics in Actions only. Discord should remain
-              # clean and simply fall back to the promotion PR title.
+              is_promotion = (
+                  os.environ.get("BASE_REF") == "main"
+                  and os.environ.get("HEAD_REF") == "preview"
+              )
+              if is_promotion:
+                  raise SystemExit(
+                      "Promotion PR must include a non-empty "
+                      "'## このリリースで変わること' section"
+                  )
+              # Non-promotion main merges may use a sanitized title fallback,
+              # but keep the omission visible in Actions logs.
               print(
-                  "::warning::Promotion PR is missing a non-empty "
+                  "::warning::Merged PR is missing a non-empty "
                   "'## このリリースで変わること' section; using PR title in Discord.",
                   file=sys.stderr,
               )
-              release_text = os.environ.get("PR_TITLE", "").strip()
+              release_text = strip_markdown_links(os.environ.get("PR_TITLE", "").strip())
 
           prefix = f"🚀 **{os.environ['REPOSITORY_NAME']} が更新されました**\n\n"
           suffix = (
