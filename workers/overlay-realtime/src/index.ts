@@ -30,8 +30,27 @@ interface OverlayRoomNamespace {
   }
 }
 
+/** The only operations the room needs from the aggregate presence registry. */
+interface OverlayPresenceNamespace {
+  idFromName(name: string): unknown
+  get(id: unknown): {
+    fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
+  }
+}
+
+interface WorkerExecutionContextLike {
+  waitUntil(promise: Promise<unknown>): void
+}
+
+interface WorkerCacheLike {
+  match(request: Request): Promise<Response | undefined>
+  put(request: Request, response: Response): Promise<void>
+}
+
 interface Env {
   OVERLAY_ROOMS: OverlayRoomNamespace
+  /** Optional during a staged rollout; room delivery must survive its absence. */
+  OVERLAY_PRESENCE?: OverlayPresenceNamespace
   OVERLAY_REALTIME_PUBLISH_SECRET: string
   OVERLAY_REALTIME_MODE?: string
   OVERLAY_REALTIME_STREAMER_ALLOWLIST?: string
@@ -58,6 +77,22 @@ const DELIVERY_DEDUPE_TTL_MS = 24 * 60 * 60 * 1_000
 const MAX_CLIENT_MESSAGE_BYTES = 4 * 1024
 const MAX_SOCKET_BUFFER_BYTES = 1024 * 1024
 const CLIENT_MESSAGES_PER_MINUTE = 30
+/**
+ * Presence is intentionally much coarser than WebSocket liveness. A room
+ * writes at most once per five minutes, and an abandoned lease disappears
+ * after ten minutes. This makes the value an honest estimate while keeping
+ * registry writes well below the existing one-minute room alarm cadence.
+ */
+const PRESENCE_REPORT_INTERVAL_MS = 5 * 60_000
+const PRESENCE_REPORT_TIMEOUT_MS = 2_000
+const PRESENCE_LEASE_TTL_MS = 10 * 60_000
+const PRESENCE_SNAPSHOT_TTL_MS = 60_000
+const PRESENCE_SWEEP_INTERVAL_MS = 5 * 60_000
+const PRESENCE_REGISTRY_NAME = 'all'
+const PRESENCE_KEY_PREFIX = 'room:'
+const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
+const PRESENCE_LAST_ATTEMPT_AT_KEY = 'presence-last-attempt-at'
+const PRESENCE_SNAPSHOT_KEY = 'presence-snapshot'
 
 /**
  * Room identity, needed only so the kill-switch alarm can re-evaluate the
@@ -95,14 +130,22 @@ interface RoomRateLimitLedger {
   clientConnectCounts: Record<string, number>
 }
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, extraHeaders?: HeadersInit): Response {
   return Response.json(body, {
     status,
     headers: {
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
+      ...extraHeaders,
     },
   })
+}
+
+function getWorkerCache(): WorkerCacheLike | null {
+  const global = globalThis as unknown as {
+    caches?: { default?: WorkerCacheLike }
+  }
+  return global.caches?.default ?? null
 }
 
 function boundedInteger(value: string | undefined, fallback: number, maximum: number): number {
@@ -218,10 +261,50 @@ async function authenticatedPublishRequest(
  * operation through their WebSocket.
  */
 const overlayRealtimeWorker = {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx?: WorkerExecutionContextLike,
+  ): Promise<Response> {
     const url = new URL(request.url)
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({ ok: true, protocolVersion: 1 })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/presence') {
+      // Keep one canonical cache key. Random query strings must not be able to
+      // turn the public estimate into an unbounded registry-read amplifier.
+      if (url.search) return json({ error: 'Query parameters are not supported' }, 400)
+      const cache = getWorkerCache()
+      const cacheKey = new Request(new URL('/presence', url).toString())
+      if (cache) {
+        try {
+          const cached = await cache.match(cacheKey)
+          if (cached) return cached
+        } catch {
+          // Cache API is an optimization. The Durable Object snapshot cache
+          // below remains the correctness and freshness boundary.
+        }
+      }
+      if (!env.OVERLAY_PRESENCE) {
+        // Presence is an auxiliary estimate. Keep the overlay transport
+        // deployable independently and make the application hide the line
+        // rather than turning an absent binding into "0 channels".
+        return json({ error: 'Presence unavailable' }, 503)
+      }
+      try {
+        const id = env.OVERLAY_PRESENCE.idFromName(PRESENCE_REGISTRY_NAME)
+        const response = await env.OVERLAY_PRESENCE.get(id).fetch(
+          new Request('https://presence.internal/snapshot')
+        )
+        if (response.ok && cache) {
+          const put = cache.put(cacheKey, response.clone()).catch(() => undefined)
+          if (ctx) ctx.waitUntil(put)
+        }
+        return response
+      } catch {
+        return json({ error: 'Presence unavailable' }, 503)
+      }
     }
 
     const connectStreamerId = roomPath(url.pathname, 'connect')
@@ -458,6 +541,10 @@ export class OverlayRoom {
       // No listeners: let the object go fully idle instead of paying for a
       // wake every minute for a room nobody is watching.
       await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
+      // A reconnect after a quiet period should publish a fresh lease
+      // immediately. The registry itself expires the old lease.
+      await this.state.storage.delete(PRESENCE_LAST_REPORTED_AT_KEY)
+      await this.state.storage.delete(PRESENCE_LAST_ATTEMPT_AT_KEY)
       return
     }
 
@@ -466,6 +553,7 @@ export class OverlayRoom {
     // (polling still recovers every committed event) and retry on the next
     // alarm rather than disconnecting a healthy room on a storage miss.
     if (!streamerId || realtimeEnabled(this.env, streamerId)) {
+      if (streamerId) this.schedulePresenceReport(streamerId)
       // Still allowed: prove liveness on the same wake. Clients reconcile
       // history only every ten minutes, so this distinguishes "no gacha
       // happened" from "this socket died" without waiting for that DB pass.
@@ -504,6 +592,86 @@ export class OverlayRoom {
       }
     }
     await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
+    await this.state.storage.delete(PRESENCE_LAST_REPORTED_AT_KEY)
+    await this.state.storage.delete(PRESENCE_LAST_ATTEMPT_AT_KEY)
+  }
+
+  /**
+   * Refresh this room's short lease without putting identity data into the
+   * public response. Failures are deliberately non-fatal: realtime delivery
+   * and polling fallback must continue even if the estimate is unavailable.
+   */
+  private schedulePresenceReport(streamerId: string): void {
+    const task = this.reportPresenceIfDue(streamerId)
+    try {
+      // Keep this best-effort task out of the WebSocket handshake and heartbeat
+      // critical path. Durable Objects continue pending I/O automatically;
+      // waitUntil is retained for runtime compatibility and the test harness.
+      if (typeof this.state.waitUntil === 'function') {
+        this.state.waitUntil(task)
+      } else {
+        void task
+      }
+    } catch {
+      void task
+    }
+  }
+
+  private async reportPresenceIfDue(streamerId: string): Promise<void> {
+    try {
+      if (!this.env.OVERLAY_PRESENCE) return
+      const now = Date.now()
+      const lastReportedAt = await this.state.storage.get<number>(
+        PRESENCE_LAST_REPORTED_AT_KEY
+      )
+      const lastAttemptAt = await this.state.storage.get<number>(
+        PRESENCE_LAST_ATTEMPT_AT_KEY
+      )
+      if (
+        typeof lastReportedAt === 'number'
+        && Number.isSafeInteger(lastReportedAt)
+        && now - lastReportedAt < PRESENCE_REPORT_INTERVAL_MS
+      ) {
+        return
+      }
+      // A failed registry deployment must not turn the room's existing
+      // one-minute alarm into a one-minute retry storm. Keep a separate attempt
+      // timestamp so failures back off at the same five-minute cadence.
+      if (
+        typeof lastAttemptAt === 'number'
+        && Number.isSafeInteger(lastAttemptAt)
+        && now - lastAttemptAt < PRESENCE_REPORT_INTERVAL_MS
+      ) {
+        return
+      }
+      await this.state.storage.put(PRESENCE_LAST_ATTEMPT_AT_KEY, now)
+
+      const id = this.env.OVERLAY_PRESENCE.idFromName(PRESENCE_REGISTRY_NAME)
+      const controller = new AbortController()
+      const timeout = setTimeout(
+        () => controller.abort(),
+        PRESENCE_REPORT_TIMEOUT_MS,
+      )
+      let response: Response
+      try {
+        response = await this.env.OVERLAY_PRESENCE.get(id).fetch(
+          new Request('https://presence.internal/report', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ streamerId }),
+            signal: controller.signal,
+          })
+        )
+      } finally {
+        clearTimeout(timeout)
+      }
+      if (!response.ok) return
+      await this.state.storage.put(PRESENCE_LAST_REPORTED_AT_KEY, now)
+    } catch {
+      // Storage and binding failures are both non-fatal. The next room alarm
+      // retries after the attempt backoff, but existing overlay delivery keeps
+      // running even if the estimate is unavailable.
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -547,6 +715,7 @@ export class OverlayRoom {
       )
       if (isValidStreamerId(roomStreamerId)) {
         await this.state.storage.put(ROOM_STREAMER_ID_KEY, roomStreamerId)
+        this.schedulePresenceReport(roomStreamerId)
       }
       // Only arm when nothing is pending. Re-arming on every connect would push
       // the check out indefinitely for a room that OBS reconnects frequently.
@@ -694,5 +863,178 @@ export class OverlayRoom {
     } catch {
       // Nothing remains to clean up when the runtime has already dropped it.
     }
+  }
+}
+
+interface PresenceLease {
+  lastSeen: number
+}
+
+interface PresenceSnapshotCache {
+  count: number
+  observedAt: string
+  expiresAt: number
+}
+
+/**
+ * A single, deliberately anonymous aggregate for the public estimate.
+ *
+ * The registry stores only a short-lived room lease. It does not store IPs,
+ * usernames, Twitch metadata, or socket counts. `/snapshot` returns a count
+ * after dropping expired leases; callers never receive the room keys.
+ */
+export class OverlayPresence {
+  private readonly state: CloudflareDurableObjectState
+
+  constructor(state: CloudflareDurableObjectState, env: Env) {
+    this.state = state
+    // Keep the standard Durable Object constructor shape for Wrangler even
+    // though this aggregate has no environment-specific behavior.
+    void env
+  }
+
+  /**
+   * Count and clean leases in bounded pages. Durable Object list() has no
+   * server-side TTL, so an alarm keeps historical rooms from accumulating;
+   * paging also avoids materializing the entire key history at once.
+   */
+  private async countActiveLeases(now: number): Promise<number> {
+    const cutoff = now - PRESENCE_LEASE_TTL_MS
+    const pageSize = 1_000
+    let startAfter: string | undefined
+    let count = 0
+
+    while (true) {
+      const options = startAfter
+        ? { prefix: PRESENCE_KEY_PREFIX, limit: pageSize, startAfter }
+        : { prefix: PRESENCE_KEY_PREFIX, limit: pageSize }
+      const entries = await this.state.storage.list<PresenceLease>(options)
+      if (entries.size === 0) break
+
+      const expiredKeys: string[] = []
+      for (const [key, lease] of entries) {
+        if (lease && Number.isFinite(lease.lastSeen) && lease.lastSeen >= cutoff) {
+          count += 1
+        } else {
+          expiredKeys.push(key)
+        }
+      }
+      if (expiredKeys.length > 0) {
+        await this.state.storage.delete(expiredKeys)
+      }
+
+      // The page is ordered by key. Deleting expired rows does not alter the
+      // already materialized page, so advancing by its final key cannot skip a
+      // later row. A short page proves there is no next page.
+      if (entries.size < pageSize) break
+      const lastKey = [...entries.keys()].at(-1)
+      if (!lastKey || lastKey === startAfter) break
+      startAfter = lastKey
+    }
+    return count
+  }
+
+  private async ensureSweepAlarm(): Promise<void> {
+    try {
+      if (await this.state.storage.getAlarm() === null) {
+        await this.state.storage.setAlarm(Date.now() + PRESENCE_SWEEP_INTERVAL_MS)
+      }
+    } catch {
+      // A later snapshot or report retries alarm setup. Lease correctness does
+      // not depend on the alarm because snapshots still drop expired rows.
+    }
+  }
+
+  async alarm(): Promise<void> {
+    try {
+      const activeCount = await this.countActiveLeases(Date.now())
+      // A sweep invalidates the cached count, even when the only change was an
+      // expiry. The next read then reflects the cleaned registry.
+      await this.state.storage.delete(PRESENCE_SNAPSHOT_KEY)
+      if (activeCount > 0) {
+        await this.state.storage.setAlarm(Date.now() + PRESENCE_SWEEP_INTERVAL_MS)
+      } else {
+        await this.state.storage.deleteAlarm()
+      }
+    } catch {
+      // Let the Durable Objects runtime retry the alarm; a metrics cleanup
+      // failure must never affect room sockets.
+      try {
+        await this.state.storage.setAlarm(Date.now() + 60_000)
+      } catch {
+        // Best effort only.
+      }
+    }
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+
+    if (request.method === 'POST' && url.pathname === '/report') {
+      let body: unknown
+      try {
+        body = await request.json()
+      } catch {
+        return json({ error: 'Invalid JSON' }, 400)
+      }
+      const streamerId =
+        body && typeof body === 'object' && 'streamerId' in body
+          ? (body as { streamerId?: unknown }).streamerId
+          : null
+      if (typeof streamerId !== 'string' || !isValidStreamerId(streamerId)) {
+        return json({ error: 'Invalid streamer id' }, 400)
+      }
+
+      // The room binding is the only caller of this route. Keeping one lease
+      // per room makes repeated reports idempotent and avoids a global counter
+      // that would need a separate decrement path when tabs disappear.
+      await this.state.storage.put<PresenceLease>(
+        `${PRESENCE_KEY_PREFIX}${streamerId}`,
+        { lastSeen: Date.now() }
+      )
+      // Keep the singleton cleanup alarm alive without resetting it on every
+      // five-minute room refresh.
+      await this.ensureSweepAlarm()
+      return json({ accepted: true }, 202)
+    }
+
+    if (request.method === 'GET' && url.pathname === '/snapshot') {
+      const now = Date.now()
+      const cached = await this.state.storage.get<PresenceSnapshotCache>(
+        PRESENCE_SNAPSHOT_KEY
+      )
+      if (
+        cached
+        && Number.isSafeInteger(cached.count)
+        && cached.count >= 0
+        && typeof cached.observedAt === 'string'
+        && Number.isSafeInteger(cached.expiresAt)
+        && cached.expiresAt > now
+      ) {
+        return this.snapshotResponse(cached.count, cached.observedAt)
+      }
+
+      const count = await this.countActiveLeases(now)
+      const observedAt = new Date(now).toISOString()
+      await this.state.storage.put<PresenceSnapshotCache>(PRESENCE_SNAPSHOT_KEY, {
+        count,
+        observedAt,
+        expiresAt: now + PRESENCE_SNAPSHOT_TTL_MS,
+      })
+      await this.ensureSweepAlarm()
+      return this.snapshotResponse(count, observedAt)
+    }
+
+    return json({ error: 'Not found' }, 404)
+  }
+
+  private snapshotResponse(count: number, observedAt: string): Response {
+    // The application adds its own KV cache. The bounded DO snapshot cache
+    // above also keeps direct reads from scanning every lease for 60 seconds.
+    return json(
+      { count, observedAt },
+      200,
+      { 'cache-control': 'public, max-age=60' }
+    )
   }
 }

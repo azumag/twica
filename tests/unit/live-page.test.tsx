@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   getLiveDirectory: vi.fn(),
+  getLiveDirectoryPresence: vi.fn(),
   getLiveDirectoryRankings: vi.fn(),
   getTranslations: vi.fn(),
 }));
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/session", () => ({ getSession: mocks.getSession }));
 vi.mock("@/lib/live-directory", () => ({
   getLiveDirectory: mocks.getLiveDirectory,
+  getLiveDirectoryPresence: mocks.getLiveDirectoryPresence,
   getLiveDirectoryRankings: mocks.getLiveDirectoryRankings,
 }));
 vi.mock("next-intl/server", () => ({
@@ -46,6 +48,9 @@ const translations: Record<string, Record<string, string>> = {
     consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
     rankingNotice:
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
+    liveCount: "現在配信中チャネル数（推定）：約{count}件",
+    liveCountNote:
+      "overlay接続だけを基にした概算です。polling-onlyは含まれず、設定画面のプレビューや残留タブは含まれるため実際の配信数とは差が生じます。反映に十数分かかる場合があります。",
   },
   header: {
     dashboard: "ダッシュボード",
@@ -56,12 +61,20 @@ describe("LivePage", () => {
   beforeEach(() => {
     mocks.getSession.mockReset();
     mocks.getLiveDirectory.mockReset();
+    mocks.getLiveDirectoryPresence.mockReset();
     mocks.getLiveDirectoryRankings.mockReset();
     mocks.getTranslations.mockReset();
     mocks.getTranslations.mockImplementation(async (namespace: string) => {
-      return (key: string) => translations[namespace]?.[key] ?? key;
+      return (key: string, values?: Record<string, unknown>) => {
+        const template = translations[namespace]?.[key] ?? key;
+        return Object.entries(values ?? {}).reduce(
+          (text, [name, value]) => text.replace(`{${name}}`, String(value)),
+          template,
+        );
+      };
     });
     mocks.getLiveDirectory.mockResolvedValue([{ streamerId: "streamer-1" }]);
+    mocks.getLiveDirectoryPresence.mockResolvedValue(null);
     mocks.getLiveDirectoryRankings.mockResolvedValue({
       last7Days: [{ identity: null }],
       allTime: [{ identity: null }, { identity: null }],
@@ -75,6 +88,7 @@ describe("LivePage", () => {
 
     expect(mocks.getSession).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectory).toHaveBeenCalledOnce();
+    expect(mocks.getLiveDirectoryPresence).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectoryRankings).toHaveBeenCalledOnce();
     expect(
       screen.getByRole("heading", { name: "TwiCaチャネルとランキング" }),
@@ -102,6 +116,23 @@ describe("LivePage", () => {
     expect(screen.getByRole("link", { name: "ダッシュボード" })).toHaveAttribute(
       "href",
       "/dashboard",
+    );
+  });
+
+  it("shows the estimate only when the presence snapshot is available", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getLiveDirectoryPresence.mockResolvedValue({
+      count: 7,
+      observedAt: "2026-08-21T00:00:00.000Z",
+    });
+
+    render(await LivePage());
+
+    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
+      "現在配信中チャネル数（推定）：約7件",
+    );
+    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
+      "polling-onlyは含まれず、設定画面のプレビューや残留タブは含まれる",
     );
   });
 

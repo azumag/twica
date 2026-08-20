@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import worker, {
+  OverlayPresence,
   OverlayRoom,
 } from '../../workers/overlay-realtime/src/index'
 import { buildPollingRealtimeEvents } from '@/lib/overlay-realtime/contract'
@@ -233,6 +234,111 @@ describe('overlay realtime Worker router', () => {
     expect(notAllowlisted.status).toBe(503)
     expect(get).not.toHaveBeenCalled()
   })
+
+  it('returns only an aggregate presence snapshot through the public read route', async () => {
+    const presenceFetch = vi.fn().mockResolvedValue(
+      Response.json(
+        { count: 3, observedAt: '2026-08-21T00:00:00.000Z' },
+        { headers: { 'cache-control': 'public, max-age=60' } },
+      ),
+    )
+    const idFromName = vi.fn(() => ({ registry: 'all' }))
+    const response = await worker.fetch(
+      new Request('https://worker.example/presence'),
+      {
+        ...ROLLOUT_ENV,
+        OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
+        OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
+        OVERLAY_PRESENCE: {
+          idFromName,
+          get: vi.fn(() => ({ fetch: presenceFetch })),
+        },
+      } as unknown as Parameters<typeof worker.fetch>[1],
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      count: 3,
+      observedAt: '2026-08-21T00:00:00.000Z',
+    })
+    expect(idFromName).toHaveBeenCalledWith('all')
+    const request = presenceFetch.mock.calls[0][0] as Request
+    expect(request.method).toBe('GET')
+    expect(new URL(request.url).pathname).toBe('/snapshot')
+  })
+
+  it('rejects query variants before touching the singleton registry', async () => {
+    const get = vi.fn()
+    const response = await worker.fetch(
+      new Request('https://worker.example/presence?cachebust=1'),
+      {
+        ...ROLLOUT_ENV,
+        OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
+        OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
+        OVERLAY_PRESENCE: { idFromName: vi.fn(), get },
+      } as unknown as Parameters<typeof worker.fetch>[1],
+    )
+
+    expect(response.status).toBe(400)
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('serves the canonical edge cache before waking the registry', async () => {
+    const cached = Response.json(
+      { count: 9, observedAt: '2026-08-21T00:00:00.000Z' },
+      { headers: { 'cache-control': 'public, max-age=60' } },
+    )
+    const match = vi.fn().mockResolvedValue(cached)
+    const get = vi.fn()
+    vi.stubGlobal('caches', { default: { match, put: vi.fn() } })
+
+    const response = await worker.fetch(
+      new Request('https://worker.example/presence'),
+      {
+        ...ROLLOUT_ENV,
+        OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
+        OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
+        OVERLAY_PRESENCE: { idFromName: vi.fn(), get },
+      } as unknown as Parameters<typeof worker.fetch>[1],
+    )
+
+    expect(response).toBe(cached)
+    expect(match).toHaveBeenCalledOnce()
+    expect(get).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('stores a cache miss without making the registry the cache owner', async () => {
+    const presenceFetch = vi.fn().mockResolvedValue(
+      Response.json(
+        { count: 5, observedAt: '2026-08-21T00:00:00.000Z' },
+        { headers: { 'cache-control': 'public, max-age=60' } },
+      ),
+    )
+    const match = vi.fn().mockResolvedValue(undefined)
+    const put = vi.fn().mockResolvedValue(undefined)
+    const waitUntil = vi.fn()
+    vi.stubGlobal('caches', { default: { match, put } })
+
+    const response = await worker.fetch(
+      new Request('https://worker.example/presence'),
+      {
+        ...ROLLOUT_ENV,
+        OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
+        OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
+        OVERLAY_PRESENCE: {
+          idFromName: vi.fn(() => ({ registry: 'all' })),
+          get: vi.fn(() => ({ fetch: presenceFetch })),
+        },
+      } as unknown as Parameters<typeof worker.fetch>[1],
+      { waitUntil } as never,
+    )
+
+    expect(response.status).toBe(200)
+    expect(put).toHaveBeenCalledOnce()
+    expect(waitUntil).toHaveBeenCalledOnce()
+    vi.unstubAllGlobals()
+  })
 })
 
 interface StorageTransaction {
@@ -242,6 +348,7 @@ interface StorageTransaction {
 
 function createRoomHarness(socketCount = 0) {
   const records = new Map<string, unknown>()
+  const presenceTasks: Promise<unknown>[] = []
   const transaction = async <T>(
     callback: (tx: StorageTransaction) => Promise<T>
   ): Promise<T> => callback({
@@ -261,6 +368,9 @@ function createRoomHarness(socketCount = 0) {
   // a transaction, and schedules itself, so the harness models those too.
   let alarmAt: number | null = null
   const state = {
+    waitUntil: (promise: Promise<unknown>) => {
+      presenceTasks.push(promise)
+    },
     storage: {
       transaction,
       get: async <V>(key: string) => records.get(key) as V | undefined,
@@ -288,6 +398,7 @@ function createRoomHarness(socketCount = 0) {
   }
   return {
     records,
+    presenceTasks,
     sockets,
     state,
     env,
@@ -512,5 +623,267 @@ describe('OverlayRoom kill switch alarm', () => {
 
     expect(harness.sockets[0].close).not.toHaveBeenCalled()
     expect(harness.getAlarmAt()).not.toBeNull()
+  })
+
+  it('reports a room lease on connect without adding client traffic', async () => {
+    const makeSocket = () => ({
+      readyState: 1,
+      send: vi.fn(),
+      close: vi.fn(),
+      serializeAttachment: vi.fn(),
+      deserializeAttachment: vi.fn(),
+    })
+    vi.stubGlobal('WebSocketPair', class {
+      0 = makeSocket()
+      1 = makeSocket()
+    })
+    const harness = createRoomHarness()
+    const presenceFetch = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 }),
+    )
+    ;(harness.env as unknown as { OVERLAY_PRESENCE: unknown }).OVERLAY_PRESENCE = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+
+    await harness.room.fetch(
+      new Request(`https://room.internal/room/connect/${STREAMER_ID}`),
+    )
+    await Promise.all(harness.presenceTasks)
+
+    expect(presenceFetch).toHaveBeenCalledTimes(1)
+    const report = presenceFetch.mock.calls[0][0] as Request
+    expect(new URL(report.url).pathname).toBe('/report')
+    expect(await report.json()).toEqual({ streamerId: STREAMER_ID })
+    vi.unstubAllGlobals()
+  })
+
+  it('returns the WebSocket handshake while a presence registry call is stuck', async () => {
+    const makeSocket = () => ({
+      readyState: 1,
+      send: vi.fn(),
+      close: vi.fn(),
+      serializeAttachment: vi.fn(),
+      deserializeAttachment: vi.fn(),
+    })
+    vi.stubGlobal('WebSocketPair', class {
+      0 = makeSocket()
+      1 = makeSocket()
+    })
+    const harness = createRoomHarness()
+    const presenceFetch = vi.fn(() => new Promise<Response>(() => {}))
+    ;(harness.env as unknown as { OVERLAY_PRESENCE: unknown }).OVERLAY_PRESENCE = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+
+    const result = await Promise.race([
+      harness.room.fetch(
+        new Request(`https://room.internal/room/connect/${STREAMER_ID}`),
+      ),
+      new Promise<'timeout'>((resolve) => {
+        setTimeout(() => resolve('timeout'), 100)
+      }),
+    ])
+
+    expect(result).not.toBe('timeout')
+    expect((result as Response).status).toBe(101)
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps heartbeat and the next alarm when presence reporting rejects', async () => {
+    const harness = createRoomHarness(1)
+    harness.records.set('room-streamer-id', STREAMER_ID)
+    const presenceFetch = vi.fn().mockRejectedValue(new Error('registry down'))
+    ;(harness.env as unknown as { OVERLAY_PRESENCE: unknown }).OVERLAY_PRESENCE = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+
+    await harness.room.alarm()
+    await Promise.all(harness.presenceTasks)
+
+    expect(harness.sockets[0].send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'server_notice', code: 'heartbeat' }),
+    )
+    expect(harness.getAlarmAt()).not.toBeNull()
+  })
+
+  it('keeps heartbeat when presence timestamp storage throws', async () => {
+    const harness = createRoomHarness(1)
+    harness.records.set('room-streamer-id', STREAMER_ID)
+    const originalGet = harness.state.storage.get
+    harness.state.storage.get = vi.fn(
+      async <T>(key: string): Promise<T | undefined> => {
+        if (key.startsWith('presence-')) throw new Error('storage unavailable')
+        return originalGet<T>(key)
+      }
+    ) as typeof originalGet
+    ;(harness.env as unknown as { OVERLAY_PRESENCE: unknown }).OVERLAY_PRESENCE = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: vi.fn() })),
+    }
+
+    await harness.room.alarm()
+    await Promise.all(harness.presenceTasks)
+
+    expect(harness.sockets[0].send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'server_notice', code: 'heartbeat' }),
+    )
+    expect(harness.getAlarmAt()).not.toBeNull()
+  })
+
+  it('backs off presence reports to one attempt per five-minute window', async () => {
+    const harness = createRoomHarness(1)
+    harness.records.set('room-streamer-id', STREAMER_ID)
+    const presenceFetch = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 }),
+    )
+    ;(harness.env as unknown as { OVERLAY_PRESENCE: unknown }).OVERLAY_PRESENCE = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+
+    for (let i = 0; i < 5; i += 1) {
+      await harness.room.alarm()
+      await Promise.all(harness.presenceTasks.splice(0))
+    }
+    expect(presenceFetch).toHaveBeenCalledTimes(1)
+
+    const retryAt = Date.now() - 5 * 60_000
+    harness.records.set('presence-last-attempt-at', retryAt)
+    harness.records.set('presence-last-reported-at', retryAt)
+    await harness.room.alarm()
+    await Promise.all(harness.presenceTasks.splice(0))
+    expect(presenceFetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+function createPresenceHarness() {
+  const records = new Map<string, unknown>()
+  let alarmAt: number | null = null
+  const list = vi.fn(async <T>(options?: {
+    prefix?: string
+    limit?: number
+    startAfter?: string
+  }) => {
+    const prefix = options?.prefix ?? ''
+    const keys = [...records.keys()]
+      .filter((key) => key.startsWith(prefix))
+      .sort()
+    const startIndex = options?.startAfter
+      ? keys.findIndex((key) => key > options.startAfter!)
+      : 0
+    const offset = startIndex < 0 ? keys.length : startIndex
+    const selected = keys.slice(offset, offset + (options?.limit ?? keys.length))
+    return new Map(
+      selected.map((key) => [key, structuredClone(records.get(key)) as T]),
+    )
+  })
+  const state = {
+    storage: {
+      get: async <T>(key: string) => records.get(key) as T | undefined,
+      put: async <T>(key: string, value: T) => {
+        records.set(key, structuredClone(value))
+      },
+      list,
+      delete: async (keys: string | string[]) => {
+        for (const key of Array.isArray(keys) ? keys : [keys]) records.delete(key)
+      },
+      getAlarm: async () => alarmAt,
+      setAlarm: async (time: number) => {
+        alarmAt = time
+      },
+      deleteAlarm: async () => {
+        alarmAt = null
+      },
+    },
+  }
+  return { records, state, list, getAlarmAt: () => alarmAt }
+}
+
+describe('OverlayPresence Durable Object', () => {
+  const firstStreamer = STREAMER_ID
+  const secondStreamer = '223e4567-e89b-42d3-a456-426614174000'
+
+  it('deduplicates room leases and hides room keys from the snapshot', async () => {
+    const harness = createPresenceHarness()
+    const presence = new OverlayPresence(
+      harness.state as never,
+      {} as never,
+    )
+
+    await presence.fetch(new Request('https://presence.internal/report', {
+      method: 'POST',
+      body: JSON.stringify({ streamerId: firstStreamer }),
+    }))
+    await presence.fetch(new Request('https://presence.internal/report', {
+      method: 'POST',
+      body: JSON.stringify({ streamerId: firstStreamer }),
+    }))
+    await presence.fetch(new Request('https://presence.internal/report', {
+      method: 'POST',
+      body: JSON.stringify({ streamerId: secondStreamer }),
+    }))
+
+    const response = await presence.fetch(
+      new Request('https://presence.internal/snapshot'),
+    )
+    expect(response.headers.get('cache-control')).toBe('public, max-age=60')
+    const body = await response.json()
+    expect(body).toMatchObject({ count: 2 })
+    expect(JSON.stringify(body)).not.toContain(firstStreamer)
+
+    const listCalls = harness.list.mock.calls.length
+    const cachedResponse = await presence.fetch(
+      new Request('https://presence.internal/snapshot'),
+    )
+    await expect(cachedResponse.json()).resolves.toMatchObject({ count: 2 })
+    expect(harness.list).toHaveBeenCalledTimes(listCalls)
+  })
+
+  it('drops leases older than the ten-minute estimate window', async () => {
+    const harness = createPresenceHarness()
+    harness.records.set('room:old', { lastSeen: Date.now() - 10 * 60_000 - 1 })
+    harness.records.set('room:fresh', { lastSeen: Date.now() })
+    const presence = new OverlayPresence(harness.state as never, {} as never)
+
+    const response = await presence.fetch(
+      new Request('https://presence.internal/snapshot'),
+    )
+
+    await expect(response.json()).resolves.toMatchObject({ count: 1 })
+    expect(harness.records.has('room:old')).toBe(false)
+    expect(harness.records.has('room:fresh')).toBe(true)
+  })
+
+  it('sweeps expired leases on its alarm even without a snapshot request', async () => {
+    const harness = createPresenceHarness()
+    harness.records.set('room:old', { lastSeen: Date.now() - 10 * 60_000 - 1 })
+    harness.records.set('room:fresh', { lastSeen: Date.now() })
+    const presence = new OverlayPresence(harness.state as never, {} as never)
+
+    await presence.alarm()
+
+    expect(harness.records.has('room:old')).toBe(false)
+    expect(harness.records.has('room:fresh')).toBe(true)
+    expect(harness.getAlarmAt()).not.toBeNull()
+  })
+
+  it('paginates large registries instead of loading every lease in one page', async () => {
+    const harness = createPresenceHarness()
+    for (let i = 0; i < 1_001; i += 1) {
+      harness.records.set(`room:${String(i).padStart(4, '0')}`, { lastSeen: Date.now() })
+    }
+    const presence = new OverlayPresence(harness.state as never, {} as never)
+
+    const response = await presence.fetch(
+      new Request('https://presence.internal/snapshot'),
+    )
+
+    await expect(response.json()).resolves.toMatchObject({ count: 1_001 })
+    expect(harness.list).toHaveBeenCalledTimes(2)
+    expect(harness.list.mock.calls[0][0]).toMatchObject({ limit: 1_000 })
+    expect(harness.list.mock.calls[1][0]).toMatchObject({ limit: 1_000 })
   })
 })
