@@ -89,16 +89,21 @@ describe('streamers デプロイ窓の列集合契約', () => {
     }
   })
 
-  it('安全な列集合は streamers 全列からデプロイ窓対象だけを除いた投影キーと一致する', () => {
+  it('安全な列集合は streamers 全列からデプロイ窓対象だけを除いた投影キーと実SQL列の対応に一致する', () => {
     // schema に新列を追加してこのテストが失敗した場合は、その実SQL列が未デプロイの窓を
-    // 持つなら *_SETTINGS_COLUMNS 側へ、既にデプロイ済みの通常列なら Drizzle の投影キーを
-    // STREAMERS_SAFE_COLUMNS 側へ追加し、フォールバック時の返却行形状を維持する。
+    // 持つなら *_SETTINGS_COLUMNS 側へ、既にデプロイ済みの通常列なら Drizzle の投影キーと
+    // 対応する列オブジェクトを STREAMERS_SAFE_COLUMNS 側へ追加し、フォールバック時の返却行形状と
+    // キー↔実SQL列の対応を維持する。
     const deployWindowColumnNames = new Set<string>(DEPLOY_WINDOW_COLUMNS)
-    const expectedSafeProjectionKeys = Object.entries(getTableColumns(streamersTable))
-      .filter(([, column]) => !deployWindowColumnNames.has(column.name))
-      .map(([key]) => key)
-    const safeProjectionKeys = Object.keys(STREAMERS_SAFE_COLUMNS)
+    const toProjectionPairs = (entries: [string, { name: string }][]) =>
+      entries.map(([key, column]) => `${key}=${column.name}`).sort()
+    const expectedSafeProjectionPairs = toProjectionPairs(
+      Object.entries(getTableColumns(streamersTable)).filter(
+        ([, column]) => !deployWindowColumnNames.has(column.name),
+      ),
+    )
+    const safeProjectionPairs = toProjectionPairs(Object.entries(STREAMERS_SAFE_COLUMNS))
 
-    expect(safeProjectionKeys.sort()).toEqual(expectedSafeProjectionKeys.sort())
+    expect(safeProjectionPairs).toEqual(expectedSafeProjectionPairs)
   })
 })
