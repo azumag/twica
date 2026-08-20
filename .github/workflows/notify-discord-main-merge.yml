@@ -2,7 +2,8 @@ name: Notify Discord on main merge
 
 # Security contract: pull_request_target lets a merged PR notification read the
 # repository webhook secret from the trusted base context. Never checkout or
-# execute code from the PR head in this workflow.
+# execute code from the PR head in this workflow. GitHub API access below is
+# read-only and is used only to resolve merged preview PR metadata.
 on:
   pull_request_target:
     types: [closed]
@@ -10,18 +11,20 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   notify:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    # PR-controlled strings stay in env and are passed to jq via --arg below;
-    # do not interpolate them directly into the shell script.
+    # PR-controlled strings stay in env and are passed to jq / shell commands
+    # as quoted data; do not interpolate them directly into the shell script.
     env:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       REPOSITORY_NAME: ${{ github.event.repository.name }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
       PR_URL: ${{ github.event.pull_request.html_url }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -35,24 +38,147 @@ jobs:
             exit 1
           fi
 
+      - name: Build release change list
+        id: changes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Current promotion PRs normally carry an `含めたPR:` line. Prefer it
+          # to avoid collecting unrelated references from QA notes. Older
+          # promotion formats fall back to scanning the whole PR body.
+          candidate_text=$(printf '%s\n' "$PR_BODY" | grep -E '含めたPR:.*#[0-9]+' || true)
+          if [[ -z "$candidate_text" ]]; then
+            candidate_text="$PR_BODY"
+          fi
+
+          candidate_numbers=$(
+            printf '%s\n' "$candidate_text" \
+              | grep -oE '#[0-9]+' \
+              | tr -d '#' \
+              | awk '!seen[$0]++' \
+              | head -n 30 \
+              || true
+          )
+
+          changes_json='[]'
+          for candidate in $candidate_numbers; do
+            # Do not accidentally list the promotion PR itself if its number is
+            # mentioned in the body.
+            if [[ "$candidate" == "$PR_NUMBER" ]]; then
+              continue
+            fi
+
+            response_file=$(mktemp)
+            if ! http_code=$(curl \
+              --silent \
+              --show-error \
+              --retry 2 \
+              --retry-delay 1 \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$candidate"); then
+              echo "::warning::Failed to fetch PR #$candidate while building the Discord change list."
+              rm -f "$response_file"
+              continue
+            fi
+
+            if [[ "$http_code" != "200" ]]; then
+              # Issue references and stale/non-PR numbers can legitimately be
+              # present in older promotion bodies, so they are ignored.
+              if [[ "$http_code" != "404" ]]; then
+                echo "::warning::GitHub API returned HTTP $http_code for PR #$candidate."
+              fi
+              rm -f "$response_file"
+              continue
+            fi
+
+            base_ref=$(jq -r '.base.ref // ""' "$response_file")
+            merged_at=$(jq -r '.merged_at // ""' "$response_file")
+            if [[ "$base_ref" != "preview" || -z "$merged_at" ]]; then
+              rm -f "$response_file"
+              continue
+            fi
+
+            title=$(jq -r '.title // ""' "$response_file" | tr '\n' ' ' | cut -c1-80)
+            url=$(jq -r '.html_url // ""' "$response_file")
+            rm -f "$response_file"
+
+            # Escape Discord Markdown control characters in PR-controlled
+            # titles while keeping the generated GitHub link clickable.
+            safe_title=$(TITLE="$title" python3 - <<'PY'
+import os
+import re
+
+value = os.environ["TITLE"]
+print(re.sub(r"([\\`*_~|>\[\]\(\)])", r"\\\1", value), end="")
+PY
+            )
+
+            changes_json=$(jq -c \
+              --arg number "$candidate" \
+              --arg title "$safe_title" \
+              --arg url "$url" \
+              '. + [{number: $number, title: $title, url: $url}]' \
+              <<<"$changes_json")
+          done
+
+          change_count=$(jq 'length' <<<"$changes_json")
+          if [[ "$change_count" -eq 0 ]]; then
+            # Keep the notification useful even if an old/custom promotion PR
+            # body does not expose its component PRs in a recognizable form.
+            safe_fallback_title=$(TITLE="$PR_TITLE" python3 - <<'PY'
+import os
+import re
+
+value = os.environ["TITLE"][:80]
+print(re.sub(r"([\\`*_~|>\[\]\(\)])", r"\\\1", value), end="")
+PY
+            )
+            change_count=1
+            change_list="- [#$PR_NUMBER $safe_fallback_title]($PR_URL)"
+          else
+            change_list=$(jq -r \
+              '.[:10][] | "- [#\(.number) \(.title)](\(.url))"' \
+              <<<"$changes_json")
+
+            if [[ "$change_count" -gt 10 ]]; then
+              change_list+=$'\n'"- ほか $((change_count - 10)) 件"
+            fi
+          fi
+
+          {
+            echo "count=$change_count"
+            echo 'change_list<<EOF'
+            printf '%s\n' "$change_list"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Send merge notification to Discord
         shell: bash
+        env:
+          CHANGE_COUNT: ${{ steps.changes.outputs.count }}
+          CHANGE_LIST: ${{ steps.changes.outputs.change_list }}
         run: |
           payload=$(jq -n \
             --arg repository "$REPOSITORY_NAME" \
-            --arg number "$PR_NUMBER" \
-            --arg title "$PR_TITLE" \
             --arg url "$PR_URL" \
             --arg author "$PR_AUTHOR" \
             --arg head_ref "$HEAD_REF" \
+            --arg change_count "$CHANGE_COUNT" \
+            --arg change_list "$CHANGE_LIST" \
             '{
               username: "twica GitHub",
               content: (
                 "🚀 **" + $repository + " が更新されました**\n\n" +
-                "**#" + $number + " " + $title + "**\n" +
+                "**今回の変更**\n" + $change_list + "\n\n" +
+                "**全" + $change_count + "件の変更**\n" +
                 "`" + $head_ref + " → main`\n" +
                 "by " + $author + "\n\n" +
-                "🔗 [Pull Requestを見る](" + $url + ")"
+                "🔗 [リリース内容を見る](" + $url + ")"
               ),
               allowed_mentions: {parse: []}
             }')
