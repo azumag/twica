@@ -58,9 +58,9 @@ jobs:
               value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
               return value
 
-          release_text = strip_markdown_links(chr(10).join(release_lines).strip())
-          if not release_text:
-              raise SystemExit("Promotion PR must include a non-empty promotion summary section")
+          release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
+          if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
+              raise SystemExit("Promotion PR must include meaningful user-facing summary text")
           PY
   notify:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true
@@ -133,18 +133,26 @@ jobs:
               value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
               return value
 
-          release_text = strip_markdown_links("\n".join(release_lines).strip())
-          if not release_text:
+          release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
+          if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
               is_promotion = (
                   os.environ.get("BASE_REF") == "main"
                   and os.environ.get("HEAD_REF") == "preview"
                   and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")
               )
               if is_promotion:
-                  raise SystemExit(
-                      "Promotion PR must include a non-empty "
-                      "'## このリリースで変わること' section"
+                  print(
+                      "::warning::Promotion PR summary missing after sanitization; "
+                      "sending a title fallback and failing the job after delivery.",
+                      file=sys.stderr,
                   )
+                  release_text = strip_markdown_links(
+                      os.environ.get("PR_TITLE", "").strip()
+                  ).strip()
+                  if not release_text:
+                      release_text = "リリース内容の説明が未記入です"
+                  with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+                      env.write("PROMOTION_SUMMARY_MISSING=true" + chr(10))
               # Non-promotion main merges may use a sanitized title fallback,
               # but keep the omission visible in Actions logs.
               print(
@@ -208,3 +216,11 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "$payload" \
             "$DISCORD_WEBHOOK_URL"
+      - name: Fail after notifying missing promotion summary
+        if: github.event.action == closed && github.event.pull_request.merged == true
+        shell: bash
+        run: |
+          if [[ "$PROMOTION_SUMMARY_MISSING" == "true" ]]; then
+            echo "::error::Promotion PR summary was missing; notification was sent using the title fallback."
+            exit 1
+          fi
