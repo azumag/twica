@@ -88,17 +88,20 @@ function stubSoundEnv(): void {
 const MAX_RETRIES = 3
 // 1回だけ試行 = リトライなし。
 const SINGLE_ATTEMPT_NO_RETRY = 1
-// 成功fixtureが実際に「リトライ後の成功」を通り、かつ到達可能であるため、
+// 成功fixtureが実際に「リトライ後の成功」を通り、かつ到達可能であるように、
 // 1 <= TRANSIENT_FAILURES_BEFORE_SUCCESS <= MAX_RETRIES を維持する。
 const TRANSIENT_FAILURES_BEFORE_SUCCESS = 2
 const RETRY_SUCCESS_ATTEMPTS = TRANSIENT_FAILURES_BEFORE_SUCCESS + 1
 const R2_INTERNAL_ERROR_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)'
 
 function mockTransientFailuresThenSuccess(): void {
+  expect(TRANSIENT_FAILURES_BEFORE_SUCCESS).toBeGreaterThanOrEqual(1)
+  expect(TRANSIENT_FAILURES_BEFORE_SUCCESS).toBeLessThanOrEqual(MAX_RETRIES)
+
   for (
-    let transientFailure = 0;
-    transientFailure < TRANSIENT_FAILURES_BEFORE_SUCCESS;
-    transientFailure += 1
+    let transientFailureIndex = 0;
+    transientFailureIndex < TRANSIENT_FAILURES_BEFORE_SUCCESS;
+    transientFailureIndex += 1
   ) {
     sendMock.mockRejectedValueOnce(new Error(R2_INTERNAL_ERROR_MESSAGE))
   }
