@@ -4,11 +4,12 @@
 
 When documentation or review notes need to refer to logic inside `accept_trade_offer`, use stable SQL identifiers and processing stages rather than line numbers:
 
-- **Payer candidate locking:** the `PERFORM` immediately before payer selection locks all eligible candidate `user_cards` rows in deterministic order. The following stage-2 `SELECT ... INTO v_payer_user_card_id ... LIMIT 1` intentionally does not add `FOR UPDATE`; the two-stage pattern avoids the `LIMIT 1 + FOR UPDATE` candidate-selection problem while preserving the lock order.
-- **Offered-card ownership check:** the `SELECT ... INTO v_offered_card_owner_check ... FOR UPDATE` is the ownership/existence check for the offered card. Later logic may rely on that row already being locked.
-- **Payer selection:** references to the chosen payment card should use `v_payer_user_card_id`, not migration line ranges.
+- **Payer selection — candidate locking:** the `PERFORM` first locks all eligible candidate `user_cards` rows in deterministic order. This full-candidate locking step is the first half of the payer-selection contract.
+- **Payer selection — candidate choice:** the following `SELECT ... INTO v_payer_user_card_id ... LIMIT 1` intentionally does not add `FOR UPDATE`. Safety comes from the preceding full-candidate lock plus this lock-free choice; describe the two statements together as **payer selection**, and the individual steps as **candidate locking** and **candidate choice**.
+- **Offered-card existence/ownership check:** the `SELECT ... INTO v_offered_card_owner_check ... FOR UPDATE` verifies that the offered card exists and is still owned by the offerer, while locking that row for the later transfer. Prefer this role-based name in prose; use `v_offered_card_owner_check` when the exact result variable matters.
+- **Chosen payment card:** references to the selected payment card should use `v_payer_user_card_id`, not migration line ranges.
 - **Lock-order contract:** describe the invariant as `trade_offers row -> offered user_cards row -> payer candidate user_cards rows`, rather than pointing at specific line numbers.
 
 This file is the safe place for maintenance-oriented annotations that would otherwise require comment-only edits to an already tracked migration.
 
-Refs #1013, #1099
+Refs #1013, #1099, #1100
