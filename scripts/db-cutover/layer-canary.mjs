@@ -732,24 +732,24 @@ export async function verifyRollbackTraceless(sql, identifiers) {
     findings.push(
       canaryFail(
         'CANARY_ROLLBACK_TRACE_STREAMERS',
-        `rollback後もstreamers行が残存しています(件数=${streamerRows.length})。復旧: fixture streamers行をtwitch_user_id(cutover-canary-<uuid>形式)で特定しDELETEすれば、cards/gacha_historyへON DELETE CASCADEで連鎖的に除去できます(usersはuser_cards経由でのみcascadeするため別途DELETEが必要、runbook参照)。`
+        `rollback後もstreamers行が残存しています(件数=${streamerRows.length})。復旧: fixture streamers行をtwitch_user_id=${streamerTwitchUserId}で特定しDELETEすれば、cards/gacha_historyへON DELETE CASCADEで連鎖的に除去できます(usersはuser_cards経由でのみcascadeするため別途DELETEが必要、runbook参照)。`
       )
     )
   }
 
   const userRows = await sql`select id from users where twitch_user_id = ${userTwitchUserId}`
   if (userRows.length > 0) {
-    findings.push(canaryFail('CANARY_ROLLBACK_TRACE_USERS', `rollback後もusers行が残存しています(件数=${userRows.length})。復旧: twitch_user_id(cutover-canary-<uuid>形式)で特定しDELETEしてください(user_cardsへON DELETE CASCADEで連鎖します)。`))
+    findings.push(canaryFail('CANARY_ROLLBACK_TRACE_USERS', `rollback後もusers行が残存しています(件数=${userRows.length})。復旧: twitch_user_id=${userTwitchUserId}で特定しDELETEしてください(user_cardsへON DELETE CASCADEで連鎖します)。`))
   }
 
   const historyRows = await sql`select id from gacha_history where event_id = ${eventId}`
   if (historyRows.length > 0) {
-    findings.push(canaryFail('CANARY_ROLLBACK_TRACE_GACHA_HISTORY', `rollback後もgacha_history行が残存しています(件数=${historyRows.length})。復旧: event_id(cutover-canary:<uuid>形式)で特定しDELETEしてください。`))
+    findings.push(canaryFail('CANARY_ROLLBACK_TRACE_GACHA_HISTORY', `rollback後もgacha_history行が残存しています(件数=${historyRows.length})。復旧: event_id=${eventId}で特定しDELETEしてください。`))
   }
 
   const cardRows = await sql`select id from cards where id = ${cardId}::uuid`
   if (cardRows.length > 0) {
-    findings.push(canaryFail('CANARY_ROLLBACK_TRACE_CARDS', `rollback後もcards行(fixture streamer由来)が残存しています(件数=${cardRows.length})。復旧: 対応するfixture streamers行をDELETEすれば連鎖的に除去できます。`))
+    findings.push(canaryFail('CANARY_ROLLBACK_TRACE_CARDS', `rollback後もcards行(fixture streamer由来、id=${cardId})が残存しています(件数=${cardRows.length})。復旧: twitch_user_id=${streamerTwitchUserId}のfixture streamers行をDELETEすれば連鎖的に除去できます。`))
   }
 
   return findings
