@@ -1,0 +1,226 @@
+name: Notify Discord on main merge
+
+# Security contract: pull_request_target lets a merged PR notification read the
+# repository webhook secret from the trusted base context. Never checkout or
+# execute code from the PR head in this workflow.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-promotion-summary:
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'preview'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate promotion summary before merge
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          if os.environ["HEAD_REPOSITORY"] != os.environ["GITHUB_REPOSITORY"]:
+              raise SystemExit("Promotion PR must originate from the repository preview branch")
+
+          body = os.environ.get("PR_BODY", "")
+          body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)
+          lines = body.splitlines()
+          section_heading = "## このリリースで変わること"
+          release_lines = []
+          start = None
+          for index, line in enumerate(lines):
+              if line.strip() == section_heading:
+                  start = index + 1
+                  break
+          if start is not None:
+              for line in lines[start:]:
+                  if line.strip().startswith("## "):
+                      break
+                  release_lines.append(line)
+
+          def strip_markdown_links(value):
+              value = re.sub(r"!\[([^]]*)\]\([^)]*\)", r"\1", value)
+              value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
+              value = re.sub(r"<https?://[^>]+>", "", value)
+              value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
+              value = re.sub(r"(?i)<[^>]+>", "", value)
+              value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
+              return value
+
+          release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
+          if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
+              raise SystemExit("Promotion PR must include meaningful user-facing summary text")
+          PY
+  notify:
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    # PR-controlled strings stay in env and are consumed as data by Python/jq;
+    # do not interpolate them directly into the shell script.
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      REPOSITORY_NAME: ${{ github.event.repository.name }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+
+    steps:
+      - name: Validate webhook configuration
+        shell: bash
+        run: |
+          if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
+            echo "::error::Repository secret DISCORD_WEBHOOK_URL is not configured."
+            exit 1
+          fi
+
+      - name: Send merge notification to Discord
+        shell: bash
+        run: |
+          # Promotion PRs keep the human-facing release summary in the first
+          # `## このリリースで変わること` section. Reuse that text directly
+          # instead of rediscovering component PRs through the GitHub API.
+          content=$(python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          limit = 2000
+          section_heading = "## このリリースで変わること"
+          body = os.environ.get("PR_BODY", "").replace("\r\n", "\n").replace("\r", "\n")
+          # Only same-repository promotion text is trusted as notification input.
+          # Fork PRs fall back to a sanitized title below.
+          if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"):
+              body = ""
+          # Template guidance and other HTML comments are not user-facing release
+          # text. Strip them before section extraction so comments-only input is
+          # treated as empty and falls back to the PR title.
+          body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)
+          lines = body.splitlines()
+
+          release_lines = []
+          start = None
+          for index, line in enumerate(lines):
+              if line.strip() == section_heading:
+                  start = index + 1
+                  break
+
+          if start is not None:
+              for line in lines[start:]:
+                  if line.strip().startswith("## "):
+                      break
+                  release_lines.append(line)
+
+          def strip_markdown_links(value):
+              value = re.sub(r"!\[([^]]*)\]\([^)]*\)", r"\1", value)
+              value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
+              value = re.sub(r"<https?://[^>]+>", "", value)
+              value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
+              value = re.sub(r"(?i)<[^>]+>", "", value)
+              value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
+              return value
+
+          release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
+          if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
+              is_promotion = (
+                  os.environ.get("BASE_REF") == "main"
+                  and os.environ.get("HEAD_REF") == "preview"
+                  and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")
+              )
+              if is_promotion:
+                  print(
+                      "::warning::Promotion PR summary missing after sanitization; "
+                      "sending a title fallback and failing the job after delivery.",
+                      file=sys.stderr,
+                  )
+                  release_text = strip_markdown_links(
+                      os.environ.get("PR_TITLE", "").strip()
+                  ).strip()
+                  if not release_text:
+                      release_text = "リリース内容の説明が未記入です"
+                  with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+                      env.write("PROMOTION_SUMMARY_MISSING=true" + chr(10))
+              # Non-promotion main merges may use a sanitized title fallback,
+              # but keep the omission visible in Actions logs.
+              print(
+                  "::warning::Merged PR is missing a non-empty "
+                  "'## このリリースで変わること' section; using PR title in Discord.",
+                  file=sys.stderr,
+              )
+              release_text = strip_markdown_links(os.environ.get("PR_TITLE", "").strip())
+
+          prefix = f"🚀 **{os.environ['REPOSITORY_NAME']} が更新されました**\n\n"
+          suffix = (
+              f"\n\n`{os.environ['HEAD_REF']} → main`\n"
+              f"by {os.environ['PR_AUTHOR']}\n\n"
+              f"🔗 [リリース内容を見る]({os.environ['PR_URL']})"
+          )
+
+          def discord_length(value):
+              return len(value.encode("utf-16-le")) // 2
+
+          def truncate_utf16(value, max_units):
+              result = []
+              used = 0
+              for char in value:
+                  units = len(char.encode("utf-16-le")) // 2
+                  if used + units > max_units:
+                      break
+                  result.append(char)
+                  used += units
+              return "".join(result)
+
+          content = prefix + release_text + suffix
+          if discord_length(content) > limit:
+              marker = "\n\n…"
+              available = limit - discord_length(prefix + marker + suffix)
+              release_text = truncate_utf16(release_text, max(0, available)).rstrip()
+              content = prefix + release_text + marker + suffix
+
+          if discord_length(content) > limit:
+              raise SystemExit("Discord notification exceeds 2000 characters after trimming")
+
+          print(content, end="")
+          PY
+          )
+
+          payload=$(jq -n \
+            --arg content "$content" \
+            '{
+              username: "twica GitHub",
+              content: $content,
+              allowed_mentions: {parse: []}
+            }')
+
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -H 'Content-Type: application/json' \
+            -d "$payload" \
+            "$DISCORD_WEBHOOK_URL"
+      - name: Fail after notifying missing promotion summary
+        if: github.event.action == closed && github.event.pull_request.merged == true
+        shell: bash
+        run: |
+          if [[ "$PROMOTION_SUMMARY_MISSING" == "true" ]]; then
+            echo "::error::Promotion PR summary was missing; notification was sent using the title fallback."
+            exit 1
+          fi
