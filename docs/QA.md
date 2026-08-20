@@ -39,7 +39,7 @@ analysis dashboard は `analysis/` で `npm ci`, `npx tsc --noEmit`, `npm run bu
 3. 各結果の chat メッセージが送信される。
 4. EventSub direct と Queue replay の両経路を確認する。
 5. overlay WebSocket を再接続し、polling gap recovery で欠落・重複がないことを確認する。
-6. analysis dashboard の主要集計が PlanetScale の値と一致することを確認する。
+6. analysis dashboard の主要集計が PlanetScale の値と一致することを確認する（`npm run check:analysis-dashboard-vs-sql`、`docs/analysis-dashboard-db-permissions.md`「確認手順」参照。対象環境の限定read接続文字列が実行環境に無い場合は、ブラウザ目視ではなくこの未接続自体を証跡として起票する）。
 7. 対象ファイルのアップロード、保存先からの取得、権限境界、Workerログを確認する。
 
 production 反映後は同じ主要経路を smoke test し、旧 provider の outbound request と

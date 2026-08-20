@@ -40,6 +40,15 @@ Cloudflare Worker の Hyperdrive binding を共有しません。接続先は
 2. 読み取り endpoint で集計 RPC が成功することを確認する。
 3. 必要な管理操作だけを実施し、許可していない DML が拒否されることを確認する。
 4. `permission denied`、RPC 欠落、接続失敗を成功扱いにしていないことをログとテストで確認する。
+5. `get_analysis_*()` RPC 自体の集計が正しいことは、`npm run check:analysis-dashboard-vs-sql`
+   （`scripts/compare-analysis-dashboard-vs-sql.js`, #1077）で検証する。RPCを経由しない
+   素朴な COUNT/GROUP BY を独立に発行し、`get_analysis_overview` /
+   `get_analysis_users_summary` / `get_analysis_streamers_summary` /
+   `get_analysis_gacha_summary` の戻り値（users/streamers/cards、
+   today/week/month/total gacha、unique users、rarity）と突き合わせる。
+   `DASHBOARD_DATABASE_URL`（無ければ `DATABASE_URL_PLANETSCALE` /
+   `PLANETSCALE_DATABASE_URL`）に対象環境の限定readロール接続文字列を設定して実行する。
+   出力はその場の差分調査用であり、Issue/PR/ログへ実数値を転記しない。
 
 新しい dashboard endpoint を追加するときは、SQL を文字列連結で組み立てず、
 postgres.js のパラメータ化を使います。権限追加は endpoint ごとに必要性を説明し、
