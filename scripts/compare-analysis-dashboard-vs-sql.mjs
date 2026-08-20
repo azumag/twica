@@ -271,23 +271,29 @@ function diffAggregates(basic, rpc) {
 const QUERY_CANCELED_SQLSTATE = '57014'
 
 // PostgreSQLのGUC時間値として妥当な形式（例: '30s', '2min', '500ms'）。単位省略時は
-// ミリ秒扱い（PostgreSQLの既定）。
-const STATEMENT_TIMEOUT_PATTERN = /^\d+(ms|s|min|h|d)?$/
+// ミリ秒扱い（PostgreSQLの既定）。第1捕捉群（数値部分）を0判定に使う。
+const STATEMENT_TIMEOUT_PATTERN = /^(\d+)(?:ms|s|min|h|d)?$/
 
 /**
- * `get_analysis_gacha_summary(NULL, NULL)` の statement_timeout を環境変数で上書き
- * できるようにする（#1081 PR 2回目レビュー【任意】指摘: production規模では全期間走査が
- * 既定の30秒を超えうり、その場合「不一致」ではなく「タイムアウト」なのに見分けが
- * つきにくい）。`tx.unsafe()` へそのまま埋め込むため、PostgreSQLのGUC時間値として
- * 妥当な形式であることを検証してから返す（任意の文字列をSQLへ混入させないための
- * 安全側の入力検証。DB接続なしで単体テストできるよう純粋関数として切り出す）。
+ * `get_analysis_gacha_summary(NULL, NULL)` の statement_timeout（本スクリプトの既定値は
+ * 30秒。PostgreSQL自体の既定は無制限）を環境変数で上書きできるようにする
+ * （production規模では全期間走査が既定の30秒を超えうり、その場合「不一致」ではなく
+ * 「タイムアウト」なのに見分けがつきにくいため）。`tx.unsafe()` へそのまま埋め込むため、
+ * PostgreSQLのGUC時間値として妥当な形式であることを検証してから返す（任意の文字列を
+ * SQLへ混入させないための安全側の入力検証。DB接続なしで単体テストできるよう純粋関数
+ * として切り出す）。
+ *
+ * `0`（またはそれと等価な"0ms"等）は明示的に拒否する。PostgreSQLはstatement_timeout=0を
+ * 「無制限」として扱うため、これを許すと安全弁（想定外の長時間ブロック防止）が環境変数
+ * だけで完全に無効化できてしまい、このタイムアウトを設ける意図と食い違う。
  */
 function resolveStatementTimeout(env) {
   const raw = env.DASHBOARD_COMPARE_STATEMENT_TIMEOUT?.trim()
   if (!raw) return '30s'
-  if (!STATEMENT_TIMEOUT_PATTERN.test(raw)) {
+  const match = STATEMENT_TIMEOUT_PATTERN.exec(raw)
+  if (!match || Number(match[1]) === 0) {
     throw new Error(
-      `DASHBOARD_COMPARE_STATEMENT_TIMEOUT の形式が不正です（例: "30s", "2min"）: "${raw}"`
+      `DASHBOARD_COMPARE_STATEMENT_TIMEOUT の形式が不正です（0は無制限を意味するため拒否。例: "30s", "2min"）: "${raw}"`
     )
   }
   return raw
@@ -394,7 +400,11 @@ async function main() {
       } catch (error) {
         console.error('analysis dashboard のDB接続終了処理に失敗しました:')
         console.error(redactError(error, connectionString))
-        exitCode = 2
+        // 比較自体は完了し不一致が見つかっていた場合（exitCode === 1）を、接続終了処理の
+        // 失敗で上書きしない。「不一致あり」という結果は接続終了の成否と独立した事実であり、
+        // 終了コードから判別できなくなると呼び出し元（CI/シェルスクリプト）が
+        // 「不一致」と「クローズ失敗」を区別できなくなる。
+        if (exitCode === 0) exitCode = 2
       }
     }
   }
@@ -402,10 +412,17 @@ async function main() {
 }
 
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch(() => {
+  main().catch((error) => {
     // main内で接続文字列をredactできる経路はすべて処理する。ここは想定外の最終安全弁なので、
     // Errorオブジェクト自体（stackも含め）は出力せずcredential混入の可能性を排除する。
-    console.error('analysis dashboard の集計比較で想定外のエラーが発生しました。')
+    // ただしSQLSTATE/Nodeエラーコード（error.code）は接続文字列を含まず切り分けに有用なため、
+    // 存在すれば安全に付記する。
+    const code = error && typeof error === 'object' && typeof error.code === 'string' ? error.code : undefined
+    console.error(
+      code
+        ? `analysis dashboard の集計比較で想定外のエラーが発生しました。[${code}]`
+        : 'analysis dashboard の集計比較で想定外のエラーが発生しました。'
+    )
     process.exitCode = 2
   })
 }

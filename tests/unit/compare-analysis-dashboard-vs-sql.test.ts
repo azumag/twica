@@ -68,6 +68,20 @@ describe('resolveStatementTimeout', () => {
     ).toThrow(/DASHBOARD_COMPARE_STATEMENT_TIMEOUT の形式が不正です/)
   })
 
+  it('0（またはその単位付き表記）はタイムアウト無効化を意味するため拒否する', () => {
+    // PostgreSQLはstatement_timeout=0を「無制限」として扱うため、これを許すと
+    // 「想定外に長時間ブロックしないための安全弁」が環境変数だけで無効化できてしまう。
+    expect(() => resolveStatementTimeout({ DASHBOARD_COMPARE_STATEMENT_TIMEOUT: '0' })).toThrow(
+      /0は無制限を意味するため拒否/
+    )
+    expect(() => resolveStatementTimeout({ DASHBOARD_COMPARE_STATEMENT_TIMEOUT: '0s' })).toThrow(
+      /0は無制限を意味するため拒否/
+    )
+    expect(() => resolveStatementTimeout({ DASHBOARD_COMPARE_STATEMENT_TIMEOUT: '0ms' })).toThrow(
+      /0は無制限を意味するため拒否/
+    )
+  })
+
   it('空白のみの値は未設定として扱い既定値を返す', () => {
     expect(resolveStatementTimeout({ DASHBOARD_COMPARE_STATEMENT_TIMEOUT: '   ' })).toBe('30s')
   })

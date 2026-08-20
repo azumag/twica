@@ -52,9 +52,10 @@ Cloudflare Worker の Hyperdrive binding を共有しません。接続先は
    production に接続するような事故を防ぐため）。全クエリは単一の read-only スナップショット
    （`REPEATABLE READ READ ONLY`）内で発行するため、比較の途中に書き込みが挟まっても
    誤検知しない。出力はその場の差分調査用であり、Issue/PR/ログへ実数値を転記しない。
-   全期間の `gacha_history` を走査する集計は production 規模では既定の
-   `statement_timeout`（30秒）を超えうる。その場合は不一致ではなくタイムアウトである旨が
-   出力されるので、`DASHBOARD_COMPARE_STATEMENT_TIMEOUT`（例: `"2min"`）で上限を延ばして
+   全期間の `gacha_history` を走査する集計は production 規模では本スクリプトの既定値
+   （30秒。PostgreSQL自体の既定は無制限）を超えうる。その場合は不一致ではなくタイムアウト
+   である旨が出力されるので、`DASHBOARD_COMPARE_STATEMENT_TIMEOUT`（例: `"2min"`。`0`は
+   タイムアウト自体を無効化してしまうため拒否される）で上限を延ばして
    再実行する。なお today/week/month の境界式は RPC 側の定義をほぼ書き写しているため、
    境界定義そのものが最初から誤っているケース（両側が同じ誤りを持つ）はこの比較では
    検出できない。
