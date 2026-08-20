@@ -68,27 +68,35 @@ jobs:
           }
 
           escape_title() {
-            TITLE="$1" python3 -c 'import os,re; value=os.environ["TITLE"][:80]; print(re.sub(r"([\\`*_~|\[\]])", r"\\\1", value), end="")'
+            # Normalize line breaks before the value can reach GITHUB_OUTPUT,
+            # truncate by Unicode characters (not bytes), then escape only
+            # Markdown controls that can affect link text rendering.
+            TITLE="$1" python3 -c 'import os,re; value=os.environ["TITLE"].replace("\r", " ").replace("\n", " ")[:80]; print(re.sub(r"([\\`*_~|\[\]])", r"\\\1", value), end="")'
           }
 
+          discovery_complete=true
           commit_shas=()
+          page_size=100
           max_pages=5
           for page in $(seq 1 "$max_pages"); do
             response_file=$(mktemp)
-            compare_url="https://api.github.com/repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA?per_page=100&page=$page"
+            compare_url="https://api.github.com/repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA?per_page=$page_size&page=$page"
             if ! http_code=$(api_get "$compare_url" "$response_file"); then
               echo "::warning::Failed to fetch release commit comparison from GitHub."
+              discovery_complete=false
               rm -f "$response_file"
               break
             fi
 
             if [[ "$http_code" != "200" ]]; then
               echo "::warning::GitHub compare API returned HTTP $http_code."
+              discovery_complete=false
               rm -f "$response_file"
               break
             fi
 
             page_count=$(jq '.commits | length' "$response_file")
+            total_commits=$(jq '.total_commits // 0' "$response_file")
             while IFS= read -r commit_sha; do
               if [[ -n "$commit_sha" ]]; then
                 commit_shas+=("$commit_sha")
@@ -96,12 +104,13 @@ jobs:
             done < <(jq -r '.commits[].sha' "$response_file")
             rm -f "$response_file"
 
-            if [[ "$page_count" -lt 100 ]]; then
+            if [[ "$page_count" -lt "$page_size" ]]; then
               break
             fi
 
-            if [[ "$page" -eq "$max_pages" ]]; then
-              echo "::warning::Release comparison exceeded $((max_pages * 100)) commits; Discord change discovery was truncated."
+            if [[ "$page" -eq "$max_pages" && "$total_commits" -gt $((max_pages * page_size)) ]]; then
+              echo "::warning::Release comparison exceeded $((max_pages * page_size)) commits; Discord change discovery was truncated."
+              discovery_complete=false
             fi
           done
 
@@ -112,12 +121,14 @@ jobs:
             pulls_url="https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$commit_sha/pulls"
             if ! http_code=$(api_get "$pulls_url" "$response_file"); then
               echo "::warning::Failed to resolve PRs associated with commit $commit_sha."
+              discovery_complete=false
               rm -f "$response_file"
               continue
             fi
 
             if [[ "$http_code" != "200" ]]; then
               echo "::warning::GitHub commit-pulls API returned HTTP $http_code for $commit_sha."
+              discovery_complete=false
               rm -f "$response_file"
               continue
             fi
@@ -128,7 +139,7 @@ jobs:
                 continue
               fi
 
-              title=$(jq -r '.title // ""' <<<"$pr_json" | tr '\n' ' ')
+              title=$(jq -r '.title // ""' <<<"$pr_json")
               url=$(jq -r '.url // ""' <<<"$pr_json")
               safe_title=$(escape_title "$title")
 
@@ -146,12 +157,14 @@ jobs:
           done
 
           change_count=$(jq 'length' <<<"$changes_json")
-          if [[ "$change_count" -eq 0 ]]; then
-            # Direct-to-main PRs and API failures still get the previous useful
-            # notification rather than a misleading empty change list.
+          if [[ "$change_count" -eq 0 && "$discovery_complete" == "true" ]]; then
+            # A direct-to-main PR has no preview-origin PRs, so preserve the
+            # previous useful notification by showing the merged PR itself.
             safe_fallback_title=$(escape_title "$PR_TITLE")
             change_count=1
             change_list="- [#$PR_NUMBER $safe_fallback_title]($PR_URL)"
+          elif [[ "$change_count" -eq 0 ]]; then
+            change_list='- 更新内容をGitHubから完全には取得できませんでした'
           else
             change_list=$(jq -r \
               '.[:10][] | "- [#\(.number) \(.title)](\(.url))"' \
@@ -162,11 +175,15 @@ jobs:
             fi
           fi
 
+          # GitHub recommends a unique delimiter for multiline outputs when
+          # values can contain externally controlled text.
+          delimiter="EOF_$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
           {
             echo "count=$change_count"
-            echo 'change_list<<EOF'
+            echo "complete=$discovery_complete"
+            echo "change_list<<$delimiter"
             printf '%s\n' "$change_list"
-            echo 'EOF'
+            echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
       - name: Send merge notification to Discord
@@ -174,20 +191,28 @@ jobs:
         env:
           CHANGE_COUNT: ${{ steps.changes.outputs.count }}
           CHANGE_LIST: ${{ steps.changes.outputs.change_list }}
+          DISCOVERY_COMPLETE: ${{ steps.changes.outputs.complete }}
         run: |
+          if [[ "$DISCOVERY_COMPLETE" == "true" ]]; then
+            change_heading="**今回の変更（全${CHANGE_COUNT}件）**"
+          elif [[ "$CHANGE_COUNT" -eq 0 ]]; then
+            change_heading='**今回の変更（取得失敗）**'
+          else
+            change_heading="**今回の変更（取得できた${CHANGE_COUNT}件・一部取得失敗）**"
+          fi
+
           payload=$(jq -n \
             --arg repository "$REPOSITORY_NAME" \
             --arg url "$PR_URL" \
             --arg author "$PR_AUTHOR" \
             --arg head_ref "$HEAD_REF" \
-            --arg change_count "$CHANGE_COUNT" \
+            --arg change_heading "$change_heading" \
             --arg change_list "$CHANGE_LIST" \
             '{
               username: "twica GitHub",
               content: (
                 "🚀 **" + $repository + " が更新されました**\n\n" +
-                "**今回の変更**\n" + $change_list + "\n\n" +
-                "**全" + $change_count + "件の変更**\n" +
+                $change_heading + "\n" + $change_list + "\n\n" +
                 "`" + $head_ref + " → main`\n" +
                 "by " + $author + "\n\n" +
                 "🔗 [リリース内容を見る](" + $url + ")"
