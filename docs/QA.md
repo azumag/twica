@@ -45,6 +45,17 @@ analysis dashboard は `analysis/` で `npm ci`, `npx tsc --noEmit`, `npm run bu
 production 反映後は同じ主要経路を smoke test し、旧 provider の outbound request と
 Secret access がゼロであることを観測してから旧 Secret を削除します。
 
+## Preview→main昇格PRのタイトル・本文契約
+
+mainへの昇格PRは、タイトルと本文の先頭を一般ユーザー向けの説明にし、その後ろへ技術的な証跡を記載します。利用者が「何が変わるか」「既存の使い方に影響があるか」を先に理解できることを必須とします。
+
+- タイトルは、実装用語やPR番号の列挙だけでなく、リリースの利用者向け効果を説明する。
+- 本文の最初の見出しは完全一致の `## このリリースで変わること` とし、画面・操作・データへの影響を一般ユーザー向けに記載する。変更が内部テスト・運用だけの場合も、その事実とユーザー影響なしを明記する。
+- その後に `対象PRと固定SHA`、累積release-unit一覧、レビュー、CI、previewデプロイ、ブラウザー／実経路の確認、main昇格条件を記載する。
+- テンプレートは自動適用を前提にせず、Web UIまたは `gh pr create --template .github/PULL_REQUEST_TEMPLATE/release.md` などで明示指定し、見出し本文を必ず記入する。既定テンプレートが表示されても、空欄のまま昇格してはならない。
+- baseが`main`、headが`preview`のマージ通知は、この見出しの本文が空または欠落している場合に失敗させる。その他のmainマージはサニタイズしたタイトルへフォールバックする場合でもActionsログへwarningを残す。
+- Discord通知へ渡す本文からHTMLコメント、内部機械マーカー、外部リンク記法を漏らさず、ユーザー向けの説明だけを送る。fork由来PRの本文は採用せず、サニタイズしたタイトルへフォールバックする。
+
 ## Preview昇格時の累積変更テスト
 
 previewからmainへ昇格する際のテスト対象は、起点となった単一PRではなく、同じpreview HEADに含まれる昇格対象**全PRの累積変更**とする。
