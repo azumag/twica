@@ -134,7 +134,13 @@ export class KVRateLimitStorage implements RateLimitStorage {
   async set(key: string, value: RateLimitStore, ttlMs: number): Promise<void> {
     // KV uses seconds for TTL, so convert from milliseconds
     // KVはTTLに秒を使用するため、ミリ秒から変換
-    const ttlSeconds = Math.ceil(ttlMs / 1000);
+    //
+    // Cloudflare KV の expirationTtl 最小値は60秒。rate-limit windowの終端付近
+    // (残りが1msなど)ではceilしても1秒未満になり得るため、60秒未満を60秒へ
+    // クランプする。クランプしないと `KV PUT failed: 400 Invalid expiration_ttl`
+    // でストレージ書き込みが失敗し、fail-open(レート制限を素通り)してしまう。
+    // (issue #1062: preview Worker tailで実際に再現した warning)
+    const ttlSeconds = Math.max(60, Math.ceil(ttlMs / 1000));
     await this.kv.put(key, JSON.stringify(value), {
       expirationTtl: ttlSeconds,
     });

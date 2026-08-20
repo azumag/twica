@@ -90,11 +90,33 @@ describe("KVRateLimitStorage", () => {
 
   it("TTLはミリ秒から秒へ切り上げる", async () => {
     const storage = new KVRateLimitStorage(kv as never);
-    await storage.set("ratelimit:test", { count: 1, resetTime: 1 }, 1);
+    await storage.set("ratelimit:test", { count: 1, resetTime: 61_000 }, 61_000);
     expect(kv.put).toHaveBeenCalledWith(
       "ratelimit:test",
+      JSON.stringify({ count: 1, resetTime: 61_000 }),
+      { expirationTtl: 61 },
+    );
+  });
+
+  it("残りwindowが短くてもCloudflare KVの最小TTL60秒未満にはしない(#1062回帰テスト)", async () => {
+    const storage = new KVRateLimitStorage(kv as never);
+
+    // window終端直前(残り1ms)でもexpirationTtlは60秒にクランプされる。
+    // クランプしないとKV PUTが `Invalid expiration_ttl of 1` で失敗し、
+    // レート制限がfail-open(素通り)してしまう。
+    await storage.set("ratelimit:almost-expired", { count: 1, resetTime: 1 }, 1);
+    expect(kv.put).toHaveBeenCalledWith(
+      "ratelimit:almost-expired",
       JSON.stringify({ count: 1, resetTime: 1 }),
-      { expirationTtl: 1 },
+      { expirationTtl: 60 },
+    );
+
+    // ちょうど0msでも同様にクランプされる。
+    await storage.set("ratelimit:zero", { count: 1, resetTime: 0 }, 0);
+    expect(kv.put).toHaveBeenCalledWith(
+      "ratelimit:zero",
+      JSON.stringify({ count: 1, resetTime: 0 }),
+      { expirationTtl: 60 },
     );
   });
 
