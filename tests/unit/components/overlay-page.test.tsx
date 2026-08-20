@@ -381,23 +381,16 @@ describe('OverlayPage', () => {
     expect(screen.getByText('RealCard')).toBeInTheDocument()
   })
 
-  // Issue #1076回帰: preview実引き換えで、overlay publish・イベント受信
-  // (Received payload: gacha)・showCard切り替えは全て成功するのに、OBS上で
-  // カード画素だけが一切表示されない(黒画面)事象が観測された。next/imageは
-  // priority未指定だと既定でloading="lazy"(ブラウザネイティブの遅延読み込みに
-  // 委譲)になり、native lazy loadingの発火条件はOBSブラウザソース(CEF)の
-  // 特殊なビューポート初期化と噛み合わない可能性がある。オーバーレイの単体
-  // カード画像は常に画面いっぱいに即時表示する用途で遅延読み込みの利点が
-  // 無いため、priorityでlazy loadingを無効化した。この回帰を固定する。
-  //
-  // priority指定時、next/imageはimg要素にloading属性自体を付与しない
-  // (undefinedのまま、"eager"という値になるわけではない)ことを実装読解と
-  // 実測の両方で確認済み。そのため「loading="lazy"ではない」ではなく
-  // 「loading属性が存在しない」という、より直接的で正確な形で固定する。
+  // Issue #1076: 接続・イベント受信・演出切り替えは全て成功するのにOBS上で
+  // カード画素だけが表示されない(黒画面)事象への対策。next/imageの既定
+  // loading="lazy"がOBSブラウザソースで発火しない恐れがあるため即時読み込みに
+  // した(詳細な調査経緯・対抗仮説はIssue #1076参照)。通常モード・画像のみ
+  // モードの両方の`<Image>`にloading="eager"を適用したことをこの回帰テストで
+  // 固定する。
   it.each([
-    { label: '通常表示モード', query: '', altText: 'RealCard' },
-    { label: '画像のみモード(imageOnly=true)', query: '?imageOnly=true', altText: 'RealCard' },
-  ])('カード画像はlazy loadingではなく即時読み込みになる($label)(Issue #1076回帰)', async ({ query, altText }) => {
+    { label: '通常表示モード', query: '', expectUsernameHeader: true },
+    { label: '画像のみモード(imageOnly=true)', query: '?imageOnly=true', expectUsernameHeader: false },
+  ])('カード画像はlazy loadingではなく即時読み込みになる($label)(Issue #1076回帰)', async ({ query, expectUsernameHeader }) => {
     window.history.replaceState({}, '', `/overlay/streamer-1${query}`)
 
     class MockImage {
@@ -439,8 +432,19 @@ describe('OverlayPage', () => {
       })
     })
 
-    const img = await screen.findByAltText(altText)
-    expect(img).not.toHaveAttribute('loading')
+    const img = await screen.findByAltText('RealCard')
+    expect(img).toHaveAttribute('loading', 'eager')
+
+    // レビュー指摘対応: it.eachの2ケースが実際に異なる分岐(通常モード/
+    // 画像のみモード)へ到達していることを確認する。通常モードは常にユーザー名
+    // 見出し「〜が引いたカード」を表示するが、画像のみモードはpUser未指定
+    // (既定false)のため表示しない。imageOnly URLパラメータの解釈が壊れて
+    // 常に通常モードへフォールバックしても、この差分が無ければ検知できない。
+    if (expectUsernameHeader) {
+      expect(screen.getByText(/が引いたカード/)).toBeInTheDocument()
+    } else {
+      expect(screen.queryByText(/が引いたカード/)).not.toBeInTheDocument()
+    }
   })
 
   // Issue #999: previewの実引き換えで、実イベント受信(`Received payload: gacha`)

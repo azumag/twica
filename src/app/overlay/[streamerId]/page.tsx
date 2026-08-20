@@ -1359,26 +1359,17 @@ export default function OverlayPage() {
             )}
 
             {/* 画像 */}
-            {/* Issue #1076: preview実引き換えで、overlay publish・イベント受信
-                (Received payload: gacha)・showCard切り替えまでは全て成功するのに
-                OBS上でカード画素だけが一切表示されない(黒画面)事象が観測された。
-                この経路だけが「接続・受信・演出は正常なのに画素が出ない」という
-                症状と一致するため、原因はカード画像自体が読み込まれていないことだと
-                考えられる。next/imageはpriority未指定だと既定でloading="lazy"
-                (ブラウザネイティブの遅延読み込みに委譲)になり、native lazy loadingは
-                通常ビューポートに近づいた時点で発火するが、OBSブラウザソース(CEF)は
-                ソース追加直後や解像度確定前に通常と異なるビューポート状態で初期化
-                されることがあり、その挙動がnative lazy loadingの発火条件と噛み合わない
-                可能性がある(この正確な発火メカニズムの不一致自体は実機ログで裏取り
-                できていない)。
-                オーバーレイの単体カード画像は常に画面いっぱいに1枚だけ即時表示する
-                用途で、遅延読み込みの利点(スクロール外画像の節約)が無い一方この失敗
-                モードのリスクだけがあるため、他のカード単体表示箇所(CardDetail.tsx等)
-                と同様に priority を指定してlazy loadingを無効化し、受信直後に読み込みを
-                開始させる。preloadリンクはReact 19のReactDOM.preload()がsrc単位で
-                重複排除するため、同じカード画像を繰り返し表示してもheadの
-                preloadリンクが配信時間に比例して増え続けることはない(新規カード画像
-                ごとに高々1件、カタログサイズが上限)。 */}
+            {/* Issue #1076: 接続・イベント受信・演出切り替えは全て成功するのに
+                OBS上でカード画素だけが表示されない(黒画面)事象への対策。
+                next/imageは既定でloading="lazy"になり、OBSブラウザソース(CEF)
+                ではその発火条件が満たされず永久に読み込まれない恐れがあるため、
+                単体カード画像を即時読み込みにする。詳細な調査経緯・対抗仮説は
+                Issue #1076参照。
+                loading="eager"（`priority`ではなく）を使うのは、この画像が
+                「カード表示が決まった瞬間に初めてマウントされる」ため、
+                `priority`が付随して出すpreloadリンクの先読み効果が無く、
+                長時間開きっぱなしのOBSページのheadへ不要なリンクを溜める
+                だけになるため。 */}
             {result.card.image_url ? (
               <Image
                 src={result.card.image_url}
@@ -1387,7 +1378,7 @@ export default function OverlayPage() {
                 height={shouldUseSmallMode ? 268 : 448}
                 className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
                 unoptimized
-                priority
+                loading="eager"
               />
             ) : (
               <div className={`flex items-center justify-center bg-gray-700 rounded-lg ${shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80"}`}>
@@ -1463,9 +1454,8 @@ export default function OverlayPage() {
                 <div className="aspect-square bg-gray-600">
                   {result.card.image_url ? (
                     // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
-                    // priority: Issue #1076参照(画像のみモード側の同コメント参照)。
-                    // OBSブラウザソースの初期ビューポート不定によるlazy loading未発火の
-                    // 黒画面回帰を避けるため、通常モードのカード画像も即時読み込みにする。
+                    // loading="eager": Issue #1076参照(画像のみモード側の同コメント参照)。
+                    // 通常モードのカード画像も同じ理由で即時読み込みにする。
                     <Image
                       src={result.card.image_url}
                       alt={result.card.name}
@@ -1474,7 +1464,7 @@ export default function OverlayPage() {
                       className={`w-full h-full ${cardImageFitClass(result.card.image_padding_color)}`}
                       style={cardImageFitStyle(result.card.image_padding_color)}
                       unoptimized
-                      priority
+                      loading="eager"
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center">
