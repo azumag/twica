@@ -55,7 +55,7 @@ jobs:
               value = re.sub(r"<https?://[^>\n]+>", "", value)
               value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
               value = re.sub(
-                  r"(?i)</?(?:!doctype|a|abbr|b|br|code|div|em|i|img|li|ol|p|pre|s|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul|h[1-6]|hr)(?:\\s[^>\\n]*)?/?>",
+                  r"(?i)</?(?:!doctype|a|abbr|b|br|code|div|em|i|img|li|ol|p|pre|s|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul|h[1-6]|hr)(?:\s[^>\n]*)?/?>",
                   "",
                   value,
               )
@@ -134,7 +134,7 @@ jobs:
               value = re.sub(r"<https?://[^>\n]+>", "", value)
               value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
               value = re.sub(
-                  r"(?i)</?(?:!doctype|a|abbr|b|br|code|div|em|i|img|li|ol|p|pre|s|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul|h[1-6]|hr)(?:\\s[^>\\n]*)?/?>",
+                  r"(?i)</?(?:!doctype|a|abbr|b|br|code|div|em|i|img|li|ol|p|pre|s|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul|h[1-6]|hr)(?:\s[^>\n]*)?/?>",
                   "",
                   value,
               )
