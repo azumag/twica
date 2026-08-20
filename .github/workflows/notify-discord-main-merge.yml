@@ -43,6 +43,7 @@ jobs:
           # instead of rediscovering component PRs through the GitHub API.
           content=$(python3 - <<'PY'
           import os
+          import sys
 
           limit = 2000
           section_heading = "## このリリースで変わること"
@@ -64,6 +65,13 @@ jobs:
 
           release_text = "\n".join(release_lines).strip()
           if not release_text:
+              # Keep internal diagnostics in Actions only. Discord should remain
+              # clean and simply fall back to the promotion PR title.
+              print(
+                  "::warning::Promotion PR is missing a non-empty "
+                  "'## このリリースで変わること' section; using PR title in Discord.",
+                  file=sys.stderr,
+              )
               release_text = os.environ.get("PR_TITLE", "").strip()
 
           prefix = f"🚀 **{os.environ['REPOSITORY_NAME']} が更新されました**\n\n"
