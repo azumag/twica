@@ -788,7 +788,9 @@ function createPresenceHarness() {
       },
       list,
       delete: async (keys: string | string[]) => {
-        for (const key of Array.isArray(keys) ? keys : [keys]) records.delete(key)
+        const batch = Array.isArray(keys) ? keys : [keys]
+        if (batch.length > 128) throw new Error('storage delete batch too large')
+        for (const key of batch) records.delete(key)
       },
       getAlarm: async () => alarmAt,
       setAlarm: async (time: number) => {
@@ -855,6 +857,23 @@ describe('OverlayPresence Durable Object', () => {
     await expect(response.json()).resolves.toMatchObject({ count: 1 })
     expect(harness.records.has('room:old')).toBe(false)
     expect(harness.records.has('room:fresh')).toBe(true)
+  })
+
+  it('chunks expired lease deletion to the Durable Object storage limit', async () => {
+    const harness = createPresenceHarness()
+    for (let i = 0; i < 129; i += 1) {
+      harness.records.set(`room:stale-${String(i).padStart(3, '0')}`, {
+        lastSeen: Date.now() - 10 * 60_000 - 1,
+      })
+    }
+    const presence = new OverlayPresence(harness.state as never, {} as never)
+
+    const response = await presence.fetch(
+      new Request('https://presence.internal/snapshot'),
+    )
+
+    await expect(response.json()).resolves.toMatchObject({ count: 0 })
+    expect([...harness.records.keys()].filter((key) => key.startsWith('room:'))).toHaveLength(0)
   })
 
   it('sweeps expired leases on its alarm even without a snapshot request', async () => {

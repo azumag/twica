@@ -136,6 +136,18 @@ describe("LivePage", () => {
     );
   });
 
+  it("omits a zero estimate so it cannot contradict the opted-in directory", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getLiveDirectoryPresence.mockResolvedValue({
+      count: 0,
+      observedAt: "2026-08-21T00:00:00.000Z",
+    });
+
+    render(await LivePage());
+
+    expect(screen.queryByTestId("live-presence-estimate")).not.toBeInTheDocument();
+  });
+
   it("builds localized metadata from the livePage namespace", async () => {
     await expect(generateMetadata()).resolves.toEqual({
       title: "チャネルとランキング - TwiCa",

@@ -80,10 +80,26 @@ describe("getLiveDirectoryPresence", () => {
     serviceFetch.mockResolvedValue(new Response(null, { status: 503 }));
 
     await expect(getLiveDirectoryPresence()).resolves.toBeNull();
-    expect(kv.put).not.toHaveBeenCalled();
-    expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
-      context: "liveDirectory:presence",
-    });
+    expect(kv.put).toHaveBeenCalledWith(
+      "live-directory:presence:v1",
+      JSON.stringify({ unavailable: true }),
+      { expirationTtl: 60 },
+    );
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it("suppresses repeated service calls while the unavailable marker is fresh", async () => {
+    serviceFetch.mockResolvedValue(new Response(null, { status: 503 }));
+    kv.get
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(JSON.stringify({ unavailable: true }));
+
+    await expect(getLiveDirectoryPresence()).resolves.toBeNull();
+    __resetLiveDirectoryCacheForTests();
+    await expect(getLiveDirectoryPresence()).resolves.toBeNull();
+
+    expect(serviceFetch).toHaveBeenCalledOnce();
+    expect(reportError).not.toHaveBeenCalled();
   });
 
   it("omits the estimate locally when the service binding is absent", async () => {
