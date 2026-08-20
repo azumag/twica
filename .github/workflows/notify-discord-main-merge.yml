@@ -58,7 +58,7 @@ jobs:
               value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
               return value
 
-          release_text = strip_markdown_links(nl.join(release_lines).strip())
+          release_text = strip_markdown_links(chr(10).join(release_lines).strip())
           if not release_text:
               raise SystemExit("Promotion PR must include a non-empty promotion summary section")
           PY
