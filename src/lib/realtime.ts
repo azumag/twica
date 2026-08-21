@@ -13,6 +13,7 @@ import {
   OVERLAY_REALTIME_HEARTBEAT_MS,
   OVERLAY_REALTIME_PROTOCOL_VERSION,
   OVERLAY_REALTIME_PRESENCE_REFRESH,
+  OVERLAY_REALTIME_PRESENCE_TOKEN_TTL_MS,
   OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH,
   OVERLAY_REALTIME_TRANSPORT_DISABLED,
   buildPollingRealtimeEvents,
@@ -130,6 +131,9 @@ const SOCKET_RECONCILIATION_TRIGGER_IDS = 512
 const MAX_BUFFERED_SOCKET_EVENTS = 32
 const SOCKET_RECOVERY_BUFFER_MAX_MS = 10_000
 const SEEN_EVENT_TTL_MS = 24 * 60 * 60 * 1000
+const PRESENCE_TOKEN_NONCE_PATTERN = /^[0-9a-f-]{36}$/i
+const PRESENCE_STORAGE_KEY_PREFIX = 'twica:overlay-presence:v1:'
+const PRESENCE_TOKEN_CLOCK_SKEW_MS = 60_000
 /**
  * Reconciliation cadence for a healthy DO connection. Ten minutes reduces the
  * old fixed history traffic while preserving eventual delivery when the
@@ -315,6 +319,96 @@ function persistSeenEvents(streamerId: string, seen: Map<string, number>): void 
   }
 }
 
+interface ParsedPresenceToken {
+  token: string
+  expiresAt: number
+}
+
+/**
+ * Validate only the bounded, public shape of the bearer capability. The
+ * Worker remains the authority for the HMAC; the browser uses the expiry to
+ * choose between the URL token and the token saved by a previous page
+ * lifetime. Keeping this parser here also prevents an untrusted server notice
+ * from filling localStorage with arbitrary data.
+ */
+function parsePresenceToken(value: unknown, now = Date.now()): ParsedPresenceToken | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH) {
+    return null
+  }
+  const parts = value.split('.')
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null
+  const expiresAt = Number(parts[0])
+  if (
+    !Number.isSafeInteger(expiresAt)
+    || expiresAt <= now
+    || expiresAt > now + OVERLAY_REALTIME_PRESENCE_TOKEN_TTL_MS + PRESENCE_TOKEN_CLOCK_SKEW_MS
+    || !PRESENCE_TOKEN_NONCE_PATTERN.test(parts[1])
+    || !/^[0-9a-f]{64}$/i.test(parts[2])
+  ) {
+    return null
+  }
+  return { token: value, expiresAt }
+}
+
+function presenceStorageKey(streamerId: string): string {
+  return `${PRESENCE_STORAGE_KEY_PREFIX}${encodeURIComponent(streamerId)}`
+}
+
+function readOverlayPresenceToken(streamerId: string): string | null {
+  if (typeof window === 'undefined') return null
+  const params = new URLSearchParams(window.location.search)
+  // Tokenless settings previews and demos must never inherit the capability
+  // saved by the real OBS source. A presence query parameter marks the page
+  // as an opted-in source even when its original token has expired.
+  if (!params.has('presence')) return null
+
+  const fromUrl = parsePresenceToken(params.get('presence'))
+  let fromStorage: ParsedPresenceToken | null = null
+  try {
+    fromStorage = parsePresenceToken(
+      window.localStorage.getItem(presenceStorageKey(streamerId))
+    )
+  } catch {
+    // Private-mode/security failures only lose reload persistence; the URL
+    // token and the current socket's in-memory refresh remain usable.
+  }
+
+  // URL order wins ties so a newly copied URL with the same expiry is used;
+  // otherwise an already refreshed token survives an OBS Browser Source
+  // reload even though the configured URL still contains the old token.
+  const selected = fromStorage && (!fromUrl || fromStorage.expiresAt > fromUrl.expiresAt)
+    ? fromStorage
+    : fromUrl
+  if (!selected) return null
+  try {
+    window.localStorage.setItem(presenceStorageKey(streamerId), selected.token)
+  } catch {
+    // The capability is still forwarded for this page lifetime.
+  }
+  return selected.token
+}
+
+function persistOverlayPresenceToken(streamerId: string, value: unknown): ParsedPresenceToken | null {
+  const parsed = parsePresenceToken(value)
+  if (!parsed || typeof window === 'undefined') return parsed
+  const params = new URLSearchParams(window.location.search)
+  // A tokenless preview must stay tokenless even if a malformed/old room
+  // happens to send a refresh notice on its public WebSocket.
+  if (!params.has('presence')) return null
+  try {
+    const stored = parsePresenceToken(
+      window.localStorage.getItem(presenceStorageKey(streamerId))
+    )
+    // Never replace a newer token with a delayed/duplicated server notice.
+    if (!stored || parsed.expiresAt >= stored.expiresAt) {
+      window.localStorage.setItem(presenceStorageKey(streamerId), parsed.token)
+    }
+  } catch {
+    // Storage is an optimization for reloads, not a delivery dependency.
+  }
+  return parsed
+}
+
 function rememberSeenId(seen: Map<string, number>, id: string): boolean {
   if (seen.has(id)) return false
   seen.set(id, Date.now())
@@ -478,9 +572,7 @@ export function subscribeToGachaResults(
   // The initial capability comes from the settings-generated overlay URL. A
   // connected room may replace it through a private server notice before the
   // next reconnect, so long-running OBS sessions do not silently age out.
-  let currentPresenceToken: string | null = typeof window !== 'undefined'
-    ? new URLSearchParams(window.location.search).get('presence')
-    : null
+  let currentPresenceToken = readOverlayPresenceToken(streamerId)
   // A present value followed by an absent value means this new client reached
   // an older app Worker during rollback. One legacy `/events` probe preserves
   // build-version rollback detection without a steady-state DB poll.
@@ -938,11 +1030,15 @@ export function subscribeToGachaResults(
           }
           if (parsed.type === 'server_notice') {
             if (parsed.code === OVERLAY_REALTIME_PRESENCE_REFRESH) {
-              if (
-                typeof parsed.presenceToken === 'string'
-                && parsed.presenceToken.length <= OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH
-              ) {
-                currentPresenceToken = parsed.presenceToken
+              const refreshed = persistOverlayPresenceToken(
+                streamerId,
+                parsed.presenceToken,
+              )
+              if (refreshed) {
+                const current = parsePresenceToken(currentPresenceToken)
+                if (!current || refreshed.expiresAt >= current.expiresAt) {
+                  currentPresenceToken = refreshed.token
+                }
                 options.onStatusChange?.('DO_PRESENCE_REFRESHED')
               }
               return

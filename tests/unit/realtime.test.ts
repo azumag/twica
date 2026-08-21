@@ -55,12 +55,15 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     sessionStorage.clear()
+    localStorage.clear()
+    window.history.replaceState({}, '', '/')
     // A rejected fetch would otherwise enter happy-dom's real XHR fallback.
     // Individual compatibility coverage for XHR lives in the overlay page tests.
     vi.stubGlobal('XMLHttpRequest', undefined)
   })
 
   afterEach(() => {
+    window.history.replaceState({}, '', '/')
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
     vi.useRealTimers()
@@ -533,7 +536,9 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       return jsonResponse({ events: [] })
     }))
 
-    const refreshedToken = '1770000000000.123e4567-e89b-42d3-a456-426614174000.' + 'b'.repeat(64)
+    const initialToken = `${Date.now() + 24 * 60 * 60 * 1_000}.123e4567-e89b-42d3-a456-426614174000.${'a'.repeat(64)}`
+    const refreshedToken = `${Date.now() + 30 * 24 * 60 * 60 * 1_000}.123e4567-e89b-42d3-a456-426614174001.${'b'.repeat(64)}`
+    window.history.replaceState({}, '', `/overlay/${STREAMER_ID}?presence=${initialToken}`)
     const statuses: string[] = []
     const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
       onStatusChange: (status) => statuses.push(status),
@@ -556,6 +561,32 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     const reconnectUrl = new URL(ControlledWebSocket.instances[1].url)
     expect(reconnectUrl.searchParams.get('presence')).toBe(refreshedToken)
     cleanup()
+
+    // Simulate OBS rebuilding the Browser Source. The configured URL still
+    // contains the original token, but the refreshed capability persisted by
+    // the first page lifetime must win during re-initialization.
+    window.history.replaceState({}, '', `/overlay/${STREAMER_ID}?presence=${initialToken}`)
+    const reloadCleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      retryDelay: 1000,
+    })
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(3)
+    const reloadUrl = new URL(ControlledWebSocket.instances[2].url)
+    expect(reloadUrl.searchParams.get('presence')).toBe(refreshedToken)
+    reloadCleanup()
+
+    // The settings page uses a tokenless iframe/demo URL. It must not inherit
+    // the OBS capability merely because this browser has a saved token for the
+    // same streamer.
+    window.history.replaceState({}, '', `/overlay/${STREAMER_ID}`)
+    const previewCleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      retryDelay: 1000,
+    })
+    await flushPromises()
+    expect(ControlledWebSocket.instances).toHaveLength(4)
+    const previewUrl = new URL(ControlledWebSocket.instances[3].url)
+    expect(previewUrl.searchParams.has('presence')).toBe(false)
+    previewCleanup()
   })
 
   it('serializes an onopen recovery behind an in-flight snapshot and runs one trailing poll', async () => {
