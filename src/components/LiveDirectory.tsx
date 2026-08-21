@@ -27,6 +27,12 @@ interface LiveDirectoryProps {
    * hydration mismatch が起こり得るため、配信経過時間の基準をシリアライズして渡す。
    */
   referenceTime: string;
+  /**
+   * #1114: overlay room presence由来の推定配信チャネル数。
+   * registry障害・realtime無効時はnullで、その場合は推定行ごと非表示にする
+   * （「0人」と誤表示しないため）。
+   */
+  estimatedLiveChannels: number | null;
 }
 
 const VIEWS: ReadonlyArray<{
@@ -135,6 +141,7 @@ export default function LiveDirectory({
   entries,
   rankings,
   referenceTime,
+  estimatedLiveChannels,
 }: LiveDirectoryProps) {
   const t = useTranslations("livePage");
   const [view, setView] = useState<LiveDirectoryView>("recentlyStarted");
@@ -173,6 +180,22 @@ export default function LiveDirectory({
       <h2 id="live-directory-heading" className="sr-only">
         {t("directoryHeading")}
       </h2>
+
+      {/* #1114: overlay room接続由来の推定値。正確なTwitch配信状態ではないため、
+          誤差要因を必ず隣接文言で明示する。null時は行ごと非表示（0と誤表示しない）。 */}
+      {estimatedLiveChannels !== null && (
+        <div
+          data-testid="live-presence-summary"
+          className="mb-6 rounded-lg border border-gray-700 bg-gray-800/60 px-4 py-3"
+        >
+          <p className="text-sm font-semibold text-white">
+            {t("presence.summary", { count: estimatedLiveChannels })}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-gray-400">
+            {t("presence.disclaimer")}
+          </p>
+        </div>
+      )}
 
       <div className="mb-8 overflow-x-auto border-b border-gray-700">
         <div

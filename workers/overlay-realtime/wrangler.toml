@@ -21,9 +21,20 @@ MAX_ROOM_PUBLISHES_PER_MINUTE = "120"
 name = "OVERLAY_ROOMS"
 class_name = "OverlayRoom"
 
+# #1114: single global presence registry for the /live estimated live-channel
+# count. Rooms report through this internal DO binding only; the public router
+# exposes just the signed presence-count read.
+[[durable_objects.bindings]]
+name = "PRESENCE_REGISTRY"
+class_name = "PresenceRegistry"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["OverlayRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PresenceRegistry"]
 
 # Required secrets (set with `wrangler secret put` and never commit):
 # - OVERLAY_REALTIME_PUBLISH_SECRET
@@ -45,3 +56,15 @@ MAX_ROOM_PUBLISHES_PER_MINUTE = "120"
 [[env.preview.durable_objects.bindings]]
 name = "OVERLAY_ROOMS"
 class_name = "OverlayRoom"
+
+[[env.preview.durable_objects.bindings]]
+name = "PRESENCE_REGISTRY"
+class_name = "PresenceRegistry"
+
+[[env.preview.migrations]]
+tag = "v1"
+new_sqlite_classes = ["OverlayRoom"]
+
+[[env.preview.migrations]]
+tag = "v2"
+new_sqlite_classes = ["PresenceRegistry"]

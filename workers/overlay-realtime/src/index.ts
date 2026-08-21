@@ -30,8 +30,23 @@ interface OverlayRoomNamespace {
   }
 }
 
+/**
+ * Aggregates short-term room presence leases (#1114).
+ *
+ * The binding is optional at the type level so older deploy windows and unit
+ * tests without a registry keep working: every caller degrades to a no-op
+ * instead of failing the room or the public estimate endpoint.
+ */
+interface PresenceRegistryNamespace {
+  idFromName(name: string): unknown
+  get(id: unknown): {
+    fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
+  }
+}
+
 interface Env {
   OVERLAY_ROOMS: OverlayRoomNamespace
+  PRESENCE_REGISTRY?: PresenceRegistryNamespace
   OVERLAY_REALTIME_PUBLISH_SECRET: string
   OVERLAY_REALTIME_MODE?: string
   OVERLAY_REALTIME_STREAMER_ALLOWLIST?: string
@@ -87,6 +102,32 @@ const KILL_SWITCH_CHECK_MS = OVERLAY_REALTIME_HEARTBEAT_MS
  * database is authoritative about the latter.
  */
 const ROOM_SEQ_KEY = 'room-seq'
+/**
+ * Presence reporting (#1114) — piggybacks on the existing kill-switch alarm.
+ *
+ * A room with live sockets reports "I exist" to the presence registry only on
+ * state changes (first socket connects, last socket disappears) plus a
+ * throttled refresh every PRESENCE_REFRESH_MS. No overlay client polls anything
+ * new; the alarm wake this reuses already happens once per minute.
+ */
+const PRESENCE_LAST_SENT_KEY = 'presence-last-sent-at'
+/** Refresh cadence: "every few minutes" per #1114, a multiple of the 1-minute alarm. */
+const PRESENCE_REFRESH_MS = 3 * OVERLAY_REALTIME_HEARTBEAT_MS
+
+/**
+ * Registry lease lifetime. Must comfortably exceed PRESENCE_REFRESH_MS so one
+ * missed refresh (worker deploy, transient error) never drops an active room,
+ * while a crashed room that missed its deregister still ages out.
+ */
+const PRESENCE_LEASE_TTL_MS = 10 * 60_000
+/**
+ * One bounded storage value instead of one key per room keeps every presence
+ * operation at one read + one write, mirroring the nonce/delivery ledgers.
+ * The cap is far above any realistic concurrent-overlay count and bounds
+ * memory/storage under abusive upsert floods (roomId is validated first).
+ */
+const MAX_PRESENCE_ROOMS = 5_000
+const PRESENCE_LEASES_KEY = 'presence-leases'
 
 interface RoomRateLimitLedger {
   windowStartedAt: number
@@ -287,6 +328,40 @@ const overlayRealtimeWorker = {
       return roomResponse
     }
 
+    /**
+     * Presence snapshot for /live (#1114).
+     *
+     * Signed with the same HMAC scheme as publish but with an empty body, so
+     * no unauthenticated caller can observe even an aggregate room count. The
+     * registry response is relayed verbatim: it contains only a count and a
+     * timestamp, never room IDs or client metadata.
+     */
+    if (request.method === 'GET' && url.pathname === '/internal/v1/presence-count') {
+      const auth = await authenticatedPublishRequest(request, env, url.pathname, '')
+      if (!auth.ok) return json({ error: 'Unauthorized' }, 401)
+      const registry = env.PRESENCE_REGISTRY
+      if (!registry || typeof registry.idFromName !== 'function') {
+        return json({ error: 'Presence unavailable' }, 503)
+      }
+      try {
+        const response = await registry
+          .get(registry.idFromName('global'))
+          .fetch(new Request('https://registry.internal/count'))
+        if (!response.ok) {
+          return json({ error: 'Presence unavailable' }, 503)
+        }
+        return new Response(response.body, {
+          status: 200,
+          headers: {
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+          },
+        })
+      } catch {
+        return json({ error: 'Presence unavailable' }, 503)
+      }
+    }
+
     return json({ error: 'Not found' }, 404)
   },
 }
@@ -445,6 +520,33 @@ export class OverlayRoom {
   }
 
   /**
+   * Best-effort presence update to the registry (#1114).
+   *
+   * Reads the room identity from storage, so remove calls must happen before
+   * ROOM_STREAMER_ID_KEY is deleted. Failures are swallowed on purpose: the
+   * registry lease expires on its own, and presence is an estimate that must
+   * never break the gacha transport this object exists for.
+   */
+  private async sendPresence(operation: 'upsert' | 'remove'): Promise<void> {
+    const registry = this.env.PRESENCE_REGISTRY
+    if (!registry || typeof registry.idFromName !== 'function') return
+    const streamerId = await this.state.storage.get<string>(ROOM_STREAMER_ID_KEY)
+    if (!streamerId) return
+    try {
+      await registry.get(registry.idFromName('global')).fetch(
+        new Request(`https://registry.internal/registry/presence/${operation}`, {
+          method: 'POST',
+          body: JSON.stringify({ roomId: streamerId }),
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    } catch {
+      // The lease TTL bounds how long a missed upsert or deregister can skew
+      // the /live estimate; retrying here would only delay the alarm.
+    }
+  }
+
+  /**
    * Disconnect every socket once the operator has removed this room from the
    * allowlist, then stop rescheduling.
    *
@@ -456,7 +558,11 @@ export class OverlayRoom {
     const sockets = this.state.getWebSockets('protocol-v1')
     if (sockets.length === 0) {
       // No listeners: let the object go fully idle instead of paying for a
-      // wake every minute for a room nobody is watching.
+      // wake every minute for a room nobody is watching. Deregistering here
+      // removes the room from the /live estimate immediately instead of
+      // waiting out the full lease TTL (#1114).
+      await this.sendPresence('remove')
+      await this.state.storage.delete(PRESENCE_LAST_SENT_KEY)
       await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
       return
     }
@@ -480,9 +586,23 @@ export class OverlayRoom {
           // A dead socket is exactly what the client-side deadline handles.
         }
       }
+      // Throttled presence refresh: state changes report immediately, steady
+      // state only reaffirms the lease every few minutes (#1114).
+      const now = Date.now()
+      const lastSent = await this.state.storage.get<number>(PRESENCE_LAST_SENT_KEY)
+      if (
+        !Number.isFinite(lastSent)
+        || now - (lastSent as number) >= PRESENCE_REFRESH_MS
+      ) {
+        await this.sendPresence('upsert')
+        await this.state.storage.put(PRESENCE_LAST_SENT_KEY, now)
+      }
       await this.state.storage.setAlarm(Date.now() + KILL_SWITCH_CHECK_MS)
       return
     }
+
+    await this.sendPresence('remove')
+    await this.state.storage.delete(PRESENCE_LAST_SENT_KEY)
 
     const notice = JSON.stringify({
       type: 'server_notice',
@@ -527,6 +647,10 @@ export class OverlayRoom {
       }).WebSocketPair
       const pair = new Pair()
       const [client, server] = Object.values(pair)
+      // Captured before accepting: a transition from zero sockets is the room
+      // coming back to life and the one connect-time presence report (#1114).
+      // Additional OBS sources in the same room must not re-report.
+      const previousSocketCount = this.state.getWebSockets().length
       const attachment: SocketAttachment = {
         connectionId: crypto.randomUUID(),
         connectedAt: Date.now(),
@@ -547,6 +671,13 @@ export class OverlayRoom {
       )
       if (isValidStreamerId(roomStreamerId)) {
         await this.state.storage.put(ROOM_STREAMER_ID_KEY, roomStreamerId)
+      }
+      // Room became active: register presence immediately so the /live
+      // estimate reflects the state change without waiting for the first
+      // throttled alarm refresh (#1114).
+      if (previousSocketCount === 0) {
+        await this.sendPresence('upsert')
+        await this.state.storage.put(PRESENCE_LAST_SENT_KEY, Date.now())
       }
       // Only arm when nothing is pending. Re-arming on every connect would push
       // the check out indefinitely for a room that OBS reconnects frequently.
@@ -694,5 +825,138 @@ export class OverlayRoom {
     } catch {
       // Nothing remains to clean up when the runtime has already dropped it.
     }
+  }
+}
+
+type PresenceLeases = Array<[roomId: string, lastSeenMs: number]>
+
+/**
+ * Re-validate stored lease rows instead of trusting the persisted shape.
+ * Hibernation survives deploys; a partially written or legacy value must
+ * never crash the registry or leak into the public count.
+ */
+function parsePresenceLeases(value: unknown): PresenceLeases {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!Array.isArray(entry) || entry.length !== 2) return []
+    const [roomId, lastSeenMs] = entry
+    return typeof roomId === 'string'
+      && Number.isSafeInteger(lastSeenMs)
+      && isValidStreamerId(roomId)
+      ? ([[roomId, lastSeenMs as number]] as PresenceLeases)
+      : []
+  })
+}
+
+function pruneExpiredLeases(leases: PresenceLeases, now: number): PresenceLeases {
+  const cutoff = now - PRESENCE_LEASE_TTL_MS
+  return leases.filter(([, lastSeenMs]) => lastSeenMs > cutoff)
+}
+
+/**
+ * Aggregates short-term room presence leases for the /live estimate (#1114).
+ *
+ * One global object holds only room identifiers and last-seen timestamps:
+ * no IP, username, channel name, or stream title ever reaches this storage.
+ * Rooms report through the internal DO binding (never the public router),
+ * and the app reads a bare count through the signed presence-count endpoint.
+ */
+export class PresenceRegistry {
+  private readonly state: CloudflareDurableObjectState
+
+  constructor(state: CloudflareDurableObjectState, _env: unknown) {
+    this.state = state
+  }
+
+  private async upsert(roomId: string, now: number): Promise<void> {
+    await this.state.storage.transaction(async (transaction) => {
+      const leases = pruneExpiredLeases(
+        parsePresenceLeases(
+          await transaction.get<unknown>(PRESENCE_LEASES_KEY)
+        ),
+        now
+      ).filter(([storedRoomId]) => storedRoomId !== roomId)
+      leases.push([roomId, now])
+      // Newest entries survive the cap: an upsert flood of unknown rooms
+      // evicts the least recently touched leases, not the active ones.
+      await transaction.put(PRESENCE_LEASES_KEY, leases.slice(-MAX_PRESENCE_ROOMS))
+    })
+  }
+
+  private async remove(roomId: string, now: number): Promise<void> {
+    await this.state.storage.transaction(async (transaction) => {
+      const leases = pruneExpiredLeases(
+        parsePresenceLeases(
+          await transaction.get<unknown>(PRESENCE_LEASES_KEY)
+        ),
+        now
+      )
+      const remaining = leases.filter(([storedRoomId]) => storedRoomId !== roomId)
+      if (remaining.length === leases.length) return
+      await transaction.put(PRESENCE_LEASES_KEY, remaining)
+    })
+  }
+
+  /**
+   * Distinct live rooms right now. The response deliberately carries a count
+   * and timestamp only — room IDs stay in storage so the public /live page
+   * can never echo them back (#1114 acceptance criteria).
+   */
+  private async count(now: number): Promise<Response> {
+    let estimatedRooms = 0
+    await this.state.storage.transaction(async (transaction) => {
+      const leases = parsePresenceLeases(
+        await transaction.get<unknown>(PRESENCE_LEASES_KEY)
+      )
+      const active = pruneExpiredLeases(leases, now)
+      if (active.length !== leases.length) {
+        await transaction.put(PRESENCE_LEASES_KEY, active)
+      }
+      estimatedRooms = active.length
+    })
+    return json({ estimatedRooms, generatedAt: new Date(now).toISOString() })
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+
+    // Internal routes only: reachable through the PRESENCE_REGISTRY binding,
+    // never routed by the public edge fetch. Bodies are tiny { roomId }
+    // objects from trusted rooms, bounded here anyway.
+    if (request.method === 'POST' && url.pathname.startsWith('/registry/presence/')) {
+      const operation = url.pathname.slice('/registry/presence/'.length)
+      if (operation !== 'upsert' && operation !== 'remove') {
+        return json({ error: 'Not found' }, 404)
+      }
+      const body = await request.text()
+      if (body.length > 256) return json({ error: 'Payload too large' }, 413)
+      let roomId: unknown
+      try {
+        roomId = (JSON.parse(body) as { roomId?: unknown }).roomId
+      } catch {
+        return json({ error: 'Invalid JSON' }, 400)
+      }
+      if (typeof roomId !== 'string' || !isValidStreamerId(roomId)) {
+        return json({ error: 'Invalid room' }, 400)
+      }
+
+      const now = Date.now()
+      if (operation === 'upsert') {
+        await this.upsert(roomId, now)
+      } else {
+        await this.remove(roomId, now)
+      }
+      return json({ ok: true })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/count') {
+      return this.count(Date.now())
+    }
+
+    console.warn('[overlay-realtime] registry route miss', {
+      method: request.method,
+      pathname: url.pathname,
+    })
+    return json({ error: 'Not found' }, 404)
   }
 }

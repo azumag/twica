@@ -1567,6 +1567,10 @@
       "cardCount": "{count, number}種類",
       "empty": "ランキングデータはありません"
     },
+    "presence": {
+      "summary": "現在配信中（推定）: 約{count, number}チャネル",
+      "disclaimer": "TwiCaオーバーレイの接続状況から推定した値です。待機中のOBSやプレビュー、閉じ忘れたタブも含まれることがあり、Twitchの実際の配信状態とは異なります。"
+    },
     "empty": {
       "title": "現在掲載中の配信はありません",
       "description": "掲載を許可した配信者がライブを開始すると、ここに表示されます。"

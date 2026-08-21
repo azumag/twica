@@ -1567,6 +1567,10 @@
       "cardCount": "{count, plural, one {# type} other {# types}}",
       "empty": "No ranking data yet"
     },
+    "presence": {
+      "summary": "Live now (estimated): about {count, number} channels",
+      "disclaimer": "Estimated from TwiCa overlay connections. Idle OBS sources, previews, or leftover tabs may be included, and this differs from the actual Twitch stream status."
+    },
     "empty": {
       "title": "No listed streams are live right now",
       "description": "Streamers who opt in will appear here when they go live."

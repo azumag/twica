@@ -101,6 +101,7 @@ function renderDirectory(
   streamItems: LiveDirectoryEntry[] = entries,
   rankingItems: LiveDirectoryRankingEntry[] = rankings,
   recentRankingItems: LiveDirectoryRankingEntry[] = rankingItems,
+  estimatedLiveChannels: number | null = null,
 ) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
@@ -111,6 +112,7 @@ function renderDirectory(
           allTime: rankingItems,
         }}
         referenceTime={REFERENCE_TIME}
+        estimatedLiveChannels={estimatedLiveChannels}
       />
     </NextIntlClientProvider>,
   );
@@ -386,5 +388,23 @@ describe("LiveDirectory", () => {
 
     const card = screen.getByRole("article");
     expect(within(card).getByText("配信開始から 1時間 30分")).toBeInTheDocument();
+  });
+});
+
+describe("estimated live channel count (#1114)", () => {
+  it("shows the estimate with its error-source disclaimer", () => {
+    renderDirectory(entries, rankings, rankings, 7);
+
+    const summary = screen.getByTestId("live-presence-summary");
+    expect(summary).toHaveTextContent("現在配信中（推定）: 約7チャネル");
+    // 誤差要因（待機中OBS・プレビュー・残留タブ）の明示は受け入れ条件。
+    expect(summary).toHaveTextContent("オーバーレイの接続状況から推定した値です");
+  });
+
+  it("hides the whole estimate line when no snapshot is available", () => {
+    renderDirectory(entries, rankings, rankings, null);
+
+    // registry障害時に「0チャネル」と誤表示しないための仕様。
+    expect(screen.queryByTestId("live-presence-summary")).not.toBeInTheDocument();
   });
 });

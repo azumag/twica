@@ -7,6 +7,7 @@ import {
   getLiveDirectory,
   getLiveDirectoryRankings,
 } from "@/lib/live-directory";
+import { getEstimatedLiveChannelCount } from "@/lib/live-presence";
 import { getSession } from "@/lib/session";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -26,10 +27,13 @@ export async function generateMetadata(): Promise<Metadata> {
  * 各データ関数のCloudflare KV 60秒キャッシュへ一元化している。
  */
 export default async function LivePage() {
-  const [session, entries, rankings, t, tHeader] = await Promise.all([
+  const [session, entries, rankings, presence, t, tHeader] = await Promise.all([
     getSession(),
     getLiveDirectory(),
     getLiveDirectoryRankings(),
+    // #1114: overlay room presence由来の推定配信チャネル数。障害・機能無効時は
+    // ok:false となり推定行だけが非表示になる（一覧・ランキングには影響しない）。
+    getEstimatedLiveChannelCount(),
     getTranslations("livePage"),
     getTranslations("header"),
   ]);
@@ -82,6 +86,7 @@ export default async function LivePage() {
           entries={entries}
           rankings={rankings}
           referenceTime={referenceTime}
+          estimatedLiveChannels={presence.ok ? presence.count : null}
         />
       </main>
 

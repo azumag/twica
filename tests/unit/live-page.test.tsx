@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   getLiveDirectory: vi.fn(),
   getLiveDirectoryRankings: vi.fn(),
+  getEstimatedLiveChannelCount: vi.fn(),
   getTranslations: vi.fn(),
 }));
 
@@ -13,6 +14,9 @@ vi.mock("@/lib/live-directory", () => ({
   getLiveDirectory: mocks.getLiveDirectory,
   getLiveDirectoryRankings: mocks.getLiveDirectoryRankings,
 }));
+vi.mock("@/lib/live-presence", () => ({
+  getEstimatedLiveChannelCount: mocks.getEstimatedLiveChannelCount,
+}));
 vi.mock("next-intl/server", () => ({
   getTranslations: mocks.getTranslations,
 }));
@@ -20,11 +24,16 @@ vi.mock("@/components/LiveDirectory", () => ({
   default: ({
     entries,
     rankings,
+    estimatedLiveChannels,
   }: {
     entries: unknown[];
     rankings: { last7Days: unknown[]; allTime: unknown[] };
+    estimatedLiveChannels: number | null;
   }) => (
-    <div data-testid="live-directory">
+    <div
+      data-testid="live-directory"
+      data-estimated={String(estimatedLiveChannels)}
+    >
       entries:{entries.length};rankings:{rankings.last7Days.length}/{rankings.allTime.length}
     </div>
   ),
@@ -57,6 +66,9 @@ describe("LivePage", () => {
     mocks.getSession.mockReset();
     mocks.getLiveDirectory.mockReset();
     mocks.getLiveDirectoryRankings.mockReset();
+    mocks.getEstimatedLiveChannelCount.mockReset();
+    // 既定はスナップショット取得成功。障害系は専用テストで上書きする。
+    mocks.getEstimatedLiveChannelCount.mockResolvedValue({ ok: true, count: 3 });
     mocks.getTranslations.mockReset();
     mocks.getTranslations.mockImplementation(async (namespace: string) => {
       return (key: string) => translations[namespace]?.[key] ?? key;
@@ -82,6 +94,12 @@ describe("LivePage", () => {
     expect(screen.getByTestId("live-directory")).toHaveTextContent(
       "entries:1;rankings:1/2",
     );
+    // #1114: presence取得は未ログインでも実行され、推定値がコンポーネントへ渡る。
+    expect(mocks.getEstimatedLiveChannelCount).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("live-directory")).toHaveAttribute(
+      "data-estimated",
+      "3",
+    );
     expect(
       screen.getByText("明示的に掲載を許可したチャネルだけが表示されています。"),
     ).toBeInTheDocument();
@@ -92,6 +110,19 @@ describe("LivePage", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ホーム" })).toHaveAttribute("href", "/");
     expect(screen.getByText("public footer")).toBeInTheDocument();
+  });
+
+  it("hides the estimate when the presence registry is unavailable", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getEstimatedLiveChannelCount.mockResolvedValue({ ok: false });
+
+    render(await LivePage());
+
+    // #1114: 障害時は「0」と誤表示せず、推定行ごと非表示（null）になる。
+    expect(screen.getByTestId("live-directory")).toHaveAttribute(
+      "data-estimated",
+      "null",
+    );
   });
 
   it("uses the dashboard header route for an authenticated visitor", async () => {
