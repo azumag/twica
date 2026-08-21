@@ -433,4 +433,5 @@ export {
   fetchBasicAggregates,
   fetchRpcAggregates,
   diffAggregates,
+  printDiffTable,
 }
