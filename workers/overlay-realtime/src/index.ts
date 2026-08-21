@@ -105,10 +105,12 @@ const ROOM_SEQ_KEY = 'room-seq'
 /**
  * Presence reporting (#1114) — piggybacks on the existing kill-switch alarm.
  *
- * A room with live sockets reports "I exist" to the presence registry only on
- * state changes (first socket connects, last socket disappears) plus a
- * throttled refresh every PRESENCE_REFRESH_MS. No overlay client polls anything
- * new; the alarm wake this reuses already happens once per minute.
+ * A room reports "I exist" to the presence registry ONLY through the
+ * throttled alarm refresh: the first report happens after its sockets have
+ * persisted through PRESENCE_REFRESH_MS since the first connect. A drive-by
+ * WebSocket therefore cannot light up the /live estimate — holding sockets
+ * open across several rooms for minutes is required, which bounds third-party
+ * inflation of this public estimate (auto-review required finding).
  */
 const PRESENCE_LAST_SENT_KEY = 'presence-last-sent-at'
 /** Refresh cadence: "every few minutes" per #1114, a multiple of the 1-minute alarm. */
@@ -123,10 +125,13 @@ const PRESENCE_LEASE_TTL_MS = 10 * 60_000
 /**
  * One bounded storage value instead of one key per room keeps every presence
  * operation at one read + one write, mirroring the nonce/delivery ledgers.
- * The cap is far above any realistic concurrent-overlay count and bounds
- * memory/storage under abusive upsert floods (roomId is validated first).
+ *
+ * 300 rooms ≈ 17 KiB stays far below the Durable Object value-size limit
+ * (128 KiB) where 5_000 entries would overflow and silently break every
+ * future put (auto-review finding). It also caps how high the PUBLIC /live
+ * estimate can be pushed by abusive connections.
  */
-const MAX_PRESENCE_ROOMS = 5_000
+const MAX_PRESENCE_ROOMS = 300
 const PRESENCE_LEASES_KEY = 'presence-leases'
 
 interface RoomRateLimitLedger {
@@ -348,6 +353,11 @@ const overlayRealtimeWorker = {
           .get(registry.idFromName('global'))
           .fetch(new Request('https://registry.internal/count'))
         if (!response.ok) {
+          try {
+            await response.body?.cancel()
+          } catch {
+            // Drain failure must not mask the 503 we are about to return.
+          }
           return json({ error: 'Presence unavailable' }, 503)
         }
         return new Response(response.body, {
@@ -525,7 +535,9 @@ export class OverlayRoom {
    * Reads the room identity from storage, so remove calls must happen before
    * ROOM_STREAMER_ID_KEY is deleted. Failures are swallowed on purpose: the
    * registry lease expires on its own, and presence is an estimate that must
-   * never break the gacha transport this object exists for.
+   * never break the gacha transport this object exists for. Non-ok registry
+   * replies are logged (without payload) so a systematically rejected room is
+   * diagnosable instead of silently missing from the estimate.
    */
   private async sendPresence(operation: 'upsert' | 'remove'): Promise<void> {
     const registry = this.env.PRESENCE_REGISTRY
@@ -533,13 +545,26 @@ export class OverlayRoom {
     const streamerId = await this.state.storage.get<string>(ROOM_STREAMER_ID_KEY)
     if (!streamerId) return
     try {
-      await registry.get(registry.idFromName('global')).fetch(
+      const response = await registry.get(registry.idFromName('global')).fetch(
         new Request(`https://registry.internal/registry/presence/${operation}`, {
           method: 'POST',
           body: JSON.stringify({ roomId: streamerId }),
           headers: { 'content-type': 'application/json' },
         })
       )
+      if (!response.ok) {
+        // The unread body of an internal error reply is drained best-effort,
+        // matching the publisher's discardResponseBody hygiene.
+        try {
+          await response.body?.cancel()
+        } catch {
+          // Drain failure must not mask the status we are about to log.
+        }
+        console.warn('[overlay-realtime] presence update rejected', {
+          operation,
+          status: response.status,
+        })
+      }
     } catch {
       // The lease TTL bounds how long a missed upsert or deregister can skew
       // the /live estimate; retrying here would only delay the alarm.
@@ -647,10 +672,10 @@ export class OverlayRoom {
       }).WebSocketPair
       const pair = new Pair()
       const [client, server] = Object.values(pair)
-      // Captured before accepting: a transition from zero sockets is the room
-      // coming back to life and the one connect-time presence report (#1114).
-      // Additional OBS sources in the same room must not re-report.
-      const previousSocketCount = this.state.getWebSockets().length
+      // Captured before accepting: the transition from zero tagged sockets
+      // marks the room coming back to life and starts its presence dwell
+      // window (#1114). Additional OBS sources in the same room change nothing.
+      const previousSocketCount = this.state.getWebSockets('protocol-v1').length
       const attachment: SocketAttachment = {
         connectionId: crypto.randomUUID(),
         connectedAt: Date.now(),
@@ -672,11 +697,11 @@ export class OverlayRoom {
       if (isValidStreamerId(roomStreamerId)) {
         await this.state.storage.put(ROOM_STREAMER_ID_KEY, roomStreamerId)
       }
-      // Room became active: register presence immediately so the /live
-      // estimate reflects the state change without waiting for the first
-      // throttled alarm refresh (#1114).
+      // Room became active: start the presence dwell window WITHOUT reporting.
+      // The first upsert happens on a later alarm only after sockets persisted
+      // PRESENCE_REFRESH_MS, so a drive-by WebSocket cannot light up the
+      // public /live estimate (#1114, auto-review required finding).
       if (previousSocketCount === 0) {
-        await this.sendPresence('upsert')
         await this.state.storage.put(PRESENCE_LAST_SENT_KEY, Date.now())
       }
       // Only arm when nothing is pending. Re-arming on every connect would push

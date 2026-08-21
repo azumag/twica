@@ -139,4 +139,71 @@ describe("getEstimatedLiveChannelCount (#1114)", () => {
       count: 5,
     });
   });
+
+  it("negative-caches failures briefly so /live cannot hammer a dead registry", async () => {
+    const innerFetch = vi.fn().mockRejectedValue(new TypeError("down"));
+    vi.stubGlobal("fetch", innerFetch);
+
+    await expect(getEstimatedLiveChannelCount()).resolves.toEqual({ ok: false });
+    await expect(getEstimatedLiveChannelCount()).resolves.toEqual({ ok: false });
+    expect(innerFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes through the Service Binding when running inside Workers", async () => {
+    const serviceFetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ estimatedRooms: 9 }), { status: 200 }));
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: "do-primary",
+        OVERLAY_REALTIME_PUBLISH_URL: "https://realtime.example",
+        OVERLAY_REALTIME_PUBLISH_SECRET: "presence-test-secret",
+        OVERLAY_REALTIME_SERVICE: { fetch: serviceFetch },
+      },
+    } as never);
+    const globalFetch = vi.fn();
+    vi.stubGlobal("fetch", globalFetch);
+
+    await expect(getEstimatedLiveChannelCount()).resolves.toEqual({
+      ok: true,
+      count: 9,
+    });
+    // Cloudflareの同一zone内Worker間はglobal fetch不可のため、Bindingだけを使う。
+    expect(serviceFetch).toHaveBeenCalledTimes(1);
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses to fall back to global fetch when the Workers runtime lacks the service binding", async () => {
+    // 必須指摘対応の回帰ガード: Binding欠如時に古いビルド時URLへglobal fetchすると、
+    // previewの推定値を本番が表示しかねない。fail-closedで非表示に倒す。
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: "do-primary",
+        OVERLAY_REALTIME_PUBLISH_URL: "https://realtime.example",
+        OVERLAY_REALTIME_PUBLISH_SECRET: "presence-test-secret",
+      },
+    } as never);
+    const globalFetch = vi.fn();
+    vi.stubGlobal("fetch", globalFetch);
+
+    await expect(getEstimatedLiveChannelCount()).resolves.toEqual({ ok: false });
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-https endpoint in production without fetching", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.mocked(getCloudflareContext).mockResolvedValue({
+      env: {
+        OVERLAY_REALTIME_MODE: "do-primary",
+        OVERLAY_REALTIME_PUBLISH_URL: "http://insecure.example/publish",
+        OVERLAY_REALTIME_PUBLISH_SECRET: "presence-test-secret",
+        OVERLAY_REALTIME_SERVICE: { fetch: vi.fn() },
+      },
+    } as never);
+    const globalFetch = vi.fn();
+    vi.stubGlobal("fetch", globalFetch);
+
+    await expect(getEstimatedLiveChannelCount()).resolves.toEqual({ ok: false });
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
 });

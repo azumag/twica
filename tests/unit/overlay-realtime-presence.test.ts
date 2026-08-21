@@ -124,17 +124,15 @@ function connect(harness: ReturnType<typeof createRoomHarness>, streamerId = STR
 }
 
 describe('OverlayRoom presence hooks (#1114)', () => {
-  it('registers presence on the zero-to-one socket transition and throttles reconnects', async () => {
+  it('starts the dwell window on the first connect without reporting yet', async () => {
     const registryFetch = vi.fn().mockResolvedValue(Response.json({ ok: true }))
     const harness = createRoomHarness(0, registryFetch)
 
     await connect(harness)
 
-    expect(registryFetch).toHaveBeenCalledTimes(1)
-    const request = registryFetch.mock.calls[0][0] as Request
-    expect(new URL(request.url).pathname).toBe('/registry/presence/upsert')
-    await expect(request.json()).resolves.toEqual({ roomId: STREAMER_ID })
-    // 初回報告時刻が記録され、alarm側の数分おきrefreshの起点になる。
+    // 接続直後の即時upsertは行わない。第三者がWebSocketを張るだけで公開推定値を
+    // 水増しできる状態を防ぐため、最初の報告はdwell時間経過後のalarmに任せる。
+    expect(registryFetch).not.toHaveBeenCalled()
     expect(harness.records.get('presence-last-sent-at')).toEqual(
       expect.any(Number)
     )
@@ -386,5 +384,21 @@ describe('PresenceRegistry Durable Object (#1114)', () => {
     expect(oversize.status).toBe(413)
 
     expect(records.has('presence-leases')).toBe(false)
+  })
+
+  it('caps stored leases below the DO value-size limit, keeping recent rooms', async () => {
+    const { records, registry } = createRegistryHarness()
+
+    for (let index = 0; index < 310; index += 1) {
+      await registry.fetch(upsertRequest(crypto.randomUUID()))
+    }
+    // 最後に触れたroomは上限内で必ず生き残る（新しめ優先のeviction）。
+    await registry.fetch(upsertRequest(STREAMER_ID))
+
+    const leases = records.get('presence-leases') as Array<[string, number]>
+    expect(leases).toHaveLength(300)
+    expect(leases.some(([roomId]) => roomId === STREAMER_ID)).toBe(true)
+    // 300件 ≈ 17KiB でDO value上限(128KiB)を余裕を持って下回る。
+    expect(JSON.stringify(leases).length).toBeLessThan(32 * 1024)
   })
 })

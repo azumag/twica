@@ -32,6 +32,9 @@ class_name = "PresenceRegistry"
 tag = "v1"
 new_sqlite_classes = ["OverlayRoom"]
 
+# 注意: migrationsはtop-levelと[env.preview.*]の両方に同じtag系列で書く必要が
+# ある（二重管理）。v3以降を追加するときは必ず両方へ追記すること。片方だけ
+# 追記すると、その環境のDO migrationが黙って取り残される。
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["PresenceRegistry"]
@@ -65,6 +68,7 @@ class_name = "PresenceRegistry"
 tag = "v1"
 new_sqlite_classes = ["OverlayRoom"]
 
+# top-levelのmigrationsと同じtag系列を必ず維持すること（上記注意参照）。
 [[env.preview.migrations]]
 tag = "v2"
 new_sqlite_classes = ["PresenceRegistry"]

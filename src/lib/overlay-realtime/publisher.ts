@@ -13,6 +13,7 @@ import {
   normalizeOverlayRealtimeCard,
   validateGachaRealtimeEvent,
 } from '@/lib/overlay-realtime/contract'
+import { resolveOverlayRealtimeEnvironment } from '@/lib/overlay-realtime/runtime-env'
 import { createPublishSignature } from '@/lib/overlay-realtime/signature'
 
 export interface OverlayPublishPayload {
@@ -126,89 +127,22 @@ interface OverlayRealtimeServiceBinding {
   fetch(request: Request): Promise<Response>
 }
 
-function stringBinding(
-  env: Record<string, unknown>,
-  key: keyof NodeJS.ProcessEnv
-): string | undefined {
-  const value = env[key]
-  return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-function serviceBinding(
-  env: Record<string, unknown>
-): OverlayRealtimeServiceBinding | undefined {
-  const value = env.OVERLAY_REALTIME_SERVICE
-  return (
-    typeof value === 'object'
-    && value !== null
-    && 'fetch' in value
-    && typeof value.fetch === 'function'
-  )
-    ? value as OverlayRealtimeServiceBinding
-    : undefined
-}
-
 /**
  * Resolve private publisher configuration from the active Workers request.
  *
- * OpenNext exposes Cloudflare runtime variables and secrets through
- * `getCloudflareContext().env`. Reading that binding first is important:
- * Workers secrets can be rotated independently of a Next.js build, whereas a
- * direct `process.env.NAME` reference may retain the value that existed while
- * the server bundle was produced. `process.env` remains the explicit fallback
- * for `next dev`, Vitest, and other non-Workers execution contexts.
+ * The fail-closed invariants (atomic binding snapshot, no process.env access
+ * when the production context is unavailable) live in the shared resolver so
+ * the #1114 presence reader cannot drift from them.
  */
 async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnvironment> {
-  try {
-    const { getCloudflareContext } = await import('@opennextjs/cloudflare')
-    const { env } = await getCloudflareContext({ async: true })
-    const runtimeEnv = env as unknown as Record<string, unknown>
-    // Treat Workers bindings as one atomic configuration snapshot. Falling
-    // back one key at a time could combine a rotated runtime secret with a
-    // stale build-time URL, or bypass polling-only mode after a binding is
-    // deliberately removed.
-    return {
-      runtime: 'workers',
-      mode: stringBinding(runtimeEnv, 'OVERLAY_REALTIME_MODE'),
-      streamerAllowlist: stringBinding(
-        runtimeEnv,
-        'OVERLAY_REALTIME_STREAMER_ALLOWLIST'
-      ),
-      publishUrl: stringBinding(runtimeEnv, 'OVERLAY_REALTIME_PUBLISH_URL'),
-      publishSecret: stringBinding(
-        runtimeEnv,
-        'OVERLAY_REALTIME_PUBLISH_SECRET'
-      ),
-      publishService: serviceBinding(runtimeEnv),
-    }
-  } catch (error) {
-    if (process.env.NODE_ENV === 'production') {
-      // A production publish must fail closed when its Workers request context
-      // is unavailable. The polling source remains authoritative, so skipping
-      // is safer than sending with possibly stale build-time credentials.
-      logger.warn('[overlay-realtime] runtime publisher context unavailable', {
-        errorName: error instanceof Error ? error.name : 'unknown',
-      })
-      return {
-        runtime: 'workers',
-        mode: undefined,
-        streamerAllowlist: undefined,
-        publishUrl: undefined,
-        publishSecret: undefined,
-        publishService: undefined,
-      }
-    }
-
-    // `next dev` and Vitest have no OpenNext request context. Their environment
-    // is process-local and cannot cross the preview/production Workers boundary.
-    return {
-      runtime: 'local',
-      mode: process.env.OVERLAY_REALTIME_MODE,
-      streamerAllowlist: process.env.OVERLAY_REALTIME_STREAMER_ALLOWLIST,
-      publishUrl: process.env.OVERLAY_REALTIME_PUBLISH_URL,
-      publishSecret: process.env.OVERLAY_REALTIME_PUBLISH_SECRET,
-      publishService: undefined,
-    }
+  const resolved = await resolveOverlayRealtimeEnvironment()
+  return {
+    runtime: resolved.runtime,
+    mode: resolved.mode,
+    streamerAllowlist: resolved.streamerAllowlist,
+    publishUrl: resolved.publishUrl,
+    publishSecret: resolved.publishSecret,
+    publishService: resolved.service,
   }
 }
 
