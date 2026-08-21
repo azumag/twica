@@ -771,6 +771,7 @@ describe('OverlayRoom kill switch alarm', () => {
     }
     harness.sockets[0].deserializeAttachment.mockReturnValue({
       presenceAuthorized: true,
+      presenceExpiresAt: Date.now() + 20 * 24 * 60 * 60_000,
     })
     harness.sockets[1].deserializeAttachment.mockReturnValue({
       presenceAuthorized: false,
@@ -802,6 +803,7 @@ describe('OverlayRoom kill switch alarm', () => {
     }
     harness.sockets[0].deserializeAttachment.mockReturnValue({
       presenceAuthorized: true,
+      presenceExpiresAt: Date.now() + 20 * 24 * 60 * 60_000,
     })
 
     for (let i = 0; i < 5; i += 1) {
@@ -816,6 +818,33 @@ describe('OverlayRoom kill switch alarm', () => {
     await harness.room.alarm()
     await Promise.all(harness.presenceTasks.splice(0))
     expect(presenceFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('renews an authorized capability before its URL expires', async () => {
+    const harness = createRoomHarness(1)
+    harness.records.set('room-streamer-id', STREAMER_ID)
+    harness.sockets[0].deserializeAttachment.mockReturnValue({
+      presenceAuthorized: true,
+      presenceExpiresAt: Date.now() + 60_000,
+    })
+
+    await harness.room.alarm()
+    await Promise.all(harness.presenceTasks.splice(0))
+
+    expect(harness.sockets[0].serializeAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        presenceAuthorized: true,
+        presenceExpiresAt: expect.any(Number),
+      }),
+    )
+    const refresh = harness.sockets[0].send.mock.calls
+      .map(([message]) => JSON.parse(String(message)))
+      .find((message) => message.code === 'presence_refresh')
+    expect(refresh).toMatchObject({
+      type: 'server_notice',
+      code: 'presence_refresh',
+    })
+    expect(typeof refresh.presenceToken).toBe('string')
   })
 })
 

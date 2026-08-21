@@ -1,6 +1,5 @@
 import { createPublishSignature } from '@/lib/overlay-realtime/signature'
-
-const PRESENCE_TOKEN_TTL_MS = 30 * 24 * 60 * 60_000
+import { OVERLAY_REALTIME_PRESENCE_TOKEN_TTL_MS } from '@/lib/overlay-realtime/contract'
 
 /**
  * Mint the capability embedded in an authenticated streamer's OBS overlay URL.
@@ -29,7 +28,7 @@ export async function createOverlayPresenceToken(
   }
   if (!secret) return null
 
-  const expiresAt = Date.now() + PRESENCE_TOKEN_TTL_MS
+  const expiresAt = Date.now() + OVERLAY_REALTIME_PRESENCE_TOKEN_TTL_MS
   const expiresAtRaw = String(expiresAt)
   const nonce = crypto.randomUUID()
   const signature = await createPublishSignature(

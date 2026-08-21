@@ -490,6 +490,74 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('uses a refreshed presence capability after reconnecting', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor(readonly url: string) {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'presence-refresh-v1',
+        })
+      }
+      return jsonResponse({ events: [] })
+    }))
+
+    const refreshedToken = '1770000000000.123e4567-e89b-42d3-a456-426614174000.' + 'b'.repeat(64)
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', vi.fn(), {
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+
+    expect(ControlledWebSocket.instances).toHaveLength(1)
+    ControlledWebSocket.instances[0].emit({
+      type: 'server_notice',
+      code: 'presence_refresh',
+      presenceToken: refreshedToken,
+    })
+    expect(statuses).toContain('DO_PRESENCE_REFRESHED')
+
+    ControlledWebSocket.instances[0].close(1006)
+    await vi.advanceTimersByTimeAsync(2_000)
+    await flushPromises()
+
+    expect(ControlledWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+    const reconnectUrl = new URL(ControlledWebSocket.instances[1].url)
+    expect(reconnectUrl.searchParams.get('presence')).toBe(refreshedToken)
+    cleanup()
+  })
+
   it('serializes an onopen recovery behind an in-flight snapshot and runs one trailing poll', async () => {
     class OpeningWebSocket {
       static readonly CONNECTING = 0

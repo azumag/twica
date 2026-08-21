@@ -383,13 +383,21 @@ export default function OverlayPreview({
 
   // オーバーレイURLを生成
   const overlayUrl = `${baseUrl}/overlay/${streamerId}`;
-  const urlParams = new URLSearchParams(buildUrlParams());
+  // The copied OBS URL carries the capability so a real overlay can report
+  // presence. The settings iframe/demo is intentionally tokenless: opening a
+  // preview must not look like a live channel to the anonymous estimate.
+  const previewUrlParams = new URLSearchParams(buildUrlParams());
+  const serializedPreviewUrlParams = previewUrlParams.toString();
+  const urlParams = new URLSearchParams(previewUrlParams);
   if (presenceToken && presenceToken.length <= 256) {
     urlParams.set("presence", presenceToken);
   }
   const serializedUrlParams = urlParams.toString();
   const overlayUrlWithParams = serializedUrlParams
     ? `${overlayUrl}?${serializedUrlParams}`
+    : overlayUrl;
+  const overlayPreviewUrl = serializedPreviewUrlParams
+    ? `${overlayUrl}?${serializedPreviewUrlParams}`
     : overlayUrl;
 
   // コレクションページURLを生成
@@ -426,8 +434,8 @@ export default function OverlayPreview({
     if (iframeRef.current) {
       // iframeをリロードしてdemoパラメータ付きで再読み込み
       // カードIDも指定（"random"の場合はランダム選択）
-      let demoUrl = serializedUrlParams
-        ? `${overlayUrl}?${serializedUrlParams}&demo=true`
+      let demoUrl = serializedPreviewUrlParams
+        ? `${overlayUrl}?${serializedPreviewUrlParams}&demo=true`
         : `${overlayUrl}?demo=true`;
       if (selectedCardId && selectedCardId !== "random") {
         demoUrl += `&cardId=${selectedCardId}`;
@@ -436,7 +444,7 @@ export default function OverlayPreview({
       // Issue #532: 自動再デモの起点として実行時刻を記録する
       lastDemoAtRef.current = Date.now();
     }
-  }, [overlayUrl, serializedUrlParams, selectedCardId]);
+  }, [overlayUrl, serializedPreviewUrlParams, selectedCardId]);
 
   // triggerDemoの最新版を常に参照できるようにするref。
   // 自動再デモのuseEffectはselectedCardId変更（triggerDemoの依存の一つ）では
@@ -454,7 +462,7 @@ export default function OverlayPreview({
   // - デモを一度も実行していない場合（初回表示・OBS URLコピーのみの利用等）は発火しない
   // - 直近のデモから RECENT_DEMO_WINDOW_MS を超えている場合も発火しない（無関係な変更で
   //   勝手にカードが出るのを防ぐ）
-  // - serializedUrlParams は options の全フィールドを反映して生成されるため、これを監視すれば
+  // - serializedPreviewUrlParams は options の全フィールドを反映して生成されるため、これを監視すれば
   //   表示に影響するオプション変更を過不足なく検知できる
   useEffect(() => {
     if (initializedStorageKey !== storageKey) {
@@ -480,7 +488,7 @@ export default function OverlayPreview({
     };
     // triggerDemoRef経由で最新のtriggerDemoを参照するため、triggerDemo自体をこのeffectの
     // 依存に含める必要はない（含めるとselectedCardId変更だけでも誤発火してしまう）。
-  }, [initializedStorageKey, storageKey, serializedUrlParams]);
+  }, [initializedStorageKey, storageKey, serializedPreviewUrlParams]);
 
   // OBS DEMOを統合events経路へ発行し、DO primaryとpolling gap recoveryの双方へ届ける。
   const triggerObsDemo = useCallback(async () => {
@@ -968,7 +976,7 @@ export default function OverlayPreview({
       <div className="rounded-lg overflow-hidden bg-gray-900 border border-gray-700">
         <iframe
           ref={iframeRef}
-          src={overlayUrlWithParams}
+          src={overlayPreviewUrl}
           className="w-full h-[600px]"
           title="Overlay Preview"
         />

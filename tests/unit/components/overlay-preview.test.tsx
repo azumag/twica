@@ -195,6 +195,23 @@ describe('OverlayPreview', () => {
     })
   })
 
+  it('設定画面のiframeにはpresence capabilityを渡さない', async () => {
+    const token = '1770000000000.123e4567-e89b-42d3-a456-426614174000.' + 'a'.repeat(64)
+
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        presenceToken={token}
+        baseUrl="https://example.com"
+      />
+    )
+
+    await waitFor(() => {
+      const iframe = screen.getByTitle('Overlay Preview') as HTMLIFrameElement
+      expect(new URL(iframe.src).searchParams.has('presence')).toBe(false)
+    })
+  })
+
   it('オプション変更を localStorage に自動保存する', async () => {
     renderWithIntl(
       <OverlayPreview

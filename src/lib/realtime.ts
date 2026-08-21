@@ -12,6 +12,8 @@
 import {
   OVERLAY_REALTIME_HEARTBEAT_MS,
   OVERLAY_REALTIME_PROTOCOL_VERSION,
+  OVERLAY_REALTIME_PRESENCE_REFRESH,
+  OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH,
   OVERLAY_REALTIME_TRANSPORT_DISABLED,
   buildPollingRealtimeEvents,
   type GachaRealtimeEventV1,
@@ -403,7 +405,11 @@ function validConfig(value: unknown): value is OverlayRealtimeConfigV1 {
     || isValidOverlayVersion(config.overlayVersion)
 }
 
-function websocketUrl(baseUrl: string, streamerId: string): string | null {
+function websocketUrl(
+  baseUrl: string,
+  streamerId: string,
+  presenceTokenOverride?: string | null,
+): string | null {
   try {
     const url = new URL(baseUrl)
     if (url.protocol === 'https:') url.protocol = 'wss:'
@@ -414,11 +420,13 @@ function websocketUrl(baseUrl: string, streamerId: string): string | null {
     // The settings page places a room-scoped liveness capability on the OBS
     // URL. Keep it out of the public config response; only the overlay page
     // that was given the capability forwards it to the WebSocket edge.
-    if (typeof window !== 'undefined') {
-      const presenceToken = new URLSearchParams(window.location.search).get('presence')
-      if (presenceToken && presenceToken.length <= 256) {
-        url.searchParams.set('presence', presenceToken)
-      }
+    const presenceToken = presenceTokenOverride === undefined
+      ? (typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('presence')
+        : null)
+      : presenceTokenOverride
+    if (presenceToken && presenceToken.length <= OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH) {
+      url.searchParams.set('presence', presenceToken)
     }
     return url.toString()
   } catch {
@@ -467,6 +475,12 @@ export function subscribeToGachaResults(
   const unreconciledSocketEventIds = new Set<string>()
   let highVolumeRecoveryRequested = false
   let currentConfig: OverlayRealtimeConfigV1 | null = null
+  // The initial capability comes from the settings-generated overlay URL. A
+  // connected room may replace it through a private server notice before the
+  // next reconnect, so long-running OBS sessions do not silently age out.
+  let currentPresenceToken: string | null = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('presence')
+    : null
   // A present value followed by an absent value means this new client reached
   // an older app Worker during rollback. One legacy `/events` probe preserves
   // build-version rollback detection without a steady-state DB poll.
@@ -859,7 +873,11 @@ export function subscribeToGachaResults(
 
   const connectWebSocket = () => {
     if (disposed || currentConfig?.mode !== 'do-primary' || typeof WebSocket === 'undefined') return
-    const target = websocketUrl(currentConfig.webSocketUrl ?? '', streamerId)
+    const target = websocketUrl(
+      currentConfig.webSocketUrl ?? '',
+      streamerId,
+      currentPresenceToken,
+    )
     if (!target) {
       options.onStatusChange?.('DO_CONFIG_INVALID')
       return
@@ -919,6 +937,16 @@ export function subscribeToGachaResults(
             return
           }
           if (parsed.type === 'server_notice') {
+            if (parsed.code === OVERLAY_REALTIME_PRESENCE_REFRESH) {
+              if (
+                typeof parsed.presenceToken === 'string'
+                && parsed.presenceToken.length <= OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH
+              ) {
+                currentPresenceToken = parsed.presenceToken
+                options.onStatusChange?.('DO_PRESENCE_REFRESHED')
+              }
+              return
+            }
             options.onStatusChange?.(`DO_NOTICE:${parsed.code}`)
             if (parsed.code === TRANSPORT_DISABLED_NOTICE) {
               // The room itself reports that the operator disabled it. Remember

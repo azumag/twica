@@ -2,12 +2,19 @@ import {
   MAX_REALTIME_EVENT_BYTES,
   OVERLAY_REALTIME_HEARTBEAT,
   OVERLAY_REALTIME_HEARTBEAT_MS,
+  OVERLAY_REALTIME_PRESENCE_REFRESH,
+  OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH,
+  OVERLAY_REALTIME_PRESENCE_TOKEN_REFRESH_LEAD_MS,
+  OVERLAY_REALTIME_PRESENCE_TOKEN_TTL_MS,
   OVERLAY_REALTIME_TRANSPORT_DISABLED,
   isOverlayRealtimeStreamerEnabled,
   isValidStreamerId,
   validateGachaRealtimeEvent,
 } from '../../../src/lib/overlay-realtime/contract'
-import { verifyPublishSignature } from '../../../src/lib/overlay-realtime/signature'
+import {
+  createPublishSignature,
+  verifyPublishSignature,
+} from '../../../src/lib/overlay-realtime/signature'
 import type {
   DurableObjectState as CloudflareDurableObjectState,
   WebSocket as CloudflareWebSocket,
@@ -58,6 +65,8 @@ interface SocketAttachment {
   messageCount: number
   /** Only this socket's generated overlay URL may keep the room lease alive. */
   presenceAuthorized: boolean
+  /** Expiry of the capability currently carried by this socket, if known. */
+  presenceExpiresAt: number | null
 }
 
 const AUTH_WINDOW_MS = 60_000
@@ -90,9 +99,7 @@ const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
 const PRESENCE_LAST_ATTEMPT_AT_KEY = 'presence-last-attempt-at'
 const PRESENCE_SNAPSHOT_KEY = 'presence-snapshot'
 const PRESENCE_DELETE_BATCH_SIZE = 128
-const PRESENCE_TOKEN_TTL_MS = 30 * 24 * 60 * 60_000
 const PRESENCE_TOKEN_CLOCK_SKEW_MS = 60_000
-const PRESENCE_TOKEN_MAX_LENGTH = 256
 
 interface PresenceResponseCache {
   namespace: OverlayPresenceNamespace
@@ -271,7 +278,11 @@ async function hasPresenceCapability(
   streamerId: string,
   token: string
 ): Promise<boolean> {
-  if (!secret || token.length === 0 || token.length > PRESENCE_TOKEN_MAX_LENGTH) {
+  if (
+    !secret
+    || token.length === 0
+    || token.length > OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH
+  ) {
     return false
   }
   const [expiresAtRaw, nonce, signature] = token.split('.')
@@ -283,7 +294,7 @@ async function hasPresenceCapability(
   if (
     !Number.isSafeInteger(expiresAt)
     || expiresAt < now - PRESENCE_TOKEN_CLOCK_SKEW_MS
-    || expiresAt > now + PRESENCE_TOKEN_TTL_MS + PRESENCE_TOKEN_CLOCK_SKEW_MS
+    || expiresAt > now + OVERLAY_REALTIME_PRESENCE_TOKEN_TTL_MS + PRESENCE_TOKEN_CLOCK_SKEW_MS
     || !/^[0-9a-f-]{36}$/i.test(nonce)
   ) {
     return false
@@ -296,6 +307,33 @@ async function hasPresenceCapability(
     nonce,
     signature
   )
+}
+
+/**
+ * Renew a capability for an already-authorized socket. The room never stores
+ * the bearer token; it only sends a fresh one to the socket that proved the
+ * previous capability. This lets a continuously running OBS source stay in
+ * the estimate beyond the initial 30-day URL lifetime without adding a poll.
+ */
+async function createPresenceCapability(
+  secret: string,
+  streamerId: string,
+  now = Date.now(),
+): Promise<{ token: string; expiresAt: number }> {
+  const expiresAt = now + OVERLAY_REALTIME_PRESENCE_TOKEN_TTL_MS
+  const expiresAtRaw = String(expiresAt)
+  const nonce = crypto.randomUUID()
+  const signature = await createPublishSignature(
+    secret,
+    `/v1/rooms/${streamerId}/connect`,
+    '',
+    expiresAtRaw,
+    nonce,
+  )
+  return {
+    token: `${expiresAtRaw}.${nonce}.${signature}`,
+    expiresAt,
+  }
 }
 
 /**
@@ -608,6 +646,7 @@ export class OverlayRoom {
     // Otherwise a tokenless tab could keep refreshing a lease after the one
     // authenticated OBS connection had gone away.
     let presenceAuthorized = false
+    const authorizedSockets: CloudflareWebSocket[] = []
     for (const socket of sockets) {
       try {
         const attachment = socket.deserializeAttachment() as
@@ -615,7 +654,7 @@ export class OverlayRoom {
           | null
         if (attachment?.presenceAuthorized === true) {
           presenceAuthorized = true
-          break
+          authorizedSockets.push(socket)
         }
       } catch {
         // A malformed attachment is treated as an ordinary, non-authorized
@@ -627,6 +666,9 @@ export class OverlayRoom {
     // alarm rather than disconnecting a healthy room on a storage miss.
     if (!streamerId || realtimeEnabled(this.env, streamerId)) {
       if (streamerId && presenceAuthorized === true) this.schedulePresenceReport(streamerId)
+      if (streamerId && authorizedSockets.length > 0) {
+        this.schedulePresenceCapabilityRefresh(streamerId, authorizedSockets)
+      }
       // Still allowed: prove liveness on the same wake. Clients reconcile
       // history only every ten minutes, so this distinguishes "no gacha
       // happened" from "this socket died" without waiting for that DB pass.
@@ -687,6 +729,86 @@ export class OverlayRoom {
       }
     } catch {
       void task
+    }
+  }
+
+  /**
+   * Refresh only sockets that already proved the room-scoped capability.
+   *
+   * OBS can keep a single overlay URL open for months. A one-shot 30-day
+   * capability would otherwise stop contributing to the estimate while the
+   * overlay itself continues to deliver events. The refreshed bearer is sent
+   * only over that same authorized socket and is never persisted in DO storage.
+   */
+  private schedulePresenceCapabilityRefresh(
+    streamerId: string,
+    sockets: CloudflareWebSocket[],
+  ): void {
+    const task = this.refreshPresenceCapabilities(streamerId, sockets)
+    try {
+      // Keep capability renewal auxiliary as well: a crypto or socket failure
+      // must not delay the heartbeat or operator kill-switch check.
+      if (typeof this.state.waitUntil === 'function') {
+        this.state.waitUntil(task)
+      } else {
+        void task
+      }
+    } catch {
+      void task
+    }
+  }
+
+  private async refreshPresenceCapabilities(
+    streamerId: string,
+    sockets: CloudflareWebSocket[],
+  ): Promise<void> {
+    try {
+      if (!this.env.OVERLAY_REALTIME_PUBLISH_SECRET) return
+      const now = Date.now()
+      const refreshableSockets = sockets.filter((socket) => {
+        try {
+          const attachment = socket.deserializeAttachment() as
+            | Partial<SocketAttachment>
+            | null
+          return attachment?.presenceAuthorized === true
+            && (
+              typeof attachment.presenceExpiresAt !== 'number'
+              || attachment.presenceExpiresAt <= now + OVERLAY_REALTIME_PRESENCE_TOKEN_REFRESH_LEAD_MS
+            )
+        } catch {
+          return false
+        }
+      })
+      if (refreshableSockets.length === 0) return
+
+      const { token, expiresAt } = await createPresenceCapability(
+        this.env.OVERLAY_REALTIME_PUBLISH_SECRET,
+        streamerId,
+        now,
+      )
+      const notice = JSON.stringify({
+        type: 'server_notice',
+        code: OVERLAY_REALTIME_PRESENCE_REFRESH,
+        presenceToken: token,
+      })
+      for (const socket of refreshableSockets) {
+        try {
+          const attachment = socket.deserializeAttachment() as
+            | Partial<SocketAttachment>
+            | null
+          if (attachment?.presenceAuthorized !== true) continue
+          socket.serializeAttachment({
+            ...attachment,
+            presenceExpiresAt: expiresAt,
+          })
+          socket.send(notice)
+        } catch {
+          // The socket may have closed between the scan and send. Presence is
+          // best effort and must not affect the remaining sockets.
+        }
+      }
+    } catch {
+      // Secret/crypto/storage failures are auxiliary to overlay delivery.
     }
   }
 
@@ -781,12 +903,17 @@ export class OverlayRoom {
           url.searchParams.get('presence') ?? ''
         )
         : false
+      const rawPresenceToken = url.searchParams.get('presence') ?? ''
+      const rawPresenceExpiry = Number(rawPresenceToken.split('.')[0])
       const attachment: SocketAttachment = {
         connectionId: crypto.randomUUID(),
         connectedAt: Date.now(),
         messageWindowStartedAt: Date.now(),
         messageCount: 0,
         presenceAuthorized,
+        presenceExpiresAt: presenceAuthorized && Number.isSafeInteger(rawPresenceExpiry)
+          ? rawPresenceExpiry
+          : null,
       }
       this.state.acceptWebSocket(server, ['protocol-v1'])
       // Cloudflare's Hibernation API registers the server socket first; the
