@@ -426,7 +426,9 @@ export default function OverlayPreview({
     if (iframeRef.current) {
       // iframeをリロードしてdemoパラメータ付きで再読み込み
       // カードIDも指定（"random"の場合はランダム選択）
-      let demoUrl = urlParams ? `${overlayUrl}?${urlParams}&demo=true` : `${overlayUrl}?demo=true`;
+      let demoUrl = serializedUrlParams
+        ? `${overlayUrl}?${serializedUrlParams}&demo=true`
+        : `${overlayUrl}?demo=true`;
       if (selectedCardId && selectedCardId !== "random") {
         demoUrl += `&cardId=${selectedCardId}`;
       }
@@ -434,7 +436,7 @@ export default function OverlayPreview({
       // Issue #532: 自動再デモの起点として実行時刻を記録する
       lastDemoAtRef.current = Date.now();
     }
-  }, [overlayUrl, urlParams, selectedCardId]);
+  }, [overlayUrl, serializedUrlParams, selectedCardId]);
 
   // triggerDemoの最新版を常に参照できるようにするref。
   // 自動再デモのuseEffectはselectedCardId変更（triggerDemoの依存の一つ）では
@@ -452,7 +454,7 @@ export default function OverlayPreview({
   // - デモを一度も実行していない場合（初回表示・OBS URLコピーのみの利用等）は発火しない
   // - 直近のデモから RECENT_DEMO_WINDOW_MS を超えている場合も発火しない（無関係な変更で
   //   勝手にカードが出るのを防ぐ）
-  // - urlParams は options の全フィールドを反映して生成されるため、これを監視すれば
+  // - serializedUrlParams は options の全フィールドを反映して生成されるため、これを監視すれば
   //   表示に影響するオプション変更を過不足なく検知できる
   useEffect(() => {
     if (initializedStorageKey !== storageKey) {
@@ -478,7 +480,7 @@ export default function OverlayPreview({
     };
     // triggerDemoRef経由で最新のtriggerDemoを参照するため、triggerDemo自体をこのeffectの
     // 依存に含める必要はない（含めるとselectedCardId変更だけでも誤発火してしまう）。
-  }, [initializedStorageKey, storageKey, urlParams]);
+  }, [initializedStorageKey, storageKey, serializedUrlParams]);
 
   // OBS DEMOを統合events経路へ発行し、DO primaryとpolling gap recoveryの双方へ届ける。
   const triggerObsDemo = useCallback(async () => {
