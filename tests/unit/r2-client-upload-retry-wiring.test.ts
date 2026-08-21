@@ -95,8 +95,14 @@ const RETRY_SUCCESS_ATTEMPTS = TRANSIENT_FAILURES_BEFORE_SUCCESS + 1
 const R2_INTERNAL_ERROR_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)'
 
 function mockTransientFailuresThenSuccess(): void {
-  expect(TRANSIENT_FAILURES_BEFORE_SUCCESS).toBeGreaterThanOrEqual(1)
-  expect(TRANSIENT_FAILURES_BEFORE_SUCCESS).toBeLessThanOrEqual(MAX_RETRIES)
+  expect(
+    TRANSIENT_FAILURES_BEFORE_SUCCESS,
+    'retry-success fixture must include at least one transient failure',
+  ).toBeGreaterThanOrEqual(1)
+  expect(
+    TRANSIENT_FAILURES_BEFORE_SUCCESS,
+    'retry-success fixture must remain reachable within MAX_RETRIES',
+  ).toBeLessThanOrEqual(MAX_RETRIES)
 
   for (
     let transientFailureIndex = 0;
