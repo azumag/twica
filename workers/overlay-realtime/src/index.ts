@@ -38,15 +38,6 @@ interface OverlayPresenceNamespace {
   }
 }
 
-interface WorkerExecutionContextLike {
-  waitUntil(promise: Promise<unknown>): void
-}
-
-interface WorkerCacheLike {
-  match(request: Request): Promise<Response | undefined>
-  put(request: Request, response: Response): Promise<void>
-}
-
 interface Env {
   OVERLAY_ROOMS: OverlayRoomNamespace
   /** Optional during a staged rollout; room delivery must survive its absence. */
@@ -88,8 +79,8 @@ const PRESENCE_REPORT_TIMEOUT_MS = 2_000
 const PRESENCE_LEASE_TTL_MS = 10 * 60_000
 const PRESENCE_SNAPSHOT_TTL_MS = 60_000
 const PRESENCE_SWEEP_INTERVAL_MS = 5 * 60_000
-// Public estimates are intentionally bucketed so a small overlay population
-// cannot be used to infer whether one particular non-listed channel is live.
+// Public estimates are intentionally bucketed to reduce disclosure risk for
+// small overlay populations and avoid exposing a one-channel signal.
 const PRESENCE_PRIVACY_BUCKET_SIZE = 5
 const PRESENCE_REGISTRY_NAME = 'all'
 const PRESENCE_KEY_PREFIX = 'room:'
@@ -97,6 +88,20 @@ const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
 const PRESENCE_LAST_ATTEMPT_AT_KEY = 'presence-last-attempt-at'
 const PRESENCE_SNAPSHOT_KEY = 'presence-snapshot'
 const PRESENCE_DELETE_BATCH_SIZE = 128
+
+interface PresenceResponseCache {
+  namespace: OverlayPresenceNamespace
+  body: string
+  status: number
+  headers: Array<[string, string]>
+  expiresAt: number
+}
+
+// `caches.default` is not a reliable boundary on workers.dev. Keep the
+// public snapshot inexpensive without depending on that platform detail:
+// each warm Worker isolate reuses the small, already-bucketed JSON response
+// for one minute, while the Durable Object remains the shared freshness gate.
+let presenceResponseCache: PresenceResponseCache | null = null
 
 /**
  * Room identity, needed only so the kill-switch alarm can re-evaluate the
@@ -143,13 +148,6 @@ function json(body: unknown, status = 200, extraHeaders?: HeadersInit): Response
       ...extraHeaders,
     },
   })
-}
-
-function getWorkerCache(): WorkerCacheLike | null {
-  const global = globalThis as unknown as {
-    caches?: { default?: WorkerCacheLike }
-  }
-  return global.caches?.default ?? null
 }
 
 function boundedInteger(value: string | undefined, fallback: number, maximum: number): number {
@@ -268,7 +266,6 @@ const overlayRealtimeWorker = {
   async fetch(
     request: Request,
     env: Env,
-    ctx?: WorkerExecutionContextLike,
   ): Promise<Response> {
     const url = new URL(request.url)
     if (request.method === 'GET' && url.pathname === '/health') {
@@ -276,34 +273,44 @@ const overlayRealtimeWorker = {
     }
 
     if (request.method === 'GET' && url.pathname === '/presence') {
-      // Keep one canonical cache key. Random query strings must not be able to
-      // turn the public estimate into an unbounded registry-read amplifier.
+      // Random query strings must not turn the public estimate into an
+      // unbounded registry-read amplifier.
       if (url.search) return json({ error: 'Query parameters are not supported' }, 400)
-      const cache = getWorkerCache()
-      const cacheKey = new Request(new URL('/presence', url).toString())
-      if (cache) {
-        try {
-          const cached = await cache.match(cacheKey)
-          if (cached) return cached
-        } catch {
-          // Cache API is an optimization. The Durable Object snapshot cache
-          // below remains the correctness and freshness boundary.
-        }
-      }
       if (!env.OVERLAY_PRESENCE) {
         // Presence is an auxiliary estimate. Keep the overlay transport
         // deployable independently and make the application hide the line
         // rather than turning an absent binding into "0 channels".
         return json({ error: 'Presence unavailable' }, 503)
       }
+      const now = Date.now()
+      const cached = presenceResponseCache
+      if (cached && cached.namespace === env.OVERLAY_PRESENCE && cached.expiresAt > now) {
+        return new Response(cached.body, {
+          status: cached.status,
+          headers: cached.headers,
+        })
+      }
+      if (cached && cached.expiresAt <= now) presenceResponseCache = null
       try {
         const id = env.OVERLAY_PRESENCE.idFromName(PRESENCE_REGISTRY_NAME)
         const response = await env.OVERLAY_PRESENCE.get(id).fetch(
           new Request('https://presence.internal/snapshot')
         )
-        if (response.ok && cache) {
-          const put = cache.put(cacheKey, response.clone()).catch(() => undefined)
-          if (ctx) ctx.waitUntil(put)
+        if (response.ok) {
+          const body = await response.text()
+          const headers: Array<[string, string]> = []
+          response.headers.forEach((value, key) => headers.push([key, value]))
+          presenceResponseCache = {
+            namespace: env.OVERLAY_PRESENCE,
+            body,
+            status: response.status,
+            headers,
+            expiresAt: Date.now() + PRESENCE_SNAPSHOT_TTL_MS,
+          }
+          return new Response(body, {
+            status: response.status,
+            headers: presenceResponseCache.headers,
+          })
         }
         return response
       } catch {

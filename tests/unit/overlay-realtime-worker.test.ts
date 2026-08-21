@@ -283,60 +283,37 @@ describe('overlay realtime Worker router', () => {
     expect(get).not.toHaveBeenCalled()
   })
 
-  it('serves the canonical edge cache before waking the registry', async () => {
-    const cached = Response.json(
-      { count: 9, observedAt: '2026-08-21T00:00:00.000Z' },
-      { headers: { 'cache-control': 'public, max-age=60' } },
-    )
-    const match = vi.fn().mockResolvedValue(cached)
-    const get = vi.fn()
-    vi.stubGlobal('caches', { default: { match, put: vi.fn() } })
-
-    const response = await worker.fetch(
-      new Request('https://worker.example/presence'),
-      {
-        ...ROLLOUT_ENV,
-        OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
-        OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
-        OVERLAY_PRESENCE: { idFromName: vi.fn(), get },
-      } as unknown as Parameters<typeof worker.fetch>[1],
-    )
-
-    expect(response).toBe(cached)
-    expect(match).toHaveBeenCalledOnce()
-    expect(get).not.toHaveBeenCalled()
-    vi.unstubAllGlobals()
-  })
-
-  it('stores a cache miss without making the registry the cache owner', async () => {
+  it('reuses an in-isolate snapshot when the platform Cache API is unavailable', async () => {
     const presenceFetch = vi.fn().mockResolvedValue(
       Response.json(
         { count: 5, observedAt: '2026-08-21T00:00:00.000Z' },
         { headers: { 'cache-control': 'public, max-age=60' } },
       ),
     )
-    const match = vi.fn().mockResolvedValue(undefined)
-    const put = vi.fn().mockResolvedValue(undefined)
-    const waitUntil = vi.fn()
-    vi.stubGlobal('caches', { default: { match, put } })
+    vi.stubGlobal('caches', undefined)
+    const presence = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+    const env = {
+      ...ROLLOUT_ENV,
+      OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
+      OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
+      OVERLAY_PRESENCE: presence,
+    } as unknown as Parameters<typeof worker.fetch>[1]
 
-    const response = await worker.fetch(
+    const first = await worker.fetch(
       new Request('https://worker.example/presence'),
-      {
-        ...ROLLOUT_ENV,
-        OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
-        OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
-        OVERLAY_PRESENCE: {
-          idFromName: vi.fn(() => ({ registry: 'all' })),
-          get: vi.fn(() => ({ fetch: presenceFetch })),
-        },
-      } as unknown as Parameters<typeof worker.fetch>[1],
-      { waitUntil } as never,
+      env,
     )
+    const second = await worker.fetch(new Request('https://worker.example/presence'), env)
 
-    expect(response.status).toBe(200)
-    expect(put).toHaveBeenCalledOnce()
-    expect(waitUntil).toHaveBeenCalledOnce()
+    expect(first.status).toBe(200)
+    await expect(second.json()).resolves.toEqual({
+      count: 5,
+      observedAt: '2026-08-21T00:00:00.000Z',
+    })
+    expect(presenceFetch).toHaveBeenCalledOnce()
     vi.unstubAllGlobals()
   })
 })
