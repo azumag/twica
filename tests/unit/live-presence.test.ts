@@ -140,6 +140,24 @@ describe("getEstimatedLiveChannelCount (#1114)", () => {
     });
   });
 
+  it("does not double-age a stale KV snapshot past its writtenAt lifetime", async () => {
+    // 書込から59秒経ったKV値は残存TTLが1秒。メモリへさらに60秒載せると合計
+    // 約2分前の値を表示してしまうため、実フェッチへ落ちる（自動レビュー任意指摘）。
+    const kv = makeKv();
+    kv.get.mockResolvedValue(
+      JSON.stringify({ estimatedRooms: 5, writtenAt: Date.now() - 59_000 })
+    );
+    vi.mocked(getKvBinding).mockResolvedValue(kv as never);
+    const innerFetch = fetchMock({ estimatedRooms: 9 });
+    vi.stubGlobal("fetch", innerFetch);
+
+    await expect(getEstimatedLiveChannelCount()).resolves.toEqual({
+      ok: true,
+      count: 9,
+    });
+    expect(innerFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("negative-caches failures briefly so /live cannot hammer a dead registry", async () => {
     const innerFetch = vi.fn().mockRejectedValue(new TypeError("down"));
     vi.stubGlobal("fetch", innerFetch);

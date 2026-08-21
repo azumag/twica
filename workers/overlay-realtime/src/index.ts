@@ -33,16 +33,14 @@ interface OverlayRoomNamespace {
 /**
  * Aggregates short-term room presence leases (#1114).
  *
- * The binding is optional at the type level so older deploy windows and unit
- * tests without a registry keep working: every caller degrades to a no-op
- * instead of failing the room or the public estimate endpoint.
+ * The binding shape is identical to OVERLAY_ROOMS, so this is a deliberate
+ * type alias; a future divergence would be a real protocol change and should
+ * be written out explicitly rather than duplicated silently
+ * (auto-review optional finding). The binding itself stays optional so older
+ * deploy windows and unit tests without a registry keep working: every caller
+ * degrades to a no-op instead of failing the room or the public estimate.
  */
-interface PresenceRegistryNamespace {
-  idFromName(name: string): unknown
-  get(id: unknown): {
-    fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>
-  }
-}
+type PresenceRegistryNamespace = OverlayRoomNamespace
 
 interface Env {
   OVERLAY_ROOMS: OverlayRoomNamespace
@@ -340,6 +338,13 @@ const overlayRealtimeWorker = {
      * no unauthenticated caller can observe even an aggregate room count. The
      * registry response is relayed verbatim: it contains only a count and a
      * timestamp, never room IDs or client metadata.
+     *
+     * Replay asymmetry (documented, auto-review optional finding): unlike
+     * publish, this read path does not consume a nonce, so a leaked signature
+     * is replayable within the 60s auth window and there is no rate limit.
+     * Accepted because the response exposes an aggregate count only — adding
+     * a nonce ledger here would put every /live render on the replay-protection
+     * write path for zero privacy gain.
      */
     if (request.method === 'GET' && url.pathname === '/internal/v1/presence-count') {
       const auth = await authenticatedPublishRequest(request, env, url.pathname, '')
@@ -360,12 +365,24 @@ const overlayRealtimeWorker = {
           }
           return json({ error: 'Presence unavailable' }, 503)
         }
-        return new Response(response.body, {
-          status: 200,
-          headers: {
-            'cache-control': 'no-store',
-            'x-content-type-options': 'nosniff',
-          },
+        // Rebuild the public payload instead of relaying verbatim: a future
+        // internal-only field on the registry response must never reach this
+        // signed-but-public edge (auto-review optional finding).
+        const payload = (await response.json()) as Record<string, unknown>
+        const estimatedRooms = payload.estimatedRooms
+        const generatedAt = payload.generatedAt
+        if (
+          typeof estimatedRooms !== 'number'
+          || !Number.isSafeInteger(estimatedRooms)
+          || estimatedRooms < 0
+        ) {
+          return json({ error: 'Presence unavailable' }, 503)
+        }
+        return json({
+          estimatedRooms,
+          ...(typeof generatedAt === 'string'
+            ? { generatedAt }
+            : {}),
         })
       } catch {
         return json({ error: 'Presence unavailable' }, 503)
@@ -532,17 +549,23 @@ export class OverlayRoom {
   /**
    * Best-effort presence update to the registry (#1114).
    *
-   * Reads the room identity from storage, so remove calls must happen before
-   * ROOM_STREAMER_ID_KEY is deleted. Failures are swallowed on purpose: the
-   * registry lease expires on its own, and presence is an estimate that must
-   * never break the gacha transport this object exists for. Non-ok registry
-   * replies are logged (without payload) so a systematically rejected room is
-   * diagnosable instead of silently missing from the estimate.
+   * Callers that already hold the room identity pass it in to save a DO
+   * storage read (auto-review optional finding); the storage fallback keeps
+   * the remove-before-delete ordering safe. Failures are swallowed on
+   * purpose: the registry lease expires on its own, and presence is an
+   * estimate that must never break the gacha transport this object exists
+   * for. Non-ok registry replies are logged (without payload) so a
+   * systematically rejected room is diagnosable instead of silently missing
+   * from the estimate.
    */
-  private async sendPresence(operation: 'upsert' | 'remove'): Promise<void> {
+  private async sendPresence(
+    operation: 'upsert' | 'remove',
+    knownRoomId?: string
+  ): Promise<void> {
     const registry = this.env.PRESENCE_REGISTRY
     if (!registry || typeof registry.idFromName !== 'function') return
-    const streamerId = await this.state.storage.get<string>(ROOM_STREAMER_ID_KEY)
+    const streamerId = knownRoomId
+      ?? (await this.state.storage.get<string>(ROOM_STREAMER_ID_KEY))
     if (!streamerId) return
     try {
       const response = await registry.get(registry.idFromName('global')).fetch(
@@ -619,14 +642,15 @@ export class OverlayRoom {
         !Number.isFinite(lastSent)
         || now - (lastSent as number) >= PRESENCE_REFRESH_MS
       ) {
-        await this.sendPresence('upsert')
+        await this.sendPresence('upsert', streamerId)
         await this.state.storage.put(PRESENCE_LAST_SENT_KEY, now)
       }
       await this.state.storage.setAlarm(Date.now() + KILL_SWITCH_CHECK_MS)
       return
     }
 
-    await this.sendPresence('remove')
+    // The disabled branch is only reachable with a known identity.
+    await this.sendPresence('remove', streamerId)
     await this.state.storage.delete(PRESENCE_LAST_SENT_KEY)
 
     const notice = JSON.stringify({
@@ -701,8 +725,21 @@ export class OverlayRoom {
       // The first upsert happens on a later alarm only after sockets persisted
       // PRESENCE_REFRESH_MS, so a drive-by WebSocket cannot light up the
       // public /live estimate (#1114, auto-review required finding).
+      //
+      // Reconnect churn exception (auto-review round-2 finding): an OBS
+      // source that flaps faster than the refresh window would otherwise
+      // reset its own dwell forever and drop out of the estimate after one
+      // lease TTL. If this room reported recently enough that its registry
+      // lease is plausibly still alive, keep the existing cadence instead of
+      // restarting it.
       if (previousSocketCount === 0) {
-        await this.state.storage.put(PRESENCE_LAST_SENT_KEY, Date.now())
+        const lastSent = await this.state.storage.get<number>(PRESENCE_LAST_SENT_KEY)
+        const leasePlausiblyAlive =
+          Number.isFinite(lastSent)
+          && Date.now() - (lastSent as number) < PRESENCE_LEASE_TTL_MS
+        if (!leasePlausiblyAlive) {
+          await this.state.storage.put(PRESENCE_LAST_SENT_KEY, Date.now())
+        }
       }
       // Only arm when nothing is pending. Re-arming on every connect would push
       // the check out indefinitely for a room that OBS reconnects frequently.
@@ -904,6 +941,14 @@ export class PresenceRegistry {
       leases.push([roomId, now])
       // Newest entries survive the cap: an upsert flood of unknown rooms
       // evicts the least recently touched leases, not the active ones.
+      // Reaching the cap is operator-visible ("no silent caps"): the /live
+      // estimate stops growing here, so say so once per truncation.
+      const capped = leases.length > MAX_PRESENCE_ROOMS
+      if (capped) {
+        console.warn('[overlay-realtime] presence registry at capacity', {
+          capacity: MAX_PRESENCE_ROOMS,
+        })
+      }
       await transaction.put(PRESENCE_LEASES_KEY, leases.slice(-MAX_PRESENCE_ROOMS))
     })
   }

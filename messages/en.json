@@ -1569,7 +1569,7 @@
     },
     "presence": {
       "summary": "Live now (estimated): {count, plural, one {about # channel} other {about # channels}}",
-      "disclaimer": "Estimated from TwiCa overlay connections. Idle OBS sources, previews, or leftover tabs may be included, and this differs from the actual Twitch stream status. Please treat it as a rough guide only."
+      "disclaimer": "Estimated from TwiCa overlay connections. Idle OBS sources, previews, leftover tabs, or streams that just ended may still be counted for a few minutes, and this differs from the actual Twitch stream status. Please treat it as a rough guide only."
     },
     "empty": {
       "title": "No listed streams are live right now",

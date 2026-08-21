@@ -14,6 +14,9 @@ import { createPublishSignature } from '@/lib/overlay-realtime/signature'
 
 const STREAMER_ID = '123e4567-e89b-42d3-a456-426614174000'
 const OTHER_STREAMER_ID = '223e4567-e89b-42d3-a456-426614174999'
+// lease TTL(10分)の実値。テスト側の期待値計算に使う（Worker定数の二重管理回避のため
+// 値を同期させるコメント付き定数）。
+const PRESENCE_LEASE_TTL_MS_FOR_TESTS = 10 * 60_000
 const SECRET = 'worker-test-secret-with-sufficient-entropy'
 
 vi.stubGlobal('WebSocket', { OPEN: 1 })
@@ -138,6 +141,37 @@ describe('OverlayRoom presence hooks (#1114)', () => {
     )
   })
 
+  it('keeps the refresh cadence across fast reconnects instead of resetting dwell', async () => {
+    const registryFetch = vi.fn().mockResolvedValue(Response.json({ ok: true }))
+    const harness = createRoomHarness(0, registryFetch)
+    // 直近（5分前）に報告済みでleaseが生存中のroomが再接続したケース。
+    const fiveMinutesAgo = Date.now() - 300_000
+    harness.records.set('presence-last-sent-at', fiveMinutesAgo)
+
+    await connect(harness)
+
+    // dwell起点をリセットしない: 3分未満間隔の再接続で推定から永久に外れない
+    // ようにする（自動レビュー任意指摘）。
+    expect(harness.records.get('presence-last-sent-at')).toBe(fiveMinutesAgo)
+  })
+
+  it('restarts the dwell window when the previous lease has already expired', async () => {
+    const registryFetch = vi.fn().mockResolvedValue(Response.json({ ok: true }))
+    const harness = createRoomHarness(0, registryFetch)
+    harness.records.set(
+      'presence-last-sent-at',
+      Date.now() - PRESENCE_LEASE_TTL_MS_FOR_TESTS
+    )
+
+    await connect(harness)
+
+    // lease切れ後の再接続は新規dwellとして扱い、第三者接続の即時反映は防ぐ。
+    expect(harness.records.get('presence-last-sent-at')).toBeGreaterThan(
+      Date.now() - 60_000
+    )
+    expect(registryFetch).not.toHaveBeenCalled()
+  })
+
   it('does not report again when additional sources join an active room', async () => {
     const registryFetch = vi.fn().mockResolvedValue(Response.json({ ok: true }))
     const harness = createRoomHarness(1, registryFetch)
@@ -237,7 +271,7 @@ describe('presence-count endpoint (#1114)', () => {
     expect(response.status).toBe(401)
   })
 
-  it('relays a registry snapshot that carries no room identifiers', async () => {
+  it('relays a whitelisted registry snapshot without unknown internal fields', async () => {
     const registryFetch = vi.fn().mockResolvedValue(
       Response.json({
         estimatedRooms: 4,
@@ -262,7 +296,14 @@ describe('presence-count endpoint (#1114)', () => {
     )
 
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toHaveProperty('estimatedRooms', 4)
+    const text = await response.text()
+    // 公開経路はestimatedRooms/generatedAtだけを再構築して返す。内部専用フィールド
+    // が将来registry応答に増えても、この境界を通って漏れない。
+    expect(JSON.parse(text)).toEqual({
+      estimatedRooms: 4,
+      generatedAt: '2026-08-21T00:00:00Z',
+    })
+    expect(text).not.toContain('must-not-leak')
     const request = registryFetch.mock.calls[0][0] as Request
     expect(new URL(request.url).pathname).toBe('/count')
   })

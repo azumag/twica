@@ -110,3 +110,28 @@ export async function resolveOverlayRealtimeEnvironment(): Promise<OverlayRealti
     }
   }
 }
+
+/**
+ * Build an internal endpoint URL from the configured base, rejecting plain
+ * HTTP in production. Shared by publisher and presence reader so the safety
+ * conditions (protocol check, query/hash strip) cannot drift apart
+ * (auto-review optional finding).
+ */
+export function resolveRealtimeUrl(
+  base: string | undefined,
+  pathname: string
+): URL | null {
+  if (!base) return null
+  try {
+    const url = new URL(base)
+    if (url.protocol !== 'https:' && process.env.NODE_ENV === 'production') {
+      return null
+    }
+    url.pathname = pathname
+    url.search = ''
+    url.hash = ''
+    return url
+  } catch {
+    return null
+  }
+}

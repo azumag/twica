@@ -13,7 +13,10 @@ import {
   normalizeOverlayRealtimeCard,
   validateGachaRealtimeEvent,
 } from '@/lib/overlay-realtime/contract'
-import { resolveOverlayRealtimeEnvironment } from '@/lib/overlay-realtime/runtime-env'
+import {
+  resolveOverlayRealtimeEnvironment,
+  resolveRealtimeUrl,
+} from '@/lib/overlay-realtime/runtime-env'
 import { createPublishSignature } from '@/lib/overlay-realtime/signature'
 
 export interface OverlayPublishPayload {
@@ -147,17 +150,12 @@ async function getPublisherEnvironment(): Promise<OverlayRealtimePublisherEnviro
 }
 
 function resolvePublishUrl(streamerId: string, base: string | undefined): URL | null {
-  if (!base) return null
-  try {
-    const url = new URL(base)
-    if (url.protocol !== 'https:' && process.env.NODE_ENV === 'production') return null
-    url.pathname = `/internal/v1/rooms/${encodeURIComponent(streamerId)}/publish`
-    url.search = ''
-    url.hash = ''
-    return url
-  } catch {
-    return null
-  }
+  // Safety conditions (protocol check, query/hash strip) are shared with the
+  // presence reader via the common resolver so they cannot drift apart.
+  return resolveRealtimeUrl(
+    base,
+    `/internal/v1/rooms/${encodeURIComponent(streamerId)}/publish`
+  )
 }
 
 function resolvePublisherTarget(
