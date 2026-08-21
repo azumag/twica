@@ -48,9 +48,9 @@ const translations: Record<string, Record<string, string>> = {
     consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
     rankingNotice:
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
-    liveCount: "現在配信中チャネル数（推定）：約{count}件",
+    liveCount: "現在配信中チャネル数（overlay接続ベースの推定・下限）：約{count}件",
     liveCountNote:
-      "設定画面で発行した認証済みoverlay URLの接続だけを基にした概算で、5件単位に切り捨てています。polling-onlyは含まれず、残留タブや切断遅延は含まれるため実際の配信数とは差が生じます。設定画面のプレビューは含まれません。反映に最大17分程度かかる場合があります。",
+      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした概算で、既存のOBS URLは再コピーが必要です。5件単位に切り捨てています。polling-onlyは含まれず、残留タブや切断遅延は含まれるため実際の配信数とは差が生じます。設定画面のプレビューは含まれません。反映に最大17分程度かかる場合があります。",
   },
   header: {
     dashboard: "ダッシュボード",
@@ -129,7 +129,7 @@ describe("LivePage", () => {
     render(await LivePage());
 
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "現在配信中チャネル数（推定）：約5件",
+      "現在配信中チャネル数（overlay接続ベースの推定・下限）：約5件",
     );
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
       "polling-onlyは含まれず、残留タブや切断遅延は含まれる",

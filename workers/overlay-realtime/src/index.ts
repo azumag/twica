@@ -100,6 +100,7 @@ const PRESENCE_LAST_ATTEMPT_AT_KEY = 'presence-last-attempt-at'
 const PRESENCE_SNAPSHOT_KEY = 'presence-snapshot'
 const PRESENCE_DELETE_BATCH_SIZE = 128
 const PRESENCE_TOKEN_CLOCK_SKEW_MS = 60_000
+const PRESENCE_UNAVAILABLE_CACHE_TTL_MS = 15_000
 
 interface PresenceResponseCache {
   namespace: OverlayPresenceNamespace
@@ -109,11 +110,68 @@ interface PresenceResponseCache {
   expiresAt: number
 }
 
+interface PresenceResponseInFlight {
+  namespace: OverlayPresenceNamespace
+  promise: Promise<PresenceResponseCache>
+}
+
 // `caches.default` is not a reliable boundary on workers.dev. Keep the
 // public snapshot inexpensive without depending on that platform detail:
 // each warm Worker isolate reuses the small, already-bucketed JSON response
 // for one minute, while the Durable Object remains the shared freshness gate.
 let presenceResponseCache: PresenceResponseCache | null = null
+let presenceResponseInFlight: PresenceResponseInFlight | null = null
+
+function presenceResponseFromCache(cached: PresenceResponseCache): Response {
+  return new Response(cached.body, {
+    status: cached.status,
+    headers: cached.headers,
+  })
+}
+
+function presenceUnavailableCache(
+  namespace: OverlayPresenceNamespace,
+): PresenceResponseCache {
+  return {
+    namespace,
+    body: JSON.stringify({ error: 'Presence unavailable' }),
+    status: 503,
+    headers: [
+      ['content-type', 'application/json'],
+      ['cache-control', 'no-store'],
+    ],
+    expiresAt: Date.now() + PRESENCE_UNAVAILABLE_CACHE_TTL_MS,
+  }
+}
+
+async function readPresenceSnapshot(
+  namespace: OverlayPresenceNamespace,
+): Promise<PresenceResponseCache> {
+  try {
+    const id = namespace.idFromName(PRESENCE_REGISTRY_NAME)
+    const response = await namespace.get(id).fetch(
+      new Request('https://presence.internal/snapshot')
+    )
+    if (!response.ok) return presenceUnavailableCache(namespace)
+
+    const body = await response.text()
+    const contentType = response.headers.get('content-type') ?? 'application/json'
+    const cacheControl = response.headers.get('cache-control')
+      ?? `public, max-age=${PRESENCE_SNAPSHOT_TTL_MS / 1_000}`
+    return {
+      namespace,
+      body,
+      status: response.status,
+      headers: [
+        ['content-type', contentType],
+        ['cache-control', cacheControl],
+      ],
+      expiresAt: Date.now() + PRESENCE_SNAPSHOT_TTL_MS,
+    }
+  } catch {
+    return presenceUnavailableCache(namespace)
+  }
+}
 
 /**
  * Room identity, needed only so the kill-switch alarm can re-evaluate the
@@ -367,37 +425,25 @@ const overlayRealtimeWorker = {
       const now = Date.now()
       const cached = presenceResponseCache
       if (cached && cached.namespace === env.OVERLAY_PRESENCE && cached.expiresAt > now) {
-        return new Response(cached.body, {
-          status: cached.status,
-          headers: cached.headers,
-        })
+        return presenceResponseFromCache(cached)
       }
       if (cached && cached.expiresAt <= now) presenceResponseCache = null
-      try {
-        const id = env.OVERLAY_PRESENCE.idFromName(PRESENCE_REGISTRY_NAME)
-        const response = await env.OVERLAY_PRESENCE.get(id).fetch(
-          new Request('https://presence.internal/snapshot')
-        )
-        if (response.ok) {
-          const body = await response.text()
-          const headers: Array<[string, string]> = []
-          response.headers.forEach((value, key) => headers.push([key, value]))
-          presenceResponseCache = {
-            namespace: env.OVERLAY_PRESENCE,
-            body,
-            status: response.status,
-            headers,
-            expiresAt: Date.now() + PRESENCE_SNAPSHOT_TTL_MS,
-          }
-          return new Response(body, {
-            status: response.status,
-            headers: presenceResponseCache.headers,
-          })
-        }
-        return response
-      } catch {
-        return json({ error: 'Presence unavailable' }, 503)
+      const inFlight = presenceResponseInFlight
+      if (inFlight && inFlight.namespace === env.OVERLAY_PRESENCE) {
+        return presenceResponseFromCache(await inFlight.promise)
       }
+
+      const promise = readPresenceSnapshot(env.OVERLAY_PRESENCE)
+      presenceResponseInFlight = {
+        namespace: env.OVERLAY_PRESENCE,
+        promise,
+      }
+      const snapshot = await promise
+      if (presenceResponseInFlight?.promise === promise) {
+        presenceResponseInFlight = null
+      }
+      presenceResponseCache = snapshot
+      return presenceResponseFromCache(snapshot)
     }
 
     const connectStreamerId = roomPath(url.pathname, 'connect')

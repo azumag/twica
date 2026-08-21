@@ -283,6 +283,56 @@ describe('overlay realtime Worker router', () => {
     expect(new URL(request.url).pathname).toBe('/snapshot')
   })
 
+  it('coalesces concurrent public presence reads into one registry request', async () => {
+    let resolveSnapshot!: (response: Response) => void
+    const pendingSnapshot = new Promise<Response>((resolve) => {
+      resolveSnapshot = resolve
+    })
+    const presenceFetch = vi.fn(() => pendingSnapshot)
+    const presence = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+    const env = {
+      ...ROLLOUT_ENV,
+      OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
+      OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
+      OVERLAY_PRESENCE: presence,
+    } as unknown as Parameters<typeof worker.fetch>[1]
+
+    const first = worker.fetch(new Request('https://worker.example/presence'), env)
+    const second = worker.fetch(new Request('https://worker.example/presence'), env)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(presenceFetch).toHaveBeenCalledOnce()
+
+    resolveSnapshot(Response.json({ count: 5 }))
+    const [firstResponse, secondResponse] = await Promise.all([first, second])
+    await expect(firstResponse.json()).resolves.toEqual({ count: 5 })
+    await expect(secondResponse.json()).resolves.toEqual({ count: 5 })
+  })
+
+  it('short negative-caches a failed presence read', async () => {
+    const presenceFetch = vi.fn().mockRejectedValue(new Error('registry down'))
+    const presence = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+    const env = {
+      ...ROLLOUT_ENV,
+      OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
+      OVERLAY_ROOMS: {} as Parameters<typeof worker.fetch>[1]['OVERLAY_ROOMS'],
+      OVERLAY_PRESENCE: presence,
+    } as unknown as Parameters<typeof worker.fetch>[1]
+
+    const first = await worker.fetch(new Request('https://worker.example/presence'), env)
+    const second = await worker.fetch(new Request('https://worker.example/presence'), env)
+
+    expect(first.status).toBe(503)
+    expect(second.status).toBe(503)
+    expect(presenceFetch).toHaveBeenCalledOnce()
+  })
+
   it('rejects query variants before touching the singleton registry', async () => {
     const get = vi.fn()
     const response = await worker.fetch(
