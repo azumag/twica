@@ -299,6 +299,12 @@ function resolveStatementTimeout(env) {
   return raw
 }
 
+/**
+ * 差分を端末向けの3列テーブルとして表示するだけのヘルパー。
+ * 比較やDBアクセスは行わず、DB非依存テストから契約を固定できるようexportしている。
+ * 列幅はJavaScriptのString.length（UTF-16コード単位）で計算するため、全角文字の
+ * 端末表示幅までは考慮しない。この既存制約を変更する場合は別途表示幅対応として扱う。
+ */
 function printDiffTable(diffs) {
   const headers = ['METRIC', '基礎集計SQL', 'get_analysis_* RPC']
   const rows = diffs.map((d) => [d.metric, String(d.expected), String(d.actual)])
