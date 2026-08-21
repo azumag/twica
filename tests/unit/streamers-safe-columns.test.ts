@@ -95,15 +95,15 @@ describe('streamers デプロイ窓の列集合契約', () => {
     // 対応する列オブジェクトを STREAMERS_SAFE_COLUMNS 側へ追加し、フォールバック時の返却行形状と
     // キー↔実SQL列の対応を維持する。
     const deployWindowColumnNames = new Set<string>(DEPLOY_WINDOW_COLUMNS)
-    const toProjectionPairs = (entries: [string, { name: string }][]) =>
-      entries.map(([key, column]) => `${key}=${column.name}`).sort()
-    const expectedSafeProjectionPairs = toProjectionPairs(
-      Object.entries(getTableColumns(streamersTable)).filter(
-        ([, column]) => !deployWindowColumnNames.has(column.name),
-      ),
+    const expectedSafeProjection = Object.fromEntries(
+      Object.entries(getTableColumns(streamersTable))
+        .filter(([, column]) => !deployWindowColumnNames.has(column.name))
+        .map(([key, column]) => [key, column.name]),
     )
-    const safeProjectionPairs = toProjectionPairs(Object.entries(STREAMERS_SAFE_COLUMNS))
+    const safeProjection = Object.fromEntries(
+      Object.entries(STREAMERS_SAFE_COLUMNS).map(([key, column]) => [key, column.name]),
+    )
 
-    expect(safeProjectionPairs).toEqual(expectedSafeProjectionPairs)
+    expect(safeProjection).toEqual(expectedSafeProjection)
   })
 })
