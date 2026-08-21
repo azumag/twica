@@ -21,7 +21,9 @@ describe('printDiffTable', () => {
       { metric: 'rarityDistribution.rare', expected: 25, actual: 26 },
     ])
 
-    const lines = log.mock.calls.map(([line]) => String(line))
+    // printDiffTable は列幅を揃えるため最終列も padEnd する。行末空白は表示上の意味を
+    // 持たないため除去し、列内容と順序の契約だけを検証する。
+    const lines = log.mock.calls.map(([line]) => String(line).trimEnd())
 
     expect(lines).toHaveLength(4)
     expect(lines[0]).toContain('METRIC')
