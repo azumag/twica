@@ -3,11 +3,15 @@ import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import LiveDirectory from "@/components/LiveDirectory";
 import PublicFooter from "@/components/PublicFooter";
+import Header from "@/components/Header";
+import DashboardNav from "@/components/DashboardNav";
 import {
   getLiveDirectory,
   getLiveDirectoryRankings,
 } from "@/lib/live-directory";
-import { getSession } from "@/lib/session";
+import { getSession, canUseStreamerFeatures } from "@/lib/session";
+import { getUnreadAnnouncements } from "@/lib/announcements";
+import { getUserPlanSnapshot } from "@/lib/plan";
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations("livePage");
@@ -24,66 +28,100 @@ export async function generateMetadata(): Promise<Metadata> {
  * 未ログインをredirectしないため、一覧と匿名化済みランキングは認証なしで閲覧できる。
  * ページrevalidateはOpenNext本番構成で機能しないため追加せず、鮮度と取得原価は
  * 各データ関数のCloudflare KV 60秒キャッシュへ一元化している。
+ *
+ * #945: ログイン中はダッシュボードと同じHeader+DashboardNavを描画し、
+ * ダッシュボードからの遷移でレイアウトが変わって混乱しないようにする。
+ * 未ログイン時は従来の公開ヘッダーを維持したまま認証なしで閲覧できる。
+ * ダッシュボードレイアウト（src/app/dashboard/layout.tsx）と違い、
+ * メンテナンスバナー・チャット送信警告・再認証Providerは付けない。
+ * /liveは読み取り専用ページであり、それらはダッシュボードの書き込み操作に
+ * 伴う警告だからだ（Header/DashboardNav自体はそれらに依存しない）。
  */
 export default async function LivePage() {
-  const [session, entries, rankings, t, tHeader] = await Promise.all([
+  const [session, entries, rankings, t] = await Promise.all([
     getSession(),
     getLiveDirectory(),
     getLiveDirectoryRankings(),
     getTranslations("livePage"),
-    getTranslations("header"),
   ]);
 
   // Serverで基準時刻を1回だけ確定し、Client ComponentのSSR/hydration間で
   // 配信経過時間がずれないようにする。
   const referenceTime = new Date().toISOString();
 
-  return (
-    <div className="min-h-screen bg-gray-900">
-      <header className="border-b border-gray-800">
-        <div className="container mx-auto max-w-7xl px-4 py-4">
-          <nav
-            aria-label={t("navigationLabel")}
-            className="flex items-center justify-between gap-4"
-          >
-            <Link href="/" className="text-xl font-bold text-white">
-              TwiCa
-            </Link>
-            {session ? (
-              <Link
-                href="/dashboard"
-                className="rounded-lg bg-purple-600 px-4 py-2 text-white transition hover:bg-purple-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-              >
-                {tHeader("dashboard")}
+  // ヘッダー出し分けの両分岐で共通のページ本体。
+  const pageBody = (
+    <>
+      <div className="mb-10 max-w-3xl">
+        <h1 className="text-3xl font-bold text-white sm:text-4xl">{t("title")}</h1>
+        <p className="mt-3 text-base leading-7 text-gray-400">{t("description")}</p>
+        <div className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
+          <p>{t("consentNotice")}</p>
+          <p className="mt-1">{t("rankingNotice")}</p>
+        </div>
+      </div>
+
+      <LiveDirectory
+        entries={entries}
+        rankings={rankings}
+        referenceTime={referenceTime}
+      />
+    </>
+  );
+
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-gray-900">
+        <header className="border-b border-gray-800">
+          <div className="container mx-auto max-w-7xl px-4 py-4">
+            <nav
+              aria-label={t("navigationLabel")}
+              className="flex items-center justify-between gap-4"
+            >
+              <Link href="/" className="text-xl font-bold text-white">
+                TwiCa
               </Link>
-            ) : (
               <Link
                 href="/"
                 className="text-gray-400 transition hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
               >
                 {t("home")}
               </Link>
-            )}
-          </nav>
-        </div>
-      </header>
-
-      <main className="container mx-auto max-w-7xl px-4 py-10 sm:py-12">
-        <div className="mb-10 max-w-3xl">
-          <h1 className="text-3xl font-bold text-white sm:text-4xl">{t("title")}</h1>
-          <p className="mt-3 text-base leading-7 text-gray-400">{t("description")}</p>
-          <div className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
-            <p>{t("consentNotice")}</p>
-            <p className="mt-1">{t("rankingNotice")}</p>
+            </nav>
           </div>
+        </header>
+
+        <main className="container mx-auto max-w-7xl px-4 py-10 sm:py-12">
+          {pageBody}
+        </main>
+
+        <PublicFooter />
+      </div>
+    );
+  }
+
+  // ダッシュボードレイアウトと同じHeader+DashboardNavの組み合わせ。
+  // 未読数・プラン判定はダッシュボードレイアウトと同じReact cache付き関数なので、
+  // 同一リクエスト内でI/Oが重複することはない。
+  const [plan, unreadAnnouncements] = await Promise.all([
+    getUserPlanSnapshot(session.twitchUserId),
+    getUnreadAnnouncements(session.twitchUserId),
+  ]);
+
+  return (
+    <div className="min-h-screen bg-gray-900">
+      <Header session={session} unreadAnnouncementsCount={unreadAnnouncements.length} />
+
+      <div className="container mx-auto px-4 py-6">
+        <div className="mb-6">
+          <DashboardNav
+            isStreamer={canUseStreamerFeatures(session)}
+            isSupporter={plan !== "basic"}
+          />
         </div>
 
-        <LiveDirectory
-          entries={entries}
-          rankings={rankings}
-          referenceTime={referenceTime}
-        />
-      </main>
+        <main>{pageBody}</main>
+      </div>
 
       <PublicFooter />
     </div>

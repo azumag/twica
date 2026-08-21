@@ -388,3 +388,51 @@ describe("LiveDirectory", () => {
     expect(within(card).getByText("配信開始から 1時間 30分")).toBeInTheDocument();
   });
 });
+
+describe("live indicator on ranking rows (#945)", () => {
+  function openPointsRanking() {
+    fireEvent.click(screen.getByRole("tab", { name: "チャネルポイントランキング" }));
+  }
+
+  it("marks a row live when its channel is in the live directory (case-insensitive)", () => {
+    // ライブ一覧側のloginは大文字、ランキング側は小文字。
+    // Twitch loginは大小文字を区別しないため照合は小文字正規化で成立する。
+    renderDirectory([entry("ALPHA", { displayName: "Alpha" })]);
+    openPointsRanking();
+
+    const alphaRow = screen.getByRole("link", { name: /AlphaをTwitchで見る/ });
+    expect(alphaRow).toHaveTextContent("LIVE");
+    expect(alphaRow).toHaveTextContent("現在配信中");
+    expect(alphaRow.querySelector("img")).toHaveClass("ring-red-600");
+
+    // 配信中でないCharlie行・匿名行にはバッジも赤い縁取りも出ない。
+    // CharlieはprofileImageUrlが空のためアバターは初期文字span。
+    const charlieRow = screen.getByRole("link", { name: /CharlieをTwitchで見る/ });
+    expect(charlieRow).not.toHaveTextContent("LIVE");
+    expect(charlieRow.querySelector("span[aria-hidden='true']")).not.toHaveClass("ring-red-600");
+
+    const rows = screen.getAllByRole("listitem");
+    expect(within(rows[0]).queryByText("LIVE")).not.toBeInTheDocument();
+  });
+
+  it("does not mark any row live when the live directory is empty", () => {
+    renderDirectory([]);
+    openPointsRanking();
+
+    expect(screen.queryByText("LIVE")).not.toBeInTheDocument();
+    expect(screen.queryByText("現在配信中")).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("img").filter((img) => img.classList.contains("ring-red-600"))).toHaveLength(0);
+  });
+
+  it("shows the live badge on the initial-letter avatar when no profile image exists", () => {
+    // CharlieはprofileImageUrlが空（初期文字アバター）で配信中。
+    renderDirectory([entry("charlie", { displayName: "Charlie" })]);
+    openPointsRanking();
+
+    const charlieRow = screen.getByRole("link", { name: /CharlieをTwitchで見る/ });
+    expect(charlieRow).toHaveTextContent("LIVE");
+    // 画像がないため、赤い縁取りは初期文字アバターのspanへ付く。
+    const avatar = charlieRow.querySelector("span[aria-hidden='true']");
+    expect(avatar).toHaveClass("ring-red-600");
+  });
+});

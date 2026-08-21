@@ -142,6 +142,14 @@ export default function LiveDirectory({
     useState<LiveDirectoryRankingPeriod>(DEFAULT_RANKING_PERIOD);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const sortedEntries = useMemo(() => sortLiveDirectoryEntries(entries), [entries]);
+  // #945: 現在ライブ中のTwitch loginの集合（小文字正規化）。
+  // entriesは「掲載を許可したチャネル」だけを含むため、この集合はランキング行の
+  // 「配信中か」判定の唯一の根拠になる。掲載未許可のチャネルは配信中でも
+  // 含まれず、ランキング上のLIVE表示も出ない（公開設定チャネルのみ、#945）。
+  const liveLogins = useMemo(
+    () => new Set(entries.map((entry) => entry.twitchLogin.toLowerCase())),
+    [entries],
+  );
   // 種類数は「現在有効なカード種類数」というスナップショット指標であり、
   // 集計期間によって変わる利用量ではない。期間選択を種類数へ誤適用しないよう、
   // 種類数だけは常に allTime 側の現在値を参照する。
@@ -254,7 +262,11 @@ export default function LiveDirectory({
                   : t(`period.usageHelp.${rankingPeriod}`)}
               </p>
             </div>
-            <LiveDirectoryRanking entries={rankingEntries} metric={view} />
+            <LiveDirectoryRanking
+              entries={rankingEntries}
+              metric={view}
+              liveLogins={liveLogins}
+            />
           </>
         )}
       </div>
@@ -308,9 +320,11 @@ function LiveStreamGrid({
 function LiveDirectoryRanking({
   entries,
   metric,
+  liveLogins,
 }: {
   entries: LiveDirectoryRankingEntry[];
   metric: LiveDirectoryRankingMetric;
+  liveLogins: ReadonlySet<string>;
 }) {
   const t = useTranslations("livePage");
   const sorted = useMemo(
@@ -333,61 +347,78 @@ function LiveDirectoryRanking({
 
   return (
     <ol className="divide-y divide-gray-800 border-y border-gray-800">
-      {sorted.map((entry, index) => (
-        <li
-          key={entry.identity?.twitchLogin ?? `anonymous-${index}`}
-          className="grid min-h-20 grid-cols-[3rem_minmax(0,1fr)_auto] items-center gap-3 py-3 sm:grid-cols-[4rem_minmax(0,1fr)_auto] sm:gap-4"
-        >
-          <span className="text-center text-lg font-semibold tabular-nums text-gray-300">
-            {t("ranking.rank", { rank: ranks[index] })}
-          </span>
+      {sorted.map((entry, index) => {
+        // #945: 公開設定チャネル（identity付き行）のうち、配信中一覧に載っている
+        // チャネルだけLIVE表示する。Twitch loginは大文字小文字を区別しないため
+        // 両側を小文字化して照合する。匿名行はidentityがnullなので対象外。
+        const isLive =
+          entry.identity !== null &&
+          liveLogins.has(entry.identity.twitchLogin.toLowerCase());
+        return (
+          <li
+            key={entry.identity?.twitchLogin ?? `anonymous-${index}`}
+            className="grid min-h-20 grid-cols-[3rem_minmax(0,1fr)_auto] items-center gap-3 py-3 sm:grid-cols-[4rem_minmax(0,1fr)_auto] sm:gap-4"
+          >
+            <span className="text-center text-lg font-semibold tabular-nums text-gray-300">
+              {t("ranking.rank", { rank: ranks[index] })}
+            </span>
 
-          {entry.identity ? (
-            <a
-              href={`https://www.twitch.tv/${encodeURIComponent(entry.identity.twitchLogin)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group flex min-w-0 items-center gap-3 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-            >
-              {entry.identity.profileImageUrl ? (
-                <Image
-                  src={entry.identity.profileImageUrl}
-                  alt=""
-                  width={40}
-                  height={40}
-                  className="h-10 w-10 shrink-0 rounded-full object-cover"
-                  unoptimized
-                />
-              ) : (
+            {entry.identity ? (
+              <a
+                href={`https://www.twitch.tv/${encodeURIComponent(entry.identity.twitchLogin)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group flex min-w-0 items-center gap-3 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+              >
+                {entry.identity.profileImageUrl ? (
+                  <Image
+                    src={entry.identity.profileImageUrl}
+                    alt=""
+                    width={40}
+                    height={40}
+                    className={`h-10 w-10 shrink-0 rounded-full object-cover${isLive ? " ring-2 ring-red-600" : ""}`}
+                    unoptimized
+                  />
+                ) : (
+                  <span
+                    aria-hidden="true"
+                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-700 text-sm font-semibold text-gray-300${isLive ? " ring-2 ring-red-600" : ""}`}
+                  >
+                    {entry.identity.displayName.slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                <span className="min-w-0 truncate font-medium text-white group-hover:text-purple-200">
+                  {entry.identity.displayName}
+                </span>
+                {isLive && (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    <span className="h-1.5 w-1.5 rounded-full bg-white" aria-hidden="true" />
+                    {t("ranking.live")}
+                  </span>
+                )}
+                <span className="sr-only">
+                  {t("ranking.channelLink", { name: entry.identity.displayName })}
+                </span>
+                {isLive && (
+                  <span className="sr-only">{t("ranking.liveBadge")}</span>
+                )}
+              </a>
+            ) : (
+              <span className="flex min-w-0 items-center gap-3 text-gray-400">
                 <span
                   aria-hidden="true"
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-700 text-sm font-semibold text-gray-300"
-                >
-                  {entry.identity.displayName.slice(0, 1).toUpperCase()}
-                </span>
-              )}
-              <span className="min-w-0 truncate font-medium text-white group-hover:text-purple-200">
-                {entry.identity.displayName}
+                  className="h-10 w-10 shrink-0 rounded-full bg-gray-800"
+                />
+                <span className="truncate font-medium">{t("ranking.anonymous")}</span>
               </span>
-              <span className="sr-only">
-                {t("ranking.channelLink", { name: entry.identity.displayName })}
-              </span>
-            </a>
-          ) : (
-            <span className="flex min-w-0 items-center gap-3 text-gray-400">
-              <span
-                aria-hidden="true"
-                className="h-10 w-10 shrink-0 rounded-full bg-gray-800"
-              />
-              <span className="truncate font-medium">{t("ranking.anonymous")}</span>
-            </span>
-          )}
+            )}
 
-          <strong className="min-w-0 break-words text-right text-sm font-semibold tabular-nums text-emerald-300 sm:whitespace-nowrap sm:text-lg">
-            {t(`ranking.${metric}`, { count: entry[metric] })}
-          </strong>
-        </li>
-      ))}
+            <strong className="min-w-0 break-words text-right text-sm font-semibold tabular-nums text-emerald-300 sm:whitespace-nowrap sm:text-lg">
+              {t(`ranking.${metric}`, { count: entry[metric] })}
+            </strong>
+          </li>
+        );
+      })}
     </ol>
   );
 }

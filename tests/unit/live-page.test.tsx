@@ -3,15 +3,27 @@ import { render, screen } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
+  canUseStreamerFeatures: vi.fn(),
   getLiveDirectory: vi.fn(),
   getLiveDirectoryRankings: vi.fn(),
   getTranslations: vi.fn(),
+  getUnreadAnnouncements: vi.fn(),
+  getUserPlanSnapshot: vi.fn(),
 }));
 
-vi.mock("@/lib/session", () => ({ getSession: mocks.getSession }));
+vi.mock("@/lib/session", () => ({
+  getSession: mocks.getSession,
+  canUseStreamerFeatures: mocks.canUseStreamerFeatures,
+}));
 vi.mock("@/lib/live-directory", () => ({
   getLiveDirectory: mocks.getLiveDirectory,
   getLiveDirectoryRankings: mocks.getLiveDirectoryRankings,
+}));
+vi.mock("@/lib/announcements", () => ({
+  getUnreadAnnouncements: mocks.getUnreadAnnouncements,
+}));
+vi.mock("@/lib/plan", () => ({
+  getUserPlanSnapshot: mocks.getUserPlanSnapshot,
 }));
 vi.mock("next-intl/server", () => ({
   getTranslations: mocks.getTranslations,
@@ -27,6 +39,38 @@ vi.mock("@/components/LiveDirectory", () => ({
     <div data-testid="live-directory">
       entries:{entries.length};rankings:{rankings.last7Days.length}/{rankings.allTime.length}
     </div>
+  ),
+}));
+vi.mock("@/components/Header", () => ({
+  default: ({
+    unreadAnnouncementsCount,
+  }: {
+    session: unknown;
+    unreadAnnouncementsCount?: number;
+  }) => (
+    <header
+      data-testid="app-header"
+      data-unread={String(unreadAnnouncementsCount ?? 0)}
+    >
+      app header
+    </header>
+  ),
+}));
+vi.mock("@/components/DashboardNav", () => ({
+  default: ({
+    isStreamer,
+    isSupporter,
+  }: {
+    isStreamer: boolean;
+    isSupporter: boolean;
+  }) => (
+    <nav
+      data-testid="dashboard-nav"
+      data-streamer={String(isStreamer)}
+      data-supporter={String(isSupporter)}
+    >
+      dashboard nav
+    </nav>
   ),
 }));
 vi.mock("@/components/PublicFooter", () => ({
@@ -47,17 +91,17 @@ const translations: Record<string, Record<string, string>> = {
     rankingNotice:
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
   },
-  header: {
-    dashboard: "ダッシュボード",
-  },
 };
 
 describe("LivePage", () => {
   beforeEach(() => {
     mocks.getSession.mockReset();
+    mocks.canUseStreamerFeatures.mockReset();
     mocks.getLiveDirectory.mockReset();
     mocks.getLiveDirectoryRankings.mockReset();
     mocks.getTranslations.mockReset();
+    mocks.getUnreadAnnouncements.mockReset();
+    mocks.getUserPlanSnapshot.mockReset();
     mocks.getTranslations.mockImplementation(async (namespace: string) => {
       return (key: string) => translations[namespace]?.[key] ?? key;
     });
@@ -66,9 +110,12 @@ describe("LivePage", () => {
       last7Days: [{ identity: null }],
       allTime: [{ identity: null }, { identity: null }],
     });
+    mocks.canUseStreamerFeatures.mockReturnValue(true);
+    mocks.getUnreadAnnouncements.mockResolvedValue([{}, {}]);
+    mocks.getUserPlanSnapshot.mockResolvedValue("patron");
   });
 
-  it("renders the full directory without redirecting when no session exists", async () => {
+  it("renders the full directory with the public header without redirecting when no session exists", async () => {
     mocks.getSession.mockResolvedValue(null);
 
     render(await LivePage());
@@ -92,17 +139,46 @@ describe("LivePage", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ホーム" })).toHaveAttribute("href", "/");
     expect(screen.getByText("public footer")).toBeInTheDocument();
+
+    // #945: 未ログイン時は公開ヘッダーのみ。アプリHeader/ダッシュボードナビは出ない。
+    expect(screen.queryByTestId("app-header")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("dashboard-nav")).not.toBeInTheDocument();
+    // 未ログインではヘッダー導線用のDB照会を行わない。
+    expect(mocks.getUnreadAnnouncements).not.toHaveBeenCalled();
+    expect(mocks.getUserPlanSnapshot).not.toHaveBeenCalled();
   });
 
-  it("uses the dashboard header route for an authenticated visitor", async () => {
+  it("renders the dashboard Header and DashboardNav for an authenticated visitor (#945)", async () => {
     mocks.getSession.mockResolvedValue({ twitchUserId: "user-1" });
 
     render(await LivePage());
 
-    expect(screen.getByRole("link", { name: "ダッシュボード" })).toHaveAttribute(
-      "href",
-      "/dashboard",
-    );
+    // ダッシュボードレイアウトと同じHeader+DashboardNavが描画され、
+    // 公開ヘッダーの「ホーム」導線は消える。
+    const appHeader = screen.getByTestId("app-header");
+    expect(appHeader).toHaveAttribute("data-unread", "2");
+    const nav = screen.getByTestId("dashboard-nav");
+    expect(nav).toHaveAttribute("data-streamer", "true");
+    expect(nav).toHaveAttribute("data-supporter", "true");
+    expect(screen.queryByRole("link", { name: "ホーム" })).not.toBeInTheDocument();
+    expect(screen.getByText("public footer")).toBeInTheDocument();
+
+    // ダッシュボードレイアウトと同じく未読数・プラン判定を1回ずつ要求する。
+    expect(mocks.getUnreadAnnouncements).toHaveBeenCalledWith("user-1");
+    expect(mocks.getUserPlanSnapshot).toHaveBeenCalledWith("user-1");
+  });
+
+  it("passes basic plan and non-streamer flags to the dashboard nav", async () => {
+    mocks.getSession.mockResolvedValue({ twitchUserId: "user-2" });
+    mocks.canUseStreamerFeatures.mockReturnValue(false);
+    mocks.getUserPlanSnapshot.mockResolvedValue("basic");
+    mocks.getUnreadAnnouncements.mockResolvedValue([]);
+
+    render(await LivePage());
+
+    expect(screen.getByTestId("app-header")).toHaveAttribute("data-unread", "0");
+    expect(screen.getByTestId("dashboard-nav")).toHaveAttribute("data-streamer", "false");
+    expect(screen.getByTestId("dashboard-nav")).toHaveAttribute("data-supporter", "false");
   });
 
   it("builds localized metadata from the livePage namespace", async () => {
