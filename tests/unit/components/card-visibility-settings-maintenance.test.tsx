@@ -24,10 +24,9 @@ function renderSettings(status: MaintenanceStatusResponse) {
   )
 }
 
-// トグルのラベルテキストは<label>要素の外側（兄弟<span>）にあり、アクセシブルネームが
-// 付いていない既存マークアップのため、name指定では拾えない。表示順が固定
-// （0: 未所持カードを表示する, 1: 未所持カードの詳細を公開する）であることを
-// 前提にインデックスで取得する。
+// トグルには可視ラベル由来のアクセシブルネームが付くが、このmaintenanceテストは
+// 両トグル共通のdisable挙動をまとめて検証するため表示順で取得する。
+// アクセシブルネーム指定へ寄せる追加改善は Issue #1093 で別途追跡する。
 function getToggles() {
   return screen.getAllByRole('checkbox')
 }
