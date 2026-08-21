@@ -678,6 +678,8 @@ describe('OverlayRoom kill switch alarm', () => {
     await Promise.all(harness.presenceTasks)
 
     expect(presenceFetch).not.toHaveBeenCalled()
+    // Authorization is retained only on the accepted socket attachment, never
+    // as room-wide Durable Object state.
     expect(harness.records.has('presence-authorized')).toBe(false)
     vi.unstubAllGlobals()
   })
@@ -757,6 +759,37 @@ describe('OverlayRoom kill switch alarm', () => {
     expect(harness.getAlarmAt()).not.toBeNull()
   })
 
+  it('stops refreshing after the authorized socket leaves a tokenless tab behind', async () => {
+    const harness = createRoomHarness(2)
+    harness.records.set('room-streamer-id', STREAMER_ID)
+    const presenceFetch = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 }),
+    )
+    ;(harness.env as unknown as { OVERLAY_PRESENCE: unknown }).OVERLAY_PRESENCE = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+    harness.sockets[0].deserializeAttachment.mockReturnValue({
+      presenceAuthorized: true,
+    })
+    harness.sockets[1].deserializeAttachment.mockReturnValue({
+      presenceAuthorized: false,
+    })
+
+    await harness.room.alarm()
+    await Promise.all(harness.presenceTasks.splice(0))
+    expect(presenceFetch).toHaveBeenCalledTimes(1)
+
+    // The authenticated socket is now gone; the remaining tokenless socket
+    // must not inherit its room-level lease authorization.
+    harness.sockets[0].deserializeAttachment.mockReturnValue({
+      presenceAuthorized: false,
+    })
+    await harness.room.alarm()
+    await Promise.all(harness.presenceTasks.splice(0))
+    expect(presenceFetch).toHaveBeenCalledTimes(1)
+  })
+
   it('backs off presence reports to one attempt per five-minute window', async () => {
     const harness = createRoomHarness(1)
     harness.records.set('room-streamer-id', STREAMER_ID)
@@ -767,7 +800,9 @@ describe('OverlayRoom kill switch alarm', () => {
       idFromName: vi.fn(() => ({ registry: 'all' })),
       get: vi.fn(() => ({ fetch: presenceFetch })),
     }
-    harness.records.set('presence-authorized', true)
+    harness.sockets[0].deserializeAttachment.mockReturnValue({
+      presenceAuthorized: true,
+    })
 
     for (let i = 0; i < 5; i += 1) {
       await harness.room.alarm()

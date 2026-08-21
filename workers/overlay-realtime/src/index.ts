@@ -56,6 +56,8 @@ interface SocketAttachment {
   connectedAt: number
   messageWindowStartedAt: number
   messageCount: number
+  /** Only this socket's generated overlay URL may keep the room lease alive. */
+  presenceAuthorized: boolean
 }
 
 const AUTH_WINDOW_MS = 60_000
@@ -86,7 +88,6 @@ const PRESENCE_REGISTRY_NAME = 'all'
 const PRESENCE_KEY_PREFIX = 'room:'
 const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
 const PRESENCE_LAST_ATTEMPT_AT_KEY = 'presence-last-attempt-at'
-const PRESENCE_AUTHORIZED_KEY = 'presence-authorized'
 const PRESENCE_SNAPSHOT_KEY = 'presence-snapshot'
 const PRESENCE_DELETE_BATCH_SIZE = 128
 const PRESENCE_TOKEN_TTL_MS = 30 * 24 * 60 * 60_000
@@ -599,18 +600,27 @@ export class OverlayRoom {
       // immediately. The registry itself expires the old lease.
       await this.state.storage.delete(PRESENCE_LAST_REPORTED_AT_KEY)
       await this.state.storage.delete(PRESENCE_LAST_ATTEMPT_AT_KEY)
-      await this.state.storage.delete(PRESENCE_AUTHORIZED_KEY)
       return
     }
 
     const streamerId = await this.state.storage.get<string>(ROOM_STREAMER_ID_KEY)
+    // Presence authorization belongs to each accepted socket, not to the room.
+    // Otherwise a tokenless tab could keep refreshing a lease after the one
+    // authenticated OBS connection had gone away.
     let presenceAuthorized = false
-    try {
-      presenceAuthorized =
-        await this.state.storage.get<boolean>(PRESENCE_AUTHORIZED_KEY) === true
-    } catch {
-      // Presence is auxiliary. A registry authorization read failure must not
-      // stop the room heartbeat or the operator kill-switch check.
+    for (const socket of sockets) {
+      try {
+        const attachment = socket.deserializeAttachment() as
+          | Partial<SocketAttachment>
+          | null
+        if (attachment?.presenceAuthorized === true) {
+          presenceAuthorized = true
+          break
+        }
+      } catch {
+        // A malformed attachment is treated as an ordinary, non-authorized
+        // socket; it must not stop heartbeats or the operator kill-switch.
+      }
     }
     // A room whose identity is missing cannot be re-evaluated. Keep the sockets
     // (polling still recovers every committed event) and retry on the next
@@ -657,7 +667,6 @@ export class OverlayRoom {
     await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
     await this.state.storage.delete(PRESENCE_LAST_REPORTED_AT_KEY)
     await this.state.storage.delete(PRESENCE_LAST_ATTEMPT_AT_KEY)
-    await this.state.storage.delete(PRESENCE_AUTHORIZED_KEY)
   }
 
   /**
@@ -759,11 +768,25 @@ export class OverlayRoom {
       }).WebSocketPair
       const pair = new Pair()
       const [client, server] = Object.values(pair)
+      // Verify the opt-in capability once and retain only the boolean on this
+      // socket's hibernation attachment. The raw token never enters Durable
+      // Object storage and cannot authorize another connection in the room.
+      const roomStreamerId = decodeURIComponent(
+        url.pathname.slice('/room/connect/'.length)
+      )
+      const presenceAuthorized = isValidStreamerId(roomStreamerId)
+        ? await hasPresenceCapability(
+          this.env.OVERLAY_REALTIME_PUBLISH_SECRET,
+          roomStreamerId,
+          url.searchParams.get('presence') ?? ''
+        )
+        : false
       const attachment: SocketAttachment = {
         connectionId: crypto.randomUUID(),
         connectedAt: Date.now(),
         messageWindowStartedAt: Date.now(),
         messageCount: 0,
+        presenceAuthorized,
       }
       this.state.acceptWebSocket(server, ['protocol-v1'])
       // Cloudflare's Hibernation API registers the server socket first; the
@@ -774,20 +797,9 @@ export class OverlayRoom {
       // Arm the kill-switch alarm. `alarm()` gets no request, so the room's own
       // identity has to be persisted here; the public router already rejected
       // any malformed ID before routing to this object.
-      const roomStreamerId = decodeURIComponent(
-        url.pathname.slice('/room/connect/'.length)
-      )
       if (isValidStreamerId(roomStreamerId)) {
         await this.state.storage.put(ROOM_STREAMER_ID_KEY, roomStreamerId)
-        const presenceToken = url.searchParams.get('presence') ?? ''
-        if (await hasPresenceCapability(
-          this.env.OVERLAY_REALTIME_PUBLISH_SECRET,
-          roomStreamerId,
-          presenceToken
-        )) {
-          await this.state.storage.put(PRESENCE_AUTHORIZED_KEY, true)
-          this.schedulePresenceReport(roomStreamerId)
-        }
+        if (presenceAuthorized) this.schedulePresenceReport(roomStreamerId)
       }
       // Only arm when nothing is pending. Re-arming on every connect would push
       // the check out indefinitely for a room that OBS reconnects frequently.
