@@ -86,8 +86,12 @@ const PRESENCE_REGISTRY_NAME = 'all'
 const PRESENCE_KEY_PREFIX = 'room:'
 const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
 const PRESENCE_LAST_ATTEMPT_AT_KEY = 'presence-last-attempt-at'
+const PRESENCE_AUTHORIZED_KEY = 'presence-authorized'
 const PRESENCE_SNAPSHOT_KEY = 'presence-snapshot'
 const PRESENCE_DELETE_BATCH_SIZE = 128
+const PRESENCE_TOKEN_TTL_MS = 30 * 24 * 60 * 60_000
+const PRESENCE_TOKEN_CLOCK_SKEW_MS = 60_000
+const PRESENCE_TOKEN_MAX_LENGTH = 256
 
 interface PresenceResponseCache {
   namespace: OverlayPresenceNamespace
@@ -252,6 +256,45 @@ async function authenticatedPublishRequest(
     signature
   )
   return valid ? { ok: true, nonce, timestamp } : { ok: false }
+}
+
+/**
+ * Presence is opt-in at the overlay-URL level, not at the public WebSocket
+ * level. A copied streamer ID must not be enough to create a public lease, so
+ * the authenticated dashboard gives each generated OBS URL a long-lived,
+ * room-scoped HMAC capability. The capability is deliberately separate from
+ * publish auth: it grants only liveness reporting, never event delivery.
+ */
+async function hasPresenceCapability(
+  secret: string,
+  streamerId: string,
+  token: string
+): Promise<boolean> {
+  if (!secret || token.length === 0 || token.length > PRESENCE_TOKEN_MAX_LENGTH) {
+    return false
+  }
+  const [expiresAtRaw, nonce, signature] = token.split('.')
+  if (!expiresAtRaw || !nonce || !signature || token.split('.').length !== 3) {
+    return false
+  }
+  const expiresAt = Number(expiresAtRaw)
+  const now = Date.now()
+  if (
+    !Number.isSafeInteger(expiresAt)
+    || expiresAt < now - PRESENCE_TOKEN_CLOCK_SKEW_MS
+    || expiresAt > now + PRESENCE_TOKEN_TTL_MS + PRESENCE_TOKEN_CLOCK_SKEW_MS
+    || !/^[0-9a-f-]{36}$/i.test(nonce)
+  ) {
+    return false
+  }
+  return verifyPublishSignature(
+    secret,
+    `/v1/rooms/${streamerId}/connect`,
+    '',
+    expiresAtRaw,
+    nonce,
+    signature
+  )
 }
 
 /**
@@ -556,15 +599,24 @@ export class OverlayRoom {
       // immediately. The registry itself expires the old lease.
       await this.state.storage.delete(PRESENCE_LAST_REPORTED_AT_KEY)
       await this.state.storage.delete(PRESENCE_LAST_ATTEMPT_AT_KEY)
+      await this.state.storage.delete(PRESENCE_AUTHORIZED_KEY)
       return
     }
 
     const streamerId = await this.state.storage.get<string>(ROOM_STREAMER_ID_KEY)
+    let presenceAuthorized = false
+    try {
+      presenceAuthorized =
+        await this.state.storage.get<boolean>(PRESENCE_AUTHORIZED_KEY) === true
+    } catch {
+      // Presence is auxiliary. A registry authorization read failure must not
+      // stop the room heartbeat or the operator kill-switch check.
+    }
     // A room whose identity is missing cannot be re-evaluated. Keep the sockets
     // (polling still recovers every committed event) and retry on the next
     // alarm rather than disconnecting a healthy room on a storage miss.
     if (!streamerId || realtimeEnabled(this.env, streamerId)) {
-      if (streamerId) this.schedulePresenceReport(streamerId)
+      if (streamerId && presenceAuthorized === true) this.schedulePresenceReport(streamerId)
       // Still allowed: prove liveness on the same wake. Clients reconcile
       // history only every ten minutes, so this distinguishes "no gacha
       // happened" from "this socket died" without waiting for that DB pass.
@@ -605,6 +657,7 @@ export class OverlayRoom {
     await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
     await this.state.storage.delete(PRESENCE_LAST_REPORTED_AT_KEY)
     await this.state.storage.delete(PRESENCE_LAST_ATTEMPT_AT_KEY)
+    await this.state.storage.delete(PRESENCE_AUTHORIZED_KEY)
   }
 
   /**
@@ -726,7 +779,15 @@ export class OverlayRoom {
       )
       if (isValidStreamerId(roomStreamerId)) {
         await this.state.storage.put(ROOM_STREAMER_ID_KEY, roomStreamerId)
-        this.schedulePresenceReport(roomStreamerId)
+        const presenceToken = url.searchParams.get('presence') ?? ''
+        if (await hasPresenceCapability(
+          this.env.OVERLAY_REALTIME_PUBLISH_SECRET,
+          roomStreamerId,
+          presenceToken
+        )) {
+          await this.state.storage.put(PRESENCE_AUTHORIZED_KEY, true)
+          this.schedulePresenceReport(roomStreamerId)
+        }
       }
       // Only arm when nothing is pending. Re-arming on every connect would push
       // the check out indefinitely for a room that OBS reconnects frequently.

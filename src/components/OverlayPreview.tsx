@@ -165,6 +165,7 @@ function areOverlayOptionsEqual(a: OverlayOptions, b: OverlayOptions) {
 
 interface OverlayPreviewProps {
   streamerId: string;
+  presenceToken?: string | null;
   baseUrl: string;
   showPreview?: boolean;  // プレビューセクションを表示するかどうか（デフォルト: true）
   showCustomization?: boolean;  // カスタマイズ折りたたみセクションを表示するか（デフォルト: true）
@@ -222,6 +223,7 @@ const isPreviewEnvironment = isPreviewAppUrl(process.env.NEXT_PUBLIC_APP_URL);
  */
 export default function OverlayPreview({
   streamerId,
+  presenceToken,
   baseUrl,
   showPreview = true,
   showCustomization = true,
@@ -381,8 +383,14 @@ export default function OverlayPreview({
 
   // オーバーレイURLを生成
   const overlayUrl = `${baseUrl}/overlay/${streamerId}`;
-  const urlParams = buildUrlParams();
-  const overlayUrlWithParams = urlParams ? `${overlayUrl}?${urlParams}` : overlayUrl;
+  const urlParams = new URLSearchParams(buildUrlParams());
+  if (presenceToken && presenceToken.length <= 256) {
+    urlParams.set("presence", presenceToken);
+  }
+  const serializedUrlParams = urlParams.toString();
+  const overlayUrlWithParams = serializedUrlParams
+    ? `${overlayUrl}?${serializedUrlParams}`
+    : overlayUrl;
 
   // コレクションページURLを生成
   // Generate collection page URL

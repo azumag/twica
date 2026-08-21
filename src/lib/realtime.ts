@@ -411,6 +411,15 @@ function websocketUrl(baseUrl: string, streamerId: string): string | null {
     url.pathname = `/v1/rooms/${encodeURIComponent(streamerId)}/connect`
     url.search = ''
     url.searchParams.set('clientVersion', 'overlay-v1')
+    // The settings page places a room-scoped liveness capability on the OBS
+    // URL. Keep it out of the public config response; only the overlay page
+    // that was given the capability forwards it to the WebSocket edge.
+    if (typeof window !== 'undefined') {
+      const presenceToken = new URLSearchParams(window.location.search).get('presence')
+      if (presenceToken && presenceToken.length <= 256) {
+        url.searchParams.set('presence', presenceToken)
+      }
+    }
     return url.toString()
   } catch {
     return null

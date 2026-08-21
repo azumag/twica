@@ -30,6 +30,22 @@ function eventFixture() {
   }])[0]
 }
 
+async function presenceToken(
+  streamerId = STREAMER_ID,
+  expiresAt = Date.now() + 24 * 60 * 60_000,
+): Promise<string> {
+  const expiresAtRaw = String(expiresAt)
+  const nonce = crypto.randomUUID()
+  const signature = await createPublishSignature(
+    SECRET,
+    `/v1/rooms/${streamerId}/connect`,
+    '',
+    expiresAtRaw,
+    nonce,
+  )
+  return `${expiresAtRaw}.${nonce}.${signature}`
+}
+
 describe('overlay realtime Worker router', () => {
   it('exposes a no-secret health response and rejects non-upgrade subscribe', async () => {
     const env = {
@@ -623,15 +639,46 @@ describe('OverlayRoom kill switch alarm', () => {
       get: vi.fn(() => ({ fetch: presenceFetch })),
     }
 
-    await harness.room.fetch(
-      new Request(`https://room.internal/room/connect/${STREAMER_ID}`),
-    )
+    await harness.room.fetch(new Request(
+      `https://room.internal/room/connect/${STREAMER_ID}?presence=${encodeURIComponent(await presenceToken())}`,
+    ))
     await Promise.all(harness.presenceTasks)
 
     expect(presenceFetch).toHaveBeenCalledTimes(1)
     const report = presenceFetch.mock.calls[0][0] as Request
     expect(new URL(report.url).pathname).toBe('/report')
     expect(await report.json()).toEqual({ streamerId: STREAMER_ID })
+    vi.unstubAllGlobals()
+  })
+
+  it('does not create a public lease from an unauthenticated room connect', async () => {
+    const makeSocket = () => ({
+      readyState: 1,
+      send: vi.fn(),
+      close: vi.fn(),
+      serializeAttachment: vi.fn(),
+      deserializeAttachment: vi.fn(),
+    })
+    vi.stubGlobal('WebSocketPair', class {
+      0 = makeSocket()
+      1 = makeSocket()
+    })
+    const harness = createRoomHarness()
+    const presenceFetch = vi.fn().mockResolvedValue(
+      Response.json({ accepted: true }, { status: 202 }),
+    )
+    ;(harness.env as unknown as { OVERLAY_PRESENCE: unknown }).OVERLAY_PRESENCE = {
+      idFromName: vi.fn(() => ({ registry: 'all' })),
+      get: vi.fn(() => ({ fetch: presenceFetch })),
+    }
+
+    await harness.room.fetch(
+      new Request(`https://room.internal/room/connect/${STREAMER_ID}`),
+    )
+    await Promise.all(harness.presenceTasks)
+
+    expect(presenceFetch).not.toHaveBeenCalled()
+    expect(harness.records.has('presence-authorized')).toBe(false)
     vi.unstubAllGlobals()
   })
 
@@ -655,9 +702,9 @@ describe('OverlayRoom kill switch alarm', () => {
     }
 
     const result = await Promise.race([
-      harness.room.fetch(
-        new Request(`https://room.internal/room/connect/${STREAMER_ID}`),
-      ),
+      harness.room.fetch(new Request(
+        `https://room.internal/room/connect/${STREAMER_ID}?presence=${encodeURIComponent(await presenceToken())}`,
+      )),
       new Promise<'timeout'>((resolve) => {
         setTimeout(() => resolve('timeout'), 100)
       }),
@@ -720,6 +767,7 @@ describe('OverlayRoom kill switch alarm', () => {
       idFromName: vi.fn(() => ({ registry: 'all' })),
       get: vi.fn(() => ({ fetch: presenceFetch })),
     }
+    harness.records.set('presence-authorized', true)
 
     for (let i = 0; i < 5; i += 1) {
       await harness.room.alarm()

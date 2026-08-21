@@ -67,6 +67,8 @@ function SettingsPanelSkeleton() {
 
 export interface SettingsLayoutData {
   streamerId: string;
+  /** Room-scoped capability used only to refresh anonymous overlay presence. */
+  presenceToken?: string | null;
   plan: PlanType;
   baseUrl: string;
   cards: Card[];
@@ -147,6 +149,7 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
       <StepCard step={t("simple.step1")} label={t("simple.step1Label")}>
         <OverlayPreview
           streamerId={data.streamerId}
+          presenceToken={data.presenceToken}
           baseUrl={data.baseUrl}
           cards={data.cards}
           showPreview={false}
@@ -284,6 +287,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       content: (
         <OverlayPreview
           streamerId={data.streamerId}
+          presenceToken={data.presenceToken}
           baseUrl={data.baseUrl}
           cards={data.cards}
           showCollectionUrl={false}
