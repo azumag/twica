@@ -69,10 +69,10 @@ jobs:
   notify:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    # PR-controlled strings stay in env and are consumed as data by Python/jq;
-    # do not interpolate them directly into the shell script.
     env:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      # PR/repository-derived strings stay in env and are consumed as data by Python/jq;
+      # do not interpolate them directly into the shell script.
       REPOSITORY_NAME: ${{ github.event.repository.name }}
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_BODY: ${{ github.event.pull_request.body }}
