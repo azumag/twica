@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   resolveDashboardDatabaseUrl,
   resolveStatementTimeout,
   diffAggregates,
   fetchBasicAggregates,
   fetchRpcAggregates,
+  printDiffTable,
 } from '../../scripts/compare-analysis-dashboard-vs-sql.mjs'
 
 /**
@@ -368,5 +369,31 @@ describe('fetchRpcAggregates', () => {
 
     expect(result.streamersSummaryTotalStreamers).toBeUndefined()
     expect(result.streamersSummaryTotalCards).toBeUndefined()
+  })
+})
+
+describe('printDiffTable', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('見出し・区切り線・全差分行を順番どおり出力する', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    printDiffTable([
+      { metric: 'totalUsers', expected: 10, actual: 11 },
+      { metric: 'rarityDistribution.rare', expected: 25, actual: 26 },
+    ])
+
+    // printDiffTable は列幅を揃えるため最終列も padEnd する。行末空白は表示上の意味を
+    // 持たないため除去し、列内容と順序の契約だけを検証する。全角文字の表示幅は
+    // printDiffTable のJSDocに記載した既存制約のため、このテストでは扱わない。
+    const lines = log.mock.calls.map(([line]) => String(line).trimEnd())
+
+    expect(lines).toHaveLength(4)
+    expect(lines[0]).toMatch(/^METRIC\s+基礎集計SQL\s+get_analysis_\* RPC$/)
+    expect(lines[1]).toMatch(/^-+\s{2}-+\s{2}-+$/)
+    expect(lines[2]).toMatch(/^totalUsers\s+10\s+11$/)
+    expect(lines[3]).toMatch(/^rarityDistribution\.rare\s+25\s+26$/)
   })
 })
