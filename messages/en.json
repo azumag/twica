@@ -1567,7 +1567,9 @@
       "redemptionCount": "{count, plural, one {# redemption} other {# redemptions}}",
       "totalPoints": "{count, plural, one {# point} other {# points}}",
       "cardCount": "{count, plural, one {# type} other {# types}}",
-      "empty": "No ranking data yet"
+      "empty": "No ranking data yet",
+      "live": "LIVE",
+      "liveBadge": "Currently live"
     },
     "empty": {
       "title": "No listed streams are live right now",

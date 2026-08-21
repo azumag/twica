@@ -1567,7 +1567,9 @@
       "redemptionCount": "{count, number}回",
       "totalPoints": "{count, number}ポイント",
       "cardCount": "{count, number}種類",
-      "empty": "ランキングデータはありません"
+      "empty": "ランキングデータはありません",
+      "live": "LIVE",
+      "liveBadge": "現在配信中"
     },
     "empty": {
       "title": "現在掲載中の配信はありません",
