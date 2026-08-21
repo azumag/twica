@@ -50,6 +50,7 @@ export default function LiveDirectorySettings({
       payload: { publishLiveStatus?: boolean; publishStats?: boolean }
     ): Promise<boolean> => {
       setSaving(true);
+      setMessage("");
       try {
         const response = await fetch("/api/streamer/settings", {
           method: "POST",
