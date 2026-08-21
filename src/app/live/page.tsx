@@ -7,6 +7,7 @@ import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
 import {
   getLiveDirectory,
+  getLiveDirectoryPresence,
   getLiveDirectoryRankings,
 } from "@/lib/live-directory";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
@@ -38,9 +39,10 @@ export async function generateMetadata(): Promise<Metadata> {
  * 伴う警告だからだ（Header/DashboardNav自体はそれらに依存しない）。
  */
 export default async function LivePage() {
-  const [session, entries, rankings, t] = await Promise.all([
+  const [session, entries, presence, rankings, t] = await Promise.all([
     getSession(),
     getLiveDirectory(),
+    getLiveDirectoryPresence(),
     getLiveDirectoryRankings(),
     getTranslations("livePage"),
   ]);
@@ -58,6 +60,12 @@ export default async function LivePage() {
         <div className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
           <p>{t("consentNotice")}</p>
           <p className="mt-1">{t("rankingNotice")}</p>
+          {presence && presence.count > 0 ? (
+            <p className="mt-1" data-testid="live-presence-estimate">
+              {t("liveCount", { count: presence.count })}
+              <span className="ml-1 text-gray-500">{t("liveCountNote")}</span>
+            </p>
+          ) : null}
         </div>
       </div>
 

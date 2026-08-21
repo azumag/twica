@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   canUseStreamerFeatures: vi.fn(),
   getLiveDirectory: vi.fn(),
+  getLiveDirectoryPresence: vi.fn(),
   getLiveDirectoryRankings: vi.fn(),
   getTranslations: vi.fn(),
   getUnreadAnnouncements: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("@/lib/session", () => ({
 }));
 vi.mock("@/lib/live-directory", () => ({
   getLiveDirectory: mocks.getLiveDirectory,
+  getLiveDirectoryPresence: mocks.getLiveDirectoryPresence,
   getLiveDirectoryRankings: mocks.getLiveDirectoryRankings,
 }));
 vi.mock("@/lib/announcements", () => ({
@@ -90,6 +92,9 @@ const translations: Record<string, Record<string, string>> = {
     consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
     rankingNotice:
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
+    liveCount: "現在配信中チャネル数（overlay接続ベースの推定・下限）：約{count}件",
+    liveCountNote:
+      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした概算で、既存のOBS URLは再コピーが必要です。5件単位に切り捨てています。polling-onlyは含まれず、残留タブや切断遅延は含まれるため実際の配信数とは差が生じます。設定画面のプレビューは含まれません。反映に最大17分程度かかる場合があります。",
   },
 };
 
@@ -98,14 +103,22 @@ describe("LivePage", () => {
     mocks.getSession.mockReset();
     mocks.canUseStreamerFeatures.mockReset();
     mocks.getLiveDirectory.mockReset();
+    mocks.getLiveDirectoryPresence.mockReset();
     mocks.getLiveDirectoryRankings.mockReset();
     mocks.getTranslations.mockReset();
     mocks.getUnreadAnnouncements.mockReset();
     mocks.getUserPlanSnapshot.mockReset();
     mocks.getTranslations.mockImplementation(async (namespace: string) => {
-      return (key: string) => translations[namespace]?.[key] ?? key;
+      return (key: string, values?: Record<string, unknown>) => {
+        const template = translations[namespace]?.[key] ?? key;
+        return Object.entries(values ?? {}).reduce(
+          (text, [name, value]) => text.replace(`{${name}}`, String(value)),
+          template,
+        );
+      };
     });
     mocks.getLiveDirectory.mockResolvedValue([{ streamerId: "streamer-1" }]);
+    mocks.getLiveDirectoryPresence.mockResolvedValue(null);
     mocks.getLiveDirectoryRankings.mockResolvedValue({
       last7Days: [{ identity: null }],
       allTime: [{ identity: null }, { identity: null }],
@@ -122,6 +135,7 @@ describe("LivePage", () => {
 
     expect(mocks.getSession).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectory).toHaveBeenCalledOnce();
+    expect(mocks.getLiveDirectoryPresence).toHaveBeenCalledOnce();
     expect(mocks.getLiveDirectoryRankings).toHaveBeenCalledOnce();
     expect(
       screen.getByRole("heading", { name: "TwiCaチャネルとランキング" }),
@@ -179,6 +193,39 @@ describe("LivePage", () => {
     expect(screen.getByTestId("app-header")).toHaveAttribute("data-unread", "0");
     expect(screen.getByTestId("dashboard-nav")).toHaveAttribute("data-streamer", "false");
     expect(screen.getByTestId("dashboard-nav")).toHaveAttribute("data-supporter", "false");
+  });
+
+  it("shows the estimate only when the presence snapshot is positive", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getLiveDirectoryPresence.mockResolvedValue({
+      count: 5,
+      observedAt: "2026-08-21T00:00:00.000Z",
+    });
+
+    render(await LivePage());
+
+    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
+      "現在配信中チャネル数（overlay接続ベースの推定・下限）：約5件",
+    );
+    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
+      "polling-onlyは含まれず、残留タブや切断遅延は含まれる",
+    );
+    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
+      "設定画面のプレビューは含まれません",
+    );
+  });
+
+  it("hides a zero overlay estimate that could contradict polling-only live entries", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getLiveDirectoryPresence.mockResolvedValue({
+      count: 0,
+      observedAt: "2026-08-21T00:00:00.000Z",
+    });
+
+    render(await LivePage());
+
+    expect(screen.queryByTestId("live-presence-estimate")).not.toBeInTheDocument();
+    expect(screen.getByTestId("live-directory")).toHaveTextContent("entries:1");
   });
 
   it("builds localized metadata from the livePage namespace", async () => {
