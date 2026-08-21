@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { INVARIANTS } from '../../../scripts/db-cutover/invariant-checks.mjs'
+import {
+  INVARIANTS,
+  TIER_A,
+} from '../../../scripts/db-cutover/invariant-checks.mjs'
 import {
   evaluateInvariantsLayer,
   readSideInvariants,
@@ -13,7 +16,7 @@ const FIXTURE_INVARIANT = {
   checks: [
     {
       code: 'FIXTURE_CHECK',
-      tier: 'A',
+      tier: TIER_A,
       countSql: 'COUNT_SQL',
       sampleSql: 'SAMPLE_SQL',
       digestSql: null,
@@ -73,7 +76,7 @@ describe('db cutover layer invariants', () => {
       checks: [
         {
           code: 'FIXTURE_CHECK',
-          tier: 'A',
+          tier: TIER_A,
           violationCount: 0,
           samples: [],
           digest: null,
