@@ -807,6 +807,9 @@ function createPresenceHarness() {
 describe('OverlayPresence Durable Object', () => {
   const firstStreamer = STREAMER_ID
   const secondStreamer = '223e4567-e89b-42d3-a456-426614174000'
+  const thirdStreamer = '323e4567-e89b-42d3-a456-426614174000'
+  const fourthStreamer = '423e4567-e89b-42d3-a456-426614174000'
+  const fifthStreamer = '523e4567-e89b-42d3-a456-426614174000'
 
   it('deduplicates room leases and hides room keys from the snapshot', async () => {
     const harness = createPresenceHarness()
@@ -827,20 +830,26 @@ describe('OverlayPresence Durable Object', () => {
       method: 'POST',
       body: JSON.stringify({ streamerId: secondStreamer }),
     }))
+    for (const streamerId of [thirdStreamer, fourthStreamer, fifthStreamer]) {
+      await presence.fetch(new Request('https://presence.internal/report', {
+        method: 'POST',
+        body: JSON.stringify({ streamerId }),
+      }))
+    }
 
     const response = await presence.fetch(
       new Request('https://presence.internal/snapshot'),
     )
     expect(response.headers.get('cache-control')).toBe('public, max-age=60')
     const body = await response.json()
-    expect(body).toMatchObject({ count: 2 })
+    expect(body).toMatchObject({ count: 5 })
     expect(JSON.stringify(body)).not.toContain(firstStreamer)
 
     const listCalls = harness.list.mock.calls.length
     const cachedResponse = await presence.fetch(
       new Request('https://presence.internal/snapshot'),
     )
-    await expect(cachedResponse.json()).resolves.toMatchObject({ count: 2 })
+    await expect(cachedResponse.json()).resolves.toMatchObject({ count: 5 })
     expect(harness.list).toHaveBeenCalledTimes(listCalls)
   })
 
@@ -854,9 +863,23 @@ describe('OverlayPresence Durable Object', () => {
       new Request('https://presence.internal/snapshot'),
     )
 
-    await expect(response.json()).resolves.toMatchObject({ count: 1 })
+    await expect(response.json()).resolves.toMatchObject({ count: 0 })
     expect(harness.records.has('room:old')).toBe(false)
     expect(harness.records.has('room:fresh')).toBe(true)
+  })
+
+  it('rounds public counts down to the five-channel privacy bucket', async () => {
+    const harness = createPresenceHarness()
+    for (let i = 0; i < 7; i += 1) {
+      harness.records.set(`room:bucket-${i}`, { lastSeen: Date.now() })
+    }
+    const presence = new OverlayPresence(harness.state as never, {} as never)
+
+    const response = await presence.fetch(
+      new Request('https://presence.internal/snapshot'),
+    )
+
+    await expect(response.json()).resolves.toMatchObject({ count: 5 })
   })
 
   it('chunks expired lease deletion to the Durable Object storage limit', async () => {
@@ -900,7 +923,7 @@ describe('OverlayPresence Durable Object', () => {
       new Request('https://presence.internal/snapshot'),
     )
 
-    await expect(response.json()).resolves.toMatchObject({ count: 1_001 })
+    await expect(response.json()).resolves.toMatchObject({ count: 1_000 })
     expect(harness.list).toHaveBeenCalledTimes(2)
     expect(harness.list.mock.calls[0][0]).toMatchObject({ limit: 1_000 })
     expect(harness.list.mock.calls[1][0]).toMatchObject({ limit: 1_000 })

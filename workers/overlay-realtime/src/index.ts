@@ -88,6 +88,9 @@ const PRESENCE_REPORT_TIMEOUT_MS = 2_000
 const PRESENCE_LEASE_TTL_MS = 10 * 60_000
 const PRESENCE_SNAPSHOT_TTL_MS = 60_000
 const PRESENCE_SWEEP_INTERVAL_MS = 5 * 60_000
+// Public estimates are intentionally bucketed so a small overlay population
+// cannot be used to infer whether one particular non-listed channel is live.
+const PRESENCE_PRIVACY_BUCKET_SIZE = 5
 const PRESENCE_REGISTRY_NAME = 'all'
 const PRESENCE_KEY_PREFIX = 'room:'
 const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
@@ -1034,8 +1037,10 @@ export class OverlayPresence {
   private snapshotResponse(count: number, observedAt: string): Response {
     // The application adds its own KV cache. The bounded DO snapshot cache
     // above also keeps direct reads from scanning every lease for 60 seconds.
+    const publicCount = Math.floor(count / PRESENCE_PRIVACY_BUCKET_SIZE)
+      * PRESENCE_PRIVACY_BUCKET_SIZE
     return json(
-      { count, observedAt },
+      { count: publicCount, observedAt },
       200,
       { 'cache-control': 'public, max-age=60' }
     )

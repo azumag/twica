@@ -50,7 +50,7 @@ const translations: Record<string, Record<string, string>> = {
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
     liveCount: "現在配信中チャネル数（推定）：約{count}件",
     liveCountNote:
-      "overlay接続だけを基にした概算です。polling-onlyは含まれず、設定画面のプレビューや残留タブは含まれるため実際の配信数とは差が生じます。反映に十数分かかる場合があります。",
+      "overlay接続だけを基にした概算で、5件単位に丸めています。polling-onlyは含まれず、設定画面のプレビューや残留タブは含まれるため実際の配信数とは差が生じます。反映に最大17分程度かかる場合があります。",
   },
   header: {
     dashboard: "ダッシュボード",
@@ -122,14 +122,14 @@ describe("LivePage", () => {
   it("shows the estimate only when the presence snapshot is positive", async () => {
     mocks.getSession.mockResolvedValue(null);
     mocks.getLiveDirectoryPresence.mockResolvedValue({
-      count: 7,
+      count: 5,
       observedAt: "2026-08-21T00:00:00.000Z",
     });
 
     render(await LivePage());
 
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "現在配信中チャネル数（推定）：約7件",
+      "現在配信中チャネル数（推定）：約5件",
     );
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
       "polling-onlyは含まれず、設定画面のプレビューや残留タブは含まれる",
