@@ -146,8 +146,15 @@ export default function LiveDirectory({
   // entriesは「掲載を許可したチャネル」だけを含むため、この集合はランキング行の
   // 「配信中か」判定の唯一の根拠になる。掲載未許可のチャネルは配信中でも
   // 含まれず、ランキング上のLIVE表示も出ない（公開設定チャネルのみ、#945）。
+  // 空文字loginはnormalize境界を通った欠損値の可能性があるため除外する
+  // （空文字同士の誤照合で誤ったLIVE表示が付く事故を防ぐ）。
   const liveLogins = useMemo(
-    () => new Set(entries.map((entry) => entry.twitchLogin.toLowerCase())),
+    () =>
+      new Set(
+        entries
+          .map((entry) => entry.twitchLogin.toLowerCase())
+          .filter((login) => login.length > 0),
+      ),
     [entries],
   );
   // 種類数は「現在有効なカード種類数」というスナップショット指標であり、
@@ -391,8 +398,13 @@ function LiveDirectoryRanking({
                   {entry.identity.displayName}
                 </span>
                 {isLive && (
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                    <span className="h-1.5 w-1.5 rounded-full bg-white" aria-hidden="true" />
+                  // 可視バッジは装飾（aria-hidden）にし、「配信中」の読み上げは
+                  // 直後のsr-onlyへ一本化する。両方を読み上げると冗長になるため。
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex shrink-0 items-center gap-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-white" />
                     {t("ranking.live")}
                   </span>
                 )}

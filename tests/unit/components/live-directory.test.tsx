@@ -403,13 +403,15 @@ describe("live indicator on ranking rows (#945)", () => {
     const alphaRow = screen.getByRole("link", { name: /AlphaをTwitchで見る/ });
     expect(alphaRow).toHaveTextContent("LIVE");
     expect(alphaRow).toHaveTextContent("現在配信中");
-    expect(alphaRow.querySelector("img")).toHaveClass("ring-red-600");
+    // 赤い縁取りはアバター画像そのものへ付く。ringクラスはバッジ内ドットには
+    // 存在しないため、.ring-red-600での特定はDOM順に依存しない。
+    expect(alphaRow.querySelector(".ring-red-600")).toBe(alphaRow.querySelector("img"));
 
     // 配信中でないCharlie行・匿名行にはバッジも赤い縁取りも出ない。
     // CharlieはprofileImageUrlが空のためアバターは初期文字span。
     const charlieRow = screen.getByRole("link", { name: /CharlieをTwitchで見る/ });
     expect(charlieRow).not.toHaveTextContent("LIVE");
-    expect(charlieRow.querySelector("span[aria-hidden='true']")).not.toHaveClass("ring-red-600");
+    expect(charlieRow.querySelector(".ring-red-600")).toBeNull();
 
     const rows = screen.getAllByRole("listitem");
     expect(within(rows[0]).queryByText("LIVE")).not.toBeInTheDocument();
@@ -432,7 +434,9 @@ describe("live indicator on ranking rows (#945)", () => {
     const charlieRow = screen.getByRole("link", { name: /CharlieをTwitchで見る/ });
     expect(charlieRow).toHaveTextContent("LIVE");
     // 画像がないため、赤い縁取りは初期文字アバターのspanへ付く。
-    const avatar = charlieRow.querySelector("span[aria-hidden='true']");
-    expect(avatar).toHaveClass("ring-red-600");
+    // .ring-red-600での特定により、バッジ内要素との取り違えを防ぐ。
+    const avatar = charlieRow.querySelector(".ring-red-600");
+    expect(avatar).not.toBeNull();
+    expect(avatar?.tagName).toBe("SPAN");
   });
 });

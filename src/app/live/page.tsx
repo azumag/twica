@@ -101,8 +101,10 @@ export default async function LivePage() {
   }
 
   // ダッシュボードレイアウトと同じHeader+DashboardNavの組み合わせ。
-  // 未読数・プラン判定はダッシュボードレイアウトと同じReact cache付き関数なので、
-  // 同一リクエスト内でI/Oが重複することはない。
+  // 未読数・プラン判定はダッシュボードレイアウトと同じReact cache付き関数で、
+  // 失敗時は basic / 0件 へ縮退する（公開ページを500にしない）。
+  // ただし/liveにはダッシュボードlayoutが無いため、ログイン済み訪問1回あたり
+  // この2クエリが純増する（cacheは同一リクエスト内の重複排除であり初回は走る）。
   const [plan, unreadAnnouncements] = await Promise.all([
     getUserPlanSnapshot(session.twitchUserId),
     getUnreadAnnouncements(session.twitchUserId),
