@@ -94,6 +94,47 @@ describe('error-handler', () => {
       expect(body.error).toBe('Storage service temporarily unavailable');
     });
 
+    it.each([
+      ['HTTP 503', 503, 'Storage service temporarily unavailable'],
+      ['HTTP/1.1 503 Service Unavailable', 503, 'Storage service temporarily unavailable'],
+      ['503 Service Unavailable', 503, 'Storage service temporarily unavailable'],
+      ['401 Unauthorized', 503, 'Storage authentication failed'],
+      ['507 Insufficient Storage', 507, 'Storage quota exceeded'],
+      ['status code: 401', 503, 'Storage authentication failed'],
+      ['statusCode=503', 503, 'Storage service temporarily unavailable'],
+      ['$metadata.httpStatusCode: 507', 507, 'Storage quota exceeded'],
+    ])('HTTP status文脈の数値を分類できる: %s', async (errorMessage, expectedStatus, expectedError) => {
+      const response = await handleBlobError(new Error(errorMessage), 'blob');
+      expect(response.status).toBe(expectedStatus);
+
+      const body = await response.json();
+      expect(body.error).toBe(expectedError);
+    });
+
+    it.each([
+      ['Unauthorized', 503, 'Storage authentication failed'],
+      ['Service Unavailable', 503, 'Storage service temporarily unavailable'],
+    ])('キーワードの大文字小文字に依存せず分類できる: %s', async (errorMessage, expectedStatus, expectedError) => {
+      const response = await handleBlobError(new Error(errorMessage), 'blob');
+      expect(response.status).toBe(expectedStatus);
+
+      const body = await response.json();
+      expect(body.error).toBe(expectedError);
+    });
+
+    it.each([
+      '401',
+      '503',
+      '507',
+      'photo-503.png',
+      'avatar-401.jpg',
+      'asset-507-preview.png',
+      'https://example.com/assets/503.png',
+    ])('文脈のない数値をHTTP statusとして誤分類しない: %s', async (errorMessage) => {
+      const response = await handleBlobError(new Error(errorMessage), 'blob');
+      expect(response.status).toBe(500);
+    });
+
     it('その他のエラーで 500 を返す', async () => {
       const response = await handleBlobError(new Error('unknown blob error'), 'blob');
       expect(response.status).toBe(500);
