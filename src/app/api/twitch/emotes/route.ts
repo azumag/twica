@@ -116,6 +116,8 @@ export async function GET(request: Request) {
         { status: 401 }
       );
     }
+    // Token-manager refresh failures may wrap DB query/parameter details; report only the
+    // sanitized diagnostic fields exposed by the shared context helper at this API boundary.
     return handleApiError(error, "Twitch emotes fetch", twitchTokenErrorReportContext(error));
   }
 }
