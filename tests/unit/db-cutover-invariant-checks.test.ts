@@ -41,6 +41,12 @@ describe('db cutover invariant checks', () => {
     }
   })
 
+  it('report・allowlistの識別に使うinvariant idが重複しない', () => {
+    const ids = INVARIANTS.map((invariant) => invariant.id)
+
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
   it('finding識別に使うcheck codeが重複しない', () => {
     const codes = INVARIANTS.flatMap((invariant) =>
       invariant.checks.map((check) => check.code),
