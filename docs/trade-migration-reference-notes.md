@@ -8,7 +8,9 @@ any byte changes the checksum and can block `apply`, `status`, `plan`, and
 
 When documentation or review notes need to refer to logic inside
 `accept_trade_offer`, use stable SQL identifiers and processing stages rather
-than line numbers:
+than line numbers. Use **payer selection** for the overall two-step operation;
+avoid positional labels such as **stage 2**, which can become ambiguous as the
+migration evolves:
 
 - **Payer selection — candidate locking:** the `PERFORM` first locks all
   eligible candidate `user_cards` rows in deterministic order. This
