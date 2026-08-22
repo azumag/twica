@@ -97,11 +97,11 @@ const R2_INTERNAL_ERROR_MESSAGE = 'put: We encountered an internal error. Please
 function mockTransientFailuresThenSuccess(): void {
   expect(
     TRANSIENT_FAILURES_BEFORE_SUCCESS,
-    'retry-success fixture must include at least one transient failure',
+    'リトライ成功fixtureには一時失敗を1回以上含めること',
   ).toBeGreaterThanOrEqual(1)
   expect(
     TRANSIENT_FAILURES_BEFORE_SUCCESS,
-    'retry-success fixture must remain reachable within MAX_RETRIES',
+    'リトライ成功fixtureはMAX_RETRIES以内で成功へ到達できること',
   ).toBeLessThanOrEqual(MAX_RETRIES)
 
   for (
