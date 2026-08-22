@@ -93,7 +93,7 @@ describe('CardVisibilitySettings maintenance integration', () => {
 
   it('mode!=off でもshowDetailsトグルは元々のshowUnowned依存disableと重複してdisableされる', () => {
     renderSettings({ mode: 'read-only' })
-    const [, showDetailsToggle] = getTogles()
+    const [, showDetailsToggle] = getToggles()
     expect(showDetailsToggle).toBeDisabled()
   })
 })
