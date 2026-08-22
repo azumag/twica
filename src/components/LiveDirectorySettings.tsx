@@ -206,7 +206,11 @@ export default function LiveDirectorySettings({
         </p>
 
         {message && (
-          <p className={`text-sm ${isError ? "text-red-400" : "text-green-400"}`}>
+          <p
+            role="status"
+            aria-live="polite"
+            className={`text-sm ${isError ? "text-red-400" : "text-green-400"}`}
+          >
             {message}
           </p>
         )}
