@@ -21,6 +21,7 @@ function missingColumnError(column: string) {
   })
 }
 
+// Drizzle の投影キーと実SQL列名の対応表を作る。
 function toProjectionMap(columns: Record<string, { name: string }>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(columns).map(([key, column]) => [key, column.name]),
