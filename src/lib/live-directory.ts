@@ -38,6 +38,16 @@ export interface LiveDirectoryEntry {
   thumbnailUrl: string;
 }
 
+/**
+ * Anonymous, intentionally approximate count of recently observed overlay
+ * rooms. `observedAt` is retained so a future UI can show freshness without
+ * exposing any room or viewer identity.
+ */
+export interface LiveDirectoryPresenceSnapshot {
+  count: number;
+  observedAt: string;
+}
+
 export interface LiveDirectoryRankingIdentity {
   twitchLogin: string;
   displayName: string;
@@ -93,7 +103,9 @@ interface HelixStream {
 
 const LIVE_DIRECTORY_KV_KEY = "live-directory:v1";
 const LIVE_DIRECTORY_RANKINGS_KV_KEY = "live-directory:rankings:v3";
+const LIVE_DIRECTORY_PRESENCE_KV_KEY = "live-directory:presence:v1";
 const LIVE_DIRECTORY_TTL_SECONDS = 60;
+const LIVE_DIRECTORY_PRESENCE_FETCH_TIMEOUT_MS = 2_000;
 const HELIX_STREAMS_BATCH_SIZE = 100;
 
 /** KV なし環境（ローカル next dev）用のメモリキャッシュ。 */
@@ -102,6 +114,100 @@ let rankingsMemoryCache: {
   entries: LiveDirectoryRankingsByPeriod;
   expiresAt: number;
 } | null = null;
+let presenceMemoryCache: {
+  snapshot: LiveDirectoryPresenceSnapshot | null;
+  expiresAt: number;
+} | null = null;
+let presenceUnavailableCache: { expiresAt: number } | null = null;
+
+interface LiveDirectoryPresenceUnavailableMarker {
+  unavailable: true;
+}
+
+interface OverlayRealtimeServiceBinding {
+  fetch(request: Request): Promise<Response>;
+}
+
+/**
+ * The realtime Worker is reached through the existing service binding rather
+ * than a public URL. Local Next.js has no binding, so returning null is a
+ * normal development fallback and does not create a network request.
+ */
+async function getOverlayRealtimeService(): Promise<OverlayRealtimeServiceBinding | null> {
+  try {
+    const { getCloudflareContext } = await import("@opennextjs/cloudflare");
+    const context = await getCloudflareContext({ async: true });
+    const env = context.env as Record<string, unknown> | undefined;
+    const binding = env?.OVERLAY_REALTIME_SERVICE;
+    if (!binding || typeof binding !== "object") return null;
+    const fetch = (binding as { fetch?: unknown }).fetch;
+    return typeof fetch === "function"
+      ? (binding as OverlayRealtimeServiceBinding)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLiveDirectoryPresence(value: unknown): LiveDirectoryPresenceSnapshot | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (
+    typeof row.count !== "number"
+    || !Number.isSafeInteger(row.count)
+    || row.count < 0
+    || typeof row.observedAt !== "string"
+    || !Number.isFinite(Date.parse(row.observedAt))
+  ) {
+    return null;
+  }
+  return {
+    count: row.count,
+    observedAt: row.observedAt,
+  };
+}
+
+function isLiveDirectoryPresenceUnavailableMarker(
+  value: unknown,
+): value is LiveDirectoryPresenceUnavailableMarker {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && (value as Record<string, unknown>).unavailable === true,
+  );
+}
+
+async function fetchLiveDirectoryPresenceUncached(): Promise<LiveDirectoryPresenceSnapshot | null> {
+  const service = await getOverlayRealtimeService();
+  if (!service) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    LIVE_DIRECTORY_PRESENCE_FETCH_TIMEOUT_MS,
+  );
+  try {
+    const response = await service.fetch(
+      new Request("https://overlay-realtime/presence", {
+        signal: controller.signal,
+      }),
+    );
+    // A staged rollout can briefly expose the app before the auxiliary Worker;
+    // do not turn an expected 404/5xx into one Sentry event per /live request.
+    if (!response.ok) return null;
+    const snapshot = normalizeLiveDirectoryPresence(await response.json());
+    if (!snapshot) throw new Error("Overlay presence response was invalid");
+    return snapshot;
+  } catch (error) {
+    await reportError(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: "liveDirectory:presence" },
+    );
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function fetchStreamsForUserIds(
   userIds: string[],
@@ -458,8 +564,121 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
   return entries;
 }
 
+/**
+ * Return the recent overlay-presence estimate for `/live`.
+ *
+ * The realtime Worker already coalesces room observations into one snapshot;
+ * this second 60-second KV cache prevents every page request from waking the
+ * registry. A missing binding or a failed snapshot is represented by null so
+ * the UI can omit the estimate instead of claiming that zero channels are
+ * live. Unavailable states are negative-cached for the same short TTL so a
+ * staged Worker rollout cannot fan out one service call per public page view.
+ */
+export async function getLiveDirectoryPresence(): Promise<LiveDirectoryPresenceSnapshot | null> {
+  const now = Date.now();
+  if (presenceUnavailableCache && presenceUnavailableCache.expiresAt > now) {
+    return null;
+  }
+
+  try {
+    const kv = await getKvBinding();
+    if (kv) {
+      const raw = await kv.get(LIVE_DIRECTORY_PRESENCE_KV_KEY);
+      if (raw) {
+        let parsed: unknown;
+        let parseSucceeded = false;
+        try {
+          parsed = JSON.parse(raw);
+          parseSucceeded = true;
+        } catch (error) {
+          await reportError(
+            error instanceof Error ? error : new Error(String(error)),
+            { context: "liveDirectory:presenceKvPayload" },
+          );
+          await kv.delete(LIVE_DIRECTORY_PRESENCE_KV_KEY);
+        }
+        if (isLiveDirectoryPresenceUnavailableMarker(parsed)) {
+          presenceUnavailableCache = {
+            expiresAt: Date.now() + LIVE_DIRECTORY_TTL_SECONDS * 1000,
+          };
+          return null;
+        }
+        if (parseSucceeded) {
+          const snapshot = normalizeLiveDirectoryPresence(parsed);
+          if (snapshot) {
+            presenceUnavailableCache = null;
+            return snapshot;
+          }
+          await reportError(new Error("Cached overlay presence was invalid"), {
+            context: "liveDirectory:presenceKvPayload",
+          });
+          // Do not re-report the same malformed value on every request during
+          // its old TTL. The next successful snapshot will repopulate the key.
+          await kv.delete(LIVE_DIRECTORY_PRESENCE_KV_KEY);
+        }
+      }
+    }
+  } catch (error) {
+    await reportError(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: "liveDirectory:presenceKvRead" },
+    );
+  }
+
+  if (presenceMemoryCache && presenceMemoryCache.expiresAt > Date.now()) {
+    return presenceMemoryCache.snapshot;
+  }
+
+  const snapshot = await fetchLiveDirectoryPresenceUncached();
+  if (!snapshot) {
+    presenceUnavailableCache = {
+      expiresAt: Date.now() + LIVE_DIRECTORY_TTL_SECONDS * 1000,
+    };
+    try {
+      const kv = await getKvBinding();
+      if (kv) {
+        await kv.put(
+          LIVE_DIRECTORY_PRESENCE_KV_KEY,
+          JSON.stringify({ unavailable: true } satisfies LiveDirectoryPresenceUnavailableMarker),
+          { expirationTtl: LIVE_DIRECTORY_TTL_SECONDS },
+        );
+      }
+    } catch (error) {
+      await reportError(
+        error instanceof Error ? error : new Error(String(error)),
+        { context: "liveDirectory:presenceKvWrite" },
+      );
+    }
+    return null;
+  }
+
+  presenceUnavailableCache = null;
+  try {
+    const kv = await getKvBinding();
+    if (kv) {
+      await kv.put(
+        LIVE_DIRECTORY_PRESENCE_KV_KEY,
+        JSON.stringify(snapshot),
+        { expirationTtl: LIVE_DIRECTORY_TTL_SECONDS },
+      );
+    }
+  } catch (error) {
+    await reportError(
+      error instanceof Error ? error : new Error(String(error)),
+      { context: "liveDirectory:presenceKvWrite" },
+    );
+  }
+  presenceMemoryCache = {
+    snapshot,
+    expiresAt: Date.now() + LIVE_DIRECTORY_TTL_SECONDS * 1000,
+  };
+  return snapshot;
+}
+
 /** テスト専用: メモリキャッシュをリセットする。 */
 export function __resetLiveDirectoryCacheForTests(): void {
   memoryCache = null;
   rankingsMemoryCache = null;
+  presenceMemoryCache = null;
+  presenceUnavailableCache = null;
 }

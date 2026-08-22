@@ -24,12 +24,17 @@ function renderSettings(status: MaintenanceStatusResponse) {
   )
 }
 
-// トグルのラベルテキストは<label>要素の外側（兄弟<span>）にあり、アクセシブルネームが
-// 付いていない既存マークアップのため、name指定では拾えない。表示順が固定
-// （0: 未所持カードを表示する, 1: 未所持カードの詳細を公開する）であることを
-// 前提にインデックスで取得する。
+// #1093: DOM順ではなく可視ラベル由来のアクセシブルネームで取得し、
+// label/htmlFor の関連付けが壊れた場合も既存maintenanceテストで回帰検知する。
 function getToggles() {
-  return screen.getAllByRole('checkbox')
+  return [
+    screen.getByRole('checkbox', {
+      name: jaMessages.cardVisibilitySettings.form.showUnowned,
+    }),
+    screen.getByRole('checkbox', {
+      name: jaMessages.cardVisibilitySettings.form.showDetails,
+    }),
+  ] as const
 }
 
 describe('CardVisibilitySettings maintenance integration', () => {

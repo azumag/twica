@@ -7,6 +7,7 @@ import { getUserPlan } from "@/lib/plan";
 import { normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 import SettingsLayout from "@/components/SettingsLayout";
 import { getChatDeliveryCapability } from "@/lib/twitch/chat-delivery-capability";
+import { createOverlayPresenceToken } from "@/lib/overlay-realtime/presence-token";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -42,6 +43,8 @@ export default async function SettingsPage({
   ]);
   if (!streamerData) redirect("/dashboard");
 
+  const presenceToken = await createOverlayPresenceToken(streamerData.streamer.id);
+
   // dashboard警告の副CTAだけを許可する固定allowlist。任意文字列をclientの
   // active sectionへ渡さず、未知値は従来どおりoverlay初期表示へ戻す。
   const requestedSection = (await searchParams).section === "announcement"
@@ -76,6 +79,7 @@ export default async function SettingsPage({
   return (
     <SettingsLayout
       streamerId={streamerData.streamer.id}
+      presenceToken={presenceToken}
       plan={plan}
       baseUrl={process.env.NEXT_PUBLIC_APP_URL || ""}
       cards={streamerData.cards}

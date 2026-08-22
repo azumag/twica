@@ -381,7 +381,7 @@ describe('printDiffTable', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
 
     printDiffTable([
-      { metric: 'totalUsers', expected: 10, actual: 11 },
+      { metric: 'usersSummary.totalUsers', expected: 10, actual: 11 },
       { metric: 'rarityDistribution.rare', expected: 25, actual: 26 },
     ])
 
@@ -393,7 +393,7 @@ describe('printDiffTable', () => {
     expect(lines).toHaveLength(4)
     expect(lines[0]).toMatch(/^METRIC\s+基礎集計SQL\s+get_analysis_\* RPC$/)
     expect(lines[1]).toMatch(/^-+\s{2}-+\s{2}-+$/)
-    expect(lines[2]).toMatch(/^totalUsers\s+10\s+11$/)
+    expect(lines[2]).toMatch(/^usersSummary\.totalUsers\s+10\s+11$/)
     expect(lines[3]).toMatch(/^rarityDistribution\.rare\s+25\s+26$/)
   })
 })
