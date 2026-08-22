@@ -205,6 +205,7 @@ export default function LiveDirectorySettings({
           {t("form.publishStatsHelp")}
         </p>
 
+        {/* 初回の結果更新も読み上げ対象になるよう、空の live region を常時マウントする。 */}
         <p
           role="status"
           aria-live="polite"
