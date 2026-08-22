@@ -117,7 +117,7 @@ export async function GET(request: Request) {
       );
     }
     // token-manager側ではrefresh障害を二重Issue化しないため、route境界で安全な
-    // refresh診断だけをadditionalInfoへ明示的に橋渡しする。
+    // refresh診断だけをadditionalInfoへ明示的に橋渡しする（#1088）。
     return handleApiError(error, "Twitch emotes fetch", twitchTokenErrorReportContext(error));
   }
 }
