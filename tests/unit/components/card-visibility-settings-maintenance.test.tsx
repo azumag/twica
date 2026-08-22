@@ -24,11 +24,17 @@ function renderSettings(status: MaintenanceStatusResponse) {
   )
 }
 
-// トグルには可視ラベル由来のアクセシブルネームが付くが、このmaintenanceテストは
-// 両トグル共通のdisable挙動をまとめて検証するため表示順で取得する。
-// アクセシブルネーム指定へ寄せる追加改善は Issue #1093 で別途追跡する。
+// #1093: DOM順ではなく可視ラベル由来のアクセシブルネームで取得し、
+// label/htmlFor の関連付けが壊れた場合も既存maintenanceテストで回帰検知する。
 function getToggles() {
-  return screen.getAllByRole('checkbox')
+  return [
+    screen.getByRole('checkbox', {
+      name: jaMessages.cardVisibilitySettings.form.showUnowned,
+    }),
+    screen.getByRole('checkbox', {
+      name: jaMessages.cardVisibilitySettings.form.showDetails,
+    }),
+  ] as const
 }
 
 describe('CardVisibilitySettings maintenance integration', () => {
