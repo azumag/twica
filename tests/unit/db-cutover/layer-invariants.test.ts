@@ -71,7 +71,7 @@ describe('db cutover layer invariants', () => {
     )
   })
 
-  it('Tier B でも違反0件なら digest SQL を実行しない', async () => {
+  it('digestSql があっても違反0件なら digest SQL を実行しない', async () => {
     const tierBInvariant = {
       ...FIXTURE_INVARIANT,
       id: 'fixture-tier-b-invariant',
