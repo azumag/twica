@@ -31,6 +31,10 @@ export const LIVE_DIRECTORY_SETTINGS_COLUMNS = [
 /**
  * デプロイ窓対象列を除いた streamers テーブルの明示的な列オブジェクト。
  * Drizzle の `.select({ ... })` にそのまま渡せる。
+ *
+ * trade_enabled / cross_channel_trade_enabled も意図的に含めないため、この安全列で再試行した
+ * 行では両設定値が undefined になりうる。消費側はデプロイ窓中の未定義値を有効扱いせず、
+ * `?? false` などで必ず fail-closed に扱うこと。
  */
 export const STREAMERS_SAFE_COLUMNS = {
   id: streamersTable.id,
