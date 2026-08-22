@@ -56,6 +56,21 @@ describe("LiveDirectorySettings", () => {
     expect(screen.getByRole("link", { name: "配信中ページ" })).toHaveAttribute("href", "/live");
   });
 
+  it("keeps the polite status region mounted before the first result and updates it in place", async () => {
+    renderSettings({});
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status.textContent).toBe("");
+
+    fireEvent.click(getLiveToggle());
+
+    await waitFor(() => {
+      expect(status).toHaveTextContent("配信中ページへの掲載設定をオンにしました");
+    });
+    expect(screen.getByRole("status")).toBe(status);
+  });
+
   it("defaults both independent toggles to off and keeps both operable", () => {
     renderSettings({});
 
