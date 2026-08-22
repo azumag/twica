@@ -169,12 +169,14 @@ describe("LiveDirectorySettings", () => {
       })
     );
     renderSettings({});
+    const status = screen.getByRole("status");
     const liveToggle = getLiveToggle();
     fireEvent.click(liveToggle);
 
     await waitFor(() => {
-      expect(screen.getByText("サーバーエラー")).toBeInTheDocument();
+      expect(status).toHaveTextContent("サーバーエラー");
     });
+    expect(screen.getByRole("status")).toBe(status);
     // 失敗時は楽観反映を巻き戻す
     expect(liveToggle).not.toBeChecked();
   });
