@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   INVARIANTS,
   TIER_A,
+  TIER_B,
 } from '../../../scripts/db-cutover/invariant-checks.mjs'
 import {
   evaluateInvariantsLayer,
@@ -66,6 +67,48 @@ describe('db cutover layer invariants', () => {
         side: 'source',
         invariantId: FIXTURE_INVARIANT.id,
         tablesOk: true,
+      }),
+    )
+  })
+
+  it('Tier B でも違反0件なら digest SQL を実行しない', async () => {
+    const tierBInvariant = {
+      ...FIXTURE_INVARIANT,
+      id: 'fixture-tier-b-invariant',
+      checks: [
+        {
+          ...FIXTURE_INVARIANT.checks[0],
+          tier: TIER_B,
+          digestSql: 'DIGEST_SQL',
+        },
+      ],
+    }
+    const unsafe = vi.fn(async (sql: string) => {
+      if (sql === 'COUNT_SQL') return [{ count: 0 }]
+      throw new Error(`unexpected SQL: ${sql}`)
+    })
+
+    const results = await readSideInvariants(
+      { unsafe } as never,
+      [tierBInvariant] as never,
+      'target',
+      (text: string) => text,
+      undefined,
+    )
+
+    expect(unsafe).toHaveBeenCalledTimes(1)
+    expect(unsafe).toHaveBeenCalledWith('COUNT_SQL')
+    expect(results.get(tierBInvariant.id)).toEqual(
+      expect.objectContaining({
+        tablesOk: true,
+        checks: [
+          expect.objectContaining({
+            tier: TIER_B,
+            violationCount: 0,
+            samples: [],
+            digest: null,
+          }),
+        ],
       }),
     )
   })
