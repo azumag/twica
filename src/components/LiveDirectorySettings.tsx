@@ -205,11 +205,13 @@ export default function LiveDirectorySettings({
           {t("form.publishStatsHelp")}
         </p>
 
-        {message && (
-          <p className={`text-sm ${isError ? "text-red-400" : "text-green-400"}`}>
-            {message}
-          </p>
-        )}
+        <p
+          role="status"
+          aria-live="polite"
+          className={`text-sm ${isError ? "text-red-400" : "text-green-400"}`}
+        >
+          {message}
+        </p>
         {saving && (
           <p className="text-sm text-gray-400">{t("messages.saving")}</p>
         )}
