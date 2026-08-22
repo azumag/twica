@@ -28,8 +28,12 @@ function renderSettings(status: MaintenanceStatusResponse) {
 // label/htmlFor の関連付けが壊れた場合も既存maintenanceテストで回帰検知する。
 function getToggles() {
   return [
-    screen.getByRole('checkbox', { name: '未所持カードを表示' }),
-    screen.getByRole('checkbox', { name: '未所持カードの詳細を公開' }),
+    screen.getByRole('checkbox', {
+      name: jaMessages.cardVisibilitySettings.form.showUnowned,
+    }),
+    screen.getByRole('checkbox', {
+      name: jaMessages.cardVisibilitySettings.form.showDetails,
+    }),
   ] as const
 }
 
