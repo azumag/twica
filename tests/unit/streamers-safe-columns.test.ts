@@ -21,6 +21,12 @@ function missingColumnError(column: string) {
   })
 }
 
+function toProjectionMap(columns: Record<string, { name: string }>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(columns).map(([key, column]) => [key, column.name]),
+  )
+}
+
 describe('withLiveDirectorySettingsColumnFallback', () => {
   it.each(DEPLOY_WINDOW_COLUMNS)(
     '%s の未デプロイを検知すると安全な列集合で再試行する',
@@ -95,14 +101,13 @@ describe('streamers デプロイ窓の列集合契約', () => {
     // 対応する列オブジェクトを STREAMERS_SAFE_COLUMNS 側へ追加し、フォールバック時の返却行形状と
     // キー↔実SQL列の対応を維持する。
     const deployWindowColumnNames = new Set<string>(DEPLOY_WINDOW_COLUMNS)
-    const expectedSafeProjection = Object.fromEntries(
-      Object.entries(getTableColumns(streamersTable))
-        .filter(([, column]) => !deployWindowColumnNames.has(column.name))
-        .map(([key, column]) => [key, column.name]),
+    const expectedSafeColumns = Object.fromEntries(
+      Object.entries(getTableColumns(streamersTable)).filter(
+        ([, column]) => !deployWindowColumnNames.has(column.name),
+      ),
     )
-    const safeProjection = Object.fromEntries(
-      Object.entries(STREAMERS_SAFE_COLUMNS).map(([key, column]) => [key, column.name]),
-    )
+    const expectedSafeProjection = toProjectionMap(expectedSafeColumns)
+    const safeProjection = toProjectionMap(STREAMERS_SAFE_COLUMNS)
 
     expect(safeProjection).toEqual(expectedSafeProjection)
   })
