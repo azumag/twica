@@ -185,9 +185,9 @@ const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
 const IMAGE_METADATA_TIMEOUT_MS = 1_500;
 const MIN_REVEAL_LEAD_IN_MS = 100;
 // A realtime delivery is not acknowledged until React has committed the card
-// and its image has loaded.  A stopped CEF/OBS render loop must still release
+// and its image has loaded. A stopped CEF/OBS render loop must still release
 // that promise so the transport can roll the event back and recover it through
-// polling instead of serializing every later draw behind a never-settling ACK.
+// polling, while presentation timing remains owned by the display queue.
 const DISPLAY_COMMIT_ACK_TIMEOUT_MS = 4_500;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
@@ -441,19 +441,9 @@ export default function OverlayPage() {
       settleDisplayCommit(displayInstanceId, false);
     }
 
-    // Do not leave the page-side display lock holding the next retry. The
-    // instance guard prevents a late timeout/error from clearing a newer card
-    // that has already replaced this one.
-    if (activeDisplayInstanceIdRef.current !== displayInstanceId) return;
-    activeDisplayInstanceIdRef.current = undefined;
-    if (animationTimeoutRef.current) {
-      clearTimeout(animationTimeoutRef.current);
-      animationTimeoutRef.current = null;
-    }
-    setShowCard(false);
-    setResult(null);
-    isDisplayingRef.current = false;
-    setTimeout(() => processQueueRef.current(), 0);
+    // A negative ACK belongs to transport recovery only. Keep the currently
+    // presented card under the normal display-duration lifecycle so a slow
+    // render watchdog cannot make a visible card disappear prematurely.
   }, [failDisplayBatch, settleDisplayCommit]);
 
   const armDisplayCommitTimeout = useCallback((displayInstanceId: number) => {
@@ -1393,6 +1383,7 @@ export default function OverlayPage() {
     if (!result) return;
     const displayInstanceId = result.displayInstanceId;
     if (displayInstanceId === undefined) return;
+    if (!displayCommitResolversRef.current.has(displayInstanceId)) return;
     addDebugLogRef.current('Card display committed');
     const cardRoot = document.querySelector('[data-overlay-card="true"]');
     if (!cardRoot) {
@@ -1429,19 +1420,39 @@ export default function OverlayPage() {
       if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
         settleDisplayCommit(displayInstanceId, true);
       } else {
-        failDisplayCommit(displayInstanceId, 'image-invalid');
+        // A broken decode is a presentation failure, not a delivery failure.
+        // Replaying the same immutable URL would loop forever after a valid
+        // redemption has already committed its card DOM.
+        addDebugLogRef.current(
+          'Card image loaded without usable dimensions; accepting committed card'
+        );
+        settleDisplayCommit(displayInstanceId, true);
       }
     };
     const onError = () => {
-      failDisplayCommit(displayInstanceId, 'image-error');
+      // Missing/corrupt R2 objects are likewise terminal presentation errors.
+      // Keep the degraded card and acknowledge the business event once.
+      addDebugLogRef.current('Card image failed to load; accepting committed card');
+      settleDisplayCommit(displayInstanceId, true);
+    };
+    const cleanup = () => {
+      image.removeEventListener('load', onLoad);
+      image.removeEventListener('error', onError);
+      if (displayImageCleanupRef.current.get(displayInstanceId) === cleanup) {
+        displayImageCleanupRef.current.delete(displayInstanceId);
+      }
     };
     image.addEventListener('load', onLoad, { once: true });
     image.addEventListener('error', onError, { once: true });
-    displayImageCleanupRef.current.set(displayInstanceId, () => {
-      image.removeEventListener('load', onLoad);
-      image.removeEventListener('error', onError);
-    });
-  }, [failDisplayCommit, result, settleDisplayCommit]);
+    displayImageCleanupRef.current.set(displayInstanceId, cleanup);
+    return cleanup;
+  }, [
+    isPortraitImage,
+    options.autoPortrait,
+    options.imageOnly,
+    result,
+    settleDisplayCommit,
+  ]);
 
   // #694 Stage 6b: maintenance状態のポーリング（debugパネル表示専用）。
   //
