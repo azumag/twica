@@ -291,14 +291,20 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Alpha')).toBeInTheDocument()
 
-    // 1枚目の表示終了後、2枚目のmetadata probeは無応答のまま。
-    // それでもprobeの1.5秒timeoutを待たず、通常の表示間隔+100msでBetaが
-    // 可視になることを固定する。これがIssue #1076の黒画面回帰契約。
+    // 1枚目の表示終了後、2枚目のmetadata probeは無応答のままでも、カードDOMは
+    // 先にマウントされる。visible revealだけは1.5秒のprobe上限まで待つ。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6600)
     })
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
-    expect(screen.getByText('Beta')).toBeVisible()
+    const betaText = screen.getByText('Beta')
+    expect(betaText).toBeInTheDocument()
+    expect(betaText.closest('.transition-all')).toHaveClass('opacity-0')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500)
+    })
+    expect(betaText.closest('.transition-all')).toHaveClass('opacity-100')
 
     // 2枚目のmetadata timeoutの有無とは独立に通常の表示時間で3枚目へ進む。
     await act(async () => {
@@ -374,7 +380,7 @@ describe('OverlayPage', () => {
     expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
   })
 
-  it('reveal後に遅れて届くmetadataで表示中のカードレイアウトを差し替えない', async () => {
+  it('metadataが遅くてもカードDOMを先に置き、解決後に安定したレイアウトでrevealする', async () => {
     vi.useFakeTimers()
 
     const metadataImages: MockImage[] = []
@@ -424,16 +430,22 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
 
-    // reveal後に画像metadataが縦長として到着しても、表示中の通常フレームを
-    // image-onlyサブツリーへ差し替えない。黒画面ではなく安定した表示を維持する。
+    // metadataが遅れても、DOMは既に存在するが、revealはまだ始まっていない。
+    expect(screen.getByText('Viewer が引いたカード').closest('.transition-all'))
+      .toHaveClass('opacity-0')
+
+    // 画像metadataが縦長として到着したあとにrevealするため、初回の可視フレーム
+    // からimage-onlyレイアウトになり、通常フレームからの差し替えが起きない。
     const metadataImage = metadataImages[0]
     expect(metadataImage).toBeDefined()
     metadataImage.width = 200
     metadataImage.height = 400
-    act(() => {
-      metadataImage?.onload?.()
+    await act(async () => {
+      metadataImage.onload?.()
+      await vi.advanceTimersByTimeAsync(0)
     })
-    expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
+    expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
+    expect(screen.getByAltText('Late Portrait')).toBeInTheDocument()
   })
 
   // Issue #999調査メモ: 「onerrorが正しく解決されず表示がブロックされて

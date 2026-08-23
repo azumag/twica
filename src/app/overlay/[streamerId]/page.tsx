@@ -736,7 +736,7 @@ export default function OverlayPage() {
       }
       setIsPortraitImage(false);
       setIsSmallImage(false);
-      void checkImageAspectRatio(
+      const imageMetadataPromise = checkImageAspectRatio(
         next.card.image_url,
         imageLayoutGeneration,
       ).catch((error) => {
@@ -747,6 +747,7 @@ export default function OverlayPage() {
           `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
         );
       });
+      const revealNotBefore = Date.now() + 100;
       // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
       // 解決に失敗してもbusiness eventのカードDOMを失わせない。
       setResult(next);
@@ -769,38 +770,46 @@ export default function OverlayPage() {
         setEffectParticles([]);
       }
 
-      // Show card after brief delay. Keep this card's metadata generation valid
-      // only until reveal. A late metadata result must not replace the already
-      // visible frame with a different subtree and cause a layout flash.
-      animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-        if (imageLayoutGenerationRef.current === imageLayoutGeneration) {
-          imageLayoutGenerationRef.current += 1;
-        }
-        setShowCard(true);
-        if (next.shouldPlaySound !== false) {
-          if (next.soundGroupId) {
-            if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
-              playedSoundGroupIdsRef.current.add(next.soundGroupId);
+      // The card DOM is mounted immediately, but the visible reveal waits for
+      // metadata or the bounded probe timeout (whichever comes first), while
+      // retaining a minimum 100ms animation lead-in. This preserves the
+      // autoPortrait/smallMode decision without replacing a visible subtree.
+      void imageMetadataPromise.then(() => {
+        const revealDelay = Math.max(0, revealNotBefore - Date.now());
+        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+          if (
+            !isOverlayMountedRef.current
+            || queueGeneration !== queueGenerationRef.current
+          ) {
+            isDisplayingRef.current = false;
+            return;
+          }
+          setShowCard(true);
+          if (next.shouldPlaySound !== false) {
+            if (next.soundGroupId) {
+              if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+                playedSoundGroupIdsRef.current.add(next.soundGroupId);
+                playGachaSound(next);
+              }
+            } else {
               playGachaSound(next);
             }
-          } else {
-            playGachaSound(next);
           }
-        }
 
-        // Hide after display, then process next queued item
-        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-          setShowCard(false);
+          // Hide after display, then process next queued item
           animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-            // Once the outgoing card is removed, its callbacks must not affect
-            // the next card even if the browser retained the Image object.
-            imageLayoutGenerationRef.current += 1;
-            setResult(null);
-            // ref経由で最新のprocessQueueを呼び出し（再帰）
-            processQueueRef.current();
-          }), 500);
-        }), options.displayDuration * 1000);
-      }), 100);
+            setShowCard(false);
+            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+              // Once the outgoing card is removed, its callbacks must not affect
+              // the next card even if the browser retained the Image object.
+              imageLayoutGenerationRef.current += 1;
+              setResult(null);
+              // ref経由で最新のprocessQueueを呼び出し（再帰）
+              processQueueRef.current();
+            }), 500);
+          }), options.displayDuration * 1000);
+        }), revealDelay);
+      });
     } catch (error) {
       handleQueueError(error);
     }
