@@ -74,6 +74,7 @@ jobs:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       # PR/repository-derived strings stay in env and are consumed as data by Python/jq;
       # do not interpolate them directly into the shell script.
+      # Re-declare the runner default so the fork check's trusted base input is explicit.
       GITHUB_REPOSITORY: ${{ github.repository }}
       REPOSITORY_NAME: ${{ github.event.repository.name }}
       PR_TITLE: ${{ github.event.pull_request.title }}
