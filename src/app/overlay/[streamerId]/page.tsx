@@ -754,15 +754,10 @@ export default function OverlayPage() {
       setResult(next);
       setShowCard(false);
 
-      // Show card after brief delay
+      // Show card after brief delay. Keep this card's metadata generation valid
+      // until the card is replaced so slower CDN/OBS metadata can still enable
+      // autoPortrait/smallMode instead of being discarded after only 100ms.
       animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-        // Metadata may improve the hidden card during this initial 100ms window,
-        // but must not reflow a card after it becomes visible. Invalidate this
-        // card's probe generation at reveal time so later load/timeout callbacks
-        // are ignored; the next queued card allocates a fresh generation.
-        if (imageLayoutGenerationRef.current === imageLayoutGeneration) {
-          imageLayoutGenerationRef.current += 1;
-        }
         setShowCard(true);
         if (next.shouldPlaySound !== false) {
           if (next.soundGroupId) {
@@ -779,6 +774,11 @@ export default function OverlayPage() {
         animationTimeoutRef.current = setTimeout(() => runProtected(() => {
           setShowCard(false);
           animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+            // The outgoing card may accept late metadata while it is still current,
+            // but once it is removed its callbacks must not affect the next card.
+            if (imageLayoutGenerationRef.current === imageLayoutGeneration) {
+              imageLayoutGenerationRef.current += 1;
+            }
             setResult(null);
             // ref経由で最新のprocessQueueを呼び出し（再帰）
             processQueueRef.current();
