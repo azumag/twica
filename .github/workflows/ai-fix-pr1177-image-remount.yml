@@ -1,3 +1,4 @@
+# Temporary one-shot workflow; removes itself after applying the fix.
 name: Apply PR 1177 image remount fix
 
 on:
