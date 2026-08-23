@@ -1,0 +1,31 @@
+# Temporary one-shot workflow; removes itself after applying the fix.
+name: Apply PR 1177 reveal decoupling fix
+
+on:
+  push:
+    branches:
+      - fix/overlay-nonblocking-image-metadata-1076
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/overlay-nonblocking-image-metadata-1076
+          fetch-depth: 0
+      - name: Apply required review fixes
+        run: python .github/scripts/ai-fix-pr1177-reveal-decouple.py
+      - name: Remove temporary patch helpers
+        run: git rm .github/workflows/ai-fix-pr1177-reveal-decouple.yml .github/scripts/ai-fix-pr1177-reveal-decouple.py
+      - name: Commit required fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/app/overlay/'[streamerId]'/page.tsx tests/unit/components/overlay-page.test.tsx
+          git commit -m "fix(overlay): decouple reveal liveness from metadata (#1177)"
+          git push origin HEAD:fix/overlay-nonblocking-image-metadata-1076
