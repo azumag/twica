@@ -10,16 +10,17 @@ import { serializePollState } from '@/lib/overlay-version'
 const HISTORY_ID_BEFORE_RELOAD = '00000000-0000-4000-8000-000000000101'
 const HISTORY_ID_RESTORED = '00000000-0000-4000-8000-000000000102'
 
-const { subscribeMock, resolvePlayableGachaSoundMock } = vi.hoisted(() => ({
+const { subscribeMock, resolvePlayableGachaSoundMock, streamerIdRef } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
   // 既定では実装(actual)へ委譲するdelegateとして下のvi.mockファクトリ内で
   // 設定する。個々のテストはmockImplementationOnce()で1回だけ差し替え、
   // それ以外の全テストへは実際のsound-rulesロジックがそのまま使われる。
   resolvePlayableGachaSoundMock: vi.fn(),
+  streamerIdRef: { current: 'streamer-1' },
 }))
 
 vi.mock('next/navigation', () => ({
-  useParams: () => ({ streamerId: 'streamer-1' }),
+  useParams: () => ({ streamerId: streamerIdRef.current }),
 }))
 
 vi.mock('@/lib/realtime', () => ({
@@ -52,6 +53,7 @@ const connectionError: RealtimeError = {
 
 describe('OverlayPage', () => {
   beforeEach(() => {
+    streamerIdRef.current = 'streamer-1'
     window.history.replaceState({}, '', '/overlay/streamer-1')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -322,6 +324,147 @@ describe('OverlayPage', () => {
       imageInstances[1].onload?.()
     })
     expect(screen.getByText('Gamma')).toBeInTheDocument()
+  })
+
+  it('streamer切替cleanup後の旧metadata解決が新しい表示ロックを解除しない', async () => {
+    vi.useFakeTimers()
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(value: string) {
+        void value
+        // 旧streamerのmetadata probeをcleanupまでpendingにする。
+      }
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    const callbacks = new Map<string, (payload: GachaBroadcastPayload) => void>()
+    subscribeMock.mockImplementation((streamerId, callback, options: SubscribeOptions) => {
+      callbacks.set(streamerId, callback as (payload: GachaBroadcastPayload) => void)
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const view = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      callbacks.get('streamer-1')?.({
+        type: 'gacha',
+        card: {
+          id: 'old-card', name: 'Old Card', description: null,
+          image_url: 'https://example.com/pending.png', rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    expect(screen.getByText('Old Card')).toBeInTheDocument()
+
+    // 同一component instanceでstreamerを切り替えると旧probeはcleanupでresolveする。
+    // そのmicrotaskが新subscriptionのisDisplayingRefを解除してはならない。
+    streamerIdRef.current = 'streamer-2'
+    view.rerender(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      callbacks.get('streamer-2')?.({
+        type: 'gacha',
+        card: {
+          id: 'new-card-1', name: 'New Alpha', description: null,
+          image_url: null, rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('New Alpha')).toBeVisible()
+
+    // 旧チェーンがlockをfalseへ戻していると、この2件目が並走してNew Alphaを
+    // 即座に置き換える。正しくは表示時間が終わるまでqueueに留まる。
+    act(() => {
+      callbacks.get('streamer-2')?.({
+        type: 'gacha',
+        card: {
+          id: 'new-card-2', name: 'New Beta', description: null,
+          image_url: null, rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    expect(screen.queryByText('New Beta')).not.toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('New Beta')).toBeVisible()
+  })
+
+  it('metadata probeのreject後も表示ロックを固着させず次のカードへ進む', async () => {
+    vi.useFakeTimers()
+
+    class RejectingImage {
+      constructor() {
+        throw new Error('metadata constructor failed')
+      }
+    }
+    vi.stubGlobal('Image', RejectingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'reject-card', name: 'Reject Alpha', description: null,
+          image_url: 'https://example.com/reject.png', rarity: 'rare',
+        },
+        cards: [
+          {
+            id: 'reject-card', name: 'Reject Alpha', description: null,
+            image_url: 'https://example.com/reject.png', rarity: 'rare',
+          },
+          {
+            id: 'after-reject', name: 'Reject Beta', description: null,
+            image_url: null, rarity: 'common',
+          },
+        ],
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Reject Alpha')).toBeVisible()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('Reject Beta')).toBeVisible()
   })
 
   it('表示前に取得できた現行カードmetadataをautoPortraitとsmallModeへ反映する', async () => {

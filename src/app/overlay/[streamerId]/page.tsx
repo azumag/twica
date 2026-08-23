@@ -774,42 +774,56 @@ export default function OverlayPage() {
       // metadata or the bounded probe timeout (whichever comes first), while
       // retaining a minimum 100ms animation lead-in. This preserves the
       // autoPortrait/smallMode decision without replacing a visible subtree.
-      void imageMetadataPromise.then(() => {
-        const revealDelay = Math.max(0, revealNotBefore - Date.now());
-        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-          if (
-            !isOverlayMountedRef.current
-            || queueGeneration !== queueGenerationRef.current
-          ) {
-            isDisplayingRef.current = false;
-            return;
-          }
-          setShowCard(true);
-          if (next.shouldPlaySound !== false) {
-            if (next.soundGroupId) {
-              if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
-                playedSoundGroupIdsRef.current.add(next.soundGroupId);
-                playGachaSound(next);
-              }
-            } else {
-              playGachaSound(next);
+      void imageMetadataPromise
+        .then(() => {
+          runProtected(() => {
+            // Cleanup can resolve the metadata Promise. Re-check the queue
+            // generation before scheduling any timer so an obsolete chain cannot
+            // create work after cleanup has already cleared the previous timer.
+            if (
+              !isOverlayMountedRef.current
+              || queueGeneration !== queueGenerationRef.current
+            ) {
+              return;
             }
-          }
-
-          // Hide after display, then process next queued item
-          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-            setShowCard(false);
+            const revealDelay = Math.max(0, revealNotBefore - Date.now());
             animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-              // Once the outgoing card is removed, its callbacks must not affect
-              // the next card even if the browser retained the Image object.
-              imageLayoutGenerationRef.current += 1;
-              setResult(null);
-              // ref経由で最新のprocessQueueを呼び出し（再帰）
-              processQueueRef.current();
-            }), 500);
-          }), options.displayDuration * 1000);
-        }), revealDelay);
-      });
+              if (
+                !isOverlayMountedRef.current
+                || queueGeneration !== queueGenerationRef.current
+              ) {
+                // Lifecycle cleanup owns the display-lock reset. An obsolete
+                // chain must never unlock a newer subscription's active queue.
+                return;
+              }
+              setShowCard(true);
+              if (next.shouldPlaySound !== false) {
+                if (next.soundGroupId) {
+                  if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+                    playedSoundGroupIdsRef.current.add(next.soundGroupId);
+                    playGachaSound(next);
+                  }
+                } else {
+                  playGachaSound(next);
+                }
+              }
+
+              // Hide after display, then process next queued item
+              animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+                setShowCard(false);
+                animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+                  // Once the outgoing card is removed, its callbacks must not affect
+                  // the next card even if the browser retained the Image object.
+                  imageLayoutGenerationRef.current += 1;
+                  setResult(null);
+                  // ref経由で最新のprocessQueueを呼び出し（再帰）
+                  processQueueRef.current();
+                }), 500);
+              }), options.displayDuration * 1000);
+            }), revealDelay);
+          });
+        })
+        .catch(handleQueueError);
     } catch (error) {
       handleQueueError(error);
     }
