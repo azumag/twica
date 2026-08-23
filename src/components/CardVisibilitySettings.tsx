@@ -164,6 +164,7 @@ export default function CardVisibilitySettings({
               checked={showUnowned}
               onChange={handleToggleShowUnowned}
               disabled={showUnownedDisabled}
+              aria-describedby="show-unowned-cards-help"
               className="peer sr-only"
             />
             <div className="h-6 w-11 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-disabled:opacity-50" />
@@ -172,7 +173,7 @@ export default function CardVisibilitySettings({
             {t("form.showUnowned")}
           </label>
         </div>
-        <p className="-mt-2 ml-14 text-xs text-gray-500">
+        <p id="show-unowned-cards-help" className="-mt-2 ml-14 text-xs text-gray-500">
           {t("form.showUnownedHelp")}
         </p>
 
@@ -189,6 +190,11 @@ export default function CardVisibilitySettings({
               checked={showDetails}
               onChange={handleToggleShowDetails}
               disabled={detailsDisabled}
+              aria-describedby={
+                showUnowned
+                  ? "show-unowned-details-help"
+                  : "show-unowned-details-help show-unowned-details-requires"
+              }
               className="peer sr-only"
             />
             <div
@@ -206,12 +212,12 @@ export default function CardVisibilitySettings({
             {t("form.showDetails")}
           </label>
           {!showUnowned && (
-            <span className="text-xs text-gray-500">
+            <span id="show-unowned-details-requires" className="text-xs text-gray-500">
               ({t("form.requiresShowUnowned")})
             </span>
           )}
         </div>
-        <p className="-mt-2 ml-14 text-xs text-gray-500">
+        <p id="show-unowned-details-help" className="-mt-2 ml-14 text-xs text-gray-500">
           {t("form.showDetailsHelp")}
         </p>
 
