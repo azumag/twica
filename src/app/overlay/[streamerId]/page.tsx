@@ -69,6 +69,8 @@ interface GachaResult {
   soundGroupId?: string;
   shouldPlaySound?: boolean;
   rewardId?: string | null;
+  /** Monotonic per-overlay key so consecutive draws always remount card DOM. */
+  displayInstanceId?: number;
 }
 
 interface OverlayPollingEvent {
@@ -155,12 +157,12 @@ const RELOAD_DEFER_RETRY_MS = 30 * 1000;
 // (メタデータ未ロードでNaN等)に使う「再生終了見込み」の安全上限。
 // リロード延期判定(soundPlayingUntilRef)のフォールバックにのみ使う
 const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
-// OBS Browser Source may keep a large animated image request pending without
-// firing either `load` or `error`. Aspect-ratio detection is presentation-only,
-// so it must never hold the business-event queue indefinitely. After this
-// bounded wait the card renders with the normal landscape layout; a slow image
-// may continue loading in the actual card element without blocking later draws.
+// OBS Browser Source may keep a large animated image metadata request pending
+// without firing either `load` or `error`. Aspect-ratio detection is
+// presentation-only, so this timeout bounds the probe lifetime/layout decision;
+// the business-event queue and card DOM mounting do not wait for it.
 const IMAGE_METADATA_TIMEOUT_MS = 1_500;
+const MIN_REVEAL_LEAD_IN_MS = 100;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
 // Issue #634 (PR #995): 新旧コードが同じキーを奪い合わないよう"-v2"へ改称した。
@@ -226,16 +228,21 @@ export default function OverlayPage() {
   // ガチャ結果キュー: アニメーション中に到着した結果をバッファし順番に表示する
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
   const queueRef = useRef<GachaResult[]>([]);
+  // A card id can repeat within one draw. Give every queued display its own key
+  // so React cannot reuse the previous card image while a new src is decoding.
+  const displayInstanceSequenceRef = useRef(0);
   const isDisplayingRef = useRef(false);
-  // Image metadata checks are cancellable because their Promise is awaited by
-  // the display queue. Cleanup must resolve (not merely clear) pending checks,
-  // otherwise the suspended processQueue closure and its card remain retained.
+  // Image metadata checks are presentation-only and run independently from the
+  // display queue. Cleanup still resolves pending checks so Image callbacks do
+  // not retain an obsolete card/component lifetime.
   const activeImageCheckCancelsRef = useRef<Set<() => void>>(new Set());
   const isOverlayMountedRef = useRef(false);
-  // A streamer change can reuse this component instance. The generation lets
-  // an old async image check distinguish that transport cleanup from the new
-  // subscription setup, even when the mounted flag has already become true.
+  // A streamer change can reuse this component instance. The queue generation
+  // prevents an obsolete display task from continuing into the new subscription.
   const queueGenerationRef = useRef(0);
+  // Image metadata can resolve after the card that started it has already been
+  // replaced. Only the latest card may update portrait/small presentation state.
+  const imageLayoutGenerationRef = useRef(0);
   const playedSoundGroupIdsRef = useRef<Set<string>>(new Set());
   // processQueueの再帰呼び出し用ref（useCallback内で自身を参照するため）
   const processQueueRef = useRef<() => void>(() => {});
@@ -501,12 +508,21 @@ export default function OverlayPage() {
 
   // 画像のアスペクト比を判定（縦長かどうか）と小さい画像かどうかを判定
   // Check if image is portrait (height > width) and if image is small (< 400x400)
-  // Promiseを返すことで、画像ロード完了を待てるようにする
-  const checkImageAspectRatio = useCallback((imageUrl: string | null): Promise<boolean> => {
+  // Promiseを返すが、カード表示の前提にはしない。画像metadataはpresentation-only
+  // のため、呼び出し側は表示と並行して実行し、レイアウト更新だけを受け取る。
+  const checkImageAspectRatio = useCallback((
+    imageUrl: string | null,
+    imageLayoutGeneration: number,
+  ): Promise<boolean> => {
     return new Promise((resolve) => {
       if (!imageUrl) {
-        setIsPortraitImage(false);
-        setIsSmallImage(false);
+        if (
+          isOverlayMountedRef.current
+          && imageLayoutGeneration === imageLayoutGenerationRef.current
+        ) {
+          setIsPortraitImage(false);
+          setIsSmallImage(false);
+        }
         resolve(false);
         return;
       }
@@ -529,16 +545,20 @@ export default function OverlayPage() {
           clearTimeout(timeoutId);
         }
         activeImageCheckCancelsRef.current.delete(cancel);
-        if (updateLayout && isOverlayMountedRef.current) {
+        if (
+          updateLayout
+          && isOverlayMountedRef.current
+          && imageLayoutGeneration === imageLayoutGenerationRef.current
+        ) {
           setIsPortraitImage(isPortrait);
           setIsSmallImage(isSmall);
         }
         resolve(isPortrait);
       };
       const cancel = () => {
-        // Cleanup resolves the awaited check while deliberately suppressing
-        // layout updates. processQueue's generation check below then prevents
-        // the cancelled card from scheduling animation or sound.
+        // Cleanup deliberately suppresses layout updates. Lifecycle cleanup also
+        // invalidates the generation so a cancelled probe cannot affect a later
+        // card or subscription.
         finish(false, false, false);
       };
       activeImageCheckCancelsRef.current.add(cancel);
@@ -703,49 +723,119 @@ export default function OverlayPage() {
     };
 
     try {
-      // 画像のアスペクト比をチェック（autoPortraitモード用）
-      await checkImageAspectRatio(next.card.image_url);
+      // Issue #1076: the exact OBS/CEF root cause is still unconfirmed. The real
+      // preview path received a valid gacha payload but produced no card DOM/
+      // pixels. Image metadata is presentation-only, so a business event must not
+      // depend on this preflight before mounting its DOM. Decouple the probe as a
+      // defensive fix; the existing 1.5s probe timeout would normally bound the
+      // old wait, so preview real-path validation remains mandatory after merge.
+      const imageLayoutGeneration = imageLayoutGenerationRef.current + 1;
+      imageLayoutGenerationRef.current = imageLayoutGeneration;
       if (
         !isOverlayMountedRef.current
         || queueGeneration !== queueGenerationRef.current
       ) {
+        // The item was dequeued immediately before transport cleanup or an
+        // unmount. Release the display lock so a later subscription can render.
+        isDisplayingRef.current = false;
         return;
       }
-
-      // このカードのレアリティに紐づくエフェクトを解決する。
-      // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
-      const resolvedStyle = options.effects
-        ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
-        : "none";
-      setActiveEffectStyle(resolvedStyle);
-      setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
+      setIsPortraitImage(false);
+      setIsSmallImage(false);
+      const imageMetadataPromise = checkImageAspectRatio(
+        next.card.image_url,
+        imageLayoutGeneration,
+      ).catch((error) => {
+        // Metadata is optional presentation data; a probe failure must not drop
+        // or advance the business-event queue after the card has started.
+        logger.warn("Overlay image metadata probe failed:", error);
+        addDebugLogRef.current(
+          `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+      // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
+      // 解決に失敗してもbusiness eventのカードDOMを失わせない。
       setResult(next);
       setShowCard(false);
 
-      // Show card after brief delay
-      animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-        setShowCard(true);
-        if (next.shouldPlaySound !== false) {
-          if (next.soundGroupId) {
-            if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
-              playedSoundGroupIdsRef.current.add(next.soundGroupId);
+      try {
+        // このカードのレアリティに紐づくエフェクトを解決する。
+        // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
+        const resolvedStyle = options.effects
+          ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
+          : "none";
+        setActiveEffectStyle(resolvedStyle);
+        setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
+      } catch (error) {
+        logger.warn("Overlay effect setup failed; using no effect:", error);
+        addDebugLogRef.current(
+          `effect setup failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        setActiveEffectStyle("none");
+        setEffectParticles([]);
+      }
+
+      // Mount the card DOM immediately. Metadata may choose portrait/small
+      // layout before reveal, but queue liveness does not depend solely on the
+      // metadata Promise: an independent fallback schedules reveal after the same
+      // bounded probe window even if that Promise stops settling in a future
+      // refactor. Whichever path wins still gives the final DOM branch at least
+      // MIN_REVEAL_LEAD_IN_MS before it becomes visible.
+      let revealScheduled = false;
+      const scheduleReveal = () => {
+        if (revealScheduled) return;
+        if (
+          !isOverlayMountedRef.current
+          || queueGeneration !== queueGenerationRef.current
+        ) {
+          return;
+        }
+        revealScheduled = true;
+        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+          if (
+            !isOverlayMountedRef.current
+            || queueGeneration !== queueGenerationRef.current
+          ) {
+            // Lifecycle cleanup owns the display-lock reset. An obsolete
+            // chain must never unlock a newer subscription's active queue.
+            return;
+          }
+          setShowCard(true);
+          if (next.shouldPlaySound !== false) {
+            if (next.soundGroupId) {
+              if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+                playedSoundGroupIdsRef.current.add(next.soundGroupId);
+                playGachaSound(next);
+              }
+            } else {
               playGachaSound(next);
             }
-          } else {
-            playGachaSound(next);
           }
-        }
 
-        // Hide after display, then process next queued item
-        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-          setShowCard(false);
+          // Hide after display, then process next queued item
           animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-            setResult(null);
-            // ref経由で最新のprocessQueueを呼び出し（再帰）
-            processQueueRef.current();
-          }), 500);
-        }), options.displayDuration * 1000);
-      }), 100);
+            setShowCard(false);
+            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+              // Once the outgoing card is removed, its callbacks must not affect
+              // the next card even if the browser retained the Image object.
+              imageLayoutGenerationRef.current += 1;
+              setResult(null);
+              // ref経由で最新のprocessQueueを呼び出し（再帰）
+              processQueueRef.current();
+            }), 500);
+          }), options.displayDuration * 1000);
+        }), MIN_REVEAL_LEAD_IN_MS);
+      };
+      const metadataFallbackTimeout = setTimeout(
+        () => runProtected(scheduleReveal),
+        IMAGE_METADATA_TIMEOUT_MS,
+      );
+      void imageMetadataPromise
+        .then(() => {
+          clearTimeout(metadataFallbackTimeout);
+          runProtected(scheduleReveal);
+        })
+        .catch(handleQueueError);
     } catch (error) {
       handleQueueError(error);
     }
@@ -776,6 +866,7 @@ export default function OverlayPage() {
         card,
         cards: undefined,
         shouldPlaySound: index === soundBearingIndex,
+        displayInstanceId: ++displayInstanceSequenceRef.current,
       }))
     );
     if (!isDisplayingRef.current) {
@@ -1160,6 +1251,7 @@ export default function OverlayPage() {
     return () => {
       isOverlayMountedRef.current = false;
       queueGenerationRef.current += 1;
+      imageLayoutGenerationRef.current += 1;
       for (const cancel of [...activeImageCheckCancels]) {
         cancel();
       }
@@ -1339,6 +1431,7 @@ export default function OverlayPage() {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
       <div
+        key={result.displayInstanceId ?? `${result.historyId ?? "card"}:${result.card.id}`}
         className={`transform transition-all duration-500 ${
           showCard ? "scale-100 opacity-100" : "scale-50 opacity-0"
         }`}

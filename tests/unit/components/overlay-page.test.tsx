@@ -10,16 +10,17 @@ import { serializePollState } from '@/lib/overlay-version'
 const HISTORY_ID_BEFORE_RELOAD = '00000000-0000-4000-8000-000000000101'
 const HISTORY_ID_RESTORED = '00000000-0000-4000-8000-000000000102'
 
-const { subscribeMock, resolvePlayableGachaSoundMock } = vi.hoisted(() => ({
+const { subscribeMock, resolvePlayableGachaSoundMock, streamerIdRef } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
   // 既定では実装(actual)へ委譲するdelegateとして下のvi.mockファクトリ内で
   // 設定する。個々のテストはmockImplementationOnce()で1回だけ差し替え、
   // それ以外の全テストへは実際のsound-rulesロジックがそのまま使われる。
   resolvePlayableGachaSoundMock: vi.fn(),
+  streamerIdRef: { current: 'streamer-1' },
 }))
 
 vi.mock('next/navigation', () => ({
-  useParams: () => ({ streamerId: 'streamer-1' }),
+  useParams: () => ({ streamerId: streamerIdRef.current }),
 }))
 
 vi.mock('@/lib/realtime', () => ({
@@ -52,6 +53,7 @@ const connectionError: RealtimeError = {
 
 describe('OverlayPage', () => {
   beforeEach(() => {
+    streamerIdRef.current = 'streamer-1'
     window.history.replaceState({}, '', '/overlay/streamer-1')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -222,7 +224,7 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
-  it('画像メタデータ取得が停止しても、タイムアウト後にN連キューを最後まで進める', async () => {
+  it('画像メタデータ取得が停止しても、独立fallbackでN連キューを前進する', async () => {
     vi.useFakeTimers()
 
     let imageLoadCount = 0
@@ -291,25 +293,27 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Alpha')).toBeInTheDocument()
 
-    // 1枚目の表示終了後、2枚目の画像ロードは応答しない。切替の0.5秒後から
-    // タイムアウト直前まで結果領域は空であり、2枚目が早まって表示されない。
+    // 1枚目の表示終了後、2枚目のmetadata probeは無応答のままでも、カードDOMは
+    // 先にマウントされる。独立fallbackが1.5秒でrevealを予約し、最終DOMへ
+    // 100msのlead-inを確保してから可視化する。
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6500 + 1499)
+      await vi.advanceTimersByTimeAsync(6600)
     })
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
-    expect(screen.queryByText('Beta')).not.toBeInTheDocument()
+    const betaText = screen.getByText('Beta')
+    expect(betaText).toBeInTheDocument()
+    expect(betaText.closest('.transition-all')).toHaveClass('opacity-0')
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1 + 100)
+      await vi.advanceTimersByTimeAsync(1600)
     })
-    expect(screen.getByText('Beta')).toBeInTheDocument()
+    expect(betaText.closest('.transition-all')).toHaveClass('opacity-100')
 
-    // 2枚目の表示終了後は3枚目の通常ロードへ戻り、無応答だった1枚によって
-    // キューが恒久停止しない。
+    // 2枚目のmetadata timeoutの有無とは独立に通常の表示時間で3枚目へ進む。
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6500 + 100)
+      await vi.advanceTimersByTimeAsync(6600)
     })
-    expect(screen.getByText('Gamma')).toBeInTheDocument()
+    expect(screen.getByText('Gamma')).toBeVisible()
 
     // タイムアウト済みの2枚目が後から縦長としてロード完了しても、現在の3枚目の
     // レイアウトを変更してはならない。autoPortraitの既定値はtrueなので、古い
@@ -321,6 +325,335 @@ describe('OverlayPage', () => {
       imageInstances[1].onload?.()
     })
     expect(screen.getByText('Gamma')).toBeInTheDocument()
+  })
+
+  it('streamer切替cleanup後の旧metadata解決が新しい表示ロックを解除しない', async () => {
+    vi.useFakeTimers()
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(value: string) {
+        void value
+        // 旧streamerのmetadata probeをcleanupまでpendingにする。
+      }
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    const callbacks = new Map<string, (payload: GachaBroadcastPayload) => void>()
+    subscribeMock.mockImplementation((streamerId, callback, options: SubscribeOptions) => {
+      callbacks.set(streamerId, callback as (payload: GachaBroadcastPayload) => void)
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const view = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      callbacks.get('streamer-1')?.({
+        type: 'gacha',
+        card: {
+          id: 'old-card', name: 'Old Card', description: null,
+          image_url: 'https://example.com/pending.png', rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    expect(screen.getByText('Old Card')).toBeInTheDocument()
+
+    // 同一component instanceでstreamerを切り替えると旧probeはcleanupでresolveする。
+    // そのmicrotaskが新subscriptionのisDisplayingRefを解除してはならない。
+    streamerIdRef.current = 'streamer-2'
+    view.rerender(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      callbacks.get('streamer-2')?.({
+        type: 'gacha',
+        card: {
+          id: 'new-card-1', name: 'New Alpha', description: null,
+          image_url: null, rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('New Alpha')).toBeVisible()
+
+    // 旧チェーンがlockをfalseへ戻していると、この2件目が並走してNew Alphaを
+    // 即座に置き換える。正しくは表示時間が終わるまでqueueに留まる。
+    act(() => {
+      callbacks.get('streamer-2')?.({
+        type: 'gacha',
+        card: {
+          id: 'new-card-2', name: 'New Beta', description: null,
+          image_url: null, rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    expect(screen.queryByText('New Beta')).not.toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('New Beta')).toBeVisible()
+  })
+
+  it('metadata probeのreject後も表示ロックを固着させず次のカードへ進む', async () => {
+    vi.useFakeTimers()
+
+    class RejectingImage {
+      constructor() {
+        throw new Error('metadata constructor failed')
+      }
+    }
+    vi.stubGlobal('Image', RejectingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'reject-card', name: 'Reject Alpha', description: null,
+          image_url: 'https://example.com/reject.png', rarity: 'rare',
+        },
+        cards: [
+          {
+            id: 'reject-card', name: 'Reject Alpha', description: null,
+            image_url: 'https://example.com/reject.png', rarity: 'rare',
+          },
+          {
+            id: 'after-reject', name: 'Reject Beta', description: null,
+            image_url: null, rarity: 'common',
+          },
+        ],
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Reject Alpha')).toBeVisible()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('Reject Beta')).toBeVisible()
+  })
+
+  it('同じcard idが連続しても表示ごとに画像DOMを再マウントする', async () => {
+    vi.useFakeTimers()
+
+    class ImmediateImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(value: string) {
+        void value
+        setTimeout(() => this.onload?.(), 0)
+      }
+    }
+    vi.stubGlobal('Image', ImmediateImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'same-card', name: 'Same Alpha', description: null,
+          image_url: 'https://example.com/alpha.png', rarity: 'common',
+        },
+        cards: [
+          {
+            id: 'same-card', name: 'Same Alpha', description: null,
+            image_url: 'https://example.com/alpha.png', rarity: 'common',
+          },
+          {
+            id: 'same-card', name: 'Same Beta', description: null,
+            image_url: 'https://example.com/beta.png', rarity: 'rare',
+          },
+        ],
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    const firstImage = screen.getByAltText('Same Alpha')
+    expect(firstImage).toBeVisible()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    const secondImage = screen.getByAltText('Same Beta')
+    expect(secondImage).toBeVisible()
+    expect(secondImage).not.toBe(firstImage)
+  })
+
+  it('表示前に取得できた現行カードmetadataをautoPortraitとsmallModeへ反映する', async () => {
+    vi.useFakeTimers()
+
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 200
+      height = 300
+
+      set src(value: string) {
+        void value
+        setTimeout(() => this.onload?.(), 0)
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'portrait-small-card',
+          name: 'Portrait Small',
+          description: null,
+          image_url: 'https://example.com/portrait-small.png',
+          rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+
+    // metadata は reveal 前に解決したため、初回の可視フレームから image-only
+    // (autoPortrait) かつ縮小サイズ (smallMode) で描画される。
+    const cardImage = screen.getByAltText('Portrait Small')
+    expect(cardImage).toBeVisible()
+    expect(cardImage).toHaveClass('max-w-[192px]')
+    expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
+  })
+
+  it('metadataが遅くてもカードDOMを先に置き、解決後に安定したレイアウトでrevealする', async () => {
+    vi.useFakeTimers()
+
+    const metadataImages: MockImage[] = []
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 800
+      height = 800
+
+      set src(value: string) {
+        void value
+        metadataImages.push(this)
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'late-portrait-card',
+          name: 'Late Portrait',
+          description: null,
+          image_url: 'https://example.com/late-portrait.png',
+          rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
+
+    // metadataが遅れても、DOMは既に存在するが、revealはまだ始まっていない。
+    expect(screen.getByText('Viewer が引いたカード').closest('.transition-all'))
+      .toHaveClass('opacity-0')
+
+    // 画像metadataが縦長として到着したあとにrevealするため、初回の可視フレーム
+    // からimage-onlyレイアウトになり、通常フレームからの差し替えが起きない。
+    const metadataImage = metadataImages[0]
+    expect(metadataImage).toBeDefined()
+    metadataImage.width = 200
+    metadataImage.height = 400
+    await act(async () => {
+      metadataImage.onload?.()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
+    expect(screen.getByAltText('Late Portrait')).toBeInTheDocument()
   })
 
   // Issue #999調査メモ: 「onerrorが正しく解決されず表示がブロックされて
@@ -523,9 +856,9 @@ describe('OverlayPage', () => {
   });
 
   // Issue #999 レビュー指摘#1回帰（GitHub自動レビュー・subagentレビュー
-  // 双方が指摘): 上のテストは processQueue の外側の try/catch（await
-  // checkImageAspectRatio 完了まで〜setResult/setShowCard まで）で捕捉
-  // される例外だけを検証していた。しかし setTimeout でスケジュールされる
+  // 双方が指摘): 上のテストは processQueue の外側の try/catch（metadata
+  // probe開始〜setResult/setShowCard まで）で捕捉される例外だけを検証していた。
+  // しかし setTimeout でスケジュールされる
   // 後半の表示チェーン（音声再生・次カードへの再帰呼び出しを含む）は、
   // それをスケジュールした関数の try/catch の動的スコープに含まれない
   // 別タスクであり、素朴に外側をtry/catchで囲んだだけではその中の例外は
