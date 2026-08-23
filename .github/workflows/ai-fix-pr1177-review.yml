@@ -1,0 +1,314 @@
+name: Apply PR 1177 required review fixes
+
+on:
+  push:
+    branches:
+      - fix/overlay-nonblocking-image-metadata-1076
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/overlay-nonblocking-image-metadata-1076
+          fetch-depth: 0
+
+      - name: Apply required review fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          page_path = Path('src/app/overlay/[streamerId]/page.tsx')
+          page = page_path.read_text()
+          old = '''      void imageMetadataPromise.then(() => {
+        const revealDelay = Math.max(0, revealNotBefore - Date.now());
+        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+          if (
+            !isOverlayMountedRef.current
+            || queueGeneration !== queueGenerationRef.current
+          ) {
+            isDisplayingRef.current = false;
+            return;
+          }
+          setShowCard(true);
+          if (next.shouldPlaySound !== false) {
+            if (next.soundGroupId) {
+              if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+                playedSoundGroupIdsRef.current.add(next.soundGroupId);
+                playGachaSound(next);
+              }
+            } else {
+              playGachaSound(next);
+            }
+          }
+
+          // Hide after display, then process next queued item
+          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+            setShowCard(false);
+            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+              // Once the outgoing card is removed, its callbacks must not affect
+              // the next card even if the browser retained the Image object.
+              imageLayoutGenerationRef.current += 1;
+              setResult(null);
+              // ref経由で最新のprocessQueueを呼び出し（再帰）
+              processQueueRef.current();
+            }), 500);
+          }), options.displayDuration * 1000);
+        }), revealDelay);
+      });'''
+          new = '''      void imageMetadataPromise
+        .then(() => {
+          runProtected(() => {
+            // Cleanup can resolve the metadata Promise. Re-check the queue
+            // generation before scheduling any timer so an obsolete chain cannot
+            // create work after cleanup has already cleared the previous timer.
+            if (
+              !isOverlayMountedRef.current
+              || queueGeneration !== queueGenerationRef.current
+            ) {
+              return;
+            }
+            const revealDelay = Math.max(0, revealNotBefore - Date.now());
+            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+              if (
+                !isOverlayMountedRef.current
+                || queueGeneration !== queueGenerationRef.current
+              ) {
+                // Lifecycle cleanup owns the display-lock reset. An obsolete
+                // chain must never unlock a newer subscription's active queue.
+                return;
+              }
+              setShowCard(true);
+              if (next.shouldPlaySound !== false) {
+                if (next.soundGroupId) {
+                  if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+                    playedSoundGroupIdsRef.current.add(next.soundGroupId);
+                    playGachaSound(next);
+                  }
+                } else {
+                  playGachaSound(next);
+                }
+              }
+
+              // Hide after display, then process next queued item
+              animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+                setShowCard(false);
+                animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+                  // Once the outgoing card is removed, its callbacks must not affect
+                  // the next card even if the browser retained the Image object.
+                  imageLayoutGenerationRef.current += 1;
+                  setResult(null);
+                  // ref経由で最新のprocessQueueを呼び出し（再帰）
+                  processQueueRef.current();
+                }), 500);
+              }), options.displayDuration * 1000);
+            }), revealDelay);
+          });
+        })
+        .catch(handleQueueError);'''
+          if old not in page:
+              raise SystemExit('target reveal chain not found')
+          page_path.write_text(page.replace(old, new, 1))
+
+          test_path = Path('tests/unit/components/overlay-page.test.tsx')
+          test = test_path.read_text()
+          old_hoist = '''const { subscribeMock, resolvePlayableGachaSoundMock } = vi.hoisted(() => ({
+  subscribeMock: vi.fn(),
+  // 既定では実装(actual)へ委譲するdelegateとして下のvi.mockファクトリ内で
+  // 設定する。個々のテストはmockImplementationOnce()で1回だけ差し替え、
+  // それ以外の全テストへは実際のsound-rulesロジックがそのまま使われる。
+  resolvePlayableGachaSoundMock: vi.fn(),
+}))
+
+vi.mock('next/navigation', () => ({
+  useParams: () => ({ streamerId: 'streamer-1' }),
+}))'''
+          new_hoist = '''const { subscribeMock, resolvePlayableGachaSoundMock, streamerIdRef } = vi.hoisted(() => ({
+  subscribeMock: vi.fn(),
+  // 既定では実装(actual)へ委譲するdelegateとして下のvi.mockファクトリ内で
+  // 設定する。個々のテストはmockImplementationOnce()で1回だけ差し替え、
+  // それ以外の全テストへは実際のsound-rulesロジックがそのまま使われる。
+  resolvePlayableGachaSoundMock: vi.fn(),
+  streamerIdRef: { current: 'streamer-1' },
+}))
+
+vi.mock('next/navigation', () => ({
+  useParams: () => ({ streamerId: streamerIdRef.current }),
+}))'''
+          if old_hoist not in test:
+              raise SystemExit('next/navigation mock target not found')
+          test = test.replace(old_hoist, new_hoist, 1)
+
+          old_before = '''  beforeEach(() => {
+    window.history.replaceState({}, '', '/overlay/streamer-1')'''
+          new_before = '''  beforeEach(() => {
+    streamerIdRef.current = 'streamer-1'
+    window.history.replaceState({}, '', '/overlay/streamer-1')'''
+          if old_before not in test:
+              raise SystemExit('beforeEach target not found')
+          test = test.replace(old_before, new_before, 1)
+
+          marker = "  it('表示前に取得できた現行カードmetadataをautoPortraitとsmallModeへ反映する', async () => {"
+          if marker not in test:
+              raise SystemExit('test insertion marker not found')
+          insertion = '''  it('streamer切替cleanup後の旧metadata解決が新しい表示ロックを解除しない', async () => {
+    vi.useFakeTimers()
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(value: string) {
+        void value
+        // 旧streamerのmetadata probeをcleanupまでpendingにする。
+      }
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    const callbacks = new Map<string, (payload: GachaBroadcastPayload) => void>()
+    subscribeMock.mockImplementation((streamerId, callback, options: SubscribeOptions) => {
+      callbacks.set(streamerId, callback as (payload: GachaBroadcastPayload) => void)
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const view = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      callbacks.get('streamer-1')?.({
+        type: 'gacha',
+        card: {
+          id: 'old-card', name: 'Old Card', description: null,
+          image_url: 'https://example.com/pending.png', rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    expect(screen.getByText('Old Card')).toBeInTheDocument()
+
+    // 同一component instanceでstreamerを切り替えると旧probeはcleanupでresolveする。
+    // そのmicrotaskが新subscriptionのisDisplayingRefを解除してはならない。
+    streamerIdRef.current = 'streamer-2'
+    view.rerender(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      callbacks.get('streamer-2')?.({
+        type: 'gacha',
+        card: {
+          id: 'new-card-1', name: 'New Alpha', description: null,
+          image_url: null, rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('New Alpha')).toBeVisible()
+
+    // 旧チェーンがlockをfalseへ戻していると、この2件目が並走してNew Alphaを
+    // 即座に置き換える。正しくは表示時間が終わるまでqueueに留まる。
+    act(() => {
+      callbacks.get('streamer-2')?.({
+        type: 'gacha',
+        card: {
+          id: 'new-card-2', name: 'New Beta', description: null,
+          image_url: null, rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+    expect(screen.queryByText('New Beta')).not.toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('New Beta')).toBeVisible()
+  })
+
+  it('metadata probeのreject後も表示ロックを固着させず次のカードへ進む', async () => {
+    vi.useFakeTimers()
+
+    class RejectingImage {
+      constructor() {
+        throw new Error('metadata constructor failed')
+      }
+    }
+    vi.stubGlobal('Image', RejectingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'reject-card', name: 'Reject Alpha', description: null,
+          image_url: 'https://example.com/reject.png', rarity: 'rare',
+        },
+        cards: [
+          {
+            id: 'reject-card', name: 'Reject Alpha', description: null,
+            image_url: 'https://example.com/reject.png', rarity: 'rare',
+          },
+          {
+            id: 'after-reject', name: 'Reject Beta', description: null,
+            image_url: null, rarity: 'common',
+          },
+        ],
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Reject Alpha')).toBeVisible()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('Reject Beta')).toBeVisible()
+  })
+
+'''
+          test_path.write_text(test.replace(marker, insertion + marker, 1))
+          PY
+
+      - name: Remove temporary workflow from final commit
+        run: git rm .github/workflows/ai-fix-pr1177-review.yml
+
+      - name: Commit required fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/app/overlay/'[streamerId]'/page.tsx tests/unit/components/overlay-page.test.tsx
+          git commit -m "fix(overlay): handle metadata cleanup races (#1177)"
+          git push origin HEAD:fix/overlay-nonblocking-image-metadata-1076
