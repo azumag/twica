@@ -68,6 +68,20 @@ describe('db cutover invariant checks', () => {
     expect(new Set(codes).size).toBe(codes.length)
   })
 
+  it('allowlistの適用先specが重複しない', () => {
+    const specKeys = ALLOWLIST.flatMap((entry) =>
+      entry.appliesTo.map((target) =>
+        JSON.stringify(
+          Object.entries(target).sort(([left], [right]) =>
+            left.localeCompare(right),
+          ),
+        ),
+      ),
+    )
+
+    expect(new Set(specKeys).size).toBe(specKeys.length)
+  })
+
   it('finding識別に使うcheck codeが重複しない', () => {
     const codes = INVARIANTS.flatMap((invariant) =>
       invariant.checks.map((check) => check.code),
