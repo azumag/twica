@@ -702,6 +702,19 @@ export function subscribeToGachaResults(
     const newlySeenEventIds: string[] = []
     const newlyUnreconciledSocketEventIds: string[] = []
     let pendingDrawEncountered = false
+    const releaseNewClaims = () => {
+      // A polling envelope can contain a draw that is already awaiting a page
+      // ACK followed by a new draw from the same batch. Do not leave the new
+      // tail in `pendingEventIds` when the envelope is deferred as a whole;
+      // the next pass must be able to claim it after the first draw settles.
+      for (const eventId of newlySeenEventIds) {
+        seenEventIds.delete(eventId)
+        pendingEventIds.delete(eventId)
+      }
+      for (const eventId of newlyUnreconciledSocketEventIds) {
+        unreconciledSocketEventIds.delete(eventId)
+      }
+    }
     const unseenDraws = event.draws.filter((draw) => {
       if (pendingEventIds.has(draw.eventId)) {
         pendingDrawEncountered = true
@@ -737,6 +750,7 @@ export function subscribeToGachaResults(
       return true
     })
     if (pendingDrawEncountered) {
+      releaseNewClaims()
       options.onStatusChange?.(`PENDING_EVENT:${source}`)
       return 'pending'
     }
@@ -754,13 +768,7 @@ export function subscribeToGachaResults(
       // A callback failure is a delivery failure, not a malformed event. Roll
       // back only the IDs claimed by this attempt; polling can then retry the
       // exact committed row without consuming another channel-point exchange.
-      for (const eventId of newlySeenEventIds) {
-        seenEventIds.delete(eventId)
-        pendingEventIds.delete(eventId)
-      }
-      for (const eventId of newlyUnreconciledSocketEventIds) {
-        unreconciledSocketEventIds.delete(eventId)
-      }
+      releaseNewClaims()
       options.onStatusChange?.(`CALLBACK_ERROR:${source}`)
       return 'callback-error' as const
     }

@@ -515,6 +515,125 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('does not strand a new draw when polling sees a pending draw first in the same batch', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSING = 2
+      static readonly CLOSED = 3
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = ControlledWebSocket.CLOSED
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const [eventA] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: historyUuid(25),
+      eventId: 'event-mixed-batch',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_A,
+    }])
+    const [eventAB] = buildPollingRealtimeEvents(STREAMER_ID, [
+      {
+        id: historyUuid(25),
+        eventId: 'event-mixed-batch',
+        redeemedAt: '2026-07-24T00:00:01.000Z',
+        userTwitchUsername: 'viewer',
+        rewardId: null,
+        card: CARD_A,
+      },
+      {
+        id: historyUuid(26),
+        eventId: 'event-mixed-batch:2',
+        redeemedAt: '2026-07-24T00:00:01.000Z',
+        userTwitchUsername: 'viewer',
+        rewardId: null,
+        card: CARD_B,
+      },
+    ])
+    let eventsCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'pending-mixed-batch-v1',
+        })
+      }
+      eventsCalls += 1
+      if (eventsCalls < 3) return jsonResponse({ realtimeEvents: [], nextCursor: null })
+      if (eventsCalls < 5) {
+        return jsonResponse({
+          realtimeEvents: [eventAB],
+          nextCursor: {
+            redeemedAt: eventAB.occurredAt,
+            historyId: eventAB.draws[1].historyId,
+          },
+        })
+      }
+      return jsonResponse({ realtimeEvents: [], nextCursor: null })
+    }))
+
+    const callback = vi.fn()
+    let resolveFirst: ((accepted: boolean) => void) | undefined
+    callback.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      resolveFirst = resolve
+    }))
+    const cleanup = subscribeToGachaResults('ignored', callback, { retryDelay: 10 })
+    await flushPromises()
+    for (let pass = 0; pass < 3; pass += 1) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushPromises()
+    }
+    const socket = ControlledWebSocket.instances[0]
+    expect(callback).not.toHaveBeenCalled()
+    socket.emit({ type: 'gacha_result', seq: 1, event: eventA })
+    await flushPromises()
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([CARD_A.id])
+
+    // Force a polling recovery while A is still waiting for its page-side ACK.
+    // The response contains A followed by a new B from the same N-draw batch.
+    socket.emit({ type: 'server_notice', code: 'transport_disabled' })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([CARD_A.id])
+
+    resolveFirst?.(true)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      CARD_A.id,
+      CARD_B.id,
+    ])
+    cleanup()
+  })
+
   it('retries transient failures without switching to a second cursor owner', async () => {
     let historyAttempts = 0
     const fetchMock = vi.fn(async () => {
