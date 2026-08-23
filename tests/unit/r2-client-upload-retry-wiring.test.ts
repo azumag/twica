@@ -85,6 +85,7 @@ function stubSoundEnv(): void {
 }
 
 // maxRetries は「初回試行後に許容する再試行回数」で、fixture の総試行回数とは別契約。
+// MAX_RETRIES = 3 はこの結線テスト専用の fixture 値で、実装側の既定値を複製・固定する契約ではない。
 const MAX_RETRIES = 3
 // 1回だけ試行 = リトライなし。
 const SINGLE_ATTEMPT_NO_RETRY = 1
