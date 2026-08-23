@@ -374,6 +374,68 @@ describe('OverlayPage', () => {
     expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
   })
 
+  it('reveal後に遅れて届くmetadataで表示中のカードレイアウトを差し替えない', async () => {
+    vi.useFakeTimers()
+
+    const metadataImages: MockImage[] = []
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 800
+      height = 800
+
+      set src(value: string) {
+        void value
+        metadataImages.push(this)
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'late-portrait-card',
+          name: 'Late Portrait',
+          description: null,
+          image_url: 'https://example.com/late-portrait.png',
+          rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
+
+    // reveal後に画像metadataが縦長として到着しても、表示中の通常フレームを
+    // image-onlyサブツリーへ差し替えない。黒画面ではなく安定した表示を維持する。
+    const metadataImage = metadataImages[0]
+    expect(metadataImage).toBeDefined()
+    metadataImage.width = 200
+    metadataImage.height = 400
+    act(() => {
+      metadataImage?.onload?.()
+    })
+    expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
+  })
+
   // Issue #999調査メモ: 「onerrorが正しく解決されず表示がブロックされて
   // いるのでは」という仮説を検討する過程で追加したテスト。実際には
   // checkImageAspectRatio自体は本Issueの修正で変更しておらず（onerror

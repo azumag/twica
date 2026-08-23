@@ -502,7 +502,8 @@ export default function OverlayPage() {
 
   // 画像のアスペクト比を判定（縦長かどうか）と小さい画像かどうかを判定
   // Check if image is portrait (height > width) and if image is small (< 400x400)
-  // Promiseを返すことで、画像ロード完了を待てるようにする
+  // Promiseを返すが、カード表示の前提にはしない。画像metadataはpresentation-only
+  // のため、呼び出し側は表示と並行して実行し、レイアウト更新だけを受け取る。
   const checkImageAspectRatio = useCallback((
     imageUrl: string | null,
     imageLayoutGeneration: number,
@@ -549,9 +550,9 @@ export default function OverlayPage() {
         resolve(isPortrait);
       };
       const cancel = () => {
-        // Cleanup resolves the awaited check while deliberately suppressing
-        // layout updates. processQueue's generation check below then prevents
-        // the cancelled card from scheduling animation or sound.
+        // Cleanup deliberately suppresses layout updates. Lifecycle cleanup also
+        // invalidates the generation so a cancelled probe cannot affect a later
+        // card or subscription.
         finish(false, false, false);
       };
       activeImageCheckCancelsRef.current.add(cancel);
@@ -724,6 +725,15 @@ export default function OverlayPage() {
       // old wait, so preview real-path validation remains mandatory after merge.
       const imageLayoutGeneration = imageLayoutGenerationRef.current + 1;
       imageLayoutGenerationRef.current = imageLayoutGeneration;
+      if (
+        !isOverlayMountedRef.current
+        || queueGeneration !== queueGenerationRef.current
+      ) {
+        // The item was dequeued immediately before transport cleanup or an
+        // unmount. Release the display lock so a later subscription can render.
+        isDisplayingRef.current = false;
+        return;
+      }
       setIsPortraitImage(false);
       setIsSmallImage(false);
       void checkImageAspectRatio(
@@ -737,27 +747,35 @@ export default function OverlayPage() {
           `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
         );
       });
-      if (
-        !isOverlayMountedRef.current
-        || queueGeneration !== queueGenerationRef.current
-      ) {
-        return;
-      }
-
-      // このカードのレアリティに紐づくエフェクトを解決する。
-      // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
-      const resolvedStyle = options.effects
-        ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
-        : "none";
-      setActiveEffectStyle(resolvedStyle);
-      setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
+      // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
+      // 解決に失敗してもbusiness eventのカードDOMを失わせない。
       setResult(next);
       setShowCard(false);
 
+      try {
+        // このカードのレアリティに紐づくエフェクトを解決する。
+        // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
+        const resolvedStyle = options.effects
+          ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
+          : "none";
+        setActiveEffectStyle(resolvedStyle);
+        setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
+      } catch (error) {
+        logger.warn("Overlay effect setup failed; using no effect:", error);
+        addDebugLogRef.current(
+          `effect setup failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        setActiveEffectStyle("none");
+        setEffectParticles([]);
+      }
+
       // Show card after brief delay. Keep this card's metadata generation valid
-      // until the card is replaced so slower CDN/OBS metadata can still enable
-      // autoPortrait/smallMode instead of being discarded after only 100ms.
+      // only until reveal. A late metadata result must not replace the already
+      // visible frame with a different subtree and cause a layout flash.
       animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+        if (imageLayoutGenerationRef.current === imageLayoutGeneration) {
+          imageLayoutGenerationRef.current += 1;
+        }
         setShowCard(true);
         if (next.shouldPlaySound !== false) {
           if (next.soundGroupId) {
@@ -774,11 +792,9 @@ export default function OverlayPage() {
         animationTimeoutRef.current = setTimeout(() => runProtected(() => {
           setShowCard(false);
           animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-            // The outgoing card may accept late metadata while it is still current,
-            // but once it is removed its callbacks must not affect the next card.
-            if (imageLayoutGenerationRef.current === imageLayoutGeneration) {
-              imageLayoutGenerationRef.current += 1;
-            }
+            // Once the outgoing card is removed, its callbacks must not affect
+            // the next card even if the browser retained the Image object.
+            imageLayoutGenerationRef.current += 1;
             setResult(null);
             // ref経由で最新のprocessQueueを呼び出し（再帰）
             processQueueRef.current();
