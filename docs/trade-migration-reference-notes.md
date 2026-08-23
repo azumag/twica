@@ -27,6 +27,15 @@ migration evolves:
   offered card exists and is still owned by the offerer, while locking that row
   for the later transfer. Prefer this role-based name in prose; use
   `v_offered_card_owner_check` when the exact result variable matters.
+- **Deletion-history boundary:** card-definition references use `ON DELETE SET
+  NULL`, while card-copy identifiers intentionally have no foreign key, so
+  completed trade rows can keep using their snapshots after cards or
+  `user_cards` rows are deleted. By contrast, `offerer_user_id`,
+  `offered_streamer_id`, and `wanted_streamer_id` use `ON DELETE CASCADE`, so
+  deleting the referenced user or streamer also deletes related
+  `trade_offers`, including completed rows. History retention is therefore
+  scoped to card/card-copy cleanup; it does not promise retention after an
+  account or streamer is deleted.
 - **Chosen payment card:** references to the selected payment card should use
   `v_payer_user_card_id`, not migration line ranges.
 - **Lock-order contract:** describe the invariant as
