@@ -1,0 +1,77 @@
+name: Temporary PR 1177 mandatory fix
+
+on:
+  push:
+    branches:
+      - fix/overlay-nonblocking-image-metadata-1076
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/overlay-nonblocking-image-metadata-1076
+      - name: Apply mandatory review fix
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/app/overlay/[streamerId]/page.tsx')
+          text = path.read_text()
+
+          old_reveal = '''      // Show card after brief delay
+          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+            // Metadata may improve the hidden card during this initial 100ms window,
+            // but must not reflow a card after it becomes visible. Invalidate this
+            // card's probe generation at reveal time so later load/timeout callbacks
+            // are ignored; the next queued card allocates a fresh generation.
+            if (imageLayoutGenerationRef.current === imageLayoutGeneration) {
+              imageLayoutGenerationRef.current += 1;
+            }
+            setShowCard(true);
+          '''
+          new_reveal = '''      // Show card after brief delay. Keep this card's metadata generation valid
+          // until the card is replaced so slower CDN/OBS metadata can still enable
+          // autoPortrait/smallMode instead of being discarded after only 100ms.
+          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+            setShowCard(true);
+          '''
+          if text.count(old_reveal) != 1:
+              raise SystemExit('expected reveal block exactly once')
+          text = text.replace(old_reveal, new_reveal)
+
+          old_replace = '''          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+            setResult(null);
+            // ref経由で最新のprocessQueueを呼び出し（再帰）
+            processQueueRef.current();
+          }), 500);
+          '''
+          new_replace = '''          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+            // The outgoing card may accept late metadata while it is still current,
+            // but once it is removed its callbacks must not affect the next card.
+            if (imageLayoutGenerationRef.current === imageLayoutGeneration) {
+              imageLayoutGenerationRef.current += 1;
+            }
+            setResult(null);
+            // ref経由で最新のprocessQueueを呼び出し（再帰）
+            processQueueRef.current();
+          }), 500);
+          '''
+          if text.count(old_replace) != 1:
+              raise SystemExit('expected replacement block exactly once')
+          text = text.replace(old_replace, new_replace)
+          path.write_text(text)
+
+          Path('.github/workflows/tmp-fix-pr1177.yml').unlink()
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/app/overlay/'[streamerId]'/page.tsx .github/workflows/tmp-fix-pr1177.yml
+          git diff --cached --check
+          git commit -m "fix(overlay): preserve metadata layout after reveal"
+          git push origin HEAD:fix/overlay-nonblocking-image-metadata-1076
