@@ -79,9 +79,8 @@ const core = require('../lib/db-migrate-core.js')
  * @param {((info: { side: string, invariantId: string, tablesOk?: boolean, error?: boolean, durationMs: number }) => void) | undefined} onInvariantChecked
  */
 // exportする理由: layer-data.mjsのscanTableと同じ考え方で、fake tx（`.unsafe()`呼び出しのみを
-// 模したもの）を使ってpagination/スキップ分岐をCI上で検証できるようにするため
-// （tests/unit/db-cutover/layer-invariants.test.ts参照。実DBでの検証は
-// docker-fault-injection.test.tsが担う）。
+// 模したもの）を使い、count→sample/digestのスキップ分岐やside結果の組み立てを
+// CI上で単体テストできるようにするため（tests/unit/db-cutover/layer-invariants.test.ts参照）。
 export async function readSideInvariants(tx, invariantDefs, side, redactError, onInvariantChecked) {
   const results = new Map()
 
