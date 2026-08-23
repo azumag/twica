@@ -93,6 +93,8 @@ describe('db cutover layer invariants', () => {
       [tierBInvariant] as never,
       'target',
       (text: string) => text,
+      // 型上は第5引数が必須なので、callbackを使わないことをundefinedで明示する。
+      undefined,
     )
 
     expect(unsafe).toHaveBeenCalledTimes(1)
