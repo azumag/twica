@@ -69,6 +69,8 @@ interface GachaResult {
   soundGroupId?: string;
   shouldPlaySound?: boolean;
   rewardId?: string | null;
+  /** Monotonic per-overlay key so consecutive draws always remount card DOM. */
+  displayInstanceId?: number;
 }
 
 interface OverlayPollingEvent {
@@ -225,6 +227,9 @@ export default function OverlayPage() {
   // ガチャ結果キュー: アニメーション中に到着した結果をバッファし順番に表示する
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
   const queueRef = useRef<GachaResult[]>([]);
+  // A card id can repeat within one draw. Give every queued display its own key
+  // so React cannot reuse the previous card image while a new src is decoding.
+  const displayInstanceSequenceRef = useRef(0);
   const isDisplayingRef = useRef(false);
   // Image metadata checks are presentation-only and run independently from the
   // display queue. Cleanup still resolves pending checks so Image callbacks do
@@ -854,6 +859,7 @@ export default function OverlayPage() {
         card,
         cards: undefined,
         shouldPlaySound: index === soundBearingIndex,
+        displayInstanceId: ++displayInstanceSequenceRef.current,
       }))
     );
     if (!isDisplayingRef.current) {
@@ -1418,6 +1424,7 @@ export default function OverlayPage() {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
       <div
+        key={result.displayInstanceId ?? `${result.historyId ?? "card"}:${result.card.id}`}
         className={`transform transition-all duration-500 ${
           showCard ? "scale-100 opacity-100" : "scale-50 opacity-0"
         }`}

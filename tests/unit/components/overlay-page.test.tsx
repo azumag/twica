@@ -467,6 +467,70 @@ describe('OverlayPage', () => {
     expect(screen.getByText('Reject Beta')).toBeVisible()
   })
 
+  it('同じcard idが連続しても表示ごとに画像DOMを再マウントする', async () => {
+    vi.useFakeTimers()
+
+    class ImmediateImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(value: string) {
+        void value
+        setTimeout(() => this.onload?.(), 0)
+      }
+    }
+    vi.stubGlobal('Image', ImmediateImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'same-card', name: 'Same Alpha', description: null,
+          image_url: 'https://example.com/alpha.png', rarity: 'common',
+        },
+        cards: [
+          {
+            id: 'same-card', name: 'Same Alpha', description: null,
+            image_url: 'https://example.com/alpha.png', rarity: 'common',
+          },
+          {
+            id: 'same-card', name: 'Same Beta', description: null,
+            image_url: 'https://example.com/beta.png', rarity: 'rare',
+          },
+        ],
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    const firstImage = screen.getByAltText('Same Alpha')
+    expect(firstImage).toBeVisible()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    const secondImage = screen.getByAltText('Same Beta')
+    expect(secondImage).toBeVisible()
+    expect(secondImage).not.toBe(firstImage)
+  })
+
   it('表示前に取得できた現行カードmetadataをautoPortraitとsmallModeへ反映する', async () => {
     vi.useFakeTimers()
 
