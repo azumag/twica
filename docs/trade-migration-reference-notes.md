@@ -32,10 +32,10 @@ migration evolves:
   completed trade rows can keep using their snapshots after cards or
   `user_cards` rows are deleted. By contrast, `offerer_user_id`,
   `offered_streamer_id`, and `wanted_streamer_id` use `ON DELETE CASCADE`, so
-  deleting the referenced user or streamer also deletes related
+  deleting the offerer user or either referenced streamer also deletes related
   `trade_offers`, including completed rows. History retention is therefore
-  scoped to card/card-copy cleanup; it does not promise retention after an
-  account or streamer is deleted.
+  scoped to card/card-copy cleanup; it does not promise retention after the
+  offerer account or a referenced streamer is deleted.
 - **Chosen payment card:** references to the selected payment card should use
   `v_payer_user_card_id`, not migration line ranges.
 - **Lock-order contract:** describe the invariant as
