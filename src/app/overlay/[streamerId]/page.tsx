@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
 import { useParams } from "next/navigation";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
@@ -189,6 +190,15 @@ const MIN_REVEAL_LEAD_IN_MS = 100;
 // that promise so the transport can roll the event back and recover it through
 // polling, while presentation timing remains owned by the display queue.
 const DISPLAY_COMMIT_ACK_TIMEOUT_MS = 4_500;
+// React normally commits the fallback in the same task as the state update,
+// but OBS/CEF can coalesce timer callbacks. Give that commit a short, bounded
+// grace period before treating the presentation as failed.
+const DISPLAY_FALLBACK_COMMIT_GRACE_MS = 250;
+const DISPLAY_FALLBACK_COMMIT_RETRY_MS = 25;
+// A short display duration can expire in the same task that commits the
+// fallback. Keep the painted fallback visible long enough for at least one
+// browser/CEF frame before making the outgoing card transparent.
+const DISPLAY_FALLBACK_MIN_VISIBLE_MS = 250;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
 // Issue #634 (PR #995): 新旧コードが同じキーを奪い合わないよう"-v2"へ改称した。
@@ -241,6 +251,11 @@ export default function OverlayPage() {
   // 画像が小さい（400x400未満）かどうかを判定するためのState
   // 小さい画像の場合はsmallModeを自動適用するために使用
   const [isSmallImage, setIsSmallImage] = useState(false);
+  // A broken or indefinitely pending card image must degrade to a visible DOM
+  // card before the transport is acknowledged.  Keeping the instance id in
+  // state makes the fallback an actual React commit that the commit effect can
+  // observe, instead of treating a missing bitmap as a successful delivery.
+  const [imageFallbackDisplayInstanceId, setImageFallbackDisplayInstanceId] = useState<number | null>(null);
   // ガチャ効果音設定
   // streamerから取得した効果音URLと有効/無効状態を保持
   const [soundSettings, setSoundSettings] = useState<{
@@ -249,6 +264,7 @@ export default function OverlayPage() {
     soundRules: GachaSoundRule[];
   }>({ soundUrl: null, soundEnabled: true, soundRules: [] });
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fallbackVisibilityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
   // ガチャ結果キュー: アニメーション中に到着した結果をバッファし順番に表示する
@@ -440,11 +456,29 @@ export default function OverlayPage() {
     } else {
       settleDisplayCommit(displayInstanceId, false);
     }
-
-    // A negative ACK belongs to transport recovery only. Keep the currently
-    // presented card under the normal display-duration lifecycle so a slow
-    // render watchdog cannot make a visible card disappear prematurely.
+    // The watchdog only releases the transport ACK. The card that is already
+    // on screen must keep its normal display timer; tearing it down here would
+    // turn a slow-but-visible card into a black flash and cause duplicate
+    // recovery renders. If no DOM was committed, the existing display timer
+    // still advances the page queue after its bounded interval.
   }, [failDisplayBatch, settleDisplayCommit]);
+
+  const requestDisplayFallback = useCallback((displayInstanceId: number, reason: string) => {
+    if (!displayCommitResolversRef.current.has(displayInstanceId)) return;
+    addDebugLogRef.current(`Card image fallback requested: ${reason}`);
+    // The fallback is the user-visible safety net for a missing bitmap. Force
+    // this small state transition to commit before the transport callback can
+    // be released; otherwise a coalesced OBS/CEF timer can observe the old
+    // image-only tree and issue a false negative ACK.
+    try {
+      flushSync(() => setImageFallbackDisplayInstanceId(displayInstanceId));
+    } catch {
+      // React forbids flushSync from a lifecycle callback in some test/runtime
+      // combinations. The normal state update remains safe in that case and
+      // the bounded commit grace below still provides the recovery path.
+      setImageFallbackDisplayInstanceId(displayInstanceId);
+    }
+  }, []);
 
   const armDisplayCommitTimeout = useCallback((displayInstanceId: number) => {
     if (
@@ -454,10 +488,22 @@ export default function OverlayPage() {
       return;
     }
     const timeoutId = setTimeout(() => {
+      const committedCard = document.querySelector(
+        `[data-overlay-card="true"][data-overlay-display-instance="${displayInstanceId}"]`,
+      );
+      if (committedCard) {
+        // A slow image/paint still has a committed card. Render the explicit
+        // fallback first; the commit effect acknowledges only after that DOM
+        // is present, so a wrapper-only/black card cannot be reported as a
+        // successful presentation.
+        addDebugLogRef.current('Card display watchdog requesting fallback');
+        requestDisplayFallback(displayInstanceId, 'watchdog');
+        return;
+      }
       failDisplayCommit(displayInstanceId, 'timeout');
     }, DISPLAY_COMMIT_ACK_TIMEOUT_MS);
     displayCommitTimeoutsRef.current.set(displayInstanceId, timeoutId);
-  }, [failDisplayCommit]);
+  }, [failDisplayCommit, requestDisplayFallback]);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
@@ -915,6 +961,7 @@ export default function OverlayPage() {
       }
       setIsPortraitImage(false);
       setIsSmallImage(false);
+      setImageFallbackDisplayInstanceId(null);
       // The realtime contract deliberately carries only the public card
       // fields. Snapshot the fields consumed by this component before the
       // state update so a malformed object/getter cannot make React fail while
@@ -996,8 +1043,13 @@ export default function OverlayPage() {
           }
         }
 
-        // Hide after display, then process next queued item
-        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+        // Hide after display, then process next queued item.  If the image is
+        // still pending when the display window expires, first render the
+        // explicit fallback card and settle its transport promise.  This is
+        // important for short displayDuration values: hiding the only card
+        // before the 4.5s watchdog would otherwise turn a slow image into a
+        // false failure and an endlessly retried, black overlay.
+        const hideAndAdvance = () => {
           setShowCard(false);
           animationTimeoutRef.current = setTimeout(() => runProtected(() => {
             // Once the outgoing card is removed, its callbacks must not affect
@@ -1005,9 +1057,71 @@ export default function OverlayPage() {
             imageLayoutGenerationRef.current += 1;
             activeDisplayInstanceIdRef.current = undefined;
             setResult(null);
+            setImageFallbackDisplayInstanceId(null);
             // ref経由で最新のprocessQueueを呼び出し（再帰）
             processQueueRef.current();
           }), 500);
+        };
+        const hideAfterFallbackVisible = () => {
+          const expectedQueueGeneration = queueGeneration;
+          const displayInstanceId = next.displayInstanceId;
+          fallbackVisibilityTimeoutRef.current = setTimeout(
+            () => runProtected(() => {
+              fallbackVisibilityTimeoutRef.current = null;
+              if (
+                !isOverlayMountedRef.current
+                || queueGenerationRef.current !== expectedQueueGeneration
+                || activeDisplayInstanceIdRef.current !== displayInstanceId
+              ) {
+                return;
+              }
+              hideAndAdvance();
+            }),
+            DISPLAY_FALLBACK_MIN_VISIBLE_MS,
+          );
+        };
+        const finishDisplayWindow = () => {
+          const displayInstanceId = next.displayInstanceId;
+          if (
+            displayInstanceId === undefined
+            || !displayCommitResolversRef.current.has(displayInstanceId)
+          ) {
+            hideAndAdvance();
+            return;
+          }
+          requestDisplayFallback(displayInstanceId, 'display-window-expired');
+          const settleFallbackAfterCommit = (elapsedMs: number) => {
+            if (!isOverlayMountedRef.current || queueGeneration !== queueGenerationRef.current) {
+              return;
+            }
+            if (!displayCommitResolversRef.current.has(displayInstanceId)) {
+              // The fallback commit effect already acknowledged the card.
+              hideAfterFallbackVisible();
+              return;
+            }
+            const cardRoot = document.querySelector(
+              `[data-overlay-card="true"][data-overlay-display-instance="${displayInstanceId}"]`,
+            );
+            const fallbackRoot = cardRoot?.querySelector('[data-overlay-card-fallback="true"]');
+            if (fallbackRoot) {
+              settleDisplayCommit(displayInstanceId, true);
+              hideAfterFallbackVisible();
+              return;
+            }
+            if (elapsedMs < DISPLAY_FALLBACK_COMMIT_GRACE_MS) {
+              setTimeout(
+                () => runProtected(() => settleFallbackAfterCommit(elapsedMs + DISPLAY_FALLBACK_COMMIT_RETRY_MS)),
+                DISPLAY_FALLBACK_COMMIT_RETRY_MS,
+              );
+              return;
+            }
+            failDisplayCommit(displayInstanceId, 'fallback-not-committed');
+            hideAndAdvance();
+          };
+          setTimeout(() => runProtected(() => settleFallbackAfterCommit(0)), 0);
+        };
+        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+          finishDisplayWindow();
         }), options.displayDuration * 1000);
       }), MIN_REVEAL_LEAD_IN_MS);
       void imageMetadataPromise
@@ -1015,7 +1129,7 @@ export default function OverlayPage() {
     } catch (error) {
       handleQueueError(error);
     }
-  }, [armDisplayCommitTimeout, checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap, settleDisplayCommit]);
+  }, [armDisplayCommitTimeout, checkImageAspectRatio, failDisplayCommit, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap, requestDisplayFallback, settleDisplayCommit]);
 
   // processQueueRefを最新のcallbackで更新
   useEffect(() => {
@@ -1379,13 +1493,18 @@ export default function OverlayPage() {
   // fixed-overlay investigation can distinguish an event that never reached
   // the queue from a React/browser paint problem. This is intentionally free
   // of card names, IDs, URLs, and user data.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!result) return;
     const displayInstanceId = result.displayInstanceId;
     if (displayInstanceId === undefined) return;
     if (!displayCommitResolversRef.current.has(displayInstanceId)) return;
     addDebugLogRef.current('Card display committed');
-    const cardRoot = document.querySelector('[data-overlay-card="true"]');
+    const previousImageCleanup = displayImageCleanupRef.current.get(displayInstanceId);
+    previousImageCleanup?.();
+    displayImageCleanupRef.current.delete(displayInstanceId);
+    const cardRoot = document.querySelector(
+      `[data-overlay-card="true"][data-overlay-display-instance="${displayInstanceId}"]`,
+    );
     if (!cardRoot) {
       // The bounded watchdog owns this failure path. A transient React commit
       // gap must not be acknowledged as a duplicate, but resolving false here
@@ -1394,8 +1513,19 @@ export default function OverlayPage() {
       return;
     }
 
+    const fallbackRoot = cardRoot.querySelector('[data-overlay-card-fallback="true"]');
+    if (imageFallbackDisplayInstanceId === displayInstanceId) {
+      if (fallbackRoot) {
+        addDebugLogRef.current('Card image fallback committed');
+        settleDisplayCommit(displayInstanceId, true);
+      }
+      return;
+    }
+
     if (!result.card.image_url) {
-      settleDisplayCommit(displayInstanceId, true);
+      if (fallbackRoot) {
+        settleDisplayCommit(displayInstanceId, true);
+      }
       return;
     }
 
@@ -1420,20 +1550,15 @@ export default function OverlayPage() {
       if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
         settleDisplayCommit(displayInstanceId, true);
       } else {
-        // A broken decode is a presentation failure, not a delivery failure.
-        // Replaying the same immutable URL would loop forever after a valid
-        // redemption has already committed its card DOM.
-        addDebugLogRef.current(
-          'Card image loaded without usable dimensions; accepting committed card'
-        );
-        settleDisplayCommit(displayInstanceId, true);
+        addDebugLogRef.current('Card image load completed without dimensions');
+        requestDisplayFallback(displayInstanceId, 'image-invalid');
       }
     };
     const onError = () => {
-      // Missing/corrupt R2 objects are likewise terminal presentation errors.
-      // Keep the degraded card and acknowledge the business event once.
-      addDebugLogRef.current('Card image failed to load; accepting committed card');
-      settleDisplayCommit(displayInstanceId, true);
+      // A permanent 404/CORS/R2 failure must not be retried forever, but it is
+      // not a successful presentation until the visible fallback DOM commits.
+      addDebugLogRef.current('Card image failed; requesting visible fallback');
+      requestDisplayFallback(displayInstanceId, 'image-error');
     };
     const cleanup = () => {
       image.removeEventListener('load', onLoad);
@@ -1446,13 +1571,7 @@ export default function OverlayPage() {
     image.addEventListener('error', onError, { once: true });
     displayImageCleanupRef.current.set(displayInstanceId, cleanup);
     return cleanup;
-  }, [
-    isPortraitImage,
-    options.autoPortrait,
-    options.imageOnly,
-    result,
-    settleDisplayCommit,
-  ]);
+  }, [imageFallbackDisplayInstanceId, isPortraitImage, requestDisplayFallback, result, settleDisplayCommit]);
 
   // #694 Stage 6b: maintenance状態のポーリング（debugパネル表示専用）。
   //
@@ -1642,6 +1761,10 @@ export default function OverlayPage() {
       if (animationTimeoutRef.current) {
         clearTimeout(animationTimeoutRef.current);
       }
+      if (fallbackVisibilityTimeoutRef.current) {
+        clearTimeout(fallbackVisibilityTimeoutRef.current);
+        fallbackVisibilityTimeoutRef.current = null;
+      }
     };
   }, [settleAllDisplayCommits, streamerId]);
 
@@ -1800,12 +1923,25 @@ export default function OverlayPage() {
   const shouldUseSmallMode = options.smallMode && isSmallImage;
   const cardSizeClass = shouldUseSmallMode ? "w-48" : "w-80";
   const imageOnlySizeClass = shouldUseSmallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
+  const showImageFallback = imageFallbackDisplayInstanceId === result.displayInstanceId;
+
+  const renderImageFallback = (sizeClassName: string) => (
+    <div
+      data-overlay-card-fallback="true"
+      role="img"
+      aria-label={`${result.card.name} の画像を表示できないため代替表示`}
+      className={`flex min-h-[192px] min-w-[192px] flex-col items-center justify-center rounded-lg bg-gray-700 px-4 py-6 text-center ${sizeClassName}`}
+    >
+      <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
+    </div>
+  );
 
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
       <div
         key={result.displayInstanceId ?? `${result.historyId ?? "card"}:${result.card.id}`}
         data-overlay-card="true"
+        data-overlay-display-instance={result.displayInstanceId ?? undefined}
         className={`transform transition-all duration-500 ${
           showCard ? "scale-100 opacity-100" : "scale-50 opacity-0"
         }`}
@@ -1837,7 +1973,7 @@ export default function OverlayPage() {
                 `priority`が付随して出すpreloadリンクの先読み効果が無く、
                 長時間開きっぱなしのOBSページのheadへ不要なリンクを溜める
                 だけになるため。 */}
-            {result.card.image_url ? (
+            {result.card.image_url && !showImageFallback ? (
               <Image
                 src={result.card.image_url}
                 alt={result.card.name}
@@ -1847,11 +1983,7 @@ export default function OverlayPage() {
                 unoptimized
                 loading="eager"
               />
-            ) : (
-              <div className={`flex items-center justify-center bg-gray-700 rounded-lg ${shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80"}`}>
-                <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
-              </div>
-            )}
+            ) : renderImageFallback(shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80")}
 
             {/* 付帯情報（画像の下、オプションで表示） */}
             {/* Info section below image (optional, for autoPortrait mode) */}
@@ -1919,7 +2051,7 @@ export default function OverlayPage() {
 
                 {/* Card Image - square like Collection */}
                 <div className="aspect-square bg-gray-600">
-                  {result.card.image_url ? (
+                  {result.card.image_url && !showImageFallback ? (
                     // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
                     // loading="eager": Issue #1076参照(画像のみモード側の同コメント参照)。
                     // 通常モードのカード画像も同じ理由で即時読み込みにする。
@@ -1933,11 +2065,7 @@ export default function OverlayPage() {
                       unoptimized
                       loading="eager"
                     />
-                  ) : (
-                    <div className="flex h-full items-center justify-center">
-                      <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
-                    </div>
-                  )}
+                  ) : renderImageFallback("h-full w-full")}
                 </div>
 
                 {/* Description - below image like Collection */}

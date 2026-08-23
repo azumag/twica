@@ -1827,6 +1827,111 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('validates socket frames before the bounded DOM-ack queue and signals queue saturation', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSED = 3
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = ControlledWebSocket.CLOSED
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'do-primary-v1',
+        })
+      }
+      return jsonResponse({ realtimeEvents: [], nextCursor: null })
+    }))
+
+    const rows = Array.from({ length: 34 }, (_, index) => ({
+      id: historyUuid(3_000 + index),
+      eventId: `dom-ack-queue-${index}`,
+      redeemedAt: `2026-07-24T01:00:${String(index).padStart(2, '0')}.000Z`,
+      userTwitchUsername: 'viewer',
+      card: { ...CARD_A, id: `dom-ack-card-${index}` },
+    }))
+    const events = rows.map((row) => buildPollingRealtimeEvents(STREAMER_ID, [row])[0])
+    let resolveFirst!: (accepted: boolean) => void
+    const firstAck = new Promise<boolean>((resolve) => {
+      resolveFirst = resolve
+    })
+    const callback = vi.fn((payload: GachaBroadcastPayload) => {
+      void payload
+      return callback.mock.calls.length === 1 ? firstAck : true
+    })
+    const statuses: string[] = []
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'dom-ack-queue-connection',
+      serverTime: '',
+      seq: 0,
+    })
+    socket.emit({ type: 'gacha_result', seq: 1, event: events[0] })
+    await flushPromises()
+    expect(callback).toHaveBeenCalledTimes(1)
+
+    // This malformed frame is rejected before it can consume one of the
+    // pending delivery slots while the first DOM ACK is still unresolved.
+    socket.emit({
+      type: 'gacha_result',
+      seq: 2,
+      event: { ...events[1], draws: [] },
+    })
+    expect(statuses).toContain('INVALID_EVENT:durable-object')
+    expect(callback).toHaveBeenCalledTimes(1)
+
+    // The active task is held by firstAck; only 32 additional validated task
+    // wrappers are retained. The 33rd is dropped in favor of authoritative
+    // recovery and reports saturation instead of growing without a bound.
+    socket.emit({ type: 'gacha_result', seq: 3, event: events[1] })
+    for (let index = 2; index < events.length; index += 1) {
+      socket.emit({ type: 'gacha_result', seq: index + 1, event: events[index] })
+    }
+    expect(statuses).toContain('DO_DELIVERY_QUEUE_FULL')
+    expect(callback).toHaveBeenCalledTimes(1)
+
+    resolveFirst(true)
+    await flushPromises()
+    cleanup()
+  })
+
   it('probes legacy events once when a modern connected client reaches a rolled-back config route', async () => {
     class ControlledWebSocket {
       static readonly CONNECTING = 0

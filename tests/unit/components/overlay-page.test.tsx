@@ -224,7 +224,7 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
-  it('N連の後段カードが失敗したとき、表示済みカードを重複させず残りだけ再試行する', async () => {
+  it('N連の後段画像が遅れても、表示中カードを消さずにACKする', async () => {
     vi.useFakeTimers()
 
     class PendingImage {
@@ -285,7 +285,8 @@ describe('OverlayPage', () => {
     expect(screen.getByText('Batch A')).toBeInTheDocument()
 
     // A commits, then B becomes active but never loads an image. Its watchdog
-    // rejects the transport batch rather than leaving A/B serialized forever.
+    // observes the committed card and ACKs the visible fallback rather than
+    // removing it and creating a retry/black-screen loop.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6600)
     })
@@ -293,35 +294,8 @@ describe('OverlayPage', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4500)
     })
-    await expect(firstAttempt).resolves.toBe(false)
-    expect(screen.queryByText('Batch A')).not.toBeInTheDocument()
-
-    let retryAttempt: Promise<boolean> | undefined
-    await act(async () => {
-      retryAttempt = onGachaResult?.(payload)
-      await Promise.resolve()
-    })
+    await expect(firstAttempt).resolves.toBe(true)
     expect(screen.getByText('Batch B')).toBeInTheDocument()
-    const staleImage = document.querySelector('[data-overlay-card="true"] img') as HTMLImageElement
-
-    // A negative ACK belongs to transport recovery only; the currently shown B
-    // intentionally remains visible until its normal display lifecycle ends.
-    // The retried B is queued behind that stale display, so advance through the
-    // remaining hide/cleanup window before acknowledging the retry image.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2100)
-    })
-    expect(screen.getByText('Batch B')).toBeInTheDocument()
-    const image = document.querySelector('[data-overlay-card="true"] img') as HTMLImageElement
-    expect(image).not.toBe(staleImage)
-    Object.defineProperty(image, 'complete', { configurable: true, value: true })
-    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 320 })
-    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 448 })
-    await act(async () => {
-      image.dispatchEvent(new Event('load'))
-      await Promise.resolve()
-    })
-    await expect(retryAttempt).resolves.toBe(true)
     view.unmount()
   })
 
@@ -429,6 +403,7 @@ describe('OverlayPage', () => {
 
   it('streamer切替cleanup後の旧metadata解決が新しい表示ロックを解除しない', async () => {
     vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
 
     class PendingImage {
       onload: (() => void) | null = null
@@ -468,9 +443,18 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Old Card')).toBeInTheDocument()
 
+    // The old card reaches its short display-window fallback. Switch the
+    // streamer before the guarded visibility timer expires; that timer must
+    // not make the newly mounted streamer's card transparent.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100)
+    })
+    expect(document.querySelector('[data-overlay-card-fallback="true"]')).not.toBeNull()
+
     // 同一component instanceでstreamerを切り替えると旧probeはcleanupでresolveする。
     // そのmicrotaskが新subscriptionのisDisplayingRefを解除してはならない。
     streamerIdRef.current = 'streamer-2'
+    window.history.replaceState({}, '', '/overlay/streamer-2')
     view.rerender(<OverlayPage />)
     await act(async () => {
       await Promise.resolve()
@@ -492,6 +476,10 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(screen.getByText('New Alpha')).toBeVisible()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+    })
+    expect(screen.getByText('New Alpha')).toBeVisible()
 
     // 旧チェーンがlockをfalseへ戻していると、この2件目が並走してNew Alphaを
     // 即座に置き換える。正しくは表示時間が終わるまでqueueに留まる。
@@ -508,7 +496,10 @@ describe('OverlayPage', () => {
     expect(screen.queryByText('New Beta')).not.toBeInTheDocument()
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6600)
+      // The route-switch setup intentionally uses duration=2 to exercise the
+      // old card's fallback window, so the queued replacement is ready after
+      // its 2s display plus the 500ms handoff rather than the default 6s.
+      await vi.advanceTimersByTimeAsync(2700)
     })
     expect(screen.getByText('New Beta')).toBeVisible()
   })
@@ -705,9 +696,9 @@ describe('OverlayPage', () => {
     }
     vi.stubGlobal('Image', MockImage)
 
-    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
     subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
-      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
       options.onSuccess?.()
       return vi.fn()
     })
@@ -719,8 +710,9 @@ describe('OverlayPage', () => {
       await Promise.resolve()
     })
 
+    let delivery: Promise<boolean> | undefined
     act(() => {
-      onGachaResult?.({
+      delivery = onGachaResult?.({
         type: 'gacha',
         card: {
           id: 'late-portrait-card',
@@ -737,6 +729,7 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
+    const initialCardImage = screen.getByAltText('Late Portrait')
 
     // metadataが遅れても、DOMは既に存在し、revealタイマーを待たず可視になる。
     expect(screen.getByText('Viewer が引いたカード').closest('.transition-all'))
@@ -753,7 +746,37 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
-    expect(screen.getByAltText('Late Portrait')).toBeInTheDocument()
+    const portraitCardImage = screen.getByAltText('Late Portrait')
+    expect(portraitCardImage).toBeInTheDocument()
+
+    // autoPortrait remounts the <img>. A late load from the detached old
+    // element must not ACK the draw; only the currently mounted image may do
+    // so after it has positive natural dimensions.
+    Object.defineProperties(initialCardImage, {
+      complete: { configurable: true, value: true },
+      naturalWidth: { configurable: true, value: 320 },
+      naturalHeight: { configurable: true, value: 448 },
+    })
+    let delivered = false
+    delivery?.then(() => {
+      delivered = true
+    })
+    await act(async () => {
+      initialCardImage.dispatchEvent(new Event('load'))
+      await Promise.resolve()
+    })
+    expect(delivered).toBe(false)
+
+    Object.defineProperties(portraitCardImage, {
+      complete: { configurable: true, value: true },
+      naturalWidth: { configurable: true, value: 320 },
+      naturalHeight: { configurable: true, value: 448 },
+    })
+    await act(async () => {
+      portraitCardImage.dispatchEvent(new Event('load'))
+      await Promise.resolve()
+    })
+    await expect(delivery).resolves.toBe(true)
   })
 
   // Issue #999調査メモ: 「onerrorが正しく解決されず表示がブロックされて
@@ -782,9 +805,9 @@ describe('OverlayPage', () => {
     }
     vi.stubGlobal('Image', MockImage)
 
-    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
     subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
-      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
       options.onSuccess?.()
       return vi.fn()
     })
@@ -795,8 +818,9 @@ describe('OverlayPage', () => {
       await Promise.resolve()
     })
 
+    let delivery: Promise<boolean> | undefined
     act(() => {
-      onGachaResult?.({
+      delivery = onGachaResult?.({
         type: 'gacha',
         card: {
           id: 'card-real', name: 'RealCard', description: null,
@@ -812,6 +836,91 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(screen.getByText('RealCard')).toBeInTheDocument()
+
+    // The transport must not ACK a broken bitmap by itself.  It first replaces
+    // the image with an explicit, painted fallback card and only then resolves
+    // the display commit.
+    const renderedImage = screen.getByAltText('RealCard')
+    await act(async () => {
+      renderedImage.dispatchEvent(new Event('error'))
+      await Promise.resolve()
+    })
+    expect(screen.getByLabelText(/RealCard の画像を表示できないため代替表示/))
+      .toHaveAttribute('data-overlay-card-fallback', 'true')
+    await expect(delivery).resolves.toBe(true)
+  })
+
+  it('短い表示時間でも画像待機を代替カードへ切り替えてからACKする', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(_value: string) {}
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    let delivery: Promise<boolean> | undefined
+    act(() => {
+      delivery = onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'short-window-card',
+          name: 'Short Window',
+          description: null,
+          image_url: 'https://example.com/short-window.png',
+          rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByAltText('Short Window')).toBeInTheDocument()
+
+    // displayDuration=2 expires before the 4.5s watchdog. The fallback must
+    // be committed while this card is still mounted, so this exchange resolves
+    // once without a transport retry.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(screen.getByLabelText(/Short Window の画像を表示できないため代替表示/))
+      .toHaveAttribute('data-overlay-card-fallback', 'true')
+    expect(document.querySelector('[data-overlay-card="true"]'))
+      .toHaveClass('opacity-100')
+    await expect(delivery).resolves.toBe(true)
+
+    // A same-turn display-expiry callback must leave the fallback painted for
+    // a bounded frame window before making the outgoing card transparent.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249)
+    })
+    expect(document.querySelector('[data-overlay-card="true"]'))
+      .toHaveClass('opacity-100')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(document.querySelector('[data-overlay-card="true"]'))
+      .toHaveClass('opacity-0')
   })
 
   // Issue #1076: 接続・イベント受信・演出切り替えは全て成功するのにOBS上で
@@ -1192,8 +1301,15 @@ describe('OverlayPage', () => {
     act(() => {
       onGachaResult?.({ type: 'gacha', card: cards[0], cards, userTwitchUsername: 'Viewer' })
     })
+    // The image watchdog renders its fallback at 4.5s. Flush that state
+    // update before advancing the normal 6s display window so the test models
+    // the browser's separate timer tasks rather than batching both deadlines.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6600)
+      await vi.advanceTimersByTimeAsync(4500)
+    })
+    expect(document.querySelector('[data-overlay-card-fallback="true"]')).not.toBeNull()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100)
     })
     expect(imageInstances).toHaveLength(2)
     const playsBeforeUnmount = playMock.mock.calls.length

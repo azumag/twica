@@ -151,10 +151,11 @@ const SOCKET_RECONCILIATION_TRIGGER_IDS = 512
 // Every validated event is at most 64 KiB. Thirty-two buffered envelopes cap a
 // recovery-order window at roughly 2 MiB before liveness takes precedence.
 const MAX_BUFFERED_SOCKET_EVENTS = 32
-// Serialized delivery tasks hold validated event envelopes while React waits
-// for a DOM acknowledgement. Bound that queue to the same 32-event window as
-// recovery buffering; overflow is recovered from authoritative DB history.
-const MAX_SOCKET_DELIVERY_TASKS = 32
+// DOM acknowledgements can serialize delivery for an entire N-draw display.
+// Keep the task queue bounded as well as the recovery-event buffer; validated
+// live frames that do not fit are recovered from the authoritative /events
+// cursor instead of accumulating unbounded closures in the browser.
+const MAX_SOCKET_DELIVERY_TASKS = MAX_BUFFERED_SOCKET_EVENTS
 const SOCKET_RECOVERY_BUFFER_MAX_MS = 10_000
 const SEEN_EVENT_TTL_MS = 24 * 60 * 60 * 1000
 const PRESENCE_TOKEN_NONCE_PATTERN = /^[0-9a-f-]{36}$/i
@@ -595,6 +596,7 @@ export function subscribeToGachaResults(
   // acknowledgement is pending. Without this owner, B can overtake A.
   let socketDeliveryBusy = false
   const socketDeliveryTasks: Array<() => Promise<void> | void> = []
+  let socketDeliveryRetryNeeded = false
   let socketFlushInFlight = false
   const demoRetryCounts = new Map<string, number>()
   const demoRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -850,6 +852,17 @@ export function subscribeToGachaResults(
     socketDeliveryBusy = true
     const finish = () => {
       socketDeliveryBusy = false
+      if (
+        socketDeliveryRetryNeeded
+        && !disposed
+        && socketDeliveryTasks.length < MAX_SOCKET_DELIVERY_TASKS
+      ) {
+        // A full queue deliberately drops only the low-latency task wrapper;
+        // the authoritative poll/recovery request restores the event. Coalesce
+        // those requests into one bounded flush after the current task yields.
+        socketDeliveryRetryNeeded = false
+        socketDeliveryTasks.push(() => flushBufferedSocketEvents())
+      }
       drainSocketDeliveryTasks()
     }
     try {
@@ -885,6 +898,14 @@ export function subscribeToGachaResults(
   }
 
   const enqueueSocketTask = (task: () => Promise<void> | void) => {
+    if (socketDeliveryTasks.length >= MAX_SOCKET_DELIVERY_TASKS) {
+      socketDeliveryRetryNeeded = true
+      options.onStatusChange?.('DO_DELIVERY_QUEUE_FULL')
+      // Validated live frames are replayable from the committed history. Start
+      // bounded recovery instead of retaining another closure in memory.
+      requestRecoveryPoll(true)
+      return
+    }
     socketDeliveryTasks.push(task)
     drainSocketDeliveryTasks()
   }
@@ -1416,18 +1437,18 @@ export function subscribeToGachaResults(
                 if (ingestResult === 'delivered') {
                   maybeRequestVolumeReconciliation()
                 } else if (ingestResult === 'callback-error') {
-                if (parsed.event.deliveryKind === 'demo') {
-                  // Keep later live frames behind the failed demo until its
-                  // local retry has committed; otherwise B would overtake A.
-                  socketRecoveryActive = true
-                  bufferedSocketEvents.unshift(parsed.event)
-                  scheduleDemoRetry(parsed.event)
-                } else {
-                  // A render callback failure must not become a permanent
-                  // duplicate. Poll the committed row immediately so the next
-                  // attempt can recover after the page is ready.
-                  requestRecoveryPoll(true)
-                }
+                  if (parsed.event.deliveryKind === 'demo') {
+                    // Keep later live frames behind the failed demo until its
+                    // local retry has committed; otherwise B would overtake A.
+                    socketRecoveryActive = true
+                    bufferedSocketEvents.unshift(parsed.event)
+                    scheduleDemoRetry(parsed.event)
+                  } else {
+                    // A render callback failure must not become a permanent
+                    // duplicate. Poll the committed row immediately so the next
+                    // attempt can recover after the page is ready.
+                    requestRecoveryPoll(true)
+                  }
                 }
               }
               const ingestResult = ingest(parsed.event, 'durable-object')
