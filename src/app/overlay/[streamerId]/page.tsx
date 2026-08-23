@@ -155,11 +155,10 @@ const RELOAD_DEFER_RETRY_MS = 30 * 1000;
 // (メタデータ未ロードでNaN等)に使う「再生終了見込み」の安全上限。
 // リロード延期判定(soundPlayingUntilRef)のフォールバックにのみ使う
 const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
-// OBS Browser Source may keep a large animated image request pending without
-// firing either `load` or `error`. Aspect-ratio detection is presentation-only,
-// so it must never hold the business-event queue indefinitely. After this
-// bounded wait the card renders with the normal landscape layout; a slow image
-// may continue loading in the actual card element without blocking later draws.
+// OBS Browser Source may keep a large animated image metadata request pending
+// without firing either `load` or `error`. Aspect-ratio detection is
+// presentation-only, so this timeout bounds the probe lifetime/layout decision;
+// the business-event queue and card DOM mounting do not wait for it.
 const IMAGE_METADATA_TIMEOUT_MS = 1_500;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
@@ -717,11 +716,12 @@ export default function OverlayPage() {
     };
 
     try {
-      // Issue #1076: aspect-ratio detection is presentation-only. In OBS/CEF a
-      // `new Image()` metadata request (and even its timeout) can be delayed,
-      // so awaiting it here kept `result` null after a valid realtime payload
-      // and produced a black overlay. Start the probe asynchronously and render
-      // the card on the normal 100ms path regardless of metadata availability.
+      // Issue #1076: the exact OBS/CEF root cause is still unconfirmed. The real
+      // preview path received a valid gacha payload but produced no card DOM/
+      // pixels. Image metadata is presentation-only, so a business event must not
+      // depend on this preflight before mounting its DOM. Decouple the probe as a
+      // defensive fix; the existing 1.5s probe timeout would normally bound the
+      // old wait, so preview real-path validation remains mandatory after merge.
       const imageLayoutGeneration = imageLayoutGenerationRef.current + 1;
       imageLayoutGenerationRef.current = imageLayoutGeneration;
       setIsPortraitImage(false);
@@ -756,6 +756,13 @@ export default function OverlayPage() {
 
       // Show card after brief delay
       animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+        // Metadata may improve the hidden card during this initial 100ms window,
+        // but must not reflow a card after it becomes visible. Invalidate this
+        // card's probe generation at reveal time so later load/timeout callbacks
+        // are ignored; the next queued card allocates a fresh generation.
+        if (imageLayoutGenerationRef.current === imageLayoutGeneration) {
+          imageLayoutGenerationRef.current += 1;
+        }
         setShowCard(true);
         if (next.shouldPlaySound !== false) {
           if (next.soundGroupId) {

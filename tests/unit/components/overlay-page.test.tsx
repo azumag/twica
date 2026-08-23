@@ -318,6 +318,62 @@ describe('OverlayPage', () => {
     expect(screen.getByText('Gamma')).toBeInTheDocument()
   })
 
+  it('表示前に取得できた現行カードmetadataをautoPortraitとsmallModeへ反映する', async () => {
+    vi.useFakeTimers()
+
+    class MockImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 200
+      height = 300
+
+      set src(value: string) {
+        void value
+        setTimeout(() => this.onload?.(), 0)
+      }
+    }
+    vi.stubGlobal('Image', MockImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'portrait-small-card',
+          name: 'Portrait Small',
+          description: null,
+          image_url: 'https://example.com/portrait-small.png',
+          rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+
+    // metadata は reveal 前に解決したため、初回の可視フレームから image-only
+    // (autoPortrait) かつ縮小サイズ (smallMode) で描画される。
+    const cardImage = screen.getByAltText('Portrait Small')
+    expect(cardImage).toBeVisible()
+    expect(cardImage).toHaveClass('max-w-[192px]')
+    expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
+  })
+
   // Issue #999調査メモ: 「onerrorが正しく解決されず表示がブロックされて
   // いるのでは」という仮説を検討する過程で追加したテスト。実際には
   // checkImageAspectRatio自体は本Issueの修正で変更しておらず（onerror
