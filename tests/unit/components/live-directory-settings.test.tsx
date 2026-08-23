@@ -61,7 +61,7 @@ describe("LiveDirectorySettings", () => {
 
     const status = screen.getByRole("status");
     expect(status).toHaveAttribute("aria-live", "polite");
-    expect(status.textContent).toBe("");
+    expect(status).toBeEmptyDOMElement();
 
     fireEvent.click(getLiveToggle());
 
