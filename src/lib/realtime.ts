@@ -151,6 +151,10 @@ const SOCKET_RECONCILIATION_TRIGGER_IDS = 512
 // Every validated event is at most 64 KiB. Thirty-two buffered envelopes cap a
 // recovery-order window at roughly 2 MiB before liveness takes precedence.
 const MAX_BUFFERED_SOCKET_EVENTS = 32
+// Serialized delivery tasks hold validated event envelopes while React waits
+// for a DOM acknowledgement. Bound that queue to the same 32-event window as
+// recovery buffering; overflow is recovered from authoritative DB history.
+const MAX_SOCKET_DELIVERY_TASKS = 32
 const SOCKET_RECOVERY_BUFFER_MAX_MS = 10_000
 const SEEN_EVENT_TTL_MS = 24 * 60 * 60 * 1000
 const PRESENCE_TOKEN_NONCE_PATTERN = /^[0-9a-f-]{36}$/i
@@ -1356,22 +1360,32 @@ export function subscribeToGachaResults(
             return
           }
           if (parsed.type === 'gacha_result') {
+            // Validate before retaining a frame in the serialized task queue.
+            // Otherwise a slow DOM acknowledgement would let unvalidated,
+            // potentially oversized envelopes accumulate without a memory bound.
+            const eventValidation = validateGachaRealtimeEvent(
+              parsed.event,
+              streamerId
+            )
+            if (!eventValidation.ok) {
+              options.onStatusChange?.('INVALID_EVENT:durable-object')
+              return
+            }
+            const queuedDeliveryCount = socketDeliveryTasks.length
+              + (socketDeliveryBusy ? 1 : 0)
+            if (queuedDeliveryCount >= MAX_SOCKET_DELIVERY_TASKS) {
+              // Drop this low-latency copy rather than retaining more memory.
+              // Committed user events are recovered from authoritative DB
+              // history; buffer subsequent frames until that recovery drains.
+              options.onStatusChange?.('DO_DELIVERY_QUEUE_FULL')
+              requestRecoveryPoll(true)
+              return
+            }
             // Serialize WebSocket delivery behind the DOM acknowledgement. A
             // callback can be asynchronous while React commits the card, so
             // handling frames directly here would allow B to overtake A.
             enqueueSocketTask(() => {
               if (disposed || generation !== socketGeneration) return
-              // Validate before buffering, not only before display. Otherwise a
-              // malformed room frame could bypass the 64 KiB contract and make
-              // the count-bounded recovery queue consume unbounded memory.
-              const eventValidation = validateGachaRealtimeEvent(
-                parsed.event,
-                streamerId
-              )
-              if (!eventValidation.ok) {
-                options.onStatusChange?.('INVALID_EVENT:durable-object')
-                return
-              }
               // A jump proves this socket missed a delivery. That is the only
               // reason a healthy connection reloads history now; the database
               // still decides what was actually missed.
