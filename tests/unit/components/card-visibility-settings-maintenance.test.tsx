@@ -46,14 +46,14 @@ describe('CardVisibilitySettings maintenance integration', () => {
     renderSettings({ mode: 'off' })
     const [showUnownedToggle] = getToggles()
     expect(showUnownedToggle).not.toBeDisabled()
-    expect(screen.queryByText('メンテナンス中は操作できません')).not.toBeInTheDocument()
+    expect(screen.queryByText(jaMessages.maintenance.writeDisabled)).not.toBeInTheDocument()
   })
 
   it('mode!=off のときはトグルがdisableされ、案内文言が表示される（事前disable）', () => {
     renderSettings({ mode: 'read-only' })
     const [showUnownedToggle] = getToggles()
     expect(showUnownedToggle).toBeDisabled()
-    expect(screen.getByText('メンテナンス中は操作できません')).toBeInTheDocument()
+    expect(screen.getByText(jaMessages.maintenance.writeDisabled)).toBeInTheDocument()
   })
 
   it('incident-read-only でも同様にdisableされる', () => {
