@@ -62,7 +62,7 @@ describe('db cutover invariant checks', () => {
     }
   })
 
-  it('allowlist lookupの識別に使うcodeが重複しない', () => {
+  it('allowlist entryの追跡用codeが重複しない', () => {
     const codes = ALLOWLIST.map((entry) => entry.code)
 
     expect(new Set(codes).size).toBe(codes.length)
