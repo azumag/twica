@@ -162,6 +162,7 @@ const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
 // presentation-only, so this timeout bounds the probe lifetime/layout decision;
 // the business-event queue and card DOM mounting do not wait for it.
 const IMAGE_METADATA_TIMEOUT_MS = 1_500;
+const MIN_REVEAL_LEAD_IN_MS = 100;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
 // Issue #634 (PR #995): 新旧コードが同じキーを奪い合わないよう"-v2"へ改称した。
@@ -752,7 +753,6 @@ export default function OverlayPage() {
           `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
         );
       });
-      const revealNotBefore = Date.now() + 100;
       // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
       // 解決に失敗してもbusiness eventのカードDOMを失わせない。
       setResult(next);
@@ -775,58 +775,65 @@ export default function OverlayPage() {
         setEffectParticles([]);
       }
 
-      // The card DOM is mounted immediately, but the visible reveal waits for
-      // metadata or the bounded probe timeout (whichever comes first), while
-      // retaining a minimum 100ms animation lead-in. This preserves the
-      // autoPortrait/smallMode decision without replacing a visible subtree.
+      // Mount the card DOM immediately. Metadata may choose portrait/small
+      // layout before reveal, but queue liveness does not depend solely on the
+      // metadata Promise: an independent fallback schedules reveal after the same
+      // bounded probe window even if that Promise stops settling in a future
+      // refactor. Whichever path wins still gives the final DOM branch at least
+      // MIN_REVEAL_LEAD_IN_MS before it becomes visible.
+      let revealScheduled = false;
+      const scheduleReveal = () => {
+        if (revealScheduled) return;
+        if (
+          !isOverlayMountedRef.current
+          || queueGeneration !== queueGenerationRef.current
+        ) {
+          return;
+        }
+        revealScheduled = true;
+        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+          if (
+            !isOverlayMountedRef.current
+            || queueGeneration !== queueGenerationRef.current
+          ) {
+            // Lifecycle cleanup owns the display-lock reset. An obsolete
+            // chain must never unlock a newer subscription's active queue.
+            return;
+          }
+          setShowCard(true);
+          if (next.shouldPlaySound !== false) {
+            if (next.soundGroupId) {
+              if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+                playedSoundGroupIdsRef.current.add(next.soundGroupId);
+                playGachaSound(next);
+              }
+            } else {
+              playGachaSound(next);
+            }
+          }
+
+          // Hide after display, then process next queued item
+          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+            setShowCard(false);
+            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+              // Once the outgoing card is removed, its callbacks must not affect
+              // the next card even if the browser retained the Image object.
+              imageLayoutGenerationRef.current += 1;
+              setResult(null);
+              // ref経由で最新のprocessQueueを呼び出し（再帰）
+              processQueueRef.current();
+            }), 500);
+          }), options.displayDuration * 1000);
+        }), MIN_REVEAL_LEAD_IN_MS);
+      };
+      const metadataFallbackTimeout = setTimeout(
+        () => runProtected(scheduleReveal),
+        IMAGE_METADATA_TIMEOUT_MS,
+      );
       void imageMetadataPromise
         .then(() => {
-          runProtected(() => {
-            // Cleanup can resolve the metadata Promise. Re-check the queue
-            // generation before scheduling any timer so an obsolete chain cannot
-            // create work after cleanup has already cleared the previous timer.
-            if (
-              !isOverlayMountedRef.current
-              || queueGeneration !== queueGenerationRef.current
-            ) {
-              return;
-            }
-            const revealDelay = Math.max(0, revealNotBefore - Date.now());
-            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-              if (
-                !isOverlayMountedRef.current
-                || queueGeneration !== queueGenerationRef.current
-              ) {
-                // Lifecycle cleanup owns the display-lock reset. An obsolete
-                // chain must never unlock a newer subscription's active queue.
-                return;
-              }
-              setShowCard(true);
-              if (next.shouldPlaySound !== false) {
-                if (next.soundGroupId) {
-                  if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
-                    playedSoundGroupIdsRef.current.add(next.soundGroupId);
-                    playGachaSound(next);
-                  }
-                } else {
-                  playGachaSound(next);
-                }
-              }
-
-              // Hide after display, then process next queued item
-              animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-                setShowCard(false);
-                animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-                  // Once the outgoing card is removed, its callbacks must not affect
-                  // the next card even if the browser retained the Image object.
-                  imageLayoutGenerationRef.current += 1;
-                  setResult(null);
-                  // ref経由で最新のprocessQueueを呼び出し（再帰）
-                  processQueueRef.current();
-                }), 500);
-              }), options.displayDuration * 1000);
-            }), revealDelay);
-          });
+          clearTimeout(metadataFallbackTimeout);
+          runProtected(scheduleReveal);
         })
         .catch(handleQueueError);
     } catch (error) {

@@ -224,7 +224,7 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
-  it('画像メタデータ取得が停止しても、タイムアウトを待たずN連キューを表示する', async () => {
+  it('画像メタデータ取得が停止しても、独立fallbackでN連キューを前進する', async () => {
     vi.useFakeTimers()
 
     let imageLoadCount = 0
@@ -294,7 +294,8 @@ describe('OverlayPage', () => {
     expect(screen.getByText('Alpha')).toBeInTheDocument()
 
     // 1枚目の表示終了後、2枚目のmetadata probeは無応答のままでも、カードDOMは
-    // 先にマウントされる。visible revealだけは1.5秒のprobe上限まで待つ。
+    // 先にマウントされる。独立fallbackが1.5秒でrevealを予約し、最終DOMへ
+    // 100msのlead-inを確保してから可視化する。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6600)
     })
@@ -304,7 +305,7 @@ describe('OverlayPage', () => {
     expect(betaText.closest('.transition-all')).toHaveClass('opacity-0')
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1500)
+      await vi.advanceTimersByTimeAsync(1600)
     })
     expect(betaText.closest('.transition-all')).toHaveClass('opacity-100')
 
