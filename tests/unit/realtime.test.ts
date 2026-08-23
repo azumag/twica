@@ -120,6 +120,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       type: 'gacha',
       card: CARD_A,
       cards: [CARD_A, CARD_B],
+      drawEventIds: ['event-1', 'event-1:2'],
       userTwitchUsername: 'viewer',
       rewardId: 'reward-1',
       soundGroupId: 'event-1',
@@ -486,7 +487,10 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     }))
 
     const callback = vi.fn()
-    callback.mockImplementationOnce(() => Promise.resolve(false))
+    let resolveFirstAttempt: ((accepted: boolean) => void) | undefined
+    callback.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      resolveFirstAttempt = resolve
+    }))
     const cleanup = subscribeToGachaResults('ignored', callback, { retryDelay: 10 })
     await flushPromises()
     expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual(['card-a'])
@@ -497,6 +501,8 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     // B arrived while A was still awaiting a successful polling retry.
     expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual(['card-a'])
 
+    resolveFirstAttempt?.(false)
+    await flushPromises()
     await vi.advanceTimersByTimeAsync(10)
     await flushPromises()
     await vi.advanceTimersByTimeAsync(1)

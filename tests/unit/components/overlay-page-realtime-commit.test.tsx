@@ -123,6 +123,14 @@ describe('OverlayPage actual realtime transport commit acknowledgement', () => {
       expect(root?.querySelector('img')?.getAttribute('loading')).toBe('eager')
       expect(screen.getByText('Commit Aware Card')).toBeInTheDocument()
     })
+    const image = document.querySelector('[data-overlay-card="true"] img') as HTMLImageElement
+    Object.defineProperty(image, 'complete', { configurable: true, value: true })
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 320 })
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 448 })
+    await act(async () => {
+      image.dispatchEvent(new Event('load'))
+      await Promise.resolve()
+    })
     const seenRecords = JSON.parse(sessionStorage.getItem(seenStorageKey) ?? '[]') as Array<[string, number]>
     expect(seenRecords.map(([eventId]) => eventId)).toContain(event.draws[0].eventId)
   })

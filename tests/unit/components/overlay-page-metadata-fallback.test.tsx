@@ -126,6 +126,13 @@ describe('OverlayPage metadata fallback', () => {
     const cardRoot = cardName.closest('.transition-all')
     expect(cardRoot).not.toBeNull()
     expect(cardRoot).toHaveClass('opacity-100')
+    const cardImage = cardRoot?.querySelector('img') as HTMLImageElement | null
+    if (cardImage) {
+      Object.defineProperty(cardImage, 'complete', { configurable: true, value: true })
+      Object.defineProperty(cardImage, 'naturalWidth', { configurable: true, value: 320 })
+      Object.defineProperty(cardImage, 'naturalHeight', { configurable: true, value: 448 })
+      cardImage.dispatchEvent(new Event('load'))
+    }
 
     // load/errorは無応答のままでも、metadata期限に依存せず表示が維持される。
     await act(async () => {

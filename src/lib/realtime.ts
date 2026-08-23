@@ -42,6 +42,8 @@ export interface GachaBroadcastPayload {
     image_url: string | null
     rarity: string
   }>
+  /** Stable identities for each card in an N-draw callback, in display order. */
+  drawEventIds?: string[]
   userTwitchUsername: string
   rewardId?: string | null
   /** Stable batch key used to suppress duplicate sound across recovery pages. */
@@ -65,7 +67,7 @@ export type GachaResultCallback = (
   payload: GachaBroadcastPayload,
 ) => GachaDeliveryResult
 
-type IngestStatus = 'invalid' | 'duplicate' | 'delivered' | 'callback-error'
+type IngestStatus = 'invalid' | 'duplicate' | 'pending' | 'delivered' | 'callback-error'
 
 function isPromiseLike<T>(value: unknown): value is Promise<T> {
   return Boolean(
@@ -592,6 +594,10 @@ export function subscribeToGachaResults(
   let socketFlushInFlight = false
   const demoRetryCounts = new Map<string, number>()
   const demoRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  // A long N-draw DOM acknowledgement can overlap the safety poll. Keep
+  // those IDs distinct from committed dedupe entries so polling does not move
+  // the durable cursor past an event whose batch is still awaiting display.
+  const pendingEventIds = new Set<string>()
   // IDs delivered by DO but not yet observed in a DB response. This separate
   // set prevents bounded general dedupe eviction from cascading into hundreds
   // of duplicate renders while a multi-page reconciliation drains.
@@ -664,10 +670,14 @@ export function subscribeToGachaResults(
   }
 
   const beginSocketRecovery = () => {
-    if (disposed || socketRecoveryActive) return
+    if (disposed) return
     socketRecoveryActive = true
-    if (recoveryBufferTimer) clearTimeout(recoveryBufferTimer)
+    // A previous bounded flush may have kept the recovery state active after
+    // a callback failure. Re-arm the safety deadline in that case; otherwise
+    // every later live frame would remain buffered forever with no timeout.
+    if (recoveryBufferTimer) return
     recoveryBufferTimer = setTimeout(() => {
+      recoveryBufferTimer = null
       releaseSocketRecoveryBuffer('timeout')
     }, SOCKET_RECOVERY_BUFFER_MAX_MS)
   }
@@ -691,7 +701,12 @@ export function subscribeToGachaResults(
     // can roll them back without disturbing earlier successful deliveries.
     const newlySeenEventIds: string[] = []
     const newlyUnreconciledSocketEventIds: string[] = []
+    let pendingDrawEncountered = false
     const unseenDraws = event.draws.filter((draw) => {
+      if (pendingEventIds.has(draw.eventId)) {
+        pendingDrawEncountered = true
+        return false
+      }
       // Seeing the exact ID in a polling envelope proves that this socket
       // delivery is now behind the authoritative DB checkpoint. Treat it as a
       // duplicate even if the general bounded cache has already evicted it.
@@ -700,6 +715,7 @@ export function subscribeToGachaResults(
       if (confirmedSocketDelivery || seenEventIds.has(draw.eventId)) return false
       if (!rememberSeenId(seenEventIds, draw.eventId)) return false
       newlySeenEventIds.push(draw.eventId)
+      pendingEventIds.add(draw.eventId)
 
       if (source === 'durable-object' && event.deliveryKind !== 'demo') {
         // Committed socket events remain pending until the authoritative DB
@@ -720,6 +736,10 @@ export function subscribeToGachaResults(
       }
       return true
     })
+    if (pendingDrawEncountered) {
+      options.onStatusChange?.(`PENDING_EVENT:${source}`)
+      return 'pending'
+    }
     if (
       source === 'polling'
       && unreconciledSocketEventIds.size < SOCKET_RECONCILIATION_TRIGGER_IDS
@@ -736,6 +756,7 @@ export function subscribeToGachaResults(
       // exact committed row without consuming another channel-point exchange.
       for (const eventId of newlySeenEventIds) {
         seenEventIds.delete(eventId)
+        pendingEventIds.delete(eventId)
       }
       for (const eventId of newlyUnreconciledSocketEventIds) {
         unreconciledSocketEventIds.delete(eventId)
@@ -746,6 +767,9 @@ export function subscribeToGachaResults(
     const commit = (accepted: void | boolean) => {
       if (accepted === false) {
         throw new Error('overlay callback rejected event')
+      }
+      for (const eventId of newlySeenEventIds) {
+        pendingEventIds.delete(eventId)
       }
       // Persist only after the page accepted the payload. Storage is an
       // optimization for reload dedupe; the in-memory rollback above is the
@@ -758,6 +782,9 @@ export function subscribeToGachaResults(
         type: 'gacha',
         card: unseenDraws[0].card,
         ...(unseenDraws.length > 1 ? { cards: unseenDraws.map((draw) => draw.card) } : {}),
+        ...(unseenDraws.length > 1
+          ? { drawEventIds: unseenDraws.map((draw) => draw.eventId) }
+          : {}),
         userTwitchUsername: event.user.twitchUsername,
         rewardId: event.rewardId ?? null,
         soundGroupId: event.soundGroupId,
@@ -872,6 +899,8 @@ export function subscribeToGachaResults(
     demoRetryCounts.set(demoId, attempt)
     if (attempt > 3) {
       options.onStatusChange?.('DO_DEMO_RETRY_EXHAUSTED')
+      demoRetryCounts.delete(demoId)
+      demoRetryTimers.delete(demoId)
       // A broken operator demo must not hold the live queue forever. Remove
       // only that demo and schedule the retained tail; committed user events
       // remain ordered and are never discarded by this bounded demo guard.
@@ -922,6 +951,14 @@ export function subscribeToGachaResults(
           // ten-minute healthy-socket reconciliation.
           requestRecoveryPoll(true)
         }
+        return false
+      }
+      if (result === 'pending') {
+        // The same event is already waiting for a page-side DOM ACK. Keep it
+        // and its tail behind that in-flight owner; the next polling pass will
+        // retry only after the owner resolves.
+        bufferedSocketEvents = buffered.slice(index).concat(bufferedSocketEvents)
+        requestRecoveryPoll(true)
         return false
       }
       if (event.deliveryKind === 'demo') {
@@ -991,6 +1028,7 @@ export function subscribeToGachaResults(
     let historyPageHadRows = false
     let failed = false
     let callbackRejected = false
+    let pendingAcknowledgement = false
     let retryDelayMs: number | null = null
     try {
       // History recovery and the rare operator demo share one HTTP response.
@@ -1013,8 +1051,18 @@ export function subscribeToGachaResults(
       const envelopes = historyResponse.realtimeEvents?.length
         ? historyResponse.realtimeEvents
         : buildPollingRealtimeEvents(streamerId, rawEvents)
+      // A polling draw is the ordering barrier for the live tail. Start
+      // buffering healthy-socket frames before awaiting its DOM acknowledgement
+      // so B cannot overtake a still-pending A even when A eventually rejects.
+      if (socketIsHealthy() && envelopes.length > 0) {
+        beginSocketRecovery()
+      }
       for (const event of envelopes) {
         const ingestResult = await ingest(event, 'polling')
+        if (ingestResult === 'pending') {
+          pendingAcknowledgement = true
+          throw new Error('overlay callback is still awaiting display acknowledgement')
+        }
         if (ingestResult === 'callback-error') {
           // Do not advance the authoritative cursor past a draw whose page
           // callback rejected it. The catch/finally path schedules a bounded
@@ -1083,7 +1131,7 @@ export function subscribeToGachaResults(
     } catch (error) {
       failed = true
       retryCount += 1
-      if (callbackRejected) {
+      if (callbackRejected || pendingAcknowledgement) {
         // A failed DOM acknowledgement leaves the history cursor before the
         // rejected draw. Keep later WebSocket frames behind that draw until a
         // retrying /events pass commits it; otherwise B can render before A
@@ -1633,6 +1681,7 @@ export function subscribeToGachaResults(
     for (const timer of demoRetryTimers.values()) clearTimeout(timer)
     demoRetryTimers.clear()
     demoRetryCounts.clear()
+    pendingEventIds.clear()
     closeSocket()
   }
 }

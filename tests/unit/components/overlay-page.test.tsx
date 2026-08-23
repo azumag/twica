@@ -224,6 +224,96 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
+  it('N連の後段カードが失敗したとき、表示済みカードを重複させず残りだけ再試行する', async () => {
+    vi.useFakeTimers()
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 320
+      height = 448
+
+      set src(_value: string) {}
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const view = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const cards = [
+      {
+        id: 'batch-card-a',
+        name: 'Batch A',
+        description: null,
+        image_url: null,
+        rarity: 'common',
+      },
+      {
+        id: 'batch-card-b',
+        name: 'Batch B',
+        description: null,
+        image_url: 'https://example.com/batch-b.png',
+        rarity: 'rare',
+      },
+    ]
+    const payload: GachaBroadcastPayload = {
+      type: 'gacha',
+      card: cards[0],
+      cards,
+      drawEventIds: ['batch-event-a', 'batch-event-b'],
+      userTwitchUsername: 'Viewer',
+    }
+
+    let firstAttempt: Promise<boolean> | undefined
+    await act(async () => {
+      firstAttempt = onGachaResult?.(payload)
+      await Promise.resolve()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Batch A')).toBeInTheDocument()
+
+    // A commits, then B becomes active but never loads an image. Its watchdog
+    // rejects the transport batch rather than leaving A/B serialized forever.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('Batch B')).toBeInTheDocument()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4500)
+    })
+    await expect(firstAttempt).resolves.toBe(false)
+    expect(screen.queryByText('Batch A')).not.toBeInTheDocument()
+
+    let retryAttempt: Promise<boolean> | undefined
+    await act(async () => {
+      retryAttempt = onGachaResult?.(payload)
+      await Promise.resolve()
+    })
+    expect(screen.getByText('Batch B')).toBeInTheDocument()
+    const image = document.querySelector('[data-overlay-card="true"] img') as HTMLImageElement
+    Object.defineProperty(image, 'complete', { configurable: true, value: true })
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 320 })
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 448 })
+    await act(async () => {
+      image.dispatchEvent(new Event('load'))
+      await Promise.resolve()
+    })
+    await expect(retryAttempt).resolves.toBe(true)
+    view.unmount()
+  })
+
   it('画像メタデータ取得が停止しても、カード表示とN連キューを止めない', async () => {
     vi.useFakeTimers()
 

@@ -69,8 +69,14 @@ interface GachaResult {
   soundGroupId?: string;
   shouldPlaySound?: boolean;
   rewardId?: string | null;
+  /** Draw identities are present for transport-backed N-draw payloads. */
+  drawEventIds?: string[];
   /** Monotonic per-overlay key so consecutive draws always remount card DOM. */
   displayInstanceId?: number;
+  /** Stable transport draw identity used to resume a partially rendered batch. */
+  drawEventId?: string;
+  /** Internal key shared by all display items from one transport batch. */
+  batchKey?: string;
 }
 
 type DisplayRequest = {
@@ -79,6 +85,14 @@ type DisplayRequest = {
 };
 
 type DisplayResultHandler = (data: GachaResult) => Promise<boolean>;
+
+type DisplayCommitBatch = {
+  batchKey: string;
+  pendingIds: Set<number>;
+  acceptedDrawIds: Set<string>;
+  resolve: (accepted: boolean) => void;
+  settled: boolean;
+};
 
 interface OverlayPollingEvent {
   id: string;
@@ -170,6 +184,11 @@ const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
 // the business-event queue and card DOM mounting do not wait for it.
 const IMAGE_METADATA_TIMEOUT_MS = 1_500;
 const MIN_REVEAL_LEAD_IN_MS = 100;
+// A realtime delivery is not acknowledged until React has committed the card
+// and its image has loaded.  A stopped CEF/OBS render loop must still release
+// that promise so the transport can roll the event back and recover it through
+// polling instead of serializing every later draw behind a never-settling ACK.
+const DISPLAY_COMMIT_ACK_TIMEOUT_MS = 4_500;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
 // Issue #634 (PR #995): 新旧コードが同じキーを奪い合わないよう"-v2"へ改称した。
@@ -244,6 +263,16 @@ export default function OverlayPage() {
   // transport retry a draw that was accepted by JavaScript but never became a
   // visible card (the failure mode behind the fixed-overlay black screen).
   const displayCommitResolversRef = useRef<Map<number, (accepted: boolean) => void>>(new Map());
+  const displayCommitTimeoutsRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const displayImageCleanupRef = useRef<Map<number, () => void>>(new Map());
+  const displayCommitEntriesRef = useRef<Map<number, { batchKey: string; drawEventId: string }>>(new Map());
+  const displayCommitBatchesRef = useRef<Map<string, DisplayCommitBatch>>(new Map());
+  // When a multi-draw batch partially renders and is retried, cards that were
+  // already committed must not be shown twice. The transport rolls back the
+  // whole batch on a negative acknowledgement, so this set bridges the retry
+  // without consuming another redemption or duplicating the visible prefix.
+  const committedDrawIdsRef = useRef<Set<string>>(new Set());
+  const activeDisplayInstanceIdRef = useRef<number | undefined>(undefined);
   // Image metadata checks are presentation-only and run independently from the
   // display queue. Cleanup still resolves pending checks so Image callbacks do
   // not retain an obsolete card/component lifetime.
@@ -332,16 +361,113 @@ export default function OverlayPage() {
     const resolve = displayCommitResolversRef.current.get(displayInstanceId);
     if (!resolve) return;
     displayCommitResolversRef.current.delete(displayInstanceId);
+    const timeoutId = displayCommitTimeoutsRef.current.get(displayInstanceId);
+    if (timeoutId) clearTimeout(timeoutId);
+    displayCommitTimeoutsRef.current.delete(displayInstanceId);
+    displayCommitEntriesRef.current.delete(displayInstanceId);
+    const cleanupImageListeners = displayImageCleanupRef.current.get(displayInstanceId);
+    cleanupImageListeners?.();
+    displayImageCleanupRef.current.delete(displayInstanceId);
     resolve(accepted);
   }, []);
 
   const settleAllDisplayCommits = useCallback((accepted: boolean) => {
-    const pending = Array.from(displayCommitResolversRef.current.values());
-    displayCommitResolversRef.current.clear();
-    for (const resolve of pending) {
-      resolve(accepted);
+    const pendingIds = Array.from(displayCommitResolversRef.current.keys());
+    for (const displayInstanceId of pendingIds) {
+      settleDisplayCommit(displayInstanceId, accepted);
     }
-  }, []);
+    for (const timeoutId of displayCommitTimeoutsRef.current.values()) {
+      clearTimeout(timeoutId);
+    }
+    displayCommitTimeoutsRef.current.clear();
+    for (const cleanup of displayImageCleanupRef.current.values()) {
+      cleanup();
+    }
+    displayImageCleanupRef.current.clear();
+  }, [settleDisplayCommit]);
+
+  const failDisplayBatch = useCallback((batchKey: string, reason: string) => {
+    const batch = displayCommitBatchesRef.current.get(batchKey);
+    if (!batch || batch.settled) return;
+    batch.settled = true;
+    displayCommitBatchesRef.current.delete(batchKey);
+    for (const drawEventId of batch.acceptedDrawIds) {
+      committedDrawIdsRef.current.add(drawEventId);
+    }
+    queueRef.current = queueRef.current.filter(
+      (item) => item.batchKey !== batchKey,
+    );
+    addDebugLogRef.current(`Card batch commit failed: ${reason}`);
+    const pendingIds = Array.from(batch.pendingIds);
+    for (const pendingId of pendingIds) {
+      settleDisplayCommit(pendingId, false);
+    }
+    batch.resolve(false);
+  }, [settleDisplayCommit]);
+
+  const acknowledgeDisplayItem = useCallback((
+    displayInstanceId: number,
+    accepted: boolean,
+    drawEventId: string,
+    batchKey: string,
+  ) => {
+    const batch = displayCommitBatchesRef.current.get(batchKey);
+    if (!batch || batch.settled) return;
+    batch.pendingIds.delete(displayInstanceId);
+    if (!accepted) {
+      failDisplayBatch(batchKey, 'item-rejected');
+      return;
+    }
+    batch.acceptedDrawIds.add(drawEventId);
+    if (batch.pendingIds.size > 0) return;
+    batch.settled = true;
+    displayCommitBatchesRef.current.delete(batchKey);
+    for (const acceptedDrawId of batch.acceptedDrawIds) {
+      committedDrawIdsRef.current.delete(acceptedDrawId);
+    }
+    batch.resolve(true);
+  }, [failDisplayBatch]);
+
+  const failDisplayCommit = useCallback((
+    displayInstanceId: number,
+    reason: string,
+  ) => {
+    if (!displayCommitResolversRef.current.has(displayInstanceId)) return;
+    addDebugLogRef.current(`Card display commit failed: ${reason}`);
+    const batchEntry = displayCommitEntriesRef.current.get(displayInstanceId);
+    if (batchEntry) {
+      failDisplayBatch(batchEntry.batchKey, reason);
+    } else {
+      settleDisplayCommit(displayInstanceId, false);
+    }
+
+    // Do not leave the page-side display lock holding the next retry. The
+    // instance guard prevents a late timeout/error from clearing a newer card
+    // that has already replaced this one.
+    if (activeDisplayInstanceIdRef.current !== displayInstanceId) return;
+    activeDisplayInstanceIdRef.current = undefined;
+    if (animationTimeoutRef.current) {
+      clearTimeout(animationTimeoutRef.current);
+      animationTimeoutRef.current = null;
+    }
+    setShowCard(false);
+    setResult(null);
+    isDisplayingRef.current = false;
+    setTimeout(() => processQueueRef.current(), 0);
+  }, [failDisplayBatch, settleDisplayCommit]);
+
+  const armDisplayCommitTimeout = useCallback((displayInstanceId: number) => {
+    if (
+      !displayCommitResolversRef.current.has(displayInstanceId)
+      || displayCommitTimeoutsRef.current.has(displayInstanceId)
+    ) {
+      return;
+    }
+    const timeoutId = setTimeout(() => {
+      failDisplayCommit(displayInstanceId, 'timeout');
+    }, DISPLAY_COMMIT_ACK_TIMEOUT_MS);
+    displayCommitTimeoutsRef.current.set(displayInstanceId, timeoutId);
+  }, [failDisplayCommit]);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
@@ -722,8 +848,13 @@ export default function OverlayPage() {
     const queueGeneration = queueGenerationRef.current;
     const next = queueRef.current.shift();
     if (!next) {
+      activeDisplayInstanceIdRef.current = undefined;
       isDisplayingRef.current = false;
       return;
+    }
+    activeDisplayInstanceIdRef.current = next.displayInstanceId;
+    if (next.displayInstanceId !== undefined) {
+      armDisplayCommitTimeout(next.displayInstanceId);
     }
     isDisplayingRef.current = true;
 
@@ -788,6 +919,7 @@ export default function OverlayPage() {
         // unmount. Release the display lock so a later subscription can render.
         addDebugLogRef.current('Card display aborted: inactive subscription');
         settleDisplayCommit(next.displayInstanceId, false);
+        activeDisplayInstanceIdRef.current = undefined;
         isDisplayingRef.current = false;
         return;
       }
@@ -881,6 +1013,7 @@ export default function OverlayPage() {
             // Once the outgoing card is removed, its callbacks must not affect
             // the next card even if the browser retained the Image object.
             imageLayoutGenerationRef.current += 1;
+            activeDisplayInstanceIdRef.current = undefined;
             setResult(null);
             // ref経由で最新のprocessQueueを呼び出し（再帰）
             processQueueRef.current();
@@ -892,7 +1025,7 @@ export default function OverlayPage() {
     } catch (error) {
       handleQueueError(error);
     }
-  }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap, settleDisplayCommit]);
+  }, [armDisplayCommitTimeout, checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap, settleDisplayCommit]);
 
   // processQueueRefを最新のcallbackで更新
   useEffect(() => {
@@ -912,6 +1045,23 @@ export default function OverlayPage() {
       return Promise.resolve(false);
     }
     const cards = data.cards?.length ? data.cards : [data.card];
+    const drawEventIds = data.drawEventIds?.length === cards.length
+      ? data.drawEventIds
+      : undefined;
+    const batchKey = drawEventIds?.[0]
+      ?? `overlay-batch-${displayInstanceSequenceRef.current + 1}`;
+    const pendingCards = cards
+      .map((card, index) => ({
+        card,
+        index,
+        drawEventId: drawEventIds?.[index],
+      }))
+      .filter(({ drawEventId }) => (
+        !drawEventId || !committedDrawIdsRef.current.has(drawEventId)
+      ));
+    if (pendingCards.length === 0) {
+      return Promise.resolve(true);
+    }
     // PR #451 レビュー指摘(F2): 「1枚目のカード」固定ではなく、バッチ全体から
     // ルール一致優先度(reward > rarity > all、同率ならより希少なレアリティ)が
     // 最も高い1枚を選んで、そのカードの表示タイミングでのみ音を鳴らす。
@@ -920,10 +1070,12 @@ export default function OverlayPage() {
     const soundBearingIndex = data.shouldPlaySound === false
       ? -1
       : pickSoundBearingCardIndex(cards, data.rewardId, soundSettings.soundRules);
-    const displayItems = cards.map((card, index) => ({
+    const displayItems = pendingCards.map(({ card, index, drawEventId }) => ({
         ...data,
         card,
         cards: undefined,
+        drawEventId,
+        batchKey: drawEventIds ? batchKey : undefined,
         shouldPlaySound: index === soundBearingIndex,
         displayInstanceId: ++displayInstanceSequenceRef.current,
       }));
@@ -932,6 +1084,35 @@ export default function OverlayPage() {
       return Promise.resolve(false);
     }
     const commitPromise = new Promise<boolean>((resolve) => {
+      if (drawEventIds) {
+        const batch: DisplayCommitBatch = {
+          batchKey,
+          pendingIds: new Set(displayItems.map((item) => item.displayInstanceId)),
+          acceptedDrawIds: new Set(),
+          resolve,
+          settled: false,
+        };
+        displayCommitBatchesRef.current.set(batchKey, batch);
+        for (const item of displayItems) {
+          const displayInstanceId = item.displayInstanceId;
+          const drawEventId = item.drawEventId;
+          if (drawEventId === undefined) continue;
+          displayCommitEntriesRef.current.set(displayInstanceId, {
+            batchKey,
+            drawEventId,
+          });
+          displayCommitResolversRef.current.set(displayInstanceId, (accepted) => {
+            acknowledgeDisplayItem(
+              displayInstanceId,
+              accepted,
+              drawEventId,
+              batchKey,
+            );
+          });
+        }
+        return;
+      }
+
       displayCommitResolversRef.current.set(firstDisplayInstanceId, resolve);
     });
     queueRef.current.push(...displayItems);
@@ -942,7 +1123,7 @@ export default function OverlayPage() {
       processQueueRef.current();
     }
     return commitPromise;
-  }, [soundSettings.soundRules]);
+  }, [acknowledgeDisplayItem, soundSettings.soundRules]);
 
   // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）。
   // 購読開始前に届いたpayloadがあれば、ここで最新のenqueueへ一度だけ渡す。
@@ -1209,21 +1390,58 @@ export default function OverlayPage() {
   // the queue from a React/browser paint problem. This is intentionally free
   // of card names, IDs, URLs, and user data.
   useEffect(() => {
-    if (result) {
-      addDebugLogRef.current('Card display committed');
-      const cardRoot = document.querySelector('[data-overlay-card="true"]');
-      const imageCommitted = !result.card.image_url || Boolean(cardRoot?.querySelector('img'));
-      if (cardRoot && imageCommitted) {
-        settleDisplayCommit(result.displayInstanceId, true);
-      } else {
-        // A state update without its card branch is exactly the failure that
-        // previously left the fixed overlay black. Do not acknowledge this
-        // event to the transport until the DOM contract is present.
-        addDebugLogRef.current('Card display commit missing DOM/image');
-        settleDisplayCommit(result.displayInstanceId, false);
-      }
+    if (!result) return;
+    const displayInstanceId = result.displayInstanceId;
+    if (displayInstanceId === undefined) return;
+    addDebugLogRef.current('Card display committed');
+    const cardRoot = document.querySelector('[data-overlay-card="true"]');
+    if (!cardRoot) {
+      // The bounded watchdog owns this failure path. A transient React commit
+      // gap must not be acknowledged as a duplicate, but resolving false here
+      // would race a same-turn commit and create an unnecessary replay.
+      addDebugLogRef.current('Card display commit missing DOM');
+      return;
     }
-  }, [result, settleDisplayCommit]);
+
+    if (!result.card.image_url) {
+      settleDisplayCommit(displayInstanceId, true);
+      return;
+    }
+
+    const image = cardRoot.querySelector('img') as HTMLImageElement | null;
+    if (!image) {
+      addDebugLogRef.current('Card display commit missing image');
+      return;
+    }
+
+    const imageIsReady = (
+      image.complete
+      && image.naturalWidth > 0
+      && image.naturalHeight > 0
+    );
+    if (imageIsReady) {
+      settleDisplayCommit(displayInstanceId, true);
+      return;
+    }
+
+    addDebugLogRef.current('Card image awaiting load');
+    const onLoad = () => {
+      if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
+        settleDisplayCommit(displayInstanceId, true);
+      } else {
+        failDisplayCommit(displayInstanceId, 'image-invalid');
+      }
+    };
+    const onError = () => {
+      failDisplayCommit(displayInstanceId, 'image-error');
+    };
+    image.addEventListener('load', onLoad, { once: true });
+    image.addEventListener('error', onError, { once: true });
+    displayImageCleanupRef.current.set(displayInstanceId, () => {
+      image.removeEventListener('load', onLoad);
+      image.removeEventListener('error', onError);
+    });
+  }, [failDisplayCommit, result, settleDisplayCommit]);
 
   // #694 Stage 6b: maintenance状態のポーリング（debugパネル表示専用）。
   //
@@ -1286,6 +1504,9 @@ export default function OverlayPage() {
     const playedSoundGroupIds = playedSoundGroupIdsRef.current;
     const activeImageCheckCancels = activeImageCheckCancelsRef.current;
     const pendingDisplayResults = pendingDisplayResultsRef.current;
+    const displayCommitBatches = displayCommitBatchesRef.current;
+    const displayCommitEntries = displayCommitEntriesRef.current;
+    const committedDrawIds = committedDrawIdsRef.current;
 
     queueMicrotask(() => {
       addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
@@ -1309,6 +1530,7 @@ export default function OverlayPage() {
           cards: payload.cards as unknown as Card[] | undefined,
           userTwitchUsername: payload.userTwitchUsername,
           rewardId: payload.rewardId ?? null,
+          drawEventIds: payload.drawEventIds,
           // A reconnect recovery page can contain only part of a very large
           // backlog. Preserve the versioned batch key so later pages do not
           // replay the same N-draw sound even though their cards still render.
@@ -1394,6 +1616,10 @@ export default function OverlayPage() {
       activeImageCheckCancels.clear();
       // キューをクリアして未再生アイテムを破棄
       queueRef.current = [];
+      displayCommitBatches.clear();
+      displayCommitEntries.clear();
+      committedDrawIds.clear();
+      activeDisplayInstanceIdRef.current = undefined;
       isDisplayingRef.current = false;
       playedSoundGroupIds.clear();
       if (connectionTimeoutRef.current) {
