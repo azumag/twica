@@ -222,7 +222,7 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
-  it('画像メタデータ取得が停止しても、タイムアウト後にN連キューを最後まで進める', async () => {
+  it('画像メタデータ取得が停止しても、タイムアウトを待たずN連キューを表示する', async () => {
     vi.useFakeTimers()
 
     let imageLoadCount = 0
@@ -291,25 +291,20 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Alpha')).toBeInTheDocument()
 
-    // 1枚目の表示終了後、2枚目の画像ロードは応答しない。切替の0.5秒後から
-    // タイムアウト直前まで結果領域は空であり、2枚目が早まって表示されない。
+    // 1枚目の表示終了後、2枚目のmetadata probeは無応答のまま。
+    // それでもprobeの1.5秒timeoutを待たず、通常の表示間隔+100msでBetaが
+    // 可視になることを固定する。これがIssue #1076の黒画面回帰契約。
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6500 + 1499)
+      await vi.advanceTimersByTimeAsync(6600)
     })
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
-    expect(screen.queryByText('Beta')).not.toBeInTheDocument()
+    expect(screen.getByText('Beta')).toBeVisible()
 
+    // 2枚目のmetadata timeoutの有無とは独立に通常の表示時間で3枚目へ進む。
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1 + 100)
+      await vi.advanceTimersByTimeAsync(6600)
     })
-    expect(screen.getByText('Beta')).toBeInTheDocument()
-
-    // 2枚目の表示終了後は3枚目の通常ロードへ戻り、無応答だった1枚によって
-    // キューが恒久停止しない。
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(6500 + 100)
-    })
-    expect(screen.getByText('Gamma')).toBeInTheDocument()
+    expect(screen.getByText('Gamma')).toBeVisible()
 
     // タイムアウト済みの2枚目が後から縦長としてロード完了しても、現在の3枚目の
     // レイアウトを変更してはならない。autoPortraitの既定値はtrueなので、古い
@@ -523,9 +518,9 @@ describe('OverlayPage', () => {
   });
 
   // Issue #999 レビュー指摘#1回帰（GitHub自動レビュー・subagentレビュー
-  // 双方が指摘): 上のテストは processQueue の外側の try/catch（await
-  // checkImageAspectRatio 完了まで〜setResult/setShowCard まで）で捕捉
-  // される例外だけを検証していた。しかし setTimeout でスケジュールされる
+  // 双方が指摘): 上のテストは processQueue の外側の try/catch（metadata
+  // probe開始〜setResult/setShowCard まで）で捕捉される例外だけを検証していた。
+  // しかし setTimeout でスケジュールされる
   // 後半の表示チェーン（音声再生・次カードへの再帰呼び出しを含む）は、
   // それをスケジュールした関数の try/catch の動的スコープに含まれない
   // 別タスクであり、素朴に外側をtry/catchで囲んだだけではその中の例外は

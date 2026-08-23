@@ -227,15 +227,17 @@ export default function OverlayPage() {
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
   const queueRef = useRef<GachaResult[]>([]);
   const isDisplayingRef = useRef(false);
-  // Image metadata checks are cancellable because their Promise is awaited by
-  // the display queue. Cleanup must resolve (not merely clear) pending checks,
-  // otherwise the suspended processQueue closure and its card remain retained.
+  // Image metadata checks are presentation-only and run independently from the
+  // display queue. Cleanup still resolves pending checks so Image callbacks do
+  // not retain an obsolete card/component lifetime.
   const activeImageCheckCancelsRef = useRef<Set<() => void>>(new Set());
   const isOverlayMountedRef = useRef(false);
-  // A streamer change can reuse this component instance. The generation lets
-  // an old async image check distinguish that transport cleanup from the new
-  // subscription setup, even when the mounted flag has already become true.
+  // A streamer change can reuse this component instance. The queue generation
+  // prevents an obsolete display task from continuing into the new subscription.
   const queueGenerationRef = useRef(0);
+  // Image metadata can resolve after the card that started it has already been
+  // replaced. Only the latest card may update portrait/small presentation state.
+  const imageLayoutGenerationRef = useRef(0);
   const playedSoundGroupIdsRef = useRef<Set<string>>(new Set());
   // processQueueの再帰呼び出し用ref（useCallback内で自身を参照するため）
   const processQueueRef = useRef<() => void>(() => {});
@@ -502,11 +504,19 @@ export default function OverlayPage() {
   // 画像のアスペクト比を判定（縦長かどうか）と小さい画像かどうかを判定
   // Check if image is portrait (height > width) and if image is small (< 400x400)
   // Promiseを返すことで、画像ロード完了を待てるようにする
-  const checkImageAspectRatio = useCallback((imageUrl: string | null): Promise<boolean> => {
+  const checkImageAspectRatio = useCallback((
+    imageUrl: string | null,
+    imageLayoutGeneration: number,
+  ): Promise<boolean> => {
     return new Promise((resolve) => {
       if (!imageUrl) {
-        setIsPortraitImage(false);
-        setIsSmallImage(false);
+        if (
+          isOverlayMountedRef.current
+          && imageLayoutGeneration === imageLayoutGenerationRef.current
+        ) {
+          setIsPortraitImage(false);
+          setIsSmallImage(false);
+        }
         resolve(false);
         return;
       }
@@ -529,7 +539,11 @@ export default function OverlayPage() {
           clearTimeout(timeoutId);
         }
         activeImageCheckCancelsRef.current.delete(cancel);
-        if (updateLayout && isOverlayMountedRef.current) {
+        if (
+          updateLayout
+          && isOverlayMountedRef.current
+          && imageLayoutGeneration === imageLayoutGenerationRef.current
+        ) {
           setIsPortraitImage(isPortrait);
           setIsSmallImage(isSmall);
         }
@@ -703,8 +717,26 @@ export default function OverlayPage() {
     };
 
     try {
-      // 画像のアスペクト比をチェック（autoPortraitモード用）
-      await checkImageAspectRatio(next.card.image_url);
+      // Issue #1076: aspect-ratio detection is presentation-only. In OBS/CEF a
+      // `new Image()` metadata request (and even its timeout) can be delayed,
+      // so awaiting it here kept `result` null after a valid realtime payload
+      // and produced a black overlay. Start the probe asynchronously and render
+      // the card on the normal 100ms path regardless of metadata availability.
+      const imageLayoutGeneration = imageLayoutGenerationRef.current + 1;
+      imageLayoutGenerationRef.current = imageLayoutGeneration;
+      setIsPortraitImage(false);
+      setIsSmallImage(false);
+      void checkImageAspectRatio(
+        next.card.image_url,
+        imageLayoutGeneration,
+      ).catch((error) => {
+        // Metadata is optional presentation data; a probe failure must not drop
+        // or advance the business-event queue after the card has started.
+        logger.warn("Overlay image metadata probe failed:", error);
+        addDebugLogRef.current(
+          `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
       if (
         !isOverlayMountedRef.current
         || queueGeneration !== queueGenerationRef.current
@@ -1160,6 +1192,7 @@ export default function OverlayPage() {
     return () => {
       isOverlayMountedRef.current = false;
       queueGenerationRef.current += 1;
+      imageLayoutGenerationRef.current += 1;
       for (const cancel of [...activeImageCheckCancels]) {
         cancel();
       }
