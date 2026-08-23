@@ -116,8 +116,8 @@ export async function GET(request: Request) {
         { status: 401 }
       );
     }
-    // token-manager側ではrefresh障害を二重Issue化しないため、route境界で安全な
-    // refresh診断だけをadditionalInfoへ明示的に橋渡しする（#1088）。
+    // token-manager側はrefresh障害を二重報告しない。永続化責任はAPI境界のhandleApiErrorにあり、
+    // ここで安全なrefresh診断だけをadditionalInfoへ明示的に橋渡しする。
     return handleApiError(error, "Twitch emotes fetch", twitchTokenErrorReportContext(error));
   }
 }
