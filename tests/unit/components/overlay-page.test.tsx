@@ -302,7 +302,18 @@ describe('OverlayPage', () => {
       await Promise.resolve()
     })
     expect(screen.getByText('Batch B')).toBeInTheDocument()
+    const staleImage = document.querySelector('[data-overlay-card="true"] img') as HTMLImageElement
+
+    // A negative ACK belongs to transport recovery only; the currently shown B
+    // intentionally remains visible until its normal display lifecycle ends.
+    // The retried B is queued behind that stale display, so advance through the
+    // remaining hide/cleanup window before acknowledging the retry image.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100)
+    })
+    expect(screen.getByText('Batch B')).toBeInTheDocument()
     const image = document.querySelector('[data-overlay-card="true"] img') as HTMLImageElement
+    expect(image).not.toBe(staleImage)
     Object.defineProperty(image, 'complete', { configurable: true, value: true })
     Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 320 })
     Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 448 })
