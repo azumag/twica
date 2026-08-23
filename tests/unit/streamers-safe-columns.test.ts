@@ -23,6 +23,7 @@ function missingColumnError(column: string) {
 
 // 列オブジェクトを直接比較すると失敗時の差分が読みにくいため、
 // Drizzle の投影キーと実SQL列名だけの対応表へ落として比較する。
+// そのため、別テーブル由来でも同じSQL列名を持つ列オブジェクトへの差し替えまでは検知しない。
 function toProjectionMap(columns: Record<string, { name: string }>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(columns).map(([key, column]) => [key, column.name]),
