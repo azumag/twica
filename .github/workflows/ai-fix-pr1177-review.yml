@@ -1,3 +1,4 @@
+# Temporary one-shot workflow: removes itself after applying the required fixes.
 name: Apply PR 1177 required review fixes
 
 on:
