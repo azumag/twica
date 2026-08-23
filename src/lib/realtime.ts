@@ -54,6 +54,26 @@ export interface GachaBroadcastPayload {
   historyCursor?: string
 }
 
+/**
+ * The page may return a promise while React commits the card DOM. `false` is
+ * an explicit negative acknowledgement: the transport must leave the event
+ * uncommitted in its dedupe state and retry it through its normal recovery
+ * path.
+ */
+export type GachaDeliveryResult = void | boolean | Promise<void | boolean>
+export type GachaResultCallback = (
+  payload: GachaBroadcastPayload,
+) => GachaDeliveryResult
+
+type IngestStatus = 'invalid' | 'duplicate' | 'delivered' | 'callback-error'
+
+function isPromiseLike<T>(value: unknown): value is Promise<T> {
+  return Boolean(
+    value
+    && typeof (value as { then?: unknown }).then === 'function'
+  )
+}
+
 export interface RealtimeError {
   type: 'connection' | 'subscription' | 'broadcast' | 'unknown'
   message: string
@@ -537,7 +557,7 @@ function websocketUrl(
  */
 export function subscribeToGachaResults(
   streamerId: string,
-  callback: (payload: GachaBroadcastPayload) => void,
+  callback: GachaResultCallback,
   options: SubscribeOptions = {}
 ): () => void {
   const maxRetries = options.maxRetries ?? Number.POSITIVE_INFINITY
@@ -563,6 +583,15 @@ export function subscribeToGachaResults(
   let socketRecoveryActive = false
   let bufferedSocketEvents: GachaRealtimeEventV1[] = []
   let recoveryBufferTimer: ReturnType<typeof setTimeout> | null = null
+  // WebSocket frames and recovery flushes share one serial task queue. The
+  // first task starts synchronously (so existing low-latency callbacks remain
+  // observable in the same turn), then stays serialized while a DOM
+  // acknowledgement is pending. Without this owner, B can overtake A.
+  let socketDeliveryBusy = false
+  const socketDeliveryTasks: Array<() => Promise<void> | void> = []
+  let socketFlushInFlight = false
+  const demoRetryCounts = new Map<string, number>()
+  const demoRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   // IDs delivered by DO but not yet observed in a DB response. This separate
   // set prevents bounded general dedupe eviction from cascading into hundreds
   // of duplicate renders while a multi-page reconciliation drains.
@@ -634,16 +663,34 @@ export function subscribeToGachaResults(
     options.onHistoryCursor?.({ ...historyCursor })
   }
 
+  const beginSocketRecovery = () => {
+    if (disposed || socketRecoveryActive) return
+    socketRecoveryActive = true
+    if (recoveryBufferTimer) clearTimeout(recoveryBufferTimer)
+    recoveryBufferTimer = setTimeout(() => {
+      releaseSocketRecoveryBuffer('timeout')
+    }, SOCKET_RECOVERY_BUFFER_MAX_MS)
+  }
+
   const ingest = (
     event: GachaRealtimeEventV1,
     source: 'durable-object' | 'polling'
-  ): 'invalid' | 'duplicate' | 'delivered' => {
+  ): IngestStatus | Promise<IngestStatus> => {
     const validation = validateGachaRealtimeEvent(event, streamerId)
     if (!validation.ok) {
       options.onStatusChange?.(`INVALID_EVENT:${source}`)
       return 'invalid'
     }
 
+    // Do not make an event durable in the dedupe cache until the page callback
+    // has accepted it. A browser render callback can throw during a rolling
+    // deploy, React teardown, or an older OBS runtime; if the ID were kept
+    // before that callback, the following polling recovery would classify the
+    // same committed draw as a duplicate and the user would see a permanent
+    // black overlay. Track only IDs added by this ingest so a callback failure
+    // can roll them back without disturbing earlier successful deliveries.
+    const newlySeenEventIds: string[] = []
+    const newlyUnreconciledSocketEventIds: string[] = []
     const unseenDraws = event.draws.filter((draw) => {
       // Seeing the exact ID in a polling envelope proves that this socket
       // delivery is now behind the authoritative DB checkpoint. Treat it as a
@@ -652,6 +699,7 @@ export function subscribeToGachaResults(
         && unreconciledSocketEventIds.delete(draw.eventId)
       if (confirmedSocketDelivery || seenEventIds.has(draw.eventId)) return false
       if (!rememberSeenId(seenEventIds, draw.eventId)) return false
+      newlySeenEventIds.push(draw.eventId)
 
       if (source === 'durable-object' && event.deliveryKind !== 'demo') {
         // Committed socket events remain pending until the authoritative DB
@@ -660,6 +708,7 @@ export function subscribeToGachaResults(
         // would manufacture permanent reconciliation debt and eventually
         // trigger high-volume /events reads after enough dashboard previews.
         unreconciledSocketEventIds.add(draw.eventId)
+        newlyUnreconciledSocketEventIds.push(draw.eventId)
         if (unreconciledSocketEventIds.size > MAX_SEEN_EVENT_IDS) {
           // A sustained DB outage must not grow OBS memory without bound. This
           // extreme degradation can replay an oldest draw after DB recovery,
@@ -681,17 +730,48 @@ export function subscribeToGachaResults(
       options.onStatusChange?.(`DUPLICATE_EVENT:${source}`)
       return 'duplicate'
     }
-    persistSeenEvents(streamerId, seenEventIds)
-    callback({
-      type: 'gacha',
-      card: unseenDraws[0].card,
-      ...(unseenDraws.length > 1 ? { cards: unseenDraws.map((draw) => draw.card) } : {}),
-      userTwitchUsername: event.user.twitchUsername,
-      rewardId: event.rewardId ?? null,
-      soundGroupId: event.soundGroupId,
-      historyCursor: event.occurredAt,
-    })
-    return 'delivered'
+    const rollback = () => {
+      // A callback failure is a delivery failure, not a malformed event. Roll
+      // back only the IDs claimed by this attempt; polling can then retry the
+      // exact committed row without consuming another channel-point exchange.
+      for (const eventId of newlySeenEventIds) {
+        seenEventIds.delete(eventId)
+      }
+      for (const eventId of newlyUnreconciledSocketEventIds) {
+        unreconciledSocketEventIds.delete(eventId)
+      }
+      options.onStatusChange?.(`CALLBACK_ERROR:${source}`)
+      return 'callback-error' as const
+    }
+    const commit = (accepted: void | boolean) => {
+      if (accepted === false) {
+        throw new Error('overlay callback rejected event')
+      }
+      // Persist only after the page accepted the payload. Storage is an
+      // optimization for reload dedupe; the in-memory rollback above is the
+      // correctness boundary for the current overlay lifetime.
+      persistSeenEvents(streamerId, seenEventIds)
+      return 'delivered' as const
+    }
+    try {
+      const callbackResult = callback({
+        type: 'gacha',
+        card: unseenDraws[0].card,
+        ...(unseenDraws.length > 1 ? { cards: unseenDraws.map((draw) => draw.card) } : {}),
+        userTwitchUsername: event.user.twitchUsername,
+        rewardId: event.rewardId ?? null,
+        soundGroupId: event.soundGroupId,
+        historyCursor: event.occurredAt,
+      })
+      if (isPromiseLike<void | boolean>(callbackResult)) {
+        return Promise.resolve(callbackResult)
+          .then(commit)
+          .catch(() => rollback())
+      }
+      return commit(callbackResult)
+    } catch {
+      return rollback()
+    }
   }
 
   const socketIsHealthy = () => (
@@ -716,18 +796,58 @@ export function subscribeToGachaResults(
    */
   const requestRecoveryPoll = (bufferLiveFrames = false) => {
     if (disposed) return
-    if (bufferLiveFrames && !socketRecoveryActive) {
-      socketRecoveryActive = true
-      if (recoveryBufferTimer) clearTimeout(recoveryBufferTimer)
-      recoveryBufferTimer = setTimeout(() => {
-        releaseSocketRecoveryBuffer('timeout')
-      }, SOCKET_RECOVERY_BUFFER_MAX_MS)
-    }
+    if (bufferLiveFrames) beginSocketRecovery()
     if (pollInFlight) {
       recoveryPollPending = true
       return
     }
     schedulePoll(0)
+  }
+
+  const drainSocketDeliveryTasks = () => {
+    if (socketDeliveryBusy || disposed) return
+    const task = socketDeliveryTasks.shift()
+    if (!task) return
+    socketDeliveryBusy = true
+    const finish = () => {
+      socketDeliveryBusy = false
+      drainSocketDeliveryTasks()
+    }
+    try {
+      const result = task()
+      if (isPromiseLike<void>(result)) {
+        void Promise.resolve(result).then(finish, (error) => {
+          if (!disposed) {
+            options.onStatusChange?.('DO_DELIVERY_TASK_ERROR')
+            options.onError?.({
+              type: 'broadcast',
+              message: 'Overlay WebSocket delivery failed',
+              error,
+              isExpected: false,
+            })
+          }
+          finish()
+        })
+      } else {
+        finish()
+      }
+    } catch (error) {
+      if (!disposed) {
+        options.onStatusChange?.('DO_DELIVERY_TASK_ERROR')
+        options.onError?.({
+          type: 'broadcast',
+          message: 'Overlay WebSocket delivery failed',
+          error,
+          isExpected: false,
+        })
+      }
+      finish()
+    }
+  }
+
+  const enqueueSocketTask = (task: () => Promise<void> | void) => {
+    socketDeliveryTasks.push(task)
+    drainSocketDeliveryTasks()
   }
 
   function maybeRequestVolumeReconciliation(): void {
@@ -745,17 +865,107 @@ export function subscribeToGachaResults(
     requestRecoveryPoll()
   }
 
-  function flushBufferedSocketEvents(): void {
+  const scheduleDemoRetry = (event: GachaRealtimeEventV1) => {
+    const demoId = event.draws[0]?.eventId
+    if (!demoId || disposed || demoRetryTimers.has(demoId)) return
+    const attempt = (demoRetryCounts.get(demoId) ?? 0) + 1
+    demoRetryCounts.set(demoId, attempt)
+    if (attempt > 3) {
+      options.onStatusChange?.('DO_DEMO_RETRY_EXHAUSTED')
+      // A broken operator demo must not hold the live queue forever. Remove
+      // only that demo and schedule the retained tail; committed user events
+      // remain ordered and are never discarded by this bounded demo guard.
+      bufferedSocketEvents = bufferedSocketEvents.filter(
+        (bufferedEvent) => bufferedEvent.draws[0]?.eventId !== demoId
+      )
+      if (bufferedSocketEvents.length > 0) {
+        enqueueSocketTask(() => flushBufferedSocketEvents())
+      } else {
+        socketRecoveryActive = false
+      }
+      return
+    }
+    const delay = Math.min(100 * 2 ** (attempt - 1), 1_000)
+    options.onStatusChange?.(`DO_DEMO_RETRY:${attempt}`)
+    const timer = setTimeout(() => {
+      demoRetryTimers.delete(demoId)
+      enqueueSocketTask(() => flushBufferedSocketEvents())
+    }, delay)
+    demoRetryTimers.set(demoId, timer)
+  }
+
+  function flushBufferedSocketEvents(): void | Promise<void> {
+    if (socketFlushInFlight || disposed) return
+    socketFlushInFlight = true
     const buffered = bufferedSocketEvents
     bufferedSocketEvents = []
-    for (const event of buffered) {
-      // The authoritative reconciliation checkpoint advances only from an
-      // actual DB response. Even a newly delivered socket frame may have an
-      // earlier gapless publish failure behind it, so ingest it without moving
-      // the history cursor.
-      ingest(event, 'durable-object')
+    let finished = false
+    const finish = (completed: boolean) => {
+      if (finished) return
+      finished = true
+      socketFlushInFlight = false
+      if (completed) socketRecoveryActive = false
+      if (completed) maybeRequestVolumeReconciliation()
     }
-    maybeRequestVolumeReconciliation()
+    const handleResult = (event: GachaRealtimeEventV1, index: number, result: IngestStatus) => {
+      if (result === 'callback-error') {
+        // Keep the failed frame and every later frame in their original order.
+        // Releasing B while A is waiting for a DOM acknowledgement would make
+        // recovery render B before A.
+        bufferedSocketEvents = buffered.slice(index).concat(bufferedSocketEvents)
+        if (event.deliveryKind === 'demo') {
+          socketRecoveryActive = true
+          scheduleDemoRetry(event)
+        } else {
+          // The frame has been rolled back from dedupe; ask the authoritative
+          // history endpoint for an immediate retry instead of waiting for the
+          // ten-minute healthy-socket reconciliation.
+          requestRecoveryPoll(true)
+        }
+        return false
+      }
+      if (event.deliveryKind === 'demo') {
+        const demoId = event.draws[0]?.eventId
+        if (demoId) {
+          demoRetryCounts.delete(demoId)
+          const retryTimer = demoRetryTimers.get(demoId)
+          if (retryTimer) clearTimeout(retryTimer)
+          demoRetryTimers.delete(demoId)
+        }
+      }
+      return true
+    }
+    const drain = (startIndex: number): void | Promise<void> => {
+      for (let index = startIndex; index < buffered.length; index += 1) {
+        const event = buffered[index]
+        // The authoritative reconciliation checkpoint advances only from an
+        // actual DB response. Even a newly delivered socket frame may have an
+        // earlier gapless publish failure behind it, so ingest it without moving
+        // the history cursor.
+        const result = ingest(event, 'durable-object')
+        if (isPromiseLike<IngestStatus>(result)) {
+          return Promise.resolve(result)
+            .then((resolved) => {
+              if (!handleResult(event, index, resolved)) {
+                finish(false)
+                return
+              }
+              return drain(index + 1)
+            })
+            .catch(() => {
+              bufferedSocketEvents = buffered.slice(index).concat(bufferedSocketEvents)
+              requestRecoveryPoll()
+              finish(false)
+            })
+        }
+        if (!handleResult(event, index, result)) {
+          finish(false)
+          return
+        }
+      }
+      finish(true)
+    }
+    return drain(0)
   }
 
   function releaseSocketRecoveryBuffer(
@@ -764,11 +974,10 @@ export function subscribeToGachaResults(
     if (recoveryBufferTimer) clearTimeout(recoveryBufferTimer)
     recoveryBufferTimer = null
     const hadRecovery = socketRecoveryActive || bufferedSocketEvents.length > 0
-    socketRecoveryActive = false
     if (degradedBy && hadRecovery) {
       options.onStatusChange?.(`DO_RECOVERY_DEGRADED:${degradedBy}`)
     }
-    flushBufferedSocketEvents()
+    enqueueSocketTask(() => flushBufferedSocketEvents())
   }
 
   const poll = async () => {
@@ -781,6 +990,7 @@ export function subscribeToGachaResults(
     options.onStatusChange?.('POLLING')
     let historyPageHadRows = false
     let failed = false
+    let callbackRejected = false
     let retryDelayMs: number | null = null
     try {
       // History recovery and the rare operator demo share one HTTP response.
@@ -803,7 +1013,16 @@ export function subscribeToGachaResults(
       const envelopes = historyResponse.realtimeEvents?.length
         ? historyResponse.realtimeEvents
         : buildPollingRealtimeEvents(streamerId, rawEvents)
-      for (const event of envelopes) ingest(event, 'polling')
+      for (const event of envelopes) {
+        const ingestResult = await ingest(event, 'polling')
+        if (ingestResult === 'callback-error') {
+          // Do not advance the authoritative cursor past a draw whose page
+          // callback rejected it. The catch/finally path schedules a bounded
+          // retry of the same /events page.
+          callbackRejected = true
+          throw new Error('overlay callback rejected polling event')
+        }
+      }
 
       if (historyResponse.nextCursor !== undefined && historyResponse.nextCursor !== null) {
         const nextCursor = normalizeHistoryCursor(historyResponse.nextCursor, true)
@@ -834,16 +1053,25 @@ export function subscribeToGachaResults(
 
       const demoEvent = historyResponse.demoEvent ?? null
       if (demoEvent) {
-        demoCursor = { redeemedAt: demoEvent.redeemedAt, historyId: demoEvent.id }
         const demoId = demoEvent.eventId ?? `demo:${demoEvent.id}`
         if (rememberSeenId(seenEventIds, demoId)) {
+          try {
+            const accepted = await callback({
+              type: 'gacha',
+              card: demoEvent.card,
+              userTwitchUsername: demoEvent.userTwitchUsername,
+              rewardId: demoEvent.rewardId ?? null,
+            })
+            if (accepted === false) {
+              throw new Error('overlay callback rejected demo event')
+            }
+          } catch {
+            seenEventIds.delete(demoId)
+            options.onStatusChange?.('CALLBACK_ERROR:polling-demo')
+            throw new Error('overlay callback rejected demo event')
+          }
+          demoCursor = { redeemedAt: demoEvent.redeemedAt, historyId: demoEvent.id }
           persistSeenEvents(streamerId, seenEventIds)
-          callback({
-            type: 'gacha',
-            card: demoEvent.card,
-            userTwitchUsername: demoEvent.userTwitchUsername,
-            rewardId: demoEvent.rewardId ?? null,
-          })
         }
       }
 
@@ -855,6 +1083,13 @@ export function subscribeToGachaResults(
     } catch (error) {
       failed = true
       retryCount += 1
+      if (callbackRejected) {
+        // A failed DOM acknowledgement leaves the history cursor before the
+        // rejected draw. Keep later WebSocket frames behind that draw until a
+        // retrying /events pass commits it; otherwise B can render before A
+        // and the fixed overlay can still appear to skip the first card.
+        beginSocketRecovery()
+      }
       // `/events` normally carries the config generation for free, but a DB
       // failure prevents that response from being produced. Probe the DB-free
       // config endpoint only in this degraded case so a healthy socket on URL A
@@ -898,6 +1133,11 @@ export function subscribeToGachaResults(
 
       if (socketRecoveryActive) {
         releaseSocketRecoveryBuffer()
+      } else if (bufferedSocketEvents.length > 0) {
+        // A prior socket callback may have failed after buffering A/B. The
+        // successful polling pass above has now retried the committed A; drain
+        // the retained live tail only after that acknowledgement completes.
+        enqueueSocketTask(() => flushBufferedSocketEvents())
       }
 
       // A healthy socket's low-frequency reconciliation is owned by the safety
@@ -1060,47 +1300,72 @@ export function subscribeToGachaResults(
             return
           }
           if (parsed.type === 'gacha_result') {
-            // Validate before buffering, not only before display. Otherwise a
-            // malformed room frame could bypass the 64 KiB contract and make
-            // the count-bounded recovery queue consume unbounded memory.
-            const eventValidation = validateGachaRealtimeEvent(
-              parsed.event,
-              streamerId
-            )
-            if (!eventValidation.ok) {
-              options.onStatusChange?.('INVALID_EVENT:durable-object')
-              return
-            }
-            // A jump proves this socket missed a delivery. That is the only
-            // reason a healthy connection reloads history now that the fixed
-            // 30-second pass is gone; the database still decides what was
-            // actually missed, this only decides *when* to ask.
-            const sequenceGap = (
-              typeof parsed.seq === 'number'
-              && lastSeq !== null
-              && parsed.seq > lastSeq + 1
-            )
-            if (sequenceGap) {
-              options.onStatusChange?.(`DO_SEQ_GAP:${lastSeq}->${parsed.seq}`)
-              requestRecoveryPoll(true)
-            }
-            if (typeof parsed.seq === 'number') lastSeq = parsed.seq
-            if (socketRecoveryActive) {
-              bufferedSocketEvents.push(parsed.event)
-              if (bufferedSocketEvents.length >= MAX_BUFFERED_SOCKET_EVENTS) {
-                // DB ordering is best-effort once the bounded recovery window
-                // fills. Release validated live events, retain their IDs for
-                // later DB dedupe, and keep the checkpoint unchanged.
-                releaseSocketRecoveryBuffer('capacity')
+            // Serialize WebSocket delivery behind the DOM acknowledgement. A
+            // callback can be asynchronous while React commits the card, so
+            // handling frames directly here would allow B to overtake A.
+            enqueueSocketTask(() => {
+              if (disposed || generation !== socketGeneration) return
+              // Validate before buffering, not only before display. Otherwise a
+              // malformed room frame could bypass the 64 KiB contract and make
+              // the count-bounded recovery queue consume unbounded memory.
+              const eventValidation = validateGachaRealtimeEvent(
+                parsed.event,
+                streamerId
+              )
+              if (!eventValidation.ok) {
+                options.onStatusChange?.('INVALID_EVENT:durable-object')
+                return
               }
-              return
-            }
-            // A pushed event is low-latency delivery, not proof that every
-            // earlier committed row reached the room. Only `/events` may move
-            // the durable reconciliation checkpoint.
-            if (ingest(parsed.event, 'durable-object') === 'delivered') {
-              maybeRequestVolumeReconciliation()
-            }
+              // A jump proves this socket missed a delivery. That is the only
+              // reason a healthy connection reloads history now; the database
+              // still decides what was actually missed.
+              const sequenceGap = (
+                typeof parsed.seq === 'number'
+                && lastSeq !== null
+                && parsed.seq > lastSeq + 1
+              )
+              if (sequenceGap) {
+                options.onStatusChange?.(`DO_SEQ_GAP:${lastSeq}->${parsed.seq}`)
+                requestRecoveryPoll(true)
+              }
+              if (typeof parsed.seq === 'number') lastSeq = parsed.seq
+              if (socketRecoveryActive) {
+                bufferedSocketEvents.push(parsed.event)
+                if (bufferedSocketEvents.length >= MAX_BUFFERED_SOCKET_EVENTS) {
+                  // DB ordering is best-effort once the bounded recovery window
+                  // fills. Release validated live events, retain their IDs for
+                  // later DB dedupe, and keep the checkpoint unchanged.
+                  releaseSocketRecoveryBuffer('capacity')
+                }
+                return
+              }
+              // A pushed event is low-latency delivery, not proof that every
+              // earlier committed row reached the room. Only `/events` may move
+              // the durable reconciliation checkpoint.
+              const handleIngestResult = (ingestResult: IngestStatus) => {
+                if (ingestResult === 'delivered') {
+                  maybeRequestVolumeReconciliation()
+                } else if (ingestResult === 'callback-error') {
+                if (parsed.event.deliveryKind === 'demo') {
+                  // Keep later live frames behind the failed demo until its
+                  // local retry has committed; otherwise B would overtake A.
+                  socketRecoveryActive = true
+                  bufferedSocketEvents.unshift(parsed.event)
+                  scheduleDemoRetry(parsed.event)
+                } else {
+                  // A render callback failure must not become a permanent
+                  // duplicate. Poll the committed row immediately so the next
+                  // attempt can recover after the page is ready.
+                  requestRecoveryPoll(true)
+                }
+                }
+              }
+              const ingestResult = ingest(parsed.event, 'durable-object')
+              if (isPromiseLike<IngestStatus>(ingestResult)) {
+                return Promise.resolve(ingestResult).then(handleIngestResult).then(() => undefined)
+              }
+              handleIngestResult(ingestResult)
+            })
           }
         } catch {
           options.onStatusChange?.('DO_MESSAGE_INVALID')
@@ -1365,6 +1630,9 @@ export function subscribeToGachaResults(
     if (connectTimeout) clearTimeout(connectTimeout)
     if (livenessTimer) clearTimeout(livenessTimer)
     if (recoveryBufferTimer) clearTimeout(recoveryBufferTimer)
+    for (const timer of demoRetryTimers.values()) clearTimeout(timer)
+    demoRetryTimers.clear()
+    demoRetryCounts.clear()
     closeSocket()
   }
 }

@@ -224,7 +224,7 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
-  it('画像メタデータ取得が停止しても、独立fallbackでN連キューを前進する', async () => {
+  it('画像メタデータ取得が停止しても、カード表示とN連キューを止めない', async () => {
     vi.useFakeTimers()
 
     let imageLoadCount = 0
@@ -294,15 +294,14 @@ describe('OverlayPage', () => {
     expect(screen.getByText('Alpha')).toBeInTheDocument()
 
     // 1枚目の表示終了後、2枚目のmetadata probeは無応答のままでも、カードDOMは
-    // 先にマウントされる。独立fallbackが1.5秒でrevealを予約し、最終DOMへ
-    // 100msのlead-inを確保してから可視化する。
+    // 先にマウントされ、metadataの期限を待たずに可視化される。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6600)
     })
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
     const betaText = screen.getByText('Beta')
     expect(betaText).toBeInTheDocument()
-    expect(betaText.closest('.transition-all')).toHaveClass('opacity-0')
+    expect(betaText.closest('.transition-all')).toHaveClass('opacity-100')
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1600)
@@ -638,12 +637,12 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
 
-    // metadataが遅れても、DOMは既に存在するが、revealはまだ始まっていない。
+    // metadataが遅れても、DOMは既に存在し、revealタイマーを待たず可視になる。
     expect(screen.getByText('Viewer が引いたカード').closest('.transition-all'))
-      .toHaveClass('opacity-0')
+      .toHaveClass('opacity-100')
 
-    // 画像metadataが縦長として到着したあとにrevealするため、初回の可視フレーム
-    // からimage-onlyレイアウトになり、通常フレームからの差し替えが起きない。
+    // 画像metadataが縦長として到着したあとも、カードは表示を継続しながら
+    // image-onlyレイアウトへ更新される。
     const metadataImage = metadataImages[0]
     expect(metadataImage).toBeDefined()
     metadataImage.width = 200

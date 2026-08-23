@@ -361,6 +361,154 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('retries a committed draw when the page callback fails before display', async () => {
+    const event = {
+      id: historyUuid(22),
+      eventId: 'event-callback-retry',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_A,
+    }
+    const statuses: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'callback-retry-v1',
+        })
+      }
+      return jsonResponse({ events: [event] })
+    }))
+
+    const callback = vi.fn()
+    callback.mockImplementationOnce(() => {
+      throw new Error('render unavailable')
+    })
+    const cleanup = subscribeToGachaResults('streamer-1', callback, {
+      retryDelay: 10,
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+
+    // The first attempt fails after validation. Its event ID must be rolled
+    // back rather than becoming a permanent duplicate.
+    expect(callback).toHaveBeenCalledTimes(1)
+    expect(statuses).toContain('CALLBACK_ERROR:polling')
+    expect(statuses).toContain('POLLING_RETRY:1')
+
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    expect(callback).toHaveBeenCalledTimes(2)
+    expect(callback.mock.calls[1][0]).toMatchObject({
+      type: 'gacha',
+      card: CARD_A,
+    })
+
+    cleanup()
+  })
+
+  it('buffers a WebSocket tail behind a polling draw whose DOM acknowledgement failed', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSING = 2
+      static readonly CLOSED = 3
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = ControlledWebSocket.CLOSED
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const [eventA] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: historyUuid(23),
+      eventId: 'event-poll-a',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_A,
+    }])
+    const [eventB] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: historyUuid(24),
+      eventId: 'event-ws-b',
+      redeemedAt: '2026-07-24T00:00:02.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_B,
+    }])
+    let historyCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'polling-ack-order-v1',
+        })
+      }
+      historyCalls += 1
+      if (historyCalls === 1) {
+        return jsonResponse({ realtimeEvents: [eventA], nextCursor: null })
+      }
+      if (historyCalls === 2) {
+        return jsonResponse({
+          realtimeEvents: [eventA],
+          nextCursor: { redeemedAt: eventA.occurredAt, historyId: eventA.draws[0].historyId },
+        })
+      }
+      return jsonResponse({ realtimeEvents: [], nextCursor: null })
+    }))
+
+    const callback = vi.fn()
+    callback.mockImplementationOnce(() => Promise.resolve(false))
+    const cleanup = subscribeToGachaResults('ignored', callback, { retryDelay: 10 })
+    await flushPromises()
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual(['card-a'])
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({ type: 'gacha_result', seq: 1, event: eventB })
+    await flushPromises()
+    // B arrived while A was still awaiting a successful polling retry.
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual(['card-a'])
+
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      'card-a',
+      'card-a',
+      'card-b',
+    ])
+    cleanup()
+  })
+
   it('retries transient failures without switching to a second cursor owner', async () => {
     let historyAttempts = 0
     const fetchMock = vi.fn(async () => {
@@ -490,6 +638,125 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     expect(
       statuses.some((status) => status.startsWith('DUPLICATE_EVENT:'))
     ).toBe(true)
+    cleanup()
+  })
+
+  it('再描画待ちのdemo callback失敗をローカル再試行し、後続フレームを先行表示しない', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+      close(code = 1000) {
+        this.readyState = 3
+        this.onclose?.({ code })
+      }
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'demo-retry-v1',
+        })
+      }
+      return jsonResponse({ realtimeEvents: [], nextCursor: null })
+    }))
+
+    const [eventA] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: 'demo:order-a',
+      eventId: 'demo:order-a',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'DemoUser',
+      card: { ...CARD_A, id: 'card-a' },
+    }])
+    const [eventB] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: 'demo:order-b',
+      eventId: 'demo:order-b',
+      redeemedAt: '2026-07-24T00:00:02.000Z',
+      userTwitchUsername: 'DemoUser',
+      card: { ...CARD_B, id: 'card-b' },
+    }])
+    const callback = vi.fn()
+    callback.mockImplementationOnce(() => Promise.resolve(false))
+    const cleanup = subscribeToGachaResults('ignored', callback)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({
+      type: 'welcome',
+      protocolVersion: 1,
+      connectionId: 'connection-demo-retry',
+      serverTime: '',
+      seq: 0,
+    })
+    socket.emit({ type: 'gacha_result', seq: 1, event: { ...eventA, deliveryKind: 'demo' } })
+    socket.emit({ type: 'gacha_result', seq: 2, event: { ...eventB, deliveryKind: 'demo' } })
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual(['card-a'])
+
+    await vi.advanceTimersByTimeAsync(100)
+    await flushPromises()
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      'card-a',
+      'card-a',
+      'card-b',
+    ])
+
+    // A demo that keeps failing is bounded and isolated. It must not leave a
+    // later frame permanently behind `socketRecoveryActive`.
+    const [eventC] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: 'demo:order-c',
+      eventId: 'demo:order-c',
+      redeemedAt: '2026-07-24T00:00:03.000Z',
+      userTwitchUsername: 'DemoUser',
+      card: { ...CARD_A, id: 'card-c' },
+    }])
+    const [eventD] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: 'demo:order-d',
+      eventId: 'demo:order-d',
+      redeemedAt: '2026-07-24T00:00:04.000Z',
+      userTwitchUsername: 'DemoUser',
+      card: { ...CARD_B, id: 'card-d' },
+    }])
+    callback
+      .mockImplementationOnce(() => Promise.resolve(false))
+      .mockImplementationOnce(() => Promise.resolve(false))
+      .mockImplementationOnce(() => Promise.resolve(false))
+      .mockImplementationOnce(() => Promise.resolve(false))
+    socket.emit({ type: 'gacha_result', seq: 3, event: { ...eventC, deliveryKind: 'demo' } })
+    socket.emit({ type: 'gacha_result', seq: 4, event: { ...eventD, deliveryKind: 'demo' } })
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(callback.mock.calls.map(([payload]) => payload.card.id).slice(-5)).toEqual([
+      'card-c',
+      'card-c',
+      'card-c',
+      'card-c',
+      'card-d',
+    ])
     cleanup()
   })
 

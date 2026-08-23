@@ -73,6 +73,13 @@ interface GachaResult {
   displayInstanceId?: number;
 }
 
+type DisplayRequest = {
+  data: GachaResult;
+  resolve: (accepted: boolean) => void;
+};
+
+type DisplayResultHandler = (data: GachaResult) => Promise<boolean>;
+
 interface OverlayPollingEvent {
   id: string;
   eventId: string | null;
@@ -232,6 +239,11 @@ export default function OverlayPage() {
   // so React cannot reuse the previous card image while a new src is decoding.
   const displayInstanceSequenceRef = useRef(0);
   const isDisplayingRef = useRef(false);
+  // Realtime delivery is acknowledged only after React has committed the card
+  // branch to the DOM. Keeping the resolver keyed by the remount key makes the
+  // transport retry a draw that was accepted by JavaScript but never became a
+  // visible card (the failure mode behind the fixed-overlay black screen).
+  const displayCommitResolversRef = useRef<Map<number, (accepted: boolean) => void>>(new Map());
   // Image metadata checks are presentation-only and run independently from the
   // display queue. Cleanup still resolves pending checks so Image callbacks do
   // not retain an obsolete card/component lifetime.
@@ -240,17 +252,35 @@ export default function OverlayPage() {
   // A streamer change can reuse this component instance. The queue generation
   // prevents an obsolete display task from continuing into the new subscription.
   const queueGenerationRef = useRef(0);
+  // A mounted flag alone cannot distinguish a late callback from the previous
+  // streamer after a route change. Every subscription closes over its own
+  // generation and must match this ref before it can enqueue a card.
+  const subscriptionGenerationRef = useRef(0);
   // Image metadata can resolve after the card that started it has already been
   // replaced. Only the latest card may update portrait/small presentation state.
   const imageLayoutGenerationRef = useRef(0);
   const playedSoundGroupIdsRef = useRef<Set<string>>(new Set());
   // processQueueの再帰呼び出し用ref（useCallback内で自身を参照するため）
   const processQueueRef = useRef<() => void>(() => {});
+  // Reactのpassive effectが購読effectより遅れて実行される環境でも、最初の
+  // realtime payloadを捨てないための一時バッファ。通常は表示handlerが
+  // 購読開始前に準備されるが、OBS/CEFの初期化やReactのeffect再実行が
+  // 同じフレームに重なると、refの初期no-opへ到達する可能性がある。
+  // unmount時には購読cleanupで必ず破棄し、古いstreamerの結果を新しい表示へ
+  // 持ち越さない。
+  const pendingDisplayResultsRef = useRef<DisplayRequest[]>([]);
   // displayResultとaddDebugLogをrefで保持することで、
   // subscriptionのuseEffectが不要に再実行されることを防ぐ
   // （soundSettings変更 → playGachaSound再生成 → displayResult再生成 のチェーンで
   //  subscriptionが破棄・再作成される問題を回避）
-  const displayResultRef = useRef<(data: GachaResult) => void>(() => {});
+  const displayResultRef = useRef<DisplayResultHandler>((data) => {
+    if (!isOverlayMountedRef.current) {
+      return Promise.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      pendingDisplayResultsRef.current.push({ data, resolve });
+    });
+  });
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
   // subscription effectはstreamerIdだけに依存させる。displayResult/addDebugLogと
   // 同じrefミラーで最新版を参照し、callback再生成による再接続を防ぐ。
@@ -296,6 +326,22 @@ export default function OverlayPage() {
   const soundPlayingUntilRef = useRef(0);
   // 音声がブラウザのAutoplayポリシーでブロックされているかどうか（UI表示用）
   const [audioBlocked, setAudioBlocked] = useState(false);
+
+  const settleDisplayCommit = useCallback((displayInstanceId: number | undefined, accepted: boolean) => {
+    if (displayInstanceId === undefined) return;
+    const resolve = displayCommitResolversRef.current.get(displayInstanceId);
+    if (!resolve) return;
+    displayCommitResolversRef.current.delete(displayInstanceId);
+    resolve(accepted);
+  }, []);
+
+  const settleAllDisplayCommits = useCallback((accepted: boolean) => {
+    const pending = Array.from(displayCommitResolversRef.current.values());
+    displayCommitResolversRef.current.clear();
+    for (const resolve of pending) {
+      resolve(accepted);
+    }
+  }, []);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
@@ -709,6 +755,9 @@ export default function OverlayPage() {
       addDebugLogRef.current(
         `processQueue error: ${error instanceof Error ? error.message : String(error)}`
       );
+      // If this item never committed, tell the transport to retry it instead
+      // of permanently deduplicating a draw that the viewer could not see.
+      settleDisplayCommit(next.displayInstanceId, false);
       // ロックを握ったまま関数を抜けないよう、失敗したカードは諦めて
       // 残りのキューを継続する。キューが尽きていれば冒頭の `if (!next)`
       // 分岐でロックが解放される。
@@ -737,13 +786,45 @@ export default function OverlayPage() {
       ) {
         // The item was dequeued immediately before transport cleanup or an
         // unmount. Release the display lock so a later subscription can render.
+        addDebugLogRef.current('Card display aborted: inactive subscription');
+        settleDisplayCommit(next.displayInstanceId, false);
         isDisplayingRef.current = false;
         return;
       }
       setIsPortraitImage(false);
       setIsSmallImage(false);
+      // The realtime contract deliberately carries only the public card
+      // fields. Snapshot the fields consumed by this component before the
+      // state update so a malformed object/getter cannot make React fail while
+      // rendering the card branch and leave the overlay black.
+      const displayCard = {
+        id: next.card.id,
+        name: next.card.name,
+        description: next.card.description,
+        image_url: next.card.image_url,
+        image_padding_color: next.card.image_padding_color,
+        rarity: next.card.rarity,
+      } as Card;
+      const displayResult = { ...next, card: displayCard };
+      // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
+      // 解決に失敗してもbusiness eventのカードDOMを失わせない。
+      setResult(displayResult);
+      // カード表示をmetadataやタイマーの完了条件にしない。OBS/CEFや
+      // バックグラウンドのブラウザではsetTimeoutが遅延することがあり、
+      // revealを待つだけでも実交換後の有効窓を全面黒画面にしてしまう。
+      // business eventを受信した時点でカードを可視化し、metadataは
+      // presentation-onlyのレイアウト更新として並行して扱う。
+      setShowCard(true);
+      // The state setter has run, but the DOM commit happens on the next React
+      // render. Use "scheduled" here; the commit effect below is the only place
+      // that reports an actual card DOM commit.
+      addDebugLogRef.current('Card display scheduled');
+
+      // Start the presentation-only metadata probe *after* scheduling the card
+      // state. Even a future Image implementation that throws before returning
+      // a Promise cannot move the business event back behind this probe.
       const imageMetadataPromise = checkImageAspectRatio(
-        next.card.image_url,
+        displayCard.image_url,
         imageLayoutGeneration,
       ).catch((error) => {
         // Metadata is optional presentation data; a probe failure must not drop
@@ -753,16 +834,12 @@ export default function OverlayPage() {
           `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
         );
       });
-      // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
-      // 解決に失敗してもbusiness eventのカードDOMを失わせない。
-      setResult(next);
-      setShowCard(false);
 
       try {
         // このカードのレアリティに紐づくエフェクトを解決する。
         // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
         const resolvedStyle = options.effects
-          ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
+          ? resolveEffectForRarity(options.rarityEffectMap, displayCard.rarity)
           : "none";
         setActiveEffectStyle(resolvedStyle);
         setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
@@ -775,71 +852,47 @@ export default function OverlayPage() {
         setEffectParticles([]);
       }
 
-      // Mount the card DOM immediately. Metadata may choose portrait/small
-      // layout before reveal, but queue liveness does not depend solely on the
-      // metadata Promise: an independent fallback schedules reveal after the same
-      // bounded probe window even if that Promise stops settling in a future
-      // refactor. Whichever path wins still gives the final DOM branch at least
-      // MIN_REVEAL_LEAD_IN_MS before it becomes visible.
-      let revealScheduled = false;
-      const scheduleReveal = () => {
-        if (revealScheduled) return;
+      // 表示は既に開始済み。ここでは効果音と表示終了だけを予約する。
+      // metadataの解決やrevealタイマーをカードDOMのliveness条件にしない。
+      animationTimeoutRef.current = setTimeout(() => runProtected(() => {
         if (
           !isOverlayMountedRef.current
           || queueGeneration !== queueGenerationRef.current
         ) {
+          // Lifecycle cleanup owns the display-lock reset. An obsolete
+          // chain must never unlock a newer subscription's active queue.
           return;
         }
-        revealScheduled = true;
-        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-          if (
-            !isOverlayMountedRef.current
-            || queueGeneration !== queueGenerationRef.current
-          ) {
-            // Lifecycle cleanup owns the display-lock reset. An obsolete
-            // chain must never unlock a newer subscription's active queue.
-            return;
-          }
-          setShowCard(true);
-          if (next.shouldPlaySound !== false) {
-            if (next.soundGroupId) {
-              if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
-                playedSoundGroupIdsRef.current.add(next.soundGroupId);
-                playGachaSound(next);
-              }
-            } else {
-              playGachaSound(next);
+        if (next.shouldPlaySound !== false) {
+          if (next.soundGroupId) {
+            if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+              playedSoundGroupIdsRef.current.add(next.soundGroupId);
+              playGachaSound(displayResult);
             }
+          } else {
+            playGachaSound(displayResult);
           }
+        }
 
-          // Hide after display, then process next queued item
+        // Hide after display, then process next queued item
+        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+          setShowCard(false);
           animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-            setShowCard(false);
-            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-              // Once the outgoing card is removed, its callbacks must not affect
-              // the next card even if the browser retained the Image object.
-              imageLayoutGenerationRef.current += 1;
-              setResult(null);
-              // ref経由で最新のprocessQueueを呼び出し（再帰）
-              processQueueRef.current();
-            }), 500);
-          }), options.displayDuration * 1000);
-        }), MIN_REVEAL_LEAD_IN_MS);
-      };
-      const metadataFallbackTimeout = setTimeout(
-        () => runProtected(scheduleReveal),
-        IMAGE_METADATA_TIMEOUT_MS,
-      );
+            // Once the outgoing card is removed, its callbacks must not affect
+            // the next card even if the browser retained the Image object.
+            imageLayoutGenerationRef.current += 1;
+            setResult(null);
+            // ref経由で最新のprocessQueueを呼び出し（再帰）
+            processQueueRef.current();
+          }), 500);
+        }), options.displayDuration * 1000);
+      }), MIN_REVEAL_LEAD_IN_MS);
       void imageMetadataPromise
-        .then(() => {
-          clearTimeout(metadataFallbackTimeout);
-          runProtected(scheduleReveal);
-        })
         .catch(handleQueueError);
     } catch (error) {
       handleQueueError(error);
     }
-  }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap]);
+  }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap, settleDisplayCommit]);
 
   // processQueueRefを最新のcallbackで更新
   useEffect(() => {
@@ -850,7 +903,14 @@ export default function OverlayPage() {
    * 新しいガチャ結果をキューに追加し、未再生なら再生を開始する
    * Enqueue a new gacha result; start playback if idle
    */
-  const enqueueResult = useCallback((data: GachaResult) => {
+  const enqueueResult = useCallback((data: GachaResult): Promise<boolean> => {
+    // Ignore callbacks from an old transport instance after streamer switch or
+    // unmount. Without this guard a late polling/WS callback could repopulate
+    // the queue after cleanup and make the next subscription display stale data.
+    if (!isOverlayMountedRef.current) {
+      addDebugLogRef.current('Ignored display callback: inactive subscription');
+      return Promise.resolve(false);
+    }
     const cards = data.cards?.length ? data.cards : [data.card];
     // PR #451 レビュー指摘(F2): 「1枚目のカード」固定ではなく、バッチ全体から
     // ルール一致優先度(reward > rarity > all、同率ならより希少なレアリティ)が
@@ -860,23 +920,54 @@ export default function OverlayPage() {
     const soundBearingIndex = data.shouldPlaySound === false
       ? -1
       : pickSoundBearingCardIndex(cards, data.rewardId, soundSettings.soundRules);
-    queueRef.current.push(
-      ...cards.map((card, index) => ({
+    const displayItems = cards.map((card, index) => ({
         ...data,
         card,
         cards: undefined,
         shouldPlaySound: index === soundBearingIndex,
         displayInstanceId: ++displayInstanceSequenceRef.current,
-      }))
-    );
-    if (!isDisplayingRef.current) {
-      processQueue();
+      }));
+    const firstDisplayInstanceId = displayItems[0]?.displayInstanceId;
+    if (firstDisplayInstanceId === undefined) {
+      return Promise.resolve(false);
     }
-  }, [processQueue, soundSettings.soundRules]);
+    const commitPromise = new Promise<boolean>((resolve) => {
+      displayCommitResolversRef.current.set(firstDisplayInstanceId, resolve);
+    });
+    queueRef.current.push(...displayItems);
+    if (!isDisplayingRef.current) {
+      // Realtime callbacks outlive a particular render. Resolve through the
+      // ref so a sound/options update cannot leave the queue using an obsolete
+      // processQueue closure (or bypass the lifecycle generation guard).
+      processQueueRef.current();
+    }
+    return commitPromise;
+  }, [soundSettings.soundRules]);
 
-  // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）
+  // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）。
+  // 購読開始前に届いたpayloadがあれば、ここで最新のenqueueへ一度だけ渡す。
+  // これにより「受信ログは残るがdisplayResultRefの初期no-opでカードが
+  // 消える」競合を、追加のchannel-point消費なしで防ぐ。
   useEffect(() => {
+    const pendingDisplayResults = pendingDisplayResultsRef.current;
     displayResultRef.current = enqueueResult;
+    const pending = pendingDisplayResults.splice(0);
+    for (const data of pending) {
+      void enqueueResult(data.data).then(data.resolve);
+    }
+    return () => {
+      // dependency更新中は次のeffectがすぐにhandlerを再登録する。再登録まで
+      // に届いたpayloadは同じバッファへ退避し、subscription cleanup側だけが
+      // streamer切替/unmount時にバッファを破棄する。
+      displayResultRef.current = (data) => {
+        if (!isOverlayMountedRef.current) {
+          return Promise.resolve(false);
+        }
+        return new Promise<boolean>((resolve) => {
+          pendingDisplayResults.push({ data, resolve });
+        });
+      };
+    };
   }, [enqueueResult]);
 
   /**
@@ -1006,7 +1097,7 @@ export default function OverlayPage() {
    * いる間はnetwork前にreturnし、version通知もcontrollerのconfig/events応答から
    * 受け取るため、この旧loopはWorker invocationもDB queryも発生させない。
    */
-  const pollOverlayEvents = useCallback(async () => {
+  const pollOverlayEvents = useCallback(async (isActive: () => boolean = () => true) => {
     if (connectionStatusRef.current === "connected") {
       return;
     }
@@ -1027,23 +1118,28 @@ export default function OverlayPage() {
         nextCursor?: OverlayHistoryCursor | null;
         overlayVersion?: string;
       }>(buildEventsUrl());
+      if (!isActive()) return;
       checkOverlayVersion(data.overlayVersion);
       const events = data.events ?? [];
       for (const event of events) {
+        if (!isActive()) return;
         if (seenHistoryIdsRef.current.has(event.id)) {
           continue;
         }
-        seenHistoryIdsRef.current.add(event.id);
-        pollCursorRef.current = event.redeemedAt;
-        pollHistoryIdRef.current = event.id;
         addDebugLogRef.current(`Polling fallback received: ${event.id}`);
-        displayResultRef.current({
+        const accepted = await displayResultRef.current({
           card: event.card as Card,
           userTwitchUsername: event.userTwitchUsername,
           historyId: event.id,
           soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
           rewardId: event.rewardId ?? null,
         });
+        if (!isActive() || !accepted) {
+          throw new Error('overlay callback rejected fallback event');
+        }
+        seenHistoryIdsRef.current.add(event.id);
+        pollCursorRef.current = event.redeemedAt;
+        pollHistoryIdRef.current = event.id;
       }
       // The server cursor also advances across defensive LEFT JOIN misses that
       // produce no display event. Prefer it over the last rendered row so a
@@ -1076,7 +1172,7 @@ export default function OverlayPage() {
 
     const schedule = () => {
       timeoutId = setTimeout(async () => {
-        await pollOverlayEvents();
+        await pollOverlayEvents(() => !stopped);
         if (!stopped) {
           schedule();
         }
@@ -1106,6 +1202,28 @@ export default function OverlayPage() {
   useEffect(() => {
     addDebugLogRef.current = addDebugLog;
   }, [addDebugLog]);
+
+  // `setResult` only schedules a React update; it does not prove that the
+  // card branch has committed to the DOM. Keep a separate commit marker so the
+  // fixed-overlay investigation can distinguish an event that never reached
+  // the queue from a React/browser paint problem. This is intentionally free
+  // of card names, IDs, URLs, and user data.
+  useEffect(() => {
+    if (result) {
+      addDebugLogRef.current('Card display committed');
+      const cardRoot = document.querySelector('[data-overlay-card="true"]');
+      const imageCommitted = !result.card.image_url || Boolean(cardRoot?.querySelector('img'));
+      if (cardRoot && imageCommitted) {
+        settleDisplayCommit(result.displayInstanceId, true);
+      } else {
+        // A state update without its card branch is exactly the failure that
+        // previously left the fixed overlay black. Do not acknowledge this
+        // event to the transport until the DOM contract is present.
+        addDebugLogRef.current('Card display commit missing DOM/image');
+        settleDisplayCommit(result.displayInstanceId, false);
+      }
+    }
+  }, [result, settleDisplayCommit]);
 
   // #694 Stage 6b: maintenance状態のポーリング（debugパネル表示専用）。
   //
@@ -1163,9 +1281,11 @@ export default function OverlayPage() {
   // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
   // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
   useEffect(() => {
+    const subscriptionGeneration = ++subscriptionGenerationRef.current;
     isOverlayMountedRef.current = true;
     const playedSoundGroupIds = playedSoundGroupIdsRef.current;
     const activeImageCheckCancels = activeImageCheckCancelsRef.current;
+    const pendingDisplayResults = pendingDisplayResultsRef.current;
 
     queueMicrotask(() => {
       addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
@@ -1176,8 +1296,15 @@ export default function OverlayPage() {
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
       addDebugLogRef.current(`Received payload: ${payload.type}`);
+      if (
+        !isOverlayMountedRef.current
+        || subscriptionGenerationRef.current !== subscriptionGeneration
+      ) {
+        addDebugLogRef.current('Ignored payload after subscription cleanup');
+        return false;
+      }
       if (payload.type === 'gacha' && payload.card) {
-        displayResultRef.current({
+        return displayResultRef.current({
           card: payload.card as unknown as Card,
           cards: payload.cards as unknown as Card[] | undefined,
           userTwitchUsername: payload.userTwitchUsername,
@@ -1200,6 +1327,7 @@ export default function OverlayPage() {
           + `cardsCount=${payload.cards?.length ?? 0})`
         );
       }
+      return true;
     }, {
       // Cursor ownership stays inside the transport controller. The page only
       // mirrors its exact DB pair so a build-version reload can hand the same
@@ -1249,9 +1377,17 @@ export default function OverlayPage() {
     cleanupRef.current = cleanup;
 
     return () => {
+      if (subscriptionGenerationRef.current === subscriptionGeneration) {
+        subscriptionGenerationRef.current += 1;
+      }
       isOverlayMountedRef.current = false;
       queueGenerationRef.current += 1;
       imageLayoutGenerationRef.current += 1;
+      const pending = pendingDisplayResults.splice(0);
+      for (const pendingResult of pending) {
+        pendingResult.resolve(false);
+      }
+      settleAllDisplayCommits(false);
       for (const cancel of [...activeImageCheckCancels]) {
         cancel();
       }
@@ -1270,7 +1406,7 @@ export default function OverlayPage() {
         clearTimeout(animationTimeoutRef.current);
       }
     };
-  }, [streamerId]);
+  }, [settleAllDisplayCommits, streamerId]);
 
   // Demo function for testing
   // デモ機能 - 配信者のカードがあればそれを、なければデモカードを表示
@@ -1432,6 +1568,7 @@ export default function OverlayPage() {
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
       <div
         key={result.displayInstanceId ?? `${result.historyId ?? "card"}:${result.card.id}`}
+        data-overlay-card="true"
         className={`transform transition-all duration-500 ${
           showCard ? "scale-100 opacity-100" : "scale-50 opacity-0"
         }`}
