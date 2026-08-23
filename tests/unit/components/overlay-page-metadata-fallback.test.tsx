@@ -27,9 +27,9 @@ describe('OverlayPage metadata fallback', () => {
   })
 
   // #1076 の実経路では gacha payload を受信しても最初のカードDOM自体が出ない症状が
-  // あった。既存のN連キューテストとは分け、初回カードの metadata probe が一度も
-  // settle しなくても business event のDOM配置と独立fallback revealが進むことを固定する。
-  it('初回カードのmetadata probeが無応答でもDOMを先に配置して表示する', async () => {
+  // あった。既存のN連キューテストとは分け、初回カードでブラウザの metadata callback が
+  // 一度も返らなくても business event のDOM配置と期限後のrevealが進むことを固定する。
+  it('初回カードのmetadata callbackが無応答でもDOMを先に配置して表示する', async () => {
     vi.useFakeTimers()
     window.history.replaceState({}, '', '/overlay/streamer-1')
 
@@ -41,7 +41,7 @@ describe('OverlayPage metadata fallback', () => {
 
       set src(value: string) {
         void value
-        // metadata probe を意図的に未解決のままにする。
+        // ブラウザ由来の load / error を意図的に発火させない。
       }
     }
     vi.stubGlobal('Image', PendingImage)
@@ -85,7 +85,7 @@ describe('OverlayPage metadata fallback', () => {
     expect(cardRoot).not.toBeNull()
     expect(cardRoot).toHaveClass('opacity-0')
 
-    // probeは無応答のままだが、1.5秒の独立fallback + 100ms lead-inで可視化される。
+    // load/errorは無応答のままでも、1.5秒のmetadata期限 + 100ms lead-inで可視化される。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1600)
     })
