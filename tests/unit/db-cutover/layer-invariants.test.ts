@@ -93,7 +93,6 @@ describe('db cutover layer invariants', () => {
       [tierBInvariant] as never,
       'target',
       (text: string) => text,
-      undefined,
     )
 
     expect(unsafe).toHaveBeenCalledTimes(1)
