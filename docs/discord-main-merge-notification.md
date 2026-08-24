@@ -19,8 +19,12 @@ Webhook URL は認証情報として扱い、リポジトリ、Issue、PR、CI �
 - fork からの PR では PR 本文を通知本文として採用せず、サニタイズした PR タイトルへフォールバックします。
 - `pull_request_target` を使うため、Secret を読む処理は信頼された base 側の workflow だけで実行します。PR head の checkout や実行をこの workflow に追加しないでください。
 
+### 昇格要約の正本
+
+`preview → main` の通知では、昇格 PR 本文の `## このリリースで変わること` を運用上の正本として扱います。Workflow はその要約を実差分やコミット一覧と自動照合しないため、通知内容の正確性は昇格 PR を更新する側が担保してください。実差分との機械的な整合確認が必要になった場合は、通知生成とは別の検証として追加します。
+
 ## 運用確認
 
 Secret の値そのものは表示せず、Repository Secret に `DISCORD_WEBHOOK_URL` が存在することだけを確認します。次回の実際の `main` マージ後に Actions の通知 job が成功し、Discord に通知が 1 件だけ届くことを確認してください。
 
-Refs #1027 #1091
+Refs #1027 #1091 #1113
