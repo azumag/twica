@@ -41,6 +41,7 @@ import {
   upsertReloadCooldownRecord,
   RELOAD_COOLDOWN_MS,
   POLLSTATE_TTL_MS,
+  MAX_PERSISTED_HISTORY_IDS,
 } from "@/lib/overlay-version";
 import { fetchMaintenanceStatus } from "@/lib/maintenance/client";
 import type { MaintenanceMode } from "@/lib/maintenance/state";
@@ -338,9 +339,18 @@ export default function OverlayPage() {
     });
   });
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
+  // subscription effectはstreamerIdだけに依存させる。displayResult/addDebugLogと
+  // 同じrefミラーで最新版を参照し、callback再生成による再接続を防ぐ。
+  const checkOverlayVersionRef = useRef<(received: string | undefined) => void>(() => {});
+  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollCursorRef = useRef(new Date().toISOString());
+  const pollHistoryIdRef = useRef("");
+  const seenHistoryIdsRef = useRef<Set<string>>(new Set());
+  const lastPollingErrorLogRef = useRef(0);
   const scheduleTerminalRecovery = useCallback((): boolean => {
     if (terminalRecoveryReloadTimerRef.current) return true;
     const storageKey = `${TERMINAL_RECOVERY_RELOAD_STORAGE_KEY}:${streamerId}`;
+    const pollStateKey = pollStateStorageKey(streamerId);
     const now = Date.now();
     let lastReloadAt = 0;
     try {
@@ -356,10 +366,42 @@ export default function OverlayPage() {
       addDebugLogRef.current('Terminal display block: reload cooldown active');
       return false;
     }
+
+    // The controller deliberately does not advance its durable cursor until
+    // the display ACK is true. Persist the exact pair before scheduling the
+    // reload so a fresh controller starts from the same event rather than
+    // defaulting to "now" and losing the unrendered redemption.
+    const snapshot = serializePollState({
+      pollCursor: pollCursorRef.current,
+      pollHistoryId: pollHistoryIdRef.current,
+      seenHistoryIds: Array.from(seenHistoryIdsRef.current),
+      savedAt: now,
+    });
+    const expectedSeenHistoryIds = Array.from(seenHistoryIdsRef.current)
+      .slice(-MAX_PERSISTED_HISTORY_IDS);
     try {
+      sessionStorage.setItem(pollStateKey, snapshot);
+      const storedSnapshot = sessionStorage.getItem(pollStateKey);
+      const parsedSnapshot = parsePollState(storedSnapshot, now, POLLSTATE_TTL_MS);
+      if (
+        !parsedSnapshot
+        || parsedSnapshot.pollCursor !== pollCursorRef.current
+        || parsedSnapshot.pollHistoryId !== pollHistoryIdRef.current
+        || JSON.stringify(parsedSnapshot.seenHistoryIds) !== JSON.stringify(expectedSeenHistoryIds)
+      ) {
+        throw new Error('terminal pollstate read-back mismatch');
+      }
       sessionStorage.setItem(storageKey, String(now));
     } catch {
-      addDebugLogRef.current('Terminal display block: reload budget unavailable');
+      // A reload without an exact cursor snapshot can skip the blocked event.
+      // Keep the legacy fallback active instead; it will retry from the live
+      // in-memory cursor without claiming that the terminal recovery worked.
+      try {
+        sessionStorage.removeItem(pollStateKey);
+      } catch {
+        // Ignore storage cleanup failures in restricted browser contexts.
+      }
+      addDebugLogRef.current('Terminal display block: cursor snapshot unavailable');
       return false;
     }
     addDebugLogRef.current('Terminal display block: scheduling one bounded reload');
@@ -369,14 +411,6 @@ export default function OverlayPage() {
     }, 250);
     return true;
   }, [streamerId]);
-  // subscription effectはstreamerIdだけに依存させる。displayResult/addDebugLogと
-  // 同じrefミラーで最新版を参照し、callback再生成による再接続を防ぐ。
-  const checkOverlayVersionRef = useRef<(received: string | undefined) => void>(() => {});
-  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollCursorRef = useRef(new Date().toISOString());
-  const pollHistoryIdRef = useRef("");
-  const seenHistoryIdsRef = useRef<Set<string>>(new Set());
-  const lastPollingErrorLogRef = useRef(0);
   // Issue #569: バージョン不一致検出＋自動リロード用のref群。
   // showCardは演出中判定にrefで参照する必要がある(setTimeoutコールバック内で
   // stateを直接読むとクロージャ生成時点の古い値のままになるため)。

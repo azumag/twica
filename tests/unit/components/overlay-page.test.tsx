@@ -197,6 +197,139 @@ describe('OverlayPage', () => {
     }
   })
 
+  it('表示ACKの終端ブロック時はexact cursorを保存し、再起動後も同じ位置から再開する', async () => {
+    vi.useFakeTimers()
+    sessionStorage.clear()
+    const originalLocation = window.location
+    const reloadMock = vi.fn()
+    const current = window.location
+    Object.defineProperty(window, 'location', {
+      value: {
+        hash: current.hash,
+        host: current.host,
+        hostname: current.hostname,
+        href: current.href,
+        origin: current.origin,
+        pathname: current.pathname,
+        port: current.port,
+        protocol: current.protocol,
+        search: current.search,
+        reload: reloadMock,
+      },
+      configurable: true,
+    })
+
+    const blockedCursor = '2026-08-24T03:00:00.000Z'
+    const blockedHistoryId = '00000000-0000-4000-8000-000000000103'
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      options.onHistoryCursor?.({ redeemedAt: blockedCursor, historyId: blockedHistoryId })
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    const view = render(<OverlayPage />)
+    try {
+      expect(subscribeMock).toHaveBeenCalled()
+      await act(async () => {
+        reportError?.(terminalDisplayBlockError)
+        await vi.advanceTimersByTimeAsync(250)
+      })
+
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+      const rawSnapshot = sessionStorage.getItem('twica-overlay-pollstate:streamer-1')
+      expect(rawSnapshot).not.toBeNull()
+      expect(JSON.parse(rawSnapshot as string)).toMatchObject({
+        pollCursor: blockedCursor,
+        pollHistoryId: blockedHistoryId,
+      })
+
+      view.unmount()
+      let resumedOptions: SubscribeOptions | undefined
+      subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+        resumedOptions = options
+        options.onSuccess?.()
+        return vi.fn()
+      })
+      render(<OverlayPage />)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(resumedOptions?.initialHistoryCursor).toEqual({
+        redeemedAt: blockedCursor,
+        historyId: blockedHistoryId,
+      })
+    } finally {
+      view.unmount()
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        configurable: true,
+      })
+    }
+  })
+
+  it('終端ACKのcursor保存に失敗した場合はリロードせず旧fallback pollingを継続する', async () => {
+    vi.useFakeTimers()
+    sessionStorage.clear()
+    const originalLocation = window.location
+    const reloadMock = vi.fn()
+    const current = window.location
+    Object.defineProperty(window, 'location', {
+      value: {
+        hash: current.hash,
+        host: current.host,
+        hostname: current.hostname,
+        href: current.href,
+        origin: current.origin,
+        pathname: current.pathname,
+        port: current.port,
+        protocol: current.protocol,
+        search: current.search,
+        reload: reloadMock,
+      },
+      configurable: true,
+    })
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: null, soundEnabled: false }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const originalSetItem = sessionStorage.setItem.bind(sessionStorage)
+    const setItemSpy = vi.spyOn(sessionStorage, 'setItem').mockImplementation(function (key, value) {
+      if (key.startsWith('twica-overlay-pollstate:')) {
+        throw new Error('sessionStorage quota unavailable')
+      }
+      return originalSetItem(key, value)
+    })
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    try {
+      render(<OverlayPage />)
+      expect(subscribeMock).toHaveBeenCalled()
+      await act(async () => {
+        reportError?.(terminalDisplayBlockError)
+        await vi.advanceTimersByTimeAsync(3_000)
+      })
+
+      expect(reloadMock).not.toHaveBeenCalled()
+      expect(fetchMock.mock.calls.some(([url]) => (
+        String(url).includes('/api/overlay/streamer-1/events')
+      ))).toBe(true)
+    } finally {
+      setItemSpy.mockRestore()
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        configurable: true,
+      })
+    }
+  })
+
   it('debug=true の時だけ接続問題をデバッグパネルに表示する', async () => {
     window.history.replaceState({}, '', '/overlay/streamer-1?debug=true')
 
