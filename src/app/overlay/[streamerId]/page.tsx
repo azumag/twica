@@ -213,6 +213,10 @@ const POLLSTATE_STORAGE_KEY = "twica-overlay-pollstate";
 // infinite reload loop when the same card remains unrenderable.
 const TERMINAL_RECOVERY_RELOAD_COOLDOWN_MS = 10 * 60 * 1000;
 const TERMINAL_RECOVERY_RELOAD_STORAGE_KEY = "twica-overlay-terminal-recovery-v1";
+// The disconnected emergency loop has no transport-level ACK budget of its
+// own. Keep a rejected head event recoverable for a few attempts, then stop
+// the loop at that exact cursor instead of replaying the same event forever.
+const LEGACY_POLL_MAX_FAILURES_PER_EVENT = 3;
 const pollStateStorageKey = (streamerId: string) =>
   `${POLLSTATE_STORAGE_KEY}:${streamerId}`;
 
@@ -278,6 +282,9 @@ export default function OverlayPage() {
   // not let the legacy disconnected polling loop read that same cursor with a
   // second dedupe cache, or already displayed rows could be shown twice.
   const legacyPollingSuppressedRef = useRef(false);
+  const legacyPollingRetryCountsRef = useRef<Map<string, number>>(new Map());
+  const legacyPollingQuarantinedEventIdsRef = useRef<Set<string>>(new Set());
+  const legacyPollingBlockedRef = useRef(false);
   // ガチャ結果キュー: アニメーション中に到着した結果をバッファし順番に表示する
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
   const queueRef = useRef<GachaResult[]>([]);
@@ -1476,6 +1483,7 @@ export default function OverlayPage() {
     if (
       connectionStatusRef.current === "connected"
       || legacyPollingSuppressedRef.current
+      || legacyPollingBlockedRef.current
     ) {
       return;
     }
@@ -1488,6 +1496,23 @@ export default function OverlayPage() {
       }
       url.searchParams.set("_", String(Date.now()));
       return url.toString();
+    };
+
+    let blockedByFallbackDelivery = false;
+    const recordFallbackDeliveryFailure = (eventId: string): void => {
+      const attempt = (legacyPollingRetryCountsRef.current.get(eventId) ?? 0) + 1;
+      legacyPollingRetryCountsRef.current.set(eventId, attempt);
+      if (attempt < LEGACY_POLL_MAX_FAILURES_PER_EVENT) return;
+
+      // Do not advance either cursor or seenHistoryIds here. The event remains
+      // the exact recovery handle for a later fresh controller, while this
+      // page stops issuing an unbounded duplicate request/display loop.
+      legacyPollingQuarantinedEventIdsRef.current.add(eventId);
+      legacyPollingBlockedRef.current = true;
+      blockedByFallbackDelivery = true;
+      addDebugLogRef.current(
+        `Polling fallback event quarantined after ${attempt} display failures: ${eventId}`
+      );
     };
 
     try {
@@ -1504,17 +1529,33 @@ export default function OverlayPage() {
         if (seenHistoryIdsRef.current.has(event.id)) {
           continue;
         }
+        if (legacyPollingQuarantinedEventIdsRef.current.has(event.id)) {
+          legacyPollingBlockedRef.current = true;
+          blockedByFallbackDelivery = true;
+          addDebugLogRef.current(`Polling fallback remains blocked at quarantined event: ${event.id}`);
+          throw new Error('overlay fallback event is quarantined');
+        }
         addDebugLogRef.current(`Polling fallback received: ${event.id}`);
-        const accepted = await displayResultRef.current({
-          card: event.card as Card,
-          userTwitchUsername: event.userTwitchUsername,
-          historyId: event.id,
-          soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
-          rewardId: event.rewardId ?? null,
-        });
-        if (!isActive() || !accepted) {
+        let accepted: boolean;
+        try {
+          accepted = await displayResultRef.current({
+            card: event.card as Card,
+            userTwitchUsername: event.userTwitchUsername,
+            historyId: event.id,
+            soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
+            rewardId: event.rewardId ?? null,
+          });
+        } catch (error) {
+          if (!isActive()) return;
+          recordFallbackDeliveryFailure(event.id);
+          throw error;
+        }
+        if (!isActive()) return;
+        if (!accepted) {
+          recordFallbackDeliveryFailure(event.id);
           throw new Error('overlay callback rejected fallback event');
         }
+        legacyPollingRetryCountsRef.current.delete(event.id);
         seenHistoryIdsRef.current.add(event.id);
         pollCursorRef.current = event.redeemedAt;
         pollHistoryIdRef.current = event.id;
@@ -1535,6 +1576,10 @@ export default function OverlayPage() {
         }
       }
     } catch (error) {
+      if (blockedByFallbackDelivery) {
+        logger.error("Overlay polling fallback blocked at an unacknowledged event:", error);
+        return;
+      }
       const now = Date.now();
       if (now - lastPollingErrorLogRef.current > 30000) {
         lastPollingErrorLogRef.current = now;
@@ -1736,6 +1781,9 @@ export default function OverlayPage() {
     const subscriptionGeneration = ++subscriptionGenerationRef.current;
     isOverlayMountedRef.current = true;
     legacyPollingSuppressedRef.current = false;
+    legacyPollingBlockedRef.current = false;
+    legacyPollingRetryCountsRef.current.clear();
+    legacyPollingQuarantinedEventIdsRef.current.clear();
     const playedSoundGroupIds = playedSoundGroupIdsRef.current;
     const activeImageCheckCancels = activeImageCheckCancelsRef.current;
     const pendingDisplayResults = pendingDisplayResultsRef.current;
@@ -1818,6 +1866,9 @@ export default function OverlayPage() {
       onSuccess: () => {
         addDebugLogRef.current('Connection successful - SUBSCRIBED');
         legacyPollingSuppressedRef.current = false;
+        legacyPollingBlockedRef.current = false;
+        legacyPollingRetryCountsRef.current.clear();
+        legacyPollingQuarantinedEventIdsRef.current.clear();
         setConnectionStatus('connected');
         if (connectionTimeoutRef.current) {
           clearTimeout(connectionTimeoutRef.current);
@@ -1866,6 +1917,9 @@ export default function OverlayPage() {
       activeDisplayInstanceIdRef.current = undefined;
       isDisplayingRef.current = false;
       playedSoundGroupIds.clear();
+      legacyPollingRetryCountsRef.current.clear();
+      legacyPollingQuarantinedEventIdsRef.current.clear();
+      legacyPollingBlockedRef.current = false;
       if (connectionTimeoutRef.current) {
         clearTimeout(connectionTimeoutRef.current);
         connectionTimeoutRef.current = null;

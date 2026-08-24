@@ -341,11 +341,23 @@ function loadSeenEvents(streamerId: string): Map<string, number> {
   return seen
 }
 
-function persistSeenEvents(streamerId: string, seen: Map<string, number>): void {
+function persistSeenEvents(
+  streamerId: string,
+  seen: Map<string, number>,
+  pendingEventIds: Set<string> = new Set(),
+): void {
   try {
     sessionStorage.setItem(
       seenStorageKey(streamerId),
-      JSON.stringify([...seen.entries()].slice(-MAX_SEEN_EVENT_IDS))
+      JSON.stringify(
+        [...seen.entries()]
+          // A callback may have claimed an N-draw batch while its DOM ACK is
+          // still pending. Those IDs are only in-memory claims; persisting
+          // them here would make a later controller skip cards that never
+          // became visible after an OBS/browser reload.
+          .filter(([eventId]) => !pendingEventIds.has(eventId))
+          .slice(-MAX_SEEN_EVENT_IDS)
+      )
     )
   } catch {
     // Storage quota/security failures must not stop overlay delivery.
@@ -846,7 +858,7 @@ export function subscribeToGachaResults(
       // Persist only after the page accepted the payload. Storage is an
       // optimization for reload dedupe; the in-memory rollback above is the
       // correctness boundary for the current overlay lifetime.
-      persistSeenEvents(streamerId, seenEventIds)
+      persistSeenEvents(streamerId, seenEventIds, pendingEventIds)
       return 'delivered' as const
     }
     try {
@@ -1309,7 +1321,7 @@ export function subscribeToGachaResults(
         // replayable until it is accepted or explicitly exhausted.
         if (!demoRetryPending && !pendingEventIds.has(demoId)) {
           demoCursor = { redeemedAt: demoEvent.redeemedAt, historyId: demoEvent.id }
-          persistSeenEvents(streamerId, seenEventIds)
+          persistSeenEvents(streamerId, seenEventIds, pendingEventIds)
         }
       }
 

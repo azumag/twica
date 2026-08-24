@@ -3276,6 +3276,115 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     )
   })
 
+  it('does not persist an unacknowledged N-draw ID when another event commits', async () => {
+    class ControlledWebSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSED = 3
+      static readonly instances: ControlledWebSocket[] = []
+      readyState = ControlledWebSocket.CONNECTING
+      onopen: (() => void) | null = null
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: ((event: { code: number }) => void) | null = null
+
+      constructor() {
+        ControlledWebSocket.instances.push(this)
+        queueMicrotask(() => {
+          this.readyState = ControlledWebSocket.OPEN
+          this.onopen?.()
+        })
+      }
+
+      send() {}
+
+      close(code = 1000) {
+        this.readyState = ControlledWebSocket.CLOSED
+        this.onclose?.({ code })
+      }
+
+      emit(message: unknown) {
+        this.onmessage?.({ data: JSON.stringify(message) })
+      }
+    }
+    vi.stubGlobal('WebSocket', ControlledWebSocket)
+
+    const [eventA] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: historyUuid(9_901),
+      eventId: 'persisted-event-a',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_A,
+    }])
+    const [eventB] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: historyUuid(9_902),
+      eventId: 'pending-n-draw-event-b',
+      redeemedAt: '2026-07-24T00:00:02.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_B,
+    }])
+    let historyCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'do-primary',
+          webSocketUrl: 'https://realtime.example',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'pending-persist-v1',
+        })
+      }
+      historyCalls += 1
+      return historyCalls <= 2
+        ? jsonResponse({ realtimeEvents: [], nextCursor: null })
+        : jsonResponse({ realtimeEvents: [eventA], nextCursor: null })
+    }))
+
+    let resolvePending!: (accepted: boolean) => void
+    const callback = vi.fn((_payload: GachaBroadcastPayload) => {
+      if (callback.mock.calls.length === 1) {
+        return new Promise<boolean>((resolve) => {
+          resolvePending = resolve
+        })
+      }
+      return true
+    })
+    const cleanup = subscribeToGachaResults('ignored', callback, { retryDelay: 10 })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    const socket = ControlledWebSocket.instances[0]
+    socket.emit({ type: 'gacha_result', seq: 1, event: eventB })
+    await flushPromises()
+    expect(callback).toHaveBeenCalledTimes(1)
+
+    // Force the recovery poll while B is still awaiting its DOM ACK. A is
+    // allowed to commit, but B must remain absent from persistent dedupe.
+    socket.emit({ type: 'server_notice', code: 'transport_disabled' })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      CARD_B.id,
+      CARD_A.id,
+    ])
+    const persisted = JSON.parse(
+      sessionStorage.getItem(`twica:overlay-seen:v1:${STREAMER_ID}`) ?? '[]'
+    ) as Array<[string, number]>
+    const persistedIds = persisted.map(([eventId]) => eventId)
+    expect(persistedIds).toContain(eventA.draws[0].eventId)
+    expect(persistedIds).not.toContain(eventB.draws[0].eventId)
+
+    resolvePending(true)
+    await flushPromises()
+    cleanup()
+  })
+
   it('does not notify an overlay version from an events request that settles after cleanup', async () => {
     let resolveEvents!: (response: Response) => void
     const pendingEvents = new Promise<Response>((resolve) => {

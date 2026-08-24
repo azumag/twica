@@ -146,6 +146,81 @@ describe('OverlayPage', () => {
     ))).toBe(true)
   })
 
+  it('旧fallbackの同一イベント表示失敗を3回で隔離し、無限再送を止める', async () => {
+    vi.useFakeTimers()
+    // Force the bounded reload budget into its cooldown path so the emergency
+    // polling loop is the only recovery route exercised by this test.
+    sessionStorage.setItem(
+      'twica-overlay-terminal-recovery-v1:streamer-1',
+      String(Date.now()),
+    )
+    const failingCard = {
+      get id(): string {
+        throw new Error('card DOM setup failed')
+      },
+      name: 'Unrenderable card',
+      description: null,
+      image_url: null,
+      rarity: 'common',
+    } as unknown as { id: string; name: string; description: null; image_url: null; rarity: string }
+    const fallbackEvent = {
+      id: '00000000-0000-4000-8000-000000000104',
+      eventId: 'fallback-unrenderable-event',
+      redeemedAt: '2026-08-24T03:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: failingCard,
+    }
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('/api/overlay/streamer-1/events')) {
+        return {
+          ok: true,
+          json: async () => ({ events: [fallbackEvent], nextCursor: null }),
+        }
+      }
+      return {
+        ok: true,
+        json: async () => ({ soundUrl: null, soundEnabled: false }),
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(subscribeMock).toHaveBeenCalled()
+
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+
+    const eventRequests = fetchMock.mock.calls.filter(([url]) => (
+      String(url).includes('/api/overlay/streamer-1/events')
+    ))
+    expect(eventRequests).toHaveLength(3)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_000)
+    })
+    expect(fetchMock.mock.calls.filter(([url]) => (
+      String(url).includes('/api/overlay/streamer-1/events')
+    ))).toHaveLength(3)
+  })
+
   it('表示ACKの終端ブロック後はリロードを一度だけ予約し、失敗時に無限化しない', async () => {
     vi.useFakeTimers()
     sessionStorage.clear()
