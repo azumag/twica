@@ -58,6 +58,8 @@ const mockDeadLetter = vi.mocked(deadLetterChatNotification)
 const mockReportError = vi.mocked(reportError)
 const mockLoggerWarn = vi.mocked(logger.warn)
 
+// `{user}` / `{card}` だけのテンプレートにして補助DB参照を通さず、
+// retryState と reportError の契約だけを隔離して検証する。
 const streamer = {
   id: 'streamer-1',
   chat_announcement_enabled: true,
