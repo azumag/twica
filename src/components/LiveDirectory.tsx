@@ -237,7 +237,7 @@ export default function LiveDirectory({
           <>
             <div className="mb-6 flex flex-col gap-3 border-b border-gray-800 pb-5 sm:flex-row sm:items-end sm:justify-between">
               {view !== "cardCount" && (
-                <fieldset>
+                <fieldset aria-describedby="live-directory-ranking-period-help">
                   <legend className="mb-2 text-sm font-medium text-gray-300">
                     {t("period.label")}
                   </legend>
@@ -255,7 +255,7 @@ export default function LiveDirectory({
                           onChange={() => setRankingPeriod(period.id)}
                           className="peer sr-only"
                         />
-                        <span className="flex min-h-9 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">
+                        <span className="flex min-h-11 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">
                           {t(period.labelKey)}
                         </span>
                       </label>
@@ -263,7 +263,10 @@ export default function LiveDirectory({
                   </div>
                 </fieldset>
               )}
-              <p className="max-w-2xl text-xs leading-5 text-gray-400 sm:text-right">
+              <p
+                id="live-directory-ranking-period-help"
+                className="max-w-2xl text-xs leading-5 text-gray-400 sm:text-right"
+              >
                 {view === "cardCount"
                   ? t("period.cardCountHelp")
                   : t(`period.usageHelp.${rankingPeriod}`)}
