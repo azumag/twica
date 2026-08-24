@@ -338,8 +338,8 @@ export default function OverlayPage() {
     });
   });
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
-  const scheduleTerminalRecovery = useCallback(() => {
-    if (terminalRecoveryReloadTimerRef.current) return;
+  const scheduleTerminalRecovery = useCallback((): boolean => {
+    if (terminalRecoveryReloadTimerRef.current) return true;
     const storageKey = `${TERMINAL_RECOVERY_RELOAD_STORAGE_KEY}:${streamerId}`;
     const now = Date.now();
     let lastReloadAt = 0;
@@ -350,23 +350,24 @@ export default function OverlayPage() {
       // the cross-page budget cannot be persisted, otherwise a hard failure
       // would turn into an unbounded reload loop.
       addDebugLogRef.current('Terminal display block: reload budget unavailable');
-      return;
+      return false;
     }
     if (Number.isFinite(lastReloadAt) && now - lastReloadAt < TERMINAL_RECOVERY_RELOAD_COOLDOWN_MS) {
       addDebugLogRef.current('Terminal display block: reload cooldown active');
-      return;
+      return false;
     }
     try {
       sessionStorage.setItem(storageKey, String(now));
     } catch {
       addDebugLogRef.current('Terminal display block: reload budget unavailable');
-      return;
+      return false;
     }
     addDebugLogRef.current('Terminal display block: scheduling one bounded reload');
     terminalRecoveryReloadTimerRef.current = setTimeout(() => {
       terminalRecoveryReloadTimerRef.current = null;
       if (isOverlayMountedRef.current) window.location.reload();
     }, 250);
+    return true;
   }, [streamerId]);
   // subscription effectはstreamerIdだけに依存させる。displayResult/addDebugLogと
   // 同じrefミラーで最新版を参照し、callback再生成による再接続を防ぐ。
@@ -1765,8 +1766,12 @@ export default function OverlayPage() {
       onError: (error) => {
         addDebugLogRef.current(`Connection error: ${error.message} (expected: ${error.isExpected})`);
         if (error.message === 'Overlay card delivery blocked after retry limit') {
-          legacyPollingSuppressedRef.current = true;
-          scheduleTerminalRecovery();
+          // The bounded reload is only a first recovery attempt. If its
+          // sessionStorage budget is exhausted or unavailable, leave the old
+          // disconnected polling loop active so a repaired presentation path
+          // can still recover the unchanged durable cursor instead of leaving
+          // the overlay permanently black.
+          legacyPollingSuppressedRef.current = scheduleTerminalRecovery();
         }
         if (error.isExpected) {
           setConnectionStatus('disconnected');

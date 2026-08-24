@@ -792,6 +792,11 @@ export function subscribeToGachaResults(
       return 'duplicate'
     }
     const rollback = () => {
+      // Cleanup resolves pending display promises before disposing this
+      // controller. Their rejection settles in a later microtask; without
+      // this guard a dead controller could consume another retry and emit a
+      // terminal block into the next subscription.
+      if (disposed) return 'duplicate' as const
       // A callback failure is a delivery failure, not a malformed event. Roll
       // back only the IDs claimed by this attempt; polling can then retry the
       // exact committed row without consuming another channel-point exchange.
@@ -827,6 +832,10 @@ export function subscribeToGachaResults(
       return 'callback-error' as const
     }
     const commit = (accepted: void | boolean) => {
+      // A callback may resolve after the page has switched streamers or
+      // unmounted. Do not persist dedupe state or mutate delivery budgets from
+      // a controller that no longer owns the page.
+      if (disposed) return 'duplicate' as const
       if (accepted === false) {
         throw new Error('overlay callback rejected event')
       }
@@ -1257,7 +1266,9 @@ export function subscribeToGachaResults(
       const demoEvent = historyResponse.demoEvent ?? null
       if (demoEvent) {
         const demoId = demoEvent.eventId ?? `demo:${demoEvent.id}`
-        if (rememberSeenId(seenEventIds, demoId)) {
+        const demoWasPending = pendingEventIds.has(demoId)
+        let demoRetryPending = false
+        if (!demoWasPending && rememberSeenId(seenEventIds, demoId)) {
           try {
             const accepted = await callback({
               type: 'gacha',
@@ -1275,6 +1286,7 @@ export function subscribeToGachaResults(
             seenEventIds.delete(demoId)
             options.onStatusChange?.(`CALLBACK_ERROR:polling-demo:${attempt}`)
             if (attempt < 3) {
+              demoRetryPending = true
               throw new Error('overlay callback rejected demo event')
             }
 
@@ -1288,6 +1300,14 @@ export function subscribeToGachaResults(
             seenEventIds.set(demoId, Date.now())
             options.onStatusChange?.('POLLING_DEMO_RETRY_EXHAUSTED')
           }
+        }
+        // A demo delivered by the DO may already be present in this response's
+        // KV fallback. Advance the independent demo cursor for an already-seen
+        // (accepted) event as well; otherwise the same KV row is fetched on
+        // every poll for its full TTL. Keep it behind only an in-flight page
+        // acknowledgement or a bounded retry so a failed demo remains
+        // replayable until it is accepted or explicitly exhausted.
+        if (!demoRetryPending && !pendingEventIds.has(demoId)) {
           demoCursor = { redeemedAt: demoEvent.redeemedAt, historyId: demoEvent.id }
           persistSeenEvents(streamerId, seenEventIds)
         }

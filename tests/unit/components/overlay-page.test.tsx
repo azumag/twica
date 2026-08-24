@@ -117,6 +117,35 @@ describe('OverlayPage', () => {
     ))).toBe(false)
   })
 
+  it('表示ACKの終端ブロックがリロードcooldown中なら旧fallback pollingで復旧を続ける', async () => {
+    vi.useFakeTimers()
+    sessionStorage.setItem(
+      'twica-overlay-terminal-recovery-v1:streamer-1',
+      String(Date.now()),
+    )
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: null, soundEnabled: false }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    expect(subscribeMock).toHaveBeenCalled()
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+
+    expect(fetchMock.mock.calls.some(([url]) => (
+      String(url).includes('/api/overlay/streamer-1/events')
+    ))).toBe(true)
+  })
+
   it('表示ACKの終端ブロック後はリロードを一度だけ予約し、失敗時に無限化しない', async () => {
     vi.useFakeTimers()
     sessionStorage.clear()

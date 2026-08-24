@@ -2499,9 +2499,11 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       rewardId: null,
       card: CARD_A,
     }])
+    const pollingUrls: URL[] = []
     let fallbackAvailable = false
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes('/realtime-config')) {
+      const url = new URL(String(input))
+      if (url.pathname.includes('/realtime-config')) {
         return jsonResponse({
           schemaVersion: 1,
           mode: 'do-primary',
@@ -2511,6 +2513,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
           configVersion: 'do-primary-v1',
         })
       }
+      pollingUrls.push(url)
       return jsonResponse({
         realtimeEvents: [],
         nextCursor: null,
@@ -2557,6 +2560,15 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
 
     expect(callback).toHaveBeenCalledTimes(1)
     expect(callback.mock.calls[0][0].userTwitchUsername).toBe('DemoUser')
+    // Force one more recovery pass after the fallback row has been consumed;
+    // the next request must carry the independent demo cursor rather than
+    // reading the same KV row until its TTL expires.
+    socket.close(1006)
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(pollingUrls.some((url) => (
+      url.searchParams.get('demoSince') === demoEvent.redeemedAt
+    ))).toBe(true)
     cleanup()
   })
 
@@ -3217,6 +3229,51 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
     await vi.advanceTimersByTimeAsync(100)
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not roll back a disposed controller when a pending display promise settles late', async () => {
+    const [event] = buildPollingRealtimeEvents(STREAMER_ID, [{
+      id: historyUuid(9_900),
+      eventId: 'late-dispose-event',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      card: CARD_A,
+    }])
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 10, maxDelayMs: 1_000 },
+          configVersion: 'late-dispose-v1',
+        })
+      }
+      return jsonResponse({ realtimeEvents: [event], nextCursor: null })
+    }))
+
+    let resolveDisplay!: (accepted: boolean) => void
+    const callback = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveDisplay = resolve
+    }))
+    const statuses: string[] = []
+    const onError = vi.fn()
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      retryDelay: 10,
+      onStatusChange: (status) => statuses.push(status),
+      onError,
+    })
+    await flushPromises()
+    expect(callback).toHaveBeenCalledTimes(1)
+
+    cleanup()
+    resolveDisplay(false)
+    await flushPromises()
+
+    expect(statuses).not.toContain('CALLBACK_ERROR:polling')
+    expect(onError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Overlay card delivery blocked after retry limit' })
+    )
   })
 
   it('does not notify an overlay version from an events request that settles after cleanup', async () => {
