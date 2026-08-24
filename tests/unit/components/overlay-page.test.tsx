@@ -837,14 +837,15 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('RealCard')).toBeInTheDocument()
 
-    // The transport must not ACK a broken bitmap by itself.  It first replaces
-    // the image with an explicit, painted fallback card and only then resolves
-    // the display commit.
+    // The transport must not ACK a broken bitmap by itself. It paints an
+    // explicit fallback over the still-mounted image element, so a slow
+    // browser can recover if the image later finishes loading.
     const renderedImage = screen.getByAltText('RealCard')
     await act(async () => {
       renderedImage.dispatchEvent(new Event('error'))
       await Promise.resolve()
     })
+    expect(screen.getByAltText('RealCard')).toBeInTheDocument()
     expect(screen.getByLabelText(/RealCard の画像を表示できないため代替表示/))
       .toHaveAttribute('data-overlay-card-fallback', 'true')
     await expect(delivery).resolves.toBe(true)

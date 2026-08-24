@@ -1514,12 +1514,13 @@ export default function OverlayPage() {
     }
 
     const fallbackRoot = cardRoot.querySelector('[data-overlay-card-fallback="true"]');
-    if (imageFallbackDisplayInstanceId === displayInstanceId) {
-      if (fallbackRoot) {
-        addDebugLogRef.current('Card image fallback committed');
-        settleDisplayCommit(displayInstanceId, true);
-      }
-      return;
+    if (imageFallbackDisplayInstanceId === displayInstanceId && fallbackRoot) {
+      // Keep the real <img> mounted while the painted fallback is visible.
+      // A slow image may still finish loading after the watchdog; removing it
+      // here would make the fallback permanent and turn a delayed but valid
+      // card into a regression.
+      addDebugLogRef.current('Card image fallback committed');
+      settleDisplayCommit(displayInstanceId, true);
     }
 
     if (!result.card.image_url) {
@@ -1541,6 +1542,11 @@ export default function OverlayPage() {
       && image.naturalHeight > 0
     );
     if (imageIsReady) {
+      if (imageFallbackDisplayInstanceId === displayInstanceId) {
+        setImageFallbackDisplayInstanceId(current => (
+          current === displayInstanceId ? null : current
+        ));
+      }
       settleDisplayCommit(displayInstanceId, true);
       return;
     }
@@ -1548,6 +1554,11 @@ export default function OverlayPage() {
     addDebugLogRef.current('Card image awaiting load');
     const onLoad = () => {
       if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
+        if (imageFallbackDisplayInstanceId === displayInstanceId) {
+          setImageFallbackDisplayInstanceId(current => (
+            current === displayInstanceId ? null : current
+          ));
+        }
         settleDisplayCommit(displayInstanceId, true);
       } else {
         addDebugLogRef.current('Card image load completed without dimensions');
@@ -1925,12 +1936,12 @@ export default function OverlayPage() {
   const imageOnlySizeClass = shouldUseSmallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
   const showImageFallback = imageFallbackDisplayInstanceId === result.displayInstanceId;
 
-  const renderImageFallback = (sizeClassName: string) => (
+  const renderImageFallback = (sizeClassName: string, overlay = false) => (
     <div
       data-overlay-card-fallback="true"
       role="img"
       aria-label={`${result.card.name} の画像を表示できないため代替表示`}
-      className={`flex min-h-[192px] min-w-[192px] flex-col items-center justify-center rounded-lg bg-gray-700 px-4 py-6 text-center ${sizeClassName}`}
+      className={`${overlay ? "pointer-events-none absolute inset-0 z-10" : ""} flex min-h-[192px] min-w-[192px] flex-col items-center justify-center rounded-lg bg-gray-700 px-4 py-6 text-center ${sizeClassName}`}
     >
       <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
     </div>
@@ -1973,16 +1984,19 @@ export default function OverlayPage() {
                 `priority`が付随して出すpreloadリンクの先読み効果が無く、
                 長時間開きっぱなしのOBSページのheadへ不要なリンクを溜める
                 だけになるため。 */}
-            {result.card.image_url && !showImageFallback ? (
-              <Image
-                src={result.card.image_url}
-                alt={result.card.name}
-                width={shouldUseSmallMode ? 192 : 320}
-                height={shouldUseSmallMode ? 268 : 448}
-                className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
-                unoptimized
-                loading="eager"
-              />
+            {result.card.image_url ? (
+              <div className="relative">
+                <Image
+                  src={result.card.image_url}
+                  alt={result.card.name}
+                  width={shouldUseSmallMode ? 192 : 320}
+                  height={shouldUseSmallMode ? 268 : 448}
+                  className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
+                  unoptimized
+                  loading="eager"
+                />
+                {showImageFallback && renderImageFallback("h-full w-full", true)}
+              </div>
             ) : renderImageFallback(shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80")}
 
             {/* 付帯情報（画像の下、オプションで表示） */}
@@ -2051,20 +2065,23 @@ export default function OverlayPage() {
 
                 {/* Card Image - square like Collection */}
                 <div className="aspect-square bg-gray-600">
-                  {result.card.image_url && !showImageFallback ? (
-                    // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
-                    // loading="eager": Issue #1076参照(画像のみモード側の同コメント参照)。
-                    // 通常モードのカード画像も同じ理由で即時読み込みにする。
-                    <Image
-                      src={result.card.image_url}
-                      alt={result.card.name}
-                      width={shouldUseSmallMode ? 180 : 300}
-                      height={shouldUseSmallMode ? 180 : 300}
-                      className={`w-full h-full ${cardImageFitClass(result.card.image_padding_color)}`}
-                      style={cardImageFitStyle(result.card.image_padding_color)}
-                      unoptimized
-                      loading="eager"
-                    />
+                  {result.card.image_url ? (
+                    <div className="relative h-full w-full">
+                      {/* unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
+                          loading="eager": Issue #1076参照(画像のみモード側の同コメント参照)。
+                          通常モードのカード画像も同じ理由で即時読み込みにする。 */}
+                      <Image
+                        src={result.card.image_url}
+                        alt={result.card.name}
+                        width={shouldUseSmallMode ? 180 : 300}
+                        height={shouldUseSmallMode ? 180 : 300}
+                        className={`w-full h-full ${cardImageFitClass(result.card.image_padding_color)}`}
+                        style={cardImageFitStyle(result.card.image_padding_color)}
+                        unoptimized
+                        loading="eager"
+                      />
+                      {showImageFallback && renderImageFallback("h-full w-full", true)}
+                    </div>
                   ) : renderImageFallback("h-full w-full")}
                 </div>
 
