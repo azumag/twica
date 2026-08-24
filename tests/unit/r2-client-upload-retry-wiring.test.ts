@@ -85,6 +85,7 @@ function stubSoundEnv(): void {
 }
 
 // maxRetries は「初回試行後に許容する再試行回数」で、fixture の総試行回数とは別契約。
+// MAX_RETRIES = 3 はこの結線テスト専用の fixture 値で、実装側の既定値を複製・固定する契約ではない。
 const MAX_RETRIES = 3
 // 1回だけ試行 = リトライなし。
 const SINGLE_ATTEMPT_NO_RETRY = 1
@@ -95,8 +96,14 @@ const RETRY_SUCCESS_ATTEMPTS = TRANSIENT_FAILURES_BEFORE_SUCCESS + 1
 const R2_INTERNAL_ERROR_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)'
 
 function mockTransientFailuresThenSuccess(): void {
-  expect(TRANSIENT_FAILURES_BEFORE_SUCCESS).toBeGreaterThanOrEqual(1)
-  expect(TRANSIENT_FAILURES_BEFORE_SUCCESS).toBeLessThanOrEqual(MAX_RETRIES)
+  expect(
+    TRANSIENT_FAILURES_BEFORE_SUCCESS,
+    'リトライ成功fixtureには一時失敗を1回以上含めること',
+  ).toBeGreaterThanOrEqual(1)
+  expect(
+    TRANSIENT_FAILURES_BEFORE_SUCCESS,
+    'リトライ成功fixtureはMAX_RETRIES以内で成功へ到達できること',
+  ).toBeLessThanOrEqual(MAX_RETRIES)
 
   for (
     let transientFailureIndex = 0;

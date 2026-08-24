@@ -52,19 +52,41 @@ export async function handleDatabaseError(error: unknown, context: string): Prom
   return NextResponse.json({ error: 'Database error' }, { status: 500 })
 }
 
+const HTTP_STATUS_REASON_PHRASES = {
+  401: 'unauthorized',
+  503: 'service\\s+unavailable',
+  507: 'insufficient\\s+storage',
+} as const
+
+// Issue #989: 裸の `503` などを部分一致させると `photo-503.png` や URL 中の数値まで
+// HTTP status と誤認するため、明示的な status ラベルか標準的な status line だけを受理する。
+// `httpStatusCode` は識別子途中に `status` があるため `\bstatus` 枝では一致せず、専用枝が必要。
+// `503 Service Unavailable` のような数値先頭形式は理由句まで一致させ、文脈のない数値を除外する。
+// r2-client のリトライ判定は一時障害メッセージを拾う目的でより広い書式を許容する一方、
+// ここでは最終レスポンスの誤分類を避けるため `\D{0,10}` のような緩い範囲を意図的に使わない。
+// 両者の判定器統合・入力形の整理は Issue #989 の残フォローアップとして扱う。
+function hasHttpStatusContext(errorMessage: string, status: 401 | 503 | 507): boolean {
+  const reasonPhrase = HTTP_STATUS_REASON_PHRASES[status]
+  return new RegExp(
+    `(?:\\bhttp(?:\\/[0-9.]+)?\\s+${status}\\b|\\bstatus(?:\\s*code)?\\s*[:=]?\\s*${status}\\b|\\bhttpstatuscode\\s*[:=]?\\s*${status}\\b|(?:^|[\\s:(\\[])${status}\\s+${reasonPhrase}\\b)`,
+    'i'
+  ).test(errorMessage)
+}
+
 export async function handleBlobError(error: unknown, context: string, additionalInfo?: Record<string, unknown>): Promise<NextResponse> {
   const errorMessage = error instanceof Error ? error.message : String(error)
+  const normalizedErrorMessage = errorMessage.toLowerCase()
   await logAndRecordError(`${context}: ${errorMessage}`, error, additionalInfo)
 
-  if (errorMessage.includes('quota') || errorMessage.includes('limit') || errorMessage.includes('507')) {
+  if (normalizedErrorMessage.includes('quota') || normalizedErrorMessage.includes('limit') || hasHttpStatusContext(errorMessage, 507)) {
     return NextResponse.json({ error: 'Storage quota exceeded' }, { status: 507 })
   }
 
-  if (errorMessage.includes('authentication') || errorMessage.includes('unauthorized') || errorMessage.includes('401')) {
+  if (normalizedErrorMessage.includes('authentication') || normalizedErrorMessage.includes('unauthorized') || hasHttpStatusContext(errorMessage, 401)) {
     return NextResponse.json({ error: 'Storage authentication failed' }, { status: 503 })
   }
 
-  if (errorMessage.includes('service unavailable') || errorMessage.includes('503')) {
+  if (normalizedErrorMessage.includes('service unavailable') || hasHttpStatusContext(errorMessage, 503)) {
     return NextResponse.json({ error: 'Storage service temporarily unavailable' }, { status: 503 })
   }
 

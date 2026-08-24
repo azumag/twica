@@ -28,6 +28,11 @@ export const OVERLAY_REALTIME_HEARTBEAT = 'heartbeat' as const
  * instead of two constants drifting apart.
  */
 export const OVERLAY_REALTIME_HEARTBEAT_MS = 60_000
+/** Shared bounds for the optional overlay liveness capability. */
+export const OVERLAY_REALTIME_PRESENCE_TOKEN_TTL_MS = 30 * 24 * 60 * 60_000
+export const OVERLAY_REALTIME_PRESENCE_TOKEN_REFRESH_LEAD_MS = 15 * 24 * 60 * 60_000
+export const OVERLAY_REALTIME_PRESENCE_TOKEN_MAX_LENGTH = 256
+export const OVERLAY_REALTIME_PRESENCE_REFRESH = 'presence_refresh' as const
 export const MAX_REALTIME_DRAWS = 15
 export const MAX_REALTIME_EVENT_BYTES = 64 * 1024
 /**
@@ -166,6 +171,8 @@ export type OverlayRealtimeServerMessage =
       type: 'server_notice'
       code: string
       retryAfterMs?: number
+      /** Refreshed room-scoped liveness capability, never sent to tokenless sockets. */
+      presenceToken?: string
     }
 
 export interface OverlayRealtimeConfigV1 {

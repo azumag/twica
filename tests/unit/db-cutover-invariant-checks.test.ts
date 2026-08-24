@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { ALLOWLIST } from '../../scripts/db-cutover/cutover-allowlist.mjs'
 import {
   INVARIANTS,
   TIER_A,
@@ -39,6 +40,32 @@ describe('db cutover invariant checks', () => {
         `ORDER BY identifier COLLATE "C"`,
       )
     }
+  })
+
+  it('report・allowlistの識別に使うinvariant idが重複しない', () => {
+    const ids = INVARIANTS.map((invariant) => invariant.id)
+
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('allowlistのinvariant参照が実在するinvariant idに一致する', () => {
+    const invariantIds = new Set(INVARIANTS.map((invariant) => invariant.id))
+    const allowlistedInvariantIds = ALLOWLIST.flatMap((entry) =>
+      entry.appliesTo.flatMap((target) =>
+        target.layer === 'invariants' ? [target.invariantId] : [],
+      ),
+    )
+
+    expect(allowlistedInvariantIds.length).toBeGreaterThan(0)
+    for (const invariantId of allowlistedInvariantIds) {
+      expect(invariantIds.has(invariantId)).toBe(true)
+    }
+  })
+
+  it('allowlist entryの追跡用codeが重複しない', () => {
+    const codes = ALLOWLIST.map((entry) => entry.code)
+
+    expect(new Set(codes).size).toBe(codes.length)
   })
 
   it('finding識別に使うcheck codeが重複しない', () => {

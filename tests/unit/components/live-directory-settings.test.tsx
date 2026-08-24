@@ -56,6 +56,21 @@ describe("LiveDirectorySettings", () => {
     expect(screen.getByRole("link", { name: "配信中ページ" })).toHaveAttribute("href", "/live");
   });
 
+  it("keeps the polite status region mounted before the first result and updates it in place", async () => {
+    renderSettings({});
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toBeEmptyDOMElement();
+
+    fireEvent.click(getLiveToggle());
+
+    await waitFor(() => {
+      expect(status).toHaveTextContent("配信中ページへの掲載設定をオンにしました");
+    });
+    expect(screen.getByRole("status")).toBe(status);
+  });
+
   it("defaults both independent toggles to off and keeps both operable", () => {
     renderSettings({});
 
@@ -154,12 +169,14 @@ describe("LiveDirectorySettings", () => {
       })
     );
     renderSettings({});
+    const status = screen.getByRole("status");
     const liveToggle = getLiveToggle();
     fireEvent.click(liveToggle);
 
     await waitFor(() => {
-      expect(screen.getByText("サーバーエラー")).toBeInTheDocument();
+      expect(status).toHaveTextContent("サーバーエラー");
     });
+    expect(screen.getByRole("status")).toBe(status);
     // 失敗時は楽観反映を巻き戻す
     expect(liveToggle).not.toBeChecked();
   });

@@ -154,39 +154,47 @@ export default function CardVisibilitySettings({
         {/* 未所持カードを表示 */}
         <div className="flex items-center gap-3">
           <label
+            htmlFor="show-unowned-cards-toggle"
             className="relative inline-flex cursor-pointer items-center"
             title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
           >
             <input
+              id="show-unowned-cards-toggle"
               type="checkbox"
-              aria-label={t("form.showUnowned")}
               checked={showUnowned}
               onChange={handleToggleShowUnowned}
               disabled={showUnownedDisabled}
+              aria-describedby="show-unowned-cards-help"
               className="peer sr-only"
             />
             <div className="h-6 w-11 rounded-full bg-gray-600 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-purple-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-disabled:opacity-50" />
           </label>
-          <span className="text-sm text-gray-300">
+          <label htmlFor="show-unowned-cards-toggle" className="cursor-pointer text-sm text-gray-300">
             {t("form.showUnowned")}
-          </span>
+          </label>
         </div>
-        <p className="-mt-2 ml-14 text-xs text-gray-500">
+        <p id="show-unowned-cards-help" className="-mt-2 ml-14 text-xs text-gray-500">
           {t("form.showUnownedHelp")}
         </p>
 
         {/* 未所持カードの詳細を公開 */}
         <div className="flex items-center gap-3">
           <label
+            htmlFor="show-unowned-details-toggle"
             className="relative inline-flex cursor-pointer items-center"
             title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
           >
             <input
+              id="show-unowned-details-toggle"
               type="checkbox"
-              aria-label={t("form.showDetails")}
               checked={showDetails}
               onChange={handleToggleShowDetails}
               disabled={detailsDisabled}
+              aria-describedby={
+                showUnowned
+                  ? "show-unowned-details-help"
+                  : "show-unowned-details-help show-unowned-details-requires"
+              }
               className="peer sr-only"
             />
             <div
@@ -195,20 +203,21 @@ export default function CardVisibilitySettings({
               }`}
             />
           </label>
-          <span
-            className={`text-sm ${
+          <label
+            htmlFor="show-unowned-details-toggle"
+            className={`cursor-pointer text-sm ${
               showUnowned ? "text-gray-300" : "text-gray-500"
             }`}
           >
             {t("form.showDetails")}
-          </span>
+          </label>
           {!showUnowned && (
-            <span className="text-xs text-gray-500">
+            <span id="show-unowned-details-requires" className="text-xs text-gray-500">
               ({t("form.requiresShowUnowned")})
             </span>
           )}
         </div>
-        <p className="-mt-2 ml-14 text-xs text-gray-500">
+        <p id="show-unowned-details-help" className="-mt-2 ml-14 text-xs text-gray-500">
           {t("form.showDetailsHelp")}
         </p>
 

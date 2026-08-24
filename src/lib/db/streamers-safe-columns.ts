@@ -1,21 +1,20 @@
 // -----------------------------------------------------------------------------
-// streamers テーブルの「デプロイ窓で欠落しうる2列」フォールバック用ヘルパー (#738)
+// streamers テーブルの「デプロイ窓で欠落しうる列」フォールバック用ヘルパー (#738, #722)
 //
-// 背景: 本PR (issue #738) で schema.ts の streamers 定義に publish_live_status /
-// publish_stats を追加した。Drizzle の無指定 `.select()` / `.select({ streamer:
-// streamersTable })` は schema.ts の静的列リストから SELECT 列を生成するため、
-// migration 未適用の環境（preview マージ後にアプリデプロイと planetscale-migrate
-// が並行実行される窓）では `column "publish_live_status" does not exist` で
-// streamers の全列 SELECT が失敗する。cards の本番未デプロイ8列（issue #625/#685。
-// 該当フォールバックは本番実測を経て #834 で撤去済み）と同種のリスクであり、
-// 同じ「まず全列で試行 → 列欠落エラー検知 → 明示列リストで再試行」パターンを適用する。
+// 背景: #738 で schema.ts の streamers 定義に publish_live_status / publish_stats を、
+// #722 で trade_enabled / cross_channel_trade_enabled を追加した。Drizzle の無指定
+// `.select()` / `.select({ streamer: streamersTable })` は schema.ts の静的列リストから
+// SELECT 列を生成するため、migration 未適用の環境（preview マージ後にアプリデプロイと
+// planetscale-migrate が並行実行される窓）では、新列が未作成だと streamers の全列 SELECT が
+// 失敗する。cards の本番未デプロイ8列（issue #625/#685。該当フォールバックは本番実測を
+// 経て #834 で撤去済み）と同種のリスクであり、同じ「まず全列で試行 → 列欠落エラー検知 →
+// 明示列リストで再試行」パターンを適用する。
 //
-// デプロイ窓では2列は常にまとめて欠落する（同一 migration で追加）ため、
-// いずれか1列分の 42703 エラーを検知できれば明示列リストへの再試行で2列とも
-// 解決される。migration 適用後は全列 SELECT が成功し、このフォールバックへは
-// 到達しない（同じ「デプロイ窓が閉じれば死に分岐になる」設計は
-// src/app/api/cards/route.ts 等の image_padding_color フォールバックにも
-// 見られる）。
+// 各 migration で同時に追加される列はデプロイ窓ではまとめて欠落するため、対象列の 42703
+// エラーを検知できれば STREAMERS_SAFE_COLUMNS への再試行で回避できる。migration 適用後は
+// 全列 SELECT が成功し、このフォールバックへは到達しない（同じ「デプロイ窓が閉じれば
+// 死に分岐になる」設計は src/app/api/cards/route.ts 等の image_padding_color
+// フォールバックにも見られる）。
 // -----------------------------------------------------------------------------
 
 import { streamers as streamersTable } from "@/lib/db/schema";
@@ -30,8 +29,12 @@ export const LIVE_DIRECTORY_SETTINGS_COLUMNS = [
 ] as const;
 
 /**
- * 上記2列を除いた streamers テーブルの明示的な列オブジェクト。
+ * デプロイ窓対象列を除いた streamers テーブルの明示的な列オブジェクト。
  * Drizzle の `.select({ ... })` にそのまま渡せる。
+ *
+ * trade_enabled / cross_channel_trade_enabled も意図的に含めないため、この安全列で再試行した
+ * 行では両設定値が undefined になりうる。消費側はデプロイ窓中の未定義値を有効扱いせず、
+ * `?? false` などで必ず fail-closed に扱うこと。
  */
 export const STREAMERS_SAFE_COLUMNS = {
   id: streamersTable.id,
@@ -75,21 +78,20 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
 }
 
 /**
- * 「まず全列で試行 → 列欠落エラー検知 → STREAMERS_SAFE_COLUMNS で再試行」の
- * 共通化。attempt(useSafeColumns) は useSafeColumns に応じて全列 / 明示列を
- * 切り替える。対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に
- * 委ねる。
+ * 「まず全列で試行 → デプロイ窓対象列の欠落エラー検知 → STREAMERS_SAFE_COLUMNS で再試行」
+ * の共通化。attempt(useSafeColumns) は useSafeColumns に応じて全列 / 明示列を切り替える。
+ * 対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に委ねる。
+ *
+ * 関数名は #738 で live directory 設定列用として導入した時の名前を維持しているが、現在は
+ * #722 の trade_enabled / cross_channel_trade_enabled も同じ安全列集合へフォールバックする。
+ * 対象列の定義は LIVE_DIRECTORY_SETTINGS_COLUMNS / TRADE_SETTINGS_COLUMNS に分け、検知条件だけを
+ * 共有する。
  *
  * 元々は cards テーブルの「本番未デプロイ8列」フォールバック
- * （旧 cards-safe-columns.ts の withCardsBattleColumnFallback）と同型の設計
- * だったが、そちらは本番実測で対象8列とも実在することを確認したため #834 で
- * 撤去された（撤去後のファイルは card-padding-color-errors.ts に改名・縮小）。
- * streamers の publish_live_status / publish_stats（#738）は本Issueとは独立した
- * 別のデプロイ窓のため、この関数自体は変更しない。
+ * （旧 cards-safe-columns.ts の withCardsBattleColumnFallback）と同型の設計だったが、そちらは
+ * 本番実測で対象8列とも実在することを確認したため #834 で撤去された（撤去後のファイルは
+ * card-padding-color-errors.ts に改名・縮小）。
  */
-// trade_enabled / cross_channel_trade_enabled の欠落もこの関数で一緒に拾う
-// （再投影先が同じ STREAMERS_SAFE_COLUMNS のため。詳細は下記
-// TRADE_SETTINGS_COLUMNS / isMissingTradeSettingsColumnError のコメントを参照）。
 export async function withLiveDirectorySettingsColumnFallback<T>(
   attempt: (useSafeColumns: boolean) => Promise<T>
 ): Promise<T> {

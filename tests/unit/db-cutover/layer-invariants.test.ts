@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { INVARIANTS } from '../../../scripts/db-cutover/invariant-checks.mjs'
+import {
+  INVARIANTS,
+  TIER_A,
+  TIER_B,
+} from '../../../scripts/db-cutover/invariant-checks.mjs'
 import {
   evaluateInvariantsLayer,
   readSideInvariants,
@@ -13,7 +17,7 @@ const FIXTURE_INVARIANT = {
   checks: [
     {
       code: 'FIXTURE_CHECK',
-      tier: 'A',
+      tier: TIER_A,
       countSql: 'COUNT_SQL',
       sampleSql: 'SAMPLE_SQL',
       digestSql: null,
@@ -67,13 +71,56 @@ describe('db cutover layer invariants', () => {
     )
   })
 
+  it('digestSql があっても違反0件なら digest SQL を実行しない', async () => {
+    const tierBInvariant = {
+      ...FIXTURE_INVARIANT,
+      id: 'fixture-tier-b-invariant',
+      checks: [
+        {
+          ...FIXTURE_INVARIANT.checks[0],
+          tier: TIER_B,
+          digestSql: 'DIGEST_SQL',
+        },
+      ],
+    }
+    const unsafe = vi.fn(async (sql: string) => {
+      if (sql === 'COUNT_SQL') return [{ count: 0 }]
+      throw new Error(`unexpected SQL: ${sql}`)
+    })
+
+    const results = await readSideInvariants(
+      { unsafe } as never,
+      [tierBInvariant] as never,
+      'target',
+      (text: string) => text,
+      // 型上は第5引数が必須なので、callbackを使わないことをundefinedで明示する。
+      undefined,
+    )
+
+    expect(unsafe).toHaveBeenCalledTimes(1)
+    expect(unsafe).toHaveBeenCalledWith('COUNT_SQL')
+    expect(results.get(tierBInvariant.id)).toEqual(
+      expect.objectContaining({
+        tablesOk: true,
+        checks: [
+          expect.objectContaining({
+            tier: TIER_B,
+            violationCount: 0,
+            samples: [],
+            digest: null,
+          }),
+        ],
+      }),
+    )
+  })
+
   it('Tier A が両側0件なら layer を pass にする', () => {
     const sideResult = {
       tablesOk: true,
       checks: [
         {
           code: 'FIXTURE_CHECK',
-          tier: 'A',
+          tier: TIER_A,
           violationCount: 0,
           samples: [],
           digest: null,

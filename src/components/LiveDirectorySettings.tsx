@@ -50,6 +50,7 @@ export default function LiveDirectorySettings({
       payload: { publishLiveStatus?: boolean; publishStats?: boolean }
     ): Promise<boolean> => {
       setSaving(true);
+      setMessage("");
       try {
         const response = await fetch("/api/streamer/settings", {
           method: "POST",
@@ -204,11 +205,14 @@ export default function LiveDirectorySettings({
           {t("form.publishStatsHelp")}
         </p>
 
-        {message && (
-          <p className={`text-sm ${isError ? "text-red-400" : "text-green-400"}`}>
-            {message}
-          </p>
-        )}
+        {/* 初回の結果更新も読み上げ対象になるよう、空の live region を常時マウントする。 */}
+        <p
+          role="status"
+          aria-live="polite"
+          className={`text-sm ${isError ? "text-red-400" : "text-green-400"}`}
+        >
+          {message}
+        </p>
         {saving && (
           <p className="text-sm text-gray-400">{t("messages.saving")}</p>
         )}

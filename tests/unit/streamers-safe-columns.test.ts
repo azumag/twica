@@ -21,6 +21,15 @@ function missingColumnError(column: string) {
   })
 }
 
+// 列オブジェクトを直接比較すると失敗時の差分が読みにくいため、
+// Drizzle の投影キーと実SQL列名だけの対応表へ落として比較する。
+// そのため、別テーブル由来でも同じSQL列名を持つ列オブジェクトへの差し替えまでは検知しない。
+function toProjectionMap(columns: Record<string, { name: string }>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(columns).map(([key, column]) => [key, column.name]),
+  )
+}
+
 describe('withLiveDirectorySettingsColumnFallback', () => {
   it.each(DEPLOY_WINDOW_COLUMNS)(
     '%s の未デプロイを検知すると安全な列集合で再試行する',
@@ -80,8 +89,7 @@ describe('streamers デプロイ窓の列集合契約', () => {
   })
 
   it('安全な列集合にはデプロイ窓で欠落しうる実SQL列を含めない', () => {
-    // 下の完全一致テストでも検知できるが、デプロイ窓列の混入時に原因を直接示す
-    // 診断用ガードとしてこの否定方向の契約も残す。
+    // 完全一致テストよりデプロイ窓列の混入原因を直接示せるため、この否定方向ガードも残す。
     const safeColumnNames = Object.values(STREAMERS_SAFE_COLUMNS).map((column) => column.name)
 
     for (const column of DEPLOY_WINDOW_COLUMNS) {
@@ -95,15 +103,14 @@ describe('streamers デプロイ窓の列集合契約', () => {
     // 対応する列オブジェクトを STREAMERS_SAFE_COLUMNS 側へ追加し、フォールバック時の返却行形状と
     // キー↔実SQL列の対応を維持する。
     const deployWindowColumnNames = new Set<string>(DEPLOY_WINDOW_COLUMNS)
-    const toProjectionPairs = (entries: [string, { name: string }][]) =>
-      entries.map(([key, column]) => `${key}=${column.name}`).sort()
-    const expectedSafeProjectionPairs = toProjectionPairs(
+    const expectedSafeColumns = Object.fromEntries(
       Object.entries(getTableColumns(streamersTable)).filter(
         ([, column]) => !deployWindowColumnNames.has(column.name),
       ),
     )
-    const safeProjectionPairs = toProjectionPairs(Object.entries(STREAMERS_SAFE_COLUMNS))
+    const expectedSafeProjection = toProjectionMap(expectedSafeColumns)
+    const safeProjection = toProjectionMap(STREAMERS_SAFE_COLUMNS)
 
-    expect(safeProjectionPairs).toEqual(expectedSafeProjectionPairs)
+    expect(safeProjection).toEqual(expectedSafeProjection)
   })
 })

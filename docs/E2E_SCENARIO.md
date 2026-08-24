@@ -155,6 +155,8 @@
 
 ## Preview Twitch 実経路（production前の必須ゲート）
 
+この節の単発・N連は、利用者の実引き換えから履歴・chat・overlayまでを確認する利用者向けE2Eです。一方、下記の「relay障害回復」「N連途中のDB障害回復」は内部保守経路の保守テストであり、該当する内部実装を変更した場合だけ、秘密情報や管理者権限を使わないテストdouble・unit/integration/contract/maintenance testとして実施します。内部保守テストを実引き換えE2Eの代用にしたり、秘密情報の取得で補完したりしてはなりません。
+
 ### 事前条件
 
 - previewアプリとpreview PlanetScale migrationが同じrevisionまで成功している。
