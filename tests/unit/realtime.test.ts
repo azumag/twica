@@ -412,6 +412,67 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('quarantines a repeatedly rejected draw so later history rows still advance', async () => {
+    const eventA = {
+      id: historyUuid(23),
+      eventId: 'event-poisoned-display',
+      redeemedAt: '2026-07-24T00:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_A,
+    }
+    const eventB = {
+      id: historyUuid(24),
+      eventId: 'event-after-poisoned-display',
+      redeemedAt: '2026-07-24T00:00:02.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: CARD_B,
+    }
+    const statuses: string[] = []
+    let historyCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'callback-quarantine-v1',
+        })
+      }
+      historyCalls += 1
+      return jsonResponse({
+        events: historyCalls <= 3 ? [eventA, eventB] : [],
+      })
+    }))
+
+    const callback = vi.fn()
+    callback
+      .mockImplementationOnce(() => false)
+      .mockImplementationOnce(() => false)
+      .mockImplementationOnce(() => false)
+    const cleanup = subscribeToGachaResults('streamer-1', callback, {
+      retryDelay: 10,
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(20)
+    await flushPromises()
+
+    expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
+      CARD_A.id,
+      CARD_A.id,
+      CARD_A.id,
+      CARD_B.id,
+    ])
+    expect(statuses).toContain('CALLBACK_ERROR_QUARANTINED:polling')
+    expect(statuses).not.toContain('POLLING_RETRY:3')
+    cleanup()
+  })
+
   it('buffers a WebSocket tail behind a polling draw whose DOM acknowledgement failed', async () => {
     class ControlledWebSocket {
       static readonly CONNECTING = 0
@@ -604,7 +665,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     callback.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
       resolveFirst = resolve
     }))
-    const cleanup = subscribeToGachaResults('ignored', callback, { retryDelay: 10 })
+    const cleanup = subscribeToGachaResults('ignored', callback, { retryDelay: 2_500 })
     await flushPromises()
     for (let pass = 0; pass < 3; pass += 1) {
       await vi.advanceTimersByTimeAsync(0)
@@ -622,10 +683,14 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     await vi.advanceTimersByTimeAsync(0)
     await flushPromises()
     expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([CARD_A.id])
+    const callsWhileDisplayAckIsPending = eventsCalls
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(eventsCalls).toBe(callsWhileDisplayAckIsPending)
 
     resolveFirst?.(true)
     await flushPromises()
-    await vi.advanceTimersByTimeAsync(10)
+    await vi.advanceTimersByTimeAsync(2_500)
     await flushPromises()
     expect(callback.mock.calls.map(([payload]) => payload.card.id)).toEqual([
       CARD_A.id,

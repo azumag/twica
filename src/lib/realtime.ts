@@ -67,7 +67,7 @@ export type GachaResultCallback = (
   payload: GachaBroadcastPayload,
 ) => GachaDeliveryResult
 
-type IngestStatus = 'invalid' | 'duplicate' | 'pending' | 'delivered' | 'callback-error'
+type IngestStatus = 'invalid' | 'duplicate' | 'pending' | 'delivered' | 'quarantined' | 'callback-error'
 
 function isPromiseLike<T>(value: unknown): value is Promise<T> {
   return Boolean(
@@ -147,6 +147,10 @@ export interface SubscribeOptions {
 // Retain enough IDs across a reload for large N-draw bursts, and trigger an
 // early DB pass well before this bounded storage window can roll over.
 const MAX_SEEN_EVENT_IDS = 8_192
+// A broken presentation must not pin the durable history cursor forever. A
+// bounded escape quarantines the event for a later retry and emits an
+// observable failure; it never marks the event as durably seen or deletes it.
+const MAX_CALLBACK_REJECTIONS_PER_EVENT = 3
 const SOCKET_RECONCILIATION_TRIGGER_IDS = 512
 // Every validated event is at most 64 KiB. Thirty-two buffered envelopes cap a
 // recovery-order window at roughly 2 MiB before liveness takes precedence.
@@ -600,6 +604,11 @@ export function subscribeToGachaResults(
   let socketFlushInFlight = false
   const demoRetryCounts = new Map<string, number>()
   const demoRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const callbackRejectionCounts = new Map<string, number>()
+  const quarantinedEvents = new Map<string, {
+    event: GachaRealtimeEventV1
+    retryAt: number
+  }>()
   // A long N-draw DOM acknowledgement can overlap the safety poll. Keep
   // those IDs distinct from committed dedupe entries so polling does not move
   // the durable cursor past an event whose batch is still awaiting display.
@@ -698,6 +707,17 @@ export function subscribeToGachaResults(
       return 'invalid'
     }
 
+    const quarantined = quarantinedEvents.get(event.eventId)
+    if (quarantined) {
+      if (quarantined.retryAt > Date.now()) {
+        options.onStatusChange?.(`CALLBACK_QUARANTINED:${source}`)
+        return 'quarantined'
+      }
+      // The bounded delay elapsed; give the original event another chance
+      // without changing its identity or marking it as delivered.
+      quarantinedEvents.delete(event.eventId)
+    }
+
     // Do not make an event durable in the dedupe cache until the page callback
     // has accepted it. A browser render callback can throw during a rolling
     // deploy, React teardown, or an older OBS runtime; if the ID were kept
@@ -775,6 +795,32 @@ export function subscribeToGachaResults(
       // back only the IDs claimed by this attempt; polling can then retry the
       // exact committed row without consuming another channel-point exchange.
       releaseNewClaims()
+      // Operator demos already have their own bounded local retry policy. Do
+      // not count them in the committed-history quarantine budget.
+      if (event.deliveryKind === 'demo') {
+        options.onStatusChange?.(`CALLBACK_ERROR:${source}`)
+        return 'callback-error' as const
+      }
+      const attempt = (callbackRejectionCounts.get(event.eventId) ?? 0) + 1
+      callbackRejectionCounts.set(event.eventId, attempt)
+      if (attempt >= MAX_CALLBACK_REJECTIONS_PER_EVENT) {
+        // Preserve the event for a later bounded retry while allowing the
+        // current history page to advance. The card is not acknowledged or
+        // persisted as seen; the quarantine is an in-memory liveness escape,
+        // and the loud status/error remains an operator-visible blocker.
+        quarantinedEvents.set(event.eventId, {
+          event,
+          retryAt: Date.now() + Math.max(intervalMs, 1_000),
+        })
+        options.onStatusChange?.(`CALLBACK_ERROR_QUARANTINED:${source}`)
+        options.onError?.({
+          type: 'broadcast',
+          message: 'Overlay card delivery quarantined after retry limit',
+          error: new Error(`display callback rejected ${MAX_CALLBACK_REJECTIONS_PER_EVENT} times`),
+          isExpected: false,
+        })
+        return 'quarantined' as const
+      }
       options.onStatusChange?.(`CALLBACK_ERROR:${source}`)
       return 'callback-error' as const
     }
@@ -782,6 +828,7 @@ export function subscribeToGachaResults(
       if (accepted === false) {
         throw new Error('overlay callback rejected event')
       }
+      callbackRejectionCounts.delete(event.eventId)
       for (const eventId of newlySeenEventIds) {
         pendingEventIds.delete(eventId)
       }
@@ -1064,6 +1111,23 @@ export function subscribeToGachaResults(
     let pendingAcknowledgement = false
     let retryDelayMs: number | null = null
     try {
+      const now = Date.now()
+      const dueQuarantinedEvents = [...quarantinedEvents.values()]
+        .filter(({ retryAt }) => retryAt <= now)
+      for (const quarantinedEvent of dueQuarantinedEvents) {
+        quarantinedEvents.delete(quarantinedEvent.event.eventId)
+        const retryResult = await ingest(quarantinedEvent.event, 'polling')
+        if (retryResult === 'pending') {
+          pendingAcknowledgement = true
+          break
+        }
+        if (retryResult === 'callback-error') {
+          callbackRejected = true
+          throw new Error('quarantined overlay callback rejected retry')
+        }
+      }
+      if (pendingAcknowledgement) return
+
       // History recovery and the rare operator demo share one HTTP response.
       // Keeping separate cursors in that response preserves the critical rule
       // that a demo timestamp must never advance committed gacha history, while
@@ -1106,6 +1170,9 @@ export function subscribeToGachaResults(
           callbackRejected = true
           throw new Error('overlay callback rejected polling event')
         }
+        // A quarantined event remains available for a later bounded retry.
+        // Treat it as consumed for this page so one poison row cannot prevent
+        // newer rows from reaching the user-facing queue.
       }
 
       if (pendingAcknowledgement) {
@@ -1215,7 +1282,20 @@ export function subscribeToGachaResults(
         // The history cursor intentionally remains unchanged until the page
         // resolves the owning display. Do not increment retryCount, probe the
         // config endpoint, or back off exponentially for this healthy wait.
-        schedulePoll(Math.max(1, Math.min(intervalMs, 1_000)))
+        // A pending display is a healthy ordering wait. Use the configured
+        // polling cadence (never a faster fixed 1s loop) so long N-draw
+        // animations do not multiply Worker/DB reads while the cursor is held.
+        schedulePoll(Math.max(1, intervalMs))
+        return
+      }
+
+      const nextQuarantineRetryAt = [...quarantinedEvents.values()]
+        .reduce<number | null>(
+          (earliest, { retryAt }) => earliest === null ? retryAt : Math.min(earliest, retryAt),
+          null,
+        )
+      if (nextQuarantineRetryAt !== null) {
+        schedulePoll(Math.max(1, nextQuarantineRetryAt - Date.now()))
         return
       }
 
