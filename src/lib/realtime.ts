@@ -1063,37 +1063,72 @@ export function subscribeToGachaResults(
       }
       return true
     }
-    const drain = (startIndex: number): void | Promise<void> => {
-      for (let index = startIndex; index < buffered.length; index += 1) {
-        const event = buffered[index]
-        // The authoritative reconciliation checkpoint advances only from an
-        // actual DB response. Even a newly delivered socket frame may have an
-        // earlier gapless publish failure behind it, so ingest it without moving
-        // the history cursor.
-        const result = ingest(event, 'durable-object')
-        if (isPromiseLike<IngestStatus>(result)) {
-          return Promise.resolve(result)
-            .then((resolved) => {
-              if (!handleResult(event, index, resolved)) {
-                finish(false)
-                return
-              }
-              return drain(index + 1)
-            })
-            .catch(() => {
-              bufferedSocketEvents = buffered.slice(index).concat(bufferedSocketEvents)
-              requestRecoveryPoll()
-              finish(false)
-            })
-        }
-        if (!handleResult(event, index, result)) {
-          finish(false)
-          return
-        }
+    const handleDrainError = (index: number, error: unknown) => {
+      // Keep the failed frame and its tail replayable. Most callback failures
+      // are returned as an IngestStatus, but a synchronous getter/render
+      // exception must not leave socketFlushInFlight permanently locked.
+      bufferedSocketEvents = buffered.slice(index).concat(bufferedSocketEvents)
+      requestRecoveryPoll()
+      if (!disposed) {
+        options.onStatusChange?.('DO_DELIVERY_FLUSH_ERROR')
+        options.onError?.({
+          type: 'broadcast',
+          message: 'Overlay WebSocket delivery failed',
+          error,
+          isExpected: false,
+        })
       }
-      finish(true)
+      finish(false)
     }
-    return drain(0)
+    const drain = (startIndex: number): void | Promise<void> => {
+      let index = startIndex
+      try {
+        for (; index < buffered.length; index += 1) {
+          const event = buffered[index]
+          // The authoritative reconciliation checkpoint advances only from an
+          // actual DB response. Even a newly delivered socket frame may have an
+          // earlier gapless publish failure behind it, so ingest it without moving
+          // the history cursor.
+          const result = ingest(event, 'durable-object')
+          if (isPromiseLike<IngestStatus>(result)) {
+            return Promise.resolve(result)
+              .then((resolved) => {
+                if (!handleResult(event, index, resolved)) {
+                  finish(false)
+                  return
+                }
+                return drain(index + 1)
+              })
+              .catch((error) => {
+                handleDrainError(index, error)
+              })
+          }
+          if (!handleResult(event, index, result)) {
+            finish(false)
+            return
+          }
+        }
+        finish(true)
+      } catch (error) {
+        handleDrainError(index, error)
+      }
+    }
+    let drained: void | Promise<void> = undefined
+    try {
+      drained = drain(0)
+      if (isPromiseLike<void>(drained)) {
+        return drained.finally(() => {
+          // Keep this invariant even if a future change adds another throw
+          // path before finish(). A stuck flush flag would silence OBS forever.
+          if (socketFlushInFlight) finish(false)
+        })
+      }
+      return drained
+    } finally {
+      // Synchronous drains complete in the same turn; promise drains are
+      // finalized above after their asynchronous tail settles.
+      if (!isPromiseLike<void>(drained) && socketFlushInFlight) finish(false)
+    }
   }
 
   function releaseSocketRecoveryBuffer(
@@ -1233,10 +1268,25 @@ export function subscribeToGachaResults(
             if (accepted === false) {
               throw new Error('overlay callback rejected demo event')
             }
+            demoRetryCounts.delete(demoId)
           } catch {
+            const attempt = (demoRetryCounts.get(demoId) ?? 0) + 1
+            demoRetryCounts.set(demoId, attempt)
             seenEventIds.delete(demoId)
-            options.onStatusChange?.('CALLBACK_ERROR:polling-demo')
-            throw new Error('overlay callback rejected demo event')
+            options.onStatusChange?.(`CALLBACK_ERROR:polling-demo:${attempt}`)
+            if (attempt < 3) {
+              throw new Error('overlay callback rejected demo event')
+            }
+
+            // Operator demos are presentation-only. After a bounded number of
+            // failed callbacks, quarantine this demo by advancing only its
+            // cursor so it cannot keep the user-history recovery loop at the
+            // maximum backoff forever. User redemptions never use this branch.
+            demoRetryCounts.delete(demoId)
+            // Keep the exhausted demo marked as seen so the normal polling
+            // cadence does not restart its retry counter on the same KV row.
+            seenEventIds.set(demoId, Date.now())
+            options.onStatusChange?.('POLLING_DEMO_RETRY_EXHAUSTED')
           }
           demoCursor = { redeemedAt: demoEvent.redeemedAt, historyId: demoEvent.id }
           persistSeenEvents(streamerId, seenEventIds)

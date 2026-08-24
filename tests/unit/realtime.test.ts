@@ -317,6 +317,55 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('bounds polling demo callback failures without slowing history recovery forever', async () => {
+    const demoEvent = {
+      id: 'demo:polling-retry-limit',
+      eventId: 'demo:polling-retry-limit',
+      redeemedAt: '2026-07-24T00:00:02.000Z',
+      userTwitchUsername: 'DemoUser',
+      rewardId: null,
+      card: CARD_A,
+    }
+    const statuses: string[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 10, maxDelayMs: 1_000 },
+          configVersion: 'polling-demo-retry-limit-v1',
+        })
+      }
+      return jsonResponse({
+        events: [],
+        nextCursor: null,
+        demoEvent,
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const callback = vi.fn(() => false)
+    const cleanup = subscribeToGachaResults('streamer-1', callback, {
+      retryDelay: 10,
+      onStatusChange: (status) => statuses.push(status),
+    })
+    await flushPromises()
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      // Polling retry delay is exponential (10, 20, 40ms), so advance to the
+      // next scheduled retry rather than assuming a fixed interval.
+      await vi.advanceTimersToNextTimerAsync()
+      await flushPromises()
+    }
+
+    expect(callback).toHaveBeenCalledTimes(3)
+    expect(statuses).toContain('CALLBACK_ERROR:polling-demo:1')
+    expect(statuses).toContain('CALLBACK_ERROR:polling-demo:2')
+    expect(statuses).toContain('CALLBACK_ERROR:polling-demo:3')
+    expect(statuses).toContain('POLLING_DEMO_RETRY_EXHAUSTED')
+    cleanup()
+  })
+
   it('keeps the supported 15-draw maximum in one callback and one sound batch', async () => {
     const redeemedAt = '2026-07-24T00:00:01.000Z'
     const events = Array.from({ length: 15 }, (_, index) => ({

@@ -206,6 +206,12 @@ const DISPLAY_FALLBACK_MIN_VISIBLE_MS = 250;
 // (このファイルとの重複記述を避けるため、詳細説明はそちら側だけに置く)。
 const RELOAD_COOLDOWN_STORAGE_KEY = "twica-overlay-reload-v2";
 const POLLSTATE_STORAGE_KEY = "twica-overlay-pollstate";
+// A terminal display-ACK block closes the current controller so its durable
+// cursor cannot be advanced past an invisible card. One bounded page reload
+// gives a transient OBS/CEF render stall a fresh controller without creating an
+// infinite reload loop when the same card remains unrenderable.
+const TERMINAL_RECOVERY_RELOAD_COOLDOWN_MS = 10 * 60 * 1000;
+const TERMINAL_RECOVERY_RELOAD_STORAGE_KEY = "twica-overlay-terminal-recovery-v1";
 const pollStateStorageKey = (streamerId: string) =>
   `${POLLSTATE_STORAGE_KEY}:${streamerId}`;
 
@@ -287,6 +293,7 @@ export default function OverlayPage() {
   const displayImageCleanupRef = useRef<Map<number, () => void>>(new Map());
   const displayCommitEntriesRef = useRef<Map<number, { batchKey: string; drawEventId: string }>>(new Map());
   const displayCommitBatchesRef = useRef<Map<string, DisplayCommitBatch>>(new Map());
+  const terminalRecoveryReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // When a multi-draw batch partially renders and is retried, cards that were
   // already committed must not be shown twice. The transport rolls back the
   // whole batch on a negative acknowledgement, so this set bridges the retry
@@ -331,6 +338,36 @@ export default function OverlayPage() {
     });
   });
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
+  const scheduleTerminalRecovery = useCallback(() => {
+    if (terminalRecoveryReloadTimerRef.current) return;
+    const storageKey = `${TERMINAL_RECOVERY_RELOAD_STORAGE_KEY}:${streamerId}`;
+    const now = Date.now();
+    let lastReloadAt = 0;
+    try {
+      lastReloadAt = Number(sessionStorage.getItem(storageKey) ?? 0);
+    } catch {
+      // A browser privacy mode can disable sessionStorage. Do not reload when
+      // the cross-page budget cannot be persisted, otherwise a hard failure
+      // would turn into an unbounded reload loop.
+      addDebugLogRef.current('Terminal display block: reload budget unavailable');
+      return;
+    }
+    if (Number.isFinite(lastReloadAt) && now - lastReloadAt < TERMINAL_RECOVERY_RELOAD_COOLDOWN_MS) {
+      addDebugLogRef.current('Terminal display block: reload cooldown active');
+      return;
+    }
+    try {
+      sessionStorage.setItem(storageKey, String(now));
+    } catch {
+      addDebugLogRef.current('Terminal display block: reload budget unavailable');
+      return;
+    }
+    addDebugLogRef.current('Terminal display block: scheduling one bounded reload');
+    terminalRecoveryReloadTimerRef.current = setTimeout(() => {
+      terminalRecoveryReloadTimerRef.current = null;
+      if (isOverlayMountedRef.current) window.location.reload();
+    }, 250);
+  }, [streamerId]);
   // subscription effectはstreamerIdだけに依存させる。displayResult/addDebugLogと
   // 同じrefミラーで最新版を参照し、callback再生成による再接続を防ぐ。
   const checkOverlayVersionRef = useRef<(received: string | undefined) => void>(() => {});
@@ -1729,6 +1766,7 @@ export default function OverlayPage() {
         addDebugLogRef.current(`Connection error: ${error.message} (expected: ${error.isExpected})`);
         if (error.message === 'Overlay card delivery blocked after retry limit') {
           legacyPollingSuppressedRef.current = true;
+          scheduleTerminalRecovery();
         }
         if (error.isExpected) {
           setConnectionStatus('disconnected');
@@ -1791,6 +1829,11 @@ export default function OverlayPage() {
       playedSoundGroupIds.clear();
       if (connectionTimeoutRef.current) {
         clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+      if (terminalRecoveryReloadTimerRef.current) {
+        clearTimeout(terminalRecoveryReloadTimerRef.current);
+        terminalRecoveryReloadTimerRef.current = null;
       }
       if (cleanupRef.current) {
         cleanupRef.current();
@@ -1803,7 +1846,7 @@ export default function OverlayPage() {
         fallbackVisibilityTimeoutRef.current = null;
       }
     };
-  }, [settleAllDisplayCommits, streamerId]);
+  }, [scheduleTerminalRecovery, settleAllDisplayCommits, streamerId]);
 
   // Demo function for testing
   // デモ機能 - 配信者のカードがあればそれを、なければデモカードを表示

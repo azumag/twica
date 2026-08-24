@@ -117,6 +117,57 @@ describe('OverlayPage', () => {
     ))).toBe(false)
   })
 
+  it('表示ACKの終端ブロック後はリロードを一度だけ予約し、失敗時に無限化しない', async () => {
+    vi.useFakeTimers()
+    sessionStorage.clear()
+    const originalLocation = window.location
+    const reloadMock = vi.fn()
+    const current = window.location
+    Object.defineProperty(window, 'location', {
+      value: {
+        hash: current.hash,
+        host: current.host,
+        hostname: current.hostname,
+        href: current.href,
+        origin: current.origin,
+        pathname: current.pathname,
+        port: current.port,
+        protocol: current.protocol,
+        search: current.search,
+        reload: reloadMock,
+      },
+      configurable: true,
+    })
+
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    try {
+      render(<OverlayPage />)
+      expect(subscribeMock).toHaveBeenCalled()
+      await act(async () => {
+        reportError?.(terminalDisplayBlockError)
+        await vi.advanceTimersByTimeAsync(250)
+      })
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+      expect(sessionStorage.getItem('twica-overlay-terminal-recovery-v1:streamer-1')).not.toBeNull()
+
+      await act(async () => {
+        reportError?.(terminalDisplayBlockError)
+        await vi.advanceTimersByTimeAsync(10_000)
+      })
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        configurable: true,
+      })
+    }
+  })
+
   it('debug=true の時だけ接続問題をデバッグパネルに表示する', async () => {
     window.history.replaceState({}, '', '/overlay/streamer-1?debug=true')
 
