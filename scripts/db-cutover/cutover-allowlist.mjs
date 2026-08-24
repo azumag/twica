@@ -18,7 +18,9 @@
  * `code`・`appliesTo`（どのlayer・どのテーブル/invariantに適用されるか）・`reason`
  * （なぜ許容するのか）・`reference`（根拠となるissue/runbook節）を必ず明記し、
  * 「無視した」という事実と理由を必ずreportへ出す（呼び出し側の責務。本モジュールは
- * ルックアップのみを提供する）。
+ * ルックアップのみを提供する）。`code` は人間が許容事項の定義を識別・追跡するためのIDで、
+ * 現状は `findAllowlistEntry` のlookup keyやreport出力値としては使わず、適用判定は
+ * `appliesTo` で行う。
  *
  * data layer（layer-data.mjs）と invariants layer（layer-invariants.mjs）の両方から
  * 参照される共有モジュールであるため、DB接続やlayer固有の型に依存しない、
