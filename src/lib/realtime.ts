@@ -1094,7 +1094,10 @@ export function subscribeToGachaResults(
         const ingestResult = await ingest(event, 'polling')
         if (ingestResult === 'pending') {
           pendingAcknowledgement = true
-          throw new Error('overlay callback is still awaiting display acknowledgement')
+          // A draw that is already owned by the page is a normal ordering
+          // wait, not a failed HTTP/DB read. Keep the cursor before that draw
+          // and let the fixed-cadence pass below retry after its DOM ACK.
+          break
         }
         if (ingestResult === 'callback-error') {
           // Do not advance the authoritative cursor past a draw whose page
@@ -1103,6 +1106,11 @@ export function subscribeToGachaResults(
           callbackRejected = true
           throw new Error('overlay callback rejected polling event')
         }
+      }
+
+      if (pendingAcknowledgement) {
+        options.onStatusChange?.('POLLING_WAITING_FOR_DISPLAY_ACK')
+        return
       }
 
       if (historyResponse.nextCursor !== undefined && historyResponse.nextCursor !== null) {
@@ -1200,6 +1208,14 @@ export function subscribeToGachaResults(
       recoveryPollPending = false
       if (failed) {
         if (retryDelayMs !== null) schedulePoll(retryDelayMs)
+        return
+      }
+
+      if (pendingAcknowledgement) {
+        // The history cursor intentionally remains unchanged until the page
+        // resolves the owning display. Do not increment retryCount, probe the
+        // config endpoint, or back off exponentially for this healthy wait.
+        schedulePoll(Math.max(1, Math.min(intervalMs, 1_000)))
         return
       }
 

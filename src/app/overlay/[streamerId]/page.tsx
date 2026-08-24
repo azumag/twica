@@ -1152,6 +1152,15 @@ export default function OverlayPage() {
     const drawEventIds = data.drawEventIds?.length === cards.length
       ? data.drawEventIds
       : undefined;
+    if (
+      drawEventIds
+      && Array.from({ length: drawEventIds.length }, (_, index) => drawEventIds[index]).some((drawEventId) => (
+        typeof drawEventId !== 'string' || drawEventId.length === 0
+      ))
+    ) {
+      addDebugLogRef.current('Ignored batch with missing draw identity');
+      return Promise.resolve(false);
+    }
     const batchKey = drawEventIds?.[0]
       ?? `overlay-batch-${displayInstanceSequenceRef.current + 1}`;
     const pendingCards = cards
@@ -1200,7 +1209,12 @@ export default function OverlayPage() {
         for (const item of displayItems) {
           const displayInstanceId = item.displayInstanceId;
           const drawEventId = item.drawEventId;
-          if (drawEventId === undefined) continue;
+          if (drawEventId === undefined) {
+            // A malformed batch must fail closed rather than leaving its
+            // Promise pending forever and blocking the transport queue.
+            failDisplayBatch(batchKey, 'missing-draw-id');
+            return;
+          }
           displayCommitEntriesRef.current.set(displayInstanceId, {
             batchKey,
             drawEventId,
@@ -1227,7 +1241,7 @@ export default function OverlayPage() {
       processQueueRef.current();
     }
     return commitPromise;
-  }, [acknowledgeDisplayItem, soundSettings.soundRules]);
+  }, [acknowledgeDisplayItem, failDisplayBatch, soundSettings.soundRules]);
 
   // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）。
   // 購読開始前に届いたpayloadがあれば、ここで最新のenqueueへ一度だけ渡す。

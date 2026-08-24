@@ -299,6 +299,60 @@ describe('OverlayPage', () => {
     view.unmount()
   })
 
+  it('draw IDが欠落したN連を未解決Promiseのままキューへ入れない', async () => {
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const sparseDrawEventIds = new Array(2) as string[]
+    sparseDrawEventIds[0] = 'malformed-event-1'
+    let result: Promise<boolean> | undefined
+    await act(async () => {
+      result = onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'malformed-card-1',
+          name: 'Malformed A',
+          description: null,
+          image_url: null,
+          rarity: 'common',
+        },
+        cards: [
+          {
+            id: 'malformed-card-1',
+            name: 'Malformed A',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          {
+            id: 'malformed-card-2',
+            name: 'Malformed B',
+            description: null,
+            image_url: null,
+            rarity: 'rare',
+          },
+        ],
+        drawEventIds: sparseDrawEventIds,
+        userTwitchUsername: 'Viewer',
+      })
+      await Promise.resolve()
+    })
+
+    await expect(result).resolves.toBe(false)
+    expect(screen.queryByText('Malformed A')).not.toBeInTheDocument()
+    expect(screen.queryByText('Malformed B')).not.toBeInTheDocument()
+  })
+
   it('画像メタデータ取得が停止しても、カード表示とN連キューを止めない', async () => {
     vi.useFakeTimers()
 
