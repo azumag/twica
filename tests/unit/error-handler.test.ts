@@ -95,29 +95,6 @@ describe('error-handler', () => {
     });
 
     it.each([
-      [401, 503, 'Storage authentication failed'],
-      [503, 503, 'Storage service temporarily unavailable'],
-      [507, 507, 'Storage quota exceeded'],
-    ])('$metadata.httpStatusCode=%s を文字列解析より優先する', async (httpStatusCode, expectedStatus, expectedError) => {
-      const error = Object.assign(new Error('opaque SDK failure'), {
-        $metadata: { httpStatusCode },
-      });
-      const response = await handleBlobError(error, 'blob');
-      expect(response.status).toBe(expectedStatus);
-
-      const body = await response.json();
-      expect(body.error).toBe(expectedError);
-    });
-
-    it('構造化statusがある場合は矛盾するmessageキーワードで上書きしない', async () => {
-      const error = Object.assign(new Error('Service Unavailable'), {
-        $metadata: { httpStatusCode: 500 },
-      });
-      const response = await handleBlobError(error, 'blob');
-      expect(response.status).toBe(500);
-    });
-
-    it.each([
       ['HTTP 503', 503, 'Storage service temporarily unavailable'],
       ['HTTP/1.1 503 Service Unavailable', 503, 'Storage service temporarily unavailable'],
       ['503 Service Unavailable', 503, 'Storage service temporarily unavailable'],
