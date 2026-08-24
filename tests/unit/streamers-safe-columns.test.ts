@@ -89,8 +89,7 @@ describe('streamers デプロイ窓の列集合契約', () => {
   })
 
   it('安全な列集合にはデプロイ窓で欠落しうる実SQL列を含めない', () => {
-    // 下の完全一致テストでも検知できるが、デプロイ窓列の混入時に原因を直接示す
-    // 診断用ガードとしてこの否定方向の契約も残す。
+    // 完全一致テストよりデプロイ窓列の混入原因を直接示せるため、この否定方向ガードも残す。
     const safeColumnNames = Object.values(STREAMERS_SAFE_COLUMNS).map((column) => column.name)
 
     for (const column of DEPLOY_WINDOW_COLUMNS) {
