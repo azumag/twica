@@ -201,6 +201,66 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
+  it('seeds restored history ACKs so a partial N-draw reload retries only the unacknowledged tail', async () => {
+    const redeemedAt = '2026-07-24T00:00:02.000Z'
+    const rows = [
+      {
+        id: historyUuid(30),
+        eventId: 'partial-reload-event',
+        redeemedAt,
+        userTwitchUsername: 'viewer',
+        card: CARD_A,
+      },
+      {
+        id: historyUuid(31),
+        eventId: 'partial-reload-event:2',
+        redeemedAt,
+        userTwitchUsername: 'viewer',
+        card: CARD_B,
+      },
+    ]
+    const requestedEventUrls: URL[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      if (url.pathname.includes('/realtime-config')) {
+        return jsonResponse({
+          schemaVersion: 1,
+          mode: 'polling-only',
+          protocolVersion: 1,
+          retryPolicy: { baseDelayMs: 100, maxDelayMs: 1_000 },
+          configVersion: 'partial-reload-v1',
+        })
+      }
+      requestedEventUrls.push(url)
+      return jsonResponse({
+        realtimeEvents: buildPollingRealtimeEvents(STREAMER_ID, rows),
+        nextCursor: null,
+      })
+    }))
+
+    const callback = vi.fn((payload: GachaBroadcastPayload) => {
+      void payload
+      return true
+    })
+    const cleanup = subscribeToGachaResults('ignored', callback, {
+      initialHistoryCursor: { redeemedAt, historyId: '00000000-0000-4000-8000-000000000029' },
+      initialSeenHistoryIds: [rows[0].id],
+    })
+    await flushPromises()
+
+    expect(requestedEventUrls).toHaveLength(1)
+    expect(callback).toHaveBeenCalledTimes(1)
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'gacha',
+      card: CARD_B,
+      userTwitchUsername: 'viewer',
+      historyIds: [rows[1].id],
+    }))
+    expect(callback.mock.calls[0][0]).not.toHaveProperty('cards')
+    expect(callback.mock.calls[0][0]).not.toHaveProperty('drawEventIds')
+    cleanup()
+  })
+
   it('notifies bounded overlay versions from both valid config and events responses', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/realtime-config')) {

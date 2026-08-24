@@ -1875,6 +1875,7 @@ export default function OverlayPage() {
         redeemedAt: pollCursorRef.current,
         historyId: pollHistoryIdRef.current,
       },
+      initialSeenHistoryIds: Array.from(seenHistoryIdsRef.current),
       onHistoryCursor: (cursor) => {
         pollCursorRef.current = cursor.redeemedAt;
         pollHistoryIdRef.current = cursor.historyId;

@@ -139,6 +139,8 @@ export interface SubscribeOptions {
   onStatusChange?: (status: string) => void
   /** Restores the exact DB position saved immediately before an overlay reload. */
   initialHistoryCursor?: OverlayHistoryCursor
+  /** History rows already painted by the page before a recovery reload. */
+  initialSeenHistoryIds?: string[]
   /** Reports each DB-confirmed cursor advance for persistence before reload. */
   onHistoryCursor?: (cursor: OverlayHistoryCursor) => void
   /** Receives a validated app build from either config or history recovery. */
@@ -627,6 +629,9 @@ export function subscribeToGachaResults(
   // those IDs distinct from committed dedupe entries so polling does not move
   // the durable cursor past an event whose batch is still awaiting display.
   const pendingEventIds = new Set<string>()
+  const initiallySeenHistoryIds = new Set(
+    (options.initialSeenHistoryIds ?? []).filter(isValidOverlayHistoryId)
+  )
   // IDs delivered by DO but not yet observed in a DB response. This separate
   // set prevents bounded general dedupe eviction from cascading into hundreds
   // of duplicate renders while a multi-page reconciliation drains.
@@ -757,6 +762,11 @@ export function subscribeToGachaResults(
       }
     }
     const unseenDraws = event.draws.filter((draw) => {
+      // A terminal display recovery can restart the controller from the exact
+      // cursor before a partially rendered N-draw batch. The page restores
+      // history IDs whose DOM was already ACKed; exclude those draws by their
+      // authoritative DB identity so only the unacknowledged tail is retried.
+      if (initiallySeenHistoryIds.has(draw.historyId)) return false
       if (pendingEventIds.has(draw.eventId)) {
         pendingDrawEncountered = true
         return false
