@@ -511,6 +511,7 @@ export default function OverlayPage() {
     accepted: boolean,
     drawEventId: string,
     batchKey: string,
+    historyId?: string,
   ) => {
     const batch = displayCommitBatchesRef.current.get(batchKey);
     if (!batch || batch.settled) return;
@@ -518,6 +519,14 @@ export default function OverlayPage() {
     if (!accepted) {
       failDisplayBatch(batchKey, 'item-rejected');
       return;
+    }
+    // A partially rendered N-draw batch may later reject its tail and resolve
+    // the overall callback as false. The prefix is nevertheless already
+    // visible to the viewer, so retain each accepted history row immediately;
+    // terminal recovery must not render that prefix again through legacy
+    // polling while it retries the unacknowledged tail.
+    if (historyId && isValidOverlayHistoryId(historyId)) {
+      seenHistoryIdsRef.current.add(historyId);
     }
     batch.acceptedDrawIds.add(drawEventId);
     if (batch.pendingIds.size > 0) return;
@@ -1272,6 +1281,7 @@ export default function OverlayPage() {
         ...data,
         card,
         cards: undefined,
+        historyId: data.historyIds?.[index] ?? data.historyId,
         drawEventId,
         batchKey: drawEventIds ? batchKey : undefined,
         shouldPlaySound: index === soundBearingIndex,
@@ -1310,6 +1320,7 @@ export default function OverlayPage() {
               accepted,
               drawEventId,
               batchKey,
+              item.historyId,
             );
           });
         }

@@ -298,6 +298,96 @@ describe('OverlayPage', () => {
     expect(document.querySelector('[data-overlay-card="true"]')).toBeNull()
   })
 
+  it('N連の先頭だけ表示成功して終端ブロックした場合も先頭カードをfallbackで重複表示しない', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+    sessionStorage.setItem(
+      'twica-overlay-terminal-recovery-v1:streamer-1',
+      String(Date.now()),
+    )
+    const firstHistoryId = '00000000-0000-4000-8000-000000000106'
+    const secondHistoryId = '00000000-0000-4000-8000-000000000107'
+    const firstCard = {
+      id: 'partial-first-card',
+      name: 'Partial first card',
+      description: null,
+      image_url: null,
+      rarity: 'common',
+    } as unknown as GachaBroadcastPayload['card']
+    const secondCard = {
+      get id(): string {
+        throw new Error('second card DOM setup failed')
+      },
+      name: 'Partial second card',
+      description: null,
+      image_url: null,
+      rarity: 'common',
+    } as unknown as GachaBroadcastPayload['card']
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('/api/overlay/streamer-1/events')) {
+        return {
+          ok: true,
+          json: async () => ({
+            events: [
+              {
+                id: firstHistoryId,
+                eventId: 'partial-event',
+                redeemedAt: '2026-08-24T03:00:03.000Z',
+                userTwitchUsername: 'viewer',
+                rewardId: null,
+                card: firstCard,
+              },
+              {
+                id: secondHistoryId,
+                eventId: 'partial-event:2',
+                redeemedAt: '2026-08-24T03:00:03.001Z',
+                userTwitchUsername: 'viewer',
+                rewardId: null,
+                card: secondCard,
+              },
+            ],
+            nextCursor: null,
+          }),
+        }
+      }
+      return {
+        ok: true,
+        json: async () => ({ soundUrl: null, soundEnabled: false }),
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let onGachaResult: ((payload: GachaBroadcastPayload) => unknown) | undefined
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => unknown
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    let acceptedPromise!: Promise<boolean>
+    act(() => {
+      acceptedPromise = onGachaResult?.({
+        type: 'gacha',
+        card: firstCard,
+        cards: [firstCard, secondCard],
+        drawEventIds: ['partial-event', 'partial-event:2'],
+        historyIds: [firstHistoryId, secondHistoryId],
+        userTwitchUsername: 'viewer',
+      }) as Promise<boolean>
+    })
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    await expect(acceptedPromise).resolves.toBe(false)
+    expect(screen.queryByText('Partial first card')).not.toBeInTheDocument()
+  })
+
   it('表示ACKの終端ブロック後はリロードを一度だけ予約し、失敗時に無限化しない', async () => {
     vi.useFakeTimers()
     sessionStorage.clear()
