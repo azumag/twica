@@ -412,7 +412,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     cleanup()
   })
 
-  it('quarantines a repeatedly rejected draw so later history rows still advance', async () => {
+  it('blocks an unacknowledged head draw without advancing the cursor or reordering later rows', async () => {
     const eventA = {
       id: historyUuid(23),
       eventId: 'event-poisoned-display',
@@ -430,7 +430,10 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       card: CARD_B,
     }
     const statuses: string[] = []
+    const restoredAt = '2026-07-24T00:00:00.000Z'
     let historyCalls = 0
+    let recoveryMode = false
+    let recoveryCalls = 0
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/realtime-config')) {
         return jsonResponse({
@@ -442,8 +445,12 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
         })
       }
       historyCalls += 1
+      if (recoveryMode) {
+        recoveryCalls += 1
+        if (recoveryCalls > 1) return jsonResponse({ events: [] })
+      }
       return jsonResponse({
-        events: historyCalls <= 3 ? [eventA, eventB] : [],
+        events: [eventA, eventB],
       })
     }))
 
@@ -452,9 +459,11 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       .mockImplementationOnce(() => false)
       .mockImplementationOnce(() => false)
       .mockImplementationOnce(() => false)
+    const onHistoryCursor = vi.fn()
     const cleanup = subscribeToGachaResults('streamer-1', callback, {
       retryDelay: 10,
       onStatusChange: (status) => statuses.push(status),
+      onHistoryCursor,
     })
     await flushPromises()
     await vi.advanceTimersByTimeAsync(10)
@@ -466,11 +475,34 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       CARD_A.id,
       CARD_A.id,
       CARD_A.id,
-      CARD_B.id,
     ])
-    expect(statuses).toContain('CALLBACK_ERROR_QUARANTINED:polling')
-    expect(statuses).not.toContain('POLLING_RETRY:3')
+    expect(statuses).toContain('CALLBACK_ERROR_BLOCKED:polling')
+    expect(statuses).toContain('POLLING_BLOCKED_UNACKNOWLEDGED_EVENT')
+    expect(onHistoryCursor).not.toHaveBeenCalled()
+    const callsAtBlock = historyCalls
+    await vi.advanceTimersByTimeAsync(60_000)
+    await flushPromises()
+    expect(historyCalls).toBe(callsAtBlock)
+
+    // The unchanged cursor is the recovery handle. A fresh controller can
+    // retry the same A and then display B in order without another redemption.
+    recoveryMode = true
     cleanup()
+    const recoveredCards: string[] = []
+    const recoveredCleanup = subscribeToGachaResults('streamer-1', (payload) => {
+      recoveredCards.push(payload.card.id)
+    }, {
+      initialHistoryCursor: { redeemedAt: restoredAt, historyId: '' },
+      retryDelay: 10,
+      onHistoryCursor,
+    })
+    await flushPromises()
+    expect(recoveredCards).toEqual([CARD_A.id, CARD_B.id])
+    expect(onHistoryCursor).toHaveBeenLastCalledWith({
+      redeemedAt: eventB.redeemedAt,
+      historyId: eventB.id,
+    })
+    recoveredCleanup()
   })
 
   it('buffers a WebSocket tail behind a polling draw whose DOM acknowledgement failed', async () => {
