@@ -206,6 +206,18 @@ describe("Twitch app access token", () => {
     });
   });
 
+  it("KV 書き込みが例外を投げても発行済みトークンを返し reportError で通知する", async () => {
+    kv.put.mockRejectedValue(new Error("kv write failed"));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(tokenResponse() as never);
+
+    const token = await getTwitchAppAccessToken();
+
+    expect(token).toBe("token-1");
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
+      context: "twitchAppToken:kvWrite",
+    });
+  });
+
   it("expirationTtl は Cloudflare KV の最小値60秒を下回らない", async () => {
     // expires_in 30秒（0.8倍で24秒 < 60秒）でも TTL は60秒になる
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
