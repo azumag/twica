@@ -93,6 +93,8 @@ const translations: Record<string, Record<string, string>> = {
     rankingNotice:
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
     liveCount: "現在配信中チャネル数（overlay接続ベースの推定・下限）：約{count}件",
+    liveCountFew:
+      "現在配信中チャネル数（overlay接続ベースの推定・下限）：5件未満",
     liveCountUnavailable:
       "現在配信中チャネル数（overlay接続ベースの推定・下限）：不明",
     liveCountNote:
@@ -217,7 +219,7 @@ describe("LivePage", () => {
     );
   });
 
-  it("shows zero instead of hiding a valid overlay estimate", async () => {
+  it("shows a bucketed zero estimate as fewer than five", async () => {
     mocks.getSession.mockResolvedValue(null);
     mocks.getLiveDirectoryPresence.mockResolvedValue({
       count: 0,
@@ -227,7 +229,7 @@ describe("LivePage", () => {
     render(await LivePage());
 
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "現在配信中チャネル数（overlay接続ベースの推定・下限）：約0件",
+      "現在配信中チャネル数（overlay接続ベースの推定・下限）：5件未満",
     );
     expect(screen.getByTestId("live-directory")).toHaveTextContent("entries:1");
   });

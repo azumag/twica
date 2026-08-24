@@ -1521,6 +1521,7 @@
     "consentNotice": "The live list only shows channels that have explicitly agreed to be listed.",
     "rankingNotice": "Rankings include all active channels. Card redemptions and channel points show the top 100 for the selected period, while card types show the top 100 current values. Channels that have not agreed to be identified appear anonymously.",
     "liveCount": "Estimated live channels (overlay-connected lower bound): about {count}",
+    "liveCountFew": "Estimated live channels (overlay-connected lower bound): fewer than 5",
     "liveCountUnavailable": "Estimated live channels (overlay-connected lower bound): unknown",
     "liveCountNote": "Approximation from connections using a newly copied authenticated overlay URL generated in settings; existing OBS URLs must be copied again. Values are truncated to five-channel buckets. Polling-only rooms are excluded, settings previews are not counted, and stale tabs or disconnect delay may be included, so the estimate can differ from the actual live count and may take up to about 17 minutes to reflect.",
     "directoryHeading": "Live channels and rankings",
