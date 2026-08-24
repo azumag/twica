@@ -851,6 +851,80 @@ describe('OverlayPage', () => {
     await expect(delivery).resolves.toBe(true)
   })
 
+  it.each([
+    { label: '通常表示', query: '' },
+    { label: '画像のみ表示', query: '?imageOnly=true' },
+  ])('ウォッチドッグ後に遅延画像が復帰すると代替表示を外す($label)', async ({ query }) => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', `/overlay/streamer-1${query}`)
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(_value: string) {}
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    let delivery: Promise<boolean> | undefined
+    act(() => {
+      delivery = onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: `slow-recovery-${query || 'card'}`,
+          name: 'Slow Recovery',
+          description: null,
+          image_url: 'https://example.com/slow-recovery.png',
+          rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    const imageBeforeFallback = screen.getByAltText('Slow Recovery')
+
+    // The watchdog paints a visible fallback, but it must not unmount the
+    // underlying image element because a slow CDN response can still recover.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4500)
+    })
+    expect(screen.getByLabelText(/Slow Recovery の画像を表示できないため代替表示/))
+      .toHaveAttribute('data-overlay-card-fallback', 'true')
+    expect(screen.getByAltText('Slow Recovery')).toBe(imageBeforeFallback)
+    await expect(delivery).resolves.toBe(true)
+
+    Object.defineProperties(imageBeforeFallback, {
+      complete: { configurable: true, value: true },
+      naturalWidth: { configurable: true, value: 320 },
+      naturalHeight: { configurable: true, value: 448 },
+    })
+    await act(async () => {
+      imageBeforeFallback.dispatchEvent(new Event('load'))
+      await Promise.resolve()
+    })
+    expect(screen.queryByLabelText(/Slow Recovery の画像を表示できないため代替表示/))
+      .not.toBeInTheDocument()
+    expect(screen.getByAltText('Slow Recovery')).toBe(imageBeforeFallback)
+  })
+
   it('短い表示時間でも画像待機を代替カードへ切り替えてからACKする', async () => {
     vi.useFakeTimers()
     window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
