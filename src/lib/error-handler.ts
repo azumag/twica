@@ -58,23 +58,6 @@ const HTTP_STATUS_REASON_PHRASES = {
   507: 'insufficient\\s+storage',
 } as const
 
-// Issue #989: S3 SDK v3 は HTTP status を `$metadata.httpStatusCode` に構造化して返す。
-// 文字列推定より信頼できる一次情報なので、値が存在する場合はこの status を優先し、
-// メッセージ解析は構造化statusを持たないR2 native等のフォールバックに限定する。
-function getStructuredHttpStatusCode(error: unknown): number | undefined {
-  if (typeof error !== 'object' || error === null || !('$metadata' in error)) return undefined
-
-  const metadata = (error as { $metadata?: unknown }).$metadata
-  if (typeof metadata !== 'object' || metadata === null || !('httpStatusCode' in metadata)) {
-    return undefined
-  }
-
-  const httpStatusCode = (metadata as { httpStatusCode?: unknown }).httpStatusCode
-  return typeof httpStatusCode === 'number' && Number.isInteger(httpStatusCode)
-    ? httpStatusCode
-    : undefined
-}
-
 // Issue #989: 裸の `503` などを部分一致させると `photo-503.png` や URL 中の数値まで
 // HTTP status と誤認するため、明示的な status ラベルか標準的な status line だけを受理する。
 // `httpStatusCode` は識別子途中に `status` があるため `\bstatus` 枝では一致せず、専用枝が必要。
@@ -93,25 +76,7 @@ function hasHttpStatusContext(errorMessage: string, status: 401 | 503 | 507): bo
 export async function handleBlobError(error: unknown, context: string, additionalInfo?: Record<string, unknown>): Promise<NextResponse> {
   const errorMessage = error instanceof Error ? error.message : String(error)
   const normalizedErrorMessage = errorMessage.toLowerCase()
-  const structuredHttpStatusCode = getStructuredHttpStatusCode(error)
   await logAndRecordError(`${context}: ${errorMessage}`, error, additionalInfo)
-
-  if (structuredHttpStatusCode === 507) {
-    return NextResponse.json({ error: 'Storage quota exceeded' }, { status: 507 })
-  }
-
-  if (structuredHttpStatusCode === 401) {
-    return NextResponse.json({ error: 'Storage authentication failed' }, { status: 503 })
-  }
-
-  if (structuredHttpStatusCode === 503) {
-    return NextResponse.json({ error: 'Storage service temporarily unavailable' }, { status: 503 })
-  }
-
-  // 構造化statusがある場合はそれを正とし、矛盾するmessageのキーワードで上書きしない。
-  if (structuredHttpStatusCode !== undefined) {
-    return NextResponse.json({ error: ERROR_MESSAGES.INTERNAL_ERROR }, { status: 500 })
-  }
 
   if (normalizedErrorMessage.includes('quota') || normalizedErrorMessage.includes('limit') || hasHttpStatusContext(errorMessage, 507)) {
     return NextResponse.json({ error: 'Storage quota exceeded' }, { status: 507 })
