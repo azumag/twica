@@ -36,6 +36,13 @@ migration evolves:
   `trade_offers`, including completed rows. History retention is therefore
   scoped to card/card-copy cleanup; it does not promise retention after the
   offerer account or a referenced streamer is deleted.
+- **Ownership-transfer timestamp:** both transferred `user_cards` rows set
+  `obtained_at = now()` when `accept_trade_offer` moves ownership. This is
+  intentional: `obtained_at` represents when the current owner acquired that
+  copy, so `card_owner_stats.last_obtained_at` also reflects the trade time via
+  its `MAX(obtained_at)` refresh. The card copy's first-ever acquisition time is
+  not preserved in `user_cards`; completed trade history instead retains its
+  snapshots and `completed_at`.
 - **Chosen payment card:** references to the selected payment card should use
   `v_payer_user_card_id`, not migration line ranges.
 - **Lock-order contract:** describe the invariant as
