@@ -21,23 +21,25 @@ analysis dashboard は `analysis/` で `npm ci`, `npx tsc --noEmit`, `npm run bu
 下記の対応表のいずれかの行に該当する変更は preview へ配備し、対応表で決まる**すべての確認必須項目**を実行します。複数の経路にまたがる変更は項目番号の和集合とし、共有 DB/OAuth/Worker/queue の影響経路を特定できない場合は 1-7 をすべて対象にします。
 
 - DB または OAuth: 1, 2, 3, 4, 5, 6, 7
-- Worker または queue の共有基盤（下記の個別経路に分類できない変更）: 1, 2, 3, 4, 5, 6, 7
+- Worker または queue の共有基盤（下記の個別経路に分類できない変更。Queue replay 単独の保守変更を除く）: 1, 2, 3, 4, 5, 6, 7
 - EventSub または gacha: 1, 2, 3, 4, 5, 6
 - overlay: 1, 2, 3, 4, 5
 - chat: 1, 2, 3, 4
-- queue replay: 1, 2, 3, 4
+- Queue replay（内部保守経路のみ）: 通常の実引き換えE2Eは追加しない。Queue replay自体を変更した場合だけ、秘密情報を使わない unit/integration/contract/maintenance test を別枠で実行する。
 - WebSocket または polling gap recovery: 1, 5
 - analysis dashboard またはその集計: 6
 - upload: 1, 2, 7
 
 対応表の行に該当する項目は対象外にできません。対応表にない影響について追加の項目確認を対象外とする場合だけ、その影響と判断理由を昇格PRへ明記し、未記録のまま省略してはなりません。
 
+ここでいうE2Eは、利用者の操作（Twitchでの報酬引き換え）から利用者が観測できる結果（履歴、chat、overlay表示）までを実際に通す確認です。EventSub direct、Queue replay、DB relay、管理APIなどの内部保守経路や、秘密情報・管理者権限を必要とする操作は、通常の利用者向けE2Eの必須条件にしません。内部経路を変更した場合は、実引き換えを代用にせず、秘密情報なしで実行できる適切な unit/integration/contract/maintenance test を別に行います。Worker/DBログはE2E結果を相関する証拠として扱い、MCPで取得できない場合は未確認として記録します。認証回避や秘密情報の取得で補完してはなりません。
+
 この対応表は `docs/E2E_SCENARIO.md` に定義された Preview Twitch 実経路の必須シナリオを置き換えません。変更が同シナリオの対象になる場合は、対応表の項目と併せて該当シナリオも実行します。
 
 1. Twitch の実チャネルポイント報酬を複数回引き換える。
 2. 各結果が順番どおり overlay に表示される。
 3. 各結果の chat メッセージが送信される。
-4. EventSub direct と Queue replay の両経路を確認する。
+4. EventSub direct の利用者向け経路を確認する。Queue replay は通常E2Eの必須項目ではなく、Queue replay変更時だけ上記の秘密情報なし内部テストを別枠で行う。
 5. overlay WebSocket を再接続し、polling gap recovery で欠落・重複がないことを確認する。
 6. analysis dashboard の主要集計が PlanetScale の値と一致することを確認する（`npm run check:analysis-dashboard-vs-sql`、`docs/analysis-dashboard-db-permissions.md`「確認手順」参照。対象環境の限定read接続文字列が実行環境に無い場合は、ブラウザ目視ではなくこの未接続自体を証跡として起票する）。このスクリプトはRPCと基礎集計SQLの数値一致のみを検証し、`adminApiPg.ts` → UI への表示ラベル・フィールド結線までは検証しないため、UI側の目視確認も引き続き併用する。
 7. 対象ファイルのアップロード、保存先からの取得、権限境界、Workerログを確認する。

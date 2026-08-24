@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
 import { useParams } from "next/navigation";
 import Image from "next/image";
 import type { Card, Rarity } from "@/types/database";
@@ -40,6 +41,7 @@ import {
   upsertReloadCooldownRecord,
   RELOAD_COOLDOWN_MS,
   POLLSTATE_TTL_MS,
+  MAX_PERSISTED_HISTORY_IDS,
 } from "@/lib/overlay-version";
 import { fetchMaintenanceStatus } from "@/lib/maintenance/client";
 import type { MaintenanceMode } from "@/lib/maintenance/state";
@@ -66,12 +68,35 @@ interface GachaResult {
   cards?: Card[];
   userTwitchUsername: string;
   historyId?: string;
+  /** Authoritative history IDs aligned with a transport-backed draw batch. */
+  historyIds?: string[];
   soundGroupId?: string;
   shouldPlaySound?: boolean;
   rewardId?: string | null;
+  /** Draw identities are present for transport-backed N-draw payloads. */
+  drawEventIds?: string[];
   /** Monotonic per-overlay key so consecutive draws always remount card DOM. */
   displayInstanceId?: number;
+  /** Stable transport draw identity used to resume a partially rendered batch. */
+  drawEventId?: string;
+  /** Internal key shared by all display items from one transport batch. */
+  batchKey?: string;
 }
+
+type DisplayRequest = {
+  data: GachaResult;
+  resolve: (accepted: boolean) => void;
+};
+
+type DisplayResultHandler = (data: GachaResult) => Promise<boolean>;
+
+type DisplayCommitBatch = {
+  batchKey: string;
+  pendingIds: Set<number>;
+  acceptedDrawIds: Set<string>;
+  resolve: (accepted: boolean) => void;
+  settled: boolean;
+};
 
 interface OverlayPollingEvent {
   id: string;
@@ -163,6 +188,20 @@ const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
 // the business-event queue and card DOM mounting do not wait for it.
 const IMAGE_METADATA_TIMEOUT_MS = 1_500;
 const MIN_REVEAL_LEAD_IN_MS = 100;
+// A realtime delivery is not acknowledged until React has committed the card
+// and its image has loaded. A stopped CEF/OBS render loop must still release
+// that promise so the transport can roll the event back and recover it through
+// polling, while presentation timing remains owned by the display queue.
+const DISPLAY_COMMIT_ACK_TIMEOUT_MS = 4_500;
+// React normally commits the fallback in the same task as the state update,
+// but OBS/CEF can coalesce timer callbacks. Give that commit a short, bounded
+// grace period before treating the presentation as failed.
+const DISPLAY_FALLBACK_COMMIT_GRACE_MS = 250;
+const DISPLAY_FALLBACK_COMMIT_RETRY_MS = 25;
+// A short display duration can expire in the same task that commits the
+// fallback. Keep the painted fallback visible long enough for at least one
+// browser/CEF frame before making the outgoing card transparent.
+const DISPLAY_FALLBACK_MIN_VISIBLE_MS = 250;
 
 // sessionStorage キー。リロード前後で状態を引き継ぐために使う
 // Issue #634 (PR #995): 新旧コードが同じキーを奪い合わないよう"-v2"へ改称した。
@@ -170,6 +209,16 @@ const MIN_REVEAL_LEAD_IN_MS = 100;
 // (このファイルとの重複記述を避けるため、詳細説明はそちら側だけに置く)。
 const RELOAD_COOLDOWN_STORAGE_KEY = "twica-overlay-reload-v2";
 const POLLSTATE_STORAGE_KEY = "twica-overlay-pollstate";
+// A terminal display-ACK block closes the current controller so its durable
+// cursor cannot be advanced past an invisible card. One bounded page reload
+// gives a transient OBS/CEF render stall a fresh controller without creating an
+// infinite reload loop when the same card remains unrenderable.
+const TERMINAL_RECOVERY_RELOAD_COOLDOWN_MS = 10 * 60 * 1000;
+const TERMINAL_RECOVERY_RELOAD_STORAGE_KEY = "twica-overlay-terminal-recovery-v1";
+// The disconnected emergency loop has no transport-level ACK budget of its
+// own. Keep a rejected head event recoverable for a few attempts, then stop
+// the loop at that exact cursor instead of replaying the same event forever.
+const LEGACY_POLL_MAX_FAILURES_PER_EVENT = 3;
 const pollStateStorageKey = (streamerId: string) =>
   `${POLLSTATE_STORAGE_KEY}:${streamerId}`;
 
@@ -215,6 +264,11 @@ export default function OverlayPage() {
   // 画像が小さい（400x400未満）かどうかを判定するためのState
   // 小さい画像の場合はsmallModeを自動適用するために使用
   const [isSmallImage, setIsSmallImage] = useState(false);
+  // A broken or indefinitely pending card image must degrade to a visible DOM
+  // card before the transport is acknowledged.  Keeping the instance id in
+  // state makes the fallback an actual React commit that the commit effect can
+  // observe, instead of treating a missing bitmap as a successful delivery.
+  const [imageFallbackDisplayInstanceId, setImageFallbackDisplayInstanceId] = useState<number | null>(null);
   // ガチャ効果音設定
   // streamerから取得した効果音URLと有効/無効状態を保持
   const [soundSettings, setSoundSettings] = useState<{
@@ -223,8 +277,16 @@ export default function OverlayPage() {
     soundRules: GachaSoundRule[];
   }>({ soundUrl: null, soundEnabled: true, soundRules: [] });
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fallbackVisibilityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
+  // A terminal display-ACK block deliberately holds the durable cursor. Do
+  // not let the legacy disconnected polling loop read that same cursor with a
+  // second dedupe cache, or already displayed rows could be shown twice.
+  const legacyPollingSuppressedRef = useRef(false);
+  const legacyPollingRetryCountsRef = useRef<Map<string, number>>(new Map());
+  const legacyPollingQuarantinedEventIdsRef = useRef<Set<string>>(new Set());
+  const legacyPollingBlockedRef = useRef(false);
   // ガチャ結果キュー: アニメーション中に到着した結果をバッファし順番に表示する
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
   const queueRef = useRef<GachaResult[]>([]);
@@ -232,6 +294,22 @@ export default function OverlayPage() {
   // so React cannot reuse the previous card image while a new src is decoding.
   const displayInstanceSequenceRef = useRef(0);
   const isDisplayingRef = useRef(false);
+  // Realtime delivery is acknowledged only after React has committed the card
+  // branch to the DOM. Keeping the resolver keyed by the remount key makes the
+  // transport retry a draw that was accepted by JavaScript but never became a
+  // visible card (the failure mode behind the fixed-overlay black screen).
+  const displayCommitResolversRef = useRef<Map<number, (accepted: boolean) => void>>(new Map());
+  const displayCommitTimeoutsRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const displayImageCleanupRef = useRef<Map<number, () => void>>(new Map());
+  const displayCommitEntriesRef = useRef<Map<number, { batchKey: string; drawEventId: string }>>(new Map());
+  const displayCommitBatchesRef = useRef<Map<string, DisplayCommitBatch>>(new Map());
+  const terminalRecoveryReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // When a multi-draw batch partially renders and is retried, cards that were
+  // already committed must not be shown twice. The transport rolls back the
+  // whole batch on a negative acknowledgement, so this set bridges the retry
+  // without consuming another redemption or duplicating the visible prefix.
+  const committedDrawIdsRef = useRef<Set<string>>(new Set());
+  const activeDisplayInstanceIdRef = useRef<number | undefined>(undefined);
   // Image metadata checks are presentation-only and run independently from the
   // display queue. Cleanup still resolves pending checks so Image callbacks do
   // not retain an obsolete card/component lifetime.
@@ -240,17 +318,35 @@ export default function OverlayPage() {
   // A streamer change can reuse this component instance. The queue generation
   // prevents an obsolete display task from continuing into the new subscription.
   const queueGenerationRef = useRef(0);
+  // A mounted flag alone cannot distinguish a late callback from the previous
+  // streamer after a route change. Every subscription closes over its own
+  // generation and must match this ref before it can enqueue a card.
+  const subscriptionGenerationRef = useRef(0);
   // Image metadata can resolve after the card that started it has already been
   // replaced. Only the latest card may update portrait/small presentation state.
   const imageLayoutGenerationRef = useRef(0);
   const playedSoundGroupIdsRef = useRef<Set<string>>(new Set());
   // processQueueの再帰呼び出し用ref（useCallback内で自身を参照するため）
   const processQueueRef = useRef<() => void>(() => {});
+  // Reactのpassive effectが購読effectより遅れて実行される環境でも、最初の
+  // realtime payloadを捨てないための一時バッファ。通常は表示handlerが
+  // 購読開始前に準備されるが、OBS/CEFの初期化やReactのeffect再実行が
+  // 同じフレームに重なると、refの初期no-opへ到達する可能性がある。
+  // unmount時には購読cleanupで必ず破棄し、古いstreamerの結果を新しい表示へ
+  // 持ち越さない。
+  const pendingDisplayResultsRef = useRef<DisplayRequest[]>([]);
   // displayResultとaddDebugLogをrefで保持することで、
   // subscriptionのuseEffectが不要に再実行されることを防ぐ
   // （soundSettings変更 → playGachaSound再生成 → displayResult再生成 のチェーンで
   //  subscriptionが破棄・再作成される問題を回避）
-  const displayResultRef = useRef<(data: GachaResult) => void>(() => {});
+  const displayResultRef = useRef<DisplayResultHandler>((data) => {
+    if (!isOverlayMountedRef.current) {
+      return Promise.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      pendingDisplayResultsRef.current.push({ data, resolve });
+    });
+  });
   const addDebugLogRef = useRef<(message: string) => void>(() => {});
   // subscription effectはstreamerIdだけに依存させる。displayResult/addDebugLogと
   // 同じrefミラーで最新版を参照し、callback再生成による再接続を防ぐ。
@@ -260,6 +356,70 @@ export default function OverlayPage() {
   const pollHistoryIdRef = useRef("");
   const seenHistoryIdsRef = useRef<Set<string>>(new Set());
   const lastPollingErrorLogRef = useRef(0);
+  const scheduleTerminalRecovery = useCallback((): boolean => {
+    if (terminalRecoveryReloadTimerRef.current) return true;
+    const storageKey = `${TERMINAL_RECOVERY_RELOAD_STORAGE_KEY}:${streamerId}`;
+    const pollStateKey = pollStateStorageKey(streamerId);
+    const now = Date.now();
+    let lastReloadAt = 0;
+    try {
+      lastReloadAt = Number(sessionStorage.getItem(storageKey) ?? 0);
+    } catch {
+      // A browser privacy mode can disable sessionStorage. Do not reload when
+      // the cross-page budget cannot be persisted, otherwise a hard failure
+      // would turn into an unbounded reload loop.
+      addDebugLogRef.current('Terminal display block: reload budget unavailable');
+      return false;
+    }
+    if (Number.isFinite(lastReloadAt) && now - lastReloadAt < TERMINAL_RECOVERY_RELOAD_COOLDOWN_MS) {
+      addDebugLogRef.current('Terminal display block: reload cooldown active');
+      return false;
+    }
+
+    // The controller deliberately does not advance its durable cursor until
+    // the display ACK is true. Persist the exact pair before scheduling the
+    // reload so a fresh controller starts from the same event rather than
+    // defaulting to "now" and losing the unrendered redemption.
+    const snapshot = serializePollState({
+      pollCursor: pollCursorRef.current,
+      pollHistoryId: pollHistoryIdRef.current,
+      seenHistoryIds: Array.from(seenHistoryIdsRef.current),
+      savedAt: now,
+    });
+    const expectedSeenHistoryIds = Array.from(seenHistoryIdsRef.current)
+      .slice(-MAX_PERSISTED_HISTORY_IDS);
+    try {
+      sessionStorage.setItem(pollStateKey, snapshot);
+      const storedSnapshot = sessionStorage.getItem(pollStateKey);
+      const parsedSnapshot = parsePollState(storedSnapshot, now, POLLSTATE_TTL_MS);
+      if (
+        !parsedSnapshot
+        || parsedSnapshot.pollCursor !== pollCursorRef.current
+        || parsedSnapshot.pollHistoryId !== pollHistoryIdRef.current
+        || JSON.stringify(parsedSnapshot.seenHistoryIds) !== JSON.stringify(expectedSeenHistoryIds)
+      ) {
+        throw new Error('terminal pollstate read-back mismatch');
+      }
+      sessionStorage.setItem(storageKey, String(now));
+    } catch {
+      // A reload without an exact cursor snapshot can skip the blocked event.
+      // Keep the legacy fallback active instead; it will retry from the live
+      // in-memory cursor without claiming that the terminal recovery worked.
+      try {
+        sessionStorage.removeItem(pollStateKey);
+      } catch {
+        // Ignore storage cleanup failures in restricted browser contexts.
+      }
+      addDebugLogRef.current('Terminal display block: cursor snapshot unavailable');
+      return false;
+    }
+    addDebugLogRef.current('Terminal display block: scheduling one bounded reload');
+    terminalRecoveryReloadTimerRef.current = setTimeout(() => {
+      terminalRecoveryReloadTimerRef.current = null;
+      if (isOverlayMountedRef.current) window.location.reload();
+    }, 250);
+    return true;
+  }, [streamerId]);
   // Issue #569: バージョン不一致検出＋自動リロード用のref群。
   // showCardは演出中判定にrefで参照する必要がある(setTimeoutコールバック内で
   // stateを直接読むとクロージャ生成時点の古い値のままになるため)。
@@ -296,6 +456,148 @@ export default function OverlayPage() {
   const soundPlayingUntilRef = useRef(0);
   // 音声がブラウザのAutoplayポリシーでブロックされているかどうか（UI表示用）
   const [audioBlocked, setAudioBlocked] = useState(false);
+
+  const settleDisplayCommit = useCallback((displayInstanceId: number | undefined, accepted: boolean) => {
+    if (displayInstanceId === undefined) return;
+    const resolve = displayCommitResolversRef.current.get(displayInstanceId);
+    if (!resolve) return;
+    displayCommitResolversRef.current.delete(displayInstanceId);
+    const timeoutId = displayCommitTimeoutsRef.current.get(displayInstanceId);
+    if (timeoutId) clearTimeout(timeoutId);
+    displayCommitTimeoutsRef.current.delete(displayInstanceId);
+    displayCommitEntriesRef.current.delete(displayInstanceId);
+    const cleanupImageListeners = displayImageCleanupRef.current.get(displayInstanceId);
+    cleanupImageListeners?.();
+    displayImageCleanupRef.current.delete(displayInstanceId);
+    resolve(accepted);
+  }, []);
+
+  const settleAllDisplayCommits = useCallback((accepted: boolean) => {
+    const pendingIds = Array.from(displayCommitResolversRef.current.keys());
+    for (const displayInstanceId of pendingIds) {
+      settleDisplayCommit(displayInstanceId, accepted);
+    }
+    for (const timeoutId of displayCommitTimeoutsRef.current.values()) {
+      clearTimeout(timeoutId);
+    }
+    displayCommitTimeoutsRef.current.clear();
+    for (const cleanup of displayImageCleanupRef.current.values()) {
+      cleanup();
+    }
+    displayImageCleanupRef.current.clear();
+  }, [settleDisplayCommit]);
+
+  const failDisplayBatch = useCallback((batchKey: string, reason: string) => {
+    const batch = displayCommitBatchesRef.current.get(batchKey);
+    if (!batch || batch.settled) return;
+    batch.settled = true;
+    displayCommitBatchesRef.current.delete(batchKey);
+    for (const drawEventId of batch.acceptedDrawIds) {
+      committedDrawIdsRef.current.add(drawEventId);
+    }
+    queueRef.current = queueRef.current.filter(
+      (item) => item.batchKey !== batchKey,
+    );
+    addDebugLogRef.current(`Card batch commit failed: ${reason}`);
+    const pendingIds = Array.from(batch.pendingIds);
+    for (const pendingId of pendingIds) {
+      settleDisplayCommit(pendingId, false);
+    }
+    batch.resolve(false);
+  }, [settleDisplayCommit]);
+
+  const acknowledgeDisplayItem = useCallback((
+    displayInstanceId: number,
+    accepted: boolean,
+    drawEventId: string,
+    batchKey: string,
+    historyId?: string,
+  ) => {
+    const batch = displayCommitBatchesRef.current.get(batchKey);
+    if (!batch || batch.settled) return;
+    batch.pendingIds.delete(displayInstanceId);
+    if (!accepted) {
+      failDisplayBatch(batchKey, 'item-rejected');
+      return;
+    }
+    // A partially rendered N-draw batch may later reject its tail and resolve
+    // the overall callback as false. The prefix is nevertheless already
+    // visible to the viewer, so retain each accepted history row immediately;
+    // terminal recovery must not render that prefix again through legacy
+    // polling while it retries the unacknowledged tail.
+    if (historyId && isValidOverlayHistoryId(historyId)) {
+      seenHistoryIdsRef.current.add(historyId);
+    }
+    batch.acceptedDrawIds.add(drawEventId);
+    if (batch.pendingIds.size > 0) return;
+    batch.settled = true;
+    displayCommitBatchesRef.current.delete(batchKey);
+    for (const acceptedDrawId of batch.acceptedDrawIds) {
+      committedDrawIdsRef.current.delete(acceptedDrawId);
+    }
+    batch.resolve(true);
+  }, [failDisplayBatch]);
+
+  const failDisplayCommit = useCallback((
+    displayInstanceId: number,
+    reason: string,
+  ) => {
+    if (!displayCommitResolversRef.current.has(displayInstanceId)) return;
+    addDebugLogRef.current(`Card display commit failed: ${reason}`);
+    const batchEntry = displayCommitEntriesRef.current.get(displayInstanceId);
+    if (batchEntry) {
+      failDisplayBatch(batchEntry.batchKey, reason);
+    } else {
+      settleDisplayCommit(displayInstanceId, false);
+    }
+    // The watchdog only releases the transport ACK. The card that is already
+    // on screen must keep its normal display timer; tearing it down here would
+    // turn a slow-but-visible card into a black flash and cause duplicate
+    // recovery renders. If no DOM was committed, the existing display timer
+    // still advances the page queue after its bounded interval.
+  }, [failDisplayBatch, settleDisplayCommit]);
+
+  const requestDisplayFallback = useCallback((displayInstanceId: number, reason: string) => {
+    if (!displayCommitResolversRef.current.has(displayInstanceId)) return;
+    addDebugLogRef.current(`Card image fallback requested: ${reason}`);
+    // The fallback is the user-visible safety net for a missing bitmap. Force
+    // this small state transition to commit before the transport callback can
+    // be released; otherwise a coalesced OBS/CEF timer can observe the old
+    // image-only tree and issue a false negative ACK.
+    try {
+      flushSync(() => setImageFallbackDisplayInstanceId(displayInstanceId));
+    } catch {
+      // React forbids flushSync from a lifecycle callback in some test/runtime
+      // combinations. The normal state update remains safe in that case and
+      // the bounded commit grace below still provides the recovery path.
+      setImageFallbackDisplayInstanceId(displayInstanceId);
+    }
+  }, []);
+
+  const armDisplayCommitTimeout = useCallback((displayInstanceId: number) => {
+    if (
+      !displayCommitResolversRef.current.has(displayInstanceId)
+      || displayCommitTimeoutsRef.current.has(displayInstanceId)
+    ) {
+      return;
+    }
+    const timeoutId = setTimeout(() => {
+      const committedCard = document.querySelector(
+        `[data-overlay-card="true"][data-overlay-display-instance="${displayInstanceId}"]`,
+      );
+      if (committedCard) {
+        // A slow image/paint still has a committed card. Render the explicit
+        // fallback first; the commit effect acknowledges only after that DOM
+        // is present, so a wrapper-only/black card cannot be reported as a
+        // successful presentation.
+        addDebugLogRef.current('Card display watchdog requesting fallback');
+        requestDisplayFallback(displayInstanceId, 'watchdog');
+        return;
+      }
+      failDisplayCommit(displayInstanceId, 'timeout');
+    }, DISPLAY_COMMIT_ACK_TIMEOUT_MS);
+    displayCommitTimeoutsRef.current.set(displayInstanceId, timeoutId);
+  }, [failDisplayCommit, requestDisplayFallback]);
 
   useEffect(() => {
     connectionStatusRef.current = connectionStatus;
@@ -676,8 +978,13 @@ export default function OverlayPage() {
     const queueGeneration = queueGenerationRef.current;
     const next = queueRef.current.shift();
     if (!next) {
+      activeDisplayInstanceIdRef.current = undefined;
       isDisplayingRef.current = false;
       return;
+    }
+    activeDisplayInstanceIdRef.current = next.displayInstanceId;
+    if (next.displayInstanceId !== undefined) {
+      armDisplayCommitTimeout(next.displayInstanceId);
     }
     isDisplayingRef.current = true;
 
@@ -709,6 +1016,9 @@ export default function OverlayPage() {
       addDebugLogRef.current(
         `processQueue error: ${error instanceof Error ? error.message : String(error)}`
       );
+      // If this item never committed, tell the transport to retry it instead
+      // of permanently deduplicating a draw that the viewer could not see.
+      settleDisplayCommit(next.displayInstanceId, false);
       // ロックを握ったまま関数を抜けないよう、失敗したカードは諦めて
       // 残りのキューを継続する。キューが尽きていれば冒頭の `if (!next)`
       // 分岐でロックが解放される。
@@ -737,13 +1047,47 @@ export default function OverlayPage() {
       ) {
         // The item was dequeued immediately before transport cleanup or an
         // unmount. Release the display lock so a later subscription can render.
+        addDebugLogRef.current('Card display aborted: inactive subscription');
+        settleDisplayCommit(next.displayInstanceId, false);
+        activeDisplayInstanceIdRef.current = undefined;
         isDisplayingRef.current = false;
         return;
       }
       setIsPortraitImage(false);
       setIsSmallImage(false);
+      setImageFallbackDisplayInstanceId(null);
+      // The realtime contract deliberately carries only the public card
+      // fields. Snapshot the fields consumed by this component before the
+      // state update so a malformed object/getter cannot make React fail while
+      // rendering the card branch and leave the overlay black.
+      const displayCard = {
+        id: next.card.id,
+        name: next.card.name,
+        description: next.card.description,
+        image_url: next.card.image_url,
+        image_padding_color: next.card.image_padding_color,
+        rarity: next.card.rarity,
+      } as Card;
+      const displayResult = { ...next, card: displayCard };
+      // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
+      // 解決に失敗してもbusiness eventのカードDOMを失わせない。
+      setResult(displayResult);
+      // カード表示をmetadataやタイマーの完了条件にしない。OBS/CEFや
+      // バックグラウンドのブラウザではsetTimeoutが遅延することがあり、
+      // revealを待つだけでも実交換後の有効窓を全面黒画面にしてしまう。
+      // business eventを受信した時点でカードを可視化し、metadataは
+      // presentation-onlyのレイアウト更新として並行して扱う。
+      setShowCard(true);
+      // The state setter has run, but the DOM commit happens on the next React
+      // render. Use "scheduled" here; the commit effect below is the only place
+      // that reports an actual card DOM commit.
+      addDebugLogRef.current('Card display scheduled');
+
+      // Start the presentation-only metadata probe *after* scheduling the card
+      // state. Even a future Image implementation that throws before returning
+      // a Promise cannot move the business event back behind this probe.
       const imageMetadataPromise = checkImageAspectRatio(
-        next.card.image_url,
+        displayCard.image_url,
         imageLayoutGeneration,
       ).catch((error) => {
         // Metadata is optional presentation data; a probe failure must not drop
@@ -753,16 +1097,12 @@ export default function OverlayPage() {
           `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
         );
       });
-      // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
-      // 解決に失敗してもbusiness eventのカードDOMを失わせない。
-      setResult(next);
-      setShowCard(false);
 
       try {
         // このカードのレアリティに紐づくエフェクトを解決する。
         // effects スイッチが OFF なら常に "none"（全レアリティ無効）。
         const resolvedStyle = options.effects
-          ? resolveEffectForRarity(options.rarityEffectMap, next.card.rarity)
+          ? resolveEffectForRarity(options.rarityEffectMap, displayCard.rarity)
           : "none";
         setActiveEffectStyle(resolvedStyle);
         setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
@@ -775,71 +1115,115 @@ export default function OverlayPage() {
         setEffectParticles([]);
       }
 
-      // Mount the card DOM immediately. Metadata may choose portrait/small
-      // layout before reveal, but queue liveness does not depend solely on the
-      // metadata Promise: an independent fallback schedules reveal after the same
-      // bounded probe window even if that Promise stops settling in a future
-      // refactor. Whichever path wins still gives the final DOM branch at least
-      // MIN_REVEAL_LEAD_IN_MS before it becomes visible.
-      let revealScheduled = false;
-      const scheduleReveal = () => {
-        if (revealScheduled) return;
+      // 表示は既に開始済み。ここでは効果音と表示終了だけを予約する。
+      // metadataの解決やrevealタイマーをカードDOMのliveness条件にしない。
+      animationTimeoutRef.current = setTimeout(() => runProtected(() => {
         if (
           !isOverlayMountedRef.current
           || queueGeneration !== queueGenerationRef.current
         ) {
+          // Lifecycle cleanup owns the display-lock reset. An obsolete
+          // chain must never unlock a newer subscription's active queue.
           return;
         }
-        revealScheduled = true;
-        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+        if (next.shouldPlaySound !== false) {
+          if (next.soundGroupId) {
+            if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
+              playedSoundGroupIdsRef.current.add(next.soundGroupId);
+              playGachaSound(displayResult);
+            }
+          } else {
+            playGachaSound(displayResult);
+          }
+        }
+
+        // Hide after display, then process next queued item.  If the image is
+        // still pending when the display window expires, first render the
+        // explicit fallback card and settle its transport promise.  This is
+        // important for short displayDuration values: hiding the only card
+        // before the 4.5s watchdog would otherwise turn a slow image into a
+        // false failure and an endlessly retried, black overlay.
+        const hideAndAdvance = () => {
+          setShowCard(false);
+          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+            // Once the outgoing card is removed, its callbacks must not affect
+            // the next card even if the browser retained the Image object.
+            imageLayoutGenerationRef.current += 1;
+            activeDisplayInstanceIdRef.current = undefined;
+            setResult(null);
+            setImageFallbackDisplayInstanceId(null);
+            // ref経由で最新のprocessQueueを呼び出し（再帰）
+            processQueueRef.current();
+          }), 500);
+        };
+        const hideAfterFallbackVisible = () => {
+          const expectedQueueGeneration = queueGeneration;
+          const displayInstanceId = next.displayInstanceId;
+          fallbackVisibilityTimeoutRef.current = setTimeout(
+            () => runProtected(() => {
+              fallbackVisibilityTimeoutRef.current = null;
+              if (
+                !isOverlayMountedRef.current
+                || queueGenerationRef.current !== expectedQueueGeneration
+                || activeDisplayInstanceIdRef.current !== displayInstanceId
+              ) {
+                return;
+              }
+              hideAndAdvance();
+            }),
+            DISPLAY_FALLBACK_MIN_VISIBLE_MS,
+          );
+        };
+        const finishDisplayWindow = () => {
+          const displayInstanceId = next.displayInstanceId;
           if (
-            !isOverlayMountedRef.current
-            || queueGeneration !== queueGenerationRef.current
+            displayInstanceId === undefined
+            || !displayCommitResolversRef.current.has(displayInstanceId)
           ) {
-            // Lifecycle cleanup owns the display-lock reset. An obsolete
-            // chain must never unlock a newer subscription's active queue.
+            hideAndAdvance();
             return;
           }
-          setShowCard(true);
-          if (next.shouldPlaySound !== false) {
-            if (next.soundGroupId) {
-              if (!playedSoundGroupIdsRef.current.has(next.soundGroupId)) {
-                playedSoundGroupIdsRef.current.add(next.soundGroupId);
-                playGachaSound(next);
-              }
-            } else {
-              playGachaSound(next);
+          requestDisplayFallback(displayInstanceId, 'display-window-expired');
+          const settleFallbackAfterCommit = (elapsedMs: number) => {
+            if (!isOverlayMountedRef.current || queueGeneration !== queueGenerationRef.current) {
+              return;
             }
-          }
-
-          // Hide after display, then process next queued item
-          animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-            setShowCard(false);
-            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-              // Once the outgoing card is removed, its callbacks must not affect
-              // the next card even if the browser retained the Image object.
-              imageLayoutGenerationRef.current += 1;
-              setResult(null);
-              // ref経由で最新のprocessQueueを呼び出し（再帰）
-              processQueueRef.current();
-            }), 500);
-          }), options.displayDuration * 1000);
-        }), MIN_REVEAL_LEAD_IN_MS);
-      };
-      const metadataFallbackTimeout = setTimeout(
-        () => runProtected(scheduleReveal),
-        IMAGE_METADATA_TIMEOUT_MS,
-      );
+            if (!displayCommitResolversRef.current.has(displayInstanceId)) {
+              // The fallback commit effect already acknowledged the card.
+              hideAfterFallbackVisible();
+              return;
+            }
+            const cardRoot = document.querySelector(
+              `[data-overlay-card="true"][data-overlay-display-instance="${displayInstanceId}"]`,
+            );
+            const fallbackRoot = cardRoot?.querySelector('[data-overlay-card-fallback="true"]');
+            if (fallbackRoot) {
+              settleDisplayCommit(displayInstanceId, true);
+              hideAfterFallbackVisible();
+              return;
+            }
+            if (elapsedMs < DISPLAY_FALLBACK_COMMIT_GRACE_MS) {
+              setTimeout(
+                () => runProtected(() => settleFallbackAfterCommit(elapsedMs + DISPLAY_FALLBACK_COMMIT_RETRY_MS)),
+                DISPLAY_FALLBACK_COMMIT_RETRY_MS,
+              );
+              return;
+            }
+            failDisplayCommit(displayInstanceId, 'fallback-not-committed');
+            hideAndAdvance();
+          };
+          setTimeout(() => runProtected(() => settleFallbackAfterCommit(0)), 0);
+        };
+        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+          finishDisplayWindow();
+        }), options.displayDuration * 1000);
+      }), MIN_REVEAL_LEAD_IN_MS);
       void imageMetadataPromise
-        .then(() => {
-          clearTimeout(metadataFallbackTimeout);
-          runProtected(scheduleReveal);
-        })
         .catch(handleQueueError);
     } catch (error) {
       handleQueueError(error);
     }
-  }, [checkImageAspectRatio, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap]);
+  }, [armDisplayCommitTimeout, checkImageAspectRatio, failDisplayCommit, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap, requestDisplayFallback, settleDisplayCommit]);
 
   // processQueueRefを最新のcallbackで更新
   useEffect(() => {
@@ -850,8 +1234,41 @@ export default function OverlayPage() {
    * 新しいガチャ結果をキューに追加し、未再生なら再生を開始する
    * Enqueue a new gacha result; start playback if idle
    */
-  const enqueueResult = useCallback((data: GachaResult) => {
+  const enqueueResult = useCallback((data: GachaResult): Promise<boolean> => {
+    // Ignore callbacks from an old transport instance after streamer switch or
+    // unmount. Without this guard a late polling/WS callback could repopulate
+    // the queue after cleanup and make the next subscription display stale data.
+    if (!isOverlayMountedRef.current) {
+      addDebugLogRef.current('Ignored display callback: inactive subscription');
+      return Promise.resolve(false);
+    }
     const cards = data.cards?.length ? data.cards : [data.card];
+    const drawEventIds = data.drawEventIds?.length === cards.length
+      ? data.drawEventIds
+      : undefined;
+    if (
+      drawEventIds
+      && Array.from({ length: drawEventIds.length }, (_, index) => drawEventIds[index]).some((drawEventId) => (
+        typeof drawEventId !== 'string' || drawEventId.length === 0
+      ))
+    ) {
+      addDebugLogRef.current('Ignored batch with missing draw identity');
+      return Promise.resolve(false);
+    }
+    const batchKey = drawEventIds?.[0]
+      ?? `overlay-batch-${displayInstanceSequenceRef.current + 1}`;
+    const pendingCards = cards
+      .map((card, index) => ({
+        card,
+        index,
+        drawEventId: drawEventIds?.[index],
+      }))
+      .filter(({ drawEventId }) => (
+        !drawEventId || !committedDrawIdsRef.current.has(drawEventId)
+      ));
+    if (pendingCards.length === 0) {
+      return Promise.resolve(true);
+    }
     // PR #451 レビュー指摘(F2): 「1枚目のカード」固定ではなく、バッチ全体から
     // ルール一致優先度(reward > rarity > all、同率ならより希少なレアリティ)が
     // 最も高い1枚を選んで、そのカードの表示タイミングでのみ音を鳴らす。
@@ -860,23 +1277,112 @@ export default function OverlayPage() {
     const soundBearingIndex = data.shouldPlaySound === false
       ? -1
       : pickSoundBearingCardIndex(cards, data.rewardId, soundSettings.soundRules);
-    queueRef.current.push(
-      ...cards.map((card, index) => ({
+    const displayItems = pendingCards.map(({ card, index, drawEventId }) => ({
         ...data,
         card,
         cards: undefined,
+        historyId: data.historyIds?.[index] ?? data.historyId,
+        drawEventId,
+        batchKey: drawEventIds ? batchKey : undefined,
         shouldPlaySound: index === soundBearingIndex,
         displayInstanceId: ++displayInstanceSequenceRef.current,
-      }))
-    );
-    if (!isDisplayingRef.current) {
-      processQueue();
+      }));
+    const firstDisplayInstanceId = displayItems[0]?.displayInstanceId;
+    if (firstDisplayInstanceId === undefined) {
+      return Promise.resolve(false);
     }
-  }, [processQueue, soundSettings.soundRules]);
+    const commitPromise = new Promise<boolean>((resolve) => {
+      if (drawEventIds) {
+        const batch: DisplayCommitBatch = {
+          batchKey,
+          pendingIds: new Set(displayItems.map((item) => item.displayInstanceId)),
+          acceptedDrawIds: new Set(),
+          resolve,
+          settled: false,
+        };
+        displayCommitBatchesRef.current.set(batchKey, batch);
+        for (const item of displayItems) {
+          const displayInstanceId = item.displayInstanceId;
+          const drawEventId = item.drawEventId;
+          if (drawEventId === undefined) {
+            // A malformed batch must fail closed rather than leaving its
+            // Promise pending forever and blocking the transport queue.
+            failDisplayBatch(batchKey, 'missing-draw-id');
+            return;
+          }
+          displayCommitEntriesRef.current.set(displayInstanceId, {
+            batchKey,
+            drawEventId,
+          });
+          displayCommitResolversRef.current.set(displayInstanceId, (accepted) => {
+            acknowledgeDisplayItem(
+              displayInstanceId,
+              accepted,
+              drawEventId,
+              batchKey,
+              item.historyId,
+            );
+          });
+        }
+        return;
+      }
 
-  // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）
+      displayCommitResolversRef.current.set(firstDisplayInstanceId, resolve);
+    });
+    queueRef.current.push(...displayItems);
+    if (!isDisplayingRef.current) {
+      // Realtime callbacks outlive a particular render. Resolve through the
+      // ref so a sound/options update cannot leave the queue using an obsolete
+      // processQueue closure (or bypass the lifecycle generation guard).
+      processQueueRef.current();
+    }
+    return commitPromise.then((accepted) => {
+      if (accepted) {
+        // The realtime controller intentionally does not move the durable
+        // `(redeemedAt, historyId)` cursor for a socket ACK. Mirror the exact
+        // history rows accepted by the page into the legacy fallback dedupe
+        // set before terminal-block recovery can switch to polling. This
+        // prevents already-painted socket cards from being rendered again
+        // while the cursor still points at the same history page.
+        const acceptedHistoryIds = data.historyIds?.length
+          ? data.historyIds
+          : data.historyId
+            ? [data.historyId]
+            : [];
+        for (const historyId of acceptedHistoryIds) {
+          if (isValidOverlayHistoryId(historyId)) {
+            seenHistoryIdsRef.current.add(historyId);
+          }
+        }
+      }
+      return accepted;
+    });
+  }, [acknowledgeDisplayItem, failDisplayBatch, soundSettings.soundRules]);
+
+  // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）。
+  // 購読開始前に届いたpayloadがあれば、ここで最新のenqueueへ一度だけ渡す。
+  // これにより「受信ログは残るがdisplayResultRefの初期no-opでカードが
+  // 消える」競合を、追加のchannel-point消費なしで防ぐ。
   useEffect(() => {
+    const pendingDisplayResults = pendingDisplayResultsRef.current;
     displayResultRef.current = enqueueResult;
+    const pending = pendingDisplayResults.splice(0);
+    for (const data of pending) {
+      void enqueueResult(data.data).then(data.resolve);
+    }
+    return () => {
+      // dependency更新中は次のeffectがすぐにhandlerを再登録する。再登録まで
+      // に届いたpayloadは同じバッファへ退避し、subscription cleanup側だけが
+      // streamer切替/unmount時にバッファを破棄する。
+      displayResultRef.current = (data) => {
+        if (!isOverlayMountedRef.current) {
+          return Promise.resolve(false);
+        }
+        return new Promise<boolean>((resolve) => {
+          pendingDisplayResults.push({ data, resolve });
+        });
+      };
+    };
   }, [enqueueResult]);
 
   /**
@@ -1006,8 +1512,12 @@ export default function OverlayPage() {
    * いる間はnetwork前にreturnし、version通知もcontrollerのconfig/events応答から
    * 受け取るため、この旧loopはWorker invocationもDB queryも発生させない。
    */
-  const pollOverlayEvents = useCallback(async () => {
-    if (connectionStatusRef.current === "connected") {
+  const pollOverlayEvents = useCallback(async (isActive: () => boolean = () => true) => {
+    if (
+      connectionStatusRef.current === "connected"
+      || legacyPollingSuppressedRef.current
+      || legacyPollingBlockedRef.current
+    ) {
       return;
     }
 
@@ -1021,29 +1531,67 @@ export default function OverlayPage() {
       return url.toString();
     };
 
+    let blockedByFallbackDelivery = false;
+    const recordFallbackDeliveryFailure = (eventId: string): void => {
+      const attempt = (legacyPollingRetryCountsRef.current.get(eventId) ?? 0) + 1;
+      legacyPollingRetryCountsRef.current.set(eventId, attempt);
+      if (attempt < LEGACY_POLL_MAX_FAILURES_PER_EVENT) return;
+
+      // Do not advance either cursor or seenHistoryIds here. The event remains
+      // the exact recovery handle for a later fresh controller, while this
+      // page stops issuing an unbounded duplicate request/display loop.
+      legacyPollingQuarantinedEventIdsRef.current.add(eventId);
+      legacyPollingBlockedRef.current = true;
+      blockedByFallbackDelivery = true;
+      addDebugLogRef.current(
+        `Polling fallback event quarantined after ${attempt} display failures: ${eventId}`
+      );
+    };
+
     try {
       const data = await fetchJsonWithXhrFallback<{
         events?: OverlayPollingEvent[];
         nextCursor?: OverlayHistoryCursor | null;
         overlayVersion?: string;
       }>(buildEventsUrl());
+      if (!isActive()) return;
       checkOverlayVersion(data.overlayVersion);
       const events = data.events ?? [];
       for (const event of events) {
+        if (!isActive()) return;
         if (seenHistoryIdsRef.current.has(event.id)) {
           continue;
         }
+        if (legacyPollingQuarantinedEventIdsRef.current.has(event.id)) {
+          legacyPollingBlockedRef.current = true;
+          blockedByFallbackDelivery = true;
+          addDebugLogRef.current(`Polling fallback remains blocked at quarantined event: ${event.id}`);
+          throw new Error('overlay fallback event is quarantined');
+        }
+        addDebugLogRef.current(`Polling fallback received: ${event.id}`);
+        let accepted: boolean;
+        try {
+          accepted = await displayResultRef.current({
+            card: event.card as Card,
+            userTwitchUsername: event.userTwitchUsername,
+            historyId: event.id,
+            soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
+            rewardId: event.rewardId ?? null,
+          });
+        } catch (error) {
+          if (!isActive()) return;
+          recordFallbackDeliveryFailure(event.id);
+          throw error;
+        }
+        if (!isActive()) return;
+        if (!accepted) {
+          recordFallbackDeliveryFailure(event.id);
+          throw new Error('overlay callback rejected fallback event');
+        }
+        legacyPollingRetryCountsRef.current.delete(event.id);
         seenHistoryIdsRef.current.add(event.id);
         pollCursorRef.current = event.redeemedAt;
         pollHistoryIdRef.current = event.id;
-        addDebugLogRef.current(`Polling fallback received: ${event.id}`);
-        displayResultRef.current({
-          card: event.card as Card,
-          userTwitchUsername: event.userTwitchUsername,
-          historyId: event.id,
-          soundGroupId: event.eventId?.replace(/:\d+$/, "") ?? event.id,
-          rewardId: event.rewardId ?? null,
-        });
       }
       // The server cursor also advances across defensive LEFT JOIN misses that
       // produce no display event. Prefer it over the last rendered row so a
@@ -1061,6 +1609,10 @@ export default function OverlayPage() {
         }
       }
     } catch (error) {
+      if (blockedByFallbackDelivery) {
+        logger.error("Overlay polling fallback blocked at an unacknowledged event:", error);
+        return;
+      }
       const now = Date.now();
       if (now - lastPollingErrorLogRef.current > 30000) {
         lastPollingErrorLogRef.current = now;
@@ -1076,7 +1628,7 @@ export default function OverlayPage() {
 
     const schedule = () => {
       timeoutId = setTimeout(async () => {
-        await pollOverlayEvents();
+        await pollOverlayEvents(() => !stopped);
         if (!stopped) {
           schedule();
         }
@@ -1106,6 +1658,102 @@ export default function OverlayPage() {
   useEffect(() => {
     addDebugLogRef.current = addDebugLog;
   }, [addDebugLog]);
+
+  // `setResult` only schedules a React update; it does not prove that the
+  // card branch has committed to the DOM. Keep a separate commit marker so the
+  // fixed-overlay investigation can distinguish an event that never reached
+  // the queue from a React/browser paint problem. This is intentionally free
+  // of card names, IDs, URLs, and user data.
+  useLayoutEffect(() => {
+    if (!result) return;
+    const displayInstanceId = result.displayInstanceId;
+    if (displayInstanceId === undefined) return;
+    if (!displayCommitResolversRef.current.has(displayInstanceId)) return;
+    addDebugLogRef.current('Card display committed');
+    const previousImageCleanup = displayImageCleanupRef.current.get(displayInstanceId);
+    previousImageCleanup?.();
+    displayImageCleanupRef.current.delete(displayInstanceId);
+    const cardRoot = document.querySelector(
+      `[data-overlay-card="true"][data-overlay-display-instance="${displayInstanceId}"]`,
+    );
+    if (!cardRoot) {
+      // The bounded watchdog owns this failure path. A transient React commit
+      // gap must not be acknowledged as a duplicate, but resolving false here
+      // would race a same-turn commit and create an unnecessary replay.
+      addDebugLogRef.current('Card display commit missing DOM');
+      return;
+    }
+
+    const fallbackRoot = cardRoot.querySelector('[data-overlay-card-fallback="true"]');
+    if (imageFallbackDisplayInstanceId === displayInstanceId && fallbackRoot) {
+      // Keep the real <img> mounted while the painted fallback is visible.
+      // A slow image may still finish loading after the watchdog; removing it
+      // here would make the fallback permanent and turn a delayed but valid
+      // card into a regression.
+      addDebugLogRef.current('Card image fallback committed');
+      settleDisplayCommit(displayInstanceId, true);
+    }
+
+    if (!result.card.image_url) {
+      if (fallbackRoot) {
+        settleDisplayCommit(displayInstanceId, true);
+      }
+      return;
+    }
+
+    const image = cardRoot.querySelector('img') as HTMLImageElement | null;
+    if (!image) {
+      addDebugLogRef.current('Card display commit missing image');
+      return;
+    }
+
+    const imageIsReady = (
+      image.complete
+      && image.naturalWidth > 0
+      && image.naturalHeight > 0
+    );
+    if (imageIsReady) {
+      if (imageFallbackDisplayInstanceId === displayInstanceId) {
+        setImageFallbackDisplayInstanceId(current => (
+          current === displayInstanceId ? null : current
+        ));
+      }
+      settleDisplayCommit(displayInstanceId, true);
+      return;
+    }
+
+    addDebugLogRef.current('Card image awaiting load');
+    const onLoad = () => {
+      if (image.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
+        if (imageFallbackDisplayInstanceId === displayInstanceId) {
+          setImageFallbackDisplayInstanceId(current => (
+            current === displayInstanceId ? null : current
+          ));
+        }
+        settleDisplayCommit(displayInstanceId, true);
+      } else {
+        addDebugLogRef.current('Card image load completed without dimensions');
+        requestDisplayFallback(displayInstanceId, 'image-invalid');
+      }
+    };
+    const onError = () => {
+      // A permanent 404/CORS/R2 failure must not be retried forever, but it is
+      // not a successful presentation until the visible fallback DOM commits.
+      addDebugLogRef.current('Card image failed; requesting visible fallback');
+      requestDisplayFallback(displayInstanceId, 'image-error');
+    };
+    const cleanup = () => {
+      image.removeEventListener('load', onLoad);
+      image.removeEventListener('error', onError);
+      if (displayImageCleanupRef.current.get(displayInstanceId) === cleanup) {
+        displayImageCleanupRef.current.delete(displayInstanceId);
+      }
+    };
+    image.addEventListener('load', onLoad, { once: true });
+    image.addEventListener('error', onError, { once: true });
+    displayImageCleanupRef.current.set(displayInstanceId, cleanup);
+    return cleanup;
+  }, [imageFallbackDisplayInstanceId, isPortraitImage, requestDisplayFallback, result, settleDisplayCommit]);
 
   // #694 Stage 6b: maintenance状態のポーリング（debugパネル表示専用）。
   //
@@ -1163,9 +1811,18 @@ export default function OverlayPage() {
   // 依存配列は streamerId のみ。displayResult/addDebugLog は ref 経由で参照し、
   // callback の再生成（soundSettings 変更等）で subscription が破棄・再作成されないようにする
   useEffect(() => {
+    const subscriptionGeneration = ++subscriptionGenerationRef.current;
     isOverlayMountedRef.current = true;
+    legacyPollingSuppressedRef.current = false;
+    legacyPollingBlockedRef.current = false;
+    legacyPollingRetryCountsRef.current.clear();
+    legacyPollingQuarantinedEventIdsRef.current.clear();
     const playedSoundGroupIds = playedSoundGroupIdsRef.current;
     const activeImageCheckCancels = activeImageCheckCancelsRef.current;
+    const pendingDisplayResults = pendingDisplayResultsRef.current;
+    const displayCommitBatches = displayCommitBatchesRef.current;
+    const displayCommitEntries = displayCommitEntriesRef.current;
+    const committedDrawIds = committedDrawIdsRef.current;
 
     queueMicrotask(() => {
       addDebugLogRef.current(`Starting subscription for streamer: ${streamerId}`);
@@ -1176,12 +1833,21 @@ export default function OverlayPage() {
 
     const cleanup = subscribeToGachaResults(streamerId, (payload) => {
       addDebugLogRef.current(`Received payload: ${payload.type}`);
+      if (
+        !isOverlayMountedRef.current
+        || subscriptionGenerationRef.current !== subscriptionGeneration
+      ) {
+        addDebugLogRef.current('Ignored payload after subscription cleanup');
+        return false;
+      }
       if (payload.type === 'gacha' && payload.card) {
-        displayResultRef.current({
+        return displayResultRef.current({
           card: payload.card as unknown as Card,
           cards: payload.cards as unknown as Card[] | undefined,
           userTwitchUsername: payload.userTwitchUsername,
           rewardId: payload.rewardId ?? null,
+          drawEventIds: payload.drawEventIds,
+          historyIds: payload.historyIds,
           // A reconnect recovery page can contain only part of a very large
           // backlog. Preserve the versioned batch key so later pages do not
           // replay the same N-draw sound even though their cards still render.
@@ -1200,6 +1866,7 @@ export default function OverlayPage() {
           + `cardsCount=${payload.cards?.length ?? 0})`
         );
       }
+      return true;
     }, {
       // Cursor ownership stays inside the transport controller. The page only
       // mirrors its exact DB pair so a build-version reload can hand the same
@@ -1208,12 +1875,21 @@ export default function OverlayPage() {
         redeemedAt: pollCursorRef.current,
         historyId: pollHistoryIdRef.current,
       },
+      initialSeenHistoryIds: Array.from(seenHistoryIdsRef.current),
       onHistoryCursor: (cursor) => {
         pollCursorRef.current = cursor.redeemedAt;
         pollHistoryIdRef.current = cursor.historyId;
       },
       onError: (error) => {
         addDebugLogRef.current(`Connection error: ${error.message} (expected: ${error.isExpected})`);
+        if (error.message === 'Overlay card delivery blocked after retry limit') {
+          // The bounded reload is only a first recovery attempt. If its
+          // sessionStorage budget is exhausted or unavailable, leave the old
+          // disconnected polling loop active so a repaired presentation path
+          // can still recover the unchanged durable cursor instead of leaving
+          // the overlay permanently black.
+          legacyPollingSuppressedRef.current = scheduleTerminalRecovery();
+        }
         if (error.isExpected) {
           setConnectionStatus('disconnected');
           setErrorMessage(null);
@@ -1224,6 +1900,10 @@ export default function OverlayPage() {
       },
       onSuccess: () => {
         addDebugLogRef.current('Connection successful - SUBSCRIBED');
+        legacyPollingSuppressedRef.current = false;
+        legacyPollingBlockedRef.current = false;
+        legacyPollingRetryCountsRef.current.clear();
+        legacyPollingQuarantinedEventIdsRef.current.clear();
         setConnectionStatus('connected');
         if (connectionTimeoutRef.current) {
           clearTimeout(connectionTimeoutRef.current);
@@ -1249,19 +1929,39 @@ export default function OverlayPage() {
     cleanupRef.current = cleanup;
 
     return () => {
+      if (subscriptionGenerationRef.current === subscriptionGeneration) {
+        subscriptionGenerationRef.current += 1;
+      }
       isOverlayMountedRef.current = false;
       queueGenerationRef.current += 1;
       imageLayoutGenerationRef.current += 1;
+      const pending = pendingDisplayResults.splice(0);
+      for (const pendingResult of pending) {
+        pendingResult.resolve(false);
+      }
+      settleAllDisplayCommits(false);
       for (const cancel of [...activeImageCheckCancels]) {
         cancel();
       }
       activeImageCheckCancels.clear();
       // キューをクリアして未再生アイテムを破棄
       queueRef.current = [];
+      displayCommitBatches.clear();
+      displayCommitEntries.clear();
+      committedDrawIds.clear();
+      activeDisplayInstanceIdRef.current = undefined;
       isDisplayingRef.current = false;
       playedSoundGroupIds.clear();
+      legacyPollingRetryCountsRef.current.clear();
+      legacyPollingQuarantinedEventIdsRef.current.clear();
+      legacyPollingBlockedRef.current = false;
       if (connectionTimeoutRef.current) {
         clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+      if (terminalRecoveryReloadTimerRef.current) {
+        clearTimeout(terminalRecoveryReloadTimerRef.current);
+        terminalRecoveryReloadTimerRef.current = null;
       }
       if (cleanupRef.current) {
         cleanupRef.current();
@@ -1269,8 +1969,12 @@ export default function OverlayPage() {
       if (animationTimeoutRef.current) {
         clearTimeout(animationTimeoutRef.current);
       }
+      if (fallbackVisibilityTimeoutRef.current) {
+        clearTimeout(fallbackVisibilityTimeoutRef.current);
+        fallbackVisibilityTimeoutRef.current = null;
+      }
     };
-  }, [streamerId]);
+  }, [scheduleTerminalRecovery, settleAllDisplayCommits, streamerId]);
 
   // Demo function for testing
   // デモ機能 - 配信者のカードがあればそれを、なければデモカードを表示
@@ -1427,11 +2131,25 @@ export default function OverlayPage() {
   const shouldUseSmallMode = options.smallMode && isSmallImage;
   const cardSizeClass = shouldUseSmallMode ? "w-48" : "w-80";
   const imageOnlySizeClass = shouldUseSmallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
+  const showImageFallback = imageFallbackDisplayInstanceId === result.displayInstanceId;
+
+  const renderImageFallback = (sizeClassName: string, overlay = false) => (
+    <div
+      data-overlay-card-fallback="true"
+      role="img"
+      aria-label={`${result.card.name} の画像を表示できないため代替表示`}
+      className={`${overlay ? "pointer-events-none absolute inset-0 z-10" : ""} flex min-h-[192px] min-w-[192px] flex-col items-center justify-center rounded-lg bg-gray-700 px-4 py-6 text-center ${sizeClassName}`}
+    >
+      <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
+    </div>
+  );
 
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
       <div
         key={result.displayInstanceId ?? `${result.historyId ?? "card"}:${result.card.id}`}
+        data-overlay-card="true"
+        data-overlay-display-instance={result.displayInstanceId ?? undefined}
         className={`transform transition-all duration-500 ${
           showCard ? "scale-100 opacity-100" : "scale-50 opacity-0"
         }`}
@@ -1464,20 +2182,19 @@ export default function OverlayPage() {
                 長時間開きっぱなしのOBSページのheadへ不要なリンクを溜める
                 だけになるため。 */}
             {result.card.image_url ? (
-              <Image
-                src={result.card.image_url}
-                alt={result.card.name}
-                width={shouldUseSmallMode ? 192 : 320}
-                height={shouldUseSmallMode ? 268 : 448}
-                className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
-                unoptimized
-                loading="eager"
-              />
-            ) : (
-              <div className={`flex items-center justify-center bg-gray-700 rounded-lg ${shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80"}`}>
-                <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
+              <div className="relative">
+                <Image
+                  src={result.card.image_url}
+                  alt={result.card.name}
+                  width={shouldUseSmallMode ? 192 : 320}
+                  height={shouldUseSmallMode ? 268 : 448}
+                  className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
+                  unoptimized
+                  loading="eager"
+                />
+                {showImageFallback && renderImageFallback("h-full w-full", true)}
               </div>
-            )}
+            ) : renderImageFallback(shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80")}
 
             {/* 付帯情報（画像の下、オプションで表示） */}
             {/* Info section below image (optional, for autoPortrait mode) */}
@@ -1546,24 +2263,23 @@ export default function OverlayPage() {
                 {/* Card Image - square like Collection */}
                 <div className="aspect-square bg-gray-600">
                   {result.card.image_url ? (
-                    // unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
-                    // loading="eager": Issue #1076参照(画像のみモード側の同コメント参照)。
-                    // 通常モードのカード画像も同じ理由で即時読み込みにする。
-                    <Image
-                      src={result.card.image_url}
-                      alt={result.card.name}
-                      width={shouldUseSmallMode ? 180 : 300}
-                      height={shouldUseSmallMode ? 180 : 300}
-                      className={`w-full h-full ${cardImageFitClass(result.card.image_padding_color)}`}
-                      style={cardImageFitStyle(result.card.image_padding_color)}
-                      unoptimized
-                      loading="eager"
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center">
-                      <span className={shouldUseSmallMode ? "text-4xl" : "text-6xl"}>🎴</span>
+                    <div className="relative h-full w-full">
+                      {/* unoptimized: ImageCropperで400x400px・JPEG85%に最適化済みのため、Vercel Image Transformationsをスキップしてコスト削減
+                          loading="eager": Issue #1076参照(画像のみモード側の同コメント参照)。
+                          通常モードのカード画像も同じ理由で即時読み込みにする。 */}
+                      <Image
+                        src={result.card.image_url}
+                        alt={result.card.name}
+                        width={shouldUseSmallMode ? 180 : 300}
+                        height={shouldUseSmallMode ? 180 : 300}
+                        className={`w-full h-full ${cardImageFitClass(result.card.image_padding_color)}`}
+                        style={cardImageFitStyle(result.card.image_padding_color)}
+                        unoptimized
+                        loading="eager"
+                      />
+                      {showImageFallback && renderImageFallback("h-full w-full", true)}
                     </div>
-                  )}
+                  ) : renderImageFallback("h-full w-full")}
                 </div>
 
                 {/* Description - below image like Collection */}

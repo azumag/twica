@@ -50,6 +50,12 @@ const connectionError: RealtimeError = {
   error: null,
   isExpected: false,
 }
+const terminalDisplayBlockError: RealtimeError = {
+  type: 'broadcast',
+  message: 'Overlay card delivery blocked after retry limit',
+  error: null,
+  isExpected: false,
+}
 
 describe('OverlayPage', () => {
   beforeEach(() => {
@@ -80,6 +86,490 @@ describe('OverlayPage', () => {
 
     expect(screen.queryByText('接続エラー')).not.toBeInTheDocument()
     expect(screen.queryByText(connectionError.message)).not.toBeInTheDocument()
+  })
+
+  it('表示ACKの終端ブロック後は旧fallback pollingを再開しない', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: null, soundEnabled: false }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    expect(subscribeMock).toHaveBeenCalled()
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+
+    expect(fetchMock.mock.calls.some(([url]) => (
+      String(url).includes('/api/overlay/streamer-1/events')
+    ))).toBe(false)
+  })
+
+  it('表示ACKの終端ブロックがリロードcooldown中なら旧fallback pollingで復旧を続ける', async () => {
+    vi.useFakeTimers()
+    sessionStorage.setItem(
+      'twica-overlay-terminal-recovery-v1:streamer-1',
+      String(Date.now()),
+    )
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: null, soundEnabled: false }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    expect(subscribeMock).toHaveBeenCalled()
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+
+    expect(fetchMock.mock.calls.some(([url]) => (
+      String(url).includes('/api/overlay/streamer-1/events')
+    ))).toBe(true)
+  })
+
+  it('旧fallbackの同一イベント表示失敗を3回で隔離し、無限再送を止める', async () => {
+    vi.useFakeTimers()
+    // Force the bounded reload budget into its cooldown path so the emergency
+    // polling loop is the only recovery route exercised by this test.
+    sessionStorage.setItem(
+      'twica-overlay-terminal-recovery-v1:streamer-1',
+      String(Date.now()),
+    )
+    const failingCard = {
+      get id(): string {
+        throw new Error('card DOM setup failed')
+      },
+      name: 'Unrenderable card',
+      description: null,
+      image_url: null,
+      rarity: 'common',
+    } as unknown as { id: string; name: string; description: null; image_url: null; rarity: string }
+    const fallbackEvent = {
+      id: '00000000-0000-4000-8000-000000000104',
+      eventId: 'fallback-unrenderable-event',
+      redeemedAt: '2026-08-24T03:00:01.000Z',
+      userTwitchUsername: 'viewer',
+      rewardId: null,
+      card: failingCard,
+    }
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('/api/overlay/streamer-1/events')) {
+        return {
+          ok: true,
+          json: async () => ({ events: [fallbackEvent], nextCursor: null }),
+        }
+      }
+      return {
+        ok: true,
+        json: async () => ({ soundUrl: null, soundEnabled: false }),
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(subscribeMock).toHaveBeenCalled()
+
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+
+    const eventRequests = fetchMock.mock.calls.filter(([url]) => (
+      String(url).includes('/api/overlay/streamer-1/events')
+    ))
+    expect(eventRequests).toHaveLength(3)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9_000)
+    })
+    expect(fetchMock.mock.calls.filter(([url]) => (
+      String(url).includes('/api/overlay/streamer-1/events')
+    ))).toHaveLength(3)
+  })
+
+  it('transportで表示済みの履歴IDを終端ブロック後のfallbackが重複表示しない', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+    sessionStorage.setItem(
+      'twica-overlay-terminal-recovery-v1:streamer-1',
+      String(Date.now()),
+    )
+    const historyId = '00000000-0000-4000-8000-000000000105'
+    const card = {
+      id: 'transport-card',
+      name: 'Transport card',
+      description: null,
+      image_url: null,
+      rarity: 'common',
+    } as unknown as GachaBroadcastPayload['card']
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('/api/overlay/streamer-1/events')) {
+        return {
+          ok: true,
+          json: async () => ({
+            events: [{
+              id: historyId,
+              eventId: 'transport-event',
+              redeemedAt: '2026-08-24T03:00:02.000Z',
+              userTwitchUsername: 'viewer',
+              rewardId: null,
+              card,
+            }],
+            nextCursor: null,
+          }),
+        }
+      }
+      return {
+        ok: true,
+        json: async () => ({ soundUrl: null, soundEnabled: false }),
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let onGachaResult: ((payload: GachaBroadcastPayload) => unknown) | undefined
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => unknown
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    let acceptedPromise!: Promise<boolean>
+    act(() => {
+      acceptedPromise = onGachaResult?.({
+        type: 'gacha',
+        card,
+        userTwitchUsername: 'viewer',
+        historyIds: [historyId],
+      }) as Promise<boolean>
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await expect(acceptedPromise).resolves.toBe(true)
+
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    // The fallback request sees the same history row, but the transport ACK
+    // already copied its authoritative ID into seenHistoryIdsRef. Let the
+    // first card finish its short test display window and ensure no second
+    // DOM instance is queued by the emergency polling loop.
+    expect(document.querySelector('[data-overlay-card="true"]')).toBeNull()
+  })
+
+  it('N連の先頭だけ表示成功して終端ブロックした場合も先頭カードをfallbackで重複表示しない', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+    sessionStorage.setItem(
+      'twica-overlay-terminal-recovery-v1:streamer-1',
+      String(Date.now()),
+    )
+    const firstHistoryId = '00000000-0000-4000-8000-000000000106'
+    const secondHistoryId = '00000000-0000-4000-8000-000000000107'
+    const firstCard = {
+      id: 'partial-first-card',
+      name: 'Partial first card',
+      description: null,
+      image_url: null,
+      rarity: 'common',
+    } as unknown as GachaBroadcastPayload['card']
+    const secondCard = {
+      get id(): string {
+        throw new Error('second card DOM setup failed')
+      },
+      name: 'Partial second card',
+      description: null,
+      image_url: null,
+      rarity: 'common',
+    } as unknown as GachaBroadcastPayload['card']
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('/api/overlay/streamer-1/events')) {
+        return {
+          ok: true,
+          json: async () => ({
+            events: [
+              {
+                id: firstHistoryId,
+                eventId: 'partial-event',
+                redeemedAt: '2026-08-24T03:00:03.000Z',
+                userTwitchUsername: 'viewer',
+                rewardId: null,
+                card: firstCard,
+              },
+              {
+                id: secondHistoryId,
+                eventId: 'partial-event:2',
+                redeemedAt: '2026-08-24T03:00:03.001Z',
+                userTwitchUsername: 'viewer',
+                rewardId: null,
+                card: secondCard,
+              },
+            ],
+            nextCursor: null,
+          }),
+        }
+      }
+      return {
+        ok: true,
+        json: async () => ({ soundUrl: null, soundEnabled: false }),
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let onGachaResult: ((payload: GachaBroadcastPayload) => unknown) | undefined
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => unknown
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    let acceptedPromise!: Promise<boolean>
+    act(() => {
+      acceptedPromise = onGachaResult?.({
+        type: 'gacha',
+        card: firstCard,
+        cards: [firstCard, secondCard],
+        drawEventIds: ['partial-event', 'partial-event:2'],
+        historyIds: [firstHistoryId, secondHistoryId],
+        userTwitchUsername: 'viewer',
+      }) as Promise<boolean>
+    })
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    await expect(acceptedPromise).resolves.toBe(false)
+    expect(screen.queryByText('Partial first card')).not.toBeInTheDocument()
+  })
+
+  it('表示ACKの終端ブロック後はリロードを一度だけ予約し、失敗時に無限化しない', async () => {
+    vi.useFakeTimers()
+    sessionStorage.clear()
+    const originalLocation = window.location
+    const reloadMock = vi.fn()
+    const current = window.location
+    Object.defineProperty(window, 'location', {
+      value: {
+        hash: current.hash,
+        host: current.host,
+        hostname: current.hostname,
+        href: current.href,
+        origin: current.origin,
+        pathname: current.pathname,
+        port: current.port,
+        protocol: current.protocol,
+        search: current.search,
+        reload: reloadMock,
+      },
+      configurable: true,
+    })
+
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    try {
+      render(<OverlayPage />)
+      expect(subscribeMock).toHaveBeenCalled()
+      await act(async () => {
+        reportError?.(terminalDisplayBlockError)
+        await vi.advanceTimersByTimeAsync(250)
+      })
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+      expect(sessionStorage.getItem('twica-overlay-terminal-recovery-v1:streamer-1')).not.toBeNull()
+
+      await act(async () => {
+        reportError?.(terminalDisplayBlockError)
+        await vi.advanceTimersByTimeAsync(10_000)
+      })
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        configurable: true,
+      })
+    }
+  })
+
+  it('表示ACKの終端ブロック時はexact cursorを保存し、再起動後も同じ位置から再開する', async () => {
+    vi.useFakeTimers()
+    sessionStorage.clear()
+    const originalLocation = window.location
+    const reloadMock = vi.fn()
+    const current = window.location
+    Object.defineProperty(window, 'location', {
+      value: {
+        hash: current.hash,
+        host: current.host,
+        hostname: current.hostname,
+        href: current.href,
+        origin: current.origin,
+        pathname: current.pathname,
+        port: current.port,
+        protocol: current.protocol,
+        search: current.search,
+        reload: reloadMock,
+      },
+      configurable: true,
+    })
+
+    const blockedCursor = '2026-08-24T03:00:00.000Z'
+    const blockedHistoryId = '00000000-0000-4000-8000-000000000103'
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      options.onHistoryCursor?.({ redeemedAt: blockedCursor, historyId: blockedHistoryId })
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    const view = render(<OverlayPage />)
+    try {
+      expect(subscribeMock).toHaveBeenCalled()
+      await act(async () => {
+        reportError?.(terminalDisplayBlockError)
+        await vi.advanceTimersByTimeAsync(250)
+      })
+
+      expect(reloadMock).toHaveBeenCalledTimes(1)
+      const rawSnapshot = sessionStorage.getItem('twica-overlay-pollstate:streamer-1')
+      expect(rawSnapshot).not.toBeNull()
+      expect(JSON.parse(rawSnapshot as string)).toMatchObject({
+        pollCursor: blockedCursor,
+        pollHistoryId: blockedHistoryId,
+      })
+
+      view.unmount()
+      let resumedOptions: SubscribeOptions | undefined
+      subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+        resumedOptions = options
+        options.onSuccess?.()
+        return vi.fn()
+      })
+      render(<OverlayPage />)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(resumedOptions?.initialHistoryCursor).toEqual({
+        redeemedAt: blockedCursor,
+        historyId: blockedHistoryId,
+      })
+    } finally {
+      view.unmount()
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        configurable: true,
+      })
+    }
+  })
+
+  it('終端ACKのcursor保存に失敗した場合はリロードせず旧fallback pollingを継続する', async () => {
+    vi.useFakeTimers()
+    sessionStorage.clear()
+    const originalLocation = window.location
+    const reloadMock = vi.fn()
+    const current = window.location
+    Object.defineProperty(window, 'location', {
+      value: {
+        hash: current.hash,
+        host: current.host,
+        hostname: current.hostname,
+        href: current.href,
+        origin: current.origin,
+        pathname: current.pathname,
+        port: current.port,
+        protocol: current.protocol,
+        search: current.search,
+        reload: reloadMock,
+      },
+      configurable: true,
+    })
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: null, soundEnabled: false }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const originalSetItem = sessionStorage.setItem.bind(sessionStorage)
+    const setItemSpy = vi.spyOn(sessionStorage, 'setItem').mockImplementation(function (key, value) {
+      if (key.startsWith('twica-overlay-pollstate:')) {
+        throw new Error('sessionStorage quota unavailable')
+      }
+      return originalSetItem(key, value)
+    })
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    try {
+      render(<OverlayPage />)
+      expect(subscribeMock).toHaveBeenCalled()
+      await act(async () => {
+        reportError?.(terminalDisplayBlockError)
+        await vi.advanceTimersByTimeAsync(3_000)
+      })
+
+      expect(reloadMock).not.toHaveBeenCalled()
+      expect(fetchMock.mock.calls.some(([url]) => (
+        String(url).includes('/api/overlay/streamer-1/events')
+      ))).toBe(true)
+    } finally {
+      setItemSpy.mockRestore()
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        configurable: true,
+      })
+    }
   })
 
   it('debug=true の時だけ接続問題をデバッグパネルに表示する', async () => {
@@ -224,7 +714,136 @@ describe('OverlayPage', () => {
     expect(playMock).toHaveBeenCalledTimes(1)
   })
 
-  it('画像メタデータ取得が停止しても、独立fallbackでN連キューを前進する', async () => {
+  it('N連の後段画像が遅れても、表示中カードを消さずにACKする', async () => {
+    vi.useFakeTimers()
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 320
+      height = 448
+
+      set src(_value: string) {}
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const view = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const cards = [
+      {
+        id: 'batch-card-a',
+        name: 'Batch A',
+        description: null,
+        image_url: null,
+        rarity: 'common',
+      },
+      {
+        id: 'batch-card-b',
+        name: 'Batch B',
+        description: null,
+        image_url: 'https://example.com/batch-b.png',
+        rarity: 'rare',
+      },
+    ]
+    const payload: GachaBroadcastPayload = {
+      type: 'gacha',
+      card: cards[0],
+      cards,
+      drawEventIds: ['batch-event-a', 'batch-event-b'],
+      userTwitchUsername: 'Viewer',
+    }
+
+    let firstAttempt: Promise<boolean> | undefined
+    await act(async () => {
+      firstAttempt = onGachaResult?.(payload)
+      await Promise.resolve()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByText('Batch A')).toBeInTheDocument()
+
+    // A commits, then B becomes active but never loads an image. Its watchdog
+    // observes the committed card and ACKs the visible fallback rather than
+    // removing it and creating a retry/black-screen loop.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6600)
+    })
+    expect(screen.getByText('Batch B')).toBeInTheDocument()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4500)
+    })
+    await expect(firstAttempt).resolves.toBe(true)
+    expect(screen.getByText('Batch B')).toBeInTheDocument()
+    view.unmount()
+  })
+
+  it('draw IDが欠落したN連を未解決Promiseのままキューへ入れない', async () => {
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const sparseDrawEventIds = new Array(2) as string[]
+    sparseDrawEventIds[0] = 'malformed-event-1'
+    let result: Promise<boolean> | undefined
+    await act(async () => {
+      result = onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'malformed-card-1',
+          name: 'Malformed A',
+          description: null,
+          image_url: null,
+          rarity: 'common',
+        },
+        cards: [
+          {
+            id: 'malformed-card-1',
+            name: 'Malformed A',
+            description: null,
+            image_url: null,
+            rarity: 'common',
+          },
+          {
+            id: 'malformed-card-2',
+            name: 'Malformed B',
+            description: null,
+            image_url: null,
+            rarity: 'rare',
+          },
+        ],
+        drawEventIds: sparseDrawEventIds,
+        userTwitchUsername: 'Viewer',
+      })
+      await Promise.resolve()
+    })
+
+    await expect(result).resolves.toBe(false)
+    expect(screen.queryByText('Malformed A')).not.toBeInTheDocument()
+    expect(screen.queryByText('Malformed B')).not.toBeInTheDocument()
+  })
+
+  it('画像メタデータ取得が停止しても、カード表示とN連キューを止めない', async () => {
     vi.useFakeTimers()
 
     let imageLoadCount = 0
@@ -294,15 +913,14 @@ describe('OverlayPage', () => {
     expect(screen.getByText('Alpha')).toBeInTheDocument()
 
     // 1枚目の表示終了後、2枚目のmetadata probeは無応答のままでも、カードDOMは
-    // 先にマウントされる。独立fallbackが1.5秒でrevealを予約し、最終DOMへ
-    // 100msのlead-inを確保してから可視化する。
+    // 先にマウントされ、metadataの期限を待たずに可視化される。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6600)
     })
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
     const betaText = screen.getByText('Beta')
     expect(betaText).toBeInTheDocument()
-    expect(betaText.closest('.transition-all')).toHaveClass('opacity-0')
+    expect(betaText.closest('.transition-all')).toHaveClass('opacity-100')
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1600)
@@ -329,6 +947,7 @@ describe('OverlayPage', () => {
 
   it('streamer切替cleanup後の旧metadata解決が新しい表示ロックを解除しない', async () => {
     vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
 
     class PendingImage {
       onload: (() => void) | null = null
@@ -368,9 +987,18 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Old Card')).toBeInTheDocument()
 
+    // The old card reaches its short display-window fallback. Switch the
+    // streamer before the guarded visibility timer expires; that timer must
+    // not make the newly mounted streamer's card transparent.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100)
+    })
+    expect(document.querySelector('[data-overlay-card-fallback="true"]')).not.toBeNull()
+
     // 同一component instanceでstreamerを切り替えると旧probeはcleanupでresolveする。
     // そのmicrotaskが新subscriptionのisDisplayingRefを解除してはならない。
     streamerIdRef.current = 'streamer-2'
+    window.history.replaceState({}, '', '/overlay/streamer-2')
     view.rerender(<OverlayPage />)
     await act(async () => {
       await Promise.resolve()
@@ -392,6 +1020,10 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(screen.getByText('New Alpha')).toBeVisible()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+    })
+    expect(screen.getByText('New Alpha')).toBeVisible()
 
     // 旧チェーンがlockをfalseへ戻していると、この2件目が並走してNew Alphaを
     // 即座に置き換える。正しくは表示時間が終わるまでqueueに留まる。
@@ -408,7 +1040,10 @@ describe('OverlayPage', () => {
     expect(screen.queryByText('New Beta')).not.toBeInTheDocument()
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6600)
+      // The route-switch setup intentionally uses duration=2 to exercise the
+      // old card's fallback window, so the queued replacement is ready after
+      // its 2s display plus the 500ms handoff rather than the default 6s.
+      await vi.advanceTimersByTimeAsync(2700)
     })
     expect(screen.getByText('New Beta')).toBeVisible()
   })
@@ -605,9 +1240,9 @@ describe('OverlayPage', () => {
     }
     vi.stubGlobal('Image', MockImage)
 
-    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
     subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
-      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
       options.onSuccess?.()
       return vi.fn()
     })
@@ -619,8 +1254,9 @@ describe('OverlayPage', () => {
       await Promise.resolve()
     })
 
+    let delivery: Promise<boolean> | undefined
     act(() => {
-      onGachaResult?.({
+      delivery = onGachaResult?.({
         type: 'gacha',
         card: {
           id: 'late-portrait-card',
@@ -637,13 +1273,14 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
+    const initialCardImage = screen.getByAltText('Late Portrait')
 
-    // metadataが遅れても、DOMは既に存在するが、revealはまだ始まっていない。
+    // metadataが遅れても、DOMは既に存在し、revealタイマーを待たず可視になる。
     expect(screen.getByText('Viewer が引いたカード').closest('.transition-all'))
-      .toHaveClass('opacity-0')
+      .toHaveClass('opacity-100')
 
-    // 画像metadataが縦長として到着したあとにrevealするため、初回の可視フレーム
-    // からimage-onlyレイアウトになり、通常フレームからの差し替えが起きない。
+    // 画像metadataが縦長として到着したあとも、カードは表示を継続しながら
+    // image-onlyレイアウトへ更新される。
     const metadataImage = metadataImages[0]
     expect(metadataImage).toBeDefined()
     metadataImage.width = 200
@@ -653,7 +1290,37 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
-    expect(screen.getByAltText('Late Portrait')).toBeInTheDocument()
+    const portraitCardImage = screen.getByAltText('Late Portrait')
+    expect(portraitCardImage).toBeInTheDocument()
+
+    // autoPortrait remounts the <img>. A late load from the detached old
+    // element must not ACK the draw; only the currently mounted image may do
+    // so after it has positive natural dimensions.
+    Object.defineProperties(initialCardImage, {
+      complete: { configurable: true, value: true },
+      naturalWidth: { configurable: true, value: 320 },
+      naturalHeight: { configurable: true, value: 448 },
+    })
+    let delivered = false
+    delivery?.then(() => {
+      delivered = true
+    })
+    await act(async () => {
+      initialCardImage.dispatchEvent(new Event('load'))
+      await Promise.resolve()
+    })
+    expect(delivered).toBe(false)
+
+    Object.defineProperties(portraitCardImage, {
+      complete: { configurable: true, value: true },
+      naturalWidth: { configurable: true, value: 320 },
+      naturalHeight: { configurable: true, value: 448 },
+    })
+    await act(async () => {
+      portraitCardImage.dispatchEvent(new Event('load'))
+      await Promise.resolve()
+    })
+    await expect(delivery).resolves.toBe(true)
   })
 
   // Issue #999調査メモ: 「onerrorが正しく解決されず表示がブロックされて
@@ -682,9 +1349,9 @@ describe('OverlayPage', () => {
     }
     vi.stubGlobal('Image', MockImage)
 
-    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
     subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
-      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
       options.onSuccess?.()
       return vi.fn()
     })
@@ -695,8 +1362,9 @@ describe('OverlayPage', () => {
       await Promise.resolve()
     })
 
+    let delivery: Promise<boolean> | undefined
     act(() => {
-      onGachaResult?.({
+      delivery = onGachaResult?.({
         type: 'gacha',
         card: {
           id: 'card-real', name: 'RealCard', description: null,
@@ -712,6 +1380,166 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(screen.getByText('RealCard')).toBeInTheDocument()
+
+    // The transport must not ACK a broken bitmap by itself. It paints an
+    // explicit fallback over the still-mounted image element, so a slow
+    // browser can recover if the image later finishes loading.
+    const renderedImage = screen.getByAltText('RealCard')
+    await act(async () => {
+      renderedImage.dispatchEvent(new Event('error'))
+      await Promise.resolve()
+    })
+    expect(screen.getByAltText('RealCard')).toBeInTheDocument()
+    expect(screen.getByLabelText(/RealCard の画像を表示できないため代替表示/))
+      .toHaveAttribute('data-overlay-card-fallback', 'true')
+    await expect(delivery).resolves.toBe(true)
+  })
+
+  it.each([
+    { label: '通常表示', query: '' },
+    { label: '画像のみ表示', query: '?imageOnly=true' },
+  ])('ウォッチドッグ後に遅延画像が復帰すると代替表示を外す($label)', async ({ query }) => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', `/overlay/streamer-1${query}`)
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(_value: string) {}
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    let delivery: Promise<boolean> | undefined
+    act(() => {
+      delivery = onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: `slow-recovery-${query || 'card'}`,
+          name: 'Slow Recovery',
+          description: null,
+          image_url: 'https://example.com/slow-recovery.png',
+          rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    const imageBeforeFallback = screen.getByAltText('Slow Recovery')
+
+    // The watchdog paints a visible fallback, but it must not unmount the
+    // underlying image element because a slow CDN response can still recover.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4500)
+    })
+    expect(screen.getByLabelText(/Slow Recovery の画像を表示できないため代替表示/))
+      .toHaveAttribute('data-overlay-card-fallback', 'true')
+    expect(screen.getByAltText('Slow Recovery')).toBe(imageBeforeFallback)
+    await expect(delivery).resolves.toBe(true)
+
+    Object.defineProperties(imageBeforeFallback, {
+      complete: { configurable: true, value: true },
+      naturalWidth: { configurable: true, value: 320 },
+      naturalHeight: { configurable: true, value: 448 },
+    })
+    await act(async () => {
+      imageBeforeFallback.dispatchEvent(new Event('load'))
+      await Promise.resolve()
+    })
+    expect(screen.queryByLabelText(/Slow Recovery の画像を表示できないため代替表示/))
+      .not.toBeInTheDocument()
+    expect(screen.getByAltText('Slow Recovery')).toBe(imageBeforeFallback)
+  })
+
+  it('短い表示時間でも画像待機を代替カードへ切り替えてからACKする', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+
+    class PendingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(_value: string) {}
+    }
+    vi.stubGlobal('Image', PendingImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => Promise<boolean>) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => Promise<boolean>
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    let delivery: Promise<boolean> | undefined
+    act(() => {
+      delivery = onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'short-window-card',
+          name: 'Short Window',
+          description: null,
+          image_url: 'https://example.com/short-window.png',
+          rarity: 'common',
+        },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(screen.getByAltText('Short Window')).toBeInTheDocument()
+
+    // displayDuration=2 expires before the 4.5s watchdog. The fallback must
+    // be committed while this card is still mounted, so this exchange resolves
+    // once without a transport retry.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(screen.getByLabelText(/Short Window の画像を表示できないため代替表示/))
+      .toHaveAttribute('data-overlay-card-fallback', 'true')
+    expect(document.querySelector('[data-overlay-card="true"]'))
+      .toHaveClass('opacity-100')
+    await expect(delivery).resolves.toBe(true)
+
+    // A same-turn display-expiry callback must leave the fallback painted for
+    // a bounded frame window before making the outgoing card transparent.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249)
+    })
+    expect(document.querySelector('[data-overlay-card="true"]'))
+      .toHaveClass('opacity-100')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(document.querySelector('[data-overlay-card="true"]'))
+      .toHaveClass('opacity-0')
   })
 
   // Issue #1076: 接続・イベント受信・演出切り替えは全て成功するのにOBS上で
@@ -1092,8 +1920,15 @@ describe('OverlayPage', () => {
     act(() => {
       onGachaResult?.({ type: 'gacha', card: cards[0], cards, userTwitchUsername: 'Viewer' })
     })
+    // The image watchdog renders its fallback at 4.5s. Flush that state
+    // update before advancing the normal 6s display window so the test models
+    // the browser's separate timer tasks rather than batching both deadlines.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6600)
+      await vi.advanceTimersByTimeAsync(4500)
+    })
+    expect(document.querySelector('[data-overlay-card-fallback="true"]')).not.toBeNull()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100)
     })
     expect(imageInstances).toHaveLength(2)
     const playsBeforeUnmount = playMock.mock.calls.length
