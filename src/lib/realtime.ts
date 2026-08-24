@@ -684,8 +684,14 @@ export function subscribeToGachaResults(
     options.onHistoryCursor?.({ ...historyCursor })
   }
 
+  const stopSocketRecovery = () => {
+    socketRecoveryActive = false
+    if (recoveryBufferTimer) clearTimeout(recoveryBufferTimer)
+    recoveryBufferTimer = null
+  }
+
   const beginSocketRecovery = () => {
-    if (disposed) return
+    if (disposed || deliveryBlocked) return
     socketRecoveryActive = true
     // A previous bounded flush may have kept the recovery state active after
     // a callback failure. Re-arm the safety deadline in that case; otherwise
@@ -807,6 +813,7 @@ export function subscribeToGachaResults(
         deliveryBlocked = true
         blockedEventId = event.eventId
         callbackRejectionCounts.delete(event.eventId)
+        stopSocketRecovery()
         options.onStatusChange?.(`CALLBACK_ERROR_BLOCKED:${source}`)
         options.onError?.({
           type: 'broadcast',
@@ -878,7 +885,7 @@ export function subscribeToGachaResults(
    * pushed events wait until DB pages have drained, preserving DB order.
    */
   const requestRecoveryPoll = (bufferLiveFrames = false) => {
-    if (disposed) return
+    if (disposed || deliveryBlocked) return
     if (bufferLiveFrames) beginSocketRecovery()
     if (pollInFlight) {
       recoveryPollPending = true
@@ -1033,9 +1040,8 @@ export function subscribeToGachaResults(
         // bounded buffer for diagnostics/recovery, stop the socket, and keep
         // the DB cursor before the head so a fresh controller can replay it.
         bufferedSocketEvents = buffered.slice(index).concat(bufferedSocketEvents)
-        socketRecoveryActive = true
+        stopSocketRecovery()
         closeSocket()
-        requestRecoveryPoll(true)
         return false
       }
       if (result === 'pending') {
@@ -1095,6 +1101,10 @@ export function subscribeToGachaResults(
   ): void {
     if (recoveryBufferTimer) clearTimeout(recoveryBufferTimer)
     recoveryBufferTimer = null
+    if (deliveryBlocked) {
+      stopSocketRecovery()
+      return
+    }
     const hadRecovery = socketRecoveryActive || bufferedSocketEvents.length > 0
     if (degradedBy && hadRecovery) {
       options.onStatusChange?.(`DO_RECOVERY_DEGRADED:${degradedBy}`)
@@ -1549,8 +1559,8 @@ export function subscribeToGachaResults(
                   // The failed head is not acknowledged. Stop low-latency
                   // delivery and let a fresh controller retry the unchanged
                   // durable cursor after the presentation path is repaired.
+                  stopSocketRecovery()
                   closeSocket()
-                  requestRecoveryPoll(true)
                 }
               }
               const ingestResult = ingest(parsed.event, 'durable-object')

@@ -267,6 +267,10 @@ export default function OverlayPage() {
   const fallbackVisibilityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const connectionStatusRef = useRef(connectionStatus);
+  // A terminal display-ACK block deliberately holds the durable cursor. Do
+  // not let the legacy disconnected polling loop read that same cursor with a
+  // second dedupe cache, or already displayed rows could be shown twice.
+  const legacyPollingSuppressedRef = useRef(false);
   // ガチャ結果キュー: アニメーション中に到着した結果をバッファし順番に表示する
   // 連続引き換え時に前のカードが消えて最後の1件しか表示されない問題を解消
   const queueRef = useRef<GachaResult[]>([]);
@@ -1397,7 +1401,10 @@ export default function OverlayPage() {
    * 受け取るため、この旧loopはWorker invocationもDB queryも発生させない。
    */
   const pollOverlayEvents = useCallback(async (isActive: () => boolean = () => true) => {
-    if (connectionStatusRef.current === "connected") {
+    if (
+      connectionStatusRef.current === "connected"
+      || legacyPollingSuppressedRef.current
+    ) {
       return;
     }
 
@@ -1656,6 +1663,7 @@ export default function OverlayPage() {
   useEffect(() => {
     const subscriptionGeneration = ++subscriptionGenerationRef.current;
     isOverlayMountedRef.current = true;
+    legacyPollingSuppressedRef.current = false;
     const playedSoundGroupIds = playedSoundGroupIdsRef.current;
     const activeImageCheckCancels = activeImageCheckCancelsRef.current;
     const pendingDisplayResults = pendingDisplayResultsRef.current;
@@ -1719,6 +1727,9 @@ export default function OverlayPage() {
       },
       onError: (error) => {
         addDebugLogRef.current(`Connection error: ${error.message} (expected: ${error.isExpected})`);
+        if (error.message === 'Overlay card delivery blocked after retry limit') {
+          legacyPollingSuppressedRef.current = true;
+        }
         if (error.isExpected) {
           setConnectionStatus('disconnected');
           setErrorMessage(null);
@@ -1729,6 +1740,7 @@ export default function OverlayPage() {
       },
       onSuccess: () => {
         addDebugLogRef.current('Connection successful - SUBSCRIBED');
+        legacyPollingSuppressedRef.current = false;
         setConnectionStatus('connected');
         if (connectionTimeoutRef.current) {
           clearTimeout(connectionTimeoutRef.current);

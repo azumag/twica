@@ -50,6 +50,12 @@ const connectionError: RealtimeError = {
   error: null,
   isExpected: false,
 }
+const terminalDisplayBlockError: RealtimeError = {
+  type: 'broadcast',
+  message: 'Overlay card delivery blocked after retry limit',
+  error: null,
+  isExpected: false,
+}
 
 describe('OverlayPage', () => {
   beforeEach(() => {
@@ -80,6 +86,35 @@ describe('OverlayPage', () => {
 
     expect(screen.queryByText('接続エラー')).not.toBeInTheDocument()
     expect(screen.queryByText(connectionError.message)).not.toBeInTheDocument()
+  })
+
+  it('表示ACKの終端ブロック後は旧fallback pollingを再開しない', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ soundUrl: null, soundEnabled: false }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, _callback, options: SubscribeOptions) => {
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    expect(subscribeMock).toHaveBeenCalled()
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+
+    expect(fetchMock.mock.calls.some(([url]) => (
+      String(url).includes('/api/overlay/streamer-1/events')
+    ))).toBe(false)
   })
 
   it('debug=true の時だけ接続問題をデバッグパネルに表示する', async () => {
