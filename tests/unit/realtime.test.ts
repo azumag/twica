@@ -121,6 +121,7 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
       card: CARD_A,
       cards: [CARD_A, CARD_B],
       drawEventIds: ['event-1', 'event-1:2'],
+      historyIds: [historyUuid(1), historyUuid(2)],
       userTwitchUsername: 'viewer',
       rewardId: 'reward-1',
       soundGroupId: 'event-1',

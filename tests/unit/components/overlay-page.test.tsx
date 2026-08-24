@@ -221,6 +221,83 @@ describe('OverlayPage', () => {
     ))).toHaveLength(3)
   })
 
+  it('transportで表示済みの履歴IDを終端ブロック後のfallbackが重複表示しない', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+    sessionStorage.setItem(
+      'twica-overlay-terminal-recovery-v1:streamer-1',
+      String(Date.now()),
+    )
+    const historyId = '00000000-0000-4000-8000-000000000105'
+    const card = {
+      id: 'transport-card',
+      name: 'Transport card',
+      description: null,
+      image_url: null,
+      rarity: 'common',
+    } as unknown as GachaBroadcastPayload['card']
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('/api/overlay/streamer-1/events')) {
+        return {
+          ok: true,
+          json: async () => ({
+            events: [{
+              id: historyId,
+              eventId: 'transport-event',
+              redeemedAt: '2026-08-24T03:00:02.000Z',
+              userTwitchUsername: 'viewer',
+              rewardId: null,
+              card,
+            }],
+            nextCursor: null,
+          }),
+        }
+      }
+      return {
+        ok: true,
+        json: async () => ({ soundUrl: null, soundEnabled: false }),
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    let onGachaResult: ((payload: GachaBroadcastPayload) => unknown) | undefined
+    let reportError: ((error: RealtimeError) => void) | undefined
+    subscribeMock.mockImplementationOnce((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => unknown
+      reportError = options.onError
+      return vi.fn()
+    })
+
+    render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    let acceptedPromise!: Promise<boolean>
+    act(() => {
+      acceptedPromise = onGachaResult?.({
+        type: 'gacha',
+        card,
+        userTwitchUsername: 'viewer',
+        historyIds: [historyId],
+      }) as Promise<boolean>
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await expect(acceptedPromise).resolves.toBe(true)
+
+    await act(async () => {
+      reportError?.(terminalDisplayBlockError)
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    // The fallback request sees the same history row, but the transport ACK
+    // already copied its authoritative ID into seenHistoryIdsRef. Let the
+    // first card finish its short test display window and ensure no second
+    // DOM instance is queued by the emergency polling loop.
+    expect(document.querySelector('[data-overlay-card="true"]')).toBeNull()
+  })
+
   it('表示ACKの終端ブロック後はリロードを一度だけ予約し、失敗時に無限化しない', async () => {
     vi.useFakeTimers()
     sessionStorage.clear()

@@ -44,6 +44,8 @@ export interface GachaBroadcastPayload {
   }>
   /** Stable identities for each card in an N-draw callback, in display order. */
   drawEventIds?: string[]
+  /** Authoritative gacha_history IDs aligned with drawEventIds/cards. */
+  historyIds?: string[]
   userTwitchUsername: string
   rewardId?: string | null
   /** Stable batch key used to suppress duplicate sound across recovery pages. */
@@ -868,6 +870,9 @@ export function subscribeToGachaResults(
         ...(unseenDraws.length > 1 ? { cards: unseenDraws.map((draw) => draw.card) } : {}),
         ...(unseenDraws.length > 1
           ? { drawEventIds: unseenDraws.map((draw) => draw.eventId) }
+          : {}),
+        ...(event.deliveryKind !== 'demo'
+          ? { historyIds: unseenDraws.map((draw) => draw.historyId) }
           : {}),
         userTwitchUsername: event.user.twitchUsername,
         rewardId: event.rewardId ?? null,

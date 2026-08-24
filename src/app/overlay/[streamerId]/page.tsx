@@ -68,6 +68,8 @@ interface GachaResult {
   cards?: Card[];
   userTwitchUsername: string;
   historyId?: string;
+  /** Authoritative history IDs aligned with a transport-backed draw batch. */
+  historyIds?: string[];
   soundGroupId?: string;
   shouldPlaySound?: boolean;
   rewardId?: string | null;
@@ -1323,7 +1325,27 @@ export default function OverlayPage() {
       // processQueue closure (or bypass the lifecycle generation guard).
       processQueueRef.current();
     }
-    return commitPromise;
+    return commitPromise.then((accepted) => {
+      if (accepted) {
+        // The realtime controller intentionally does not move the durable
+        // `(redeemedAt, historyId)` cursor for a socket ACK. Mirror the exact
+        // history rows accepted by the page into the legacy fallback dedupe
+        // set before terminal-block recovery can switch to polling. This
+        // prevents already-painted socket cards from being rendered again
+        // while the cursor still points at the same history page.
+        const acceptedHistoryIds = data.historyIds?.length
+          ? data.historyIds
+          : data.historyId
+            ? [data.historyId]
+            : [];
+        for (const historyId of acceptedHistoryIds) {
+          if (isValidOverlayHistoryId(historyId)) {
+            seenHistoryIdsRef.current.add(historyId);
+          }
+        }
+      }
+      return accepted;
+    });
   }, [acknowledgeDisplayItem, failDisplayBatch, soundSettings.soundRules]);
 
   // refを最新のcallbackで更新（useEffectの依存配列に含めずに最新の関数を参照するため）。
@@ -1814,6 +1836,7 @@ export default function OverlayPage() {
           userTwitchUsername: payload.userTwitchUsername,
           rewardId: payload.rewardId ?? null,
           drawEventIds: payload.drawEventIds,
+          historyIds: payload.historyIds,
           // A reconnect recovery page can contain only part of a very large
           // backlog. Preserve the versioned batch key so later pages do not
           // replay the same N-draw sound even though their cards still render.
