@@ -96,15 +96,6 @@ const RETRY_SUCCESS_ATTEMPTS = TRANSIENT_FAILURES_BEFORE_SUCCESS + 1
 const R2_INTERNAL_ERROR_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)'
 
 function mockTransientFailuresThenSuccess(): void {
-  expect(
-    TRANSIENT_FAILURES_BEFORE_SUCCESS,
-    'リトライ成功fixtureには一時失敗を1回以上含めること',
-  ).toBeGreaterThanOrEqual(1)
-  expect(
-    TRANSIENT_FAILURES_BEFORE_SUCCESS,
-    'リトライ成功fixtureはMAX_RETRIES以内で成功へ到達できること',
-  ).toBeLessThanOrEqual(MAX_RETRIES)
-
   for (
     let transientFailureIndex = 0;
     transientFailureIndex < TRANSIENT_FAILURES_BEFORE_SUCCESS;
@@ -147,6 +138,17 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     vi.unstubAllEnvs()
     // リトライ成功テストは fake timers を使うため、後続テストへ影響を残さない。
     vi.useRealTimers()
+  })
+
+  it('リトライ成功fixtureの一時失敗回数が有効範囲にある', () => {
+    expect(
+      TRANSIENT_FAILURES_BEFORE_SUCCESS,
+      'リトライ成功fixtureには一時失敗を1回以上含めること',
+    ).toBeGreaterThanOrEqual(1)
+    expect(
+      TRANSIENT_FAILURES_BEFORE_SUCCESS,
+      'リトライ成功fixtureはMAX_RETRIES以内で成功へ到達できること',
+    ).toBeLessThanOrEqual(MAX_RETRIES)
   })
 
   it('R2バインディング・環境変数がどちらも無い場合、実際のuploadToR2が投げる恒久エラーを1回の試行で返す', async () => {
