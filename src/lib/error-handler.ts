@@ -2,7 +2,7 @@ import 'server-only'
 
 import { NextResponse } from 'next/server'
 import { logErrorFromLogger } from './sentry/error-handler'
-import { sanitizeLogArg } from './log-sanitizer'
+import { sanitizeErrorText, sanitizeLogArg } from './log-sanitizer'
 import { ERROR_MESSAGES } from './constants'
 
 // Cloudflare Workers ではレスポンス返却後にバックグラウンド Promise が打ち切られるため、
@@ -10,7 +10,7 @@ import { ERROR_MESSAGES } from './constants'
 // logErrorFromLogger を直接使用することで、記録の確実性を担保する。
 //
 // Issue #401: console経路とPlanetScale経路で同一の機密情報マスキングを適用するため、
-// console 出力前に args をサニタイズする。生の error / additionalInfo がそのまま
+// console 出力前に message / args をサニタイズする。生の error / additionalInfo がそのまま
 // Cloudflare Workers logs / wrangler tail に漏れないようにする。
 async function logAndRecordError(
   message: string,
@@ -18,8 +18,9 @@ async function logAndRecordError(
   additionalInfo?: Record<string, unknown>
 ): Promise<void> {
   const args: unknown[] = additionalInfo ? [error, additionalInfo] : [error]
-  console.error(`[ERROR] ${message}`, ...args.map(sanitizeLogArg))
-  await logErrorFromLogger(message, args)
+  const sanitizedMessage = sanitizeErrorText(message)
+  console.error(`[ERROR] ${sanitizedMessage}`, ...args.map(sanitizeLogArg))
+  await logErrorFromLogger(sanitizedMessage, args)
 }
 
 export async function handleApiError(
@@ -76,7 +77,8 @@ function hasHttpStatusContext(errorMessage: string, status: 401 | 503 | 507): bo
 export async function handleBlobError(error: unknown, context: string, additionalInfo?: Record<string, unknown>): Promise<NextResponse> {
   const errorMessage = error instanceof Error ? error.message : String(error)
   const normalizedErrorMessage = errorMessage.toLowerCase()
-  await logAndRecordError(`${context}: ${errorMessage}`, error, additionalInfo)
+  const sanitizedErrorMessage = sanitizeErrorText(errorMessage)
+  await logAndRecordError(`${context}: ${sanitizedErrorMessage}`, error, additionalInfo)
 
   if (normalizedErrorMessage.includes('quota') || normalizedErrorMessage.includes('limit') || hasHttpStatusContext(errorMessage, 507)) {
     return NextResponse.json({ error: 'Storage quota exceeded' }, { status: 507 })
