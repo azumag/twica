@@ -138,7 +138,7 @@ describe("streamer/settings gacha_sound_rules deploy-window fallback (#991)", ()
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.gachaSoundRulesPremiumRequired).toBe(false);
+    expect(body).not.toHaveProperty("gachaSoundRulesPremiumRequired");
     expect(body.gachaSoundRules).toEqual([rule]);
     expect(pg.db.select).toHaveBeenCalledTimes(2);
     expect(pg.updateCalls).toHaveLength(1);
