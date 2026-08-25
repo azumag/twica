@@ -26,10 +26,10 @@ const PARTIAL_SENSITIVE_KEYS = [
 // DrizzleQueryError.params は bind 値（token 等）を保持し得るため、汎用名でも exact match で隠す。
 const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address', 'params']
 
-// drizzle-orm の DrizzleQueryError は bind 値を `params:` 行として message / stack に
-// 埋め込み得る。キー名ベースのマスクだけでは防げないため、文字列経路も共通で検閲する。
-// `\s` は改行も含むため使わず、必ず1行の `params:` だけを置換してstack frameを残す。
-const DRIZZLE_PARAMS_LINE = /^([^\S\r\n]*params:[^\S\r\n]*)[^\r\n]*$/gim
+// drizzle-orm の DrizzleQueryError は bind 値を `params:` 以降へ埋め込み得る。
+// bind 値自体に改行が含まれる場合もあるため、次の stack frame（`    at ...`）
+// または文字列末尾までを一括で置換し、stack frame だけを診断用に残す。
+const DRIZZLE_PARAMS_BLOCK = /^([^\S\r\n]*params:[^\S\r\n]*)(?:[^\r\n]*(?:\r?\n(?![^\S\r\n]+at\s)[^\r\n]*)*)/gim
 
 export function isSensitiveKey(key: string): boolean {
   const lowerKey = key.toLowerCase()
@@ -39,7 +39,7 @@ export function isSensitiveKey(key: string): boolean {
 }
 
 export function sanitizeErrorText(value: string): string {
-  return value.replace(DRIZZLE_PARAMS_LINE, '$1[REDACTED]')
+  return value.replace(DRIZZLE_PARAMS_BLOCK, '$1[REDACTED]')
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
