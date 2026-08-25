@@ -29,12 +29,19 @@ describe('log-sanitizer', () => {
       expect(isSensitiveKey(key)).toBe(true)
     })
 
-    it.each(['userId', 'username', 'email', 'ip_address', 'params'])(
-      'redacts exact match key %s',
-      (key) => {
-        expect(isSensitiveKey(key)).toBe(true)
-      }
-    )
+    it.each([
+      'userId',
+      'username',
+      'email',
+      'ip_address',
+      'params',
+      'parameters',
+      'args',
+      'detail',
+      'where',
+    ])('redacts exact match key %s', (key) => {
+      expect(isSensitiveKey(key)).toBe(true)
+    })
 
     it.each(['broadcasterUserId', 'twitchUsername', 'streamerId', 'safeName', 'queryParams'])(
       'keeps debug-friendly compound key %s',
@@ -127,6 +134,18 @@ describe('log-sanitizer', () => {
       expect(nested.query).toBe('UPDATE users SET twitch_access_token = $1')
       expect(nested.cause).toEqual({ code: '42703' })
     })
+
+    it('stops recursive records at a bounded depth', () => {
+      let nested: Record<string, unknown> = { leaf: 'safe' }
+      for (let i = 0; i < 12; i += 1) nested = { next: nested }
+
+      let cursor: unknown = sanitizeContext({ nested }).nested
+      for (let i = 0; i < 20 && cursor && typeof cursor === 'object'; i += 1) {
+        cursor = (cursor as Record<string, unknown>).next
+      }
+
+      expect(cursor).toBe('[MaxDepth]')
+    })
   })
 
   describe('sanitizeLogArg', () => {
@@ -161,6 +180,51 @@ describe('log-sanitizer', () => {
       expect(out.query).toBe('UPDATE users SET twitch_access_token = $1')
       expect(out.params).toBe('[REDACTED]')
       expect(err.message).toContain('sensitive-token-value')
+    })
+
+    it('redacts postgres.js fields on an enumerable Drizzle cause', () => {
+      const cause = Object.assign(new Error('duplicate key value violates unique constraint'), {
+        code: '23505',
+        detail: 'Key (twitch_access_token)=(sensitive-token-value) already exists.',
+        where: 'SQL statement with sensitive-token-value',
+        parameters: ['sensitive-token-value'],
+        args: ['sensitive-token-value'],
+      })
+      cause.name = 'PostgresError'
+
+      const err = Object.assign(new Error('Failed query: UPDATE users SET twitch_access_token = $1'), {
+        query: 'UPDATE users SET twitch_access_token = $1',
+        params: ['sensitive-token-value'],
+        cause,
+      })
+      err.name = 'DrizzleQueryError'
+
+      const out = sanitizeLogArg(err) as Error & {
+        cause: Error & {
+          code: string
+          detail: unknown
+          where: unknown
+          parameters: unknown
+          args: unknown
+        }
+      }
+
+      expect(out.cause).toBeInstanceOf(Error)
+      expect(out.cause.code).toBe('23505')
+      expect(out.cause.detail).toBe('[REDACTED]')
+      expect(out.cause.where).toBe('[REDACTED]')
+      expect(out.cause.parameters).toBe('[REDACTED]')
+      expect(out.cause.args).toBe('[REDACTED]')
+      expect(JSON.stringify(out.cause)).not.toContain('sensitive-token-value')
+    })
+
+    it('stops circular Error cause chains', () => {
+      const err = new Error('database failure') as Error & { cause?: unknown }
+      err.cause = err
+
+      const out = sanitizeLogArg(err) as Error & { cause: unknown }
+
+      expect(out.cause).toBe('[Circular]')
     })
 
     it.each([null, undefined, 42, 'plain', true])(
