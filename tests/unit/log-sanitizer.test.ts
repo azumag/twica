@@ -55,17 +55,14 @@ describe('log-sanitizer', () => {
       )
     })
 
-    it('preserves stack frames after redacting multiline Drizzle bind params', () => {
+    it('does not trust stack-frame-like text inside bind values as a redaction boundary', () => {
       expect(sanitizeErrorText(
-        'DrizzleQueryError: Failed query: INSERT INTO support_messages (body) VALUES ($1)\n' +
-        'params: first line\nsecond line\n' +
-        '    at query.ts:10:20\n' +
-        '    at route.ts:30:40'
+        'DrizzleQueryError: Failed query: INSERT INTO support_messages (body, token) VALUES ($1, $2)\n' +
+        'params: hello\n    at attacker,sensitive-token-value\n' +
+        '    at query.ts:10:20'
       )).toBe(
-        'DrizzleQueryError: Failed query: INSERT INTO support_messages (body) VALUES ($1)\n' +
-        'params: [REDACTED]\n' +
-        '    at query.ts:10:20\n' +
-        '    at route.ts:30:40'
+        'DrizzleQueryError: Failed query: INSERT INTO support_messages (body, token) VALUES ($1, $2)\n' +
+        'params: [REDACTED]'
       )
     })
   })
@@ -122,7 +119,7 @@ describe('log-sanitizer', () => {
       expect(nested.message).toContain('params: [REDACTED]')
       expect(nested.message).not.toContain('sensitive-token-value')
       expect(nested.stack).toContain('params: [REDACTED]')
-      expect(nested.stack).toContain('at query.ts:1:1')
+      expect(nested.stack).not.toContain('sensitive-token-value')
       expect(nested.params).toBe('[REDACTED]')
       expect(nested.query).toBe('UPDATE users SET twitch_access_token = $1')
       expect(nested.cause).toEqual({ code: '42703' })
@@ -168,7 +165,6 @@ describe('log-sanitizer', () => {
       expect(out.message).toContain('params: [REDACTED]')
       expect(out.message).not.toContain('sensitive-token-value')
       expect(out.stack).toContain('params: [REDACTED]')
-      expect(out.stack).toContain('at query.ts:1:1')
       expect(out.stack).not.toContain('sensitive-token-value')
       expect(out.query).toBe('UPDATE users SET twitch_access_token = $1')
       expect(out.params).toBe('[REDACTED]')
