@@ -23,8 +23,16 @@ const PARTIAL_SENSITIVE_KEYS = [
   'csrf_token', 'xsrf_token',
 ]
 
-// DrizzleQueryError.params は bind 値（token 等）を保持し得るため、汎用名でも exact match で隠す。
-const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address', 'params']
+// Drizzle / postgres.js の error field は bind 値や failing row を保持し得るため、
+// 汎用名でも exact match で隠す。
+const EXACT_SENSITIVE_KEYS = [
+  'userid', 'username', 'email', 'ip_address',
+  'params', 'parameters', 'args', 'detail', 'where',
+]
+
+const MAX_SANITIZE_DEPTH = 8
+const CIRCULAR_MARKER = '[Circular]'
+const MAX_DEPTH_MARKER = '[MaxDepth]'
 
 // drizzle-orm の DrizzleQueryError は bind 値を `params:` 以降へ埋め込み得る。
 // bind 値自体に改行が含まれる場合もあるため、次の stack frame（`    at ...`）
@@ -46,15 +54,64 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
-function sanitizeErrorForLog(error: Error): Error {
+function sanitizeRecord(
+  obj: Record<string, unknown>,
+  depth: number,
+  seen: WeakSet<object>,
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(obj)) {
+    sanitized[key] = isSensitiveKey(key)
+      ? '[REDACTED]'
+      : sanitizeValue(value, depth + 1, seen)
+  }
+  return sanitized
+}
+
+function sanitizeErrorForLogInternal(
+  error: Error,
+  depth: number,
+  seen: WeakSet<object>,
+): Error {
   const sanitized = new Error(sanitizeErrorText(error.message))
   sanitized.name = error.name
   if (error.stack) sanitized.stack = sanitizeErrorText(error.stack)
 
-  // Error の custom enumerable fields（query / params / code 等）も console 展開時に
+  // Error の custom enumerable fields（query / params / cause / code 等）も console 展開時に
   // 見えるため、通常の context と同じキー名ベースのポリシーを適用する。
-  Object.assign(sanitized, sanitizeContext(Object.fromEntries(Object.entries(error))))
+  Object.assign(
+    sanitized,
+    sanitizeRecord(Object.fromEntries(Object.entries(error)), depth, seen),
+  )
   return sanitized
+}
+
+function sanitizeValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') return sanitizeErrorText(value)
+  if (typeof value !== 'object' || value === null) return value
+  if (depth >= MAX_SANITIZE_DEPTH) return MAX_DEPTH_MARKER
+  if (seen.has(value)) return CIRCULAR_MARKER
+
+  seen.add(value)
+  try {
+    if (value instanceof Error) return sanitizeErrorForLogInternal(value, depth, seen)
+    if (Array.isArray(value)) {
+      return value.map(item => sanitizeValue(item, depth + 1, seen))
+    }
+    return sanitizeRecord(value as Record<string, unknown>, depth, seen)
+  } finally {
+    seen.delete(value)
+  }
+}
+
+function sanitizeErrorForLog(error: Error): Error {
+  const seen = new WeakSet<object>()
+  seen.add(error)
+  try {
+    return sanitizeErrorForLogInternal(error, 0, seen)
+  } finally {
+    seen.delete(error)
+  }
 }
 
 /**
@@ -62,28 +119,13 @@ function sanitizeErrorForLog(error: Error): Error {
  * Pure function — input is not mutated.
  */
 export function sanitizeContext(obj: Record<string, unknown>): Record<string, unknown> {
-  const sanitized: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(obj)) {
-    if (isSensitiveKey(key)) {
-      sanitized[key] = '[REDACTED]'
-    } else if (Array.isArray(value)) {
-      sanitized[key] = value.map(item => {
-        if (item instanceof Error) return sanitizeErrorForLog(item)
-        if (isRecord(item)) return sanitizeContext(item)
-        if (typeof item === 'string') return sanitizeErrorText(item)
-        return item
-      })
-    } else if (value instanceof Error) {
-      sanitized[key] = sanitizeErrorForLog(value)
-    } else if (isRecord(value)) {
-      sanitized[key] = sanitizeContext(value)
-    } else if (typeof value === 'string') {
-      sanitized[key] = sanitizeErrorText(value)
-    } else {
-      sanitized[key] = value
-    }
+  const seen = new WeakSet<object>()
+  seen.add(obj)
+  try {
+    return sanitizeRecord(obj, 0, seen)
+  } finally {
+    seen.delete(obj)
   }
-  return sanitized
 }
 
 /**
@@ -98,14 +140,7 @@ export function sanitizeContext(obj: Record<string, unknown>): Record<string, un
  */
 export function sanitizeLogArg(arg: unknown): unknown {
   if (arg instanceof Error) return sanitizeErrorForLog(arg)
-  if (Array.isArray(arg)) {
-    return arg.map(item => {
-      if (item instanceof Error) return sanitizeErrorForLog(item)
-      if (isRecord(item)) return sanitizeContext(item)
-      if (typeof item === 'string') return sanitizeErrorText(item)
-      return item
-    })
-  }
+  if (Array.isArray(arg)) return sanitizeValue(arg, 0, new WeakSet<object>())
   if (isRecord(arg)) return sanitizeContext(arg)
   if (typeof arg === 'string') return sanitizeErrorText(arg)
   return arg
