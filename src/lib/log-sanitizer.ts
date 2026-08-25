@@ -26,11 +26,19 @@ const PARTIAL_SENSITIVE_KEYS = [
 // DrizzleQueryError.params は bind 値（token 等）を保持し得るため、汎用名でも exact match で隠す。
 const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address', 'params']
 
+// drizzle-orm の DrizzleQueryError は bind 値を `params:` 行として message / stack に
+// 埋め込み得る。キー名ベースのマスクだけでは防げないため、文字列経路も共通で検閲する。
+const DRIZZLE_PARAMS_LINE = /^(\s*params:\s*).*$/gim
+
 export function isSensitiveKey(key: string): boolean {
   const lowerKey = key.toLowerCase()
   if (EXACT_SENSITIVE_KEYS.some(k => lowerKey === k)) return true
   if (PARTIAL_SENSITIVE_KEYS.some(k => lowerKey.includes(k))) return true
   return false
+}
+
+export function sanitizeErrorText(value: string): string {
+  return value.replace(DRIZZLE_PARAMS_LINE, '$1[REDACTED]')
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -47,9 +55,15 @@ export function sanitizeContext(obj: Record<string, unknown>): Record<string, un
     if (isSensitiveKey(key)) {
       sanitized[key] = '[REDACTED]'
     } else if (Array.isArray(value)) {
-      sanitized[key] = value.map(item => isRecord(item) ? sanitizeContext(item) : item)
+      sanitized[key] = value.map(item => {
+        if (isRecord(item)) return sanitizeContext(item)
+        if (typeof item === 'string') return sanitizeErrorText(item)
+        return item
+      })
     } else if (isRecord(value)) {
       sanitized[key] = sanitizeContext(value)
+    } else if (typeof value === 'string') {
+      sanitized[key] = sanitizeErrorText(value)
     } else {
       sanitized[key] = value
     }
@@ -57,22 +71,38 @@ export function sanitizeContext(obj: Record<string, unknown>): Record<string, un
   return sanitized
 }
 
+function sanitizeErrorForLog(error: Error): Error {
+  const sanitized = new Error(sanitizeErrorText(error.message))
+  sanitized.name = error.name
+  if (error.stack) sanitized.stack = sanitizeErrorText(error.stack)
+
+  // Error の custom enumerable fields（query / params / code 等）も console 展開時に
+  // 見えるため、通常の context と同じキー名ベースのポリシーを適用する。
+  Object.assign(sanitized, sanitizeContext(Object.fromEntries(Object.entries(error))))
+  return sanitized
+}
+
 /**
  * Sanitize a single log argument for console output.
  * - Plain records are sanitized recursively.
- * - Error instances are passed through (their `.message` / `.stack` are
- *   developer-authored and assumed not to embed secrets).
+ * - Error instances keep their Error shape, but message / stack and enumerable
+ *   fields are sanitized because library-generated errors may embed bind values.
  * - Primitives are passed through.
  *
- * Note: arrays of primitives pass through unchanged; arrays of objects are
- * sanitized so structures like `[{ token: '...' }]` are still masked.
+ * Note: arrays of primitives pass through except string values, which still
+ * receive the error-text redaction used for Drizzle-style `params:` lines.
  */
 export function sanitizeLogArg(arg: unknown): unknown {
-  if (arg instanceof Error) return arg
+  if (arg instanceof Error) return sanitizeErrorForLog(arg)
   if (Array.isArray(arg)) {
-    return arg.map(item => isRecord(item) ? sanitizeContext(item) : item)
+    return arg.map(item => {
+      if (isRecord(item)) return sanitizeContext(item)
+      if (typeof item === 'string') return sanitizeErrorText(item)
+      return item
+    })
   }
   if (isRecord(arg)) return sanitizeContext(arg)
+  if (typeof arg === 'string') return sanitizeErrorText(arg)
   return arg
 }
 
@@ -87,21 +117,21 @@ export function sanitizeLogArg(arg: unknown): unknown {
 export function extractErrorMessage(error: unknown): string {
   if (error && typeof error === 'object') {
     if ('message' in error && typeof (error as { message: unknown }).message === 'string') {
-      return (error as { message: string }).message
+      return sanitizeErrorText((error as { message: string }).message)
     }
     const seen = new WeakSet()
     try {
-      return JSON.stringify(error, (key, value) => {
+      return sanitizeErrorText(JSON.stringify(error, (key, value) => {
         if (key && isSensitiveKey(key)) return '[REDACTED]'
         if (typeof value === 'object' && value !== null) {
           if (seen.has(value)) return '[Circular]'
           seen.add(value)
         }
         return value
-      })
+      }))
     } catch {
       return '[Unserializable object]'
     }
   }
-  return String(error)
+  return sanitizeErrorText(String(error))
 }
