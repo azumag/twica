@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   isSensitiveKey,
   sanitizeContext,
+  sanitizeErrorText,
   sanitizeLogArg,
   extractErrorMessage,
 } from '@/lib/log-sanitizer'
@@ -41,6 +42,32 @@ describe('log-sanitizer', () => {
         expect(isSensitiveKey(key)).toBe(false)
       }
     )
+  })
+
+  describe('sanitizeErrorText', () => {
+    it('redacts multiline Drizzle bind params through the end of a message', () => {
+      expect(sanitizeErrorText(
+        'Failed query: INSERT INTO support_messages (body, token) VALUES ($1, $2)\n' +
+        'params: first line\nsecond line,sensitive-token-value'
+      )).toBe(
+        'Failed query: INSERT INTO support_messages (body, token) VALUES ($1, $2)\n' +
+        'params: [REDACTED]'
+      )
+    })
+
+    it('preserves stack frames after redacting multiline Drizzle bind params', () => {
+      expect(sanitizeErrorText(
+        'DrizzleQueryError: Failed query: INSERT INTO support_messages (body) VALUES ($1)\n' +
+        'params: first line\nsecond line\n' +
+        '    at query.ts:10:20\n' +
+        '    at route.ts:30:40'
+      )).toBe(
+        'DrizzleQueryError: Failed query: INSERT INTO support_messages (body) VALUES ($1)\n' +
+        'params: [REDACTED]\n' +
+        '    at query.ts:10:20\n' +
+        '    at route.ts:30:40'
+      )
+    })
   })
 
   describe('sanitizeContext', () => {
