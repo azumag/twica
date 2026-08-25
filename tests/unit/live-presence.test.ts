@@ -76,6 +76,20 @@ describe("getLiveDirectoryPresence", () => {
     expect(serviceFetch).not.toHaveBeenCalled();
   });
 
+  it("preserves a valid zero bucket instead of treating it as unavailable", async () => {
+    kv.get.mockResolvedValue(JSON.stringify({
+      count: 0,
+      observedAt: "2026-08-21T00:00:00.000Z",
+    }));
+
+    await expect(getLiveDirectoryPresence()).resolves.toEqual({
+      count: 0,
+      observedAt: "2026-08-21T00:00:00.000Z",
+    });
+    expect(serviceFetch).not.toHaveBeenCalled();
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
   it("negative-caches an expected registry outage without reporting every page view", async () => {
     serviceFetch.mockResolvedValue(new Response(null, { status: 503 }));
 
