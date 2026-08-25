@@ -9,8 +9,8 @@
  * Key categories follow OWASP Logging Cheat Sheet recommendations:
  * - PARTIAL_SENSITIVE_KEYS: substring match — always redact when the key
  *   contains one of these tokens (e.g. `twitch_access_token`, `csrf_token`).
- * - EXACT_SENSITIVE_KEYS: exact match only — redact bare PII keys without
- *   masking debug-friendly compound keys (e.g. `userId` is masked but
+ * - EXACT_SENSITIVE_KEYS: exact match only — redact bare sensitive/PII keys
+ *   without masking debug-friendly compound keys (e.g. `userId` is masked but
  *   `broadcasterUserId` / `twitchUsername` are kept for triage).
  */
 
@@ -23,7 +23,8 @@ const PARTIAL_SENSITIVE_KEYS = [
   'csrf_token', 'xsrf_token',
 ]
 
-const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address']
+// DrizzleQueryError.params は bind 値（token 等）を保持し得るため、汎用名でも exact match で隠す。
+const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address', 'params']
 
 export function isSensitiveKey(key: string): boolean {
   const lowerKey = key.toLowerCase()
