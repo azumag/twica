@@ -56,7 +56,7 @@ export function sanitizeErrorText(value: string): string {
   return value.replace(DRIZZLE_PARAMS_TO_END, '$1$2[REDACTED]')
 }
 
-function sanitizeErrorStack(stack: string, name: string, message: string): string {
+export function sanitizeErrorStack(stack: string, name: string, message: string): string {
   // V8 / Node の標準形なら、信頼できる境界は stack 内の見た目ではなく Error.message
   // そのもの。bind 値中に `    at ...` があっても header 全体を exact length で置換し、
   // message の外側にある本物の stack frame だけを保持する。
@@ -117,14 +117,7 @@ function sanitizeValue(value: unknown, depth: number, seen: WeakSet<object>): un
   try {
     if (value instanceof Error) return sanitizeErrorForLogInternal(value, depth, seen)
     if (Array.isArray(value)) {
-      // 既存契約どおり配列は1段だけ処理し、ネスト配列の再帰化は別フォローアップに残す。
-      return value.map(item => {
-        if (item instanceof Error || isRecord(item)) {
-          return sanitizeValue(item, depth + 1, seen)
-        }
-        if (typeof item === 'string') return sanitizeErrorText(item)
-        return item
-      })
+      return value.map(item => sanitizeValue(item, depth + 1, seen))
     }
     return sanitizeRecord(value as Record<string, unknown>, depth, seen)
   } finally {
@@ -163,8 +156,8 @@ export function sanitizeContext(obj: Record<string, unknown>): Record<string, un
  *   fields are sanitized because library-generated errors may embed bind values.
  * - Primitives are passed through.
  *
- * Note: arrays of primitives pass through except string values, which still
- * receive the error-text redaction used for Drizzle-style `params:` lines.
+ * Arrays recurse through the same sanitizer so nested records, errors, strings,
+ * and arrays cannot bypass the key/text redaction policy.
  */
 export function sanitizeLogArg(arg: unknown): unknown {
   if (arg instanceof Error) return sanitizeErrorForLog(arg)
@@ -189,14 +182,15 @@ export function extractErrorMessage(error: unknown): string {
     }
     const seen = new WeakSet()
     try {
-      return sanitizeErrorText(JSON.stringify(error, (key, value) => {
+      return JSON.stringify(error, (key, value) => {
         if (key && isSensitiveKey(key)) return '[REDACTED]'
+        if (typeof value === 'string') return sanitizeErrorText(value)
         if (typeof value === 'object' && value !== null) {
           if (seen.has(value)) return '[Circular]'
           seen.add(value)
         }
         return value
-      }))
+      })
     } catch {
       return '[Unserializable object]'
     }
