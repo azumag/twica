@@ -35,10 +35,11 @@ const MAX_SANITIZE_DEPTH = 8
 const CIRCULAR_MARKER = '[Circular]'
 const MAX_DEPTH_MARKER = '[MaxDepth]'
 
-// drizzle-orm の DrizzleQueryError は bind 値を `params:` 以降へ埋め込み得る。
-// bind 値自体に改行が含まれる場合もあるため、次の stack frame（`    at ...`）
-// または文字列末尾までを一括で置換し、stack frame だけを診断用に残す。
-const DRIZZLE_PARAMS_BLOCK = /^([^\S\r\n]*params:[^\S\r\n]*)(?:[^\r\n]*(?:\r?\n(?![^\S\r\n]+at\s)[^\r\n]*)*)/gim
+// drizzle-orm の DrizzleQueryError.message は `params:` 以降が bind 値の文字列化。
+// bind 値自身に改行や `    at ...` のような stack-frame 風文字列を含められるため、
+// 終端を内容から推測せず `params:` 行から文字列末尾までを決定論的に検閲する。
+// stack 文字列へ適用した場合は診断用 frame も落ちるが、機密値を残すより安全側へ倒す。
+const DRIZZLE_PARAMS_TO_END = /(^|\r?\n)([^\S\r\n]*params:[^\S\r\n]*)[\s\S]*$/i
 
 export function isSensitiveKey(key: string): boolean {
   const lowerKey = key.toLowerCase()
@@ -53,7 +54,7 @@ function isSensitiveErrorKey(key: string): boolean {
 }
 
 export function sanitizeErrorText(value: string): string {
-  return value.replace(DRIZZLE_PARAMS_BLOCK, '$1[REDACTED]')
+  return value.replace(DRIZZLE_PARAMS_TO_END, '$1$2[REDACTED]')
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
