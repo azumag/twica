@@ -8,7 +8,7 @@ const scriptPath = path.join(repoRoot, "scripts/compare-analysis-dashboard-vs-sq
 
 describe("compare-analysis-dashboard-vs-sql CLI", () => {
   it("DASHBOARD_DATABASE_URL が未設定なら DB へ接続せず終了コード2を返す", () => {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       // 旧接続変数が存在しても DASHBOARD_DATABASE_URL へフォールバックしないことを
       // CLI 経路でも固定する。
