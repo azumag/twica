@@ -38,6 +38,7 @@ import 'server-only'
 
 import {
   sanitizeContext,
+  sanitizeErrorStack,
   sanitizeErrorText,
   sanitizeLogArg,
   extractErrorMessage,
@@ -52,7 +53,7 @@ function resolveErrorInfo(error: unknown): { message: string; stack: string | nu
   if (error instanceof Error) {
     return {
       message: sanitizeErrorText(error.message),
-      stack: error.stack ? sanitizeErrorText(error.stack) : null,
+      stack: error.stack ? sanitizeErrorStack(error.stack, error.name, error.message) : null,
       isErrorInstance: true,
     }
   }
@@ -157,10 +158,11 @@ async function persistErrorToDatabase(
     const environment = appUrl.includes('preview') ? 'preview' : 'production'
     const values = {
       error_type: errorType,
-      // DB / error-reporter への最終書き込み境界でも再度検閲し、呼び出し元が
-      // raw Error text を渡しても bind params が message / stack に残らないようにする。
+      // message/context は最終書き込み境界でも再検閲する。stack は Error 境界で
+      // sanitizeErrorStack() 済みで、再度 sanitizeErrorText() すると保持した実frameまで
+      // `params:` 以降として消してしまうため、ここでは長さ制限だけ適用する。
       message: sanitizeErrorText(message).slice(0, MAX_MESSAGE_LENGTH),
-      stack_trace: stackTrace ? sanitizeErrorText(stackTrace).slice(0, MAX_STACK_LENGTH) : null,
+      stack_trace: stackTrace ? stackTrace.slice(0, MAX_STACK_LENGTH) : null,
       // 機密情報（userId, token 等）を除外してから記録
       context: persistedContext(context),
       environment,
@@ -282,7 +284,7 @@ export async function logErrorFromLogger(message: string, args: unknown[]): Prom
         // 最初の Error を採用（原因エラーは通常先頭に渡される）
         if (!errorDetail) {
           errorDetail = sanitizeErrorText(arg.message)
-          stack = arg.stack ? sanitizeErrorText(arg.stack) : null
+          stack = arg.stack ? sanitizeErrorStack(arg.stack, arg.name, arg.message) : null
         }
       } else if (arg && typeof arg === 'object') {
         const obj = arg as Record<string, unknown>
@@ -290,7 +292,9 @@ export async function logErrorFromLogger(message: string, args: unknown[]): Prom
         if ('error' in obj && obj.error != null && !errorDetail) {
           if (obj.error instanceof Error) {
             errorDetail = sanitizeErrorText(obj.error.message)
-            stack = obj.error.stack ? sanitizeErrorText(obj.error.stack) : null
+            stack = obj.error.stack
+              ? sanitizeErrorStack(obj.error.stack, obj.error.name, obj.error.message)
+              : null
           } else {
             errorDetail = extractErrorMessage(obj.error)
           }
