@@ -71,21 +71,34 @@ describe('log-sanitizer', () => {
       })
     })
 
-    it('redacts Drizzle-style bind params nested in a log context', () => {
-      const dbError = Object.assign(new Error('database query failed'), {
-        query: 'UPDATE users SET twitch_access_token = $1',
-        params: ['sensitive-token-value'],
-        cause: { code: '42703' },
-      })
-
-      expect(sanitizeContext({ twitchUserId: 'user-1', error: dbError })).toEqual({
-        twitchUserId: 'user-1',
-        error: {
+    it('preserves a nested Error while redacting its message / stack / params', () => {
+      const dbError = Object.assign(
+        new Error('Failed query: UPDATE users SET twitch_access_token = $1\nparams: sensitive-token-value'),
+        {
           query: 'UPDATE users SET twitch_access_token = $1',
-          params: '[REDACTED]',
+          params: ['sensitive-token-value'],
           cause: { code: '42703' },
         },
-      })
+      )
+      dbError.name = 'DrizzleQueryError'
+      dbError.stack = 'DrizzleQueryError: Failed query: UPDATE users SET twitch_access_token = $1\nparams: sensitive-token-value\n    at query.ts:1:1'
+
+      const sanitized = sanitizeContext({ twitchUserId: 'user-1', error: dbError })
+      const nested = sanitized.error as Error & {
+        query: string
+        params: unknown
+        cause: { code: string }
+      }
+
+      expect(sanitized.twitchUserId).toBe('user-1')
+      expect(nested).toBeInstanceOf(Error)
+      expect(nested.message).toContain('params: [REDACTED]')
+      expect(nested.message).not.toContain('sensitive-token-value')
+      expect(nested.stack).toContain('params: [REDACTED]')
+      expect(nested.stack).toContain('at query.ts:1:1')
+      expect(nested.params).toBe('[REDACTED]')
+      expect(nested.query).toBe('UPDATE users SET twitch_access_token = $1')
+      expect(nested.cause).toEqual({ code: '42703' })
     })
   })
 
@@ -116,6 +129,7 @@ describe('log-sanitizer', () => {
       expect(out.message).toContain('params: [REDACTED]')
       expect(out.message).not.toContain('sensitive-token-value')
       expect(out.stack).toContain('params: [REDACTED]')
+      expect(out.stack).toContain('at query.ts:1:1')
       expect(out.stack).not.toContain('sensitive-token-value')
       expect(out.query).toBe('UPDATE users SET twitch_access_token = $1')
       expect(out.params).toBe('[REDACTED]')
