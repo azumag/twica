@@ -17,8 +17,9 @@ import { sanitizeLogArg } from './log-sanitizer'
  * Without this guard, raw context (OAuth codes, access tokens, cookies, session
  * identifiers, etc.) could leak via `console.log/warn/error`.
  *
- * Error instances pass through untouched: their `.message` / `.stack` are
- * developer-authored strings and are assumed not to contain secrets.
+ * Error instances are also sanitized. Library-generated errors such as
+ * DrizzleQueryError may embed bind params in `.message` / `.stack`, so Error
+ * objects are not treated as inherently safe developer-authored strings.
  */
 export const logger = {
   info: (message: string, ...args: unknown[]) => {
