@@ -46,6 +46,17 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+function sanitizeErrorForLog(error: Error): Error {
+  const sanitized = new Error(sanitizeErrorText(error.message))
+  sanitized.name = error.name
+  if (error.stack) sanitized.stack = sanitizeErrorText(error.stack)
+
+  // Error の custom enumerable fields（query / params / code 等）も console 展開時に
+  // 見えるため、通常の context と同じキー名ベースのポリシーを適用する。
+  Object.assign(sanitized, sanitizeContext(Object.fromEntries(Object.entries(error))))
+  return sanitized
+}
+
 /**
  * Recursively replace sensitive values with `[REDACTED]`.
  * Pure function — input is not mutated.
@@ -57,10 +68,13 @@ export function sanitizeContext(obj: Record<string, unknown>): Record<string, un
       sanitized[key] = '[REDACTED]'
     } else if (Array.isArray(value)) {
       sanitized[key] = value.map(item => {
+        if (item instanceof Error) return sanitizeErrorForLog(item)
         if (isRecord(item)) return sanitizeContext(item)
         if (typeof item === 'string') return sanitizeErrorText(item)
         return item
       })
+    } else if (value instanceof Error) {
+      sanitized[key] = sanitizeErrorForLog(value)
     } else if (isRecord(value)) {
       sanitized[key] = sanitizeContext(value)
     } else if (typeof value === 'string') {
@@ -69,17 +83,6 @@ export function sanitizeContext(obj: Record<string, unknown>): Record<string, un
       sanitized[key] = value
     }
   }
-  return sanitized
-}
-
-function sanitizeErrorForLog(error: Error): Error {
-  const sanitized = new Error(sanitizeErrorText(error.message))
-  sanitized.name = error.name
-  if (error.stack) sanitized.stack = sanitizeErrorText(error.stack)
-
-  // Error の custom enumerable fields（query / params / code 等）も console 展開時に
-  // 見えるため、通常の context と同じキー名ベースのポリシーを適用する。
-  Object.assign(sanitized, sanitizeContext(Object.fromEntries(Object.entries(error))))
   return sanitized
 }
 
@@ -97,6 +100,7 @@ export function sanitizeLogArg(arg: unknown): unknown {
   if (arg instanceof Error) return sanitizeErrorForLog(arg)
   if (Array.isArray(arg)) {
     return arg.map(item => {
+      if (item instanceof Error) return sanitizeErrorForLog(item)
       if (isRecord(item)) return sanitizeContext(item)
       if (typeof item === 'string') return sanitizeErrorText(item)
       return item
