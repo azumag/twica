@@ -28,14 +28,14 @@ describe('log-sanitizer', () => {
       expect(isSensitiveKey(key)).toBe(true)
     })
 
-    it.each(['userId', 'username', 'email', 'ip_address'])(
+    it.each(['userId', 'username', 'email', 'ip_address', 'params'])(
       'redacts exact match key %s',
       (key) => {
         expect(isSensitiveKey(key)).toBe(true)
       }
     )
 
-    it.each(['broadcasterUserId', 'twitchUsername', 'streamerId', 'safeName'])(
+    it.each(['broadcasterUserId', 'twitchUsername', 'streamerId', 'safeName', 'queryParams'])(
       'keeps debug-friendly compound key %s',
       (key) => {
         expect(isSensitiveKey(key)).toBe(false)
@@ -61,6 +61,23 @@ describe('log-sanitizer', () => {
       expect(
         sanitizeContext({ items: [{ password: 'p' }, { name: 'n' }] })
       ).toEqual({ items: [{ password: '[REDACTED]' }, { name: 'n' }] })
+    })
+
+    it('redacts Drizzle-style bind params nested in a log context', () => {
+      const dbError = Object.assign(new Error('database query failed'), {
+        query: 'UPDATE users SET twitch_access_token = $1',
+        params: ['sensitive-token-value'],
+        cause: { code: '42703' },
+      })
+
+      expect(sanitizeContext({ twitchUserId: 'user-1', error: dbError })).toEqual({
+        twitchUserId: 'user-1',
+        error: {
+          query: 'UPDATE users SET twitch_access_token = $1',
+          params: '[REDACTED]',
+          cause: { code: '42703' },
+        },
+      })
     })
   })
 
