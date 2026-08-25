@@ -135,6 +135,25 @@ describe('error-handler', () => {
       expect(response.status).toBe(500);
     });
 
+    it('Drizzle bind paramsをconsole / DB loggerへ渡す前にmessageから検閲する', async () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const error = new Error(
+        'Failed query: SELECT * FROM cards LIMIT 1\nparams: sensitive-token-value'
+      );
+
+      await handleBlobError(error, 'blob context');
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[ERROR] blob context: Failed query: SELECT * FROM cards LIMIT 1\nparams: [REDACTED]',
+        expect.any(Error)
+      );
+      expect(logErrorFromLogger).toHaveBeenCalledWith(
+        'blob context: Failed query: SELECT * FROM cards LIMIT 1\nparams: [REDACTED]',
+        [error]
+      );
+      consoleSpy.mockRestore();
+    });
+
     it('その他のエラーで 500 を返す', async () => {
       const response = await handleBlobError(new Error('unknown blob error'), 'blob');
       expect(response.status).toBe(500);
