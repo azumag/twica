@@ -23,12 +23,13 @@ const PARTIAL_SENSITIVE_KEYS = [
   'csrf_token', 'xsrf_token',
 ]
 
-// Drizzle / postgres.js の error field は bind 値や failing row を保持し得るため、
-// 汎用名でも exact match で隠す。
-const EXACT_SENSITIVE_KEYS = [
-  'userid', 'username', 'email', 'ip_address',
-  'params', 'parameters', 'args', 'detail', 'where',
-]
+// DrizzleQueryError.params は bind 値（token 等）を保持し得るため、汎用名でも exact match で隠す。
+const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address', 'params']
+
+// postgres.js の PostgresError はこれらを own enumerable field として持ち、
+// DETAIL / WHERE や debug bind 情報に行データ・token 等が含まれ得る。
+// 汎用 context の `detail` 等まで消さないよう、Error field を再構築する時だけ適用する。
+const ERROR_EXACT_SENSITIVE_KEYS = ['detail', 'where', 'parameters', 'args']
 
 const MAX_SANITIZE_DEPTH = 8
 const CIRCULAR_MARKER = '[Circular]'
@@ -46,6 +47,11 @@ export function isSensitiveKey(key: string): boolean {
   return false
 }
 
+function isSensitiveErrorKey(key: string): boolean {
+  const lowerKey = key.toLowerCase()
+  return isSensitiveKey(key) || ERROR_EXACT_SENSITIVE_KEYS.includes(lowerKey)
+}
+
 export function sanitizeErrorText(value: string): string {
   return value.replace(DRIZZLE_PARAMS_BLOCK, '$1[REDACTED]')
 }
@@ -58,10 +64,12 @@ function sanitizeRecord(
   obj: Record<string, unknown>,
   depth: number,
   seen: WeakSet<object>,
+  errorFields = false,
 ): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(obj)) {
-    sanitized[key] = isSensitiveKey(key)
+    const sensitive = errorFields ? isSensitiveErrorKey(key) : isSensitiveKey(key)
+    sanitized[key] = sensitive
       ? '[REDACTED]'
       : sanitizeValue(value, depth + 1, seen)
   }
@@ -78,10 +86,10 @@ function sanitizeErrorForLogInternal(
   if (error.stack) sanitized.stack = sanitizeErrorText(error.stack)
 
   // Error の custom enumerable fields（query / params / cause / code 等）も console 展開時に
-  // 見えるため、通常の context と同じキー名ベースのポリシーを適用する。
+  // 見えるため、Error 固有の機密fieldを含むキー名ベースのポリシーを適用する。
   Object.assign(
     sanitized,
-    sanitizeRecord(Object.fromEntries(Object.entries(error)), depth, seen),
+    sanitizeRecord(Object.fromEntries(Object.entries(error)), depth, seen, true),
   )
   return sanitized
 }
