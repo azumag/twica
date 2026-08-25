@@ -38,7 +38,6 @@ const MAX_DEPTH_MARKER = '[MaxDepth]'
 // drizzle-orm の DrizzleQueryError.message は `params:` 以降が bind 値の文字列化。
 // bind 値自身に改行や `    at ...` のような stack-frame 風文字列を含められるため、
 // 終端を内容から推測せず `params:` 行から文字列末尾までを決定論的に検閲する。
-// stack 文字列へ適用した場合は診断用 frame も落ちるが、機密値を残すより安全側へ倒す。
 const DRIZZLE_PARAMS_TO_END = /(^|\r?\n)([^\S\r\n]*params:[^\S\r\n]*)[\s\S]*$/i
 
 export function isSensitiveKey(key: string): boolean {
@@ -55,6 +54,19 @@ function isSensitiveErrorKey(key: string): boolean {
 
 export function sanitizeErrorText(value: string): string {
   return value.replace(DRIZZLE_PARAMS_TO_END, '$1$2[REDACTED]')
+}
+
+function sanitizeErrorStack(stack: string, name: string, message: string): string {
+  // V8 / Node の標準形なら、信頼できる境界は stack 内の見た目ではなく Error.message
+  // そのもの。bind 値中に `    at ...` があっても header 全体を exact length で置換し、
+  // message の外側にある本物の stack frame だけを保持する。
+  const header = `${name}: ${message}`
+  if (stack.startsWith(header)) {
+    return `${name}: ${sanitizeErrorText(message)}${stack.slice(header.length)}`
+  }
+
+  // 非標準 stack は安全な message 境界を特定できないため、診断情報より漏洩防止を優先。
+  return sanitizeErrorText(stack)
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -84,7 +96,7 @@ function sanitizeErrorForLogInternal(
 ): Error {
   const sanitized = new Error(sanitizeErrorText(error.message))
   sanitized.name = error.name
-  if (error.stack) sanitized.stack = sanitizeErrorText(error.stack)
+  if (error.stack) sanitized.stack = sanitizeErrorStack(error.stack, error.name, error.message)
 
   // Error の custom enumerable fields（query / params / cause / code 等）も console 展開時に
   // 見えるため、Error 固有の機密fieldを含むキー名ベースのポリシーを適用する。
