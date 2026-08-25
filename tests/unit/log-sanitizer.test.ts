@@ -87,6 +87,12 @@ describe('log-sanitizer', () => {
       ).toEqual({ items: [{ password: '[REDACTED]' }, { name: 'n' }] })
     })
 
+    it('sanitizes sensitive records inside nested arrays', () => {
+      expect(
+        sanitizeContext({ items: [[{ twitch_access_token: 'secret' }]] })
+      ).toEqual({ items: [[{ twitch_access_token: '[REDACTED]' }]] })
+    })
+
     it('redacts Drizzle-style bind params stored as a context string', () => {
       expect(sanitizeContext({
         error: 'Failed query: UPDATE users SET twitch_access_token = $1\nparams: sensitive-token-value',
@@ -249,6 +255,15 @@ describe('log-sanitizer', () => {
       expect(out).toContain('"code":500')
       expect(out).toContain('[REDACTED]')
       expect(out).not.toContain('secret')
+    })
+
+    it('redacts Drizzle-style params inside JSON fallback string values', () => {
+      const out = extractErrorMessage({
+        code: 500,
+        detail: 'Failed query: UPDATE users SET twitch_access_token = $1\nparams: sensitive-token-value',
+      })
+      expect(out).toContain('params: [REDACTED]')
+      expect(out).not.toContain('sensitive-token-value')
     })
 
     it('handles circular references safely', () => {
