@@ -417,6 +417,39 @@ describe("live indicator on ranking rows (#945)", () => {
     expect(within(rows[0]).queryByText("LIVE")).not.toBeInTheDocument();
   });
 
+  it("does not mark an empty ranking login live when the directory also contains an empty login", () => {
+    const emptyLoginEntry = entry("empty-login-streamer", {
+      twitchLogin: "",
+      displayName: "Empty Login Live",
+      profileImageUrl: "",
+      title: "Empty login stream",
+      viewerCount: 1,
+      startedAt: "2026-08-11T02:00:00Z",
+      thumbnailUrl: "",
+    });
+    const emptyLoginRanking: LiveDirectoryRankingEntry = {
+      identity: {
+        twitchLogin: "",
+        displayName: "Empty Login Ranking",
+        profileImageUrl: "",
+      },
+      cardCount: 1,
+      redemptionCount: 1,
+      totalPoints: 100,
+      rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
+    };
+
+    renderDirectory([emptyLoginEntry], [emptyLoginRanking]);
+    openPointsRanking();
+
+    const rankingLink = screen.getByRole("link", {
+      name: /Empty Login RankingをTwitchで見る/,
+    });
+    expect(rankingLink).not.toHaveTextContent("LIVE");
+    expect(rankingLink).not.toHaveTextContent("現在配信中");
+    expect(rankingLink.querySelector(".ring-red-600")).toBeNull();
+  });
+
   it("does not mark any row live when the live directory is empty", () => {
     renderDirectory([]);
     openPointsRanking();
