@@ -28,7 +28,8 @@ const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address', 'para
 
 // drizzle-orm の DrizzleQueryError は bind 値を `params:` 行として message / stack に
 // 埋め込み得る。キー名ベースのマスクだけでは防げないため、文字列経路も共通で検閲する。
-const DRIZZLE_PARAMS_LINE = /^(\s*params:\s*).*$/gim
+// `\s` は改行も含むため使わず、必ず1行の `params:` だけを置換してstack frameを残す。
+const DRIZZLE_PARAMS_LINE = /^([^\S\r\n]*params:[^\S\r\n]*)[^\r\n]*$/gim
 
 export function isSensitiveKey(key: string): boolean {
   const lowerKey = key.toLowerCase()
