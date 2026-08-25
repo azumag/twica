@@ -1,6 +1,7 @@
 import 'server-only'
 
 import { logger as consoleLogger } from './logger'
+import { sanitizeLogArg } from './log-sanitizer'
 import { logErrorFromLogger } from './sentry/error-handler'
 
 /**
@@ -26,7 +27,9 @@ export const logger = {
   },
   error: (message: string, ...args: unknown[]): void => {
     consoleLogger.error(message, ...args)
-    // logErrorFromLoggerは内部で永続化失敗を捕捉し、呼び出し元へrejectを漏らさない。
-    void logErrorFromLogger(message, args)
+    // console側は共有logger内でサニタイズされる。DB永続化にはraw argsを渡さず、
+    // DrizzleQueryErrorのmessage/stackに含まれ得るbind paramsも同じ境界で落とす。
+    const sanitizedArgs = args.map(sanitizeLogArg)
+    void logErrorFromLogger(message, sanitizedArgs)
   },
 }
