@@ -63,6 +63,14 @@ describe('log-sanitizer', () => {
       ).toEqual({ items: [{ password: '[REDACTED]' }, { name: 'n' }] })
     })
 
+    it('redacts Drizzle-style bind params stored as a context string', () => {
+      expect(sanitizeContext({
+        error: 'Failed query: UPDATE users SET twitch_access_token = $1\nparams: sensitive-token-value',
+      })).toEqual({
+        error: 'Failed query: UPDATE users SET twitch_access_token = $1\nparams: [REDACTED]',
+      })
+    })
+
     it('redacts Drizzle-style bind params nested in a log context', () => {
       const dbError = Object.assign(new Error('database query failed'), {
         query: 'UPDATE users SET twitch_access_token = $1',
@@ -89,9 +97,29 @@ describe('log-sanitizer', () => {
       })
     })
 
-    it('passes Error instances through untouched (preserves stack)', () => {
-      const err = new Error('boom')
-      expect(sanitizeLogArg(err)).toBe(err)
+    it('sanitizes Error message / stack and enumerable params without mutating the original', () => {
+      const err = Object.assign(
+        new Error('Failed query: UPDATE users SET twitch_access_token = $1\nparams: sensitive-token-value'),
+        {
+          query: 'UPDATE users SET twitch_access_token = $1',
+          params: ['sensitive-token-value'],
+        },
+      )
+      err.name = 'DrizzleQueryError'
+      err.stack = 'DrizzleQueryError: Failed query: UPDATE users SET twitch_access_token = $1\nparams: sensitive-token-value\n    at query.ts:1:1'
+
+      const out = sanitizeLogArg(err) as Error & { query: string; params: unknown }
+
+      expect(out).toBeInstanceOf(Error)
+      expect(out).not.toBe(err)
+      expect(out.name).toBe('DrizzleQueryError')
+      expect(out.message).toContain('params: [REDACTED]')
+      expect(out.message).not.toContain('sensitive-token-value')
+      expect(out.stack).toContain('params: [REDACTED]')
+      expect(out.stack).not.toContain('sensitive-token-value')
+      expect(out.query).toBe('UPDATE users SET twitch_access_token = $1')
+      expect(out.params).toBe('[REDACTED]')
+      expect(err.message).toContain('sensitive-token-value')
     })
 
     it.each([null, undefined, 42, 'plain', true])(
@@ -114,6 +142,12 @@ describe('log-sanitizer', () => {
       expect(
         extractErrorMessage({ code: '23505', message: 'duplicate key' })
       ).toBe('duplicate key')
+    })
+
+    it('redacts Drizzle-style params from message fields', () => {
+      expect(extractErrorMessage({
+        message: 'Failed query: UPDATE users SET twitch_access_token = $1\nparams: sensitive-token-value',
+      })).toBe('Failed query: UPDATE users SET twitch_access_token = $1\nparams: [REDACTED]')
     })
 
     it('falls back to JSON.stringify with redacted secrets when message is missing', () => {
