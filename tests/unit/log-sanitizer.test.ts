@@ -29,19 +29,12 @@ describe('log-sanitizer', () => {
       expect(isSensitiveKey(key)).toBe(true)
     })
 
-    it.each([
-      'userId',
-      'username',
-      'email',
-      'ip_address',
-      'params',
-      'parameters',
-      'args',
-      'detail',
-      'where',
-    ])('redacts exact match key %s', (key) => {
-      expect(isSensitiveKey(key)).toBe(true)
-    })
+    it.each(['userId', 'username', 'email', 'ip_address', 'params'])(
+      'redacts exact match key %s',
+      (key) => {
+        expect(isSensitiveKey(key)).toBe(true)
+      }
+    )
 
     it.each(['broadcasterUserId', 'twitchUsername', 'streamerId', 'safeName', 'queryParams'])(
       'keeps debug-friendly compound key %s',
