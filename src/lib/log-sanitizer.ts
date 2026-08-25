@@ -96,7 +96,14 @@ function sanitizeValue(value: unknown, depth: number, seen: WeakSet<object>): un
   try {
     if (value instanceof Error) return sanitizeErrorForLogInternal(value, depth, seen)
     if (Array.isArray(value)) {
-      return value.map(item => sanitizeValue(item, depth + 1, seen))
+      // 既存契約どおり配列は1段だけ処理し、ネスト配列の再帰化は別フォローアップに残す。
+      return value.map(item => {
+        if (item instanceof Error || isRecord(item)) {
+          return sanitizeValue(item, depth + 1, seen)
+        }
+        if (typeof item === 'string') return sanitizeErrorText(item)
+        return item
+      })
     }
     return sanitizeRecord(value as Record<string, unknown>, depth, seen)
   } finally {
