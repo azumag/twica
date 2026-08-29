@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   KVRateLimitStorage,
   checkRateLimit,
-  getRateLimitStorage,
   rateLimits,
   retryAfterSeconds,
   setRateLimitStorage,
