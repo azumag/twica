@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import type { Session } from '@/lib/session'
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -27,7 +28,6 @@ vi.mock('@/lib/twitch/token-manager', async (importOriginal) => {
     ...actual,
     getTwitchAccessToken: vi.fn(),
     hasScope: vi.fn(),
-    twitchTokenErrorReportContext: vi.fn().mockReturnValue(undefined),
   }
 })
 vi.mock('@/lib/error-handler', () => ({
@@ -39,8 +39,6 @@ vi.mock('@/lib/error-handler', () => ({
   ),
   recordApiError: vi.fn().mockResolvedValue(undefined),
 }))
-vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
-vi.mock('@/lib/twitch/app-token', () => ({ fetchTwitchApi: vi.fn() }))
 vi.mock('@/lib/twitch/channel-points-access', () => ({
   getChannelPointsAccessState: vi.fn().mockResolvedValue({
     capability: 'unknown',
@@ -55,11 +53,11 @@ const session = {
   twitchUserId: 'streamer-1',
   twitchUsername: 'streamer',
   twitchDisplayName: 'Streamer',
-  twitchProfileImageUrl: null,
+  twitchProfileImageUrl: '',
   broadcasterType: 'affiliate',
   expiresAt: Date.now() + 10_000,
   version: 1,
-}
+} satisfies Session
 
 describe('GET /api/twitch/channel-point-bootstrap refresh status contract', () => {
   beforeEach(async () => {
@@ -69,7 +67,7 @@ describe('GET /api/twitch/channel-point-bootstrap refresh status contract', () =
     const { checkRateLimit } = await import('@/lib/rate-limit')
     const { hasScope } = await import('@/lib/twitch/token-manager')
 
-    vi.mocked(getSession).mockResolvedValue(session as never)
+    vi.mocked(getSession).mockResolvedValue(session)
     vi.mocked(canUseStreamerFeatures).mockReturnValue(true)
     vi.mocked(checkRateLimit).mockResolvedValue({
       success: true,
@@ -80,9 +78,9 @@ describe('GET /api/twitch/channel-point-bootstrap refresh status contract', () =
     vi.mocked(hasScope).mockResolvedValue(true)
   })
 
-  // Issue #1018: route側の既存テストは permanent 判定を同形mockで供給するため、
-  // ここでは実 isPermanentRefreshFailure を残した partial mock で 400/401 の
-  // ホワイトリストと route の 401 応答契約を一続きに固定する。
+  // Issue #1258: route側の既存テストは permanent 判定と診断helperを同形mockで
+  // 供給するため、ここでは実helperを残したpartial mockで、400/401の
+  // ホワイトリスト・401応答・エラー記録コンテキストを一続きに固定する。
   it.each([400, 401])(
     'REFRESH_FAILED(status=%i, kind=http)は実 helper 経由で401+requiresReauthへ変換する',
     async (refreshStatus) => {
@@ -119,10 +117,58 @@ describe('GET /api/twitch/channel-point-bootstrap refresh status contract', () =
       expect(recordApiError).toHaveBeenCalledWith(
         tokenError,
         'Channel Point Bootstrap API',
-        undefined,
+        {
+          refreshStatus,
+          refreshErrorKind: 'http',
+          refreshRetryable: false,
+        },
       )
       expect(recordChannelPointsApiFailure).toHaveBeenCalledWith('streamer-1', 401)
       expect(handleApiError).not.toHaveBeenCalled()
+    },
+  )
+
+  // 403はWAF/client設定、520は上流一時障害になり得るため、retryable=falseでも
+  // 400/401以外を恒久失効と扱って401+requiresReauthへ広げない。
+  it.each([403, 520])(
+    'REFRESH_FAILED(status=%i, kind=http)は実 helper 経由で500を維持する',
+    async (refreshStatus) => {
+      const {
+        getTwitchAccessToken,
+        isPermanentRefreshFailure,
+        TwitchTokenError,
+      } = await import('@/lib/twitch/token-manager')
+      const { handleApiError, recordApiError } = await import('@/lib/error-handler')
+      const { recordChannelPointsApiFailure } = await import('@/lib/twitch/channel-points-access')
+
+      const tokenError = new TwitchTokenError(
+        'Failed to refresh Twitch access token',
+        'REFRESH_FAILED',
+        undefined,
+        refreshStatus,
+        'http',
+        false,
+      )
+      expect(isPermanentRefreshFailure(tokenError)).toBe(false)
+      vi.mocked(getTwitchAccessToken).mockRejectedValue(tokenError)
+
+      const { GET } = await import('@/app/api/twitch/channel-point-bootstrap/route')
+      const response = await GET(
+        new NextRequest('http://localhost:3000/api/twitch/channel-point-bootstrap'),
+      )
+
+      expect(response.status).toBe(500)
+      expect(handleApiError).toHaveBeenCalledWith(
+        tokenError,
+        'Channel Point Bootstrap API',
+        {
+          refreshStatus,
+          refreshErrorKind: 'http',
+          refreshRetryable: false,
+        },
+      )
+      expect(recordApiError).not.toHaveBeenCalled()
+      expect(recordChannelPointsApiFailure).not.toHaveBeenCalled()
     },
   )
 })
