@@ -154,8 +154,6 @@ describe("rate limit storage 切り替え", () => {
 
   beforeEach(() => {
     kv = makeKv();
-    // テスト間でモジュールレベルのストレージをメモリ実装へ戻す
-    setRateLimitStorage(getRateLimitStorage());
   });
 
   it("KVストレージ設定後はcheckRateLimitがKVを経由してカウントする", async () => {
