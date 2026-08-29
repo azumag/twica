@@ -95,6 +95,22 @@ const TRANSIENT_FAILURES_BEFORE_SUCCESS = 2
 const RETRY_SUCCESS_ATTEMPTS = TRANSIENT_FAILURES_BEFORE_SUCCESS + 1
 const R2_INTERNAL_ERROR_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)'
 
+// fake timers を必要とするテスト基盤の責務を、R2 fixture の準備処理から分離する。
+async function runWithFakeTimers<T>(operation: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers()
+  try {
+    const pending = operation()
+    // pending を先に await すると、fake timer 上のバックオフ用 setTimeout が進まず、
+    // operation が解決しないまま Vitest の testTimeout まで停止し得る。先に登録済みの
+    // timer を全て進めてから、同じ operation の完了を待つ順序を維持する。
+    await vi.runAllTimersAsync()
+    return await pending
+  } finally {
+    // 呼び出し元やテスト成否にかかわらず、この helper が有効化した timer を自ら復元する。
+    vi.useRealTimers()
+  }
+}
+
 function mockTransientFailuresThenSuccess(): void {
   expect(
     TRANSIENT_FAILURES_BEFORE_SUCCESS,
@@ -113,13 +129,6 @@ function mockTransientFailuresThenSuccess(): void {
     sendMock.mockRejectedValueOnce(new Error(R2_INTERNAL_ERROR_MESSAGE))
   }
   sendMock.mockResolvedValueOnce({})
-}
-
-async function runWithFakeTimers<T>(operation: () => Promise<T>): Promise<T> {
-  vi.useFakeTimers()
-  const pending = operation()
-  await vi.runAllTimersAsync()
-  return pending
 }
 
 function expectAllAttemptsUsedConfig(expectedAttempts: number, expectedConfig: Record<string, unknown>): void {
@@ -152,7 +161,8 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
   afterEach(() => {
     // 環境変数はテストごとに vi.stubEnv で設定・削除し、ここで必ず元へ戻す。
     vi.unstubAllEnvs()
-    // リトライ成功テストは fake timers を使うため、後続テストへ影響を残さない。
+    // runWithFakeTimers は自己完結で復元するが、テスト途中の予期しない失敗や将来の
+    // 直接利用でも後続テストへ fake timers を残さないため、suite の安全網も維持する。
     vi.useRealTimers()
   })
 
