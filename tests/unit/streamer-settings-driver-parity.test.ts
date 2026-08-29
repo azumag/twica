@@ -7,7 +7,7 @@
  * 正規化ロジックそのものの網羅的な検証は
  * tests/unit/streamer-settings-api.test.ts に委ねる。
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
@@ -61,7 +61,7 @@ function createDrizzleDbMock(
   let updateIndex = 0;
   let insertIndex = 0;
   let deleteIndex = 0;
-  const selectCalls: Array<{ where?: unknown }> = [];
+  const selectCalls: Array<{ fields: Record<string, unknown>; from?: unknown; where?: unknown; limit?: number }> = [];
   const updateCalls: Array<{ table: unknown; set?: unknown; where?: unknown }> = [];
   const insertCalls: Array<{ table: unknown; values?: unknown; onConflict?: unknown }> = [];
   const deleteCalls: Array<{ table: unknown; where?: unknown }> = [];
@@ -71,7 +71,7 @@ function createDrizzleDbMock(
       const responses = config.selects ?? [{ rows: [] }];
       const response = responses[Math.min(selectIndex, responses.length - 1)];
       selectIndex += 1;
-      const call: { where?: unknown } = {};
+      const call: { fields: Record<string, unknown>; from?: unknown; where?: unknown; limit?: number } = { fields };
       selectCalls.push(call);
       const resolve = () =>
         response.error
@@ -82,12 +82,18 @@ function createDrizzleDbMock(
               )
             );
       const builder: any = {
-        from: vi.fn(() => builder),
+        from: vi.fn((table: unknown) => {
+          call.from = table;
+          return builder;
+        }),
         where: vi.fn((condition: unknown) => {
           call.where = condition;
           return builder;
         }),
-        limit: vi.fn(() => builder),
+        limit: vi.fn((count: number) => {
+          call.limit = count;
+          return builder;
+        }),
         then: (onFulfilled: any, onRejected: any) => resolve().then(onFulfilled, onRejected),
       };
       return builder;
@@ -184,6 +190,10 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     mockGetUserPlan.mockResolvedValue("support" as any);
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("所有権SELECT + UPDATE が正しいテーブル/条件/値で実行される", async () => {
     const pg = createDrizzleDbMock({
       selects: [
@@ -255,6 +265,7 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
   });
 
   it("gacha_sound_rules 列欠落 → legacy fallback で保存し、gachaSoundRulesSkippedDeployWindow を返す", async () => {
+    vi.stubEnv("ALLOWED_SOUND_HOSTS", "sounds.example.test");
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
       updates: [
@@ -274,7 +285,7 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
       postRequest({
         streamerId: "streamer123",
         gachaSoundRules: [
-          { id: "catch-all", url: "https://example.com/all.mp3", enabled: true, label: "A", targetType: "all", rarity: null, rewardId: null, rewardName: null },
+          { id: "catch-all", url: "https://sounds.example.test/all.mp3", enabled: true, label: "A", targetType: "all", rarity: null, rewardId: null, rewardName: null },
         ],
       })
     );
@@ -285,9 +296,77 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     expect(pg.updateCalls).toHaveLength(2);
     // legacy fallback: gacha_sound_rules は含まれないが gacha_sound_url/enabled は含まれる
     expect(pg.updateCalls[1].set).toEqual(
-      expect.objectContaining({ gacha_sound_url: "https://example.com/all.mp3", gacha_sound_enabled: true })
+      expect.objectContaining({ gacha_sound_url: "https://sounds.example.test/all.mp3", gacha_sound_enabled: true })
     );
     expect(pg.updateCalls[1].set).not.toHaveProperty("gacha_sound_rules");
+  });
+
+  it("読取専用の gacha_sound_rules 列が未適用（42703）でも、基本プランの新規ルールを通常保存する", async () => {
+    vi.stubEnv("ALLOWED_SOUND_HOSTS", "sounds.example.test");
+    mockGetUserPlan.mockResolvedValue("basic" as any);
+    const pg = createDrizzleDbMock({
+      selects: [
+        {
+          rows: [
+            { id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null },
+          ],
+        },
+        {
+          error: {
+            code: "42703",
+            message: 'column "gacha_sound_rules" of relation "streamers" does not exist',
+          },
+        },
+      ],
+      updates: [{ rows: [] }],
+    });
+    primePgDb(pg);
+
+    const rule = {
+      id: "catch-all",
+      url: "https://sounds.example.test/all.mp3",
+      enabled: true,
+      label: "default",
+      targetType: "all",
+      rarity: null,
+      rewardId: null,
+      rewardName: null,
+    };
+    const { POST } = await loadRoute();
+    const response = await POST(postRequest({ streamerId: "streamer123", gachaSoundRules: [rule] }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body).not.toHaveProperty("gachaSoundRulesPremiumRequired");
+    expect(body.gachaSoundRules).toEqual([rule]);
+    expect(pg.selectCalls).toHaveLength(2);
+    expect(pg.selectCalls[0]).toEqual(
+      expect.objectContaining({
+        from: streamersTable,
+        where: and(eq(streamersTable.id, "streamer123"), eq(streamersTable.twitch_user_id, "streamer123")),
+        limit: 1,
+      })
+    );
+    // 42703 は basic プランの既存ルール取得だけで発生する。書込側の列欠落は
+    // 直前の legacy fallback ケースが別途検証している。
+    expect(pg.selectCalls[1]).toEqual({
+      fields: { gacha_sound_rules: streamersTable.gacha_sound_rules },
+      from: streamersTable,
+      where: eq(streamersTable.id, "streamer123"),
+      limit: 1,
+    });
+    expect(pg.updateCalls).toEqual([
+      expect.objectContaining({
+        table: streamersTable,
+        set: expect.objectContaining({
+          gacha_sound_rules: [rule],
+          gacha_sound_url: rule.url,
+          gacha_sound_enabled: true,
+        }),
+        where: eq(streamersTable.id, "streamer123"),
+      }),
+    ]);
   });
 
   it("publish_live_status/publish_stats 列欠落 → 2キーまとめて剥がし、liveDirectorySettingsSkippedDeployWindow を返す", async () => {
