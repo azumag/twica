@@ -417,16 +417,12 @@ describe("live indicator on ranking rows (#945)", () => {
     expect(within(rows[0]).queryByText("LIVE")).not.toBeInTheDocument();
   });
 
-  it("does not mark an empty ranking login live when the directory also contains an empty login", () => {
+  it("does not match empty logins while still marking a normal matching login live", () => {
+    // #1130の空login照合回帰: 空値同士は一致させず、通常のlogin照合は維持する。
     const emptyLoginEntry = entry("empty-login-streamer", {
       twitchLogin: "",
-      displayName: "Empty Login Live",
-      profileImageUrl: "",
-      title: "Empty login stream",
-      viewerCount: 1,
-      startedAt: "2026-08-11T02:00:00Z",
-      thumbnailUrl: "",
     });
+    const normalLoginEntry = entry("normal-login-streamer");
     const emptyLoginRanking: LiveDirectoryRankingEntry = {
       identity: {
         twitchLogin: "",
@@ -438,8 +434,22 @@ describe("live indicator on ranking rows (#945)", () => {
       totalPoints: 100,
       rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
     };
+    const normalLoginRanking: LiveDirectoryRankingEntry = {
+      identity: {
+        twitchLogin: normalLoginEntry.twitchLogin,
+        displayName: normalLoginEntry.displayName,
+        profileImageUrl: normalLoginEntry.profileImageUrl,
+      },
+      cardCount: 2,
+      redemptionCount: 2,
+      totalPoints: 200,
+      rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
+    };
 
-    renderDirectory([emptyLoginEntry], [emptyLoginRanking]);
+    renderDirectory(
+      [emptyLoginEntry, normalLoginEntry],
+      [emptyLoginRanking, normalLoginRanking],
+    );
     openPointsRanking();
 
     const rankingLink = screen.getByRole("link", {
@@ -448,6 +458,12 @@ describe("live indicator on ranking rows (#945)", () => {
     expect(rankingLink).not.toHaveTextContent("LIVE");
     expect(rankingLink).not.toHaveTextContent("現在配信中");
     expect(rankingLink.querySelector(".ring-red-600")).toBeNull();
+
+    const normalRankingLink = screen.getByRole("link", {
+      name: /normal-login-streamerをTwitchで見る/,
+    });
+    expect(normalRankingLink).toHaveTextContent("LIVE");
+    expect(normalRankingLink).toHaveTextContent("現在配信中");
   });
 
   it("does not mark any row live when the live directory is empty", () => {
