@@ -1,0 +1,124 @@
+name: One-off fix PR 1200 presence copy
+
+on:
+  push:
+    branches:
+      - codex/issue-1199-live-presence-display
+
+permissions:
+  contents: write
+
+jobs:
+  patch-copy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/issue-1199-live-presence-display
+          fetch-depth: 0
+
+      - name: Scope presence copy to authenticated overlays
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              "messages/ja.json": [
+                  (
+                      "現在配信中チャネル数（overlay接続ベースの推定・下限）：約{count}件",
+                      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：約{count}件",
+                      1,
+                  ),
+                  (
+                      "現在配信中チャネル数（overlay接続ベースの推定・下限）：5件未満",
+                      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：5件未満",
+                      1,
+                  ),
+                  (
+                      "現在配信中チャネル数（overlay接続ベースの推定・下限）：不明",
+                      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：不明",
+                      1,
+                  ),
+                  (
+                      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした概算で、既存のOBS URLは再コピーが必要です。",
+                      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした下限推定で、直下の配信中一覧（Twitch APIベース）の件数とは一致しません。既存のOBS URLは再コピーが必要です。",
+                      1,
+                  ),
+              ],
+              "messages/en.json": [
+                  (
+                      "Estimated live channels (overlay-connected lower bound): about {count}",
+                      "Live channels observed through authenticated overlays (lower-bound estimate): about {count}",
+                      1,
+                  ),
+                  (
+                      "Estimated live channels (overlay-connected lower bound): fewer than 5",
+                      "Live channels observed through authenticated overlays (lower-bound estimate): fewer than 5",
+                      1,
+                  ),
+                  (
+                      "Estimated live channels (overlay-connected lower bound): unknown",
+                      "Live channels observed through authenticated overlays (lower-bound estimate): unknown",
+                      1,
+                  ),
+                  (
+                      "Approximation from connections using a newly copied authenticated overlay URL generated in settings; existing OBS URLs must be copied again.",
+                      "This lower-bound estimate only uses connections from newly copied authenticated overlay URLs issued in settings and does not match the Twitch API-based live directory count below. Existing OBS URLs must be copied again.",
+                      1,
+                  ),
+              ],
+              "tests/unit/live-page.test.tsx": [
+                  (
+                      "現在配信中チャネル数（overlay接続ベースの推定・下限）：約{count}件",
+                      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：約{count}件",
+                      1,
+                  ),
+                  (
+                      "現在配信中チャネル数（overlay接続ベースの推定・下限）：5件未満",
+                      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：5件未満",
+                      2,
+                  ),
+                  (
+                      "現在配信中チャネル数（overlay接続ベースの推定・下限）：不明",
+                      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：不明",
+                      2,
+                  ),
+                  (
+                      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした概算で、既存のOBS URLは再コピーが必要です。",
+                      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした下限推定で、直下の配信中一覧（Twitch APIベース）の件数とは一致しません。既存のOBS URLは再コピーが必要です。",
+                      1,
+                  ),
+                  (
+                      "現在配信中チャネル数（overlay接続ベースの推定・下限）：約5件",
+                      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：約5件",
+                      1,
+                  ),
+                  (
+                      "    expect(screen.getByTestId(\"live-presence-estimate\")).toHaveTextContent(\n      \"設定画面のプレビューは含まれません\",\n    );",
+                      "    expect(screen.getByTestId(\"live-presence-estimate\")).toHaveTextContent(\n      \"直下の配信中一覧（Twitch APIベース）の件数とは一致しません\",\n    );\n    expect(screen.getByTestId(\"live-presence-estimate\")).toHaveTextContent(\n      \"設定画面のプレビューは含まれません\",\n    );",
+                      1,
+                  ),
+              ],
+          }
+
+          for filename, changes in replacements.items():
+              path = Path(filename)
+              text = path.read_text(encoding="utf-8")
+              for old, new, expected in changes:
+                  actual = text.count(old)
+                  if actual != expected:
+                      raise SystemExit(
+                          f"{filename}: expected {expected} occurrence(s), found {actual}: {old}"
+                      )
+                  text = text.replace(old, new)
+              path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Commit patched copy and remove one-off workflow
+        run: |
+          rm .github/workflows/fix-pr-1200-presence-copy.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add messages/en.json messages/ja.json tests/unit/live-page.test.tsx .github/workflows/fix-pr-1200-presence-copy.yml
+          git commit -m "fix(live): overlay由来の推定であることを明確化"
+          git push origin HEAD:codex/issue-1199-live-presence-display
