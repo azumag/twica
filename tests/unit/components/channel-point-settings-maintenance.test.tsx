@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider";
@@ -14,6 +14,28 @@ vi.mock("@/lib/logger");
 // テスト。
 
 type FetchMock = ReturnType<typeof vi.fn>;
+
+// Issue #1019: authorization_revoked の回帰（バナー内の再連携CTAと、再認証後に
+// EventSub を登録し直す案内を同時に表示すること）を固定する共通bootstrap応答。
+// 同じ失効状態を各ケースで個別に記述すると、再認証失敗時などの検証が別状態を
+// 前提にしてしまうため、ここへ集約する。
+const AUTHORIZATION_REVOKED_BOOTSTRAP = {
+  hasRequiredScope: true,
+  rewards: [{ id: "reward-1", title: "Reward1", cost: 100, is_enabled: true }],
+  subscriptions: [
+    {
+      id: "sub-1",
+      status: "authorization_revoked",
+      type: "channel.channel_points_custom_reward_redemption.add",
+      condition: { broadcaster_user_id: "user-1", reward_id: "reward-1" },
+      transport: { callback: "https://example.com/api/twitch/eventsub" },
+    },
+  ],
+  additionalRewards: [],
+  eventSubStatus: "error",
+  raidEventSubStatus: "active",
+  raidGiftDrawCount: 0,
+};
 
 function mockFetch(overrides: {
   rewards?: unknown[];
@@ -221,56 +243,28 @@ describe("ChannelPointSettings maintenance integration", () => {
     expect(saveButton).toHaveAttribute("title", "メンテナンス中は操作できません");
   });
 
-  it("authorization_revoked のサブスクリプションがあるとき、バナー内に再連携ボタンを表示する（Issue #1019）", async () => {
+  it("authorization_revoked バナー内に再連携CTAとEventSub再登録案内を表示する（Issue #1019）", async () => {
     fetchMock = mockFetch({
-      bootstrapBody: {
-        hasRequiredScope: true,
-        rewards: [{ id: "reward-1", title: "Reward1", cost: 100, is_enabled: true }],
-        subscriptions: [
-          {
-            id: "sub-1",
-            status: "authorization_revoked",
-            type: "channel.channel_points_custom_reward_redemption.add",
-            condition: { broadcaster_user_id: "user-1", reward_id: "reward-1" },
-            transport: { callback: "https://example.com/api/twitch/eventsub" },
-          },
-        ],
-        additionalRewards: [],
-        eventSubStatus: "error",
-        raidEventSubStatus: "active",
-        raidGiftDrawCount: 0,
-      },
+      bootstrapBody: AUTHORIZATION_REVOKED_BOOTSTRAP,
     });
     vi.stubGlobal("fetch", fetchMock);
     renderComponent({ mode: "off" }, { currentRewardId: "reward-1", currentRewardName: "Reward1" });
 
-    // バナー本文が表示される
-    expect(await screen.findByText("認証が取り消されました")).toBeInTheDocument();
-    // 同一バナー内に再連携CTAが存在する（従来はボタン無しだった）
-    const button = await screen.findByRole("button", { name: "チャネルポイント連携を有効化" });
+    const bannerTitle = await screen.findByText("認証が取り消されました");
+    const banner = bannerTitle.closest("div");
+    expect(banner).not.toBeNull();
+
+    // #1019 の回帰対象は、案内とCTAのどちらかだけではなく同じ失効バナー内で復旧手順が完結すること。
+    const revokedBanner = within(banner as HTMLElement);
+    expect(revokedBanner.getByText("そのうえで「保存 & EventSub登録」ボタンで登録し直してください")).toBeInTheDocument();
+    const button = revokedBanner.getByRole("button", { name: "チャネルポイント連携を有効化" });
     expect(button).toBeInTheDocument();
     expect(button).not.toBeDisabled();
   });
 
   it("authorization_revoked バナー内の再連携ボタンは maintenance 中は disable される（Issue #1019）", async () => {
     fetchMock = mockFetch({
-      bootstrapBody: {
-        hasRequiredScope: true,
-        rewards: [{ id: "reward-1", title: "Reward1", cost: 100, is_enabled: true }],
-        subscriptions: [
-          {
-            id: "sub-1",
-            status: "authorization_revoked",
-            type: "channel.channel_points_custom_reward_redemption.add",
-            condition: { broadcaster_user_id: "user-1", reward_id: "reward-1" },
-            transport: { callback: "https://example.com/api/twitch/eventsub" },
-          },
-        ],
-        additionalRewards: [],
-        eventSubStatus: "error",
-        raidEventSubStatus: "active",
-        raidGiftDrawCount: 0,
-      },
+      bootstrapBody: AUTHORIZATION_REVOKED_BOOTSTRAP,
     });
     vi.stubGlobal("fetch", fetchMock);
     renderComponent({ mode: "read-only" }, { currentRewardId: "reward-1", currentRewardName: "Reward1" });
@@ -286,23 +280,7 @@ describe("ChannelPointSettings maintenance integration", () => {
     // Issue #1019 必須指摘対応で追加された確認ダイアログを通過させる
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchMock = mockFetch({
-      bootstrapBody: {
-        hasRequiredScope: true,
-        rewards: [{ id: "reward-1", title: "Reward1", cost: 100, is_enabled: true }],
-        subscriptions: [
-          {
-            id: "sub-1",
-            status: "authorization_revoked",
-            type: "channel.channel_points_custom_reward_redemption.add",
-            condition: { broadcaster_user_id: "user-1", reward_id: "reward-1" },
-            transport: { callback: "https://example.com/api/twitch/eventsub" },
-          },
-        ],
-        additionalRewards: [],
-        eventSubStatus: "error",
-        raidEventSubStatus: "active",
-        raidGiftDrawCount: 0,
-      },
+      bootstrapBody: AUTHORIZATION_REVOKED_BOOTSTRAP,
       reauthBody: { loginUrl: "https://evil.example.com/phish", state: "state-1234" },
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -325,23 +303,7 @@ describe("ChannelPointSettings maintenance integration", () => {
     const originalHref = window.location.href;
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     fetchMock = mockFetch({
-      bootstrapBody: {
-        hasRequiredScope: true,
-        rewards: [{ id: "reward-1", title: "Reward1", cost: 100, is_enabled: true }],
-        subscriptions: [
-          {
-            id: "sub-1",
-            status: "authorization_revoked",
-            type: "channel.channel_points_custom_reward_redemption.add",
-            condition: { broadcaster_user_id: "user-1", reward_id: "reward-1" },
-            transport: { callback: "https://example.com/api/twitch/eventsub" },
-          },
-        ],
-        additionalRewards: [],
-        eventSubStatus: "error",
-        raidEventSubStatus: "active",
-        raidGiftDrawCount: 0,
-      },
+      bootstrapBody: AUTHORIZATION_REVOKED_BOOTSTRAP,
       reauthBody: { loginUrl: "https://id.twitch.tv/oauth2/authorize?client_id=xxx&state=zzz", state: "zzz" },
     });
     vi.stubGlobal("fetch", fetchMock);
