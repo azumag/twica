@@ -29,14 +29,20 @@ import 'server-only'
  * - db/retry.ts → logger.server.ts → 本moduleの循環を初期評価時に作らない
  *
  * 機密情報マスキング:
- * - sanitizeContext / extractErrorMessage は log-sanitizer.ts に集約
+ * - sanitizeContext / extractErrorMessage / sanitizeErrorText は log-sanitizer.ts に集約
  * - 同じユーティリティを logger.ts も使用しており、console 経路 / DB 記録経路で
  *   同一ポリシーが適用される（Issue #401）
  * - Sensitive-info masking lives in log-sanitizer so both the console pipeline
  *   (logger) and the database pipeline use the same redaction policy.
  */
 
-import { sanitizeContext, extractErrorMessage } from '@/lib/log-sanitizer'
+import {
+  sanitizeContext,
+  sanitizeErrorStack,
+  sanitizeErrorText,
+  sanitizeLogArg,
+  extractErrorMessage,
+} from '@/lib/log-sanitizer'
 import type { Json } from '@/types/database'
 
 /**
@@ -45,7 +51,11 @@ import type { Json } from '@/types/database'
  */
 function resolveErrorInfo(error: unknown): { message: string; stack: string | null; isErrorInstance: boolean } {
   if (error instanceof Error) {
-    return { message: error.message, stack: error.stack || null, isErrorInstance: true }
+    return {
+      message: sanitizeErrorText(error.message),
+      stack: error.stack ? sanitizeErrorStack(error.stack, error.name, error.message) : null,
+      isErrorInstance: true,
+    }
   }
   return { message: extractErrorMessage(error), stack: null, isErrorInstance: false }
 }
@@ -116,7 +126,10 @@ async function logErrorToDatabase(
       // （ガードが無い＝保険が効かないだけで、通常運用では #711 の不変条件により
       // そもそも再帰は起きないため実害は無い）。
       reentryGuardPromise = undefined
-      console.warn('[Error Tracking] Failed to load reentry guard, proceeding without it:', err)
+      console.warn(
+        '[Error Tracking] Failed to load reentry guard, proceeding without it:',
+        sanitizeLogArg(err),
+      )
       return persistErrorToDatabase(errorType, message, stackTrace, context)
     }
 
@@ -124,7 +137,7 @@ async function logErrorToDatabase(
       // 真の再帰を検知。DBへは書き込まず console.warn のみ（この関数自身を
       // 再度呼ぶと同じ分岐を無限に辿るため、ここは再帰防止の末端でなければ
       // ならない）。
-      console.warn('[Error Tracking] Reentrant error logging suppressed:', message)
+      console.warn('[Error Tracking] Reentrant error logging suppressed:', sanitizeErrorText(message))
       return
     }
     return guard.run(true, () => persistErrorToDatabase(errorType, message, stackTrace, context))
@@ -145,8 +158,11 @@ async function persistErrorToDatabase(
     const environment = appUrl.includes('preview') ? 'preview' : 'production'
     const values = {
       error_type: errorType,
-      message: message.slice(0, MAX_MESSAGE_LENGTH),
-      stack_trace: stackTrace?.slice(0, MAX_STACK_LENGTH) || null,
+      // message/context は最終書き込み境界でも再検閲する。stack は Error 境界で
+      // sanitizeErrorStack() 済みで、再度 sanitizeErrorText() すると保持した実frameまで
+      // `params:` 以降として消してしまうため、ここでは長さ制限だけ適用する。
+      message: sanitizeErrorText(message).slice(0, MAX_MESSAGE_LENGTH),
+      stack_trace: stackTrace ? stackTrace.slice(0, MAX_STACK_LENGTH) : null,
       // 機密情報（userId, token 等）を除外してから記録
       context: persistedContext(context),
       environment,
@@ -188,7 +204,7 @@ async function persistErrorToDatabase(
     // 二重の防御になる）。同一isolate内の別requestで同じエラーが並行発生しても
     // 観測データを誤って捨てないことは AsyncLocalStorage ガード側で担保される
     // （上記コメント参照）。
-    console.warn('[Error Tracking] Failed to persist error:', err)
+    console.warn('[Error Tracking] Failed to persist error:', sanitizeLogArg(err))
   }
 }
 
@@ -267,25 +283,27 @@ export async function logErrorFromLogger(message: string, args: unknown[]): Prom
       if (arg instanceof Error) {
         // 最初の Error を採用（原因エラーは通常先頭に渡される）
         if (!errorDetail) {
-          errorDetail = arg.message
-          stack = arg.stack || null
+          errorDetail = sanitizeErrorText(arg.message)
+          stack = arg.stack ? sanitizeErrorStack(arg.stack, arg.name, arg.message) : null
         }
       } else if (arg && typeof arg === 'object') {
         const obj = arg as Record<string, unknown>
         // { error: ... } パターンからエラー詳細を抽出
         if ('error' in obj && obj.error != null && !errorDetail) {
           if (obj.error instanceof Error) {
-            errorDetail = (obj.error as Error).message
-            stack = (obj.error as Error).stack || null
+            errorDetail = sanitizeErrorText(obj.error.message)
+            stack = obj.error.stack
+              ? sanitizeErrorStack(obj.error.stack, obj.error.name, obj.error.message)
+              : null
           } else {
             errorDetail = extractErrorMessage(obj.error)
           }
         } else if (!errorDetail && 'message' in obj && typeof obj.message === 'string' && obj.message !== '') {
           // error プロパティがない場合、オブジェクト自体が PostgrestError 等のエラーと判定
           // See: https://github.com/azumag/twica/issues/262
-          errorDetail = obj.message
+          errorDetail = sanitizeErrorText(obj.message)
         }
-        Object.assign(context, obj)
+        Object.assign(context, sanitizeContext(obj))
       }
     }
 

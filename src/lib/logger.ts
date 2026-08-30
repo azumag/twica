@@ -1,4 +1,4 @@
-import { sanitizeLogArg } from './log-sanitizer'
+import { sanitizeErrorText, sanitizeLogArg } from './log-sanitizer'
 
 /**
  * ブラウザ・サーバー両方から利用できるconsole logger。
@@ -9,25 +9,27 @@ import { sanitizeLogArg } from './log-sanitizer'
  * `logger.server`はこのloggerへconsole出力を委譲するので、マスキング規則と出力形式は
  * 両runtimeで共通のまま維持される。
  *
- * 全consoleログ経路で同一の機密情報マスキングを適用するため、出力前にargsを
+ * 全consoleログ経路で同一の機密情報マスキングを適用するため、messageとargsを
  * サニタイズする。
  *
- * Sanitize args before they reach console.* so that Cloudflare Workers logs,
- * browser consoles, and server consoles all follow the same redaction policy.
- * Without this guard, raw context (OAuth codes, access tokens, cookies, session
- * identifiers, etc.) could leak via `console.log/warn/error`.
+ * Sanitize message and args before they reach console.* so that Cloudflare
+ * Workers logs, browser consoles, and server consoles all follow the same
+ * redaction policy. Without this guard, raw context (OAuth codes, access
+ * tokens, cookies, session identifiers, Drizzle bind params, etc.) could leak
+ * via `console.log/warn/error`.
  *
- * Error instances pass through untouched: their `.message` / `.stack` are
- * developer-authored strings and are assumed not to contain secrets.
+ * Error instances are also sanitized. Library-generated errors such as
+ * DrizzleQueryError may embed bind params in `.message` / `.stack`, so Error
+ * objects are not treated as inherently safe developer-authored strings.
  */
 export const logger = {
   info: (message: string, ...args: unknown[]) => {
-    console.log(`[INFO] ${message}`, ...args.map(sanitizeLogArg))
+    console.log(`[INFO] ${sanitizeErrorText(message)}`, ...args.map(sanitizeLogArg))
   },
   warn: (message: string, ...args: unknown[]) => {
-    console.warn(`[WARN] ${message}`, ...args.map(sanitizeLogArg))
+    console.warn(`[WARN] ${sanitizeErrorText(message)}`, ...args.map(sanitizeLogArg))
   },
   error: (message: string, ...args: unknown[]): void => {
-    console.error(`[ERROR] ${message}`, ...args.map(sanitizeLogArg))
+    console.error(`[ERROR] ${sanitizeErrorText(message)}`, ...args.map(sanitizeLogArg))
   },
 }
