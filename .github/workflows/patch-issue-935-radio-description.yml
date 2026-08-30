@@ -1,0 +1,70 @@
+name: One-off patch issue 935 radio descriptions
+
+on:
+  push:
+    branches:
+      - codex/issue-935-radio-description
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/issue-935-radio-description
+          fetch-depth: 0
+
+      - name: Associate dynamic help with each radio
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          component = Path("src/components/LiveDirectory.tsx")
+          text = component.read_text(encoding="utf-8")
+
+          old = '''              {view !== "cardCount" && (\n                <fieldset aria-describedby="live-directory-ranking-period-help">\n                  <legend className="mb-2 text-sm font-medium text-gray-300">'''
+          new = '''              {view !== "cardCount" && (\n                <fieldset>\n                  <legend className="mb-2 text-sm font-medium text-gray-300">'''
+          if text.count(old) != 1:
+              raise SystemExit("fieldset replacement target was not unique")
+          text = text.replace(old, new)
+
+          old = '''                  <div className="inline-flex overflow-hidden rounded-lg border border-gray-600 bg-gray-800 p-1">\n                    {RANKING_PERIODS.map((period) => ('''
+          new = '''                  {/* The help text changes with the selected period. Link it to\n                      each focused radio instead of only the fieldset so screen readers\n                      announce the current description consistently. */}\n                  <div className="inline-flex overflow-hidden rounded-lg border border-gray-600 bg-gray-800 p-1">\n                    {RANKING_PERIODS.map((period) => ('''
+          if text.count(old) != 1:
+              raise SystemExit("radio explanation insertion target was not unique")
+          text = text.replace(old, new)
+
+          old = '''                          checked={rankingPeriod === period.id}\n                          onChange={() => setRankingPeriod(period.id)}\n                          className="peer sr-only"'''
+          new = '''                          checked={rankingPeriod === period.id}\n                          onChange={() => setRankingPeriod(period.id)}\n                          aria-describedby="live-directory-ranking-period-help"\n                          className="peer sr-only"'''
+          if text.count(old) != 1:
+              raise SystemExit("radio aria-describedby target was not unique")
+          text = text.replace(old, new)
+
+          old = '''                        <span className="flex min-h-11 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">'''
+          new = '''                        {/* Keep both dimensions at least 44px even if a future\n                            locale introduces a very short period label. */}\n                        <span className="flex min-h-11 min-w-11 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">'''
+          if text.count(old) != 1:
+              raise SystemExit("touch target replacement target was not unique")
+          text = text.replace(old, new)
+          component.write_text(text, encoding="utf-8")
+
+          test = Path("tests/unit/components/live-directory.test.tsx")
+          text = test.read_text(encoding="utf-8")
+          old = '''    expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();\n    expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();\n    expect(screen.getByText("345ポイント")).toBeInTheDocument();\n    expect(\n      screen.getByText("直近7日間に記録されたカード引き換えを集計しています。"),\n    ).toBeInTheDocument();'''
+          new = '''    expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();\n    const last7DaysRadio = screen.getByRole("radio", { name: "直近7日間" });\n    const allTimeRadio = screen.getByRole("radio", { name: "全期間" });\n    const periodHelp = screen.getByText(\n      "直近7日間に記録されたカード引き換えを集計しています。",\n    );\n\n    expect(last7DaysRadio).toBeChecked();\n    expect(last7DaysRadio).toHaveAttribute(\n      "aria-describedby",\n      "live-directory-ranking-period-help",\n    );\n    expect(allTimeRadio).toHaveAttribute(\n      "aria-describedby",\n      "live-directory-ranking-period-help",\n    );\n    expect(periodHelp).toHaveAttribute("id", "live-directory-ranking-period-help");\n    expect(last7DaysRadio.closest("label")?.querySelector("span")).toHaveClass(\n      "min-h-11",\n      "min-w-11",\n    );\n    expect(screen.getByText("345ポイント")).toBeInTheDocument();'''
+          if text.count(old) != 1:
+              raise SystemExit("test replacement target was not unique")
+          text = text.replace(old, new)
+          test.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Commit patch and remove one-off workflow
+        run: |
+          rm .github/workflows/patch-issue-935-radio-description.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/components/LiveDirectory.tsx tests/unit/components/live-directory.test.tsx .github/workflows/patch-issue-935-radio-description.yml
+          git commit -m "fix(a11y): 期間説明を各radioへ関連付ける\n\nRefs #935"
+          git push origin HEAD:codex/issue-935-radio-description
