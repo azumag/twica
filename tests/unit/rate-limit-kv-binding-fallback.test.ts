@@ -35,6 +35,8 @@ describe("rate-limit KV binding fallback", () => {
     },
     {
       label: "binding 解決が reject する",
+      // 現行 getKvBinding() は内部例外を null に畳むため、通常は到達しない防御的fixture。
+      // helper が将来 throw する実装へ変わっても rate-limit 側の fail-open を維持する契約を固定する。
       arrange: () => mocks.getKvBinding.mockRejectedValue(new Error("RATE_LIMIT_KV unavailable")),
     },
   ])("getKvBinding が $label 場合もメモリへfallbackしてカウントを継続する", async ({ arrange }) => {
