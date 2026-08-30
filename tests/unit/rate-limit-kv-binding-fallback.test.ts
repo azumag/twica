@@ -18,6 +18,8 @@ describe("rate-limit KV binding fallback", () => {
     // 各ケースを fresh module で開始して初回 binding 解決の契約だけを検証する。
     vi.resetModules();
     mocks.getKvBinding.mockReset();
+    // MemoryRateLimitStorage の module-scope cleanup interval を、
+    // vi.resetModules() ごとに実時間タイマーとして積み残さないため fake timers を使う。
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
   });
