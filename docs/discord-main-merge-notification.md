@@ -17,6 +17,7 @@ Webhook URL は認証情報として扱い、リポジトリ、Issue、PR、CI �
 - `main` 向け PR がマージされたときに通知します。
 - `preview → main` の昇格 PR では、PR 本文の最初の `## このリリースで変わること` セクションを通知本文として利用します。
 - fork からの PR では PR 本文を通知本文として採用せず、サニタイズした PR タイトルへフォールバックします。
+- fork 判定は、信頼された base context の `GITHUB_REPOSITORY` と PR head 由来の `HEAD_REPOSITORY` を比較して行います。`HEAD_REPOSITORY` は非信頼入力として扱い、信頼側の基準値には使用しません。
 - `pull_request_target` を使うため、Secret を読む処理は信頼された base 側の workflow だけで実行します。PR head の checkout や実行をこの workflow に追加しないでください。
 
 ## 運用確認
