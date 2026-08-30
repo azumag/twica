@@ -641,6 +641,7 @@
     },
     "buttons": {
       "createReward": "TwiCa用チャネルポイント引き換えを作成（100ポイント）",
+      "creating": "作成中...",
       "saveEventSub": "保存 & EventSub登録",
       "disconnect": "設定解除",
       "disconnecting": "解除中...",
