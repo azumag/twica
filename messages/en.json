@@ -641,6 +641,7 @@
     },
     "buttons": {
       "createReward": "Create TwiCa Redemption (100 points)",
+      "creating": "Creating...",
       "saveEventSub": "Save & Register EventSub",
       "disconnect": "Disconnect",
       "disconnecting": "Disconnecting...",
