@@ -102,3 +102,6 @@ analysis/dist
 # and must never be tracked — they break Cloudflare Workers Builds' submodule clone.
 .codex-*/
 twica-maker-*/
+
+# Unit-test scratch repositories. May survive SIGKILL; never commit them.
+.tmp-i18n-static-keys-*/
