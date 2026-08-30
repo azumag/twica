@@ -130,6 +130,7 @@ describe('error-handler', () => {
       'avatar-401.jpg',
       'asset-507-preview.png',
       'https://example.com/assets/503.png',
+      'PUT http://a/503 failed',
     ])('文脈のない数値をHTTP statusとして誤分類しない: %s', async (errorMessage) => {
       const response = await handleBlobError(new Error(errorMessage), 'blob');
       expect(response.status).toBe(500);
