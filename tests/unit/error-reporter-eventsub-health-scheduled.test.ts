@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../workers/error-reporter/src/index';
 
+// workers/error-reporter/src/index.ts の scheduled() が説明する通り、EventSub health は
+// reporter 用 binding/secrets の設定ミスに巻き込まれず動く必要がある。このテストは、
+// その監視を既存 reporter の環境変数バリデーションより前に実行する順序契約を固定する。
 describe('error-reporter scheduled EventSub health wiring', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
