@@ -28,18 +28,23 @@ export interface KVNamespaceLike {
 }
 
 /**
+ * このヘルパーはアプリ共通の RATE_LIMIT_KV namespace 専用。呼び出し側が binding 名を
+ * 差し替える用途はなく、任意文字列を受け取る API にすると wrangler.toml の固定契約を
+ * 不要に汎用化してしまうため、binding 名はここで一元管理する。
+ */
+const KV_BINDING_NAME = "RATE_LIMIT_KV"
+
+/**
  * Workers 環境から KV バインディングを取得する。Workers 以外では null。
  * getCloudflareContext はビルド時に @opennextjs/cloudflare を解決しないよう
  * 動的 import する（r2-client.ts と同じ理由）。
  */
-export async function getKvBinding(
-  bindingName = "RATE_LIMIT_KV",
-): Promise<KVNamespaceLike | null> {
+export async function getKvBinding(): Promise<KVNamespaceLike | null> {
   try {
     const { getCloudflareContext } = await import("@opennextjs/cloudflare")
     const ctx = await getCloudflareContext({ async: true })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const binding = (ctx.env as any)[bindingName] as KVNamespaceLike | undefined
+    const binding = (ctx.env as any)[KV_BINDING_NAME] as KVNamespaceLike | undefined
     return binding ?? null
   } catch {
     return null
