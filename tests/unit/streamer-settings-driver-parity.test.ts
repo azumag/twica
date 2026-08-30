@@ -348,7 +348,7 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
         limit: 1,
       })
     );
-    // 42703 は basic プランの既存ルール取得だけで発生する。書込側の列欠落は
+    // 本ケースでは SELECT 側だけに 42703 を注入する。書込側の列欠落は
     // 直前の legacy fallback ケースが別途検証している。
     expect(pg.selectCalls[1]).toEqual({
       fields: { gacha_sound_rules: streamersTable.gacha_sound_rules },
