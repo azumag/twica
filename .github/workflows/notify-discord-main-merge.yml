@@ -71,7 +71,6 @@ jobs:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       # PR/repository-derived strings stay in env and are consumed as data by Python/jq;
       # do not interpolate them directly into the shell script.
       # Re-declare the runner default so the fork check's trusted base input is explicit.
@@ -88,6 +87,8 @@ jobs:
     steps:
       - name: Validate webhook configuration
         shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
             echo "::error::Repository secret DISCORD_WEBHOOK_URL is not configured."
@@ -96,6 +97,8 @@ jobs:
 
       - name: Send merge notification to Discord
         shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           # Promotion PRs keep the human-facing release summary in the first
           # `## このリリースで変わること` section. Reuse that text directly
