@@ -8,6 +8,10 @@ const { subscribeMock, streamerIdRef } = vi.hoisted(() => ({
   streamerIdRef: { current: 'streamer-1' },
 }))
 
+// metadata callback が無応答のままでも表示が維持されることを見る観測窓。
+// 現行の 1.5 秒 probe timeout を少し越えて待つ意図を数値直書きから分離する。
+const METADATA_STALL_OBSERVATION_MS = 1_600
+
 vi.mock('next/navigation', () => ({
   useParams: () => ({ streamerId: streamerIdRef.current }),
 }))
@@ -136,7 +140,7 @@ describe('OverlayPage metadata fallback', () => {
 
     // load/errorは無応答のままでも、metadata期限に依存せず表示が維持される。
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1600)
+      await vi.advanceTimersByTimeAsync(METADATA_STALL_OBSERVATION_MS)
     })
     expect(cardRoot).toHaveClass('opacity-100')
     expect(acknowledged).toBe(true)
