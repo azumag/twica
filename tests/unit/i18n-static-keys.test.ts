@@ -3,10 +3,15 @@ import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+const STATIC_KEY_CHECK_TIMEOUT_MS = 10_000;
+const STATIC_KEY_CHECK_MAX_BUFFER_BYTES = 1024 * 1024;
+
 function runStaticKeyCheck(cwd = process.cwd()) {
   const result = spawnSync(process.execPath, ["scripts/check-i18n-static-keys.mjs"], {
     cwd,
     encoding: "utf8",
+    timeout: STATIC_KEY_CHECK_TIMEOUT_MS,
+    maxBuffer: STATIC_KEY_CHECK_MAX_BUFFER_BYTES,
   });
   const details = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
   return { result, details };
