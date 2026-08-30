@@ -104,6 +104,7 @@ describe('db cutover layer invariants', () => {
         tablesOk: true,
         checks: [
           expect.objectContaining({
+            code: 'FIXTURE_CHECK',
             tier: TIER_B,
             violationCount: 0,
             samples: [],
