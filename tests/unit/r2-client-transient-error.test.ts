@@ -41,8 +41,8 @@ describe('isTransientR2Error', () => {
   // 一時障害として扱わないことを両方の代表値で固定する。
   it.each(['500', '503'])(
     'キー名にたまたま%sを含む恒久エラーは一時障害として扱わない (Issue #984)',
-    (status) => {
-      expect(isTransientR2Error(`AccessDenied: key 'photo-${status}.png' is not permitted`)).toBe(false)
+    (numericToken) => {
+      expect(isTransientR2Error(`AccessDenied: key 'photo-${numericToken}.png' is not permitted`)).toBe(false)
     },
   )
 
