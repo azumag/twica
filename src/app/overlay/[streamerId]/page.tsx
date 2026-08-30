@@ -988,29 +988,13 @@ export default function OverlayPage() {
     }
     isDisplayingRef.current = true;
 
-    // Issue #999: 以前はここから先で想定外の例外が発生すると
-    // isDisplayingRef が true のまま戻らず、以後 enqueueResult() の
-    // `if (!isDisplayingRef.current)` ガードが常に偽になって、後続の
-    // 実イベントを受信してもキューに積まれるだけで二度と画面へ反映
-    // されなくなっていた（1件でも例外が起きるとそのOBSセッションが
-    // 恒久的に沈黙する）。
+    // Issue #999: 非同期タイマー内の例外でも表示ロックを解放できるよう、
+    // 各コールバックを runProtected で個別に保護する。setTimeout の
+    // コールバックは、それを登録した外側 try/catch の動的スコープ外で
+    // 実行されるため、外側だけを保護しても例外は捕捉できない。
     //
-    // レビュー指摘#1対応: 単純に外側をtry/catchで囲むだけでは不十分
-    // だった。下の3段のsetTimeoutコールバック（表示後の音声再生・次
-    // カードへの再帰呼び出しを含む）は、それをスケジュールした関数の
-    // try/catchの動的スコープに含まれない別タスクとして実行される
-    // ため、その中で投げた例外は外側のcatchに伝播せず、同じロック
-    // 固着バグが再現してしまう。runProtectedで各コールバック本体を
-    // 個別に保護し、どの区間で例外が起きても同じ経路（handleQueueError）
-    // でロックを解放できるようにする。
-    //
-    // レビュー指摘#2対応: catch側の再継続を同期的な直接呼び出しに
-    // すると、同一の例外がキュー内の全アイテムで連続して起きた場合に
-    // 同期呼び出しの連鎖でコールスタックを消費し続け、RangeError
-    // (Maximum call stack size exceeded)で落ちてロックが解放されない
-    // まま終わりうる（実測で約8000件連続でスタックオーバーフローを
-    // 確認済み）。setTimeout(..., 0)でマクロタスクへ逃がし、各
-    // イテレーションで確実にコールスタックを巻き戻す。
+    // エラー後の再開は setTimeout(..., 0) で次のマクロタスクへ送る。
+    // 同期再帰にすると連続失敗時にコールスタックを消費し続けるため。
     const handleQueueError = (error: unknown) => {
       logger.error("Error processing gacha display queue:", error);
       addDebugLogRef.current(
