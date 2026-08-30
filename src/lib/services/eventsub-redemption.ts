@@ -621,13 +621,15 @@ export async function postRedemptionNotify(
   // 加え、この「想定外throw」時にもreportErrorが機能する。
   for (const [i, result] of results.entries()) {
     if (result.status === 'rejected') {
-      const label = i === 0 ? 'broadcast' : 'chatAnnouncement';
-      logger.warn(`[postRedemptionNotify] ${i === 0 ? 'broadcast' : 'chat announcement'} failed`, {
+      const { contextLabel, displayLabel } = i === 0
+        ? { contextLabel: 'broadcast', displayLabel: 'broadcast' }
+        : { contextLabel: 'chatAnnouncement', displayLabel: 'chat announcement' };
+      logger.warn(`[postRedemptionNotify] ${displayLabel} failed`, {
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         streamerId: data.streamer.id,
       });
       await reportNotificationError(result.reason, {
-        context: `eventsub:postRedemptionNotify:${label}`,
+        context: `eventsub:postRedemptionNotify:${contextLabel}`,
         streamerId: data.streamer.id,
         broadcasterTwitchUserId: data.broadcasterTwitchUserId,
       });
