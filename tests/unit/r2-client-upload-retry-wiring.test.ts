@@ -106,6 +106,13 @@ function mockTransientFailuresThenSuccess(): void {
   sendMock.mockResolvedValueOnce({})
 }
 
+async function runWithFakeTimers<T>(operation: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers()
+  const pending = operation()
+  await vi.runAllTimersAsync()
+  return pending
+}
+
 function expectAllAttemptsUsedConfig(expectedAttempts: number, expectedConfig: Record<string, unknown>): void {
   // PR #1030で呼び出し側にあった送信試行数のassertをこのヘルパへ集約したため、
   // 「期待回数だけ試行し、その各試行で期待configを使う」までを1つの契約として検証する。
@@ -184,11 +191,9 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     mockTransientFailuresThenSuccess()
 
     const { uploadToR2WithRetry } = await import('@/lib/r2-client')
-    vi.useFakeTimers()
-    const pending = uploadToR2WithRetry('f.png', Buffer.from('img'), 'image/png', MAX_RETRIES)
-    // 保留中の指数バックオフを実時間で待たずに全て進める
-    await vi.runAllTimersAsync()
-    const result = await pending
+    const result = await runWithFakeTimers(() =>
+      uploadToR2WithRetry('f.png', Buffer.from('img'), 'image/png', MAX_RETRIES),
+    )
 
     expect(result).toEqual({ url: 'https://example.test/f.png' })
     // 全試行の入力が常に正しいことを確認する（リトライのたびに引数やbufferを
@@ -210,10 +215,9 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     mockTransientFailuresThenSuccess()
 
     const { uploadSoundToR2WithRetry } = await import('@/lib/r2-client')
-    vi.useFakeTimers()
-    const pending = uploadSoundToR2WithRetry('f.mp3', Buffer.from('snd'), 'audio/mpeg', MAX_RETRIES)
-    await vi.runAllTimersAsync()
-    const result = await pending
+    const result = await runWithFakeTimers(() =>
+      uploadSoundToR2WithRetry('f.mp3', Buffer.from('snd'), 'audio/mpeg', MAX_RETRIES),
+    )
 
     expect(result).toEqual({ url: 'https://sounds.example.test/f.mp3' })
     for (const call of sendMock.mock.calls) {
