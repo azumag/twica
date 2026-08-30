@@ -98,7 +98,7 @@ describe("LiveDirectorySettings", () => {
         })
       );
     });
-    expect(screen.getByText("配信中ページへの掲載設定をオンにしました")).toBeInTheDocument();
+    expect(await screen.findByText("配信中ページへの掲載設定をオンにしました")).toBeInTheDocument();
     expect(getRankingToggle()).not.toBeChecked();
     expect(getRankingToggle()).toBeEnabled();
   });
