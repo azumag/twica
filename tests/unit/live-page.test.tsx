@@ -92,9 +92,13 @@ const translations: Record<string, Record<string, string>> = {
     consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
     rankingNotice:
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
-    liveCount: "現在配信中チャネル数（overlay接続ベースの推定・下限）：約{count}件",
+    liveCount: "認証済みoverlayで確認できた配信中チャネル数（下限推定）：約{count}件",
+    liveCountFew:
+      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：5件未満",
+    liveCountUnavailable:
+      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：不明",
     liveCountNote:
-      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした概算で、既存のOBS URLは再コピーが必要です。5件単位に切り捨てています。polling-onlyは含まれず、残留タブや切断遅延は含まれるため実際の配信数とは差が生じます。設定画面のプレビューは含まれません。反映に最大17分程度かかる場合があります。",
+      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした下限推定で、直下の配信中一覧（Twitch APIベース）の件数とは一致しません。既存のOBS URLは再コピーが必要です。5件単位に切り捨てています。polling-onlyは含まれず、残留タブや切断遅延は含まれるため実際の配信数とは差が生じます。設定画面のプレビューは含まれません。反映に最大17分程度かかる場合があります。",
   },
 };
 
@@ -195,7 +199,7 @@ describe("LivePage", () => {
     expect(screen.getByTestId("dashboard-nav")).toHaveAttribute("data-supporter", "false");
   });
 
-  it("shows the estimate only when the presence snapshot is positive", async () => {
+  it("shows the estimate when the presence snapshot is available", async () => {
     mocks.getSession.mockResolvedValue(null);
     mocks.getLiveDirectoryPresence.mockResolvedValue({
       count: 5,
@@ -205,17 +209,20 @@ describe("LivePage", () => {
     render(await LivePage());
 
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "現在配信中チャネル数（overlay接続ベースの推定・下限）：約5件",
+      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：約5件",
     );
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
       "polling-onlyは含まれず、残留タブや切断遅延は含まれる",
+    );
+    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
+      "直下の配信中一覧（Twitch APIベース）の件数とは一致しません",
     );
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
       "設定画面のプレビューは含まれません",
     );
   });
 
-  it("hides a zero overlay estimate that could contradict polling-only live entries", async () => {
+  it("shows a bucketed zero estimate as fewer than five", async () => {
     mocks.getSession.mockResolvedValue(null);
     mocks.getLiveDirectoryPresence.mockResolvedValue({
       count: 0,
@@ -224,8 +231,20 @@ describe("LivePage", () => {
 
     render(await LivePage());
 
-    expect(screen.queryByTestId("live-presence-estimate")).not.toBeInTheDocument();
+    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
+      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：5件未満",
+    );
     expect(screen.getByTestId("live-directory")).toHaveTextContent("entries:1");
+  });
+
+  it("shows the estimate as unknown when the presence snapshot is unavailable", async () => {
+    mocks.getSession.mockResolvedValue(null);
+
+    render(await LivePage());
+
+    expect(screen.getByTestId("live-presence-unavailable")).toHaveTextContent(
+      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：不明",
+    );
   });
 
   it("builds localized metadata from the livePage namespace", async () => {

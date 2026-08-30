@@ -60,12 +60,18 @@ export default async function LivePage() {
         <div className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
           <p>{t("consentNotice")}</p>
           <p className="mt-1">{t("rankingNotice")}</p>
-          {presence && presence.count > 0 ? (
+          {presence ? (
             <p className="mt-1" data-testid="live-presence-estimate">
-              {t("liveCount", { count: presence.count })}
+              {presence.count === 0
+                ? t("liveCountFew")
+                : t("liveCount", { count: presence.count })}
               <span className="ml-1 text-gray-500">{t("liveCountNote")}</span>
             </p>
-          ) : null}
+          ) : (
+            <p className="mt-1" data-testid="live-presence-unavailable">
+              {t("liveCountUnavailable")}
+            </p>
+          )}
         </div>
       </div>
 
