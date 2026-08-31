@@ -1074,6 +1074,9 @@ export class GachaService {
               // 最終drawのduplicate RPC自身が全履歴からoutboxを冪等再構成済み。
               return err('Duplicate event')
             }
+            // 初回COMMIT成功・応答消失では、メモリ上のpreviousCardIdだけが
+            // COMMIT済み履歴より1枚古い。次drawの反復抑制もDB正本へ再同期する。
+            previousCardId = await this.getLatestCardIdForStreamer(streamerId)
             index = completedDrawCount - 1
             continue
           }
