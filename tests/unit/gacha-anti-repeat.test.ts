@@ -39,9 +39,10 @@ describe('selectWeightedCardMinimizingRepeat', () => {
       { id: 'b', drop_rate: 0.75 },
     ]
 
-    mockSecureRandomUnit(0.1)
+    const firstRandom = mockSecureRandomUnit(0.1)
     expect(selectWeightedCardMinimizingRepeat(cards, null)?.id).toBe('a')
 
+    firstRandom.mockRestore()
     mockSecureRandomUnit(0.8)
     expect(selectWeightedCardMinimizingRepeat(cards, 'missing')?.id).toBe('b')
   })
