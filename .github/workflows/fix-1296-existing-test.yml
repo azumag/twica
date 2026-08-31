@@ -1,0 +1,50 @@
+name: Fix Issue 1296 existing unit test
+
+on:
+  push:
+    branches:
+      - fix/1296-anti-repeat-gacha
+    paths:
+      - .github/workflows/fix-1296-existing-test.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/1296-anti-repeat-gacha
+          fetch-depth: 0
+
+      - name: Update old history-read expectation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/unit/gacha-service.test.ts')
+          text = path.read_text()
+          replacements = {
+              "it('単発メイン報酬では完了履歴クエリを増やさない', async () => {":
+                  "it('単発メイン報酬では直近カード履歴を1回だけ確認する', async () => {",
+              "expect(fixture.tableCursors.has('gacha_history')).toBe(false)":
+                  "expect(fixture.tableCursors.get('gacha_history')).toBe(1)",
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match for {old!r}, found {count}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
+      - name: Remove one-shot workflow and commit
+        run: |
+          rm .github/workflows/fix-1296-existing-test.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/unit/gacha-service.test.ts .github/workflows/fix-1296-existing-test.yml
+          git commit -m "test(gacha): 単発の直近履歴参照を期待値へ反映" -m "Refs #1296"
+          git push origin HEAD:fix/1296-anti-repeat-gacha
