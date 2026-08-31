@@ -1756,8 +1756,8 @@ describe('OverlayPage', () => {
     // when the reveal callback fails. Recovery must settle it explicitly rather
     // than leaving the 4.5s watchdog to decide after the card has been removed.
     await expect(failedDelivery).resolves.toBe(false)
-    // Sound setup is presentation-only. The card already started, so an error
-    // must not erase the business event immediately.
+    // ACK=false allows realtime to retry this draw, so the failed visual must
+    // not remain for a full display window and then appear again on redelivery.
     expect(screen.getByText('TimerThrow')).toBeInTheDocument()
 
     act(() => {
@@ -1769,10 +1769,10 @@ describe('OverlayPage', () => {
     })
     expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()
 
-    // Recovery preserves the configured two-second display window, then uses
-    // the existing 500ms inter-card gap before advancing the queued card.
+    // Recovery hides the failed card immediately and keeps only the existing
+    // 500ms inter-card gap before advancing the locally queued next card.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2_500)
+      await vi.advanceTimersByTimeAsync(501)
     })
     expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
     expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()

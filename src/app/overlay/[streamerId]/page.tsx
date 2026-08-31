@@ -1073,9 +1073,10 @@ export default function OverlayPage() {
           clearTimeout(animationTimeoutRef.current);
           animationTimeoutRef.current = null;
         }
-        // This recovery path cannot reach the normal fallback/commit chain;
-        // the queue-level invariant above has already rejected its transport ACK.
-        scheduleQueueRecovery(true);
+        // The transport ACK is already false, so do not keep a failed visual
+        // presentation on screen for a full window before realtime retries it.
+        // Advance promptly to keep ACK semantics and viewer-visible behavior aligned.
+        scheduleQueueRecovery(false);
       }
       // If the normal display-window timer is already armed, leave it alone.
 
