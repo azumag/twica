@@ -1067,6 +1067,11 @@ export default function OverlayPage() {
           clearTimeout(animationTimeoutRef.current);
           animationTimeoutRef.current = null;
         }
+        // This recovery path cannot reach the normal fallback/commit chain.
+        // Settle the transport ACK explicitly before the bounded visual recovery;
+        // otherwise a short display duration can unmount the card first and let
+        // the later watchdog fail an already-advanced queue item implicitly.
+        settleDisplayCommit(next.displayInstanceId, false);
         scheduleQueueRecovery(true);
       }
       // If the normal display-window timer is already armed, leave it alone.

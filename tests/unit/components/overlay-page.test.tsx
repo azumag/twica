@@ -1699,6 +1699,7 @@ describe('OverlayPage', () => {
   // 「setTimeoutコールバックの中で起きた例外」を確実に再現する。
   it('setTimeoutでスケジュールされる表示チェーン内の例外でもロックが残らない(Issue #999レビュー指摘#1回帰)', async () => {
     vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ soundUrl: 'https://example.com/gacha.mp3', soundEnabled: true }),
@@ -1729,12 +1730,19 @@ describe('OverlayPage', () => {
       throw new Error('diagnostic logger failed')
     })
 
+    let failedDelivery: Promise<boolean> | undefined
     act(() => {
-      onGachaResult?.({
+      failedDelivery = onGachaResult?.({
         type: 'gacha',
-        card: { id: 'card-timer-throw', name: 'TimerThrow', description: null, image_url: null, rarity: 'rare' },
+        card: {
+          id: 'card-timer-throw',
+          name: 'TimerThrow',
+          description: null,
+          image_url: 'https://example.com/pending-card.png',
+          rarity: 'rare',
+        },
         userTwitchUsername: 'Viewer',
-      })
+      }) as unknown as Promise<boolean>
     })
 
     // 100ms後の1段目のsetTimeoutコールバック内でplayGachaSoundが呼ばれ、
@@ -1744,6 +1752,10 @@ describe('OverlayPage', () => {
     })
     expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
     expect(loggerErrorSpy).toHaveBeenCalled()
+    // The image is intentionally left pending, so the display ACK is still open
+    // when the reveal callback fails. Recovery must settle it explicitly rather
+    // than leaving the 4.5s watchdog to decide after the card has been removed.
+    await expect(failedDelivery).resolves.toBe(false)
     // Sound setup is presentation-only. The card already started, so an error
     // must not erase the business event immediately.
     expect(screen.getByText('TimerThrow')).toBeInTheDocument()
@@ -1757,10 +1769,10 @@ describe('OverlayPage', () => {
     })
     expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()
 
-    // Recovery preserves the configured six-second display window, then uses
+    // Recovery preserves the configured two-second display window, then uses
     // the existing 500ms inter-card gap before advancing the queued card.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(6_500)
+      await vi.advanceTimersByTimeAsync(2_500)
     })
     expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
     expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
