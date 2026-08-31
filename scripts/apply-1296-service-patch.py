@@ -1,0 +1,189 @@
+from pathlib import Path
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f'{label}: expected exactly one match, found {count}')
+    return text.replace(old, new, 1)
+
+
+service_path = Path('src/lib/services/gacha.ts')
+service = service_path.read_text()
+
+service = replace_once(
+    service,
+    "import { selectWeightedCard } from '@/lib/gacha'",
+    "import { selectWeightedCardMinimizingRepeat } from '@/lib/gacha'",
+    'gacha import',
+)
+service = replace_once(
+    service,
+    "import { and, count, eq, inArray, isNull } from 'drizzle-orm'",
+    "import { and, count, desc, eq, inArray, isNull } from 'drizzle-orm'",
+    'drizzle import',
+)
+service = replace_once(
+    service,
+    """    chatOutbox?: {
+      batchId: string
+      drawIndex: number
+      drawCount: number
+      collectionName?: string | null
+    }
+  ): Promise<Result<GachaResult>> {""",
+    """    chatOutbox?: {
+      batchId: string
+      drawIndex: number
+      drawCount: number
+      collectionName?: string | null
+    },
+    // Issue #1296: 呼び出し元が直前カードを取得済みなら渡す。undefined は
+    // 従来の独立抽選を意味し、低レベルAPIと既存テストの後方互換を保つ。
+    previousCardId?: string | null
+  ): Promise<Result<GachaResult>> {""",
+    'executeGacha signature',
+)
+service = replace_once(
+    service,
+    'const selectedCard = this.selectCardFromPool(pool, resolvedRarityWeights)',
+    'const selectedCard = this.selectCardFromPool(pool, resolvedRarityWeights, previousCardId)',
+    'selection call',
+)
+
+wrapper_anchor = """  /**
+   * execute_gacha_transaction_with_chat_outbox RPC のPlanetScale直結実装 (#573/#803)。"""
+wrapper = """  /**
+   * Issue #1296: 単発ガチャ向けの反復抑制エントリポイント。
+   * 最新履歴の読み取りはUX改善用で、失敗時はgetLatestCardIdForStreamerがnullへ
+   * フォールバックするため、カード付与・履歴記録の本処理は止めない。
+   */
+  async executeGachaWithRepeatProtection(
+    streamerId: string,
+    userTwitchId: string,
+    userTwitchUsername: string,
+    eventId?: string,
+    rewardCost?: number,
+    collectionName?: string | null,
+    weightsConfig?: RarityWeightsDrawConfig,
+    rewardId?: string | null,
+    chatOutbox?: {
+      batchId: string
+      drawIndex: number
+      drawCount: number
+      collectionName?: string | null
+    }
+  ): Promise<Result<GachaResult>> {
+    const previousCardId = await this.getLatestCardIdForStreamer(streamerId)
+    return this.executeGacha(
+      streamerId,
+      userTwitchId,
+      userTwitchUsername,
+      eventId,
+      rewardCost,
+      collectionName,
+      weightsConfig,
+      rewardId,
+      chatOutbox,
+      previousCardId,
+    )
+  }
+
+""" + wrapper_anchor
+service = replace_once(service, wrapper_anchor, wrapper, 'wrapper insertion')
+
+helper_anchor = """  /**
+   * 抽選プールから1枚選択し、返却/RPC送信用に再構築したカードを返す。"""
+helper = """  /**
+   * Issue #1296: 配信者の直近ガチャ結果を1件だけ取得する。
+   * `(streamer_id, redeemed_at, card_id, ...)` の既存covering index (#672)を使える
+   * 並びで読み、同一時刻の決定性だけUUID主キーで補う。
+   *
+   * この読み取りは反復体感を改善する補助情報であり、課金・付与の正本ではない。
+   * 接続断や一時障害ではガチャ全体を失敗させずnullを返し、従来の独立抽選へ
+   * フォールバックする。
+   */
+  private async getLatestCardIdForStreamer(streamerId: string): Promise<string | null> {
+    try {
+      const rows = await withDbRetry(async () => {
+        const { db } = await getDb()
+        return db.select({ card_id: gachaHistory.card_id })
+          .from(gachaHistory)
+          .where(eq(gachaHistory.streamer_id, streamerId))
+          .orderBy(desc(gachaHistory.redeemed_at), desc(gachaHistory.id))
+          .limit(1)
+      }, 'gacha:getLatestCardIdForStreamer', { idempotent: true })
+      return rows[0]?.card_id ?? null
+    } catch (error) {
+      logger.warn('Failed to read latest gacha card; using independent draw', {
+        streamerId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return null
+    }
+  }
+
+""" + helper_anchor
+service = replace_once(service, helper_anchor, helper, 'latest card helper insertion')
+
+service = replace_once(
+    service,
+    ">(pool: T[], resolvedRarityWeights: Record<string, number> | null): GachaCard | null {",
+    ">(\n    pool: T[],\n    resolvedRarityWeights: Record<string, number> | null,\n    previousCardId?: string | null,\n  ): GachaCard | null {",
+    'selectCardFromPool signature',
+)
+service = replace_once(
+    service,
+    'const picked = selectWeightedCard(selectionPool)',
+    'const picked = selectWeightedCardMinimizingRepeat(selectionPool, previousCardId)',
+    'anti-repeat selection',
+)
+service = replace_once(
+    service,
+    """    let completedDrawCount = resumeFromIndex
+    let requiresPersistedBatch = resumeFromIndex > 0
+
+    for (let index = resumeFromIndex; index < drawCount; index += 1) {""",
+    """    let completedDrawCount = resumeFromIndex
+    let requiresPersistedBatch = resumeFromIndex > 0
+    // Issue #1296: バッチ冒頭で1回だけDB履歴を読み、以降はこのリクエストで
+    // 確定した直前カードを引き継ぐ。15連でも履歴クエリを15回へ増やさない。
+    let previousCardId = await this.getLatestCardIdForStreamer(streamerId)
+
+    for (let index = resumeFromIndex; index < drawCount; index += 1) {""",
+    'multi-draw previous initialization',
+)
+service = replace_once(
+    service,
+    """          : undefined
+      )
+
+      if (!result.success) {""",
+    """          : undefined,
+        previousCardId,
+      )
+
+      if (!result.success) {""",
+    'multi-draw previous forwarding',
+)
+service = replace_once(
+    service,
+    """      cards.push(result.data.card)
+      firstResult ??= result.data""",
+    """      previousCardId = result.data.card.id
+      cards.push(result.data.card)
+      firstResult ??= result.data""",
+    'multi-draw previous update',
+)
+
+service_path.write_text(service)
+
+route_path = Path('src/app/api/gacha/route.ts')
+route = route_path.read_text()
+route = replace_once(
+    route,
+    'const result = await gachaService.executeGacha(',
+    'const result = await gachaService.executeGachaWithRepeatProtection(',
+    'manual route entrypoint',
+)
+route_path.write_text(route)
