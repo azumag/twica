@@ -553,7 +553,7 @@ export async function postRedemptionNotify(
         // 通知欠落の監査可能性は維持される。token欠落・401・未知terminalはここへ
         // 入らず従来どおりthrow/reportErrorされる。
         if (outcome.code === CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE) {
-          logger.info('[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization', {
+          logger.warn('[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization', {
             code: outcome.code,
             reason: outcome.reason,
             streamerId: data.streamer.id,
@@ -579,8 +579,8 @@ export async function postRedemptionNotify(
         // 再試行のたびに[Error]としてGitHub Issueを量産してしまう
         // （実際に本番で429が1回発生しただけで自動Issueが起票された）。
         // 再試行を使い切ってdead化した場合・lease競合でlost-leaseになった場合のみ
-        // 下のthrow/reportErrorへ回し、pendingはwarnログに留めて正常終了する。
-        logger.warn('[postRedemptionNotify] chat announcement retry scheduled', {
+        // 下のthrow/reportErrorへ回す。pendingは自動回復中の正常状態なのでinfoに留める。
+        logger.info('[postRedemptionNotify] chat announcement retry scheduled', {
           streamerId: data.streamer.id,
           broadcasterTwitchUserId: data.broadcasterTwitchUserId,
           outboxId: claim.id,
