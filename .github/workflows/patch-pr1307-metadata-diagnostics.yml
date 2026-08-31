@@ -24,65 +24,73 @@ jobs:
           path = Path('src/app/overlay/[streamerId]/page.tsx')
           text = path.read_text(encoding='utf-8')
 
-          old = '''      ).catch((error) => {
-        // Metadata is optional presentation data; a probe failure must not drop
-        // or advance the business-event queue after the card has started.
-        logger.warn("Overlay image metadata probe failed:", error);
-        addDebugLogRef.current(
-          `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-      });'''
-          new = '''      ).catch((error) => {
-        // Metadata and its diagnostics are presentation-only. A broken logger
-        // or debug panel must not reject this already-handled Promise and leak
-        // into handleQueueError after the normal advance chain is armed.
-        try {
-          logger.warn("Overlay image metadata probe failed:", error);
-        } catch {
-          // Best-effort diagnostic only.
-        }
-        try {
-          addDebugLogRef.current(
-            `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        } catch {
-          // Best-effort debug UI only.
-        }
-      });'''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one metadata catch, got {text.count(old)}')
-          text = text.replace(old, new, 1)
+          old_metadata = "\n".join([
+              "      ).catch((error) => {",
+              "        // Metadata is optional presentation data; a probe failure must not drop",
+              "        // or advance the business-event queue after the card has started.",
+              "        logger.warn(\"Overlay image metadata probe failed:\", error);",
+              "        addDebugLogRef.current(",
+              "          `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`",
+              "        );",
+              "      });",
+          ])
+          new_metadata = "\n".join([
+              "      ).catch((error) => {",
+              "        // Metadata and its diagnostics are presentation-only. A broken logger",
+              "        // or debug panel must not reject this already-handled Promise and leak",
+              "        // into handleQueueError after the normal advance chain is armed.",
+              "        try {",
+              "          logger.warn(\"Overlay image metadata probe failed:\", error);",
+              "        } catch {",
+              "          // Best-effort diagnostic only.",
+              "        }",
+              "        try {",
+              "          addDebugLogRef.current(",
+              "            `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`",
+              "          );",
+              "        } catch {",
+              "          // Best-effort debug UI only.",
+              "        }",
+              "      });",
+          ])
+          if text.count(old_metadata) != 1:
+              raise SystemExit(f'expected one metadata catch, got {text.count(old_metadata)}')
+          text = text.replace(old_metadata, new_metadata, 1)
 
-          old = '''      } catch (error) {
-        logger.warn("Overlay effect setup failed; using no effect:", error);
-        addDebugLogRef.current(
-          `effect setup failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-        setActiveEffectStyle("none");
-        setEffectParticles([]);
-      }'''
-          new = '''      } catch (error) {
-        // Effect setup is presentation-only. Apply the safe fallback before
-        // best-effort diagnostics so logger/debug failures cannot escape into
-        // the queue-level error boundary either.
-        setActiveEffectStyle("none");
-        setEffectParticles([]);
-        try {
-          logger.warn("Overlay effect setup failed; using no effect:", error);
-        } catch {
-          // Best-effort diagnostic only.
-        }
-        try {
-          addDebugLogRef.current(
-            `effect setup failed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        } catch {
-          // Best-effort debug UI only.
-        }
-      }'''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one effect catch, got {text.count(old)}')
-          text = text.replace(old, new, 1)
+          old_effect = "\n".join([
+              "      } catch (error) {",
+              "        logger.warn(\"Overlay effect setup failed; using no effect:\", error);",
+              "        addDebugLogRef.current(",
+              "          `effect setup failed: ${error instanceof Error ? error.message : String(error)}`",
+              "        );",
+              "        setActiveEffectStyle(\"none\");",
+              "        setEffectParticles([]);",
+              "      }",
+          ])
+          new_effect = "\n".join([
+              "      } catch (error) {",
+              "        // Effect setup is presentation-only. Apply the safe fallback before",
+              "        // best-effort diagnostics so logger/debug failures cannot escape into",
+              "        // the queue-level error boundary either.",
+              "        setActiveEffectStyle(\"none\");",
+              "        setEffectParticles([]);",
+              "        try {",
+              "          logger.warn(\"Overlay effect setup failed; using no effect:\", error);",
+              "        } catch {",
+              "          // Best-effort diagnostic only.",
+              "        }",
+              "        try {",
+              "          addDebugLogRef.current(",
+              "            `effect setup failed: ${error instanceof Error ? error.message : String(error)}`",
+              "          );",
+              "        } catch {",
+              "          // Best-effort debug UI only.",
+              "        }",
+              "      }",
+          ])
+          if text.count(old_effect) != 1:
+              raise SystemExit(f'expected one effect catch, got {text.count(old_effect)}')
+          text = text.replace(old_effect, new_effect, 1)
           path.write_text(text, encoding='utf-8')
           PY
 
