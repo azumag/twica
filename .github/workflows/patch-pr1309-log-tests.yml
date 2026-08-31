@@ -1,0 +1,48 @@
+name: Patch PR 1309 log severity tests
+
+on:
+  push:
+    branches:
+      - chore/1037-chat-log-severity
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chore/1037-chat-log-severity
+
+      - name: Align log severity assertions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tests/unit/eventsub-user-card-counts-driver-parity.test.ts')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+            "    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(\n      '[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization',":
+            "    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(\n      '[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization',",
+            "  // pendingはbackoffで自動再試行される正常系のため、warnログのみに留め\n":
+            "  // pendingはbackoffで自動再試行される正常系のため、infoログのみに留め\n",
+            "    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(\n      '[postRedemptionNotify] chat announcement retry scheduled',":
+            "    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(\n      '[postRedemptionNotify] chat announcement retry scheduled',",
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one match, got {count}: {old[:80]}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit tests and remove one-off workflow
+        run: |
+          rm .github/workflows/patch-pr1309-log-tests.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/unit/eventsub-user-card-counts-driver-parity.test.ts .github/workflows/patch-pr1309-log-tests.yml
+          git commit -m "test(chat): ログ重大度契約を更新" -m "Refs #1037 #1309"
+          git push origin HEAD:chore/1037-chat-log-severity
