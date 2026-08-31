@@ -157,11 +157,11 @@ const TRANSIENT_R2_ERROR_PATTERNS: Array<string | RegExp> = [
   'ETIMEDOUT',
   'ENOTFOUND',
   'service unavailable',
-  // 【Issue #984】裸の'503'部分文字列は、キー名やリクエストIDにたまたま'503'という
-  // 数字列が含まれる場合（例: 'photo-503.png' 等）に恒久エラーを一時障害と誤判定し、
-  // 無駄なリトライ（最大 maxRetries+1 回・最大約7秒）を発生させるリスクがあった。
-  // 'http'/'status'という文脈語が近傍にある場合のみHTTP 503相当として扱うよう限定する。
-  /\b(?:http|status)\D{0,10}503\b/i,
+  // 【Issue #984/#1252】裸の500/503部分文字列は、キー名やリクエストIDに
+  // たまたま数字列が含まれる場合（例: photo-500.png）まで一時障害と誤判定する。
+  // HTTP 500/503はいずれも一過性のサーバー障害として再試行するが、誤検知を避けるため
+  // `http` / `status` という文脈語が近傍にある場合だけ対象にする。
+  /\b(?:http|status)\D{0,10}(?:500|503)\b/i,
   'NetworkingError',
   'Unspecified error',
   ...CLOUDFLARE_R2_TRANSIENT_MARKERS,

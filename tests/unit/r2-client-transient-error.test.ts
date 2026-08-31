@@ -28,19 +28,19 @@ describe('isTransientR2Error', () => {
     expect(isTransientR2Error('put: service unavailable, please retry')).toBe(true)
   })
 
-  it('HTTPステータス表記の503（"HTTP 503"）を一時障害として扱う', () => {
-    expect(isTransientR2Error('Request failed with HTTP 503')).toBe(true)
+  it.each([
+    ['HTTP 500', 'Request failed with HTTP 500'],
+    ['status: 500', 'put: status: 500, please retry later'],
+    ['HTTP 503', 'Request failed with HTTP 503'],
+    ['status: 503', 'put: status: 503, please retry later'],
+  ])('HTTPステータス表記の%sを一時障害として扱う', (_label, message) => {
+    expect(isTransientR2Error(message)).toBe(true)
   })
 
-  it('HTTPステータス表記の503（"status: 503"）を一時障害として扱う', () => {
-    expect(isTransientR2Error('put: status: 503, please retry later')).toBe(true)
-  })
-
-  // 【Issue #984/#1252】裸の'503'部分文字列マッチは、キー名やリクエストIDに偶然数字列を含む
-  // 恒久エラーを誤って一時障害と判定するリスクがあった。500は現状リトライ対象外だが、
-  // HTTP statusの文脈が無い数字列を扱わない負例として503とあわせて固定する。
+  // 【Issue #984/#1252】500/503はHTTPステータスの文脈がある場合だけ再試行する。
+  // 文脈語のない裸の数字列を追加するとファイル名等まで誤判定するため、両方を負例で固定する。
   it.each(['500', '503'])(
-    'キー名にたまたま%sを含む恒久エラーは一時障害として扱わない (Issue #984)',
+    'キー名にたまたま%sを含む恒久エラーは一時障害として扱わない (Issue #984/#1252)',
     (numericToken) => {
       expect(isTransientR2Error(`AccessDenied: key 'photo-${numericToken}.png' is not permitted`)).toBe(false)
     },
