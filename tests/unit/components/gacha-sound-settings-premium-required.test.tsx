@@ -19,6 +19,8 @@ const rule: GachaSoundRule = {
   rewardName: null,
 };
 
+const premiumRequiredMessage = "複数効果音・ターゲット指定は助力プラン以上の機能です。";
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -26,16 +28,9 @@ afterEach(() => {
 });
 
 describe("GachaSoundSettings premium-required save response", () => {
-  it("gachaSoundRulesPremiumRequiredを受信すると制限メッセージを表示する", async () => {
+  it("gachaSoundRulesPremiumRequiredを受信すると制限メッセージを追加表示する", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-
-      if (url.includes("/api/twitch/rewards")) {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
 
       if (url.includes("/api/streamer/settings")) {
         return new Response(
@@ -58,13 +53,11 @@ describe("GachaSoundSettings premium-required save response", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    // supportプランでは制限バナーが初期表示されないため、API応答で表示された
-    // premiumRequiredメッセージだけを独立して検証できる。
     render(
       <NextIntlClientProvider locale="ja" messages={jaMessages}>
         <GachaSoundSettings
           streamerId="streamer-1"
-          plan="support"
+          plan="basic"
           currentSoundUrl={null}
           currentSoundEnabled={false}
           currentSoundRules={[rule] as unknown as Json}
@@ -74,14 +67,9 @@ describe("GachaSoundSettings premium-required save response", () => {
       </NextIntlClientProvider>
     );
 
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([input]) => String(input).includes("/api/twitch/rewards"))
-      ).toBe(true);
-    });
-    expect(
-      screen.queryByText("複数効果音・ターゲット指定は助力プラン以上の機能です。")
-    ).not.toBeInTheDocument();
+    // basicプランでは案内バナーが常時1件ある。保存応答のflagを受けた後に
+    // 同文言のエラーメッセージがもう1件増えることで、応答処理を区別して検証する。
+    expect(screen.getAllByText(premiumRequiredMessage)).toHaveLength(1);
 
     fireEvent.click(screen.getByLabelText("効果音を有効にする"));
 
@@ -89,9 +77,7 @@ describe("GachaSoundSettings premium-required save response", () => {
       expect(
         fetchMock.mock.calls.some(([input]) => String(input).includes("/api/streamer/settings"))
       ).toBe(true);
+      expect(screen.getAllByText(premiumRequiredMessage)).toHaveLength(2);
     });
-    expect(
-      await screen.findByText("複数効果音・ターゲット指定は助力プラン以上の機能です。")
-    ).toBeInTheDocument();
   });
 });
