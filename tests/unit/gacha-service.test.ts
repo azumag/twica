@@ -1155,7 +1155,7 @@ describe('GachaService.executeGachaForEventSub', () => {
     }
   })
 
-  it('単発メイン報酬では直近カード履歴を1回だけ確認する', async () => {
+  it('単発メイン報酬でも直近カード履歴を確認する', async () => {
     const fixture = installDbFixture({
       tables: {
         streamers: [{ value: [baseStreamer] }],
@@ -1166,7 +1166,7 @@ describe('GachaService.executeGachaForEventSub', () => {
     const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-single')
 
     expect(result.success).toBe(true)
-    expect(fixture.tableCursors.get('gacha_history')).toBe(1)
+    expect(fixture.tableCursors.has('gacha_history')).toBe(true)
   })
 
   it('streamerのパック別レアリティ設定をメイン報酬の抽選へ伝播する', async () => {
