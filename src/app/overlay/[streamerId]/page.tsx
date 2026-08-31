@@ -1052,9 +1052,15 @@ export default function OverlayPage() {
     };
 
     const handleQueueError = (error: unknown) => {
+      // Any exception that reaches the queue boundary is a failed presentation.
+      // Settle the transport ACK before choosing a visual recovery path. This is
+      // intentionally unconditional and idempotent: by the time the display
+      // window has elapsed its one-shot watchdog may already have fired, so
+      // leaving settlement to a later timer can block realtime delivery forever.
+      settleDisplayCommit(next.displayInstanceId, false);
+
       if (!displayStarted) {
         // A card that never started is a failed business-event presentation.
-        settleDisplayCommit(next.displayInstanceId, false);
         scheduleQueueRecovery(false);
       } else if (displayWindowElapsed) {
         // Its intended display window is already over, so advance promptly.
@@ -1067,11 +1073,8 @@ export default function OverlayPage() {
           clearTimeout(animationTimeoutRef.current);
           animationTimeoutRef.current = null;
         }
-        // This recovery path cannot reach the normal fallback/commit chain.
-        // Settle the transport ACK explicitly before the bounded visual recovery;
-        // otherwise a short display duration can unmount the card first and let
-        // the later watchdog fail an already-advanced queue item implicitly.
-        settleDisplayCommit(next.displayInstanceId, false);
+        // This recovery path cannot reach the normal fallback/commit chain;
+        // the queue-level invariant above has already rejected its transport ACK.
         scheduleQueueRecovery(true);
       }
       // If the normal display-window timer is already armed, leave it alone.
