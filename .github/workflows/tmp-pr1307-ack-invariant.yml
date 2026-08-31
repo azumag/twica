@@ -18,49 +18,54 @@ jobs:
           fetch-depth: 0
 
       - name: Restore queue-error ACK invariant
+        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
           path = Path('src/app/overlay/[streamerId]/page.tsx')
           text = path.read_text(encoding='utf-8')
 
-          old = """    const handleQueueError = (error: unknown) => {
-      if (!displayStarted) {
-        // A card that never started is a failed business-event presentation.
-        settleDisplayCommit(next.displayInstanceId, false);
-        scheduleQueueRecovery(false);
-"""
-          new = """    const handleQueueError = (error: unknown) => {
-      // Any exception that reaches the queue boundary is a failed presentation.
-      // Settle the transport ACK before choosing a visual recovery path. This is
-      // intentionally unconditional and idempotent: by the time the display
-      // window has elapsed its one-shot watchdog may already have fired, so
-      // leaving settlement to a later timer can block realtime delivery forever.
-      settleDisplayCommit(next.displayInstanceId, false);
-
-      if (!displayStarted) {
-        // A card that never started is a failed business-event presentation.
-        scheduleQueueRecovery(false);
-"""
+          old = "\n".join([
+              "    const handleQueueError = (error: unknown) => {",
+              "      if (!displayStarted) {",
+              "        // A card that never started is a failed business-event presentation.",
+              "        settleDisplayCommit(next.displayInstanceId, false);",
+              "        scheduleQueueRecovery(false);",
+          ])
+          new = "\n".join([
+              "    const handleQueueError = (error: unknown) => {",
+              "      // Any exception that reaches the queue boundary is a failed presentation.",
+              "      // Settle the transport ACK before choosing a visual recovery path. This is",
+              "      // intentionally unconditional and idempotent: by the time the display",
+              "      // window has elapsed its one-shot watchdog may already have fired, so",
+              "      // leaving settlement to a later timer can block realtime delivery forever.",
+              "      settleDisplayCommit(next.displayInstanceId, false);",
+              "",
+              "      if (!displayStarted) {",
+              "        // A card that never started is a failed business-event presentation.",
+              "        scheduleQueueRecovery(false);",
+          ])
           if text.count(old) != 1:
               raise SystemExit(f'expected one handleQueueError header, got {text.count(old)}')
           text = text.replace(old, new, 1)
 
-          old = """        // This recovery path cannot reach the normal fallback/commit chain.
-        // Settle the transport ACK explicitly before the bounded visual recovery;
-        // otherwise a short display duration can unmount the card first and let
-        // the later watchdog fail an already-advanced queue item implicitly.
-        settleDisplayCommit(next.displayInstanceId, false);
-        scheduleQueueRecovery(true);
-"""
-          new = """        // This recovery path cannot reach the normal fallback/commit chain;
-        // the queue-level invariant above has already rejected its transport ACK.
-        scheduleQueueRecovery(true);
-"""
+          old = "\n".join([
+              "        // This recovery path cannot reach the normal fallback/commit chain.",
+              "        // Settle the transport ACK explicitly before the bounded visual recovery;",
+              "        // otherwise a short display duration can unmount the card first and let",
+              "        // the later watchdog fail an already-advanced queue item implicitly.",
+              "        settleDisplayCommit(next.displayInstanceId, false);",
+              "        scheduleQueueRecovery(true);",
+          ])
+          new = "\n".join([
+              "        // This recovery path cannot reach the normal fallback/commit chain;",
+              "        // the queue-level invariant above has already rejected its transport ACK.",
+              "        scheduleQueueRecovery(true);",
+          ])
           if text.count(old) != 1:
               raise SystemExit(f'expected one early-recovery ACK block, got {text.count(old)}')
-          text = text.replace(old, new, 1)
-          path.write_text(text, encoding='utf-8')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
 
       - name: Install dependencies
@@ -73,6 +78,7 @@ jobs:
         run: npm run typecheck
 
       - name: Commit fix and remove one-off workflow
+        shell: bash
         run: |
           rm .github/workflows/tmp-pr1307-ack-invariant.yml
           git config user.name "github-actions[bot]"
