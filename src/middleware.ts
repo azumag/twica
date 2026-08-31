@@ -41,8 +41,10 @@ const MAINTENANCE_GUARDED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 // using middleware.ts if it doesn't need Node.js-only APIs, which is exactly
 // what this file does.
 // This file intentionally stays on the deprecated middleware.ts convention
-// (with edge-compatible code only) until proxy.ts support ships in a
-// released @opennextjs/cloudflare version.
+// (with edge-compatible code only) while the current Cloudflare deployment
+// path rejects Next.js Proxy / Node.js middleware. Revisit this when TwiCa can
+// move to an Adapters API based (or other compatible) deployment path and
+// `npm run workers:build` succeeds there; see docs/cloudflare-proxy-migration.md.
 
 /**
  * Detect locale from request (cookie or Accept-Language header)
@@ -160,7 +162,7 @@ export async function middleware(request: NextRequest) {
   // 継続発生させず、入力エラーとして400を返す。
   if (hasInvalidOverlayEventsStreamerId(pathname)) {
     const errorResponse = NextResponse.json(
-      { error: 'Invalid streamer ID' },
+      { error: 'Invalid Streamer ID' },
       { status: 400 }
     )
     return setSecurityHeaders(errorResponse, { pathname })
