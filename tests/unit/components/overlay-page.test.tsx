@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import type { GachaBroadcastPayload, RealtimeError, SubscribeOptions } from '@/lib/realtime'
 import type { GachaSoundRule } from '@/lib/gacha-sound-rules'
 import OverlayPage from '@/app/overlay/[streamerId]/page'
+import { logger } from '@/lib/logger'
 import { pickSoundBearingCardIndex } from '@/lib/gacha-sound-rules'
 import { OVERLAY_EFFECT_PARTICLE_CONFIG } from '@/lib/overlay-effect'
 import { serializePollState } from '@/lib/overlay-version'
@@ -1722,6 +1723,11 @@ describe('OverlayPage', () => {
     resolvePlayableGachaSoundMock.mockImplementationOnce(() => {
       throw new Error('failure inside setTimeout chain')
     })
+    // handleQueueError must schedule recovery before diagnostics. Simulate a
+    // logger implementation failure to ensure it cannot strand the display lock.
+    const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementationOnce(() => {
+      throw new Error('diagnostic logger failed')
+    })
 
     act(() => {
       onGachaResult?.({
@@ -1737,6 +1743,10 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
+    expect(loggerErrorSpy).toHaveBeenCalled()
+    // The normal hide chain was never scheduled, so handleQueueError itself
+    // must remove the failed card instead of leaving it visible indefinitely.
+    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
 
     // 例外がhandleQueueErrorへ届いていれば、setTimeout(0)経由でロックが
     // 解放され、次のカードが表示されるはず。届いていなければ(=レビュー
@@ -1752,6 +1762,7 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
+    loggerErrorSpy.mockRestore()
   })
 
   // Issue #999 レビュー指摘#2回帰: catch側の再継続を同期的な直接呼び出し

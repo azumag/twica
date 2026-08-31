@@ -996,17 +996,47 @@ export default function OverlayPage() {
     // エラー後の再開は setTimeout(..., 0) で次のマクロタスクへ送る。
     // 同期再帰にすると連続失敗時にコールスタックを消費し続けるため。
     const handleQueueError = (error: unknown) => {
-      logger.error("Error processing gacha display queue:", error);
-      addDebugLogRef.current(
-        `processQueue error: ${error instanceof Error ? error.message : String(error)}`
-      );
+      // Recovery is the primary contract. Arm it before diagnostics so a
+      // broken logger/debug panel cannot leave the display lock stuck. Keep
+      // the timeout in the tracked ref so lifecycle cleanup can cancel an old
+      // subscription's recovery before a newer queue starts.
+      animationTimeoutRef.current = setTimeout(() => {
+        animationTimeoutRef.current = null;
+        if (
+          !isOverlayMountedRef.current
+          || queueGeneration !== queueGenerationRef.current
+        ) {
+          return;
+        }
+        processQueueRef.current();
+      }, 0);
+
       // If this item never committed, tell the transport to retry it instead
       // of permanently deduplicating a draw that the viewer could not see.
       settleDisplayCommit(next.displayInstanceId, false);
-      // ロックを握ったまま関数を抜けないよう、失敗したカードは諦めて
-      // 残りのキューを継続する。キューが尽きていれば冒頭の `if (!next)`
-      // 分岐でロックが解放される。
-      setTimeout(() => processQueueRef.current(), 0);
+      // A presentation error may happen after the card became visible but
+      // before the normal hide chain was scheduled. Remove that failed card
+      // immediately so an empty queue cannot leave it on screen indefinitely.
+      imageLayoutGenerationRef.current += 1;
+      activeDisplayInstanceIdRef.current = undefined;
+      setShowCard(false);
+      setResult(null);
+      setImageFallbackDisplayInstanceId(null);
+      setActiveEffectStyle("none");
+      setEffectParticles([]);
+
+      try {
+        logger.error("Error processing gacha display queue:", error);
+      } catch {
+        // Diagnostics are best-effort; the recovery timer above is authoritative.
+      }
+      try {
+        addDebugLogRef.current(
+          `processQueue error: ${error instanceof Error ? error.message : String(error)}`
+        );
+      } catch {
+        // Debug UI failures must not block the business-event queue either.
+      }
     };
     const runProtected = (fn: () => void) => {
       try {
