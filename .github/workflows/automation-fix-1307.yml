@@ -1,0 +1,100 @@
+name: One-off fix PR 1307
+
+on:
+  push:
+    branches:
+      - fix/1002-overlay-queue-recovery
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/1002-overlay-queue-recovery
+          fetch-depth: 0
+      - name: Patch queue recovery and remove one-off workflow
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/app/overlay/[streamerId]/page.tsx')
+          text = path.read_text()
+          start_marker = '    const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {'
+          end_marker = '\n    const handleQueueError = (error: unknown) => {'
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          replacement = '''    const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {
+      if (recoveryScheduled) return;
+      recoveryScheduled = true;
+      const expectedQueueGeneration = queueGeneration;
+      const hideDelayMs = preserveCurrentCard ? options.displayDuration * 1000 : 0;
+
+      const finishQueueRecovery = () => {
+        if (
+          !isOverlayMountedRef.current
+          || expectedQueueGeneration !== queueGenerationRef.current
+        ) {
+          return;
+        }
+
+        imageLayoutGenerationRef.current += 1;
+        activeDisplayInstanceIdRef.current = undefined;
+        try {
+          setResult(null);
+        } finally {
+          try {
+            setImageFallbackDisplayInstanceId(null);
+          } finally {
+            // Recovery must always release the queue lock, even if a React
+            // state update unexpectedly throws while cleaning up the failed card.
+            recoveryScheduled = false;
+            void processQueueRef.current();
+          }
+        }
+      };
+
+      // Keep recovery timers local. Cleanup increments queueGeneration, so stale
+      // callbacks become no-ops without overwriting animationTimeoutRef. Recovery
+      // callbacks use finally blocks because they run outside the surrounding
+      // processQueue try/catch and therefore must release the queue themselves.
+      setTimeout(() => {
+        if (
+          !isOverlayMountedRef.current
+          || expectedQueueGeneration !== queueGenerationRef.current
+        ) {
+          return;
+        }
+
+        if (!displayStarted) {
+          finishQueueRecovery();
+          return;
+        }
+
+        try {
+          setShowCard(false);
+          setActiveEffectStyle("none");
+          setEffectParticles([]);
+        } finally {
+          // Keep the normal inter-card gap, but guarantee the final recovery
+          // callback is scheduled even if presentation cleanup throws.
+          setTimeout(finishQueueRecovery, 500);
+        }
+      }, hideDelayMs);
+    };
+'''
+          path.write_text(text[:start] + replacement + text[end:])
+          PY
+          rm .github/workflows/automation-fix-1307.yml
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 'src/app/overlay/[streamerId]/page.tsx' .github/workflows/automation-fix-1307.yml
+          git commit -m 'fix(overlay): make queue recovery timers fail-safe'
+          git push origin HEAD:fix/1002-overlay-queue-recovery
