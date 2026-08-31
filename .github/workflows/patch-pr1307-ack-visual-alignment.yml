@@ -16,66 +16,22 @@ jobs:
         with:
           ref: fix/1002-overlay-queue-recovery
 
-      - name: Apply mandatory ACK/visual alignment fix
+      - name: Apply mandatory ACK visual alignment fix
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           page = Path('src/app/overlay/[streamerId]/page.tsx')
           text = page.read_text(encoding='utf-8')
-          old = '''        // This recovery path cannot reach the normal fallback/commit chain;
-        // the queue-level invariant above has already rejected its transport ACK.
-        scheduleQueueRecovery(true);'''
-          new = '''        // The transport ACK is already false, so do not keep a failed visual
-        // presentation on screen for a full window before realtime retries it.
-        // Advance promptly to keep ACK semantics and viewer-visible behavior aligned.
-        scheduleQueueRecovery(false);'''
+          old = "        // This recovery path cannot reach the normal fallback/commit chain;\n        // the queue-level invariant above has already rejected its transport ACK.\n        scheduleQueueRecovery(true);"
+          new = "        // The transport ACK is already false, so do not keep a failed visual\n        // presentation on screen for a full window before realtime retries it.\n        // Advance promptly to keep ACK semantics and viewer-visible behavior aligned.\n        scheduleQueueRecovery(false);"
           if text.count(old) != 1:
               raise SystemExit(f'page target count={text.count(old)}')
           page.write_text(text.replace(old, new), encoding='utf-8')
 
           test = Path('tests/unit/components/overlay-page.test.tsx')
           text = test.read_text(encoding='utf-8')
-          old = '''    // Sound setup is presentation-only. The card already started, so an error
-    // must not erase the business event immediately.
-    expect(screen.getByText('TimerThrow')).toBeInTheDocument()
-
-    act(() => {
-      onGachaResult?.({
-        type: 'gacha',
-        card: { id: 'card-ok2', name: 'RecoveredFromTimer', description: null, image_url: null, rarity: 'common' },
-        userTwitchUsername: 'Viewer',
-      })
-    })
-    expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()
-
-    // Recovery preserves the configured two-second display window, then uses
-    // the existing 500ms inter-card gap before advancing the queued card.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2_500)
-    })
-    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
-    expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()'''
-          new = '''    // ACK=false allows realtime to retry this draw, so the failed visual must
-    // not remain for a full display window and then appear again on redelivery.
-    expect(screen.getByText('TimerThrow')).toBeInTheDocument()
-
-    act(() => {
-      onGachaResult?.({
-        type: 'gacha',
-        card: { id: 'card-ok2', name: 'RecoveredFromTimer', description: null, image_url: null, rarity: 'common' },
-        userTwitchUsername: 'Viewer',
-      })
-    })
-    expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()
-
-    // Recovery hides the failed card immediately and keeps only the existing
-    // 500ms inter-card gap before advancing the locally queued next card.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(501)
-    })
-    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
-    expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()'''
+          old = "    // Sound setup is presentation-only. The card already started, so an error\n    // must not erase the business event immediately.\n    expect(screen.getByText('TimerThrow')).toBeInTheDocument()\n\n    act(() => {\n      onGachaResult?.({\n        type: 'gacha',\n        card: { id: 'card-ok2', name: 'RecoveredFromTimer', description: null, image_url: null, rarity: 'common' },\n        userTwitchUsername: 'Viewer',\n      })\n    })\n    expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()\n\n    // Recovery preserves the configured two-second display window, then uses\n    // the existing 500ms inter-card gap before advancing the queued card.\n    await act(async () => {\n      await vi.advanceTimersByTimeAsync(2_500)\n    })\n    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()\n    expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()"
+          new = "    // ACK=false allows realtime to retry this draw, so the failed visual must\n    // not remain for a full display window and then appear again on redelivery.\n    expect(screen.getByText('TimerThrow')).toBeInTheDocument()\n\n    act(() => {\n      onGachaResult?.({\n        type: 'gacha',\n        card: { id: 'card-ok2', name: 'RecoveredFromTimer', description: null, image_url: null, rarity: 'common' },\n        userTwitchUsername: 'Viewer',\n      })\n    })\n    expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()\n\n    // Recovery hides the failed card immediately and keeps only the existing\n    // 500ms inter-card gap before advancing the locally queued next card.\n    await act(async () => {\n      await vi.advanceTimersByTimeAsync(501)\n    })\n    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()\n    expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()"
           if text.count(old) != 1:
               raise SystemExit(f'test target count={text.count(old)}')
           test.write_text(text.replace(old, new), encoding='utf-8')
