@@ -162,7 +162,7 @@ export async function middleware(request: NextRequest) {
   // 継続発生させず、入力エラーとして400を返す。
   if (hasInvalidOverlayEventsStreamerId(pathname)) {
     const errorResponse = NextResponse.json(
-      { error: 'Invalid Streamer ID' },
+      { error: 'Invalid streamer ID' },
       { status: 400 }
     )
     return setSecurityHeaders(errorResponse, { pathname })
