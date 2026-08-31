@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   apply-fix:
-    if: github.event.head_commit.message == 'chore: apply PR1307 review fix'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -136,6 +135,8 @@ jobs:
 
           Path('.github/workflows/tmp-pr1307-review-fix.yml').unlink()
           PY
+      - name: Install dependencies
+        run: npm ci
       - name: Run focused regression test
         run: npx vitest run tests/unit/components/overlay-page.test.tsx
       - name: Run typecheck
