@@ -130,6 +130,7 @@ describe('error-handler', () => {
       'avatar-401.jpg',
       'asset-507-preview.png',
       'https://example.com/assets/503.png',
+      // 短いホスト名 `a` は `http` と `503` の距離を意図的に詰め、近傍regexへ戻した退行も検知する。
       'PUT http://a/503 failed',
     ])('文脈のない数値をHTTP statusとして誤分類しない: %s', async (errorMessage) => {
       const response = await handleBlobError(new Error(errorMessage), 'blob');

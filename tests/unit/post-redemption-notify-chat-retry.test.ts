@@ -21,7 +21,7 @@ import {
  *
  * ここでは retryChatNotification の戻り値ごとに reportError が呼ばれるか/
  * 呼ばれないかを固定する:
- * - 'pending'（自動再試行予定）: reportErrorを呼ばずwarnログのみ
+ * - 'pending'（自動再試行予定）: reportErrorを呼ばずinfoログのみ
  * - 'dead'（再試行を使い切った）: 従来通りreportErrorを呼ぶ
  */
 
@@ -57,6 +57,7 @@ const mockMarkSent = vi.mocked(markChatNotificationSent)
 const mockDeadLetter = vi.mocked(deadLetterChatNotification)
 const mockReportError = vi.mocked(reportError)
 const mockLoggerWarn = vi.mocked(logger.warn)
+const mockLoggerInfo = vi.mocked(logger.info)
 
 // `{user}` / `{card}` だけのテンプレートにして補助DB参照を通さず、
 // retryState と reportError の契約だけを隔離して検証する。
@@ -119,7 +120,7 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
     vi.restoreAllMocks()
   })
 
-  it('pending（自動再試行予定）の場合はreportErrorを呼ばずwarnログのみ残す', async () => {
+  it('pending（自動再試行予定）の場合はreportErrorを呼ばずinfoログのみ残す', async () => {
     mockRetry.mockResolvedValue('pending')
 
     await postRedemptionNotify(notifyData)
@@ -132,7 +133,7 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
       expect.stringContaining('too quickly'),
     )
     expect(mockReportError).not.toHaveBeenCalled()
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
+    expect(mockLoggerInfo).toHaveBeenCalledWith(
       '[postRedemptionNotify] chat announcement retry scheduled',
       expect.objectContaining({ streamerId: 'streamer-1', outboxId: 'outbox-1' }),
     )
@@ -158,8 +159,8 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
       }),
     )
     // レビュー指摘: pending分岐の判定条件が誤って広がる退行(例: retryState !== 'dead'
-    // のような反転ミス)を検知するため、pending専用のwarnログが出ないことも固定する。
-    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+    // のような反転ミス)を検知するため、pending専用のinfoログが出ないことも固定する。
+    expect(mockLoggerInfo).not.toHaveBeenCalledWith(
       '[postRedemptionNotify] chat announcement retry scheduled',
       expect.anything(),
     )
@@ -180,7 +181,7 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
         streamerId: 'streamer-1',
       }),
     )
-    expect(mockLoggerWarn).not.toHaveBeenCalledWith(
+    expect(mockLoggerInfo).not.toHaveBeenCalledWith(
       '[postRedemptionNotify] chat announcement retry scheduled',
       expect.anything(),
     )

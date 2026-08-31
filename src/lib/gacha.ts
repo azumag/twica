@@ -99,3 +99,104 @@ export function selectWeightedCard<T extends WeightedCard>(items: T[]): T | null
 
   return lastWeighted
 }
+
+/**
+ * Issue #1296: 設定された長期排出率を維持したまま、直前と同じカードになる確率を
+ * 理論上可能な最小値まで下げる重み付き抽選。
+ *
+ * 単純に previousCardId を候補から除外して残りを再正規化すると、例えば
+ * 90% / 10% の2枚プールが必ず交互になり、長期排出率が 50% / 50% へ壊れる。
+ * ここでは各カードの重み区間を円周上へカードID順で配置し、直前カードの区間内
+ * から一様に点を選ぶ。その点を、最大区間の重み M と総重み T から決めた
+ * `[min(M, T-M), max(M, T-M)]` の範囲で独立にランダム移動し、移動先の区間を
+ * 次カードとする。
+ *
+ * 固定プールで直前状態が設定重みの分布に従うとき、直前区間内の点を混ぜた全体は
+ * 円周上の一様分布になる。円周上の独立な平行移動は一様分布を保つため、次カードの
+ * 周辺分布も元の設定重みと一致する。
+ *
+ * - M <= T/2 の場合、移動距離は [M, T-M]。全区間の長さ w は M 以下なので、
+ *   移動距離は常に [w, T-w] に入り、どの区間も自分自身と重ならない。
+ * - M > T/2 の場合、移動距離は [T-M, M]。最大区間以外は長さが T-M 以下なので
+ *   自分自身と重ならず、最大区間だけが常に `2M-T` の不可避な重なりを持つ。
+ *
+ * したがって全体の反復率は理論下限 `max(0, 2 * maxProbability - 1)` に一致する。
+ * 移動距離を固定の半周にせず安全範囲内でランダム化するのは、均等4枚なら
+ * A→C→A のような決定的な短周期に閉じ込められるのを避け、反復抑制とランダム感を
+ * 両立するため。
+ *
+ * DBの返却順が呼び出し間で変わると区間配置も変わり上の定常性が崩れるため、
+ * 元配列を変更せずカードID順の安定したコピーを作る。同一IDは本番DBでは主キーに
+ * より存在しないが、fixtureでも決定的になるよう元indexをタイブレークに使う。
+ *
+ * previousCardId が未指定・現プールに存在しない場合は、初回またはプール変更と
+ * みなして従来の独立抽選へフォールバックする。排出可能カードが1枚だけなら、
+ * 反復を避ける方法がないためそのカードを返す。
+ */
+export function selectWeightedCardMinimizingRepeat<T extends WeightedCard>(
+  items: T[],
+  previousCardId: string | null | undefined,
+): T | null {
+  if (previousCardId == null) {
+    return selectWeightedCard(items)
+  }
+
+  const weightedItems = items
+    .map((item, index) => ({ item, index, weight: toWeight(item.drop_rate) }))
+    .filter(({ weight }) => weight > 0)
+    .sort((left, right) => {
+      if (left.item.id < right.item.id) return -1
+      if (left.item.id > right.item.id) return 1
+      return left.index - right.index
+    })
+
+  if (weightedItems.length === 0) {
+    return null
+  }
+  if (weightedItems.length === 1) {
+    return weightedItems[0].item
+  }
+
+  let totalWeight = 0
+  let maxWeight = 0
+  let previousStart = 0
+  let previousWeight = 0
+  let previousFound = false
+
+  for (const entry of weightedItems) {
+    if (entry.item.id === previousCardId && !previousFound) {
+      previousStart = totalWeight
+      previousWeight = entry.weight
+      previousFound = true
+    }
+    totalWeight += entry.weight
+    maxWeight = Math.max(maxWeight, entry.weight)
+  }
+
+  // 個々の重みは有限でも合計だけがInfinityへオーバーフローする異常値では、
+  // 移動距離・剰余計算がNaNになる。既存抽選の安全網へ戻し、nullで課金結果を失わない。
+  if (!Number.isFinite(totalWeight) || !previousFound) {
+    return selectWeightedCard(items)
+  }
+
+  const sourcePoint = previousStart + secureRandomUnit() * previousWeight
+  const shiftMin = Math.min(maxWeight, totalWeight - maxWeight)
+  const shiftMax = Math.max(maxWeight, totalWeight - maxWeight)
+  const shiftDistance = shiftMin === shiftMax
+    ? shiftMin
+    : shiftMin + secureRandomUnit() * (shiftMax - shiftMin)
+  const targetPoint = (sourcePoint + shiftDistance) % totalWeight
+
+  let cumulative = 0
+  let lastWeighted: T | null = null
+  for (const entry of weightedItems) {
+    cumulative += entry.weight
+    lastWeighted = entry.item
+    if (targetPoint < cumulative) {
+      return entry.item
+    }
+  }
+
+  // selectWeightedCard と同じく、浮動小数点境界や将来の実装変更に対する安全網。
+  return lastWeighted
+}

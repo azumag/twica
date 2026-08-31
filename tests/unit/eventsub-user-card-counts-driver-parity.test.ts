@@ -566,7 +566,7 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
       'user:write:chat scope not granted',
     )
     expect(mockReportError).not.toHaveBeenCalled()
-    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
       '[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization',
       expect.objectContaining({ code: 'missing_scope', streamerId: 'streamer-1' }),
     )
@@ -576,7 +576,7 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
   // 旧実装は retryChatNotification が 'pending' を返しても常にthrowしており、
   // Twitch 429のような自己回復するレート制限が1回起きるだけで
   // reportError経由の自動GitHub Issueが量産されていた（本番実測で確認）。
-  // pendingはbackoffで自動再試行される正常系のため、warnログのみに留め
+  // pendingはbackoffで自動再試行される正常系のため、infoログのみに留め
   // reportErrorには到達しないことをここで固定する。
   it.each([
     ['scope確認不能', 'eventsub-chat-scope-unavailable', 'unable to verify user:write:chat scope'],
@@ -615,7 +615,7 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     expect(mocks.deadLetterChatNotification).not.toHaveBeenCalled()
     expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
     expect(mockReportError).not.toHaveBeenCalled()
-    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
       '[postRedemptionNotify] chat announcement retry scheduled',
       expect.objectContaining({ streamerId: 'streamer-1', reason }),
     )
