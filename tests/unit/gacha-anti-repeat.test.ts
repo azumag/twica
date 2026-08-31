@@ -84,6 +84,41 @@ describe('selectWeightedCardMinimizingRepeat', () => {
     expect(repeatCount).toBe(0)
   })
 
+  it('最大重み50%以下でも、反復を0にしたまま長期分布を設定重みどおり維持する', () => {
+    const cards: WeightedCard[] = [
+      { id: 'a', drop_rate: 0.4 },
+      { id: 'b', drop_rate: 0.3 },
+      { id: 'c', drop_rate: 0.2 },
+      { id: 'd', drop_rate: 0.1 },
+    ]
+    mockDeterministicCrypto(0x6a09e667)
+
+    const counts = new Map(cards.map((card) => [card.id, 0]))
+    let previousId = 'a'
+    let nullCount = 0
+    let repeatCount = 0
+    const iterations = 100_000
+
+    for (let draw = 0; draw < iterations; draw += 1) {
+      const picked = selectWeightedCardMinimizingRepeat(cards, previousId)
+      if (!picked) {
+        nullCount += 1
+        continue
+      }
+
+      counts.set(picked.id, (counts.get(picked.id) ?? 0) + 1)
+      if (picked.id === previousId) repeatCount += 1
+      previousId = picked.id
+    }
+
+    expect(nullCount).toBe(0)
+    expect(repeatCount).toBe(0)
+    expect((counts.get('a') ?? 0) / iterations).toBeCloseTo(0.4, 2)
+    expect((counts.get('b') ?? 0) / iterations).toBeCloseTo(0.3, 2)
+    expect((counts.get('c') ?? 0) / iterations).toBeCloseTo(0.2, 2)
+    expect((counts.get('d') ?? 0) / iterations).toBeCloseTo(0.1, 2)
+  })
+
   it('均等4枚でも固定の2周期へ閉じず、全カードへ遷移する', () => {
     const cards: WeightedCard[] = [
       { id: 'a', drop_rate: 0.25 },
