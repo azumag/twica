@@ -66,13 +66,21 @@ describe('selectWeightedCardMinimizingRepeat', () => {
     ]
     mockDeterministicCrypto()
 
+    let nullCount = 0
+    let repeatCount = 0
     for (const previous of cards) {
       for (let sample = 0; sample < 1_000; sample += 1) {
         const picked = selectWeightedCardMinimizingRepeat(cards, previous.id)
-        expect(picked).not.toBeNull()
-        expect(picked?.id).not.toBe(previous.id)
+        if (!picked) {
+          nullCount += 1
+        } else if (picked.id === previous.id) {
+          repeatCount += 1
+        }
       }
     }
+
+    expect(nullCount).toBe(0)
+    expect(repeatCount).toBe(0)
   })
 
   it('均等4枚でも固定の2周期へ閉じず、全カードへ遷移する', () => {
@@ -85,15 +93,22 @@ describe('selectWeightedCardMinimizingRepeat', () => {
     mockDeterministicCrypto()
 
     let previousId = 'a'
+    let nullCount = 0
+    let repeatCount = 0
     const seen = new Set([previousId])
     for (let draw = 0; draw < 1_000; draw += 1) {
       const picked = selectWeightedCardMinimizingRepeat(cards, previousId)
-      expect(picked).not.toBeNull()
-      expect(picked?.id).not.toBe(previousId)
-      previousId = picked?.id ?? previousId
+      if (!picked) {
+        nullCount += 1
+        continue
+      }
+      if (picked.id === previousId) repeatCount += 1
+      previousId = picked.id
       seen.add(previousId)
     }
 
+    expect(nullCount).toBe(0)
+    expect(repeatCount).toBe(0)
     expect(seen).toEqual(new Set(['a', 'b', 'c', 'd']))
   })
 
@@ -107,19 +122,23 @@ describe('selectWeightedCardMinimizingRepeat', () => {
 
     const counts = new Map(cards.map((card) => [card.id, 0]))
     let previousId = 'a'
+    let nullCount = 0
     let repeatCount = 0
     const iterations = 100_000
 
     for (let draw = 0; draw < iterations; draw += 1) {
       const picked = selectWeightedCardMinimizingRepeat(cards, previousId)
-      expect(picked).not.toBeNull()
-      if (!picked) break
+      if (!picked) {
+        nullCount += 1
+        continue
+      }
 
       counts.set(picked.id, (counts.get(picked.id) ?? 0) + 1)
       if (picked.id === previousId) repeatCount += 1
       previousId = picked.id
     }
 
+    expect(nullCount).toBe(0)
     expect((counts.get('a') ?? 0) / iterations).toBeCloseTo(0.6, 2)
     expect((counts.get('b') ?? 0) / iterations).toBeCloseTo(0.2, 2)
     expect((counts.get('c') ?? 0) / iterations).toBeCloseTo(0.2, 2)
