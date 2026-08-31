@@ -21,190 +21,158 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          def replace_between(text: str, start_marker: str, end_marker: str, replacement: str) -> str:
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+              return text[:start] + replacement + text[end:]
+
+          def replace_through(text: str, start_marker: str, end_marker: str, replacement: str) -> str:
+              start = text.index(start_marker)
+              end = text.index(end_marker, start) + len(end_marker)
+              return text[:start] + replacement + text[end:]
+
           page = Path('src/app/overlay/[streamerId]/page.tsx')
           text = page.read_text(encoding='utf-8')
 
-          start_marker = '    const handleQueueError = (error: unknown) => {'
-          end_marker = '    const runProtected = (fn: () => void) => {'
-          start = text.index(start_marker)
-          end = text.index(end_marker, start)
-          replacement = '''    // Queue recovery and presentation timing are separate concerns. A failure
-              // before a card starts can advance immediately, while a presentation-only
-              // failure after the card became visible must preserve its normal display
-              // window. These flags distinguish those cases without stealing the ref
-              // used by the normal reveal/display timers.
-              let displayStarted = false;
-              let displayWindowScheduled = false;
-              let displayWindowElapsed = false;
-              let recoveryScheduled = false;
+          handle_lines = [
+              '    // Queue recovery and presentation timing are separate concerns. A failure',
+              '    // before a card starts can advance immediately, while a presentation-only',
+              '    // failure after the card became visible must preserve its normal display',
+              '    // window. These flags distinguish those cases without stealing the ref',
+              '    // used by the normal reveal/display timers.',
+              '    let displayStarted = false;',
+              '    let displayWindowScheduled = false;',
+              '    let displayWindowElapsed = false;',
+              '    let recoveryScheduled = false;',
+              '',
+              '    const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {',
+              '      if (recoveryScheduled) return;',
+              '      recoveryScheduled = true;',
+              '      const expectedQueueGeneration = queueGeneration;',
+              '      const hideDelayMs = preserveCurrentCard ? options.displayDuration * 1000 : 0;',
+              '',
+              '      // Keep recovery timers local. Cleanup increments queueGeneration, so stale',
+              '      // callbacks become no-ops without overwriting animationTimeoutRef.',
+              '      setTimeout(() => {',
+              '        if (',
+              '          !isOverlayMountedRef.current',
+              '          || expectedQueueGeneration !== queueGenerationRef.current',
+              '        ) {',
+              '          return;',
+              '        }',
+              '        if (displayStarted) {',
+              '          setShowCard(false);',
+              '          setActiveEffectStyle("none");',
+              '          setEffectParticles([]);',
+              '        }',
+              '',
+              '        setTimeout(() => {',
+              '          if (',
+              '            !isOverlayMountedRef.current',
+              '            || expectedQueueGeneration !== queueGenerationRef.current',
+              '          ) {',
+              '            return;',
+              '          }',
+              '          imageLayoutGenerationRef.current += 1;',
+              '          activeDisplayInstanceIdRef.current = undefined;',
+              '          setResult(null);',
+              '          setImageFallbackDisplayInstanceId(null);',
+              '          processQueueRef.current();',
+              '        }, displayStarted ? 500 : 0);',
+              '      }, hideDelayMs);',
+              '    };',
+              '',
+              '    const handleQueueError = (error: unknown) => {',
+              '      if (!displayStarted) {',
+              '        // A card that never started is a failed business-event presentation.',
+              '        settleDisplayCommit(next.displayInstanceId, false);',
+              '        scheduleQueueRecovery(false);',
+              '      } else if (displayWindowElapsed) {',
+              '        // Its intended display window is already over, so advance promptly.',
+              '        scheduleQueueRecovery(false);',
+              '      } else if (!displayWindowScheduled) {',
+              '        // An early presentation failure interrupted the reveal callback before',
+              '        // it could arm the normal display-window timer. Cancel a still-pending',
+              '        // reveal timer, keep the card visible for a bounded window, then advance.',
+              '        if (animationTimeoutRef.current) {',
+              '          clearTimeout(animationTimeoutRef.current);',
+              '          animationTimeoutRef.current = null;',
+              '        }',
+              '        scheduleQueueRecovery(true);',
+              '      }',
+              '      // If the normal display-window timer is already armed, leave it alone.',
+              '',
+              '      try {',
+              '        logger.error("Error processing gacha display queue:", error);',
+              '      } catch {',
+              '        // Diagnostics are best-effort; recovery above is authoritative.',
+              '      }',
+              '      try {',
+              '        addDebugLogRef.current(',
+              '          `processQueue error: ${error instanceof Error ? error.message : String(error)}`',
+              '        );',
+              '      } catch {',
+              '        // Debug UI failures must not block the business-event queue either.',
+              '      }',
+              '    };',
+              '',
+          ]
+          text = replace_between(
+              text,
+              '    const handleQueueError = (error: unknown) => {',
+              '    const runProtected = (fn: () => void) => {',
+              '\n'.join(handle_lines),
+          )
 
-              const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {
-                if (recoveryScheduled) return;
-                recoveryScheduled = true;
-                const expectedQueueGeneration = queueGeneration;
-                const hideDelayMs = preserveCurrentCard ? options.displayDuration * 1000 : 0;
+          show_marker = '      setShowCard(true);'
+          if text.count(show_marker) != 1:
+              raise SystemExit(f'expected one setShowCard marker, got {text.count(show_marker)}')
+          text = text.replace(show_marker, show_marker + '\n      displayStarted = true;', 1)
 
-                // Keep recovery timers local. Cleanup increments queueGeneration, so stale
-                // callbacks become no-ops without overwriting animationTimeoutRef.
-                setTimeout(() => {
-                  if (
-                    !isOverlayMountedRef.current
-                    || expectedQueueGeneration !== queueGenerationRef.current
-                  ) {
-                    return;
-                  }
-                  if (displayStarted) {
-                    setShowCard(false);
-                    setActiveEffectStyle("none");
-                    setEffectParticles([]);
-                  }
+          reveal_marker = '      animationTimeoutRef.current = setTimeout(() => runProtected(() => {\n        if (\n          !isOverlayMountedRef.current'
+          reveal_replacement = '      animationTimeoutRef.current = setTimeout(() => runProtected(() => {\n        // The reveal timer has fired; it no longer needs lifecycle tracking.\n        animationTimeoutRef.current = null;\n        if (\n          !isOverlayMountedRef.current'
+          if text.count(reveal_marker) != 1:
+              raise SystemExit(f'expected one reveal marker, got {text.count(reveal_marker)}')
+          text = text.replace(reveal_marker, reveal_replacement, 1)
 
-                  setTimeout(() => {
-                    if (
-                      !isOverlayMountedRef.current
-                      || expectedQueueGeneration !== queueGenerationRef.current
-                    ) {
-                      return;
-                    }
-                    imageLayoutGenerationRef.current += 1;
-                    activeDisplayInstanceIdRef.current = undefined;
-                    setResult(null);
-                    setImageFallbackDisplayInstanceId(null);
-                    processQueueRef.current();
-                  }, displayStarted ? 500 : 0);
-                }, hideDelayMs);
-              };
-
-              const handleQueueError = (error: unknown) => {
-                if (!displayStarted) {
-                  // A card that never started is a failed business-event presentation.
-                  settleDisplayCommit(next.displayInstanceId, false);
-                  scheduleQueueRecovery(false);
-                } else if (displayWindowElapsed) {
-                  // Its intended display window is already over, so advance promptly.
-                  scheduleQueueRecovery(false);
-                } else if (!displayWindowScheduled) {
-                  // An early presentation failure interrupted the reveal callback before
-                  // it could arm the normal display-window timer. Cancel a still-pending
-                  // reveal timer, keep the card visible for a bounded window, then advance.
-                  if (animationTimeoutRef.current) {
-                    clearTimeout(animationTimeoutRef.current);
-                    animationTimeoutRef.current = null;
-                  }
-                  scheduleQueueRecovery(true);
-                }
-                // If the normal display-window timer is already armed, leave it alone.
-
-                try {
-                  logger.error("Error processing gacha display queue:", error);
-                } catch {
-                  // Diagnostics are best-effort; recovery above is authoritative.
-                }
-                try {
-                  addDebugLogRef.current(
-                    `processQueue error: ${error instanceof Error ? error.message : String(error)}`
-                  );
-                } catch {
-                  // Debug UI failures must not block the business-event queue either.
-                }
-              };
-          '''
-          # The YAML block indentation becomes part of the triple-quoted literal above.
-          # Normalize the 10 extra spaces while preserving the intended 4-space TS base.
-          replacement = '\n'.join(
-              line[10:] if line.startswith('          ') else line
-              for line in replacement.splitlines()
-          ) + '\n'
-          text = text[:start] + replacement + text[end:]
-
-          old = '      setShowCard(true);\n      // The state setter has run, but the DOM commit happens on the next React'
-          new = '      setShowCard(true);\n      displayStarted = true;\n      // The state setter has run, but the DOM commit happens on the next React'
-          if text.count(old) != 1:
-              raise SystemExit('setShowCard target was not unique')
-          text = text.replace(old, new)
-
-          old = '''      animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-              if (
-                !isOverlayMountedRef.current'''
-          new = '''      animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-              // The reveal timer has fired; it no longer needs lifecycle tracking.
-              animationTimeoutRef.current = null;
-              if (
-                !isOverlayMountedRef.current'''
-          old = '\n'.join(line[10:] if line.startswith('          ') else line for line in old.splitlines())
-          new = '\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())
-          if text.count(old) != 1:
-              raise SystemExit('reveal timer target was not unique')
-          text = text.replace(old, new)
-
-          old = '''        animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-              finishDisplayWindow();
-            }), options.displayDuration * 1000);'''
-          new = '''        displayWindowScheduled = true;
-            animationTimeoutRef.current = setTimeout(() => runProtected(() => {
-              animationTimeoutRef.current = null;
-              displayWindowScheduled = false;
-              displayWindowElapsed = true;
-              finishDisplayWindow();
-            }), options.displayDuration * 1000);'''
-          old = '\n'.join(line[10:] if line.startswith('          ') else line for line in old.splitlines())
-          new = '\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())
-          if text.count(old) != 1:
-              raise SystemExit('display window target was not unique')
-          text = text.replace(old, new)
+          display_marker = '        animationTimeoutRef.current = setTimeout(() => runProtected(() => {\n          finishDisplayWindow();\n        }), options.displayDuration * 1000);'
+          display_replacement = '        displayWindowScheduled = true;\n        animationTimeoutRef.current = setTimeout(() => runProtected(() => {\n          animationTimeoutRef.current = null;\n          displayWindowScheduled = false;\n          displayWindowElapsed = true;\n          finishDisplayWindow();\n        }), options.displayDuration * 1000);'
+          if text.count(display_marker) != 1:
+              raise SystemExit(f'expected one display marker, got {text.count(display_marker)}')
+          text = text.replace(display_marker, display_replacement, 1)
           page.write_text(text, encoding='utf-8')
 
           test = Path('tests/unit/components/overlay-page.test.tsx')
           text = test.read_text(encoding='utf-8')
-          old = '''    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
-              expect(loggerErrorSpy).toHaveBeenCalled()
-              // The normal hide chain was never scheduled, so handleQueueError itself
-              // must remove the failed card instead of leaving it visible indefinitely.
-              expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
-
-              // 例外がhandleQueueErrorへ届いていれば、setTimeout(0)経由でロックが
-              // 解放され、次のカードが表示されるはず。届いていなければ(=レビュー
-              // 指摘の再発)、isDisplayingRefがtrueのまま残り、これは表示されない。
-              act(() => {
-                onGachaResult?.({
-                  type: 'gacha',
-                  card: { id: 'card-ok2', name: 'RecoveredFromTimer', description: null, image_url: null, rarity: 'common' },
-                  userTwitchUsername: 'Viewer',
-                })
-              })
-              await act(async () => {
-                await vi.advanceTimersByTimeAsync(100)
-              })
-              expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
-              loggerErrorSpy.mockRestore()'''
-          new = '''    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
-              expect(loggerErrorSpy).toHaveBeenCalled()
-              // Sound setup is presentation-only. The card already started, so an error
-              // must not erase the business event immediately.
-              expect(screen.getByText('TimerThrow')).toBeInTheDocument()
-
-              act(() => {
-                onGachaResult?.({
-                  type: 'gacha',
-                  card: { id: 'card-ok2', name: 'RecoveredFromTimer', description: null, image_url: null, rarity: 'common' },
-                  userTwitchUsername: 'Viewer',
-                })
-              })
-              expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()
-
-              // Recovery preserves the configured six-second display window, then uses
-              // the existing 500ms inter-card gap before advancing the queued card.
-              await act(async () => {
-                await vi.advanceTimersByTimeAsync(6_500)
-              })
-              expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
-              expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
-              loggerErrorSpy.mockRestore()'''
-          old = '\n'.join(line[10:] if line.startswith('          ') else line for line in old.splitlines())
-          new = '\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines())
-          if text.count(old) != 1:
-              raise SystemExit('timer recovery test target was not unique')
-          test.write_text(text.replace(old, new), encoding='utf-8')
+          test_start = '    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()\n    expect(loggerErrorSpy).toHaveBeenCalled()'
+          test_end = '    loggerErrorSpy.mockRestore()'
+          test_lines = [
+              '    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()',
+              '    expect(loggerErrorSpy).toHaveBeenCalled()',
+              '    // Sound setup is presentation-only. The card already started, so an error',
+              '    // must not erase the business event immediately.',
+              "    expect(screen.getByText('TimerThrow')).toBeInTheDocument()",
+              '',
+              '    act(() => {',
+              '      onGachaResult?.({',
+              "        type: 'gacha',",
+              "        card: { id: 'card-ok2', name: 'RecoveredFromTimer', description: null, image_url: null, rarity: 'common' },",
+              "        userTwitchUsername: 'Viewer',",
+              '      })',
+              '    })',
+              "    expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()",
+              '',
+              '    // Recovery preserves the configured six-second display window, then uses',
+              '    // the existing 500ms inter-card gap before advancing the queued card.',
+              '    await act(async () => {',
+              '      await vi.advanceTimersByTimeAsync(6_500)',
+              '    })',
+              "    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()",
+              "    expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()",
+              '    loggerErrorSpy.mockRestore()',
+          ]
+          text = replace_through(text, test_start, test_end, '\n'.join(test_lines))
+          test.write_text(text, encoding='utf-8')
           PY
 
       - name: Commit mandatory fixes and remove one-off workflow
