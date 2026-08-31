@@ -1744,13 +1744,10 @@ describe('OverlayPage', () => {
     })
     expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
     expect(loggerErrorSpy).toHaveBeenCalled()
-    // The normal hide chain was never scheduled, so handleQueueError itself
-    // must remove the failed card instead of leaving it visible indefinitely.
-    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
+    // Sound setup is presentation-only. The card already started, so an error
+    // must not erase the business event immediately.
+    expect(screen.getByText('TimerThrow')).toBeInTheDocument()
 
-    // 例外がhandleQueueErrorへ届いていれば、setTimeout(0)経由でロックが
-    // 解放され、次のカードが表示されるはず。届いていなければ(=レビュー
-    // 指摘の再発)、isDisplayingRefがtrueのまま残り、これは表示されない。
     act(() => {
       onGachaResult?.({
         type: 'gacha',
@@ -1758,9 +1755,14 @@ describe('OverlayPage', () => {
         userTwitchUsername: 'Viewer',
       })
     })
+    expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()
+
+    // Recovery preserves the configured six-second display window, then uses
+    // the existing 500ms inter-card gap before advancing the queued card.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(6_500)
     })
+    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
     expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
     loggerErrorSpy.mockRestore()
   })

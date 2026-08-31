@@ -995,40 +995,77 @@ export default function OverlayPage() {
     //
     // エラー後の再開は setTimeout(..., 0) で次のマクロタスクへ送る。
     // 同期再帰にすると連続失敗時にコールスタックを消費し続けるため。
-    const handleQueueError = (error: unknown) => {
-      // Recovery is the primary contract. Arm it before diagnostics so a
-      // broken logger/debug panel cannot leave the display lock stuck. Keep
-      // the timeout in the tracked ref so lifecycle cleanup can cancel an old
-      // subscription's recovery before a newer queue starts.
-      animationTimeoutRef.current = setTimeout(() => {
-        animationTimeoutRef.current = null;
+    // Queue recovery and presentation timing are separate concerns. A failure
+    // before a card starts can advance immediately, while a presentation-only
+    // failure after the card became visible must preserve its normal display
+    // window. These flags distinguish those cases without stealing the ref
+    // used by the normal reveal/display timers.
+    let displayStarted = false;
+    let displayWindowScheduled = false;
+    let displayWindowElapsed = false;
+    let recoveryScheduled = false;
+
+    const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {
+      if (recoveryScheduled) return;
+      recoveryScheduled = true;
+      const expectedQueueGeneration = queueGeneration;
+      const hideDelayMs = preserveCurrentCard ? options.displayDuration * 1000 : 0;
+
+      // Keep recovery timers local. Cleanup increments queueGeneration, so stale
+      // callbacks become no-ops without overwriting animationTimeoutRef.
+      setTimeout(() => {
         if (
           !isOverlayMountedRef.current
-          || queueGeneration !== queueGenerationRef.current
+          || expectedQueueGeneration !== queueGenerationRef.current
         ) {
           return;
         }
-        processQueueRef.current();
-      }, 0);
+        if (displayStarted) {
+          setShowCard(false);
+          setActiveEffectStyle("none");
+          setEffectParticles([]);
+        }
 
-      // If this item never committed, tell the transport to retry it instead
-      // of permanently deduplicating a draw that the viewer could not see.
-      settleDisplayCommit(next.displayInstanceId, false);
-      // A presentation error may happen after the card became visible but
-      // before the normal hide chain was scheduled. Remove that failed card
-      // immediately so an empty queue cannot leave it on screen indefinitely.
-      imageLayoutGenerationRef.current += 1;
-      activeDisplayInstanceIdRef.current = undefined;
-      setShowCard(false);
-      setResult(null);
-      setImageFallbackDisplayInstanceId(null);
-      setActiveEffectStyle("none");
-      setEffectParticles([]);
+        setTimeout(() => {
+          if (
+            !isOverlayMountedRef.current
+            || expectedQueueGeneration !== queueGenerationRef.current
+          ) {
+            return;
+          }
+          imageLayoutGenerationRef.current += 1;
+          activeDisplayInstanceIdRef.current = undefined;
+          setResult(null);
+          setImageFallbackDisplayInstanceId(null);
+          processQueueRef.current();
+        }, displayStarted ? 500 : 0);
+      }, hideDelayMs);
+    };
+
+    const handleQueueError = (error: unknown) => {
+      if (!displayStarted) {
+        // A card that never started is a failed business-event presentation.
+        settleDisplayCommit(next.displayInstanceId, false);
+        scheduleQueueRecovery(false);
+      } else if (displayWindowElapsed) {
+        // Its intended display window is already over, so advance promptly.
+        scheduleQueueRecovery(false);
+      } else if (!displayWindowScheduled) {
+        // An early presentation failure interrupted the reveal callback before
+        // it could arm the normal display-window timer. Cancel a still-pending
+        // reveal timer, keep the card visible for a bounded window, then advance.
+        if (animationTimeoutRef.current) {
+          clearTimeout(animationTimeoutRef.current);
+          animationTimeoutRef.current = null;
+        }
+        scheduleQueueRecovery(true);
+      }
+      // If the normal display-window timer is already armed, leave it alone.
 
       try {
         logger.error("Error processing gacha display queue:", error);
       } catch {
-        // Diagnostics are best-effort; the recovery timer above is authoritative.
+        // Diagnostics are best-effort; recovery above is authoritative.
       }
       try {
         addDebugLogRef.current(
@@ -1092,6 +1129,7 @@ export default function OverlayPage() {
       // business eventを受信した時点でカードを可視化し、metadataは
       // presentation-onlyのレイアウト更新として並行して扱う。
       setShowCard(true);
+      displayStarted = true;
       // The state setter has run, but the DOM commit happens on the next React
       // render. Use "scheduled" here; the commit effect below is the only place
       // that reports an actual card DOM commit.
@@ -1132,6 +1170,8 @@ export default function OverlayPage() {
       // 表示は既に開始済み。ここでは効果音と表示終了だけを予約する。
       // metadataの解決やrevealタイマーをカードDOMのliveness条件にしない。
       animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+        // The reveal timer has fired; it no longer needs lifecycle tracking.
+        animationTimeoutRef.current = null;
         if (
           !isOverlayMountedRef.current
           || queueGeneration !== queueGenerationRef.current
@@ -1228,7 +1268,11 @@ export default function OverlayPage() {
           };
           setTimeout(() => runProtected(() => settleFallbackAfterCommit(0)), 0);
         };
+        displayWindowScheduled = true;
         animationTimeoutRef.current = setTimeout(() => runProtected(() => {
+          animationTimeoutRef.current = null;
+          displayWindowScheduled = false;
+          displayWindowElapsed = true;
           finishDisplayWindow();
         }), options.displayDuration * 1000);
       }), MIN_REVEAL_LEAD_IN_MS);
