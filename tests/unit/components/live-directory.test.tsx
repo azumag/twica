@@ -232,11 +232,27 @@ describe("LiveDirectory", () => {
 
     // 初期選択は直近7日間。全期間へは明示的な操作でのみ切り替わる（regression guard）。
     expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
+    const last7DaysRadio = screen.getByRole("radio", { name: "直近7日間" });
+    const allTimeRadio = screen.getByRole("radio", { name: "全期間" });
+    const periodHelp = screen.getByText(
+      "直近7日間に記録されたカード引き換えを集計しています。",
+    );
+
+    expect(last7DaysRadio).toBeChecked();
+    expect(last7DaysRadio).toHaveAttribute(
+      "aria-describedby",
+      "live-directory-ranking-period-help",
+    );
+    expect(allTimeRadio).toHaveAttribute(
+      "aria-describedby",
+      "live-directory-ranking-period-help",
+    );
+    expect(periodHelp).toHaveAttribute("id", "live-directory-ranking-period-help");
+    expect(last7DaysRadio.closest("label")?.querySelector("span")).toHaveClass(
+      "min-h-11",
+      "min-w-11",
+    );
     expect(screen.getByText("345ポイント")).toBeInTheDocument();
-    expect(
-      screen.getByText("直近7日間に記録されたカード引き換えを集計しています。"),
-    ).toBeInTheDocument();
   });
 
   it("switches usage ranking periods while card count always uses current values", () => {
