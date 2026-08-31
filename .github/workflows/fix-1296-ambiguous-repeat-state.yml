@@ -21,35 +21,7 @@ jobs:
 
       - name: Resync repeat predecessor after ambiguous commit recovery
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/lib/services/gacha.ts')
-          text = path.read_text()
-          old = """            if (completedDrawCount >= drawCount) {
-              // 最終drawのduplicate RPC自身が全履歴からoutboxを冪等再構成済み。
-              return err('Duplicate event')
-            }
-            index = completedDrawCount - 1
-            continue
-"""
-          new = """            if (completedDrawCount >= drawCount) {
-              // 最終drawのduplicate RPC自身が全履歴からoutboxを冪等再構成済み。
-              return err('Duplicate event')
-            }
-            // 初回COMMIT成功・応答消失では、メモリ上のpreviousCardIdだけが
-            // COMMIT済み履歴より1枚古い。次drawの即時反復抑制もDB正本へ再同期する。
-            if (previousCardId !== undefined) {
-              previousCardId = await this.getLatestCardIdForStreamer(streamerId)
-            }
-            index = completedDrawCount - 1
-            continue
-"""
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'expected one recovery block, found {count}')
-          path.write_text(text.replace(old, new, 1))
-          PY
+          python -c 'from pathlib import Path; p=Path("src/lib/services/gacha.ts"); t=p.read_text(); old="            index = completedDrawCount - 1\n            continue"; new="            // 初回COMMIT成功・応答消失では、メモリ上のpreviousCardIdだけが\n            // COMMIT済み履歴より1枚古い。次drawの反復抑制もDB正本へ再同期する。\n            previousCardId = await this.getLatestCardIdForStreamer(streamerId)\n            index = completedDrawCount - 1\n            continue"; assert t.count(old) == 1, t.count(old); p.write_text(t.replace(old, new, 1))'
 
       - name: Remove one-shot workflow and commit
         run: |
