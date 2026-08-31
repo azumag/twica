@@ -1,0 +1,150 @@
+name: Temporary PR1307 review fix
+
+on:
+  push:
+    branches:
+      - fix/1002-overlay-queue-recovery
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    if: github.event.head_commit.message == 'chore: apply PR1307 review fix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/1002-overlay-queue-recovery
+          fetch-depth: 0
+      - name: Apply required review fix and regression test
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          page = Path('src/app/overlay/[streamerId]/page.tsx')
+          source = page.read_text()
+          old = '''      } else if (!displayWindowScheduled) {
+        // An early presentation failure interrupted the reveal callback before
+        // it could arm the normal display-window timer. Cancel a still-pending
+        // reveal timer, keep the card visible for a bounded window, then advance.
+        if (animationTimeoutRef.current) {
+          clearTimeout(animationTimeoutRef.current);
+          animationTimeoutRef.current = null;
+        }
+        scheduleQueueRecovery(true);
+      }
+'''
+          new = '''      } else if (!displayWindowScheduled) {
+        // An early presentation failure interrupted the reveal callback before
+        // it could arm the normal display-window timer. Cancel a still-pending
+        // reveal timer, keep the card visible for a bounded window, then advance.
+        if (animationTimeoutRef.current) {
+          clearTimeout(animationTimeoutRef.current);
+          animationTimeoutRef.current = null;
+        }
+        // This recovery path cannot reach the normal fallback/commit chain.
+        // Settle the transport ACK explicitly before the bounded visual recovery;
+        // otherwise a short display duration can unmount the card first and let
+        // the later watchdog fail an already-advanced queue item implicitly.
+        settleDisplayCommit(next.displayInstanceId, false);
+        scheduleQueueRecovery(true);
+      }
+'''
+          if source.count(old) != 1:
+              raise SystemExit(f'expected one page.tsx target, found {source.count(old)}')
+          page.write_text(source.replace(old, new, 1))
+
+          test = Path('tests/unit/components/overlay-page.test.tsx')
+          source = test.read_text()
+          old = '''  it('setTimeoutでスケジュールされる表示チェーン内の例外でもロックが残らない(Issue #999レビュー指摘#1回帰)', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+'''
+          new = '''  it('setTimeoutでスケジュールされる表示チェーン内の例外でもロックが残らない(Issue #999レビュー指摘#1回帰)', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+'''
+          if source.count(old) != 1:
+              raise SystemExit(f'expected one test header target, found {source.count(old)}')
+          source = source.replace(old, new, 1)
+
+          old = '''    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: { id: 'card-timer-throw', name: 'TimerThrow', description: null, image_url: null, rarity: 'rare' },
+        userTwitchUsername: 'Viewer',
+      })
+    })
+'''
+          new = '''    let failedDelivery: Promise<boolean> | undefined
+    act(() => {
+      failedDelivery = onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'card-timer-throw',
+          name: 'TimerThrow',
+          description: null,
+          image_url: 'https://example.com/pending-card.png',
+          rarity: 'rare',
+        },
+        userTwitchUsername: 'Viewer',
+      }) as unknown as Promise<boolean>
+    })
+'''
+          if source.count(old) != 1:
+              raise SystemExit(f'expected one first delivery target, found {source.count(old)}')
+          source = source.replace(old, new, 1)
+
+          old = '''    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
+    expect(loggerErrorSpy).toHaveBeenCalled()
+    // Sound setup is presentation-only. The card already started, so an error
+    // must not erase the business event immediately.
+    expect(screen.getByText('TimerThrow')).toBeInTheDocument()
+'''
+          new = '''    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
+    expect(loggerErrorSpy).toHaveBeenCalled()
+    // The image is intentionally left pending, so the display ACK is still open
+    // when the reveal callback fails. Recovery must settle it explicitly rather
+    // than leaving the 4.5s watchdog to decide after the card has been removed.
+    await expect(failedDelivery).resolves.toBe(false)
+    // Sound setup is presentation-only. The card already started, so an error
+    // must not erase the business event immediately.
+    expect(screen.getByText('TimerThrow')).toBeInTheDocument()
+'''
+          if source.count(old) != 1:
+              raise SystemExit(f'expected one ack assertion target, found {source.count(old)}')
+          source = source.replace(old, new, 1)
+
+          old = '''    // Recovery preserves the configured six-second display window, then uses
+    // the existing 500ms inter-card gap before advancing the queued card.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_500)
+    })
+'''
+          new = '''    // Recovery preserves the configured two-second display window, then uses
+    // the existing 500ms inter-card gap before advancing the queued card.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500)
+    })
+'''
+          if source.count(old) != 1:
+              raise SystemExit(f'expected one recovery timing target, found {source.count(old)}')
+          test.write_text(source.replace(old, new, 1))
+
+          Path('.github/workflows/tmp-pr1307-review-fix.yml').unlink()
+          PY
+      - name: Run focused regression test
+        run: npx vitest run tests/unit/components/overlay-page.test.tsx
+      - name: Run typecheck
+        run: npm run typecheck
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/app/overlay/'[streamerId]'/page.tsx tests/unit/components/overlay-page.test.tsx .github/workflows/tmp-pr1307-review-fix.yml
+          git commit -m 'fix(overlay): settle recovery display ACK explicitly'
+          git push origin HEAD:fix/1002-overlay-queue-recovery
