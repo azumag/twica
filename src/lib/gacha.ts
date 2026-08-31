@@ -99,3 +99,89 @@ export function selectWeightedCard<T extends WeightedCard>(items: T[]): T | null
 
   return lastWeighted
 }
+
+/**
+ * Issue #1296: 設定された長期排出率を維持したまま、直前と同じカードになる確率を
+ * 理論上可能な最小値まで下げる重み付き抽選。
+ *
+ * 単純に previousCardId を候補から除外して残りを再正規化すると、例えば
+ * 90% / 10% の2枚プールが必ず交互になり、長期排出率が 50% / 50% へ壊れる。
+ * ここでは各カードの重み区間を円周上へカードID順で配置し、直前カードの区間内
+ * から一様に点を選んだ後、その点をちょうど半周だけ回転して次のカードへ写す。
+ *
+ * 固定プールで直前状態が設定重みの分布に従うとき、直前区間内の点を混ぜた全体は
+ * 円周上の一様分布になる。半周回転は一様分布を保つため、次カードの周辺分布も
+ * 元の設定重みと一致する。一方、長さが円周の半分以下の区間は半周先の自分自身と
+ * 重ならないため即時反復は0になる。過半のカードだけは区間が必ず自分自身と
+ * `2 * weight - totalWeight` だけ重なり、その分が排出率を維持するため不可避な
+ * 反復になる。したがって全体の反復率は理論下限
+ * `max(0, 2 * maxProbability - 1)` に一致する。
+ *
+ * DBの返却順が呼び出し間で変わると区間配置も変わり上の定常性が崩れるため、
+ * 元配列を変更せずカードID順の安定したコピーを作る。同一IDは本番DBでは主キーに
+ * より存在しないが、fixtureでも決定的になるよう元indexをタイブレークに使う。
+ *
+ * previousCardId が未指定・現プールに存在しない場合は、初回またはプール変更と
+ * みなして従来の独立抽選へフォールバックする。排出可能カードが1枚だけなら、
+ * 反復を避ける方法がないためそのカードを返す。
+ */
+export function selectWeightedCardMinimizingRepeat<T extends WeightedCard>(
+  items: T[],
+  previousCardId: string | null | undefined,
+): T | null {
+  if (previousCardId == null) {
+    return selectWeightedCard(items)
+  }
+
+  const weightedItems = items
+    .map((item, index) => ({ item, index, weight: toWeight(item.drop_rate) }))
+    .filter(({ weight }) => weight > 0)
+    .sort((left, right) => {
+      if (left.item.id < right.item.id) return -1
+      if (left.item.id > right.item.id) return 1
+      return left.index - right.index
+    })
+
+  if (weightedItems.length === 0) {
+    return null
+  }
+  if (weightedItems.length === 1) {
+    return weightedItems[0].item
+  }
+
+  let totalWeight = 0
+  let previousStart = 0
+  let previousWeight = 0
+  let previousFound = false
+
+  for (const entry of weightedItems) {
+    if (entry.item.id === previousCardId && !previousFound) {
+      previousStart = totalWeight
+      previousWeight = entry.weight
+      previousFound = true
+    }
+    totalWeight += entry.weight
+  }
+
+  // 個々の重みは有限でも合計だけがInfinityへオーバーフローする異常値では、
+  // 半周・剰余計算がNaNになる。既存抽選の安全網へ戻し、nullで課金結果を失わない。
+  if (!Number.isFinite(totalWeight) || !previousFound) {
+    return selectWeightedCard(items)
+  }
+
+  const sourcePoint = previousStart + secureRandomUnit() * previousWeight
+  const targetPoint = (sourcePoint + totalWeight / 2) % totalWeight
+
+  let cumulative = 0
+  let lastWeighted: T | null = null
+  for (const entry of weightedItems) {
+    cumulative += entry.weight
+    lastWeighted = entry.item
+    if (targetPoint < cumulative) {
+      return entry.item
+    }
+  }
+
+  // selectWeightedCard と同じく、浮動小数点境界や将来の実装変更に対する安全網。
+  return lastWeighted
+}
