@@ -1011,10 +1011,34 @@ export default function OverlayPage() {
       const expectedQueueGeneration = queueGeneration;
       const hideDelayMs = preserveCurrentCard ? options.displayDuration * 1000 : 0;
 
+      const finishQueueRecovery = () => {
+        if (
+          !isOverlayMountedRef.current
+          || expectedQueueGeneration !== queueGenerationRef.current
+        ) {
+          return;
+        }
+
+        imageLayoutGenerationRef.current += 1;
+        activeDisplayInstanceIdRef.current = undefined;
+        try {
+          setResult(null);
+        } finally {
+          try {
+            setImageFallbackDisplayInstanceId(null);
+          } finally {
+            // Recovery must always release the queue lock, even if a React
+            // state update unexpectedly throws while cleaning up the failed card.
+            recoveryScheduled = false;
+            void processQueueRef.current();
+          }
+        }
+      };
+
       // Keep recovery timers local. Cleanup increments queueGeneration, so stale
-      // callbacks become no-ops without overwriting animationTimeoutRef. Failures
-      // before display starts advance in this single macro task; only a card that
-      // was actually visible keeps the normal 500ms inter-card gap.
+      // callbacks become no-ops without overwriting animationTimeoutRef. Recovery
+      // callbacks use finally blocks because they run outside the surrounding
+      // processQueue try/catch and therefore must release the queue themselves.
       setTimeout(() => {
         if (
           !isOverlayMountedRef.current
@@ -1024,30 +1048,19 @@ export default function OverlayPage() {
         }
 
         if (!displayStarted) {
-          imageLayoutGenerationRef.current += 1;
-          activeDisplayInstanceIdRef.current = undefined;
-          setResult(null);
-          setImageFallbackDisplayInstanceId(null);
-          processQueueRef.current();
+          finishQueueRecovery();
           return;
         }
 
-        setShowCard(false);
-        setActiveEffectStyle("none");
-        setEffectParticles([]);
-        setTimeout(() => {
-          if (
-            !isOverlayMountedRef.current
-            || expectedQueueGeneration !== queueGenerationRef.current
-          ) {
-            return;
-          }
-          imageLayoutGenerationRef.current += 1;
-          activeDisplayInstanceIdRef.current = undefined;
-          setResult(null);
-          setImageFallbackDisplayInstanceId(null);
-          processQueueRef.current();
-        }, 500);
+        try {
+          setShowCard(false);
+          setActiveEffectStyle("none");
+          setEffectParticles([]);
+        } finally {
+          // Keep the normal inter-card gap, but guarantee the final recovery
+          // callback is scheduled even if presentation cleanup throws.
+          setTimeout(finishQueueRecovery, 500);
+        }
       }, hideDelayMs);
     };
 
