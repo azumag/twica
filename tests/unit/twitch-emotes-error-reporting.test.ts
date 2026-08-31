@@ -37,7 +37,7 @@ describe('GET /api/twitch/emotes error reporting', () => {
     })
   })
 
-  it('token refresh失敗時の安全な診断contextをhandleApiErrorへ渡す', async () => {
+  it('token refresh失敗時の診断contextをhandleApiErrorへ渡す', async () => {
     const tokenError = new Error('refresh failed')
     const reportContext = {
       refreshStatus: 503,
