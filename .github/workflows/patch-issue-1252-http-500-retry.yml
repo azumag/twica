@@ -1,0 +1,83 @@
+name: One-off patch issue 1252 HTTP 500 retry
+
+on:
+  push:
+    branches:
+      - fix/1252-http-500-retry
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/1252-http-500-retry
+          fetch-depth: 0
+
+      - name: Retry contextual HTTP 500 errors
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path("src/lib/r2-client.ts")
+          text = source.read_text(encoding="utf-8")
+          old = '''  // 【Issue #984】裸の'503'部分文字列は、キー名やリクエストIDにたまたま'503'という
+  // 数字列が含まれる場合（例: 'photo-503.png' 等）に恒久エラーを一時障害と誤判定し、
+  // 無駄なリトライ（最大 maxRetries+1 回・最大約7秒）を発生させるリスクがあった。
+  // 'http'/'status'という文脈語が近傍にある場合のみHTTP 503相当として扱うよう限定する。
+  /\\b(?:http|status)\\D{0,10}503\\b/i,'''
+          new = '''  // 【Issue #984/#1252】裸の500/503部分文字列は、キー名やリクエストIDに
+  // たまたま数字列が含まれる場合（例: photo-500.png）まで一時障害と誤判定する。
+  // HTTP 500/503はいずれも一過性のサーバー障害として再試行するが、誤検知を避けるため
+  // `http` / `status` という文脈語が近傍にある場合だけ対象にする。
+  /\\b(?:http|status)\\D{0,10}(?:500|503)\\b/i,'''
+          if text.count(old) != 1:
+              raise SystemExit("r2 transient pattern target was not unique")
+          source.write_text(text.replace(old, new), encoding="utf-8")
+
+          test = Path("tests/unit/r2-client-transient-error.test.ts")
+          text = test.read_text(encoding="utf-8")
+          old = '''  it('HTTPステータス表記の503（"HTTP 503"）を一時障害として扱う', () => {
+    expect(isTransientR2Error('Request failed with HTTP 503')).toBe(true)
+  })
+
+  it('HTTPステータス表記の503（"status: 503"）を一時障害として扱う', () => {
+    expect(isTransientR2Error('put: status: 503, please retry later')).toBe(true)
+  })
+
+  // 【Issue #984/#1252】裸の'503'部分文字列マッチは、キー名やリクエストIDに偶然数字列を含む
+  // 恒久エラーを誤って一時障害と判定するリスクがあった。500は現状リトライ対象外だが、
+  // HTTP statusの文脈が無い数字列を扱わない負例として503とあわせて固定する。
+  it.each(['500', '503'])(
+    'キー名にたまたま%sを含む恒久エラーは一時障害として扱わない (Issue #984)',
+    (numericToken) => {'''
+          new = '''  it.each([
+    ['HTTP 500', 'Request failed with HTTP 500'],
+    ['status: 500', 'put: status: 500, please retry later'],
+    ['HTTP 503', 'Request failed with HTTP 503'],
+    ['status: 503', 'put: status: 503, please retry later'],
+  ])('HTTPステータス表記の%sを一時障害として扱う', (_label, message) => {
+    expect(isTransientR2Error(message)).toBe(true)
+  })
+
+  // 【Issue #984/#1252】500/503はHTTPステータスの文脈がある場合だけ再試行する。
+  // 文脈語のない裸の数字列を追加するとファイル名等まで誤判定するため、両方を負例で固定する。
+  it.each(['500', '503'])(
+    'キー名にたまたま%sを含む恒久エラーは一時障害として扱わない (Issue #984/#1252)',
+    (numericToken) => {'''
+          if text.count(old) != 1:
+              raise SystemExit("r2 transient test target was not unique")
+          test.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
+      - name: Commit patch and remove one-off workflow
+        run: |
+          rm .github/workflows/patch-issue-1252-http-500-retry.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/lib/r2-client.ts tests/unit/r2-client-transient-error.test.ts .github/workflows/patch-issue-1252-http-500-retry.yml
+          git commit -m "fix(r2): HTTP文脈の500を一時障害として扱う\n\nCloses #1252"
+          git push origin HEAD:fix/1252-http-500-retry
