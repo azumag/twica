@@ -1006,41 +1006,50 @@ export default function OverlayPage() {
     let recoveryScheduled = false;
 
     const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {
-      if (recoveryScheduled) return;
-      recoveryScheduled = true;
-      const expectedQueueGeneration = queueGeneration;
-      const hideDelayMs = preserveCurrentCard ? options.displayDuration * 1000 : 0;
+  if (recoveryScheduled) return;
+  recoveryScheduled = true;
+  const expectedQueueGeneration = queueGeneration;
+  const hideDelayMs = preserveCurrentCard ? options.displayDuration * 1000 : 0;
 
-      // Keep recovery timers local. Cleanup increments queueGeneration, so stale
-      // callbacks become no-ops without overwriting animationTimeoutRef.
-      setTimeout(() => {
-        if (
-          !isOverlayMountedRef.current
-          || expectedQueueGeneration !== queueGenerationRef.current
-        ) {
-          return;
-        }
-        if (displayStarted) {
-          setShowCard(false);
-          setActiveEffectStyle("none");
-          setEffectParticles([]);
-        }
+  // Keep recovery timers local. Cleanup increments queueGeneration, so stale
+  // callbacks become no-ops without overwriting animationTimeoutRef. Failures
+  // before display starts advance in this single macro task; only a card that
+  // was actually visible keeps the normal 500ms inter-card gap.
+  setTimeout(() => {
+    if (
+      !isOverlayMountedRef.current
+      || expectedQueueGeneration !== queueGenerationRef.current
+    ) {
+      return;
+    }
 
-        setTimeout(() => {
-          if (
-            !isOverlayMountedRef.current
-            || expectedQueueGeneration !== queueGenerationRef.current
-          ) {
-            return;
-          }
-          imageLayoutGenerationRef.current += 1;
-          activeDisplayInstanceIdRef.current = undefined;
-          setResult(null);
-          setImageFallbackDisplayInstanceId(null);
-          processQueueRef.current();
-        }, displayStarted ? 500 : 0);
-      }, hideDelayMs);
-    };
+    if (!displayStarted) {
+      imageLayoutGenerationRef.current += 1;
+      activeDisplayInstanceIdRef.current = undefined;
+      setResult(null);
+      setImageFallbackDisplayInstanceId(null);
+      processQueueRef.current();
+      return;
+    }
+
+    setShowCard(false);
+    setActiveEffectStyle("none");
+    setEffectParticles([]);
+    setTimeout(() => {
+      if (
+        !isOverlayMountedRef.current
+        || expectedQueueGeneration !== queueGenerationRef.current
+      ) {
+        return;
+      }
+      imageLayoutGenerationRef.current += 1;
+      activeDisplayInstanceIdRef.current = undefined;
+      setResult(null);
+      setImageFallbackDisplayInstanceId(null);
+      processQueueRef.current();
+    }, 500);
+  }, hideDelayMs);
+};
 
     const handleQueueError = (error: unknown) => {
       if (!displayStarted) {
