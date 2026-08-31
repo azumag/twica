@@ -1,0 +1,31 @@
+name: Sync Issue 1296 branch with preview
+
+on:
+  push:
+    branches:
+      - fix/1296-anti-repeat-gacha
+    paths:
+      - .github/workflows/sync-1296-preview.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/1296-anti-repeat-gacha
+          fetch-depth: 0
+
+      - name: Merge latest preview and remove one-shot workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin preview
+          git merge --no-commit --no-ff origin/preview
+          rm .github/workflows/sync-1296-preview.yml
+          git add -u .github/workflows/sync-1296-preview.yml
+          git commit -m "chore: previewの最新変更を取り込む" -m "Refs #1296"
+          git push origin HEAD:fix/1296-anti-repeat-gacha
