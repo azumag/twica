@@ -1,13 +1,9 @@
 name: One-off fix PR 1307
-
 on:
   push:
-    branches:
-      - fix/1002-overlay-queue-recovery
-
+    branches: ["fix/1002-overlay-queue-recovery"]
 permissions:
   contents: write
-
 jobs:
   patch:
     runs-on: ubuntu-latest
@@ -16,85 +12,16 @@ jobs:
         with:
           ref: fix/1002-overlay-queue-recovery
           fetch-depth: 0
-      - name: Patch queue recovery and remove one-off workflow
+      - name: Patch queue recovery
         shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/app/overlay/[streamerId]/page.tsx')
-          text = path.read_text()
-          start_marker = '    const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {'
-          end_marker = '\n    const handleQueueError = (error: unknown) => {'
-          start = text.index(start_marker)
-          end = text.index(end_marker, start)
-          replacement = '''    const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {
-      if (recoveryScheduled) return;
-      recoveryScheduled = true;
-      const expectedQueueGeneration = queueGeneration;
-      const hideDelayMs = preserveCurrentCard ? options.displayDuration * 1000 : 0;
-
-      const finishQueueRecovery = () => {
-        if (
-          !isOverlayMountedRef.current
-          || expectedQueueGeneration !== queueGenerationRef.current
-        ) {
-          return;
-        }
-
-        imageLayoutGenerationRef.current += 1;
-        activeDisplayInstanceIdRef.current = undefined;
-        try {
-          setResult(null);
-        } finally {
-          try {
-            setImageFallbackDisplayInstanceId(null);
-          } finally {
-            // Recovery must always release the queue lock, even if a React
-            // state update unexpectedly throws while cleaning up the failed card.
-            recoveryScheduled = false;
-            void processQueueRef.current();
-          }
-        }
-      };
-
-      // Keep recovery timers local. Cleanup increments queueGeneration, so stale
-      // callbacks become no-ops without overwriting animationTimeoutRef. Recovery
-      // callbacks use finally blocks because they run outside the surrounding
-      // processQueue try/catch and therefore must release the queue themselves.
-      setTimeout(() => {
-        if (
-          !isOverlayMountedRef.current
-          || expectedQueueGeneration !== queueGenerationRef.current
-        ) {
-          return;
-        }
-
-        if (!displayStarted) {
-          finishQueueRecovery();
-          return;
-        }
-
-        try {
-          setShowCard(false);
-          setActiveEffectStyle("none");
-          setEffectParticles([]);
-        } finally {
-          // Keep the normal inter-card gap, but guarantee the final recovery
-          // callback is scheduled even if presentation cleanup throws.
-          setTimeout(finishQueueRecovery, 500);
-        }
-      }, hideDelayMs);
-    };
-'''
-          path.write_text(text[:start] + replacement + text[end:])
-          PY
+          python -c "from pathlib import Path; import base64; p=Path('src/app/overlay/[streamerId]/page.tsx'); t=p.read_text(); s=t.index('    const scheduleQueueRecovery = (preserveCurrentCard: boolean) => {'); e=t.index('\\n    const handleQueueError = (error: unknown) => {', s); r=base64.b64decode('ICAgIGNvbnN0IHNjaGVkdWxlUXVldWVSZWNvdmVyeSA9IChwcmVzZXJ2ZUN1cnJlbnRDYXJkOiBib29sZWFuKSA9PiB7CiAgICAgIGlmIChyZWNvdmVyeVNjaGVkdWxlZCkgcmV0dXJuOwogICAgICByZWNvdmVyeVNjaGVkdWxlZCA9IHRydWU7CiAgICAgIGNvbnN0IGV4cGVjdGVkUXVldWVHZW5lcmF0aW9uID0gcXVldWVHZW5lcmF0aW9uOwogICAgICBjb25zdCBoaWRlRGVsYXlNcyA9IHByZXNlcnZlQ3VycmVudENhcmQgPyBvcHRpb25zLmRpc3BsYXlEdXJhdGlvbiAqIDEwMDAgOiAwOwoKICAgICAgY29uc3QgZmluaXNoUXVldWVSZWNvdmVyeSA9ICgpID0+IHsKICAgICAgICBpZiAoCiAgICAgICAgICAhaXNPdmVybGF5TW91bnRlZFJlZi5jdXJyZW50CiAgICAgICAgICB8fCBleHBlY3RlZFF1ZXVlR2VuZXJhdGlvbiAhPT0gcXVldWVHZW5lcmF0aW9uUmVmLmN1cnJlbnQKICAgICAgICApIHsKICAgICAgICAgIHJldHVybjsKICAgICAgICB9CgogICAgICAgIGltYWdlTGF5b3V0R2VuZXJhdGlvblJlZi5jdXJyZW50ICs9IDE7CiAgICAgICAgYWN0aXZlRGlzcGxheUluc3RhbmNlSWRSZWYuY3VycmVudCA9IHVuZGVmaW5lZDsKICAgICAgICB0cnkgewogICAgICAgICAgc2V0UmVzdWx0KG51bGwpOwogICAgICAgIH0gZmluYWxseSB7CiAgICAgICAgICB0cnkgewogICAgICAgICAgICBzZXRJbWFnZUZhbGxiYWNrRGlzcGxheUluc3RhbmNlSWQobnVsbCk7CiAgICAgICAgICB9IGZpbmFsbHkgewogICAgICAgICAgICAvLyBSZWNvdmVyeSBtdXN0IGFsd2F5cyByZWxlYXNlIHRoZSBxdWV1ZSBsb2NrLCBldmVuIGlmIGEgUmVhY3QKICAgICAgICAgICAgLy8gc3RhdGUgdXBkYXRlIHVuZXhwZWN0ZWRseSB0aHJvd3Mgd2hpbGUgY2xlYW5pbmcgdXAgdGhlIGZhaWxlZCBjYXJkLgogICAgICAgICAgICByZWNvdmVyeVNjaGVkdWxlZCA9IGZhbHNlOwogICAgICAgICAgICB2b2lkIHByb2Nlc3NRdWV1ZVJlZi5jdXJyZW50KCk7CiAgICAgICAgICB9CiAgICAgICAgfQogICAgICB9OwoKICAgICAgLy8gS2VlcCByZWNvdmVyeSB0aW1lcnMgbG9jYWwuIENsZWFudXAgaW5jcmVtZW50cyBxdWV1ZUdlbmVyYXRpb24sIHNvIHN0YWxlCiAgICAgIC8vIGNhbGxiYWNrcyBiZWNvbWUgbm8tb3BzIHdpdGhvdXQgb3ZlcndyaXRpbmcgYW5pbWF0aW9uVGltZW91dFJlZi4gUmVjb3ZlcnkKICAgICAgLy8gY2FsbGJhY2tzIHVzZSBmaW5hbGx5IGJsb2NrcyBiZWNhdXNlIHRoZXkgcnVuIG91dHNpZGUgdGhlIHN1cnJvdW5kaW5nCiAgICAgIC8vIHByb2Nlc3NRdWV1ZSB0cnkvY2F0Y2ggYW5kIHRoZXJlZm9yZSBtdXN0IHJlbGVhc2UgdGhlIHF1ZXVlIHRoZW1zZWx2ZXMuCiAgICAgIHNldFRpbWVvdXQoKCkgPT4gewogICAgICAgIGlmICgKICAgICAgICAgICFpc092ZXJsYXlNb3VudGVkUmVmLmN1cnJlbnQKICAgICAgICAgIHx8IGV4cGVjdGVkUXVldWVHZW5lcmF0aW9uICE9PSBxdWV1ZUdlbmVyYXRpb25SZWYuY3VycmVudAogICAgICAgICkgewogICAgICAgICAgcmV0dXJuOwogICAgICAgIH0KCiAgICAgICAgaWYgKCFkaXNwbGF5U3RhcnRlZCkgewogICAgICAgICAgZmluaXNoUXVldWVSZWNvdmVyeSgpOwogICAgICAgICAgcmV0dXJuOwogICAgICAgIH0KCiAgICAgICAgdHJ5IHsKICAgICAgICAgIHNldFNob3dDYXJkKGZhbHNlKTsKICAgICAgICAgIHNldEFjdGl2ZUVmZmVjdFN0eWxlKCJub25lIik7CiAgICAgICAgICBzZXRFZmZlY3RQYXJ0aWNsZXMoW10pOwogICAgICAgIH0gZmluYWxseSB7CiAgICAgICAgICAvLyBLZWVwIHRoZSBub3JtYWwgaW50ZXItY2FyZCBnYXAsIGJ1dCBndWFyYW50ZWUgdGhlIGZpbmFsIHJlY292ZXJ5CiAgICAgICAgICAvLyBjYWxsYmFjayBpcyBzY2hlZHVsZWQgZXZlbiBpZiBwcmVzZW50YXRpb24gY2xlYW51cCB0aHJvd3MuCiAgICAgICAgICBzZXRUaW1lb3V0KGZpbmlzaFF1ZXVlUmVjb3ZlcnksIDUwMCk7CiAgICAgICAgfQogICAgICB9LCBoaWRlRGVsYXlNcyk7CiAgICB9Owo=').decode(); p.write_text(t[:s]+r+t[e:])"
+      - name: Commit fix and remove helper workflow
+        shell: bash
+        run: |
           rm .github/workflows/automation-fix-1307.yml
-      - name: Commit fix
-        shell: bash
-        run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add 'src/app/overlay/[streamerId]/page.tsx' .github/workflows/automation-fix-1307.yml
+          git add -A
           git commit -m 'fix(overlay): make queue recovery timers fail-safe'
           git push origin HEAD:fix/1002-overlay-queue-recovery
