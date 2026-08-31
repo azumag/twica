@@ -57,10 +57,25 @@ const streamer = {
   default_card_pack_name: null,
 }
 
+interface TransactionResult {
+  is_duplicate?: boolean
+  limit_reached?: boolean
+  history_id?: string | null
+  cards?: typeof cards
+}
+
 interface FixtureOptions {
   latestCardId?: string | null
+  latestCardIds?: Array<string | null>
   latestHistoryError?: unknown
+  completedPrefixes?: Array<Array<{ event_id: string }>>
   additionalDrawCount?: number
+  transactions?: Array<{ result?: TransactionResult; error?: unknown }>
+}
+
+function consume<T>(values: T[] | undefined, index: number, fallback: T): T {
+  if (!values || values.length === 0) return fallback
+  return values[Math.min(index, values.length - 1)]
 }
 
 /**
@@ -71,6 +86,9 @@ interface FixtureOptions {
 function installDbFixture(options: FixtureOptions = {}) {
   const tableReads: string[] = []
   const transactionCalls: unknown[][] = []
+  let latestCardCursor = 0
+  let completedPrefixCursor = 0
+  let transactionCursor = 0
 
   const select = vi.fn((fields: Record<string, unknown>) => {
     let tableName = ''
@@ -92,13 +110,19 @@ function installDbFixture(options: FixtureOptions = {}) {
       ) => {
         let promise: Promise<unknown[]>
         if (tableName === 'gacha_history' && 'event_id' in fields) {
-          promise = Promise.resolve([])
+          const prefix = consume(options.completedPrefixes, completedPrefixCursor, [])
+          completedPrefixCursor += 1
+          promise = Promise.resolve(prefix)
         } else if (tableName === 'gacha_history' && 'card_id' in fields) {
-          promise = options.latestHistoryError
-            ? Promise.reject(options.latestHistoryError)
-            : Promise.resolve(options.latestCardId
-              ? [{ card_id: options.latestCardId }]
-              : [])
+          if (options.latestHistoryError) {
+            promise = Promise.reject(options.latestHistoryError)
+          } else {
+            const latestCardId = options.latestCardIds
+              ? consume(options.latestCardIds, latestCardCursor, null)
+              : options.latestCardId ?? null
+            latestCardCursor += 1
+            promise = Promise.resolve(latestCardId ? [{ card_id: latestCardId }] : [])
+          }
         } else if (tableName === 'cards') {
           promise = Promise.resolve(cards)
         } else if (tableName === 'streamers') {
@@ -124,8 +148,17 @@ function installDbFixture(options: FixtureOptions = {}) {
 
   const sql = vi.fn((_strings: TemplateStringsArray, ...values: unknown[]) => {
     transactionCalls.push(values)
-    return Promise.resolve([{
+    const configured = consume(options.transactions, transactionCursor, {
       result: {
+        is_duplicate: false,
+        limit_reached: false,
+        history_id: `history-${transactionCalls.length}`,
+      },
+    })
+    transactionCursor += 1
+    if (configured.error) return Promise.reject(configured.error)
+    return Promise.resolve([{
+      result: configured.result ?? {
         is_duplicate: false,
         limit_reached: false,
         history_id: `history-${transactionCalls.length}`,
@@ -220,5 +253,59 @@ describe('GachaService repeat protection', () => {
     ])
     // N連prefix確認 + 直前カード取得。各ドローごとの追加履歴readは発生しない。
     expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(2)
+  })
+
+  it('N連のCOMMIT応答消失後はDBの最新カードへ再同期して次drawの連続を避ける', async () => {
+    const persistedCards = [cards[1], cards[0], cards[1]]
+    const fixture = installDbFixture({
+      latestCardIds: ['card-a', 'card-b'],
+      completedPrefixes: [
+        [],
+        [{ event_id: 'event-ambiguous' }],
+      ],
+      additionalDrawCount: 3,
+      transactions: [
+        {
+          error: Object.assign(new Error('response lost after commit'), {
+            code: 'CONNECTION_CLOSED',
+          }),
+        },
+        { result: { is_duplicate: true } },
+        { result: { is_duplicate: false, history_id: 'history-2' } },
+        {
+          result: {
+            is_duplicate: false,
+            history_id: 'history-3',
+            cards: persistedCards,
+          },
+        },
+      ],
+    })
+    mockSecureRandomUnit(0)
+
+    const result = await new GachaService().executeGachaForEventSub({
+      broadcaster_user_id: 'broadcaster-1',
+      user_id: 'user-1',
+      user_login: 'viewer',
+      user_name: 'Viewer',
+      reward: { id: 'multi-reward', cost: 300 },
+    }, 'event-ambiguous')
+
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls.map((call) => call[3])).toEqual([
+      'card-b',
+      'card-b',
+      'card-a',
+      'card-b',
+    ])
+    if (result.success) {
+      expect(result.data.cards?.map((card) => card.id)).toEqual([
+        'card-b',
+        'card-a',
+        'card-b',
+      ])
+    }
+    // prefix初回 + 最新カード初回 + duplicate後prefix再読込 + 最新カード再同期。
+    expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(4)
   })
 })
