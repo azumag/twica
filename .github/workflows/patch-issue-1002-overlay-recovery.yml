@@ -1,0 +1,145 @@
+name: One-off patch issue 1002 overlay recovery
+
+on:
+  push:
+    branches:
+      - fix/1002-overlay-queue-recovery
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/1002-overlay-queue-recovery
+          fetch-depth: 0
+
+      - name: Make queue recovery independent from diagnostics
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          page = Path('src/app/overlay/[streamerId]/page.tsx')
+          text = page.read_text(encoding='utf-8')
+          old = '''    const handleQueueError = (error: unknown) => {
+      logger.error("Error processing gacha display queue:", error);
+      addDebugLogRef.current(
+        `processQueue error: ${error instanceof Error ? error.message : String(error)}`
+      );
+      // If this item never committed, tell the transport to retry it instead
+      // of permanently deduplicating a draw that the viewer could not see.
+      settleDisplayCommit(next.displayInstanceId, false);
+      // ロックを握ったまま関数を抜けないよう、失敗したカードは諦めて
+      // 残りのキューを継続する。キューが尽きていれば冒頭の `if (!next)`
+      // 分岐でロックが解放される。
+      setTimeout(() => processQueueRef.current(), 0);
+    };'''
+          new = '''    const handleQueueError = (error: unknown) => {
+      // Recovery is the primary contract. Arm it before diagnostics so a
+      // broken logger/debug panel cannot leave the display lock stuck. Keep
+      // the timeout in the tracked ref so lifecycle cleanup can cancel an old
+      // subscription's recovery before a newer queue starts.
+      animationTimeoutRef.current = setTimeout(() => {
+        animationTimeoutRef.current = null;
+        if (
+          !isOverlayMountedRef.current
+          || queueGeneration !== queueGenerationRef.current
+        ) {
+          return;
+        }
+        processQueueRef.current();
+      }, 0);
+
+      // If this item never committed, tell the transport to retry it instead
+      // of permanently deduplicating a draw that the viewer could not see.
+      settleDisplayCommit(next.displayInstanceId, false);
+      // A presentation error may happen after the card became visible but
+      // before the normal hide chain was scheduled. Remove that failed card
+      // immediately so an empty queue cannot leave it on screen indefinitely.
+      imageLayoutGenerationRef.current += 1;
+      activeDisplayInstanceIdRef.current = undefined;
+      setShowCard(false);
+      setResult(null);
+      setImageFallbackDisplayInstanceId(null);
+      setActiveEffectStyle("none");
+      setEffectParticles([]);
+
+      try {
+        logger.error("Error processing gacha display queue:", error);
+      } catch {
+        // Diagnostics are best-effort; the recovery timer above is authoritative.
+      }
+      try {
+        addDebugLogRef.current(
+          `processQueue error: ${error instanceof Error ? error.message : String(error)}`
+        );
+      } catch {
+        // Debug UI failures must not block the business-event queue either.
+      }
+    };'''
+          if text.count(old) != 1:
+              raise SystemExit('handleQueueError target was not unique')
+          page.write_text(text.replace(old, new), encoding='utf-8')
+
+          test = Path('tests/unit/components/overlay-page.test.tsx')
+          text = test.read_text(encoding='utf-8')
+          old = "import OverlayPage from '@/app/overlay/[streamerId]/page'\n"
+          new = old + "import { logger } from '@/lib/logger'\n"
+          if text.count(old) != 1:
+              raise SystemExit('logger import target was not unique')
+          text = text.replace(old, new)
+
+          old = '''    resolvePlayableGachaSoundMock.mockImplementationOnce(() => {
+      throw new Error('failure inside setTimeout chain')
+    })
+
+    act(() => {'''
+          new = '''    resolvePlayableGachaSoundMock.mockImplementationOnce(() => {
+      throw new Error('failure inside setTimeout chain')
+    })
+    // handleQueueError must schedule recovery before diagnostics. Simulate a
+    // logger implementation failure to ensure it cannot strand the display lock.
+    const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementationOnce(() => {
+      throw new Error('diagnostic logger failed')
+    })
+
+    act(() => {'''
+          if text.count(old) != 1:
+              raise SystemExit('logger failure fixture target was not unique')
+          text = text.replace(old, new)
+
+          old = '''    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
+
+    // 例外がhandleQueueErrorへ届いていれば、setTimeout(0)経由でロックが'''
+          new = '''    expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
+    expect(loggerErrorSpy).toHaveBeenCalled()
+    // The normal hide chain was never scheduled, so handleQueueError itself
+    // must remove the failed card instead of leaving it visible indefinitely.
+    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
+
+    // 例外がhandleQueueErrorへ届いていれば、setTimeout(0)経由でロックが'''
+          if text.count(old) != 1:
+              raise SystemExit('failed card assertion target was not unique')
+          text = text.replace(old, new)
+
+          old = '''    expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
+  })'''
+          new = '''    expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
+    loggerErrorSpy.mockRestore()
+  })'''
+          if text.count(old) != 1:
+              raise SystemExit('logger restore target was not unique')
+          test.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+
+      - name: Commit patch and remove one-off workflow
+        run: |
+          rm .github/workflows/patch-issue-1002-overlay-recovery.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/app/overlay/[streamerId]/page.tsx tests/unit/components/overlay-page.test.tsx .github/workflows/patch-issue-1002-overlay-recovery.yml
+          git commit -m "fix(overlay): queue回復を診断処理から独立させる" -m "Closes #1002"
+          git push origin HEAD:fix/1002-overlay-queue-recovery
