@@ -237,10 +237,13 @@ export default function LiveDirectory({
           <>
             <div className="mb-6 flex flex-col gap-3 border-b border-gray-800 pb-5 sm:flex-row sm:items-end sm:justify-between">
               {view !== "cardCount" && (
-                <fieldset aria-describedby="live-directory-ranking-period-help">
+                <fieldset>
                   <legend className="mb-2 text-sm font-medium text-gray-300">
                     {t("period.label")}
                   </legend>
+                  {/* The help text changes with the selected period. Link it to
+                      each focused radio instead of only the fieldset so screen readers
+                      announce the current description consistently. */}
                   <div className="inline-flex overflow-hidden rounded-lg border border-gray-600 bg-gray-800 p-1">
                     {RANKING_PERIODS.map((period) => (
                       <label
@@ -253,9 +256,12 @@ export default function LiveDirectory({
                           value={period.id}
                           checked={rankingPeriod === period.id}
                           onChange={() => setRankingPeriod(period.id)}
+                          aria-describedby="live-directory-ranking-period-help"
                           className="peer sr-only"
                         />
-                        <span className="flex min-h-11 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">
+                        {/* Keep both dimensions at least 44px even if a future
+                            locale introduces a very short period label. */}
+                        <span className="flex min-h-11 min-w-11 items-center justify-center px-4 text-sm font-medium text-gray-400 transition peer-checked:bg-gray-600 peer-checked:text-white peer-focus-visible:outline-none">
                           {t(period.labelKey)}
                         </span>
                       </label>
