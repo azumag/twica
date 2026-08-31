@@ -6,7 +6,7 @@ name: Notify Discord on main merge
 # `contents: read`; do not widen them without a reviewed workflow requirement.
 on:
   pull_request_target:
-    types: [opened, edited, synchronize, closed]
+    types: [opened, edited, synchronize, reopened, closed]
     branches: [main]
 
 permissions:
