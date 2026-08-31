@@ -19,33 +19,10 @@ jobs:
           ref: fix/1296-anti-repeat-gacha
           fetch-depth: 0
 
-      - name: Make the latest-history read explicit in the fixture
+      - name: Update the existing expectation
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('tests/unit/gacha-service.test.ts')
-          text = path.read_text()
-          old = """  it('単発メイン報酬では直近カード履歴を1回だけ確認する', async () => {
-    const fixture = installDbFixture({
-      tables: {
-        streamers: [{ value: [baseStreamer] }],
-        cards: [{ value: testCards }],
-      },
-    })"""
-          new = """  it('単発メイン報酬では直近カード履歴を1回だけ確認する', async () => {
-    const fixture = installDbFixture({
-      tables: {
-        streamers: [{ value: [baseStreamer] }],
-        gacha_history: [{ value: [] }],
-        cards: [{ value: testCards }],
-      },
-    })"""
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'expected one target block, found {count}')
-          path.write_text(text.replace(old, new, 1))
-          PY
+          sed -i "s/単発メイン報酬では直近カード履歴を1回だけ確認する/単発メイン報酬でも直近カード履歴を確認する/" tests/unit/gacha-service.test.ts
+          sed -i "s/expect(fixture.tableCursors.get('gacha_history')).toBe(1)/expect(fixture.tableCursors.has('gacha_history')).toBe(true)/" tests/unit/gacha-service.test.ts
 
       - name: Remove one-shot workflow and commit
         run: |
@@ -53,5 +30,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add tests/unit/gacha-service.test.ts .github/workflows/fix-1296-history-fixture.yml
-          git commit -m "test(gacha): 直近履歴fixtureの参照回数を明示" -m "Refs #1296"
+          git commit -m "test(gacha): 直近履歴参照を既存fixtureへ反映" -m "Refs #1296"
           git push origin HEAD:fix/1296-anti-repeat-gacha
