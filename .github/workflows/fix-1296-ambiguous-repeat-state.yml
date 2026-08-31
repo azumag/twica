@@ -1,0 +1,61 @@
+name: Fix Issue 1296 ambiguous commit repeat state
+
+on:
+  push:
+    branches:
+      - fix/1296-anti-repeat-gacha
+    paths:
+      - .github/workflows/fix-1296-ambiguous-repeat-state.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/1296-anti-repeat-gacha
+          fetch-depth: 0
+
+      - name: Resync repeat predecessor after ambiguous commit recovery
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/lib/services/gacha.ts')
+          text = path.read_text()
+          old = """            if (completedDrawCount >= drawCount) {
+              // 最終drawのduplicate RPC自身が全履歴からoutboxを冪等再構成済み。
+              return err('Duplicate event')
+            }
+            index = completedDrawCount - 1
+            continue
+"""
+          new = """            if (completedDrawCount >= drawCount) {
+              // 最終drawのduplicate RPC自身が全履歴からoutboxを冪等再構成済み。
+              return err('Duplicate event')
+            }
+            // 初回COMMIT成功・応答消失では、メモリ上のpreviousCardIdだけが
+            // COMMIT済み履歴より1枚古い。次drawの即時反復抑制もDB正本へ再同期する。
+            if (previousCardId !== undefined) {
+              previousCardId = await this.getLatestCardIdForStreamer(streamerId)
+            }
+            index = completedDrawCount - 1
+            continue
+"""
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected one recovery block, found {count}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Remove one-shot workflow and commit
+        run: |
+          rm .github/workflows/fix-1296-ambiguous-repeat-state.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/lib/services/gacha.ts .github/workflows/fix-1296-ambiguous-repeat-state.yml
+          git commit -m "fix(gacha): ambiguous commit後の直前カードを再同期" -m "Refs #1296"
+          git push origin HEAD:fix/1296-anti-repeat-gacha
