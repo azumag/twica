@@ -1151,12 +1151,21 @@ export default function OverlayPage() {
         displayCard.image_url,
         imageLayoutGeneration,
       ).catch((error) => {
-        // Metadata is optional presentation data; a probe failure must not drop
-        // or advance the business-event queue after the card has started.
-        logger.warn("Overlay image metadata probe failed:", error);
-        addDebugLogRef.current(
-          `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
-        );
+        // Metadata and its diagnostics are presentation-only. A broken logger
+        // or debug panel must not reject this already-handled Promise and leak
+        // into handleQueueError after the normal advance chain is armed.
+        try {
+          logger.warn("Overlay image metadata probe failed:", error);
+        } catch {
+          // Best-effort diagnostic only.
+        }
+        try {
+          addDebugLogRef.current(
+            `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        } catch {
+          // Best-effort debug UI only.
+        }
       });
 
       try {
@@ -1168,12 +1177,23 @@ export default function OverlayPage() {
         setActiveEffectStyle(resolvedStyle);
         setEffectParticles(generateOverlayEffectParticles(resolvedStyle));
       } catch (error) {
-        logger.warn("Overlay effect setup failed; using no effect:", error);
-        addDebugLogRef.current(
-          `effect setup failed: ${error instanceof Error ? error.message : String(error)}`
-        );
+        // Effect setup is presentation-only. Apply the safe fallback before
+        // best-effort diagnostics so logger/debug failures cannot escape into
+        // the queue-level error boundary either.
         setActiveEffectStyle("none");
         setEffectParticles([]);
+        try {
+          logger.warn("Overlay effect setup failed; using no effect:", error);
+        } catch {
+          // Best-effort diagnostic only.
+        }
+        try {
+          addDebugLogRef.current(
+            `effect setup failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        } catch {
+          // Best-effort debug UI only.
+        }
       }
 
       // 表示は既に開始済み。ここでは効果音と表示終了だけを予約する。
