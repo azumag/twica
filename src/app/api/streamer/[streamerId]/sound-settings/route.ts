@@ -194,7 +194,7 @@ export async function GET(
       }
     );
   } catch (error) {
-    const response = handleApiError(error, "Streamer Sound Settings API");
+    const response = await handleApiError(error, "Streamer Sound Settings API");
     response.headers.set("Cache-Control", NO_STORE_CACHE_CONTROL);
     return response;
   }
