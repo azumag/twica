@@ -241,7 +241,6 @@ export async function middleware(request: NextRequest) {
     if (!isExcludedPath) {
       const ip = getClientIp(request)
       const identifier = `global:${ip}`
-
       const rateLimitResult = await checkRateLimit(
         rateLimits.global,
         identifier
