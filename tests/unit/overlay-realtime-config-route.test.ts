@@ -23,7 +23,9 @@ describe('overlay realtime runtime config', () => {
     expect(response.status).toBe(200)
     expect(body.mode).toBe('polling-only')
     expect(JSON.stringify(body)).not.toContain('must-never-leak')
-    expect(response.headers.get('cache-control')).toContain('max-age=15')
+    expect(response.headers.get('cache-control')).toBe(
+      'public, max-age=15, stale-while-revalidate=15'
+    )
   })
 
   it('enables only an allowlisted room with a secure WebSocket endpoint', async () => {
@@ -56,11 +58,12 @@ describe('overlay realtime runtime config', () => {
     expect(body).not.toHaveProperty('overlayVersion')
   })
 
-  it('rejects an invalid public room ID', async () => {
+  it('rejects an invalid public room ID without making the error cacheable', async () => {
     const response = await GET(
       new Request('https://app.example/config'),
       params('not-a-uuid')
     )
     expect(response.status).toBe(400)
+    expect(response.headers.get('cache-control')).toBe('private, no-store')
   })
 })
