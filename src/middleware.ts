@@ -163,6 +163,9 @@ export async function middleware(request: NextRequest) {
       { error: 'Invalid streamer ID' },
       { status: 400 }
     )
+    // 早期 return は後段の fail-closed Cache-Control を通らないため、
+    // エラー応答側でも明示的に保存禁止を宣言する（#1337）。
+    errorResponse.headers.set('Cache-Control', 'private, no-store')
     return setSecurityHeaders(errorResponse, { pathname })
   }
 
@@ -199,8 +202,8 @@ export async function middleware(request: NextRequest) {
   // 明示的にキャッシュを許可した公開パス以外には private, no-store を付与する。
   // キャッシュ許可パスはルート側で Cache-Control: public を設定する（この middleware は
   // ルートより先に実行されるため、ルートが最終的にヘッダーを上書きできる）。
-  // 400/429/503 等のエラーレスポンスは Workers Cache のヒューリスティック対象外のため、
-  // 早期 return 経路では Cache-Control を設定しない。
+  // 400/429/503 等は Workers Cache のヒューリスティック対象外だが、早期 return でも
+  // fail-closed 契約が必要な経路は個別に private, no-store を明示する。
   // /api/overlay/ 配下は prefix ではなくエンドポイント単位で判定する。
   // events は OBS オーバーレイの 3 秒間隔ポーリングだが Cache-Control を設定
   // しないため、prefix 許可だと Workers Caching のヒューリスティック TTL
@@ -238,6 +241,7 @@ export async function middleware(request: NextRequest) {
     if (!isExcludedPath) {
       const ip = getClientIp(request)
       const identifier = `global:${ip}`
+
       const rateLimitResult = await checkRateLimit(
         rateLimits.global,
         identifier
