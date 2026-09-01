@@ -1,33 +1,97 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { GachaService } from '@/lib/services/gacha'
+import { getDb } from '@/lib/db/client'
+import { selectWeightedCardMinimizingRepeat } from '@/lib/gacha'
 
-const gachaServiceSource = readFileSync(
-  resolve(process.cwd(), 'src/lib/services/gacha.ts'),
-  'utf8',
-)
+vi.mock('@/lib/db/client', () => ({ getDb: vi.fn() }))
+vi.mock('@/lib/gacha', () => ({ selectWeightedCardMinimizingRepeat: vi.fn() }))
+vi.mock('@/lib/sentry/error-handler', () => ({
+  reportError: vi.fn(),
+  reportApiError: vi.fn(),
+  logErrorFromLogger: vi.fn(),
+}))
 
-describe('GachaService limit_reached retry repeat-protection contract (#1302)', () => {
-  it('再抽選でも同じ previousCardId を selectCardFromPool へ渡す', () => {
-    const retryLoopStart = gachaServiceSource.indexOf('for (let attempt = 1; ; attempt += 1)')
-    const successReturn = gachaServiceSource.indexOf(
-      'card: selectedCard,',
-      retryLoopStart,
+const mockGetDb = vi.mocked(getDb)
+const mockSelectWeightedCardMinimizingRepeat = vi.mocked(selectWeightedCardMinimizingRepeat)
+
+const cards = [
+  {
+    id: 'card-a',
+    name: 'Card A',
+    description: null,
+    image_url: null,
+    rarity: 'common',
+    drop_rate: 1,
+    max_issuance_count: null,
+  },
+  {
+    id: 'card-b',
+    name: 'Card B',
+    description: null,
+    image_url: null,
+    rarity: 'common',
+    drop_rate: 1,
+    max_issuance_count: null,
+  },
+]
+
+beforeEach(() => {
+  vi.clearAllMocks()
+
+  const builder: Record<string, unknown> = {}
+  const chain = vi.fn(() => builder)
+  Object.assign(builder, {
+    from: chain,
+    where: chain,
+    then: (
+      onFulfilled: (value: typeof cards) => unknown,
+      onRejected?: (reason: unknown) => unknown,
+    ) => Promise.resolve(cards).then(onFulfilled, onRejected),
+  })
+
+  const select = vi.fn(() => builder)
+  let transactionAttempt = 0
+  const sql = vi.fn(() => {
+    transactionAttempt += 1
+    return Promise.resolve([{
+      result: transactionAttempt === 1
+        ? { limit_reached: true }
+        : { is_duplicate: false, limit_reached: false, history_id: 'history-2' },
+    }])
+  })
+
+  mockGetDb.mockResolvedValue({
+    db: { select } as never,
+    sql: sql as never,
+  })
+  mockSelectWeightedCardMinimizingRepeat.mockImplementation((pool) => pool[0] ?? null)
+})
+
+describe('GachaService limit_reached retry repeat protection (#1302)', () => {
+  it('再抽選でも初回と同じ previousCardId を反復抑制抽選へ渡す', async () => {
+    const result = await new GachaService().executeGacha(
+      'streamer-1',
+      'user-1',
+      'Viewer',
+      'event-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'previous-card',
     )
 
-    expect(retryLoopStart).toBeGreaterThanOrEqual(0)
-    expect(successReturn).toBeGreaterThan(retryLoopStart)
-
-    const retryLoop = gachaServiceSource.slice(retryLoopStart, successReturn)
-
-    // limit_reached では pool だけを更新して同じ loop 先頭へ戻る。
-    // previousCardId を再計算・破棄せず、初回と同じ反復抑制条件で再選択する契約を固定する。
-    expect(retryLoop).toContain(
-      'this.selectCardFromPool(pool, resolvedRarityWeights, previousCardId)',
-    )
-    expect(retryLoop).toMatch(
-      /if \(rpcResult\?\.limit_reached\) \{[\s\S]*?pool = pool\.filter\([\s\S]*?continue[\s\S]*?\}/,
-    )
-    expect(retryLoop).not.toMatch(/previousCardId\s*=/)
+    expect(result.success).toBe(true)
+    expect(mockSelectWeightedCardMinimizingRepeat).toHaveBeenCalledTimes(2)
+    expect(
+      mockSelectWeightedCardMinimizingRepeat.mock.calls.map(([, previousCardId]) => previousCardId),
+    ).toEqual(['previous-card', 'previous-card'])
+    expect(
+      mockSelectWeightedCardMinimizingRepeat.mock.calls.map(([pool]) => pool.map((card) => card.id)),
+    ).toEqual([
+      ['card-a', 'card-b'],
+      ['card-b'],
+    ])
   })
 })
