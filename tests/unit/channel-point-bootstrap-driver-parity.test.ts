@@ -5,7 +5,7 @@
  *
  * 検証観点（tests/unit/announcements-driver-parity.test.ts と
  * tests/unit/overlay-events-api-pg.test.ts の確立パターンを踏襲）:
- *   1. フル select 経路の応答 JSON
+ *   1. フル select 経路の応答 JSON（collection_name を含む）
  *   2. raid 系カラムのスキーマドリフト時の縮退フォールバック経路
  *      (isPgMissingColumnError [42703])
  *   3. streamer 行なし(limit(1) → 空配列)で404 + STREAMER_NOT_FOUND
@@ -134,6 +134,7 @@ const FULL_REWARD_ROW = {
   reward_name: 'Extra Reward',
   draw_count: 2,
   is_raid_limited: true,
+  collection_name: 'pack-a',
   created_at: '2020-01-01T00:00:00.000+00:00',
 }
 
@@ -151,7 +152,7 @@ const FALLBACK_REWARD_ROW = {
 
 const EXPECTED_FULL_ADDITIONAL_REWARDS = [FULL_REWARD_ROW]
 const EXPECTED_FALLBACK_ADDITIONAL_REWARDS = [
-  { ...FALLBACK_REWARD_ROW, draw_count: 1, is_raid_limited: false },
+  { ...FALLBACK_REWARD_ROW, draw_count: 1, is_raid_limited: false, collection_name: null },
 ]
 
 // ---------------------------------------------------------------------------
@@ -294,6 +295,9 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: フル select �
       eq(streamerAdditionalGachaRewardsTable.streamer_id, FULL_STREAMER_ROW.id)
     )
     expect(rewardsCall.orderByCondition).toEqual(asc(streamerAdditionalGachaRewardsTable.created_at))
+    // Issue #1324: refresh後のUIは bootstrap の additionalRewards を使うため、
+    // pack表示に必要な collection_name を full select で必ず返す。
+    expect(Object.keys(rewardsCall.fields)).toContain('collection_name')
   })
 })
 
@@ -328,7 +332,7 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
     expect(db.select).toHaveBeenCalledTimes(4)
   })
 
-  it('フォールバック時は縮退select(raid_gacha_draw_count/draw_count/is_raid_limitedを含まない)を発行する', async () => {
+  it('フォールバック時は縮退select(raid_gacha_draw_count/draw_count/is_raid_limited/collection_nameを含まない)を発行する', async () => {
     const { db } = await runPlanetscalePath(
       [
         {
@@ -355,13 +359,14 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
     expect(Object.keys(db.calls[0].fields)).toContain('raid_gacha_draw_count')
     // 2回目(streamers, フォールバック select)は raid_gacha_draw_count を含まない
     expect(Object.keys(db.calls[1].fields)).not.toContain('raid_gacha_draw_count')
-    // 3回目(rewards, フル select)は draw_count / is_raid_limited を含む
+    // 3回目(rewards, フル select)は draw_count / is_raid_limited / collection_name を含む
     expect(Object.keys(db.calls[2].fields)).toEqual(
-      expect.arrayContaining(['draw_count', 'is_raid_limited'])
+      expect.arrayContaining(['draw_count', 'is_raid_limited', 'collection_name'])
     )
-    // 4回目(rewards, フォールバック select)は draw_count / is_raid_limited を含まない
+    // 4回目(rewards, フォールバック select)は追加列を含まない
     expect(Object.keys(db.calls[3].fields)).not.toContain('draw_count')
     expect(Object.keys(db.calls[3].fields)).not.toContain('is_raid_limited')
+    expect(Object.keys(db.calls[3].fields)).not.toContain('collection_name')
   })
 
   it('42703以外の恒久的エラーはフォールバックせず500(handleApiError経由)になる', async () => {
