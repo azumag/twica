@@ -67,6 +67,8 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     });
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, s-maxage=1");
+    expect(response.headers.get("Cache-Tag")).toBe("sound-settings-streamer-1");
     await expect(response.json()).resolves.toEqual({
       soundUrl: "https://cdn.example.com/sound.mp3",
       soundEnabled: true,
@@ -81,7 +83,7 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     expect(pg.select).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps streamer-not-found as a 404", async () => {
+  it("keeps streamer-not-found as a non-cacheable 404", async () => {
     primeSoundSettingsDb({});
 
     const response = await GET(request(), {
@@ -89,10 +91,12 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     });
 
     expect(response.status).toBe(404);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
     await expect(response.json()).resolves.toEqual({ error: "Streamer not found" });
   });
 
-  it("falls back to disabled sound settings when PlanetScale returns a transient connection error", async () => {
+  it("falls back to non-cacheable disabled sound settings when PlanetScale returns a transient connection error", async () => {
     primeSoundSettingsDb({
       error: { code: "08006", message: "connection failure" },
     });
@@ -102,6 +106,8 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     });
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
     await expect(response.json()).resolves.toEqual({
       soundUrl: null,
       soundEnabled: false,
