@@ -144,13 +144,13 @@ async function getSubscriptionsByUserId(
  * Issue #690: getAdditionalRewards の pg 直結実装。
  *
  * - フル select（id, reward_id, reward_name, draw_count, is_raid_limited,
- *   created_at）を streamer_id で絞り込み created_at 昇順に取得する。
- * - draw_count・is_raid_limited は migration 00041 で追加されたため、rolling
- *   deploy の短い窓だけ SQLSTATE 42703 を検知して縮退クエリへ切り替える。
- *   任意の message 文字列ではなく SQLSTATE を根拠にし、接続障害や権限エラーを
- *   migration 遅延として握りつぶさない。
- * - フォールバック時は draw_count: 1 / is_raid_limited: false を補完する
- *   （streamerAdditionalGachaRewards schema の DEFAULT 値と一致）。
+ *   collection_name, created_at）を streamer_id で絞り込み created_at 昇順に取得する。
+ * - draw_count・is_raid_limited は migration 00041、collection_name は migration
+ *   00061 で追加されたため、rolling deploy の短い窓だけ SQLSTATE 42703 を検知して
+ *   縮退クエリへ切り替える。任意の message 文字列ではなく SQLSTATE を根拠にし、
+ *   接続障害や権限エラーを migration 遅延として握りつぶさない。
+ * - フォールバック時は draw_count: 1 / is_raid_limited: false /
+ *   collection_name: null を補完する（各列の未設定時の既存契約と一致）。
  * - withDbRetry 内で発生した例外はそのまま伝播させる（呼び出し元の
  *   GET ハンドラの try/catch が handleApiError で 500 を返す既存挙動を維持）。
  */
@@ -167,6 +167,7 @@ async function getAdditionalRewardsPg(streamerId: string) {
             reward_name: streamerAdditionalGachaRewardsTable.reward_name,
             draw_count: streamerAdditionalGachaRewardsTable.draw_count,
             is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
+            collection_name: streamerAdditionalGachaRewardsTable.collection_name,
             created_at: streamerAdditionalGachaRewardsTable.created_at,
           })
           .from(streamerAdditionalGachaRewardsTable)
@@ -181,9 +182,8 @@ async function getAdditionalRewardsPg(streamerId: string) {
     if (!isPgMissingColumnError(error)) {
       throw error;
     }
-    // デプロイ窓フォールバック（42703 undefined_column）: draw_count /
-    // is_raid_limited を含めない縮退クエリへ切り替え、PostgREST 版と同じ
-    // デフォルト値（draw_count: 1, is_raid_limited: false）を補って返す。
+    // デプロイ窓フォールバック（42703 undefined_column）: migration 00041/00061
+    // で追加された列を含めない縮退クエリへ切り替え、既存のデフォルト値を補う。
     return await withDbRetry(
       async () => {
         const { db } = await getDb();
@@ -201,6 +201,7 @@ async function getAdditionalRewardsPg(streamerId: string) {
           ...reward,
           draw_count: 1,
           is_raid_limited: false,
+          collection_name: null,
         }));
       },
       "getAdditionalRewards:raid-options-fallback",
