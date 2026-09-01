@@ -101,7 +101,11 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 // 警告: ここへ HTML を返すパスを追加してはならない。エッジキャッシュに nonce 付き
 // CSP が焼き付き、キャッシュ HIT 中の全スクリプトが nonce 不一致でブロックされる
 // （現状の対象は JSON のみで無害）。
-const CACHEABLE_PUBLIC_PATHS = ['/api/maintenance-status']
+const CACHEABLE_PUBLIC_PATHS = [
+  /^\/api\/maintenance-status$/,
+  /^\/api\/streamer\/[^/]+\/sound-settings$/,
+  /^\/api\/overlay\/[^/]+\/realtime-config$/,
+]
 
 /**
  * #694 Stage 3: maintenance mode (off 以外) のとき、/api 配下の write メソッド
@@ -209,10 +213,9 @@ export async function middleware(request: NextRequest) {
   // 明示する意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
   // 警告: ここも HTML を返すパスを追加してはならない（CACHEABLE_PUBLIC_PATHS と
   // 同じ理由で nonce がエッジキャッシュに焼き付く）。
-  const isCacheablePublicPath =
-    CACHEABLE_PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
-    (pathname.startsWith('/api/overlay/') &&
-      pathname.endsWith('/realtime-config'))
+  const isCacheablePublicPath = CACHEABLE_PUBLIC_PATHS.some((pathPattern) =>
+    pathPattern.test(pathname)
+  )
   if (!isCacheablePublicPath) {
     response.headers.set('Cache-Control', 'private, no-store')
   }
