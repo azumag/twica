@@ -591,12 +591,23 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     const body = await response.json();
     expect(body.success).toBe(true);
     expect(body.reward).toEqual(expect.objectContaining({ draw_count: 5 }));
+    // SET に collection_name が無いため、ストリップ再試行でもフラグは立たない
+    // （「パック変更は反映待ち」の誤表示を防ぐ）。
+    expect(body.collectionNameSkippedDeployWindow).toBeUndefined();
     // 2回目の RETURNING は collection_name を含まない明示列
     expect(returningCalls[1]).toEqual(expect.any(Object));
     expect(returningCalls[1]).not.toHaveProperty("collection_name");
     // 2回目の SET は draw_count のみ（collection_name は元々無い）
     expect(updateCalls[1]).toEqual(expect.objectContaining({ draw_count: 5 }));
     expect(updateCalls[1]).not.toHaveProperty("collection_name");
+  });
+
+  it("rejects a non-number drawCount instead of coercing it", async () => {
+    const response = await PUT(request({ rewardId: REWARD_ID, drawCount: true }, "PUT"));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "drawCount must be an integer between 1 and 15",
+    });
   });
 
   it("変更なしのリクエストはunchangedを返しUPDATEしない", async () => {

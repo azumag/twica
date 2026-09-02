@@ -750,12 +750,15 @@ async function updateAdditionalRewardPg(
 
   // 空 SET を実行すると Drizzle が throw するため、実行前に空チェックで no-op へ分岐。
   // collectionNameStripped はストリップ後の再試行から引き継ぐ。
+  // returningMinimal は列欠落窓からの再試行で常に true（SET の内容に関わらず、
+  // 引数なし returning() はスキーマ全列を展開して 42703 が再発するため）。
   const tryUpdate = async (
     payload: Record<string, unknown>,
     collectionNameStripped = false,
+    returningMinimal?: boolean,
   ): Promise<UpdateAdditionalRewardOutcome> => {
     if (Object.keys(payload).length === 0) return { kind: "no-op", collectionNameStripped };
-    const rows = await runUpdate(payload, collectionNameStripped);
+    const rows = await runUpdate(payload, returningMinimal ?? collectionNameStripped);
     if (rows.length === 0) return { kind: "not-found" };
     return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
   };
@@ -770,10 +773,13 @@ async function updateAdditionalRewardPg(
     if (isMissingCollectionNameColumn(error as GenericDbError)) {
       // 呼び出し元の updatePayload をミューテートせず、コピーから剥がして再試行する
       // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
+      // ストリップフラグは「SET に collection_name があり、実際に剥がした」場合
+      // だけ立て、drawCount のみの更新で「パック変更は反映待ち」と誤表示しない。
       const stripped = { ...updatePayload };
+      const hadCollectionName = "collection_name" in stripped;
       delete stripped.collection_name;
       try {
-        return await tryUpdate(stripped, true);
+        return await tryUpdate(stripped, hadCollectionName, true);
       } catch (retryError) {
         // ストリップ後の再試行が失敗した場合は、他分岐と同じ handleDatabaseError
         // （{ kind: "error" }）へ寄せて分類を揃える。
@@ -850,7 +856,15 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    const normalizedDrawCount = drawCount === undefined ? undefined : Number(drawCount);
+    // drawCount: true 等の非数値は Number() で 1 に化けるため、number 型を要求する
+    // （POST と同じ既存挙動を見直した PUT 側の堅牢化）。
+    if (drawCount !== undefined && typeof drawCount !== "number") {
+      return NextResponse.json(
+        { error: "drawCount must be an integer between 1 and 15" },
+        { status: 400 }
+      );
+    }
+    const normalizedDrawCount = drawCount;
     // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
     if (
       normalizedDrawCount !== undefined &&
@@ -987,8 +1001,13 @@ export async function PUT(request: NextRequest) {
       return handleDatabaseError(updateOutcome.error, "Additional Rewards API: PUT");
     }
 
+    // 実際に永続化された列をログに出す（ストリップ時は collection_name を
+    // 書いていないため除外し、障害調査時の誤誘導を防ぐ）。
+    const writtenFields = updateOutcome.collectionNameStripped
+      ? Object.keys(updatePayload).filter((key) => key !== "collection_name")
+      : Object.keys(updatePayload);
     logger.info(
-      `Additional reward updated: streamerId=${streamer.id}, rewardId=${rewardId}, fields=${Object.keys(updatePayload).join(",")}`
+      `Additional reward updated: streamerId=${streamer.id}, rewardId=${rewardId}, fields=${writtenFields.join(",")}`
     );
 
     return NextResponse.json({
