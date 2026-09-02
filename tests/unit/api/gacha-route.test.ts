@@ -75,7 +75,7 @@ describe("POST /api/gacha", () => {
       data: { card: sampleCard, userTwitchUsername: "user1" },
     });
     MockGachaService.mockImplementation(() => ({
-      executeGacha: executeGachaMock,
+      executeGachaWithRepeatProtection: executeGachaMock,
     }) as unknown as GachaService);
   });
 
@@ -84,7 +84,7 @@ describe("POST /api/gacha", () => {
   // eventId at all, which propagated as NULL all the way to the RPC. It must
   // now always supply a non-null, per-request-unique synthetic event id so
   // the manual "draw a real gacha" flow keeps working.
-  it("passes a non-null, non-empty eventId to GachaService.executeGacha", async () => {
+  it("passes a non-null, non-empty eventId to GachaService.executeGachaWithRepeatProtection", async () => {
     const res = await POST(makeRequest({ streamerId: "streamer-1" }));
 
     expect(res.status).toBe(200);
@@ -117,7 +117,7 @@ describe("POST /api/gacha", () => {
     expect(executeGachaMock).not.toHaveBeenCalled();
   });
 
-  it("returns 500 when GachaService.executeGacha fails (e.g. the RPC rejects a NULL event_id)", async () => {
+  it("returns 500 when GachaService.executeGachaWithRepeatProtection fails", async () => {
     executeGachaMock.mockResolvedValue({
       success: false,
       error: "Failed to execute gacha transaction: event_id must not be null",

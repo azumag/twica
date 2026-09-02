@@ -84,7 +84,9 @@ describe("FAQ page", () => {
     expect(source).toContain('href: "/privacy"');
     expect(source).toContain('href: "/releases"');
   });
+});
 
+describe("top page live-directory navigation", () => {
   it("places the live-directory link in content navigation instead of top bars", () => {
     const home = readSource("src/app/page.tsx");
     const dashboardNav = readSource("src/components/DashboardNav.tsx");

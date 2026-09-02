@@ -39,12 +39,28 @@ export async function generateMetadata(): Promise<Metadata> {
  * 伴う警告だからだ（Header/DashboardNav自体はそれらに依存しない）。
  */
 export default async function LivePage() {
-  const [session, entries, presence, rankings, t] = await Promise.all([
-    getSession(),
-    getLiveDirectory(),
-    getLiveDirectoryPresence(),
-    getLiveDirectoryRankings(),
-    getTranslations("livePage"),
+  // sessionだけはヘッダー分岐に必要だが、directory系と翻訳は先に開始する。
+  // ログイン済みならsession解決直後にplan / unreadも開始し、遅いdirectory取得の
+  // 完了後までヘッダー用DB照会を直列化しない（Issue #1130）。
+  const sessionPromise = getSession();
+  const entriesPromise = getLiveDirectory();
+  const presencePromise = getLiveDirectoryPresence();
+  const rankingsPromise = getLiveDirectoryRankings();
+  const translationsPromise = getTranslations("livePage");
+
+  const session = await sessionPromise;
+  const authenticatedHeaderPromise = session
+    ? Promise.all([
+        getUserPlanSnapshot(session.twitchUserId),
+        getUnreadAnnouncements(session.twitchUserId),
+      ])
+    : undefined;
+
+  const [entries, presence, rankings, t] = await Promise.all([
+    entriesPromise,
+    presencePromise,
+    rankingsPromise,
+    translationsPromise,
   ]);
 
   // Serverで基準時刻を1回だけ確定し、Client ComponentのSSR/hydration間で
@@ -60,12 +76,18 @@ export default async function LivePage() {
         <div className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
           <p>{t("consentNotice")}</p>
           <p className="mt-1">{t("rankingNotice")}</p>
-          {presence && presence.count > 0 ? (
+          {presence ? (
             <p className="mt-1" data-testid="live-presence-estimate">
-              {t("liveCount", { count: presence.count })}
+              {presence.count === 0
+                ? t("liveCountFew")
+                : t("liveCount", { count: presence.count })}
               <span className="ml-1 text-gray-500">{t("liveCountNote")}</span>
             </p>
-          ) : null}
+          ) : (
+            <p className="mt-1" data-testid="live-presence-unavailable">
+              {t("liveCountUnavailable")}
+            </p>
+          )}
         </div>
       </div>
 
@@ -77,7 +99,7 @@ export default async function LivePage() {
     </>
   );
 
-  if (!session) {
+  if (!session || !authenticatedHeaderPromise) {
     return (
       <div className="min-h-screen bg-gray-900">
         <header className="border-b border-gray-800">
@@ -111,12 +133,9 @@ export default async function LivePage() {
   // ダッシュボードレイアウトと同じHeader+DashboardNavの組み合わせ。
   // 未読数・プラン判定はダッシュボードレイアウトと同じReact cache付き関数で、
   // 失敗時は basic / 0件 へ縮退する（公開ページを500にしない）。
-  // ただし/liveにはダッシュボードlayoutが無いため、ログイン済み訪問1回あたり
-  // この2クエリが純増する（cacheは同一リクエスト内の重複排除であり初回は走る）。
-  const [plan, unreadAnnouncements] = await Promise.all([
-    getUserPlanSnapshot(session.twitchUserId),
-    getUnreadAnnouncements(session.twitchUserId),
-  ]);
+  // /liveにはダッシュボードlayoutが無いためログイン済み訪問1回あたり2クエリは
+  // 純増するが、上でdirectory系と並列に開始してレスポンス待ち時間へ直列加算しない。
+  const [plan, unreadAnnouncements] = await authenticatedHeaderPromise;
 
   return (
     <div className="min-h-screen bg-gray-900">

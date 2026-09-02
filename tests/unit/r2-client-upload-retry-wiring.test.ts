@@ -95,16 +95,23 @@ const TRANSIENT_FAILURES_BEFORE_SUCCESS = 2
 const RETRY_SUCCESS_ATTEMPTS = TRANSIENT_FAILURES_BEFORE_SUCCESS + 1
 const R2_INTERNAL_ERROR_MESSAGE = 'put: We encountered an internal error. Please try again. (10001)'
 
-function mockTransientFailuresThenSuccess(): void {
-  expect(
-    TRANSIENT_FAILURES_BEFORE_SUCCESS,
-    'リトライ成功fixtureには一時失敗を1回以上含めること',
-  ).toBeGreaterThanOrEqual(1)
-  expect(
-    TRANSIENT_FAILURES_BEFORE_SUCCESS,
-    'リトライ成功fixtureはMAX_RETRIES以内で成功へ到達できること',
-  ).toBeLessThanOrEqual(MAX_RETRIES)
+// fake timers を必要とするテスト基盤の責務を、R2 fixture の準備処理から分離する。
+async function runWithFakeTimers<T>(operation: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers()
+  try {
+    const pending = operation()
+    // pending を先に await すると、fake timer 上のバックオフ用 setTimeout が進まず、
+    // operation が解決しないまま Vitest の testTimeout まで停止し得る。先に登録済みの
+    // timer を全て進めてから、同じ operation の完了を待つ順序を維持する。
+    await vi.runAllTimersAsync()
+    return await pending
+  } finally {
+    // 呼び出し元やテスト成否にかかわらず、この helper が有効化した timer を自ら復元する。
+    vi.useRealTimers()
+  }
+}
 
+function mockTransientFailuresThenSuccess(): void {
   for (
     let transientFailureIndex = 0;
     transientFailureIndex < TRANSIENT_FAILURES_BEFORE_SUCCESS;
@@ -145,8 +152,20 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
   afterEach(() => {
     // 環境変数はテストごとに vi.stubEnv で設定・削除し、ここで必ず元へ戻す。
     vi.unstubAllEnvs()
-    // リトライ成功テストは fake timers を使うため、後続テストへ影響を残さない。
+    // runWithFakeTimers は自己完結で復元するが、テスト途中の予期しない失敗や将来の
+    // 直接利用でも後続テストへ fake timers を残さないため、suite の安全網も維持する。
     vi.useRealTimers()
+  })
+
+  it('リトライ成功fixtureの一時失敗回数が有効範囲にある', () => {
+    expect(
+      TRANSIENT_FAILURES_BEFORE_SUCCESS,
+      'リトライ成功fixtureには一時失敗を1回以上含めること',
+    ).toBeGreaterThanOrEqual(1)
+    expect(
+      TRANSIENT_FAILURES_BEFORE_SUCCESS,
+      'リトライ成功fixtureはMAX_RETRIES以内で成功へ到達できること',
+    ).toBeLessThanOrEqual(MAX_RETRIES)
   })
 
   it('R2バインディング・環境変数がどちらも無い場合、実際のuploadToR2が投げる恒久エラーを1回の試行で返す', async () => {
@@ -182,11 +201,9 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     mockTransientFailuresThenSuccess()
 
     const { uploadToR2WithRetry } = await import('@/lib/r2-client')
-    vi.useFakeTimers()
-    const pending = uploadToR2WithRetry('f.png', Buffer.from('img'), 'image/png', MAX_RETRIES)
-    // 保留中の指数バックオフを実時間で待たずに全て進める
-    await vi.runAllTimersAsync()
-    const result = await pending
+    const result = await runWithFakeTimers(() =>
+      uploadToR2WithRetry('f.png', Buffer.from('img'), 'image/png', MAX_RETRIES),
+    )
 
     expect(result).toEqual({ url: 'https://example.test/f.png' })
     // 全試行の入力が常に正しいことを確認する（リトライのたびに引数やbufferを
@@ -208,10 +225,9 @@ describe('uploadToR2WithRetry / uploadSoundToR2WithRetry の結線', () => {
     mockTransientFailuresThenSuccess()
 
     const { uploadSoundToR2WithRetry } = await import('@/lib/r2-client')
-    vi.useFakeTimers()
-    const pending = uploadSoundToR2WithRetry('f.mp3', Buffer.from('snd'), 'audio/mpeg', MAX_RETRIES)
-    await vi.runAllTimersAsync()
-    const result = await pending
+    const result = await runWithFakeTimers(() =>
+      uploadSoundToR2WithRetry('f.mp3', Buffer.from('snd'), 'audio/mpeg', MAX_RETRIES),
+    )
 
     expect(result).toEqual({ url: 'https://sounds.example.test/f.mp3' })
     for (const call of sendMock.mock.calls) {

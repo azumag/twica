@@ -130,9 +130,30 @@ describe('error-handler', () => {
       'avatar-401.jpg',
       'asset-507-preview.png',
       'https://example.com/assets/503.png',
+      // 短いホスト名 `a` は `http` と `503` の距離を意図的に詰め、r2-client の `\D{0,10}` 近傍regexへ戻した退行も検知する。
+      'PUT http://a/503 failed',
     ])('文脈のない数値をHTTP statusとして誤分類しない: %s', async (errorMessage) => {
       const response = await handleBlobError(new Error(errorMessage), 'blob');
       expect(response.status).toBe(500);
+    });
+
+    it('Drizzle bind paramsをconsole / DB loggerへ渡す前にmessageから検閲する', async () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const error = new Error(
+        'Failed query: SELECT * FROM cards LIMIT 1\nparams: sensitive-token-value'
+      );
+
+      await handleBlobError(error, 'blob context');
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[ERROR] blob context: Failed query: SELECT * FROM cards LIMIT 1\nparams: [REDACTED]',
+        expect.any(Error)
+      );
+      expect(logErrorFromLogger).toHaveBeenCalledWith(
+        'blob context: Failed query: SELECT * FROM cards LIMIT 1\nparams: [REDACTED]',
+        [error]
+      );
+      consoleSpy.mockRestore();
     });
 
     it('その他のエラーで 500 を返す', async () => {

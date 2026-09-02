@@ -9,8 +9,8 @@
  * Key categories follow OWASP Logging Cheat Sheet recommendations:
  * - PARTIAL_SENSITIVE_KEYS: substring match — always redact when the key
  *   contains one of these tokens (e.g. `twitch_access_token`, `csrf_token`).
- * - EXACT_SENSITIVE_KEYS: exact match only — redact bare PII keys without
- *   masking debug-friendly compound keys (e.g. `userId` is masked but
+ * - EXACT_SENSITIVE_KEYS: exact match only — redact bare sensitive/PII keys
+ *   without masking debug-friendly compound keys (e.g. `userId` is masked but
  *   `broadcasterUserId` / `twitchUsername` are kept for triage).
  */
 
@@ -23,7 +23,22 @@ const PARTIAL_SENSITIVE_KEYS = [
   'csrf_token', 'xsrf_token',
 ]
 
-const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address']
+// DrizzleQueryError.params は bind 値（token 等）を保持し得るため、汎用名でも exact match で隠す。
+const EXACT_SENSITIVE_KEYS = ['userid', 'username', 'email', 'ip_address', 'params']
+
+// postgres.js の PostgresError はこれらを own enumerable field として持ち、
+// DETAIL / WHERE や debug bind 情報に行データ・token 等が含まれ得る。
+// 汎用 context の `detail` 等まで消さないよう、Error field を再構築する時だけ適用する。
+const ERROR_EXACT_SENSITIVE_KEYS = ['detail', 'where', 'parameters', 'args']
+
+const MAX_SANITIZE_DEPTH = 8
+const CIRCULAR_MARKER = '[Circular]'
+const MAX_DEPTH_MARKER = '[MaxDepth]'
+
+// drizzle-orm の DrizzleQueryError.message は `params:` 以降が bind 値の文字列化。
+// bind 値自身に改行や `    at ...` のような stack-frame 風文字列を含められるため、
+// 終端を内容から推測せず `params:` 行から文字列末尾までを決定論的に検閲する。
+const DRIZZLE_PARAMS_TO_END = /(^|\r?\n)([^\S\r\n]*params:[^\S\r\n]*)[\s\S]*$/i
 
 export function isSensitiveKey(key: string): boolean {
   const lowerKey = key.toLowerCase()
@@ -32,8 +47,92 @@ export function isSensitiveKey(key: string): boolean {
   return false
 }
 
+function isSensitiveErrorKey(key: string): boolean {
+  const lowerKey = key.toLowerCase()
+  return isSensitiveKey(key) || ERROR_EXACT_SENSITIVE_KEYS.includes(lowerKey)
+}
+
+export function sanitizeErrorText(value: string): string {
+  return value.replace(DRIZZLE_PARAMS_TO_END, '$1$2[REDACTED]')
+}
+
+export function sanitizeErrorStack(stack: string, name: string, message: string): string {
+  // V8 / Node の標準形なら、信頼できる境界は stack 内の見た目ではなく Error.message
+  // そのもの。bind 値中に `    at ...` があっても header 全体を exact length で置換し、
+  // message の外側にある本物の stack frame だけを保持する。
+  const header = `${name}: ${message}`
+  if (stack.startsWith(header)) {
+    return `${name}: ${sanitizeErrorText(message)}${stack.slice(header.length)}`
+  }
+
+  // 非標準 stack は安全な message 境界を特定できないため、診断情報より漏洩防止を優先。
+  return sanitizeErrorText(stack)
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function sanitizeRecord(
+  obj: Record<string, unknown>,
+  depth: number,
+  seen: WeakSet<object>,
+  errorFields = false,
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(obj)) {
+    const sensitive = errorFields ? isSensitiveErrorKey(key) : isSensitiveKey(key)
+    sanitized[key] = sensitive
+      ? '[REDACTED]'
+      : sanitizeValue(value, depth + 1, seen)
+  }
+  return sanitized
+}
+
+function sanitizeErrorForLogInternal(
+  error: Error,
+  depth: number,
+  seen: WeakSet<object>,
+): Error {
+  const sanitized = new Error(sanitizeErrorText(error.message))
+  sanitized.name = error.name
+  if (error.stack) sanitized.stack = sanitizeErrorStack(error.stack, error.name, error.message)
+
+  // Error の custom enumerable fields（query / params / cause / code 等）も console 展開時に
+  // 見えるため、Error 固有の機密fieldを含むキー名ベースのポリシーを適用する。
+  Object.assign(
+    sanitized,
+    sanitizeRecord(Object.fromEntries(Object.entries(error)), depth, seen, true),
+  )
+  return sanitized
+}
+
+function sanitizeValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') return sanitizeErrorText(value)
+  if (typeof value !== 'object' || value === null) return value
+  if (depth >= MAX_SANITIZE_DEPTH) return MAX_DEPTH_MARKER
+  if (seen.has(value)) return CIRCULAR_MARKER
+
+  seen.add(value)
+  try {
+    if (value instanceof Error) return sanitizeErrorForLogInternal(value, depth, seen)
+    if (Array.isArray(value)) {
+      return value.map(item => sanitizeValue(item, depth + 1, seen))
+    }
+    return sanitizeRecord(value as Record<string, unknown>, depth, seen)
+  } finally {
+    seen.delete(value)
+  }
+}
+
+function sanitizeErrorForLog(error: Error): Error {
+  const seen = new WeakSet<object>()
+  seen.add(error)
+  try {
+    return sanitizeErrorForLogInternal(error, 0, seen)
+  } finally {
+    seen.delete(error)
+  }
 }
 
 /**
@@ -41,37 +140,30 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * Pure function — input is not mutated.
  */
 export function sanitizeContext(obj: Record<string, unknown>): Record<string, unknown> {
-  const sanitized: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(obj)) {
-    if (isSensitiveKey(key)) {
-      sanitized[key] = '[REDACTED]'
-    } else if (Array.isArray(value)) {
-      sanitized[key] = value.map(item => isRecord(item) ? sanitizeContext(item) : item)
-    } else if (isRecord(value)) {
-      sanitized[key] = sanitizeContext(value)
-    } else {
-      sanitized[key] = value
-    }
+  const seen = new WeakSet<object>()
+  seen.add(obj)
+  try {
+    return sanitizeRecord(obj, 0, seen)
+  } finally {
+    seen.delete(obj)
   }
-  return sanitized
 }
 
 /**
  * Sanitize a single log argument for console output.
  * - Plain records are sanitized recursively.
- * - Error instances are passed through (their `.message` / `.stack` are
- *   developer-authored and assumed not to embed secrets).
+ * - Error instances keep their Error shape, but message / stack and enumerable
+ *   fields are sanitized because library-generated errors may embed bind values.
  * - Primitives are passed through.
  *
- * Note: arrays of primitives pass through unchanged; arrays of objects are
- * sanitized so structures like `[{ token: '...' }]` are still masked.
+ * Arrays recurse through the same sanitizer so nested records, errors, strings,
+ * and arrays cannot bypass the key/text redaction policy.
  */
 export function sanitizeLogArg(arg: unknown): unknown {
-  if (arg instanceof Error) return arg
-  if (Array.isArray(arg)) {
-    return arg.map(item => isRecord(item) ? sanitizeContext(item) : item)
-  }
+  if (arg instanceof Error) return sanitizeErrorForLog(arg)
+  if (Array.isArray(arg)) return sanitizeValue(arg, 0, new WeakSet<object>())
   if (isRecord(arg)) return sanitizeContext(arg)
+  if (typeof arg === 'string') return sanitizeErrorText(arg)
   return arg
 }
 
@@ -86,12 +178,13 @@ export function sanitizeLogArg(arg: unknown): unknown {
 export function extractErrorMessage(error: unknown): string {
   if (error && typeof error === 'object') {
     if ('message' in error && typeof (error as { message: unknown }).message === 'string') {
-      return (error as { message: string }).message
+      return sanitizeErrorText((error as { message: string }).message)
     }
     const seen = new WeakSet()
     try {
       return JSON.stringify(error, (key, value) => {
         if (key && isSensitiveKey(key)) return '[REDACTED]'
+        if (typeof value === 'string') return sanitizeErrorText(value)
         if (typeof value === 'object' && value !== null) {
           if (seen.has(value)) return '[Circular]'
           seen.add(value)
@@ -102,5 +195,5 @@ export function extractErrorMessage(error: unknown): string {
       return '[Unserializable object]'
     }
   }
-  return String(error)
+  return sanitizeErrorText(String(error))
 }

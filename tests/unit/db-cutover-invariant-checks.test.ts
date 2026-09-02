@@ -68,6 +68,18 @@ describe('db cutover invariant checks', () => {
     expect(new Set(codes).size).toBe(codes.length)
   })
 
+  it('allowlistのappliesTo参照が重複しない', () => {
+    const targetKeys = ALLOWLIST.flatMap((entry) =>
+      entry.appliesTo.map((target) => {
+        if (target.layer === 'data') return `data:${target.table}`
+        if (target.layer === 'invariants') return `invariants:${target.invariantId}`
+        return `${target.layer}:${target.kind}:${target.key}`
+      }),
+    )
+
+    expect(new Set(targetKeys).size).toBe(targetKeys.length)
+  })
+
   it('finding識別に使うcheck codeが重複しない', () => {
     const codes = INVARIANTS.flatMap((invariant) =>
       invariant.checks.map((check) => check.code),

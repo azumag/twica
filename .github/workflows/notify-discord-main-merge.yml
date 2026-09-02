@@ -6,7 +6,7 @@ name: Notify Discord on main merge
 # `contents: read`; do not widen them without a reviewed workflow requirement.
 on:
   pull_request_target:
-    types: [opened, edited, synchronize, closed]
+    types: [opened, edited, synchronize, reopened, ready_for_review, closed]
     branches: [main]
 
 permissions:
@@ -71,7 +71,6 @@ jobs:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       # PR/repository-derived strings stay in env and are consumed as data by Python/jq;
       # do not interpolate them directly into the shell script.
       # Re-declare the runner default so the fork check's trusted base input is explicit.
@@ -88,6 +87,8 @@ jobs:
     steps:
       - name: Validate webhook configuration
         shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
             echo "::error::Repository secret DISCORD_WEBHOOK_URL is not configured."
@@ -96,6 +97,8 @@ jobs:
 
       - name: Send merge notification to Discord
         shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           # Promotion PRs keep the human-facing release summary in the first
           # `## このリリースで変わること` section. Reuse that text directly
@@ -107,6 +110,10 @@ jobs:
 
           limit = 2000
           section_heading = "## このリリースで変わること"
+          # Only the canonical preview -> main path is a release promotion.
+          # Keep the branch names explicit here so direct-to-main merges use the title fallback.
+          promotion_source_ref = "preview"
+          promotion_target_ref = "main"
           body = os.environ.get("PR_BODY", "").replace("\r\n", "\n").replace("\r", "\n")
           # Only same-repository promotion text is trusted as notification input.
           # Fork PRs fall back to a sanitized title below.
@@ -147,8 +154,8 @@ jobs:
           release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
           if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
               is_promotion = (
-                  os.environ.get("BASE_REF") == "main"
-                  and os.environ.get("HEAD_REF") == "preview"
+                  os.environ.get("BASE_REF") == promotion_target_ref
+                  and os.environ.get("HEAD_REF") == promotion_source_ref
                   and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")
               )
               if is_promotion:

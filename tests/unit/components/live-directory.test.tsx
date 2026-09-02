@@ -232,11 +232,27 @@ describe("LiveDirectory", () => {
 
     // 初期選択は直近7日間。全期間へは明示的な操作でのみ切り替わる（regression guard）。
     expect(screen.getByRole("group", { name: "集計期間" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "直近7日間" })).toBeChecked();
+    const last7DaysRadio = screen.getByRole("radio", { name: "直近7日間" });
+    const allTimeRadio = screen.getByRole("radio", { name: "全期間" });
+    const periodHelp = screen.getByText(
+      "直近7日間に記録されたカード引き換えを集計しています。",
+    );
+
+    expect(last7DaysRadio).toBeChecked();
+    expect(last7DaysRadio).toHaveAttribute(
+      "aria-describedby",
+      "live-directory-ranking-period-help",
+    );
+    expect(allTimeRadio).toHaveAttribute(
+      "aria-describedby",
+      "live-directory-ranking-period-help",
+    );
+    expect(periodHelp).toHaveAttribute("id", "live-directory-ranking-period-help");
+    expect(last7DaysRadio.closest("label")?.querySelector("span")).toHaveClass(
+      "min-h-11",
+      "min-w-11",
+    );
     expect(screen.getByText("345ポイント")).toBeInTheDocument();
-    expect(
-      screen.getByText("直近7日間に記録されたカード引き換えを集計しています。"),
-    ).toBeInTheDocument();
   });
 
   it("switches usage ranking periods while card count always uses current values", () => {
@@ -415,6 +431,55 @@ describe("live indicator on ranking rows (#945)", () => {
 
     const rows = screen.getAllByRole("listitem");
     expect(within(rows[0]).queryByText("LIVE")).not.toBeInTheDocument();
+  });
+
+  it("does not match empty logins while still marking a normal matching login live", () => {
+    // #1130の空login照合回帰: 空値同士は一致させず、通常のlogin照合は維持する。
+    const emptyLoginEntry = entry("empty-login-streamer", {
+      twitchLogin: "",
+    });
+    const normalLoginEntry = entry("normal-login-streamer");
+    const emptyLoginRanking: LiveDirectoryRankingEntry = {
+      identity: {
+        twitchLogin: "",
+        displayName: "Empty Login Ranking",
+        profileImageUrl: "",
+      },
+      cardCount: 1,
+      redemptionCount: 1,
+      totalPoints: 100,
+      rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
+    };
+    const normalLoginRanking: LiveDirectoryRankingEntry = {
+      identity: {
+        twitchLogin: normalLoginEntry.twitchLogin,
+        displayName: normalLoginEntry.displayName,
+        profileImageUrl: normalLoginEntry.profileImageUrl,
+      },
+      cardCount: 2,
+      redemptionCount: 2,
+      totalPoints: 200,
+      rankedMetrics: ["cardCount", "redemptionCount", "totalPoints"],
+    };
+
+    renderDirectory(
+      [emptyLoginEntry, normalLoginEntry],
+      [emptyLoginRanking, normalLoginRanking],
+    );
+    openPointsRanking();
+
+    const rankingLink = screen.getByRole("link", {
+      name: /Empty Login RankingをTwitchで見る/,
+    });
+    expect(rankingLink).not.toHaveTextContent("LIVE");
+    expect(rankingLink).not.toHaveTextContent("現在配信中");
+    expect(rankingLink.querySelector(".ring-red-600")).toBeNull();
+
+    const normalRankingLink = screen.getByRole("link", {
+      name: /normal-login-streamerをTwitchで見る/,
+    });
+    expect(normalRankingLink).toHaveTextContent("LIVE");
+    expect(normalRankingLink).toHaveTextContent("現在配信中");
   });
 
   it("does not mark any row live when the live directory is empty", () => {

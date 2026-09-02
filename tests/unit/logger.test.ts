@@ -34,10 +34,14 @@ describe('logger', () => {
       expect(consoleWarnMock).toHaveBeenCalledWith('[WARN] warning message')
     })
 
-    it('passes Error instances through untouched', () => {
+    it('keeps Error shape while sanitizing Error arguments', () => {
       const error = new Error('test error')
       logger.warn('warning message', error)
-      expect(consoleWarnMock).toHaveBeenCalledWith('[WARN] warning message', error)
+
+      const loggedError = consoleWarnMock.mock.calls[0]?.[1]
+      expect(loggedError).toBeInstanceOf(Error)
+      expect(loggedError).not.toBe(error)
+      expect((loggedError as Error).message).toBe('test error')
     })
   })
 
@@ -91,10 +95,24 @@ describe('logger', () => {
       })
     })
 
-    it('keeps Error instances untouched so stack traces remain available', () => {
-      const err = new Error('boom')
+    it('redacts Drizzle params embedded in the log message', () => {
+      logger.error('query failed\nparams: secret-bind-value')
+      expect(consoleErrorMock).toHaveBeenCalledWith('[ERROR] query failed\nparams: [REDACTED]')
+    })
+
+    it('preserves Error diagnostics while redacting Drizzle params', () => {
+      const err = new Error('query failed\nparams: secret-bind-value')
+      err.stack = 'Error: query failed\nparams: secret-bind-value\n    at test-callsite'
+
       logger.error('failure', err)
-      expect(consoleErrorMock).toHaveBeenCalledWith('[ERROR] failure', err)
+
+      const loggedError = consoleErrorMock.mock.calls[0]?.[1]
+      expect(loggedError).toBeInstanceOf(Error)
+      expect(loggedError).not.toBe(err)
+      expect((loggedError as Error).message).toBe('query failed\nparams: [REDACTED]')
+      expect((loggedError as Error).stack).toContain('params: [REDACTED]')
+      expect((loggedError as Error).stack).toContain('at test-callsite')
+      expect((loggedError as Error).stack).not.toContain('secret-bind-value')
     })
   })
 })

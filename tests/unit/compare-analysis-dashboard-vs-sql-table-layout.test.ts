@@ -6,9 +6,11 @@ describe('printDiffTable separator layout', () => {
     vi.restoreAllMocks()
   })
 
-  it('区切り線の各列幅をヘッダーまたは最長データ幅へ揃える', () => {
+  it('ネスト名を含む実在メトリクスで区切り線の各列幅を固定する', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
 
+    // 平坦なメトリクス名も正当だが、実出力で使うネスト名を fixture へ含め、
+    // 「誤った名前の修正」ではなく列幅契約を実出力へ寄せる意図を明確にする。
     printDiffTable([
       { metric: 'usersSummary.totalUsers', expected: 10, actual: 11 },
       { metric: 'rarityDistribution.rare', expected: 25, actual: 26 },

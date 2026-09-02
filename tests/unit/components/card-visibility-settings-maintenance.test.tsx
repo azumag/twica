@@ -10,13 +10,13 @@ vi.mock('@/lib/logger')
 
 // #694 Stage 6b: 「設定保存」カテゴリの代表として CardVisibilitySettings
 // (/api/streamer/settings への書き込み) を検証する。
-function renderSettings(status: MaintenanceStatusResponse) {
+function renderSettings(status: MaintenanceStatusResponse, currentShowUnowned = false) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <MaintenanceStatusContext.Provider value={status}>
         <CardVisibilitySettings
           streamerId="streamer-1"
-          currentShowUnowned={false}
+          currentShowUnowned={currentShowUnowned}
           currentShowUnownedDetails={false}
         />
       </MaintenanceStatusContext.Provider>
@@ -36,6 +36,34 @@ function getToggles() {
     }),
   ] as const
 }
+
+describe('CardVisibilitySettings accessible descriptions', () => {
+  it('未所持カード表示トグルを補足説明へ関連付ける', () => {
+    renderSettings({ mode: 'off' })
+    const [showUnownedToggle] = getToggles()
+
+    expect(showUnownedToggle).toHaveAccessibleDescription(
+      jaMessages.cardVisibilitySettings.form.showUnownedHelp
+    )
+  })
+
+  it('詳細トグルは未所持カード非表示時だけ前提条件も説明する', () => {
+    const { unmount } = renderSettings({ mode: 'off' })
+    const [, hiddenDetailsToggle] = getToggles()
+
+    expect(hiddenDetailsToggle).toHaveAccessibleDescription(
+      `${jaMessages.cardVisibilitySettings.form.showDetailsHelp} (${jaMessages.cardVisibilitySettings.form.requiresShowUnowned})`
+    )
+
+    unmount()
+    renderSettings({ mode: 'off' }, true)
+    const [, visibleDetailsToggle] = getToggles()
+
+    expect(visibleDetailsToggle).toHaveAccessibleDescription(
+      jaMessages.cardVisibilitySettings.form.showDetailsHelp
+    )
+  })
+})
 
 describe('CardVisibilitySettings maintenance integration', () => {
   afterEach(() => {

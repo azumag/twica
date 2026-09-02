@@ -18,10 +18,12 @@ import {
 } from '@/lib/db/schema';
 
 export class TwitchTokenError extends Error {
+  public readonly originalError?: Error;
+
   constructor(
     message: string,
     public readonly code: 'NO_TOKEN' | 'REFRESH_FAILED' | 'DATABASE_ERROR' | 'USER_NOT_FOUND',
-    public readonly originalError?: Error,
+    originalError?: Error,
     // Issue #653/#670/#654/#655: TwitchTokenRefreshErrorのstatus/kind/retryable
     // (安全な要約値のみ)をAPI境界(handleApiError)まで橋渡しするための追加フィールド。
     // 生のoriginalErrorをここに載せない理由はtwitchTokenRefreshFailureContextの
@@ -32,6 +34,9 @@ export class TwitchTokenError extends Error {
   ) {
     super(message);
     this.name = 'TwitchTokenError';
+    // Issue #998: DrizzleQueryError の params には token 実値が含まれ得るため、
+    // DATABASE_ERROR では生の DB error を将来の診断経路へ持ち越さない。
+    this.originalError = code === 'DATABASE_ERROR' ? undefined : originalError;
   }
 }
 

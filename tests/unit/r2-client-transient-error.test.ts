@@ -36,12 +36,15 @@ describe('isTransientR2Error', () => {
     expect(isTransientR2Error('put: status: 503, please retry later')).toBe(true)
   })
 
-  // 【Issue #984】裸の'503'部分文字列マッチは、キー名やリクエストIDに偶然'503'を含む
-  // 恒久エラーを誤って一時障害と判定するリスクがあった。'http'/'status'という文脈語が
-  // 近傍に無い'503'は一時障害として扱わないことを確認する回帰テスト。
-  it('キー名にたまたま503を含む恒久エラーは一時障害として扱わない (Issue #984)', () => {
-    expect(isTransientR2Error("AccessDenied: key 'photo-503.png' is not permitted")).toBe(false)
-  })
+  // 【Issue #984/#1252】裸の'503'部分文字列マッチは、キー名やリクエストIDに偶然数字列を含む
+  // 恒久エラーを誤って一時障害と判定するリスクがあった。500は現状リトライ対象外だが、
+  // HTTP statusの文脈が無い数字列を扱わない負例として503とあわせて固定する。
+  it.each(['500', '503'])(
+    'キー名にたまたま%sを含む恒久エラーは一時障害として扱わない (Issue #984)',
+    (numericToken) => {
+      expect(isTransientR2Error(`AccessDenied: key 'photo-${numericToken}.png' is not permitted`)).toBe(false)
+    },
+  )
 
   // r2-retry-policy.tsのCLOUDFLARE_R2_TRANSIENT_MARKERSをここから直接importして
   // 全要素をループ検証する。ハードコピーした文字列リテラルではなく実際にimportした
