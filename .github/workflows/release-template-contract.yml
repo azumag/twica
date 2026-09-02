@@ -1,0 +1,32 @@
+name: Release PR template contract
+
+on:
+  pull_request:
+    branches: [main, preview]
+    paths:
+      - '.github/PULL_REQUEST_TEMPLATE/**'
+      - 'docs/QA.md'
+      - 'tests/unit/release-pr-template-contract.test.ts'
+      - '.github/workflows/release-template-contract.yml'
+  push:
+    branches: [main, preview]
+    paths:
+      - '.github/PULL_REQUEST_TEMPLATE/**'
+      - 'docs/QA.md'
+      - 'tests/unit/release-pr-template-contract.test.ts'
+      - '.github/workflows/release-template-contract.yml'
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Verify release PR template contract
+        run: npx vitest run tests/unit/release-pr-template-contract.test.ts
