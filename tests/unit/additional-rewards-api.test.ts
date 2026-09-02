@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { POST } from "@/app/api/streamer/additional-rewards/route";
+import { POST, PUT } from "@/app/api/streamer/additional-rewards/route";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
@@ -31,10 +31,12 @@ interface DbResponse {
   error?: unknown;
 }
 
-function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[] }) {
+function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[]; updates?: DbResponse[] }) {
   let selectIndex = 0;
   let insertIndex = 0;
+  let updateIndex = 0;
   const insertCalls: Array<Record<string, unknown>> = [];
+  const updateCalls: Array<Record<string, unknown>> = [];
   const db = {
     select: vi.fn((fields: Record<string, unknown>) => {
       const responses = config.selects ?? [{ rows: [] }];
@@ -74,14 +76,33 @@ function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[] }) {
       };
       return builder;
     }),
+    update: vi.fn(() => {
+      const responses = config.updates ?? [{ rows: [] }];
+      const response = responses[Math.min(updateIndex++, responses.length - 1)];
+      const resolve = () =>
+        response.error
+          ? Promise.reject(response.error)
+          : Promise.resolve(response.rows ?? []);
+      const builder: any = {
+        set: vi.fn((values: Record<string, unknown>) => {
+          updateCalls.push(values);
+          return builder;
+        }),
+        where: vi.fn(() => builder),
+        returning: vi.fn(() => builder),
+        then: (onFulfilled: any, onRejected: any) =>
+          resolve().then(onFulfilled, onRejected),
+      };
+      return builder;
+    }),
   };
   vi.mocked(getDb).mockResolvedValue({ db, sql: vi.fn() } as any);
-  return { db, insertCalls };
+  return { db, insertCalls, updateCalls };
 }
 
-function request(body: Record<string, unknown>) {
+function request(body: Record<string, unknown>, method: "POST" | "PUT" = "POST") {
   return new NextRequest("http://localhost/api/streamer/additional-rewards", {
-    method: "POST",
+    method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -93,6 +114,11 @@ function streamer(cardPackNames: string[] = []) {
     channel_point_reward_id: "main-reward",
     card_pack_names: cardPackNames,
   };
+}
+
+// 追加報酬の現在行（PUT の存在確認・現在値取得に使う）。
+function currentAdditionalReward(collectionName: string | null = "weapons") {
+  return { id: "additional-1", collection_name: collectionName };
 }
 
 beforeEach(() => {
@@ -247,5 +273,186 @@ describe("/api/streamer/additional-rewards raid options", () => {
     expect(await response.json()).toEqual({
       error: "drawCount must be an integer between 1 and 15",
     });
+  });
+});
+
+describe("/api/streamer/additional-rewards PUT (update)", () => {
+  const REWARD_ID = "44444444-4444-4444-4444-444444444444";
+
+  it("updates collectionName when the new pack has active cards", async () => {
+    const db = primeDb({
+      selects: [
+        { rows: [streamer(["weapons", "characters"])] },
+        { rows: [currentAdditionalReward("weapons")] },
+        { rows: [{ count: 3 }] },
+      ],
+      updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, collection_name: "characters" }] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "characters",
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    expect((await response.json()).success).toBe(true);
+    expect(db.updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "characters" }));
+  });
+
+  it("updates drawCount only when no collectionName is sent", async () => {
+    const { db, updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer()] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+      updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, draw_count: 10 }] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      drawCount: 10,
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    expect(updateCalls[0]).toEqual(expect.objectContaining({ draw_count: 10 }));
+    // 値が変わらないため checkCollectionHasActiveCards（3回目のselect）は走らない。
+    expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears collectionName to null (back to all cards)", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer()] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+      updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, collection_name: null }] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: null,
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: null }));
+  });
+
+  it("rejects an unregistered pack name", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer(["characters"])] },
+        // 現在値は null（全カード）。送信値 weapons は登録済み一覧に無く、
+        // 現在値とも異なるため membership 検証で 400 になる。
+        { rows: [currentAdditionalReward(null)] },
+      ],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "weapons",
+    }, "PUT"));
+    expect(response.status).toBe(400);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("rejects a pack with no active cards", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer(["empty-pack"])] },
+        { rows: [currentAdditionalReward("weapons")] },
+        { rows: [{ count: 0 }] },
+      ],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "empty-pack",
+    }, "PUT"));
+    expect(response.status).toBe(400);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("allows re-sending the current (orphaned) binding without an active-card check", async () => {
+    // 登録解除済みパック（一覧に無いが現在紐付け中）の再送信は維持扱いで許可し、
+    // checkCollectionHasActiveCards（3回目のselect）は走らせない。
+    const { db, updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer(["characters"])] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+      updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, collection_name: "weapons" }] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "weapons",
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    expect(db.select).toHaveBeenCalledTimes(2);
+    expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "weapons" }));
+  });
+
+  it("accepts DEFAULT_PACK_SENTINEL when active unclassified cards exist", async () => {
+    const db = primeDb({
+      selects: [
+        { rows: [streamer(["weapons"])] },
+        { rows: [currentAdditionalReward("weapons")] },
+        { rows: [{ count: 1 }] },
+      ],
+      updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, collection_name: DEFAULT_PACK_SENTINEL }] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: DEFAULT_PACK_SENTINEL,
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    expect(db.updateCalls[0]).toEqual(
+      expect.objectContaining({ collection_name: DEFAULT_PACK_SENTINEL }),
+    );
+  });
+
+  it("returns 404 when the target additional reward does not exist", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer()] },
+        { rows: [] },
+      ],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "weapons",
+    }, "PUT"));
+    expect(response.status).toBe(404);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("drops pack binding when card_pack_names is not deployed (deploy window)", async () => {
+    // getStreamerForAdditionalRewardPost が card_pack_names 欠落でフォールバック
+    // SELECT（2回目）を使うため、現在値の SELECT は 3 回目になる。
+    const { updateCalls } = primeDb({
+      selects: [
+        { error: { code: "42703", message: "column streamers.card_pack_names does not exist" } },
+        { rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward" }] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+      updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, draw_count: 5 }] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "weapons",
+      drawCount: 5,
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    expect((await response.json()).collectionNameSkippedDeployWindow).toBe(true);
+    expect(updateCalls[0]).not.toHaveProperty("collection_name");
+  });
+
+  it("rejects a present but invalid collectionName type", async () => {
+    const response = await PUT(request({ rewardId: REWARD_ID, collectionName: 123 }, "PUT"));
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects drawCount outside the supported range", async () => {
+    const response = await PUT(request({ rewardId: REWARD_ID, drawCount: 20 }, "PUT"));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "drawCount must be an integer between 1 and 15",
+    });
+  });
+
+  it("rejects a missing rewardId", async () => {
+    const response = await PUT(request({ drawCount: 5 }, "PUT"));
+    expect(response.status).toBe(400);
   });
 });

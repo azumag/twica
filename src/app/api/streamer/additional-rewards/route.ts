@@ -613,6 +613,321 @@ export async function POST(request: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
+// PUT: ownership lookup + update (read+write mixed → PlanetScale の単一接続)
+// ---------------------------------------------------------------------------
+
+/**
+ * 更新対象の追加報酬の現在状態（collection_name）を取得する pg 実装。
+ *
+ * PUT は「登録解除済みパックの再送信（孤立参照の維持）」を許可する
+ * （isRegisteredOrUnchanged の currentValue 判定）ため、更新前に現在値を
+ * 読む必要がある。0 行なら null を返し、呼び出し元が 404 を返す。
+ * collection_name 列未デプロイ窓では列を外して再試行し null を補完する。
+ */
+async function getAdditionalRewardForUpdatePg(
+  streamerId: string,
+  rewardId: string,
+): Promise<{ reward: { id: string; collection_name: string | null } | null; error: unknown }> {
+  const selectWithCollectionName = () =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamerAdditionalGachaRewardsTable.id,
+            collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+          })
+          .from(streamerAdditionalGachaRewardsTable)
+          .where(
+            and(
+              eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
+              eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
+            )
+          )
+          .limit(1);
+      },
+      "Additional Rewards API: PUT lookup",
+      { idempotent: true },
+    );
+
+  const selectWithoutCollectionName = () =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ id: streamerAdditionalGachaRewardsTable.id })
+          .from(streamerAdditionalGachaRewardsTable)
+          .where(
+            and(
+              eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
+              eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
+            )
+          )
+          .limit(1);
+      },
+      "Additional Rewards API: PUT lookup (no collection_name)",
+      { idempotent: true },
+    );
+
+  try {
+    const rows = await selectWithCollectionName();
+    return { reward: rows[0] ?? null, error: null };
+  } catch (error) {
+    if (isMissingCollectionNameColumn(error as GenericDbError)) {
+      try {
+        const rows = await selectWithoutCollectionName();
+        const row = rows[0] ?? null;
+        return { reward: row ? { ...row, collection_name: null } : null, error: null };
+      } catch (fallbackError) {
+        return { reward: null, error: fallbackError };
+      }
+    }
+    return { reward: null, error };
+  }
+}
+
+type UpdateAdditionalRewardOutcome =
+  | { kind: "ok"; reward: unknown }
+  | { kind: "not-found" }
+  | { kind: "error"; error: unknown };
+
+/**
+ * 追加報酬の更新（collection_name / draw_count）を実行する pg 実装。
+ *
+ * POST の insertAdditionalRewardPg と同じく、collection_name 列未デプロイ窓では
+ * 当該列を剥がして再試行する（それ以外の失敗は握りつぶさない）。
+ * 0 行更新（対象行が存在しない）は not-found として呼び出し元で 404 にする。
+ */
+async function updateAdditionalRewardPg(
+  streamerId: string,
+  rewardId: string,
+  updatePayload: Record<string, unknown>,
+): Promise<UpdateAdditionalRewardOutcome> {
+  const runUpdate = (payload: Record<string, unknown>) =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .update(streamerAdditionalGachaRewardsTable)
+          .set(payload as typeof streamerAdditionalGachaRewardsTable.$inferInsert)
+          .where(
+            and(
+              eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
+              eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
+            )
+          )
+          .returning();
+      },
+      "Additional Rewards API: PUT update",
+      // 同一条件の UPDATE は再実行しても最終状態が同じため冪等
+      { idempotent: true },
+    );
+
+  try {
+    const rows = await runUpdate(updatePayload);
+    if (rows.length === 0) return { kind: "not-found" };
+    return { kind: "ok", reward: rows[0] ?? null };
+  } catch (error) {
+    if (isMissingCollectionNameColumn(error as GenericDbError) && "collection_name" in updatePayload) {
+      delete updatePayload.collection_name;
+      try {
+        const rows = await runUpdate(updatePayload);
+        if (rows.length === 0) return { kind: "not-found" };
+        return { kind: "ok", reward: rows[0] ?? null };
+      } catch (retryError) {
+        return { kind: "error", error: retryError };
+      }
+    }
+    return { kind: "error", error };
+  }
+}
+
+/**
+ * PUT: 追加報酬の設定（紐付くカードパック・排出枚数）を更新する。
+ * 追加報酬は作成/削除のみだったため、グループの変更は「削除して作り直し」を
+ * 強いていた。UI の編集操作からこのエンドポイントを呼び、既存の EventSub
+ * サブスクリプション（報酬 ID ベース）を維持したまま設定だけを更新する。
+ */
+export async function PUT(request: NextRequest) {
+  // Content-Type validation - must be the first check
+  // JSON body を要求する状態変更 API のため POST と同じく最初に検証する。
+  const contentTypeValidation = validateContentType(request, "application/json");
+  if (contentTypeValidation) {
+    return contentTypeValidation;
+  }
+
+  // 状態変更 API のため CSRF 検証を最初に行う (#736。DELETE と同一方針)。
+  const csrfValidation = await validateCSRFToken(request);
+  if (!csrfValidation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    );
+  }
+
+  const session = await getSession();
+
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.streamerSettings, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(rateLimitResult.limit),
+          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+          "X-RateLimit-Reset": String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
+  if (!session || !canUseStreamerFeatures(session)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
+  }
+
+  try {
+    const body = await request.json();
+    const { rewardId, drawCount } = body;
+
+    // Issue #393: optional pack binding for this additional reward.
+    // undefined = 変更なし、null = 全カードへ戻す、string = パックへ紐付け。
+    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
+    if (!collectionNameResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    if (!rewardId) {
+      return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
+    }
+
+    // Issue #836: rewardId は Twitch の報酬 ID（UUID）形式を要求する（POST と同一）。
+    if (!validateRewardId(rewardId).valid) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    const normalizedDrawCount = drawCount === undefined ? undefined : Number(drawCount);
+    // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+    if (
+      normalizedDrawCount !== undefined &&
+      (!Number.isInteger(normalizedDrawCount) || normalizedDrawCount < 1 || normalizedDrawCount > 15)
+    ) {
+      return NextResponse.json(
+        { error: "drawCount must be an integer between 1 and 15" },
+        { status: 400 }
+      );
+    }
+
+    // Get streamer info to verify ownership + registered pack catalog
+    // ストリーマー情報を取得して所有権と登録済みパック名を確認
+    const { streamer, cardPackNamesUnavailable } = await getStreamerForAdditionalRewardPost(
+      session.twitchUserId
+    );
+
+    if (!streamer) {
+      return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
+    }
+
+    // 更新対象の現在値を読み、存在確認と「値が変わらない再送信」判定に使う。
+    const currentResult = await getAdditionalRewardForUpdatePg(streamer.id, rewardId);
+    if (currentResult.error) {
+      return handleDatabaseError(currentResult.error, "Additional Rewards API: PUT lookup");
+    }
+    if (!currentResult.reward) {
+      return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
+    }
+
+    const registeredPackNames: string[] = Array.isArray(streamer.card_pack_names)
+      ? streamer.card_pack_names
+      : [];
+
+    // Issue #393再設計: POST と同じ membership 検証。ただし PUT は既存紐付けの
+    // 再送信（現在値と同一）も許可するため isRegisteredOrUnchanged の
+    // currentValue に現在の collection_name を渡す（孤立参照を壊さない）。
+    // Issue #555: DEFAULT_PACK_SENTINEL は予約値のため membership 検証をスキップ。
+    if (
+      typeof collectionNameResult.value === "string" &&
+      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
+      !cardPackNamesUnavailable &&
+      !isRegisteredOrUnchanged(
+        collectionNameResult.value,
+        currentResult.reward.collection_name,
+        registeredPackNames
+      )
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+    }
+
+    // デプロイ窓で membership 検証ができない間は、新しいパック紐付けの書き込み
+    // 自体を見送る（現在値の維持は続行。POST と同じ方針）。
+    const collectionNameSkippedDeployWindow =
+      cardPackNamesUnavailable && typeof collectionNameResult.value === "string";
+
+    // Issue #393: 紐付け先が変わる場合のみ、アクティブカードの存在を確認する
+    // （空プールになる紐付けは拒否。POST と同じ #1 方針）。
+    if (
+      typeof collectionNameResult.value === "string" &&
+      !collectionNameSkippedDeployWindow &&
+      collectionNameResult.value !== currentResult.reward.collection_name
+    ) {
+      const existence = await checkCollectionHasActiveCards(
+        streamer.id,
+        collectionNameResult.value
+      );
+      if (existence === "absent") {
+        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+      }
+    }
+
+    // 更新するフィールドを構築。collection_name は値が指定された場合のみ
+    // 含め、列未デプロイ窓でも更新自体を壊さない（POST と同じ方針）。
+    const updatePayload: Record<string, unknown> = {};
+    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
+      updatePayload.collection_name = collectionNameResult.value;
+    } else if (collectionNameResult.value === null) {
+      // 明示的な「全カードへ戻す」（null）は常に保存する。
+      updatePayload.collection_name = null;
+    }
+    if (normalizedDrawCount !== undefined) {
+      updatePayload.draw_count = normalizedDrawCount;
+    }
+
+    if (Object.keys(updatePayload).length === 0) {
+      // 変更なしのリクエスト。更新自体は無意味なので現状をそのまま返す。
+      return NextResponse.json({
+        success: true,
+        reward: { ...currentResult.reward, reward_id: rewardId },
+        unchanged: true,
+      });
+    }
+
+    const updateOutcome = await updateAdditionalRewardPg(streamer.id, rewardId, updatePayload);
+
+    if (updateOutcome.kind === "not-found") {
+      return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
+    }
+
+    if (updateOutcome.kind === "error") {
+      return handleDatabaseError(updateOutcome.error, "Additional Rewards API: PUT");
+    }
+
+    logger.info(
+      `Additional reward updated: streamerId=${streamer.id}, rewardId=${rewardId}, fields=${Object.keys(updatePayload).join(",")}`
+    );
+
+    return NextResponse.json({
+      success: true,
+      reward: updateOutcome.reward,
+      ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
+    });
+  } catch (error) {
+    return handleApiError(error, "Additional Rewards API: PUT");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // DELETE: ownership lookup + delete (read+write mixed → PlanetScale の単一接続)
 // ---------------------------------------------------------------------------
 

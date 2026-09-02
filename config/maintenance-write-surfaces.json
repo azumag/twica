@@ -225,11 +225,12 @@
     "path": "/api/streamer/additional-rewards",
     "methods": [
       "POST",
+      "PUT",
       "DELETE"
     ],
     "category": "streamer",
     "maintenanceBehavior": "block",
-    "reason": "追加報酬の登録・削除。allowlist未登録のため一律ブロックに従う。",
+    "reason": "追加報酬の登録(POST)・更新(PUT)・削除(DELETE)。PUTはパック紐付け/排出枚数の変更(DB書き込み)。allowlist未登録のため一律ブロックに従う。",
     "owner": "azumag",
     "reviewedAt": "2026-07-18"
   },

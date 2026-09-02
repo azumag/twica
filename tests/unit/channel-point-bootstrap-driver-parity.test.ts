@@ -134,6 +134,7 @@ const FULL_REWARD_ROW = {
   reward_name: 'Extra Reward',
   draw_count: 2,
   is_raid_limited: true,
+  collection_name: 'weapons',
   created_at: '2020-01-01T00:00:00.000+00:00',
 }
 
@@ -150,8 +151,9 @@ const FALLBACK_REWARD_ROW = {
 }
 
 const EXPECTED_FULL_ADDITIONAL_REWARDS = [FULL_REWARD_ROW]
+// フォールバック時は collection_name も null で補完される（#393 のバッジ表示に必要）
 const EXPECTED_FALLBACK_ADDITIONAL_REWARDS = [
-  { ...FALLBACK_REWARD_ROW, draw_count: 1, is_raid_limited: false },
+  { ...FALLBACK_REWARD_ROW, draw_count: 1, is_raid_limited: false, collection_name: null },
 ]
 
 // ---------------------------------------------------------------------------
