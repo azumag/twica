@@ -689,6 +689,10 @@ async function getAdditionalRewardForUpdatePg(
 type UpdateAdditionalRewardOutcome =
   | { kind: "ok"; reward: unknown }
   | { kind: "not-found" }
+  // collection_name 列未デプロイ窓でパック変更のみの更新を送ると、ストリップ後に
+  // 更新フィールドが空になる。空 SET は Drizzle が "No values to set" で throw する
+  // ため、実行前に no-op へ分岐させる（500 にしない）。
+  | { kind: "no-op" }
   | { kind: "error"; error: unknown };
 
 /**
@@ -723,20 +727,20 @@ async function updateAdditionalRewardPg(
       { idempotent: true },
     );
 
-  try {
-    const rows = await runUpdate(updatePayload);
+  // 空 SET を実行すると Drizzle が throw するため、実行前に空チェックで no-op へ分岐。
+  const tryUpdate = async (payload: Record<string, unknown>): Promise<UpdateAdditionalRewardOutcome> => {
+    if (Object.keys(payload).length === 0) return { kind: "no-op" };
+    const rows = await runUpdate(payload);
     if (rows.length === 0) return { kind: "not-found" };
     return { kind: "ok", reward: rows[0] ?? null };
+  };
+
+  try {
+    return await tryUpdate(updatePayload);
   } catch (error) {
     if (isMissingCollectionNameColumn(error as GenericDbError) && "collection_name" in updatePayload) {
       delete updatePayload.collection_name;
-      try {
-        const rows = await runUpdate(updatePayload);
-        if (rows.length === 0) return { kind: "not-found" };
-        return { kind: "ok", reward: rows[0] ?? null };
-      } catch (retryError) {
-        return { kind: "error", error: retryError };
-      }
+      return await tryUpdate(updatePayload);
     }
     return { kind: "error", error };
   }
@@ -895,10 +899,11 @@ export async function PUT(request: NextRequest) {
     }
 
     if (Object.keys(updatePayload).length === 0) {
-      // 変更なしのリクエスト。更新自体は無意味なので現状をそのまま返す。
+      // 変更なしのリクエスト。更新自体は無意味なので現状維持として返す。
+      // reward は含めない（成功時は DB 行全体、ここは取得していない列もある
+      // ため形が揃わない。クライアントは応答本文を使わず再取得する）。
       return NextResponse.json({
         success: true,
-        reward: { ...currentResult.reward, reward_id: rewardId },
         unchanged: true,
       });
     }
@@ -907,6 +912,15 @@ export async function PUT(request: NextRequest) {
 
     if (updateOutcome.kind === "not-found") {
       return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
+    }
+
+    if (updateOutcome.kind === "no-op") {
+      // collection_name 列未デプロイ窓でパック変更のみの更新が破棄された場合。
+      // 成功扱いにしつつ、ストリップが起きたことを応答で明示する（黙って破棄しない）。
+      return NextResponse.json({
+        success: true,
+        collectionNameSkippedDeployWindow: true,
+      });
     }
 
     if (updateOutcome.kind === "error") {

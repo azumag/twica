@@ -618,8 +618,16 @@ export default function ChannelPointSettings({
    * 追加報酬の編集モードを開始する。
    * 現在のパック紐付け（collection_name）と排出枚数をプリフィルし、
    * その行の下に編集フォームを表示する。
+   *
+   * 別の行が編集中の場合は、未保存の入力が破棄される旨を確認してから
+   * 切り替える（無告知の破棄を防ぐ）。
    */
   const handleStartEditAdditionalReward = (reward: AdditionalReward) => {
+    if (editingRewardId && editingRewardId !== reward.reward_id) {
+      if (!window.confirm(t("additionalRewards.editDiscardConfirm"))) {
+        return;
+      }
+    }
     setEditingRewardId(reward.reward_id);
     setEditingCollectionName(reward.collection_name || "");
     setEditingDrawCount(reward.draw_count);
@@ -652,7 +660,12 @@ export default function ChannelPointSettings({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           rewardId: editingRewardId,
-          collectionName: editingCollectionName || null,
+          // パック選択が非表示（canManage=false かつ既存紐付けなし）の場合は
+          // 送らない（undefined）。フォームに出ていない項目は更新しない、
+          // という意図を API 契約に合わせて明確にする。
+          ...(editingPackControlMode === "hidden"
+            ? {}
+            : { collectionName: editingCollectionName || null }),
           drawCount: editingDrawCount,
         }),
       });
@@ -676,7 +689,6 @@ export default function ChannelPointSettings({
   };
 
   /**
-   * 追加報酬を削除する
    * 追加報酬を削除する
    */
   const handleRemoveAdditionalReward = async (rewardId: string) => {
@@ -1363,9 +1375,9 @@ export default function ChannelPointSettings({
                title={t("additionalRewards.title")}
                description={t("additionalRewards.description")}
              >
-               {/* List of additional rewards */}
-               {/* 追加報酬一覧 */}
-{additionalRewards.length > 0 && (
+{/* List of additional rewards */}
+                {/* 追加報酬一覧 */}
+                {additionalRewards.length > 0 && (
                   <div className="mb-3 space-y-2">
                     {additionalRewards.map((reward) => (
                       <div

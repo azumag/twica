@@ -13,7 +13,19 @@ vi.mock("@/lib/logger");
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
-function mockFetch(): FetchMock {
+const DEFAULT_ADDITIONAL_REWARDS = [
+  {
+    id: "ar-1",
+    reward_id: "extra-reward",
+    reward_name: "Extra",
+    draw_count: 3,
+    is_raid_limited: false,
+    collection_name: "weapons",
+    created_at: "2026-01-01T00:00:00.000Z",
+  },
+];
+
+function mockFetch(additionalRewards: unknown[] = DEFAULT_ADDITIONAL_REWARDS): FetchMock {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
@@ -35,37 +47,17 @@ function mockFetch(): FetchMock {
           ],
           subscriptions: [],
           // bootstrap 経路でも collection_name が欠落しないこと（表示バグの回帰ガード）
-          additionalRewards: [
-            {
-              id: "ar-1",
-              reward_id: "extra-reward",
-              reward_name: "Extra",
-              draw_count: 3,
-              is_raid_limited: false,
-              collection_name: "weapons",
-              created_at: "2026-01-01T00:00:00.000Z",
-            },
-          ],
+          additionalRewards,
           eventSubStatus: "active",
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
     }
     if (url.includes("/api/streamer/additional-rewards") && method === "GET") {
-      return new Response(
-        JSON.stringify([
-          {
-            id: "ar-1",
-            reward_id: "extra-reward",
-            reward_name: "Extra",
-            draw_count: 3,
-            is_raid_limited: false,
-            collection_name: "weapons",
-            created_at: "2026-01-01T00:00:00.000Z",
-          },
-        ]),
-        { status: 200, headers: { "content-type": "application/json" } }
-      );
+      return new Response(JSON.stringify(additionalRewards), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
     if (url.includes("/api/streamer/additional-rewards") && method === "PUT") {
       return new Response(JSON.stringify({ success: true }), {
@@ -197,5 +189,64 @@ describe("ChannelPointSettings additional-reward editing", () => {
     expect(packSelect.value).toBe("weapons");
     // 枚数入力はプランに関係なく編集できる
     expect(screen.getByDisplayValue("3")).toBeInTheDocument();
+  });
+
+  // 別の行の「編集」を押したとき、編集中の未保存入力が無告知で破棄されないこと。
+  it("confirms before switching edit targets with unsaved changes; cancel keeps the current edit", async () => {
+    const secondReward = {
+      id: "ar-2",
+      reward_id: "extra-reward-2",
+      reward_name: "Extra 2",
+      draw_count: 1,
+      is_raid_limited: false,
+      collection_name: "characters",
+      created_at: "2026-01-02T00:00:00.000Z",
+    };
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", mockFetch([...DEFAULT_ADDITIONAL_REWARDS, secondReward]));
+    const confirmMock = vi.fn().mockReturnValue(false);
+    vi.stubGlobal("confirm", confirmMock);
+    renderComponent();
+
+    const editButtons = await screen.findAllByRole("button", { name: "編集" });
+    fireEvent.click(editButtons[0]);
+    // 未保存の変更を作る
+    const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
+    fireEvent.change(packSelect, { target: { value: "characters" } });
+
+    fireEvent.click(editButtons[1]);
+
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    // キャンセルしたので 1 件目の編集フォームが残る
+    expect(screen.getByLabelText("編集する引き換えのカードパック")).toBeInTheDocument();
+  });
+
+  it("switches to the other row's edit form when the discard is confirmed", async () => {
+    const secondReward = {
+      id: "ar-2",
+      reward_id: "extra-reward-2",
+      reward_name: "Extra 2",
+      draw_count: 1,
+      is_raid_limited: false,
+      collection_name: "characters",
+      created_at: "2026-01-02T00:00:00.000Z",
+    };
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", mockFetch([...DEFAULT_ADDITIONAL_REWARDS, secondReward]));
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    renderComponent();
+
+    const editButtons = await screen.findAllByRole("button", { name: "編集" });
+    fireEvent.click(editButtons[0]);
+    const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
+    fireEvent.change(packSelect, { target: { value: "characters" } });
+
+    fireEvent.click(editButtons[1]);
+
+    // 2 件目の編集フォームに切り替わり、characters がプリフィルされる
+    await waitFor(() => {
+      const switched = screen.getByLabelText("編集する引き換えのカードパック") as HTMLSelectElement;
+      expect(switched.value).toBe("characters");
+    });
   });
 });

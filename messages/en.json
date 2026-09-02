@@ -673,6 +673,7 @@
       "updateSuccess": "Additional redemption updated",
       "updateFailed": "Failed to update additional redemption",
       "removeConfirm": "Remove this additional redemption? EventSub subscription will also be removed.",
+      "editDiscardConfirm": "Unsaved changes will be discarded if you switch to editing another redemption. Continue?",
       "cannotUseAsMain": "This redemption is already registered as an additional redemption. Please remove it first.",
       "cannotUseAsAdditional": "This redemption is already set as the main redemption.",
       "drawCount": "Cards per redemption",

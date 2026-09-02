@@ -6,7 +6,7 @@
  * 予約センチネル・未登録パック・デプロイ窓の永続化判断を固定する。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { POST, PUT } from "@/app/api/streamer/additional-rewards/route";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -14,6 +14,7 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { getDb } from "@/lib/db/client";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import { ERROR_MESSAGES } from "@/lib/constants";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
@@ -454,5 +455,83 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
   it("rejects a missing rewardId", async () => {
     const response = await PUT(request({ drawCount: 5 }, "PUT"));
     expect(response.status).toBe(400);
+  });
+
+  // 必須レビュー指摘（collection_name 列未デプロイ窓）の回帰テスト:
+  // collectionName のみの更新を送ると、ストリップ後に空 payload になり
+  // Drizzle の空 SET が throw するため、no-op へ分岐して 500 にしない。
+  it("collection_name列未デプロイ窓でパック変更のみの更新はno-opになり500にならない", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer(["weapons", "characters"])] },
+        { rows: [currentAdditionalReward("weapons")] },
+        { rows: [{ count: 2 }] },
+      ],
+      updates: [{
+        error: {
+          code: "42703",
+          message: 'column "collection_name" of relation "streamer_additional_gacha_rewards" does not exist',
+        },
+      }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "characters",
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    // ストリップが起きたことを応答で明示する（黙って破棄しない）
+    expect(body.collectionNameSkippedDeployWindow).toBe(true);
+    // ストリップ後の再試行は空 payload になるため DB を呼ばない（1回目のみ）
+    expect(updateCalls).toHaveLength(1);
+  });
+
+  it("変更なしのリクエストはunchangedを返しUPDATEしない", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer()] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+    });
+    const response = await PUT(request({ rewardId: REWARD_ID }, "PUT"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.unchanged).toBe(true);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("CSRF検証が無効な場合は403を返し、レートリミット/セッション取得/DB更新に到達しない", async () => {
+    mockValidateCSRFToken.mockResolvedValue({ valid: false, error: "bad csrf" } as any);
+    const response = await PUT(request({ rewardId: REWARD_ID, collectionName: "weapons" }, "PUT"));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: ERROR_MESSAGES.FORBIDDEN });
+    expect(mockCheckRateLimit).not.toHaveBeenCalled();
+    expect(mockGetSession).not.toHaveBeenCalled();
+  });
+
+  it("未認証なら401を返す", async () => {
+    mockCanUseStreamerFeatures.mockReturnValue(false);
+    const response = await PUT(request({ rewardId: REWARD_ID }, "PUT"));
+    expect(response.status).toBe(401);
+  });
+
+  it("レートリミット超過なら429を返す", async () => {
+    mockCheckRateLimit.mockResolvedValue({
+      success: false,
+      limit: 10,
+      remaining: 0,
+      reset: Date.now() + 60_000,
+    } as any);
+    const response = await PUT(request({ rewardId: REWARD_ID }, "PUT"));
+    expect(response.status).toBe(429);
+  });
+
+  it("Content-Typeが不正なら415を返す", async () => {
+    mockValidateContentType.mockReturnValue(
+      new NextResponse(JSON.stringify({ error: "unsupported media type" }), { status: 415 })
+    );
+    const response = await PUT(request({ rewardId: REWARD_ID }, "PUT"));
+    expect(response.status).toBe(415);
   });
 });
