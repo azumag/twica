@@ -227,3 +227,21 @@ describe('getStorageUsage', () => {
     expect(result.planOverLimit).toBe(false)
   })
 })
+
+describe('formatBytes', () => {
+  // 現行の実利用は非負の B〜GB 範囲なので、その契約だけを直接固定する。
+  // 負数や TB 以上をどう表現するかは別途仕様判断が必要なため、このテストでは既存挙動を固定しない。
+  it.each([
+    { bytes: 0, expected: '0 B' },
+    { bytes: 1023, expected: '1023 B' },
+    { bytes: 1024, expected: '1 KB' },
+    { bytes: 1536, expected: '1.5 KB' },
+    { bytes: 1024 ** 2, expected: '1 MB' },
+    { bytes: 1024 ** 3, expected: '1 GB' },
+    { bytes: 50 * 1024 ** 3, expected: '50 GB' },
+  ])('formats $bytes bytes as $expected', async ({ bytes, expected }) => {
+    const { formatBytes } = await import('@/lib/storage-usage')
+
+    expect(formatBytes(bytes)).toBe(expected)
+  })
+})
