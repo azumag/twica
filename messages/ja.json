@@ -667,7 +667,7 @@
       "removeSuccess": "追加の引き換えを削除しました",
       "addFailed": "追加の引き換えの登録に失敗しました",
       "removeFailed": "追加の引き換えの削除に失敗しました",
-      "edit": "編集",
+      "edit": "パック・枚数を編集",
       "update": "変更を保存",
       "cancel": "キャンセル",
       "updateSuccess": "追加の引き換えを更新しました",

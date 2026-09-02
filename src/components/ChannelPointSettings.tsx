@@ -654,6 +654,9 @@ export default function ChannelPointSettings({
    */
   const handleUpdateAdditionalReward = async () => {
     if (!editingRewardId) return;
+    // 保存開始時の編集対象をキャプチャする。保存中に他行の編集へ移っていた
+    // 場合は、開いているフォームを勝手に閉じない。
+    const targetRewardId = editingRewardId;
 
     setUpdatingAdditional(true);
     setMessage("");
@@ -698,7 +701,8 @@ export default function ChannelPointSettings({
           ? t("additionalRewards.updateSuccessPackPending")
           : t("additionalRewards.updateSuccess")
       );
-      handleCancelEditAdditionalReward();
+      // 保存中に他行の編集へ移っていた場合は、開いているフォームを残す
+      setEditingRewardId((current) => (current === targetRewardId ? null : current));
       await fetchAdditionalRewards();
     } catch {
       setMessage(t("additionalRewards.updateFailed"));
@@ -1457,13 +1461,12 @@ export default function ChannelPointSettings({
                             </div>
                           </div>
                           <div className="flex shrink-0 items-center gap-3 pl-3">
-                            <button
+<button
                               onClick={() => handleStartEditAdditionalReward(reward)}
-                              // 編集中の行の再クリックと、PUT 実行中の他行への切替は無効
-                              // （未保存入力の無告知リセット・フォームの勝手なクローズ防止）。
-                              // 編集フォームを開くこと自体は読み取りなので maintenance 中も
-                              // 許可し、書き込み（変更を保存）側でブロックする。
-                              disabled={updatingAdditional || editingRewardId === reward.reward_id}
+                              // 編集中の行の再クリックは無効（未保存入力の無告知リセット防止）。
+                              // 保存中（updatingAdditional）も他行への切替は許可するが、
+                              // 保存完了時に開いているフォームは閉じない（上記参照）。
+                              disabled={editingRewardId === reward.reward_id}
                               className="text-xs text-purple-400 hover:text-purple-300 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {t("additionalRewards.edit")}

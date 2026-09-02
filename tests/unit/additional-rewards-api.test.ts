@@ -492,6 +492,21 @@ it("drops pack binding when card_pack_names is not deployed (deploy window)", as
     expect(response.status).toBe(400);
   });
 
+  it("rejects a non-object body instead of throwing (500)", async () => {
+    const nullBody = new NextRequest("http://localhost/api/streamer/additional-rewards", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "null",
+    });
+    expect((await PUT(nullBody)).status).toBe(400);
+    const arrayBody = new NextRequest("http://localhost/api/streamer/additional-rewards", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "[]",
+    });
+    expect((await PUT(arrayBody)).status).toBe(400);
+  });
+
   // 必須レビュー指摘（collection_name 列未デプロイ窓）の回帰テスト:
   // collectionName のみの更新を送ると、ストリップ後に空 payload になり
   // Drizzle の空 SET が throw するため、no-op へ分岐して 500 にしない。
@@ -556,9 +571,10 @@ it("drops pack binding when card_pack_names is not deployed (deploy window)", as
     expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "characters", draw_count: 7 }));
     expect(updateCalls[1]).toEqual(expect.objectContaining({ draw_count: 7 }));
     expect(updateCalls[1]).not.toHaveProperty("collection_name");
-    // ストリップ後の再試行の RETURNING は collection_name を含まない明示列
-    // （Drizzle の引数なし returning() はスキーマ全列を列挙するため 42703 が再発する）
-    expect(returningCalls[0]).toBeUndefined();
+    // 初回の RETURNING は GET と同じ明示列（collection_name 含む）、
+    // ストリップ後の再試行は collection_name を含まない明示列
+    expect(returningCalls[0]).toEqual(expect.any(Object));
+    expect(returningCalls[0]).toHaveProperty("collection_name");
     expect(returningCalls[1]).toEqual(expect.any(Object));
     expect(returningCalls[1]).not.toHaveProperty("collection_name");
   });

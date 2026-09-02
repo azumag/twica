@@ -727,6 +727,8 @@ async function updateAdditionalRewardPg(
   // collection_name 列未デプロイ窓では RETURNING にも collection_name を含めない。
   // Drizzle の引数なし returning() はスキーマ定義の全列を明示列挙するため、
   // SET から外しても RETURNING 側で 42703 が再発する（レビュー指摘対応）。
+  // 成功時の RETURNING は GET（listAdditionalRewardsPg の selectFull）と同じ
+  // 明示列に揃え、API 全体で streamer_id の有無を統一する（streamer_id は返さない）。
   const runUpdate = (payload: Record<string, unknown>, returningMinimal: boolean) =>
     withDbRetry(
       async () => {
@@ -740,16 +742,20 @@ async function updateAdditionalRewardPg(
               eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
             )
           );
+        const baseReturning = {
+          id: streamerAdditionalGachaRewardsTable.id,
+          reward_id: streamerAdditionalGachaRewardsTable.reward_id,
+          reward_name: streamerAdditionalGachaRewardsTable.reward_name,
+          draw_count: streamerAdditionalGachaRewardsTable.draw_count,
+          is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
+          created_at: streamerAdditionalGachaRewardsTable.created_at,
+        };
         return returningMinimal
-          ? query.returning({
-              id: streamerAdditionalGachaRewardsTable.id,
-              reward_id: streamerAdditionalGachaRewardsTable.reward_id,
-              reward_name: streamerAdditionalGachaRewardsTable.reward_name,
-              draw_count: streamerAdditionalGachaRewardsTable.draw_count,
-              is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
-              created_at: streamerAdditionalGachaRewardsTable.created_at,
-            })
-          : query.returning();
+          ? query.returning(baseReturning)
+          : query.returning({
+              ...baseReturning,
+              collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+            });
       },
       "Additional Rewards API: PUT update",
       // 同一条件の UPDATE は再実行しても最終状態が同じため冪等
@@ -856,7 +862,12 @@ export async function PUT(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { rewardId, drawCount } = body;
+    // body が null / 配列 / 非オブジェクトの場合は destructuring で TypeError に
+    // なり 500 になるため、400 で拒否する（POST と同じ既存パターンの PUT 側対応）。
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    const { rewardId, drawCount } = body as Record<string, unknown>;
 
     // Issue #393: optional pack binding for this additional reward.
     // undefined = 変更なし、null = 全カードへ戻す、string = パックへ紐付け。

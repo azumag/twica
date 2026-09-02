@@ -122,7 +122,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
   it("opens the inline edit form prefilled with the current binding", async () => {
     renderComponent();
 
-    const editButton = await screen.findByRole("button", { name: "編集" });
+    const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButton);
 
 // 編集フォームが表示され、パック選択に現在値（weapons）がプリフィルされる
@@ -138,7 +138,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
   it("sends a PUT with the new collection and draw count, then closes the form", async () => {
     renderComponent();
 
-    const editButton = await screen.findByRole("button", { name: "編集" });
+    const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButton);
 
     const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
@@ -171,7 +171,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
   it("closes the edit form on cancel without sending a PUT", async () => {
     renderComponent();
 
-    const editButton = await screen.findByRole("button", { name: "編集" });
+    const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButton);
     await screen.findByRole("button", { name: "キャンセル" });
 
@@ -191,7 +191,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
   it("disables the pack select in edit mode when canManage=false with an existing binding", async () => {
     renderComponent({ cardPacks: { canManage: false, defaultPackName: null } });
 
-    const editButton = await screen.findByRole("button", { name: "編集" });
+    const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButton);
 
     const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
@@ -205,11 +205,11 @@ describe("ChannelPointSettings additional-reward editing", () => {
   it("disables the edit button of the row being edited (no silent reset)", async () => {
     renderComponent();
 
-    const editButton = await screen.findByRole("button", { name: "編集" });
+    const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButton);
     // 編集フォームが開いたら、同じ行の編集ボタンは disabled になる
     await screen.findByLabelText("編集する引き換えのカードパック");
-    expect(screen.getByRole("button", { name: "編集" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "パック・枚数を編集" })).toBeDisabled();
   });
 
   // メンテナンスモード中は編集フォームの「変更を保存」が disabled になる
@@ -218,7 +218,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
   it("disables the edit form's save button during maintenance mode", async () => {
     renderComponent({}, "read_only");
 
-    const editButton = await screen.findByRole("button", { name: "編集" });
+    const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButton);
 
     await screen.findByLabelText("編集する引き換えのカードパック");
@@ -237,7 +237,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     vi.stubGlobal("fetch", notFoundMock);
     renderComponent();
 
-    const editButton = await screen.findByRole("button", { name: "編集" });
+    const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButton);
     await screen.findByLabelText("編集する引き換えのカードパック");
 
@@ -276,7 +276,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     vi.stubGlobal("confirm", confirmMock);
     renderComponent();
 
-    const editButtons = await screen.findAllByRole("button", { name: "編集" });
+    const editButtons = await screen.findAllByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButtons[0]);
     // 未保存の変更を作る
     const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
@@ -304,7 +304,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
     renderComponent();
 
-    const editButtons = await screen.findAllByRole("button", { name: "編集" });
+    const editButtons = await screen.findAllByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButtons[0]);
     const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
     fireEvent.change(packSelect, { target: { value: "characters" } });
@@ -335,7 +335,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     vi.stubGlobal("confirm", confirmMock);
     renderComponent();
 
-    const editButtons = await screen.findAllByRole("button", { name: "編集" });
+    const editButtons = await screen.findAllByRole("button", { name: "パック・枚数を編集" });
     fireEvent.click(editButtons[0]);
     await screen.findByLabelText("編集する引き換えのカードパック");
 
@@ -346,5 +346,59 @@ describe("ChannelPointSettings additional-reward editing", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("編集する引き換えのカードパック")).toBeInTheDocument();
     });
+  });
+
+  // 保存中に他行の編集へ移っても、保存完了で開いているフォームを閉じない。
+  it("keeps the newly opened form when save completes after switching rows", async () => {
+    const secondReward = {
+      id: "ar-2",
+      reward_id: "extra-reward-2",
+      reward_name: "Extra 2",
+      draw_count: 1,
+      is_raid_limited: false,
+      collection_name: "characters",
+      created_at: "2026-01-02T00:00:00.000Z",
+    };
+    vi.unstubAllGlobals();
+    const baseMock = mockFetch([...DEFAULT_ADDITIONAL_REWARDS, secondReward]);
+    let resolvePut!: (response: Response) => void;
+    const gatingMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/streamer/additional-rewards") && (init?.method ?? "GET") === "PUT") {
+        return new Promise<Response>((resolve) => {
+          resolvePut = resolve;
+        });
+      }
+      return (baseMock as ReturnType<typeof vi.fn>)(input, init);
+    });
+    vi.stubGlobal("fetch", gatingMock);
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    renderComponent();
+
+    const editButtons = await screen.findAllByRole("button", { name: "パック・枚数を編集" });
+    // 1 件目の編集を開いて保存を開始する
+    fireEvent.click(editButtons[0]);
+    await screen.findByLabelText("編集する引き換えのカードパック");
+    fireEvent.click(screen.getByRole("button", { name: "変更を保存" }));
+    // PUT 実行中に 2 件目の編集へ移る（confirm なしで開けること）
+    const secondButtons = screen.getAllByRole("button", { name: "パック・枚数を編集" });
+    expect(secondButtons[1]).not.toBeDisabled();
+    fireEvent.click(secondButtons[1]);
+    const switched = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
+    expect(switched.value).toBe("characters");
+    // PUT が完了しても 2 件目のフォームが残る
+    resolvePut(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    await waitFor(() => {
+      expect(screen.getByText("追加の引き換えを更新しました")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: "キャンセル" })).toBeInTheDocument();
+    expect(
+      (screen.getByLabelText("編集する引き換えのカードパック") as HTMLSelectElement).value
+    ).toBe("characters");
   });
 });
