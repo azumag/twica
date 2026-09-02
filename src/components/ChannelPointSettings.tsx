@@ -1466,7 +1466,10 @@ export default function ChannelPointSettings({
                               // 編集中の行の再クリックは無効（未保存入力の無告知リセット防止）。
                               // 保存中（updatingAdditional）も他行への切替は許可するが、
                               // 保存完了時に開いているフォームは閉じない（上記参照）。
-                              disabled={editingRewardId === reward.reward_id}
+                              // メンテナンス中は削除ボタンと同様に無効化し、開いてから
+                              // 保存できない不親切な導線にしない。
+                              disabled={isMaintenanceBlocked || editingRewardId === reward.reward_id}
+                              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                               className="text-xs text-purple-400 hover:text-purple-300 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {t("additionalRewards.edit")}

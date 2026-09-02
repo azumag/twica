@@ -116,6 +116,26 @@ async function getOwnedStreamerIdForRewards(twitchUserId: string): Promise<strin
 }
 
 /**
+ * 追加報酬の応答形状（GET の一覧・PUT の成功時 RETURNING）で使う明示列の共有定義。
+ * 引数なし returning() はスキーマ全列（streamer_id 含む）を返すため使わず、
+ * GET と PUT で streamer_id の有無を統一する。collection_name 未デプロイ窓用の
+ * 最小セット（collection_name なし）もここから派生させる。
+ */
+const ADDITIONAL_REWARD_MINIMAL_COLUMNS = {
+  id: streamerAdditionalGachaRewardsTable.id,
+  reward_id: streamerAdditionalGachaRewardsTable.reward_id,
+  reward_name: streamerAdditionalGachaRewardsTable.reward_name,
+  draw_count: streamerAdditionalGachaRewardsTable.draw_count,
+  is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
+  created_at: streamerAdditionalGachaRewardsTable.created_at,
+} as const;
+
+const ADDITIONAL_REWARD_RESPONSE_COLUMNS = {
+  ...ADDITIONAL_REWARD_MINIMAL_COLUMNS,
+  collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+} as const;
+
+/**
  * listAdditionalRewardsPg の各列セレクトと 2 段フォールバックチェイン (#663)
  *
  * collection_name 列欠落を raid-options 列欠落より先に判定する。raid 側の
@@ -130,15 +150,7 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
       async () => {
         const { db } = await getDb();
         return db
-          .select({
-            id: streamerAdditionalGachaRewardsTable.id,
-            reward_id: streamerAdditionalGachaRewardsTable.reward_id,
-            reward_name: streamerAdditionalGachaRewardsTable.reward_name,
-            draw_count: streamerAdditionalGachaRewardsTable.draw_count,
-            is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
-            collection_name: streamerAdditionalGachaRewardsTable.collection_name,
-            created_at: streamerAdditionalGachaRewardsTable.created_at,
-          })
+          .select(ADDITIONAL_REWARD_RESPONSE_COLUMNS)
           .from(streamerAdditionalGachaRewardsTable)
           .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
           .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
@@ -742,20 +754,10 @@ async function updateAdditionalRewardPg(
               eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
             )
           );
-        const baseReturning = {
-          id: streamerAdditionalGachaRewardsTable.id,
-          reward_id: streamerAdditionalGachaRewardsTable.reward_id,
-          reward_name: streamerAdditionalGachaRewardsTable.reward_name,
-          draw_count: streamerAdditionalGachaRewardsTable.draw_count,
-          is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
-          created_at: streamerAdditionalGachaRewardsTable.created_at,
-        };
+        const baseReturning = ADDITIONAL_REWARD_MINIMAL_COLUMNS;
         return returningMinimal
           ? query.returning(baseReturning)
-          : query.returning({
-              ...baseReturning,
-              collection_name: streamerAdditionalGachaRewardsTable.collection_name,
-            });
+          : query.returning(ADDITIONAL_REWARD_RESPONSE_COLUMNS);
       },
       "Additional Rewards API: PUT update",
       // 同一条件の UPDATE は再実行しても最終状態が同じため冪等
@@ -955,10 +957,12 @@ export async function PUT(request: NextRequest) {
     // デプロイ窓で membership 検証ができない間は、新しいパック紐付けの書き込み
     // 自体を見送る（現在値の維持は続行。POST と同じ方針）。
     // 現在値と同じパック名の再送は「変更要求」ではないため対象外にし、
-    // 「反映待ち」の誤表示を防ぐ。
+    // 「反映待ち」の誤表示を防ぐ。センチネル（デフォルトパックのみ）は登録不要の
+    // 疑似パックのため membership 検証自体が不要で、見送り対象からも除外する。
     const collectionNameSkippedDeployWindow =
       cardPackNamesUnavailable &&
       typeof collectionNameResult.value === "string" &&
+      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
       collectionNameResult.value !== currentResult.reward.collection_name;
 
     // Issue #393: 紐付け先が変わる場合のみ、アクティブカードの存在を確認する

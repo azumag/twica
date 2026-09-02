@@ -212,18 +212,13 @@ describe("ChannelPointSettings additional-reward editing", () => {
     expect(screen.getByRole("button", { name: "パック・枚数を編集" })).toBeDisabled();
   });
 
-  // メンテナンスモード中は編集フォームの「変更を保存」が disabled になる
-  // （書き込み導線のため channel-point-settings-maintenance の対象外だった
-  // 編集フォームの回帰ガード）。
-  it("disables the edit form's save button during maintenance mode", async () => {
+  // メンテナンスモード中は編集ボタン自体が disabled になる
+  // （フォームを開いてから保存できない不親切な導線にしない）。
+  it("disables the edit button itself during maintenance mode", async () => {
     renderComponent({}, "read_only");
 
     const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
-    fireEvent.click(editButton);
-
-    await screen.findByLabelText("編集する引き換えのカードパック");
-    expect(screen.getByRole("button", { name: "変更を保存" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "キャンセル" })).not.toBeDisabled();
+    expect(editButton).toBeDisabled();
   });
 
   // PUT が 404（別タブで削除済み）を返したら、存在しない行の編集フォームを

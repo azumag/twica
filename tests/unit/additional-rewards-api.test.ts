@@ -474,6 +474,28 @@ it("drops pack binding when card_pack_names is not deployed (deploy window)", as
     expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "weapons" }));
   });
 
+  // センチネル（デフォルトパックのみ）は membership 検証自体が不要な疑似パックの
+  // ため、デプロイ窓でも書き込みを見送らない。
+  it("card_pack_names未デプロイ窓でもセンチネルへの変更は書き込む", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { error: { code: "42703", message: "column streamers.card_pack_names does not exist" } },
+        { rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward" }] },
+        { rows: [currentAdditionalReward("weapons")] },
+        { rows: [{ count: 1 }] },
+      ],
+      updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, collection_name: DEFAULT_PACK_SENTINEL }] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: DEFAULT_PACK_SENTINEL,
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.collectionNameSkippedDeployWindow).toBeUndefined();
+    expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: DEFAULT_PACK_SENTINEL }));
+  });
+
   it("rejects a present but invalid collectionName type", async () => {
     const response = await PUT(request({ rewardId: REWARD_ID, collectionName: 123 }, "PUT"));
     expect(response.status).toBe(400);
