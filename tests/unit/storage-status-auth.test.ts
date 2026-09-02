@@ -5,6 +5,11 @@ import { getStorageUsage } from '@/lib/storage-usage'
 import { sha256Prefix } from '@/lib/crypto-utils'
 import { ERROR_MESSAGES } from '@/lib/constants'
 
+/**
+ * Issue #1352: storage-status は未認証と配信者機能を使えないセッションを
+ * 同じ 401 契約で拒否する。ここでは認証完了前に storage 読み取りへ進まない
+ * 境界も含め、既存 API 契約として意図的に固定する。
+ */
 vi.mock('@/lib/session')
 vi.mock('@/lib/storage-usage')
 vi.mock('@/lib/crypto-utils')
