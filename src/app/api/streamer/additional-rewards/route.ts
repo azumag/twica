@@ -716,11 +716,14 @@ async function updateAdditionalRewardPg(
   rewardId: string,
   updatePayload: Record<string, unknown>,
 ): Promise<UpdateAdditionalRewardOutcome> {
-  const runUpdate = (payload: Record<string, unknown>) =>
+  // collection_name 列未デプロイ窓では RETURNING にも collection_name を含めない。
+  // Drizzle の引数なし returning() はスキーマ定義の全列を明示列挙するため、
+  // SET から外しても RETURNING 側で 42703 が再発する（レビュー指摘対応）。
+  const runUpdate = (payload: Record<string, unknown>, returningMinimal: boolean) =>
     withDbRetry(
       async () => {
         const { db } = await getDb();
-        return db
+        const query = db
           .update(streamerAdditionalGachaRewardsTable)
           .set(payload as typeof streamerAdditionalGachaRewardsTable.$inferInsert)
           .where(
@@ -728,8 +731,17 @@ async function updateAdditionalRewardPg(
               eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
               eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
             )
-          )
-          .returning();
+          );
+        return returningMinimal
+          ? query.returning({
+              id: streamerAdditionalGachaRewardsTable.id,
+              reward_id: streamerAdditionalGachaRewardsTable.reward_id,
+              reward_name: streamerAdditionalGachaRewardsTable.reward_name,
+              draw_count: streamerAdditionalGachaRewardsTable.draw_count,
+              is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
+              created_at: streamerAdditionalGachaRewardsTable.created_at,
+            })
+          : query.returning();
       },
       "Additional Rewards API: PUT update",
       // 同一条件の UPDATE は再実行しても最終状態が同じため冪等
@@ -743,7 +755,7 @@ async function updateAdditionalRewardPg(
     collectionNameStripped = false,
   ): Promise<UpdateAdditionalRewardOutcome> => {
     if (Object.keys(payload).length === 0) return { kind: "no-op", collectionNameStripped };
-    const rows = await runUpdate(payload);
+    const rows = await runUpdate(payload, collectionNameStripped);
     if (rows.length === 0) return { kind: "not-found" };
     return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
   };
@@ -893,8 +905,12 @@ export async function PUT(request: NextRequest) {
 
     // デプロイ窓で membership 検証ができない間は、新しいパック紐付けの書き込み
     // 自体を見送る（現在値の維持は続行。POST と同じ方針）。
+    // 現在値と同じパック名の再送は「変更要求」ではないため対象外にし、
+    // 「反映待ち」の誤表示を防ぐ。
     const collectionNameSkippedDeployWindow =
-      cardPackNamesUnavailable && typeof collectionNameResult.value === "string";
+      cardPackNamesUnavailable &&
+      typeof collectionNameResult.value === "string" &&
+      collectionNameResult.value !== currentResult.reward.collection_name;
 
     // Issue #393: 紐付け先が変わる場合のみ、アクティブカードの存在を確認する
     // （空プールになる紐付けは拒否。POST と同じ #1 方針）。
@@ -952,8 +968,10 @@ export async function PUT(request: NextRequest) {
     if (updateOutcome.kind === "no-op") {
       // collection_name 列未デプロイ窓でパック変更のみの更新が破棄された場合。
       // 成功扱いにしつつ、ストリップが起きたことを応答で明示する（黙って破棄しない）。
+      // unchanged は「DB は変わっていない」ことを他の分岐と対称に伝える。
       return NextResponse.json({
         success: true,
+        unchanged: true,
         ...(updateOutcome.collectionNameStripped || collectionNameSkippedDeployWindow
           ? { collectionNameSkippedDeployWindow: true }
           : {}),

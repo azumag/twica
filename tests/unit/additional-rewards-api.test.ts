@@ -38,6 +38,7 @@ function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[]; updat
   let updateIndex = 0;
   const insertCalls: Array<Record<string, unknown>> = [];
   const updateCalls: Array<Record<string, unknown>> = [];
+  const returningCalls: Array<unknown> = [];
   const db = {
     select: vi.fn((fields: Record<string, unknown>) => {
       const responses = config.selects ?? [{ rows: [] }];
@@ -92,7 +93,13 @@ function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[]; updat
           return builder;
         }),
         where: vi.fn(() => builder),
-        returning: vi.fn(() => builder),
+        returning: vi.fn((columns?: unknown) => {
+          // 引数なし returning() と明示列 returning({...}) を区別して記録する
+          // （collection_name 列未デプロイ窓で RETURNING 側の 42703 再発を防ぐ
+          // 明示列への切り替えを検証するため）
+          returningCalls.push(columns);
+          return builder;
+        }),
         then: (onFulfilled: any, onRejected: any) =>
           resolve().then(onFulfilled, onRejected),
       };
@@ -100,7 +107,7 @@ function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[]; updat
     }),
   };
   vi.mocked(getDb).mockResolvedValue({ db, sql: vi.fn() } as any);
-  return { db, insertCalls, updateCalls };
+  return { db, insertCalls, updateCalls, returningCalls };
 }
 
 function request(body: Record<string, unknown>, method: "POST" | "PUT" = "POST") {
@@ -427,6 +434,7 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
   it("drops pack binding when card_pack_names is not deployed (deploy window)", async () => {
     // getStreamerForAdditionalRewardPost が card_pack_names 欠落でフォールバック
     // SELECT（2回目）を使うため、現在値の SELECT は 3 回目になる。
+    // 現在値（weapons）と異なるパック名（characters）を送り「変更要求」とする。
     const { updateCalls } = primeDb({
       selects: [
         { error: { code: "42703", message: "column streamers.card_pack_names does not exist" } },
@@ -437,12 +445,34 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     });
     const response = await PUT(request({
       rewardId: REWARD_ID,
-      collectionName: "weapons",
+      collectionName: "characters",
       drawCount: 5,
     }, "PUT"));
     expect(response.status).toBe(200);
     expect((await response.json()).collectionNameSkippedDeployWindow).toBe(true);
     expect(updateCalls[0]).not.toHaveProperty("collection_name");
+  });
+
+  // 現在値と同じパック名の再送は「変更要求」ではないため、デプロイ窓でも
+  // 反映待ちフラグを立てず、同値の UPDATE として処理する（文言と実態の一致）。
+  it("card_pack_names未デプロイ窓でも現在値と同じ再送では反映待ちフラグを立てない", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { error: { code: "42703", message: "column streamers.card_pack_names does not exist" } },
+        { rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward" }] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+      updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, collection_name: "weapons" }] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "weapons",
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.collectionNameSkippedDeployWindow).toBeUndefined();
+    // 現在値と同じなので updatePayload に collection_name が入り、同値 UPDATE が走る
+    expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "weapons" }));
   });
 
   it("rejects a present but invalid collectionName type", async () => {
@@ -487,6 +517,8 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.success).toBe(true);
+    // DB は変わっていないことを他の分岐と対称に伝える
+    expect(body.unchanged).toBe(true);
     // ストリップが起きたことを応答で明示する（黙って破棄しない）
     expect(body.collectionNameSkippedDeployWindow).toBe(true);
     // ストリップ後の再試行は空 payload になるため DB を呼ばない（1回目のみ）
@@ -494,7 +526,7 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
   });
 
   it("collection_name列未デプロイ窓でdrawCount併送時もストリップを応答フラグで明示する", async () => {
-    const { updateCalls } = primeDb({
+    const { updateCalls, returningCalls } = primeDb({
       selects: [
         { rows: [streamer(["weapons", "characters"])] },
         { rows: [currentAdditionalReward("weapons")] },
@@ -525,6 +557,11 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "characters", draw_count: 7 }));
     expect(updateCalls[1]).toEqual(expect.objectContaining({ draw_count: 7 }));
     expect(updateCalls[1]).not.toHaveProperty("collection_name");
+    // ストリップ後の再試行の RETURNING は collection_name を含まない明示列
+    // （Drizzle の引数なし returning() はスキーマ全列を列挙するため 42703 が再発する）
+    expect(returningCalls[0]).toBeUndefined();
+    expect(returningCalls[1]).toEqual(expect.any(Object));
+    expect(returningCalls[1]).not.toHaveProperty("collection_name");
   });
 
   it("変更なしのリクエストはunchangedを返しUPDATEしない", async () => {

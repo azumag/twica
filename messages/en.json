@@ -678,6 +678,7 @@
       "cannotUseAsMain": "This redemption is already registered as an additional redemption. Please remove it first.",
       "cannotUseAsAdditional": "This redemption is already set as the main redemption.",
       "drawCount": "Cards per redemption",
+      "drawCountEditLabel": "Cards per redemption (edit)",
       "raidOnly": "Raid only",
       "multiDraw": "{count} draws",
       "raidLimited": "Raid limited",

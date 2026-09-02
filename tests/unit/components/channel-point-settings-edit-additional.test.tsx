@@ -27,7 +27,10 @@ const DEFAULT_ADDITIONAL_REWARDS = [
   },
 ];
 
-function mockFetch(additionalRewards: unknown[] = DEFAULT_ADDITIONAL_REWARDS): FetchMock {
+function mockFetch(
+  additionalRewards: unknown[] = DEFAULT_ADDITIONAL_REWARDS,
+  overrides: { putStatus?: number; putBody?: unknown } = {}
+): FetchMock {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = init?.method ?? "GET";
@@ -62,8 +65,8 @@ function mockFetch(additionalRewards: unknown[] = DEFAULT_ADDITIONAL_REWARDS): F
       });
     }
     if (url.includes("/api/streamer/additional-rewards") && method === "PUT") {
-      return new Response(JSON.stringify({ success: true }), {
-        status: 200,
+      return new Response(JSON.stringify(overrides.putBody ?? { success: true }), {
+        status: overrides.putStatus ?? 200,
         headers: { "content-type": "application/json" },
       });
     }
@@ -122,12 +125,12 @@ describe("ChannelPointSettings additional-reward editing", () => {
     const editButton = await screen.findByRole("button", { name: "編集" });
     fireEvent.click(editButton);
 
-    // 編集フォームが表示され、パック選択に現在値（weapons）がプリフィルされる
+// 編集フォームが表示され、パック選択に現在値（weapons）がプリフィルされる
     const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
     expect(packSelect.value).toBe("weapons");
-    // 枚数入力も現在値（3連）がプリフィルされる
-    const drawCountInput = screen.getByDisplayValue("3") as HTMLInputElement;
-    expect(drawCountInput).toBeInTheDocument();
+    // 枚数入力も現在値（3連）がプリフィルされる（追加フォームと重複しない専用ラベル）
+    const drawCountInput = screen.getByLabelText("編集時の排出枚数") as HTMLInputElement;
+    expect(drawCountInput.value).toBe("3");
     expect(screen.getByRole("button", { name: "変更を保存" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "キャンセル" })).toBeInTheDocument();
   });
@@ -140,7 +143,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
 
     const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
     fireEvent.change(packSelect, { target: { value: "characters" } });
-    const drawCountInput = screen.getByDisplayValue("3") as HTMLInputElement;
+    const drawCountInput = screen.getByLabelText("編集時の排出枚数") as HTMLInputElement;
     fireEvent.change(drawCountInput, { target: { value: "5" } });
 
     fireEvent.click(screen.getByRole("button", { name: "変更を保存" }));
@@ -195,7 +198,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     expect(packSelect).toBeDisabled();
     expect(packSelect.value).toBe("weapons");
     // 枚数入力はプランに関係なく編集できる
-    expect(screen.getByDisplayValue("3")).toBeInTheDocument();
+    expect(screen.getByLabelText("編集時の排出枚数")).toBeInTheDocument();
   });
 
   // 編集中の行の「編集」再クリックで未保存入力が無告知リセットされないこと。
@@ -221,6 +224,39 @@ describe("ChannelPointSettings additional-reward editing", () => {
     await screen.findByLabelText("編集する引き換えのカードパック");
     expect(screen.getByRole("button", { name: "変更を保存" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "キャンセル" })).not.toBeDisabled();
+  });
+
+  // PUT が 404（別タブで削除済み）を返したら、存在しない行の編集フォームを
+  // 閉じて一覧を再取得する（手動リロードを強いる表示にしない）。
+  it("closes the edit form and refetches the list when PUT returns 404", async () => {
+    const notFoundMock = mockFetch(undefined, {
+      putStatus: 404,
+      putBody: { error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください" },
+    });
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", notFoundMock);
+    renderComponent();
+
+    const editButton = await screen.findByRole("button", { name: "編集" });
+    fireEvent.click(editButton);
+    await screen.findByLabelText("編集する引き換えのカードパック");
+
+    fireEvent.click(screen.getByRole("button", { name: "変更を保存" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("この追加の引き換えは既に削除されています。設定を再読み込みしてください")
+      ).toBeInTheDocument();
+    });
+    // 編集フォームは閉じる
+    expect(screen.queryByRole("button", { name: "キャンセル" })).not.toBeInTheDocument();
+    // 一覧が再取得される（fetchAdditionalRewards は method 未指定 = GET）
+    const getCalls = notFoundMock.mock.calls.filter(
+      ([input, init]) =>
+        String(input).includes("/api/streamer/additional-rewards") &&
+        ((init as RequestInit)?.method ?? "GET") === "GET"
+    );
+    expect(getCalls.length).toBeGreaterThan(0);
   });
 
   // 別の行の「編集」を押したとき、編集中の未保存入力が無告知で破棄されないこと。

@@ -680,6 +680,12 @@ export default function ChannelPointSettings({
         // maintenance mode による503拒否時はサーバーの案内文言を優先する。
         const maintenanceError = parseMaintenanceError(response, data);
         setMessage(maintenanceError?.message || data.error || t("additionalRewards.updateFailed"));
+        // 対象が削除済み（404）なら、存在しない行と編集フォームを画面に残さない
+        // （一覧を再取得して編集モードを解除する）。
+        if (response.status === 404) {
+          handleCancelEditAdditionalReward();
+          await fetchAdditionalRewards();
+        }
         return;
       }
 
@@ -1524,6 +1530,10 @@ export default function ChannelPointSettings({
                                   type="number"
                                   min={1}
                                   max={15}
+                                  // 追加フォームの枚数ラベル（drawCount）とは別の
+                                  // aria-label にする（accessible name の重複防止。
+                                  // パック select の editLabel と同じ方針）。
+                                  aria-label={t("additionalRewards.drawCountEditLabel")}
                                   value={editingDrawCount}
                                   // Issue #641: onChange clamp must match the `max` attribute above,
                                   // otherwise keyboard-entered values beyond the old 10 cap would be
@@ -1532,8 +1542,8 @@ export default function ChannelPointSettings({
                                   className="h-7 w-12 rounded bg-gray-800 px-2 text-sm text-gray-100 focus:outline-none"
                                 />
                               </label>
-                              <div className="flex items-center gap-2">
-                                <button
+                                <div className="flex items-center gap-2">
+                                  <button
                                   type="button"
                                   onClick={handleUpdateAdditionalReward}
                                   disabled={updatingAdditional || isMaintenanceBlocked}
