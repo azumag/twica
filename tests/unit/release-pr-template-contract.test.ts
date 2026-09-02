@@ -21,6 +21,22 @@ function h2Headings(source: string): string[] {
   return source.split(/\r?\n/).filter((line) => line.startsWith("## "));
 }
 
+function h2Section(source: string, heading: string): string {
+  const lines = source.split(/\r?\n/);
+  const start = lines.findIndex((line) => line === heading);
+  if (start === -1) return "";
+
+  const next = lines.findIndex(
+    (line, index) => index > start && line.startsWith("## ")
+  );
+  return lines.slice(start, next === -1 ? undefined : next).join("\n");
+}
+
+const qaReleaseContract = h2Section(
+  qaDocument,
+  "## Preview→main昇格PRのタイトル・本文契約"
+);
+
 describe("preview -> main release PR template contract", () => {
   it("keeps the user-facing release summary as the first H2 heading", () => {
     expect(h2Headings(releaseTemplate)[0]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
@@ -38,7 +54,11 @@ describe("preview -> main release PR template contract", () => {
   });
 
   it("keeps docs/QA.md aligned with the template responsibilities", () => {
-    expect(qaDocument).toContain("`## このリリースで変わること`");
+    expect(qaReleaseContract).not.toBe("");
+    expect(qaReleaseContract).toContain("`## このリリースで変わること`");
+    expect(qaReleaseContract).toContain(
+      ".github/PULL_REQUEST_TEMPLATE/release.md"
+    );
 
     for (const requiredTerm of [
       "対象PRと固定SHA",
@@ -49,7 +69,7 @@ describe("preview -> main release PR template contract", () => {
       "ブラウザー／実経路の確認",
       "main昇格条件",
     ]) {
-      expect(qaDocument).toContain(requiredTerm);
+      expect(qaReleaseContract).toContain(requiredTerm);
     }
   });
 });
