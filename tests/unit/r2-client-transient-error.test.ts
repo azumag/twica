@@ -36,6 +36,10 @@ describe('isTransientR2Error', () => {
     expect(isTransientR2Error('put: status: 503, please retry later')).toBe(true)
   })
 
+  it('文脈語のない裸の503は一時障害として扱わない (Issue #989)', () => {
+    expect(isTransientR2Error('503')).toBe(false)
+  })
+
   // 【Issue #984/#1252】裸の'503'部分文字列マッチは、キー名やリクエストIDに偶然数字列を含む
   // 恒久エラーを誤って一時障害と判定するリスクがあった。500は現状リトライ対象外だが、
   // HTTP statusの文脈が無い数字列を扱わない負例として503とあわせて固定する。
