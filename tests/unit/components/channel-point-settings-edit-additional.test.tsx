@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
+import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider";
+import type { MaintenanceStatusResponse } from "@/lib/maintenance/client";
 import jaMessages from "../../../messages/ja.json";
 
 vi.mock("@/lib/logger");
@@ -73,16 +75,21 @@ function mockFetch(additionalRewards: unknown[] = DEFAULT_ADDITIONAL_REWARDS): F
   return fetchMock;
 }
 
-function renderComponent(props: Partial<React.ComponentProps<typeof ChannelPointSettings>> = {}) {
+function renderComponent(
+  props: Partial<React.ComponentProps<typeof ChannelPointSettings>> = {},
+  mode: "off" | "read_only" = "off"
+) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
-      <ChannelPointSettings
-        streamerId="streamer-1"
-        currentRewardId="main-reward"
-        currentRewardName="Main"
-        currentCollectionName={null}
-        {...props}
-      />
+      <MaintenanceStatusContext.Provider value={{ mode } as unknown as MaintenanceStatusResponse}>
+        <ChannelPointSettings
+          streamerId="streamer-1"
+          currentRewardId="main-reward"
+          currentRewardName="Main"
+          currentCollectionName={null}
+          {...props}
+        />
+      </MaintenanceStatusContext.Provider>
     </NextIntlClientProvider>
   );
 }
@@ -202,6 +209,20 @@ describe("ChannelPointSettings additional-reward editing", () => {
     expect(screen.getByRole("button", { name: "編集" })).toBeDisabled();
   });
 
+  // メンテナンスモード中は編集フォームの「変更を保存」が disabled になる
+  // （書き込み導線のため channel-point-settings-maintenance の対象外だった
+  // 編集フォームの回帰ガード）。
+  it("disables the edit form's save button during maintenance mode", async () => {
+    renderComponent({}, "read_only");
+
+    const editButton = await screen.findByRole("button", { name: "編集" });
+    fireEvent.click(editButton);
+
+    await screen.findByLabelText("編集する引き換えのカードパック");
+    expect(screen.getByRole("button", { name: "変更を保存" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "キャンセル" })).not.toBeDisabled();
+  });
+
   // 別の行の「編集」を押したとき、編集中の未保存入力が無告知で破棄されないこと。
   it("confirms before switching edit targets with unsaved changes; cancel keeps the current edit", async () => {
     const secondReward = {
@@ -258,6 +279,36 @@ describe("ChannelPointSettings additional-reward editing", () => {
     await waitFor(() => {
       const switched = screen.getByLabelText("編集する引き換えのカードパック") as HTMLSelectElement;
       expect(switched.value).toBe("characters");
+    });
+  });
+
+  // 入力値を変えずに別の行へ切り替える場合は confirm を出さない（文言と実態の一致）。
+  it("does not confirm when switching without unsaved changes", async () => {
+    const secondReward = {
+      id: "ar-2",
+      reward_id: "extra-reward-2",
+      reward_name: "Extra 2",
+      draw_count: 1,
+      is_raid_limited: false,
+      collection_name: "characters",
+      created_at: "2026-01-02T00:00:00.000Z",
+    };
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", mockFetch([...DEFAULT_ADDITIONAL_REWARDS, secondReward]));
+    const confirmMock = vi.fn().mockReturnValue(false);
+    vi.stubGlobal("confirm", confirmMock);
+    renderComponent();
+
+    const editButtons = await screen.findAllByRole("button", { name: "編集" });
+    fireEvent.click(editButtons[0]);
+    await screen.findByLabelText("編集する引き換えのカードパック");
+
+    fireEvent.click(editButtons[1]);
+
+    expect(confirmMock).not.toHaveBeenCalled();
+    // 2 件目の編集フォームに切り替わっている
+    await waitFor(() => {
+      expect(screen.getByLabelText("編集する引き換えのカードパック")).toBeInTheDocument();
     });
   });
 });

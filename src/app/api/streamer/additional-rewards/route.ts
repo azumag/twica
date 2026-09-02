@@ -61,6 +61,12 @@ function isRaidOptionsSchemaErrorPg(error: unknown): boolean {
 const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
   "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。";
 
+// PUT 専用: 対象の追加報酬が存在しない場合の文言（別タブ等で削除済み）。
+// 日本語固定は POST の既存エラーメッセージと同じ方針（en 対応は次 PR で
+// ERROR_MESSAGES へ寄せる余地あり）。
+const ADDITIONAL_REWARD_NOT_FOUND_MESSAGE =
+  "この追加の引き換えは既に削除されています。設定を再読み込みしてください";
+
 interface AdditionalRewardRow {
   id: string;
   reward_id: string;
@@ -750,7 +756,13 @@ async function updateAdditionalRewardPg(
       // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
       const stripped = { ...updatePayload };
       delete stripped.collection_name;
-      return await tryUpdate(stripped, true);
+      try {
+        return await tryUpdate(stripped, true);
+      } catch (retryError) {
+        // ストリップ後の再試行が失敗した場合は、他分岐と同じ handleDatabaseError
+        // （{ kind: "error" }）へ寄せて分類を揃える。
+        return { kind: "error", error: retryError };
+      }
     }
     return { kind: "error", error };
   }
@@ -853,7 +865,7 @@ export async function PUT(request: NextRequest) {
       // 対象の追加報酬が存在しない（別タブ等で削除済み）。報酬不在を意味する
       // 専用文言を返す（STREAMER_NOT_FOUND は英語かつ実態と合わないため）。
       return NextResponse.json(
-        { error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください" },
+        { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
         { status: 404 }
       );
     }
@@ -917,9 +929,12 @@ export async function PUT(request: NextRequest) {
       // 変更なしのリクエスト。更新自体は無意味なので現状維持として返す。
       // reward は含めない（成功時は DB 行全体、ここは取得していない列もある
       // ため形が揃わない。クライアントは応答本文を使わず再取得する）。
+      // card_pack_names 列未デプロイ窓でパック変更のみを送るとここへ来るため、
+      // パック変更が破棄されたことをフラグで明示する（他の分岐と対称）。
       return NextResponse.json({
         success: true,
         unchanged: true,
+        ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
       });
     }
 
@@ -929,7 +944,7 @@ export async function PUT(request: NextRequest) {
       // 対象の追加報酬が存在しない（別タブ等で削除済み）。PUT 固有の分岐
       // （DELETE は0件でも200）のため、報酬不在を意味する専用文言を返す。
       return NextResponse.json(
-        { error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください" },
+        { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
         { status: 404 }
       );
     }

@@ -619,12 +619,17 @@ export default function ChannelPointSettings({
    * 現在のパック紐付け（collection_name）と排出枚数をプリフィルし、
    * その行の下に編集フォームを表示する。
    *
-   * 別の行が編集中の場合は、未保存の入力が破棄される旨を確認してから
-   * 切り替える（無告知の破棄を防ぐ）。
+   * 別の行が編集中で、入力値がプリフィル値（DB の現在値）から変わっている
+   * 場合のみ、破棄の確認をしてから切り替える（未変更なら無用な確認をしない）。
    */
   const handleStartEditAdditionalReward = (reward: AdditionalReward) => {
     if (editingRewardId && editingRewardId !== reward.reward_id) {
-      if (!window.confirm(t("additionalRewards.editDiscardConfirm"))) {
+      const currentReward = additionalRewards.find((r) => r.reward_id === editingRewardId) ?? null;
+      const hasUnsavedChanges =
+        currentReward !== null &&
+        (editingCollectionName !== (currentReward.collection_name || "") ||
+          editingDrawCount !== currentReward.draw_count);
+      if (hasUnsavedChanges && !window.confirm(t("additionalRewards.editDiscardConfirm"))) {
         return;
       }
     }
@@ -728,6 +733,11 @@ export default function ChannelPointSettings({
 
       // 3. Update state
       // 状態を更新
+      // 編集対象の報酬が削除された場合は編集モードを解除する
+      // （stale な editingRewardId が残り、次の編集開始で無関係な confirm が出るのを防ぐ）。
+      if (editingRewardId === rewardId) {
+        handleCancelEditAdditionalReward();
+      }
       setMessage(t("additionalRewards.removeSuccess"));
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
@@ -1381,7 +1391,7 @@ export default function ChannelPointSettings({
                title={t("additionalRewards.title")}
                description={t("additionalRewards.description")}
              >
-{/* List of additional rewards */}
+                {/* List of additional rewards */}
                 {/* 追加報酬一覧 */}
                 {additionalRewards.length > 0 && (
                   <div className="mb-3 space-y-2">
@@ -1441,9 +1451,11 @@ export default function ChannelPointSettings({
                           <div className="flex shrink-0 items-center gap-3 pl-3">
                             <button
                               onClick={() => handleStartEditAdditionalReward(reward)}
-                              // 編集中の行の再クリックは無効（未保存入力の無告知リセット防止）
-                              disabled={isMaintenanceBlocked || editingRewardId === reward.reward_id}
-                              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+                              // 編集中の行の再クリックと、PUT 実行中の他行への切替は無効
+                              // （未保存入力の無告知リセット・フォームの勝手なクローズ防止）。
+                              // 編集フォームを開くこと自体は読み取りなので maintenance 中も
+                              // 許可し、書き込み（変更を保存）側でブロックする。
+                              disabled={updatingAdditional || editingRewardId === reward.reward_id}
                               className="text-xs text-purple-400 hover:text-purple-300 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {t("additionalRewards.edit")}
