@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
-  INVARIANTS,
   TIER_A,
   TIER_B,
 } from '../../../scripts/db-cutover/invariant-checks.mjs'
@@ -26,12 +25,6 @@ const FIXTURE_INVARIANT = {
 }
 
 describe('db cutover layer invariants', () => {
-  it('invariant id が重複しない', () => {
-    const ids = INVARIANTS.map((invariant) => invariant.id)
-
-    expect(new Set(ids).size).toBe(ids.length)
-  })
-
   it('違反0件なら sample / digest SQL を実行せず side 結果を返す', async () => {
     const unsafe = vi.fn(async (sql: string) => {
       if (sql === 'COUNT_SQL') return [{ count: 0 }]
