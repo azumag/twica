@@ -687,12 +687,15 @@ async function getAdditionalRewardForUpdatePg(
 }
 
 type UpdateAdditionalRewardOutcome =
-  | { kind: "ok"; reward: unknown }
+  // collectionNameStripped: collection_name 列未デプロイ窓で当該列を剥がして
+  // 再試行した場合に true。パック変更が破棄されたことを呼び出し元へ伝え、
+  // 応答に collectionNameSkippedDeployWindow として反映する（黙って破棄しない）。
+  | { kind: "ok"; reward: unknown; collectionNameStripped?: boolean }
   | { kind: "not-found" }
   // collection_name 列未デプロイ窓でパック変更のみの更新を送ると、ストリップ後に
   // 更新フィールドが空になる。空 SET は Drizzle が "No values to set" で throw する
   // ため、実行前に no-op へ分岐させる（500 にしない）。
-  | { kind: "no-op" }
+  | { kind: "no-op"; collectionNameStripped?: boolean }
   | { kind: "error"; error: unknown };
 
 /**
@@ -728,19 +731,26 @@ async function updateAdditionalRewardPg(
     );
 
   // 空 SET を実行すると Drizzle が throw するため、実行前に空チェックで no-op へ分岐。
-  const tryUpdate = async (payload: Record<string, unknown>): Promise<UpdateAdditionalRewardOutcome> => {
-    if (Object.keys(payload).length === 0) return { kind: "no-op" };
+  // collectionNameStripped はストリップ後の再試行から引き継ぐ。
+  const tryUpdate = async (
+    payload: Record<string, unknown>,
+    collectionNameStripped = false,
+  ): Promise<UpdateAdditionalRewardOutcome> => {
+    if (Object.keys(payload).length === 0) return { kind: "no-op", collectionNameStripped };
     const rows = await runUpdate(payload);
     if (rows.length === 0) return { kind: "not-found" };
-    return { kind: "ok", reward: rows[0] ?? null };
+    return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
   };
 
   try {
     return await tryUpdate(updatePayload);
   } catch (error) {
     if (isMissingCollectionNameColumn(error as GenericDbError) && "collection_name" in updatePayload) {
-      delete updatePayload.collection_name;
-      return await tryUpdate(updatePayload);
+      // 呼び出し元の updatePayload をミューテートせず、コピーから剥がして再試行する
+      // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
+      const stripped = { ...updatePayload };
+      delete stripped.collection_name;
+      return await tryUpdate(stripped, true);
     }
     return { kind: "error", error };
   }
@@ -840,7 +850,12 @@ export async function PUT(request: NextRequest) {
       return handleDatabaseError(currentResult.error, "Additional Rewards API: PUT lookup");
     }
     if (!currentResult.reward) {
-      return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
+      // 対象の追加報酬が存在しない（別タブ等で削除済み）。報酬不在を意味する
+      // 専用文言を返す（STREAMER_NOT_FOUND は英語かつ実態と合わないため）。
+      return NextResponse.json(
+        { error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください" },
+        { status: 404 }
+      );
     }
 
     const registeredPackNames: string[] = Array.isArray(streamer.card_pack_names)
@@ -911,7 +926,12 @@ export async function PUT(request: NextRequest) {
     const updateOutcome = await updateAdditionalRewardPg(streamer.id, rewardId, updatePayload);
 
     if (updateOutcome.kind === "not-found") {
-      return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
+      // 対象の追加報酬が存在しない（別タブ等で削除済み）。PUT 固有の分岐
+      // （DELETE は0件でも200）のため、報酬不在を意味する専用文言を返す。
+      return NextResponse.json(
+        { error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください" },
+        { status: 404 }
+      );
     }
 
     if (updateOutcome.kind === "no-op") {
@@ -919,7 +939,9 @@ export async function PUT(request: NextRequest) {
       // 成功扱いにしつつ、ストリップが起きたことを応答で明示する（黙って破棄しない）。
       return NextResponse.json({
         success: true,
-        collectionNameSkippedDeployWindow: true,
+        ...(updateOutcome.collectionNameStripped || collectionNameSkippedDeployWindow
+          ? { collectionNameSkippedDeployWindow: true }
+          : {}),
       });
     }
 
@@ -934,7 +956,11 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({
       success: true,
       reward: updateOutcome.reward,
-      ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
+      // card_pack_names 列欠落（既存）または collection_name 列欠落（ストリップ）の
+      // どちらでも、パック変更が反映されなかったことを応答で明示する。
+      ...((updateOutcome.collectionNameStripped || collectionNameSkippedDeployWindow)
+        ? { collectionNameSkippedDeployWindow: true }
+        : {}),
     });
   } catch (error) {
     return handleApiError(error, "Additional Rewards API: PUT");

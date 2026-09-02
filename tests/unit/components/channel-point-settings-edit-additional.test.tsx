@@ -191,6 +191,17 @@ describe("ChannelPointSettings additional-reward editing", () => {
     expect(screen.getByDisplayValue("3")).toBeInTheDocument();
   });
 
+  // 編集中の行の「編集」再クリックで未保存入力が無告知リセットされないこと。
+  it("disables the edit button of the row being edited (no silent reset)", async () => {
+    renderComponent();
+
+    const editButton = await screen.findByRole("button", { name: "編集" });
+    fireEvent.click(editButton);
+    // 編集フォームが開いたら、同じ行の編集ボタンは disabled になる
+    await screen.findByLabelText("編集する引き換えのカードパック");
+    expect(screen.getByRole("button", { name: "編集" })).toBeDisabled();
+  });
+
   // 別の行の「編集」を押したとき、編集中の未保存入力が無告知で破棄されないこと。
   it("confirms before switching edit targets with unsaved changes; cancel keeps the current edit", async () => {
     const secondReward = {

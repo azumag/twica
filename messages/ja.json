@@ -671,6 +671,7 @@
       "update": "変更を保存",
       "cancel": "キャンセル",
       "updateSuccess": "追加の引き換えを更新しました",
+      "updateSuccessPackPending": "追加の引き換えを更新しました（パックの変更は反映待ちです）",
       "updateFailed": "追加の引き換えの更新に失敗しました",
       "removeConfirm": "この追加の引き換えを削除しますか？EventSubサブスクリプションも削除されます。",
       "editDiscardConfirm": "編集中の変更はまだ保存されていません。別の引き換えの編集に切り替えると破棄されます。続けますか？",

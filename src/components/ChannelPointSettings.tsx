@@ -678,7 +678,13 @@ export default function ChannelPointSettings({
         return;
       }
 
-      setMessage(t("additionalRewards.updateSuccess"));
+      // パック変更が DB 反映待ち（デプロイ窓でストリップされた）場合は
+      // 専用文言を表示し、「変更したはず」という誤解を防ぐ。
+      setMessage(
+        data.collectionNameSkippedDeployWindow
+          ? t("additionalRewards.updateSuccessPackPending")
+          : t("additionalRewards.updateSuccess")
+      );
       handleCancelEditAdditionalReward();
       await fetchAdditionalRewards();
     } catch {
@@ -1435,7 +1441,8 @@ export default function ChannelPointSettings({
                           <div className="flex shrink-0 items-center gap-3 pl-3">
                             <button
                               onClick={() => handleStartEditAdditionalReward(reward)}
-                              disabled={isMaintenanceBlocked}
+                              // 編集中の行の再クリックは無効（未保存入力の無告知リセット防止）
+                              disabled={isMaintenanceBlocked || editingRewardId === reward.reward_id}
                               title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
                               className="text-xs text-purple-400 hover:text-purple-300 disabled:cursor-not-allowed disabled:opacity-50"
                             >
@@ -1533,6 +1540,10 @@ export default function ChannelPointSettings({
                                 </button>
                               </div>
                             </div>
+                            {/* Issue #554: canManage=false のときは追加フォームと同じく
+                                詳しい案内（/plans リンク付き）をグリッドの下に表示する。 */}
+                            {(editingPackControlMode === "hidden" || editingPackControlMode === "disabled") &&
+                              renderPackUpsellHint()}
                           </div>
                         )}
                       </div>
@@ -1721,6 +1732,8 @@ export default function ChannelPointSettings({
                       t("messages2.disconnectSuccess"),
                       t("additionalRewards.addSuccess"),
                       t("additionalRewards.removeSuccess"),
+                      t("additionalRewards.updateSuccess"),
+                      t("additionalRewards.updateSuccessPackPending"),
                     ].includes(message)
                       ? "text-green-400"
                       : "text-red-400"

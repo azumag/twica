@@ -86,7 +86,9 @@ function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[]; updat
           : Promise.resolve(response.rows ?? []);
       const builder: any = {
         set: vi.fn((values: Record<string, unknown>) => {
-          updateCalls.push(values);
+          // スナップショットで記録（route 側が payload をミューテートしても
+          // 呼び出し時の値を検証できるようにする）
+          updateCalls.push({ ...values });
           return builder;
         }),
         where: vi.fn(() => builder),
@@ -403,7 +405,7 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     );
   });
 
-  it("returns 404 when the target additional reward does not exist", async () => {
+  it("returns 404 with the reward-specific message when the target does not exist", async () => {
     const { updateCalls } = primeDb({
       selects: [
         { rows: [streamer()] },
@@ -415,6 +417,10 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
       collectionName: "weapons",
     }, "PUT"));
     expect(response.status).toBe(404);
+    // STREAMER_NOT_FOUND（英語）ではなく報酬不在専用の日本語文言を返す
+    expect(await response.json()).toEqual({
+      error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください",
+    });
     expect(updateCalls).toHaveLength(0);
   });
 
@@ -485,6 +491,40 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     expect(body.collectionNameSkippedDeployWindow).toBe(true);
     // ストリップ後の再試行は空 payload になるため DB を呼ばない（1回目のみ）
     expect(updateCalls).toHaveLength(1);
+  });
+
+  it("collection_name列未デプロイ窓でdrawCount併送時もストリップを応答フラグで明示する", async () => {
+    const { updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer(["weapons", "characters"])] },
+        { rows: [currentAdditionalReward("weapons")] },
+        { rows: [{ count: 2 }] },
+      ],
+      updates: [
+        {
+          error: {
+            code: "42703",
+            message: 'column "collection_name" of relation "streamer_additional_gacha_rewards" does not exist',
+          },
+        },
+        { rows: [{ id: "additional-1", reward_id: REWARD_ID, draw_count: 7 }] },
+      ],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "characters",
+      drawCount: 7,
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    // drawCount 併送時もストリップが起きたことを応答で明示する（黙って破棄しない）
+    expect(body.collectionNameSkippedDeployWindow).toBe(true);
+    expect(body.reward).toEqual(expect.objectContaining({ draw_count: 7 }));
+    // 1回目は collection_name を含み 42703 で失敗、2回目は draw_count のみで成功
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "characters", draw_count: 7 }));
+    expect(updateCalls[1]).toEqual(expect.objectContaining({ draw_count: 7 }));
+    expect(updateCalls[1]).not.toHaveProperty("collection_name");
   });
 
   it("変更なしのリクエストはunchangedを返しUPDATEしない", async () => {

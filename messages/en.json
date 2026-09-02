@@ -671,6 +671,7 @@
       "update": "Save Changes",
       "cancel": "Cancel",
       "updateSuccess": "Additional redemption updated",
+      "updateSuccessPackPending": "Additional redemption updated (pack change pending deployment)",
       "updateFailed": "Failed to update additional redemption",
       "removeConfirm": "Remove this additional redemption? EventSub subscription will also be removed.",
       "editDiscardConfirm": "Unsaved changes will be discarded if you switch to editing another redemption. Continue?",
