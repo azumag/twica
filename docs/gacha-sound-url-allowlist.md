@@ -21,10 +21,11 @@
 
 許可ホストは比較前に前後空白を除去し、小文字へ正規化する。対象 URL 側も `URL.hostname` を小文字へ正規化して比較する。
 
-したがって、現在の比較単位は hostname の完全一致である。
+したがって、allowlist の比較単位は hostname の完全一致である。
 
 - 大文字・小文字の違いは無視する。
-- URL のポート番号は `hostname` には含まれないため比較対象外である。
+- 対象 URL のポート番号は `URL.hostname` に含まれないため、allowlist の hostname 比較には使わない。
+- `ALLOWED_SOUND_HOSTS` の各要素は URL として再解釈されず、そのまま hostname 文字列として比較される。そのため `cdn.example.com:443` ではなく `cdn.example.com` の形式で指定する。
 - `example.com` を許可しても `cdn.example.com` は自動では許可されない。
 - ワイルドカードや suffix 一致は実装していない。
 
@@ -49,6 +50,8 @@ R2 由来ホストと `ALLOWED_SOUND_HOSTS` の双方から 1 件も hostname �
 ## same-origin 分岐
 
 同一 origin の例外は `location` が存在するブラウザ環境でのみ評価される。サーバー側で `location` が存在しない実行では、この分岐には入らない。
+
+この分岐は `parsed.origin === location.origin` で判定するため、allowlist の hostname 比較とは異なり scheme / hostname / port を含む origin 全体が一致する必要がある。
 
 この分岐が各実利用経路で実際に必要か、削除・責務整理すべきかは Issue #1375 の別フォローアップとして扱い、本書では現行挙動だけを記録する。
 
