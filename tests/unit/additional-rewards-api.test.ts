@@ -431,10 +431,9 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     expect(updateCalls).toHaveLength(0);
   });
 
-  it("drops pack binding when card_pack_names is not deployed (deploy window)", async () => {
+it("drops pack binding when card_pack_names is not deployed (deploy window)", async () => {
     // getStreamerForAdditionalRewardPost が card_pack_names 欠落でフォールバック
     // SELECT（2回目）を使うため、現在値の SELECT は 3 回目になる。
-    // 現在値（weapons）と異なるパック名（characters）を送り「変更要求」とする。
     const { updateCalls } = primeDb({
       selects: [
         { error: { code: "42703", message: "column streamers.card_pack_names does not exist" } },
@@ -607,6 +606,28 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
       error: "drawCount must be an integer between 1 and 15",
+    });
+  });
+
+  // POST と同じく、draw_count / is_raid_limited 列未デプロイ窓は 503 + 専用文言
+  // （raid-options 列欠落。接続断等は isRaidOptionsSchemaErrorPg が除外する）。
+  it("raid-options列欠落エラー(42703 draw_count)なら503", async () => {
+    primeDb({
+      selects: [
+        { rows: [streamer()] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+      updates: [{
+        error: {
+          code: "42703",
+          message: 'column "draw_count" of relation "streamer_additional_gacha_rewards" does not exist',
+        },
+      }],
+    });
+    const response = await PUT(request({ rewardId: REWARD_ID, drawCount: 5 }, "PUT"));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度お試しください。",
     });
   });
 

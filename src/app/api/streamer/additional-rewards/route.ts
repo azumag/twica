@@ -61,6 +61,12 @@ function isRaidOptionsSchemaErrorPg(error: unknown): boolean {
 const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
   "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。";
 
+// PUT 専用: draw_count / is_raid_limited 列未デプロイ窓の 503 文言。
+// POST の RAID_OPTIONS_SCHEMA_PENDING_MESSAGE は「再度追加してください」で PUT の
+// 文脈に合わないため、更新用の文言を分ける。
+const PUT_RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
+  "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度お試しください。";
+
 // PUT 専用: 対象の追加報酬が存在しない場合の文言（別タブ等で削除済み）。
 // 日本語固定は POST の既存エラーメッセージと同じ方針（en 対応は次 PR で
 // ERROR_MESSAGES へ寄せる余地あり）。
@@ -702,6 +708,8 @@ type UpdateAdditionalRewardOutcome =
   // 更新フィールドが空になる。空 SET は Drizzle が "No values to set" で throw する
   // ため、実行前に no-op へ分岐させる（500 にしない）。
   | { kind: "no-op"; collectionNameStripped?: boolean }
+  // draw_count / is_raid_limited 列未デプロイ窓（POST と同じ 503 扱い）。
+  | { kind: "raid-options-unavailable"; error: unknown }
   | { kind: "error"; error: unknown };
 
 /**
@@ -752,19 +760,21 @@ async function updateAdditionalRewardPg(
   // collectionNameStripped はストリップ後の再試行から引き継ぐ。
   // returningMinimal は列欠落窓からの再試行で常に true（SET の内容に関わらず、
   // 引数なし returning() はスキーマ全列を展開して 42703 が再発するため）。
+  // 初回は常に (false, false) で呼び、再試行だけがストリップ由来の値を渡す
+  // （3 引数はすべて必須とし、引数の組み合わせ解釈を固定する）。
   const tryUpdate = async (
     payload: Record<string, unknown>,
-    collectionNameStripped = false,
-    returningMinimal?: boolean,
+    collectionNameStripped: boolean,
+    returningMinimal: boolean,
   ): Promise<UpdateAdditionalRewardOutcome> => {
     if (Object.keys(payload).length === 0) return { kind: "no-op", collectionNameStripped };
-    const rows = await runUpdate(payload, returningMinimal ?? collectionNameStripped);
+    const rows = await runUpdate(payload, returningMinimal);
     if (rows.length === 0) return { kind: "not-found" };
     return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
   };
 
   try {
-    return await tryUpdate(updatePayload);
+    return await tryUpdate(updatePayload, false, false);
   } catch (error) {
     // collection_name 列未デプロイ窓: 初回の引数なし returning() はスキーマ定義の
     // 全列（collection_name 含む）を RETURNING に展開するため、SET が draw_count
@@ -781,10 +791,18 @@ async function updateAdditionalRewardPg(
       try {
         return await tryUpdate(stripped, hadCollectionName, true);
       } catch (retryError) {
+        if (isRaidOptionsSchemaErrorPg(retryError)) {
+          return { kind: "raid-options-unavailable", error: retryError };
+        }
         // ストリップ後の再試行が失敗した場合は、他分岐と同じ handleDatabaseError
         // （{ kind: "error" }）へ寄せて分類を揃える。
         return { kind: "error", error: retryError };
       }
+    }
+    // draw_count / is_raid_limited 列未デプロイ窓は POST と同じ 503 扱い
+    // （接続断・権限エラーは isRaidOptionsSchemaErrorPg が除外するため握りつぶさない）。
+    if (isRaidOptionsSchemaErrorPg(error)) {
+      return { kind: "raid-options-unavailable", error };
     }
     return { kind: "error", error };
   }
@@ -995,6 +1013,19 @@ export async function PUT(request: NextRequest) {
           ? { collectionNameSkippedDeployWindow: true }
           : {}),
       });
+    }
+
+    if (updateOutcome.kind === "raid-options-unavailable") {
+      const errForLog = updateOutcome.error as { message?: string } | null | undefined;
+      logger.warn("Additional reward raid options schema is not ready; refusing to update draws", {
+        rewardId,
+        streamerId: streamer.id,
+        error: errForLog?.message,
+      });
+      return NextResponse.json(
+        { error: PUT_RAID_OPTIONS_SCHEMA_PENDING_MESSAGE },
+        { status: 503 }
+      );
     }
 
     if (updateOutcome.kind === "error") {

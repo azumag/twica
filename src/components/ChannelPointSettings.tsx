@@ -679,7 +679,9 @@ export default function ChannelPointSettings({
       if (!response.ok) {
         // maintenance mode による503拒否時はサーバーの案内文言を優先する。
         const maintenanceError = parseMaintenanceError(response, data);
-        setMessage(maintenanceError?.message || data.error || t("additionalRewards.updateFailed"));
+        // API は文字列 error だけを返す契約だが、将来のオブジェクト形状でも
+        // "[object Object]" 表示にならないよう型ガードする（EventSub 側の既存方針）。
+        setMessage(maintenanceError?.message || (typeof data.error === "string" ? data.error : t("additionalRewards.updateFailed")));
         // 対象が削除済み（404）なら、存在しない行と編集フォームを画面に残さない
         // （一覧を再取得して編集モードを解除する）。
         if (response.status === 404) {
