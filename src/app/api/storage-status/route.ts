@@ -35,6 +35,8 @@ export async function GET() {
       // planOverLimitの場合もアップロードを無効化
       uploadDisabled: usage.userLimitReached || usage.globalLimitReached || usage.planOverLimit,
       planOverLimit: usage.planOverLimit,
+      // 後方互換用の message。公式UIは上記フラグを見て t() で文言を解決するため、
+      // ここは未知・外部クライアント向けフォールバックとして維持する（#835, #1345）。
       message: usage.planOverLimit
         ? ERROR_MESSAGES.PLAN_OVER_LIMIT
         : usage.globalLimitReached
