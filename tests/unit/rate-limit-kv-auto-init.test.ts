@@ -43,6 +43,7 @@ describe("rate limit KV auto initialization", () => {
     expect(second.success).toBe(true);
     expect(second.remaining).toBe(3);
     expect(getKvBindingMock).toHaveBeenCalledTimes(1);
+    expect(getKvBindingMock).toHaveBeenCalledWith();
     expect(kv.get).toHaveBeenCalledWith(
       "ratelimit:authLogin:user:auto-kv",
       "json",
