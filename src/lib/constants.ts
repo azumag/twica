@@ -434,12 +434,12 @@ export const PLAN_CONFIG = {
   FANBOX_ID_MAX_LENGTH: 100,
 } as const
 
+// API互換用の日本語フォールバック文言。公式UIは upload の code /
+// storage-status の構造化フラグを使って t() で表示文言を解決するため、
+// ここでは外部・未知クライアント向けの互換文字列を維持する（#835 / #1345）。
 export const STORAGE_LIMIT_MESSAGES = {
   // User limit message: increased to 10MB
   // ユーザー制限メッセージ: 10MBに増加
   USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。',
-  // 後方互換のため維持。クライアントは code フィールドで t() 解決するため、この文言は
-  // サーバーフォールバック（未知のクライアント等）でしか表示されない
-  // （#835: 英語ロケールでも制限理由を表示できるよう、APIの error 文言は最終手段）。
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
 } as const
