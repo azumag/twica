@@ -201,6 +201,42 @@ describe("ChannelPointSettings additional-reward editing", () => {
     expect(screen.getByLabelText("一度に排出する枚数（編集）")).toBeInTheDocument();
   });
 
+  // canManage=false かつ既存紐付けなし（hidden）ではプルダウンが表示されず、
+  // PUT ボディから collectionName が省かれる（フォームに出ていない項目は送らない）。
+  it("omits collectionName from the PUT body when the pack select is hidden", async () => {
+    const noPackReward = {
+      id: "ar-3",
+      reward_id: "extra-reward-3",
+      reward_name: "Extra 3",
+      draw_count: 1,
+      is_raid_limited: false,
+      collection_name: null,
+      created_at: "2026-01-03T00:00:00.000Z",
+    };
+    const hiddenMock = mockFetch([noPackReward]);
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", hiddenMock);
+    renderComponent({ cardPacks: { canManage: false, defaultPackName: null } });
+
+    const editButton = await screen.findByRole("button", { name: "パック・枚数を編集" });
+    fireEvent.click(editButton);
+    // プルダウン自体が表示されない（アップセル表示になる）
+    expect(screen.queryByLabelText("編集する引き換えのカードパック")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "変更を保存" }));
+
+    await waitFor(() => {
+      const putCall = hiddenMock.mock.calls.find(
+        ([input, init]) =>
+          String(input).includes("/api/streamer/additional-rewards") && (init as RequestInit)?.method === "PUT"
+      );
+      expect(putCall).toBeDefined();
+      const body = JSON.parse((putCall![1] as RequestInit).body as string);
+      expect(body).not.toHaveProperty("collectionName");
+      expect(body).toEqual(expect.objectContaining({ rewardId: "extra-reward-3", drawCount: 1 }));
+    });
+  });
+
   // 編集中の行の「編集」再クリックで未保存入力が無告知リセットされないこと。
   it("disables the edit button of the row being edited (no silent reset)", async () => {
     renderComponent();

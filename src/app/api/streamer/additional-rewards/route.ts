@@ -119,9 +119,12 @@ async function getOwnedStreamerIdForRewards(twitchUserId: string): Promise<strin
  * 追加報酬の応答形状（GET の一覧・PUT の成功時 RETURNING）で使う明示列の共有定義。
  * 引数なし returning() はスキーマ全列（streamer_id 含む）を返すため使わず、
  * GET と PUT で streamer_id の有無を統一する。collection_name 未デプロイ窓用の
- * 最小セット（collection_name なし）もここから派生させる。
+ * セット（collection_name なし）もここから派生させる。
+ *
+ * 命名注意: 同ファイルの selectMinimal（4列: id/reward_id/reward_name/created_at）
+ * とは別物。こちらは「collection_name を除く応答6列」を指す。
  */
-const ADDITIONAL_REWARD_MINIMAL_COLUMNS = {
+const ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME = {
   id: streamerAdditionalGachaRewardsTable.id,
   reward_id: streamerAdditionalGachaRewardsTable.reward_id,
   reward_name: streamerAdditionalGachaRewardsTable.reward_name,
@@ -131,7 +134,7 @@ const ADDITIONAL_REWARD_MINIMAL_COLUMNS = {
 } as const;
 
 const ADDITIONAL_REWARD_RESPONSE_COLUMNS = {
-  ...ADDITIONAL_REWARD_MINIMAL_COLUMNS,
+  ...ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME,
   collection_name: streamerAdditionalGachaRewardsTable.collection_name,
 } as const;
 
@@ -164,14 +167,7 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
       async () => {
         const { db } = await getDb();
         return db
-          .select({
-            id: streamerAdditionalGachaRewardsTable.id,
-            reward_id: streamerAdditionalGachaRewardsTable.reward_id,
-            reward_name: streamerAdditionalGachaRewardsTable.reward_name,
-            draw_count: streamerAdditionalGachaRewardsTable.draw_count,
-            is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
-            created_at: streamerAdditionalGachaRewardsTable.created_at,
-          })
+          .select(ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME)
           .from(streamerAdditionalGachaRewardsTable)
           .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
           .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
@@ -754,7 +750,7 @@ async function updateAdditionalRewardPg(
               eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
             )
           );
-        const baseReturning = ADDITIONAL_REWARD_MINIMAL_COLUMNS;
+        const baseReturning = ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME;
         return returningMinimal
           ? query.returning(baseReturning)
           : query.returning(ADDITIONAL_REWARD_RESPONSE_COLUMNS);
@@ -766,8 +762,8 @@ async function updateAdditionalRewardPg(
 
   // 空 SET を実行すると Drizzle が throw するため、実行前に空チェックで no-op へ分岐。
   // collectionNameStripped はストリップ後の再試行から引き継ぐ。
-  // returningMinimal は列欠落窓からの再試行で常に true（SET の内容に関わらず、
-  // 引数なし returning() はスキーマ全列を展開して 42703 が再発するため）。
+  // returningMinimal は列欠落窓からの再試行で常に true（成功時の RETURNING にも
+  // collection_name が含まれるため、SET になくても 42703 が再発する）。
   // 初回は常に (false, false) で呼び、再試行だけがストリップ由来の値を渡す
   // （3 引数はすべて必須とし、引数の組み合わせ解釈を固定する）。
   const tryUpdate = async (
@@ -784,10 +780,10 @@ async function updateAdditionalRewardPg(
   try {
     return await tryUpdate(updatePayload, false, false);
   } catch (error) {
-    // collection_name 列未デプロイ窓: 初回の引数なし returning() はスキーマ定義の
-    // 全列（collection_name 含む）を RETURNING に展開するため、SET が draw_count
-    // のみの更新でも 42703 になり得る。そのため「collection_name が SET にある」
-    // だけでなく、列欠落エラーそのもので再試行へ分岐する。
+    // collection_name 列未デプロイ窓: 成功時の RETURNING に collection_name が
+    // 含まれるため、SET が draw_count のみの更新でも 42703 になり得る。そのため
+    // 「collection_name が SET にある」だけでなく、列欠落エラーそのもので
+    // 再試行へ分岐する。
     if (isMissingCollectionNameColumn(error as GenericDbError)) {
       // 呼び出し元の updatePayload をミューテートせず、コピーから剥がして再試行する
       // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
