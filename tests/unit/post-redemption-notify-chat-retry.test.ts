@@ -56,7 +56,6 @@ const mockRetry = vi.mocked(retryChatNotification)
 const mockMarkSent = vi.mocked(markChatNotificationSent)
 const mockDeadLetter = vi.mocked(deadLetterChatNotification)
 const mockReportError = vi.mocked(reportError)
-const mockLoggerWarn = vi.mocked(logger.warn)
 const mockLoggerInfo = vi.mocked(logger.info)
 
 // `{user}` / `{card}` だけのテンプレートにして補助DB参照を通さず、
