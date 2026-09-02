@@ -45,7 +45,6 @@ An unbounded decompression chain in HTTP responses on Node.js Fetch API via Cont
 - All API inputs are validated
 - Rate limiting prevents abuse
 - CSRF protection on all state-changing requests
-  （例外: `/api/twitch/eventsub/debug` の DELETE は #831 で追跡中）
 
 #### Rate Limiting
 - In-memory rate limiting for development
@@ -108,4 +107,4 @@ To automatically audit dependencies as part of CI/CD, consider adding to your wo
 
 ## Last Updated
 
-2026-08-12
+2026-09-01
