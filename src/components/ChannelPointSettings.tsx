@@ -1461,7 +1461,7 @@ export default function ChannelPointSettings({
                             </div>
                           </div>
                           <div className="flex shrink-0 items-center gap-3 pl-3">
-<button
+                            <button
                               onClick={() => handleStartEditAdditionalReward(reward)}
                               // 編集中の行の再クリックは無効（未保存入力の無告知リセット防止）。
                               // 保存中（updatingAdditional）も他行への切替は許可するが、
@@ -1549,21 +1549,21 @@ export default function ChannelPointSettings({
                               </label>
                                 <div className="flex items-center gap-2">
                                   <button
-                                  type="button"
-                                  onClick={handleUpdateAdditionalReward}
-                                  disabled={updatingAdditional || isMaintenanceBlocked}
-                                  title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
-                                  className="inline-flex h-9 items-center justify-center rounded-md bg-purple-600 px-4 text-xs font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
-                                >
+                                    type="button"
+                                    onClick={handleUpdateAdditionalReward}
+                                    disabled={updatingAdditional || isMaintenanceBlocked}
+                                    title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+                                    className="inline-flex h-9 items-center justify-center rounded-md bg-purple-600 px-4 text-xs font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
+                                  >
                                   {updatingAdditional ? tCommon("loading") : t("additionalRewards.update")}
-                                </button>
+                                  </button>
                                 <button
                                   type="button"
                                   onClick={handleCancelEditAdditionalReward}
                                   disabled={updatingAdditional}
                                   className="inline-flex h-9 items-center justify-center rounded-md border border-gray-500 bg-transparent px-3 text-xs font-medium text-gray-300 transition-colors hover:border-gray-400 hover:bg-gray-700/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                  {t("additionalRewards.cancel")}
+                                  {tCommon("cancel")}
                                 </button>
                               </div>
                             </div>
@@ -1571,6 +1571,10 @@ export default function ChannelPointSettings({
                                 詳しい案内（/plans リンク付き）をグリッドの下に表示する。 */}
                             {(editingPackControlMode === "hidden" || editingPackControlMode === "disabled") &&
                               renderPackUpsellHint()}
+                            {/* 追加フォームと同じく、登録済みパック0件の案内も表示する */}
+                            {editingPackControlMode === "enabled" && showNoPacksRegisteredHint && (
+                              <p className="mt-1 text-xs text-gray-500">{t("collections.packHint")}</p>
+                            )}
                           </div>
                         )}
                       </div>

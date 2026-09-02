@@ -669,7 +669,6 @@
       "removeFailed": "追加の引き換えの削除に失敗しました",
       "edit": "パック・枚数を編集",
       "update": "変更を保存",
-      "cancel": "キャンセル",
       "updateSuccess": "追加の引き換えを更新しました",
       "updateSuccessPackPending": "追加の引き換えを更新しました（パックの変更は反映待ちです）",
       "updateFailed": "追加の引き換えの更新に失敗しました",
