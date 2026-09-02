@@ -18,7 +18,9 @@ describe("Cloudflare proxy migration policy", () => {
 
     expect(doc).toContain("Node.js middleware is not currently supported");
     expect(doc).toContain("Do not add `src/proxy.ts` yet");
-    expect(doc).toContain("@opennextjs/adapters-api");
+    expect(doc).toContain("Next.js Adapters API");
+    expect(doc).toContain("opennextjs/adapters-api");
+    expect(doc).not.toContain("@opennextjs/adapters-api");
     expect(middleware).toContain("export async function middleware");
     expect(middleware).not.toContain("export async function proxy");
     expect(middleware).toContain("intentionally stays on the deprecated middleware.ts convention");
