@@ -5,12 +5,12 @@
 - warn 表示は `broadcast` / `chat announcement` を使う。ログ本文からソースを grep しやすいよう、表示ラベルはリテラルのまま維持する。
 - `reportError` の context は `eventsub:postRedemptionNotify:broadcast` / `eventsub:postRedemptionNotify:chatAnnouncement` を使う。`chatAnnouncement` は既存の監視・テストとの互換性を保つため camelCase のまま変更しない。
 
-## pending 再試行時の通報境界
+## pending 状態と通報境界
 
 chat 通知が `pending` に戻る場合でも、通報契約は経路によって異なる。
 
 - `sendChatAnnouncement` が retryable outcome を返した通常の再試行経路は、`chat announcement retry scheduled` の warn を残して正常終了し、`reportError` へは到達しない。
-- `sendChatAnnouncement` 自体が予期せず throw した catch 経路は、delivery state が未確定なら outbox を再試行可能な状態へ戻したうえで例外を rethrow する。この場合は呼び出し元の失敗処理を通って `reportError` の対象になり得る。
+- `sendChatAnnouncement` 自体が予期せず throw した catch 経路は、delivery state が未確定なら `retryChatNotification` を呼ぶ。これは試行回数や lease 状態に応じて `pending` / `dead` / `lost-lease` になり得るが、その結果にかかわらず元の例外を rethrow するため、呼び出し元の失敗処理を通って `reportError` の対象になり得る。
 
 したがって、outbox の最終状態が `pending` であることだけを根拠に「`reportError` されない」と判断してはならない。通常の retryable outcome と unexpected throw は別の経路として扱う。
 
