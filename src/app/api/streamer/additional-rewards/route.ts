@@ -876,7 +876,9 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    if (!rewardId) {
+    // rewardId は後続の string 引数へ渡すため、ここで string へ narrowing する
+    // （unknown のままでは typecheck が失敗する。レビュー指摘対応）。
+    if (typeof rewardId !== "string" || rewardId.trim() === "") {
       return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
     }
 
