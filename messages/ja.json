@@ -678,7 +678,7 @@
       "cannotUseAsMain": "このチャネルポイント引き換えは追加の引き換えとして登録済みです。先に削除してください。",
       "cannotUseAsAdditional": "このチャネルポイント引き換えはメインの引き換えとして設定されています。",
       "drawCount": "一度に排出する枚数",
-      "drawCountEditLabel": "編集時の排出枚数",
+      "drawCountEditLabel": "一度に排出する枚数（編集）",
       "raidOnly": "レイド限定",
       "multiDraw": "{count}連",
       "raidLimited": "レイド限定",

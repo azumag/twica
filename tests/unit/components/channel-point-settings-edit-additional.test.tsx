@@ -129,7 +129,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
     expect(packSelect.value).toBe("weapons");
     // 枚数入力も現在値（3連）がプリフィルされる（追加フォームと重複しない専用ラベル）
-    const drawCountInput = screen.getByLabelText("編集時の排出枚数") as HTMLInputElement;
+    const drawCountInput = screen.getByLabelText("一度に排出する枚数（編集）") as HTMLInputElement;
     expect(drawCountInput.value).toBe("3");
     expect(screen.getByRole("button", { name: "変更を保存" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "キャンセル" })).toBeInTheDocument();
@@ -143,7 +143,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
 
     const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
     fireEvent.change(packSelect, { target: { value: "characters" } });
-    const drawCountInput = screen.getByLabelText("編集時の排出枚数") as HTMLInputElement;
+    const drawCountInput = screen.getByLabelText("一度に排出する枚数（編集）") as HTMLInputElement;
     fireEvent.change(drawCountInput, { target: { value: "5" } });
 
     fireEvent.click(screen.getByRole("button", { name: "変更を保存" }));
@@ -198,7 +198,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     expect(packSelect).toBeDisabled();
     expect(packSelect.value).toBe("weapons");
     // 枚数入力はプランに関係なく編集できる
-    expect(screen.getByLabelText("編集時の排出枚数")).toBeInTheDocument();
+    expect(screen.getByLabelText("一度に排出する枚数（編集）")).toBeInTheDocument();
   });
 
   // 編集中の行の「編集」再クリックで未保存入力が無告知リセットされないこと。

@@ -564,6 +564,41 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     expect(returningCalls[1]).not.toHaveProperty("collection_name");
   });
 
+  it("collection_name列未デプロイ窓でdrawCountのみの更新もRETURNINGの列明示で500にならない", async () => {
+    // 初回の引数なし returning() はスキーマ全列（collection_name 含む）を展開する
+    // ため、SET が draw_count のみでも 42703 になり得る。列欠落エラーで再試行に
+    // 分岐し、明示列 RETURNING で成功することを検証する。
+    const { updateCalls, returningCalls } = primeDb({
+      selects: [
+        { rows: [streamer()] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+      updates: [
+        {
+          error: {
+            code: "42703",
+            message: 'column "collection_name" of relation "streamer_additional_gacha_rewards" does not exist',
+          },
+        },
+        { rows: [{ id: "additional-1", reward_id: REWARD_ID, draw_count: 5 }] },
+      ],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      drawCount: 5,
+    }, "PUT"));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    expect(body.reward).toEqual(expect.objectContaining({ draw_count: 5 }));
+    // 2回目の RETURNING は collection_name を含まない明示列
+    expect(returningCalls[1]).toEqual(expect.any(Object));
+    expect(returningCalls[1]).not.toHaveProperty("collection_name");
+    // 2回目の SET は draw_count のみ（collection_name は元々無い）
+    expect(updateCalls[1]).toEqual(expect.objectContaining({ draw_count: 5 }));
+    expect(updateCalls[1]).not.toHaveProperty("collection_name");
+  });
+
   it("変更なしのリクエストはunchangedを返しUPDATEしない", async () => {
     const { updateCalls } = primeDb({
       selects: [

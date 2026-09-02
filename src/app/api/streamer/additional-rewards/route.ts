@@ -763,7 +763,11 @@ async function updateAdditionalRewardPg(
   try {
     return await tryUpdate(updatePayload);
   } catch (error) {
-    if (isMissingCollectionNameColumn(error as GenericDbError) && "collection_name" in updatePayload) {
+    // collection_name 列未デプロイ窓: 初回の引数なし returning() はスキーマ定義の
+    // 全列（collection_name 含む）を RETURNING に展開するため、SET が draw_count
+    // のみの更新でも 42703 になり得る。そのため「collection_name が SET にある」
+    // だけでなく、列欠落エラーそのもので再試行へ分岐する。
+    if (isMissingCollectionNameColumn(error as GenericDbError)) {
       // 呼び出し元の updatePayload をミューテートせず、コピーから剥がして再試行する
       // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
       const stripped = { ...updatePayload };
@@ -957,8 +961,9 @@ export async function PUT(request: NextRequest) {
     const updateOutcome = await updateAdditionalRewardPg(streamer.id, rewardId, updatePayload);
 
     if (updateOutcome.kind === "not-found") {
-      // 対象の追加報酬が存在しない（別タブ等で削除済み）。PUT 固有の分岐
-      // （DELETE は0件でも200）のため、報酬不在を意味する専用文言を返す。
+      // 事前 lookup（上記 currentResult）との間に削除された場合のみ到達する
+      // 防御的分岐（TOCTOU）。通常の存在チェックは lookup 側で行っている。
+      // DELETE は0件でも200のため、この分岐は PUT 固有。
       return NextResponse.json(
         { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
         { status: 404 }
