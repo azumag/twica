@@ -10,8 +10,8 @@ now because the current Cloudflare deployment path cannot build a Next.js Proxy.
   deployment path rejects Next.js Proxy / Node.js middleware.
 - Do not add `src/proxy.ts` yet.
 - Do not wait for `@opennextjs/cloudflare` itself to gain Proxy support. The
-  upstream direction is to handle Node.js middleware through the newer
-  `@opennextjs/adapters-api` architecture instead.
+  upstream direction is to handle Node.js middleware through the newer Next.js
+  Adapters API architecture tracked in the `opennextjs/adapters-api` repository.
 - Accept the Next.js deprecated convention warning as the smaller operational
   risk while Cloudflare builds still require Edge Middleware output.
 
@@ -34,8 +34,9 @@ The incompatibility remains observable upstream as
 
 Revisit this decision when either of these is true:
 
-- Migrating TwiCa to `@opennextjs/adapters-api` (or another Cloudflare deployment
-  path with Next.js Proxy / Node.js middleware support) becomes practical and
+- Migrating TwiCa to the Next.js Adapters API path from
+  `opennextjs/adapters-api` (or another Cloudflare deployment path with Next.js
+  Proxy / Node.js middleware support) becomes practical and
   `npm run workers:build` can be verified on that path.
 - TwiCa changes deployment architecture so request interception no longer needs
   to run in Cloudflare Workers middleware.
