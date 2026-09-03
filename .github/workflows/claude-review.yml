@@ -1,4 +1,9 @@
-# Claude Auto Review (preview)
+# Claude Auto Review (preview) — 現在は停止中
+#
+# 2026-09-03 以降、Claude Code Review が structured_output 未返却で連続失敗し、
+# レビュー未投稿のまま Checks だけが赤くなる状態が続いたため、pull_request
+# 駆動を外して手動実行（workflow_dispatch）のみに切り替えた。
+# 再開する場合は git 履歴から下の pull_request トリガーを復元すること。
 #
 # preview をターゲットにした PR のたびに、Claude Code（モデル: opus）が追加された
 # 変更を自動レビューし、PR コメントで指摘を報告する。
@@ -55,23 +60,10 @@
 name: Claude Auto Review (preview)
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [preview]
-    # ドキュメントのみの変更では opus を回さない（コスト抑制）。ただし
-    # AGENTS.md / CLAUDE.md はレビュー基準そのものなので対象から外さない。
-    # paths は最後にマッチしたパターンが優先されるため、
-    # 全ファイル含む → md 除外 → 上記2ファイル再含む、の順で書く。
-    paths:
-      - '**'
-      # GitHub のドキュメント表記に合わせる（`!**/*.md` はルート直下の md に
-      # 対する挙動が実装依存のため）
-      - '!**.md'
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-    # main 向け PR は対象外（preview でレビュー済みの内容を昇格するだけのため意図的）
-    # preview への直接 push は branch protection で禁止されている前提
-    # （直 push できる場合、その変更は本レビューの対象外になる）
+  # 自動実行は停止中。手動実行のみ受け付ける。
+  # 旧 pull_request トリガー（opened/synchronize/reopened/ready_for_review、
+  # branches: [preview]、paths フィルタ付き）は git 履歴を参照すること。
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
