@@ -15,16 +15,15 @@ This document tracks known security vulnerabilities and mitigation strategies in
 
 **Resolution:**
 The application has migrated from Vercel Blob to Cloudflare R2 for storage.
-- @vercel/blob is now a devDependency only used for migration scripts
-- Production builds do not include @vercel/blob
-- The migration script (`npm run migrate:vercel-to-r2`) can be used to migrate existing files
-- After migration is complete, @vercel/blob can be removed entirely
+- `@vercel/blob` has been removed from both dependencies and devDependencies
+- The old Vercel Blob migration command is no longer part of the current npm scripts
+- Production uploads and storage use Cloudflare R2
 
 **Original Description:**
 An unbounded decompression chain in HTTP responses on Node.js Fetch API via Content-Encoding leads to resource exhaustion.
 
 **Current Mitigation:**
-1. @vercel/blob is no longer used in production code
+1. `@vercel/blob` is no longer present in the current package manifest
 2. All new uploads go directly to Cloudflare R2
 3. File upload validation and rate limiting remain in place
 
@@ -107,4 +106,4 @@ To automatically audit dependencies as part of CI/CD, consider adding to your wo
 
 ## Last Updated
 
-2026-09-01
+2026-09-03
