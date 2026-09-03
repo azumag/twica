@@ -39,6 +39,7 @@
 - **チャネルポイント引き換えは配信者本人のアカウントでも、チャンネルがオフラインでも実行できる。** 配信を開始する必要はなく、別の視聴者アカウントを用意する必要もない。「配信中でないと引き換えられない」と思い込んで手を止めないこと。
 - 対象チャンネルは Twitch の**ログイン名**で開く（`twitch.tv/<twitch_username>`）。表示名（`twitch_display_name`）とログイン名は別物で、DBの `streamers.twitch_username` が正本。表示名から推測したURLを開くと**別人のチャンネル**を見ることになる。
 - preview と本番は別の Twitch client ID・別の報酬・別の callback を使う。EventSub 購読は `reward_id` 単位（`src/app/api/twitch/eventsub/subscribe/route.ts`）なので、preview 用の報酬を引き換えても本番側は発火しない。どの報酬がどちらの環境かは各環境DBの `streamers.channel_point_reward_id` / `channel_point_reward_name` で確認する。
+- Twitchの「ビッツとポイントの残高」はBitsを含む複合表示なので、数値だけをチャネルポイント残高と解釈しない。配信者本人（アカウント所有者）で実引き換えする場合は、ポイント残高表示やBits残高を阻害条件にせず、正確な報酬メニュー表示・交換操作・引き換え結果を一次証拠にする。視聴者アカウントでは実際のチャネルポイント不足を別途確認し、Bits残高を代用根拠にしない。
 - 観測は引き換え前に用意しておく: `npx wrangler tail <worker名>`（worker名は**位置引数**。`--name` は使えない）でアプリ Worker と overlay-realtime Worker の両方、加えてオーバーレイURLをブラウザで開いておく。
 
 ### 実画面での検証（Chrome）
