@@ -6,35 +6,17 @@ npm audit previously identified 2 low severity vulnerabilities related to the `u
 
 **Status:** Resolved - Migrated to Cloudflare R2
 
-The application has migrated from Vercel Blob to Cloudflare R2 for storage:
-- @vercel/blob is now a devDependency only (used for migration scripts)
-- Production builds do not include @vercel/blob
-- All new file uploads use Cloudflare R2 (`@aws-sdk/client-s3`)
+The application has completed its migration from Vercel Blob to Cloudflare R2 for storage:
+- `@vercel/blob` has been removed from both dependencies and devDependencies
+- The legacy `migrate:vercel-to-r2` npm scripts and `scripts/migrate-vercel-blob-to-r2.js` have been removed
+- All current file uploads use Cloudflare R2; local development falls back to `@aws-sdk/client-s3` where needed
 
-## Migration Steps
+## Historical Migration Notes
 
-To migrate existing Vercel Blob files to R2:
-```bash
-# Dry run (no changes)
-npm run migrate:vercel-to-r2:dry
+The Vercel Blob to R2 migration has already been completed. The migration commands and script that were previously documented here are no longer present in the current repository. Consult git history if the retired migration procedure is needed for historical investigation.
 
-# Execute migration
-npm run migrate:vercel-to-r2
+## Current Related Files
 
-# Execute migration and delete source files
-npm run migrate:vercel-to-r2 -- --delete-source
-```
-
-## After Migration Complete
-
-Once all files are migrated and verified:
-1. Remove `@vercel/blob` from devDependencies
-2. Delete `scripts/migrate-vercel-blob-to-r2.js`
-3. Delete `scripts/init-storage-usage.js.deprecated`
-
-## Related Files
-
-- package.json - Dependencies (R2 via @aws-sdk/client-s3)
-- src/lib/r2-client.ts - R2 storage client
-- src/app/api/upload/route.ts - Uses R2 for file uploads
-- scripts/migrate-vercel-blob-to-r2.js - Migration script
+- `package.json` - Current dependencies and npm scripts
+- `src/lib/r2-client.ts` - Cloudflare R2 client and local S3 SDK fallback
+- `src/app/api/upload/route.ts` - Current R2-backed file upload route
