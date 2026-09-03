@@ -3,7 +3,8 @@
 # 2026-09-03 以降、Claude Code Review が structured_output 未返却で連続失敗し、
 # レビュー未投稿のまま Checks だけが赤くなる状態が続いたため、pull_request
 # 駆動を外して手動実行（workflow_dispatch）のみに切り替えた。
-# 再開する場合は git 履歴から下の pull_request トリガーを復元すること。
+# 手動実行は停止通知だけを記録してレビューjobをスキップする。
+# 再開する場合は git 履歴から下の pull_request トリガーとjob条件を復元すること。
 #
 # preview をターゲットにした PR のたびに、Claude Code（モデル: opus）が追加された
 # 変更を自動レビューし、PR コメントで指摘を報告する。
@@ -66,15 +67,16 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # workflow_dispatchにはpull_requestコンテキストがないためrun_idへフォールバックする。
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   claude_review:
     name: Review PR changes
-    # draft PR では opus を回さない。bot 作成 PR（Renovate / Dependabot /
-    # エージェント等）はレビュー対象に含める（エージェント起点の変更こそ要レビュー）。
-    if: github.event.pull_request.draft == false
+    # 現在は自動レビュー停止中。pull_requestトリガーを復元したときだけ実行する。
+    # workflow_dispatchではPRコンテキストが無いため、手動実行しても安全にskipとなる。
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # コスト受容: preview 向け PR の synchronize ごとに opus（最大70ターン）を
