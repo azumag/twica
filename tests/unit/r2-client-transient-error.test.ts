@@ -36,8 +36,26 @@ describe('isTransientR2Error', () => {
     expect(isTransientR2Error('put: status: 503, please retry later')).toBe(true)
   })
 
-  it('文脈語のない裸の503は一時障害として扱わない (Issue #989)', () => {
-    expect(isTransientR2Error('503')).toBe(false)
+  it.each([
+    'Request failed with HTTP/1.1 503',
+    'Request failed with HTTP/2 503',
+    'put: status code=503, please retry later',
+    'SDK response: statusCode=503',
+    'SDK response: httpStatusCode: 503',
+  ])('標準的なHTTP status表記%sを一時障害として扱う (Issue #989)', (errorMessage) => {
+    expect(isTransientR2Error(errorMessage)).toBe(true)
+  })
+
+  // 【Issue #989】status文脈の無い数値やURL中の数値は、R2/S3のHTTP statusを表す保証が
+  // ないため一時障害としない。特に短いURLは旧\D{0,10}実装で誤って一致していた。
+  it.each([
+    '503',
+    'PUT http://a/503 failed',
+    'Request failed with HTTP 5030',
+    'SDK response: statusCode=5030',
+    'SDK response from myhttp 503',
+  ])('標準的なstatus文脈のない503を一時障害として扱わない: %s', (errorMessage) => {
+    expect(isTransientR2Error(errorMessage)).toBe(false)
   })
 
   // 【Issue #984/#1252】裸の'503'部分文字列マッチは、キー名やリクエストIDに偶然数字列を含む
