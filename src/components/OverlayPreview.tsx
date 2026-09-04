@@ -504,6 +504,7 @@ export default function OverlayPreview({
       const response = await fetch("/api/gacha/demo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           streamerId,
           cardId: selectedCardId !== "random" ? selectedCardId : undefined,
