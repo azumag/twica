@@ -17,6 +17,13 @@ const REQUIRED_TEMPLATE_HEADINGS = [
   "## main昇格条件",
 ] as const;
 
+const REQUIRED_CONFIRMATION_LINES = [
+  "- レビュー:",
+  "- CI:",
+  "- previewデプロイ:",
+  "- ブラウザー／実経路の確認: <!-- 対象外の場合は理由を記載 -->",
+] as const;
+
 function h2Headings(source: string): string[] {
   return source.split(/\r?\n/).filter((line) => line.startsWith("## "));
 }
@@ -51,6 +58,18 @@ describe("preview -> main release PR template contract", () => {
     );
 
     expect(requiredHeadings).toEqual([...REQUIRED_TEMPLATE_HEADINGS]);
+  });
+
+  it("keeps every required confirmation row in the confirmation section", () => {
+    const confirmationLines = h2Section(releaseTemplate, "## 確認済み")
+      .split(/\r?\n/)
+      .map((line) => line.trim());
+
+    // These rows are the promotion evidence slots documented in QA.md. Checking
+    // the complete row text catches template drift that a heading-only check misses.
+    for (const requiredLine of REQUIRED_CONFIRMATION_LINES) {
+      expect(confirmationLines).toContain(requiredLine);
+    }
   });
 
   it("keeps docs/QA.md aligned with the template responsibilities", () => {
