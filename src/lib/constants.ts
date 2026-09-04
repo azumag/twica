@@ -438,8 +438,13 @@ export const PLAN_CONFIG = {
 // storage-status の構造化フラグを使って t() で表示文言を解決するため、
 // ここでは外部・未知クライアント向けの互換文字列を維持する（#835 / #1345）。
 export const STORAGE_LIMIT_MESSAGES = {
-  // User limit message: increased to 10MB
-  // ユーザー制限メッセージ: 10MBに増加
+  // 注意: この互換文言は「一アカウントにつき10MB」と固定値を案内しているが、
+  // 実効上限は getStorageUsage() の effectiveLimit
+  // （UPLOAD_CONFIG.USER_STORAGE_LIMIT + ボーナス + プラン加算）で変動し、
+  // 10MB を超え得る。文言自体の見直しは外部互換の判断を伴うため本変更では行わず、
+  // ここでは現状の乖離を明記するのみとする（#1354）。
+  // なお同種の10MB固定文言は messages/ja.json・en.json の userLimitReached /
+  // storageLimitReason にも存在するため、見直す際は i18n 側と併せて行うこと。
   USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。',
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
 } as const
