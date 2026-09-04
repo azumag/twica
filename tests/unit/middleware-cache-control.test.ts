@@ -78,6 +78,16 @@ describe('middleware fail-closed Cache-Control (issue #906)', () => {
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
   })
 
+  it('不正 streamerId の overlay events 400 にも private, no-store を付与する', async () => {
+    const response = await middleware(makeRequest('/api/overlay/not-a-uuid/events'))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: 'Invalid streamer ID' })
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+    // DB/session I/O より前の早期拒否契約も維持する。
+    expect(updateSessionMock).not.toHaveBeenCalled()
+  })
+
   it('overlay demo-events にも private, no-store を付与する（ルート側 no-store と二重防御）', async () => {
     const response = await middleware(makeRequest('/api/overlay/123e4567-e89b-42d3-a456-426614174000/demo-events'))
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
