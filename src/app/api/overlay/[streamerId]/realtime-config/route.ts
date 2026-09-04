@@ -32,7 +32,15 @@ export async function GET(
 ): Promise<NextResponse> {
   const { streamerId } = await params
   if (!isValidStreamerId(streamerId)) {
-    return NextResponse.json({ error: 'Invalid streamer ID' }, { status: 400 })
+    return NextResponse.json(
+      { error: 'Invalid streamer ID' },
+      {
+        status: 400,
+        headers: {
+          'Cache-Control': 'private, no-store',
+        },
+      }
+    )
   }
 
   const overlayVersion = process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? 'dev'
