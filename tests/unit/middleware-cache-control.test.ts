@@ -60,6 +60,11 @@ describe('middleware fail-closed Cache-Control (issue #906)', () => {
     expect(response.headers.get('Cache-Control')).toBeNull()
   })
 
+  it('キャッシュ許可パス（sound-settings）にも no-store を付与しない', async () => {
+    const response = await middleware(makeRequest('/api/streamer/123e4567-e89b-42d3-a456-426614174000/sound-settings'))
+    expect(response.headers.get('Cache-Control')).toBeNull()
+  })
+
   it('キャッシュ許可パス（/api/overlay/ 配下の realtime-config）にも no-store を付与しない', async () => {
     const response = await middleware(makeRequest('/api/overlay/123e4567-e89b-42d3-a456-426614174000/realtime-config'))
     expect(response.headers.get('Cache-Control')).toBeNull()
