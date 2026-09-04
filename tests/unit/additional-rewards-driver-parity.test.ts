@@ -1,7 +1,7 @@
 /**
  * #663: 追加ガチャ報酬APIのPlanetScale契約テスト
  *
- * 対象: GET/POST/DELETE /api/streamer/additional-rewards
+ * 対象: GET/POST/PUT/DELETE /api/streamer/additional-rewards
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
@@ -44,14 +44,16 @@ interface PgResponse {
 }
 
 function createDrizzleDbMock(
-  config: { selects?: PgResponse[]; inserts?: PgResponse[]; deletes?: PgResponse[] } = {}
+  config: { selects?: PgResponse[]; inserts?: PgResponse[]; deletes?: PgResponse[]; updates?: PgResponse[] } = {}
 ) {
   let selectIndex = 0;
   let insertIndex = 0;
   let deleteIndex = 0;
+  let updateIndex = 0;
   const selectCalls: Array<{ where?: unknown; orderBy?: unknown }> = [];
   const insertCalls: Array<{ table: unknown; values?: unknown }> = [];
   const deleteCalls: Array<{ table: unknown; where?: unknown }> = [];
+  const updateCalls: Array<{ table: unknown; values?: unknown; where?: unknown }> = [];
 
   const db = {
     select: vi.fn((fields: Record<string, unknown>) => {
@@ -117,8 +119,29 @@ function createDrizzleDbMock(
       };
       return builder;
     }),
+    update: vi.fn((table: unknown) => {
+      const responses = config.updates ?? [{ rows: [{}] }];
+      const response = responses[Math.min(updateIndex, responses.length - 1)];
+      updateIndex += 1;
+      const call: { table: unknown; values?: unknown; where?: unknown } = { table };
+      updateCalls.push(call);
+      const resolve = () => (response.error ? Promise.reject(response.error) : Promise.resolve(response.rows ?? [{}]));
+      const builder: any = {
+        set: vi.fn((values: unknown) => {
+          call.values = values;
+          return builder;
+        }),
+        where: vi.fn((condition: unknown) => {
+          call.where = condition;
+          return builder;
+        }),
+        returning: vi.fn(() => builder),
+        then: (onFulfilled: any, onRejected: any) => resolve().then(onFulfilled, onRejected),
+      };
+      return builder;
+    }),
   };
-  return { db, selectCalls, insertCalls, deleteCalls };
+  return { db, selectCalls, insertCalls, deleteCalls, updateCalls };
 }
 
 function primePgDb(mock: ReturnType<typeof createDrizzleDbMock>) {
@@ -560,6 +583,104 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       expect(db.insert).toHaveBeenCalled();
     });
 
+  });
+
+  describe("PUT", () => {
+    const REWARD_ID = "33333333-3333-3333-3333-333333333333";
+
+    it("所有権確認後に正しいテーブル・条件・値でUPDATEする", async () => {
+      const OWNED_STREAMER = { id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: ["weapons", "characters"] };
+      const UPDATED_REWARD = { id: "additional-1", reward_id: REWARD_ID, collection_name: "characters", draw_count: 5 };
+
+      const pg = createDrizzleDbMock({
+        selects: [
+          { rows: [OWNED_STREAMER] },
+          { rows: [{ id: "additional-1", collection_name: "weapons" }] },
+          { rows: [{ count: 2 }] }, // checkCollectionHasActiveCards（値が変わるため）
+        ],
+        updates: [{ rows: [UPDATED_REWARD] }],
+      });
+      primePgDb(pg);
+      const { PUT: pgPUT } = await loadRoute();
+      const pgResponse = await pgPUT(
+        jsonRequest("http://localhost/api/streamer/additional-rewards", "PUT", {
+          rewardId: REWARD_ID,
+          collectionName: "characters",
+          drawCount: 5,
+        })
+      );
+      const pgBody = await pgResponse.json();
+
+      expect(pgResponse.status).toBe(200);
+      expect(pgBody).toEqual(expect.objectContaining({ success: true, reward: UPDATED_REWARD }));
+      expect(getDb).toHaveBeenCalled();
+      expect(pg.updateCalls[0].table).toBe(streamerAdditionalGachaRewardsTable);
+      expect(pg.updateCalls[0].values).toEqual(
+        expect.objectContaining({ collection_name: "characters", draw_count: 5 })
+      );
+      expect(pg.updateCalls[0].where).toEqual(
+        and(
+          eq(streamerAdditionalGachaRewardsTable.streamer_id, "streamer-1"),
+          eq(streamerAdditionalGachaRewardsTable.reward_id, REWARD_ID)
+        )
+      );
+    });
+
+    // 必須レビュー指摘の回帰テスト: collection_name 列未デプロイ窓で
+    // collectionName のみの更新を送ると、ストリップ後に空 payload になり
+    // Drizzle の空 SET が throw する。no-op へ分岐して 500 にしない。
+    it("collection_name列欠落時、パック変更のみの更新はno-opになり500にならずフラグを返す", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [
+          { rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: ["weapons", "characters"] }] },
+          { rows: [{ id: "additional-1", collection_name: "weapons" }] },
+          { rows: [{ count: 2 }] },
+        ],
+        updates: [{
+          error: {
+            code: "42703",
+            message: 'column "collection_name" of relation "streamer_additional_gacha_rewards" does not exist',
+          },
+        }],
+      });
+      primePgDb(pg);
+
+      const { PUT } = await loadRoute();
+      const response = await PUT(
+        jsonRequest("http://localhost/api/streamer/additional-rewards", "PUT", {
+          rewardId: REWARD_ID,
+          collectionName: "characters",
+        })
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual(
+        expect.objectContaining({ success: true, collectionNameSkippedDeployWindow: true })
+      );
+      // ストリップ後の再試行は空 payload になるため DB を呼ばない（1回目のみ）
+      expect(pg.updateCalls).toHaveLength(1);
+    });
+
+    it("変更なしのリクエストはunchangedを返しUPDATEしない", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [
+          { rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: [] }] },
+          { rows: [{ id: "additional-1", collection_name: "weapons" }] },
+        ],
+      });
+      primePgDb(pg);
+
+      const { PUT } = await loadRoute();
+      const response = await PUT(
+        jsonRequest("http://localhost/api/streamer/additional-rewards", "PUT", { rewardId: REWARD_ID })
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual(expect.objectContaining({ success: true, unchanged: true }));
+      expect(pg.updateCalls).toHaveLength(0);
+    });
   });
 
   describe("DELETE", () => {

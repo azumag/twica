@@ -134,6 +134,12 @@ export default function ChannelPointSettings({
   const [addingAdditional, setAddingAdditional] = useState(false);
   const [selectedAdditionalRewardId, setSelectedAdditionalRewardId] = useState("");
   const [additionalDrawCount, setAdditionalDrawCount] = useState(1);
+  // 追加報酬の編集（パック変更・枚数変更）用 state。editingRewardId が非 null の
+  // ときだけ該当行の下に編集フォームを表示する。
+  const [editingRewardId, setEditingRewardId] = useState<string | null>(null);
+  const [editingCollectionName, setEditingCollectionName] = useState("");
+  const [editingDrawCount, setEditingDrawCount] = useState(1);
+  const [updatingAdditional, setUpdatingAdditional] = useState(false);
   const [raidGiftDrawCount, setRaidGiftDrawCount] = useState(0);
   const [updatingRaidGift, setUpdatingRaidGift] = useState(false);
   // Track if registration failed (webhook unreachable)
@@ -609,7 +615,103 @@ export default function ChannelPointSettings({
   };
 
   /**
-   * Remove an additional reward
+   * 追加報酬の編集モードを開始する。
+   * 現在のパック紐付け（collection_name）と排出枚数をプリフィルし、
+   * その行の下に編集フォームを表示する。
+   *
+   * 別の行が編集中で、入力値がプリフィル値（DB の現在値）から変わっている
+   * 場合のみ、破棄の確認をしてから切り替える（未変更なら無用な確認をしない）。
+   */
+  const handleStartEditAdditionalReward = (reward: AdditionalReward) => {
+    if (editingRewardId && editingRewardId !== reward.reward_id) {
+      const currentReward = additionalRewards.find((r) => r.reward_id === editingRewardId) ?? null;
+      const hasUnsavedChanges =
+        currentReward !== null &&
+        (editingCollectionName !== (currentReward.collection_name || "") ||
+          editingDrawCount !== currentReward.draw_count);
+      if (hasUnsavedChanges && !window.confirm(t("additionalRewards.editDiscardConfirm"))) {
+        return;
+      }
+    }
+    setEditingRewardId(reward.reward_id);
+    setEditingCollectionName(reward.collection_name || "");
+    setEditingDrawCount(reward.draw_count);
+  };
+
+  /**
+   * 追加報酬の編集モードを解除する。未保存の入力は破棄する。
+   */
+  const handleCancelEditAdditionalReward = () => {
+    setEditingRewardId(null);
+    setEditingCollectionName("");
+    setEditingDrawCount(1);
+  };
+
+  /**
+   * 追加報酬の設定（紐付くカードパック・排出枚数）を更新する。
+   * EventSub サブスクリプションは報酬 ID ベースのため、編集では
+   * 追加/削除の必要がない（PUT は DB の設定のみ更新する）。
+   */
+  const handleUpdateAdditionalReward = async () => {
+    if (!editingRewardId) return;
+    // 保存開始時の編集対象をキャプチャする。保存中に他行の編集へ移っていた
+    // 場合は、開いているフォームを勝手に閉じない。
+    const targetRewardId = editingRewardId;
+
+    setUpdatingAdditional(true);
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/streamer/additional-rewards", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rewardId: editingRewardId,
+          // パック選択が非表示（canManage=false かつ既存紐付けなし）の場合は
+          // 送らない（undefined）。フォームに出ていない項目は更新しない、
+          // という意図を API 契約に合わせて明確にする。
+          ...(editingPackControlMode === "hidden"
+            ? {}
+            : { collectionName: editingCollectionName || null }),
+          drawCount: editingDrawCount,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        // maintenance mode による503拒否時はサーバーの案内文言を優先する。
+        const maintenanceError = parseMaintenanceError(response, data);
+        // API は文字列 error だけを返す契約だが、将来のオブジェクト形状でも
+        // "[object Object]" 表示にならないよう型ガードする（EventSub 側の既存方針）。
+        setMessage(maintenanceError?.message || (typeof data.error === "string" ? data.error : t("additionalRewards.updateFailed")));
+        // 対象が削除済み（404）なら、存在しない行と編集フォームを画面に残さない
+        // （一覧を再取得して編集モードを解除する）。
+        if (response.status === 404) {
+          handleCancelEditAdditionalReward();
+          await fetchAdditionalRewards();
+        }
+        return;
+      }
+
+      // パック変更が DB 反映待ち（デプロイ窓でストリップされた）場合は
+      // 専用文言を表示し、「変更したはず」という誤解を防ぐ。
+      setMessage(
+        data.collectionNameSkippedDeployWindow
+          ? t("additionalRewards.updateSuccessPackPending")
+          : t("additionalRewards.updateSuccess")
+      );
+      // 保存中に他行の編集へ移っていた場合は、開いているフォームを残す
+      setEditingRewardId((current) => (current === targetRewardId ? null : current));
+      await fetchAdditionalRewards();
+    } catch {
+      setMessage(t("additionalRewards.updateFailed"));
+    } finally {
+      setUpdatingAdditional(false);
+    }
+  };
+
+  /**
    * 追加報酬を削除する
    */
   const handleRemoveAdditionalReward = async (rewardId: string) => {
@@ -643,6 +745,11 @@ export default function ChannelPointSettings({
 
       // 3. Update state
       // 状態を更新
+      // 編集対象の報酬が削除された場合は編集モードを解除する
+      // （stale な editingRewardId が残り、次の編集開始で無関係な confirm が出るのを防ぐ）。
+      if (editingRewardId === rewardId) {
+        handleCancelEditAdditionalReward();
+      }
       setMessage(t("additionalRewards.removeSuccess"));
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
@@ -908,6 +1015,11 @@ export default function ChannelPointSettings({
   };
   const mainPackControlMode = resolvePackControlMode(selectedCollectionName !== "");
   const additionalPackControlMode = resolvePackControlMode(selectedAdditionalCollectionName !== "");
+  // Issue #554: 編集フォームのパック select は「追加フォームの選択値」ではなく
+  // 「編集対象の報酬に既存の紐付けがあるか」で制御する（canManage=false の
+  // ダウングレード後も既存紐付けの維持表示は有効、新規紐付けのみ禁止）。
+  const editingReward = additionalRewards.find((r) => r.reward_id === editingRewardId) ?? null;
+  const editingPackControlMode = resolvePackControlMode(Boolean(editingReward?.collection_name));
   // canManage=true だが登録済みパックが0件の場合の案内(「すべてのカード」
   // 「デフォルトパックのみ」は常に有効な選択肢のため、select自体は表示する)。
   const showNoPacksRegisteredHint = Boolean(cardPacks?.canManage) && collections.length === 0;
@@ -1291,74 +1403,187 @@ export default function ChannelPointSettings({
                title={t("additionalRewards.title")}
                description={t("additionalRewards.description")}
              >
-               {/* List of additional rewards */}
-               {/* 追加報酬一覧 */}
-               {additionalRewards.length > 0 && (
-                 <div className="mb-3 space-y-2">
-                   {additionalRewards.map((reward) => (
-                     <div
-                       key={reward.id}
-                       className="flex items-center justify-between rounded bg-gray-600/50 px-3 py-2"
-                     >
-                       {/* テキストが長い場合にコンテナからはみ出さないようにする */}
-                       <div className="min-w-0 flex-1 overflow-hidden">
-                         <span className="text-sm text-gray-200 break-all">
-                           {reward.reward_name || reward.reward_id.slice(0, 8) + "..."}
-                         </span>
-                         <span className="ml-2 text-xs text-gray-400 whitespace-nowrap">
-                           ({reward.reward_id.slice(0, 8)}...)
-                         </span>
-                         <div className="mt-1 flex flex-wrap gap-1 text-xs">
-                           {reward.draw_count > 1 && (
-                             <span className="rounded bg-purple-500/20 px-2 py-0.5 text-purple-200">
-                               {t("additionalRewards.multiDraw", { count: reward.draw_count })}
-                             </span>
-                           )}
-                           {reward.is_raid_limited && (
-                             <span className="rounded bg-cyan-500/20 px-2 py-0.5 text-cyan-200">
-                               {t("additionalRewards.raidLimited")}
-                             </span>
-                           )}
-                           {/* Issue #393再設計: 紐付くカードパック。パック管理で
-                               登録解除された(=事前登録一覧に無い)パックは警告色で
-                               示す。取得完了後のみ警告（取得前/失敗時は素の名前で表示）。
-                               Issue #555: DEFAULT_PACK_SENTINEL は予約値のため
-                               事前登録一覧には現れず、素の "__default__" 文字列
-                               表示や「登録解除済み」誤判定を避けるため専用ラベルを
-                               優先して表示する。 */}
-                           {reward.collection_name ? (
-                             reward.collection_name === DEFAULT_PACK_SENTINEL ? (
-                               <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
-                                 {t("collections.defaultOnly", { name: defaultPackDisplayName })}
-                               </span>
-                             ) : collectionsLoaded && !collections.includes(reward.collection_name) ? (
-                               <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
-                                 {t("collections.missing", { name: reward.collection_name })}
-                               </span>
-                             ) : (
-                               <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
-                                 {reward.collection_name}
-                               </span>
-                             )
-                           ) : (
-                             <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
-                               {t("collections.all")}
-                             </span>
-                           )}
-                         </div>
-                       </div>
-                       <button
-                         onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
-                         disabled={isMaintenanceBlocked}
-                         title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
-                         className="text-xs text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
-                       >
-                         {t("additionalRewards.remove")}
-                       </button>
-                     </div>
-                   ))}
-                 </div>
-               )}
+                {/* List of additional rewards */}
+                {/* 追加報酬一覧 */}
+                {additionalRewards.length > 0 && (
+                  <div className="mb-3 space-y-2">
+                    {additionalRewards.map((reward) => (
+                      <div
+                        key={reward.id}
+                        className="rounded bg-gray-600/50 px-3 py-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          {/* テキストが長い場合にコンテナからはみ出さないようにする */}
+                          <div className="min-w-0 flex-1 overflow-hidden">
+                            <span className="text-sm text-gray-200 break-all">
+                              {reward.reward_name || reward.reward_id.slice(0, 8) + "..."}
+                            </span>
+                            <span className="ml-2 text-xs text-gray-400 whitespace-nowrap">
+                              ({reward.reward_id.slice(0, 8)}...)
+                            </span>
+                            <div className="mt-1 flex flex-wrap gap-1 text-xs">
+                              {reward.draw_count > 1 && (
+                                <span className="rounded bg-purple-500/20 px-2 py-0.5 text-purple-200">
+                                  {t("additionalRewards.multiDraw", { count: reward.draw_count })}
+                                </span>
+                              )}
+                              {reward.is_raid_limited && (
+                                <span className="rounded bg-cyan-500/20 px-2 py-0.5 text-cyan-200">
+                                  {t("additionalRewards.raidLimited")}
+                                </span>
+                              )}
+                              {/* Issue #393再設計: 紐付くカードパック。パック管理で
+                                  登録解除された(=事前登録一覧に無い)パックは警告色で
+                                  示す。取得完了後のみ警告（取得前/失敗時は素の名前で表示）。
+                                  Issue #555: DEFAULT_PACK_SENTINEL は予約値のため
+                                  事前登録一覧には現れず、素の "__default__" 文字列
+                                  表示や「登録解除済み」誤判定を避けるため専用ラベルを
+                                  優先して表示する。 */}
+                              {reward.collection_name ? (
+                                reward.collection_name === DEFAULT_PACK_SENTINEL ? (
+                                  <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                                    {t("collections.defaultOnly", { name: defaultPackDisplayName })}
+                                  </span>
+                                ) : collectionsLoaded && !collections.includes(reward.collection_name) ? (
+                                  <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
+                                    {t("collections.missing", { name: reward.collection_name })}
+                                  </span>
+                                ) : (
+                                  <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                                    {reward.collection_name}
+                                  </span>
+                                )
+                              ) : (
+                                <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                                  {t("collections.all")}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-3 pl-3">
+                            <button
+                              onClick={() => handleStartEditAdditionalReward(reward)}
+                              // 編集中の行の再クリックは無効（未保存入力の無告知リセット防止）。
+                              // 保存中（updatingAdditional）も他行への切替は許可するが、
+                              // 保存完了時に開いているフォームは閉じない（上記参照）。
+                              // メンテナンス中は削除ボタンと同様に無効化し、開いてから
+                              // 保存できない不親切な導線にしない。
+                              disabled={isMaintenanceBlocked || editingRewardId === reward.reward_id}
+                              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+                              className="text-xs text-purple-400 hover:text-purple-300 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {t("additionalRewards.edit")}
+                            </button>
+                            <button
+                              onClick={() => handleRemoveAdditionalReward(reward.reward_id)}
+                              disabled={isMaintenanceBlocked}
+                              title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+                              className="text-xs text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {t("additionalRewards.remove")}
+                            </button>
+                          </div>
+                        </div>
+                        {/* 編集モード: パック紐付けと排出枚数を変更するインラインフォーム。
+                            EventSub サブスクリプションは報酬 ID ベースのため、削除→再追加
+                            せずに設定だけ更新できる（PUT /api/streamer/additional-rewards）。 */}
+                        {editingRewardId === reward.reward_id && (
+                          <div className="mt-2 rounded border border-purple-500/30 bg-gray-800/80 p-3">
+                            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px_auto] sm:items-center">
+                              {/* Issue #554: パック選択の表示制御は追加フォームと同じ
+                                  （canManage=false ではアップセル表示/disabled）。
+                                  枚数変更はプランゲート対象外のため編集自体は許可する。 */}
+                              {editingPackControlMode === "hidden" ? (
+                                <div className="flex h-9 min-w-0 items-center rounded-md border border-gray-700 bg-gray-800/60 px-2 text-[11px] leading-tight text-gray-500">
+                                  {t("collections.premiumLocked")}
+                                </div>
+                              ) : (
+                                <select
+                                  value={editingCollectionName}
+                                  onChange={(e) => setEditingCollectionName(e.target.value)}
+                                  // 追加フォームのプルダウン（additionalLabel）とは別の
+                                  // ラベルにする。同じ aria-label だと accessible name が
+                                  // 重複し、getByLabelText が多重一致するため。
+                                  aria-label={t("collections.editLabel")}
+                                  disabled={editingPackControlMode === "disabled"}
+                                  className="h-9 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  <option value="">{t("collections.all")}</option>
+                                  {/* Issue #555: メイン報酬の選択肢と同様に「デフォルトパックのみ」を追加 */}
+                                  <option value={DEFAULT_PACK_SENTINEL}>
+                                    {t("collections.defaultOnly", { name: defaultPackDisplayName })}
+                                  </option>
+                                  {collections.map((name) => (
+                                    <option key={name} value={name}>{name}</option>
+                                  ))}
+                                  {/* 保存済みだが一覧に無い(パック管理で登録解除された)パックも
+                                      選択肢に残し、黙ってスコープが全カードに変わる事故を防ぐ
+                                      （メイン報酬のプルダウンと同じ方針）。 */}
+                                  {editingCollectionName
+                                    && editingCollectionName !== DEFAULT_PACK_SENTINEL
+                                    && !collections.includes(editingCollectionName) && (
+                                    <option value={editingCollectionName}>
+                                      {collectionsLoaded
+                                        ? t("collections.missing", { name: editingCollectionName })
+                                        : editingCollectionName}
+                                    </option>
+                                  )}
+                                </select>
+                              )}
+                              <label className="group flex h-9 items-center gap-2 rounded-md border border-gray-600 bg-gray-700 pl-3 pr-1.5 text-sm text-gray-200 transition-colors hover:border-gray-500 focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500/40">
+                                <span className="whitespace-nowrap text-xs text-gray-300">
+                                  {t("additionalRewards.drawCount")}
+                                </span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={15}
+                                  // 追加フォームの枚数ラベル（drawCount）とは別の
+                                  // aria-label にする（accessible name の重複防止。
+                                  // パック select の editLabel と同じ方針）。
+                                  aria-label={t("additionalRewards.drawCountEditLabel")}
+                                  value={editingDrawCount}
+                                  // Issue #641: onChange clamp must match the `max` attribute above,
+                                  // otherwise keyboard-entered values beyond the old 10 cap would be
+                                  // silently truncated back down (max alone doesn't block typed input).
+                                  onChange={(e) => setEditingDrawCount(Math.min(15, Math.max(1, Number(e.target.value) || 1)))}
+                                  className="h-7 w-12 rounded bg-gray-800 px-2 text-sm text-gray-100 focus:outline-none"
+                                />
+                              </label>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={handleUpdateAdditionalReward}
+                                    disabled={updatingAdditional || isMaintenanceBlocked}
+                                    title={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+                                    className="inline-flex h-9 items-center justify-center rounded-md bg-purple-600 px-4 text-xs font-medium text-white shadow-sm transition-colors hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-400 disabled:shadow-none"
+                                  >
+                                  {updatingAdditional ? tCommon("loading") : t("additionalRewards.update")}
+                                  </button>
+                                <button
+                                  type="button"
+                                  onClick={handleCancelEditAdditionalReward}
+                                  disabled={updatingAdditional}
+                                  className="inline-flex h-9 items-center justify-center rounded-md border border-gray-500 bg-transparent px-3 text-xs font-medium text-gray-300 transition-colors hover:border-gray-400 hover:bg-gray-700/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {tCommon("cancel")}
+                                </button>
+                              </div>
+                            </div>
+                            {/* Issue #554: canManage=false のときは追加フォームと同じく
+                                詳しい案内（/plans リンク付き）をグリッドの下に表示する。 */}
+                            {(editingPackControlMode === "hidden" || editingPackControlMode === "disabled") &&
+                              renderPackUpsellHint()}
+                            {/* 追加フォームと同じく、登録済みパック0件の案内も表示する */}
+                            {editingPackControlMode === "enabled" && showNoPacksRegisteredHint && (
+                              <p className="mt-1 text-xs text-gray-500">{t("collections.packHint")}</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
@@ -1541,6 +1766,8 @@ export default function ChannelPointSettings({
                       t("messages2.disconnectSuccess"),
                       t("additionalRewards.addSuccess"),
                       t("additionalRewards.removeSuccess"),
+                      t("additionalRewards.updateSuccess"),
+                      t("additionalRewards.updateSuccessPackPending"),
                     ].includes(message)
                       ? "text-green-400"
                       : "text-red-400"

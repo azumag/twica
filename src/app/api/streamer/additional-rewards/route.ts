@@ -61,6 +61,18 @@ function isRaidOptionsSchemaErrorPg(error: unknown): boolean {
 const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
   "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度追加してください。";
 
+// PUT 専用: draw_count / is_raid_limited 列未デプロイ窓の 503 文言。
+// POST の RAID_OPTIONS_SCHEMA_PENDING_MESSAGE は「再度追加してください」で PUT の
+// 文脈に合わないため、更新用の文言を分ける。
+const PUT_RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
+  "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度お試しください。";
+
+// PUT 専用: 対象の追加報酬が存在しない場合の文言（別タブ等で削除済み）。
+// 日本語固定は POST の既存エラーメッセージと同じ方針（en 対応は次 PR で
+// ERROR_MESSAGES へ寄せる余地あり）。
+const ADDITIONAL_REWARD_NOT_FOUND_MESSAGE =
+  "この追加の引き換えは既に削除されています。設定を再読み込みしてください";
+
 interface AdditionalRewardRow {
   id: string;
   reward_id: string;
@@ -104,6 +116,29 @@ async function getOwnedStreamerIdForRewards(twitchUserId: string): Promise<strin
 }
 
 /**
+ * 追加報酬の応答形状（GET の一覧・PUT の成功時 RETURNING）で使う明示列の共有定義。
+ * 引数なし returning() はスキーマ全列（streamer_id 含む）を返すため使わず、
+ * GET と PUT で streamer_id の有無を統一する。collection_name 未デプロイ窓用の
+ * セット（collection_name なし）もここから派生させる。
+ *
+ * 命名注意: 同ファイルの selectMinimal（4列: id/reward_id/reward_name/created_at）
+ * とは別物。こちらは「collection_name を除く応答6列」を指す。
+ */
+const ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME = {
+  id: streamerAdditionalGachaRewardsTable.id,
+  reward_id: streamerAdditionalGachaRewardsTable.reward_id,
+  reward_name: streamerAdditionalGachaRewardsTable.reward_name,
+  draw_count: streamerAdditionalGachaRewardsTable.draw_count,
+  is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
+  created_at: streamerAdditionalGachaRewardsTable.created_at,
+} as const;
+
+const ADDITIONAL_REWARD_RESPONSE_COLUMNS = {
+  ...ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME,
+  collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+} as const;
+
+/**
  * listAdditionalRewardsPg の各列セレクトと 2 段フォールバックチェイン (#663)
  *
  * collection_name 列欠落を raid-options 列欠落より先に判定する。raid 側の
@@ -118,15 +153,7 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
       async () => {
         const { db } = await getDb();
         return db
-          .select({
-            id: streamerAdditionalGachaRewardsTable.id,
-            reward_id: streamerAdditionalGachaRewardsTable.reward_id,
-            reward_name: streamerAdditionalGachaRewardsTable.reward_name,
-            draw_count: streamerAdditionalGachaRewardsTable.draw_count,
-            is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
-            collection_name: streamerAdditionalGachaRewardsTable.collection_name,
-            created_at: streamerAdditionalGachaRewardsTable.created_at,
-          })
+          .select(ADDITIONAL_REWARD_RESPONSE_COLUMNS)
           .from(streamerAdditionalGachaRewardsTable)
           .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
           .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
@@ -140,14 +167,7 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
       async () => {
         const { db } = await getDb();
         return db
-          .select({
-            id: streamerAdditionalGachaRewardsTable.id,
-            reward_id: streamerAdditionalGachaRewardsTable.reward_id,
-            reward_name: streamerAdditionalGachaRewardsTable.reward_name,
-            draw_count: streamerAdditionalGachaRewardsTable.draw_count,
-            is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
-            created_at: streamerAdditionalGachaRewardsTable.created_at,
-          })
+          .select(ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME)
           .from(streamerAdditionalGachaRewardsTable)
           .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
           .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
@@ -609,6 +629,442 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     return handleApiError(error, "Additional Rewards API: POST");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PUT: ownership lookup + update (read+write mixed → PlanetScale の単一接続)
+// ---------------------------------------------------------------------------
+
+/**
+ * 更新対象の追加報酬の現在状態（collection_name）を取得する pg 実装。
+ *
+ * PUT は「登録解除済みパックの再送信（孤立参照の維持）」を許可する
+ * （isRegisteredOrUnchanged の currentValue 判定）ため、更新前に現在値を
+ * 読む必要がある。0 行なら null を返し、呼び出し元が 404 を返す。
+ * collection_name 列未デプロイ窓では列を外して再試行し null を補完する。
+ */
+async function getAdditionalRewardForUpdatePg(
+  streamerId: string,
+  rewardId: string,
+): Promise<{ reward: { id: string; collection_name: string | null } | null; error: unknown }> {
+  const selectWithCollectionName = () =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamerAdditionalGachaRewardsTable.id,
+            collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+          })
+          .from(streamerAdditionalGachaRewardsTable)
+          .where(
+            and(
+              eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
+              eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
+            )
+          )
+          .limit(1);
+      },
+      "Additional Rewards API: PUT lookup",
+      { idempotent: true },
+    );
+
+  const selectWithoutCollectionName = () =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ id: streamerAdditionalGachaRewardsTable.id })
+          .from(streamerAdditionalGachaRewardsTable)
+          .where(
+            and(
+              eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
+              eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
+            )
+          )
+          .limit(1);
+      },
+      "Additional Rewards API: PUT lookup (no collection_name)",
+      { idempotent: true },
+    );
+
+  try {
+    const rows = await selectWithCollectionName();
+    return { reward: rows[0] ?? null, error: null };
+  } catch (error) {
+    if (isMissingCollectionNameColumn(error as GenericDbError)) {
+      try {
+        const rows = await selectWithoutCollectionName();
+        const row = rows[0] ?? null;
+        return { reward: row ? { ...row, collection_name: null } : null, error: null };
+      } catch (fallbackError) {
+        return { reward: null, error: fallbackError };
+      }
+    }
+    return { reward: null, error };
+  }
+}
+
+type UpdateAdditionalRewardOutcome =
+  // collectionNameStripped: collection_name 列未デプロイ窓で当該列を剥がして
+  // 再試行した場合に true。パック変更が破棄されたことを呼び出し元へ伝え、
+  // 応答に collectionNameSkippedDeployWindow として反映する（黙って破棄しない）。
+  | { kind: "ok"; reward: unknown; collectionNameStripped?: boolean }
+  | { kind: "not-found" }
+  // collection_name 列未デプロイ窓でパック変更のみの更新を送ると、ストリップ後に
+  // 更新フィールドが空になる。空 SET は Drizzle が "No values to set" で throw する
+  // ため、実行前に no-op へ分岐させる（500 にしない）。
+  | { kind: "no-op"; collectionNameStripped?: boolean }
+  // draw_count / is_raid_limited 列未デプロイ窓（POST と同じ 503 扱い）。
+  | { kind: "raid-options-unavailable"; error: unknown }
+  | { kind: "error"; error: unknown };
+
+/**
+ * 追加報酬の更新（collection_name / draw_count）を実行する pg 実装。
+ *
+ * POST の insertAdditionalRewardPg と同じく、collection_name 列未デプロイ窓では
+ * 当該列を剥がして再試行する（それ以外の失敗は握りつぶさない）。
+ * 0 行更新（対象行が存在しない）は not-found として呼び出し元で 404 にする。
+ */
+async function updateAdditionalRewardPg(
+  streamerId: string,
+  rewardId: string,
+  updatePayload: Record<string, unknown>,
+): Promise<UpdateAdditionalRewardOutcome> {
+  // collection_name 列未デプロイ窓では RETURNING にも collection_name を含めない。
+  // Drizzle の引数なし returning() はスキーマ定義の全列を明示列挙するため、
+  // SET から外しても RETURNING 側で 42703 が再発する（レビュー指摘対応）。
+  // 成功時の RETURNING は GET（listAdditionalRewardsPg の selectFull）と同じ
+  // 明示列に揃え、API 全体で streamer_id の有無を統一する（streamer_id は返さない）。
+  const runUpdate = (payload: Record<string, unknown>, returningMinimal: boolean) =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        const query = db
+          .update(streamerAdditionalGachaRewardsTable)
+          .set(payload as typeof streamerAdditionalGachaRewardsTable.$inferInsert)
+          .where(
+            and(
+              eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
+              eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
+            )
+          );
+        const baseReturning = ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME;
+        return returningMinimal
+          ? query.returning(baseReturning)
+          : query.returning(ADDITIONAL_REWARD_RESPONSE_COLUMNS);
+      },
+      "Additional Rewards API: PUT update",
+      // 同一条件の UPDATE は再実行しても最終状態が同じため冪等
+      { idempotent: true },
+    );
+
+  // 空 SET を実行すると Drizzle が throw するため、実行前に空チェックで no-op へ分岐。
+  // collectionNameStripped はストリップ後の再試行から引き継ぐ。
+  // returningMinimal は列欠落窓からの再試行で常に true（成功時の RETURNING にも
+  // collection_name が含まれるため、SET になくても 42703 が再発する）。
+  // 初回は常に (false, false) で呼び、再試行だけがストリップ由来の値を渡す
+  // （3 引数はすべて必須とし、引数の組み合わせ解釈を固定する）。
+  const tryUpdate = async (
+    payload: Record<string, unknown>,
+    collectionNameStripped: boolean,
+    returningMinimal: boolean,
+  ): Promise<UpdateAdditionalRewardOutcome> => {
+    if (Object.keys(payload).length === 0) return { kind: "no-op", collectionNameStripped };
+    const rows = await runUpdate(payload, returningMinimal);
+    if (rows.length === 0) return { kind: "not-found" };
+    return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
+  };
+
+  try {
+    return await tryUpdate(updatePayload, false, false);
+  } catch (error) {
+    // collection_name 列未デプロイ窓: 成功時の RETURNING に collection_name が
+    // 含まれるため、SET が draw_count のみの更新でも 42703 になり得る。そのため
+    // 「collection_name が SET にある」だけでなく、列欠落エラーそのもので
+    // 再試行へ分岐する。
+    if (isMissingCollectionNameColumn(error as GenericDbError)) {
+      // 呼び出し元の updatePayload をミューテートせず、コピーから剥がして再試行する
+      // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
+      // ストリップフラグは「SET に collection_name があり、実際に剥がした」場合
+      // だけ立て、drawCount のみの更新で「パック変更は反映待ち」と誤表示しない。
+      const stripped = { ...updatePayload };
+      const hadCollectionName = "collection_name" in stripped;
+      delete stripped.collection_name;
+      try {
+        return await tryUpdate(stripped, hadCollectionName, true);
+      } catch (retryError) {
+        if (isRaidOptionsSchemaErrorPg(retryError)) {
+          return { kind: "raid-options-unavailable", error: retryError };
+        }
+        // ストリップ後の再試行が失敗した場合は、他分岐と同じ handleDatabaseError
+        // （{ kind: "error" }）へ寄せて分類を揃える。
+        return { kind: "error", error: retryError };
+      }
+    }
+    // draw_count / is_raid_limited 列未デプロイ窓は POST と同じ 503 扱い
+    // （接続断・権限エラーは isRaidOptionsSchemaErrorPg が除外するため握りつぶさない）。
+    if (isRaidOptionsSchemaErrorPg(error)) {
+      return { kind: "raid-options-unavailable", error };
+    }
+    return { kind: "error", error };
+  }
+}
+
+/**
+ * PUT: 追加報酬の設定（紐付くカードパック・排出枚数）を更新する。
+ * 追加報酬は作成/削除のみだったため、グループの変更は「削除して作り直し」を
+ * 強いていた。UI の編集操作からこのエンドポイントを呼び、既存の EventSub
+ * サブスクリプション（報酬 ID ベース）を維持したまま設定だけを更新する。
+ */
+export async function PUT(request: NextRequest) {
+  // Content-Type validation - must be the first check
+  // JSON body を要求する状態変更 API のため POST と同じく最初に検証する。
+  const contentTypeValidation = validateContentType(request, "application/json");
+  if (contentTypeValidation) {
+    return contentTypeValidation;
+  }
+
+  // 状態変更 API のため CSRF 検証を最初に行う (#736。DELETE と同一方針)。
+  const csrfValidation = await validateCSRFToken(request);
+  if (!csrfValidation.valid) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.FORBIDDEN },
+      { status: 403 }
+    );
+  }
+
+  const session = await getSession();
+
+  const identifier = await getRateLimitIdentifier(request, session?.twitchUserId);
+  const rateLimitResult = await checkRateLimit(rateLimits.streamerSettings, identifier);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(rateLimitResult.limit),
+          "X-RateLimit-Remaining": String(rateLimitResult.remaining),
+          "X-RateLimit-Reset": String(rateLimitResult.reset),
+        },
+      }
+    );
+  }
+
+  if (!session || !canUseStreamerFeatures(session)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
+  }
+
+  try {
+    const body = await request.json();
+    // body が null / 配列 / 非オブジェクトの場合は destructuring で TypeError に
+    // なり 500 になるため、400 で拒否する（POST と同じ既存パターンの PUT 側対応）。
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    const { rewardId, drawCount } = body as Record<string, unknown>;
+
+    // Issue #393: optional pack binding for this additional reward.
+    // undefined = 変更なし、null = 全カードへ戻す、string = パックへ紐付け。
+    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
+    if (!collectionNameResult.ok) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    // rewardId は後続の string 引数へ渡すため、ここで string へ narrowing する
+    // （unknown のままでは typecheck が失敗する。レビュー指摘対応）。
+    if (typeof rewardId !== "string" || rewardId.trim() === "") {
+      return NextResponse.json({ error: ERROR_MESSAGES.MISSING_REWARD_ID }, { status: 400 });
+    }
+
+    // Issue #836: rewardId は Twitch の報酬 ID（UUID）形式を要求する（POST と同一）。
+    if (!validateRewardId(rewardId).valid) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    // drawCount: true 等の非数値は Number() で 1 に化けるため、number 型を要求する
+    // （POST と同じ既存挙動を見直した PUT 側の堅牢化）。
+    if (drawCount !== undefined && typeof drawCount !== "number") {
+      return NextResponse.json(
+        { error: "drawCount must be an integer between 1 and 15" },
+        { status: 400 }
+      );
+    }
+    const normalizedDrawCount = drawCount;
+    // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
+    if (
+      normalizedDrawCount !== undefined &&
+      (!Number.isInteger(normalizedDrawCount) || normalizedDrawCount < 1 || normalizedDrawCount > 15)
+    ) {
+      return NextResponse.json(
+        { error: "drawCount must be an integer between 1 and 15" },
+        { status: 400 }
+      );
+    }
+
+    // Get streamer info to verify ownership + registered pack catalog
+    // ストリーマー情報を取得して所有権と登録済みパック名を確認
+    const { streamer, cardPackNamesUnavailable } = await getStreamerForAdditionalRewardPost(
+      session.twitchUserId
+    );
+
+    if (!streamer) {
+      return NextResponse.json({ error: ERROR_MESSAGES.STREAMER_NOT_FOUND }, { status: 404 });
+    }
+
+    // 更新対象の現在値を読み、存在確認と「値が変わらない再送信」判定に使う。
+    const currentResult = await getAdditionalRewardForUpdatePg(streamer.id, rewardId);
+    if (currentResult.error) {
+      return handleDatabaseError(currentResult.error, "Additional Rewards API: PUT lookup");
+    }
+    if (!currentResult.reward) {
+      // 対象の追加報酬が存在しない（別タブ等で削除済み）。報酬不在を意味する
+      // 専用文言を返す（STREAMER_NOT_FOUND は英語かつ実態と合わないため）。
+      return NextResponse.json(
+        { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
+        { status: 404 }
+      );
+    }
+
+    const registeredPackNames: string[] = Array.isArray(streamer.card_pack_names)
+      ? streamer.card_pack_names
+      : [];
+
+    // Issue #393再設計: POST と同じ membership 検証。ただし PUT は既存紐付けの
+    // 再送信（現在値と同一）も許可するため isRegisteredOrUnchanged の
+    // currentValue に現在の collection_name を渡す（孤立参照を壊さない）。
+    // Issue #555: DEFAULT_PACK_SENTINEL は予約値のため membership 検証をスキップ。
+    if (
+      typeof collectionNameResult.value === "string" &&
+      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
+      !cardPackNamesUnavailable &&
+      !isRegisteredOrUnchanged(
+        collectionNameResult.value,
+        currentResult.reward.collection_name,
+        registeredPackNames
+      )
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+    }
+
+    // デプロイ窓で membership 検証ができない間は、新しいパック紐付けの書き込み
+    // 自体を見送る（現在値の維持は続行。POST と同じ方針）。
+    // 現在値と同じパック名の再送は「変更要求」ではないため対象外にし、
+    // 「反映待ち」の誤表示を防ぐ。センチネル（デフォルトパックのみ）は登録不要の
+    // 疑似パックのため membership 検証自体が不要で、見送り対象からも除外する。
+    const collectionNameSkippedDeployWindow =
+      cardPackNamesUnavailable &&
+      typeof collectionNameResult.value === "string" &&
+      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
+      collectionNameResult.value !== currentResult.reward.collection_name;
+
+    // Issue #393: 紐付け先が変わる場合のみ、アクティブカードの存在を確認する
+    // （空プールになる紐付けは拒否。POST と同じ #1 方針）。
+    if (
+      typeof collectionNameResult.value === "string" &&
+      !collectionNameSkippedDeployWindow &&
+      collectionNameResult.value !== currentResult.reward.collection_name
+    ) {
+      const existence = await checkCollectionHasActiveCards(
+        streamer.id,
+        collectionNameResult.value
+      );
+      if (existence === "absent") {
+        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+      }
+    }
+
+    // 更新するフィールドを構築。collection_name は値が指定された場合のみ
+    // 含め、列未デプロイ窓でも更新自体を壊さない（POST と同じ方針）。
+    const updatePayload: Record<string, unknown> = {};
+    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
+      updatePayload.collection_name = collectionNameResult.value;
+    } else if (collectionNameResult.value === null) {
+      // 明示的な「全カードへ戻す」（null）は常に保存する。
+      updatePayload.collection_name = null;
+    }
+    if (normalizedDrawCount !== undefined) {
+      updatePayload.draw_count = normalizedDrawCount;
+    }
+
+    if (Object.keys(updatePayload).length === 0) {
+      // 変更なしのリクエスト。更新自体は無意味なので現状維持として返す。
+      // reward は含めない（成功時は DB 行全体、ここは取得していない列もある
+      // ため形が揃わない。クライアントは応答本文を使わず再取得する）。
+      // card_pack_names 列未デプロイ窓でパック変更のみを送るとここへ来るため、
+      // パック変更が破棄されたことをフラグで明示する（他の分岐と対称）。
+      return NextResponse.json({
+        success: true,
+        unchanged: true,
+        ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
+      });
+    }
+
+    const updateOutcome = await updateAdditionalRewardPg(streamer.id, rewardId, updatePayload);
+
+    if (updateOutcome.kind === "not-found") {
+      // 事前 lookup（上記 currentResult）との間に削除された場合のみ到達する
+      // 防御的分岐（TOCTOU）。通常の存在チェックは lookup 側で行っている。
+      // DELETE は0件でも200のため、この分岐は PUT 固有。
+      return NextResponse.json(
+        { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
+        { status: 404 }
+      );
+    }
+
+    if (updateOutcome.kind === "no-op") {
+      // collection_name 列未デプロイ窓でパック変更のみの更新が破棄された場合。
+      // 成功扱いにしつつ、ストリップが起きたことを応答で明示する（黙って破棄しない）。
+      // unchanged は「DB は変わっていない」ことを他の分岐と対称に伝える。
+      return NextResponse.json({
+        success: true,
+        unchanged: true,
+        ...(updateOutcome.collectionNameStripped || collectionNameSkippedDeployWindow
+          ? { collectionNameSkippedDeployWindow: true }
+          : {}),
+      });
+    }
+
+    if (updateOutcome.kind === "raid-options-unavailable") {
+      const errForLog = updateOutcome.error as { message?: string } | null | undefined;
+      logger.warn("Additional reward raid options schema is not ready; refusing to update draws", {
+        rewardId,
+        streamerId: streamer.id,
+        error: errForLog?.message,
+      });
+      return NextResponse.json(
+        { error: PUT_RAID_OPTIONS_SCHEMA_PENDING_MESSAGE },
+        { status: 503 }
+      );
+    }
+
+    if (updateOutcome.kind === "error") {
+      return handleDatabaseError(updateOutcome.error, "Additional Rewards API: PUT");
+    }
+
+    // 実際に永続化された列をログに出す（ストリップ時は collection_name を
+    // 書いていないため除外し、障害調査時の誤誘導を防ぐ）。
+    const writtenFields = updateOutcome.collectionNameStripped
+      ? Object.keys(updatePayload).filter((key) => key !== "collection_name")
+      : Object.keys(updatePayload);
+    logger.info(
+      `Additional reward updated: streamerId=${streamer.id}, rewardId=${rewardId}, fields=${writtenFields.join(",")}`
+    );
+
+    return NextResponse.json({
+      success: true,
+      reward: updateOutcome.reward,
+      // card_pack_names 列欠落（既存）または collection_name 列欠落（ストリップ）の
+      // どちらでも、パック変更が反映されなかったことを応答で明示する。
+      ...((updateOutcome.collectionNameStripped || collectionNameSkippedDeployWindow)
+        ? { collectionNameSkippedDeployWindow: true }
+        : {}),
+    });
+  } catch (error) {
+    return handleApiError(error, "Additional Rewards API: PUT");
   }
 }
 
