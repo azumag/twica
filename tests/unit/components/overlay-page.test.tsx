@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import type { GachaBroadcastPayload, RealtimeError, SubscribeOptions } from '@/lib/realtime'
 import type { GachaSoundRule } from '@/lib/gacha-sound-rules'
 import OverlayPage from '@/app/overlay/[streamerId]/page'
+import { logger } from '@/lib/logger'
 import { pickSoundBearingCardIndex } from '@/lib/gacha-sound-rules'
 import { OVERLAY_EFFECT_PARTICLE_CONFIG } from '@/lib/overlay-effect'
 import { serializePollState } from '@/lib/overlay-version'
@@ -1698,6 +1699,7 @@ describe('OverlayPage', () => {
   // 「setTimeoutコールバックの中で起きた例外」を確実に再現する。
   it('setTimeoutでスケジュールされる表示チェーン内の例外でもロックが残らない(Issue #999レビュー指摘#1回帰)', async () => {
     vi.useFakeTimers()
+    window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ soundUrl: 'https://example.com/gacha.mp3', soundEnabled: true }),
@@ -1722,13 +1724,25 @@ describe('OverlayPage', () => {
     resolvePlayableGachaSoundMock.mockImplementationOnce(() => {
       throw new Error('failure inside setTimeout chain')
     })
+    // handleQueueError must schedule recovery before diagnostics. Simulate a
+    // logger implementation failure to ensure it cannot strand the display lock.
+    const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementationOnce(() => {
+      throw new Error('diagnostic logger failed')
+    })
 
+    let failedDelivery: Promise<boolean> | undefined
     act(() => {
-      onGachaResult?.({
+      failedDelivery = onGachaResult?.({
         type: 'gacha',
-        card: { id: 'card-timer-throw', name: 'TimerThrow', description: null, image_url: null, rarity: 'rare' },
+        card: {
+          id: 'card-timer-throw',
+          name: 'TimerThrow',
+          description: null,
+          image_url: 'https://example.com/pending-card.png',
+          rarity: 'rare',
+        },
         userTwitchUsername: 'Viewer',
-      })
+      }) as unknown as Promise<boolean>
     })
 
     // 100ms後の1段目のsetTimeoutコールバック内でplayGachaSoundが呼ばれ、
@@ -1737,10 +1751,15 @@ describe('OverlayPage', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(resolvePlayableGachaSoundMock).toHaveBeenCalled()
+    expect(loggerErrorSpy).toHaveBeenCalled()
+    // The image is intentionally left pending, so the display ACK is still open
+    // when the reveal callback fails. Recovery must settle it explicitly rather
+    // than leaving the 4.5s watchdog to decide after the card has been removed.
+    await expect(failedDelivery).resolves.toBe(false)
+    // ACK=false allows realtime to retry this draw, so the failed visual must
+    // not remain for a full display window and then appear again on redelivery.
+    expect(screen.getByText('TimerThrow')).toBeInTheDocument()
 
-    // 例外がhandleQueueErrorへ届いていれば、setTimeout(0)経由でロックが
-    // 解放され、次のカードが表示されるはず。届いていなければ(=レビュー
-    // 指摘の再発)、isDisplayingRefがtrueのまま残り、これは表示されない。
     act(() => {
       onGachaResult?.({
         type: 'gacha',
@@ -1748,10 +1767,16 @@ describe('OverlayPage', () => {
         userTwitchUsername: 'Viewer',
       })
     })
+    expect(screen.queryByText('RecoveredFromTimer')).not.toBeInTheDocument()
+
+    // Recovery hides the failed card immediately and keeps only the existing
+    // 500ms inter-card gap before advancing the locally queued next card.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(501)
     })
+    expect(screen.queryByText('TimerThrow')).not.toBeInTheDocument()
     expect(screen.getByText('RecoveredFromTimer')).toBeInTheDocument()
+    loggerErrorSpy.mockRestore()
   })
 
   // Issue #999 レビュー指摘#2回帰: catch側の再継続を同期的な直接呼び出し
