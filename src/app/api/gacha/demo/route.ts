@@ -213,6 +213,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // #1331: 公開デモカード取得は読み取り用途として意図的に無認証のまま維持する。
+    // session Cookie で KV / Overlay Realtime へ状態変更する broadcast 分岐だけが
+    // CSRF の対象であり、エンドポイント全体へ検証を広げて公開デモを壊さない。
     if (broadcast && streamerId) {
       const csrfValidation = await validateCSRFToken(request);
       if (!csrfValidation.valid) {
