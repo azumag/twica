@@ -60,7 +60,7 @@ describe("preview -> main release PR template contract", () => {
       ".github/PULL_REQUEST_TEMPLATE/release.md"
     );
 
-    for (const requiredTerm of [
+    const requiredTerms = [
       "対象PRと固定SHA",
       "累積release-unit一覧",
       "レビュー",
@@ -68,8 +68,24 @@ describe("preview -> main release PR template contract", () => {
       "previewデプロイ",
       "ブラウザー／実経路の確認",
       "main昇格条件",
-    ]) {
-      expect(qaReleaseContract).toContain(requiredTerm);
+    ];
+
+    // Keep the contract tied to the documented responsibility list. Searching
+    // only this bullet prevents unrelated mentions elsewhere in QA.md from
+    // making a missing or reordered responsibility pass.
+    const responsibilityLines = qaReleaseContract
+      .split(/\r?\n/)
+      .filter(
+        (line) => line.startsWith("- ") && line.includes("対象PRと固定SHA")
+      );
+    expect(responsibilityLines).toHaveLength(1);
+    const responsibilityLine = responsibilityLines[0] ?? "";
+
+    let previousIndex = -1;
+    for (const requiredTerm of requiredTerms) {
+      const currentIndex = responsibilityLine.indexOf(requiredTerm);
+      expect(currentIndex).toBeGreaterThan(previousIndex);
+      previousIndex = currentIndex;
     }
   });
 });
