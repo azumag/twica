@@ -37,6 +37,8 @@ async function getStorageStatus(overrides: Partial<StorageUsage> = {}) {
 }
 
 describe('GET /api/storage-status message compatibility', () => {
+  // 互換契約の退行を検知するため、production の定数を参照せず期待文字列をリテラルで固定する。
+  // 定数側の文言変更へテストも同時追従すると、未知クライアント向け message の意図しない変更を検知できない。
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetSession.mockResolvedValue({
