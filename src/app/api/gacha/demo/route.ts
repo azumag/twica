@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger.server";
 import { getSession } from "@/lib/session";
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { validateCSRFToken } from "@/lib/csrf";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
 import type { ApiRateLimitResponse } from "@/types/api";
 import { eq, and } from "drizzle-orm";
@@ -213,6 +214,11 @@ export async function POST(request: NextRequest) {
     }
 
     if (broadcast && streamerId) {
+      const csrfValidation = await validateCSRFToken(request);
+      if (!csrfValidation.valid) {
+        return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+      }
+
       const session = await getSession();
       if (!session) {
         return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });

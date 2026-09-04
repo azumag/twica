@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/gacha/demo/route'
 import { getSession } from '@/lib/session'
 import { getStreamerIdByTwitchUserId } from '@/lib/user-data'
+import { validateCSRFToken } from '@/lib/csrf'
 import {
   createOverlayDemoEvent,
   storeOverlayDemoEvent,
@@ -18,6 +19,7 @@ vi.mock('@/lib/logger.server', () => ({
 }))
 vi.mock('@/lib/session')
 vi.mock('@/lib/user-data')
+vi.mock('@/lib/csrf')
 vi.mock('@/lib/overlay/demo-event-store', () => ({
   createOverlayDemoEvent: vi.fn(),
   storeOverlayDemoEvent: vi.fn(),
@@ -37,6 +39,7 @@ vi.mock('@/lib/rate-limit', () => ({
 
 const mockGetSession = vi.mocked(getSession)
 const mockGetStreamerIdByTwitchUserId = vi.mocked(getStreamerIdByTwitchUserId)
+const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 const mockCreateOverlayDemoEvent = vi.mocked(createOverlayDemoEvent)
 const mockStoreOverlayDemoEvent = vi.mocked(storeOverlayDemoEvent)
 const mockPublishOverlayDemoRealtimeEvent = vi.mocked(publishOverlayDemoRealtimeEvent)
@@ -72,6 +75,7 @@ function makeRequest(body: unknown) {
 describe('POST /api/gacha/demo: KV demo publication authorization', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockValidateCSRFToken.mockResolvedValue({ valid: true } as any)
     mockCreateOverlayDemoEvent.mockReturnValue(DEMO_EVENT)
     mockStoreOverlayDemoEvent.mockResolvedValue(undefined)
     mockPublishOverlayDemoRealtimeEvent.mockResolvedValue({
@@ -92,6 +96,20 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs()
+  })
+
+  it('returns 403 before authentication or publication when broadcast CSRF validation fails', async () => {
+    mockValidateCSRFToken.mockResolvedValue({ valid: false, error: 'bad csrf' } as any)
+
+    const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
+
+    expect(response.status).toBe(403)
+    expect(await response.json()).toEqual({ error: ERROR_MESSAGES.FORBIDDEN })
+    expect(mockGetSession).not.toHaveBeenCalled()
+    expect(mockGetStreamerIdByTwitchUserId).not.toHaveBeenCalled()
+    expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
+    expect(mockPublishOverlayDemoRealtimeEvent).not.toHaveBeenCalled()
   })
 
   it('returns 401 for unauthenticated publication', async () => {
@@ -274,6 +292,7 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
 
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
+    expect(mockValidateCSRFToken).not.toHaveBeenCalled()
     expect(mockGetSession).not.toHaveBeenCalled()
     expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
     expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
@@ -289,6 +308,7 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
 
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
+    expect(mockValidateCSRFToken).not.toHaveBeenCalled()
     expect(mockGetSession).not.toHaveBeenCalled()
     expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
     expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
