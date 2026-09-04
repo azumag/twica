@@ -162,7 +162,13 @@ const TRANSIENT_R2_ERROR_PATTERNS: Array<string | RegExp> = [
   // （最大 maxRetries+1 回・最大約7秒）を発生させる。文字列間の距離（旧\D{0,10}）
   // はR2/S3が保証する契約ではないため、標準的なHTTP status文法だけを明示的に受理する。
   // HTTP status line（HTTP 503 / HTTP/1.1 503）、statusラベル（status: 503 / status code=503）、
-  // および文字列化された httpStatusCode: 503 を許容し、http://a/503 のようなURLは拒否する。
+  // および識別子と区切りの間に引用符を挟まない httpStatusCode: 503 /
+  // httpStatusCode=503 を許容し、http://a/503 のようなURLは拒否する。
+  // 旧実装で一致していた `HTTP Error 503` / `HTTP response 503` /
+  // `status code is 503` / `status503` / `{"statusCode":503}` は、R2/S3 SDKや
+  // ネイティブ binding が返す保証された形式ではないため、意図的に受理しない。
+  // この境界を変える場合は、単なる文字列の類似ではなく実際の provider message を
+  // fixture にして、リトライによる副作用（同じ upload の再試行）を含めて再評価する。
   /\b(?:http(?:\/\d+(?:\.\d+)?)?\s+503|status(?:\s*code)?(?:\s*[:=]\s*|\s+)503|httpstatuscode\s*[:=]\s*503)\b/i,
   'NetworkingError',
   'Unspecified error',

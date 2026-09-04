@@ -59,13 +59,17 @@ const HTTP_STATUS_REASON_PHRASES = {
   507: 'insufficient\\s+storage',
 } as const
 
-// Issue #989: 裸の `503` などを部分一致させると `photo-503.png` や URL 中の数値まで
+// Issue #989/#1397: 裸の `503` などを部分一致させると `photo-503.png` や URL 中の数値まで
 // HTTP status と誤認するため、明示的な status ラベルか標準的な status line だけを受理する。
 // `httpStatusCode` は識別子途中に `status` があるため `\bstatus` 枝では一致せず、専用枝が必要。
 // `503 Service Unavailable` のような数値先頭形式は理由句まで一致させ、文脈のない数値を除外する。
-// r2-client のリトライ判定は一時障害メッセージを拾う目的でより広い書式を許容する一方、
-// ここでは最終レスポンスの誤分類を避けるため `\D{0,10}` のような緩い範囲を意図的に使わない。
-// 両者の判定器統合・入力形の整理は Issue #989 の残フォローアップとして扱う。
+//
+// この判定器は r2-client.ts のリトライ判定とは意図的に共通化しない。こちらは provider
+// のエラーメッセージを利用者向けの 401/503/507 応答へ分類する境界であり、r2-client は
+// upload の再試行による副作用を避けるため、再試行してよい証拠だけを狭く拾う境界である。
+// 同じ matcher を共有すると、一方の false positive / false negative を避けるための規則が
+// 他方へ波及する。入力契約と返却契約が同じになった場合に限り、status 番号を引数に取る
+// 共通 helper を再評価する。
 function hasHttpStatusContext(errorMessage: string, status: 401 | 503 | 507): boolean {
   const reasonPhrase = HTTP_STATUS_REASON_PHRASES[status]
   return new RegExp(
