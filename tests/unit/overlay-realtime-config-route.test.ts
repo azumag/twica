@@ -23,6 +23,8 @@ describe('overlay realtime runtime config', () => {
     expect(response.status).toBe(200)
     expect(body.mode).toBe('polling-only')
     expect(JSON.stringify(body)).not.toContain('must-never-leak')
+    // Keep the complete header value as the contract: changing cache scope or either
+    // 15-second freshness window can leave overlay runtime config stale at the edge.
     expect(response.headers.get('cache-control')).toBe(
       'public, max-age=15, stale-while-revalidate=15'
     )
