@@ -83,6 +83,26 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     expect(pg.select).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps missing streamerId as a non-cacheable 400", async () => {
+    const response = await GET(request(), {
+      params: Promise.resolve({ streamerId: "" }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it("keeps unexpected catch responses non-cacheable and untagged", async () => {
+    const response = await GET(request(), {
+      params: Promise.reject(new Error("params failed")),
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
   it("keeps streamer-not-found as a non-cacheable 404", async () => {
     primeSoundSettingsDb({});
 
