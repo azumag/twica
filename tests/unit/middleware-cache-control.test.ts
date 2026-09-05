@@ -79,6 +79,8 @@ describe('middleware fail-closed Cache-Control (issue #906)', () => {
   })
 
   it('不正 streamerId の overlay events 400 にも private, no-store を付与する', async () => {
+    // 現行の Workers Cache heuristics では 400 は通常キャッシュ対象外だが、将来の
+    // edge cache 設定変更でも保存されないよう、多層防御として no-store を固定する（#1337）。
     const response = await middleware(makeRequest('/api/overlay/not-a-uuid/events'))
 
     expect(response.status).toBe(400)
