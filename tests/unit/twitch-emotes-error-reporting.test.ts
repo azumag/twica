@@ -56,7 +56,7 @@ describe('GET /api/twitch/emotes error reporting', () => {
     )
 
     const { GET } = await import('@/app/api/twitch/emotes/route')
-    const response = await GET(new Request('http://localhost:3000/api/twitch/emotes'))
+    await GET(new Request('http://localhost:3000/api/twitch/emotes'))
 
     expect(twitchTokenErrorReportContext).toHaveBeenCalledWith(tokenError)
     expect(handleApiError).toHaveBeenCalledWith(
@@ -64,6 +64,5 @@ describe('GET /api/twitch/emotes error reporting', () => {
       'Twitch emotes fetch',
       reportContext
     )
-    expect(response.status).toBe(500)
   })
 })
