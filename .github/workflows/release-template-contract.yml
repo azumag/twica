@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [main, preview]
 
+# #1371: Keep this as a dedicated workflow so template/QA-only changes still
+# exercise the release contract; the job-level path filter skips its cost for unrelated changes.
 jobs:
   changes:
     name: Detect release contract changes
