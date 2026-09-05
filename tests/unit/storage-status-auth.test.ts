@@ -19,6 +19,8 @@ const SESSION = {
   version: 1 as const,
 }
 
+// #1352: This contract keeps auth rejection at the route boundary: missing or
+// ineligible sessions must fail before user identifiers are hashed or storage is read.
 describe('GET /api/storage-status auth contract', () => {
   beforeEach(() => {
     vi.clearAllMocks()
