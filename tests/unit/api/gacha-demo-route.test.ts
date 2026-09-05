@@ -75,7 +75,7 @@ function makeRequest(body: unknown) {
 describe('POST /api/gacha/demo: KV demo publication authorization', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockValidateCSRFToken.mockResolvedValue({ valid: true } as any)
+    mockValidateCSRFToken.mockResolvedValue({ valid: true })
     mockCreateOverlayDemoEvent.mockReturnValue(DEMO_EVENT)
     mockStoreOverlayDemoEvent.mockResolvedValue(undefined)
     mockPublishOverlayDemoRealtimeEvent.mockResolvedValue({
@@ -99,7 +99,7 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
   })
 
   it('returns 403 before authentication or publication when broadcast CSRF validation fails', async () => {
-    mockValidateCSRFToken.mockResolvedValue({ valid: false, error: 'bad csrf' } as any)
+    mockValidateCSRFToken.mockResolvedValue({ valid: false, error: 'bad csrf' })
 
     const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
 
