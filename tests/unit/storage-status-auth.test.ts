@@ -9,13 +9,15 @@ vi.mock('@/lib/session')
 vi.mock('@/lib/storage-usage')
 vi.mock('@/lib/crypto-utils')
 
+const SESSION_EXPIRES_AT = Date.UTC(2100, 0, 1)
+
 const SESSION = {
   twitchUserId: 'viewer-twitch-id',
   twitchUsername: 'viewer',
   twitchDisplayName: 'Viewer',
   twitchProfileImageUrl: '',
   broadcasterType: '',
-  expiresAt: Date.now() + 100_000,
+  expiresAt: SESSION_EXPIRES_AT,
   version: 1 as const,
 }
 
