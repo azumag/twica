@@ -89,6 +89,7 @@ db/planetscale/.local-backups/
 .claude/scheduled_tasks.lock
 .env*.local
 
+# Local development helpers
 # Keep the local zellij development helper out of repository history.
 /zellij_monitor.sh
 
