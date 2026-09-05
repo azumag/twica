@@ -223,6 +223,31 @@ describe('GachaService repeat protection', () => {
     expect(fixture.transactionCalls[0][3]).toBe('card-a')
   })
 
+  it('limit_reached 再抽選でも同じ直前カード状態を維持する', async () => {
+    const fixture = installDbFixture({
+      latestCardId: 'card-a',
+      transactions: [
+        { result: { is_duplicate: false, limit_reached: true, history_id: null } },
+        { result: { is_duplicate: false, limit_reached: false, history_id: 'history-2' } },
+      ],
+    })
+    mockSecureRandomUnit(0)
+
+    const service = new GachaService()
+    const selectSpy = vi.spyOn(service as any, 'selectCardFromPool')
+    const result = await service.executeGachaWithRepeatProtection(
+      'streamer-1',
+      'user-1',
+      'Viewer',
+      'event-limit-retry',
+    )
+
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls.map((call) => call[3])).toEqual(['card-b', 'card-a'])
+    expect(selectSpy.mock.calls.map((call) => call[2])).toEqual(['card-a', 'card-a'])
+    expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(1)
+  })
+
   it('N連では履歴を冒頭に1回だけ読み、以後は直前の確定結果を引き継ぐ', async () => {
     const fixture = installDbFixture({
       latestCardId: 'card-a',
