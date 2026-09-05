@@ -21,30 +21,14 @@ const maintenanceWriteSurfaces = maintenanceWriteSurfacesJson as MaintenanceWrit
 /** maintenance write block の対象となる HTTP メソッド（読み取り系は対象外）。 */
 const MAINTENANCE_GUARDED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
-// Next.js 16 recommends proxy.ts, but Proxy always builds as Node.js runtime
-// with no opt-out: setting `export const config = { runtime: 'edge' }` in a
-// proxy.ts file throws "Proxy always runs on Node.js runtime" at build time.
-// (https://nextjs.org/docs/messages/middleware-to-proxy)
-// @opennextjs/cloudflare (pinned 1.20.2 in this repo) hard-fails `workers:build` with
-// "Node.js middleware is not currently supported. Consider switching to Edge
-// Middleware." whenever it detects Node.js-runtime middleware/proxy output
-// (see useNodeMiddleware() in its build.js). This is still true as of
-// @opennextjs/cloudflare 1.20.2, the version pinned in this repo — confirmed
-// by inspecting that version's published
-// build.js, which contains the identical check.
-// Upstream tracking: opennextjs/opennextjs-cloudflare maintainers say real
-// proxy.ts support is planned only via Next.js's "Adapters API"
-// (opennextjs/opennextjs-cloudflare#972). The concrete bug is tracked at
-// opennextjs/opennextjs-cloudflare#1277 (open), with a community fix at PR
-// #1280 (open, changes requested by a maintainer, stalled since 2026-06-21 —
-// not merged/released). A maintainer's current guidance on #1277 is to keep
-// using middleware.ts if it doesn't need Node.js-only APIs, which is exactly
-// what this file does.
-// This file intentionally stays on the deprecated middleware.ts convention
-// (with edge-compatible code only) while the current Cloudflare deployment
-// path rejects Next.js Proxy / Node.js middleware. Revisit this when TwiCa can
-// move to an Adapters API based (or other compatible) deployment path and
-// `npm run workers:build` succeeds there; see docs/cloudflare-proxy-migration.md.
+// Next.js 16 recommends proxy.ts, but Proxy runs as Node.js middleware.
+// TwiCa remains on src/middleware.ts while @opennextjs/cloudflare is pinned
+// to 1.20.2, whose workers:build rejects that Node.js middleware output.
+// Upstream proxy.ts support shipped in @opennextjs/cloudflare 1.20.3+, so
+// migration is now gated by dependency upgrade and TwiCa-specific verification,
+// not by an open upstream blocker. Keep this file edge-compatible until the
+// proxy build and existing session/routing contracts pass.
+// Source of truth: docs/cloudflare-proxy-migration.md (#1321).
 
 /**
  * Detect locale from request (cookie or Accept-Language header)

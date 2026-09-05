@@ -25,6 +25,6 @@ describe("Cloudflare proxy migration policy", () => {
     expect(doc).toContain("npm run workers:build");
     expect(middleware).toContain("export async function middleware");
     expect(middleware).not.toContain("export async function proxy");
-    expect(middleware).toContain("intentionally stays on the deprecated middleware.ts convention");
+    expect(middleware).toContain("Source of truth: docs/cloudflare-proxy-migration.md (#1321).");
   });
 });
