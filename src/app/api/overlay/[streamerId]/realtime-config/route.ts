@@ -31,8 +31,18 @@ export async function GET(
   { params }: RouteParams
 ): Promise<NextResponse> {
   const { streamerId } = await params
+  // This validation returns before the normal config response. Keep the early
+  // 400 explicitly non-cacheable so future edge-cache policy changes cannot persist it.
   if (!isValidStreamerId(streamerId)) {
-    return NextResponse.json({ error: 'Invalid streamer ID' }, { status: 400 })
+    return NextResponse.json(
+      { error: 'Invalid streamer ID' },
+      {
+        status: 400,
+        headers: {
+          'Cache-Control': 'private, no-store',
+        },
+      }
+    )
   }
 
   const overlayVersion = process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? 'dev'

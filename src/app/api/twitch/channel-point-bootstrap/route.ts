@@ -19,7 +19,8 @@ import { asc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
-import { isPgMissingColumnError } from "@/lib/db/errors";
+import { isPgMissingColumnError, isPgMissingNamedColumnError } from "@/lib/db/errors";
+import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
 import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
@@ -144,21 +145,53 @@ async function getSubscriptionsByUserId(
  * Issue #690: getAdditionalRewards の pg 直結実装。
  *
  * - フル select（id, reward_id, reward_name, draw_count, is_raid_limited,
- *   created_at）を streamer_id で絞り込み created_at 昇順に取得する。
+ *   collection_name, created_at）を streamer_id で絞り込み created_at 昇順に取得する。
+ *   collection_name（#393 で追加）を含めるのは、bootstrap 経由で表示する追加報酬
+ *   一覧のパックバッジが「すべてのカード」に化ける不具合の修正のため
+ *   （/api/streamer/additional-rewards の listAdditionalRewardsPg は既に含んでいた）。
  * - draw_count・is_raid_limited は migration 00041 で追加されたため、rolling
  *   deploy の短い窓だけ SQLSTATE 42703 を検知して縮退クエリへ切り替える。
  *   任意の message 文字列ではなく SQLSTATE を根拠にし、接続障害や権限エラーを
  *   migration 遅延として握りつぶさない。
- * - フォールバック時は draw_count: 1 / is_raid_limited: false を補完する
- *   （streamerAdditionalGachaRewards schema の DEFAULT 値と一致）。
+ * - 列欠落は collection_name → raid-options の順に1つずつ剥がして再試行する
+ *   3段フォールバックチェイン（/api/streamer/additional-rewards の
+ *   listAdditionalRewardsPg と同一構造。collection_name 欠落のとき最初に
+ *   minimal へ落とすと draw_count/is_raid_limited まで失うため順序が重要）。
+ * - フォールバック時は draw_count: 1 / is_raid_limited: false / collection_name:
+ *   null を補完する（streamerAdditionalGachaRewards schema の DEFAULT 値と一致）。
  * - withDbRetry 内で発生した例外はそのまま伝播させる（呼び出し元の
  *   GET ハンドラの try/catch が handleApiError で 500 を返す既存挙動を維持）。
  */
 async function getAdditionalRewardsPg(streamerId: string) {
-  try {
-    return await withDbRetry(
+  // 1段目: 全列（collection_name を含む）。通常はここで成功する。
+  const selectFull = () =>
+    withDbRetry(
       async () => {
         // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamerAdditionalGachaRewardsTable.id,
+            reward_id: streamerAdditionalGachaRewardsTable.reward_id,
+            reward_name: streamerAdditionalGachaRewardsTable.reward_name,
+            draw_count: streamerAdditionalGachaRewardsTable.draw_count,
+            is_raid_limited: streamerAdditionalGachaRewardsTable.is_raid_limited,
+            collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+            created_at: streamerAdditionalGachaRewardsTable.created_at,
+          })
+          .from(streamerAdditionalGachaRewardsTable)
+          .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
+          .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
+      },
+      "getAdditionalRewards",
+      // 読み取り専用クエリのため冪等（idempotent: true でリトライを opt-in）
+      { idempotent: true },
+    );
+
+  // 2段目: collection_name 未デプロイ窓向け（draw_count / is_raid_limited は残す）。
+  const selectWithoutCollectionName = () =>
+    withDbRetry(
+      async () => {
         const { db } = await getDb();
         return db
           .select({
@@ -173,21 +206,16 @@ async function getAdditionalRewardsPg(streamerId: string) {
           .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
           .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
       },
-      "getAdditionalRewards",
-      // 読み取り専用クエリのため冪等（idempotent: true でリトライを opt-in）
+      "getAdditionalRewards:no-collection-name",
       { idempotent: true },
     );
-  } catch (error) {
-    if (!isPgMissingColumnError(error)) {
-      throw error;
-    }
-    // デプロイ窓フォールバック（42703 undefined_column）: draw_count /
-    // is_raid_limited を含めない縮退クエリへ切り替え、PostgREST 版と同じ
-    // デフォルト値（draw_count: 1, is_raid_limited: false）を補って返す。
-    return await withDbRetry(
+
+  // 3段目: draw_count / is_raid_limited 未デプロイ窓向けの最小列セット。
+  const selectMinimal = () =>
+    withDbRetry(
       async () => {
         const { db } = await getDb();
-        const rows = await db
+        return db
           .select({
             id: streamerAdditionalGachaRewardsTable.id,
             reward_id: streamerAdditionalGachaRewardsTable.reward_id,
@@ -197,15 +225,43 @@ async function getAdditionalRewardsPg(streamerId: string) {
           .from(streamerAdditionalGachaRewardsTable)
           .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
           .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
-        return rows.map((reward) => ({
-          ...reward,
-          draw_count: 1,
-          is_raid_limited: false,
-        }));
       },
-      "getAdditionalRewards:raid-options-fallback",
+      "getAdditionalRewards:minimal",
       { idempotent: true },
     );
+
+  try {
+    return await selectFull();
+  } catch (error) {
+    // collection_name 欠落（42703 かつ列名一致）だけを剥がす。それ以外の
+    // 42703（raid 列）や接続障害は誤って縮退させない。
+    if (isMissingCollectionNameColumn(error)) {
+      try {
+        const rows = await selectWithoutCollectionName();
+        return rows.map((row) => ({ ...row, collection_name: null }));
+      } catch (error2) {
+        if (isPgMissingNamedColumnError(error2, ["draw_count", "is_raid_limited"])) {
+          const rows = await selectMinimal();
+          return rows.map((row) => ({
+            ...row,
+            draw_count: 1,
+            is_raid_limited: false,
+            collection_name: null,
+          }));
+        }
+        throw error2;
+      }
+    }
+    if (isPgMissingNamedColumnError(error, ["draw_count", "is_raid_limited"])) {
+      const rows = await selectMinimal();
+      return rows.map((row) => ({
+        ...row,
+        draw_count: 1,
+        is_raid_limited: false,
+        collection_name: null,
+      }));
+    }
+    throw error;
   }
 }
 

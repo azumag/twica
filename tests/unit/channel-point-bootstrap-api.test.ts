@@ -177,6 +177,8 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
 
     // ルートは streamer 所有権の一意行と追加報酬一覧を別々に読む。
     // 選択フィールドで結果を振り分け、SQL ビルダーの外形まで実装契約に合わせる。
+    // 追加報酬行には collection_name（#393）を含める — bootstrap 経由の一覧表示が
+    // 「すべてのカード」バッジに化ける回帰を防ぐための契約検証。
     const db = {
       select: vi.fn((fields: Record<string, unknown>) => {
         const isStreamerQuery = Object.hasOwn(fields, 'channel_point_reward_id')
@@ -186,7 +188,9 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
           limit: vi.fn().mockResolvedValue([
             { id: 'streamer-db-1', channel_point_reward_id: 'reward-1', raid_gacha_draw_count: 3 },
           ]),
-          orderBy: vi.fn().mockResolvedValue([{ id: 'extra-1', reward_id: 'reward-2' }]),
+          orderBy: vi.fn().mockResolvedValue([
+            { id: 'extra-1', reward_id: 'reward-2', collection_name: 'weapons' },
+          ]),
         }
         if (!isStreamerQuery) {
           builder.limit = vi.fn().mockResolvedValue([])
@@ -203,6 +207,11 @@ describe('GET /api/twitch/channel-point-bootstrap', () => {
     expect(body.eventSubStatus).toBe('active')
     expect(body.raidEventSubStatus).toBe('active')
     expect(body.additionalRewards).toHaveLength(1)
+    // 追加報酬に紐付くパック名が bootstrap レスポンスでも欠落しないこと
+    // （欠落すると ChannelPointSettings の一覧が「すべてのカード」と表示される）。
+    expect(body.additionalRewards[0]).toEqual(
+      expect.objectContaining({ reward_id: 'reward-2', collection_name: 'weapons' }),
+    )
     expect(body.raidGiftDrawCount).toBe(3)
   })
 

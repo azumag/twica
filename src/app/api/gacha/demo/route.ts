@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger.server";
 import { getSession } from "@/lib/session";
 import { getStreamerIdByTwitchUserId } from "@/lib/user-data";
 import { ERROR_MESSAGES } from "@/lib/constants";
+import { validateCSRFToken } from "@/lib/csrf";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from "@/lib/rate-limit";
 import type { ApiRateLimitResponse } from "@/types/api";
 import { eq, and } from "drizzle-orm";
@@ -212,7 +213,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // #1331: 公開デモカード取得は読み取り用途として意図的に無認証のまま維持する。
+    // session Cookie で KV / Overlay Realtime へ状態変更する broadcast 分岐だけが
+    // CSRF の対象であり、エンドポイント全体へ検証を広げて公開デモを壊さない。
     if (broadcast && streamerId) {
+      const csrfValidation = await validateCSRFToken(request);
+      if (!csrfValidation.valid) {
+        return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
+      }
+
       const session = await getSession();
       if (!session) {
         return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });

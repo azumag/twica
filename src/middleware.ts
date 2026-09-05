@@ -103,7 +103,11 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 // 警告: ここへ HTML を返すパスを追加してはならない。エッジキャッシュに nonce 付き
 // CSP が焼き付き、キャッシュ HIT 中の全スクリプトが nonce 不一致でブロックされる
 // （現状の対象は JSON のみで無害）。
-const CACHEABLE_PUBLIC_PATHS = ['/api/maintenance-status']
+const CACHEABLE_PUBLIC_PATHS = [
+  /^\/api\/maintenance-status$/,
+  /^\/api\/streamer\/[^/]+\/sound-settings$/,
+  /^\/api\/overlay\/[^/]+\/realtime-config$/,
+]
 
 /**
  * #694 Stage 3: maintenance mode (off 以外) のとき、/api 配下の write メソッド
@@ -165,6 +169,9 @@ export async function middleware(request: NextRequest) {
       { error: 'Invalid streamer ID' },
       { status: 400 }
     )
+    // 早期 return は後段の fail-closed Cache-Control を通らないため、
+    // エラー応答側でも明示的に保存禁止を宣言する（#1337）。
+    errorResponse.headers.set('Cache-Control', 'private, no-store')
     return setSecurityHeaders(errorResponse, { pathname })
   }
 
@@ -201,8 +208,8 @@ export async function middleware(request: NextRequest) {
   // 明示的にキャッシュを許可した公開パス以外には private, no-store を付与する。
   // キャッシュ許可パスはルート側で Cache-Control: public を設定する（この middleware は
   // ルートより先に実行されるため、ルートが最終的にヘッダーを上書きできる）。
-  // 400/429/503 等のエラーレスポンスは Workers Cache のヒューリスティック対象外のため、
-  // 早期 return 経路では Cache-Control を設定しない。
+  // 400/429/503 等は Workers Cache のヒューリスティック対象外だが、早期 return でも
+  // fail-closed 契約が必要な経路は個別に private, no-store を明示する。
   // /api/overlay/ 配下は prefix ではなくエンドポイント単位で判定する。
   // events は OBS オーバーレイの 3 秒間隔ポーリングだが Cache-Control を設定
   // しないため、prefix 許可だと Workers Caching のヒューリスティック TTL
@@ -211,10 +218,9 @@ export async function middleware(request: NextRequest) {
   // 明示する意図的な短 TTL キャッシュ対象（オーバーレイのバージョン確認）。
   // 警告: ここも HTML を返すパスを追加してはならない（CACHEABLE_PUBLIC_PATHS と
   // 同じ理由で nonce がエッジキャッシュに焼き付く）。
-  const isCacheablePublicPath =
-    CACHEABLE_PUBLIC_PATHS.some((path) => pathname.startsWith(path)) ||
-    (pathname.startsWith('/api/overlay/') &&
-      pathname.endsWith('/realtime-config'))
+  const isCacheablePublicPath = CACHEABLE_PUBLIC_PATHS.some((pathPattern) =>
+    pathPattern.test(pathname)
+  )
   if (!isCacheablePublicPath) {
     response.headers.set('Cache-Control', 'private, no-store')
   }

@@ -14,7 +14,7 @@ import {
   isPgFunctionNotFoundError,
   isPgMissingNamedColumnError,
 } from '@/lib/db/errors'
-import { and, count, desc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm'
 import {
   cards as cardsTable,
   gachaHistory,
@@ -837,7 +837,10 @@ export class GachaService {
         const { db } = await getDb()
         return db.select({ card_id: gachaHistory.card_id })
           .from(gachaHistory)
-          .where(eq(gachaHistory.streamer_id, streamerId))
+          .where(and(
+            eq(gachaHistory.streamer_id, streamerId),
+            isNotNull(gachaHistory.redeemed_at),
+          ))
           .orderBy(desc(gachaHistory.redeemed_at), desc(gachaHistory.id))
           .limit(1)
       }, 'gacha:getLatestCardIdForStreamer', { idempotent: true })

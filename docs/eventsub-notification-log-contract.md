@@ -9,7 +9,7 @@
 
 chat 通知が `pending` に戻る場合でも、通報契約は経路によって異なる。
 
-- `sendChatAnnouncement` が retryable outcome を返した通常の再試行経路は、`chat announcement retry scheduled` の warn を残して正常終了し、`reportError` へは到達しない。
+- `sendChatAnnouncement` が retryable outcome を返した通常の再試行経路は、`chat announcement retry scheduled` を `logger.info` で残して正常終了し、`reportError` へは到達しない。`pending` は自動回復中の正常状態として扱うため、ここでは warn に昇格させない。
 - `sendChatAnnouncement` 自体が予期せず throw した catch 経路は、delivery state が未確定なら `retryChatNotification` を呼ぶ。これは試行回数や lease 状態に応じて `pending` / `dead` / `lost-lease` になり得るが、その結果にかかわらず元の例外を rethrow するため、呼び出し元の失敗処理を通って `reportError` の対象になり得る。
 
 したがって、outbox の最終状態が `pending` であることだけを根拠に「`reportError` されない」と判断してはならない。通常の retryable outcome と unexpected throw は別の経路として扱う。

@@ -89,6 +89,8 @@ db/planetscale/.local-backups/
 .claude/scheduled_tasks.lock
 .env*.local
 
+# Keep the local zellij development helper out of repository history.
+/zellij_monitor.sh
 
 # supabase backup
 .backup.sql

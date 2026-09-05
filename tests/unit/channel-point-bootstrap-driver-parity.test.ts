@@ -134,6 +134,7 @@ const FULL_REWARD_ROW = {
   reward_name: 'Extra Reward',
   draw_count: 2,
   is_raid_limited: true,
+  collection_name: 'weapons',
   created_at: '2020-01-01T00:00:00.000+00:00',
 }
 
@@ -150,8 +151,9 @@ const FALLBACK_REWARD_ROW = {
 }
 
 const EXPECTED_FULL_ADDITIONAL_REWARDS = [FULL_REWARD_ROW]
+// フォールバック時は collection_name も null で補完される（#393 のバッジ表示に必要）
 const EXPECTED_FALLBACK_ADDITIONAL_REWARDS = [
-  { ...FALLBACK_REWARD_ROW, draw_count: 1, is_raid_limited: false },
+  { ...FALLBACK_REWARD_ROW, draw_count: 1, is_raid_limited: false, collection_name: null },
 ]
 
 // ---------------------------------------------------------------------------
@@ -372,6 +374,44 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
     expect(res.status).toBe(500)
     // フォールバッククエリは発行されない(1回のみ)
     expect(db.select).toHaveBeenCalledTimes(1)
+  })
+
+  // collection_name 欠落 → さらに raid 列欠落へカスケードする分岐の回帰テスト。
+  // 2段目（collection_name なし）でも 42703 なら最小列セットへ落ち、
+  // draw_count: 1 / is_raid_limited: false / collection_name: null を補完する。
+  it('collection_name欠落→さらにraid列欠落のカスケードで最小列セットにフォールバックする', async () => {
+    const { res, body, db } = await runPlanetscalePath(
+      [{ rows: [FULL_STREAMER_ROW] }],
+      [
+        {
+          error: {
+            code: '42703',
+            message: 'column "collection_name" of relation "streamer_additional_gacha_rewards" does not exist',
+          },
+        },
+        {
+          error: {
+            code: '42703',
+            message: 'column "draw_count" of relation "streamer_additional_gacha_rewards" does not exist',
+          },
+        },
+        { rows: [FALLBACK_REWARD_ROW] },
+      ]
+    )
+
+    expect(res.status).toBe(200)
+    expect(body.additionalRewards).toEqual(EXPECTED_FALLBACK_ADDITIONAL_REWARDS)
+    // streamers 1回 + rewards 3回(full → no-collection_name → minimal)
+    expect(db.calls).toHaveLength(4)
+    // 1段目(rewards フル select)は collection_name / draw_count を含む
+    expect(Object.keys(db.calls[1].fields)).toContain('collection_name')
+    expect(Object.keys(db.calls[1].fields)).toContain('draw_count')
+    // 2段目は collection_name を含まず draw_count は残す
+    expect(Object.keys(db.calls[2].fields)).not.toContain('collection_name')
+    expect(Object.keys(db.calls[2].fields)).toContain('draw_count')
+    // 3段目(最小列)は両方とも含まない
+    expect(Object.keys(db.calls[3].fields)).not.toContain('collection_name')
+    expect(Object.keys(db.calls[3].fields)).not.toContain('draw_count')
   })
 })
 

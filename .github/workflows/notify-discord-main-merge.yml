@@ -234,7 +234,7 @@ jobs:
             -d "$payload" \
             "$DISCORD_WEBHOOK_URL"
       - name: Fail after notifying missing promotion summary
-        if: success() && github.event.action == 'closed' && github.event.pull_request.merged == true
+        if: success()
         shell: bash
         run: |
           if [[ "$PROMOTION_SUMMARY_MISSING" == "true" ]]; then

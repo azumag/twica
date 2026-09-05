@@ -12,13 +12,17 @@ describe("Cloudflare proxy migration policy", () => {
     expect(existsSync(join(process.cwd(), "src/proxy.ts"))).toBe(false);
   });
 
-  it("documents the deploy blocker and current revisit path", () => {
+  it("documents the current pin, upstream support, and verification gate", () => {
     const doc = readSource("docs/cloudflare-proxy-migration.md");
     const middleware = readSource("src/middleware.ts");
 
     expect(doc).toContain("Node.js middleware is not currently supported");
     expect(doc).toContain("Do not add `src/proxy.ts` yet");
-    expect(doc).toContain("@opennextjs/adapters-api");
+    expect(doc).toContain("@opennextjs/cloudflare` 1.20.2");
+    expect(doc).toContain("opennextjs-cloudflare#1309");
+    expect(doc).toContain("1.20.3");
+    expect(doc).toContain("Upstream status last checked");
+    expect(doc).toContain("npm run workers:build");
     expect(middleware).toContain("export async function middleware");
     expect(middleware).not.toContain("export async function proxy");
     expect(middleware).toContain("intentionally stays on the deprecated middleware.ts convention");

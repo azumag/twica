@@ -46,14 +46,17 @@ describe('isTransientR2Error', () => {
     expect(isTransientR2Error(errorMessage)).toBe(true)
   })
 
-  // 【Issue #989】status文脈の無い数値やURL中の数値は、R2/S3のHTTP statusを表す保証が
-  // ないため一時障害としない。特に短いURLは旧\D{0,10}実装で誤って一致していた。
+  // 【Issue #989/#1397】status文脈の無い数値やURL中の数値、区切りのないstatus503、
+  // quoted JSON keyのstatusCodeは標準的なHTTP status表記とはみなさず、一時障害にしない。
+  // 特に短いURLは旧\D{0,10}実装で誤って一致していたため、偽陽性境界を負例で固定する。
   it.each([
     '503',
     'PUT http://a/503 failed',
     'Request failed with HTTP 5030',
     'SDK response: statusCode=5030',
     'SDK response from myhttp 503',
+    'status503',
+    '{"statusCode":503}',
   ])('標準的なstatus文脈のない503を一時障害として扱わない: %s', (errorMessage) => {
     expect(isTransientR2Error(errorMessage)).toBe(false)
   })
