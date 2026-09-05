@@ -45,6 +45,8 @@ const qaReleaseContract = h2Section(
 );
 
 describe("preview -> main release PR template contract", () => {
+  // 最初のH2を利用者向け要約に固定し、技術的な証跡より先に「何が変わるか」を
+  // レビュー・通知の読み手が確認できるという QA.md の本文契約を守る。
   it("keeps the user-facing release summary as the first H2 heading", () => {
     expect(h2Headings(releaseTemplate)[0]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
   });
