@@ -602,9 +602,9 @@ it("drops pack binding when card_pack_names is not deployed (deploy window)", as
   });
 
   it("collection_name列未デプロイ窓でdrawCountのみの更新もRETURNINGの列明示で500にならない", async () => {
-    // 初回の引数なし returning() はスキーマ全列（collection_name 含む）を展開する
-    // ため、SET が draw_count のみでも 42703 になり得る。列欠落エラーで再試行に
-    // 分岐し、明示列 RETURNING で成功することを検証する。
+    // 初回の明示列 RETURNING は GET と同じ応答列（collection_name 含む）なので、
+    // SET が draw_count のみでも列未デプロイ窓では 42703 になり得る。列欠落時は
+    // collection_name を除く明示列 RETURNING へ切り替えて成功することを検証する。
     const { updateCalls, returningCalls } = primeDb({
       selects: [
         { rows: [streamer()] },
