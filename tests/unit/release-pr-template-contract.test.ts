@@ -8,6 +8,10 @@ const releaseTemplate = readFileSync(
   "utf8"
 );
 const qaDocument = readFileSync(join(repositoryRoot, "docs/QA.md"), "utf8");
+const notifyWorkflow = readFileSync(
+  join(repositoryRoot, ".github/workflows/notify-discord-main-merge.yml"),
+  "utf8"
+);
 
 const REQUIRED_TEMPLATE_HEADINGS = [
   "## このリリースで変わること",
@@ -49,6 +53,18 @@ describe("preview -> main release PR template contract", () => {
   // レビュー・通知の読み手が確認できるという QA.md の本文契約を守る。
   it("keeps the user-facing release summary as the first H2 heading", () => {
     expect(h2Headings(releaseTemplate)[0]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
+  });
+
+  it("keeps the Discord promotion consumer on the same summary heading", () => {
+    const sectionHeadings = Array.from(
+      notifyWorkflow.matchAll(/section_heading = "([^"]+)"/g),
+      (match) => match[1]
+    );
+
+    expect(sectionHeadings).toEqual([
+      REQUIRED_TEMPLATE_HEADINGS[0],
+      REQUIRED_TEMPLATE_HEADINGS[0],
+    ]);
   });
 
   it("keeps the required release sections in the documented order", () => {
