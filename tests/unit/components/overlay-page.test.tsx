@@ -8,15 +8,18 @@ import { pickSoundBearingCardIndex } from '@/lib/gacha-sound-rules'
 import { OVERLAY_EFFECT_PARTICLE_CONFIG } from '@/lib/overlay-effect'
 import { serializePollState } from '@/lib/overlay-version'
 
+type ResolvePlayableGachaSound = typeof import('@/lib/gacha-sound-rules')['resolvePlayableGachaSound']
+
 const HISTORY_ID_BEFORE_RELOAD = '00000000-0000-4000-8000-000000000101'
 const HISTORY_ID_RESTORED = '00000000-0000-4000-8000-000000000102'
 
-const { subscribeMock, resolvePlayableGachaSoundMock, streamerIdRef } = vi.hoisted(() => ({
+const { subscribeMock, resolvePlayableGachaSoundMock, resolvePlayableGachaSoundActualRef, streamerIdRef } = vi.hoisted(() => ({
   subscribeMock: vi.fn(),
   // 既定では実装(actual)へ委譲するdelegateとして下のvi.mockファクトリ内で
   // 設定する。個々のテストはmockImplementationOnce()で1回だけ差し替え、
   // それ以外の全テストへは実際のsound-rulesロジックがそのまま使われる。
   resolvePlayableGachaSoundMock: vi.fn(),
+  resolvePlayableGachaSoundActualRef: { current: null as ResolvePlayableGachaSound | null },
   streamerIdRef: { current: 'streamer-1' },
 }))
 
@@ -38,6 +41,7 @@ vi.mock('@/lib/realtime', () => ({
 // getterトリックではなく明示的に制御するための部分モック。
 vi.mock('@/lib/gacha-sound-rules', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/gacha-sound-rules')>()
+  resolvePlayableGachaSoundActualRef.current = actual.resolvePlayableGachaSound
   resolvePlayableGachaSoundMock.mockImplementation(actual.resolvePlayableGachaSound)
   return {
     ...actual,
@@ -60,6 +64,10 @@ const terminalDisplayBlockError: RealtimeError = {
 
 describe('OverlayPage', () => {
   beforeEach(() => {
+    // Nested suites use vi.restoreAllMocks(), which also resets this vi.fn delegate.
+    // Reinstall the actual implementation for every test so execution order cannot leak state (#1308).
+    resolvePlayableGachaSoundMock.mockReset()
+    resolvePlayableGachaSoundMock.mockImplementation(resolvePlayableGachaSoundActualRef.current!)
     streamerIdRef.current = 'streamer-1'
     window.history.replaceState({}, '', '/overlay/streamer-1')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
