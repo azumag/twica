@@ -61,9 +61,11 @@
 name: Claude Auto Review (preview)
 
 on:
-  # 自動実行は停止中。手動実行のみ受け付ける。
-  # 旧 pull_request トリガー（opened/synchronize/reopened/ready_for_review、
-  # branches: [preview]、paths フィルタ付き）は git 履歴を参照すること。
+  # 自動レビューは停止中。workflow_dispatch は停止状態を GitHub UI から確認できるよう
+  # 残しているだけの no-op で、pr_number input も持たないため手動レビュー経路ではない。
+  # 再設計は Issue #1390 で追跡する。旧 pull_request トリガー
+  # （opened/synchronize/reopened/ready_for_review、branches: [preview]、paths フィルタ付き）は
+  # git 履歴を参照すること。
   workflow_dispatch: {}
 
 concurrency:
