@@ -203,6 +203,28 @@ describe('GachaService repeat protection', () => {
     expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(1)
   })
 
+  it('redeemed_atがNULLの履歴しかなくても、従来の独立抽選へ安全にフォールバックする', async () => {
+    // getLatestCardIdForStreamer は redeemed_at IS NOT NULL で候補を絞るため、
+    // legacy NULL 行しかない状態は「有効な最新履歴0件」として返る契約を再現する。
+    const fixture = installDbFixture({ latestCardId: null })
+    mockSecureRandomUnit(0)
+
+    const result = await new GachaService().executeGachaWithRepeatProtection(
+      'streamer-1',
+      'user-1',
+      'Viewer',
+      'event-empty-history',
+    )
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.card.id).toBe('card-a')
+    }
+    expect(fixture.transactionCalls).toHaveLength(1)
+    expect(fixture.transactionCalls[0][3]).toBe('card-a')
+    expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(1)
+  })
+
   it('最新履歴の読み取りに失敗しても、従来の独立抽選へフォールバックする', async () => {
     const fixture = installDbFixture({
       latestHistoryError: new Error('history read unavailable'),
