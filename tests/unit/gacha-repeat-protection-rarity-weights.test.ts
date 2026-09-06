@@ -17,7 +17,7 @@ describe('GachaService repeat protection with rarity weights', () => {
         description: null,
         image_url: null,
         rarity: 'common' as const,
-        drop_rate: 0.9,
+        drop_rate: 0.75,
         intra_rarity_weight: 1,
       },
       {
@@ -26,7 +26,7 @@ describe('GachaService repeat protection with rarity weights', () => {
         description: null,
         image_url: null,
         rarity: 'rare' as const,
-        drop_rate: 0.1,
+        drop_rate: 0.25,
         intra_rarity_weight: 1,
       },
     ]
@@ -34,13 +34,13 @@ describe('GachaService repeat protection with rarity weights', () => {
     const service = new GachaService()
     const selectCardFromPool = (service as any).selectCardFromPool.bind(service)
 
-    // 同じ乱数・直前カードでも元の 90:10 重みでは A が不可避に連続する。
+    // 同じ乱数・直前カードでも元の 75:25 重みでは A が不可避に連続する。
     expect(selectCardFromPool(pool, null, 'card-a')?.id).toBe('card-a')
 
-    // レアリティ配分を 10:90 に反転すると effectiveWeight 側の反復抑制が B を選ぶ。
-    const selected = selectCardFromPool(pool, { common: 10, rare: 90 }, 'card-a')
+    // レアリティ配分を 25:75 に反転すると effectiveWeight 側の反復抑制が B を選ぶ。
+    const selected = selectCardFromPool(pool, { common: 25, rare: 75 }, 'card-a')
     expect(selected?.id).toBe('card-b')
     // effectiveWeight は選択専用で、下流へ返す drop_rate は元カードの値を維持する。
-    expect(selected?.drop_rate).toBe(0.1)
+    expect(selected?.drop_rate).toBe(0.25)
   })
 })
