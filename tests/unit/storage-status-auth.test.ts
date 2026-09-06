@@ -18,7 +18,7 @@ const SESSION = {
   twitchProfileImageUrl: '',
   broadcasterType: '',
   expiresAt: SESSION_EXPIRES_AT,
-  version: 1 as const,
+  version: 1,
 }
 
 // #1352: This contract keeps auth rejection at the route boundary: missing or
