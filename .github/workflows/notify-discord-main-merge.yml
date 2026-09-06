@@ -25,7 +25,6 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python3 - <<'PY'
           import os
@@ -73,8 +72,7 @@ jobs:
     env:
       # PR/repository-derived strings stay in env and are consumed as data by Python/jq;
       # do not interpolate them directly into the shell script.
-      # Re-declare the runner default so the fork check's trusted base input is explicit.
-      GITHUB_REPOSITORY: ${{ github.repository }}
+      # GITHUB_REPOSITORY is a GitHub-provided default env and is the trusted base for fork checks.
       REPOSITORY_NAME: ${{ github.event.repository.name }}
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_BODY: ${{ github.event.pull_request.body }}
