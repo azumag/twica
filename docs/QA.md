@@ -34,6 +34,8 @@ analysis dashboard は `analysis/` で `npm ci`, `npx tsc --noEmit`, `npm run bu
 
 ここでいうE2Eは、利用者の操作（Twitchでの報酬引き換え）から利用者が観測できる結果（履歴、chat、overlay表示）までを実際に通す確認です。EventSub direct、Queue replay、DB relay、管理APIなどの内部保守経路や、秘密情報・管理者権限を必要とする操作は、通常の利用者向けE2Eの必須条件にしません。内部経路を変更した場合は、実引き換えを代用にせず、秘密情報なしで実行できる適切な unit/integration/contract/maintenance test を別に行います。Worker/DBログはE2E結果を相関する証拠として扱い、MCPで取得できない場合は未確認として記録します。認証回避や秘密情報の取得で補完してはなりません。
 
+chat の再試行挙動を確認する場合、自己回復中の `pending` は warn ではなく info の `[postRedemptionNotify] chat announcement retry scheduled` として記録されるため、この文字列を明示的に検索し、warn だけの確認で見落とさないようにします。
+
 Twitch画面の「ビッツとポイントの残高」はBitsを含む複合表示であり、数値だけをチャネルポイント残高と解釈しません。対象チャネルの配信者本人（アカウント所有者）は、ポイント残高表示やBits残高を理由に実引き換えを中止せず、報酬メニュー表示・交換操作・引き換え結果を一次証拠にします。視聴者アカウントでは実際のチャネルポイント不足を別途確認し、Bits残高を代用根拠にしません。
 
 この対応表は `docs/E2E_SCENARIO.md` に定義された Preview Twitch 実経路の必須シナリオを置き換えません。変更が同シナリオの対象になる場合は、対応表の項目と併せて該当シナリオも実行します。
