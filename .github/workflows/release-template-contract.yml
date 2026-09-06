@@ -25,6 +25,8 @@ jobs:
         id: filter
         with:
           base: ${{ github.ref }}
+          # Keep the contract test itself in this dedicated filter even though broad CI also
+          # runs it: test-only edits should still produce the stable release-contract check.
           filters: |
             contract:
               - '.github/PULL_REQUEST_TEMPLATE/**'

@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { middleware } from '@/middleware'
 
-const { updateSessionMock } = vi.hoisted(() => ({
+const { updateSessionMock, checkRateLimitMock } = vi.hoisted(() => ({
   updateSessionMock: vi.fn(
     async () => new Response(null, { status: 200 })
   ),
+  checkRateLimitMock: vi.fn(),
 }))
 
 /**
@@ -24,7 +25,7 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 vi.mock('@/lib/rate-limit', () => ({
-  checkRateLimit: vi.fn().mockResolvedValue({ success: true, limit: 1000, remaining: 999, reset: Date.now() + 60000 }),
+  checkRateLimit: checkRateLimitMock,
   getClientIp: vi.fn(() => '127.0.0.1'),
   rateLimits: { global: {} },
 }))
@@ -44,6 +45,12 @@ function makeRequest(pathname: string): NextRequest {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  checkRateLimitMock.mockResolvedValue({
+    success: true,
+    limit: 1000,
+    remaining: 999,
+    reset: Date.now() + 60000,
+  })
 })
 
 describe('middleware fail-closed Cache-Control (issue #906)', () => {
@@ -88,6 +95,22 @@ describe('middleware fail-closed Cache-Control (issue #906)', () => {
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
     // DB/session I/O より前の早期拒否契約も維持する。
     expect(updateSessionMock).not.toHaveBeenCalled()
+  })
+
+  it('global rate limit の早期429にも private, no-store を付与する', async () => {
+    // cacheable public path は通常 middleware の no-store 対象外なので、
+    // 429 自身が明示 no-store を持つことを直接固定する（#1337）。
+    checkRateLimitMock.mockResolvedValueOnce({
+      success: false,
+      limit: 1000,
+      remaining: 0,
+      reset: Date.now() + 60000,
+    })
+
+    const response = await middleware(makeRequest(CACHEABLE_PUBLIC_PATH))
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
   })
 
   it('overlay demo-events にも private, no-store を付与する（ルート側 no-store と二重防御）', async () => {

@@ -1,10 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { NextRequest } from 'next/server'
 import { middleware } from '@/middleware'
-
-vi.mock('@/lib/logger', () => ({
-  logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
-}))
 
 describe('middleware overlay events validation', () => {
   it('不正なstreamerIdを400の固定JSON本文で拒否する', async () => {

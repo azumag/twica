@@ -47,6 +47,7 @@ interface StorageStatus {
   uploadDisabled: boolean;
   // プランダウングレード後のストレージ超過フラグ
   planOverLimit?: boolean;
+  /** @deprecated 公式UIは構造化された制限フラグから i18n 文言を解決するため、API互換用フォールバックとしてのみ保持する。 */
   message: string | null;
 }
 

@@ -94,9 +94,9 @@ function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[]; updat
         }),
         where: vi.fn(() => builder),
         returning: vi.fn((columns?: unknown) => {
-          // 引数なし returning() と明示列 returning({...}) を区別して記録する
-          // （collection_name 列未デプロイ窓で RETURNING 側の 42703 再発を防ぐ
-          // 明示列への切り替えを検証するため）
+          // PUT は初回から明示列 returning({...}) を使うため、各呼び出しの列セットを記録する。
+          // collection_name を含む通常列と、列欠落時に除外した再試行列を比較し、
+          // deploy window で RETURNING 側の 42703 が再発しない契約を検証する。
           returningCalls.push(columns);
           return builder;
         }),

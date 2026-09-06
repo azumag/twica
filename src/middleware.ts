@@ -241,6 +241,10 @@ export async function middleware(request: NextRequest) {
           {
             status: 429,
             headers: {
+              // 429 は現在の Workers Cache heuristics では通常キャッシュ対象外だが、
+              // 早期 return は上段の fail-closed response を返さないため明示的に保存禁止する。
+              // cacheable public path でもレート制限応答だけは再利用させない（#1337）。
+              'Cache-Control': 'private, no-store',
               'X-RateLimit-Limit': String(rateLimitResult.limit),
               'X-RateLimit-Remaining': String(rateLimitResult.remaining),
               'X-RateLimit-Reset': String(rateLimitResult.reset),

@@ -65,4 +65,28 @@ describe('GET /api/twitch/emotes error reporting', () => {
       reportContext
     )
   })
+
+  it('診断contextがないrefresh失敗でもundefinedをhandleApiErrorへ渡す', async () => {
+    const tokenError = new Error('refresh failed without diagnostics')
+
+    const { getTwitchAccessToken, twitchTokenErrorReportContext } =
+      await import('@/lib/twitch/token-manager')
+    const { handleApiError } = await import('@/lib/error-handler')
+
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(tokenError)
+    vi.mocked(twitchTokenErrorReportContext).mockReturnValue(undefined)
+    vi.mocked(handleApiError).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'handled' }), { status: 500 }) as never
+    )
+
+    const { GET } = await import('@/app/api/twitch/emotes/route')
+    await GET(new Request('http://localhost:3000/api/twitch/emotes'))
+
+    expect(twitchTokenErrorReportContext).toHaveBeenCalledWith(tokenError)
+    expect(handleApiError).toHaveBeenCalledWith(
+      tokenError,
+      'Twitch emotes fetch',
+      undefined
+    )
+  })
 })
