@@ -376,6 +376,42 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
     expect(db.select).toHaveBeenCalledTimes(1)
   })
 
+  it('collection_nameだけが欠落した場合はraid設定を保持して2段目で復旧する', async () => {
+    const rewardWithoutCollectionName = {
+      id: 'extra-1',
+      reward_id: 'reward-2',
+      reward_name: 'Extra Reward',
+      draw_count: 2,
+      is_raid_limited: true,
+      created_at: '2020-01-01T00:00:00.000+00:00',
+    }
+    const { res, body, db } = await runPlanetscalePath(
+      [{ rows: [FULL_STREAMER_ROW] }],
+      [
+        {
+          error: {
+            code: '42703',
+            message: 'column \"collection_name\" of relation \"streamer_additional_gacha_rewards\" does not exist',
+          },
+        },
+        { rows: [rewardWithoutCollectionName] },
+      ]
+    )
+
+    expect(res.status).toBe(200)
+    expect(body.additionalRewards).toEqual([
+      { ...rewardWithoutCollectionName, collection_name: null },
+    ])
+    // streamers 1回 + rewards 2回(full → no-collection_name)で復旧し、
+    // raid列まで剥がすminimal queryには進まない。
+    expect(db.calls).toHaveLength(3)
+    expect(Object.keys(db.calls[1].fields)).toContain('collection_name')
+    expect(Object.keys(db.calls[2].fields)).not.toContain('collection_name')
+    expect(Object.keys(db.calls[2].fields)).toEqual(
+      expect.arrayContaining(['draw_count', 'is_raid_limited'])
+    )
+  })
+
   // collection_name 欠落 → さらに raid 列欠落へカスケードする分岐の回帰テスト。
   // 2段目（collection_name なし）でも 42703 なら最小列セットへ落ち、
   // draw_count: 1 / is_raid_limited: false / collection_name: null を補完する。
