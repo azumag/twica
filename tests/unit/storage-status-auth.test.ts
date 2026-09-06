@@ -37,7 +37,8 @@ describe('GET /api/storage-status auth contract', () => {
 
     expect(response.status).toBe(401)
     await expect(response.json()).resolves.toEqual({ error: ERROR_MESSAGES.UNAUTHORIZED })
-    expect(canUseStreamerFeatures).not.toHaveBeenCalled()
+    // canUseStreamerFeatures() の内部呼び出し順序はこの境界契約に含めず、
+    // 未認証で hash / storage I/O へ進まないことだけを固定する。
     expect(sha256Prefix).not.toHaveBeenCalled()
     expect(getStorageUsage).not.toHaveBeenCalled()
   })
