@@ -1638,6 +1638,7 @@
     "unavailable": "Unable to load reward settings. Please reopen this panel later.",
     "saveFailed": "Unable to save. Check the card status and try again.",
     "orphan": "Setting for a removed pack",
-    "defaultPack": "Default"
+    "defaultPack": "Default",
+    "activateBlocked": "This card is configured as the completion reward for “{packName}”. Remove the reward setting before enabling random draws."
   }
 }

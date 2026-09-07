@@ -1,3 +1,4 @@
+import { getTranslations } from 'next-intl/server';
 import { getRewardCardProtectionPack } from '@/lib/pack-completion-reward-errors';
 import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
@@ -564,7 +565,8 @@ export async function PUT(
     if (error) {
       const rewardPack = getRewardCardProtectionPack(error);
       if (rewardPack !== null) {
-        return NextResponse.json({ error: `このカードはパック「${rewardPack}」のコンプ報酬です。先に報酬設定を解除してください。`, code: 'PACK_COMPLETION_REWARD_CARD', packName: rewardPack }, { status: 409 });
+        const tReward = await getTranslations('packCompletionReward');
+        return NextResponse.json({ error: tReward('activateBlocked', { packName: rewardPack === '__default__' ? tReward('defaultPack') : rewardPack }), code: 'PACK_COMPLETION_REWARD_CARD', packName: rewardPack }, { status: 409 });
       }
       if (isCardNumberConflictError(error)) {
         return NextResponse.json(
