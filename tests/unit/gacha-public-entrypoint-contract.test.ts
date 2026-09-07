@@ -42,6 +42,9 @@ function findExecuteGachaCalls(path: string): string[] {
 
 describe("GachaService production entrypoints (#1301)", () => {
   it("does not call the low-level executeGacha method outside GachaService", () => {
+    // Scan production `src` only: tests/fixtures may exercise the low-level contract directly.
+    // Exclude GachaService itself because internal composition is allowed inside the implementation.
+    // AST matching keeps the guard semantic and avoids false positives from comments or strings.
     const srcRoot = resolve(process.cwd(), "src");
     const servicePath = resolve(srcRoot, "lib/services/gacha.ts");
     const directCallSites = collectTypeScriptFiles(srcRoot)
