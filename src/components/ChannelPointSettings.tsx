@@ -1463,6 +1463,9 @@ export default function ChannelPointSettings({
                           <div className="flex shrink-0 items-center gap-3 pl-3">
                             <button
                               onClick={() => handleStartEditAdditionalReward(reward)}
+                              aria-label={t("additionalRewards.editAccessibleLabel", {
+                                name: reward.reward_name || reward.reward_id.slice(0, 8) + "...",
+                              })}
                               // 編集中の行の再クリックは無効（未保存入力の無告知リセット防止）。
                               // 保存中（updatingAdditional）も他行への切替は許可するが、
                               // 保存完了時に開いているフォームは閉じない（上記参照）。

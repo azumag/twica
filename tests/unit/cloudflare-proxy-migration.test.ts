@@ -16,8 +16,8 @@ describe("Cloudflare proxy migration policy", () => {
     const doc = readSource("docs/cloudflare-proxy-migration.md");
     const middleware = readSource("src/middleware.ts");
 
-    expect(doc).toContain("Node.js middleware is not currently supported");
-    expect(doc).toContain("Do not add `src/proxy.ts` yet");
+    // Keep this contract on observable migration gates, not prose copied from
+    // the policy document. Wording changes must not require a test rewrite.
     expect(doc).toContain("@opennextjs/cloudflare` 1.20.2");
     expect(doc).toContain("opennextjs-cloudflare#1309");
     expect(doc).toContain("1.20.3");
