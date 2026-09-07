@@ -145,12 +145,19 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
 
     await postRedemptionNotify(notifyData)
 
-    // レビュー指摘: expect.any(Error)だけだとretryStateの文字列連結が壊れても
-    // 検知できないため、メッセージ本文と呼び出し回数まで固定する。
+    // retry結果を永続化済みとして扱う契約も固定し、catch経路で同じoutboxを
+    // 二重にretryする退行を検知する。
+    expect(mockRetry).toHaveBeenCalledTimes(1)
+    expect(mockRetry).toHaveBeenCalledWith(
+      claim,
+      'Twitch API 429: Your message was not sent because you are sending messages too quickly.',
+    )
+    // expect.any(Error)だけだとretryStateやreasonの連結が壊れても検知できないため、
+    // terminal messageを完全一致で固定する。
     expect(mockReportError).toHaveBeenCalledTimes(1)
     expect(mockReportError).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: expect.stringContaining('Chat announcement dead: '),
+        message: 'Chat announcement dead: Twitch API 429: Your message was not sent because you are sending messages too quickly.',
       }),
       expect.objectContaining({
         context: 'eventsub:postRedemptionNotify:chatAnnouncement',
@@ -170,10 +177,15 @@ describe('postRedemptionNotify: chatAnnouncement retryState別のreportError到�
 
     await postRedemptionNotify(notifyData)
 
+    expect(mockRetry).toHaveBeenCalledTimes(1)
+    expect(mockRetry).toHaveBeenCalledWith(
+      claim,
+      'Twitch API 429: Your message was not sent because you are sending messages too quickly.',
+    )
     expect(mockReportError).toHaveBeenCalledTimes(1)
     expect(mockReportError).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: expect.stringContaining('Chat announcement lost-lease: '),
+        message: 'Chat announcement lost-lease: Twitch API 429: Your message was not sent because you are sending messages too quickly.',
       }),
       expect.objectContaining({
         context: 'eventsub:postRedemptionNotify:chatAnnouncement',
