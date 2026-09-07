@@ -32,11 +32,10 @@ describe('completion rewards preserve collection safety', () => {
     expect(await getPackCompletionRewards('streamer')).toEqual([]);
     expect(await getPackCompletionRewardGrants('viewer', 'streamer')).toEqual([]);
   });
-  it('skips grant queries entirely for a normal collection without rewards', async () => {
+  it('skips grant history for an empty owned collection without rewards', async () => {
     settings = [];
-    const owned = [{ ...normal, count: 1 }];
-    const result = await applyPackCompletionRewards('viewer', 'streamer', [normal], owned);
-    expect(result.cards).toEqual(owned);
+    const result = await applyPackCompletionRewards('viewer', 'streamer', [normal], []);
+    expect(result.cards).toEqual([]);
     expect(mocks.sql).toHaveBeenCalledTimes(1);
   });
   it('never serializes locked card identities, names or images', async () => {
@@ -63,10 +62,12 @@ describe('completion rewards preserve collection safety', () => {
     expect(result.views[0].state).toBe('locked');
     expect(grants).toEqual([]);
   });
-  it('retains historical badges after a reward is removed', async () => {
+  it('retains historical badges after a reward is removed and its card is re-enabled', async () => {
     settings = []; grants.push({ collection_name: '__default__', reward_card_id: bonus.id });
-    const result = await applyPackCompletionRewards('viewer', 'streamer', [normal], [{ ...bonus, count: 1 }]);
+    const reactivatedBonus = { ...bonus, is_active: true, count: 1 };
+    const result = await applyPackCompletionRewards('viewer', 'streamer', [normal, reactivatedBonus], [reactivatedBonus]);
     expect(result.views).toEqual([]);
     expect(result.rewardCardIds).toEqual([bonus.id]);
+    expect(mocks.sql.mock.calls.some(([strings]) => strings.join('').includes('SELECT * FROM public.pack_completion_reward_grants'))).toBe(true);
   });
 });
