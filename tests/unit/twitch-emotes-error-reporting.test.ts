@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Issue #1088: このテストは token-manager / error-handler 自体の正当性ではなく、
+// emotes route が refresh error と診断 context を API 境界へ結線する契約だけを固定する。
+// helper / error writer の内部契約は各専用テストへ委ねるため、ここでは意図的に mock する。
 vi.mock('@/lib/session', () => ({
   getSession: vi.fn(),
   canUseStreamerFeatures: vi.fn(),
