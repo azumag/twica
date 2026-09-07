@@ -112,7 +112,7 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     expect(mockPublishOverlayDemoRealtimeEvent).not.toHaveBeenCalled()
   })
 
-  it('returns 401 for unauthenticated publication', async () => {
+  it('keeps a downstream 401 when the session is unavailable after CSRF validation', async () => {
     mockGetSession.mockResolvedValue(null)
 
     const response = await POST(makeRequest({ streamerId: 'streamer-1', broadcast: true }))
