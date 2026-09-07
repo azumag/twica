@@ -446,5 +446,6 @@ export const STORAGE_LIMIT_MESSAGES = {
   // なお同種の10MB固定文言は messages/ja.json・en.json の userLimitReached /
   // storageLimitReason にも存在するため、見直す際は i18n 側と併せて行うこと。
   USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。',
+  // GLOBAL_LIMIT_REACHED も同じく外部・未知クライアント向けの互換文言として維持する。
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
 } as const
