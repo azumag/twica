@@ -330,6 +330,8 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
     expect(db.select).toHaveBeenCalledTimes(4)
   })
 
+  // 応答JSONの equality は既定値補完を、select-field assertion は未デプロイ列を
+  // 再発行しないことを検証する別契約なので、意図的に両方を保持する。
   it('フォールバック時は縮退select(raid_gacha_draw_count/draw_count/is_raid_limitedを含まない)を発行する', async () => {
     const { db } = await runPlanetscalePath(
       [
