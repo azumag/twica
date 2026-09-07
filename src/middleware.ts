@@ -192,8 +192,10 @@ export async function middleware(request: NextRequest) {
   // 明示的にキャッシュを許可した公開パス以外には private, no-store を付与する。
   // キャッシュ許可パスはルート側で Cache-Control: public を設定する（この middleware は
   // ルートより先に実行されるため、ルートが最終的にヘッダーを上書きできる）。
-  // 400/429/503 等は Workers Cache のヒューリスティック対象外だが、早期 return でも
-  // fail-closed 契約が必要な経路は個別に private, no-store を明示する。
+  // 400/429/503 等は Workers Cache のヒューリスティック対象外だが、それには依存しない。
+  // 後段の通常キャッシュ方針を通らず早期 return するレスポンスは、公開キャッシュ許可
+  // パス上でも保存されないよう、自身で private, no-store を明示する。現在は不正 overlay
+  // events の 400、global rate-limit の 429、maintenance guard の 503 がこの基準に従う（#1337）。
   // /api/overlay/ 配下は prefix ではなくエンドポイント単位で判定する。
   // events は OBS オーバーレイの 3 秒間隔ポーリングだが Cache-Control を設定
   // しないため、prefix 許可だと Workers Caching のヒューリスティック TTL
