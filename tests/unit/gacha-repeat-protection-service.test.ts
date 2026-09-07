@@ -183,6 +183,47 @@ afterEach(() => {
 })
 
 describe('GachaService repeat protection', () => {
+  it('pack-scoped rarity実効重みでも直前カードの反復抑制を適用する', () => {
+    const service = new GachaService()
+    mockSecureRandomUnit(0)
+
+    const pool = [
+      {
+        id: 'common-heavy-raw',
+        name: 'Common',
+        description: null,
+        image_url: null,
+        image_padding_color: null,
+        rarity: 'common' as const,
+        drop_rate: 0.99,
+        max_issuance_count: null,
+      },
+      {
+        id: 'rare-light-raw',
+        name: 'Rare',
+        description: null,
+        image_url: null,
+        image_padding_color: null,
+        rarity: 'rare' as const,
+        drop_rate: 0.01,
+        max_issuance_count: null,
+      },
+    ]
+
+    // 生drop_rateの99:1ではfraction=0のとき直前commonを再度選ぶが、
+    // pack-scoped自動配分の50:50 effectiveWeightなら反復ゼロの境界になりrareへ移る。
+    // resolvedRarityWeightsを使う分岐でも #1296 の反復抑制が失われないことを固定する。
+    const selected = (service as any).selectCardFromPool(
+      pool,
+      { common: 50, rare: 50 },
+      'common-heavy-raw',
+    )
+
+    expect(selected?.id).toBe('rare-light-raw')
+    // effectiveWeightは選択専用で、返却カードの永続drop_rateへ漏らさない。
+    expect(selected?.drop_rate).toBe(0.01)
+  })
+
   it('最新履歴のカードを直前状態として使い、同確率2枚の連続を避ける', async () => {
     const fixture = installDbFixture({ latestCardId: 'card-a' })
     mockSecureRandomUnit(0)
