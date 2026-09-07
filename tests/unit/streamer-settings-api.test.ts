@@ -1174,6 +1174,46 @@ describe('POST /api/streamer/settings', () => {
       expect(data.gachaSoundRulesPremiumRequired).toBe(true)
     })
 
+    it('treats a missing gacha_sound_rules column as an empty current state during the deploy window (Issue #991)', async () => {
+      mockGetUserPlan.mockResolvedValue('basic')
+
+      const builder = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockDbFixture = builder.build()
+      const query = builder.getQueryBuilder()
+      query.maybeSingle.mockResolvedValueOnce({
+        data: { id: 'streamer123', twitch_user_id: 'streamer123' },
+        error: null,
+      })
+      query.maybeSingle.mockResolvedValueOnce({
+        data: null,
+        error: {
+          code: '42703',
+          message: 'column \"gacha_sound_rules\" of relation \"streamers\" does not exist',
+        },
+      })
+
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          gachaSoundRules: [
+            { id: 'rule1', url: 'https://example.com/s.mp3', enabled: true, label: 'a', targetType: 'all', rarity: null, rewardId: null, rewardName: null },
+          ],
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.gachaSoundRules).toEqual([expect.objectContaining({ id: 'rule1', targetType: 'all' })])
+      expect(data.gachaSoundRulesPremiumRequired).toBeUndefined()
+      expect(query.maybeSingle).toHaveBeenCalledTimes(2)
+    })
+
     it('fails the whole request rather than silently treating existing rules as new when reading current state fails for a non-missing-column reason (Issue #946 security fix)', async () => {
       // 【自動レビュー指摘（必須・修正済み）】getCurrentGachaSoundRulesが、列欠落
       // 以外のエラー(接続断・タイムアウト等)でも一律[]にフォールバックしていた。
