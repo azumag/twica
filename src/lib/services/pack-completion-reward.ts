@@ -49,8 +49,10 @@ export async function applyPackCompletionRewards(
   const fallback = { views: [] as CompletionRewardView[], cards: ownedCards, rewardCardIds: [] as string[] };
   try {
     const rewards = await getPackCompletionRewards(streamerId);
-    // Existing owners still need historical badges after a setting is removed.
-    if (!rewards.length && !ownedCards.some(c => !c.is_active)) return fallback;
+    // Grant history is authoritative for the badge even after a setting is
+    // removed and its old reward card is re-enabled. Only an empty ownership
+    // list can safely skip that personal history lookup when no setting exists.
+    if (!rewards.length && !ownedCards.length) return fallback;
     let grants = await getPackCompletionRewardGrants(twitchUserId, streamerId);
     const newlyGranted = new Set<string>();
     const { sql } = await getDb();
