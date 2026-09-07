@@ -42,7 +42,7 @@ npx wrangler secret put CSRF_TOKEN_SALT --name twica --env preview
 
 ### 4. 反映を検証する
 
-1. Cloudflare のデプロイ完了後、Worker のログと Sentry に `CSRF_TOKEN_SALT` の検証エラーがないことを確認します。
+1. Cloudflare のデプロイ完了後、Worker のログに `CSRF_TOKEN_SALT` の検証エラーがないことを確認します。
 2. 認証済みセッションで、CSRF 保護される状態変更 API を正しい同一オリジン Cookie と Origin/Referer で実行します。
 3. CSRF Cookie の欠落、または不正な Origin/Referer のリクエストが拒否されることを確認します。
 
