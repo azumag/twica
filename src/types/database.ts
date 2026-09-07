@@ -16,6 +16,8 @@ export type TwitchBotStatus = 'active' | 'revoked' | 'error'
 export interface Database {
   public: {
     Tables: {
+      pack_completion_rewards: { Row: PackCompletionReward; Insert: PackCompletionRewardInsert; Update: Partial<PackCompletionRewardInsert> };
+      pack_completion_reward_grants: { Row: PackCompletionRewardGrant; Insert: PackCompletionRewardGrantInsert; Update: Partial<PackCompletionRewardGrantInsert> };
       streamers: {
         Row: {
           id: string
@@ -844,3 +846,22 @@ export function extractTwitchUserId(streamers: unknown): string | null {
 export type UserCardWithDetails = UserCard & {
   card: CardWithStreamer
 }
+
+export interface PackCompletionReward {
+  id: string;
+  streamer_id: string;
+  collection_name: string;
+  reward_card_id: string;
+  created_at: string;
+  updated_at: string;
+}
+export type PackCompletionRewardInsert = Pick<PackCompletionReward, 'streamer_id' | 'collection_name' | 'reward_card_id'>;
+export interface PackCompletionRewardGrant {
+  id: string;
+  twitch_user_id: string;
+  streamer_id: string;
+  collection_name: string;
+  reward_card_id: string;
+  granted_at: string;
+}
+export type PackCompletionRewardGrantInsert = Omit<PackCompletionRewardGrant, 'id' | 'granted_at'>;

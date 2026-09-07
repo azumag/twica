@@ -1616,5 +1616,28 @@
       "saveFailed": "Failed to save settings",
       "deployWindow": "Live directory settings are temporarily unavailable. Please try again shortly."
     }
+  },
+  "packCompletionReward": {
+    "slotLabel": "Completion reward",
+    "slotLocked": "Complete this pack to receive this reward",
+    "obtainedBadge": "Obtained",
+    "rewardBadge": "Completion reward",
+    "revealTitle": "You earned the completion reward for “{packName}”!",
+    "revealClose": "Close",
+    "settingsButton": "Choose a reward card",
+    "settingsRemove": "Remove",
+    "settingsSave": "Set reward",
+    "settingsInactiveOnlyHint": "Only cards excluded from random draws can be used as rewards.",
+    "excludedNotice": "Reward cards do not count toward completion. Random draws cannot be enabled while a card is configured as a reward.",
+    "settingsEmpty": "No eligible reward cards.",
+    "settingsEmptyHint": "Go to card management to create a card with draws disabled.",
+    "settingsRetroactiveNotice": "Viewers who already own the complete set will receive the reward on their next collection visit. Awards cannot be undone.",
+    "completionEstimate": "Past completion records: approximately {count} viewers (not the current eligible count).",
+    "settingsChangeWarning": "{count} viewers have already received a reward. Changing or removing it keeps awarded cards and does not award this pack again. The new setting applies only to viewers who have not received a reward.",
+    "deleteCardWarning": "The completion reward settings for this card will also be removed.",
+    "unavailable": "Unable to load reward settings. Please reopen this panel later.",
+    "saveFailed": "Unable to save. Check the card status and try again.",
+    "orphan": "Setting for a removed pack",
+    "defaultPack": "Default"
   }
 }

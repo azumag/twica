@@ -560,6 +560,16 @@ export default function CardManager({
   const [showCustomRarityModal, setShowCustomRarityModal] = useState(false);
   // パック管理モーダルの状態(Issue #393再設計)
   const [showCardPackModal, setShowCardPackModal] = useState(false);
+  const tReward = useTranslations('packCompletionReward');
+  const [completionRewardIds, setCompletionRewardIds] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/streamer/pack-completion-rewards', { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => { if (!cancelled && data) setCompletionRewardIds(data.rewards.map((r: { reward_card_id: string }) => r.reward_card_id)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [showCardPackModal]);
   // Zoomed card image modal state (opened when user clicks a thumbnail)
   // Uses the original (pre-thumbnail) URL so users see the full-resolution image
   // サムネイルクリック時に表示する拡大画像モーダルの状態
@@ -1640,7 +1650,7 @@ export default function CardManager({
 
   // 全体削除（手持ちからも削除）
   const handleDelete = async (cardId: string) => {
-    if (!confirm(t("confirmations.fullDeleteCard"))) return;
+    if (!confirm(t("confirmations.fullDeleteCard") + (completionRewardIds.includes(cardId) ? '\n' + tReward('deleteCardWarning') : ''))) return;
 
     const originalCards = cards;
     try {
@@ -2592,6 +2602,7 @@ export default function CardManager({
                       <div className={`p-3 pb-2 ${banners.length === 2 ? 'pt-16' : banners.length === 1 ? 'pt-8' : ''}`}>
                         <div className="flex items-center justify-between">
                           <h3 className="font-semibold text-white truncate">{card.name}</h3>
+                          {completionRewardIds.includes(card.id) && <button type="button" className="text-xs text-purple-300 underline" onClick={() => setShowCardPackModal(true)}>{tReward('rewardBadge')} · {tReward('settingsRemove')}</button>}
                           <span
                             className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
                           >

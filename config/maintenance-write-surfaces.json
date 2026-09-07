@@ -400,5 +400,17 @@
     "reason": "効果音ファイルのアップロード・削除。allowlist未登録のため一律ブロックに従う。",
     "owner": "azumag",
     "reviewedAt": "2026-07-18"
+  },
+  {
+    "path": "/api/streamer/pack-completion-rewards",
+    "methods": [
+      "PUT",
+      "DELETE"
+    ],
+    "category": "streamer",
+    "maintenanceBehavior": "block",
+    "reason": "パックコンプ報酬の設定・解除。既存の一般 write 拒否に従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-09-08"
   }
 ]

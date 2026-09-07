@@ -1,5 +1,6 @@
 "use client";
 
+import PackCompletionRewardSettings from './PackCompletionRewardSettings';
 import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
@@ -96,6 +97,8 @@ export default function CardPackModal({
   onPackRenamed,
 }: CardPackModalProps) {
   const t = useTranslations("cardManager");
+  const tReward = useTranslations("packCompletionReward");
+  const [showRewards, setShowRewards] = useState(false);
   const tCommon = useTranslations("common");
   const tMaintenance = useTranslations("maintenance");
   // #694 Stage 6c: ダッシュボード共有Context経由のmaintenance状態。
@@ -666,6 +669,8 @@ export default function CardPackModal({
               </ul>
             </div>
 
+            <button type="button" aria-expanded={showRewards} onClick={() => setShowRewards(value => !value)} className="mt-4 rounded-lg border border-purple-500 px-3 py-2 text-sm text-purple-200">{tReward('slotLabel')}</button>
+            {showRewards && <PackCompletionRewardSettings packNames={cardPackNames} defaultPackName={defaultRowDisplayName} onManageCards={onClose} />}
             <p className="mt-3 text-xs text-gray-500">
               {t("cardPackModal.deleteNote")}
             </p>

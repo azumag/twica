@@ -1616,5 +1616,28 @@
       "saveFailed": "設定の保存に失敗しました",
       "deployWindow": "配信中ページの設定を現在保存できません。しばらくしてから再度お試しください。"
     }
+  },
+  "packCompletionReward": {
+    "slotLabel": "コンプ報酬",
+    "slotLocked": "パックをコンプリートすると獲得できます",
+    "obtainedBadge": "獲得済み",
+    "rewardBadge": "コンプ報酬",
+    "revealTitle": "パック「{packName}」のコンプリート報酬を獲得しました！",
+    "revealClose": "閉じる",
+    "settingsButton": "報酬カードを選択",
+    "settingsRemove": "解除",
+    "settingsSave": "報酬を設定",
+    "settingsInactiveOnlyHint": "ガチャで排出されないカードのみ報酬に設定できます。",
+    "excludedNotice": "報酬カードはコンプリート条件に含まれません。設定中は排出を再開できません。",
+    "settingsEmpty": "報酬にできるカードがありません。",
+    "settingsEmptyHint": "カード管理で排出停止のカードを作成してください。",
+    "settingsRetroactiveNotice": "現在コンプリート済みの視聴者にも、次回のコレクション閲覧時に付与されます。付与は取り消せません。",
+    "completionEstimate": "過去のコンプ記録：約{count}人（現在の対象人数とは異なります）。",
+    "settingsChangeWarning": "既に{count}人が受領済みです。変更・解除しても受領済みカードは残り、同じパックでは再付与されません。新しい設定は未受領の視聴者にのみ適用されます。",
+    "deleteCardWarning": "このカードのコンプ報酬設定も解除されます。",
+    "unavailable": "コンプ報酬の設定を読み込めません。しばらくしてから開き直してください。",
+    "saveFailed": "保存できませんでした。カードの状態を確認して、もう一度お試しください。",
+    "orphan": "削除済みパックの設定",
+    "defaultPack": "デフォルト"
   }
 }

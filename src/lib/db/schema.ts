@@ -661,3 +661,21 @@ export const tradeOffers = pgTable('trade_offers', {
 //    - twitch_bot_accounts.created_at / updated_at
 //    - streamer_chat_sender_settings.created_at / updated_at
 // =============================================================================
+
+// #720: completion bonuses are outside the active collectible set.
+export const packCompletionRewards = pgTable('pack_completion_rewards', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  streamer_id: uuid('streamer_id').notNull(),
+  collection_name: text('collection_name').notNull(),
+  reward_card_id: uuid('reward_card_id').notNull(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+});
+export const packCompletionRewardGrants = pgTable('pack_completion_reward_grants', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  twitch_user_id: text('twitch_user_id').notNull(),
+  streamer_id: uuid('streamer_id').notNull(),
+  collection_name: text('collection_name').notNull(),
+  reward_card_id: uuid('reward_card_id').notNull(),
+  granted_at: timestamp('granted_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+});

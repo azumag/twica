@@ -90,6 +90,7 @@ jobs:
               - 'tests/fixtures/add-card-trading-postgres.sql'
               - 'tests/fixtures/add-card-trading-concurrency.sh'
               - 'tests/fixtures/redemption-ranking-exclusions-postgres.sql'
+              - 'tests/fixtures/pack-completion-rewards-postgres.sql'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
@@ -523,6 +524,13 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: bash tests/fixtures/transactional-chat-outbox-concurrency.sh
+
+      - name: Verify completion reward invariants
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/pack-completion-rewards-postgres.sql
 
       - name: Verify card trading invariants
         # trade_offers/accept_trade_offerはSQL文字列テストでは冪等リプレイ・

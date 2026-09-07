@@ -1,3 +1,5 @@
+import PackCompletionRewards from './PackCompletionRewards';
+import type { CompletionRewardView } from '@/lib/pack-completion-reward';
 import Image from "next/image";
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
@@ -12,9 +14,11 @@ export interface StreamerCollectionCard extends Card {
   count: number;
   isOwned: boolean;
   collectionNumber?: number;
+  isCompletionReward?: boolean;
 }
 
 interface StreamerCollectionProps {
+  completionRewards?: CompletionRewardView[];
   streamer: Streamer;
   cards: StreamerCollectionCard[];
   stats: {
@@ -61,6 +65,7 @@ export default async function StreamerCollection({
   completionHistory = [],
   hideUnownedDetails = false,
   packs = [],
+  completionRewards = [],
 }: StreamerCollectionProps) {
   const t = await getTranslations("collection");
   const tStreamer = await getTranslations("streamerCollection");
@@ -71,7 +76,9 @@ export default async function StreamerCollection({
   // 両方でグリッドを描画するため、1回だけ組み立てて共有する。
   // Pass template strings instead of functions (Server -> Client serialization)
   // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
+  const tReward = await getTranslations("packCompletionReward");
   const gridTranslations = {
+    completionRewardStatus: tReward("rewardBadge"),
     cardCountTemplate: t("cardCount", { count: "{count}" }),
     noImage: tCommon("noImage"),
     unownedCard: t("unownedCard"),
@@ -86,6 +93,7 @@ export default async function StreamerCollection({
   return (
     <div className="min-h-screen bg-gray-900 p-4 sm:p-6 lg:p-8">
       <div className="mx-auto max-w-7xl">
+        {completionRewards.length > 0 && <PackCompletionRewards rewards={completionRewards} defaultPackName={streamer.default_card_pack_name ?? tReward("defaultPack")} />}
         {/* Header with streamer info */}
         {/* 配信者情報付きヘッダー */}
         <div className="mb-6 flex items-center gap-4">
