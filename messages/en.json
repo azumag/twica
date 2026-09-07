@@ -668,6 +668,7 @@
       "addFailed": "Failed to register additional redemption",
       "removeFailed": "Failed to remove additional redemption",
       "edit": "Edit pack/draws",
+      "editAccessibleLabel": "Edit pack/draws for {name}",
       "update": "Save Changes",
       "updateSuccess": "Additional redemption updated",
       "updateSuccessPackPending": "Additional redemption updated (pack change pending deployment)",
