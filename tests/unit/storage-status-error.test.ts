@@ -40,13 +40,14 @@ const SESSION: SessionPayload = {
   expiresAt: 4_102_444_800_000,
   version: 1,
 };
+const STORAGE_PREFIX = 'storage-error-prefix';
 
 describe('GET /api/storage-status: error delegation (#1356)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(SESSION);
     mockCanUseStreamerFeatures.mockReturnValue(true);
-    mockSha256Prefix.mockResolvedValue('storage-error-prefix');
+    mockSha256Prefix.mockResolvedValue(STORAGE_PREFIX);
     mockHandleApiError.mockResolvedValue(
       NextResponse.json({ error: 'handled-storage-error' }, { status: 500 })
     );
@@ -59,7 +60,7 @@ describe('GET /api/storage-status: error delegation (#1356)', () => {
     const response = await GET();
 
     expect(mockGetStorageUsage).toHaveBeenCalledWith(
-      'storage-error-prefix',
+      STORAGE_PREFIX,
       SESSION.twitchUserId
     );
     expect(mockHandleApiError).toHaveBeenCalledTimes(1);
