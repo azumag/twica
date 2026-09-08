@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GET } from '@/app/api/storage-status/route'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
-import { getStorageUsage, formatBytes, type StorageUsage } from '@/lib/storage-usage'
+import { getStorageUsage, type StorageUsage } from '@/lib/storage-usage'
 import { sha256Prefix } from '@/lib/crypto-utils'
 
 vi.mock('@/lib/session')
@@ -14,7 +14,6 @@ vi.mock('@/lib/crypto-utils')
 const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockGetStorageUsage = vi.mocked(getStorageUsage)
-const mockFormatBytes = vi.mocked(formatBytes)
 const mockSha256Prefix = vi.mocked(sha256Prefix)
 
 const baseUsage: StorageUsage = {
@@ -64,7 +63,6 @@ describe('GET /api/storage-status uploadDisabled contract (#1352)', () => {
     })
     mockCanUseStreamerFeatures.mockReturnValue(true)
     mockSha256Prefix.mockResolvedValue('12345678')
-    mockFormatBytes.mockImplementation((bytes) => `${bytes} B`)
   })
 
   it('制限フラグがすべて false なら uploadDisabled は false', async () => {
