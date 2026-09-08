@@ -504,6 +504,8 @@ export default function OverlayPreview({
       const response = await fetch("/api/gacha/demo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        // 相対URLの same-origin fetch では Cookie は既定でも送信されるが、認証必須の
+        // broadcast 経路であることを明示し、triggerRealGacha と credential 方針を揃える。
         credentials: "include",
         body: JSON.stringify({
           streamerId,
