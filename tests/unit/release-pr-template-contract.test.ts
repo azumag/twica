@@ -1,16 +1,31 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const repositoryRoot = process.cwd();
-const releaseTemplate = readFileSync(
-  join(repositoryRoot, ".github/PULL_REQUEST_TEMPLATE/release.md"),
-  "utf8"
+const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+
+function readContractSource(relativePath: string, contractName: string): string {
+  try {
+    return readFileSync(join(repositoryRoot, relativePath), "utf8");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    // These files are loaded during Vitest collection, so include the logical contract
+    // name in the thrown error instead of leaving reviewers with a bare ENOENT path.
+    throw new Error(
+      `Failed to load release contract source "${contractName}" (${relativePath}): ${detail}`
+    );
+  }
+}
+
+const releaseTemplate = readContractSource(
+  ".github/PULL_REQUEST_TEMPLATE/release.md",
+  "release PR template"
 );
-const qaDocument = readFileSync(join(repositoryRoot, "docs/QA.md"), "utf8");
-const notifyWorkflow = readFileSync(
-  join(repositoryRoot, ".github/workflows/notify-discord-main-merge.yml"),
-  "utf8"
+const qaDocument = readContractSource("docs/QA.md", "preview promotion QA");
+const notifyWorkflow = readContractSource(
+  ".github/workflows/notify-discord-main-merge.yml",
+  "Discord promotion notification workflow"
 );
 
 const REQUIRED_TEMPLATE_HEADINGS = [
@@ -28,19 +43,38 @@ const REQUIRED_CONFIRMATION_LINES = [
   "- ブラウザー／実経路の確認: <!-- 対象外の場合は理由を記載 -->",
 ] as const;
 
+function headingScanLines(source: string): string[] {
+  // The promotion workflow removes HTML comments before heading extraction.
+  // Preserve their newline count here so scan-line indexes still map to the
+  // original source used by the rest of the contract assertions.
+  const withoutHtmlCommentText = source.replace(
+    /<!--[\s\S]*?(?:-->|$)/g,
+    (comment) => comment.replace(/[^\r\n]/g, "")
+  );
+  return withoutHtmlCommentText.split(/\r?\n/);
+}
+
+function normalizedHeading(line: string): string {
+  // Match the workflow's Python line.strip() comparison for H2 detection only.
+  return line.trim();
+}
+
 function h2Headings(source: string): string[] {
-  return source.split(/\r?\n/).filter((line) => line.startsWith("## "));
+  return headingScanLines(source)
+    .map(normalizedHeading)
+    .filter((line) => line.startsWith("## "));
 }
 
 function h2Section(source: string, heading: string): string {
-  const lines = source.split(/\r?\n/);
-  const start = lines.findIndex((line) => line === heading);
+  const sourceLines = source.split(/\r?\n/);
+  const scanLines = headingScanLines(source);
+  const start = scanLines.findIndex((line) => normalizedHeading(line) === heading);
   if (start === -1) return "";
 
-  const next = lines.findIndex(
-    (line, index) => index > start && line.startsWith("## ")
+  const next = scanLines.findIndex(
+    (line, index) => index > start && normalizedHeading(line).startsWith("## ")
   );
-  return lines.slice(start, next === -1 ? undefined : next).join("\n");
+  return sourceLines.slice(start, next === -1 ? undefined : next).join("\n");
 }
 
 const qaReleaseContract = h2Section(
@@ -53,6 +87,36 @@ describe("preview -> main release PR template contract", () => {
   // レビュー・通知の読み手が確認できるという QA.md の本文契約を守る。
   it("keeps the user-facing release summary as the first H2 heading", () => {
     expect(h2Headings(releaseTemplate)[0]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
+  });
+
+  it("mirrors the promotion workflow's HTML-comment and heading whitespace normalization", () => {
+    const source = [
+      "<!--",
+      "## hidden guidance heading",
+      "-->",
+      "  ## visible heading  ",
+      "  release text <!-- keep this in the returned contract section -->",
+      "   ## next heading   ",
+    ].join("\n");
+
+    expect(h2Headings(source)).toEqual([
+      "## visible heading",
+      "## next heading",
+    ]);
+    expect(h2Section(source, "## visible heading")).toBe(
+      "  ## visible heading  \n  release text <!-- keep this in the returned contract section -->"
+    );
+  });
+
+  it("reports the logical contract name when a source file is missing", () => {
+    expect(() =>
+      readContractSource(
+        "tests/unit/__missing_release_contract_source__",
+        "missing-source diagnostic"
+      )
+    ).toThrow(
+      'Failed to load release contract source "missing-source diagnostic"'
+    );
   });
 
   it("keeps the Discord promotion consumer on the same summary heading", () => {

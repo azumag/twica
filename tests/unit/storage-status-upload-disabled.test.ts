@@ -9,9 +9,7 @@ vi.mock('@/lib/storage-usage', () => ({
   getStorageUsage: vi.fn(),
   formatBytes: vi.fn(),
 }))
-vi.mock('@/lib/crypto-utils', () => ({
-  sha256Prefix: vi.fn(),
-}))
+vi.mock('@/lib/crypto-utils')
 
 const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)

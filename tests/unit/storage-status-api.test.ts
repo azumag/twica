@@ -9,15 +9,16 @@ vi.mock('@/lib/storage-usage', () => ({
   getStorageUsage: vi.fn(),
   formatBytes: vi.fn(),
 }))
-vi.mock('@/lib/crypto-utils', () => ({
-  sha256Prefix: vi.fn(),
-}))
+vi.mock('@/lib/crypto-utils')
 
 const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockGetStorageUsage = vi.mocked(getStorageUsage)
 const mockFormatBytes = vi.mocked(formatBytes)
 const mockSha256Prefix = vi.mocked(sha256Prefix)
+
+// 認証済みfixtureは実行時刻に依存させず、十分未来の固定時刻で有効状態を表現する。
+const SESSION_EXPIRES_AT = Date.UTC(2100, 0, 1)
 
 const baseUsage: StorageUsage = {
   userUsage: 1024,
@@ -47,7 +48,7 @@ describe('GET /api/storage-status message compatibility', () => {
       twitchDisplayName: 'Test User',
       twitchProfileImageUrl: 'https://example.com/avatar.jpg',
       broadcasterType: 'affiliate',
-      expiresAt: Date.now() + 3600000,
+      expiresAt: SESSION_EXPIRES_AT,
       version: 1,
     })
     mockCanUseStreamerFeatures.mockReturnValue(true)

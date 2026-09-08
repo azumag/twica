@@ -17,6 +17,7 @@ interface CardWithDetails extends Card {
   count: number;
   isOwned?: boolean;
   collectionNumber?: number;
+  isCompletionReward?: boolean;
 }
 
 interface SortedCardGridProps {
@@ -41,6 +42,7 @@ interface SortedCardGridProps {
     // 未所持カードの支援技術向け状態ラベル。
     unownedStatus?: string;
     inactiveStatus: string;
+    completionRewardStatus?: string;
     cardNumberTemplate: string;
     sortLabel: string;
     sortByNumber: string;
@@ -143,8 +145,8 @@ export default function SortedCardGrid({
               }
               isOwned={isOwned}
               unownedLabel={translations.unownedStatus}
-              isInactive={isOwned && !card.is_active}
-              inactiveLabel={translations.inactiveStatus}
+              isInactive={isOwned && (!card.is_active || !!card.isCompletionReward)}
+              inactiveLabel={card.isCompletionReward ? translations.completionRewardStatus ?? translations.inactiveStatus : translations.inactiveStatus}
               descriptionComponent={
                 showDescription ? (
                   <ExpandableDescription
