@@ -43,12 +43,19 @@ const REQUIRED_CONFIRMATION_LINES = [
   "- ブラウザー／実経路の確認: <!-- 対象外の場合は理由を記載 -->",
 ] as const;
 
+function promotionWorkflowLines(source: string): string[] {
+  // Keep heading extraction aligned with notify-discord-main-merge.yml: remove
+  // HTML comments first, then compare headings after strip()/trim() normalization.
+  const withoutHtmlComments = source.replace(/<!--.*?(?:-->|$)/gs, "");
+  return withoutHtmlComments.split(/\r?\n/).map((line) => line.trim());
+}
+
 function h2Headings(source: string): string[] {
-  return source.split(/\r?\n/).filter((line) => line.startsWith("## "));
+  return promotionWorkflowLines(source).filter((line) => line.startsWith("## "));
 }
 
 function h2Section(source: string, heading: string): string {
-  const lines = source.split(/\r?\n/);
+  const lines = promotionWorkflowLines(source);
   const start = lines.findIndex((line) => line === heading);
   if (start === -1) return "";
 
@@ -68,6 +75,25 @@ describe("preview -> main release PR template contract", () => {
   // レビュー・通知の読み手が確認できるという QA.md の本文契約を守る。
   it("keeps the user-facing release summary as the first H2 heading", () => {
     expect(h2Headings(releaseTemplate)[0]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
+  });
+
+  it("mirrors the promotion workflow's HTML-comment and whitespace normalization", () => {
+    const source = [
+      "<!--",
+      "## hidden guidance heading",
+      "-->",
+      "  ## visible heading  ",
+      "release text",
+      "   ## next heading   ",
+    ].join("\n");
+
+    expect(h2Headings(source)).toEqual([
+      "## visible heading",
+      "## next heading",
+    ]);
+    expect(h2Section(source, "## visible heading")).toBe(
+      "## visible heading\nrelease text"
+    );
   });
 
   it("reports the logical contract name when a source file is missing", () => {
