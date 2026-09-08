@@ -1,10 +1,9 @@
-// @vitest-environment node
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const releaseTemplate = readFileSync(
   join(repositoryRoot, ".github/PULL_REQUEST_TEMPLATE/release.md"),
   "utf8"
