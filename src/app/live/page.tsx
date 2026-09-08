@@ -75,13 +75,22 @@ export default async function LivePage() {
         <p className="mt-3 text-base leading-7 text-gray-400">{t("description")}</p>
         <div className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
           <p>{t("consentNotice")}</p>
+          {/*
+           * `entries` is the canonical public count: getLiveDirectory() already
+           * restricts the list to channels that opted in and are live according
+           * to Twitch Helix. Overlay presence is a separate, intentionally
+           * bucketed lower-bound signal, so it must not replace or visually
+           * contradict this exact count.
+           */}
+          <p className="mt-1" data-testid="live-directory-count">
+            {t("liveDirectoryCount", { count: entries.length })}
+          </p>
           <p className="mt-1">{t("rankingNotice")}</p>
           {presence ? (
             <p className="mt-1" data-testid="live-presence-estimate">
               {presence.count === 0
                 ? t("liveCountFew")
                 : t("liveCount", { count: presence.count })}
-              <span className="ml-1 text-gray-500">{t("liveCountNote")}</span>
             </p>
           ) : (
             <p className="mt-1" data-testid="live-presence-unavailable">

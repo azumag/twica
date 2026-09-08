@@ -92,13 +92,10 @@ const translations: Record<string, Record<string, string>> = {
     consentNotice: "明示的に掲載を許可したチャネルだけが表示されています。",
     rankingNotice:
       "ランキングは全アクティブチャネルを集計対象とし、選択した期間の各指標上位100件を、チャネル表示を許可していない場合は匿名で表示します。",
-    liveCount: "認証済みoverlayで確認できた配信中チャネル数（下限推定）：約{count}件",
-    liveCountFew:
-      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：5件未満",
-    liveCountUnavailable:
-      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：不明",
-    liveCountNote:
-      "設定画面で発行した認証済みoverlay URLを新しくコピーした接続だけを基にした下限推定で、直下の配信中一覧（Twitch APIベース）の件数とは一致しません。既存のOBS URLは再コピーが必要です。5件単位に切り捨てています。polling-onlyは含まれず、残留タブや切断遅延は含まれるため実際の配信数とは差が生じます。設定画面のプレビューは含まれません。反映に最大17分程度かかる場合があります。",
+    liveCount: "概算同時配信チャネル数：{count}件",
+    liveCountFew: "概算同時配信チャネル数：5件未満",
+    liveCountUnavailable: "概算同時配信チャネル数：不明",
+    liveDirectoryCount: "掲載許可済みで現在配信中のチャネル数：{count}件",
   },
 };
 
@@ -209,16 +206,7 @@ describe("LivePage", () => {
     render(await LivePage());
 
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：約5件",
-    );
-    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "polling-onlyは含まれず、残留タブや切断遅延は含まれる",
-    );
-    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "直下の配信中一覧（Twitch APIベース）の件数とは一致しません",
-    );
-    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "設定画面のプレビューは含まれません",
+      /^概算同時配信チャネル数：5件$/,
     );
   });
 
@@ -232,9 +220,29 @@ describe("LivePage", () => {
     render(await LivePage());
 
     expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
-      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：5件未満",
+      "概算同時配信チャネル数：5件未満",
     );
     expect(screen.getByTestId("live-directory")).toHaveTextContent("entries:1");
+  });
+
+  it("shows the exact listed-live count separately from the overlay lower bound", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    mocks.getLiveDirectory.mockResolvedValue(
+      Array.from({ length: 8 }, (_, index) => ({ streamerId: `streamer-${index}` })),
+    );
+    mocks.getLiveDirectoryPresence.mockResolvedValue({
+      count: 0,
+      observedAt: "2026-08-21T00:00:00.000Z",
+    });
+
+    render(await LivePage());
+
+    expect(screen.getByTestId("live-directory-count")).toHaveTextContent(
+      "掲載許可済みで現在配信中のチャネル数：8件",
+    );
+    expect(screen.getByTestId("live-presence-estimate")).toHaveTextContent(
+      "概算同時配信チャネル数：5件未満",
+    );
   });
 
   it("shows the estimate as unknown when the presence snapshot is unavailable", async () => {
@@ -243,7 +251,7 @@ describe("LivePage", () => {
     render(await LivePage());
 
     expect(screen.getByTestId("live-presence-unavailable")).toHaveTextContent(
-      "認証済みoverlayで確認できた配信中チャネル数（下限推定）：不明",
+      "概算同時配信チャネル数：不明",
     );
   });
 
