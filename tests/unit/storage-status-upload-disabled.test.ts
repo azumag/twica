@@ -34,7 +34,9 @@ type StorageStatusBody = Pick<
   uploadDisabled: boolean
 }
 
-async function getStorageStatus(
+// このsuiteは200応答のmachine-readable body契約が対象なので、成功statusはhelperで固定する。
+// auth/errorのstatus契約は専用テストへ分離し、各ケースは制限フラグのOR契約へ集中させる（#1352）。
+async function getSuccessfulStorageStatusBody(
   overrides: Partial<StorageUsage> = {}
 ): Promise<StorageStatusBody> {
   mockGetStorageUsage.mockResolvedValue({ ...baseUsage, ...overrides })
@@ -66,7 +68,7 @@ describe('GET /api/storage-status uploadDisabled contract (#1352)', () => {
   })
 
   it('制限フラグがすべて false なら uploadDisabled は false', async () => {
-    const body = await getStorageStatus()
+    const body = await getSuccessfulStorageStatusBody()
 
     expect(body).toMatchObject({
       userLimitReached: false,
@@ -77,7 +79,7 @@ describe('GET /api/storage-status uploadDisabled contract (#1352)', () => {
   })
 
   it('userLimitReached が true なら uploadDisabled は true', async () => {
-    const body = await getStorageStatus({ userLimitReached: true })
+    const body = await getSuccessfulStorageStatusBody({ userLimitReached: true })
 
     expect(body).toMatchObject({
       userLimitReached: true,
@@ -88,7 +90,7 @@ describe('GET /api/storage-status uploadDisabled contract (#1352)', () => {
   })
 
   it('globalLimitReached が true なら uploadDisabled は true', async () => {
-    const body = await getStorageStatus({ globalLimitReached: true })
+    const body = await getSuccessfulStorageStatusBody({ globalLimitReached: true })
 
     expect(body).toMatchObject({
       userLimitReached: false,
@@ -99,7 +101,7 @@ describe('GET /api/storage-status uploadDisabled contract (#1352)', () => {
   })
 
   it('planOverLimit が true なら uploadDisabled は true', async () => {
-    const body = await getStorageStatus({ planOverLimit: true })
+    const body = await getSuccessfulStorageStatusBody({ planOverLimit: true })
 
     expect(body).toMatchObject({
       userLimitReached: false,
