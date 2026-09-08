@@ -1,3 +1,4 @@
+import { applyPackCompletionRewards } from '@/lib/services/pack-completion-reward';
 import { redirect, notFound } from "next/navigation";
 import { getSession } from "@/lib/session";
 import {
@@ -74,18 +75,22 @@ export default async function StreamerCollectionPage({
 
   // Fetch user's cards, all active cards, and completion history in parallel
   // ユーザー所持カード・全アクティブカード・コンプリート履歴を並列取得
-  const [userCards, activeCards, completionHistory] = await Promise.all([
+  const [initialUserCards, activeCards, completionHistory] = await Promise.all([
     getUserCardsForStreamer(session.twitchUserId, streamerId),
     getActiveCardsForStreamer(streamerId),
     getCollectionCompletions(session.twitchUserId, streamerId),
   ]);
 
+  const rewardResult = await applyPackCompletionRewards(session.twitchUserId, streamerId, activeCards, initialUserCards);
+  const userCards = rewardResult.cards;
+  const rewardCardIds = new Set(rewardResult.rewardCardIds);
   const activeCardIds = new Set(activeCards.map((card) => card.id));
   const collectionNumberMap = createCollectionNumberMap([...activeCards, ...userCards]);
   const ownedCards: StreamerCollectionCard[] = sortCollectedCards(userCards).map((card) => ({
     ...card,
     count: card.count,
     isOwned: true,
+    isCompletionReward: rewardCardIds.has(card.id),
     collectionNumber: collectionNumberMap.get(card.id),
   }));
 
@@ -197,6 +202,7 @@ export default async function StreamerCollectionPage({
   return (
     <StreamerCollection
       streamer={streamer}
+      completionRewards={rewardResult.views}
       cards={cards}
       stats={stats}
       progress={progress}

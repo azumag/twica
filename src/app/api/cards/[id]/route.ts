@@ -1,3 +1,5 @@
+import { getTranslations } from 'next-intl/server';
+import { getRewardCardProtectionPack } from '@/lib/pack-completion-reward-errors';
 import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 
@@ -561,6 +563,11 @@ export async function PUT(
     const { updatedCard, error } = await updateCardPg(id, updateData);
 
     if (error) {
+      const rewardPack = getRewardCardProtectionPack(error);
+      if (rewardPack !== null) {
+        const tReward = await getTranslations('packCompletionReward');
+        return NextResponse.json({ error: tReward('activateBlocked', { packName: rewardPack === '__default__' ? tReward('defaultPack') : rewardPack }), code: 'PACK_COMPLETION_REWARD_CARD', packName: rewardPack }, { status: 409 });
+      }
       if (isCardNumberConflictError(error)) {
         return NextResponse.json(
           { error: CARD_NUMBER_MESSAGES.duplicate },
