@@ -48,7 +48,7 @@ function headingScanLines(source: string): string[] {
   // Preserve their newline count here so scan-line indexes still map to the
   // original source used by the rest of the contract assertions.
   const withoutHtmlCommentText = source.replace(
-    /<!--.*?(?:-->|$)/gs,
+    /<!--[\s\S]*?(?:-->|$)/g,
     (comment) => comment.replace(/[^\r\n]/g, "")
   );
   return withoutHtmlCommentText.split(/\r?\n/);
