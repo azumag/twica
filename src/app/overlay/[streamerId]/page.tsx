@@ -182,11 +182,9 @@ const RELOAD_DEFER_RETRY_MS = 30 * 1000;
 // (メタデータ未ロードでNaN等)に使う「再生終了見込み」の安全上限。
 // リロード延期判定(soundPlayingUntilRef)のフォールバックにのみ使う
 const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
-// OBS Browser Source may keep a large animated image metadata request pending
-// without firing either `load` or `error`. Aspect-ratio detection is
-// presentation-only, so this timeout bounds the probe lifetime/layout decision;
-// the business-event queue and card DOM mounting do not wait for it.
-const IMAGE_METADATA_TIMEOUT_MS = 1_500;
+// OBS can leave load/decode pending for a large or broken image. Bound the
+// preparation wait, then reveal the existing fallback so later cards still run.
+const IMAGE_PREPARE_TIMEOUT_MS = 1_500;
 const MIN_REVEAL_LEAD_IN_MS = 100;
 // A realtime delivery is not acknowledged until React has committed the card
 // and its image has loaded. A stopped CEF/OBS render loop must still release
@@ -310,9 +308,8 @@ export default function OverlayPage() {
   // without consuming another redemption or duplicating the visible prefix.
   const committedDrawIdsRef = useRef<Set<string>>(new Set());
   const activeDisplayInstanceIdRef = useRef<number | undefined>(undefined);
-  // Image metadata checks are presentation-only and run independently from the
-  // display queue. Cleanup still resolves pending checks so Image callbacks do
-  // not retain an obsolete card/component lifetime.
+  // Cleanup resolves image preparation waits as well as clearing their timers,
+  // so an old async queue task can exit through its lifecycle generation guard.
   const activeImageCheckCancelsRef = useRef<Set<() => void>>(new Set());
   const isOverlayMountedRef = useRef(false);
   // A streamer change can reuse this component instance. The queue generation
@@ -810,9 +807,9 @@ export default function OverlayPage() {
 
   // 画像のアスペクト比を判定（縦長かどうか）と小さい画像かどうかを判定
   // Check if image is portrait (height > width) and if image is small (< 400x400)
-  // Promiseを返すが、カード表示の前提にはしない。画像metadataはpresentation-only
-  // のため、呼び出し側は表示と並行して実行し、レイアウト更新だけを受け取る。
-  const checkImageAspectRatio = useCallback((
+  // 枠だけの先行表示を避けるため、画像のload/decodeを最大1.5秒待つ。
+  // timeout/errorではfalseを返し、代替表示でキューを継続する。
+  const prepareCardImage = useCallback((
     imageUrl: string | null,
     imageLayoutGeneration: number,
   ): Promise<boolean> => {
@@ -839,7 +836,8 @@ export default function OverlayPage() {
       const finish = (
         isPortrait: boolean,
         isSmall: boolean,
-        updateLayout = true
+        updateLayout = true,
+        imageReady = false,
       ) => {
         if (settled) return;
         settled = true;
@@ -847,6 +845,8 @@ export default function OverlayPage() {
           clearTimeout(timeoutId);
         }
         activeImageCheckCancelsRef.current.delete(cancel);
+        img.onload = null;
+        img.onerror = null;
         if (
           updateLayout
           && isOverlayMountedRef.current
@@ -855,7 +855,7 @@ export default function OverlayPage() {
           setIsPortraitImage(isPortrait);
           setIsSmallImage(isSmall);
         }
-        resolve(isPortrait);
+        resolve(imageReady);
       };
       const cancel = () => {
         // Cleanup deliberately suppresses layout updates. Lifecycle cleanup also
@@ -866,21 +866,43 @@ export default function OverlayPage() {
       activeImageCheckCancelsRef.current.add(cancel);
 
       img.onload = () => {
+        if (!(img.width > 0 && img.height > 0)) {
+          finish(false, false);
+          return;
+        }
         // 画像の縦が横より大きい（正方形でない縦長画像）の場合はポートレイト
         // Portrait if height is greater than width (not a square)
         const isPortrait = img.height > img.width;
         // 画像が400x400未満の場合は小さい画像として判定
         // 小さい画像モードを自動適用するために使用
         const isSmall = img.width < 400 && img.height < 400;
-        finish(isPortrait, isSmall);
+        // decode() avoids a blank first frame after the network load completes:
+        // https://developer.mozilla.org/en-US/docs/Web/API/HTMLImageElement/decode
+        // Keep the timeout active during decode; OBS must never strand the queue.
+        try {
+          if (typeof img.decode === 'function') {
+            void img.decode().then(
+              () => finish(isPortrait, isSmall, true, true),
+              () => finish(false, false),
+            );
+          } else {
+            finish(isPortrait, isSmall, true, true);
+          }
+        } catch {
+          finish(false, false);
+        }
       };
       img.onerror = () => {
         finish(false, false);
       };
       timeoutId = setTimeout(() => {
         finish(false, false);
-      }, IMAGE_METADATA_TIMEOUT_MS);
-      img.src = imageUrl;
+      }, IMAGE_PREPARE_TIMEOUT_MS);
+      try {
+        img.src = imageUrl;
+      } catch {
+        finish(false, false);
+      }
     });
   }, []);
 
@@ -1115,12 +1137,8 @@ export default function OverlayPage() {
     };
 
     try {
-      // Issue #1076: the exact OBS/CEF root cause is still unconfirmed. The real
-      // preview path received a valid gacha payload but produced no card DOM/
-      // pixels. Image metadata is presentation-only, so a business event must not
-      // depend on this preflight before mounting its DOM. Decouple the probe as a
-      // defensive fix; the existing 1.5s probe timeout would normally bound the
-      // old wait, so preview real-path validation remains mandatory after merge.
+      // Bound image preparation so frames and effects appear with the artwork,
+      // while preserving the #1076 recovery path for failed or stalled requests.
       const imageLayoutGeneration = imageLayoutGenerationRef.current + 1;
       imageLayoutGenerationRef.current = imageLayoutGeneration;
       if (
@@ -1151,44 +1169,29 @@ export default function OverlayPage() {
         rarity: next.card.rarity,
       } as Card;
       const displayResult = { ...next, card: displayCard };
-      // `result`を先に確定する。エフェクト設定はpresentation-onlyなので、
-      // 解決に失敗してもbusiness eventのカードDOMを失わせない。
-      setResult(displayResult);
-      // カード表示をmetadataやタイマーの完了条件にしない。OBS/CEFや
-      // バックグラウンドのブラウザではsetTimeoutが遅延することがあり、
-      // revealを待つだけでも実交換後の有効窓を全面黒画面にしてしまう。
-      // business eventを受信した時点でカードを可視化し、metadataは
-      // presentation-onlyのレイアウト更新として並行して扱う。
-      setShowCard(true);
-      displayStarted = true;
-      // The state setter has run, but the DOM commit happens on the next React
-      // render. Use "scheduled" here; the commit effect below is the only place
-      // that reports an actual card DOM commit.
-      addDebugLogRef.current('Card display scheduled');
-
-      // Start the presentation-only metadata probe *after* scheduling the card
-      // state. Even a future Image implementation that throws before returning
-      // a Promise cannot move the business event back behind this probe.
-      const imageMetadataPromise = checkImageAspectRatio(
+      // No-image cards remain synchronous. For image cards, both the network
+      // request and decode share the bounded probe timeout. A failed probe uses
+      // the existing painted fallback instead of showing an empty image region.
+      const imageReady = !displayCard.image_url || await prepareCardImage(
         displayCard.image_url,
         imageLayoutGeneration,
-      ).catch((error) => {
-        // Metadata and its diagnostics are presentation-only. A broken logger
-        // or debug panel must not reject this already-handled Promise and leak
-        // into handleQueueError after the normal advance chain is armed.
-        try {
-          logger.warn("Overlay image metadata probe failed:", error);
-        } catch {
-          // Best-effort diagnostic only.
-        }
-        try {
-          addDebugLogRef.current(
-            `image metadata probe failed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        } catch {
-          // Best-effort debug UI only.
-        }
-      });
+      ).catch(() => false);
+      if (
+        !isOverlayMountedRef.current
+        || queueGeneration !== queueGenerationRef.current
+        || imageLayoutGeneration !== imageLayoutGenerationRef.current
+      ) {
+        // Cleanup owns the old queue lock; never touch a new subscription here.
+        settleDisplayCommit(next.displayInstanceId, false);
+        return;
+      }
+      if (!imageReady && next.displayInstanceId !== undefined) {
+        setImageFallbackDisplayInstanceId(next.displayInstanceId);
+      }
+      setResult(displayResult);
+      setShowCard(true);
+      displayStarted = true;
+      addDebugLogRef.current('Card display scheduled');
 
       try {
         // このカードのレアリティに紐づくエフェクトを解決する。
@@ -1219,7 +1222,7 @@ export default function OverlayPage() {
       }
 
       // 表示は既に開始済み。ここでは効果音と表示終了だけを予約する。
-      // metadataの解決やrevealタイマーをカードDOMのliveness条件にしない。
+      // 画像準備にかかった時間をカードの表示時間から差し引かない。
       animationTimeoutRef.current = setTimeout(() => runProtected(() => {
         // The reveal timer has fired; it no longer needs lifecycle tracking.
         animationTimeoutRef.current = null;
@@ -1327,12 +1330,10 @@ export default function OverlayPage() {
           finishDisplayWindow();
         }), options.displayDuration * 1000);
       }), MIN_REVEAL_LEAD_IN_MS);
-      void imageMetadataPromise
-        .catch(handleQueueError);
     } catch (error) {
       handleQueueError(error);
     }
-  }, [armDisplayCommitTimeout, checkImageAspectRatio, failDisplayCommit, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap, requestDisplayFallback, settleDisplayCommit]);
+  }, [armDisplayCommitTimeout, prepareCardImage, failDisplayCommit, playGachaSound, options.displayDuration, options.effects, options.rarityEffectMap, requestDisplayFallback, settleDisplayCommit]);
 
   // processQueueRefを最新のcallbackで更新
   useEffect(() => {

@@ -78,7 +78,9 @@ describe('OverlayPage actual realtime transport commit acknowledgement', () => {
     class PendingImage {
       onload: (() => void) | null = null
       onerror: (() => void) | null = null
-      set src(_value: string) {}
+      width = 640
+      height = 480
+      set src(_value: string) { queueMicrotask(() => this.onload?.()) }
     }
     vi.stubGlobal('Image', PendingImage)
 

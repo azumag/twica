@@ -8,10 +8,6 @@ const { subscribeMock, streamerIdRef } = vi.hoisted(() => ({
   streamerIdRef: { current: 'streamer-1' },
 }))
 
-// metadata callback が無応答のままでも表示が維持されることを見る観測窓。
-// 現行の 1.5 秒 probe timeout を少し越えて待つ意図を数値直書きから分離する。
-const METADATA_STALL_OBSERVATION_MS = 1_600
-
 vi.mock('next/navigation', () => ({
   useParams: () => ({ streamerId: streamerIdRef.current }),
 }))
@@ -65,86 +61,79 @@ describe('OverlayPage metadata fallback', () => {
       .toHaveClass('opacity-100')
   })
 
-  // #1076 の実経路では gacha payload を受信しても最初のカードDOM自体が出ない症状が
-  // あった。既存のN連キューテストとは分け、初回カードでブラウザの metadata callback が
-  // 一度も返らなくても business event のDOM配置と期限後のrevealが進むことを固定する。
-  it('初回カードのmetadata callbackが無応答でもDOMを先に配置して表示する', async () => {
-    vi.useFakeTimers()
-    window.history.replaceState({}, '', '/overlay/streamer-1')
-
-    class PendingImage {
-      onload: (() => void) | null = null
-      onerror: (() => void) | null = null
-      width = 640
-      height = 480
-
-      set src(value: string) {
-        void value
-        // ブラウザ由来の load / error を意図的に発火させない。
+  it.each(['load', 'timeout', 'error', 'decode-error', 'decode-timeout'] as const)(
+    '画像準備待ちでは枠を表示せず、%s 後から表示時間を数える', async (outcome) => {
+      vi.useFakeTimers()
+      window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
+      const pendingImages: PendingImage[] = []
+      let finishDecode: (() => void) | undefined
+      class PendingImage {
+        onload: (() => void) | null = null
+        onerror: (() => void) | null = null
+        width = 640
+        height = 480
+        decode = () => outcome === 'decode-error'
+          ? Promise.reject(new Error('invalid image'))
+          : new Promise<void>(resolve => { finishDecode = resolve })
+        set src(_value: string) { pendingImages.push(this) }
       }
-    }
-    vi.stubGlobal('Image', PendingImage)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ soundUrl: null, soundEnabled: false }),
-    }))
-
-    let onGachaResult: ((payload: GachaBroadcastPayload) => GachaDeliveryResult) | undefined
-    let acknowledged = false
-    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
-      onGachaResult = callback as (payload: GachaBroadcastPayload) => GachaDeliveryResult
-      options.onSuccess?.()
-      return vi.fn()
-    })
-
-    render(<OverlayPage />)
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(onGachaResult).toBeDefined()
-    act(() => {
-      const delivery = onGachaResult?.({
-        type: 'gacha',
-        card: {
-          id: 'metadata-pending-card',
-          name: 'Metadata Pending',
-          description: null,
-          image_url: 'https://example.com/metadata-pending.png',
-          rarity: 'rare',
-        },
-        userTwitchUsername: 'Viewer',
+      vi.stubGlobal('Image', PendingImage)
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true, json: async () => ({ soundUrl: null, soundEnabled: false }),
+      }))
+      let onPayload: ((payload: GachaBroadcastPayload) => GachaDeliveryResult) | undefined
+      subscribeMock.mockImplementation((_id, callback, options: SubscribeOptions) => {
+        onPayload = callback
+        options.onSuccess?.()
+        return vi.fn()
       })
-      expect(delivery).toBeInstanceOf(Promise)
-      void Promise.resolve(delivery).then((accepted) => {
-        acknowledged = accepted === true
+      render(<OverlayPage />)
+      await act(async () => { await Promise.resolve() })
+      await act(async () => {
+        void onPayload?.({
+          type: 'gacha',
+          card: { id: 'waiting', name: 'Waiting Card', description: null,
+            image_url: 'https://example.com/waiting.png', rarity: 'rare' },
+          userTwitchUsername: 'Viewer',
+        })
       })
-      expect(acknowledged).toBe(false)
-    })
-
-    // metadata timeoutを待つ前からカードDOMは存在し、すでに可視である。
-    // presentation-onlyなmetadata取得やrevealタイマーがbusiness eventの
-    // 表示を再びブロックする回帰をここで検知する。
-    const cardName = screen.getByText('Metadata Pending')
-    const cardRoot = cardName.closest('.transition-all')
-    expect(cardRoot).not.toBeNull()
-    expect(cardRoot).toHaveClass('opacity-100')
-    const cardImage = cardRoot?.querySelector('img') as HTMLImageElement | null
-    if (cardImage) {
-      Object.defineProperty(cardImage, 'complete', { configurable: true, value: true })
-      Object.defineProperty(cardImage, 'naturalWidth', { configurable: true, value: 320 })
-      Object.defineProperty(cardImage, 'naturalHeight', { configurable: true, value: 448 })
-      cardImage.dispatchEvent(new Event('load'))
-    }
-
-    // load/errorは無応答のままでも、metadata期限に依存せず表示が維持される。
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(METADATA_STALL_OBSERVATION_MS)
-    })
-    expect(cardRoot).toHaveClass('opacity-100')
-    expect(acknowledged).toBe(true)
-  })
+      expect(screen.queryByText('Waiting Card')).not.toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+      expect(screen.queryByText('Waiting Card')).not.toBeInTheDocument()
+      if (outcome === 'timeout') {
+        await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+      } else if (outcome === 'error') {
+        await act(async () => { pendingImages[0]?.onerror?.() })
+      } else {
+        await act(async () => { pendingImages[0]?.onload?.() })
+        if (outcome === 'decode-timeout') {
+          await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+        }
+        if (outcome === 'load') {
+          expect(screen.queryByText('Waiting Card')).not.toBeInTheDocument()
+          await act(async () => { finishDecode?.() })
+        }
+      }
+      const root = screen.getByText('Waiting Card').closest('[data-overlay-card="true"]')!
+      expect(root).toHaveClass('opacity-100')
+      if (outcome !== 'load') {
+        expect(root.querySelector('[data-overlay-card-fallback="true"]')).not.toBeNull()
+      } else {
+        // The real element, rather than the detached preloader, owns delivery ACK.
+        const image = root.querySelector('img')!
+        Object.defineProperties(image, {
+          complete: { configurable: true, value: true },
+          naturalWidth: { configurable: true, value: 320 },
+          naturalHeight: { configurable: true, value: 448 },
+        })
+        await act(async () => { image.dispatchEvent(new Event('load')) })
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+      expect(root).toHaveClass('opacity-100')
+      await act(async () => { await vi.advanceTimersByTimeAsync(1400) })
+      expect(root).toHaveClass('opacity-0')
+    },
+  )
 
   it('旧subscription世代の遅延payloadを新しいstreamerへ混ぜない', async () => {
     window.history.replaceState({}, '', '/overlay/streamer-1')

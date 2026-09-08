@@ -783,15 +783,14 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Batch A')).toBeInTheDocument()
 
-    // A commits, then B becomes active but never loads an image. Its watchdog
-    // observes the committed card and ACKs the visible fallback rather than
-    // removing it and creating a retry/black-screen loop.
+    // A commits, then B waits for preparation and times out. The visible
+    // fallback ACKs B without removing it or starting a retry loop.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6600)
     })
-    expect(screen.getByText('Batch B')).toBeInTheDocument()
+    expect(screen.queryByText('Batch B')).not.toBeInTheDocument()
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(4500)
+      await vi.advanceTimersByTimeAsync(1600)
     })
     await expect(firstAttempt).resolves.toBe(true)
     expect(screen.getByText('Batch B')).toBeInTheDocument()
@@ -921,22 +920,15 @@ describe('OverlayPage', () => {
     })
     expect(screen.getByText('Alpha')).toBeInTheDocument()
 
-    // 1枚目の表示終了後、2枚目のmetadata probeは無応答のままでも、カードDOMは
-    // 先にマウントされ、metadataの期限を待たずに可視化される。
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(6600)
-    })
+    // 2枚目は画像準備の上限まで待ち、代替カードで表示を開始する。
+    await act(async () => { await vi.advanceTimersByTimeAsync(6600) })
     expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
+    expect(screen.queryByText('Beta')).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600) })
     const betaText = screen.getByText('Beta')
-    expect(betaText).toBeInTheDocument()
     expect(betaText.closest('.transition-all')).toHaveClass('opacity-100')
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1600)
-    })
-    expect(betaText.closest('.transition-all')).toHaveClass('opacity-100')
-
-    // 2枚目のmetadata timeoutの有無とは独立に通常の表示時間で3枚目へ進む。
+    // 代替表示開始後の通常の表示時間を確保して3枚目へ進む。
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6600)
     })
@@ -994,15 +986,7 @@ describe('OverlayPage', () => {
         userTwitchUsername: 'Viewer',
       })
     })
-    expect(screen.getByText('Old Card')).toBeInTheDocument()
-
-    // The old card reaches its short display-window fallback. Switch the
-    // streamer before the guarded visibility timer expires; that timer must
-    // not make the newly mounted streamer's card transparent.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2100)
-    })
-    expect(document.querySelector('[data-overlay-card-fallback="true"]')).not.toBeNull()
+    expect(screen.queryByText('Old Card')).not.toBeInTheDocument()
 
     // 同一component instanceでstreamerを切り替えると旧probeはcleanupでresolveする。
     // そのmicrotaskが新subscriptionのisDisplayingRefを解除してはならない。
@@ -1232,7 +1216,7 @@ describe('OverlayPage', () => {
     expect(screen.queryByText('Viewer が引いたカード')).not.toBeInTheDocument()
   })
 
-  it('metadataが遅くてもカードDOMを先に置き、解決後に安定したレイアウトでrevealする', async () => {
+  it('画像準備を待って縦長レイアウトで表示し、実画像load後だけACKする', async () => {
     vi.useFakeTimers()
 
     const metadataImages: MockImage[] = []
@@ -1281,15 +1265,8 @@ describe('OverlayPage', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100)
     })
-    expect(screen.getByText('Viewer が引いたカード')).toBeInTheDocument()
-    const initialCardImage = screen.getByAltText('Late Portrait')
+    expect(screen.queryByAltText('Late Portrait')).not.toBeInTheDocument()
 
-    // metadataが遅れても、DOMは既に存在し、revealタイマーを待たず可視になる。
-    expect(screen.getByText('Viewer が引いたカード').closest('.transition-all'))
-      .toHaveClass('opacity-100')
-
-    // 画像metadataが縦長として到着したあとも、カードは表示を継続しながら
-    // image-onlyレイアウトへ更新される。
     const metadataImage = metadataImages[0]
     expect(metadataImage).toBeDefined()
     metadataImage.width = 200
@@ -1302,22 +1279,9 @@ describe('OverlayPage', () => {
     const portraitCardImage = screen.getByAltText('Late Portrait')
     expect(portraitCardImage).toBeInTheDocument()
 
-    // autoPortrait remounts the <img>. A late load from the detached old
-    // element must not ACK the draw; only the currently mounted image may do
-    // so after it has positive natural dimensions.
-    Object.defineProperties(initialCardImage, {
-      complete: { configurable: true, value: true },
-      naturalWidth: { configurable: true, value: 320 },
-      naturalHeight: { configurable: true, value: 448 },
-    })
     let delivered = false
-    delivery?.then(() => {
-      delivered = true
-    })
-    await act(async () => {
-      initialCardImage.dispatchEvent(new Event('load'))
-      await Promise.resolve()
-    })
+    delivery?.then(() => { delivered = true })
+    await act(async () => { await Promise.resolve() })
     expect(delivered).toBe(false)
 
     Object.defineProperties(portraitCardImage, {
@@ -1407,7 +1371,7 @@ describe('OverlayPage', () => {
   it.each([
     { label: '通常表示', query: '' },
     { label: '画像のみ表示', query: '?imageOnly=true' },
-  ])('ウォッチドッグ後に遅延画像が復帰すると代替表示を外す($label)', async ({ query }) => {
+  ])('画像準備タイムアウト後に遅延画像が復帰すると代替表示を外す($label)', async ({ query }) => {
     vi.useFakeTimers()
     window.history.replaceState({}, '', `/overlay/streamer-1${query}`)
 
@@ -1450,14 +1414,14 @@ describe('OverlayPage', () => {
     })
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(1600)
     })
     const imageBeforeFallback = screen.getByAltText('Slow Recovery')
 
-    // The watchdog paints a visible fallback, but it must not unmount the
+    // The preparation timeout paints a fallback, but it must not unmount the
     // underlying image element because a slow CDN response can still recover.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(4500)
+      await vi.advanceTimersByTimeAsync(200)
     })
     expect(screen.getByLabelText(/Slow Recovery の画像を表示できないため代替表示/))
       .toHaveAttribute('data-overlay-card-fallback', 'true')
@@ -1521,15 +1485,14 @@ describe('OverlayPage', () => {
     })
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(1600)
     })
     expect(screen.getByAltText('Short Window')).toBeInTheDocument()
 
-    // displayDuration=2 expires before the 4.5s watchdog. The fallback must
-    // be committed while this card is still mounted, so this exchange resolves
-    // once without a transport retry.
+    // The fallback must be committed during its full two-second display
+    // window, so this exchange resolves once without a transport retry.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000)
+      await vi.advanceTimersByTimeAsync(1000)
     })
     expect(screen.getByLabelText(/Short Window の画像を表示できないため代替表示/))
       .toHaveAttribute('data-overlay-card-fallback', 'true')
@@ -1537,15 +1500,14 @@ describe('OverlayPage', () => {
       .toHaveClass('opacity-100')
     await expect(delivery).resolves.toBe(true)
 
-    // A same-turn display-expiry callback must leave the fallback painted for
-    // a bounded frame window before making the outgoing card transparent.
+    // Preparation time must not shorten the fallback display window.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(249)
     })
     expect(document.querySelector('[data-overlay-card="true"]'))
       .toHaveClass('opacity-100')
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(500)
+      await vi.advanceTimersByTimeAsync(1000)
     })
     expect(document.querySelector('[data-overlay-card="true"]'))
       .toHaveClass('opacity-0')
@@ -1707,6 +1669,15 @@ describe('OverlayPage', () => {
   // 「setTimeoutコールバックの中で起きた例外」を確実に再現する。
   it('setTimeoutでスケジュールされる表示チェーン内の例外でもロックが残らない(Issue #999レビュー指摘#1回帰)', async () => {
     vi.useFakeTimers()
+    class PreparedImage {
+      width = 640
+      height = 480
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      set src(_value: string) { queueMicrotask(() => this.onload?.()) }
+    }
+    vi.stubGlobal('Image', PreparedImage)
+
     window.history.replaceState({}, '', '/overlay/streamer-1?duration=2')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -1953,16 +1924,11 @@ describe('OverlayPage', () => {
     act(() => {
       onGachaResult?.({ type: 'gacha', card: cards[0], cards, userTwitchUsername: 'Viewer' })
     })
-    // The image watchdog renders its fallback at 4.5s. Flush that state
-    // update before advancing the normal 6s display window so the test models
-    // the browser's separate timer tasks rather than batching both deadlines.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(4500)
-    })
+    // The first preloader succeeds; the mounted image watchdog owns its ACK.
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(4400) })
     expect(document.querySelector('[data-overlay-card-fallback="true"]')).not.toBeNull()
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2100)
-    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
     expect(imageInstances).toHaveLength(2)
     const playsBeforeUnmount = playMock.mock.calls.length
 
