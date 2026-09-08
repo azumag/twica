@@ -43,34 +43,38 @@ const REQUIRED_CONFIRMATION_LINES = [
   "- ブラウザー／実経路の確認: <!-- 対象外の場合は理由を記載 -->",
 ] as const;
 
-function promotionWorkflowLines(source: string): string[] {
-  // Keep heading extraction aligned with notify-discord-main-merge.yml: remove
-  // HTML comments before looking for the promotion section.
-  const withoutHtmlComments = source.replace(/<!--.*?(?:-->|$)/gs, "");
-  return withoutHtmlComments.split(/\r?\n/);
+function headingScanLines(source: string): string[] {
+  // The promotion workflow removes HTML comments before heading extraction.
+  // Preserve their newline count here so scan-line indexes still map to the
+  // original source used by the rest of the contract assertions.
+  const withoutHtmlCommentText = source.replace(
+    /<!--.*?(?:-->|$)/gs,
+    (comment) => comment.replace(/[^\r\n]/g, "")
+  );
+  return withoutHtmlCommentText.split(/\r?\n/);
 }
 
 function normalizedHeading(line: string): string {
-  // The workflow compares headings with Python's strip(), but preserving the
-  // original section lines keeps indentation meaningful to the contract tests.
+  // Match the workflow's Python line.strip() comparison for H2 detection only.
   return line.trim();
 }
 
 function h2Headings(source: string): string[] {
-  return promotionWorkflowLines(source)
+  return headingScanLines(source)
     .map(normalizedHeading)
     .filter((line) => line.startsWith("## "));
 }
 
 function h2Section(source: string, heading: string): string {
-  const lines = promotionWorkflowLines(source);
-  const start = lines.findIndex((line) => normalizedHeading(line) === heading);
+  const sourceLines = source.split(/\r?\n/);
+  const scanLines = headingScanLines(source);
+  const start = scanLines.findIndex((line) => normalizedHeading(line) === heading);
   if (start === -1) return "";
 
-  const next = lines.findIndex(
+  const next = scanLines.findIndex(
     (line, index) => index > start && normalizedHeading(line).startsWith("## ")
   );
-  return lines.slice(start, next === -1 ? undefined : next).join("\n");
+  return sourceLines.slice(start, next === -1 ? undefined : next).join("\n");
 }
 
 const qaReleaseContract = h2Section(
@@ -91,7 +95,7 @@ describe("preview -> main release PR template contract", () => {
       "## hidden guidance heading",
       "-->",
       "  ## visible heading  ",
-      "  release text",
+      "  release text <!-- keep this in the returned contract section -->",
       "   ## next heading   ",
     ].join("\n");
 
@@ -100,7 +104,7 @@ describe("preview -> main release PR template contract", () => {
       "## next heading",
     ]);
     expect(h2Section(source, "## visible heading")).toBe(
-      "  ## visible heading  \n  release text"
+      "  ## visible heading  \n  release text <!-- keep this in the returned contract section -->"
     );
   });
 
