@@ -20,9 +20,7 @@ vi.mock('@/lib/storage-usage', () => ({
   getStorageUsage: vi.fn(),
   formatBytes: vi.fn(),
 }));
-vi.mock('@/lib/crypto-utils', () => ({
-  sha256Prefix: vi.fn(),
-}));
+vi.mock('@/lib/crypto-utils');
 vi.mock('@/lib/error-handler', () => ({
   handleApiError: vi.fn(),
 }));
