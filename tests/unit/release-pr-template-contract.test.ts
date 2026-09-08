@@ -4,14 +4,28 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const releaseTemplate = readFileSync(
-  join(repositoryRoot, ".github/PULL_REQUEST_TEMPLATE/release.md"),
-  "utf8"
+
+function readContractSource(relativePath: string, contractName: string): string {
+  try {
+    return readFileSync(join(repositoryRoot, relativePath), "utf8");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    // These files are loaded during Vitest collection, so include the logical contract
+    // name in the thrown error instead of leaving reviewers with a bare ENOENT path.
+    throw new Error(
+      `Failed to load release contract source "${contractName}" (${relativePath}): ${detail}`
+    );
+  }
+}
+
+const releaseTemplate = readContractSource(
+  ".github/PULL_REQUEST_TEMPLATE/release.md",
+  "release PR template"
 );
-const qaDocument = readFileSync(join(repositoryRoot, "docs/QA.md"), "utf8");
-const notifyWorkflow = readFileSync(
-  join(repositoryRoot, ".github/workflows/notify-discord-main-merge.yml"),
-  "utf8"
+const qaDocument = readContractSource("docs/QA.md", "preview promotion QA");
+const notifyWorkflow = readContractSource(
+  ".github/workflows/notify-discord-main-merge.yml",
+  "Discord promotion notification workflow"
 );
 
 const REQUIRED_TEMPLATE_HEADINGS = [
@@ -54,6 +68,17 @@ describe("preview -> main release PR template contract", () => {
   // レビュー・通知の読み手が確認できるという QA.md の本文契約を守る。
   it("keeps the user-facing release summary as the first H2 heading", () => {
     expect(h2Headings(releaseTemplate)[0]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
+  });
+
+  it("reports the logical contract name when a source file is missing", () => {
+    expect(() =>
+      readContractSource(
+        "tests/unit/__missing_release_contract_source__",
+        "missing-source diagnostic"
+      )
+    ).toThrow(
+      'Failed to load release contract source "missing-source diagnostic"'
+    );
   });
 
   it("keeps the Discord promotion consumer on the same summary heading", () => {
