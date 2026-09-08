@@ -30,7 +30,9 @@ const baseUsage: StorageUsage = {
   planOverLimit: false,
 }
 
-async function getStorageStatus(overrides: Partial<StorageUsage> = {}) {
+// このsuiteは200応答の本文互換だけを検証するため、成功statusのassertionはhelperに集約する。
+// 401/500のstatus契約は専用suiteで固定し、各テストはmessage優先順位へ集中させる（#1352）。
+async function getSuccessfulStorageStatusBody(overrides: Partial<StorageUsage> = {}) {
   mockGetStorageUsage.mockResolvedValue({ ...baseUsage, ...overrides })
   const response = await GET()
   expect(response.status).toBe(200)
@@ -57,7 +59,7 @@ describe('GET /api/storage-status message compatibility', () => {
   })
 
   it('planOverLimit を最優先の互換 message として返す', async () => {
-    const body = await getStorageStatus({
+    const body = await getSuccessfulStorageStatusBody({
       planOverLimit: true,
       globalLimitReached: true,
       userLimitReached: true,
@@ -69,7 +71,7 @@ describe('GET /api/storage-status message compatibility', () => {
   })
 
   it('globalLimitReached を userLimitReached より優先する', async () => {
-    const body = await getStorageStatus({
+    const body = await getSuccessfulStorageStatusBody({
       globalLimitReached: true,
       userLimitReached: true,
     })
@@ -78,7 +80,7 @@ describe('GET /api/storage-status message compatibility', () => {
   })
 
   it('userLimitReached の互換 message を返す', async () => {
-    const body = await getStorageStatus({ userLimitReached: true })
+    const body = await getSuccessfulStorageStatusBody({ userLimitReached: true })
 
     expect(body.message).toBe(
       '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。'
@@ -86,7 +88,7 @@ describe('GET /api/storage-status message compatibility', () => {
   })
 
   it('制限に達していなければ message は null を返す', async () => {
-    const body = await getStorageStatus()
+    const body = await getSuccessfulStorageStatusBody()
 
     expect(body.message).toBeNull()
   })
