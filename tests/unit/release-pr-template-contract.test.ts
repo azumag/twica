@@ -45,22 +45,30 @@ const REQUIRED_CONFIRMATION_LINES = [
 
 function promotionWorkflowLines(source: string): string[] {
   // Keep heading extraction aligned with notify-discord-main-merge.yml: remove
-  // HTML comments first, then compare headings after strip()/trim() normalization.
+  // HTML comments before looking for the promotion section.
   const withoutHtmlComments = source.replace(/<!--.*?(?:-->|$)/gs, "");
-  return withoutHtmlComments.split(/\r?\n/).map((line) => line.trim());
+  return withoutHtmlComments.split(/\r?\n/);
+}
+
+function normalizedHeading(line: string): string {
+  // The workflow compares headings with Python's strip(), but preserving the
+  // original section lines keeps indentation meaningful to the contract tests.
+  return line.trim();
 }
 
 function h2Headings(source: string): string[] {
-  return promotionWorkflowLines(source).filter((line) => line.startsWith("## "));
+  return promotionWorkflowLines(source)
+    .map(normalizedHeading)
+    .filter((line) => line.startsWith("## "));
 }
 
 function h2Section(source: string, heading: string): string {
   const lines = promotionWorkflowLines(source);
-  const start = lines.findIndex((line) => line === heading);
+  const start = lines.findIndex((line) => normalizedHeading(line) === heading);
   if (start === -1) return "";
 
   const next = lines.findIndex(
-    (line, index) => index > start && line.startsWith("## ")
+    (line, index) => index > start && normalizedHeading(line).startsWith("## ")
   );
   return lines.slice(start, next === -1 ? undefined : next).join("\n");
 }
@@ -77,13 +85,13 @@ describe("preview -> main release PR template contract", () => {
     expect(h2Headings(releaseTemplate)[0]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
   });
 
-  it("mirrors the promotion workflow's HTML-comment and whitespace normalization", () => {
+  it("mirrors the promotion workflow's HTML-comment and heading whitespace normalization", () => {
     const source = [
       "<!--",
       "## hidden guidance heading",
       "-->",
       "  ## visible heading  ",
-      "release text",
+      "  release text",
       "   ## next heading   ",
     ].join("\n");
 
@@ -92,7 +100,7 @@ describe("preview -> main release PR template contract", () => {
       "## next heading",
     ]);
     expect(h2Section(source, "## visible heading")).toBe(
-      "## visible heading\nrelease text"
+      "  ## visible heading  \n  release text"
     );
   });
 
