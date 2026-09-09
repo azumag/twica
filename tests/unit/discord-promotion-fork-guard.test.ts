@@ -14,6 +14,16 @@ function validationCondition(source: string): string {
   return match?.[1] ?? "";
 }
 
+function pullRequestTargetTypes(source: string): string[] {
+  const match = source.match(/pull_request_target:\n\s+types: \[([^\]]+)\]/);
+  return (
+    match?.[1]
+      ?.split(",")
+      .map((type) => type.trim())
+      .filter(Boolean) ?? []
+  );
+}
+
 describe("Discord promotion validation fork guard", () => {
   it("skips the validation job for fork-owned preview branches", () => {
     const condition = validationCondition(workflow);
@@ -24,5 +34,12 @@ describe("Discord promotion validation fork guard", () => {
     expect(condition).toContain(
       "github.event.pull_request.head.ref == 'preview'"
     );
+  });
+
+  it("revalidates promotion summaries after reopen and ready-for-review transitions", () => {
+    const eventTypes = pullRequestTargetTypes(workflow);
+
+    expect(eventTypes).toContain("reopened");
+    expect(eventTypes).toContain("ready_for_review");
   });
 });
