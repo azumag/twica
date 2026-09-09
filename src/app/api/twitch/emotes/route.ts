@@ -42,7 +42,7 @@ async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string
 /**
  * GET /api/twitch/emotes
  * Fetches the broadcaster's channel emotes from Twitch API
- * 配信者のチャネルエモートを取得
+ * 配信者のチャネルエモートをTwitch APIから取得
  */
 export async function GET(request: Request) {
   const session = await getSession();
