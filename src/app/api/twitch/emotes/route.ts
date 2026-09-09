@@ -42,7 +42,7 @@ async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string
 /**
  * GET /api/twitch/emotes
  * Fetches the broadcaster's channel emotes from Twitch API
- * 配信者のチャネルエモートをTwitch APIから取得
+ * 配信者のチャネルエモートを取得
  */
 export async function GET(request: Request) {
   const session = await getSession();
@@ -116,8 +116,7 @@ export async function GET(request: Request) {
         { status: 401 }
       );
     }
-    // refresh診断の永続化責任はAPI境界。additionalInfoへの安全な橋渡しと非二重報告の理由は
-    // twitchTokenErrorReportContext のJSDocを参照。
+    // refresh診断の永続化・非二重報告契約は twitchTokenErrorReportContext のJSDocを参照。
     return handleApiError(error, "Twitch emotes fetch", twitchTokenErrorReportContext(error));
   }
 }
