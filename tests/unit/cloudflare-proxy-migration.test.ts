@@ -12,13 +12,19 @@ describe("Cloudflare proxy migration policy", () => {
     expect(existsSync(join(process.cwd(), "src/proxy.ts"))).toBe(false);
   });
 
-  it("documents the current pin, upstream support, and verification gate", () => {
+  it("documents the current package pin, upstream support, and verification gate", () => {
     const doc = readSource("docs/cloudflare-proxy-migration.md");
     const middleware = readSource("src/middleware.ts");
+    const packageJson = JSON.parse(readSource("package.json")) as {
+      devDependencies?: Record<string, string>;
+    };
+    const adapterVersion = packageJson.devDependencies?.["@opennextjs/cloudflare"];
 
     // Keep this contract on observable migration gates, not prose copied from
-    // the policy document. Wording changes must not require a test rewrite.
-    expect(doc).toContain("@opennextjs/cloudflare` 1.20.2");
+    // the policy document. Wording and future package pin changes should not
+    // require duplicating the same version literal in this test.
+    expect(adapterVersion).toBeDefined();
+    expect(doc).toContain(`@opennextjs/cloudflare\` ${adapterVersion}`);
     expect(doc).toContain("opennextjs-cloudflare#1309");
     expect(doc).toContain("1.20.3");
     expect(doc).toContain("Upstream status last checked");
