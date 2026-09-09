@@ -80,7 +80,6 @@ jobs:
       PR_URL: ${{ github.event.pull_request.html_url }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      BASE_REF: ${{ github.event.pull_request.base.ref }}
       HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
 
     steps:
@@ -113,9 +112,9 @@ jobs:
           limit = 2000
           section_heading = "## このリリースで変わること"
           # Only the canonical preview -> main path is a release promotion.
-          # Keep the branch names explicit here so direct-to-main merges use the title fallback.
+          # The workflow itself is already scoped to PRs targeting main, so only
+          # the head ref and repository identity need to be checked here.
           promotion_source_ref = "preview"
-          promotion_target_ref = "main"
           body = os.environ.get("PR_BODY", "").replace("\r\n", "\n").replace("\r", "\n")
           # Only same-repository promotion text is trusted as notification input.
           # Fork PRs fall back to a sanitized title below.
@@ -156,8 +155,7 @@ jobs:
           release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
           if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
               is_promotion = (
-                  os.environ.get("BASE_REF") == promotion_target_ref
-                  and os.environ.get("HEAD_REF") == promotion_source_ref
+                  os.environ.get("HEAD_REF") == promotion_source_ref
                   and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")
               )
               if is_promotion:
