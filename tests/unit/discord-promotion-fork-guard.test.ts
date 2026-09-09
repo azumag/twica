@@ -24,6 +24,19 @@ function pullRequestTargetTypes(source: string): string[] {
   );
 }
 
+function missingSummaryBranches(source: string): {
+  promotion: string;
+  directToMain: string;
+} {
+  const match = source.match(
+    /if is_promotion:\n([\s\S]*?)\n\s+else:\n([\s\S]*?)\n\s+prefix =/
+  );
+  return {
+    promotion: match?.[1] ?? "",
+    directToMain: match?.[2] ?? "",
+  };
+}
+
 describe("Discord promotion validation fork guard", () => {
   it("skips the validation job for fork-owned preview branches", () => {
     const condition = validationCondition(workflow);
@@ -45,13 +58,20 @@ describe("Discord promotion validation fork guard", () => {
 
   it("keeps missing-summary warnings and failures limited to preview promotions", () => {
     expect(workflow).toContain(
-      'is_promotion = (\n                  os.environ.get("HEAD_REF") == promotion_source_ref\n                  and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")\n              )'
+      'os.environ.get("HEAD_REF") == promotion_source_ref'
     );
     expect(workflow).toContain(
-      'if is_promotion:\n                  print(\n                      "::warning::Promotion PR summary missing after sanitization; "'
+      'os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")'
     );
-    expect(workflow).toContain(
-      'else:\n                  # A direct-to-main merge has no promotion-summary contract.'
+
+    const { promotion, directToMain } = missingSummaryBranches(workflow);
+
+    expect(promotion).toContain("::warning::Promotion PR summary missing");
+    expect(promotion).toContain("PROMOTION_SUMMARY_MISSING=true");
+    expect(directToMain).toContain(
+      "A direct-to-main merge has no promotion-summary contract."
     );
+    expect(directToMain).not.toContain("::warning::");
+    expect(directToMain).not.toContain("PROMOTION_SUMMARY_MISSING=true");
   });
 });
