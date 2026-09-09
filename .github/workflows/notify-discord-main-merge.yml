@@ -171,10 +171,9 @@ jobs:
                   with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
                       env.write("PROMOTION_SUMMARY_MISSING=true" + chr(10))
               else:
-                  print(
-                      "::warning::Merged PR is missing a non-empty promotion summary; using PR title in Discord.",
-                      file=sys.stderr,
-                  )
+                  # A direct-to-main merge has no promotion-summary contract.
+                  # Falling back to the sanitized PR title is the expected path,
+                  # so do not emit a misleading warning for this normal case.
                   release_text = strip_markdown_links(
                       os.environ.get("PR_TITLE", "").strip()
                   ).strip()
