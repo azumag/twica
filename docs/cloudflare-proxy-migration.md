@@ -36,7 +36,8 @@ was closed on 2026-08-25 when
 merged. `@opennextjs/cloudflare` 1.20.3, published on 2026-08-26, includes that
 experimental `proxy.ts` support.
 
-Upstream status last checked: **2026-09-05**. TwiCa is still pinned to
+Upstream status last checked: **2026-09-09**. The recheck confirms #1277 remains
+closed and #1309 remains merged. TwiCa is still pinned to
 `@opennextjs/cloudflare` 1.20.2, so the upstream fix has not yet changed the
 repository's verified deployment contract.
 
