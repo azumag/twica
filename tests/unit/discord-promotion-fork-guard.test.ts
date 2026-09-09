@@ -80,15 +80,10 @@ describe("Discord promotion validation fork guard", () => {
       'body = os.environ.get("PR_BODY", "").replace'
     );
     const forkGuard = workflow.indexOf(
-      'if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"): ',
-      notifyBodyStart
-    );
-    const forkGuardWithoutTrailingSpace = workflow.indexOf(
       'if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"):',
       notifyBodyStart
     );
-    const effectiveForkGuard = forkGuard >= 0 ? forkGuard : forkGuardWithoutTrailingSpace;
-    const discardBody = workflow.indexOf('body = ""', effectiveForkGuard);
+    const discardBody = workflow.indexOf('body = ""', forkGuard);
     const sanitizeBody = workflow.indexOf(
       'body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)',
       discardBody
@@ -96,8 +91,8 @@ describe("Discord promotion validation fork guard", () => {
     const splitBody = workflow.indexOf("lines = body.splitlines()", sanitizeBody);
 
     expect(notifyBodyStart).toBeGreaterThan(-1);
-    expect(effectiveForkGuard).toBeGreaterThan(notifyBodyStart);
-    expect(discardBody).toBeGreaterThan(effectiveForkGuard);
+    expect(forkGuard).toBeGreaterThan(notifyBodyStart);
+    expect(discardBody).toBeGreaterThan(forkGuard);
     expect(sanitizeBody).toBeGreaterThan(discardBody);
     expect(splitBody).toBeGreaterThan(sanitizeBody);
   });
