@@ -74,4 +74,26 @@ describe("Discord promotion validation fork guard", () => {
     expect(directToMain).not.toContain("::warning::");
     expect(directToMain).not.toContain("PROMOTION_SUMMARY_MISSING=true");
   });
+
+  it("discards fork PR bodies before parsing notification summary text", () => {
+    const notifyBodyStart = workflow.indexOf(
+      'body = os.environ.get("PR_BODY", "").replace'
+    );
+    const forkGuard = workflow.indexOf(
+      'if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"):',
+      notifyBodyStart
+    );
+    const discardBody = workflow.indexOf('body = ""', forkGuard);
+    const sanitizeBody = workflow.indexOf(
+      'body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)',
+      discardBody
+    );
+    const splitBody = workflow.indexOf("lines = body.splitlines()", sanitizeBody);
+
+    expect(notifyBodyStart).toBeGreaterThan(-1);
+    expect(forkGuard).toBeGreaterThan(notifyBodyStart);
+    expect(discardBody).toBeGreaterThan(forkGuard);
+    expect(sanitizeBody).toBeGreaterThan(discardBody);
+    expect(splitBody).toBeGreaterThan(sanitizeBody);
+  });
 });
