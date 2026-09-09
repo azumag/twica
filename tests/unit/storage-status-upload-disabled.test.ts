@@ -108,4 +108,18 @@ describe('GET /api/storage-status uploadDisabled contract (#1352)', () => {
       uploadDisabled: true,
     })
   })
+
+  it('プランダウングレードで userLimitReached と planOverLimit が同時に true でも uploadDisabled は true', async () => {
+    const body = await getSuccessfulStorageStatusBody({
+      userLimitReached: true,
+      planOverLimit: true,
+    })
+
+    expect(body).toMatchObject({
+      userLimitReached: true,
+      globalLimitReached: false,
+      planOverLimit: true,
+      uploadDisabled: true,
+    })
+  })
 })
