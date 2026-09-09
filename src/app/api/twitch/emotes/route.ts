@@ -116,8 +116,7 @@ export async function GET(request: Request) {
         { status: 401 }
       );
     }
-    // refresh診断の永続化責任はAPI境界。additionalInfoへの安全な橋渡しと非二重報告の理由は
-    // twitchTokenErrorReportContext のJSDocを参照。
+    // refresh診断の永続化・非二重報告契約は twitchTokenErrorReportContext のJSDocを参照。
     return handleApiError(error, "Twitch emotes fetch", twitchTokenErrorReportContext(error));
   }
 }
