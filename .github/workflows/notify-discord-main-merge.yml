@@ -199,9 +199,17 @@ jobs:
                   used += units
               return "".join(result)
 
+          # GitHub currently bounds repository/user/ref metadata far below Discord's
+          # 2000 UTF-16-unit limit, but keep delivery fail-safe if those contracts or
+          # event payloads ever change. In that pathological case, discard optional
+          # metadata before trimming the user-facing release text.
+          marker = "\n\n…"
+          if discord_length(prefix + marker + suffix) > limit:
+              prefix = "🚀 **リポジトリが更新されました**\n\n"
+              suffix = f"\n\n🔗 {os.environ['PR_URL']}"
+
           content = prefix + release_text + suffix
           if discord_length(content) > limit:
-              marker = "\n\n…"
               available = limit - discord_length(prefix + marker + suffix)
               release_text = truncate_utf16(release_text, max(0, available)).rstrip()
               content = prefix + release_text + marker + suffix
