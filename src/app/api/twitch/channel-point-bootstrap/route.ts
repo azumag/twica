@@ -477,8 +477,7 @@ export async function GET(request: NextRequest) {
         { status: 401 }
       );
     }
-    // Issue #670: refresh失敗(REFRESH_FAILED)の場合、diagnostics(status/kind)を
-    // auto-generated bug reportのContextへ載せる(twitchTokenErrorReportContext参照)。
+    // refresh診断の永続化・非二重報告契約は twitchTokenErrorReportContext のJSDocを参照。
     return handleApiError(error, "Channel Point Bootstrap API", twitchTokenErrorReportContext(error));
   } finally {
     logPerf("api", "channel-point-bootstrap", startedAt, { diagnostics });

@@ -80,7 +80,6 @@ jobs:
       PR_URL: ${{ github.event.pull_request.html_url }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      BASE_REF: ${{ github.event.pull_request.base.ref }}
       HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
 
     steps:
@@ -102,6 +101,9 @@ jobs:
           # Promotion PRs keep the human-facing release summary in the first
           # `## このリリースで変わること` section. Reuse that text directly
           # instead of rediscovering component PRs through the GitHub API.
+          # The promotion PR body is intentionally the notification source of truth:
+          # this workflow does not reconstruct the summary from component diffs, so
+          # summary-vs-diff accuracy remains a normal promotion-PR review responsibility.
           content=$(python3 - <<'PY'
           import os
           import re
@@ -110,9 +112,9 @@ jobs:
           limit = 2000
           section_heading = "## このリリースで変わること"
           # Only the canonical preview -> main path is a release promotion.
-          # Keep the branch names explicit here so direct-to-main merges use the title fallback.
+          # The workflow itself is already scoped to PRs targeting main, so only
+          # the head ref and repository identity need to be checked here.
           promotion_source_ref = "preview"
-          promotion_target_ref = "main"
           body = os.environ.get("PR_BODY", "").replace("\r\n", "\n").replace("\r", "\n")
           # Only same-repository promotion text is trusted as notification input.
           # Fork PRs fall back to a sanitized title below.
@@ -153,8 +155,7 @@ jobs:
           release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
           if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
               is_promotion = (
-                  os.environ.get("BASE_REF") == promotion_target_ref
-                  and os.environ.get("HEAD_REF") == promotion_source_ref
+                  os.environ.get("HEAD_REF") == promotion_source_ref
                   and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")
               )
               if is_promotion:
@@ -171,10 +172,9 @@ jobs:
                   with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
                       env.write("PROMOTION_SUMMARY_MISSING=true" + chr(10))
               else:
-                  print(
-                      "::warning::Merged PR is missing a non-empty promotion summary; using PR title in Discord.",
-                      file=sys.stderr,
-                  )
+                  # A direct-to-main merge has no promotion-summary contract.
+                  # Falling back to the sanitized PR title is the expected path,
+                  # so do not emit a misleading warning for this normal case.
                   release_text = strip_markdown_links(
                       os.environ.get("PR_TITLE", "").strip()
                   ).strip()
@@ -199,9 +199,17 @@ jobs:
                   used += units
               return "".join(result)
 
+          # GitHub currently bounds repository/user/ref metadata far below Discord's
+          # 2000 UTF-16-unit limit, but keep delivery fail-safe if those contracts or
+          # event payloads ever change. In that pathological case, discard optional
+          # metadata before trimming the user-facing release text.
+          marker = "\n\n…"
+          if discord_length(prefix + marker + suffix) > limit:
+              prefix = "🚀 **リポジトリが更新されました**\n\n"
+              suffix = f"\n\n🔗 {os.environ['PR_URL']}"
+
           content = prefix + release_text + suffix
           if discord_length(content) > limit:
-              marker = "\n\n…"
               available = limit - discord_length(prefix + marker + suffix)
               release_text = truncate_utf16(release_text, max(0, available)).rstrip()
               content = prefix + release_text + marker + suffix

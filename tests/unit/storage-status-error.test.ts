@@ -40,13 +40,14 @@ const SESSION: SessionPayload = {
   expiresAt: 4_102_444_800_000,
   version: 1,
 };
+const STORAGE_PREFIX = 'storage-error-prefix';
 
 describe('GET /api/storage-status: error delegation (#1356)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(SESSION);
     mockCanUseStreamerFeatures.mockReturnValue(true);
-    mockSha256Prefix.mockResolvedValue('storage-error-prefix');
+    mockSha256Prefix.mockResolvedValue(STORAGE_PREFIX);
     mockHandleApiError.mockResolvedValue(
       NextResponse.json({ error: 'handled-storage-error' }, { status: 500 })
     );
@@ -59,11 +60,16 @@ describe('GET /api/storage-status: error delegation (#1356)', () => {
     const response = await GET();
 
     expect(mockGetStorageUsage).toHaveBeenCalledWith(
-      'storage-error-prefix',
+      STORAGE_PREFIX,
       SESSION.twitchUserId
     );
     expect(mockHandleApiError).toHaveBeenCalledTimes(1);
-    expect(mockHandleApiError).toHaveBeenCalledWith(error, 'Storage Status API');
+    // route が保証するのは元例外と context の伝播まで。将来 additionalInfo を
+    // 追加しても委譲契約の退行ではないため、先頭2引数だけを固定する。
+    expect(mockHandleApiError.mock.calls[0]?.slice(0, 2)).toEqual([
+      error,
+      'Storage Status API',
+    ]);
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toEqual({ error: 'handled-storage-error' });
   });

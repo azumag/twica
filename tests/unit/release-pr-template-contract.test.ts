@@ -36,12 +36,13 @@ const REQUIRED_TEMPLATE_HEADINGS = [
   "## main昇格条件",
 ] as const;
 
-const REQUIRED_CONFIRMATION_LINES = [
-  "- レビュー:",
-  "- CI:",
-  "- previewデプロイ:",
-  "- ブラウザー／実経路の確認: <!-- 対象外の場合は理由を記載 -->",
+const REQUIRED_CONFIRMATION_LABELS = [
+  "レビュー",
+  "CI",
+  "previewデプロイ",
+  "ブラウザー／実経路の確認",
 ] as const;
+const BROWSER_CONFIRMATION_HINT = "<!-- 対象外の場合は理由を記載 -->";
 
 function headingScanLines(source: string): string[] {
   // The promotion workflow removes HTML comments before heading extraction.
@@ -142,16 +143,29 @@ describe("preview -> main release PR template contract", () => {
     expect(requiredHeadings).toEqual([...REQUIRED_TEMPLATE_HEADINGS]);
   });
 
-  it("keeps every required confirmation row in the confirmation section", () => {
-    const confirmationLines = h2Section(releaseTemplate, "## 確認済み")
+  it("keeps required confirmation labels as top-level rows in documented order", () => {
+    const confirmationRows = h2Section(releaseTemplate, "## 確認済み")
       .split(/\r?\n/)
-      .map((line) => line.trim());
+      // Do not trim indentation here: these evidence slots are top-level rows,
+      // while their value text and HTML hints are intentionally not part of the label contract.
+      .filter((line) => line.startsWith("- "));
 
-    // These rows are the promotion evidence slots documented in QA.md. Checking
-    // the complete row text catches template drift that a heading-only check misses.
-    for (const requiredLine of REQUIRED_CONFIRMATION_LINES) {
-      expect(confirmationLines).toContain(requiredLine);
+    let previousIndex = -1;
+    for (const label of REQUIRED_CONFIRMATION_LABELS) {
+      const rowPrefix = `- ${label}:`;
+      const currentIndex = confirmationRows.findIndex((line) =>
+        line.startsWith(rowPrefix)
+      );
+      expect(currentIndex).toBeGreaterThan(previousIndex);
+      previousIndex = currentIndex;
     }
+
+    const browserRow = confirmationRows.find((line) =>
+      line.startsWith(`- ${REQUIRED_CONFIRMATION_LABELS[3]}:`)
+    );
+    // The browser/real-path slot keeps its operator hint, but the contract no longer
+    // freezes the complete row value so future guidance can evolve independently.
+    expect(browserRow).toContain(BROWSER_CONFIRMATION_HINT);
   });
 
   it("keeps docs/QA.md aligned with the template responsibilities", () => {

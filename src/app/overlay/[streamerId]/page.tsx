@@ -178,8 +178,8 @@ const CURRENT_OVERLAY_VERSION = process.env.NEXT_PUBLIC_OVERLAY_VERSION ?? "dev"
 const RELOAD_JITTER_MAX_MS = 10 * 60 * 1000;
 // 演出中で実行を見送った場合の再試行間隔(演出を壊さないための待ち時間)
 const RELOAD_DEFER_RETRY_MS = 30 * 1000;
-// SREレビュー指摘対応: 効果音の長さ(audio.duration)が有限値で取得できない場合
-// (メタデータ未ロードでNaN等)に使う「再生終了見込み」の安全上限。
+// audio.duration がメタデータ未ロードのNaNやライブ系のInfinityなどで
+// 有限値として取得できない場合に使う「再生終了見込み」の安全上限。
 // リロード延期判定(soundPlayingUntilRef)のフォールバックにのみ使う
 const SOUND_DURATION_FALLBACK_MS = 15 * 1000;
 // OBS can leave load/decode pending for a large or broken image. Bound the
@@ -442,7 +442,7 @@ export default function OverlayPage() {
   // ユーザー操作により音声再生がアンロック済みかどうか
   // ブラウザの自動再生ポリシーにより、最初のユーザー操作までplay()は失敗する
   const audioUnlockedRef = useRef(false);
-  // SREレビュー指摘対応: 効果音の「再生終了見込み時刻」(epoch ms)。
+  // 効果音の「再生終了見込み時刻」(epoch ms)。
   // attemptReloadのisMidDisplay判定(isDisplayingRef/queueRef/showCardRef)は
   // カード演出の状態しか見ておらず、displayDurationより長い効果音の再生中に
   // location.reload()が割り込むと配信画面で音が不自然に途切れる。再生開始時に
@@ -934,7 +934,7 @@ export default function OverlayPage() {
     }
 
     try {
-      // SREレビュー指摘対応: 再生開始時に「再生終了見込み時刻」をsoundPlayingUntilRefへ
+      // 再生開始時に「再生終了見込み時刻」をsoundPlayingUntilRefへ
       // 記録し、効果音再生中の自動リロード(attemptReload)を延期して配信画面の
       // 音途切れを防ぐ。durationはメタデータ未ロード時NaN・ライブ系でInfinityに
       // なりうるため、有限値のときだけ実尺を採用し、それ以外は安全上限へフォールバック。
@@ -1379,7 +1379,7 @@ export default function OverlayPage() {
     if (pendingCards.length === 0) {
       return Promise.resolve(true);
     }
-    // PR #451 レビュー指摘(F2): 「1枚目のカード」固定ではなく、バッチ全体から
+    // 「1枚目のカード」固定ではなく、バッチ全体から
     // ルール一致優先度(reward > rarity > all、同率ならより希少なレアリティ)が
     // 最も高い1枚を選んで、そのカードの表示タイミングでのみ音を鳴らす。
     // 上位から明示的に shouldPlaySound: false が来ている場合はバッチ全体を
@@ -1507,8 +1507,8 @@ export default function OverlayPage() {
    */
   const attemptReload = useCallback(() => {
     // 演出中(キュー処理中・キュー待ち・カード表示中)は演出を壊さないよう
-    // 30秒後に同じ判定をやり直す(設計上の要件3番)。
-    // SREレビュー指摘対応: displayDurationより長い効果音がまだ鳴っている間の
+    // 30秒後に同じ判定をやり直し、表示途中のカードを中断しない。
+    // displayDurationより長い効果音がまだ鳴っている間の
     // リロードは配信画面の音を不自然に途切れさせるため、効果音の再生終了見込み
     // 時刻(soundPlayingUntilRef、playGachaSound参照)も延期条件に含める
     const isMidDisplay =
@@ -1970,7 +1970,7 @@ export default function OverlayPage() {
         // カードが表示されない不具合の一次切り分けを実機ログだけで行える
         // ようにするため、card 欠落時だけ明示的に記録する。cards（N連の
         // 残り）の件数も併記し、「card だけ欠けている」のか「両方欠けて
-        // いる」のかを実機ログから区別できるようにする（レビュー指摘）。
+        // いる」のかを実機ログから区別できるようにする。
         addDebugLogRef.current(
           `Gacha payload missing card (rewardId=${payload.rewardId ?? 'null'}, `
           + `cardsCount=${payload.cards?.length ?? 0})`
