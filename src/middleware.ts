@@ -21,13 +21,8 @@ const maintenanceWriteSurfaces = maintenanceWriteSurfacesJson as MaintenanceWrit
 /** maintenance write block の対象となる HTTP メソッド（読み取り系は対象外）。 */
 const MAINTENANCE_GUARDED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
-// Next.js 16 recommends proxy.ts, but Proxy runs as Node.js middleware.
-// TwiCa remains on src/middleware.ts while @opennextjs/cloudflare is pinned
-// to 1.20.2, whose workers:build rejects that Node.js middleware output.
-// Upstream proxy.ts support shipped in @opennextjs/cloudflare 1.20.3+, so
-// migration is now gated by dependency upgrade and TwiCa-specific verification,
-// not by an open upstream blocker. Keep this file edge-compatible until the
-// proxy build and existing session/routing contracts pass.
+// Keep this Edge Middleware entrypoint until the Cloudflare Proxy migration
+// passes TwiCa's build and session/routing verification gates.
 // Source of truth: docs/cloudflare-proxy-migration.md (#1321).
 
 /**
