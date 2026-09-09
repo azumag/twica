@@ -96,4 +96,32 @@ describe("Discord promotion validation fork guard", () => {
     expect(sanitizeBody).toBeGreaterThan(discardBody);
     expect(splitBody).toBeGreaterThan(sanitizeBody);
   });
+
+  it("falls back to bounded metadata before trimming release text", () => {
+    const metadataOverflowGuard = workflow.indexOf(
+      "if discord_length(prefix + marker + suffix) > limit:"
+    );
+    const fallbackPrefix = workflow.indexOf(
+      'prefix = "🚀 **リポジトリが更新されました**\\n\\n"',
+      metadataOverflowGuard
+    );
+    const fallbackSuffix = workflow.indexOf(
+      'suffix = f"\\n\\n🔗 {os.environ[\'PR_URL\']}"',
+      fallbackPrefix
+    );
+    const contentBuild = workflow.indexOf(
+      "content = prefix + release_text + suffix",
+      fallbackSuffix
+    );
+    const releaseTextTrim = workflow.indexOf(
+      "if discord_length(content) > limit:",
+      contentBuild
+    );
+
+    expect(metadataOverflowGuard).toBeGreaterThan(-1);
+    expect(fallbackPrefix).toBeGreaterThan(metadataOverflowGuard);
+    expect(fallbackSuffix).toBeGreaterThan(fallbackPrefix);
+    expect(contentBuild).toBeGreaterThan(fallbackSuffix);
+    expect(releaseTextTrim).toBeGreaterThan(contentBuild);
+  });
 });
