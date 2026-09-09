@@ -102,6 +102,9 @@ jobs:
           # Promotion PRs keep the human-facing release summary in the first
           # `## このリリースで変わること` section. Reuse that text directly
           # instead of rediscovering component PRs through the GitHub API.
+          # The promotion PR body is intentionally the notification source of truth:
+          # this workflow does not reconstruct the summary from component diffs, so
+          # summary-vs-diff accuracy remains a normal promotion-PR review responsibility.
           content=$(python3 - <<'PY'
           import os
           import re
