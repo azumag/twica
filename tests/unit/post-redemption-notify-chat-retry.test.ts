@@ -23,6 +23,10 @@ import {
  * 呼ばれないかを固定する:
  * - 'pending'（自動再試行予定）: reportErrorを呼ばずinfoログのみ
  * - 'dead'（再試行を使い切った）: 従来通りreportErrorを呼ぶ
+ *
+ * EventSub/DB driver parity suite は署名付きroute全体とDB境界を検証する一方、
+ * このsuiteは補助DB参照を通さず retryState→reportError/log 契約を直接固定する。
+ * 責務が異なるため、pendingケースはここへ集約し parity test とは統合しない（#1037）。
  */
 
 vi.mock('@/lib/services/chat-notification-outbox', () => ({
