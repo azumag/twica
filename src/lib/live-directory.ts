@@ -570,7 +570,7 @@ export async function getLiveDirectory(): Promise<LiveDirectoryEntry[]> {
  * The realtime Worker already coalesces room observations into one snapshot;
  * this second 60-second KV cache prevents every page request from waking the
  * registry. A missing binding or a failed snapshot is represented by null so
- * callers can distinguish an unavailable estimate from a valid zero bucket
+ * callers can distinguish an unavailable estimate from a valid zero observation
  * instead of claiming that zero channels are live. Unavailable states are
  * negative-cached for the same short TTL so a staged Worker rollout cannot fan
  * out one service call per public page view.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { and, asc, eq, gt, or } from "drizzle-orm";
+import { reportOverlayPollingPresence } from "@/lib/overlay-realtime/polling-presence";
 import { GET } from "@/app/api/overlay/[streamerId]/events/route";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getDb } from "@/lib/db/client";
@@ -14,6 +15,7 @@ import {
 } from "@/lib/overlay/demo-event-store";
 
 vi.mock("@/lib/rate-limit");
+vi.mock("@/lib/overlay-realtime/polling-presence", () => ({ reportOverlayPollingPresence: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/sentry/error-handler", () => ({
   reportError: vi.fn(),
   reportApiError: vi.fn(),
@@ -133,6 +135,20 @@ describe("GET /api/overlay/[streamerId]/events", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
+  });
+
+  it("presenceは既存rate limit後にのみ転送し履歴レスポンスへ認証情報を含めない", async () => {
+    useRows([]);
+    const request = createRequest({ since: SINCE });
+    request.headers.set("x-twica-presence", "test-capability");
+    const response = await GET(request, routeParams());
+    expect(response.status).toBe(200);
+    expect(reportOverlayPollingPresence).toHaveBeenCalledWith(STREAMER_ID, "test-capability");
+    expect(await response.text()).not.toContain("test-capability");
+    vi.mocked(reportOverlayPollingPresence).mockClear();
+    mockCheckRateLimit.mockResolvedValue({ success: false, limit: 120, remaining: 0, reset: Math.floor(Date.now() / 1000) + 30 });
+    expect((await GET(request, routeParams())).status).toBe(429);
+    expect(reportOverlayPollingPresence).not.toHaveBeenCalled();
   });
 
   it("不正な streamer、since、demoSince、afterId をDB接続前に拒否する", async () => {
