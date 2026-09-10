@@ -613,7 +613,7 @@ export async function postRedemptionNotify(
   // Note: publishCommittedGachaBatch (i=0) は失敗を結果へ閉じ込め、polling回収へ
   // 委ねる設計のため rejected にならない。詳細はpublisher側の構造化warnで追跡する。
   // chatAnnouncement (i=1): retryable outcome経由でretryChatNotificationが'pending'を
-  // 返した場合はchatTask内でwarnログのみに留めて正常終了するため、ここには到達しない
+  // 返した場合はchatTask内でinfoログのみに留めて正常終了するため、ここには到達しない
   // （Issue #1033）。一方、sendChatAnnouncement自体が予期せずthrowした場合の catch
   // ブロックは、行を'pending'へ戻したうえでそのままrethrowする契約を維持しており
   // （呼び出し元コード自体のバグを揉み消さないため）、この経路はoutbox行がpendingで
