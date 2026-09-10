@@ -140,7 +140,7 @@ export async function withDbRetry<T>(
       // 非冪等（既定）は分類すらせず即 throw（上記の二重実行リスク回避）。
       // 恒久的エラー・リトライ回数到達時もそのまま呼び出し元へ伝播する。
       if (!idempotent || !isRetryableDbError(error) || attempt >= maxRetries) {
-        // 最終 throw の直前に必ず [db:pg] タグ付き warn を1行出す（SRE レビュー指摘）。
+        // 最終 throw の直前に必ず [db:pg] タグ付き warn を1行出す。
         // リトライ中の warn だけでは、非冪等（既定）の即 throw・非リトライ対象エラー・
         // リトライ上限到達という「最も重要な失敗モード」が一切ログに残らず、
         // docs/db-driver-migration.md の監視手順（wrangler tail で [db:pg] を検索）が
@@ -153,7 +153,7 @@ export async function withDbRetry<T>(
             ? 'non-retryable'
             : 'max-retries-exhausted'
         // ログの code は getSqlState でチェーン全体（トップレベル→cause）から
-        // 拾う（Fable厳格レビュー指摘・低6）。トップレベルの code のみだと
+        // 拾う。トップレベルの code のみだと
         // Drizzle にラップされたエラーで常に undefined になり、[db:pg] タグの
         // wrangler tail 監視で実際の SQLSTATE が見えなくなる（観測性の欠落）。
         logger.warn(`[DB Retry] [db:pg] ${context} failed (no retry: ${reason})`, {
