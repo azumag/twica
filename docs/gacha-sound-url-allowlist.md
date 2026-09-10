@@ -14,8 +14,7 @@
    - `ALLOWED_SOUND_HOSTS` のカンマ区切り hostname
 4. 許可ホスト集合が空の場合は、後方互換として HTTPS URL を許可する。
 5. 許可ホスト集合がある場合は、対象 URL の hostname が集合に含まれていれば許可する。
-6. ブラウザ環境で `location` が存在する場合は、同一 origin の HTTPS URL も許可する。
-7. それ以外は拒否する。
+6. それ以外は拒否する。
 
 ## hostname の正規化
 
@@ -47,12 +46,12 @@ R2 由来ホストと `ALLOWED_SOUND_HOSTS` の双方から 1 件も hostname �
 
 これは「任意 URL を常に許可する」という意味ではない。いずれかの許可ホストが 1 件でも設定・導出されると hostname 制限が有効になる。
 
-## same-origin 分岐
+## ブラウザでの相対 URL 解釈
 
-同一 origin の例外は `location` が存在するブラウザ環境でのみ評価される。サーバー側で `location` が存在しない実行では、この分岐には入らない。
+ブラウザ環境では相対 URL を解釈するために `location.origin` を `new URL()` の base として使う。ただし、`location.origin` 自体を allowlist の追加許可としては扱わない。
 
-この分岐は `parsed.origin === location.origin` で判定するため、allowlist の hostname 比較とは異なり scheme / hostname / port を含む origin 全体が一致する必要がある。
+`R2_SOUND_PUBLIC_URL` / `R2_PUBLIC_URL` / `ALLOWED_SOUND_HOSTS` はいずれも `NEXT_PUBLIC_` ではないためクライアントバンドルへ公開されず、通常のブラウザ経路では許可ホスト集合が空になって HTTPS fallback が先に成立する。一方、サーバー経路には `location` がない。このため従来の「allowlist 不一致でも同一 origin なら許可する」末尾分岐は、サポートしている実行経路では到達不能だったため Issue #1375 で撤去した。
 
-この分岐が各実利用経路で実際に必要か、削除・責務整理すべきかは Issue #1375 の別フォローアップとして扱い、本書では現行挙動だけを記録する。
+相対 URL を絶対 URL へ解釈するための `location.origin` 利用は維持しているため、この整理によってブラウザ上の相対 HTTPS URL の扱いは変わらない。
 
 Refs #1375 #1374 #1342 #837
