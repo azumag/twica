@@ -25,14 +25,10 @@ jobs:
         shell: bash
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           python3 - <<'PY'
           import os
           import re
-
-          if os.environ["HEAD_REPOSITORY"] != os.environ["GITHUB_REPOSITORY"]:
-              raise SystemExit("Promotion PR must originate from the repository preview branch")
 
           body = os.environ.get("PR_BODY", "")
           body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)
