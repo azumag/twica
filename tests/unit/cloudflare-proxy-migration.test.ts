@@ -22,15 +22,14 @@ describe("Cloudflare proxy migration policy", () => {
 
     // Keep this contract on observable migration gates, not prose copied from
     // the policy document. Wording and future package pin changes should not
-    // require duplicating the same version literal in this test.
+    // require duplicating the same version literal or explanatory sentence here.
     expect(adapterVersion).toBeDefined();
     expect(doc).toContain(`@opennextjs/cloudflare\` ${adapterVersion}`);
     expect(doc).toContain("opennextjs-cloudflare#1309");
-    expect(doc).toContain("1.20.3");
     expect(doc).toContain("Upstream status last checked");
     expect(doc).toContain("npm run workers:build");
     expect(middleware).toContain("export async function middleware");
     expect(middleware).not.toContain("export async function proxy");
-    expect(middleware).toContain("Source of truth: docs/cloudflare-proxy-migration.md (#1321).");
+    expect(middleware).toContain("docs/cloudflare-proxy-migration.md");
   });
 });
