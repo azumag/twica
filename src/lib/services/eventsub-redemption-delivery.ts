@@ -101,7 +101,7 @@ async function deliverClaimedChatNotification(
           {
             deliveryMode: mode,
             chunkSize: claim.deliveryChunkSize,
-            startCursor: claim.deliveryCursor,
+            startCursor: claim.deliveryCursor ?? 0,
             beforeExternalSend,
             afterSegmentComplete: async (nextCursor) => {
               const persisted = await advanceChatNotificationDeliveryCursor(claim, nextCursor)
@@ -183,7 +183,7 @@ async function deliverClaimedChatNotification(
         streamerId: data.streamer.id,
         broadcasterTwitchUserId: data.broadcasterTwitchUserId,
         outboxId: claim.id,
-        deliveryCursor: claim.deliveryCursor,
+        deliveryCursor: claim.deliveryCursor ?? 0,
         reason: failureReason,
       })
       return
