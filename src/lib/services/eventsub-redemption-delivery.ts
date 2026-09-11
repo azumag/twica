@@ -14,6 +14,7 @@ export type {
 import { publishCommittedGachaBatch } from '@/lib/overlay-realtime/publisher'
 import { logger } from '@/lib/logger.server'
 import { reportError } from '@/lib/sentry/error-handler'
+import { hasOlderPacedChatNotification } from '@/lib/services/chat-notification-congestion'
 import {
   advanceChatNotificationDeliveryCursor,
   claimChatNotificationBatch,
@@ -91,7 +92,24 @@ async function deliverClaimedChatNotification(
       ? persistedData.gachaResult.cards
       : [persistedData.gachaResult.card]
     const mode = normalizeMultiDrawChatDeliveryMode(claim.deliveryMode)
-    const usePacedDelivery = drawnCards.length > 1 && mode !== 'summary'
+    let usePacedDelivery = drawnCards.length > 1 && mode !== 'summary'
+
+    // Only one paced sequence may occupy a broadcaster's chat at a time. Two EventSub
+    // workers sending every 1.6s would otherwise combine into an unsafe ~0.8s cadence.
+    // A sequence that already checkpointed at least one segment must continue paced on retry;
+    // only a not-yet-started newer sequence is eligible to collapse to the legacy summary.
+    if (usePacedDelivery && (claim.deliveryCursor ?? 0) === 0) {
+      const congested = await hasOlderPacedChatNotification(claim, persistedData.streamer.id)
+      if (congested) {
+        usePacedDelivery = false
+        logger.info('[postRedemptionNotify] collapsed paced multi-draw to summary due to channel congestion', {
+          streamerId: persistedData.streamer.id,
+          broadcasterTwitchUserId: persistedData.broadcasterTwitchUserId,
+          outboxId: claim.id,
+          configuredMode: mode,
+        })
+      }
+    }
 
     const outcome: ChatAnnouncementOutcome = usePacedDelivery
       ? await sendPacedMultiDrawChatAnnouncement(
