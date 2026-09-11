@@ -43,8 +43,7 @@ async function getR2Binding(bindingName: 'R2_IMAGES' | 'R2_SOUNDS'): Promise<R2B
     // ローカル開発時に@opennextjs/cloudflareをバンドルしないよう動的インポート
     const { getCloudflareContext } = await import('@opennextjs/cloudflare');
     const ctx = await getCloudflareContext({ async: true });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const binding = (ctx.env as any)[bindingName] as R2BucketLike | undefined;
+    const binding = (ctx.env as unknown as Record<string, unknown>)[bindingName] as R2BucketLike | undefined;
     return binding ?? null;
   } catch {
     // Not running in Cloudflare Workers environment
@@ -244,6 +243,7 @@ export async function uploadSoundToR2(
       await binding.put(fileName, buffer, { httpMetadata: { contentType } });
     } else {
       // S3 SDK fallback for local development
+      // ローカル開発用S3 SDKフォールバック
       const bucket = process.env.R2_SOUND_BUCKET_NAME;
       if (!bucket) throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
       await s3Upload(bucket, fileName, buffer, contentType, 'sounds');
@@ -271,6 +271,7 @@ export async function deleteFromR2(fileName: string): Promise<void> {
       await binding.delete(fileName);
     } else {
       // S3 SDK fallback for local development
+      // ローカル開発用S3 SDKフォールバック
       const bucket = process.env.R2_BUCKET_NAME;
       if (!bucket) throw new Error('Missing R2_BUCKET_NAME environment variable');
       await s3Delete(bucket, fileName, 'images');
@@ -295,6 +296,7 @@ export async function deleteSoundFromR2(fileName: string): Promise<void> {
       await binding.delete(fileName);
     } else {
       // S3 SDK fallback for local development
+      // ローカル開発用S3 SDKフォールバック
       const bucket = process.env.R2_SOUND_BUCKET_NAME;
       if (!bucket) throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
       await s3Delete(bucket, fileName, 'sounds');
