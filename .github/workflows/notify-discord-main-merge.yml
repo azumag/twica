@@ -31,7 +31,10 @@ jobs:
           import re
 
           body = os.environ.get("PR_BODY", "")
-          body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)
+          # Complete comment pairs hide their contents. A stray opener can be
+          # explanatory text, so remove only its delimiter instead of consuming EOF.
+          body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+          body = body.replace("<!--", "")
           lines = body.splitlines()
           section_heading = "## このリリースで変わること"
           release_lines = []
@@ -116,10 +119,11 @@ jobs:
           # Fork PRs fall back to a sanitized title below.
           if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"):
               body = ""
-          # Template guidance and other HTML comments are not user-facing release
-          # text. Strip them before section extraction so comments-only input is
-          # treated as empty and falls back to the PR title.
-          body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)
+          # Template guidance and other complete HTML comments are not user-facing.
+          # A stray opener may be explanatory text, so discard only the delimiter
+          # instead of swallowing all following release text through EOF.
+          body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+          body = body.replace("<!--", "")
           lines = body.splitlines()
 
           release_lines = []
