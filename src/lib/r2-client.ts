@@ -243,7 +243,6 @@ export async function uploadSoundToR2(
       await binding.put(fileName, buffer, { httpMetadata: { contentType } });
     } else {
       // S3 SDK fallback for local development
-      // ローカル開発用S3 SDKフォールバック
       const bucket = process.env.R2_SOUND_BUCKET_NAME;
       if (!bucket) throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
       await s3Upload(bucket, fileName, buffer, contentType, 'sounds');
@@ -271,7 +270,6 @@ export async function deleteFromR2(fileName: string): Promise<void> {
       await binding.delete(fileName);
     } else {
       // S3 SDK fallback for local development
-      // ローカル開発用S3 SDKフォールバック
       const bucket = process.env.R2_BUCKET_NAME;
       if (!bucket) throw new Error('Missing R2_BUCKET_NAME environment variable');
       await s3Delete(bucket, fileName, 'images');
@@ -296,7 +294,6 @@ export async function deleteSoundFromR2(fileName: string): Promise<void> {
       await binding.delete(fileName);
     } else {
       // S3 SDK fallback for local development
-      // ローカル開発用S3 SDKフォールバック
       const bucket = process.env.R2_SOUND_BUCKET_NAME;
       if (!bucket) throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
       await s3Delete(bucket, fileName, 'sounds');
