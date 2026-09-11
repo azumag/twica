@@ -10,8 +10,8 @@ export const DEFAULT_MULTI_DRAW_CHAT_CHUNK_SIZE = 3
 export const MIN_MULTI_DRAW_CHAT_CHUNK_SIZE = 2
 export const MAX_MULTI_DRAW_CHAT_CHUNK_SIZE = 5
 
-// Twitchの通常チャットは同一チャンネルで1秒に1件を超えないよう余裕を持たせる。
-// 15連をindividualで送っても 14 * 1.6s = 22.4s で完了する。
+// Keep enough headroom above Twitch's one-message-per-second channel boundary.
+// An individual 15-draw sequence takes 14 * 1.6s = 22.4s between first/last sends.
 export const MULTI_DRAW_CHAT_INTERVAL_MS = 1_600
 
 export interface MultiDrawChatSegment {
@@ -38,10 +38,10 @@ export function normalizeMultiDrawChatChunkSize(value: unknown): number {
 
 function rarityLabel(rarity: string): string {
   const labels: Record<string, string> = {
-    common: 'コモン',
-    rare: 'レア',
-    epic: 'エピック',
-    legendary: 'レジェンダリー',
+    common: 'C',
+    rare: 'R',
+    epic: 'E',
+    legendary: 'L',
   }
   return labels[rarity] ?? rarity
 }
@@ -60,7 +60,7 @@ function formatRarityCounts(cards: GachaCard[]): string {
       return (ai === -1 ? order.length : ai) - (bi === -1 ? order.length : bi)
     })
     .map(([rarity, count]) => `${rarityLabel(rarity)}x${count}`)
-    .join('、')
+    .join(', ')
 }
 
 function fitSegmentMessage(message: string): string {
@@ -69,10 +69,9 @@ function fitSegmentMessage(message: string): string {
 }
 
 /**
- * summaryは従来のsendChatAnnouncementに委ねるためsegmentを返さない。
- * individual/chunkedはカード順序から決定的にmessage列を構築する。retry時に
- * delivery_cursorだけで同じindexへ復帰できることが重要なので、時刻・乱数・外部状態を
- * 一切参照しない。
+ * Summary stays on the legacy sendChatAnnouncement path. Individual/chunked messages
+ * are deterministic from card order so delivery_cursor can resume the exact segment
+ * without depending on time, randomness, or mutable external state.
  */
 export function buildMultiDrawChatSegments(
   cards: GachaCard[],
@@ -89,7 +88,7 @@ export function buildMultiDrawChatSegments(
       startDraw: index + 1,
       endDraw: index + 1,
       message: fitSegmentMessage(
-        `@${userName} ${total}連 ${index + 1}/${total}: 【${rarityLabel(card.rarity)}】${card.name}`,
+        `@${userName} ${total}x ${index + 1}/${total}: [${rarityLabel(card.rarity)}] ${card.name}`,
       ),
     }))
   }
@@ -102,12 +101,12 @@ export function buildMultiDrawChatSegments(
     const endDraw = offset + chunk.length
     const range = startDraw === endDraw ? `${startDraw}/${total}` : `${startDraw}-${endDraw}/${total}`
     const rarityCounts = formatRarityCounts(chunk)
-    const names = chunk.map((card) => card.name).join('、')
+    const names = chunk.map((card) => card.name).join(', ')
     segments.push({
       index: segments.length,
       startDraw,
       endDraw,
-      message: fitSegmentMessage(`@${userName} ${total}連 ${range}: ${rarityCounts} / ${names}`),
+      message: fitSegmentMessage(`@${userName} ${total}x ${range}: ${rarityCounts} / ${names}`),
     })
   }
   return segments
