@@ -54,7 +54,9 @@ function headingScanLines(source: string): string[] {
     (comment) => comment.replace(/[^\r\n]/g, "")
   );
   const withoutStrayOpeners = withoutClosedHtmlComments.replace(/<!--/g, "");
-  return withoutStrayOpeners.split(/\r?\n/);
+  // Python str.splitlines() accepts LF, CRLF, and legacy CR. Mirror that here so
+  // test fixtures exercise the same heading boundaries as both workflow paths.
+  return withoutStrayOpeners.split(/\r\n?|\n/);
 }
 
 function normalizedHeading(line: string): string {
@@ -69,7 +71,7 @@ function h2Headings(source: string): string[] {
 }
 
 function h2Section(source: string, heading: string): string {
-  const sourceLines = source.split(/\r?\n/);
+  const sourceLines = source.split(/\r\n?|\n/);
   const scanLines = headingScanLines(source);
   const start = scanLines.findIndex((line) => normalizedHeading(line) === heading);
   if (start === -1) return "";
@@ -108,6 +110,21 @@ describe("preview -> main release PR template contract", () => {
     ]);
     expect(h2Section(source, "## visible heading")).toBe(
       "  ## visible heading  \n  release text <!-- keep this in the returned contract section -->"
+    );
+  });
+
+  it("mirrors Python splitlines for CRLF and legacy CR promotion bodies", () => {
+    const source = [
+      "## このリリースで変わること\r\nfirst line",
+      "second line\r## 対象PRと固定SHA\rnext section",
+    ].join("\r\n");
+
+    expect(h2Headings(source)).toEqual([
+      "## このリリースで変わること",
+      "## 対象PRと固定SHA",
+    ]);
+    expect(h2Section(source, "## このリリースで変わること")).toBe(
+      "## このリリースで変わること\nfirst line\nsecond line"
     );
   });
 
