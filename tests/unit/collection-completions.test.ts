@@ -154,7 +154,12 @@ describe('collection-completions', () => {
         const response = responses[Math.min(index, responses.length - 1)];
         index += 1;
         const builder: any = {
-          from: vi.fn(() => builder),
+          from: vi.fn((table: unknown) => {
+            if (table !== collectionCompletionsTable) {
+              throw new Error('unexpected table in collection completions fixture');
+            }
+            return builder;
+          }),
           where: vi.fn(() => builder),
           orderBy: vi.fn(() => builder),
           limit: vi.fn(() => {
