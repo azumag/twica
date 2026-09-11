@@ -43,8 +43,7 @@ export async function getKvBinding(): Promise<KVNamespaceLike | null> {
   try {
     const { getCloudflareContext } = await import("@opennextjs/cloudflare")
     const ctx = await getCloudflareContext({ async: true })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const binding = (ctx.env as any)[KV_BINDING_NAME] as KVNamespaceLike | undefined
+    const binding = (ctx.env as unknown as Record<string, unknown>)[KV_BINDING_NAME] as KVNamespaceLike | undefined
     return binding ?? null
   } catch {
     return null
