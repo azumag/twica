@@ -156,8 +156,9 @@ export async function getMaintenanceKvBinding(): Promise<KVNamespaceLike | null>
     // （db/client.ts, r2-client.ts と同じ理由）
     const { getCloudflareContext } = await import('@opennextjs/cloudflare')
     const { env } = await getCloudflareContext({ async: true })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const binding = (env as any)[KV_BINDING_NAME] as KVNamespaceLike | undefined
+    const binding = (env as unknown as Record<string, unknown>)[KV_BINDING_NAME] as
+      | KVNamespaceLike
+      | undefined
     return binding ?? null
   } catch {
     // Cloudflare Workers 環境ではない（next dev / Node / テスト）
