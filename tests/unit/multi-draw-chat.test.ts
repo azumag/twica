@@ -44,7 +44,7 @@ describe('multi-draw chat segmentation', () => {
 
     expect(segments).toHaveLength(5)
     expect(segments[0]?.message).toContain('1-3/15')
-    expect(segments[0]?.message).toContain('レアx1、コモンx2')
+    expect(segments[0]?.message).toContain('Rx1, Cx2')
     expect(segments[4]?.message).toContain('13-15/15')
   })
 
