@@ -38,17 +38,20 @@ describe("Cloudflare Workers Build cost guard", () => {
     expect(result.stdout).toContain("Skipping OpenNext build");
   });
 
-  it("skips preview deploy/upload on feature branches in Workers CI", () => {
-    for (const mode of ["deploy", "upload"] as const) {
-      const result = spawnSync("bash", [deployGuard, "preview", mode], {
-        cwd: repositoryRoot,
-        env: workersCiEnv("feature/cost-test"),
-        encoding: "utf8",
-      });
+  it("skips deploy/upload for both deployment targets on feature branches in Workers CI", () => {
+    for (const target of ["production", "preview"] as const) {
+      const expectedBranch = target === "production" ? "main" : "preview";
+      for (const mode of ["deploy", "upload"] as const) {
+        const result = spawnSync("bash", [deployGuard, target, mode], {
+          cwd: repositoryRoot,
+          env: workersCiEnv("feature/cost-test"),
+          encoding: "utf8",
+        });
 
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain("Skipping Cloudflare");
-      expect(result.stdout).toContain("only 'preview' is deployable");
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("Skipping Cloudflare");
+        expect(result.stdout).toContain(`only '${expectedBranch}' is deployable`);
+      }
     }
   });
 });
