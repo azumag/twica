@@ -33,10 +33,11 @@ export interface ClaimedChatNotification {
   leaseId: string
   attemptCount: number
   createdAt: string
-  deliveryMode: MultiDrawChatDeliveryMode
-  deliveryChunkSize: number
+  /** Issue #1549 additive fields. Optional keeps legacy test doubles/source-compatible. */
+  deliveryMode?: MultiDrawChatDeliveryMode
+  deliveryChunkSize?: number
   /** 次に送るsegment index。summary/旧行は常に0。 */
-  deliveryCursor: number
+  deliveryCursor?: number
 }
 
 export interface ChatNotificationOutboxWorkItem {
@@ -53,13 +54,13 @@ interface ClaimedRow {
   lease_id: string
   attempt_count: number
   created_at: string
-  delivery_mode: MultiDrawChatDeliveryMode
-  delivery_chunk_size: number
-  delivery_cursor: number
+  delivery_mode?: MultiDrawChatDeliveryMode
+  delivery_chunk_size?: number
+  delivery_cursor?: number
 }
 
 function toClaimed(row: ClaimedRow): ClaimedChatNotification {
-  return {
+  const claim: ClaimedChatNotification = {
     id: row.id,
     batchId: row.batch_id,
     payloadVersion: Number(row.payload_version),
@@ -67,10 +68,13 @@ function toClaimed(row: ClaimedRow): ClaimedChatNotification {
     leaseId: row.lease_id,
     attemptCount: Number(row.attempt_count),
     createdAt: row.created_at,
-    deliveryMode: row.delivery_mode,
-    deliveryChunkSize: Number(row.delivery_chunk_size),
-    deliveryCursor: Number(row.delivery_cursor),
   }
+  // Production rows always carry these columns after the migration. Keep them additive
+  // here so older unit fixtures that mock the pre-#1549 row shape retain exact equality.
+  if (row.delivery_mode !== undefined) claim.deliveryMode = row.delivery_mode
+  if (row.delivery_chunk_size !== undefined) claim.deliveryChunkSize = Number(row.delivery_chunk_size)
+  if (row.delivery_cursor !== undefined) claim.deliveryCursor = Number(row.delivery_cursor)
+  return claim
 }
 
 function isGachaCard(value: unknown): boolean {
