@@ -502,7 +502,7 @@ export default function ChannelPointSettings({
         setMessage(eventSubData.error || t("messages.rateLimit"));
       } else {
         // Registration failed - webhook unreachable or other error
-        // 登録失敗 - Webhookに到達できないか、その他のエラー
+        // 登録失敗 - Webhookに到達できなかったか、その他のエラー
         // #694 Stage 6c: maintenance mode による503拒否時、body は
         // `{error: {code, message, ...}}` 形状(eventSubData.errorはオブジェクト)
         // のため、そのままsetMessageすると"[object Object]"表示になる
@@ -685,10 +685,11 @@ export default function ChannelPointSettings({
         // API は文字列 error だけを返す契約だが、将来のオブジェクト形状でも
         // "[object Object]" 表示にならないよう型ガードする（EventSub 側の既存方針）。
         setMessage(maintenanceError?.message || (typeof data.error === "string" ? data.error : t("additionalRewards.updateFailed")));
-        // 対象が削除済み（404）なら、存在しない行と編集フォームを画面に残さない
-        // （一覧を再取得して編集モードを解除する）。
+        // 対象が削除済み（404）なら一覧を再取得し、保存開始時と同じ行を
+        // まだ編集中のときだけフォームを閉じる。保存中に別行へ切り替えた場合は、
+        // 後から開いたフォームを保護する。
         if (response.status === 404) {
-          handleCancelEditAdditionalReward();
+          setEditingRewardId((current) => (current === targetRewardId ? null : current));
           await fetchAdditionalRewards();
         }
         return;
