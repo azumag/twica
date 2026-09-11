@@ -1,6 +1,6 @@
+import { getKvBinding } from '@/lib/cloudflare-kv'
 import type { Card } from '@/types/database'
 
-const KV_BINDING_NAME = 'RATE_LIMIT_KV'
 const KEY_PREFIX = 'overlay:demo:'
 // A healthy overlay performs a full HTTP reconciliation every 10 minutes, and
 // realtime liveness detection plus bounded reconnect retries can consume a
@@ -14,11 +14,6 @@ type OverlayDemoCard = Pick<
   Card,
   'id' | 'name' | 'description' | 'image_url' | 'image_padding_color' | 'rarity'
 >
-
-interface KVNamespaceLike {
-  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
-  get(key: string): Promise<string | null>
-}
 
 export interface OverlayDemoEvent {
   readonly id: string
@@ -48,17 +43,6 @@ function requireLocalFallback(): void {
     throw new Error(
       '[overlay-demo] RATE_LIMIT_KV is required in production; refusing process-local delivery'
     )
-  }
-}
-
-async function getKvBinding(): Promise<KVNamespaceLike | null> {
-  try {
-    const { getCloudflareContext } = await import('@opennextjs/cloudflare')
-    const { env } = await getCloudflareContext({ async: true })
-    const binding = (env as unknown as Record<string, unknown>)[KV_BINDING_NAME]
-    return (binding as KVNamespaceLike | undefined) ?? null
-  } catch {
-    return null
   }
 }
 
