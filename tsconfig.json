@@ -20,6 +20,7 @@
     ],
     "paths": {
       "@/lib/services/eventsub-redemption": ["./src/lib/services/eventsub-redemption-delivery.ts"],
+      "@/components/ChatAnnouncementSettings": ["./src/components/ChatAnnouncementSettingsWithDelivery.tsx"],
       "@/*": ["./src/*"]
     }
   },
