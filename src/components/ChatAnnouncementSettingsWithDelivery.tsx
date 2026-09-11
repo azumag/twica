@@ -1,12 +1,14 @@
 'use client'
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import ChatAnnouncementSettings from './ChatAnnouncementSettings'
 import MultiDrawChatDeliverySettings from './MultiDrawChatDeliverySettings'
 
 export default function ChatAnnouncementSettingsWithDelivery(
   props: React.ComponentProps<typeof ChatAnnouncementSettings>,
 ) {
+  const t = useTranslations('multiDrawChatDelivery')
   const [showDeliverySettings, setShowDeliverySettings] = useState(false)
 
   return (
@@ -19,7 +21,7 @@ export default function ChatAnnouncementSettingsWithDelivery(
           aria-expanded={showDeliverySettings}
           className="flex w-full items-center justify-between gap-3 text-left text-sm font-medium text-gray-200"
         >
-          <span>N× chat</span>
+          <span>{t('open')}</span>
           <span aria-hidden="true">{showDeliverySettings ? '−' : '+'}</span>
         </button>
         {showDeliverySettings && <MultiDrawChatDeliverySettings />}
