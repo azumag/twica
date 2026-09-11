@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from '@/lib/constants'
+import { countCharacters } from '@/lib/text-utils'
 import {
   buildMultiDrawChatSegments,
   DEFAULT_MULTI_DRAW_CHAT_CHUNK_SIZE,
@@ -56,6 +58,31 @@ describe('multi-draw chat segmentation', () => {
     expect(segments[3]?.startDraw).toBe(10)
     expect(segments[3]?.endDraw).toBe(10)
     expect(segments[3]?.message).toContain('10/10')
+  })
+
+  it('preserves segment context and reports omitted chunk names within the Twitch limit', () => {
+    const cards = [1, 2, 3].map((index) => ({
+      ...card(index),
+      name: `${index}-${'x'.repeat(300)}`,
+    }))
+    const [segment] = buildMultiDrawChatSegments(cards, 'user', 'chunked', 3)
+
+    expect(segment?.message).toContain('1-3/3: Cx3 / ')
+    expect(segment?.message).toContain('…(+2)')
+    expect(countCharacters(segment?.message ?? '')).toBeLessThanOrEqual(
+      TWITCH_CHAT_MESSAGE_MAX_CHARACTERS,
+    )
+  })
+
+  it('truncates only an oversized individual card-name tail and keeps draw context', () => {
+    const cards = [
+      { ...card(1), name: 'x'.repeat(700) },
+      card(2),
+    ]
+    const [segment] = buildMultiDrawChatSegments(cards, 'user', 'individual')
+
+    expect(segment?.message).toMatch(/^@user 2x 1\/2: \[C\] /)
+    expect(countCharacters(segment?.message ?? '')).toBe(TWITCH_CHAT_MESSAGE_MAX_CHARACTERS)
   })
 
   it('normalizes invalid persisted settings fail-safe to summary / chunk size 3', () => {

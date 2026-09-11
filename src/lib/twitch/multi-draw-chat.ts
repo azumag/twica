@@ -1,5 +1,5 @@
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from '@/lib/constants'
-import { truncateCharacters } from '@/lib/text-utils'
+import { countCharacters, truncateCharacters } from '@/lib/text-utils'
 import type { GachaCard } from '@/lib/services/gacha'
 
 export const MULTI_DRAW_CHAT_DELIVERY_MODES = ['summary', 'individual', 'chunked'] as const
@@ -63,9 +63,45 @@ function formatRarityCounts(cards: GachaCard[]): string {
     .join(', ')
 }
 
-function fitSegmentMessage(message: string): string {
-  if (message.length === 0) return message
-  return truncateCharacters(message, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS)
+/**
+ * Fit a list of card names without cutting the structural part of the segment message.
+ *
+ * The legacy multi-draw formatter shortens the card-name list itself and keeps an explicit
+ * omitted-card count. Do the same here instead of truncating the fully rendered segment,
+ * otherwise a long card name can remove the draw range / rarity context or end mid-name.
+ */
+function fitCardNamesForSegment(cardNames: string[], maxCharacters: number): string {
+  if (maxCharacters <= 0 || cardNames.length === 0) return ''
+
+  const fullList = cardNames.join(', ')
+  if (countCharacters(fullList) <= maxCharacters) return fullList
+
+  const displayed: string[] = []
+  for (const cardName of cardNames) {
+    const nextDisplayed = [...displayed, cardName]
+    const remaining = cardNames.length - nextDisplayed.length
+    const suffix = remaining > 0 ? ` …(+${remaining})` : ''
+    const candidate = `${nextDisplayed.join(', ')}${suffix}`
+    if (countCharacters(candidate) > maxCharacters) break
+    displayed.push(cardName)
+  }
+
+  if (displayed.length === 0) {
+    return truncateCharacters(`…(+${cardNames.length})`, maxCharacters)
+  }
+
+  const remaining = cardNames.length - displayed.length
+  return remaining > 0
+    ? `${displayed.join(', ')} …(+${remaining})`
+    : displayed.join(', ')
+}
+
+function fitSegmentWithTail(prefix: string, tail: string): string {
+  const remainingCharacters = TWITCH_CHAT_MESSAGE_MAX_CHARACTERS - countCharacters(prefix)
+  if (remainingCharacters <= 0) {
+    return truncateCharacters(prefix, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS)
+  }
+  return `${prefix}${truncateCharacters(tail, remainingCharacters)}`
 }
 
 /**
@@ -83,14 +119,15 @@ export function buildMultiDrawChatSegments(
 
   const total = cards.length
   if (mode === 'individual') {
-    return cards.map((card, index) => ({
-      index,
-      startDraw: index + 1,
-      endDraw: index + 1,
-      message: fitSegmentMessage(
-        `@${userName} ${total}x ${index + 1}/${total}: [${rarityLabel(card.rarity)}] ${card.name}`,
-      ),
-    }))
+    return cards.map((card, index) => {
+      const prefix = `@${userName} ${total}x ${index + 1}/${total}: [${rarityLabel(card.rarity)}] `
+      return {
+        index,
+        startDraw: index + 1,
+        endDraw: index + 1,
+        message: fitSegmentWithTail(prefix, card.name),
+      }
+    })
   }
 
   const safeChunkSize = normalizeMultiDrawChatChunkSize(chunkSize)
@@ -101,12 +138,16 @@ export function buildMultiDrawChatSegments(
     const endDraw = offset + chunk.length
     const range = startDraw === endDraw ? `${startDraw}/${total}` : `${startDraw}-${endDraw}/${total}`
     const rarityCounts = formatRarityCounts(chunk)
-    const names = chunk.map((card) => card.name).join(', ')
+    const prefix = `@${userName} ${total}x ${range}: ${rarityCounts} / `
+    const names = fitCardNamesForSegment(
+      chunk.map((card) => card.name),
+      TWITCH_CHAT_MESSAGE_MAX_CHARACTERS - countCharacters(prefix),
+    )
     segments.push({
       index: segments.length,
       startDraw,
       endDraw,
-      message: fitSegmentMessage(`@${userName} ${total}x ${range}: ${rarityCounts} / ${names}`),
+      message: fitSegmentWithTail(prefix, names),
     })
   }
   return segments
