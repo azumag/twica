@@ -30,27 +30,33 @@ case "$target:$mode" in
     deploy_command=(npm run workers:deploy:preview)
     ;;
   production:upload)
-    expected_branch=""
+    expected_branch="main"
     deploy_command=(npx opennextjs-cloudflare upload)
     ;;
   preview:upload)
-    expected_branch=""
+    expected_branch="preview"
     deploy_command=(npx opennextjs-cloudflare upload --env preview)
     ;;
 esac
 
-if [[ "$mode" == "deploy" ]]; then
-  if [[ "$branch" != "$expected_branch" ]]; then
-    if [[ "$target" == "preview" ]]; then
-      echo "Uploading preview version for non-preview branch '$branch' instead of deploying." >&2
-      deploy_command=(npx opennextjs-cloudflare upload --env preview)
-      "${deploy_command[@]}"
-      exit 0
-    fi
+# Branch control in Cloudflare is the primary cost control. This guard remains
+# as defense-in-depth so a future dashboard drift cannot make feature branches
+# upload or deploy a Worker after the build-side guard skipped OpenNext.
+if [[ "${WORKERS_CI:-}" == "1" && "$branch" != "$expected_branch" ]]; then
+  echo "Skipping Cloudflare $mode for $target on Workers Builds branch '$branch'; only '$expected_branch' is deployable."
+  exit 0
+fi
 
-    echo "Refusing to deploy $target from branch '$branch'; expected '$expected_branch'." >&2
-    exit 1
+if [[ "$mode" == "deploy" && "$branch" != "$expected_branch" ]]; then
+  if [[ "$target" == "preview" ]]; then
+    echo "Uploading preview version for non-preview branch '$branch' instead of deploying." >&2
+    deploy_command=(npx opennextjs-cloudflare upload --env preview)
+    "${deploy_command[@]}"
+    exit 0
   fi
+
+  echo "Refusing to deploy $target from branch '$branch'; expected '$expected_branch'." >&2
+  exit 1
 fi
 
 "${deploy_command[@]}"
