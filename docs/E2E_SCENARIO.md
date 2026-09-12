@@ -177,11 +177,41 @@
 
 ### N連を引き換える
 
-1. 2枚以上の実報酬を1回引き換える。
+Issue #1549 のpaced deliveryを含む変更では、`summary` / `individual` / `chunked`を
+それぞれ実previewで確認する。設定画面でmode（および`chunked`の枚数）を保存し、
+保存結果を読み戻してから引き換える。1件のoutbox処理途中で設定を変更して、その結果を
+同一引き換えの期待値に混ぜてはならない。
+
+共通:
+
+1. `chunked`の分割境界も通すため、4枚以上の実報酬を1回引き換える。該当する実報酬を
+   用意できない場合は低枚数テストで代替完了扱いにせず、未確認として記録する。
 2. 全カードがoverlayへ順番どおり表示され、2枚目以降が欠落しない。
-3. チャットは設定どおり1バッチに集約され、表示カード名・枚数が実結果と一致する。
-4. outboxの`payload_version=1`、`expected_draw_count`と`assembled_draw_count`が
-   一致し、途中`building`を経ず`sent`になっている。
+3. 表示カード名・枚数・順序が実結果と一致する。
+4. outboxの`payload_version=1`、`expected_draw_count`と`assembled_draw_count`が一致し、
+   途中`building`を経ず最終的に`sent`になっている。
+
+mode別:
+
+- `summary`
+  - Twitch chatは従来互換の1投稿だけになる。
+  - outboxの`delivery_mode='summary'`、`delivery_cursor=0`を確認する。
+- `individual`
+  - Twitch chatは1枚につき1投稿となり、`1/N`から`N/N`まで順番どおり送信される。
+  - segment間は固定paced deliveryで処理され、短時間の一括連投にならないことを確認する。
+  - 最終outboxの`delivery_mode='individual'`、`delivery_cursor=N`を確認する。
+- `chunked`
+  - `delivery_chunk_size=3`で保存し、4枚以上の引き換えで少なくとも2segmentを発生させる。
+  - Twitch chatのdraw範囲が`1-3/N`、`4-.../N`のように欠落・逆転なく連続し、
+    端数segmentも正しいことを確認する。
+  - segment間は固定paced deliveryで処理され、短時間の一括連投にならないことを確認する。
+  - 最終outboxの`delivery_mode='chunked'`、`delivery_chunk_size=3`、
+    `delivery_cursor=ceil(N / 3)`を確認する。
+
+`individual` / `chunked`では`delivery_mode_resolved=true`も確認する。DB列を確認するための
+限定read接続が実行環境に無い場合は、管理者接続や秘密情報で代替せず、そのDB証跡だけを
+未確認として記録する。通常の実引き換えE2Eと、429/5xx/cursor/lease fencingを検証する
+内部保守テストは別物として扱う。
 
 ### relay障害回復
 
