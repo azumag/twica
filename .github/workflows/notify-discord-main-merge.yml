@@ -43,9 +43,27 @@ jobs:
               if line.strip() == section_heading:
                   start = index + 1
                   break
+          fence_char = None
+          fence_len = 0
           if start is not None:
               for line in lines[start:]:
-                  if line.strip().startswith("## "):
+                  stripped = line.lstrip()
+                  fence_match = re.match(r"^(`{3,}|~{3,})", stripped)
+                  if fence_match:
+                      marker = fence_match.group(1)
+                      if fence_char is None:
+                          fence_char = marker[0]
+                          fence_len = len(marker)
+                      elif (
+                          marker[0] == fence_char
+                          and len(marker) >= fence_len
+                          and stripped[len(marker):].strip() == ""
+                      ):
+                          fence_char = None
+                          fence_len = 0
+                      release_lines.append(line)
+                      continue
+                  if fence_char is None and line.strip().startswith("## "):
                       break
                   release_lines.append(line)
 
@@ -133,9 +151,27 @@ jobs:
                   start = index + 1
                   break
 
+          fence_char = None
+          fence_len = 0
           if start is not None:
               for line in lines[start:]:
-                  if line.strip().startswith("## "):
+                  stripped = line.lstrip()
+                  fence_match = re.match(r"^(`{3,}|~{3,})", stripped)
+                  if fence_match:
+                      marker = fence_match.group(1)
+                      if fence_char is None:
+                          fence_char = marker[0]
+                          fence_len = len(marker)
+                      elif (
+                          marker[0] == fence_char
+                          and len(marker) >= fence_len
+                          and stripped[len(marker):].strip() == ""
+                      ):
+                          fence_char = None
+                          fence_len = 0
+                      release_lines.append(line)
+                      continue
+                  if fence_char is None and line.strip().startswith("## "):
                       break
                   release_lines.append(line)
 
