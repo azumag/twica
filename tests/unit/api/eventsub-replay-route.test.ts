@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { ERROR_MESSAGES, TWITCH_SUBSCRIPTION_TYPE } from '@/lib/constants'
+import { TwitchChatService } from '@/lib/twitch/chat-service'
+import type { RedemptionNotifyData } from '@/lib/services/eventsub-redemption'
 import type { ParkedEventSubRecord } from '@/lib/maintenance/eventsub-park'
 
 const mocks = vi.hoisted(() => ({
   listParkedEventSubNotifications: vi.fn(),
   deleteParkedEventSubNotification: vi.fn(),
+  claimChatNotificationBatch: vi.fn(),
   claimDueChatNotifications: vi.fn(),
+  advanceChatNotificationDeliveryCursor: vi.fn(),
+  resolveChatNotificationDeliveryMode: vi.fn(),
   peekChatNotificationOutboxWork: vi.fn(),
   decodeChatNotificationPayload: vi.fn(),
   markChatNotificationSent: vi.fn(),
@@ -29,13 +34,23 @@ vi.mock('@/lib/maintenance/eventsub-park', () => ({
 }))
 
 vi.mock('@/lib/services/chat-notification-outbox', () => ({
+  claimChatNotificationBatch: mocks.claimChatNotificationBatch,
   claimDueChatNotifications: mocks.claimDueChatNotifications,
+  advanceChatNotificationDeliveryCursor: mocks.advanceChatNotificationDeliveryCursor,
   peekChatNotificationOutboxWork: mocks.peekChatNotificationOutboxWork,
   decodeChatNotificationPayload: mocks.decodeChatNotificationPayload,
   markChatNotificationSent: mocks.markChatNotificationSent,
   renewChatNotificationLease: mocks.renewChatNotificationLease,
   deadLetterChatNotification: mocks.deadLetterChatNotification,
   retryChatNotification: mocks.retryChatNotification,
+}))
+
+vi.mock('@/lib/services/chat-notification-congestion', () => ({
+  resolveChatNotificationDeliveryMode: mocks.resolveChatNotificationDeliveryMode,
+}))
+
+vi.mock('@/lib/overlay-realtime/publisher', () => ({
+  publishCommittedGachaBatch: vi.fn().mockResolvedValue({ outcome: 'skipped', attempts: 0 }),
 }))
 
 vi.mock('@/lib/services/eventsub-redemption', () => ({
@@ -197,10 +212,15 @@ describe('POST /api/admin/eventsub-replay', () => {
     mocks.renewChatNotificationLease.mockResolvedValue(true)
     mocks.deadLetterChatNotification.mockResolvedValue(true)
     mocks.retryChatNotification.mockResolvedValue('pending')
+    mocks.advanceChatNotificationDeliveryCursor.mockReset()
+    mocks.advanceChatNotificationDeliveryCursor.mockResolvedValue(true)
+    mocks.resolveChatNotificationDeliveryMode.mockReset()
+    mocks.resolveChatNotificationDeliveryMode.mockImplementation(async (claim) => claim.deliveryMode)
     mocks.reportError.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     vi.useRealTimers()
     delete process.env.EVENTSUB_REPLAY_SECRET
   })
@@ -316,6 +336,161 @@ describe('POST /api/admin/eventsub-replay', () => {
   })
 
   describe('transactional chat outbox の処理', () => {
+    describe('paced delivery across live owner and relay', () => {
+      function makePacedClaim(cursor = 0) {
+        const cards = Array.from({ length: 10 }, (_, index) => ({
+          id: `card-${index + 1}`, name: `Card ${index + 1}`, description: null,
+          image_url: null, rarity: 'rare', drop_rate: 1,
+        }))
+        return {
+          ...makeChatOutboxClaim({ card: cards[0], cards }),
+          deliveryMode: 'individual' as const,
+          deliveryChunkSize: 3,
+          deliveryCursor: cursor,
+        }
+      }
+
+      it('resumes at segment 7 in the relay after the live owner sends 6 then gets 429', async () => {
+        vi.useFakeTimers()
+        const claim = makePacedClaim()
+        mocks.claimChatNotificationBatch.mockResolvedValue(claim)
+        const successfulMessages: string[] = []
+        let attempts = 0
+        const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+          .mockImplementation(async (_broadcaster, message, options) => {
+            expect(await options?.beforeExternalSend?.()).toBe(true)
+            // Ack must not happen while any segment remains unsent or uncheckpointed.
+            expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+            attempts += 1
+            if (attempts === 7) return { outcome: 'retryable', reason: 'Twitch API 429' }
+            successfulMessages.push(message)
+            return { outcome: 'sent' }
+          })
+        const { postRedemptionNotify } = await vi.importActual<
+          typeof import('@/lib/services/eventsub-redemption')
+        >('@/lib/services/eventsub-redemption')
+        const firstAttempt = postRedemptionNotify(claim.payload as RedemptionNotifyData)
+        await vi.advanceTimersByTimeAsync(6 * 1600)
+        await firstAttempt
+
+        expect(claim.deliveryCursor).toBe(6)
+        expect(mocks.retryChatNotification).toHaveBeenCalledExactlyOnceWith(claim, 'Twitch API 429')
+        expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+        expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+        expect(mocks.reportError).not.toHaveBeenCalled()
+
+        // A new owner receives the persisted checkpoint and the same snapshotted mode.
+        const retryClaim = { ...claim, leaseId: 'relay-lease', attemptCount: 2 }
+        mocks.claimDueChatNotifications.mockResolvedValueOnce([retryClaim]).mockResolvedValueOnce([])
+        mocks.markChatNotificationSent.mockImplementationOnce(async (completedClaim) => {
+          expect(completedClaim.deliveryCursor).toBe(10)
+          expect(successfulMessages).toHaveLength(10)
+          return true
+        })
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const retry = POST(createReplayRequest({}))
+        await vi.advanceTimersByTimeAsync(3 * 1600)
+        const json = await (await retry).json()
+
+        expect(send.mock.calls[7]?.[1]).toContain('7/10')
+        expect(successfulMessages.map((message) => message.match(/ (\d+)\/10:/)?.[1]))
+          .toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'])
+        expect(mocks.advanceChatNotificationDeliveryCursor.mock.calls.map(([, cursor]) => cursor))
+          .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        expect(mocks.renewChatNotificationLease).toHaveBeenCalledTimes(11)
+        expect(mocks.markChatNotificationSent).toHaveBeenCalledExactlyOnceWith(retryClaim)
+        expect(mocks.retryChatNotification).toHaveBeenCalledTimes(1)
+        expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+        expect(json.results[0].outcome).toBe('succeeded')
+      })
+
+      it.each(['lost lease', 'storage exception'])('stops the relay on cursor %s before any later segment', async (failure) => {
+        vi.useFakeTimers()
+        const claim = makePacedClaim(6)
+        mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+        if (failure === 'lost lease') {
+          mocks.advanceChatNotificationDeliveryCursor.mockResolvedValueOnce(false)
+        } else {
+          mocks.advanceChatNotificationDeliveryCursor.mockRejectedValueOnce(new Error('cursor storage unavailable'))
+        }
+        const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+          .mockImplementation(async (_broadcaster, _message, options) => {
+            expect(await options?.beforeExternalSend?.()).toBe(true)
+            return { outcome: 'sent' }
+          })
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const json = await (await POST(createReplayRequest({}))).json()
+
+        expect(send).toHaveBeenCalledTimes(1)
+        expect(send.mock.calls[0]?.[1]).toContain('7/10')
+        expect(mocks.advanceChatNotificationDeliveryCursor).toHaveBeenCalledExactlyOnceWith(claim, 7)
+        expect(claim.deliveryCursor).toBe(6)
+        expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+        expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+        if (failure === 'lost lease') expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+        expect(json.results[0].outcome).toBe('failed')
+      })
+
+      it('does not send when resolving the initial delivery mode loses ownership', async () => {
+        const claim = makePacedClaim()
+        mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+        mocks.resolveChatNotificationDeliveryMode.mockResolvedValueOnce(null)
+        const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const json = await (await POST(createReplayRequest({}))).json()
+
+        expect(send).not.toHaveBeenCalled()
+        expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+        expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+        expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+        expect(json.results[0]).toMatchObject({ outcome: 'failed', error: 'Chat delivery mode update lost its lease' })
+      })
+
+      it('checks the lease again before the next segment and aborts without ack or retry when lost', async () => {
+        vi.useFakeTimers()
+        const claim = makePacedClaim(6)
+        mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+        mocks.renewChatNotificationLease.mockResolvedValueOnce(true).mockResolvedValueOnce(false)
+        const messages: string[] = []
+        vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+          .mockImplementation(async (_broadcaster, message, options) => {
+            if (!await options?.beforeExternalSend?.()) {
+              return { outcome: 'aborted', reason: 'chat delivery ownership lost before send' }
+            }
+            messages.push(message)
+            return { outcome: 'sent' }
+          })
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const pending = POST(createReplayRequest({}))
+        await vi.advanceTimersByTimeAsync(1600)
+        const json = await (await pending).json()
+
+        expect(messages).toHaveLength(1)
+        expect(messages[0]).toContain('7/10')
+        expect(claim.deliveryCursor).toBe(7)
+        expect(mocks.renewChatNotificationLease).toHaveBeenCalledTimes(2)
+        expect(mocks.markChatNotificationSent).not.toHaveBeenCalled()
+        expect(mocks.retryChatNotification).not.toHaveBeenCalled()
+        expect(json.results[0].outcome).toBe('failed')
+      })
+
+      it('only acknowledges a completed cursor and reports a lost final lease without resending', async () => {
+        const claim = makePacedClaim(10)
+        mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+        mocks.markChatNotificationSent.mockResolvedValueOnce(false)
+        const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const json = await (await POST(createReplayRequest({}))).json()
+
+        expect(send).not.toHaveBeenCalled()
+        expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+        expect(mocks.advanceChatNotificationDeliveryCursor).not.toHaveBeenCalled()
+        expect(mocks.markChatNotificationSent).toHaveBeenCalledExactlyOnceWith(claim)
+        expect(json.results[0]).toMatchObject({ outcome: 'failed', error: 'sent, but outbox ack lost its lease' })
+        expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      })
+    })
+
     it('chat送信成功時はowner-fenced sentへ更新する', async () => {
       const claim = makeChatOutboxClaim()
       mocks.claimDueChatNotifications

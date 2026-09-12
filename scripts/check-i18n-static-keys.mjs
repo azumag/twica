@@ -14,16 +14,47 @@ import ts from "typescript";
  */
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const srcDir = path.join(rootDir, "src");
+const messagesDir = path.join(rootDir, "messages");
 const messageFiles = {
-  en: path.join(rootDir, "messages", "en.json"),
-  ja: path.join(rootDir, "messages", "ja.json"),
+  en: path.join(messagesDir, "en.json"),
+  ja: path.join(messagesDir, "ja.json"),
 };
+
+async function pathExists(filename) {
+  try {
+    await fs.access(filename);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Runtime loader may keep feature-local catalogs under messages/features/<feature>/<locale>.json.
+ * Merge those top-level namespaces over the base catalog so this guard validates exactly the
+ * message surface that next-intl receives. A repository/fixture without messages/features is
+ * still valid and behaves exactly like the pre-feature-catalog layout.
+ */
+async function loadMessages(locale, baseFilename) {
+  const base = JSON.parse(await fs.readFile(baseFilename, "utf8"));
+  const featuresDir = path.join(messagesDir, "features");
+  if (!(await pathExists(featuresDir))) return base;
+
+  const featureEntries = await fs.readdir(featuresDir, { withFileTypes: true });
+  for (const entry of featureEntries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    const featureFilename = path.join(featuresDir, entry.name, `${locale}.json`);
+    if (!(await pathExists(featureFilename))) continue;
+    Object.assign(base, JSON.parse(await fs.readFile(featureFilename, "utf8")));
+  }
+  return base;
+}
 
 const messages = Object.fromEntries(
   await Promise.all(
     Object.entries(messageFiles).map(async ([locale, filename]) => [
       locale,
-      JSON.parse(await fs.readFile(filename, "utf8")),
+      await loadMessages(locale, filename),
     ]),
   ),
 );

@@ -47,6 +47,7 @@ import {
   renewChatNotificationLease,
   retryChatNotification,
 } from "@/lib/services/chat-notification-outbox";
+import { sendClaimedChatAnnouncement } from "@/lib/services/eventsub-redemption-delivery";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 export { runInBackground } from "@/lib/background-task";
 // チャット通知プレースホルダと売り切れ設定を、ガチャ確定と同じPlanetScaleから
@@ -475,15 +476,9 @@ export async function postRedemptionNotify(
             : 'Chat announcement payload DLQ update lost its lease',
         );
       }
-      const outcome = await sendChatAnnouncement(
-        persistedData.broadcasterTwitchUserId,
-        persistedData.streamer,
-        persistedData.gachaResult.card,
-        persistedData.gachaResult.userTwitchUsername,
-        persistedData.userId,
-        persistedData.gachaResult.cards,
-        persistedData.gachaResult.collectionName,
-        persistedData.chatSnapshot,
+      const outcome = await sendClaimedChatAnnouncement(
+        claim,
+        persistedData,
         async () => {
           // replay routeが期限切れで応答を返した後に、遅れて資格情報解決が完了しても
           // Twitch送信を開始しない。期限内ならowner-fenced lease更新を最終送信許可にする。

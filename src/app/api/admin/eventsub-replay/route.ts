@@ -22,8 +22,8 @@ import {
   handleRedemption,
   handleRaidNotification,
   postRedemptionNotify,
-  sendChatAnnouncement,
 } from "@/lib/services/eventsub-redemption";
+import { sendClaimedChatAnnouncement } from "@/lib/services/eventsub-redemption-delivery";
 
 /**
  * EventSubリプレイ機構 (Issue #787)
@@ -365,15 +365,9 @@ export async function POST(request: NextRequest) {
 
       try {
         const deliveryResult = await awaitBeforeReplayDeadline(
-          sendChatAnnouncement(
-            data.broadcasterTwitchUserId,
-            data.streamer,
-            data.gachaResult.card,
-            data.gachaResult.userTwitchUsername,
-            data.userId,
-            data.gachaResult.cards,
-            data.gachaResult.collectionName,
-            data.chatSnapshot,
+          sendClaimedChatAnnouncement(
+            claim,
+            data,
             async () => {
               if (Date.now() >= externalChatSendDeadlineAt) return false;
               const renewed = await renewChatNotificationLease(claim);
