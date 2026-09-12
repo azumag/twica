@@ -19,6 +19,7 @@
   - preview merge `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b`
 - openでAPI上のmergeable=true:
   - #1564（draft、base=`preview`。この文書自身を更新するWIPのため、HEAD SHAは本文へ固定せずPR APIから再取得する）
+  - #1565 `04ed72551313ad417bc4258daab4d5d91755cf7b`（draft、#1549のN連Preview E2E mode別QA仕様追従）
   - #1534 `34e5d9a812119938635e77641b6f8842ad6bce80`
   - #1532 `a6c9deef03a6b132df1b934ddbb380324a8177ba`
   - #1493 `2c6cb69a94d293f109e34b5ddb94a0962bbebb79`
@@ -35,6 +36,7 @@
 - PR #1564 は再取得時点で `draft=true` / `mergeable=true`、review 0件、未解決review thread 0件、PRコメント0件。
 - #1564の文書更新前HEAD `4015baa24f808d816ef940a04bf39384bf9ec0a6`ではCI #3003 / Release PR template contract #393がsuccess。
 - 1回目の再検証追記後HEAD `32cc499a671ca12ee496290c8e7adaf15d04f8fe`ではCI #3004 / Release PR template contract #394がsuccess。docs-onlyのためCIのruntime test / migration等はpath filterでskipし、Detect changed pathsのみsuccess。
+- 自己SHA固定を除去したHEAD `325bc4105283270e77ec79f8d8fe3a3cbe4e9143`ではCI #3005 / Release PR template contract #395がsuccess。
 - **この文書を含む最新#1564 HEADは自己参照を避けるため本文へ固定しない。再開時は必ずPR APIからHEADとworkflowを取得する。**
 - `preview` exact HEAD `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b` のpush:
   - CI #3002: success
@@ -44,6 +46,22 @@
   - Application build without Supabase variablesもsuccess。
   - 一方、変更パス条件によりanalysis dashboard build、workflow lint、PostgreSQL 17 migration、i18n lint、通常lint、migration orderはこのpushではskip。PR #1552で過去に成功した証跡を、現行preview HEADでの再実行結果と混同しない。
   - Cloudflare Deploy Supportではpreview room Workerのbuild/deployはsuccess。legacy app deploy / auxiliary-workersはこのrunではskipのため、実previewアプリ配備やブラウザ実経路QAの完了根拠にはしない。
+
+### #1549 E2E仕様の追従
+
+`docs/E2E_SCENARIO.md` の「N連を引き換える」は従来のsummary前提で「1バッチに集約」としており、#1549で追加した`individual` / `chunked`の実preview期待値が明示されていなかった。
+
+このQA仕様追従をruntime変更と混ぜず、Draft PR #1565へ分離した。
+
+- PR #1565 exact HEAD: `04ed72551313ad417bc4258daab4d5d91755cf7b`
+- base: `preview` `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b`
+- `draft=true` / `mergeable=true`
+- CI #3006: success
+- Release PR template contract #396: success
+- docs-only。実preview QAそのものは未実施であり、成功扱いにしない。
+- `summary` / `individual` / `chunked`をmode別に確認し、`chunked=3`では4枚以上で複数segmentと端数segmentを通す手順へ更新。
+- overlay/chat順序・枚数、outboxのsnapshot mode/chunk size・最終cursor・resolved状態を確認する。限定read接続が無い場合はDB証跡だけを未確認として残し、管理者接続・秘密情報で代替しない。
+- 通常の実引き換えE2Eと429/5xx/cursor/lease fencingの内部保守テストを別物として記録する。
 
 ### 他のopen preview PR
 
@@ -96,15 +114,18 @@ Issue #1561にはDrizzle schemaと`streamer_chat_multi_delivery_settings` / outb
 
 PR #1552本文と作業記録には、TypeScript、unit、integration、PostgreSQL 17.10 migration/競合fixture、i18n、migration order、maintenance surface、cursor/429/duplicate/lease fencing、375px相当のローカルUI検証が成功したと記録されています。これは過去記録です。現行preview HEADでは上記「2026-09-12 再取得結果」に記載した範囲だけを再確認済みとして扱ってください。
 
-`docs/QA.md`ではDB変更はPreview実経路1〜7、EventSub/gachaは1〜6、chatは1〜4を要求します。#1549/#1552はDB migration + EventSub/gacha + chatを含むため、最終的には1〜7をすべて対象にします。実引き換え、overlay、chat、EventSub direct、WebSocket/polling gap recovery、analysis対DB照合、upload/権限/Workerログの実証を省略してmain/productionへ進めないでください。
+`docs/QA.md`ではDB変更はPreview実経路1〜7、EventSub/gachaは1〜6、chatは1〜4を要求します。#1549/#1552はDB migration + EventSub/gacha + chatを含むため、最終的には1〜7をすべて対象にします。加えて、`docs/E2E_SCENARIO.md`のN連mode別手順（Draft PR #1565）に従ってsummary / individual / chunkedを実previewで確認します。実引き換え、overlay、chat、EventSub direct、WebSocket/polling gap recovery、analysis対DB照合、upload/権限/Workerログの実証を省略してmain/productionへ進めないでください。
 
 ## 後続作業チェックリスト
 
 - [x] preview / main / open PRの最新HEAD・mergeable・review threadを再取得
 - [x] `preview` exact HEADのworkflow / CI jobを再取得し、successとpath-filter skipを区別して記録
 - [x] #1549コード契約（summary互換、cursor再開、owner fencing、競合縮退、500文字制限）を現行treeで再確認
+- [x] N連E2Eのmode別期待値追従をDraft PR #1565として分離し、CIを確認
+- [ ] PR #1565をレビューしてQA仕様追従をpreviewへ反映（実preview QA完了とは別扱い）
 - [ ] open preview PRを現行previewへ統合する時点で、累積release-unitとして再レビュー・再CIする
 - [ ] `docs/QA.md` のPreview実経路1〜7を実施し、対象HEAD・時刻・結果を記録
+- [ ] `docs/E2E_SCENARIO.md` のN連mode別手順でsummary / individual / chunkedを実preview確認
 - [ ] 実チャネルポイント引き換え、履歴/注文、overlay、Twitch chat、EventSub、WebSocket/polling gap recoveryを確認
 - [ ] 必要なOBS demo、upload/permission/logのQAを確認
 - [ ] ja/en設定UIを実previewで確認（radio 3種、chunked時だけ枚数select、1.6秒注意文、保存、折りたたみ、375px横幅）
@@ -116,6 +137,7 @@ PR #1552本文と作業記録には、TypeScript、unit、integration、PostgreS
 
 - Issue #1494のprivacy bucket判断が未完了。#1493は判断まで保留
 - preview実経路QA・analysis read-only接続は未確認扱い
+- Draft PR #1565はQA手順の追従だけで、実preview QA証跡ではない
 - 過去の375pxブラウザ観測では設定画面の横幅超過があった。現行previewで再確認し、修正時は対象branchと差分を明記
 - Twitch送信成功直後・cursor保存前の停止では、at-least-once境界により同一segment再送の余地がある。保存済みcursorからの通常retry重複は修正済み
 - API/CI/deploymentを取得できないときは成功扱いにしない
