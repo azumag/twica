@@ -33,6 +33,7 @@ PR #1552 は `preview` へマージ済み。
 - PR #1552 exact HEAD: `c607e8eaf23a9122c8bd8497e4957676fa34e9a3`
 - preview merge SHA: `b871c88efaf2d5290bf309eec41caa202bc91e49`
 - 後続の設定UI回帰 PR #1562 も `preview` へマージ済み。
+- Issue #1561 の残件だった設定コンポーネント回帰とDrizzle schema型整合は PR #1562 / #1566 で `preview` へ反映済み。Issue #1561 は `completed` でcloseされており、同内容を再実装しない。
 
 現行treeで維持する契約:
 
@@ -116,7 +117,6 @@ PR #1552 の作業記録では、TypeScript、unit、integration、PostgreSQL mi
 - Draft PR #1565はQA手順の追従だけで、実preview QA証跡ではない。
 - Twitch送信成功直後・cursor保存前の停止では、at-least-once境界により同一segment再送の余地がある。保存済みcursorからの通常retry重複は修正済み。
 - API/CI/deploymentを取得できないときは成功扱いにしない。
-- Issue #1561 のDrizzle schema型整合は任意改善。#1549の実経路ゲートと混同せず、必要なら別PRで扱う。
 
 ## 運用ルール
 
