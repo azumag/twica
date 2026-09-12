@@ -224,7 +224,11 @@ async function maintainChatNotificationOutbox(): Promise<void> {
   `
 }
 
-/** ライブEventSub処理が、自分のbatchだけをclaimする。 */
+/**
+ * ライブEventSub処理が、自分のbatchだけをclaimする。
+ * RETURNING * deliberately avoids naming additive delivery columns: Workers Builds can
+ * deploy before migration. Old rows then omit those fields and remain on legacy summary.
+ */
 export async function claimChatNotificationBatch(
   batchId: string,
 ): Promise<ClaimedChatNotification | null> {
@@ -243,8 +247,7 @@ export async function claimChatNotificationBatch(
         (status = 'pending' and next_attempt_at <= now())
         or (status = 'processing' and lease_expires_at <= now())
       )
-    returning id, batch_id, payload_version, payload, lease_id, attempt_count, created_at,
-              delivery_mode, delivery_chunk_size, delivery_cursor
+    returning *
   `
   return rows[0] ? toClaimed(rows[0]) : null
 }
@@ -285,9 +288,7 @@ export async function claimDueChatNotifications(
         updated_at = now()
     from candidates
     where outbox.id = candidates.id
-    returning outbox.id, outbox.batch_id, outbox.payload_version, outbox.payload,
-              outbox.lease_id, outbox.attempt_count, outbox.created_at,
-              outbox.delivery_mode, outbox.delivery_chunk_size, outbox.delivery_cursor
+    returning outbox.*
   `
   return rows.map(toClaimed)
 }

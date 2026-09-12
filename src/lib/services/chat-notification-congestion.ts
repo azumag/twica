@@ -1,41 +1,24 @@
 import { getDb } from '@/lib/db/client'
 import { withDbRetry } from '@/lib/db/retry'
 import type { ClaimedChatNotification } from '@/lib/services/chat-notification-outbox'
+import { MULTI_DRAW_CHAT_DELIVERY_MODES, type MultiDrawChatDeliveryMode } from '@/lib/twitch/multi-draw-chat'
 
 /**
- * A channel must have at most one paced multi-draw sequence in flight.
- *
- * Two independent EventSub workers can otherwise each send every 1.6 seconds and combine
- * into an effective ~0.8 second channel cadence. The older queued/processing paced row wins;
- * newer rows should fall back to the existing summary message instead of waiting behind it.
- *
- * This is intentionally a read-only decision. The current row's snapshotted delivery_mode
- * remains unchanged so retries are deterministic; the same older-row ordering produces the
- * same fallback decision until that older row reaches sent/dead.
+ * Resolve and persist the first delivery decision under a per-channel DB lock.
+ * The RPC reads the channel from the stored payload and fences the decision by lease.
+ * Persisting both a paced reservation and a summary fallback makes retries deterministic,
+ * including when an older INSERT transaction commits after another row starts delivery.
  */
-export async function hasOlderPacedChatNotification(
-  claim: Pick<ClaimedChatNotification, 'id' | 'createdAt'>,
-  streamerId: string,
-): Promise<boolean> {
+export async function resolveChatNotificationDeliveryMode(
+  claim: Pick<ClaimedChatNotification, 'id' | 'leaseId'>,
+): Promise<MultiDrawChatDeliveryMode | null> {
   return withDbRetry(async () => {
     const { sql } = await getDb()
-    const rows = await sql<Array<{ busy: boolean }>>`
-      select exists (
-        select 1
-        from chat_notification_outbox older
-        where older.id <> ${claim.id}::uuid
-          and older.status in ('pending', 'processing')
-          and older.delivery_mode in ('individual', 'chunked')
-          and older.payload #>> '{streamer,id}' = ${streamerId}
-          and (
-            older.created_at < ${claim.createdAt}::timestamptz
-            or (
-              older.created_at = ${claim.createdAt}::timestamptz
-              and older.id::text < ${claim.id}
-            )
-          )
-      ) as busy
+    const rows = await sql<Array<{ mode: MultiDrawChatDeliveryMode | null }>>`
+      select public.resolve_chat_outbox_delivery_mode(${claim.id}::uuid, ${claim.leaseId}::uuid) as mode
     `
-    return rows[0]?.busy === true
-  }, 'chat outbox paced congestion check', { idempotent: true })
+    const mode = rows[0]?.mode
+    // Empty/unknown responses must never be interpreted as permission to send.
+    return mode && MULTI_DRAW_CHAT_DELIVERY_MODES.includes(mode) ? mode : null
+  }, 'chat outbox delivery mode reservation', { idempotent: true })
 }

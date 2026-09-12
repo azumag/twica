@@ -1,263 +1,70 @@
-export {
-  handleRaidNotification,
-  handleRedemption,
-  runInBackground,
-  sendChatAnnouncement,
-} from './eventsub-redemption'
-export type {
-  ChatAnnouncementOutcome,
-  ChatAnnouncementSnapshot,
-  RedemptionNotifyData,
-  RedemptionOutcome,
-} from './eventsub-redemption'
-
-import { publishCommittedGachaBatch } from '@/lib/overlay-realtime/publisher'
-import { logger } from '@/lib/logger.server'
-import { reportError } from '@/lib/sentry/error-handler'
-import { hasOlderPacedChatNotification } from '@/lib/services/chat-notification-congestion'
+import { resolveChatNotificationDeliveryMode } from '@/lib/services/chat-notification-congestion'
 import {
   advanceChatNotificationDeliveryCursor,
-  claimChatNotificationBatch,
-  decodeChatNotificationPayload,
-  deadLetterChatNotification,
-  markChatNotificationSent,
-  renewChatNotificationLease,
-  retryChatNotification,
   type ClaimedChatNotification,
 } from '@/lib/services/chat-notification-outbox'
 import {
-  postRedemptionNotify as legacyPostRedemptionNotify,
   sendChatAnnouncement,
   type ChatAnnouncementOutcome,
   type RedemptionNotifyData,
 } from './eventsub-redemption'
-import { CHAT_SEND_TERMINAL_CODES } from '@/lib/twitch/chat-service'
-import { formatChatFailureReason } from '@/lib/twitch/chat-failure-reason'
 import { normalizeMultiDrawChatDeliveryMode } from '@/lib/twitch/multi-draw-chat'
 import { sendPacedMultiDrawChatAnnouncement } from '@/lib/twitch/paced-multi-draw-sender'
 
-async function reportNotificationError(
-  error: unknown,
-  context: Record<string, unknown>,
-): Promise<void> {
-  try {
-    await reportError(error, context)
-  } catch (reportingError) {
-    logger.warn('[EventSub] Failed to persist notification error', {
-      context: context.context,
-      error: reportingError instanceof Error
-        ? reportingError.message
-        : String(reportingError),
-    })
-  }
-}
-
-async function deliverClaimedChatNotification(
+/**
+ * Live notifications and the outbox relay must use the same snapshotted delivery mode
+ * and cursor. Keep their existing ack, backoff and error reporting at the owning boundary;
+ * this helper only sends and checkpoints the next unsent segment under the current lease.
+ * The supplied fence runs immediately before each external send, after credential lookup.
+ */
+export async function sendClaimedChatAnnouncement(
   claim: ClaimedChatNotification,
   data: RedemptionNotifyData,
-  options: { externalSendDeadlineAt?: number },
-): Promise<void> {
-  let deliveryStatePersisted = false
-  try {
-    const persistedData = decodeChatNotificationPayload(claim)
-    if (!persistedData) {
-      const persisted = await deadLetterChatNotification(
-        claim,
-        `transactional chat outbox payload v${claim.payloadVersion} is invalid`,
-      )
-      deliveryStatePersisted = true
-      throw new Error(
-        persisted
-          ? 'Chat announcement payload moved to DLQ'
-          : 'Chat announcement payload DLQ update lost its lease',
-      )
+  beforeExternalSend: () => Promise<boolean>,
+): Promise<ChatAnnouncementOutcome> {
+  const drawnCards = data.gachaResult.cards?.length
+    ? data.gachaResult.cards
+    : [data.gachaResult.card]
+  let mode = normalizeMultiDrawChatDeliveryMode(claim.deliveryMode)
+  if (drawnCards.length > 1 && mode !== 'summary') {
+    // Persist any congestion fallback before sending. Retry must keep that decision even
+    // when the older sequence has completed, and a lost owner must not start a sequence.
+    const resolvedMode = await resolveChatNotificationDeliveryMode(claim)
+    if (resolvedMode === null) {
+      return { outcome: 'aborted', reason: 'Chat delivery mode update lost its lease' }
     }
-
-    const beforeExternalSend = async () => {
-      if (
-        options.externalSendDeadlineAt !== undefined
-        && Date.now() >= options.externalSendDeadlineAt
-      ) {
-        return false
-      }
-      const renewed = await renewChatNotificationLease(claim)
-      return renewed && (
-        options.externalSendDeadlineAt === undefined
-        || Date.now() < options.externalSendDeadlineAt
-      )
-    }
-
-    const drawnCards = persistedData.gachaResult.cards
-      && persistedData.gachaResult.cards.length > 0
-      ? persistedData.gachaResult.cards
-      : [persistedData.gachaResult.card]
-    const mode = normalizeMultiDrawChatDeliveryMode(claim.deliveryMode)
-    let usePacedDelivery = drawnCards.length > 1 && mode !== 'summary'
-
-    // Only one paced sequence may occupy a broadcaster's chat at a time. Two EventSub
-    // workers sending every 1.6s would otherwise combine into an unsafe ~0.8s cadence.
-    // A sequence that already checkpointed at least one segment must continue paced on retry;
-    // only a not-yet-started newer sequence is eligible to collapse to the legacy summary.
-    if (usePacedDelivery && (claim.deliveryCursor ?? 0) === 0) {
-      const congested = await hasOlderPacedChatNotification(claim, persistedData.streamer.id)
-      if (congested) {
-        usePacedDelivery = false
-        logger.info('[postRedemptionNotify] collapsed paced multi-draw to summary due to channel congestion', {
-          streamerId: persistedData.streamer.id,
-          broadcasterTwitchUserId: persistedData.broadcasterTwitchUserId,
-          outboxId: claim.id,
-          configuredMode: mode,
-        })
-      }
-    }
-
-    const outcome: ChatAnnouncementOutcome = usePacedDelivery
-      ? await sendPacedMultiDrawChatAnnouncement(
-          persistedData.broadcasterTwitchUserId,
-          drawnCards,
-          persistedData.gachaResult.userTwitchUsername,
-          {
-            deliveryMode: mode,
-            chunkSize: claim.deliveryChunkSize,
-            startCursor: claim.deliveryCursor ?? 0,
-            beforeExternalSend,
-            afterSegmentComplete: async (nextCursor) => {
-              const persisted = await advanceChatNotificationDeliveryCursor(claim, nextCursor)
-              if (persisted) {
-                claim.deliveryCursor = nextCursor
-              }
-              return persisted
-            },
-          },
-        )
-      : await sendChatAnnouncement(
-          persistedData.broadcasterTwitchUserId,
-          persistedData.streamer,
-          persistedData.gachaResult.card,
-          persistedData.gachaResult.userTwitchUsername,
-          persistedData.userId,
-          persistedData.gachaResult.cards,
-          persistedData.gachaResult.collectionName,
-          persistedData.chatSnapshot,
-          beforeExternalSend,
-        )
-
-    if (outcome.outcome === 'sent' || outcome.outcome === 'skipped') {
-      const persisted = await markChatNotificationSent(claim)
-      deliveryStatePersisted = true
-      if (!persisted) {
-        throw new Error(formatChatFailureReason(
-          'Chat announcement sent but outbox ack lost its lease',
-          outcome.degradation,
-        ))
-      }
-      if (outcome.degradation) {
-        logger.warn('[postRedemptionNotify] Chat sent using fallback sender', {
-          streamerId: data.streamer.id,
-          broadcasterTwitchUserId: data.broadcasterTwitchUserId,
-          degradation: outcome.degradation,
-        })
-        await reportNotificationError(
-          new Error(`Chat delivery used fallback sender: ${outcome.degradation.reason}`),
-          {
-            context: 'eventsub:postRedemptionNotify:chatDegradation',
-            streamerId: data.streamer.id,
-            broadcasterTwitchUserId: data.broadcasterTwitchUserId,
-            degradation: outcome.degradation,
-          },
-        )
-      }
-      return
-    }
-
-    const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation)
-    if (outcome.outcome === 'terminal') {
-      const persisted = await deadLetterChatNotification(claim, failureReason)
-      deliveryStatePersisted = true
-      if (!persisted) {
-        throw new Error(`Chat announcement DLQ update lost its lease: ${failureReason}`)
-      }
-      if (outcome.code === CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE) {
-        logger.warn('[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization', {
-          code: outcome.code,
-          reason: outcome.reason,
-          streamerId: data.streamer.id,
-          broadcasterTwitchUserId: data.broadcasterTwitchUserId,
-          outboxId: claim.id,
-        })
-        return
-      }
-      throw new Error(`Chat announcement moved to DLQ: ${failureReason}`)
-    }
-    if (outcome.outcome === 'aborted') {
-      deliveryStatePersisted = true
-      throw new Error(`Chat announcement aborted: ${failureReason}`)
-    }
-
-    const retryState = await retryChatNotification(claim, failureReason)
-    deliveryStatePersisted = true
-    if (retryState === 'pending') {
-      logger.info('[postRedemptionNotify] chat announcement retry scheduled', {
-        streamerId: data.streamer.id,
-        broadcasterTwitchUserId: data.broadcasterTwitchUserId,
-        outboxId: claim.id,
-        deliveryCursor: claim.deliveryCursor ?? 0,
-        reason: failureReason,
-      })
-      return
-    }
-    throw new Error(`Chat announcement ${retryState}: ${failureReason}`)
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    if (!deliveryStatePersisted) {
-      await retryChatNotification(claim, reason)
-    }
-    throw error
-  }
-}
-
-/**
- * Delivery wrapper for Issue #1549. Summary mode stays on the existing message builder.
- * Individual/chunked mode sends deterministic segments and checkpoints the next segment
- * cursor after every Twitch-confirmed send, so retry resumes without replaying earlier cards.
- */
-export async function postRedemptionNotify(
-  data: RedemptionNotifyData,
-  options: { externalSendDeadlineAt?: number } = {},
-): Promise<void> {
-  if (!data.streamer.chat_announcement_enabled) {
-    await legacyPostRedemptionNotify(data, options)
-    return
+    mode = resolvedMode
   }
 
-  const chatTask = (async () => {
-    const claim = await claimChatNotificationBatch(data.batchId)
-    if (!claim) return
-    await deliverClaimedChatNotification(claim, data, options)
-  })()
-
-  const results = await Promise.allSettled([
-    publishCommittedGachaBatch(data.streamer.id, data.gachaResult, {
-      batchId: data.batchId,
-      maxRetries: 1,
-      retryDelay: 500,
-    }),
-    chatTask,
-  ])
-
-  for (const [index, result] of results.entries()) {
-    if (result.status !== 'rejected') continue
-    const { contextLabel, displayLabel } = index === 0
-      ? { contextLabel: 'broadcast', displayLabel: 'broadcast' }
-      : { contextLabel: 'chatAnnouncement', displayLabel: 'chat announcement' }
-    logger.warn(`[postRedemptionNotify] ${displayLabel} failed`, {
-      error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-      streamerId: data.streamer.id,
-    })
-    await reportNotificationError(result.reason, {
-      context: `eventsub:postRedemptionNotify:${contextLabel}`,
-      streamerId: data.streamer.id,
-      broadcasterTwitchUserId: data.broadcasterTwitchUserId,
-    })
+  if (drawnCards.length > 1 && mode !== 'summary') {
+    return sendPacedMultiDrawChatAnnouncement(
+      data.broadcasterTwitchUserId,
+      drawnCards,
+      data.gachaResult.userTwitchUsername,
+      {
+        deliveryMode: mode,
+        chunkSize: claim.deliveryChunkSize,
+        startCursor: claim.deliveryCursor ?? 0,
+        beforeExternalSend,
+        afterSegmentComplete: async (nextCursor) => {
+          const persisted = await advanceChatNotificationDeliveryCursor(claim, nextCursor)
+          if (persisted) claim.deliveryCursor = nextCursor
+          return persisted
+        },
+      },
+    )
   }
+
+  // Preserve the legacy summary builder, including templates and card-list settings.
+  return sendChatAnnouncement(
+    data.broadcasterTwitchUserId,
+    data.streamer,
+    data.gachaResult.card,
+    data.gachaResult.userTwitchUsername,
+    data.userId,
+    data.gachaResult.cards,
+    data.gachaResult.collectionName,
+    data.chatSnapshot,
+    beforeExternalSend,
+  )
 }

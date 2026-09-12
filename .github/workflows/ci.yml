@@ -525,6 +525,11 @@ jobs:
           PGPASSWORD: postgres
         run: bash tests/fixtures/transactional-chat-outbox-concurrency.sh
 
+      - name: Verify paced chat retry and concurrent delivery reservations
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/paced-multi-draw-chat-postgres.mjs
+
       - name: Verify completion reward invariants
         env:
           PGPASSWORD: postgres
