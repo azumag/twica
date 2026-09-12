@@ -18,24 +18,24 @@
   - head `71c206140ee9548b1b429cf9e12b901237dc7938`
   - preview merge `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b`
 - openでAPI上のmergeable=true:
-  - #1564 `4015baa24f808d816ef940a04bf39384bf9ec0a6`（draft、base=`preview`）
+  - #1564（draft、base=`preview`。この文書自身を更新するWIPのため、HEAD SHAは本文へ固定せずPR APIから再取得する）
   - #1534 `34e5d9a812119938635e77641b6f8842ad6bce80`
   - #1532 `a6c9deef03a6b132df1b934ddbb380324a8177ba`
   - #1493 `2c6cb69a94d293f109e34b5ddb94a0962bbebb79`
   - #1491 `f0f8c9a708e468fdd5069392b3d941010bfe5767`
 - #1493はIssue #1494のprivacy公開粒度判断が付くまでマージしない
 
-作業開始時に必ず各値を再取得してください。過去のローカルclone、Issue本文、古いコメントのSHAを現行値として扱わないでください。
+作業開始時に必ず各値を再取得してください。過去のローカルclone、Issue本文、古いコメントのSHAを現行値として扱わないでください。特に#1564はこの文書の更新自体でHEADが変わるため、本文中の過去HEADを現行値として扱わないでください。
 
 ## 2026-09-12 再取得結果
 
 ### 現行preview / WIP
 
 - `preview` / `main` は上記SHAから変化なし。
-- PR #1564 は `draft=true` / `mergeable=true` のまま。review 0件、未解決review thread 0件、PRコメント0件。
-- PR #1564 exact HEAD `4015baa24f808d816ef940a04bf39384bf9ec0a6`:
-  - CI #3003: success
-  - Release PR template contract #393: success
+- PR #1564 は再取得時点で `draft=true` / `mergeable=true`、review 0件、未解決review thread 0件、PRコメント0件。
+- #1564の文書更新前HEAD `4015baa24f808d816ef940a04bf39384bf9ec0a6`ではCI #3003 / Release PR template contract #393がsuccess。
+- 1回目の再検証追記後HEAD `32cc499a671ca12ee496290c8e7adaf15d04f8fe`ではCI #3004 / Release PR template contract #394がsuccess。docs-onlyのためCIのruntime test / migration等はpath filterでskipし、Detect changed pathsのみsuccess。
+- **この文書を含む最新#1564 HEADは自己参照を避けるため本文へ固定しない。再開時は必ずPR APIからHEADとworkflowを取得する。**
 - `preview` exact HEAD `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b` のpush:
   - CI #3002: success
   - Release PR template contract #392: success
