@@ -142,6 +142,20 @@ describe("preview -> main release PR template contract", () => {
     ]);
   });
 
+  it("keeps comment-only and heading-less bodies without a release section", () => {
+    const commentOnly = [
+      "<!--",
+      "## このリリースで変わること",
+      "hidden guidance only",
+      "-->",
+    ].join("\n");
+    const headingLess = "利用者向け本文だけがあり、必須見出しがない";
+
+    expect(h2Headings(commentOnly)).toEqual([]);
+    expect(h2Section(commentOnly, REQUIRED_TEMPLATE_HEADINGS[0])).toBe("");
+    expect(h2Section(headingLess, REQUIRED_TEMPLATE_HEADINGS[0])).toBe("");
+  });
+
   it("keeps both promotion workflow paths on bounded HTML-comment sanitization", () => {
     const boundedCommentSanitizer =
       'body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)';
