@@ -1,152 +1,126 @@
 # TwiCa preview累積リリース／Issue #1549 引き継ぎ
 
-更新基準日: 2026-09-12  
+更新基準日: 2026-09-13  
 対象リポジトリ: `azumag/twica`
 
-この文書は、preview累積リリースとIssue #1549 / PR #1552の残件を後続作業者へ渡すための記録です。このWIPは引き継ぎ文書だけを変更し、preview/main/productionへのマージやデプロイを許可するものではありません。
+この文書は、preview累積リリースと Issue #1549 / PR #1552 の残件を後続作業者へ渡すための記録です。このWIPは引き継ぎ文書だけを変更し、preview/main/productionへのマージやデプロイを許可するものではありません。
 
-## GitHub APIで確認した基準状態
+## 現在の基準状態
 
-- `preview`: `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b`
-  - `test: N連チャット設定をproduction alias経由で検証 (#1562)`
-  - parent `afb96220a04bb49b7541b7b6c2fd249b258ed006`
+2026-09-13 に GitHub API から再取得した値です。過去のローカルclone、Issue本文、古いコメントのSHAを現行値として扱わないでください。
+
+- `preview`: `1932648eb1c473c775fba277222608734bf8e72d`
+  - `fix: Discord通知メタデータのMarkdown崩れを防ぐ (#1568)`
 - `main`: `a69016808edcb0671cba62568a3cfd95c63ff2c8`
-- PR #1552: merged
-  - head `c607e8eaf23a9122c8bd8497e4957676fa34e9a3`
-  - preview merge `b871c88efaf2d5290bf309eec41caa202bc91e49`
-- PR #1562: merged
-  - head `71c206140ee9548b1b429cf9e12b901237dc7938`
-  - preview merge `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b`
-- openでAPI上のmergeable=true:
-  - #1564（draft、base=`preview`。この文書自身を更新するWIPのため、HEAD SHAは本文へ固定せずPR APIから再取得する）
+- open `preview` PR は6件:
+  - #1564（draft、この文書自身。最新HEADは自己参照を避けて本文へ固定せず、PR APIから毎回取得する）
   - #1565 `04ed72551313ad417bc4258daab4d5d91755cf7b`（draft、#1549のN連Preview E2E mode別QA仕様追従）
   - #1534 `34e5d9a812119938635e77641b6f8842ad6bce80`
   - #1532 `a6c9deef03a6b132df1b934ddbb380324a8177ba`
   - #1493 `2c6cb69a94d293f109e34b5ddb94a0962bbebb79`
   - #1491 `f0f8c9a708e468fdd5069392b3d941010bfe5767`
-- #1493はIssue #1494のprivacy公開粒度判断が付くまでマージしない
+- 上記6件は再取得時点で `mergeable=true`。各latest exact HEADのformal reviewがあり、未解決review threadは0件。
+- #1565 / #1534 / #1532 / #1493 / #1491 の各exact HEADでは CI / Release PR template contract が success。
+- #1564 はこの文書更新でHEADが変わるため、更新後のreview / CIを別途そのlatest exact HEADで確認する。
+- #1493 は Issue #1494 のprivacy公開粒度判断が付くまでマージしない。
 
-作業開始時に必ず各値を再取得してください。過去のローカルclone、Issue本文、古いコメントのSHAを現行値として扱わないでください。特に#1564はこの文書の更新自体でHEADが変わるため、本文中の過去HEADを現行値として扱わないでください。
+既存exact HEADのCI成功だけで「現在のpreviewとの累積統合後も検証済み」とは扱わない。統合時点で累積release-unitとして再レビュー・再CIする。
 
-## 2026-09-12 再取得結果
+## #1549 / #1552 の実装状態
 
-### 現行preview / WIP
+PR #1552 は `preview` へマージ済み。
 
-- `preview` / `main` は上記SHAから変化なし。
-- PR #1564 は再取得時点で `draft=true` / `mergeable=true`、review 0件、未解決review thread 0件、PRコメント0件。
-- #1564の文書更新前HEAD `4015baa24f808d816ef940a04bf39384bf9ec0a6`ではCI #3003 / Release PR template contract #393がsuccess。
-- 1回目の再検証追記後HEAD `32cc499a671ca12ee496290c8e7adaf15d04f8fe`ではCI #3004 / Release PR template contract #394がsuccess。docs-onlyのためCIのruntime test / migration等はpath filterでskipし、Detect changed pathsのみsuccess。
-- 自己SHA固定を除去したHEAD `325bc4105283270e77ec79f8d8fe3a3cbe4e9143`ではCI #3005 / Release PR template contract #395がsuccess。
-- **この文書を含む最新#1564 HEADは自己参照を避けるため本文へ固定しない。再開時は必ずPR APIからHEADとworkflowを取得する。**
-- `preview` exact HEAD `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b` のpush:
-  - CI #3002: success
-  - Release PR template contract #392: success
-  - Cloudflare Deploy Support #1060: success
-  - CIの `test` jobではtypecheck、overlay realtime Worker typecheck、Supabase shutdown independence、maintenance write surface、unit、integrationがsuccess。
-  - Application build without Supabase variablesもsuccess。
-  - 一方、変更パス条件によりanalysis dashboard build、workflow lint、PostgreSQL 17 migration、i18n lint、通常lint、migration orderはこのpushではskip。PR #1552で過去に成功した証跡を、現行preview HEADでの再実行結果と混同しない。
-  - Cloudflare Deploy Supportではpreview room Workerのbuild/deployはsuccess。legacy app deploy / auxiliary-workersはこのrunではskipのため、実previewアプリ配備やブラウザ実経路QAの完了根拠にはしない。
+- PR #1552 exact HEAD: `c607e8eaf23a9122c8bd8497e4957676fa34e9a3`
+- preview merge SHA: `b871c88efaf2d5290bf309eec41caa202bc91e49`
+- 後続の設定UI回帰 PR #1562 も `preview` へマージ済み。
 
-### #1549 E2E仕様の追従
+現行treeで維持する契約:
 
-`docs/E2E_SCENARIO.md` の「N連を引き換える」は従来のsummary前提で「1バッチに集約」としており、#1549で追加した`individual` / `chunked`の実preview期待値が明示されていなかった。
-
-このQA仕様追従をruntime変更と混ぜず、Draft PR #1565へ分離した。
-
-- PR #1565 exact HEAD: `04ed72551313ad417bc4258daab4d5d91755cf7b`
-- base: `preview` `99a0d69a79a98e3d059cb7fc0481b63d130c1b2b`
-- `draft=true` / `mergeable=true`
-- CI #3006: success
-- Release PR template contract #396: success
-- docs-only。実preview QAそのものは未実施であり、成功扱いにしない。
-- `summary` / `individual` / `chunked`をmode別に確認し、`chunked=3`では4枚以上で複数segmentと端数segmentを通す手順へ更新。
-- overlay/chat順序・枚数、outboxのsnapshot mode/chunk size・最終cursor・resolved状態を確認する。限定read接続が無い場合はDB証跡だけを未確認として残し、管理者接続・秘密情報で代替しない。
-- 通常の実引き換えE2Eと429/5xx/cursor/lease fencingの内部保守テストを別物として記録する。
-
-### 他のopen preview PR
-
-- #1534 / #1532 / #1493 / #1491 は現在もopen / mergeable=true、未解決review thread 0件で、各exact HEADのCI / Release contractはsuccess。
-- ただし各HEADは現行`preview`より古いmerge baseから分岐している。
-  - #1534 / #1532: 現行previewに対して56 commits behind
-  - #1493 / #1491: 現行previewに対して61 commits behind
-- よって既存exact HEADの成功だけで「現行previewとの累積統合後も検証済み」とは扱わない。昇格前は累積release-unitとして再レビュー・再テストする。
-- #1493は上記に加えて#1494のprivacy判断とPreview実経路1〜5が未完了。
-
-### #1549 現行tree再確認
-
-現行`preview`の実装を再読し、少なくとも静的契約として次を再確認した。
-
-- `summary` / `individual` / `chunked`、chunk 2〜5・既定3、固定1.6秒。
-- individual/chunkedは500文字上限内に構造情報（draw範囲・rarity・省略件数）を残す。
-- summaryは既存`sendChatAnnouncement`経路を維持する。
-- paced送信は保存済み`delivery_cursor`から開始し、`sent`または`duplicate`確定後だけcursorを前進する。
-- cursor保存失敗・lease喪失時は次segmentへ進まない。
-- cursor更新は現lease ownerだけが成功し、`greatest()`で後退しない。
-- migration既定値は既存ユーザー/既存outboxとも`summary` / chunk 3 / cursor 0。
-- outbox INSERT時に設定をsnapshotし、同一配信者の先行paced通知と競合した未開始通知はDBロック下でsummaryへ永続縮退する。
-- 設定APIは認証、CSRF、rate limit、mode/chunk validationを持つ。
-- UIはradio 3種、chunked時だけ2〜5枚select、分割時のpacing注意文、保存状態を持つ。
-
-PR #1562によりVitestでもproduction alias経由で設定コンポーネントを開くテストが追加され、summary初期表示、chunked選択、chunk size変更、PUT保存、pacing案内は自動テスト対象になった。ただしこれは実previewブラウザ・実viewport 375pxの証跡ではない。
-
-Issue #1561にはDrizzle schemaと`streamer_chat_multi_delivery_settings` / outbox新配送列の型整合が任意改善として残っている。Issue本文どおりraw SQLの現行配送・設定処理に対するマージブロッカーではなく、DDL/migrationを正本として別差分で扱う。
-
-## #1549 / #1552の実装契約
-
-- `summary`: 既存 `sendChatAnnouncement` の本文・1投稿動作を維持する既定値
+- `summary`: 従来の `sendChatAnnouncement` の1投稿動作を維持する既定値
 - `individual`: 1枚ずつ順番に送信
 - `chunked`: 2〜5枚単位、既定3枚
 - 分割間隔は約1.6秒固定
-- outboxへ `delivery_mode` / `delivery_chunk_size` / `delivery_cursor` / 解決済み状態をsnapshot
-- segment成功または `msg_duplicate` 確定後だけ、現lease ownerがcursorを前進
+- individual/chunkedの各segmentは500文字以内にし、長いカード名を省略してもdraw範囲・rarity・省略件数を保持する
+- outboxへ `delivery_mode` / `delivery_chunk_size` / `delivery_cursor` / 解決済み状態をsnapshotする
+- segment成功または `msg_duplicate` 確定後だけ、現lease ownerがcursorを前進する
 - cursor保存失敗・lease喪失時は次segmentを送信しない
-- 429 / 5xx / timeoutは既存backoffへ戻し、保存済みcursorから再開
-- 全segment完了後だけoutbox全体を `sent`
-- 同一配信者で先行paced outboxが `pending` / `processing` の場合、未開始の後発分割outboxをsummaryへ永続縮退
+- cursorは `greatest()` で後退させない
+- 429 / 5xx / timeoutは既存backoffへ戻し、保存済みcursorから再開する
+- 全segment完了後だけoutbox全体を `sent` にする
+- 同一配信者で先行paced outboxが `pending` / `processing` の場合、未開始の後発分割outboxをsummaryへ永続縮退する
 - INSERT時に設定をsnapshotし、retry途中の設定変更でsegment構成を変えない
-- migration適用後の既存outbox・既存配信者はsummary / cursor 0
-- 設定APIは認証・CSRF・rate limit・mode/chunk size検証・maintenance write surfaceに対応
-- ja/en feature messagesと静的i18n key検査を追加
-- Issue #1548のカード名一覧設定廃止は含めない
-- individual/chunkedのsegmentは500文字以内。長いカード名はカード名部分だけを省略し、draw範囲・rarity・省略件数を保持する
+- migration適用後の既存outbox・既存配信者はsummary / chunk 3 / cursor 0
+- 設定APIは認証・CSRF・rate limit・mode/chunk size検証・maintenance write surfaceに対応する
+- ja/en feature messagesと静的i18n key検査を維持する
+- Issue #1548 のカード名一覧設定廃止は本変更へ含めない
 
-## 記録済みの検証と未確認の境界
+## N連Preview E2E仕様
 
-PR #1552本文と作業記録には、TypeScript、unit、integration、PostgreSQL 17.10 migration/競合fixture、i18n、migration order、maintenance surface、cursor/429/duplicate/lease fencing、375px相当のローカルUI検証が成功したと記録されています。これは過去記録です。現行preview HEADでは上記「2026-09-12 再取得結果」に記載した範囲だけを再確認済みとして扱ってください。
+`docs/E2E_SCENARIO.md` のmode別追従は Draft PR #1565 に分離している。
 
-`docs/QA.md`ではDB変更はPreview実経路1〜7、EventSub/gachaは1〜6、chatは1〜4を要求します。#1549/#1552はDB migration + EventSub/gacha + chatを含むため、最終的には1〜7をすべて対象にします。加えて、`docs/E2E_SCENARIO.md`のN連mode別手順（Draft PR #1565）に従ってsummary / individual / chunkedを実previewで確認します。実引き換え、overlay、chat、EventSub direct、WebSocket/polling gap recovery、analysis対DB照合、upload/権限/Workerログの実証を省略してmain/productionへ進めないでください。
+- exact HEAD: `04ed72551313ad417bc4258daab4d5d91755cf7b`
+- docs-only。実preview QAそのものの成功証跡には数えない。
+- `summary` / `individual` / `chunked` をそれぞれ実previewで確認する。
+- `chunked=3` は4枚以上の実報酬で複数segmentと端数segmentを通す。必要な実報酬を用意できない場合は低枚数テストで代替完了扱いにしない。
+- overlay / Twitch chat の順序・枚数、outboxのsnapshot mode/chunk size・最終cursor・resolved状態を確認する。
+- DB列確認用の限定read接続が無い場合は、そのDB証跡だけを未確認として残し、管理者接続や秘密情報で代替しない。
+- 通常の実引き換えE2Eと、429/5xx/cursor/lease fencingの内部保守テストを別物として記録する。
+
+## 記録済み検証と未確認の境界
+
+PR #1552 の作業記録では、TypeScript、unit、integration、PostgreSQL migration/競合fixture、i18n、migration order、maintenance surface、cursor/429/duplicate/lease fencing、375px相当のローカルUI検証が成功している。これは過去の自動/ローカル検証記録であり、実previewブラウザ・実Twitch・実DB経路の証跡へ読み替えない。
+
+`docs/QA.md` ではDB変更はPreview実経路1〜7、EventSub/gachaは1〜6、chatは1〜4を要求する。#1549/#1552はDB migration + EventSub/gacha + chatを含むため、最終的には1〜7を対象とする。
+
+残る実経路:
+
+- 実previewで `summary` / `individual` / `chunked` を確認
+- 実チャネルポイント引き換え、履歴/注文、overlay、Twitch chat、EventSub directを確認
+- WebSocket / polling gap recoveryを確認
+- ja/en設定UIを実previewで確認（radio 3種、chunked時だけ枚数select、1.6秒注意文、保存、折りたたみ、375px横幅）
+- 必要なOBS demo、upload/permission、Worker/error-reporterログを確認
+- analysis RPCと基礎SQLの比較は、許可された限定read接続が用意できた場合だけ実施する
+
+実環境証跡を取得できない項目は成功扱いにしない。
+
+## 他のopen preview PR
+
+- #1534: コード上の必須事項なし。Preview実経路1〜5待ち。
+- #1532: コード上の必須事項なし。Preview実経路1〜6待ち。
+- #1493: コード上の必須事項なし。Preview実経路1〜5に加え、Issue #1494 のprivacy公開粒度判断待ち。
+- #1491: コード上の必須事項なし。Preview実経路1〜7待ち。
+- #1565: QA手順のdocs-only Draft。実preview QA証跡ではない。
+
+これらは外部実経路待ちだけを理由に他の安全な軽量改善を停止しない。ただし各PRを統合する時点では、現在のpreviewを含む累積release-unitとして再レビュー・再CIする。
 
 ## 後続作業チェックリスト
 
-- [x] preview / main / open PRの最新HEAD・mergeable・review threadを再取得
-- [x] `preview` exact HEADのworkflow / CI jobを再取得し、successとpath-filter skipを区別して記録
+- [x] preview / main / open PRの最新HEAD・mergeability・review threadを再取得
 - [x] #1549コード契約（summary互換、cursor再開、owner fencing、競合縮退、500文字制限）を現行treeで再確認
 - [x] N連E2Eのmode別期待値追従をDraft PR #1565として分離し、CIを確認
-- [ ] PR #1565をレビューしてQA仕様追従をpreviewへ反映（実preview QA完了とは別扱い）
-- [ ] open preview PRを現行previewへ統合する時点で、累積release-unitとして再レビュー・再CIする
-- [ ] `docs/QA.md` のPreview実経路1〜7を実施し、対象HEAD・時刻・結果を記録
-- [ ] `docs/E2E_SCENARIO.md` のN連mode別手順でsummary / individual / chunkedを実preview確認
-- [ ] 実チャネルポイント引き換え、履歴/注文、overlay、Twitch chat、EventSub、WebSocket/polling gap recoveryを確認
-- [ ] 必要なOBS demo、upload/permission/logのQAを確認
-- [ ] ja/en設定UIを実previewで確認（radio 3種、chunked時だけ枚数select、1.6秒注意文、保存、折りたたみ、375px横幅）
-- [ ] analysis RPCと基礎SQLの比較は、許可された限定read接続が用意できた場合だけ実施。管理者接続や秘密情報で代替しない
-- [ ] previewゲート完了後だけpreview→main promotion PRを作成
-- [ ] mainマージ、production配備、tag確認を別ゲートとして順に記録
+- [ ] PR #1565をpreviewへ反映する場合、latest exact HEADを再レビュー・再CIする（実preview QA完了とは別扱い）
+- [ ] open preview PRを統合する時点で、累積release-unitとして再レビュー・再CIする
+- [ ] `docs/QA.md` のPreview実経路1〜7を実施し、対象HEAD・時刻・結果を記録する
+- [ ] `docs/E2E_SCENARIO.md` のN連mode別手順でsummary / individual / chunkedを実preview確認する
+- [ ] 実チャネルポイント引き換え、履歴/注文、overlay、Twitch chat、EventSub、WebSocket/polling gap recoveryを確認する
+- [ ] 必要なOBS demo、upload/permission/logのQAを確認する
+- [ ] ja/en設定UIを実previewで確認する
+- [ ] analysis RPCと基礎SQLの比較は、許可された限定read接続が用意できた場合だけ実施する
+- [ ] previewゲート完了後だけpreview→main promotion PRを作成する
+- [ ] mainマージ、production配備、tag確認を別ゲートとして順に記録する
 
 ## 残リスク・判断待ち
 
-- Issue #1494のprivacy bucket判断が未完了。#1493は判断まで保留
-- preview実経路QA・analysis read-only接続は未確認扱い
-- Draft PR #1565はQA手順の追従だけで、実preview QA証跡ではない
-- 過去の375pxブラウザ観測では設定画面の横幅超過があった。現行previewで再確認し、修正時は対象branchと差分を明記
-- Twitch送信成功直後・cursor保存前の停止では、at-least-once境界により同一segment再送の余地がある。保存済みcursorからの通常retry重複は修正済み
-- API/CI/deploymentを取得できないときは成功扱いにしない
-- Issue #1561のDrizzle schema型整合は任意改善。#1549の実経路ゲートと混同せず、必要なら別PRで扱う
+- Issue #1494 のprivacy公開粒度判断が未完了。#1493は判断まで保留する。
+- Preview実経路QA・analysis read-only接続は未確認扱い。
+- Draft PR #1565はQA手順の追従だけで、実preview QA証跡ではない。
+- Twitch送信成功直後・cursor保存前の停止では、at-least-once境界により同一segment再送の余地がある。保存済みcursorからの通常retry重複は修正済み。
+- API/CI/deploymentを取得できないときは成功扱いにしない。
+- Issue #1561 のDrizzle schema型整合は任意改善。#1549の実経路ゲートと混同せず、必要なら別PRで扱う。
 
 ## 運用ルール
 
-- Full resetを使用しない
-- preview/main/productionへ勝手にマージ・デプロイしない
-- shared checkoutを直接変更しない。分離worktreeを使う
-- secrets、token、接続文字列、個人情報を記録しない
-- 「APIで確認」「過去記録」「未確認」を分けて書く
+- Full resetを使用しない。
+- preview/main/productionへ勝手にマージ・デプロイしない。
+- secrets、token、接続文字列、個人情報を記録しない。
+- 「APIで確認」「過去記録」「未確認」を分けて書く。
