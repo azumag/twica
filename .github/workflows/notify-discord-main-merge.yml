@@ -188,6 +188,19 @@ jobs:
               value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
               return value
 
+          def escape_discord_markdown(value):
+              escaped = value
+              for marker in ("\\", "`", "*", "_", "~", "|"):
+                  escaped = escaped.replace(marker, "\\" + marker)
+              return escaped
+
+          def discord_inline_code(value):
+              # Normal refs keep the compact code style. A rare ref containing a
+              # backtick falls back to escaped plain text instead of breaking the span.
+              if "`" in value:
+                  return escape_discord_markdown(value)
+              return f"`{value}`"
+
           release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
           if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
               is_promotion = (
@@ -214,10 +227,14 @@ jobs:
                   release_text = strip_markdown_links(
                       os.environ.get("PR_TITLE", "").strip()
                   ).strip()
-          prefix = f"🚀 **{os.environ['REPOSITORY_NAME']} が更新されました**\n\n"
+
+          repository_name = escape_discord_markdown(os.environ["REPOSITORY_NAME"])
+          head_ref = discord_inline_code(os.environ["HEAD_REF"])
+          pr_author = escape_discord_markdown(os.environ["PR_AUTHOR"])
+          prefix = f"🚀 **{repository_name} が更新されました**\n\n"
           suffix = (
-              f"\n\n`{os.environ['HEAD_REF']} → main`\n"
-              f"by {os.environ['PR_AUTHOR']}\n\n"
+              f"\n\n{head_ref} → main\n"
+              f"by {pr_author}\n\n"
               f"🔗 [リリース内容を見る]({os.environ['PR_URL']})"
           )
 
