@@ -45,6 +45,13 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      // Keep the exact production TypeScript path override ahead of the generic
+      // `@` mapping so component tests exercise the same wrapper as Next.js.
+      // Refs #1561.
+      '@/components/ChatAnnouncementSettings': path.resolve(
+        __dirname,
+        './src/components/ChatAnnouncementSettingsWithDelivery.tsx',
+      ),
       '@': path.resolve(__dirname, './src'),
       // `server-only` is a Next.js compile-time boundary marker and has no
       // browser/runtime implementation for Vite to resolve. Alias only inside
