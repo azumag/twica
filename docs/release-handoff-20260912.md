@@ -9,8 +9,8 @@
 
 2026-09-13 に GitHub API から再取得した値です。過去のローカルclone、Issue本文、古いコメントのSHAを現行値として扱わないでください。
 
-- `preview`: `1932648eb1c473c775fba277222608734bf8e72d`
-  - `fix: Discord通知メタデータのMarkdown崩れを防ぐ (#1568)`
+- `preview`: `063da2cfa8a1caa4f8a4a5ae11d83586f09740b8`
+  - `docs: proxy移行のbundle検証条件を固定 (#1570)`
 - `main`: `a69016808edcb0671cba62568a3cfd95c63ff2c8`
 - open `preview` PR は6件:
   - #1564（draft、この文書自身。最新HEADは自己参照を避けて本文へ固定せず、PR APIから毎回取得する）
