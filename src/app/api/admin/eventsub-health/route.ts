@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { resolveAppEnvironment } from "@/lib/app-environment";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger.server";
@@ -148,14 +149,6 @@ function buildFetchFailedAlertMessage(environment: "production" | "preview"): st
   return `[EventSub Health][${environment}] Failed to check EventSub subscription health`;
 }
 
-/** `process.env.NEXT_PUBLIC_APP_URL` から environment を判定する。
- * `src/lib/sentry/error-handler.ts` の persistErrorToDatabase と同じロジック
- * （errors.environment 列の算出方法と一致させておく必要があるため、意図的な
- * 重複実装。フォローアップissueで共通化を検討）。 */
-function resolveEnvironment(): "production" | "preview" {
-  return (process.env.NEXT_PUBLIC_APP_URL || "").includes("preview") ? "preview" : "production";
-}
-
 /** KV上のアラート状態キーのprefix。root wrangler.tomlのRATE_LIMIT_KVコメント
  * が列挙する既存用途（レート制限・maintenance EventSub parking・OBSデモ
  * イベント・Twitch app tokenキャッシュ）と衝突しないdisjointな新規prefix。 */
@@ -300,7 +293,7 @@ export async function GET(request: NextRequest) {
     // Worker側secretだけ先に設定されアプリ側が未設定、という一時的な
     // デプロイ順序の過渡期でも5分毎に呼ばれうるため、他の通知経路と同じ
     // クールダウンゲートを通す（PR #1009 3回目のレビュー指摘・必須）。
-    const environment = resolveEnvironment();
+    const environment = resolveAppEnvironment();
     const kv = await getKvBinding();
     const kvKey = alertStateKvKey("secret-missing", environment);
     const now = Date.now();
@@ -338,7 +331,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const environment = resolveEnvironment();
+  const environment = resolveAppEnvironment();
   const kv = await getKvBinding();
 
   try {
