@@ -26,6 +26,8 @@ describe("Cloudflare proxy migration policy", () => {
     expect(adapterVersion).toBeDefined();
     expect(doc).toContain(`@opennextjs/cloudflare\` ${adapterVersion}`);
     expect(doc).toContain("opennextjs-cloudflare#1309");
+    expect(doc).toContain("opennextjs-cloudflare#1373");
+    expect(doc).toContain("bundle size");
     expect(doc).toContain("Upstream status last checked");
     expect(doc).toContain("npm run workers:build");
     expect(middleware).toContain("export async function middleware");
