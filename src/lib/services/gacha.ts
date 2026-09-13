@@ -1150,14 +1150,6 @@ export class GachaService {
   }
 
   /**
-   * RPC関数未デプロイ時のフォールバック: 旧ロジック（個別DB操作）でガチャを実行
-   * マイグレーション適用前のデプロイ中間状態でユーザーへのカード未付与を防ぐ
-   * アトミック性は保証されないが、カード付与されないよりは良い
-   * TODO: マイグレーション適用確認後にこのメソッドを削除
-   */
-
-
-  /**
    * Execute gacha for EventSub channel point redemption
    * Checks both main reward and additional rewards for matching reward ID.
    * Streamer query includes chat announcement settings to avoid a second query in route.ts.
