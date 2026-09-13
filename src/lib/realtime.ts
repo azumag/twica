@@ -275,7 +275,7 @@ function configUrl(streamerId: string, expectedVersion?: string): string {
   return url.toString()
 }
 
-function fetchJsonWithXhr<T>(url: string, fetchError: unknown): Promise<T> {
+function fetchJsonWithXhr<T>(url: string, fetchError: unknown, headers?: Record<string, string>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (typeof XMLHttpRequest === 'undefined') {
       reject(fetchError)
@@ -283,6 +283,7 @@ function fetchJsonWithXhr<T>(url: string, fetchError: unknown): Promise<T> {
     }
     const xhr = new XMLHttpRequest()
     xhr.open('GET', url, true)
+    for (const [name, value] of Object.entries(headers ?? {})) xhr.setRequestHeader(name, value)
     xhr.responseType = 'json'
     xhr.timeout = 10_000
     xhr.onload = () => {
@@ -309,13 +310,14 @@ function fetchJsonWithXhr<T>(url: string, fetchError: unknown): Promise<T> {
  */
 async function fetchJson<T>(
   url: string,
-  cache: RequestCache = 'no-store'
+  cache: RequestCache = 'no-store',
+  headers?: Record<string, string>,
 ): Promise<T> {
   let response: Response
   try {
-    response = await fetch(url, { cache })
+    response = await fetch(url, { cache, ...(headers ? { headers } : {}) })
   } catch (fetchError) {
-    return fetchJsonWithXhr<T>(url, fetchError)
+    return fetchJsonWithXhr<T>(url, fetchError, headers)
   }
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   return response.json() as Promise<T>
@@ -642,6 +644,7 @@ export function subscribeToGachaResults(
   // connected room may replace it through a private server notice before the
   // next reconnect, so long-running OBS sessions do not silently age out.
   let currentPresenceToken = readOverlayPresenceToken(streamerId)
+  let nextPollingPresenceAt = 0
   // A present value followed by an absent value means this new client reached
   // an older app Worker during rollback. One legacy `/events` probe preserves
   // build-version rollback detection without a steady-state DB poll.
@@ -1206,8 +1209,17 @@ export function subscribeToGachaResults(
       // Keeping separate cursors in that response preserves the critical rule
       // that a demo timestamp must never advance committed gacha history, while
       // avoiding one always-on Worker invocation per active OBS overlay.
+      // Reuse existing history traffic; never add a heartbeat request or report
+      // from a tokenless settings preview. Healthy sockets already renew their
+      // room lease. Back off even after failure so an outage cannot amplify it.
+      const reportPresence = !socketIsHealthy()
+        && Date.now() >= nextPollingPresenceAt
+        && parsePresenceToken(currentPresenceToken) !== null
+      if (reportPresence) nextPollingPresenceAt = Date.now() + 5 * 60_000
       const historyResponse = await fetchJson<PollingResponse>(
-        eventUrl(streamerId, historyCursor, demoCursor)
+        eventUrl(streamerId, historyCursor, demoCursor),
+        'no-store',
+        reportPresence ? { 'x-twica-presence': currentPresenceToken! } : undefined,
       )
       if (disposed) return
 

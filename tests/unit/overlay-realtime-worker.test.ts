@@ -47,6 +47,30 @@ async function presenceToken(
 }
 
 describe('overlay realtime Worker router', () => {
+  it('accepts only room-scoped polling capabilities even when WebSockets are disabled', async () => {
+    const roomFetch = vi.fn().mockResolvedValue(Response.json({ accepted: true }, { status: 202 }))
+    const env = {
+      OVERLAY_REALTIME_MODE: 'polling-only',
+      OVERLAY_REALTIME_PUBLISH_SECRET: SECRET,
+      OVERLAY_ROOMS: { idFromName: vi.fn(() => STREAMER_ID), get: vi.fn(() => ({ fetch: roomFetch })) },
+      OVERLAY_PRESENCE: {},
+    }
+    for (const token of ['', 'invalid', await presenceToken('223e4567-e89b-42d3-a456-426614174000'), await presenceToken(STREAMER_ID, Date.now() - 120_000)]) {
+      const response = await worker.fetch(new Request(`https://worker.example/internal/v1/rooms/${STREAMER_ID}/presence`, {
+        method: 'POST', headers: { 'x-twica-presence': token },
+      }), env as never)
+      expect(response.status).toBe(401)
+    }
+    expect(roomFetch).not.toHaveBeenCalled()
+    const response = await worker.fetch(new Request(`https://worker.example/internal/v1/rooms/${STREAMER_ID}/presence`, {
+      method: 'POST', headers: { 'x-twica-presence': await presenceToken() },
+    }), env as never)
+    expect(response.status).toBe(202)
+    const forwarded = roomFetch.mock.calls[0][0] as Request
+    expect(new URL(forwarded.url).pathname).toBe('/room/presence')
+    expect(forwarded.headers.has('x-twica-presence')).toBe(false)
+  })
+
   it('exposes a no-secret health response and rejects non-upgrade subscribe', async () => {
     const env = {
       ...ROLLOUT_ENV,
@@ -1002,12 +1026,12 @@ describe('OverlayPresence Durable Object', () => {
       new Request('https://presence.internal/snapshot'),
     )
 
-    await expect(response.json()).resolves.toMatchObject({ count: 0 })
+    await expect(response.json()).resolves.toMatchObject({ count: 1 })
     expect(harness.records.has('room:old')).toBe(false)
     expect(harness.records.has('room:fresh')).toBe(true)
   })
 
-  it('rounds public counts down to the five-channel privacy bucket', async () => {
+  it('returns seven observed leases without rounding or extra scans', async () => {
     const harness = createPresenceHarness()
     for (let i = 0; i < 7; i += 1) {
       harness.records.set(`room:bucket-${i}`, { lastSeen: Date.now() })
@@ -1018,7 +1042,7 @@ describe('OverlayPresence Durable Object', () => {
       new Request('https://presence.internal/snapshot'),
     )
 
-    await expect(response.json()).resolves.toMatchObject({ count: 5 })
+    await expect(response.json()).resolves.toMatchObject({ count: 7 })
   })
 
   it('chunks expired lease deletion to the Durable Object storage limit', async () => {
@@ -1062,9 +1086,33 @@ describe('OverlayPresence Durable Object', () => {
       new Request('https://presence.internal/snapshot'),
     )
 
-    await expect(response.json()).resolves.toMatchObject({ count: 1_000 })
+    await expect(response.json()).resolves.toMatchObject({ count: 1_001 })
     expect(harness.list).toHaveBeenCalledTimes(2)
     expect(harness.list.mock.calls[0][0]).toMatchObject({ limit: 1_000 })
     expect(harness.list.mock.calls[1][0]).toMatchObject({ limit: 1_000 })
+  })
+})
+
+
+describe('polling presence room aggregation', () => {
+  it('coalesces simultaneous reports and preserves the five-minute limit across socket disconnect', async () => {
+    const harness = createRoomHarness()
+    const presenceFetch = vi.fn().mockResolvedValue(Response.json({ accepted: true }, { status: 202 }))
+    Object.assign(harness.env, { OVERLAY_PRESENCE: {
+      idFromName: () => 'all', get: () => ({ fetch: presenceFetch }),
+    } })
+    const report = () => harness.room.fetch(new Request('https://room.internal/room/presence', {
+      method: 'POST', headers: { 'x-internal-streamer-id': STREAMER_ID },
+    }))
+    const responses = await Promise.all([report(), report(), report()])
+    expect(responses.every(r => r.status === 202)).toBe(true)
+    expect(presenceFetch).toHaveBeenCalledTimes(1)
+    await harness.room.alarm()
+    await report()
+    expect(presenceFetch).toHaveBeenCalledTimes(1)
+    harness.records.set('presence-last-reported-at', Date.now() - 300_001)
+    harness.records.set('presence-last-attempt-at', Date.now() - 300_001)
+    await report()
+    expect(presenceFetch).toHaveBeenCalledTimes(2)
   })
 })
