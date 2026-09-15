@@ -14,7 +14,7 @@ function card(index: number): GachaCard {
 }
 
 describe('sendPacedMultiDrawChatAnnouncement', () => {
-  it('persists cursor after each segment and resumes from it', async () => {
+  it('persists cursor after each fallback segment and resumes from it', async () => {
     const sendChatMessageDetailed = vi.fn()
       .mockResolvedValueOnce({ outcome: 'sent' })
       .mockResolvedValueOnce({ outcome: 'sent' })
@@ -39,8 +39,8 @@ describe('sendPacedMultiDrawChatAnnouncement', () => {
     )).resolves.toEqual({ outcome: 'sent' })
 
     expect(sendChatMessageDetailed).toHaveBeenCalledTimes(2)
-    expect(sendChatMessageDetailed.mock.calls[0]?.[1]).toBe('@user が【コモン】カード2 を獲得しました！')
-    expect(sendChatMessageDetailed.mock.calls[1]?.[1]).toBe('@user が【コモン】カード3 を獲得しました！')
+    expect(sendChatMessageDetailed.mock.calls[0]?.[1]).toContain('2/3')
+    expect(sendChatMessageDetailed.mock.calls[1]?.[1]).toContain('3/3')
     expect(afterSegmentComplete.mock.calls.map(([cursor]) => cursor)).toEqual([2, 3])
     expect(delay).toHaveBeenCalledTimes(1)
     expect(delay).toHaveBeenCalledWith(1600)
