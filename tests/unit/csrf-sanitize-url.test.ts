@@ -12,7 +12,7 @@ describe('sanitizeURL', () => {
     expect(sanitizeURL('https://example.com/?token=secret')).toBe('/')
   })
 
-  it('returns a safe fallback for malformed URLs', () => {
-    expect(sanitizeURL('not-a-url')).toBe('[invalid URL]')
+  it('returns the existing safe fallback for malformed URLs', () => {
+    expect(sanitizeURL('not-a-url')).toBe('invalid_url')
   })
 })
