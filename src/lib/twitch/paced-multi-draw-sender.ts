@@ -2,6 +2,7 @@ import type { GachaCard } from '@/lib/services/gacha'
 import {
   TwitchChatService,
   type ChatSendDegradation,
+  type ChatSendOutcome,
   type ChatSendTerminalCode,
 } from '@/lib/twitch/chat-service'
 import {
@@ -25,6 +26,11 @@ export interface PacedMultiDrawSendOptions {
   startCursor: number
   beforeExternalSend?: () => Promise<boolean>
   afterSegmentComplete: (nextCursor: number) => Promise<boolean>
+  /**
+   * individual時だけ使う1枚送信hook。productionでは通常の単発通知経路を渡し、
+   * 配信者の単発テンプレートとplaceholder解決をそのまま再利用する。
+   */
+  sendIndividualCard?: (card: GachaCard, drawIndex: number) => Promise<PacedMultiDrawSendOutcome>
   /** unit test用。productionは固定1.6秒を使用する。 */
   delay?: (milliseconds: number) => Promise<void>
   chatService?: Pick<TwitchChatService, 'sendChatMessageDetailed' | 'sendChatMessage'>
@@ -41,6 +47,10 @@ const defaultDelay = (milliseconds: number) => new Promise<void>((resolve) => {
  * cursor保存に失敗した場合は即停止し、既送信segmentの後へ進まない。429/5xx等の
  * retryable outcomeはcursorを進めず呼び出し元outbox backoffへ返すため、次claimは
  * 最後に確定保存できたsegmentから再開できる。
+ *
+ * individualはproductionからsendIndividualCardを注入し、N連専用の固定文面ではなく
+ * 通常の1枚ガチャと同じsendChatAnnouncement経路を使う。segment自体はcursor数と
+ * fallback本文を決めるため残し、古い/独立callerでも決定的に再開できるようにする。
  */
 export async function sendPacedMultiDrawChatAnnouncement(
   broadcasterTwitchUserId: string,
@@ -77,23 +87,36 @@ export async function sendPacedMultiDrawChatAnnouncement(
       return { outcome: 'retryable', reason: `missing multi-draw segment ${index}` }
     }
 
-    const rawOutcome = typeof chatService.sendChatMessageDetailed === 'function'
-      ? options.beforeExternalSend
-        ? await chatService.sendChatMessageDetailed(
-            broadcasterTwitchUserId,
-            segment.message,
-            { beforeExternalSend: options.beforeExternalSend },
-          )
-        : await chatService.sendChatMessageDetailed(broadcasterTwitchUserId, segment.message)
-      : (await chatService.sendChatMessage(broadcasterTwitchUserId, segment.message))
-        ? { outcome: 'sent' as const }
-        : { outcome: 'retryable' as const, reason: 'chat send failed' }
+    let rawOutcome: ChatSendOutcome | PacedMultiDrawSendOutcome
+    if (mode === 'individual' && options.sendIndividualCard) {
+      const card = cards[segment.startDraw - 1]
+      if (!card) {
+        return { outcome: 'retryable', reason: `missing multi-draw card ${segment.startDraw}` }
+      }
+      rawOutcome = await options.sendIndividualCard(card, segment.startDraw - 1)
+    } else {
+      rawOutcome = typeof chatService.sendChatMessageDetailed === 'function'
+        ? options.beforeExternalSend
+          ? await chatService.sendChatMessageDetailed(
+              broadcasterTwitchUserId,
+              segment.message,
+              { beforeExternalSend: options.beforeExternalSend },
+            )
+          : await chatService.sendChatMessageDetailed(broadcasterTwitchUserId, segment.message)
+        : (await chatService.sendChatMessage(broadcasterTwitchUserId, segment.message))
+          ? { outcome: 'sent' as const }
+          : { outcome: 'retryable' as const, reason: 'chat send failed' }
+    }
 
     if ('degradation' in rawOutcome && rawOutcome.degradation) {
       degradation = rawOutcome.degradation
     }
 
-    if (rawOutcome.outcome === 'sent' || rawOutcome.outcome === 'duplicate') {
+    if (
+      rawOutcome.outcome === 'sent'
+      || rawOutcome.outcome === 'duplicate'
+      || rawOutcome.outcome === 'skipped'
+    ) {
       const persisted = await options.afterSegmentComplete(index + 1)
       if (!persisted) {
         return degradation
