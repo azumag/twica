@@ -9,6 +9,9 @@ const query = (sql) => execFileSync('psql', args, { input: sql, encoding: 'utf8'
 const streamer = '15490000-0000-4000-8000-000000000001'
 const lease = '15490000-0000-4000-8000-000000000002'
 const staleLease = '15490000-0000-4000-8000-000000000003'
+const viewer = '15490000-0000-4000-8000-000000000090'
+const cardA = '15490000-0000-4000-8000-000000000091'
+const cardB = '15490000-0000-4000-8000-000000000092'
 const id = (n) => `15490000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const resolve = (n, owner = lease) => `SELECT public.resolve_chat_outbox_delivery_mode('${id(n)}', '${owner}');`
 const insert = (n, createdAt, count = 10) => `
@@ -104,10 +107,48 @@ try {
   assert.equal(query(`SELECT has_function_privilege('anon','public.resolve_chat_outbox_delivery_mode(uuid,uuid)','EXECUTE')
     OR has_function_privilege('authenticated','public.resolve_chat_outbox_delivery_mode(uuid,uuid)','EXECUTE');`), 'f')
   assert.equal(query(`SET ROLE service_role; ${resolve(18)}`), 'chunked', 'runtime role can execute the resolver')
+
+  // New individual outboxes snapshot final counts for every distinct drawn card. The app
+  // can then reconstruct {num}/{unique} at each draw without reading mutable current state.
+  query(`
+    RESET ROLE;
+    UPDATE public.streamer_chat_multi_delivery_settings
+      SET delivery_mode='individual',chunk_size=3 WHERE streamer_id='${streamer}';
+    INSERT INTO public.users(id,twitch_user_id,twitch_username,twitch_display_name)
+      VALUES('${viewer}','paced-viewer','paced-viewer','Paced Viewer');
+    INSERT INTO public.cards(id,streamer_id,name) VALUES
+      ('${cardA}','${streamer}','Card A'),
+      ('${cardB}','${streamer}','Card B');
+    INSERT INTO public.user_cards(user_id,card_id) VALUES
+      ('${viewer}','${cardA}'),('${viewer}','${cardA}'),('${viewer}','${cardA}'),('${viewer}','${cardA}'),
+      ('${viewer}','${cardB}');
+    INSERT INTO public.chat_notification_outbox
+      (id,batch_id,payload,expected_draw_count,assembled_draw_count,status,lease_id,lease_expires_at,created_at)
+    VALUES (
+      '${id(19)}','paced-ci-19',
+      jsonb_build_object(
+        'streamer',jsonb_build_object('id','${streamer}'),
+        'userId','paced-viewer',
+        'gachaResult',jsonb_build_object('cards',jsonb_build_array(
+          jsonb_build_object('id','${cardA}'),jsonb_build_object('id','${cardA}'),jsonb_build_object('id','${cardB}')
+        )),
+        'chatSnapshot',jsonb_build_object('cardCount',4,'uniqueCount',2,'allCount',2,'newCardNames',jsonb_build_array())
+      ),
+      3,3,'processing','${lease}',now()+interval '60 seconds','2026-01-01T00:00:08Z'
+    );`)
+  assert.equal(query(`SELECT
+      (payload #> '{chatSnapshot,cardCounts}' ->> '${cardA}') || '|' ||
+      (payload #> '{chatSnapshot,cardCounts}' ->> '${cardB}')
+    FROM public.chat_notification_outbox WHERE id='${id(19)}';`), '4|1')
+
   console.log('paced multi-draw PostgreSQL defaults, snapshots, retry reservation, fencing and concurrency checks passed')
 } finally {
   for (const process of pending) process.child.kill()
   await Promise.allSettled(pending.map((process) => process.done))
-  query(`DELETE FROM public.chat_notification_outbox WHERE batch_id LIKE 'paced-ci-%';
+  query(`RESET ROLE;
+    DELETE FROM public.chat_notification_outbox WHERE batch_id LIKE 'paced-ci-%';
+    DELETE FROM public.user_cards WHERE user_id='${viewer}';
+    DELETE FROM public.cards WHERE id IN ('${cardA}','${cardB}');
+    DELETE FROM public.users WHERE id='${viewer}';
     DELETE FROM public.streamers WHERE id='${streamer}';`)
 }
