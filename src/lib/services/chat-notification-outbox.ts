@@ -9,6 +9,7 @@
  */
 import { getDb } from '@/lib/db/client'
 import type { RedemptionNotifyData } from '@/lib/services/eventsub-redemption'
+import type { MultiDrawChatDeliveryMode } from '@/lib/twitch/multi-draw-chat'
 
 export const CHAT_OUTBOX_MAX_ATTEMPTS = 5
 // Helix送信は最大3試行（各試行timeout + backoff）を含むため、通常の最悪時間より
@@ -32,6 +33,11 @@ export interface ClaimedChatNotification {
   leaseId: string
   attemptCount: number
   createdAt: string
+  /** Issue #1549 additive fields. Optional keeps legacy test doubles/source-compatible. */
+  deliveryMode?: MultiDrawChatDeliveryMode
+  deliveryChunkSize?: number
+  /** 次に送るsegment index。summary/旧行は常に0。 */
+  deliveryCursor?: number
 }
 
 export interface ChatNotificationOutboxWorkItem {
@@ -48,10 +54,13 @@ interface ClaimedRow {
   lease_id: string
   attempt_count: number
   created_at: string
+  delivery_mode?: MultiDrawChatDeliveryMode
+  delivery_chunk_size?: number
+  delivery_cursor?: number
 }
 
 function toClaimed(row: ClaimedRow): ClaimedChatNotification {
-  return {
+  const claim: ClaimedChatNotification = {
     id: row.id,
     batchId: row.batch_id,
     payloadVersion: Number(row.payload_version),
@@ -60,6 +69,12 @@ function toClaimed(row: ClaimedRow): ClaimedChatNotification {
     attemptCount: Number(row.attempt_count),
     createdAt: row.created_at,
   }
+  // Production rows always carry these columns after the migration. Keep them additive
+  // here so older unit fixtures that mock the pre-#1549 row shape retain exact equality.
+  if (row.delivery_mode !== undefined) claim.deliveryMode = row.delivery_mode
+  if (row.delivery_chunk_size !== undefined) claim.deliveryChunkSize = Number(row.delivery_chunk_size)
+  if (row.delivery_cursor !== undefined) claim.deliveryCursor = Number(row.delivery_cursor)
+  return claim
 }
 
 function isGachaCard(value: unknown): boolean {
@@ -209,7 +224,11 @@ async function maintainChatNotificationOutbox(): Promise<void> {
   `
 }
 
-/** ライブEventSub処理が、自分のbatchだけをclaimする。 */
+/**
+ * ライブEventSub処理が、自分のbatchだけをclaimする。
+ * RETURNING * deliberately avoids naming additive delivery columns: Workers Builds can
+ * deploy before migration. Old rows then omit those fields and remain on legacy summary.
+ */
 export async function claimChatNotificationBatch(
   batchId: string,
 ): Promise<ClaimedChatNotification | null> {
@@ -228,7 +247,7 @@ export async function claimChatNotificationBatch(
         (status = 'pending' and next_attempt_at <= now())
         or (status = 'processing' and lease_expires_at <= now())
       )
-    returning id, batch_id, payload_version, payload, lease_id, attempt_count, created_at
+    returning *
   `
   return rows[0] ? toClaimed(rows[0]) : null
 }
@@ -269,8 +288,7 @@ export async function claimDueChatNotifications(
         updated_at = now()
     from candidates
     where outbox.id = candidates.id
-    returning outbox.id, outbox.batch_id, outbox.payload_version, outbox.payload,
-              outbox.lease_id, outbox.attempt_count, outbox.created_at
+    returning outbox.*
   `
   return rows.map(toClaimed)
 }
@@ -290,6 +308,32 @@ export async function renewChatNotificationLease(
   const rows = await sql<{ id: string }[]>`
     update chat_notification_outbox
     set lease_expires_at = now() + (${CHAT_OUTBOX_LEASE_SECONDS}::integer * interval '1 second'),
+        updated_at = now()
+    where id = ${claim.id}::uuid
+      and status = 'processing'
+      and lease_id = ${claim.leaseId}::uuid
+    returning id
+  `
+  return rows.length === 1
+}
+
+/**
+ * 分割N連の1segmentがTwitch側で確定した直後にcursorを前進する。
+ *
+ * cursorを保存できないまま次segmentを送ると、worker停止/429後の再claimで既送信分を
+ * 再送してしまう。そのためowner-fenced UPDATEが成功した場合だけ呼び出し側は次へ進む。
+ * `greatest` によりcursorは単調増加し、古いworkerが後退させることもない。
+ */
+export async function advanceChatNotificationDeliveryCursor(
+  claim: Pick<ClaimedChatNotification, 'id' | 'leaseId'>,
+  nextCursor: number,
+): Promise<boolean> {
+  if (!Number.isInteger(nextCursor) || nextCursor < 0) return false
+  const { sql } = await getDb()
+  const rows = await sql<{ id: string }[]>`
+    update chat_notification_outbox
+    set delivery_cursor = greatest(delivery_cursor, ${nextCursor}::integer),
+        lease_expires_at = now() + (${CHAT_OUTBOX_LEASE_SECONDS}::integer * interval '1 second'),
         updated_at = now()
     where id = ${claim.id}::uuid
       and status = 'processing'

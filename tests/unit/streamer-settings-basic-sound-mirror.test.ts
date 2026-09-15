@@ -82,17 +82,17 @@ describe("streamer settings basic-plan sound legacy mirror (#991)", () => {
       broadcasterType: "affiliate",
       expiresAt: Date.UTC(2100, 0, 1),
       version: 1,
-    } as any);
+    });
     mockCanUseStreamerFeatures.mockReturnValue(true);
     mockCheckRateLimit.mockResolvedValue({
       success: true,
       limit: 10,
       remaining: 9,
       reset: Date.UTC(2100, 0, 1),
-    } as any);
-    mockValidateCSRFToken.mockResolvedValue({ valid: true } as any);
+    });
+    mockValidateCSRFToken.mockResolvedValue({ valid: true });
     mockValidateContentType.mockReturnValue(null);
-    mockGetUserPlan.mockResolvedValue("basic" as any);
+    mockGetUserPlan.mockResolvedValue("basic");
   });
 
   it("derives gacha_sound_url/enabled from the post-gate rules, not the submitted gated fields", async () => {

@@ -4,6 +4,15 @@ import { useTranslations, useLocale } from 'next-intl'
 import { locales, LOCALE_COOKIE_NAME, LOCALE_COOKIE_MAX_AGE, type Locale } from '@/i18n/config'
 
 /**
+ * Persist a locale preference and reload so the new locale is applied.
+ * 言語設定をCookieへ保存し、新しいロケールを反映するため再読み込みする。
+ */
+function applyLocaleAndReload(newLocale: Locale) {
+  document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
+  window.location.reload()
+}
+
+/**
  * Language Switcher Component
  * Allows users to switch between Japanese and English.
  * Saves preference to cookie and reloads the page.
@@ -20,16 +29,7 @@ export function LanguageSwitcher() {
    */
   const switchLocale = (newLocale: Locale) => {
     if (newLocale === currentLocale) return
-
-    // Set cookie with 1-year expiration
-    // 1年の有効期限でCookieを設定
-    // ブラウザのdocument.cookieへの書き込みは通常の操作であり、lintルールを無効化
-    // eslint-disable-next-line react-hooks/immutability
-    document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
-
-    // Reload to apply the new locale
-    // 新しいロケールを適用するためにリロード
-    window.location.reload()
+    applyLocaleAndReload(newLocale)
   }
 
   return (
@@ -64,8 +64,7 @@ export function LanguageSwitcherCompact() {
 
   const switchLocale = (newLocale: Locale) => {
     if (newLocale === currentLocale) return
-    document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
-    window.location.reload()
+    applyLocaleAndReload(newLocale)
   }
 
   // Toggle between locales
@@ -92,10 +91,7 @@ export function LanguageSwitcherDark() {
 
   const switchLocale = (newLocale: Locale) => {
     if (newLocale === currentLocale) return
-    // ブラウザのdocument.cookieへの書き込みは通常の操作であり、lintルールを無効化
-    // eslint-disable-next-line react-hooks/immutability
-    document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
-    window.location.reload()
+    applyLocaleAndReload(newLocale)
   }
 
   return (
@@ -129,10 +125,7 @@ export function LanguageSwitcherSettings() {
 
   const switchLocale = (newLocale: Locale) => {
     if (newLocale === currentLocale) return
-    // ブラウザのdocument.cookieへの書き込みは通常の操作であり、lintルールを無効化
-    // eslint-disable-next-line react-hooks/immutability
-    document.cookie = `${LOCALE_COOKIE_NAME}=${newLocale};path=/;max-age=${LOCALE_COOKIE_MAX_AGE};samesite=lax`
-    window.location.reload()
+    applyLocaleAndReload(newLocale)
   }
 
   // Language options with full names and descriptions

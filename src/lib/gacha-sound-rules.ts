@@ -46,7 +46,7 @@ export const createRuleId = (): string => (
  * アプリ自身がアップロード済み効果音／画像の公開URLとして実際に使っている
  * R2_SOUND_PUBLIC_URL / R2_PUBLIC_URL（いずれも src/lib/r2-client.ts が使う
  * サーバー専用の環境変数。NEXT_PUBLIC_ プレフィックスが無いためクライアント
- * バンドルには埋め込まれない = ブラウザ側で呼ばれても値は取れず安全側に倒れる）
+ * バンドルには埋め込まれず、ブラウザ側の判定ではこれらの値を前提にしない）
  * のホスト名を許可リストとして導出する。正規に保存された効果音は必ずこの
  * いずれかのホストに置かれているため、既存の保存済みルールが誤って弾かれる
  * ことはない。
@@ -71,7 +71,6 @@ function getDefaultAllowedSoundHosts(): string[] {
  *   1. R2_SOUND_PUBLIC_URL / R2_PUBLIC_URL から導出したホスト（アプリが
  *      実際にアップロード先として使っているホスト。上記 getDefaultAllowedSoundHosts 参照）
  *   2. process.env.ALLOWED_SOUND_HOSTS（カンマ区切りホスト名、任意の追加許可）
- *   または同一オリジンのみ許可
  * - 上記いずれも未設定の場合（ローカル開発でR2環境変数が無い等）は
  *   後方互換のため HTTPS チェックのみで素通しする
  */
@@ -102,11 +101,6 @@ export function isAllowedSoundUrl(rawUrl: string): boolean {
   const hostname = parsed.hostname.toLowerCase();
   if (allowList.includes(hostname)) return true;
 
-  // 同一オリジンは常に許可
-  if (typeof location !== "undefined" && parsed.origin === location.origin) {
-    return true;
-  }
-
   return false;
 }
 
@@ -123,7 +117,7 @@ function normalizeRule(value: unknown): GachaSoundRule | null {
   const url = sanitizeText(raw.url, 2048);
   if (!url) return null;
 
-  // URL allowlist: HTTPS 必須 + 許可ホスト／同一オリジン制限
+  // URL allowlist: HTTPS 必須 + 許可ホスト制限
   // 任意の外部 URL を配信オーバーレイで再生させない（SSRF/不正音声対策）
   if (!isAllowedSoundUrl(url)) return null;
 

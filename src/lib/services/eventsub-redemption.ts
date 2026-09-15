@@ -47,6 +47,7 @@ import {
   renewChatNotificationLease,
   retryChatNotification,
 } from "@/lib/services/chat-notification-outbox";
+import { sendClaimedChatAnnouncement } from "@/lib/services/eventsub-redemption-delivery";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 export { runInBackground } from "@/lib/background-task";
 // チャット通知プレースホルダと売り切れ設定を、ガチャ確定と同じPlanetScaleから
@@ -475,15 +476,9 @@ export async function postRedemptionNotify(
             : 'Chat announcement payload DLQ update lost its lease',
         );
       }
-      const outcome = await sendChatAnnouncement(
-        persistedData.broadcasterTwitchUserId,
-        persistedData.streamer,
-        persistedData.gachaResult.card,
-        persistedData.gachaResult.userTwitchUsername,
-        persistedData.userId,
-        persistedData.gachaResult.cards,
-        persistedData.gachaResult.collectionName,
-        persistedData.chatSnapshot,
+      const outcome = await sendClaimedChatAnnouncement(
+        claim,
+        persistedData,
         async () => {
           // replay routeが期限切れで応答を返した後に、遅れて資格情報解決が完了しても
           // Twitch送信を開始しない。期限内ならowner-fenced lease更新を最終送信許可にする。
@@ -613,7 +608,7 @@ export async function postRedemptionNotify(
   // Note: publishCommittedGachaBatch (i=0) は失敗を結果へ閉じ込め、polling回収へ
   // 委ねる設計のため rejected にならない。詳細はpublisher側の構造化warnで追跡する。
   // chatAnnouncement (i=1): retryable outcome経由でretryChatNotificationが'pending'を
-  // 返した場合はchatTask内でwarnログのみに留めて正常終了するため、ここには到達しない
+  // 返した場合はchatTask内でinfoログのみに留めて正常終了するため、ここには到達しない
   // （Issue #1033）。一方、sendChatAnnouncement自体が予期せずthrowした場合の catch
   // ブロックは、行を'pending'へ戻したうえでそのままrethrowする契約を維持しており
   // （呼び出し元コード自体のバグを揉み消さないため）、この経路はoutbox行がpendingで

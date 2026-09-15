@@ -1,0 +1,21 @@
+{
+  "multiDrawChatDelivery": {
+    "title": "N連通知方式",
+    "description": "N連ガチャの結果をチャットへ送る方法を選びます。既定では従来どおり1投稿にまとめます。",
+    "summary": "1投稿にまとめる",
+    "summaryDescription": "従来どおり、N連全体を1つのチャット投稿で通知します。",
+    "individual": "1枚ずつ順番に送る",
+    "individualDescription": "各カードを約1.6秒間隔で1投稿ずつ通知します。15連では完了まで約22秒かかります。",
+    "chunked": "数枚ずつ送る",
+    "chunkedDescription": "カードを数枚ずつまとめ、約1.6秒間隔で複数投稿します。",
+    "chunkSize": "1投稿あたりの枚数",
+    "cards": "{count}枚",
+    "save": "通知方式を保存",
+    "saving": "保存中…",
+    "saved": "N連通知方式を保存しました。",
+    "loadError": "N連通知方式を読み込めませんでした。",
+    "saveError": "N連通知方式を保存できませんでした。",
+    "pacingNote": "分割通知はTwitchの連投制限に余裕を持たせるため、投稿間に約1.6秒の間隔を設けます。",
+    "open": "N連通知方式を設定"
+  }
+}
