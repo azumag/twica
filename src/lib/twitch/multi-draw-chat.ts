@@ -61,16 +61,6 @@ function compactRarityLabel(rarity: string): string {
   return labels[rarity] ?? rarity
 }
 
-function singleDrawRarityLabel(rarity: string): string {
-  const labels: Record<string, string> = {
-    common: 'コモン',
-    rare: 'レア',
-    epic: 'エピック',
-    legendary: 'レジェンダリー',
-  }
-  return labels[rarity] ?? rarity
-}
-
 function formatRarityCounts(cards: GachaCard[]): string {
   const counts = new Map<string, number>()
   for (const card of cards) {
@@ -205,21 +195,13 @@ function fitSegmentWithTail(prefix: string, tail: string): string {
   return `${prefix}${truncateCharacters(tail, remainingCharacters)}`
 }
 
-function buildDefaultSingleDrawMessage(card: GachaCard, userName: string): string {
-  const message = `@${userName} が【${singleDrawRarityLabel(card.rarity)}】${card.name} を獲得しました！`
-  return countCharacters(message) > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS
-    ? `${truncateCharacters(message, TWITCH_CHAT_MESSAGE_MAX_CHARACTERS - 3)}...`
-    : message
-}
-
 /**
- * Summary stays on the legacy sendChatAnnouncement path. Individual/chunked messages
- * are deterministic from card order so delivery_cursor can resume the exact segment
- * without depending on time, randomness, or mutable external state.
+ * Summary stays on the legacy sendChatAnnouncement path. Individual/chunked fallback
+ * messages are deterministic from card order so delivery_cursor can resume the exact
+ * segment without depending on time, randomness, or mutable external state.
  *
- * Production individual delivery replaces the fallback message with the streamer's normal
- * single-draw template via sendChatAnnouncement. Keeping the fallback identical to the
- * default single-draw wording also preserves sensible behavior for isolated callers/tests.
+ * Production individual delivery replaces this structural fallback with the streamer's
+ * normal single-draw template via sendChatAnnouncement.
  */
 export function buildMultiDrawChatSegments(
   cards: GachaCard[],
@@ -231,12 +213,15 @@ export function buildMultiDrawChatSegments(
 
   const total = cards.length
   if (mode === 'individual') {
-    return cards.map((card, index) => ({
-      index,
-      startDraw: index + 1,
-      endDraw: index + 1,
-      message: buildDefaultSingleDrawMessage(card, userName),
-    }))
+    return cards.map((card, index) => {
+      const prefix = `@${userName} ${total}x ${index + 1}/${total}: [${compactRarityLabel(card.rarity)}] `
+      return {
+        index,
+        startDraw: index + 1,
+        endDraw: index + 1,
+        message: fitSegmentWithTail(prefix, card.name),
+      }
+    })
   }
 
   const safeChunkSize = normalizeMultiDrawChatChunkSize(chunkSize)
