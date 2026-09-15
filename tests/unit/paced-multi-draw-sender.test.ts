@@ -14,7 +14,7 @@ function card(index: number): GachaCard {
 }
 
 describe('sendPacedMultiDrawChatAnnouncement', () => {
-  it('persists cursor after each segment and resumes from it', async () => {
+  it('persists cursor after each fallback segment and resumes from it', async () => {
     const sendChatMessageDetailed = vi.fn()
       .mockResolvedValueOnce({ outcome: 'sent' })
       .mockResolvedValueOnce({ outcome: 'sent' })
@@ -44,6 +44,37 @@ describe('sendPacedMultiDrawChatAnnouncement', () => {
     expect(afterSegmentComplete.mock.calls.map(([cursor]) => cursor)).toEqual([2, 3])
     expect(delay).toHaveBeenCalledTimes(1)
     expect(delay).toHaveBeenCalledWith(1600)
+  })
+
+  it('uses the injected single-draw sender for individual delivery', async () => {
+    const sendChatMessageDetailed = vi.fn()
+    const sendIndividualCard = vi.fn()
+      .mockResolvedValueOnce({ outcome: 'sent' })
+      .mockResolvedValueOnce({ outcome: 'skipped' })
+    const afterSegmentComplete = vi.fn().mockResolvedValue(true)
+
+    await expect(sendPacedMultiDrawChatAnnouncement(
+      'broadcaster',
+      [card(1), card(2)],
+      'user',
+      {
+        deliveryMode: 'individual',
+        chunkSize: 3,
+        startCursor: 0,
+        sendIndividualCard,
+        afterSegmentComplete,
+        delay: vi.fn().mockResolvedValue(undefined),
+        chatService: {
+          sendChatMessageDetailed,
+          sendChatMessage: vi.fn(),
+        },
+      },
+    )).resolves.toEqual({ outcome: 'sent' })
+
+    expect(sendIndividualCard).toHaveBeenNthCalledWith(1, expect.objectContaining({ name: 'カード1' }), 0)
+    expect(sendIndividualCard).toHaveBeenNthCalledWith(2, expect.objectContaining({ name: 'カード2' }), 1)
+    expect(sendChatMessageDetailed).not.toHaveBeenCalled()
+    expect(afterSegmentComplete.mock.calls.map(([cursor]) => cursor)).toEqual([1, 2])
   })
 
   it('stops before the next segment if cursor persistence loses the lease', async () => {
