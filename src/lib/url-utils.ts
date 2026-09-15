@@ -58,8 +58,8 @@ function resolveFallbackOrigin(): string {
   const raw = process.env.NEXT_PUBLIC_APP_URL
   if (!raw) {
     if (process.env.NODE_ENV === 'production') {
-      // サイレントに localhost へ倒すと OAuth redirect_uri が全滅し、気付く手段が
-      // 無い。設定ミスはリクエスト時に即座に検知する（#836 レビュー指摘）。
+      // サイレントに localhost へ倒すと OAuth redirect_uri が全滅して設定ミスを
+      // 検知できないため、production ではリクエスト時に即座に失敗させる。
       throw new Error('NEXT_PUBLIC_APP_URL is required in production')
     }
     return 'http://localhost:8787'

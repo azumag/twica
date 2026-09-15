@@ -51,7 +51,7 @@ async function issueAppAccessToken(): Promise<CachedAppToken> {
   const data = (await response.json()) as { access_token?: string; expires_in?: number };
   if (typeof data.access_token !== "string" || data.access_token.length === 0) {
     // 200 でも access_token 欠落のボディが返る異常系。不正値を KV へ4時間
-    // キャッシュしない（#739 レビュー指摘）。
+    // キャッシュしない。
     throw new Error("App access token response is missing access_token");
   }
   // expires_in 欠落・不正値（0以下 / NaN）は上限TTLへフォールバックする
@@ -173,7 +173,7 @@ export async function fetchTwitchApi(
   if (response.status === 401) {
     await invalidateTwitchAppToken();
     // 強制再発行: KV の delete がエッジへ伝播していない場合でも、キャッシュを
-    // 読み戻さず新トークンを発行してリトライする（#739 レビュー指摘）。
+    // 読み戻さず新トークンを発行してリトライする。
     return doFetch(await getTwitchAppAccessToken({ forceRefresh: true }));
   }
   return response;

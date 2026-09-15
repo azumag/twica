@@ -37,6 +37,17 @@ function getLocaleFromAcceptLanguage(acceptLanguage: string | null): Locale | nu
   return null
 }
 
+async function loadMessages(locale: Locale) {
+  const [base, multiDrawChat] = await Promise.all([
+    import(`../../messages/${locale}.json`),
+    import(`../../messages/features/multi-draw-chat/${locale}.json`),
+  ])
+  return {
+    ...base.default,
+    ...multiDrawChat.default,
+  }
+}
+
 /**
  * Main request config for next-intl
  * next-intlのメインリクエスト設定
@@ -50,7 +61,7 @@ export default getRequestConfig(async () => {
   if (localeCookie && locales.includes(localeCookie as Locale)) {
     return {
       locale: localeCookie as Locale,
-      messages: (await import(`../../messages/${localeCookie}.json`)).default,
+      messages: await loadMessages(localeCookie as Locale),
     }
   }
 
@@ -63,7 +74,7 @@ export default getRequestConfig(async () => {
   if (browserLocale) {
     return {
       locale: browserLocale,
-      messages: (await import(`../../messages/${browserLocale}.json`)).default,
+      messages: await loadMessages(browserLocale),
     }
   }
 
@@ -71,6 +82,6 @@ export default getRequestConfig(async () => {
   // 優先度3: デフォルトロケールにフォールバック
   return {
     locale: defaultLocale,
-    messages: (await import(`../../messages/${defaultLocale}.json`)).default,
+    messages: await loadMessages(defaultLocale),
   }
 })

@@ -217,9 +217,22 @@ export const gachaHistory = pgTable('gacha_history', {
 })
 
 // -----------------------------------------------------------------------------
+// streamer_chat_multi_delivery_settings（Issue #1549: N連チャット配送方式）
+// 根拠: 20260912013000 paced multi draw chat
+// -----------------------------------------------------------------------------
+export const streamerChatMultiDeliverySettings = pgTable('streamer_chat_multi_delivery_settings', {
+  streamer_id: uuid('streamer_id').primaryKey(),
+  delivery_mode: text('delivery_mode').notNull().default('summary'),
+  chunk_size: integer('chunk_size').notNull().default(3),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+// -----------------------------------------------------------------------------
 // chat_notification_outbox（Issue #708: transactional chat outbox）
 // Twitch API配送はat-least-once。processing leaseで通常の同時送信を防ぐが、
 // Twitch送信成功後〜sent記録前の停止時だけは重複送信を許容する。
+// 20260912013000でN連チャットの配送snapshot/cursor列を追加（Issue #1549）。
 // -----------------------------------------------------------------------------
 export const chatNotificationOutbox = pgTable('chat_notification_outbox', {
   id: uuid('id').primaryKey().default(sql`extensions.uuid_generate_v4()`),
@@ -228,6 +241,10 @@ export const chatNotificationOutbox = pgTable('chat_notification_outbox', {
   payload: jsonb('payload').$type<Json>().notNull(),
   expected_draw_count: integer('expected_draw_count').notNull(),
   assembled_draw_count: integer('assembled_draw_count').notNull(),
+  delivery_mode: text('delivery_mode').notNull().default('summary'),
+  delivery_chunk_size: integer('delivery_chunk_size').notNull().default(3),
+  delivery_cursor: integer('delivery_cursor').notNull().default(0),
+  delivery_mode_resolved: boolean('delivery_mode_resolved').notNull().default(false),
   status: text('status').notNull().default('pending'),
   attempt_count: integer('attempt_count').notNull().default(0),
   next_attempt_at: timestamp('next_attempt_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),

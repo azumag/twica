@@ -2195,14 +2195,10 @@ export interface ActiveCardCountForStreamer {
 /**
  * getActiveCardCountsForStreamers の Drizzle（pg 直結）実装 (#571)
  *
- * 前処理（重複除去・空入力の早期 return）と JS 側集計は経路非依存だが、
- * 「関数冒頭でのフラグ分岐 + 既存実装無変更」の規約を守るため、pg 版にも
- * 同じ前処理を意図的に複製している（挙動パリティの検証容易性を優先）。
- *
- * 暗黙に打ち切られる。この関数は複数配信者のアクティブカードを合算で取得する
- * ため、コレクションの多いユーザーでは 1000 行超が現実に起こりうる。ここで
- * LIMIT を外すと pg 経路だけカウントが変わってしまうため、明示 LIMIT 1000 で
- * 既存挙動（打ち切りによる過少カウントも含めて）を再現する。
+ * 複数配信者の進捗は、対象となる全アクティブカードのIDで集計する。
+ * 合算にLIMITを掛けると後方の配信者が一部のカードだけで100%と判定されるため、
+ * pg直結では件数を打ち切らない。取得列はIDと配信者IDのみに絞り、
+ * 配信者ごとのN+1クエリを避けながら分母と所有カードとの交差を正確に保つ。
  * エラー時は既存実装と同じく reportError + 全ゼロの counts を返す。
  */
 async function getActiveCardCountsForStreamersPg(
@@ -2233,8 +2229,7 @@ async function getActiveCardCountsForStreamersPg(
               inArray(cardsTable.streamer_id, uniqueStreamerIds),
               eq(cardsTable.is_active, true),
             )
-          )
-          .limit(1000);
+          );
       },
       "getActiveCardCountsForStreamers",
       { idempotent: true },

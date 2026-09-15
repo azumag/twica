@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getDb } from '@/lib/db/client'
 import {
   CHAT_OUTBOX_MAX_ATTEMPTS,
+  advanceChatNotificationDeliveryCursor,
   claimChatNotificationBatch,
   claimDueChatNotifications,
   decodeChatNotificationPayload,
@@ -39,6 +40,42 @@ const CLAIM_ROW = {
 describe('transactional chat outbox claim/ack', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+
+  it('keeps pre-migration claim SQL free of unavailable delivery columns', async () => {
+    const sqlMock = createSqlMock([[CLAIM_ROW]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+    await claimChatNotificationBatch('batch-1')
+    await claimDueChatNotifications(1, { maintain: false })
+    for (let index = 0; index < 2; index += 1) {
+      expect(renderSqlCall(sqlMock, index).text).not.toContain('delivery_')
+    }
+  })
+
+  it('carries committed segment progress into a reclaimed notification', async () => {
+    const sqlMock = createSqlMock([[{
+      ...CLAIM_ROW, delivery_mode: 'individual', delivery_chunk_size: 3, delivery_cursor: 6,
+    }]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+    await expect(claimChatNotificationBatch('batch-1')).resolves.toMatchObject({
+      deliveryMode: 'individual', deliveryChunkSize: 3, deliveryCursor: 6,
+    })
+  })
+
+  it('checkpoints only through a processing owner and keeps the cursor monotonic', async () => {
+    const sqlMock = createSqlMock([[{ id: CLAIM_ROW.id }], []])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+    const claim = { id: CLAIM_ROW.id, leaseId: CLAIM_ROW.lease_id }
+    await expect(advanceChatNotificationDeliveryCursor(claim, 6)).resolves.toBe(true)
+    await expect(advanceChatNotificationDeliveryCursor(claim, 7)).resolves.toBe(false)
+    const query = renderSqlCall(sqlMock, 0)
+    expect(query.text).toContain('greatest(delivery_cursor, $::integer)')
+    expect(query.text).toContain("status = 'processing'")
+    expect(query.text).toContain('lease_id = $::uuid')
+    expect(query.values).toContain(CLAIM_ROW.lease_id)
+    await expect(advanceChatNotificationDeliveryCursor(claim, -1)).resolves.toBe(false)
+    expect(sqlMock).toHaveBeenCalledTimes(2)
   })
 
   it('期限到来順をFOR UPDATE SKIP LOCKEDでclaimし、同時relayの重複取得を避ける', async () => {

@@ -15,6 +15,11 @@ predates the adapter's Node.js middleware / `proxy.ts` support.
   `opennextjs/opennextjs-cloudflare#1309` added experimental Node.js middleware
   (`proxy.ts`) support directly to `@opennextjs/cloudflare`, and it shipped in
   1.20.3. The support requires the `nodejs_compat` compatibility flag.
+- Treat bundle size as an explicit migration gate. PR #1309 lists increased
+  worker size as a known limitation, and `opennextjs-cloudflare#1373` reports a
+  roughly 4.6 MB total bundle in a minimal no-op `proxy.ts` reproduction on
+  1.20.4. That upstream report is not a TwiCa measurement, so TwiCa must compare
+  its own before/after artifacts before accepting the migration.
 - Accept the Next.js deprecated convention warning as the smaller operational
   risk until the dependency is upgraded and `npm run workers:build` is verified
   on TwiCa's actual middleware path.
@@ -36,18 +41,23 @@ was closed on 2026-08-25 when
 merged. `@opennextjs/cloudflare` 1.20.3, published on 2026-08-26, includes that
 experimental `proxy.ts` support.
 
-Upstream status last checked: **2026-09-09**. The recheck confirms #1277 remains
-closed and #1309 remains merged. TwiCa is still pinned to
-`@opennextjs/cloudflare` 1.20.2, so the upstream fix has not yet changed the
-repository's verified deployment contract.
+Upstream status last checked: **2026-09-13**. The recheck confirms #1277 remains
+closed, #1309 remains merged, and
+[`opennextjs-cloudflare#1373`](https://github.com/opennextjs/opennextjs-cloudflare/issues/1373)
+remains open as a bundle-size regression report for the Node.js middleware
+path. TwiCa is still pinned to `@opennextjs/cloudflare` 1.20.2, so the upstream
+support has not yet changed the repository's verified deployment contract.
 
 ## Revisit Conditions
 
 Revisit this decision when either of these is true:
 
 - TwiCa upgrades to an `@opennextjs/cloudflare` release containing #1309
-  (1.20.3 or newer) and `npm run workers:build` succeeds with `src/proxy.ts`
-  while the existing session refresh, protected-route, and middleware contract
-  tests remain green.
+  (1.20.3 or newer), `npm run workers:build` succeeds with `src/proxy.ts`, and
+  the existing session refresh, protected-route, and middleware contract tests
+  remain green. Before accepting the migration, also compare the generated
+  middleware / total Worker bundle size with the current Edge Middleware
+  baseline and confirm the increase is acceptable for TwiCa's Cloudflare
+  deployment limits and operating cost. A successful build alone is not enough.
 - TwiCa changes deployment architecture so request interception no longer needs
   to run in Cloudflare Workers middleware.
