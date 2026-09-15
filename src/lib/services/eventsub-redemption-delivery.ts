@@ -8,7 +8,11 @@ import {
   type ChatAnnouncementOutcome,
   type RedemptionNotifyData,
 } from './eventsub-redemption'
-import { normalizeMultiDrawChatDeliveryMode } from '@/lib/twitch/multi-draw-chat'
+import {
+  buildIndividualChatSnapshot,
+  normalizeMultiDrawChatDeliveryMode,
+  type MultiDrawChatSnapshot,
+} from '@/lib/twitch/multi-draw-chat'
 import { sendPacedMultiDrawChatAnnouncement } from '@/lib/twitch/paced-multi-draw-sender'
 
 /**
@@ -37,6 +41,9 @@ export async function sendClaimedChatAnnouncement(
   }
 
   if (drawnCards.length > 1 && mode !== 'summary') {
+    // cardCounts is an additive outbox snapshot field for individual delivery. Older v1
+    // payloads do not carry it; buildIndividualChatSnapshot has a deterministic fallback.
+    const multiSnapshot = data.chatSnapshot as MultiDrawChatSnapshot | undefined
     return sendPacedMultiDrawChatAnnouncement(
       data.broadcasterTwitchUserId,
       drawnCards,
@@ -51,6 +58,24 @@ export async function sendClaimedChatAnnouncement(
           if (persisted) claim.deliveryCursor = nextCursor
           return persisted
         },
+        ...(mode === 'individual'
+          ? {
+              // Treat every paced card exactly like a normal one-card gacha for wording:
+              // same custom/default template, rarity text, detail, URL and packName rules.
+              sendIndividualCard: (card: typeof drawnCards[number], drawIndex: number) =>
+                sendChatAnnouncement(
+                  data.broadcasterTwitchUserId,
+                  data.streamer,
+                  card,
+                  data.gachaResult.userTwitchUsername,
+                  data.userId,
+                  undefined,
+                  data.gachaResult.collectionName,
+                  buildIndividualChatSnapshot(drawnCards, drawIndex, multiSnapshot),
+                  beforeExternalSend,
+                ),
+            }
+          : {}),
       },
     )
   }
