@@ -24,6 +24,7 @@ import {
 } from "@/lib/overlay-realtime/contract";
 import { resolveOverlayRealtimeConfigVersion } from "@/lib/overlay-realtime/resolve-config";
 import { getOverlayDemoEvent } from "@/lib/overlay/demo-event-store";
+import { reportOverlayPollingPresence } from "@/lib/overlay-realtime/polling-presence";
 import { normalizeOverlayHistoryTimestamp } from "@/lib/overlay-history-cursor";
 
 // A redemption produces at most 15 rows. The larger bounded page keeps one
@@ -222,6 +223,11 @@ export async function GET(
         }
       );
     }
+
+    // Only new authenticated clients attach this header, at most every five
+    // minutes. Register the best-effort binding task after the existing rate
+    // limit, without delaying history on the presence registry's response.
+    await reportOverlayPollingPresence(streamerId, request.headers.get("x-twica-presence"));
 
     // Start the optional KV read together with the PlanetScale query. Awaiting
     // them serially would add KV latency to every active overlay even though

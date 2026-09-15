@@ -90,9 +90,6 @@ const PRESENCE_REPORT_TIMEOUT_MS = 2_000
 const PRESENCE_LEASE_TTL_MS = 10 * 60_000
 const PRESENCE_SNAPSHOT_TTL_MS = 60_000
 const PRESENCE_SWEEP_INTERVAL_MS = 5 * 60_000
-// Public estimates are intentionally bucketed to reduce disclosure risk for
-// small overlay populations and avoid exposing a one-channel signal.
-const PRESENCE_PRIVACY_BUCKET_SIZE = 5
 const PRESENCE_REGISTRY_NAME = 'all'
 const PRESENCE_KEY_PREFIX = 'room:'
 const PRESENCE_LAST_REPORTED_AT_KEY = 'presence-last-reported-at'
@@ -117,7 +114,7 @@ interface PresenceResponseInFlight {
 
 // `caches.default` is not a reliable boundary on workers.dev. Keep the
 // public snapshot inexpensive without depending on that platform detail:
-// each warm Worker isolate reuses the small, already-bucketed JSON response
+// each warm Worker isolate reuses the small, aggregated JSON response
 // for one minute, while the Durable Object remains the shared freshness gate.
 let presenceResponseCache: PresenceResponseCache | null = null
 let presenceResponseInFlight: PresenceResponseInFlight | null = null
@@ -247,7 +244,7 @@ async function clientRateLimitBucket(request: Request): Promise<string> {
     .join('')
 }
 
-function roomPath(pathname: string, suffix: 'connect' | 'publish'): string | null {
+function roomPath(pathname: string, suffix: 'connect' | 'publish' | 'presence'): string | null {
   // Subscriptions are intentionally public, while publish is reachable only
   // through the internal path even when a caller happens to possess a valid
   // signature. Keeping the prefix tied to the operation avoids accidentally
@@ -446,6 +443,21 @@ const overlayRealtimeWorker = {
       return presenceResponseFromCache(snapshot)
     }
 
+    const pollingStreamerId = roomPath(url.pathname, 'presence')
+    if (request.method === 'POST' && pollingStreamerId) {
+      // Polling intentionally remains available with WebSockets disabled. The
+      // same room-scoped capability is required; public stream IDs are not auth.
+      if (!await hasPresenceCapability(env.OVERLAY_REALTIME_PUBLISH_SECRET, pollingStreamerId,
+        request.headers.get('x-twica-presence') ?? '')) {
+        return json({ error: 'Unauthorized' }, 401)
+      }
+      if (!env.OVERLAY_PRESENCE) return json({ error: 'Presence unavailable' }, 503)
+      const id = env.OVERLAY_ROOMS.idFromName(pollingStreamerId)
+      return env.OVERLAY_ROOMS.get(id).fetch(new Request('https://room.internal/room/presence', {
+        method: 'POST', headers: { 'x-internal-streamer-id': pollingStreamerId },
+      }))
+    }
+
     const connectStreamerId = roomPath(url.pathname, 'connect')
     if (request.method === 'GET' && connectStreamerId) {
       if (!realtimeEnabled(env, connectStreamerId)) {
@@ -527,6 +539,7 @@ export default overlayRealtimeWorker
 export class OverlayRoom {
   private readonly state: CloudflareDurableObjectState
   private readonly env: Env
+  private presenceReportInFlight: Promise<void> | null = null
   constructor(state: CloudflareDurableObjectState, env: Env) {
     this.state = state
     this.env = env
@@ -680,10 +693,9 @@ export class OverlayRoom {
       // No listeners: let the object go fully idle instead of paying for a
       // wake every minute for a room nobody is watching.
       await this.state.storage.delete(ROOM_STREAMER_ID_KEY)
-      // A reconnect after a quiet period should publish a fresh lease
-      // immediately. The registry itself expires the old lease.
-      await this.state.storage.delete(PRESENCE_LAST_REPORTED_AT_KEY)
-      await this.state.storage.delete(PRESENCE_LAST_ATTEMPT_AT_KEY)
+      // Retain the two bounded timestamps: polling may still be renewing this
+      // room. Clearing them here would defeat throttling on transport changes.
+      // A reconnect after five minutes is due without resetting either value.
       return
     }
 
@@ -858,7 +870,18 @@ export class OverlayRoom {
     }
   }
 
-  private async reportPresenceIfDue(streamerId: string): Promise<void> {
+  private reportPresenceIfDue(streamerId: string): Promise<void> {
+    // Concurrent polls and socket alarms share one attempt, including failures.
+    // Persisted attempt timestamps retain the limit across room hibernation.
+    if (this.presenceReportInFlight) return this.presenceReportInFlight
+    const task = this.reportPresenceAttempt(streamerId).finally(() => {
+      this.presenceReportInFlight = null
+    })
+    this.presenceReportInFlight = task
+    return task
+  }
+
+  private async reportPresenceAttempt(streamerId: string): Promise<void> {
     try {
       if (!this.env.OVERLAY_PRESENCE) return
       const now = Date.now()
@@ -917,6 +940,14 @@ export class OverlayRoom {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    if (request.method === 'POST' && url.pathname === '/room/presence') {
+      // Only the edge router reaches this internal DO route, after checking the
+      // capability and selecting the room from that authenticated streamer ID.
+      const streamerId = request.headers.get('x-internal-streamer-id') ?? ''
+      if (!isValidStreamerId(streamerId)) return json({ error: 'Invalid streamer ID' }, 400)
+      await this.reportPresenceIfDue(streamerId)
+      return json({ accepted: true }, 202)
+    }
     if (request.method === 'GET' && url.pathname.startsWith('/room/connect/')) {
       const bucket = await clientRateLimitBucket(request)
       if (!await this.consumeRoomRateLimit('connect', bucket)) {
@@ -1290,10 +1321,10 @@ export class OverlayPresence {
   private snapshotResponse(count: number, observedAt: string): Response {
     // The application adds its own KV cache. The bounded DO snapshot cache
     // above also keeps direct reads from scanning every lease for 60 seconds.
-    const publicCount = Math.floor(count / PRESENCE_PRIVACY_BUCKET_SIZE)
-      * PRESENCE_PRIVACY_BUCKET_SIZE
+    // Rounding happens after the scan and saves no I/O. Return the observed
+    // lease count; cadence/expiry still make this an estimate of overlay use.
     return json(
-      { count: publicCount, observedAt },
+      { count, observedAt },
       200,
       { 'cache-control': 'public, max-age=60' }
     )

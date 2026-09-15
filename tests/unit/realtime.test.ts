@@ -69,6 +69,36 @@ describe('subscribeToGachaResults: HTTP polling transport', () => {
     vi.useRealTimers()
   })
 
+
+  it.each([false, true])('bounds polling presence even on failure (%s) and excludes tokenless previews', async (fail) => {
+    const token = `${Date.now() + 86400_000}.123e4567-e89b-42d3-a456-426614174000.${'a'.repeat(64)}`
+    window.history.replaceState({}, '', `/overlay/${STREAMER_ID}?presence=${token}`)
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input
+      void _init
+      if (fail) throw new Error('network unavailable')
+      return jsonResponse({ events: [] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const unsubscribe = subscribeToGachaResults('streamer', vi.fn())
+    await flushPromises()
+    const reports = () => fetchMock.mock.calls.filter(([, init]) => new Headers(init?.headers).has('x-twica-presence'))
+    expect(reports()).toHaveLength(1)
+    expect(new Headers(reports()[0][1]?.headers).get('x-twica-presence')).toBe(token)
+    expect(String(reports()[0][0])).not.toContain(token)
+    await vi.advanceTimersByTimeAsync(299_000)
+    expect(reports()).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(61_000)
+    expect(reports()).toHaveLength(2)
+    unsubscribe()
+    window.history.replaceState({}, '', `/overlay/${STREAMER_ID}`)
+    fetchMock.mockClear()
+    const stopPreview = subscribeToGachaResults('streamer', vi.fn())
+    await flushPromises()
+    expect(reports()).toHaveLength(0)
+    stopPreview()
+  })
+
   it('groups N-draw history rows and consumes a demo from the same polling response', async () => {
     const redeemedAt = '2026-07-24T00:00:01.000Z'
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
