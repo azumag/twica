@@ -23,15 +23,13 @@
  * コード」のためだけに新しいインフラ依存（専用 namespace 作成・wrangler.toml
  * 更新・デプロイ）を先回りして増やすのは YAGNI に反する。そのため既存の
  * RATE_LIMIT_KV バインディング（wrangler.toml）をキープレフィックス
- * `maintenance:eventsub:` で分離して共用する。将来的に専用 namespace に
- * 分けたくなった場合は KV_BINDING_NAME を差し替えるだけで済むよう、
- * バインディング名をこの1箇所に集約している。
+ * `maintenance:eventsub:` で分離して共用する。RATE_LIMIT_KV の binding 取得は
+ * src/lib/cloudflare-kv.ts#getKvBinding に集約し、このモジュールは maintenance 固有の
+ * キー・レコード・list 契約だけを持つ。
  */
+import { getKvBinding, type KVNamespaceLike as SharedKVNamespaceLike } from '@/lib/cloudflare-kv'
 import { logger } from '@/lib/logger.server'
 import type { MaintenanceState } from './state'
-
-/** 共用する KV バインディング名。専用 namespace に切り替える際はここだけ変更すればよい。 */
-const KV_BINDING_NAME = 'RATE_LIMIT_KV'
 
 /**
  * 退避データのキープレフィックス。RATE_LIMIT_KV 内で既に使われている
@@ -85,16 +83,14 @@ export function buildParkedEventSubKey(receivedAt: string, messageId: string): s
 const PARK_TTL_SECONDS = 7 * 24 * 60 * 60
 
 /**
- * Cloudflare Workers KV namespace の最小インターフェース。
- * r2-client.ts の R2BucketLike と同じ方針: @cloudflare/workers-types に
- * 依存せず、実際に使うメソッドだけを最小定義する。
+ * Cloudflare Workers KV namespace の maintenance 用インターフェース。
+ * 共通 `KVNamespaceLike` の get/put/delete に、リプレイで必要な list を追加する。
  *
  * Issue #787 Stage 2: リプレイ機構の実装に伴い、退避時の put に加えて
- * 一覧取得・個別取得・削除の3メソッドを追加。型は実際の Cloudflare Workers KV
- * API（list/get/delete）に合わせている。
+ * 一覧取得・個別取得・削除を扱う。型は実際の Cloudflare Workers KV API
+ * （list/get/put/delete）に合わせている。
  */
-export interface KVNamespaceLike {
-  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
+export interface KVNamespaceLike extends SharedKVNamespaceLike {
   /**
    * キー一覧を取得する。`list_complete: false` の場合は返却された `cursor` を
    * 次回呼び出しに渡すことで続きを取得できる（Cloudflare Workers KV の
@@ -105,8 +101,6 @@ export interface KVNamespaceLike {
     list_complete: boolean
     cursor?: string
   }>
-  get(key: string): Promise<string | null>
-  delete(key: string): Promise<void>
 }
 
 /**
@@ -142,28 +136,15 @@ export interface ParkEventSubNotificationInput {
 
 /**
  * Cloudflare Workers 環境から RATE_LIMIT_KV バインディングを取得する。
- * next dev 等 Workers 外の環境、または binding 未設定時は null を返す
- * （r2-client.ts の getR2Binding と同じフォールバックパターン）。
+ * binding名・Workers外でnullへfallbackする契約は共通 `getKvBinding()` に委譲し、
+ * maintenance 固有の `list()` を含む型として返す。
  *
  * このモジュール外（src/lib/eventsub-dedup.ts、issue #836）からも同じ
- * RATE_LIMIT_KV バインディングを参照するため export する。バインディング名を
- * この1箇所に集約するという上部コメントの設計意図（KV_BINDING_NAME参照）を
- * 保つため、呼び出し側で同名の定数・同じ取得ロジックを再実装しないこと。
+ * RATE_LIMIT_KV バインディングを参照するため、公開関数自体は維持する。
  */
 export async function getMaintenanceKvBinding(): Promise<KVNamespaceLike | null> {
-  try {
-    // ローカル開発時に @opennextjs/cloudflare をバンドルしないよう動的 import
-    // （db/client.ts, r2-client.ts と同じ理由）
-    const { getCloudflareContext } = await import('@opennextjs/cloudflare')
-    const { env } = await getCloudflareContext({ async: true })
-    const binding = (env as unknown as Record<string, unknown>)[KV_BINDING_NAME] as
-      | KVNamespaceLike
-      | undefined
-    return binding ?? null
-  } catch {
-    // Cloudflare Workers 環境ではない（next dev / Node / テスト）
-    return null
-  }
+  const binding = await getKvBinding()
+  return binding as KVNamespaceLike | null
 }
 
 /**
