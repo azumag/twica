@@ -27,13 +27,13 @@ describe('multi-draw chat segmentation', () => {
     expect(buildMultiDrawChatSegments([card(1), card(2)], 'user', 'summary')).toEqual([])
   })
 
-  it.each([5, 10, 15])('individual builds one single-draw-style segment per draw (%i draws)', (count) => {
+  it.each([5, 10, 15])('individual keeps one ordered fallback segment per draw (%i draws)', (count) => {
     const cards = Array.from({ length: count }, (_, index) => card(index + 1))
     const segments = buildMultiDrawChatSegments(cards, 'user', 'individual')
 
     expect(segments).toHaveLength(count)
-    expect(segments[0]?.message).toBe('@user が【コモン】カード1 を獲得しました！')
-    expect(segments[count - 1]?.message).toBe(`@user が【コモン】カード${count} を獲得しました！`)
+    expect(segments[0]?.message).toContain(`1/${count}:`)
+    expect(segments[count - 1]?.message).toContain(`${count}/${count}:`)
     expect(segments.map((segment) => segment.index)).toEqual(
       Array.from({ length: count }, (_, index) => index),
     )
@@ -75,15 +75,14 @@ describe('multi-draw chat segmentation', () => {
     )
   })
 
-  it('truncates an oversized individual message the same way as normal chat delivery', () => {
+  it('truncates only an oversized fallback card-name tail and keeps draw context', () => {
     const cards = [
       { ...card(1), name: 'x'.repeat(700) },
       card(2),
     ]
     const [segment] = buildMultiDrawChatSegments(cards, 'user', 'individual')
 
-    expect(segment?.message).toMatch(/^@user が【コモン】/)
-    expect(segment?.message.endsWith('...')).toBe(true)
+    expect(segment?.message).toMatch(/^@user 2x 1\/2: \[C\] /)
     expect(countCharacters(segment?.message ?? '')).toBe(TWITCH_CHAT_MESSAGE_MAX_CHARACTERS)
   })
 
