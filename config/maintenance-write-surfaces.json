@@ -235,6 +235,17 @@
     "reviewedAt": "2026-09-02"
   },
   {
+    "path": "/api/streamer/chat-multi-delivery",
+    "methods": [
+      "PUT"
+    ],
+    "category": "streamer",
+    "maintenanceBehavior": "block",
+    "reason": "N連チャット通知の配送方式(summary/individual/chunked)と分割枚数をDBへ保存する設定操作。メンテナンス中は他の配信者設定書き込みと同様にブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-09-12"
+  },
+  {
     "path": "/api/streamer/raid-gacha",
     "methods": [
       "POST"

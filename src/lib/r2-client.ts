@@ -43,8 +43,7 @@ async function getR2Binding(bindingName: 'R2_IMAGES' | 'R2_SOUNDS'): Promise<R2B
     // ローカル開発時に@opennextjs/cloudflareをバンドルしないよう動的インポート
     const { getCloudflareContext } = await import('@opennextjs/cloudflare');
     const ctx = await getCloudflareContext({ async: true });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const binding = (ctx.env as any)[bindingName] as R2BucketLike | undefined;
+    const binding = (ctx.env as unknown as Record<string, unknown>)[bindingName] as R2BucketLike | undefined;
     return binding ?? null;
   } catch {
     // Not running in Cloudflare Workers environment

@@ -84,17 +84,22 @@ describe("Discord promotion validation fork guard", () => {
       notifyBodyStart
     );
     const discardBody = workflow.indexOf('body = ""', forkGuard);
-    const sanitizeBody = workflow.indexOf(
-      'body = re.sub(r"<!--.*?(?:-->|$)", "", body, flags=re.DOTALL)',
+    const stripClosedComments = workflow.indexOf(
+      'body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)',
       discardBody
     );
-    const splitBody = workflow.indexOf("lines = body.splitlines()", sanitizeBody);
+    const stripStrayOpeners = workflow.indexOf(
+      'body = body.replace("<!--", "")',
+      stripClosedComments
+    );
+    const splitBody = workflow.indexOf("lines = body.splitlines()", stripStrayOpeners);
 
     expect(notifyBodyStart).toBeGreaterThan(-1);
     expect(forkGuard).toBeGreaterThan(notifyBodyStart);
     expect(discardBody).toBeGreaterThan(forkGuard);
-    expect(sanitizeBody).toBeGreaterThan(discardBody);
-    expect(splitBody).toBeGreaterThan(sanitizeBody);
+    expect(stripClosedComments).toBeGreaterThan(discardBody);
+    expect(stripStrayOpeners).toBeGreaterThan(stripClosedComments);
+    expect(splitBody).toBeGreaterThan(stripStrayOpeners);
   });
 
   it("falls back to bounded metadata before trimming release text", () => {

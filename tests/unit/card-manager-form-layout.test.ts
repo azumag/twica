@@ -30,4 +30,15 @@ describe("CardManager form layout", () => {
       "<option key={rarity} value={rarity}>",
     );
   });
+
+  it("wraps the header action buttons instead of overflowing the panel's right edge", () => {
+    const source = readSource("src/components/CardManager.tsx");
+
+    // ボタン数が増えても折り返せるよう flex-wrap を維持する（issue #719）
+    expect(source).toContain('<div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">');
+    // 折り返し時にタイトルが2行目のボタンと中央揃えにならないよう items-start にする
+    expect(source).toContain(
+      'className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"',
+    );
+  });
 });

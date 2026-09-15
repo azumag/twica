@@ -45,14 +45,18 @@ const REQUIRED_CONFIRMATION_LABELS = [
 const BROWSER_CONFIRMATION_HINT = "<!-- 対象外の場合は理由を記載 -->";
 
 function headingScanLines(source: string): string[] {
-  // The promotion workflow removes HTML comments before heading extraction.
+  // The promotion workflow removes complete HTML comments before heading extraction.
   // Preserve their newline count here so scan-line indexes still map to the
-  // original source used by the rest of the contract assertions.
-  const withoutHtmlCommentText = source.replace(
-    /<!--[\s\S]*?(?:-->|$)/g,
+  // original source used by the rest of the contract assertions. A stray opener
+  // drops only the delimiter so later release text/headings are not swallowed.
+  const withoutClosedHtmlComments = source.replace(
+    /<!--[\s\S]*?-->/g,
     (comment) => comment.replace(/[^\r\n]/g, "")
   );
-  return withoutHtmlCommentText.split(/\r?\n/);
+  const withoutStrayOpeners = withoutClosedHtmlComments.replace(/<!--/g, "");
+  // Python str.splitlines() accepts LF, CRLF, and legacy CR. Mirror that here so
+  // test fixtures exercise the same heading boundaries as both workflow paths.
+  return withoutStrayOpeners.split(/\r\n?|\n/);
 }
 
 function normalizedHeading(line: string): string {
@@ -67,7 +71,7 @@ function h2Headings(source: string): string[] {
 }
 
 function h2Section(source: string, heading: string): string {
-  const sourceLines = source.split(/\r?\n/);
+  const sourceLines = source.split(/\r\n?|\n/);
   const scanLines = headingScanLines(source);
   const start = scanLines.findIndex((line) => normalizedHeading(line) === heading);
   if (start === -1) return "";
@@ -107,6 +111,59 @@ describe("preview -> main release PR template contract", () => {
     expect(h2Section(source, "## visible heading")).toBe(
       "  ## visible heading  \n  release text <!-- keep this in the returned contract section -->"
     );
+  });
+
+  it("mirrors Python splitlines for CRLF and legacy CR promotion bodies", () => {
+    const source = [
+      "## このリリースで変わること\r\nfirst line",
+      "second line\r## 対象PRと固定SHA\rnext section",
+    ].join("\r\n");
+
+    expect(h2Headings(source)).toEqual([
+      "## このリリースで変わること",
+      "## 対象PRと固定SHA",
+    ]);
+    expect(h2Section(source, "## このリリースで変わること")).toBe(
+      "## このリリースで変わること\nfirst line\nsecond line"
+    );
+  });
+
+  it("does not swallow later headings after an unmatched HTML comment opener", () => {
+    const source = [
+      "<!-- literal opener used in explanatory text",
+      "## visible heading",
+      "release text",
+      "## next heading",
+    ].join("\n");
+
+    expect(h2Headings(source)).toEqual([
+      "## visible heading",
+      "## next heading",
+    ]);
+  });
+
+  it("keeps comment-only and heading-less bodies without a release section", () => {
+    const commentOnly = [
+      "<!--",
+      "## このリリースで変わること",
+      "hidden guidance only",
+      "-->",
+    ].join("\n");
+    const headingLess = "利用者向け本文だけがあり、必須見出しがない";
+
+    expect(h2Headings(commentOnly)).toEqual([]);
+    expect(h2Section(commentOnly, REQUIRED_TEMPLATE_HEADINGS[0])).toBe("");
+    expect(h2Section(headingLess, REQUIRED_TEMPLATE_HEADINGS[0])).toBe("");
+  });
+
+  it("keeps both promotion workflow paths on bounded HTML-comment sanitization", () => {
+    const boundedCommentSanitizer =
+      'body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)';
+    const strayOpenerSanitizer = 'body = body.replace("<!--", "")';
+
+    expect(notifyWorkflow.split(boundedCommentSanitizer)).toHaveLength(3);
+    expect(notifyWorkflow.split(strayOpenerSanitizer)).toHaveLength(3);
+    expect(notifyWorkflow).not.toContain('r"<!--.*?(?:-->|$)"');
   });
 
   it("reports the logical contract name when a source file is missing", () => {

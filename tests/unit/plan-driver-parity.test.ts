@@ -42,8 +42,14 @@ function createDrizzleDbMock(config: {
       from: vi.fn((table: unknown) => {
         const call: DrizzleCallRecord = { table }
         calls.push(call)
-        const isLicenseQuery = table === userLicensesTable
-        const rows = isLicenseQuery ? (config.licenseRows ?? []) : (config.userRows ?? [])
+        let rows: Array<{ plan_type: string }> | Array<{ twitch_has_sub: boolean | null }>
+        if (table === userLicensesTable) {
+          rows = config.licenseRows ?? []
+        } else if (table === usersTable) {
+          rows = config.userRows ?? []
+        } else {
+          throw new Error('Unexpected table in plan driver parity mock')
+        }
         const projected = rows.map((row) =>
           Object.fromEntries(
             Object.keys(fields).map((key) => [key, (row as Record<string, unknown>)[key] ?? null])

@@ -19,6 +19,37 @@ GitHub Actions はアプリ本体を二重デプロイせず、PlanetScale migra
 - DB は production / preview とも `HYPERDRIVE_PLANETSCALE` binding が唯一の runtime 経路です。
   connection string を Workers Builds の変数として複製しません。
 
+### Build Minutes のコスト制御
+
+TwiCa は `main` / `preview` という長期ブランチでのみ Cloudflare へデプロイします。feature branch ごとの
+Commit Preview は運用上不要で、OpenNext のフルビルドを各 push で実行すると Workers Build Minutes を
+大量消費するため、Cloudflare Dashboard の **Settings > Build** は次の状態を正本とします。
+
+| Worker | Production branch | Builds for non-production branches | Build cache |
+| --- | --- | --- | --- |
+| `twica` | `main` | **OFF** | **ON** |
+| `twica-preview` | `preview` | **OFF** | **ON** |
+
+Build watch paths では、少なくとも deploy artifact を変えない次の変更を除外します。
+
+```text
+.github/*
+docs/*
+tests/*
+AGENTS.md
+README.md
+```
+
+複数種類のファイルを同じ push で変更した場合、上記以外の deploy 対象ファイルが1つでも含まれれば
+build は通常どおり起動します。`scripts/`、`src/`、`workers/`、`package*.json`、Wrangler/OpenNext設定は
+build/deploy契約に影響し得るため除外しません。
+
+`scripts/cloudflare-workers-build.sh` と `scripts/cloudflare-workers-build-deploy.sh` にも
+`WORKERS_CI_BRANCH` を使った防御を置いています。Cloudflare 側の Branch control が誤って再度
+非production branchを対象にしても、`main` / `preview` 以外では重い OpenNext build と deploy/upload を
+実行しません。ただし、repo側ガードは Build 自体の起動を止められないため、**Branch control と watch paths が
+一次対策**です。
+
 Cloudflare Workers Builds を有効にするリポジトリ変数は
 `CLOUDFLARE_WORKERS_BUILDS_ENABLED=true` です。有効時、
 `.github/workflows/deploy-cloudflare.yml` の legacy app deploy は意図的に skip されます。

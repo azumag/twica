@@ -87,6 +87,7 @@ db/planetscale/.local-backups/
 # Claude
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 .env*.local
 
 # Local development helpers

@@ -1,0 +1,21 @@
+{
+  "multiDrawChatDelivery": {
+    "title": "Multi-draw notification mode",
+    "description": "Choose how multi-draw gacha results are posted to chat. Existing behavior remains one summary message by default.",
+    "summary": "Send one summary message",
+    "summaryDescription": "Keep the existing behavior and post the whole multi-draw result as one chat message.",
+    "individual": "Send one card at a time",
+    "individualDescription": "Post each card separately at about 1.6-second intervals. A 15-draw result takes about 22 seconds to finish.",
+    "chunked": "Send a few cards at a time",
+    "chunkedDescription": "Group several cards per message and post the groups at about 1.6-second intervals.",
+    "chunkSize": "Cards per message",
+    "cards": "{count} cards",
+    "save": "Save notification mode",
+    "saving": "Saving…",
+    "saved": "Multi-draw notification mode saved.",
+    "loadError": "Could not load the multi-draw notification mode.",
+    "saveError": "Could not save the multi-draw notification mode.",
+    "pacingNote": "Split notifications use about 1.6 seconds between posts to stay comfortably within Twitch chat pacing limits.",
+    "open": "Configure multi-draw notification mode"
+  }
+}

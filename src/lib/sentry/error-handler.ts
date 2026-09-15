@@ -36,6 +36,7 @@ import 'server-only'
  *   (logger) and the database pipeline use the same redaction policy.
  */
 
+import { resolveAppEnvironment } from '@/lib/app-environment'
 import {
   sanitizeContext,
   sanitizeErrorStack,
@@ -153,9 +154,7 @@ async function persistErrorToDatabase(
   context: Record<string, unknown>
 ): Promise<void> {
   try {
-    // 環境判定: NEXT_PUBLIC_APP_URL に 'preview' が含まれるかで判定
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
-    const environment = appUrl.includes('preview') ? 'preview' : 'production'
+    const environment = resolveAppEnvironment()
     const values = {
       error_type: errorType,
       // message/context は最終書き込み境界でも再検閲する。stack は Error 境界で
