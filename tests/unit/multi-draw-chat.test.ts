@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from '@/lib/constants'
 import { countCharacters } from '@/lib/text-utils'
 import {
+  buildIndividualChatSnapshot,
   buildMultiDrawChatSegments,
   DEFAULT_MULTI_DRAW_CHAT_CHUNK_SIZE,
   MULTI_DRAW_CHAT_INTERVAL_MS,
@@ -26,7 +27,7 @@ describe('multi-draw chat segmentation', () => {
     expect(buildMultiDrawChatSegments([card(1), card(2)], 'user', 'summary')).toEqual([])
   })
 
-  it.each([5, 10, 15])('individual builds one ordered segment per draw (%i draws)', (count) => {
+  it.each([5, 10, 15])('individual keeps one ordered fallback segment per draw (%i draws)', (count) => {
     const cards = Array.from({ length: count }, (_, index) => card(index + 1))
     const segments = buildMultiDrawChatSegments(cards, 'user', 'individual')
 
@@ -74,7 +75,7 @@ describe('multi-draw chat segmentation', () => {
     )
   })
 
-  it('truncates only an oversized individual card-name tail and keeps draw context', () => {
+  it('truncates only an oversized fallback card-name tail and keeps draw context', () => {
     const cards = [
       { ...card(1), name: 'x'.repeat(700) },
       card(2),
@@ -83,6 +84,50 @@ describe('multi-draw chat segmentation', () => {
 
     expect(segment?.message).toMatch(/^@user 2x 1\/2: \[C\] /)
     expect(countCharacters(segment?.message ?? '')).toBe(TWITCH_CHAT_MESSAGE_MAX_CHARACTERS)
+  })
+
+  it('reconstructs per-draw num and unique placeholders from final card counts', () => {
+    const first = card(1)
+    const second = card(2)
+    const cards = [first, first, second]
+    const snapshot = {
+      cardCount: 4,
+      uniqueCount: 5,
+      allCount: 12,
+      newCardNames: [second.name],
+      newCardNamesResolved: true,
+      cardCounts: {
+        [first.id]: 4,
+        [second.id]: 1,
+      },
+    }
+
+    expect(buildIndividualChatSnapshot(cards, 0, snapshot)).toMatchObject({
+      cardCount: 3,
+      uniqueCount: 4,
+      allCount: 12,
+    })
+    expect(buildIndividualChatSnapshot(cards, 1, snapshot)).toMatchObject({
+      cardCount: 4,
+      uniqueCount: 4,
+      allCount: 12,
+    })
+    expect(buildIndividualChatSnapshot(cards, 2, snapshot)).toMatchObject({
+      cardCount: 1,
+      uniqueCount: 5,
+      allCount: 12,
+    })
+  })
+
+  it('keeps a deterministic aggregate fallback for pre-cardCounts outbox rows', () => {
+    const snapshot = {
+      cardCount: 7,
+      uniqueCount: 9,
+      allCount: 12,
+      newCardNames: [],
+    }
+
+    expect(buildIndividualChatSnapshot([card(1), card(2)], 1, snapshot)).toEqual(snapshot)
   })
 
   it('normalizes invalid persisted settings fail-safe to summary / chunk size 3', () => {
