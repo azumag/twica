@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   loggerWarn: vi.fn(),
@@ -17,10 +17,20 @@ vi.mock('@/lib/sentry/error-handler', () => ({
 
 import { handleAuthError } from '@/lib/auth-error-handler'
 
+const originalAppUrl = process.env.NEXT_PUBLIC_APP_URL
+
 describe('handleAuthError', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     process.env.NEXT_PUBLIC_APP_URL = 'https://env.example'
+  })
+
+  afterEach(() => {
+    if (originalAppUrl === undefined) {
+      delete process.env.NEXT_PUBLIC_APP_URL
+    } else {
+      process.env.NEXT_PUBLIC_APP_URL = originalAppUrl
+    }
   })
 
   it('永続化対象の認証失敗を warning + reportAuthError で1回記録し JSON 500 を返す', async () => {
