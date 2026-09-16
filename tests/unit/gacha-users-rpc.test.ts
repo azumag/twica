@@ -289,6 +289,29 @@ describe('getGachaUsersForStreamer', () => {
     )
   })
 
+  it('statement timeout(57014)でもreportErrorしつつDrizzle fallbackを返す', async () => {
+    primeDb({
+      rpcError: pgError('57014', 'canceling statement due to statement timeout'),
+      historyRows: fallbackHistory,
+      cardRows: [{ id: 'card-a' }, { id: 'card-b' }],
+    })
+
+    const result = await getGachaUsersForStreamer(streamerId)
+
+    expect(result.users[0]).toMatchObject({
+      userTwitchId: 'user1',
+      drawCount: 2,
+      uniqueCards: 2,
+    })
+    expect(reportError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining(
+          'get_gacha_users_for_streamer RPC failed: canceling statement due to statement timeout'
+        ),
+      })
+    )
+  })
+
   it('その他のRPCエラーはreportErrorしつつfallback結果を返す', async () => {
     primeDb({
       rpcError: pgError('42501', 'permission denied'),
