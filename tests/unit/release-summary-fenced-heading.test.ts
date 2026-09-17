@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,45 +9,17 @@ const notifyWorkflow = readFileSync(
   join(repositoryRoot, ".github/workflows/notify-discord-main-merge.yml"),
   "utf8"
 );
+const releaseSummaryScript = join(
+  repositoryRoot,
+  ".github/scripts/release_summary.py"
+);
 const releaseHeading = "## このリリースで変わること";
 
 function extractReleaseSection(source: string): string {
-  const body = source
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<!--/g, "");
-  const lines = body.split(/\r\n?|\n/);
-  const start = lines.findIndex((line) => line.trim() === releaseHeading);
-  if (start === -1) return "";
-
-  const releaseLines: string[] = [];
-  let fenceChar: "`" | "~" | null = null;
-  let fenceLength = 0;
-
-  for (const line of lines.slice(start + 1)) {
-    const stripped = line.trimStart();
-    const fenceMatch = stripped.match(/^(`{3,}|~{3,})/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1] ?? "";
-      if (fenceChar === null) {
-        fenceChar = marker[0] as "`" | "~";
-        fenceLength = marker.length;
-      } else if (
-        marker[0] === fenceChar &&
-        marker.length >= fenceLength &&
-        stripped.slice(marker.length).trim() === ""
-      ) {
-        fenceChar = null;
-        fenceLength = 0;
-      }
-      releaseLines.push(line);
-      continue;
-    }
-
-    if (fenceChar === null && line.trim().startsWith("## ")) break;
-    releaseLines.push(line);
-  }
-
-  return releaseLines.join("\n").trim();
+  return execFileSync("python3", [releaseSummaryScript], {
+    encoding: "utf8",
+    env: { ...process.env, PR_BODY: source },
+  });
 }
 
 describe("promotion summary fenced heading contract", () => {
@@ -90,14 +63,16 @@ describe("promotion summary fenced heading contract", () => {
     expect(extractReleaseSection(body)).not.toContain("## 確認済み");
   });
 
-  it("keeps both embedded Python paths on the same fence-aware boundary contract", () => {
-    const fenceMatcher = 'fence_match = re.match(r"^(`{3,}|~{3,})", stripped)';
-    const boundaryCheck =
-      "if fence_char is None and h2_text(line) is not None:";
-    const closeLengthCheck = "and len(marker) >= fence_len";
-
-    expect(notifyWorkflow.split(fenceMatcher)).toHaveLength(3);
-    expect(notifyWorkflow.split(boundaryCheck)).toHaveLength(3);
-    expect(notifyWorkflow.split(closeLengthCheck)).toHaveLength(3);
+  it("uses the shared helper from validation and notification instead of duplicating the parser", () => {
+    expect(notifyWorkflow).toContain(
+      "python3 .github/scripts/release_summary.py --validate"
+    );
+    expect(notifyWorkflow).toContain('sys.path.insert(0, ".github/scripts")');
+    expect(notifyWorkflow).toContain(
+      "release_summary.extract_release_text(body)"
+    );
+    expect(notifyWorkflow).not.toContain(
+      'fence_match = re.match(r"^(`{3,}|~{3,})", stripped)'
+    );
   });
 });
