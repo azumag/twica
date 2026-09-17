@@ -141,7 +141,7 @@ def truncate_markdown_utf16(value: str, max_units: int) -> str:
         if fence_char is None:
             last_safe_line_count = len(kept_lines)
 
-    return "".join(kept_lines[:last_safe_line_count]).rstrip()
+    return "".join(kept_lines[:last_safe_line_count]).rstrip("\r\n")
 
 
 def main() -> None:
