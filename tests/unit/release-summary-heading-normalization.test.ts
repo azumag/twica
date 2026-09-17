@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,26 +9,17 @@ const notifyWorkflow = readFileSync(
   join(repositoryRoot, ".github/workflows/notify-discord-main-merge.yml"),
   "utf8"
 );
-const releaseHeadingText = "このリリースで変わること";
-
-function h2Text(line: string): string | null {
-  const match = line
-    .trim()
-    .match(/^##[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/);
-  return match?.[1]?.trim() ?? null;
-}
+const releaseSummaryScriptPath = join(
+  repositoryRoot,
+  ".github/scripts/release_summary.py"
+);
+const releaseSummaryScript = readFileSync(releaseSummaryScriptPath, "utf8");
 
 function extractReleaseSection(source: string): string {
-  const lines = source.split(/\r\n?|\n/);
-  const start = lines.findIndex((line) => h2Text(line) === releaseHeadingText);
-  if (start === -1) return "";
-
-  const releaseLines: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (h2Text(line) !== null) break;
-    releaseLines.push(line);
-  }
-  return releaseLines.join("\n").trim();
+  return execFileSync("python3", [releaseSummaryScriptPath], {
+    encoding: "utf8",
+    env: { ...process.env, PR_BODY: source },
+  });
 }
 
 describe("promotion summary heading normalization", () => {
@@ -57,16 +49,16 @@ describe("promotion summary heading normalization", () => {
     ).toBe("");
   });
 
-  it("keeps validation and notification on the same heading parser contract", () => {
-    const headingParser = "def h2_text(line):";
-    const headingMatcher =
-      'match = re.fullmatch(r"##[ \\t]+(.+?)(?:[ \\t]+#+)?[ \\t]*", line.strip())';
-    const startCheck = "if h2_text(line) == section_heading_text:";
-    const boundaryCheck = "if fence_char is None and h2_text(line) is not None:";
-
-    expect(notifyWorkflow.split(headingParser)).toHaveLength(3);
-    expect(notifyWorkflow.split(headingMatcher)).toHaveLength(3);
-    expect(notifyWorkflow.split(startCheck)).toHaveLength(3);
-    expect(notifyWorkflow.split(boundaryCheck)).toHaveLength(3);
+  it("keeps validation and notification on the same shared heading parser contract", () => {
+    expect(releaseSummaryScript).toContain("def h2_text(line: str) -> str | None:");
+    expect(releaseSummaryScript).toContain(
+      'match = re.fullmatch(r"##[ \\t]+(.+?)(?:[ \\t]+#+)?[ \\t]*", line.strip())'
+    );
+    expect(notifyWorkflow).toContain(
+      "python3 .github/scripts/release_summary.py --validate"
+    );
+    expect(notifyWorkflow).toContain(
+      "release_summary.extract_release_text(body)"
+    );
   });
 });
