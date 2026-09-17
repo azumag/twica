@@ -36,7 +36,8 @@ jobs:
           body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
           body = body.replace("<!--", "")
           lines = body.splitlines()
-          section_heading_text = "このリリースで変わること"
+          section_heading = "## このリリースで変わること"
+          section_heading_text = section_heading.removeprefix("## ").strip()
 
           def h2_text(line):
               match = re.fullmatch(r"##[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*", line.strip())
@@ -132,7 +133,8 @@ jobs:
           import sys
 
           limit = 2000
-          section_heading_text = "このリリースで変わること"
+          section_heading = "## このリリースで変わること"
+          section_heading_text = section_heading.removeprefix("## ").strip()
           # Only the canonical preview -> main path is a release promotion.
           # The workflow itself is already scoped to PRs targeting main, so only
           # the head ref and repository identity need to be checked here.
