@@ -27,6 +27,10 @@ const notifyWorkflow = readContractSource(
   ".github/workflows/notify-discord-main-merge.yml",
   "Discord promotion notification workflow"
 );
+const releaseSummaryScript = readContractSource(
+  ".github/scripts/release_summary.py",
+  "shared release summary parser"
+);
 
 const REQUIRED_TEMPLATE_HEADINGS = [
   "## このリリースで変わること",
@@ -45,7 +49,7 @@ const REQUIRED_CONFIRMATION_LABELS = [
 const BROWSER_CONFIRMATION_HINT = "<!-- 対象外の場合は理由を記載 -->";
 
 function headingScanLines(source: string): string[] {
-  // The promotion workflow removes complete HTML comments before heading extraction.
+  // The promotion parser removes complete HTML comments before heading extraction.
   // Preserve their newline count here so scan-line indexes still map to the
   // original source used by the rest of the contract assertions. A stray opener
   // drops only the delimiter so later release text/headings are not swallowed.
@@ -55,12 +59,11 @@ function headingScanLines(source: string): string[] {
   );
   const withoutStrayOpeners = withoutClosedHtmlComments.replace(/<!--/g, "");
   // Python str.splitlines() accepts LF, CRLF, and legacy CR. Mirror that here so
-  // test fixtures exercise the same heading boundaries as both workflow paths.
+  // test fixtures exercise the same heading boundaries as the shared parser.
   return withoutStrayOpeners.split(/\r\n?|\n/);
 }
 
 function normalizedHeading(line: string): string {
-  // Match the workflow's Python line.strip() comparison for H2 detection only.
   return line.trim();
 }
 
@@ -94,7 +97,7 @@ describe("preview -> main release PR template contract", () => {
     expect(h2Headings(releaseTemplate)[0]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
   });
 
-  it("mirrors the promotion workflow's HTML-comment and heading whitespace normalization", () => {
+  it("mirrors the promotion parser's HTML-comment and heading whitespace normalization", () => {
     const source = [
       "<!--",
       "## hidden guidance heading",
@@ -156,14 +159,15 @@ describe("preview -> main release PR template contract", () => {
     expect(h2Section(headingLess, REQUIRED_TEMPLATE_HEADINGS[0])).toBe("");
   });
 
-  it("keeps both promotion workflow paths on bounded HTML-comment sanitization", () => {
+  it("keeps the shared parser on bounded HTML-comment sanitization", () => {
     const boundedCommentSanitizer =
       'body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)';
-    const strayOpenerSanitizer = 'body = body.replace("<!--", "")';
+    const strayOpenerSanitizer = 'return body.replace("<!--", "")';
 
-    expect(notifyWorkflow.split(boundedCommentSanitizer)).toHaveLength(3);
-    expect(notifyWorkflow.split(strayOpenerSanitizer)).toHaveLength(3);
-    expect(notifyWorkflow).not.toContain('r"<!--.*?(?:-->|$)"');
+    expect(releaseSummaryScript).toContain(boundedCommentSanitizer);
+    expect(releaseSummaryScript).toContain(strayOpenerSanitizer);
+    expect(releaseSummaryScript).not.toContain('r"<!--.*?(?:-->|$)"');
+    expect(notifyWorkflow).not.toContain(boundedCommentSanitizer);
   });
 
   it("reports the logical contract name when a source file is missing", () => {
@@ -177,16 +181,18 @@ describe("preview -> main release PR template contract", () => {
     );
   });
 
-  it("keeps the Discord promotion consumer on the same summary heading", () => {
-    const sectionHeadings = Array.from(
-      notifyWorkflow.matchAll(/section_heading = "([^"]+)"/g),
-      (match) => match[1]
+  it("keeps both promotion workflow consumers on the shared summary heading", () => {
+    const sectionHeadingMatch = releaseSummaryScript.match(
+      /SECTION_HEADING = "([^"]+)"/
     );
 
-    expect(sectionHeadings).toEqual([
-      REQUIRED_TEMPLATE_HEADINGS[0],
-      REQUIRED_TEMPLATE_HEADINGS[0],
-    ]);
+    expect(sectionHeadingMatch?.[1]).toBe(REQUIRED_TEMPLATE_HEADINGS[0]);
+    expect(notifyWorkflow).toContain(
+      "python3 .github/scripts/release_summary.py --validate"
+    );
+    expect(notifyWorkflow).toContain(
+      "release_summary.extract_release_text(body)"
+    );
   });
 
   it("keeps the required release sections in the documented order", () => {
