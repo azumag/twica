@@ -57,6 +57,14 @@ describe('Discord promotion notification length contract', () => {
     expect(truncateMarkdown(value, maxUnits)).toBe(firstLine)
   })
 
+  it('preserves Markdown hard-break spaces on the last retained line', () => {
+    const firstLine = 'first  '
+    const value = [firstLine, 'second line', 'third line'].join('\n')
+    const maxUnits = `${firstLine}\nsecond`.length
+
+    expect(truncateMarkdown(value, maxUnits)).toBe(firstLine)
+  })
+
   it('rolls back before an opening fence when the closing fence does not fit', () => {
     const value = ['intro', '```text', 'inside', '```', 'after'].join('\n')
     const maxUnits = 'intro\n```text\ninside\n'.length
