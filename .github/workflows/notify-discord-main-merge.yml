@@ -1,9 +1,10 @@
 name: Notify Discord on main merge
 
 # Security contract: pull_request_target lets a merged PR notification read the
-# repository webhook secret from the trusted base context. Never checkout or
-# execute code from the PR head in this workflow. Keep permissions at
-# `contents: read`; do not widen them without a reviewed workflow requirement.
+# repository webhook secret from the trusted base context. Any checkout in this
+# workflow must stay pinned to github.sha (the trusted base commit); never checkout
+# or execute code from the PR head. Keep permissions at `contents: read`; do not
+# widen them without a reviewed workflow requirement.
 on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review, closed]
@@ -21,75 +22,16 @@ jobs:
       github.event.pull_request.head.ref == 'preview'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout trusted base workflow helpers
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Validate promotion summary before merge
         shell: bash
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-
-          body = os.environ.get("PR_BODY", "")
-          # Complete comment pairs hide their contents. A stray opener can be
-          # explanatory text, so remove only its delimiter instead of consuming EOF.
-          body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
-          body = body.replace("<!--", "")
-          lines = body.splitlines()
-          section_heading = "## このリリースで変わること"
-          section_heading_text = section_heading.removeprefix("## ").strip()
-
-          def h2_text(line):
-              match = re.fullmatch(r"##[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*", line.strip())
-              return match.group(1).strip() if match else None
-
-          release_lines = []
-          start = None
-          for index, line in enumerate(lines):
-              if h2_text(line) == section_heading_text:
-                  start = index + 1
-                  break
-          fence_char = None
-          fence_len = 0
-          if start is not None:
-              for line in lines[start:]:
-                  stripped = line.lstrip()
-                  fence_match = re.match(r"^(`{3,}|~{3,})", stripped)
-                  if fence_match:
-                      marker = fence_match.group(1)
-                      if fence_char is None:
-                          fence_char = marker[0]
-                          fence_len = len(marker)
-                      elif (
-                          marker[0] == fence_char
-                          and len(marker) >= fence_len
-                          and stripped[len(marker):].strip() == ""
-                      ):
-                          fence_char = None
-                          fence_len = 0
-                      release_lines.append(line)
-                      continue
-                  if fence_char is None and h2_text(line) is not None:
-                      break
-                  release_lines.append(line)
-
-          def strip_markdown_links(value):
-              value = re.sub(r"!\[([^]]*)\]\([^)]*\)", r"\1", value)
-              value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
-              value = re.sub(r"<https?://[^>\n]+>", "", value)
-              value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
-              value = re.sub(
-                  r"(?i)</?(?:!doctype|a|abbr|b|br|code|div|em|i|img|li|ol|p|pre|s|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul|h[1-6]|hr)(?:\s[^>\n]*)?/?>",
-                  "",
-                  value,
-              )
-              value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
-              return value
-
-          release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
-          if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
-              raise SystemExit("Promotion PR must include meaningful user-facing summary text")
-          PY
+        run: python3 .github/scripts/release_summary.py --validate
   notify:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
@@ -116,6 +58,12 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout trusted base workflow helpers
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Send merge notification to Discord
         shell: bash
         env:
@@ -129,75 +77,22 @@ jobs:
           # summary-vs-diff accuracy remains a normal promotion-PR review responsibility.
           content=$(python3 - <<'PY'
           import os
-          import re
           import sys
 
+          sys.path.insert(0, ".github/scripts")
+          import release_summary
+
           limit = 2000
-          section_heading = "## このリリースで変わること"
-          section_heading_text = section_heading.removeprefix("## ").strip()
           # Only the canonical preview -> main path is a release promotion.
           # The workflow itself is already scoped to PRs targeting main, so only
           # the head ref and repository identity need to be checked here.
           promotion_source_ref = "preview"
-          body = os.environ.get("PR_BODY", "").replace("\r\n", "\n").replace("\r", "\n")
+          body = os.environ.get("PR_BODY", "")
           # Only same-repository promotion text is trusted as notification input.
           # Fork PRs fall back to a sanitized title below.
           if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"):
               body = ""
-          # Template guidance and other complete HTML comments are not user-facing.
-          # A stray opener may be explanatory text, so discard only the delimiter
-          # instead of swallowing all following release text through EOF.
-          body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
-          body = body.replace("<!--", "")
-          lines = body.splitlines()
-
-          def h2_text(line):
-              match = re.fullmatch(r"##[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*", line.strip())
-              return match.group(1).strip() if match else None
-
-          release_lines = []
-          start = None
-          for index, line in enumerate(lines):
-              if h2_text(line) == section_heading_text:
-                  start = index + 1
-                  break
-
-          fence_char = None
-          fence_len = 0
-          if start is not None:
-              for line in lines[start:]:
-                  stripped = line.lstrip()
-                  fence_match = re.match(r"^(`{3,}|~{3,})", stripped)
-                  if fence_match:
-                      marker = fence_match.group(1)
-                      if fence_char is None:
-                          fence_char = marker[0]
-                          fence_len = len(marker)
-                      elif (
-                          marker[0] == fence_char
-                          and len(marker) >= fence_len
-                          and stripped[len(marker):].strip() == ""
-                      ):
-                          fence_char = None
-                          fence_len = 0
-                      release_lines.append(line)
-                      continue
-                  if fence_char is None and h2_text(line) is not None:
-                      break
-                  release_lines.append(line)
-
-          def strip_markdown_links(value):
-              value = re.sub(r"!\[([^]]*)\]\([^)]*\)", r"\1", value)
-              value = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", value)
-              value = re.sub(r"<https?://[^>\n]+>", "", value)
-              value = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", r"\1", value)
-              value = re.sub(
-                  r"(?i)</?(?:!doctype|a|abbr|b|br|code|div|em|i|img|li|ol|p|pre|s|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul|h[1-6]|hr)(?:\s[^>\n]*)?/?>",
-                  "",
-                  value,
-              )
-              value = re.sub(r"(?i)(?<![\w@])(?:https?://|www\.|discord\.gg/)[^\s<>()]+", "", value)
-              return value
+          release_text = release_summary.extract_release_text(body)
 
           def escape_discord_markdown(value):
               escaped = value
@@ -212,8 +107,7 @@ jobs:
                   return escape_discord_markdown(value)
               return f"`{value}`"
 
-          release_text = strip_markdown_links(chr(10).join(release_lines)).strip()
-          if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
+          if not release_summary.has_meaningful_text(release_text):
               is_promotion = (
                   os.environ.get("HEAD_REF") == promotion_source_ref
                   and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")
@@ -224,10 +118,10 @@ jobs:
                       "sending a title fallback and failing the job after delivery.",
                       file=sys.stderr,
                   )
-                  release_text = strip_markdown_links(
+                  release_text = release_summary.strip_markdown_links(
                       os.environ.get("PR_TITLE", "").strip()
                   ).strip()
-                  if not release_text or not re.search("[0-9A-Za-zぁ-んァ-ヶ一-龠]", release_text):
+                  if not release_summary.has_meaningful_text(release_text):
                       release_text = "リリース内容の説明が未記入です"
                   with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
                       env.write("PROMOTION_SUMMARY_MISSING=true" + chr(10))
@@ -235,7 +129,7 @@ jobs:
                   # A direct-to-main merge has no promotion-summary contract.
                   # Falling back to the sanitized PR title is the expected path,
                   # so do not emit a misleading warning for this normal case.
-                  release_text = strip_markdown_links(
+                  release_text = release_summary.strip_markdown_links(
                       os.environ.get("PR_TITLE", "").strip()
                   ).strip()
 

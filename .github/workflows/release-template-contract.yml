@@ -30,6 +30,7 @@ jobs:
           filters: |
             contract:
               - '.github/PULL_REQUEST_TEMPLATE/**'
+              - '.github/scripts/release_summary.py'
               - 'docs/QA.md'
               - 'tests/unit/release-pr-template-contract.test.ts'
               - '.github/workflows/notify-discord-main-merge.yml'

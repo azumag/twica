@@ -75,31 +75,31 @@ describe("Discord promotion validation fork guard", () => {
     expect(directToMain).not.toContain("PROMOTION_SUMMARY_MISSING=true");
   });
 
-  it("discards fork PR bodies before parsing notification summary text", () => {
+  it("discards fork PR bodies before the shared release-summary parser sees them", () => {
     const notifyBodyStart = workflow.indexOf(
-      'body = os.environ.get("PR_BODY", "").replace'
+      'body = os.environ.get("PR_BODY", "")'
     );
     const forkGuard = workflow.indexOf(
       'if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"):',
       notifyBodyStart
     );
     const discardBody = workflow.indexOf('body = ""', forkGuard);
-    const stripClosedComments = workflow.indexOf(
-      'body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)',
+    const sharedParser = workflow.indexOf(
+      "release_text = release_summary.extract_release_text(body)",
       discardBody
     );
-    const stripStrayOpeners = workflow.indexOf(
-      'body = body.replace("<!--", "")',
-      stripClosedComments
-    );
-    const splitBody = workflow.indexOf("lines = body.splitlines()", stripStrayOpeners);
 
     expect(notifyBodyStart).toBeGreaterThan(-1);
     expect(forkGuard).toBeGreaterThan(notifyBodyStart);
     expect(discardBody).toBeGreaterThan(forkGuard);
-    expect(stripClosedComments).toBeGreaterThan(discardBody);
-    expect(stripStrayOpeners).toBeGreaterThan(stripClosedComments);
-    expect(splitBody).toBeGreaterThan(stripStrayOpeners);
+    expect(sharedParser).toBeGreaterThan(discardBody);
+  });
+
+  it("checks out only the trusted pull_request_target base commit for shared helpers", () => {
+    expect(workflow.split("uses: actions/checkout@v4")).toHaveLength(3);
+    expect(workflow.split("ref: ${{ github.sha }}")).toHaveLength(3);
+    expect(workflow.split("persist-credentials: false")).toHaveLength(3);
+    expect(workflow).not.toContain("github.event.pull_request.head.sha");
   });
 
   it("falls back to bounded metadata before trimming release text", () => {
