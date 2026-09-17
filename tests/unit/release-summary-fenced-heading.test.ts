@@ -93,7 +93,7 @@ describe("promotion summary fenced heading contract", () => {
   it("keeps both embedded Python paths on the same fence-aware boundary contract", () => {
     const fenceMatcher = 'fence_match = re.match(r"^(`{3,}|~{3,})", stripped)';
     const boundaryCheck =
-      'if fence_char is None and line.strip().startswith("## "):';
+      "if fence_char is None and h2_text(line) is not None:";
     const closeLengthCheck = "and len(marker) >= fence_len";
 
     expect(notifyWorkflow.split(fenceMatcher)).toHaveLength(3);
