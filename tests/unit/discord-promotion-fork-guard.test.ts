@@ -104,7 +104,7 @@ describe("Discord promotion validation fork guard", () => {
 
   it("falls back to bounded metadata before trimming release text", () => {
     const metadataOverflowGuard = workflow.indexOf(
-      "if discord_length(prefix + marker + suffix) > limit:"
+      "if release_summary.utf16_length(prefix + marker + suffix) > limit:"
     );
     const fallbackPrefix = workflow.indexOf(
       'prefix = "🚀 **リポジトリが更新されました**\\n\\n"',
@@ -119,7 +119,7 @@ describe("Discord promotion validation fork guard", () => {
       fallbackSuffix
     );
     const releaseTextTrim = workflow.indexOf(
-      "if discord_length(content) > limit:",
+      "if release_summary.utf16_length(content) > limit:",
       contentBuild
     );
 

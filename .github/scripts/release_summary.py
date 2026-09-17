@@ -89,6 +89,61 @@ def has_meaningful_text(value: str) -> bool:
     return bool(value and MEANINGFUL_TEXT_RE.search(value))
 
 
+def utf16_length(value: str) -> int:
+    """Return the UTF-16 code-unit count used by Discord's content limit."""
+    return len(value.encode("utf-16-le")) // 2
+
+
+def truncate_markdown_utf16(value: str, max_units: int) -> str:
+    """Trim at complete-line boundaries without leaving a new open code fence.
+
+    The input is already sanitized release text. When truncation is required we
+    prefer dropping a whole trailing line to cutting inline Markdown tokens. If
+    the limit lands inside a fenced code block, roll back to the last boundary
+    before the opening fence so the notification does not introduce an unclosed
+    block. A single overlong first line therefore becomes an empty summary and
+    the workflow's explicit ellipsis marker remains the only truncation signal.
+    """
+    if max_units <= 0:
+        return ""
+    if utf16_length(value) <= max_units:
+        return value
+
+    kept_lines: list[str] = []
+    used_units = 0
+    last_safe_line_count = 0
+    fence_char: str | None = None
+    fence_len = 0
+
+    for line in value.splitlines(keepends=True):
+        line_units = utf16_length(line)
+        if used_units + line_units > max_units:
+            break
+
+        kept_lines.append(line)
+        used_units += line_units
+
+        stripped = line.lstrip()
+        fence_match = re.match(r"^(`{3,}|~{3,})", stripped)
+        if fence_match:
+            marker = fence_match.group(1)
+            if fence_char is None:
+                fence_char = marker[0]
+                fence_len = len(marker)
+            elif (
+                marker[0] == fence_char
+                and len(marker) >= fence_len
+                and stripped[len(marker) :].strip() == ""
+            ):
+                fence_char = None
+                fence_len = 0
+
+        if fence_char is None:
+            last_safe_line_count = len(kept_lines)
+
+    return "".join(kept_lines[:last_safe_line_count]).rstrip("\r\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
