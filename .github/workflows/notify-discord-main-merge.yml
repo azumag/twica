@@ -143,36 +143,24 @@ jobs:
               f"🔗 [リリース内容を見る]({os.environ['PR_URL']})"
           )
 
-          def discord_length(value):
-              return len(value.encode("utf-16-le")) // 2
-
-          def truncate_utf16(value, max_units):
-              result = []
-              used = 0
-              for char in value:
-                  units = len(char.encode("utf-16-le")) // 2
-                  if used + units > max_units:
-                      break
-                  result.append(char)
-                  used += units
-              return "".join(result)
-
           # GitHub currently bounds repository/user/ref metadata far below Discord's
           # 2000 UTF-16-unit limit, but keep delivery fail-safe if those contracts or
           # event payloads ever change. In that pathological case, discard optional
           # metadata before trimming the user-facing release text.
           marker = "\n\n…"
-          if discord_length(prefix + marker + suffix) > limit:
+          if release_summary.utf16_length(prefix + marker + suffix) > limit:
               prefix = "🚀 **リポジトリが更新されました**\n\n"
               suffix = f"\n\n🔗 {os.environ['PR_URL']}"
 
           content = prefix + release_text + suffix
-          if discord_length(content) > limit:
-              available = limit - discord_length(prefix + marker + suffix)
-              release_text = truncate_utf16(release_text, max(0, available)).rstrip()
+          if release_summary.utf16_length(content) > limit:
+              available = limit - release_summary.utf16_length(prefix + marker + suffix)
+              release_text = release_summary.truncate_markdown_utf16(
+                  release_text, max(0, available)
+              )
               content = prefix + release_text + marker + suffix
 
-          if discord_length(content) > limit:
+          if release_summary.utf16_length(content) > limit:
               raise SystemExit("Discord notification exceeds 2000 characters after trimming")
 
           print(content, end="")
