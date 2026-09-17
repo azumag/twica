@@ -36,11 +36,16 @@ jobs:
           body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
           body = body.replace("<!--", "")
           lines = body.splitlines()
-          section_heading = "## このリリースで変わること"
+          section_heading_text = "このリリースで変わること"
+
+          def h2_text(line):
+              match = re.fullmatch(r"##[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*", line.strip())
+              return match.group(1).strip() if match else None
+
           release_lines = []
           start = None
           for index, line in enumerate(lines):
-              if line.strip() == section_heading:
+              if h2_text(line) == section_heading_text:
                   start = index + 1
                   break
           fence_char = None
@@ -63,7 +68,7 @@ jobs:
                           fence_len = 0
                       release_lines.append(line)
                       continue
-                  if fence_char is None and line.strip().startswith("## "):
+                  if fence_char is None and h2_text(line) is not None:
                       break
                   release_lines.append(line)
 
@@ -127,7 +132,7 @@ jobs:
           import sys
 
           limit = 2000
-          section_heading = "## このリリースで変わること"
+          section_heading_text = "このリリースで変わること"
           # Only the canonical preview -> main path is a release promotion.
           # The workflow itself is already scoped to PRs targeting main, so only
           # the head ref and repository identity need to be checked here.
@@ -144,10 +149,14 @@ jobs:
           body = body.replace("<!--", "")
           lines = body.splitlines()
 
+          def h2_text(line):
+              match = re.fullmatch(r"##[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*", line.strip())
+              return match.group(1).strip() if match else None
+
           release_lines = []
           start = None
           for index, line in enumerate(lines):
-              if line.strip() == section_heading:
+              if h2_text(line) == section_heading_text:
                   start = index + 1
                   break
 
@@ -171,7 +180,7 @@ jobs:
                           fence_len = 0
                       release_lines.append(line)
                       continue
-                  if fence_char is None and line.strip().startswith("## "):
+                  if fence_char is None and h2_text(line) is not None:
                       break
                   release_lines.append(line)
 
