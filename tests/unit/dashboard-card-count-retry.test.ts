@@ -1,9 +1,10 @@
 /**
- * get_user_card_counts のPlanetScale/postgres.jsリトライ契約。
+ * get_user_card_counts のPlanetScale/postgres.js耐障害契約。
  *
  * 読み取りRPCは冪等なので接続断から再実行できる一方、HTTP/PostgREST固有の
  * status fixtureは現行経路に存在しない。ドライバが実際にthrowするcodeを使い、
- * 再試行ごとに getDb() を取得し直すことまで固定する。
+ * 再試行ごとに getDb() を取得し直すことと、非再試行エラー時も直接SQLへ
+ * フォールバックして読み取り可用性を維持することを固定する。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getUserCards, getUserCardsForStreamer } from '@/lib/dashboard-data'
@@ -70,7 +71,7 @@ function createNonRetryableFallbackSql() {
     .mockResolvedValueOnce([rpcCardRow])
 }
 
-describe('dashboard card count RPC retry', () => {
+describe('dashboard card count RPC resilience', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
