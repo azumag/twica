@@ -1,9 +1,10 @@
 /**
- * get_user_card_counts のPlanetScale/postgres.jsリトライ契約。
+ * get_user_card_counts のPlanetScale/postgres.js耐障害契約。
  *
  * 読み取りRPCは冪等なので接続断から再実行できる一方、HTTP/PostgREST固有の
  * status fixtureは現行経路に存在しない。ドライバが実際にthrowするcodeを使い、
- * 再試行ごとに getDb() を取得し直すことまで固定する。
+ * 再試行ごとに getDb() を取得し直すことと、非再試行エラー時も直接SQLへ
+ * フォールバックして読み取り可用性を維持することを固定する。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getUserCards, getUserCardsForStreamer } from '@/lib/dashboard-data'
@@ -61,7 +62,16 @@ function createRetryingSql() {
     .mockResolvedValueOnce([{ result: [rpcCardRow] }])
 }
 
-describe('dashboard card count RPC retry', () => {
+function createNonRetryableFallbackSql() {
+  const permissionDenied = Object.assign(new Error('permission denied'), {
+    code: '42501',
+  })
+  return vi.fn()
+    .mockRejectedValueOnce(permissionDenied)
+    .mockResolvedValueOnce([rpcCardRow])
+}
+
+describe('dashboard card count RPC resilience', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
@@ -103,5 +113,33 @@ describe('dashboard card count RPC retry', () => {
       },
     ])
     expect(reportError).not.toHaveBeenCalled()
+  })
+
+  it('streamer指定は非42883 RPC失敗でも直接SQLへfallbackする', async () => {
+    const sql = createNonRetryableFallbackSql()
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as any)
+
+    const result = await getUserCardsForStreamer('viewer-1', 'streamer-1')
+
+    expect(sql).toHaveBeenCalledTimes(2)
+
+    const [rpcStrings, ...rpcValues] = sql.mock.calls[0] as [readonly string[], ...unknown[]]
+    expect(rpcStrings.join('$')).toContain('get_user_card_counts')
+    expect(rpcValues).toEqual(['viewer-1', 'streamer-1'])
+
+    const [fallbackStrings, ...fallbackValues] = sql.mock.calls[1] as [readonly string[], ...unknown[]]
+    expect(fallbackStrings.join('$')).toContain('from user_cards uc')
+    expect(fallbackValues).toEqual(['viewer-1', 'streamer-1'])
+
+    expect(result).toEqual([
+      {
+        ...rpcCardRow.card,
+        streamer: rpcCardRow.streamer,
+        count: 2,
+      },
+    ])
+    expect(reportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('permission denied') }),
+    )
   })
 })
