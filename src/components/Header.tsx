@@ -38,7 +38,7 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
               // unoptimized: Twitch CDNから取得済みの画像のため、Vercel Image Transformationsをスキップしてコスト削減
               <Image
                 src={session.twitchProfileImageUrl}
-                alt={session.twitchDisplayName}
+                alt=""
                 width={28}
                 height={28}
                 className="h-7 w-7 rounded-full sm:h-8 sm:w-8"
