@@ -5,6 +5,7 @@ on:
     branches: [main, preview]
     paths:
       - '.github/scripts/**/*.mjs'
+      - '.github/scripts/**/*.py'
       - '.github/workflows/lint-github-scripts.yml'
       - 'eslint.config.mjs'
       - 'package.json'
@@ -13,6 +14,7 @@ on:
     branches: [main, preview]
     paths:
       - '.github/scripts/**/*.mjs'
+      - '.github/scripts/**/*.py'
       - '.github/workflows/lint-github-scripts.yml'
       - 'eslint.config.mjs'
       - 'package.json'
@@ -27,6 +29,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check Python helper syntax
+        run: python3 -m compileall -q .github/scripts
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
