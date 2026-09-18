@@ -16,6 +16,13 @@ const eslintConfig = defineConfig([
     ".open-next/**",
     ".wrangler/**",
     "workers/*/dist/**",
+    // Agent worktrees / scratch clones are intentionally git-ignored, but ESLint flat config
+    // does not consume .gitignore. Keep `eslint .` from recursively linting unrelated local
+    // checkouts or test scratch repositories that can contain their own generated artifacts.
+    ".claude/worktrees/**",
+    ".codex-*/**",
+    "twica-maker-*/**",
+    ".tmp-i18n-static-keys-*/**",
     // Exclude analysis directory (separate project with bundled artifacts)
     // analysis ディレクトリを除外（バンドル済み成果物を含む別プロジェクト）
     "analysis/**",
