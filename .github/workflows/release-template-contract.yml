@@ -31,6 +31,7 @@ jobs:
             contract:
               - '.github/PULL_REQUEST_TEMPLATE/**'
               - '.github/scripts/release_summary.py'
+              - '.github/scripts/test_release_summary.py'
               - 'docs/QA.md'
               - 'tests/unit/release-pr-template-contract.test.ts'
               - '.github/workflows/notify-discord-main-merge.yml'
@@ -48,6 +49,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: Verify Python release summary contract
+        run: python3 .github/scripts/test_release_summary.py
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
