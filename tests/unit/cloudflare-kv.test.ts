@@ -1,17 +1,29 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getKvBinding } from '@/lib/cloudflare-kv'
 
 const mocks = vi.hoisted(() => ({
   getCloudflareContext: vi.fn(),
+  loggerWarn: vi.fn(),
 }))
 
 vi.mock('@opennextjs/cloudflare', () => ({
   getCloudflareContext: mocks.getCloudflareContext,
 }))
 
+vi.mock('@/lib/logger', () => ({
+  logger: {
+    warn: mocks.loggerWarn,
+  },
+}))
+
 describe('getKvBinding', () => {
   beforeEach(() => {
     mocks.getCloudflareContext.mockReset()
+    mocks.loggerWarn.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
   })
 
   it('RATE_LIMIT_KV bindingをasync Cloudflare contextから返す', async () => {
@@ -33,11 +45,34 @@ describe('getKvBinding', () => {
     mocks.getCloudflareContext.mockResolvedValue({ env: {} })
 
     await expect(getKvBinding()).resolves.toBeNull()
+    expect(mocks.loggerWarn).not.toHaveBeenCalled()
+  })
+
+  it('productionでRATE_LIMIT_KV bindingが無い場合はfallback前に警告する', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    mocks.getCloudflareContext.mockResolvedValue({ env: {} })
+
+    await expect(getKvBinding()).resolves.toBeNull()
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      '[cloudflare-kv] RATE_LIMIT_KV binding is missing; using fallback',
+    )
   })
 
   it('Cloudflare contextを解決できない場合もnullへfallbackする', async () => {
     mocks.getCloudflareContext.mockRejectedValue(new Error('context unavailable'))
 
     await expect(getKvBinding()).resolves.toBeNull()
+    expect(mocks.loggerWarn).not.toHaveBeenCalled()
+  })
+
+  it('productionでCloudflare context解決に失敗した場合はfallback前に警告する', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    mocks.getCloudflareContext.mockRejectedValue(new Error('context unavailable'))
+
+    await expect(getKvBinding()).resolves.toBeNull()
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      '[cloudflare-kv] RATE_LIMIT_KV binding resolution failed; using fallback',
+      { error: 'context unavailable' },
+    )
   })
 })

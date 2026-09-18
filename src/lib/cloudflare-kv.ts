@@ -1,3 +1,5 @@
+import { logger } from '@/lib/logger'
+
 /**
  * Cloudflare KV binding 取得ヘルパー（r2-client.ts の R2BucketLike パターン踏襲）。
  *
@@ -44,8 +46,19 @@ export async function getKvBinding(): Promise<KVNamespaceLike | null> {
     const { getCloudflareContext } = await import("@opennextjs/cloudflare")
     const ctx = await getCloudflareContext({ async: true })
     const binding = (ctx.env as unknown as Record<string, unknown>)[KV_BINDING_NAME] as KVNamespaceLike | undefined
+    if (!binding && process.env.NODE_ENV === 'production') {
+      logger.warn('[cloudflare-kv] RATE_LIMIT_KV binding is missing; using fallback')
+    }
     return binding ?? null
-  } catch {
+  } catch (error) {
+    // Local Next.js does not expose a Workers context, so that expected fallback
+    // stays quiet. In deployed builds a context-resolution failure would silently
+    // disable every RATE_LIMIT_KV consumer, so leave a sanitized Workers-log signal.
+    if (process.env.NODE_ENV === 'production') {
+      logger.warn('[cloudflare-kv] RATE_LIMIT_KV binding resolution failed; using fallback', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
     return null
   }
 }
