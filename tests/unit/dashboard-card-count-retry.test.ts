@@ -61,6 +61,15 @@ function createRetryingSql() {
     .mockResolvedValueOnce([{ result: [rpcCardRow] }])
 }
 
+function createNonRetryableFallbackSql() {
+  const permissionDenied = Object.assign(new Error('permission denied'), {
+    code: '42501',
+  })
+  return vi.fn()
+    .mockRejectedValueOnce(permissionDenied)
+    .mockResolvedValueOnce([rpcCardRow])
+}
+
 describe('dashboard card count RPC retry', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -103,5 +112,33 @@ describe('dashboard card count RPC retry', () => {
       },
     ])
     expect(reportError).not.toHaveBeenCalled()
+  })
+
+  it('streamer指定は非42883 RPC失敗でも直接SQLへfallbackする', async () => {
+    const sql = createNonRetryableFallbackSql()
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as any)
+
+    const result = await getUserCardsForStreamer('viewer-1', 'streamer-1')
+
+    expect(sql).toHaveBeenCalledTimes(2)
+
+    const [rpcStrings, ...rpcValues] = sql.mock.calls[0] as [readonly string[], ...unknown[]]
+    expect(rpcStrings.join('$')).toContain('get_user_card_counts')
+    expect(rpcValues).toEqual(['viewer-1', 'streamer-1'])
+
+    const [fallbackStrings, ...fallbackValues] = sql.mock.calls[1] as [readonly string[], ...unknown[]]
+    expect(fallbackStrings.join('$')).toContain('from user_cards uc')
+    expect(fallbackValues).toEqual(['viewer-1', 'streamer-1'])
+
+    expect(result).toEqual([
+      {
+        ...rpcCardRow.card,
+        streamer: rpcCardRow.streamer,
+        count: 2,
+      },
+    ])
+    expect(reportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('permission denied') }),
+    )
   })
 })
