@@ -1,0 +1,41 @@
+name: GitHub helper scripts lint
+
+on:
+  push:
+    branches: [main, preview]
+    paths:
+      - '.github/scripts/**/*.mjs'
+      - '.github/workflows/lint-github-scripts.yml'
+      - 'eslint.config.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+  pull_request:
+    branches: [main, preview]
+    paths:
+      - '.github/scripts/**/*.mjs'
+      - '.github/workflows/lint-github-scripts.yml'
+      - 'eslint.config.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint GitHub helper scripts
+        run: npx eslint .github/scripts
