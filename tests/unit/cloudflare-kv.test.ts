@@ -45,6 +45,17 @@ describe('getKvBinding', () => {
     mocks.getCloudflareContext.mockResolvedValue({ env: {} })
 
     await expect(getKvBinding()).resolves.toBeNull()
+    expect(mocks.loggerWarn).not.toHaveBeenCalled()
+  })
+
+  it('productionでRATE_LIMIT_KV bindingが無い場合はfallback前に警告する', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    mocks.getCloudflareContext.mockResolvedValue({ env: {} })
+
+    await expect(getKvBinding()).resolves.toBeNull()
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      '[cloudflare-kv] RATE_LIMIT_KV binding is missing; using fallback',
+    )
   })
 
   it('Cloudflare contextを解決できない場合もnullへfallbackする', async () => {
