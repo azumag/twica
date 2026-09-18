@@ -479,8 +479,8 @@ async function fetchUserCardsFromDB(twitchUserId: string): Promise<CardWithDetai
     return cards;
   }
 
-  // RPCエラー時は直接クエリにフォールバック（DB一時障害でもカード空表示を防ぐ）
-  // TODO: マイグレーション適用確認後にフォールバックを削除
+  // RPCエラー時は直接クエリにフォールバックし、42883以外でも読み取り可用性を維持する。
+  // 撤去は Preview / Production 実測と可用性契約判断後に再評価する（#1517）。
   if (rpcError.code === "42883") {
     await reportMissingDashboardRpc(
       "get_user_card_counts",
@@ -995,8 +995,8 @@ export async function getGachaUsersForStreamer(
     };
   }
 
-  // RPCエラー時はクライアント側集約にフォールバック（マイグレーション未適用時の互換性維持）
-  // TODO: マイグレーション適用確認後にフォールバックを削除
+  // RPCエラー時はクライアント側集約へフォールバックし、42883以外でも読み取り可用性を維持する。
+  // 撤去は Preview / Production 実測と可用性契約判断後に再評価する（#1517）。
   if (rpcError?.code === "42883") {
     await reportMissingDashboardRpc(
       "get_gacha_users_for_streamer",
@@ -2303,8 +2303,8 @@ async function fetchUserCardsForStreamerFromDB(
     return cards;
   }
 
-  // RPCエラー時は直接クエリにフォールバック（DB一時障害でもカード空表示を防ぐ）
-  // TODO: マイグレーション適用確認後にフォールバックを削除
+  // RPCエラー時は直接クエリにフォールバックし、42883以外でも読み取り可用性を維持する。
+  // 撤去は Preview / Production 実測と可用性契約判断後に再評価する（#1517）。
   if (rpcError.code === "42883") {
     await reportMissingDashboardRpc(
       "get_user_card_counts",
