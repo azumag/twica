@@ -46,6 +46,9 @@ export async function getKvBinding(): Promise<KVNamespaceLike | null> {
     const { getCloudflareContext } = await import("@opennextjs/cloudflare")
     const ctx = await getCloudflareContext({ async: true })
     const binding = (ctx.env as unknown as Record<string, unknown>)[KV_BINDING_NAME] as KVNamespaceLike | undefined
+    if (!binding && process.env.NODE_ENV === 'production') {
+      logger.warn('[cloudflare-kv] RATE_LIMIT_KV binding is missing; using fallback')
+    }
     return binding ?? null
   } catch (error) {
     // Local Next.js does not expose a Workers context, so that expected fallback
