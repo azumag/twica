@@ -131,6 +131,10 @@ export function getCompetitionRanks(
   });
 }
 
+function getDisplayNameInitial(displayName: string): string {
+  return [...displayName][0]?.toUpperCase() ?? "";
+}
+
 export default function LiveDirectory({
   entries,
   rankings,
@@ -400,7 +404,7 @@ function LiveDirectoryRanking({
                     aria-hidden="true"
                     className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-700 text-sm font-semibold text-gray-300${isLive ? " ring-2 ring-red-600" : ""}`}
                   >
-                    {entry.identity.displayName.slice(0, 1).toUpperCase()}
+                    {getDisplayNameInitial(entry.identity.displayName)}
                   </span>
                 )}
                 <span className="min-w-0 truncate font-medium text-white group-hover:text-purple-200">
@@ -515,7 +519,7 @@ function LiveDirectoryCard({
                 aria-hidden="true"
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-700 text-sm font-semibold text-gray-300"
               >
-                {entry.displayName.slice(0, 1).toUpperCase()}
+                {getDisplayNameInitial(entry.displayName)}
               </span>
             )}
             <p className="min-w-0 flex-1 truncate font-semibold text-white">
