@@ -4,6 +4,7 @@ import { GET } from "@/app/api/gacha-history/route";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
+  getCollectionCompletions,
   getGachaHistoryForStreamer,
   getGachaHistoryForUser,
 } from "@/lib/dashboard-data";
@@ -30,6 +31,7 @@ vi.mock("@/lib/constants", async (importOriginal) => {
 const mockGetSession = vi.mocked(getSession);
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures);
 const mockCheckRateLimit = vi.mocked(checkRateLimit);
+const mockGetCollectionCompletions = vi.mocked(getCollectionCompletions);
 const mockGetGachaHistoryForStreamer = vi.mocked(getGachaHistoryForStreamer);
 const mockGetGachaHistoryForUser = vi.mocked(getGachaHistoryForUser);
 
@@ -157,13 +159,15 @@ describe("GET /api/gacha-history", () => {
     const body = await res.json();
     expect(body.history).toHaveLength(0);
     expect(body.pagination.total).toBe(0);
+    expect(body).not.toHaveProperty("completions");
+    expect(mockGetCollectionCompletions).not.toHaveBeenCalled();
     expect(mockGetGachaHistoryForStreamer).toHaveBeenCalledWith(
       "streamer-id-1",
       expect.objectContaining({ username: "test", rarity: "epic", page: 1 }),
     );
   });
 
-  it("forwards a numeric userId filter for streamer user history", async () => {
+  it("returns completion history only for a numeric streamer userId detail request", async () => {
     const session = {
       twitchUserId: "streamer1",
       twitchUsername: "streamer1",
@@ -181,6 +185,18 @@ describe("GET /api/gacha-history", () => {
       history: [],
       pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
     } as never);
+    mockGetCollectionCompletions.mockResolvedValue([
+      {
+        total_cards: 8,
+        completed_at: "2026-03-01T00:00:00Z",
+        collection_name: null,
+      },
+      {
+        total_cards: 3,
+        completed_at: "2026-03-02T00:00:00Z",
+        collection_name: "第一弾",
+      },
+    ]);
 
     const res = await GET(createRequest({ userId: "123456789" }));
     expect(res.status).toBe(200);
@@ -188,9 +204,19 @@ describe("GET /api/gacha-history", () => {
       "streamer-id-1",
       expect.objectContaining({ userId: "123456789" }),
     );
+    expect(mockGetCollectionCompletions).toHaveBeenCalledWith(
+      "123456789",
+      "streamer-id-1",
+    );
+    await expect(res.json()).resolves.toMatchObject({
+      completions: [
+        expect.objectContaining({ total_cards: 8, collection_name: null }),
+        expect.objectContaining({ total_cards: 3, collection_name: "第一弾" }),
+      ],
+    });
   });
 
-  it("drops a non-numeric userId filter instead of forwarding it", async () => {
+  it("drops a non-numeric userId filter without fetching completion history", async () => {
     const session = {
       twitchUserId: "streamer1",
       twitchUsername: "streamer1",
@@ -215,6 +241,8 @@ describe("GET /api/gacha-history", () => {
       "streamer-id-1",
       expect.objectContaining({ userId: undefined }),
     );
+    expect(mockGetCollectionCompletions).not.toHaveBeenCalled();
+    expect(await res.json()).not.toHaveProperty("completions");
   });
 
   it("returns personal history for streamer with view=personal", async () => {
@@ -251,6 +279,8 @@ describe("GET /api/gacha-history", () => {
     const body = await res.json();
     expect(body.history).toHaveLength(1);
     expect(body.pagination.total).toBe(1);
+    expect(body).not.toHaveProperty("completions");
+    expect(mockGetCollectionCompletions).not.toHaveBeenCalled();
     expect(getDb).not.toHaveBeenCalled();
   });
 
