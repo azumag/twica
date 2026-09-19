@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 
+import { PRIVATE_NO_STORE_CACHE_CONTROL } from "@/lib/cache-control";
 import { handleApiError } from "@/lib/error-handler";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { logger } from "@/lib/logger.server";
@@ -25,7 +26,6 @@ interface RouteParams {
 // edge cache し、同時リクエストの request collapsing を有効にする。長TTL化は
 // tag purge と同時に行い、設定変更直後の古い値が長時間残る退行を作らない。
 const SOUND_SETTINGS_CACHE_CONTROL = "public, max-age=0, s-maxage=1";
-const NO_STORE_CACHE_CONTROL = "private, no-store";
 
 interface SoundSettingsRow {
   gacha_sound_url: string | null;
@@ -143,7 +143,7 @@ export async function GET(
         { error: ERROR_MESSAGES.STREAMER_ID_REQUIRED },
         {
           status: 400,
-          headers: { "Cache-Control": NO_STORE_CACHE_CONTROL },
+          headers: { "Cache-Control": PRIVATE_NO_STORE_CACHE_CONTROL },
         }
       );
     }
@@ -156,7 +156,7 @@ export async function GET(
           soundUrl: null,
           soundEnabled: false,
         },
-        { headers: { "Cache-Control": NO_STORE_CACHE_CONTROL } }
+        { headers: { "Cache-Control": PRIVATE_NO_STORE_CACHE_CONTROL } }
       );
     }
 
@@ -167,7 +167,7 @@ export async function GET(
         { error: ERROR_MESSAGES.STREAMER_NOT_FOUND },
         {
           status: 404,
-          headers: { "Cache-Control": NO_STORE_CACHE_CONTROL },
+          headers: { "Cache-Control": PRIVATE_NO_STORE_CACHE_CONTROL },
         }
       );
     }
@@ -195,7 +195,7 @@ export async function GET(
     );
   } catch (error) {
     const response = await handleApiError(error, "Streamer Sound Settings API");
-    response.headers.set("Cache-Control", NO_STORE_CACHE_CONTROL);
+    response.headers.set("Cache-Control", PRIVATE_NO_STORE_CACHE_CONTROL);
     return response;
   }
 }
