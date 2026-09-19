@@ -163,6 +163,60 @@ describe("GET /api/gacha-history", () => {
     );
   });
 
+  it("forwards a numeric userId filter for streamer user history", async () => {
+    const session = {
+      twitchUserId: "streamer1",
+      twitchUsername: "streamer1",
+      twitchDisplayName: "Streamer 1",
+      twitchProfileImageUrl: "",
+      broadcasterType: "affiliate",
+      expiresAt: Date.now() + 100000,
+      version: 1,
+    };
+    mockGetSession.mockResolvedValue(session);
+    mockCanUseStreamerFeatures.mockReturnValue(true);
+
+    primeStreamerLookup([{ id: "streamer-id-1" }]);
+    mockGetGachaHistoryForStreamer.mockResolvedValue({
+      history: [],
+      pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
+    } as never);
+
+    const res = await GET(createRequest({ userId: "123456789" }));
+    expect(res.status).toBe(200);
+    expect(mockGetGachaHistoryForStreamer).toHaveBeenCalledWith(
+      "streamer-id-1",
+      expect.objectContaining({ userId: "123456789" }),
+    );
+  });
+
+  it("drops a non-numeric userId filter instead of forwarding it", async () => {
+    const session = {
+      twitchUserId: "streamer1",
+      twitchUsername: "streamer1",
+      twitchDisplayName: "Streamer 1",
+      twitchProfileImageUrl: "",
+      broadcasterType: "affiliate",
+      expiresAt: Date.now() + 100000,
+      version: 1,
+    };
+    mockGetSession.mockResolvedValue(session);
+    mockCanUseStreamerFeatures.mockReturnValue(true);
+
+    primeStreamerLookup([{ id: "streamer-id-1" }]);
+    mockGetGachaHistoryForStreamer.mockResolvedValue({
+      history: [],
+      pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
+    } as never);
+
+    const res = await GET(createRequest({ userId: "123abc" }));
+    expect(res.status).toBe(200);
+    expect(mockGetGachaHistoryForStreamer).toHaveBeenCalledWith(
+      "streamer-id-1",
+      expect.objectContaining({ userId: undefined }),
+    );
+  });
+
   it("returns personal history for streamer with view=personal", async () => {
     const session = {
       twitchUserId: "streamer1",
