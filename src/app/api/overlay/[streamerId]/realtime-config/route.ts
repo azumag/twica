@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { PRIVATE_NO_STORE_CACHE_CONTROL } from '@/lib/cache-control'
 import {
   isValidOverlayVersion,
   isValidStreamerId,
@@ -39,7 +40,7 @@ export async function GET(
       {
         status: 400,
         headers: {
-          'Cache-Control': 'private, no-store',
+          'Cache-Control': PRIVATE_NO_STORE_CACHE_CONTROL,
         },
       }
     )
