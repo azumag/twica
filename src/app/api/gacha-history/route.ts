@@ -9,6 +9,7 @@ import {
 } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import {
+  getCollectionCompletions,
   getGachaHistoryForStreamer,
   getGachaHistoryForUser,
   getGachaUsersForStreamer,
@@ -151,13 +152,13 @@ export async function GET(request: NextRequest) {
       const userId = rawUserId && /^\d+$/.test(rawUserId) ? rawUserId : undefined;
 
       // Validate date format (YYYY-MM-DD), ignore invalid values
-      // 日付フォーマットの検証（YYYY-MM-DD）、不正な値は無視
+      // 日付フォーマットの検証（不正な値は無視）
       const rawFrom = searchParams.get("from");
       const from = rawFrom && DATE_REGEX.test(rawFrom) ? rawFrom : undefined;
       const rawTo = searchParams.get("to");
       const to = rawTo && DATE_REGEX.test(rawTo) ? rawTo : undefined;
 
-      const result = await getGachaHistoryForStreamer(streamer.id, {
+      const filters = {
         page,
         perPage,
         username,
@@ -166,8 +167,21 @@ export async function GET(request: NextRequest) {
         userId,
         from,
         to,
-      });
+      };
 
+      // The user-detail panel is the only caller that supplies a validated userId.
+      // Fetch its independent read-only datasets in parallel, while preserving the
+      // existing response shape for channel history, users-list, and invalid userId
+      // requests so completion data cannot leak into unrelated views (#873).
+      if (userId) {
+        const [result, completions] = await Promise.all([
+          getGachaHistoryForStreamer(streamer.id, filters),
+          getCollectionCompletions(userId, streamer.id),
+        ]);
+        return NextResponse.json({ ...result, completions });
+      }
+
+      const result = await getGachaHistoryForStreamer(streamer.id, filters);
       return NextResponse.json(result);
     } else {
       // Viewer: fetch only their own history
