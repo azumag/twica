@@ -177,7 +177,7 @@ export async function middleware(request: NextRequest) {
   setSecurityHeaders(response, { pathname, csp })
 
   // Detect and set locale for server components
-  // サーバーコンポーネント用ロケールを検出・設定
+  // サーバーコンポーネント用にロケールを検出・設定
   const locale = detectLocale(request)
   response.headers.set('x-locale', locale)
 
