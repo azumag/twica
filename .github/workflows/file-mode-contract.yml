@@ -1,0 +1,24 @@
+name: File mode contract
+
+on:
+  push:
+    branches: [main, preview]
+  pull_request:
+    branches: [main, preview]
+
+permissions:
+  contents: read
+
+jobs:
+  file-mode:
+    name: Reject executable source/config/doc files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check tracked file modes
+        run: node scripts/check-non-executable-file-modes.mjs
