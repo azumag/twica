@@ -55,7 +55,7 @@ function isGuardedPath(filePath) {
     filePath.startsWith("messages/") ||
     filePath.startsWith("docs/") ||
     filePath.startsWith("config/") ||
-    filePath.startsWith(".github/workflows/")
+    filePath.startsWith(".github/")
   );
 }
 
