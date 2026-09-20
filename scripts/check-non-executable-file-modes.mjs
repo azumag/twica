@@ -24,6 +24,28 @@ const NON_EXECUTABLE_EXTENSIONS = new Set([
   ".yml",
 ]);
 
+const ROOT_NON_EXECUTABLE_FILES = new Set([
+  ".env.local.example",
+  ".gitattributes",
+  ".gitignore",
+  ".node-version",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "LICENSE",
+  "README.md",
+  "SECURITY.md",
+  "eslint.config.mjs",
+  "eslint.i18n.config.mjs",
+  "next.config.ts",
+  "open-next.config.ts",
+  "package-lock.json",
+  "package.json",
+  "postcss.config.mjs",
+  "tsconfig.json",
+  "vitest.config.ts",
+  "wrangler.toml",
+]);
+
 function isGuardedPath(filePath) {
   return (
     filePath.startsWith("src/") ||
@@ -34,6 +56,17 @@ function isGuardedPath(filePath) {
     filePath.startsWith("docs/") ||
     filePath.startsWith("config/") ||
     filePath.startsWith(".github/workflows/")
+  );
+}
+
+function isNonExecutableFile(filePath) {
+  if (ROOT_NON_EXECUTABLE_FILES.has(filePath)) {
+    return true;
+  }
+
+  return (
+    isGuardedPath(filePath) &&
+    NON_EXECUTABLE_EXTENSIONS.has(path.extname(filePath).toLowerCase())
   );
 }
 
@@ -52,13 +85,8 @@ for (const entry of stagedFiles.split("\0")) {
 
   const [mode] = entry.slice(0, separator).split(" ");
   const filePath = entry.slice(separator + 1);
-  const extension = path.extname(filePath).toLowerCase();
 
-  if (
-    mode === "100755" &&
-    isGuardedPath(filePath) &&
-    NON_EXECUTABLE_EXTENSIONS.has(extension)
-  ) {
+  if (mode === "100755" && isNonExecutableFile(filePath)) {
     offenders.push(filePath);
   }
 }
