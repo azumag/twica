@@ -46,6 +46,7 @@ const ROOT_NON_EXECUTABLE_FILES = new Set([
   "wrangler.toml",
 ]);
 
+// Keep executable-script directories such as scripts/ out of this path guard.
 function isGuardedPath(filePath) {
   return (
     filePath.startsWith("src/") ||
@@ -54,11 +55,13 @@ function isGuardedPath(filePath) {
     filePath.startsWith("analysis/") ||
     filePath.startsWith("messages/") ||
     filePath.startsWith("docs/") ||
+    filePath.startsWith("tasks/") ||
     filePath.startsWith("config/") ||
     filePath.startsWith("e2e/") ||
     filePath.startsWith("db/") ||
     filePath.startsWith("supabase/") ||
-    filePath.startsWith(".github/")
+    filePath.startsWith(".github/") ||
+    filePath.startsWith(".opencode/")
   );
 }
 
