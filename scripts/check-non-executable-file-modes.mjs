@@ -51,7 +51,7 @@ function isGuardedPath(filePath) {
     filePath.startsWith("src/") ||
     filePath.startsWith("workers/") ||
     filePath.startsWith("tests/") ||
-    filePath.startsWith("analysis/src/") ||
+    filePath.startsWith("analysis/") ||
     filePath.startsWith("messages/") ||
     filePath.startsWith("docs/") ||
     filePath.startsWith("config/") ||
