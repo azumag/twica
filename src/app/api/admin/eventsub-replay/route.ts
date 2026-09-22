@@ -485,9 +485,20 @@ export async function POST(request: NextRequest) {
           // lost lease / deadline / fence障害時は、新所有者の状態を上書きしない。
           // missing_scope以外を黙殺しない契約に合わせ、outbox更新は行わずとも
           // 運用障害としてawait済みのreportErrorへ残す。
+          //
+          // Issue #1665: このrelay経路はsendClaimedChatAnnouncementへbudget/
+          // channelGateを渡さないため、'deferred'は本来発生しない不変条件。
+          // outbox状態を上書きしない点はabortedと同じ安全側の扱いのままでよいが、
+          // 万一発生した場合に診断しやすいよう、汎用の"aborted"文言ではなく
+          // 専用の理由を残す。
           const failureReason = formatChatFailureReason(outcome.reason, outcome.degradation);
+          const unexpectedlyDeferred = outcome.outcome === "deferred";
           await reportErrorSafely(
-            new Error(`[eventsub-replay] chat delivery aborted: ${failureReason}`),
+            new Error(
+              unexpectedlyDeferred
+                ? `[eventsub-replay] chat delivery unexpectedly deferred without a budget: ${failureReason}`
+                : `[eventsub-replay] chat delivery aborted: ${failureReason}`,
+            ),
             {
               key: baseResult.key,
               messageId: claim.batchId,

@@ -415,6 +415,17 @@ export const rateLimits = {
   // dbHealth と同じ「共有シークレット認証・読み取り専用」の運用エンドポイントで、
   // 5分毎のCron Workerからの定期ポーリングに耐えられるよう同水準（分あたり20回）にする。
   eventsubHealth: createRatelimit("eventsubHealth", 20, 60 * 1000),
+  // Issue #1665: 専用Queue Workerから呼ばれるbounded chat配送の内部境界
+  // (deliver / dispatch-due)。共有シークレット認証の運用エンドポイントだが、
+  // getRateLimitIdentifierはIPベースであり、Service Binding経由の呼び出しは
+  // 送信元IPを区別できず全ストリーマー分のトラフィックが1つのバケツに
+  // 集約される。N連の複数バッチが同時に複数ストリーマーで発生する
+  // バースト（本Issueが対処しようとしている状況そのもの）でも正当な
+  // deliver呼び出しが誤って429にならないよう、他のadmin系運用エンドポイント
+  // （分あたり10〜20回、低頻度ポーリング用）よりずっと高い水準にする。
+  // 異常なloop等の暴走を止めるための上限であり、通常運用のスループットを
+  // 制限する意図ではない。
+  chatOutboxDelivery: createRatelimit("chatOutboxDelivery", 600, 60 * 1000),
 } as const;
 
 /**
