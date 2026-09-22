@@ -442,6 +442,28 @@ describe('bounded delivery claim/release/retry/wake reservation (Issue #1665)', 
     expect(rendered.values).toContain('batch-1')
   })
 
+  it('regression (2026-09-22 azumagレビュー): attempt_count上限に達したcontinuation行もclaimできる', async () => {
+    // 過去の一時障害でattempt_count=MAXに達した後、その試行内で複数segmentを
+    // 正常送信し予算切れでcontinuationへ入った行は、無条件のattempt_count<MAXを
+    // WHERE句に課すと二度とclaimできず永久pending化する（本テストが固定する
+    // WHERE句の構造がこの回帰を防ぐ）。
+    const sqlMock = createSqlMock([[{ ...CLAIM_ROW, attempt_count: CHAT_OUTBOX_MAX_ATTEMPTS }]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    await claimChatNotificationForBoundedDelivery('batch-1')
+
+    const rendered = renderSqlCall(sqlMock, 0)
+    // continuation行は独立したORブランチでattempt_count上限を課さない。
+    expect(rendered.text).toContain(
+      "(status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())",
+    )
+    // 一方、通常のpending(retry/initial)・processing(クラッシュ回収)は
+    // 引き続きattempt_count上限つきの別ブランチにある（実障害側は緩めない）。
+    expect(rendered.text).toMatch(
+      /attempt_count < \$::integer\s+and\s+\(\s*\(status = 'pending' and next_attempt_at <= now\(\)\)\s*or\s*\(status = 'processing' and lease_expires_at <= now\(\)\)\s*\)/,
+    )
+  })
+
   it('release-for-continuationはleaseを解放しpending_kindをcontinuationにする', async () => {
     const sqlMock = createSqlMock([[{ id: CLAIM_ROW.id }]])
     vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
@@ -517,6 +539,21 @@ describe('bounded delivery claim/release/retry/wake reservation (Issue #1665)', 
     expect(rendered.text).toContain('wake_reserved_until = now()')
     expect(rendered.values).toContain(25)
     expect(rendered.values).toContain(120)
+  })
+
+  it('regression (2026-09-22 azumagレビュー): attempt_count上限に達したcontinuation行もwake予約できる', async () => {
+    const sqlMock = createSqlMock([[]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    await reserveDueChatNotificationOutboxForWake(25, 120)
+
+    const rendered = renderSqlCall(sqlMock, 0)
+    expect(rendered.text).toContain(
+      "(status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())",
+    )
+    expect(rendered.text).toMatch(
+      /attempt_count < \$::integer\s+and\s+\(\s*\(status = 'pending' and next_attempt_at <= now\(\)\)\s*or\s*\(status = 'processing' and lease_expires_at <= now\(\)\)\s*\)/,
+    )
   })
 
   it('due-wake予約はlease失効したprocessing行（consumer停止からのクラッシュ回収）も対象にする', async () => {

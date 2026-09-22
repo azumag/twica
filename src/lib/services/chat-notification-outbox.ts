@@ -483,6 +483,15 @@ export async function retryChatNotification(
  * SET句のCASE式はUPDATE前（更新前）の行の値を参照するPostgreSQLの仕様に
  * 依拠しており、他の列への代入順序には依存しない。
  *
+ * WHERE句の`attempt_count < MAX`はcontinuation行には課さない
+ * （2026-09-22 azumagレビュー指摘の回帰修正）。continuationはattempt_countを
+ * 消費しないため、過去の一時障害で既にattempt_count = MAXへ達していても
+ * 正常な続きとしてclaimできなければならない。この上限を無条件のANDにすると、
+ * 「一時障害で試行上限に達した直後に、同じ行が予算切れでcontinuationへ入る」
+ * という正当な経路で行が二度とclaimされずpendingのまま永久に取り残される
+ * （dead化もされない: deadLetterはclaim済みの行にしか作用しないため）。
+ * 一方、lease失効processing行（クラッシュ回収=実障害側）の上限は緩めない。
+ *
  * 既知の残課題: この判定は「pending_kind='continuation'であること」だけを
  * 信頼する。retryChatNotification（cron relay経由の旧経路、Step 3までは
  * この関数と同じ行を無条件に触りうる）のdocコメント参照。詳細な回避条件と
@@ -505,10 +514,15 @@ export async function claimChatNotificationForBoundedDelivery(
         wake_reserved_until = null,
         updated_at = now()
     where batch_id = ${batchId}
-      and attempt_count < ${CHAT_OUTBOX_MAX_ATTEMPTS}::integer
       and (
-        (status = 'pending' and next_attempt_at <= now())
-        or (status = 'processing' and lease_expires_at <= now())
+        (status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())
+        or (
+          attempt_count < ${CHAT_OUTBOX_MAX_ATTEMPTS}::integer
+          and (
+            (status = 'pending' and next_attempt_at <= now())
+            or (status = 'processing' and lease_expires_at <= now())
+          )
+        )
       )
     returning *
   `
@@ -608,6 +622,11 @@ export interface ChatNotificationWakeCandidate {
  * 次にclaimChatNotificationForBoundedDeliveryが呼ばれた時点でwake_reserved_until
  * はnullへ戻る。
  *
+ * attempt_count上限はstatus='pending' and pending_kind='continuation'の行には
+ * 課さない（claimChatNotificationForBoundedDeliveryと同じ回帰修正、
+ * 2026-09-22 azumagレビュー指摘）。ここで対象外にすると、claim可能でも
+ * sweepがwake-upを起票できず同じ行が回収されない状態になる。
+ *
  * FOR UPDATE SKIP LOCKEDにより、同時に複数のsweep呼び出しが動いても同じ行を
  * 重複予約しない。予約後にenqueueが失敗しても、reservationSecondsで自然に
  * 期限切れて次回sweepが再度拾える（明示的なロールバックは不要）。
@@ -623,11 +642,16 @@ export async function reserveDueChatNotificationOutboxForWake(
     with candidates as (
       select id
       from chat_notification_outbox
-      where attempt_count < ${CHAT_OUTBOX_MAX_ATTEMPTS}::integer
-        and (wake_reserved_until is null or wake_reserved_until <= now())
+      where (wake_reserved_until is null or wake_reserved_until <= now())
         and (
-          (status = 'pending' and next_attempt_at <= now())
-          or (status = 'processing' and lease_expires_at <= now())
+          (status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())
+          or (
+            attempt_count < ${CHAT_OUTBOX_MAX_ATTEMPTS}::integer
+            and (
+              (status = 'pending' and next_attempt_at <= now())
+              or (status = 'processing' and lease_expires_at <= now())
+            )
+          )
         )
       order by next_attempt_at asc, created_at asc
       for update skip locked
