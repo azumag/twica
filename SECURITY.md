@@ -42,11 +42,13 @@ An unbounded decompression chain in HTTP responses on Node.js Fetch API via Cont
 
 #### Input Validation
 - All API inputs are validated
-- Rate limiting prevents abuse
+- Rate limiting is one layer of abuse mitigation; security-sensitive endpoints also rely on authentication, authorization, CSRF protection, input validation, and endpoint-specific controls as applicable
 - CSRF protection on all state-changing requests
 
 #### Rate Limiting
-- In-memory rate limiting for development
+- Cloudflare Workers automatically use the `RATE_LIMIT_KV` binding when it is available
+- Local development, tests, and environments where the binding cannot be resolved use the in-memory fallback
+- Storage failures currently fail open, so strict abuse prevention must not rely on this rate limiter as the only control; distributed-backend and fail-open policy follow-up is tracked in Issue #728
 - Per-endpoint rate limits
 - Configurable windows and limits
 
@@ -106,4 +108,4 @@ To automatically audit dependencies as part of CI/CD, consider adding to your wo
 
 ## Last Updated
 
-2026-09-03
+2026-09-22
