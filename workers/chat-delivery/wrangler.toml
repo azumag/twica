@@ -1,0 +1,81 @@
+# Chat Delivery Queue Worker (Issue #1665)
+#
+# NOTE: このWorkerは現時点でどのCIパイプライン（.github/workflows/
+# deploy-cloudflare.yml）からもdeployされない。実際のCloudflare Queue
+# リソース作成（`wrangler queues create`）・下記bindingの実配備・
+# デプロイ手順への登録は、Issue #1665 導入順序 Step 2
+# （「権限のあるデプロイ手順」で行う想定）の対象であり、このPRの範囲外。
+# ここではPhase 2着手時に迷わないよう、想定するbinding構成を先に書いておく。
+#
+# queue名（chat-notification-wakeup / chat-notification-wakeup-preview）は
+# 提案値。実際に`wrangler queues create`する際に必要なら変更してよい
+# （root/[env.preview]両方のqueue名を揃えて変更すること）。
+
+name = "twica-chat-delivery"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Issue #1665設計: 最初はmax_batch_size=1、小さな明示的concurrencyから
+# 検証する。Queue全体を1並列にすることを同一チャネルの正しさの根拠には
+# しない（正しさはchat_channel_send_gate側のDB原子性で担保する）。
+[[queues.consumers]]
+queue = "chat-notification-wakeup"
+max_batch_size = 1
+max_concurrency = 5
+# 内部HTTP呼び出しのタイムアウト（src/index.ts INTERNAL_CALL_TIMEOUT_MS）より
+# 長く、Cloudflareのconsumer実行寿命上限（15分）よりは短く取る。
+max_retries = 5
+
+# consumer自身が続きのwake-upをenqueueするためのproducer binding。
+[[queues.producers]]
+binding = "CHAT_NOTIFICATION_QUEUE"
+queue = "chat-notification-wakeup"
+
+# 回収sweep用のscheduled handler。初期案は1分周期。値は負荷と回収遅延の
+# 実測（Preview配備後）で確定する。
+[triggers]
+crons = ["*/1 * * * *"]
+
+# Cloudflareは同一zone上のWorker間globalfetch()を許可しないため、本体アプリ
+# （twica）へService Binding経由で到達する（overlay-realtime publisherと
+# 同じ理由）。
+[[services]]
+binding = "CHAT_APP"
+service = "twica"
+
+[vars]
+CHAT_APP_BASE_URL = "https://twica.bluemoon.works"
+
+# CHAT_DELIVERY_SECRET は `wrangler secret put CHAT_DELIVERY_SECRET` で設定する
+# （本体アプリのCHAT_DELIVERY_SECRETと同じ値。本体アプリ側の値をそのまま
+# 流用し、新しい値を生成しない）。
+
+# ============================================================
+# Preview環境
+# ============================================================
+[env.preview]
+
+[[env.preview.queues.consumers]]
+queue = "chat-notification-wakeup-preview"
+max_batch_size = 1
+max_concurrency = 5
+max_retries = 5
+
+[[env.preview.queues.producers]]
+binding = "CHAT_NOTIFICATION_QUEUE"
+queue = "chat-notification-wakeup-preview"
+
+[env.preview.triggers]
+crons = ["*/1 * * * *"]
+
+[[env.preview.services]]
+binding = "CHAT_APP"
+service = "twica-preview"
+
+[env.preview.vars]
+CHAT_APP_BASE_URL = "https://twica-preview.tsubasa-azumagakito.workers.dev"
+
+# CHAT_DELIVERY_SECRET (preview) は `wrangler secret put CHAT_DELIVERY_SECRET
+# --env preview` で設定する（preview本体アプリのCHAT_DELIVERY_SECRETと
+# 同じ値）。

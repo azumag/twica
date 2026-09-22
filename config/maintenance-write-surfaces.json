@@ -413,6 +413,17 @@
     "reviewedAt": "2026-07-18"
   },
   {
+    "path": "/api/internal/chat-outbox",
+    "methods": [
+      "POST"
+    ],
+    "category": "twitch",
+    "maintenanceBehavior": "block",
+    "reason": "専用Chat Delivery Queue WorkerがService Binding経由で呼ぶ内部配送境界（Issue #1665）。deliverはchat_notification_outboxのclaim/ack/retry/dead、dispatch-dueはwake予約を伴うDB書き込みのため、他の書き込みAPIと同様にメンテ中はブロックし、状態を失わず延期する。",
+    "owner": "azumag",
+    "reviewedAt": "2026-09-22"
+  },
+  {
     "path": "/api/streamer/pack-completion-rewards",
     "methods": [
       "PUT",

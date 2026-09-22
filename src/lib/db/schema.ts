@@ -255,6 +255,23 @@ export const chatNotificationOutbox = pgTable('chat_notification_outbox', {
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
   sent_at: timestamp('sent_at', { withTimezone: true, mode: 'string' }),
   dead_at: timestamp('dead_at', { withTimezone: true, mode: 'string' }),
+  // 20260922100000で追加（Issue #1665）。continuation（正常な予算切れによる途中
+  // 終了）とretry（一時障害）を区別し、continuationはattempt_countを消費しない。
+  pending_kind: text('pending_kind').notNull().default('initial'),
+  // 回収sweeperの二重enqueue防止用の短い予約期限。未予約行はNULL。
+  wake_reserved_until: timestamp('wake_reserved_until', { withTimezone: true, mode: 'string' }),
+})
+
+// -----------------------------------------------------------------------------
+// chat_channel_send_gate（Issue #1665: チャネル単位の送信間隔gate）
+// 根拠: 20260922100000 chat_outbox_continuation_and_channel_gate
+// summary/individual/chunkedのどの経路から送っても、また別outbox行・別Worker
+// 実行にまたがっても、同じ配信者チャンネルへの外部送信間隔（既定1.6秒）を守る。
+// -----------------------------------------------------------------------------
+export const chatChannelSendGate = pgTable('chat_channel_send_gate', {
+  broadcaster_twitch_user_id: text('broadcaster_twitch_user_id').primaryKey(),
+  next_send_at: timestamp('next_send_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
 })
 
 // -----------------------------------------------------------------------------

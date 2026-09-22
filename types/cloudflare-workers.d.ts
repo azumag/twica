@@ -20,3 +20,21 @@ interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void
   passThroughOnException(): void
 }
+
+// Issue #1665: workers/chat-delivery/src/index.ts (Queue consumer) 用に追加。
+// 実際のCloudflare Queues APIの最小サブセットのみ定義する
+// (ack/retry/messages以外は未使用のため定義しない。YAGNI)。
+interface Message<Body = unknown> {
+  readonly id: string
+  readonly timestamp: Date
+  readonly body: Body
+  ack(): void
+  retry(options?: { delaySeconds?: number }): void
+}
+
+interface MessageBatch<Body = unknown> {
+  readonly queue: string
+  readonly messages: readonly Message<Body>[]
+  ackAll(): void
+  retryAll(options?: { delaySeconds?: number }): void
+}

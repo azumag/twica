@@ -148,3 +148,72 @@ describe('sendClaimedChatAnnouncement individual delivery', () => {
     expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
   })
 })
+
+// Issue #1665: summary/単発（cards.length<=1、または deliveryMode='summary'）は
+// paced-multi-draw-senderを経由しないため、budget（deadlineAt/channelGate）は
+// sendClaimedChatAnnouncement自身が明示的に適用する必要がある。
+describe('sendClaimedChatAnnouncement summary/single-draw delivery budget (Issue #1665)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent' })
+  })
+
+  function makeSummaryClaim() {
+    return { ...makeClaim(), deliveryMode: 'summary' as const }
+  }
+
+  const makeSummaryData = () => makeData(true)
+
+  it('defers without sending when deadlineAt has already passed, even without a channelGate', async () => {
+    const { sendClaimedChatAnnouncement } = await import('@/lib/services/eventsub-redemption-delivery')
+
+    await expect(sendClaimedChatAnnouncement(
+      makeSummaryClaim() as never,
+      makeSummaryData() as never,
+      vi.fn().mockResolvedValue(true),
+      { deadlineAt: Date.now() - 1 },
+    )).resolves.toEqual({ outcome: 'deferred', reason: 'budget' })
+
+    expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+  })
+
+  it('sends normally when deadlineAt has not passed yet', async () => {
+    const { sendClaimedChatAnnouncement } = await import('@/lib/services/eventsub-redemption-delivery')
+
+    await expect(sendClaimedChatAnnouncement(
+      makeSummaryClaim() as never,
+      makeSummaryData() as never,
+      vi.fn().mockResolvedValue(true),
+      { deadlineAt: Date.now() + 60_000 },
+    )).resolves.toEqual({ outcome: 'sent' })
+
+    expect(mocks.sendChatAnnouncement).toHaveBeenCalledTimes(1)
+  })
+
+  it('defers on a budget-exhausted channelGate reservation without sending', async () => {
+    const { sendClaimedChatAnnouncement } = await import('@/lib/services/eventsub-redemption-delivery')
+    const channelGate = vi.fn().mockResolvedValue({ outcome: 'budget-exhausted' })
+
+    await expect(sendClaimedChatAnnouncement(
+      makeSummaryClaim() as never,
+      makeSummaryData() as never,
+      vi.fn().mockResolvedValue(true),
+      { channelGate },
+    )).resolves.toEqual({ outcome: 'deferred', reason: 'budget' })
+
+    expect(channelGate).toHaveBeenCalledTimes(1)
+    expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+  })
+
+  it('sends normally, gated once, when neither deadlineAt nor channelGate is supplied (existing live/replay callers)', async () => {
+    const { sendClaimedChatAnnouncement } = await import('@/lib/services/eventsub-redemption-delivery')
+
+    await expect(sendClaimedChatAnnouncement(
+      makeSummaryClaim() as never,
+      makeSummaryData() as never,
+      vi.fn().mockResolvedValue(true),
+    )).resolves.toEqual({ outcome: 'sent' })
+
+    expect(mocks.sendChatAnnouncement).toHaveBeenCalledTimes(1)
+  })
+})

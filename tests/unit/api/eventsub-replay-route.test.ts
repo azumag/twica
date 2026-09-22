@@ -26,6 +26,14 @@ const mocks = vi.hoisted(() => ({
   getRateLimitIdentifier: vi.fn(),
   reportError: vi.fn(),
   logErrorFromLogger: vi.fn().mockResolvedValue(undefined),
+  // Issue #1665: 新しいbounded配送経路は初期無効。postRedemptionNotifyは
+  // enqueueChatNotificationWakeup単体の戻り値(outcome)だけでフラグを判定する。
+  // 既定値('disabled')はbeforeEachで設定する（afterEachのvi.restoreAllMocks()が
+  // 毎回実装を消すため）。未mockのままだと、vi.importActualで読み込む実
+  // postRedemptionNotifyが@opennextjs/cloudflareの実import・
+  // getCloudflareContext呼び出しへ到達し、vi.useFakeTimers()下で解決しない
+  // Promiseを待ち続けてテストがtimeoutする。
+  enqueueChatNotificationWakeup: vi.fn(),
 }))
 
 vi.mock('@/lib/maintenance/eventsub-park', () => ({
@@ -47,6 +55,10 @@ vi.mock('@/lib/services/chat-notification-outbox', () => ({
 
 vi.mock('@/lib/services/chat-notification-congestion', () => ({
   resolveChatNotificationDeliveryMode: mocks.resolveChatNotificationDeliveryMode,
+}))
+
+vi.mock('@/lib/services/chat-notification-dispatch', () => ({
+  enqueueChatNotificationWakeup: mocks.enqueueChatNotificationWakeup,
 }))
 
 vi.mock('@/lib/overlay-realtime/publisher', () => ({
@@ -217,6 +229,13 @@ describe('POST /api/admin/eventsub-replay', () => {
     mocks.resolveChatNotificationDeliveryMode.mockReset()
     mocks.resolveChatNotificationDeliveryMode.mockImplementation(async (claim) => claim.deliveryMode)
     mocks.reportError.mockResolvedValue(undefined)
+    // afterEachのvi.restoreAllMocks()が前testの実装を毎回消すため、
+    // 他のmockと同じくbeforeEachで明示的に既定値を再設定する
+    // （再設定を忘れるとdispatchResult.outcomeがundefinedになり、
+    // 'disabled'との不一致でpostRedemptionNotifyが既存の同期経路へ
+    // 一切進まなくなる）。
+    mocks.enqueueChatNotificationWakeup.mockReset()
+    mocks.enqueueChatNotificationWakeup.mockResolvedValue({ outcome: 'disabled' })
   })
 
   afterEach(() => {

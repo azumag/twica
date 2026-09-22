@@ -387,8 +387,45 @@ export async function deadLetterChatNotification(
 }
 
 /**
+ * attempt_count（claim済みでインクリメント後の値）から指数的backoffの遅延を
+ * 求める。retryChatNotification/retryChatNotificationForBoundedDeliveryで共有し、
+ * chat-notification-delivery.tsがDBの実際のnext_attempt_atを読み直さずに
+ * 次回wake-upのおおよその予定時刻を見積もる用途にも使う（正本は常にDB側の
+ * next_attempt_atであり、この見積もりがずれてもclaim時のnext_attempt_at<=now()
+ * 判定がfail-closedに保護する）。
+ */
+export function estimateChatOutboxRetryDelayMs(attemptCount: number): number {
+  const delayIndex = Math.min(
+    attemptCount - 1,
+    CHAT_OUTBOX_RETRY_DELAYS_MS.length - 1,
+  )
+  return CHAT_OUTBOX_RETRY_DELAYS_MS[Math.max(0, delayIndex)]
+}
+
+/**
  * 一時障害を指数的backoffで再予定する。claim時にattempt_countは増えているため、
  * 5回目の失敗はpendingへ戻さずその場でDLQ化する。
+ *
+ * 既知の残課題（Issue #1665 ロールアウトStep 3で解消する前提）:
+ * この関数はpending_kindに触れない（列名を直接埋め込むと、後述の
+ * pre-migration deploy中に「実障害からの通常retry」という日常的な処理が
+ * 列不存在エラーになってしまうため、意図的にこの列を避けている。
+ * claimChatNotificationForBoundedDeliveryコメント参照）。
+ * この関数は現状、20分周期cron relay（eventsub-replay route経由の
+ * claimDueChatNotifications）から無条件に呼ばれ続ける。専用Queue Worker配備後、
+ * pending_kind='continuation'（正常な予算切れの続き）のまま残っている行を
+ * このcron relayが先に拾って実障害でretryすると、pending_kindが
+ * 'continuation'のまま更新されず、次のclaimChatNotificationForBoundedDeliveryが
+ * それを正常な継続と誤認してattempt_countを消費し損ねる
+ * （実障害の有限上限をすり抜ける経路になり得る）。
+ * 本PRが実際にdeployする範囲では専用Worker自体が存在せずQueueへのenqueueも
+ * 無効なため、pending_kind='continuation'な行は生成され得ずこの経路は
+ * 到達しない。Issue #1665 導入順序 Step 3（「live/relayの全配送入口を共通
+ * dispatcherへ接続し、旧新の二重ownerを遮断してから」）で、eventsub-replay
+ * route側のchat outbox処理もbounded delivery系関数へ統合し、この関数
+ * （とclaimDueChatNotifications/claimChatNotificationBatch）をchat outbox用途から
+ * 退役させること。それまでは新経路のフラグを有効化する運用手順が、
+ * このcron relayとの二重ownerを事前に遮断することに依存する。
  */
 export async function retryChatNotification(
   claim: Pick<ClaimedChatNotification, 'id' | 'leaseId' | 'attemptCount'>,
@@ -398,11 +435,7 @@ export async function retryChatNotification(
     return await deadLetterChatNotification(claim, reason) ? 'dead' : 'lost-lease'
   }
 
-  const delayIndex = Math.min(
-    claim.attemptCount - 1,
-    CHAT_OUTBOX_RETRY_DELAYS_MS.length - 1,
-  )
-  const delayMs = CHAT_OUTBOX_RETRY_DELAYS_MS[Math.max(0, delayIndex)]
+  const delayMs = estimateChatOutboxRetryDelayMs(claim.attemptCount)
   const { sql } = await getDb()
   const rows = await sql<{ id: string }[]>`
     update chat_notification_outbox
@@ -418,4 +451,217 @@ export async function retryChatNotification(
     returning id
   `
   return rows.length === 1 ? 'pending' : 'lost-lease'
+}
+
+// =============================================================================
+// Issue #1665: bounded delivery（専用Queue + 送信位置からの再開）専用の
+// claim/release/retry。
+//
+// 上のclaimChatNotificationBatch/claimDueChatNotifications/retryChatNotification
+// は意図的に変更しない: pending_kind/wake_reserved_until はこのmigration
+// （20260922100000）で追加した列であり、Workers Builds はコードdeployと
+// migrationが独立して進みうるため、常に呼ばれる既存claim経路がこれらの列名を
+// SQL文に埋め込むと「アプリ先行deploy・DB未適用」時に列不存在エラーになる
+// （chat-notification-outbox.ts冒頭のclaimChatNotificationBatchコメント、
+// 20260912013000のRETURNING *設計と同じ理由）。
+//
+// 以下の新関数群は、新しいbounded配送経路（chat-notification-delivery.ts）
+// からのみ呼ばれる。この経路自体が初期無効（フィーチャーフラグ）であり、
+// 有効化はロールアウト手順上必ずmigration適用後に行われるため、新関数が
+// pending_kind/wake_reserved_until を直接名指ししても pre-migration deploy を
+// 壊さない。
+// =============================================================================
+
+/**
+ * bounded配送経路専用のclaim。batch_idで1件だけ、continuationとretry/初回を
+ * 区別してattempt_countを増減する。
+ *
+ * pending_kind='continuation'（予算内に完走できず正常に途中終了した続き）を
+ * pending状態から再claimする場合だけ、attempt_countを増やさない。lease失効後の
+ * processing行の回収（クラッシュ回収）は、continuationかどうかに関係なく通常の
+ * 失敗試行として扱い、無限再試行へ化けないようattempt_countを増やす。
+ * SET句のCASE式はUPDATE前（更新前）の行の値を参照するPostgreSQLの仕様に
+ * 依拠しており、他の列への代入順序には依存しない。
+ *
+ * WHERE句の`attempt_count < MAX`はcontinuation行には課さない
+ * （2026-09-22 azumagレビュー指摘の回帰修正）。continuationはattempt_countを
+ * 消費しないため、過去の一時障害で既にattempt_count = MAXへ達していても
+ * 正常な続きとしてclaimできなければならない。この上限を無条件のANDにすると、
+ * 「一時障害で試行上限に達した直後に、同じ行が予算切れでcontinuationへ入る」
+ * という正当な経路で行が二度とclaimされずpendingのまま永久に取り残される
+ * （dead化もされない: deadLetterはclaim済みの行にしか作用しないため）。
+ * 一方、lease失効processing行（クラッシュ回収=実障害側）の上限は緩めない。
+ *
+ * 既知の残課題: この判定は「pending_kind='continuation'であること」だけを
+ * 信頼する。retryChatNotification（cron relay経由の旧経路、Step 3までは
+ * この関数と同じ行を無条件に触りうる）のdocコメント参照。詳細な回避条件と
+ * 解消計画はそちらに記載。
+ */
+export async function claimChatNotificationForBoundedDelivery(
+  batchId: string,
+): Promise<ClaimedChatNotification | null> {
+  const leaseId = crypto.randomUUID()
+  const { sql } = await getDb()
+  const rows = await sql<ClaimedRow[]>`
+    update chat_notification_outbox
+    set status = 'processing',
+        lease_id = ${leaseId}::uuid,
+        lease_expires_at = now() + (${CHAT_OUTBOX_LEASE_SECONDS}::integer * interval '1 second'),
+        attempt_count = attempt_count + case
+          when status = 'pending' and pending_kind = 'continuation' then 0
+          else 1
+        end,
+        wake_reserved_until = null,
+        updated_at = now()
+    where batch_id = ${batchId}
+      and (
+        (status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())
+        or (
+          attempt_count < ${CHAT_OUTBOX_MAX_ATTEMPTS}::integer
+          and (
+            (status = 'pending' and next_attempt_at <= now())
+            or (status = 'processing' and lease_expires_at <= now())
+          )
+        )
+      )
+    returning *
+  `
+  return rows[0] ? toClaimed(rows[0]) : null
+}
+
+/**
+ * 予算内に完走できなかったが失敗ではない正常な途中終了。cursor/lease以外の
+ * delivery_cursor自体は呼び出し前にadvanceChatNotificationDeliveryCursorで
+ * 既に保存済みである前提。ここではstatusをpendingへ戻し、次のclaimが
+ * attempt_countを消費しないよう pending_kind='continuation' を記録する。
+ * last_error/attempt_countには触れない（正常系であり障害ログではないため）。
+ */
+export async function releaseChatNotificationForContinuation(
+  claim: Pick<ClaimedChatNotification, 'id' | 'leaseId'>,
+  nextAttemptAt: Date,
+): Promise<boolean> {
+  const { sql } = await getDb()
+  const rows = await sql<{ id: string }[]>`
+    update chat_notification_outbox
+    set status = 'pending',
+        pending_kind = 'continuation',
+        next_attempt_at = ${nextAttemptAt.toISOString()}::timestamptz,
+        lease_id = null,
+        lease_expires_at = null,
+        wake_reserved_until = null,
+        updated_at = now()
+    where id = ${claim.id}::uuid
+      and status = 'processing'
+      and lease_id = ${claim.leaseId}::uuid
+    returning id
+  `
+  return rows.length === 1
+}
+
+/**
+ * bounded配送経路専用のretry。ロジックはretryChatNotificationと同じ指数的
+ * backoffだが、pending_kind='retry'を明示的に書き込む点だけが異なる。
+ *
+ * これが必須である理由: このUPDATEがpending_kindを書かないと、直前に
+ * continuationとしてpendingへ戻った行（pending_kind='continuation'）が
+ * 一時障害で失敗した場合、値が'continuation'のまま残ってしまう。次回claimの
+ * CASE式はpending_kindの値だけを見るため、実際には一時障害からのretryなのに
+ * attempt_countを消費せず無限に再試行できてしまう
+ * （「実障害の有限上限は維持する」という要件への回帰）。
+ */
+export async function retryChatNotificationForBoundedDelivery(
+  claim: Pick<ClaimedChatNotification, 'id' | 'leaseId' | 'attemptCount'>,
+  reason: string,
+): Promise<'pending' | 'dead' | 'lost-lease'> {
+  if (claim.attemptCount >= CHAT_OUTBOX_MAX_ATTEMPTS) {
+    return await deadLetterChatNotification(claim, reason) ? 'dead' : 'lost-lease'
+  }
+
+  const delayMs = estimateChatOutboxRetryDelayMs(claim.attemptCount)
+  const { sql } = await getDb()
+  const rows = await sql<{ id: string }[]>`
+    update chat_notification_outbox
+    set status = 'pending',
+        pending_kind = 'retry',
+        next_attempt_at = now() + (${delayMs}::integer * interval '1 millisecond'),
+        lease_id = null,
+        lease_expires_at = null,
+        wake_reserved_until = null,
+        last_error = left(${reason}::text, 2000),
+        updated_at = now()
+    where id = ${claim.id}::uuid
+      and status = 'processing'
+      and lease_id = ${claim.leaseId}::uuid
+    returning id
+  `
+  return rows.length === 1 ? 'pending' : 'lost-lease'
+}
+
+export interface ChatNotificationWakeCandidate {
+  id: string
+  batchId: string
+}
+
+/**
+ * 回収sweeper（dispatch-due）専用。期限到来済み・未予約の行を原子的に
+ * 予約するだけで、claim（lease取得・attempt_count更新）は一切行わない。
+ * 実際の配送は、この予約結果のbatchIdを積んだQueue wake-upがconsumeされた
+ * 時点でclaimChatNotificationForBoundedDeliveryを呼ぶ別経路が担う。
+ *
+ * 対象は次の2種類（claimChatNotificationForBoundedDelivery/
+ * claimDueChatNotificationsと同じ「期限到来」の定義）:
+ * - status='pending' and next_attempt_at<=now(): 通常の初回/retry/continuation。
+ * - status='processing' and lease_expires_at<=now(): Queue Worker・内部endpoint
+ *   呼び出しがclaim後に応答なく停止した（consumer停止・HTTPタイムアウト等）
+ *   クラッシュ回収。pendingだけを対象にすると、この場合に起票済みのwake-up
+ *   メッセージが無くなった後、この専用sweepでは永久に再起床できず、既存の
+ *   20分周期cron relay（claimDueChatNotifications経由）にしか拾われない
+ *   （Issue #1665の「consumer停止」回収要件に対する回帰）。
+ * wake_reserved_untilはprocessing行にも同じ意味で書く: 実際のstatus遷移は
+ * 変えず、単に「この行への次のwake-up起票は予約済み」という重複防止の印。
+ * 次にclaimChatNotificationForBoundedDeliveryが呼ばれた時点でwake_reserved_until
+ * はnullへ戻る。
+ *
+ * attempt_count上限はstatus='pending' and pending_kind='continuation'の行には
+ * 課さない（claimChatNotificationForBoundedDeliveryと同じ回帰修正、
+ * 2026-09-22 azumagレビュー指摘）。ここで対象外にすると、claim可能でも
+ * sweepがwake-upを起票できず同じ行が回収されない状態になる。
+ *
+ * FOR UPDATE SKIP LOCKEDにより、同時に複数のsweep呼び出しが動いても同じ行を
+ * 重複予約しない。予約後にenqueueが失敗しても、reservationSecondsで自然に
+ * 期限切れて次回sweepが再度拾える（明示的なロールバックは不要）。
+ */
+export async function reserveDueChatNotificationOutboxForWake(
+  limit: number,
+  reservationSeconds: number,
+): Promise<ChatNotificationWakeCandidate[]> {
+  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100))
+  const safeReservationSeconds = Math.max(1, Math.trunc(reservationSeconds))
+  const { sql } = await getDb()
+  const rows = await sql<Array<{ id: string; batch_id: string }>>`
+    with candidates as (
+      select id
+      from chat_notification_outbox
+      where (wake_reserved_until is null or wake_reserved_until <= now())
+        and (
+          (status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())
+          or (
+            attempt_count < ${CHAT_OUTBOX_MAX_ATTEMPTS}::integer
+            and (
+              (status = 'pending' and next_attempt_at <= now())
+              or (status = 'processing' and lease_expires_at <= now())
+            )
+          )
+        )
+      order by next_attempt_at asc, created_at asc
+      for update skip locked
+      limit ${safeLimit}::integer
+    )
+    update chat_notification_outbox as outbox
+    set wake_reserved_until = now() + (${safeReservationSeconds}::integer * interval '1 second')
+    from candidates
+    where outbox.id = candidates.id
+    returning outbox.id, outbox.batch_id
+  `
+  return rows.map((row) => ({ id: row.id, batchId: row.batch_id }))
 }
