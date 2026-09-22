@@ -14,7 +14,7 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:all": "vitest run",
-    "test:unit:ui": "vitest --ui",
+    "test:unit:ui": "vitest --ui tests/unit",
     "test:cleanup": "pkill -9 -f vitest || true",
     "test:agent": "npm run test:cleanup && vitest run --no-watch --no-file-parallelism --pool=forks --poolOptions.forks.singleFork=true --bail 1 && npm run test:cleanup",
     "workers:build": "bash scripts/cloudflare-workers-build.sh",
