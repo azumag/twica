@@ -156,4 +156,115 @@ describe('GachaHistoryTable hydration mismatch (Issue #776 regression)', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
     expect(fetchSpy.mock.calls[1]?.[0]).toContain('userId=123456789')
   })
+
+  it('keeps loading owned by the latest user detail request after the previous request aborts', async () => {
+    let resolveSecondDetail: ((response: Response) => void) | undefined
+    let resolveFirstAbort: (() => void) | undefined
+    const firstAbort = new Promise<void>((resolve) => {
+      resolveFirstAbort = resolve
+    })
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.includes('view=users')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          users: [
+            {
+              userTwitchId: 'user-a',
+              username: 'alice',
+              drawCount: 1,
+              uniqueCards: 1,
+              uniqueCardIds: ['card-a'],
+              lastDrawAt: '2026-03-01T00:00:00Z',
+            },
+            {
+              userTwitchId: 'user-b',
+              username: 'bob',
+              drawCount: 1,
+              uniqueCards: 1,
+              uniqueCardIds: ['card-b'],
+              lastDrawAt: '2026-03-02T00:00:00Z',
+            },
+          ],
+          pagination: { page: 1, perPage: 20, total: 2, totalPages: 1 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      }
+
+      if (url.includes('userId=user-a')) {
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          if (!signal) {
+            reject(new Error('user detail request must carry an abort signal'))
+            return
+          }
+          signal.addEventListener('abort', () => {
+            resolveFirstAbort?.()
+            reject(new DOMException('Aborted', 'AbortError'))
+          }, { once: true })
+        })
+      }
+
+      if (url.includes('userId=user-b')) {
+        return new Promise<Response>((resolve) => {
+          resolveSecondDetail = resolve
+        })
+      }
+
+      return Promise.reject(new Error(`unexpected fetch: ${url}`))
+    })
+
+    render(
+      <NextIntlClientProvider locale="ja" messages={jaMessages}>
+        <GachaHistoryTable
+          initialHistory={[]}
+          initialPagination={{ page: 1, perPage: 20, total: 0, totalPages: 0 }}
+          isStreamer
+          cards={[
+            { id: 'card-a', name: 'Aliceカード' },
+            { id: 'card-b', name: 'Bobカード' },
+          ]}
+          totalActiveCards={2}
+        />
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: jaMessages.gachaHistoryPage.tabs.users }))
+    await screen.findByRole('button', { name: /alice/ })
+    await screen.findByRole('button', { name: /bob/ })
+
+    fireEvent.click(screen.getByRole('button', { name: /alice/ }))
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    fireEvent.click(screen.getByRole('button', { name: /bob/ }))
+
+    // Wait until request A has actually rejected due to B aborting it and React
+    // has flushed A's catch/finally. The stale finally must not clear B's spinner.
+    await act(async () => {
+      await firstAbort
+      await Promise.resolve()
+    })
+    expect(document.querySelector('.fixed .opacity-50')).not.toBeNull()
+
+    await act(async () => {
+      resolveSecondDetail?.(new Response(JSON.stringify({
+        history: [{
+          id: 'history-b',
+          redeemed_at: '2026-03-02T00:00:00Z',
+          cards: {
+            id: 'card-b',
+            name: 'Bobカード',
+            image_url: null,
+            image_padding_color: null,
+            rarity: 'common',
+          },
+        }],
+        pagination: { page: 1, perPage: 20, total: 1, totalPages: 1 },
+        completions: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      await Promise.resolve()
+    })
+
+    await screen.findByText('Bobカード')
+    await waitFor(() => expect(document.querySelector('.fixed .opacity-50')).toBeNull())
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+  })
 })

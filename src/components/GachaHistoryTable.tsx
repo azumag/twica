@@ -202,7 +202,13 @@ export default function GachaHistoryTable({
       if (e instanceof DOMException && e.name === "AbortError") return;
       throw e;
     } finally {
-      setPanelLoading(false);
+      // The loading flag is shared by successive detail requests. An aborted
+      // request may settle after its replacement has already set loading=true,
+      // so only the controller that still owns the ref may clear that state.
+      if (panelAbortRef.current === controller) {
+        panelAbortRef.current = null;
+        setPanelLoading(false);
+      }
     }
   }, []);
 
