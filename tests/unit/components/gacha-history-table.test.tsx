@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, type ComponentProps } from 'react'
 import { renderToString } from 'react-dom/server'
 import { hydrateRoot } from 'react-dom/client'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import GachaHistoryTable from '@/components/GachaHistoryTable'
 import jaMessages from '../../../messages/ja.json'
@@ -103,7 +104,56 @@ describe('GachaHistoryTable hydration mismatch (Issue #776 regression)', () => {
     // (Fableレビュー指摘)。
     const occurrences = source.match(/suppressHydrationWarning>/g) ?? []
     // users一覧の最終ドロー日 (toLocaleDateString) + 履歴一覧のredeemed_at
-    // (toLocaleString) + ユーザー詳細パネル内redeemed_at (toLocaleString) の3箇所
-    expect(occurrences.length).toBeGreaterThanOrEqual(3)
+    // (toLocaleString) + ユーザー詳細パネル内redeemed_at (toLocaleString) の3箇所以上。
+    // #873 のコンプリート日時にも同じローカルTZ方針を適用している。
+    expect(occurrences.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('renders overall and pack completion history in the streamer user detail panel', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        users: [{
+          userTwitchId: '123456789',
+          username: 'alice',
+          drawCount: 2,
+          uniqueCards: 1,
+          uniqueCardIds: ['card-1'],
+          lastDrawAt: '2026-03-03T00:00:00Z',
+        }],
+        pagination: { page: 1, perPage: 20, total: 1, totalPages: 1 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        history: [],
+        pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
+        completions: [
+          { total_cards: 8, completed_at: '2026-03-01T00:00:00Z', collection_name: null },
+          { total_cards: 3, completed_at: '2026-03-02T00:00:00Z', collection_name: '第一弾' },
+          { total_cards: 2, completed_at: '2026-03-03T00:00:00Z', collection_name: '__default__' },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    render(
+      <NextIntlClientProvider locale="ja" messages={jaMessages}>
+        <GachaHistoryTable
+          initialHistory={[]}
+          initialPagination={{ page: 1, perPage: 20, total: 0, totalPages: 0 }}
+          isStreamer
+          cards={[{ id: 'card-1', name: 'カード1' }]}
+          totalActiveCards={8}
+        />
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: jaMessages.gachaHistoryPage.tabs.users }))
+    await screen.findByRole('button', { name: /alice/ })
+    fireEvent.click(screen.getByRole('button', { name: /alice/ }))
+
+    await screen.findByText('第一弾')
+    expect(screen.getByText(jaMessages.channelPointSettings.collections.defaultOnlyName)).toBeTruthy()
+    expect(screen.getByText(/全8種時にコンプリート達成/)).toBeTruthy()
+    expect(screen.getByText(/全3種時にコンプリート達成/)).toBeTruthy()
+    expect(screen.getByText(/全2種時にコンプリート達成/)).toBeTruthy()
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    expect(fetchSpy.mock.calls[1]?.[0]).toContain('userId=123456789')
   })
 })

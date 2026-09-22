@@ -6,10 +6,14 @@ import { useTranslations, useLocale } from "next-intl";
 import { formatRarityLabel, getRarityColorClass } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
+import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
 import Pagination from "@/components/Pagination";
 import GachaHistoryFilters from "@/components/GachaHistoryFilters";
 import type { GachaHistory, Card } from "@/types/database";
-import type { GachaUserEntry } from "@/lib/dashboard-data";
+import type {
+  CollectionCompletionRecord,
+  GachaUserEntry,
+} from "@/lib/dashboard-data";
 
 /**
  * Gacha history entry with joined card data
@@ -59,6 +63,10 @@ export default function GachaHistoryTable({
 }: GachaHistoryTableProps) {
   const t = useTranslations("gachaHistoryPage");
   const tRarity = useTranslations("rarity");
+  // #873: completion history reuses the same localized wording already used on
+  // collection pages instead of introducing a second translation vocabulary.
+  const tCollectionProgress = useTranslations("collectionProgress");
+  const tChannelPointSettings = useTranslations("channelPointSettings");
   const locale = useLocale();
 
   // Current view mode for streamers
@@ -84,6 +92,7 @@ export default function GachaHistoryTable({
   // User detail panel state / ユーザー詳細パネルの状態
   const [selectedUser, setSelectedUser] = useState<GachaUserEntry | null>(null);
   const [panelHistory, setPanelHistory] = useState<GachaHistoryEntry[]>([]);
+  const [panelCompletions, setPanelCompletions] = useState<CollectionCompletionRecord[]>([]);
   const [panelPagination, setPanelPagination] = useState<PaginationData>({
     page: 1, perPage: 20, total: 0, totalPages: 0,
   });
@@ -183,6 +192,10 @@ export default function GachaHistoryTable({
         const data = await res.json();
         setPanelHistory(data.history);
         setPanelPagination(data.pagination);
+        // The API adds completions only to a validated streamer user-detail
+        // response. `?? []` keeps the component backward-compatible with older
+        // preview deployments during a rolling deploy (#873).
+        setPanelCompletions(data.completions ?? []);
       }
     } catch (e) {
       // Ignore abort errors from cancelled requests
@@ -227,6 +240,7 @@ export default function GachaHistoryTable({
     // Clear previous panel data to prevent stale content display
     // 前回のパネルデータをクリアして古いデータの表示を防止
     setPanelHistory([]);
+    setPanelCompletions([]);
     setPanelPagination({ page: 1, perPage: 20, total: 0, totalPages: 0 });
     fetchUserHistory(user.userTwitchId, 1);
   };
@@ -240,6 +254,7 @@ export default function GachaHistoryTable({
   const handleClosePanel = useCallback(() => {
     setSelectedUser(null);
     setPanelHistory([]);
+    setPanelCompletions([]);
     setShowUniqueCardDetails(false);
   }, []);
 
@@ -271,6 +286,13 @@ export default function GachaHistoryTable({
   const missingUniqueCards = (cards || []).filter(
     (card) => !selectedUserUniqueCardIdSet.has(card.id)
   );
+
+  const formatCompletionDateTime = (value: string): string => {
+    const completedAt = new Date(value);
+    return Number.isNaN(completedAt.getTime())
+      ? value
+      : completedAt.toLocaleString(locale);
+  };
 
   return (
     <div>
@@ -516,6 +538,43 @@ export default function GachaHistoryTable({
                     )}
                   </div>
                 </div>
+              )}
+
+              {/* #873: completion records are scoped by the same validated userId +
+                  streamerId as the detail history. Existing shared ja/en copy is reused
+                  so collection pages and history describe the same event consistently. */}
+              {panelCompletions.length > 0 && (
+                <section className="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
+                  <h4 className="mb-2 text-sm font-semibold text-emerald-300">
+                    {tCollectionProgress("complete")}
+                  </h4>
+                  <div className="space-y-2">
+                    {panelCompletions.map((record, index) => {
+                      const collectionLabel =
+                        record.collection_name === DEFAULT_PACK_SENTINEL
+                          ? tChannelPointSettings("collections.defaultOnlyName")
+                          : record.collection_name;
+                      return (
+                        <div
+                          key={`${record.completed_at}-${record.total_cards}-${record.collection_name ?? "overall"}-${index}`}
+                          className="rounded-md bg-gray-900/70 px-3 py-2"
+                        >
+                          {collectionLabel && (
+                            <p className="mb-0.5 text-xs font-medium text-emerald-200">
+                              {collectionLabel}
+                            </p>
+                          )}
+                          <p className="text-xs text-gray-300" suppressHydrationWarning>
+                            {tCollectionProgress("pastCompleteWithDateTime", {
+                              totalCards: record.total_cards,
+                              dateTime: formatCompletionDateTime(record.completed_at),
+                            })}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
               )}
 
               <div className="divide-y divide-gray-700 rounded-lg bg-gray-900">
