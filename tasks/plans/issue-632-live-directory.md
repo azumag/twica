@@ -37,7 +37,7 @@
 - ライブ状態はDBに保存しない（キャッシュのみ）。カラム追加はオプトインフラグ2つだけ。
 - ソートは取得済みリストのクライアントサイドソート（対象は「現在ライブ中のオプトイン配信者」なので件数は小さい。サーバ側ソート/ページネーションはYAGNI）。
 
-## DB設計（migration `00074_add_live_directory_settings.sql`）
+## DB設計（migration `20260811000000_add_live_directory_settings.sql`）
 
 ```sql
 ALTER TABLE streamers
@@ -149,7 +149,7 @@ interface LiveDirectoryEntry {
 
 ```text
 #A UI/UXデザイン設計          #B DB/設定オプトイン
-   （/live + 設定トグルの        （migration 00074 一式
+   （/live + 設定トグルの        （20260811000000_add_live_directory_settings.sql
      UX仕様。Bと並行可）          = カラム + RPC + settings API
      │                            + LiveDirectorySettings トグル）
      │                               │
