@@ -17,7 +17,8 @@ import {
  * 終了し、同一ユーザーの別 repository / 別 worktree の Vitest を巻き込まないことを、
  * 実プロセス（detached で作った独立グループ）を使って回帰確認する。
  * プロセスグループへの kill は POSIX 前提のため Windows ではスキップする。
- * `@vitest-environment node` は指定しない: 共通 setup（tests/setup.ts）が global.navigator を
+ * テスト環境を node へ切り替える docblock 指定は付けない（Vitest はコメント中の指定文字列も
+ * 拾うため、ここでも正確な綴りは書かない）: 共通 setup（tests/setup.ts）が global.navigator を
  * 前提にしており、navigator を持たない Node 20（CI の実行バージョン）では setup で落ちるため。
  * child_process / process.kill は既定の happy-dom 環境でもそのまま使える。
  */
