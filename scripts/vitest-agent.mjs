@@ -13,12 +13,13 @@
  *      新セッション）のリーダーにする。forks プールのワーカーも同じグループに属するため、
  *      `process.kill(-pgid, sig)` でこの実行が作ったプロセスだけをまとめて扱える。
  *      コマンド文字列マッチ（pkill -f）は採用しない。Vitest は process.title を
- *      `vitest` / `vitest 1` に書き換えるため ps 上にパスが残らず、worktree を区別できないことを
+ *      `node (vitest)` / `node (vitest N)` に書き換えるため ps 上にパスが残らず、worktree を区別できないことを
  *      実測で確認している。pgid は OS が割り当てた「この実行固有」の識別子なので誤爆しない。
  *   2. 起動した pgid と、そのリーダーの起動時刻を この worktree の `node_modules/.cache/` 配下に
  *      記録する。ラッパー自身が SIGKILL 等で異常終了して記録が残った場合だけ、次回の開始前
  *      （または `--cleanup`）にそのグループを終了する。記録したラッパーが生きている間は
  *      「実行中」とみなして触らない（同じ worktree で並行実行した test:agent を巻き込まない）。
+ *      既知の制限: 記録は node_modules 配下なので `npm ci` をまたいだ残留は回収できない。
  *   3. PID 再利用対策: 終了させる前に、pid == pgid のプロセスの起動時刻が記録と一致するかを
  *      `ps -o lstart=` で確認する。リーダーが既に居ないのにグループが生きている場合は、POSIX が
  *      「同じ ID のプロセスグループが存在する間はその PID を再利用しない」ことを保証するため、
@@ -36,7 +37,15 @@
  */
 
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { createRequire } from 'node:module'
 import { constants as osConstants } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -69,6 +78,16 @@ function exists(pid) {
  * `Z` で始まるものを除外して判定する。psOutput はテスト用の差し替え口。
  */
 export function hasLiveMembers(pgid, psOutput = readProcessGroups()) {
+  // ps が使えない環境（procps の無い slim コンテナ等）では kill(-pgid, 0) に縮退する。
+  // ゾンビを生存扱いする分だけ終了待ちが長くなり得るが、テスト結果や終了コードは失わない。
+  if (psOutput === null) {
+    try {
+      process.kill(-pgid, 0)
+      return true
+    } catch (error) {
+      return error.code === 'EPERM'
+    }
+  }
   return psOutput.split('\n').some((line) => {
     const [group, stat] = line.trim().split(/\s+/)
     return Number(group) === pgid && stat !== undefined && !stat.startsWith('Z')
@@ -76,15 +95,23 @@ export function hasLiveMembers(pgid, psOutput = readProcessGroups()) {
 }
 
 function readProcessGroups() {
-  return execFileSync('ps', ['-A', '-o', 'pgid=,stat='], { encoding: 'utf8' })
+  try {
+    return execFileSync('ps', ['-A', '-o', 'pgid=,stat='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } catch {
+    return null
+  }
 }
 
-/** プロセスの起動時刻（秒精度の文字列）。存在しなければ null。ロケール差を避けるため LC_ALL=C。 */
+/** プロセスの起動時刻（秒精度の文字列）。存在しなければ null。
+ * 記録時と照合時で表記が揺れないよう、ロケールは LC_ALL=C、タイムゾーンは TZ=UTC に固定する。 */
 export function readStartTime(pid) {
   try {
     const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf8',
-      env: { ...process.env, LC_ALL: 'C' },
+      env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
     return out === '' ? null : out
@@ -176,6 +203,27 @@ async function main(argv) {
   await cleanupStale({ stateDir })
   if (argv[0] === '--cleanup') return 0
 
+  // シグナルハンドラは spawn より前に登録する。Vitest は別セッションにいるため端末の Ctrl+C は
+  // 届かず、ハンドラ登録前（spawn 直後の ps / 記録書き込み中）にラッパーが既定動作で即死すると、
+  // 記録の無い孤児グループが残って次回の cleanup でも回収できない（レビューで実測済み）。
+  // pgid 確定前に届いたシグナルは保留し、確定直後に転送する。
+  // なお SIGKILL だけは捕捉できないため、spawn から記録書き込みまでの数十 ms に
+  // ラッパーが SIGKILL された場合の孤児は防げない（残余リスクとして許容）。
+  let pgid
+  const pending = []
+  const forward = (signal) => {
+    if (pgid === undefined) {
+      pending.push(signal)
+      return
+    }
+    try {
+      process.kill(-pgid, signal)
+    } catch {
+      // 既に終了済み
+    }
+  }
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, forward)
+
   // npx / .bin シムを経由せず node で直接起動し、pgid == この子プロセスの PID にする。
   const child = spawn(process.execPath, [vitestEntry, ...argv], {
     stdio: 'inherit',
@@ -190,24 +238,17 @@ async function main(argv) {
       }),
     )
   }
-  const pgid = child.pid
+  pgid = child.pid
   const recordFile = join(stateDir, `${pgid}.json`)
   mkdirSync(stateDir, { recursive: true })
+  // 並行する cleanup が書き込み途中の空ファイルを「壊れた記録」として消さないよう、
+  // 一時ファイルに書いてから rename で原子的に公開する（cleanup は *.json だけを読む）。
   writeFileSync(
-    recordFile,
+    `${recordFile}.tmp`,
     JSON.stringify({ pgid, wrapperPid: process.pid, startTime: readStartTime(pgid) }),
   )
-
-  // detached で端末のフォアグラウンドグループから外れるため、Ctrl+C 等はラッパーが受けて転送する。
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(signal, () => {
-      try {
-        process.kill(-pgid, signal)
-      } catch {
-        // 既に終了済み
-      }
-    })
-  }
+  renameSync(`${recordFile}.tmp`, recordFile)
+  for (const signal of pending.splice(0)) forward(signal)
 
   const exitCode = await new Promise((r) =>
     child.once('exit', (code, signal) =>

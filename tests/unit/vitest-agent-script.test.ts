@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { spawn, type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -22,9 +23,10 @@ const posix = process.platform !== 'win32'
 
 // 引数付きの常駐 node プロセスを独立したプロセスグループのリーダーとして起動する。
 // ignoreTerm=true のときは SIGTERM を無視し、段階的終了の SIGKILL 経路を検証する。
+// 子はハンドラ登録後に stdout へ ready を書くので、固定時間待ちに頼らず登録完了を待てる。
 function spawnGroup({ ignoreTerm = false } = {}): ChildProcess {
-  const code = `${ignoreTerm ? "process.on('SIGTERM', () => {});" : ''} setInterval(() => {}, 1000)`
-  return spawn(process.execPath, ['-e', code], { detached: true, stdio: 'ignore' })
+  const code = `${ignoreTerm ? "process.on('SIGTERM', () => {});" : ''} process.stdout.write('ready'); setInterval(() => {}, 1000)`
+  return spawn(process.execPath, ['-e', code], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
 }
 
 function groupAlive(pgid: number): boolean {
@@ -71,9 +73,10 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
     rmSync(stateDir, { recursive: true, force: true })
   })
 
-  function startGroup(options?: { ignoreTerm?: boolean }): number {
+  async function startGroup(options?: { ignoreTerm?: boolean }): Promise<number> {
     const child = spawnGroup(options)
     groups.push(child)
+    await once(child.stdout!, 'data')
     return child.pid!
   }
 
@@ -82,8 +85,8 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
   }
 
   it('ラッパーが死んだ記録済みグループだけを終了し、記録のない別 worktree 相当のグループは残す', async () => {
-    const leftover = startGroup()
-    const unrelated = startGroup() // 別 repository / 別 worktree の Vitest に相当（記録なし）
+    const leftover = await startGroup()
+    const unrelated = await startGroup() // 別 repository / 別 worktree の Vitest に相当（記録なし）
     record(leftover, { wrapperPid: await deadPid(), startTime: readStartTime(leftover) })
 
     const cleaned = await cleanupStale({ stateDir, log: () => {} })
@@ -95,7 +98,7 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
   })
 
   it('記録したラッパーが生存中（並行実行中の test:agent）なら触らず、記録も残す', async () => {
-    const running = startGroup()
+    const running = await startGroup()
     record(running, { wrapperPid: process.pid, startTime: readStartTime(running) })
 
     expect(await cleanupStale({ stateDir, log: () => {} })).toEqual([])
@@ -104,7 +107,7 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
   })
 
   it('リーダーの起動時刻が記録と異なる（PID 再利用）グループは終了せず、記録だけ捨てる', async () => {
-    const reused = startGroup()
+    const reused = await startGroup()
     record(reused, { wrapperPid: await deadPid(), startTime: 'Thu Jan  1 00:00:00 1970' })
 
     expect(isOwnedGroup({ pgid: reused, startTime: 'Thu Jan  1 00:00:00 1970' })).toBe(false)
@@ -122,15 +125,13 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
   })
 
   it('SIGTERM で終わるグループには SIGKILL を送らない', async () => {
-    const pgid = startGroup()
+    const pgid = await startGroup()
     expect(await terminateGroup(pgid, { graceMs: 2000, log: () => {} })).toEqual(['SIGTERM'])
     expect(await waitUntilDead(pgid)).toBe(true)
   })
 
   it('SIGTERM を無視するグループには猶予後にだけ SIGKILL を送る', async () => {
-    const pgid = startGroup({ ignoreTerm: true })
-    // SIGTERM ハンドラ登録前にシグナルが届かないよう、起動完了を待つ
-    await new Promise((r) => setTimeout(r, 300))
+    const pgid = await startGroup({ ignoreTerm: true })
     const logs: string[] = []
     expect(await terminateGroup(pgid, { graceMs: 300, log: (m: string) => logs.push(m) })).toEqual([
       'SIGTERM',
@@ -153,12 +154,18 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
     expect(hasLiveMembers(400, ps)).toBe(false)
   })
 
+  it('ps が使えない環境では kill(-pgid, 0) に縮退して判定する', async () => {
+    const pgid = await startGroup()
+    expect(hasLiveMembers(pgid, null)).toBe(true)
+    expect(hasLiveMembers(await deadPid(), null)).toBe(false)
+  })
+
   it('package.json の test:agent / test:cleanup は広域 pkill を使わずラッパー経由で実行する', () => {
     const { scripts } = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
       scripts: Record<string, string>
     }
-    expect(scripts['test:cleanup']).toBe('node scripts/vitest-agent.mjs --cleanup')
-    expect(scripts['test:agent']).toMatch(/^node scripts\/vitest-agent\.mjs run /)
+    expect(scripts['test:cleanup']).toMatch(/^node scripts\/vitest-agent\.mjs /)
+    expect(scripts['test:agent']).toMatch(/^node scripts\/vitest-agent\.mjs /)
     expect(Object.values(scripts).join('\n')).not.toMatch(/pkill/)
   })
 })
