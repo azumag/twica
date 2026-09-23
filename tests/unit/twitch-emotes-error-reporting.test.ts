@@ -16,11 +16,13 @@ vi.mock('@/lib/rate-limit', () => ({
 
 vi.mock('@/lib/twitch/token-manager', () => ({
   getTwitchAccessToken: vi.fn(),
+  isPermanentRefreshFailure: vi.fn(),
   twitchTokenErrorReportContext: vi.fn(),
 }))
 
 vi.mock('@/lib/error-handler', () => ({
   handleApiError: vi.fn(),
+  recordApiError: vi.fn(),
 }))
 
 describe('GET /api/twitch/emotes error reporting', () => {
@@ -29,6 +31,7 @@ describe('GET /api/twitch/emotes error reporting', () => {
 
     const { getSession, canUseStreamerFeatures } = await import('@/lib/session')
     const { checkRateLimit } = await import('@/lib/rate-limit')
+    const { isPermanentRefreshFailure } = await import('@/lib/twitch/token-manager')
 
     vi.mocked(getSession).mockResolvedValue({ twitchUserId: 'streamer-1' } as never)
     vi.mocked(canUseStreamerFeatures).mockReturnValue(true)
@@ -38,6 +41,7 @@ describe('GET /api/twitch/emotes error reporting', () => {
       remaining: 29,
       reset: Date.now() + 60_000,
     })
+    vi.mocked(isPermanentRefreshFailure).mockReturnValue(false)
   })
 
   it('token refresh失敗時の診断contextをhandleApiErrorへ渡す', async () => {
@@ -69,6 +73,41 @@ describe('GET /api/twitch/emotes error reporting', () => {
       'Twitch emotes fetch',
       reportContext
     )
+  })
+
+  it('恒久refresh失敗では診断を記録して401 requiresReauthを返す', async () => {
+    const tokenError = new Error('permanent refresh failed')
+    const reportContext = {
+      refreshStatus: 400,
+      refreshErrorKind: 'http',
+      refreshRetryable: false,
+    }
+
+    const {
+      getTwitchAccessToken,
+      isPermanentRefreshFailure,
+      twitchTokenErrorReportContext,
+    } = await import('@/lib/twitch/token-manager')
+    const { handleApiError, recordApiError } = await import('@/lib/error-handler')
+
+    vi.mocked(getTwitchAccessToken).mockRejectedValue(tokenError)
+    vi.mocked(isPermanentRefreshFailure).mockReturnValue(true)
+    vi.mocked(twitchTokenErrorReportContext).mockReturnValue(reportContext)
+    vi.mocked(recordApiError).mockResolvedValue(undefined)
+
+    const { GET } = await import('@/app/api/twitch/emotes/route')
+    const response = await GET(new Request('http://localhost:3000/api/twitch/emotes'))
+
+    expect(isPermanentRefreshFailure).toHaveBeenCalledWith(tokenError)
+    expect(twitchTokenErrorReportContext).toHaveBeenCalledWith(tokenError)
+    expect(recordApiError).toHaveBeenCalledWith(
+      tokenError,
+      'Twitch emotes fetch',
+      reportContext
+    )
+    expect(handleApiError).not.toHaveBeenCalled()
+    expect(response.status).toBe(401)
+    await expect(response.json()).resolves.toMatchObject({ requiresReauth: true })
   })
 
   it('診断contextがないrefresh失敗でもundefinedをhandleApiErrorへ渡す', async () => {
