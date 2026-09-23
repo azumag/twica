@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
-import { handleApiError } from "@/lib/error-handler";
+import { handleApiError, recordApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { getTwitchAccessToken, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
+import {
+  getTwitchAccessToken,
+  isPermanentRefreshFailure,
+  twitchTokenErrorReportContext,
+} from "@/lib/twitch/token-manager";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -116,6 +120,16 @@ export async function GET(request: Request) {
         { status: 401 }
       );
     }
+
+    if (isPermanentRefreshFailure(error)) {
+      const reportContext = twitchTokenErrorReportContext(error);
+      await recordApiError(error, "Twitch emotes fetch", reportContext);
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED, requiresReauth: true },
+        { status: 401 }
+      );
+    }
+
     // refresh診断の永続化・非二重報告契約は twitchTokenErrorReportContext のJSDocを参照。
     return handleApiError(error, "Twitch emotes fetch", twitchTokenErrorReportContext(error));
   }
