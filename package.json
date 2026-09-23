@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "npx wrangler dev",
-    "dev:next": "NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000} TURBOPACK=0 next dev",
+    "dev:next": "NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000} next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
