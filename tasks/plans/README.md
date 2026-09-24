@@ -14,6 +14,17 @@ DBとruntimeの接続方式については、[`docs/db-driver-migration.md`](../
 
 ## 現在進行中の個別override
 
+### #632 Live Directory
+
+#632 / #737 / #738 / #739 / #740 と `issue-632-live-directory.md` には、設計時点の Supabase service_role / direct PostgREST / RPC / Supabase Realtime をDB runtimeとして使う前提が残っています。これらは履歴として参照し、現在の PlanetScale PostgreSQL 固定runtimeへそのまま復活させません。
+
+- DB読み書き・集計は現行のDB helper / service境界へ再設計し、旧direct PostgREST、service_role DB runtime、`DB_DRIVER` 分岐を新規追加しません。
+- `supabase/migrations` は `docs/db-driver-migration.md` で定義されたmigration historyの入力として現在も扱うため、旧runtime前提と混同して機械的に削除・移動しません。
+- `last_seen` 更新、集計の冪等性、privacy / authorization境界、ランキング・統計の分離、性能目標と観測性などの機能要件は、現行runtimeへ再マップして維持します。
+- Realtime transportは現在のCloudflare / PlanetScale構成で別途設計し、旧Supabase Realtime案だけを根拠に自動復活させません。
+
+このoverrideは接続方式の読み替えだけを定義し、Live Directoryのproduct仕様やRealtime transport方式、Preview実経路QAの完了を決定しません。
+
 ### #642 統計ランキング
 
 #642 / #741 / #742 には設計時点の PostgREST / `DB_DRIVER` / dual-driver / Supabase role 前提が残っています。これらは履歴として参照し、現在の PlanetScale PostgreSQL 固定runtimeへそのまま復活させません。
