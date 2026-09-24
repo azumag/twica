@@ -39,7 +39,7 @@ DBとruntimeの接続方式については、[`docs/db-driver-migration.md`](../
 
 `issue-715-card-trading.md` には設計時点の Supabase / PostgREST / dual-driver 前提や、rate limit KV が未配線だった時点の記録が残っています。これらは履歴として参照し、現在のruntimeへそのまま復活させません。
 
-- DB基盤は #722 で現行 PlanetScale PostgreSQL migration / schema へ実装済みです。API・settings実装では #723 / #724 / #725 の最新Issue本文を現在の接続・retry境界として扱います。
+- DB基盤は #722 で現行 PlanetScale PostgreSQL へ実装済みで、migration正本は `db/planetscale/migrations/20260817100000_add_card_trading.sql` です。API・settings実装では #723 / #724 / #725 の最新Issue本文を現在の接続・retry境界として扱います。
 - `RATE_LIMIT_KV` のコード配線は #728 の lazy auto-init 方式で実装済みです。設計書に残る「未配線なので常にMemory」という前提は採用しません。一方、Workers KV の same-key write制限、eventual consistency、非原子的RMW、fail-openを踏まえた strict backend 方針と実環境観測は #728 の未完了条件です。
 - 成立通知は #729 の最新状態を正とし、旧Supabase Realtime案を復活させず、現行Cloudflare / PlanetScale transportから再設計します。
 
