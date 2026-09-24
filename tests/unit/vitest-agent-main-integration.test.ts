@@ -26,7 +26,10 @@ function createFixture(vitestSource: string): string {
   mkdirSync(join(root, 'scripts'), { recursive: true })
   mkdirSync(join(root, 'node_modules', 'vitest'), { recursive: true })
   copyFileSync(wrapperSource, join(root, 'scripts', 'vitest-agent.mjs'))
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'vitest-agent-fixture', private: true }))
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'vitest-agent-fixture', private: true }),
+  )
   writeFileSync(
     join(root, 'node_modules', 'vitest', 'package.json'),
     JSON.stringify({ name: 'vitest', version: '0.0.0', bin: { vitest: 'bin.mjs' } }),
@@ -59,7 +62,9 @@ function killRecordedGroups(root: string) {
     if (!name.endsWith('.json')) continue
     try {
       const { pgid } = JSON.parse(readFileSync(join(stateDir, name), 'utf8')) as { pgid?: number }
-      if (Number.isInteger(pgid) && pgid! > 1) process.kill(-pgid!, 'SIGKILL')
+      if (typeof pgid === 'number' && Number.isInteger(pgid) && pgid > 1) {
+        process.kill(-pgid, 'SIGKILL')
+      }
     } catch {
       // The fixture may already have exited or removed its state file.
     }
