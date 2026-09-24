@@ -91,10 +91,10 @@ describe.skipIf(!posix)('vitest-agent main integration (#1695)', () => {
     expect(readdirSync(join(root, 'node_modules', '.cache', 'twica-vitest-agent'))).toEqual([])
   })
 
-  it('ラッパーへの SIGTERM を fake Vitest へ転送し、その終了コードと記録削除を維持する', async () => {
+  it('ラッパーへの SIGINT を fake Vitest へ転送し、その終了コードと記録削除を維持する', async () => {
     const root = createFixture(`
 import { writeFileSync } from 'node:fs'
-process.on('SIGTERM', () => process.exit(42))
+process.on('SIGINT', () => process.exit(42))
 writeFileSync(process.argv[2], String(process.pid))
 setInterval(() => {}, 1000)
 `)
@@ -103,7 +103,7 @@ setInterval(() => {}, 1000)
     const exit = once(wrapper, 'exit')
 
     await waitForFile(readyFile)
-    expect(wrapper.kill('SIGTERM')).toBe(true)
+    expect(wrapper.kill('SIGINT')).toBe(true)
     const [code, signal] = (await exit) as [number | null, NodeJS.Signals | null]
 
     expect({ code, signal }).toEqual({ code: 42, signal: null })
