@@ -1,5 +1,30 @@
-import { vi } from 'vitest'
+import { afterEach, vi } from 'vitest'
+import { cleanup } from '@testing-library/react'
 import '@testing-library/jest-dom'
+
+// React Testing Library (RTL) の DOM クリーンアップを setupFiles で明示登録する。
+//
+// RTL は import 時の副作用として `afterEach(cleanup)` を自動登録するが、
+// node_modules の RTL は Vitest で外部化 (externalize) され Node のモジュール
+// キャッシュに載るため、同一ワーカープロセス内では最初にそれを import した
+// テストファイルでしか評価されない。`--poolOptions.forks.singleFork=true`
+// (npm run test:agent) で全ファイルが1プロセスに載ると、2ファイル目以降は
+// afterEach が登録されず、前のテストで render したツリーが document.body に
+// 残って後続テストの `screen.queryByRole(...)` 等に混入する。実例:
+// channel-points-access-section.test.tsx の Affiliate ケースが、直前のテストで
+// 描画された「有効化ボタン」を拾って単独実行時のみ成功していた。
+//
+// setupFiles は `isolate` 下でテストファイルごとに再評価されるため、ここで登録すれば
+// プール設定に依存せず毎ファイルで cleanup が走る（本対応の範囲は cleanup のみ。RTL が
+// 同様に自動登録する IS_REACT_ACT_ENVIRONMENT の設定も2ファイル目以降で欠けるが、
+// act 警告の有無が変わるだけでテスト結果には影響しない）。RTL 公式ドキュメントも
+// 自動 cleanup が効かない環境では cleanup を手動で呼ぶよう案内している
+// (https://testing-library.com/docs/react-testing-library/api#cleanup)。
+// cleanup は描画済みコンテナの集合を空にするだけの冪等処理なので、自動登録が
+// 効いている場合に二重実行されても無害。
+afterEach(() => {
+  cleanup()
+})
 
 // Setup environment variables
 process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000'
