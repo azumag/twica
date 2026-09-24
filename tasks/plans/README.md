@@ -23,3 +23,13 @@ DBとruntimeの接続方式については、[`docs/db-driver-migration.md`](../
 - 成立通知は #729 の最新状態を正とし、旧Supabase Realtime案を復活させず、現行Cloudflare / PlanetScale transportから再設計します。
 
 カードトレード設計にある原子性、冪等性、所有権、履歴保持、設定ゲート等の機能要件まで無効化するものではありません。
+
+### #720 コンプ報酬
+
+#720 / #731 には実装前の Supabase migration / PostgREST / dual-driver 前提が設計履歴として残っています。現在のコンプ報酬DB実装の正本は `db/planetscale/migrations/20260907000000_add_pack_completion_rewards.sql` と現行 PlanetScale / Hyperdrive のAPI・service実装です。旧接続方式を新しいruntime実装へ復活させません。
+
+- #731 / #733 / #734 はコード実装済みで、現在は対象Preview DB、375px実画面、設定→取得→reload等の外部実経路ゲートを追跡しています。同じDB/API/UIを別PRで再実装しません。
+- 実装内容を確認するときは、現行migration・`src/lib/services/pack-completion-reward.ts`・`src/app/api/streamer/pack-completion-rewards/route.ts` と対応testを正とします。
+- 冪等付与、報酬カードをinactiveに保つ不変条件、アクティブ化とのTOCTOU防止、未コンプ時のカード情報秘匿、migration未適用windowで既存画面を壊さない契約は引き続き維持します。
+
+Preview実経路の未取得項目をローカル/CI結果で完了扱いにせず、実環境証跡を捏造しません。
