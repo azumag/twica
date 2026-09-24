@@ -14,6 +14,16 @@ DBとruntimeの接続方式については、[`docs/db-driver-migration.md`](../
 
 ## 現在進行中の個別override
 
+### #642 統計ランキング
+
+#642 / #741 / #742 には設計時点の PostgREST / `DB_DRIVER` / dual-driver / Supabase role 前提が残っています。これらは履歴として参照し、現在の PlanetScale PostgreSQL 固定runtimeへそのまま復活させません。
+
+- 集計・読み取りの実装経路は現行 PlanetScale + Hyperdrive / postgres.js + Drizzle のDB helperへ再設計します。旧 `.rpc()` / PostgREST 分岐や dual-driver parity を新規追加しません。
+- 一方、JST日境界での冪等集計、snapshotの原子的置換、backfill完了前の公開抑止、他streamer識別子をクライアントへ出さない匿名化境界などの安全要件は維持します。
+- #642 に残るカード登録数ランキングの表示方式、将来opt-out、全期間統計方針の更新は product / privacy 判断を伴うため、このruntime読み替えだけで決定しません。
+
+#741 / #742 の最新Issue本文を current-runtime の実装境界として扱い、旧接続方式の記述だけを根拠にコードや権限モデルを復活させないでください。
+
 ### #715 カードトレード
 
 `issue-715-card-trading.md` には設計時点の Supabase / PostgREST / dual-driver 前提や、rate limit KV が未配線だった時点の記録が残っています。これらは履歴として参照し、現在のruntimeへそのまま復活させません。
