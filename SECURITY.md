@@ -27,6 +27,40 @@ An unbounded decompression chain in HTTP responses on Node.js Fetch API via Cont
 2. All new uploads go directly to Cloudflare R2
 3. File upload validation and rate limiting remain in place
 
+#### OBS Browser Source: chat-overlay XSS → CVE-2024-7971 (OBS Studio ≤ 32.2.2) - NOT AFFECTED
+
+**Status:** Not affected (defense-in-depth added)
+**Upstream issue:** Vulnerable third-party chat overlays inserted viewer messages
+as HTML. In OBS Browser Source (Chromium sandbox disabled, bundled CEF with
+V8 type confusion CVE-2024-7971), a malicious Twitch chat message could reach
+native code execution on the streamer's PC.
+
+**Assessment of `/overlay/[streamerId]`:**
+1. No HTML sinks: viewer-derived strings (Twitch user name) and card text are
+   rendered only as React text nodes (auto-escaped). There are no
+   `dangerouslySetInnerHTML` / `innerHTML` usages in `src/` or `workers/`.
+   The viewer name is the EventSub `user_name` stored as-is (output encoding at
+   render time, not input sanitization); a regression test in
+   `tests/unit/components/overlay-page.test.tsx` renders an HTML payload as the
+   viewer name / card text and asserts no element is created.
+2. Viewer free-text (`user_input` of channel point redemptions) is never
+   rendered and is stripped before being parked (`src/lib/maintenance/eventsub-park.ts`).
+3. twica does not read Twitch chat; it only sends messages.
+4. Card image / sound URLs are set by the streamer only (HTTPS, extension /
+   storage-owner validation in `src/lib/validations.ts`, `src/lib/storage-utils.ts`).
+5. A nonce + `'strict-dynamic'` CSP is applied to the overlay route
+   (`src/lib/security-headers.ts`), so injected inline scripts would not run.
+
+**Guardrail:** `eslint.config.mjs` rejects `dangerouslySetInnerHTML`,
+`innerHTML` / `outerHTML` assignment, `insertAdjacentHTML`,
+`createContextualFragment` and `document.write` in `src/` and `workers/`, and
+CI runs `npm run lint`.
+
+**Recommendation for streamers:** The root cause is in OBS itself. Update OBS
+Studio to a release that bundles CEF 128 or later, and do not add untrusted
+Browser Sources. twica's overlay does not use the `window.obsstudio` API, so
+the Browser Source "Page permissions" can stay at "No access to OBS".
+
 ### Security Best Practices
 
 #### Session Management
