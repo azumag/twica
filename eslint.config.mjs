@@ -48,15 +48,24 @@ const eslintConfig = defineConfig([
             "innerHTML/outerHTML への代入は XSS シンクです。textContent か React のテキスト描画を使ってください。",
         },
         {
+          // el['innerHTML'] = ... のブラケット記法も同じシンクとして扱う
+          selector:
+            "AssignmentExpression > MemberExpression.left[property.value=/^(innerHTML|outerHTML)$/]",
+          message:
+            "innerHTML/outerHTML への代入は XSS シンクです。textContent か React のテキスト描画を使ってください。",
+        },
+        {
           selector:
             "CallExpression > MemberExpression.callee[property.name=/^(insertAdjacentHTML|createContextualFragment)$/]",
           message:
             "HTML 文字列を解釈する API は XSS シンクです。DOM API（textContent 等）か React のテキスト描画を使ってください。",
         },
         {
-          // WritableStream#write 等を誤検知しないよう document に限定する
+          // WritableStream#write 等を誤検知しないよう、レシーバが document
+          // （document.write / window.document.write / iframe.contentWindow.document.write
+          // 等、末尾が .document のもの）の場合に限定する
           selector:
-            "CallExpression > MemberExpression.callee[object.name='document'][property.name=/^(write|writeln)$/]",
+            "CallExpression > MemberExpression.callee:matches([object.name='document'], [object.property.name='document'])[property.name=/^(write|writeln)$/]",
           message:
             "HTML 文字列を解釈する API は XSS シンクです。DOM API（textContent 等）か React のテキスト描画を使ってください。",
         },
