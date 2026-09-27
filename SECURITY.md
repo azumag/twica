@@ -27,13 +27,26 @@ An unbounded decompression chain in HTTP responses on Node.js Fetch API via Cont
 2. All new uploads go directly to Cloudflare R2
 3. File upload validation and rate limiting remain in place
 
-#### OBS Browser Source: chat-overlay XSS → CVE-2024-7971 (OBS Studio ≤ 32.2.2) - NOT AFFECTED
+#### OBS Browser Source: reported chat-overlay attack path — not applicable to TwiCa
 
-**Status:** Not affected (defense-in-depth added)
-**Upstream issue:** Vulnerable third-party chat overlays inserted viewer messages
-as HTML. In OBS Browser Source (Chromium sandbox disabled, bundled CEF with
-V8 type confusion CVE-2024-7971), a malicious Twitch chat message could reach
-native code execution on the streamer's PC.
+**Status:** TwiCa is not affected by the viewer-message HTML-injection path
+described below (defense-in-depth added). The upstream browser-engine risk
+remains for vulnerable Chromium builds.
+
+**Upstream issue:** CVE-2024-7971 is a V8 type-confusion vulnerability in
+Chromium versions before `128.0.6613.84` ([NVD](https://nvd.nist.gov/vuln/detail/CVE-2024-7971)).
+A published report chained viewer-controlled HTML in a chat overlay with this
+vulnerability in OBS Browser Source to reach native code execution
+([Orange Cyberdefense research](https://blog.scrt.ch/2026/09/22/how-one-twitch-chat-message-became-code-execution-on-a-streamers-pc/)).
+For that reported Twitch-chat chain, viewer-controlled HTML injection was the
+zero-click entry point. More generally, attacker-controlled content loaded
+directly in a Browser Source or browser dock can reach the same browser-engine
+attack surface.
+
+OBS Studio 32.2.2's official build configuration selects CEF 6533
+([OBS 32.2.2 build configuration](https://github.com/obsproject/obs-studio/blob/32.2.2/CMakePresets.json)).
+The linked report measured its tested browser binary as Chromium 127.0.6533.120,
+below the fixed version.
 
 **Assessment of `/overlay/[streamerId]`:**
 1. No HTML sinks: viewer-derived strings (Twitch user name) and card text are
@@ -62,10 +75,17 @@ runs only on preview → main PRs, so `tests/unit/eslint-xss-sink-rule.test.ts`
 also loads the real config in the unit `test` job to pin which patterns are
 rejected and which (`textContent`, `WritableStream#write`) stay allowed.
 
-**Recommendation for streamers:** The root cause is in OBS itself. Update OBS
-Studio to a release that bundles CEF 128 or later, and do not add untrusted
-Browser Sources. twica's overlay does not use the `window.obsstudio` API, so
-the Browser Source "Page permissions" can stay at "No access to OBS".
+**Recommendations for streamers (checked 2026-09-27):** Use only trusted
+Browser Sources as a permanent trust-boundary rule, and keep OBS on the latest
+official stable release. At this check, OBS Studio 32.2.2 is the
+[latest official stable release](https://github.com/obsproject/obs-studio/releases)
+and its build configuration selects CEF 6533. No official stable OBS release
+with the CVE-fixed Chromium version was available at this check. For
+CVE-2024-7971 specifically, verify the full bundled Chromium version is
+`128.0.6613.84` or later; CEF 128 alone does not establish that this CVE is
+fixed. Keep the Browser Source "Page permissions" at "No access to OBS" for
+least privilege; this limits access to OBS APIs but does not patch Chromium or
+enable its sandbox. twica's overlay does not use `window.obsstudio`.
 
 ### Security Best Practices
 
