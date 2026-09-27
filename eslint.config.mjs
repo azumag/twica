@@ -2,6 +2,19 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 
+// XSS シンク禁止ルール（下の no-restricted-syntax）用の esquery 部品。
+// メンバー名はドット記法（el.innerHTML）と文字列リテラルのブラケット記法
+// （el['innerHTML']）で AST 上の格納先が異なる（Identifier.name / Literal.value）ため、
+// 両方を照合しないと書き方ひとつで lint をすり抜ける。変数キー（el[key]）は
+// 静的に名前が決まらないため対象外。
+const memberKey = (path, pattern) =>
+  `:matches([${path}.name=${pattern}], [${path}.value=${pattern}])`;
+const HTML_PROPS = "/^(innerHTML|outerHTML)$/";
+const HTML_METHODS = "/^(insertAdjacentHTML|createContextualFragment)$/";
+const DOCUMENT_WRITE = "/^(write|writeln)$/";
+const HTML_PARSING_API_MESSAGE =
+  "HTML 文字列を解釈する API は XSS シンクです。DOM API（textContent 等）か React のテキスト描画を使ってください。";
+
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
@@ -42,32 +55,20 @@ const eslintConfig = defineConfig([
       "no-restricted-syntax": [
         "error",
         {
-          selector:
-            "AssignmentExpression > MemberExpression.left[property.name=/^(innerHTML|outerHTML)$/]",
+          selector: `AssignmentExpression > MemberExpression.left${memberKey("property", HTML_PROPS)}`,
           message:
             "innerHTML/outerHTML への代入は XSS シンクです。textContent か React のテキスト描画を使ってください。",
         },
         {
-          // el['innerHTML'] = ... のブラケット記法も同じシンクとして扱う
-          selector:
-            "AssignmentExpression > MemberExpression.left[property.value=/^(innerHTML|outerHTML)$/]",
-          message:
-            "innerHTML/outerHTML への代入は XSS シンクです。textContent か React のテキスト描画を使ってください。",
+          selector: `CallExpression > MemberExpression.callee${memberKey("property", HTML_METHODS)}`,
+          message: HTML_PARSING_API_MESSAGE,
         },
         {
-          selector:
-            "CallExpression > MemberExpression.callee[property.name=/^(insertAdjacentHTML|createContextualFragment)$/]",
-          message:
-            "HTML 文字列を解釈する API は XSS シンクです。DOM API（textContent 等）か React のテキスト描画を使ってください。",
-        },
-        {
-          // WritableStream#write 等を誤検知しないよう、レシーバが document
-          // （document.write / window.document.write / iframe.contentWindow.document.write
-          // 等、末尾が .document のもの）の場合に限定する
-          selector:
-            "CallExpression > MemberExpression.callee:matches([object.name='document'], [object.property.name='document'])[property.name=/^(write|writeln)$/]",
-          message:
-            "HTML 文字列を解釈する API は XSS シンクです。DOM API（textContent 等）か React のテキスト描画を使ってください。",
+          // WritableStream#write 等を誤検知しないよう、レシーバが document の場合に限定する。
+          // document.write / document['write'] に加え、window.document.write や
+          // iframe.contentWindow['document'].write のように末尾が document のものも対象。
+          selector: `CallExpression > MemberExpression.callee:matches([object.name='document'], [object.property.name='document'], [object.property.value='document'])${memberKey("property", DOCUMENT_WRITE)}`,
+          message: HTML_PARSING_API_MESSAGE,
         },
       ],
     },

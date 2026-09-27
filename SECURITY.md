@@ -53,8 +53,11 @@ native code execution on the streamer's PC.
 
 **Guardrail:** `eslint.config.mjs` rejects `dangerouslySetInnerHTML`,
 `innerHTML` / `outerHTML` assignment, `insertAdjacentHTML`,
-`createContextualFragment` and `document.write` in `src/` and `workers/`, and
-CI runs `npm run lint`.
+`createContextualFragment` and `document.write` / `writeln` in `src/` and
+`workers/`, in both dot and string-literal bracket notation. The CI `lint` job
+runs only on preview → main PRs, so `tests/unit/eslint-xss-sink-rule.test.ts`
+also loads the real config in the unit `test` job to pin which patterns are
+rejected and which (`textContent`, `WritableStream#write`) stay allowed.
 
 **Recommendation for streamers:** The root cause is in OBS itself. Update OBS
 Studio to a release that bundles CEF 128 or later, and do not add untrusted
