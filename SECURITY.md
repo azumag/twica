@@ -51,10 +51,13 @@ native code execution on the streamer's PC.
 5. A nonce + `'strict-dynamic'` CSP is applied to the overlay route
    (`src/lib/security-headers.ts`), so injected inline scripts would not run.
 
-**Guardrail:** `eslint.config.mjs` rejects `dangerouslySetInnerHTML`,
-`innerHTML` / `outerHTML` assignment, `insertAdjacentHTML`,
-`createContextualFragment` and `document.write` / `writeln` in `src/` and
-`workers/`, in both dot and string-literal bracket notation. The CI `lint` job
+**Guardrail:** `eslint.config.mjs` rejects the TrustedHTML injection sinks
+listed by MDN's Trusted Types API in `src/` and `workers/`, in both dot and
+string-literal bracket notation: `innerHTML` / `outerHTML` / `srcdoc`
+assignment, `insertAdjacentHTML`, `createContextualFragment`,
+`setHTMLUnsafe`, `parseHTMLUnsafe`, `DOMParser#parseFromString`,
+`execCommand` and `document.write` / `writeln`, plus React's
+`dangerouslySetInnerHTML` and `<iframe srcDoc>`. The CI `lint` job
 runs only on preview → main PRs, so `tests/unit/eslint-xss-sink-rule.test.ts`
 also loads the real config in the unit `test` job to pin which patterns are
 rejected and which (`textContent`, `WritableStream#write`) stay allowed.

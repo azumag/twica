@@ -22,7 +22,8 @@ async function sinkMessages(code: string, filePath = 'src/__xss_probe__.tsx') {
   )
 }
 
-const PRELUDE = 'declare const el: HTMLElement; declare const range: Range; declare const s: string;\n'
+const PRELUDE =
+  'declare const el: HTMLElement; declare const range: Range; declare const iframe: HTMLIFrameElement; declare const s: string;\n'
 
 describe('eslint.config.mjs（XSS シンク禁止）', () => {
   it.each([
@@ -37,6 +38,13 @@ describe('eslint.config.mjs（XSS シンク禁止）', () => {
     ['document.writeln（ブラケット）', "document['writeln'](s)"],
     ['window.document.write', 'window.document.write(s)'],
     ["window['document'].write", "window['document'].write(s)"],
+    ['iframe.srcdoc 代入', 'iframe.srcdoc = s'],
+    ['iframe.srcdoc 代入（ブラケット）', "iframe['srcdoc'] = s"],
+    ['setHTMLUnsafe', 'el.setHTMLUnsafe(s)'],
+    ['Document.parseHTMLUnsafe', 'Document.parseHTMLUnsafe(s)'],
+    ['DOMParser#parseFromString', "new DOMParser().parseFromString(s, 'text/html')"],
+    ['execCommand（insertHTML）', "document.execCommand('insertHTML', false, s)"],
+    ['execCommand（ブラケット）', "document['execCommand']('insertHTML', false, s)"],
   ])('%s を検出する', async (_label, code) => {
     expect(await sinkMessages(PRELUDE + code)).toHaveLength(1)
   })
@@ -46,6 +54,13 @@ describe('eslint.config.mjs（XSS シンク禁止）', () => {
       'export const C = ({ s }: { s: string }) => <div dangerouslySetInnerHTML={{ __html: s }} />',
     )
     expect(messages.map((m) => m.ruleId)).toEqual(['react/no-danger'])
+  })
+
+  it.each([
+    ['srcDoc', 'export const C = ({ s }: { s: string }) => <iframe srcDoc={s} />'],
+    ['srcdoc（小文字）', 'export const C = ({ s }: { s: string }) => <iframe srcdoc={s} />'],
+  ])('JSX の %s 属性を検出する', async (_label, code) => {
+    expect(await sinkMessages(code)).toHaveLength(1)
   })
 
   it('workers/ 配下にも適用される', async () => {
@@ -59,6 +74,7 @@ describe('eslint.config.mjs（XSS シンク禁止）', () => {
     ['WritableStream#write', 'void new WritableStream().getWriter().write(s)'],
     ['write メソッドを持つ任意オブジェクト', "declare const logger: { write(v: string): void }; logger['write'](s)"],
     ['innerHTML の読み取り', 'console.log(el.innerHTML)'],
+    ['iframe の src 属性', "export const C = () => <iframe src=\"/overlay/demo\" />"],
   ])('%s は許可する', async (_label, code) => {
     expect(await sinkMessages(PRELUDE + code)).toEqual([])
   })

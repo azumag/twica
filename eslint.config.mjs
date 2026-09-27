@@ -9,8 +9,15 @@ import nextTs from "eslint-config-next/typescript";
 // 静的に名前が決まらないため対象外。
 const memberKey = (path, pattern) =>
   `:matches([${path}.name=${pattern}], [${path}.value=${pattern}])`;
-const HTML_PROPS = "/^(innerHTML|outerHTML)$/";
-const HTML_METHODS = "/^(insertAdjacentHTML|createContextualFragment)$/";
+// 対象は MDN Trusted Types の TrustedHTML injection sink 一覧に揃える
+// （https://developer.mozilla.org/en-US/docs/Web/API/Trusted_Types_API#injection_sink_interfaces）。
+// 一覧を正本にすることで、レビューごとに sink を1つずつ追加する取りこぼしを避ける。
+// - srcdoc: iframe 内で文字列を HTML としてパースし、sandbox 無しならスクリプトも実行される
+// - parseFromString: DOMParser が文字列を HTML/XML 文書としてパースする
+// - execCommand: 'insertHTML' が HTML sink。第1引数は動的になり得るため、非推奨 API ごと禁止する
+const HTML_PROPS = "/^(innerHTML|outerHTML|srcdoc)$/";
+const HTML_METHODS =
+  "/^(insertAdjacentHTML|createContextualFragment|setHTMLUnsafe|parseHTMLUnsafe|parseFromString|execCommand)$/";
 const DOCUMENT_WRITE = "/^(write|writeln)$/";
 const HTML_PARSING_API_MESSAGE =
   "HTML 文字列を解釈する API は XSS シンクです。DOM API（textContent 等）か React のテキスト描画を使ってください。";
@@ -57,7 +64,13 @@ const eslintConfig = defineConfig([
         {
           selector: `AssignmentExpression > MemberExpression.left${memberKey("property", HTML_PROPS)}`,
           message:
-            "innerHTML/outerHTML への代入は XSS シンクです。textContent か React のテキスト描画を使ってください。",
+            "innerHTML/outerHTML/srcdoc への代入は XSS シンクです。textContent か React のテキスト描画を使ってください。",
+        },
+        {
+          // React の <iframe srcDoc={...} /> は DOM の srcdoc 代入と同じ sink
+          selector: "JSXAttribute[name.name=/^srcdoc$/i]",
+          message:
+            "srcDoc は文字列を HTML としてパースする XSS シンクです。iframe には src で同一オリジンのページを指定してください。",
         },
         {
           selector: `CallExpression > MemberExpression.callee${memberKey("property", HTML_METHODS)}`,
