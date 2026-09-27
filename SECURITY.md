@@ -27,6 +27,66 @@ An unbounded decompression chain in HTTP responses on Node.js Fetch API via Cont
 2. All new uploads go directly to Cloudflare R2
 3. File upload validation and rate limiting remain in place
 
+#### OBS Browser Source: reported chat-overlay attack path — not applicable to TwiCa
+
+**Status:** TwiCa is not affected by the viewer-message HTML-injection path
+described below (defense-in-depth added). The upstream browser-engine risk
+remains for vulnerable Chromium builds.
+
+**Upstream issue:** CVE-2024-7971 is a V8 type-confusion vulnerability in
+Chromium versions before `128.0.6613.84` ([NVD](https://nvd.nist.gov/vuln/detail/CVE-2024-7971)).
+A published report chained viewer-controlled HTML in a chat overlay with this
+vulnerability in OBS Browser Source to reach native code execution
+([Orange Cyberdefense research](https://blog.scrt.ch/2026/09/22/how-one-twitch-chat-message-became-code-execution-on-a-streamers-pc/)).
+For that reported Twitch-chat chain, viewer-controlled HTML injection was the
+zero-click entry point. More generally, attacker-controlled content loaded
+directly in a Browser Source or browser dock can reach the same browser-engine
+attack surface.
+
+OBS Studio 32.2.2's official build configuration selects CEF 6533
+([OBS 32.2.2 build configuration](https://github.com/obsproject/obs-studio/blob/32.2.2/CMakePresets.json)).
+The linked report measured its tested browser binary as Chromium 127.0.6533.120,
+below the fixed version.
+
+**Assessment of `/overlay/[streamerId]`:**
+1. No HTML sinks: viewer-derived strings (Twitch user name) and card text are
+   rendered only as React text nodes (auto-escaped). There are no
+   `dangerouslySetInnerHTML` / `innerHTML` usages in `src/` or `workers/`.
+   The viewer name is the EventSub `user_name` stored as-is (output encoding at
+   render time, not input sanitization); a regression test in
+   `tests/unit/components/overlay-page.test.tsx` renders an HTML payload as the
+   viewer name / card text and asserts no element is created.
+2. Viewer free-text (`user_input` of channel point redemptions) is never
+   rendered and is stripped before being parked (`src/lib/maintenance/eventsub-park.ts`).
+3. twica does not read Twitch chat; it only sends messages.
+4. Card image / sound URLs are set by the streamer only (HTTPS, extension /
+   storage-owner validation in `src/lib/validations.ts`, `src/lib/storage-utils.ts`).
+5. A nonce + `'strict-dynamic'` CSP is applied to the overlay route
+   (`src/lib/security-headers.ts`), so injected inline scripts would not run.
+
+**Guardrail:** `eslint.config.mjs` rejects the TrustedHTML injection sinks
+listed by MDN's Trusted Types API in `src/` and `workers/`, in both dot and
+string-literal bracket notation: `innerHTML` / `outerHTML` / `srcdoc`
+assignment, `insertAdjacentHTML`, `createContextualFragment`,
+`setHTMLUnsafe`, `parseHTMLUnsafe`, `DOMParser#parseFromString`,
+`execCommand` and `document.write` / `writeln`, plus React's
+`dangerouslySetInnerHTML` and `<iframe srcDoc>`. The CI `lint` job
+runs only on preview → main PRs, so `tests/unit/eslint-xss-sink-rule.test.ts`
+also loads the real config in the unit `test` job to pin which patterns are
+rejected and which (`textContent`, `WritableStream#write`) stay allowed.
+
+**Recommendations for streamers (checked 2026-09-27):** Use only trusted
+Browser Sources as a permanent trust-boundary rule, and keep OBS on the latest
+official stable release. At this check, OBS Studio 32.2.2 is the
+[latest official stable release](https://github.com/obsproject/obs-studio/releases)
+and its build configuration selects CEF 6533. No official stable OBS release
+with the CVE-fixed Chromium version was available at this check. For
+CVE-2024-7971 specifically, verify the full bundled Chromium version is
+`128.0.6613.84` or later; CEF 128 alone does not establish that this CVE is
+fixed. Keep the Browser Source "Page permissions" at "No access to OBS" for
+least privilege; this limits access to OBS APIs but does not patch Chromium or
+enable its sandbox. twica's overlay does not use `window.obsstudio`.
+
 ### Security Best Practices
 
 #### Session Management
