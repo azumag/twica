@@ -49,7 +49,7 @@ export interface GachaCard {
 
 /**
  * パック内レアリティ自動配分(Issue #579, #576 フェーズ2)に必要な、配信者の
- * レアリティ重み設定。executeGacha に collectionName と一緒に渡し、抽選プールが
+ * レアリティ重み設定。executeGachaWithoutRepeatProtection に collectionName と一緒に渡し、抽選プールが
  * 特定パックに絞られている場合のみ effectiveWeight 計算に使う。省略時/各
  * フィールドが undefined の場合は resolveRarityWeightsForPool が安全側
  * (手動モード維持 or グローバル配分)にフォールバックする。
@@ -121,7 +121,7 @@ interface GachaTransactionRpcResult {
 
 /**
  * PlanetScale RPCのthrowを「code + message」形状へ正規化するための最小型(#573)。
- * executeGachaは42883を必須migration不足としてfail-closedにし、その他も
+ * 低レベル抽選(executeGachaWithoutRepeatProtection)は42883を必須migration不足としてfail-closedにし、その他も
  * reportError + err()へ統一して運用通知するため、この形へ詰め替える。
  * code を optional にしているのは、接続断系(CONNECTION_CLOSED 等)や
  * 非 Error オブジェクトが throw された場合に SQLSTATE が存在しないため。
@@ -211,41 +211,114 @@ function buildDrawEventId(eventId: string | undefined, index: number): string | 
   return index > 0 ? `${eventId}:${index + 1}` : eventId
 }
 
+/**
+ * Issue #1301: 低レベル抽選1回分(=1枚引く)への入力。
+ *
+ * 旧実装は10個の位置引数を受けていたため、将来の引数追加・並び替えで
+ * 「隣の引数へずれたまま型だけ合ってしまう」取り違え事故(ガチャは課金・付与の
+ * クリティカルパスなので致命的)をコンパイラが検出できなかった。名前付き
+ * オプションへ移行した理由は executeGachaTransactionRpcPg が既に採用している
+ * 名前付き引数方針(#803)と同一で、「隣へずれた型が通ってしまう」のを構造的に
+ * 防ぐ。特に rewardCost / rewardId / chatOutbox は連続した optional 引数で
+ * 位置が1つでもずれると別の値として静かに受け渡されるため、この移行の恩恵が
+ * 最も大きい。
+ *
+ * 各フィールドの意味・互換性は旧位置引数のインラインコメントをそのまま引き継ぐ。
+ */
+export interface ExecuteGachaParams {
+  /** 抽選対象の配信者。cards / gacha_history / user_cards の両方でこのIDを使う。 */
+  streamerId: string
+  /** 引き換えた視聴者の Twitch user id (gacha_history.user_twitch_id)。 */
+  userTwitchId: string
+  /** 結果に載せる表示名。通知・overlay の表示にそのまま使われる。 */
+  userTwitchUsername: string
+  /**
+   * EventSub の messageId 相当の一意キー。gacha_history.event_id の UNIQUE と
+   * RPC の advisory lock を成立させる冪等化の鍵。手動ドロー API は毎回一意な
+   * 合成ID(`manual:${uuid}`)を渡す(#661)。
+   */
+  eventId?: string
+  /** 引き換え1回で消費した点数(gacha_history.reward_cost)。N連では1枚目だけに載る。 */
+  rewardCost?: number
+  /**
+   * Issue #393: when set, restrict the draw pool to this card pack. NULL/undefined
+   * keeps the legacy "all active cards" behavior.
+   */
+  collectionName?: string | null
+  /**
+   * Issue #579 (#576 フェーズ2): パック内レアリティ自動配分に使う配信者の
+   * 重み設定。collectionName が未指定の場合や手動モードの場合は無視され、
+   * 従来どおり drop_rate ベースの抽選になる。
+   */
+  weightsConfig?: RarityWeightsDrawConfig
+  /**
+   * Issue #591: Twitchチャネルポイント報酬ID(streamer_additional_gacha_rewards.reward_id
+   * / GachaResult.rewardId と同じ形の値、cards.id とは無関係)。execute_gacha_transaction
+   * RPC経由でgacha_history.reward_idに永続化することで、Realtime broadcastが届かない
+   * ポーリング経路(/api/overlay/[streamerId]/events)でも報酬別効果音ルール
+   * (gacha-sound-rules.ts の targetType: 'reward', #451/#586)が発火するようにする。
+   * EventSub経由(executeGachaForEventSub)のみ利用可能。レイドガチャ
+   * (executeGachaForRaidEvent)はチャネルポイント報酬に紐付かないため常にundefined。
+   */
+  rewardId?: string | null
+  /**
+   * EventSub/raidのN連をtransactional chat outboxへ順番どおり組み立てる情報。
+   * 手動ガチャはチャット通知対象外なので未指定のままにする。
+   */
+  chatOutbox?: {
+    batchId: string
+    drawIndex: number
+    drawCount: number
+    collectionName?: string | null
+  }
+  /**
+   * Issue #1296: 呼び出し元が直前カードを取得済みなら渡す。undefined は
+   * 従来の独立抽選を意味し、低レベルAPIと既存テストの後方互換を保つ。
+   *
+   * 反復抑制つき公開エントリポイントはこの項目を Omit して渡さない。
+   * previousCardId を外から偽装できないことが、直前カード取得と抽選の結線を
+   * 型で保証する。
+   */
+  previousCardId?: string | null
+}
+
 export class GachaService {
-  async executeGacha(
-    streamerId: string,
-    userTwitchId: string,
-    userTwitchUsername: string,
-    eventId?: string,
-    rewardCost?: number,
-    // Issue #393: when set, restrict the draw pool to this card pack. NULL/undefined
-    // keeps the legacy "all active cards" behavior.
-    collectionName?: string | null,
-    // Issue #579 (#576 フェーズ2): パック内レアリティ自動配分に使う配信者の
-    // 重み設定。collectionName が未指定の場合や手動モードの場合は無視され、
-    // 従来どおり drop_rate ベースの抽選になる。
-    weightsConfig?: RarityWeightsDrawConfig,
-    // Issue #591: Twitchチャネルポイント報酬ID(streamer_additional_gacha_rewards.reward_id
-    // / GachaResult.rewardId と同じ形の値、cards.id とは無関係)。execute_gacha_transaction
-    // RPC経由でgacha_history.reward_idに永続化することで、Realtime broadcastが届かない
-    // ポーリング経路(/api/overlay/[streamerId]/events)でも報酬別効果音ルール
-    // (gacha-sound-rules.ts の targetType: 'reward', #451/#586)が発火するようにする。
-    // EventSub経由(executeGachaForEventSub)のみ利用可能。レイドガチャ
-    // (executeGachaForRaidEvent)はチャネルポイント報酬に紐付かないため常にundefined。
-    rewardId?: string | null,
-    // EventSub/raidのN連をtransactional chat outboxへ順番どおり組み立てる情報。
-    // 手動ガチャはチャット通知対象外なので未指定のままにする。
-    chatOutbox?: {
-      batchId: string
-      drawIndex: number
-      drawCount: number
-      collectionName?: string | null
-    },
-    // Issue #1296: 呼び出し元が直前カードを取得済みなら渡す。undefined は
-    // 従来の独立抽選を意味し、低レベルAPIと既存テストの後方互換を保つ。
-    previousCardId?: string | null
+  /**
+   * 反復抑制(直前カードとの即時反復を減らす抽選、Issue #1296)を一切通さない
+   * 低レベルの単発抽選。直前カードを渡さない限り従来どおりの独立抽選になる。
+   *
+   * Issue #1301: 本番コードから直接呼んではならない。本番の公開エントリポイントは
+   * `executeGachaWithRepeatProtection` / `executeGachaForEventSub` /
+   * `executeGachaForRaidEvent` の3つだけで、いずれも直前カードを取得してから
+   * この低レベル実装を呼ぶ。直接呼び出しは `tests/unit/gacha-public-entrypoint-contract.test.ts`
+   * のホワイトリストで禁止している(本番経路のスキャンであり、単体テストは
+   * 低レベル契約の検証のために呼んでよい)。
+   *
+   * あえて private にしていない理由: 低レベルの RPC bind 値・duplicate/limit_reached/
+   * soldOut の安全側分岐は課金系の回帰の正本であり、反復抑制用の履歴readを経由させると
+   * 各テストfixtureに無関係なDB readが1本増え、何を検証しているのかが曖昧になる。
+   * そのため「名前で意図を明示し、本番からの直接呼び出しを契約テストで塞ぐ」構成を採る。
+   */
+  async executeGachaWithoutRepeatProtection(
+    params: ExecuteGachaParams
   ): Promise<Result<GachaResult>> {
     try {
+      // 展開も try の内側に置く。params 自体が不正(undefined等)でも従来同様、
+      // try の外へ TypeError として reject を返さず、`Unexpected error:` の
+      // Result へ正規化して呼出元の Result 処理へ流すため。
+      const {
+        streamerId,
+        userTwitchId,
+        userTwitchUsername,
+        eventId,
+        rewardCost,
+        collectionName,
+        weightsConfig,
+        rewardId,
+        chatOutbox,
+        previousCardId,
+      } = params
+
       // Get active cards for this streamer (optionally scoped to a pack).
       // collection_name は抽選後に下流で使われないため SELECT しない。これにより
       // パック未指定のガチャ(=大多数)はクエリが従来と完全に同一になり、列未デプロイの
@@ -318,6 +391,11 @@ export class GachaService {
         }))
       }
 
+      // Issue #1301: 下記の `gacha:executeGacha:*` context 文字列は、メソッドの
+      // リネーム(executeGacha → executeGachaWithoutRepeatProtection)に合わせて
+      // 変更しない。これはログ/Observability の検索キーであり、既存の保存済み検索・
+      // アラート・障害調査の相関を壊さないことを優先した意図的な非変更である。
+      // このメソッド内の後続ラベルも同じ理由で `executeGacha` プレフィックスを維持する。
       try {
         cards = await withDbRetry(
           () => loadPgCards(true),
@@ -537,41 +615,28 @@ export class GachaService {
    * Issue #1296: 単発ガチャ向けの反復抑制エントリポイント。
    * 最新履歴の読み取りはUX改善用で、失敗時はgetLatestCardIdForStreamerがnullへ
    * フォールバックするため、カード付与・履歴記録の本処理は止めない。
+   *
+   * Issue #1301: `Omit<ExecuteGachaParams, 'previousCardId'>` にすることで、
+   * 呼び出し側が直前カードを自分で捏装して反復抑制を迂回する経路を型で塞いでいる。
+   *
+   * 手動ドローAPIはこの専用ラッパーを維持する(#1301 の「executeGachaDraws の単発
+   * 利用へ寄せる案」に対する比較結果)。executeGachaDraws へ寄せると、内部で
+   * `eventId ? { batchId, drawIndex, drawCount } : undefined` と chatOutbox を組み立てる
+   * ため、手動ドローの合成 event_id にも transactional chat outbox 行が作られ、
+   * これまで通知対象外だったQA用の手動ドローまでTwitchチャット通知されてしまう。
+   * 通知の有無は chatOutbox の有無で決まる既存仕様を変える必要がないため、
+   * 単発1枚の専用ラッパーを残すほうが安全側である。
    */
   async executeGachaWithRepeatProtection(
-    streamerId: string,
-    userTwitchId: string,
-    userTwitchUsername: string,
-    eventId?: string,
-    rewardCost?: number,
-    collectionName?: string | null,
-    weightsConfig?: RarityWeightsDrawConfig,
-    rewardId?: string | null,
-    chatOutbox?: {
-      batchId: string
-      drawIndex: number
-      drawCount: number
-      collectionName?: string | null
-    }
+    params: Omit<ExecuteGachaParams, 'previousCardId'>
   ): Promise<Result<GachaResult>> {
-    const previousCardId = await this.getLatestCardIdForStreamer(streamerId)
-    return this.executeGacha(
-      streamerId,
-      userTwitchId,
-      userTwitchUsername,
-      eventId,
-      rewardCost,
-      collectionName,
-      weightsConfig,
-      rewardId,
-      chatOutbox,
-      previousCardId,
-    )
+    const previousCardId = await this.getLatestCardIdForStreamer(params.streamerId)
+    return this.executeGachaWithoutRepeatProtection({ ...params, previousCardId })
   }
 
   /**
    * execute_gacha_transaction_with_chat_outbox RPC のPlanetScale直結実装 (#573/#803)。
-   * executeGacha の単一路線として呼ばれ、既存の { data, error } 形状を維持することで、
+   * 低レベル抽選の単一路線として呼ばれ、既存の { data, error } 形状を維持することで、
    * 呼び出し側の後続分岐(42883 fail-closed・is_duplicate・limit_reached 再抽選)
    * を共有する。
    *
@@ -602,8 +667,9 @@ export class GachaService {
    *   下記参照)構造的に発生しない。手動ドローAPI(src/app/api/gacha/route.ts)は
    *   #661 対応で `manual:${crypto.randomUUID()}` という毎回一意な合成 event_id を
    *   渡すよう修正済みで、これも ON CONFLICT (event_id) DO NOTHING により冪等
-   *   (=リトライ安全)になった。したがって現状、`executeGacha` の全呼び出し元
-   *   (route.ts の手動ドロー、executeGachaDraws 経由の EventSub/raid N連)が
+   *   (=リトライ安全)になった。したがって現状、低レベル抽選の全呼び出し元
+   *   (route.ts の手動ドロー → executeGachaWithRepeatProtection、
+   *   executeGachaDraws 経由の EventSub/raid N連)が
    *   非 null の一意な event_id を渡すため `idempotent: eventId !== null` は
    *   実質的に常に true として評価される。型シグネチャ上 `eventId: string | null`
    *   を維持しているのは、将来この不変条件が崩れた場合にも
@@ -717,7 +783,7 @@ export class GachaService {
    *
    * 無停止デプロイの過渡期でRPCが未デプロイ(42883)の場合は、旧来の
    * select+in によるフェッチ→JS集計にフォールバックする。Map<card_id, count>
-   * の中身は両経路で完全に同一になるため、呼び出し側(executeGacha)の
+   * の中身は両経路で完全に同一になるため、呼び出し側(低レベル抽選)の
    * フィルタリングロジックへの影響はない。
    */
   private async getIssuedCounts(cardIds: string[]): Promise<Result<Map<string, number>>> {
@@ -856,11 +922,11 @@ export class GachaService {
 
   /**
    * 抽選プールから1枚選択し、返却/RPC送信用に再構築したカードを返す。
-   * executeGacha の初回選択と、limit_reached 時の再抽選(R1: PR #450
+   * 低レベル抽選の初回選択と、limit_reached 時の再抽選(R1: PR #450
    * follow-up)の両方から呼ばれる共通ロジック。呼び出しごとに(縮小した)
    * プールを渡すことで、pack-scoped 自動配分の effectiveWeight もその都度
    * プール全体で再計算され、正しく再正規化される(normalizeDropRate による
-   * 型保証含め、executeGacha 直書き時と同じ挙動を維持)。
+   * 型保証含め、低レベル抽選を直接呼ぶ経路と同じ挙動を維持)。
    *
    * プールが空、または全カードの選択重みが0で選択不能な場合は null を返す。
    */
@@ -1040,16 +1106,19 @@ export class GachaService {
     for (let index = resumeFromIndex; index < drawCount; index += 1) {
       const drawEventId = buildDrawEventId(eventId, index)
       const drawRewardCost = index === 0 ? rewardCost : undefined
-      const result = await this.executeGacha(
+      // 位置引数時代は drawEventId/drawRewardCost を4番目/5番目に並べる必要があり、
+      // 引数追加でずれると「別の値が event_id としてRPCへ渡る」事故が型では検出
+      // できなかった(#1301)。名前付きなら値と意味が一致していることを読むだけで確認できる。
+      const result = await this.executeGachaWithoutRepeatProtection({
         streamerId,
         userTwitchId,
         userTwitchUsername,
-        drawEventId,
-        drawRewardCost,
+        eventId: drawEventId,
+        rewardCost: drawRewardCost,
         collectionName,
         weightsConfig,
         rewardId,
-        eventId
+        chatOutbox: eventId
           ? {
               batchId: eventId,
               drawIndex: index + 1,
@@ -1058,7 +1127,7 @@ export class GachaService {
             }
           : undefined,
         previousCardId,
-      )
+      })
 
       if (!result.success) {
         if (result.error === 'Duplicate event' && eventId && drawCount > 1) {
