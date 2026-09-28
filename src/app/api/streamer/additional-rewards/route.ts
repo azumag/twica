@@ -67,12 +67,6 @@ const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
 const PUT_RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
   "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度お試しください。";
 
-// PUT 専用: 対象の追加報酬が存在しない場合の文言（別タブ等で削除済み）。
-// 日本語固定は POST の既存エラーメッセージと同じ方針（en 対応は次 PR で
-// ERROR_MESSAGES へ寄せる余地あり）。
-const ADDITIONAL_REWARD_NOT_FOUND_MESSAGE =
-  "この追加の引き換えは既に削除されています。設定を再読み込みしてください";
-
 interface AdditionalRewardRow {
   id: string;
   reward_id: string;
@@ -924,7 +918,7 @@ export async function PUT(request: NextRequest) {
       // 対象の追加報酬が存在しない（別タブ等で削除済み）。報酬不在を意味する
       // 専用文言を返す（STREAMER_NOT_FOUND は英語かつ実態と合わないため）。
       return NextResponse.json(
-        { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
+        { error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND },
         { status: 404 }
       );
     }
@@ -1010,7 +1004,7 @@ export async function PUT(request: NextRequest) {
       // 防御的分岐（TOCTOU）。通常の存在チェックは lookup 側で行っている。
       // DELETE は0件でも200のため、この分岐は PUT 固有。
       return NextResponse.json(
-        { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
+        { error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND },
         { status: 404 }
       );
     }
