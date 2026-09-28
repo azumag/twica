@@ -887,6 +887,28 @@ describe('POST /api/admin/eventsub-replay', () => {
       expect(json.results.map((result: { outcome: string }) => result.outcome)).toEqual(['failed', 'succeeded'])
     })
 
+    it('content_rejectedはDLQ化するが自動Issue化しない (#1725)', async () => {
+      const claim = makeChatOutboxClaim()
+      mocks.claimDueChatNotifications
+        .mockResolvedValueOnce([claim])
+        .mockResolvedValueOnce([])
+      mocks.sendChatAnnouncement.mockResolvedValue({
+        outcome: 'terminal',
+        code: 'content_rejected',
+        reason: 'Twitch API 200: The message was held by AutoMod.',
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(
+        claim,
+        'Twitch API 200: The message was held by AutoMod.',
+      )
+      expect(mocks.reportError).not.toHaveBeenCalled()
+      expect(json.results.map((result: { outcome: string }) => result.outcome)).toEqual(['failed'])
+    })
+
     it('missing_scopeでもDLQ更新がleaseを失った場合は運用障害としてreportする', async () => {
       const claim = makeChatOutboxClaim()
       mocks.claimDueChatNotifications

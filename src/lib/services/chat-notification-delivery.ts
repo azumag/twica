@@ -198,6 +198,14 @@ export async function deliverChatNotificationSlice(
           code: outcome.code,
           reason: outcome.reason,
         })
+      } else if (outcome.code === CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED) {
+        // Issue #1725: AutoMod等の本文拒否はコード不具合ではなく、再送しても
+        // 結果は変わらない。MISSING_SCOPEと同じくDLQ/ログは残すが自動報告しない。
+        logger.info('[chat-notification-delivery] moved to DLQ - rejected by Twitch content filter', {
+          ...logContext,
+          code: outcome.code,
+          reason: outcome.reason,
+        })
       } else {
         await reportDeliveryError(
           new Error(`[chat-notification-delivery] moved to DLQ: ${reason}`),
