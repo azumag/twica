@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider";
 import type { MaintenanceStatusResponse } from "@/lib/maintenance/client";
+import { ERROR_MESSAGES } from "@/lib/constants";
 import jaMessages from "../../../messages/ja.json";
 
 vi.mock("@/lib/logger");
@@ -135,14 +136,14 @@ describe("ChannelPointSettings additional-reward edit race", () => {
 
     resolvePut?.(
       new Response(
-        JSON.stringify({ error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください" }),
+        JSON.stringify({ error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND }),
         { status: 404, headers: { "content-type": "application/json" } }
       )
     );
 
     await waitFor(() => {
       expect(
-        screen.getByText("この追加の引き換えは既に削除されています。設定を再読み込みしてください")
+        screen.getByText("この追加の引き換えは既に削除されています。一覧を再読み込みしました")
       ).toBeInTheDocument();
     });
 
