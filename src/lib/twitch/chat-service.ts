@@ -161,6 +161,16 @@ export const CHAT_SEND_TERMINAL_CODES = {
   MISSING_SCOPE: 'missing_scope',
   CREDENTIAL_UNAVAILABLE: 'credential_unavailable',
   TWITCH_REJECTED: 'twitch_rejected',
+  /**
+   * Issue #1725: HTTP 200だがAutoMod等drop_reason付きでis_sent!==trueだったケース。
+   * 本文自体がTwitchの自動判定で拒否されただけでコード側の不具合ではなく、かつ
+   * missing_scopeと違い配信者の操作でも直らない（本文次第で再発し得る）ため、
+   * MISSING_SCOPE同様に自動Issue化の対象外へ倒す。ただしTWITCH_REJECTED
+   * （401/403等の本物のAPIレベル拒否）とは原因が異なるため別codeに分ける:
+   * TWITCH_REJECTEDへ合流させるとscope/認証系の実障害まで自動Issue対象外に
+   * なってしまう。
+   */
+  CONTENT_REJECTED: 'content_rejected',
 } as const
 
 export type ChatSendTerminalCode =
@@ -436,6 +446,9 @@ export class TwitchChatService {
     let lastResponse: Response | null = null
     let lastResponseErrorBody: TwitchApiError | null = null
     let lastException: unknown = null
+    // HTTP 200 + drop_reason（AutoMod等、msg_duplicateを除く）で拒否されたケースを
+    // 下のterminal code決定時に区別するためのフラグ。
+    let contentRejectedByTwitch = false
 
     for (let attempt = 1; attempt <= CHAT_SEND_MAX_ATTEMPTS; attempt++) {
       try {
@@ -519,6 +532,7 @@ export class TwitchChatService {
             message: dropMessage,
           }
           lastException = null
+          contentRejectedByTwitch = true
           // 同じ本文を再送してもAutoMod等の判定は変わらないためterminalとし、
           // 後続通知を塞がずDLQから人間が内容を確認できるようにする。
           break
@@ -622,7 +636,9 @@ export class TwitchChatService {
           }
         : {
             outcome: 'terminal',
-            code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+            code: contentRejectedByTwitch
+              ? CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED
+              : CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
             reason: `Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`,
           }
       )

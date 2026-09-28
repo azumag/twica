@@ -422,7 +422,7 @@ describe('TwitchChatService', () => {
         service.sendChatMessageDetailed('123456789', 'test message')
       ).resolves.toEqual({
         outcome: 'terminal',
-        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        code: CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED,
         reason: 'Twitch API 200: The message was held by AutoMod.',
       });
       expect(global.fetch).toHaveBeenCalledTimes(1);

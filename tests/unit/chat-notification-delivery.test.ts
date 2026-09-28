@@ -165,6 +165,27 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
     expect(reportError).not.toHaveBeenCalled()
   })
 
+  // Issue #1725: AutoMod等の本文拒否はコード不具合ではないため、missing_scopeと
+  // 同様に自動Issue化しない。
+  it('does not report to GitHub Issues for a content_rejected terminal (AutoMod, not a bug)', async () => {
+    const { reportError } = await import('@/lib/sentry/error-handler')
+    mockClaim.mockResolvedValue(claim)
+    mockDecode.mockReturnValue(decodedData)
+    mockSend.mockResolvedValue({
+      outcome: 'terminal',
+      code: 'content_rejected',
+      reason: 'Twitch API 200: The message was held by AutoMod.',
+    })
+    mockDeadLetter.mockResolvedValue(true)
+
+    await expect(deliverChatNotificationSlice('batch-1')).resolves.toEqual({
+      kind: 'terminal',
+      code: 'content_rejected',
+    })
+
+    expect(reportError).not.toHaveBeenCalled()
+  })
+
   it('treats aborted (lost fence) as lease_lost without overwriting a new owner state, but still reports it', async () => {
     const { reportError } = await import('@/lib/sentry/error-handler')
     mockClaim.mockResolvedValue(claim)
