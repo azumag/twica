@@ -4,13 +4,18 @@ import {
   CHAT_OUTBOX_MAX_ATTEMPTS,
   advanceChatNotificationDeliveryCursor,
   claimChatNotificationBatch,
+  claimChatNotificationForBoundedDelivery,
   claimDueChatNotifications,
   decodeChatNotificationPayload,
   deadLetterChatNotification,
+  estimateChatOutboxRetryDelayMs,
   markChatNotificationSent,
   peekChatNotificationOutboxWork,
+  releaseChatNotificationForContinuation,
   renewChatNotificationLease,
+  reserveDueChatNotificationOutboxForWake,
   retryChatNotification,
+  retryChatNotificationForBoundedDelivery,
 } from '@/lib/services/chat-notification-outbox'
 
 function createSqlMock(responses: unknown[][]) {
@@ -412,5 +417,156 @@ describe('transactional chat outbox claim/ack', () => {
     expect(rendered.text).toContain("status = 'dead'")
     expect(rendered.text).toContain('lease_id = null')
     expect(rendered.values).toEqual(['scope missing', CLAIM_ROW.id, CLAIM_ROW.lease_id])
+  })
+})
+
+// Issue #1665: bounded delivery（専用Queue + 送信位置からの再開）専用の
+// claim/release/retry/wake予約。既存のclaimChatNotificationBatch/
+// claimDueChatNotifications/retryChatNotificationは意図的に変更しないため、
+// 上のdescribeブロックとは独立してテストする。
+describe('bounded delivery claim/release/retry/wake reservation (Issue #1665)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('continuationからの再claimはattempt_countを消費しない', async () => {
+    const sqlMock = createSqlMock([[CLAIM_ROW]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    await claimChatNotificationForBoundedDelivery('batch-1')
+
+    const rendered = renderSqlCall(sqlMock, 0)
+    expect(rendered.text).toContain("when status = 'pending' and pending_kind = 'continuation' then 0")
+    expect(rendered.text).toContain('where batch_id = $')
+    expect(rendered.text).toContain('wake_reserved_until = null')
+    expect(rendered.values).toContain('batch-1')
+  })
+
+  it('regression (2026-09-22 azumagレビュー): attempt_count上限に達したcontinuation行もclaimできる', async () => {
+    // 過去の一時障害でattempt_count=MAXに達した後、その試行内で複数segmentを
+    // 正常送信し予算切れでcontinuationへ入った行は、無条件のattempt_count<MAXを
+    // WHERE句に課すと二度とclaimできず永久pending化する（本テストが固定する
+    // WHERE句の構造がこの回帰を防ぐ）。
+    const sqlMock = createSqlMock([[{ ...CLAIM_ROW, attempt_count: CHAT_OUTBOX_MAX_ATTEMPTS }]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    await claimChatNotificationForBoundedDelivery('batch-1')
+
+    const rendered = renderSqlCall(sqlMock, 0)
+    // continuation行は独立したORブランチでattempt_count上限を課さない。
+    expect(rendered.text).toContain(
+      "(status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())",
+    )
+    // 一方、通常のpending(retry/initial)・processing(クラッシュ回収)は
+    // 引き続きattempt_count上限つきの別ブランチにある（実障害側は緩めない）。
+    expect(rendered.text).toMatch(
+      /attempt_count < \$::integer\s+and\s+\(\s*\(status = 'pending' and next_attempt_at <= now\(\)\)\s*or\s*\(status = 'processing' and lease_expires_at <= now\(\)\)\s*\)/,
+    )
+  })
+
+  it('release-for-continuationはleaseを解放しpending_kindをcontinuationにする', async () => {
+    const sqlMock = createSqlMock([[{ id: CLAIM_ROW.id }]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    const nextAttemptAt = new Date('2026-09-22T00:00:01.000Z')
+    await expect(releaseChatNotificationForContinuation(
+      { id: CLAIM_ROW.id, leaseId: CLAIM_ROW.lease_id },
+      nextAttemptAt,
+    )).resolves.toBe(true)
+
+    const rendered = renderSqlCall(sqlMock, 0)
+    expect(rendered.text).toContain("status = 'pending'")
+    expect(rendered.text).toContain("pending_kind = 'continuation'")
+    expect(rendered.text).toContain('lease_id = null')
+    expect(rendered.text).toContain("status = 'processing'")
+    expect(rendered.text).toContain('lease_id = $::uuid')
+    expect(rendered.values).toContain(nextAttemptAt.toISOString())
+    expect(rendered.values).toContain(CLAIM_ROW.lease_id)
+  })
+
+  it('bounded delivery専用retryはpending_kindをretryに設定し、実障害の上限を維持する', async () => {
+    const retrySql = createSqlMock([[{ id: CLAIM_ROW.id }]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: retrySql as never })
+
+    await expect(retryChatNotificationForBoundedDelivery({
+      id: CLAIM_ROW.id,
+      leaseId: CLAIM_ROW.lease_id,
+      attemptCount: 1,
+    }, 'Twitch API 503')).resolves.toBe('pending')
+
+    const rendered = renderSqlCall(retrySql, 0)
+    expect(rendered.text).toContain("status = 'pending'")
+    expect(rendered.text).toContain("pending_kind = 'retry'")
+    expect(rendered.text).toContain('wake_reserved_until = null')
+    expect(rendered.values).toContain(60_000)
+
+    // 上限到達後は継続と同じくDLQ化する（continuationだからといって無限retryに
+    // ならない: pending_kind='retry'を書くのはretryChatNotificationForBoundedDelivery
+    // 自身であり、次回claimのCASE式が実障害を正しくattempt_count消費として扱う）。
+    const deadSql = createSqlMock([[{ id: CLAIM_ROW.id }]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: deadSql as never })
+    await expect(retryChatNotificationForBoundedDelivery({
+      id: CLAIM_ROW.id,
+      leaseId: CLAIM_ROW.lease_id,
+      attemptCount: CHAT_OUTBOX_MAX_ATTEMPTS,
+    }, 'still unavailable')).resolves.toBe('dead')
+    expect(renderSqlCall(deadSql, 0).text).toContain("status = 'dead'")
+  })
+
+  it('estimateChatOutboxRetryDelayMsはretryChatNotification/ForBoundedDeliveryと同じbackoff系列を返す', () => {
+    expect(estimateChatOutboxRetryDelayMs(1)).toBe(60_000)
+    expect(estimateChatOutboxRetryDelayMs(2)).toBe(5 * 60_000)
+    expect(estimateChatOutboxRetryDelayMs(3)).toBe(15 * 60_000)
+    expect(estimateChatOutboxRetryDelayMs(4)).toBe(60 * 60_000)
+    // 系列長を超えた試行回数は最後の値に張り付く。
+    expect(estimateChatOutboxRetryDelayMs(99)).toBe(60 * 60_000)
+  })
+
+  it('due-wake予約はFOR UPDATE SKIP LOCKEDで未予約行だけを原子的に予約する', async () => {
+    const sqlMock = createSqlMock([[
+      { id: CLAIM_ROW.id, batch_id: CLAIM_ROW.batch_id },
+    ]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    await expect(reserveDueChatNotificationOutboxForWake(25, 120)).resolves.toEqual([
+      { id: CLAIM_ROW.id, batchId: CLAIM_ROW.batch_id },
+    ])
+
+    const rendered = renderSqlCall(sqlMock, 0)
+    expect(rendered.text).toContain("status = 'pending'")
+    expect(rendered.text).toContain('for update skip locked')
+    expect(rendered.text).toContain('wake_reserved_until is null or wake_reserved_until <= now()')
+    expect(rendered.text).toContain('wake_reserved_until = now()')
+    expect(rendered.values).toContain(25)
+    expect(rendered.values).toContain(120)
+  })
+
+  it('regression (2026-09-22 azumagレビュー): attempt_count上限に達したcontinuation行もwake予約できる', async () => {
+    const sqlMock = createSqlMock([[]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    await reserveDueChatNotificationOutboxForWake(25, 120)
+
+    const rendered = renderSqlCall(sqlMock, 0)
+    expect(rendered.text).toContain(
+      "(status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())",
+    )
+    expect(rendered.text).toMatch(
+      /attempt_count < \$::integer\s+and\s+\(\s*\(status = 'pending' and next_attempt_at <= now\(\)\)\s*or\s*\(status = 'processing' and lease_expires_at <= now\(\)\)\s*\)/,
+    )
+  })
+
+  it('due-wake予約はlease失効したprocessing行（consumer停止からのクラッシュ回収）も対象にする', async () => {
+    // pendingだけを対象にすると、内部endpoint呼び出しがclaim後に応答なく停止した
+    // 行（wake-upメッセージは既に消費済みで残っていない）を、この専用sweepでは
+    // 二度と回収できなくなる（既存の20分周期cron relayに頼るしかなくなる）。
+    const sqlMock = createSqlMock([[]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    await reserveDueChatNotificationOutboxForWake(25, 120)
+
+    const rendered = renderSqlCall(sqlMock, 0)
+    expect(rendered.text).toContain("status = 'processing'")
+    expect(rendered.text).toContain('lease_expires_at <= now()')
   })
 })

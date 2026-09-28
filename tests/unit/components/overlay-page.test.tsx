@@ -1160,6 +1160,63 @@ describe('OverlayPage', () => {
     expect(secondImage).not.toBe(firstImage)
   })
 
+  it('視聴者名・カード文言に含まれるHTMLは要素化せずテキストとして描画する（OBS Browser Source XSS対策）', async () => {
+    // 視聴者名は EventSub の user_name（外部入力）がそのまま届く。HTML として
+    // 解釈されると OBS Browser Source 上で任意 JS 実行の入口になる
+    // （CVE-2024-7971 連鎖の報告事例）。サニタイズではなく出力時エスケープ
+    // （React のテキストノード描画）で無害化されていることを固定する。
+    vi.useFakeTimers()
+
+    class ImmediateImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = 640
+      height = 480
+
+      set src(value: string) {
+        void value
+        setTimeout(() => this.onload?.(), 0)
+      }
+    }
+    vi.stubGlobal('Image', ImmediateImage)
+
+    let onGachaResult: ((payload: GachaBroadcastPayload) => void) | undefined
+    subscribeMock.mockImplementation((_streamerId, callback, options: SubscribeOptions) => {
+      onGachaResult = callback as (payload: GachaBroadcastPayload) => void
+      options.onSuccess?.()
+      return vi.fn()
+    })
+
+    const maliciousName = '<img src=x onerror="window.__twicaXss=1">'
+    const { container } = render(<OverlayPage />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      onGachaResult?.({
+        type: 'gacha',
+        card: {
+          id: 'xss-card', name: '<b>card</b>', description: '<script>window.__twicaXss=1</script>',
+          image_url: 'https://example.com/card.png', rarity: 'common',
+        },
+        userTwitchUsername: maliciousName,
+      })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+
+    expect(screen.getByText(`${maliciousName} が引いたカード`)).toBeVisible()
+    expect(screen.getByText('<b>card</b>')).toBeVisible()
+    expect(screen.getByText('<script>window.__twicaXss=1</script>')).toBeVisible()
+    // 注入文字列由来の要素が DOM に生成されていないこと（img はカード画像の1枚のみ）
+    expect(container.querySelector('img[src="x"]')).toBeNull()
+    expect(container.querySelector('b, script')).toBeNull()
+    expect((window as unknown as { __twicaXss?: number }).__twicaXss).toBeUndefined()
+  })
+
   it('表示前に取得できた現行カードmetadataをautoPortraitとsmallModeへ反映する', async () => {
     vi.useFakeTimers()
 

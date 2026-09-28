@@ -179,3 +179,154 @@ describe('sendPacedMultiDrawChatAnnouncement', () => {
     expect(sendChatMessageDetailed).not.toHaveBeenCalled()
   })
 })
+
+// Issue #1665: bounded配送（予算内に完走できない場合の正常な途中終了）。
+describe('sendPacedMultiDrawChatAnnouncement bounded delivery (Issue #1665)', () => {
+  it('yields with deferred once maxSegments is reached, without sending further segments', async () => {
+    const afterSegmentComplete = vi.fn().mockResolvedValue(true)
+    const sendChatMessageDetailed = vi.fn().mockResolvedValue({ outcome: 'sent' })
+
+    const outcome = await sendPacedMultiDrawChatAnnouncement(
+      'broadcaster',
+      [card(1), card(2), card(3), card(4)],
+      'user',
+      {
+        deliveryMode: 'individual',
+        chunkSize: 3,
+        startCursor: 0,
+        maxSegments: 2,
+        afterSegmentComplete,
+        delay: vi.fn().mockResolvedValue(undefined),
+        chatService: { sendChatMessageDetailed, sendChatMessage: vi.fn() },
+      },
+    )
+
+    expect(outcome).toEqual({ outcome: 'deferred', reason: 'budget' })
+    expect(sendChatMessageDetailed).toHaveBeenCalledTimes(2)
+    expect(afterSegmentComplete.mock.calls.map(([cursor]) => cursor)).toEqual([1, 2])
+  })
+
+  it('yields with deferred without starting a new segment once deadlineAt has passed', async () => {
+    const sendChatMessageDetailed = vi.fn().mockResolvedValue({ outcome: 'sent' })
+
+    const outcome = await sendPacedMultiDrawChatAnnouncement(
+      'broadcaster',
+      [card(1), card(2)],
+      'user',
+      {
+        deliveryMode: 'individual',
+        chunkSize: 3,
+        startCursor: 0,
+        deadlineAt: Date.now() - 1,
+        afterSegmentComplete: vi.fn().mockResolvedValue(true),
+        delay: vi.fn().mockResolvedValue(undefined),
+        chatService: { sendChatMessageDetailed, sendChatMessage: vi.fn() },
+      },
+    )
+
+    expect(outcome).toEqual({ outcome: 'deferred', reason: 'budget' })
+    expect(sendChatMessageDetailed).not.toHaveBeenCalled()
+  })
+
+  it('a slice resumed from a non-zero startCursor also respects deadlineAt/maxSegments', async () => {
+    const afterSegmentComplete = vi.fn().mockResolvedValue(true)
+    const sendChatMessageDetailed = vi.fn().mockResolvedValue({ outcome: 'sent' })
+
+    const outcome = await sendPacedMultiDrawChatAnnouncement(
+      'broadcaster',
+      [card(1), card(2), card(3), card(4), card(5)],
+      'user',
+      {
+        deliveryMode: 'individual',
+        chunkSize: 3,
+        startCursor: 3,
+        maxSegments: 1,
+        afterSegmentComplete,
+        delay: vi.fn().mockResolvedValue(undefined),
+        chatService: { sendChatMessageDetailed, sendChatMessage: vi.fn() },
+      },
+    )
+
+    expect(outcome).toEqual({ outcome: 'deferred', reason: 'budget' })
+    expect(sendChatMessageDetailed).toHaveBeenCalledTimes(1)
+    expect(afterSegmentComplete).toHaveBeenCalledWith(4)
+  })
+
+  it('propagates degradation through a deferred outcome', async () => {
+    const afterSegmentComplete = vi.fn().mockResolvedValue(true)
+    const sendChatMessageDetailed = vi.fn().mockResolvedValue({
+      outcome: 'sent',
+      degradation: { code: 'credential_unavailable', reason: 'bot token expired' },
+    })
+
+    const outcome = await sendPacedMultiDrawChatAnnouncement(
+      'broadcaster',
+      [card(1), card(2)],
+      'user',
+      {
+        deliveryMode: 'individual',
+        chunkSize: 3,
+        startCursor: 0,
+        maxSegments: 1,
+        afterSegmentComplete,
+        delay: vi.fn().mockResolvedValue(undefined),
+        chatService: { sendChatMessageDetailed, sendChatMessage: vi.fn() },
+      },
+    )
+
+    expect(outcome).toEqual({
+      outcome: 'deferred',
+      reason: 'budget',
+      degradation: { code: 'credential_unavailable', reason: 'bot token expired' },
+    })
+  })
+
+  it('calls channelGate once per segment instead of the in-process delay, including the first segment', async () => {
+    const afterSegmentComplete = vi.fn().mockResolvedValue(true)
+    const sendChatMessageDetailed = vi.fn().mockResolvedValue({ outcome: 'sent' })
+    const delay = vi.fn().mockResolvedValue(undefined)
+    const channelGate = vi.fn().mockResolvedValue({ outcome: 'reserved' })
+
+    const outcome = await sendPacedMultiDrawChatAnnouncement(
+      'broadcaster',
+      [card(1), card(2)],
+      'user',
+      {
+        deliveryMode: 'individual',
+        chunkSize: 3,
+        startCursor: 0,
+        afterSegmentComplete,
+        delay,
+        channelGate,
+        chatService: { sendChatMessageDetailed, sendChatMessage: vi.fn() },
+      },
+    )
+
+    expect(outcome).toEqual({ outcome: 'sent' })
+    expect(channelGate).toHaveBeenCalledTimes(2)
+    expect(delay).not.toHaveBeenCalled()
+  })
+
+  it('stops as deferred when channelGate reports budget-exhausted', async () => {
+    const sendChatMessageDetailed = vi.fn().mockResolvedValue({ outcome: 'sent' })
+    const channelGate = vi.fn().mockResolvedValue({ outcome: 'budget-exhausted' })
+
+    const outcome = await sendPacedMultiDrawChatAnnouncement(
+      'broadcaster',
+      [card(1), card(2)],
+      'user',
+      {
+        deliveryMode: 'individual',
+        chunkSize: 3,
+        startCursor: 0,
+        afterSegmentComplete: vi.fn().mockResolvedValue(true),
+        delay: vi.fn().mockResolvedValue(undefined),
+        channelGate,
+        chatService: { sendChatMessageDetailed, sendChatMessage: vi.fn() },
+      },
+    )
+
+    expect(outcome).toEqual({ outcome: 'deferred', reason: 'budget' })
+    expect(sendChatMessageDetailed).not.toHaveBeenCalled()
+  })
+})

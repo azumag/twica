@@ -10,6 +10,7 @@
  * 実際に route / middleware から呼ばれるのは Stage 3 から。
  */
 import { NextResponse } from 'next/server'
+import { PRIVATE_NO_STORE_CACHE_CONTROL } from '@/lib/cache-control'
 // この guard は middleware から同期的に呼ばれる。middleware は Edge runtime の
 // import graph に入るため、DB 永続化を含む logger.server ではなく、console 出力だけを
 // 行う共有 logger を使う。ここで server-only logger を import すると、到達しない
@@ -140,7 +141,7 @@ export function guardWrite(options: WriteGuardOptions): NextResponse | null {
     'Retry-After',
     String(computeRetryAfterSeconds(rejection.state.expectedEndAt))
   )
-  response.headers.set('Cache-Control', 'private, no-store')
+  response.headers.set('Cache-Control', PRIVATE_NO_STORE_CACHE_CONTROL)
   return response
 }
 
@@ -183,7 +184,7 @@ export function guardWriteRedirect(
     status: 302,
     headers: {
       Location: toSafeRedirectPath(options.redirectTo),
-      'Cache-Control': 'private, no-store',
+      'Cache-Control': PRIVATE_NO_STORE_CACHE_CONTROL,
     },
   })
 }

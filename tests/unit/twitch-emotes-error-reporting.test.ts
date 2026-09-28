@@ -51,6 +51,7 @@ describe('GET /api/twitch/emotes error reporting', () => {
     const { getTwitchAccessToken, twitchTokenErrorReportContext } =
       await import('@/lib/twitch/token-manager')
     const { handleApiError } = await import('@/lib/error-handler')
+    const { checkRateLimit, rateLimits } = await import('@/lib/rate-limit')
 
     vi.mocked(getTwitchAccessToken).mockRejectedValue(tokenError)
     vi.mocked(twitchTokenErrorReportContext).mockReturnValue(reportContext)
@@ -61,6 +62,7 @@ describe('GET /api/twitch/emotes error reporting', () => {
     const { GET } = await import('@/app/api/twitch/emotes/route')
     await GET(new Request('http://localhost:3000/api/twitch/emotes'))
 
+    expect(checkRateLimit).toHaveBeenCalledWith(rateLimits.twitchRewardsGet, 'user:test')
     expect(twitchTokenErrorReportContext).toHaveBeenCalledWith(tokenError)
     expect(handleApiError).toHaveBeenCalledWith(
       tokenError,

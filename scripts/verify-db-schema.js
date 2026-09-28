@@ -315,7 +315,7 @@ async function main() {
   const databaseUrl = process.env.DATABASE_URL
   if (!databaseUrl) {
     console.error('Usage: DATABASE_URL="postgres://..." node scripts/verify-db-schema.js')
-    console.error('DATABASE_URL is not set (use the Supabase Direct connection string).')
+    console.error('DATABASE_URL is not set (use the PlanetScale PostgreSQL connection string).')
     process.exit(2)
   }
 

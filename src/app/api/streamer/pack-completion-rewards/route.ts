@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
+import { PRIVATE_NO_STORE_CACHE_CONTROL } from '@/lib/cache-control';
 import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { validateCSRFToken } from '@/lib/csrf';
 import { checkRateLimit, getRateLimitIdentifier, rateLimits } from '@/lib/rate-limit';
@@ -8,7 +9,7 @@ import { getDb } from '@/lib/db/client';
 import { getSqlState } from '@/lib/db/errors';
 import { rewardCacheTag } from '@/lib/services/pack-completion-reward';
 
-const respond = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': 'private, no-store' } });
+const respond = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': PRIVATE_NO_STORE_CACHE_CONTROL } });
 
 async function handle(request: NextRequest) {
   const method = request.method;

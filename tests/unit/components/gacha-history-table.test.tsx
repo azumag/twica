@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, type ComponentProps } from 'react'
 import { renderToString } from 'react-dom/server'
 import { hydrateRoot } from 'react-dom/client'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import GachaHistoryTable from '@/components/GachaHistoryTable'
 import jaMessages from '../../../messages/ja.json'
@@ -103,7 +104,167 @@ describe('GachaHistoryTable hydration mismatch (Issue #776 regression)', () => {
     // (Fableレビュー指摘)。
     const occurrences = source.match(/suppressHydrationWarning>/g) ?? []
     // users一覧の最終ドロー日 (toLocaleDateString) + 履歴一覧のredeemed_at
-    // (toLocaleString) + ユーザー詳細パネル内redeemed_at (toLocaleString) の3箇所
-    expect(occurrences.length).toBeGreaterThanOrEqual(3)
+    // (toLocaleString) + ユーザー詳細パネル内redeemed_at (toLocaleString) の3箇所以上。
+    // #873 のコンプリート日時にも同じローカルTZ方針を適用している。
+    expect(occurrences.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('renders overall and pack completion history in the streamer user detail panel', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        users: [{
+          userTwitchId: '123456789',
+          username: 'alice',
+          drawCount: 2,
+          uniqueCards: 1,
+          uniqueCardIds: ['card-1'],
+          lastDrawAt: '2026-03-03T00:00:00Z',
+        }],
+        pagination: { page: 1, perPage: 20, total: 1, totalPages: 1 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        history: [],
+        pagination: { page: 1, perPage: 20, total: 0, totalPages: 0 },
+        completions: [
+          { total_cards: 8, completed_at: '2026-03-01T00:00:00Z', collection_name: null },
+          { total_cards: 3, completed_at: '2026-03-02T00:00:00Z', collection_name: '第一弾' },
+          { total_cards: 2, completed_at: '2026-03-03T00:00:00Z', collection_name: '__default__' },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    render(
+      <NextIntlClientProvider locale="ja" messages={jaMessages}>
+        <GachaHistoryTable
+          initialHistory={[]}
+          initialPagination={{ page: 1, perPage: 20, total: 0, totalPages: 0 }}
+          isStreamer
+          cards={[{ id: 'card-1', name: 'カード1' }]}
+          totalActiveCards={8}
+        />
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: jaMessages.gachaHistoryPage.tabs.users }))
+    await screen.findByRole('button', { name: /alice/ })
+    fireEvent.click(screen.getByRole('button', { name: /alice/ }))
+
+    await screen.findByText('第一弾')
+    expect(screen.getByText(jaMessages.channelPointSettings.collections.defaultOnlyName)).toBeTruthy()
+    expect(screen.getByText(/全8種時にコンプリート達成/)).toBeTruthy()
+    expect(screen.getByText(/全3種時にコンプリート達成/)).toBeTruthy()
+    expect(screen.getByText(/全2種時にコンプリート達成/)).toBeTruthy()
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    expect(fetchSpy.mock.calls[1]?.[0]).toContain('userId=123456789')
+  })
+
+  it('keeps loading owned by the latest user detail request after the previous request aborts', async () => {
+    let resolveSecondDetail: ((response: Response) => void) | undefined
+    let resolveFirstAbort: (() => void) | undefined
+    const firstAbort = new Promise<void>((resolve) => {
+      resolveFirstAbort = resolve
+    })
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.includes('view=users')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          users: [
+            {
+              userTwitchId: 'user-a',
+              username: 'alice',
+              drawCount: 1,
+              uniqueCards: 1,
+              uniqueCardIds: ['card-a'],
+              lastDrawAt: '2026-03-01T00:00:00Z',
+            },
+            {
+              userTwitchId: 'user-b',
+              username: 'bob',
+              drawCount: 1,
+              uniqueCards: 1,
+              uniqueCardIds: ['card-b'],
+              lastDrawAt: '2026-03-02T00:00:00Z',
+            },
+          ],
+          pagination: { page: 1, perPage: 20, total: 2, totalPages: 1 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      }
+
+      if (url.includes('userId=user-a')) {
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal
+          if (!signal) {
+            reject(new Error('user detail request must carry an abort signal'))
+            return
+          }
+          signal.addEventListener('abort', () => {
+            resolveFirstAbort?.()
+            reject(new DOMException('Aborted', 'AbortError'))
+          }, { once: true })
+        })
+      }
+
+      if (url.includes('userId=user-b')) {
+        return new Promise<Response>((resolve) => {
+          resolveSecondDetail = resolve
+        })
+      }
+
+      return Promise.reject(new Error(`unexpected fetch: ${url}`))
+    })
+
+    render(
+      <NextIntlClientProvider locale="ja" messages={jaMessages}>
+        <GachaHistoryTable
+          initialHistory={[]}
+          initialPagination={{ page: 1, perPage: 20, total: 0, totalPages: 0 }}
+          isStreamer
+          cards={[
+            { id: 'card-a', name: 'Aliceカード' },
+            { id: 'card-b', name: 'Bobカード' },
+          ]}
+          totalActiveCards={2}
+        />
+      </NextIntlClientProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: jaMessages.gachaHistoryPage.tabs.users }))
+    await screen.findByRole('button', { name: /alice/ })
+    await screen.findByRole('button', { name: /bob/ })
+
+    fireEvent.click(screen.getByRole('button', { name: /alice/ }))
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    fireEvent.click(screen.getByRole('button', { name: /bob/ }))
+
+    // Wait until request A has actually rejected due to B aborting it and React
+    // has flushed A's catch/finally. The stale finally must not clear B's spinner.
+    await act(async () => {
+      await firstAbort
+      await Promise.resolve()
+    })
+    expect(document.querySelector('.fixed .opacity-50')).not.toBeNull()
+
+    await act(async () => {
+      resolveSecondDetail?.(new Response(JSON.stringify({
+        history: [{
+          id: 'history-b',
+          redeemed_at: '2026-03-02T00:00:00Z',
+          cards: {
+            id: 'card-b',
+            name: 'Bobカード',
+            image_url: null,
+            image_padding_color: null,
+            rarity: 'common',
+          },
+        }],
+        pagination: { page: 1, perPage: 20, total: 1, totalPages: 1 },
+        completions: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      await Promise.resolve()
+    })
+
+    await screen.findByText('Bobカード')
+    await waitFor(() => expect(document.querySelector('.fixed .opacity-50')).toBeNull())
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
   })
 })

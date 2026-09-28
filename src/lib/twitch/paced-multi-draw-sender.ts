@@ -18,7 +18,18 @@ export type PacedMultiDrawSendOutcome = (
   | { outcome: 'terminal'; code: ChatSendTerminalCode; reason: string }
   | { outcome: 'retryable'; reason: string }
   | { outcome: 'aborted'; reason: string }
+  /**
+   * Issue #1665: deadlineAt/maxSegmentsの予算内に完走できなかった、正常な
+   * 途中終了。terminal/retryable/abortedのいずれでもない、失敗ではない停止。
+   * 呼び出し元（chat-notification-delivery.ts）はこれをcontinuationとして
+   * 永続化し、通常の試行回数を消費しない。
+   */
+  | { outcome: 'deferred'; reason: 'budget' }
 ) & { degradation?: ChatSendDegradation }
+
+export type ChatChannelGateResult =
+  | { outcome: 'reserved' }
+  | { outcome: 'budget-exhausted' }
 
 export interface PacedMultiDrawSendOptions {
   deliveryMode: unknown
@@ -34,6 +45,26 @@ export interface PacedMultiDrawSendOptions {
   /** unit test用。productionは固定1.6秒を使用する。 */
   delay?: (milliseconds: number) => Promise<void>
   chatService?: Pick<TwitchChatService, 'sendChatMessageDetailed' | 'sendChatMessage'>
+  /**
+   * Issue #1665: この時刻を過ぎたら新しいsegmentの送信を開始せずdeferredで
+   * 返す。未指定時は無制限（既存の同期呼び出し元と完全に同じ挙動を維持する）。
+   */
+  deadlineAt?: number
+  /**
+   * Issue #1665: この呼び出しで送信するsegment数の上限。未指定時は無制限。
+   */
+  maxSegments?: number
+  /**
+   * Issue #1665: 指定時、各segment送信の直前にDBバックエンドのチャネル送信gate
+   * （chat-channel-gate.ts）で予約してから送る。同じ配信者チャンネルへ向かう
+   * 別のoutbox行・別の配送経路（summary/individual/chunked、別のN連バッチ）
+   * との間隔も守れるようになる。
+   *
+   * 未指定時は従来通りプロセス内delay()のみで間隔を制御する（既存の同期経路
+   * ＝postRedemptionNotify/eventsub-replayの現行動作を変えないため、新しい
+   * bounded配送経路だけがこれを渡す）。
+   */
+  channelGate?: (deadlineAt: number) => Promise<ChatChannelGateResult>
 }
 
 const defaultDelay = (milliseconds: number) => new Promise<void>((resolve) => {
@@ -76,9 +107,32 @@ export async function sendPacedMultiDrawChatAnnouncement(
   const chatService = options.chatService ?? new TwitchChatService()
   const delay = options.delay ?? defaultDelay
   let degradation: ChatSendDegradation | undefined
+  let segmentsSentThisCall = 0
+
+  const deferredOutcome = (): PacedMultiDrawSendOutcome => (
+    degradation
+      ? { outcome: 'deferred', reason: 'budget', degradation }
+      : { outcome: 'deferred', reason: 'budget' }
+  )
 
   for (let index = startCursor; index < segments.length; index += 1) {
-    if (index > startCursor) {
+    if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt) {
+      return deferredOutcome()
+    }
+    if (options.maxSegments !== undefined && segmentsSentThisCall >= options.maxSegments) {
+      return deferredOutcome()
+    }
+
+    if (options.channelGate) {
+      // gate自身がチャネル全体の間隔を管理するため、プロセス内delay()は使わない
+      // （二重に待つと間隔が不必要に伸びる）。最初のsegmentも含め毎回予約する:
+      // continuation再開後は他のoutbox行が同じチャネルへ送信済みの可能性がある。
+      const gateDeadline = options.deadlineAt ?? Number.POSITIVE_INFINITY
+      const gateResult = await options.channelGate(gateDeadline)
+      if (gateResult.outcome === 'budget-exhausted') {
+        return deferredOutcome()
+      }
+    } else if (index > startCursor) {
       await delay(MULTI_DRAW_CHAT_INTERVAL_MS)
     }
 
@@ -130,6 +184,7 @@ export async function sendPacedMultiDrawChatAnnouncement(
               reason: `multi-draw segment ${index + 1}/${segments.length} sent but cursor update lost its lease`,
             }
       }
+      segmentsSentThisCall += 1
       continue
     }
 

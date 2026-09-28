@@ -14,6 +14,36 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn() },
 }))
 
+/**
+ * `vi.useFakeTimers()` 済みの偽 setTimeout を呼び出し記録付きで差し替え、その記録用
+ * モックを返す。必ず useFakeTimers() の後に呼ぶこと。
+ *
+ * `vi.spyOn(globalThis, 'setTimeout')` を使わない理由:
+ * spyOn は spy 作成時点の値（ここでは fake-timers の偽 setTimeout）を「元の実装」として
+ * 記憶し、Vitest 3 の spy レジストリ（@vitest/spy の `mocks` Set）は restore 後も spy を
+ * 保持し続ける。そのため後続の `vi.restoreAllMocks()`（この describe の beforeEach や、
+ * singleFork で同一プロセスに載った後続テストファイル）が呼ばれるたびに、
+ * `useRealTimers()` でネイティブへ戻したはずの globalThis.setTimeout へ偽実装が
+ * 書き戻される。実測で twitch-auth.test.ts 終了時に偽 setTimeout が残り、
+ * `--poolOptions.forks.singleFork=true` の全体実行で後続ファイル
+ * (twitch-check-subscription-api / db-retry 等、withDbRetry の実待機を使うテスト) が
+ * 30 秒タイムアウトしていた。
+ *
+ * ここでは globalThis へ直接代入するだけなので restore 対象として登録されず、
+ * afterEach の `vi.useRealTimers()` が fake-timers の保存していたネイティブ実装で
+ * 上書きして元へ戻る。この復元は、`vi.fn(impl)` が偽実装の own property
+ * （fake-timers の uninstall が「ネイティブを書き戻すか delete するか」を判定する
+ * `hadOwnProperty`）を記録用モックへコピーすることに依存している（Vitest 3.2.4 で確認）。
+ */
+function recordFakeSetTimeoutCalls() {
+  // fake timers なしで呼ぶと vi.fn(ネイティブ) が globalThis に残り、useRealTimers() でも
+  // 戻らず後続ファイルへ漏れるため、前提を実行時に強制する。
+  if (!vi.isFakeTimers()) throw new Error('recordFakeSetTimeoutCalls() must be called after vi.useFakeTimers()')
+  const recorder = vi.fn(globalThis.setTimeout)
+  globalThis.setTimeout = recorder as unknown as typeof globalThis.setTimeout
+  return recorder
+}
+
 describe('AUTH_SCOPES / ADDITIONAL_SCOPES (Issue #398: least privilege)', () => {
   it('AUTH_SCOPES は本人確認に必要な user:read:email のみ', async () => {
     const { AUTH_SCOPES } = await import('@/lib/twitch/scopes')
@@ -344,7 +374,7 @@ describe('refreshTwitchToken', () => {
 
   it('Retry-Afterのdelta-secondsを最低待機時間として尊重する', async () => {
     vi.useFakeTimers()
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    const timeoutSpy = recordFakeSetTimeoutCalls()
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('busy', { status: 429, headers: { 'Retry-After': '1' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_in: 1, token_type: 'bearer', scope: [] }), { status: 200 }))
@@ -365,7 +395,7 @@ describe('refreshTwitchToken', () => {
   ])('Retry-AfterのRFC HTTP-dateを尊重する: %s', async retryAfter => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-24T12:00:00.000Z'))
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    const timeoutSpy = recordFakeSetTimeoutCalls()
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('busy', {
         status: 503,
@@ -419,7 +449,7 @@ describe('refreshTwitchToken', () => {
   it('RFC850の2桁年が50年と1秒先なら100年前へ補正する', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-24T12:00:00.000Z'))
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    const timeoutSpy = recordFakeSetTimeoutCalls()
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('busy', {
         status: 503,
@@ -442,7 +472,7 @@ describe('refreshTwitchToken', () => {
   it('HTTP-dateのleap secondは直前の59秒から1秒後として扱う', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2016-12-31T23:59:59.000Z'))
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    const timeoutSpy = recordFakeSetTimeoutCalls()
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('busy', {
         status: 503,
@@ -463,7 +493,7 @@ describe('refreshTwitchToken', () => {
   it('過去のRetry-After HTTP-dateは待機0msで再試行する', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-24T12:00:01.000Z'))
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    const timeoutSpy = recordFakeSetTimeoutCalls()
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('busy', {
         status: 503,
@@ -490,7 +520,7 @@ describe('refreshTwitchToken', () => {
     'Thu, 24 Jul 2026 12:00:01 GMT',
   ])('RFC外のRetry-Afterはfull-jitterへフォールバックする: %s', async retryAfter => {
     vi.useFakeTimers()
-    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    const timeoutSpy = recordFakeSetTimeoutCalls()
     vi.spyOn(Math, 'random').mockReturnValue(0.5)
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('busy', { status: 503, headers: { 'Retry-After': retryAfter } }))

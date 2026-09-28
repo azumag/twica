@@ -3,6 +3,7 @@ import { updateSession } from '@/lib/session-middleware'
 import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
 import { setSecurityHeaders, buildCsp } from '@/lib/security-headers'
 import { ERROR_MESSAGES } from '@/lib/constants'
+import { PRIVATE_NO_STORE_CACHE_CONTROL } from '@/lib/cache-control'
 import { hasInvalidOverlayEventsStreamerId } from '@/lib/overlay-route-validation'
 import { defaultLocale, locales, LOCALE_COOKIE_NAME, type Locale } from '@/i18n/config'
 import { guardWrite } from '@/lib/maintenance/guard'
@@ -150,7 +151,7 @@ export async function middleware(request: NextRequest) {
     )
     // 早期 return は後段の fail-closed Cache-Control を通らないため、
     // エラー応答側でも明示的に保存禁止を宣言する（#1337）。
-    errorResponse.headers.set('Cache-Control', 'private, no-store')
+    errorResponse.headers.set('Cache-Control', PRIVATE_NO_STORE_CACHE_CONTROL)
     return setSecurityHeaders(errorResponse, { pathname })
   }
 
@@ -203,7 +204,7 @@ export async function middleware(request: NextRequest) {
     pathPattern.test(pathname)
   )
   if (!isCacheablePublicPath) {
-    response.headers.set('Cache-Control', 'private, no-store')
+    response.headers.set('Cache-Control', PRIVATE_NO_STORE_CACHE_CONTROL)
   }
 
   // Ensure pages with session-dependent content are never cached
@@ -241,7 +242,7 @@ export async function middleware(request: NextRequest) {
               // 429 は現在の Workers Cache heuristics では通常キャッシュ対象外だが、
               // 早期 return は上段の fail-closed response を返さないため明示的に保存禁止する。
               // cacheable public path でもレート制限応答だけは再利用させない（#1337）。
-              'Cache-Control': 'private, no-store',
+              'Cache-Control': PRIVATE_NO_STORE_CACHE_CONTROL,
               'X-RateLimit-Limit': String(rateLimitResult.limit),
               'X-RateLimit-Remaining': String(rateLimitResult.remaining),
               'X-RateLimit-Reset': String(rateLimitResult.reset),

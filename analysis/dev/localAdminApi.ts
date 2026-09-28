@@ -567,8 +567,8 @@ export async function getUserCardsSummary(userId: string, env: Env) {
   return getUserCardsSummaryPg(env, userId)
 }
 
-// analysis/src/pages/UserCards.tsx が現在.range(0, 9999)で単発取得しているuser_cardsの
-// サーバーサイドページネーション版。streamerは各カードのstreamer_idからまとめて引き当てて埋め込む
+// UserCards.tsx のカード詳細テーブルは /__admin/user-cards/table 経由の
+// サーバーサイドページネーションを利用する。streamer情報もDB側でまとめて結合して返す。
 export async function getUserCardsTable(
   params: { userId: string; page: number; pageSize: number },
   env: Env
@@ -579,8 +579,8 @@ export async function getUserCardsTable(
   return getUserCardsTablePg(env, { userId, offset, pageSize })
 }
 
-// analysis/src/pages/StreamerCards.tsx が現在.range(0, 9999)で単発取得しているcardsの
-// サーバーサイドページネーション版。並び順(レアリティ降順→作成日降順)は既存と同一
+// StreamerCards.tsx のカード一覧は /__admin/streamer-cards 経由の
+// サーバーサイドページネーションを利用する。並び順(レアリティ降順→作成日降順)はDB側で保証する。
 export async function getStreamerCardsPage(
   params: { streamerId: string; page: number; pageSize: number },
   env: Env

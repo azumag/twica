@@ -46,6 +46,7 @@ vi.mock('@/lib/twitch/linked-account-auth', () => ({ handleLinkedAccountCallback
 
 import { GET as callbackGet } from '@/app/api/auth/twitch/callback/route'
 import { GET as loginGet } from '@/app/api/auth/twitch/login/route'
+import { GET as emotesGet } from '@/app/api/twitch/emotes/route'
 import { GET as rewardsGet } from '@/app/api/twitch/rewards/route'
 import { GET as bootstrapGet } from '@/app/api/twitch/channel-point-bootstrap/route'
 
@@ -226,6 +227,28 @@ describe('OAuth error reporting has exactly one durable writer', () => {
       // バグを検知できない。実際のroute handler(rewardsGet)を通し、
       // logErrorFromLoggerへ渡るargsにrefreshStatus/refreshErrorKindが実際に
       // 含まれることを直接確認する。
+      const [, loggedArgs] = mocks.logErrorFromLogger.mock.calls[0]
+      expect(loggedArgs).toContainEqual(
+        expect.objectContaining({ refreshStatus: 522, refreshErrorKind: 'http' }),
+      )
+    } finally {
+      fetchMock.mockRestore()
+    }
+  }, 10_000)
+
+  it('期限切れ token の 522 refresh は emotes API 境界でも一度だけ記録し、provider body を渡さない', async () => {
+    mocks.getSession.mockResolvedValue({ twitchUserId: 'streamer-1' })
+    mocks.canUseStreamerFeatures.mockReturnValue(true)
+    primeExpiredTokenDb()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(SECRET, { status: 522 }))
+    try {
+      const response = await emotesGet(new Request('http://localhost:3000/api/twitch/emotes'))
+
+      expect(response.status).toBe(500)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      expect(mocks.reportAuthError).not.toHaveBeenCalled()
+      expect(mocks.logErrorFromLogger).toHaveBeenCalledTimes(1)
+      expect(allPersistedArguments()).not.toContain(SECRET)
       const [, loggedArgs] = mocks.logErrorFromLogger.mock.calls[0]
       expect(loggedArgs).toContainEqual(
         expect.objectContaining({ refreshStatus: 522, refreshErrorKind: 'http' }),

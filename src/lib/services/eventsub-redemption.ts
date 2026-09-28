@@ -48,6 +48,7 @@ import {
   retryChatNotification,
 } from "@/lib/services/chat-notification-outbox";
 import { sendClaimedChatAnnouncement } from "@/lib/services/eventsub-redemption-delivery";
+import { enqueueChatNotificationWakeup } from "@/lib/services/chat-notification-dispatch";
 import type { GachaCard, EventSubStreamerInfo } from "@/lib/services/gacha";
 export { runInBackground } from "@/lib/background-task";
 // チャット通知プレースホルダと売り切れ設定を、ガチャ確定と同じPlanetScaleから
@@ -454,6 +455,31 @@ export async function postRedemptionNotify(
     // chat無効時はexecute_gacha_transactionもoutboxを作らないためDB操作ゼロ。
     if (!data.streamer.chat_announcement_enabled) return;
 
+    // Issue #1665: 新しいbounded配送経路（専用Queue + 送信位置からの再開）は
+    // 初期無効。有効化後は、このHTTPレスポンス寿命に縛られた同期全件送信を
+    // やめ、outbox行（カード付与と同じDB transactionで既にcommit済み）への
+    // 軽い起床通知だけをenqueueする。実配送はchat-notification-delivery.tsの
+    // bounded sliceが専用Queue Worker経由で行う。enqueue失敗時もここで例外に
+    // せず既存Cron relay・回収sweepに委ねる（enqueueChatNotificationWakeup自身が
+    // fail-safe）。
+    //
+    // enqueueChatNotificationWakeup自身がフラグを判定するため、ここで別途
+    // isChatDeliveryDispatchEnabled()を呼ばない。フラグ判定はCloudflare Workers
+    // 実行コンテキストの解決（getCloudflareContext）を伴うため、2回呼ぶと
+    // ガチャ交換のたびにその解決を不要に倍加させてしまう。
+    // outcomeが'disabled'（フラグ未設定=初期状態）の場合だけ下の同期経路へ
+    // フォールバックする。'unavailable'（フラグは有効だがQueue binding未配備・
+    // enqueue失敗）でも同期経路へは戻さない。これは意図的な選択であり、
+    // バグではない: 「Queue binding未設定・Queue障害を成功扱いにせず…
+    // 旧長時間ループへ自動フォールバックしない」（Issue #1665）。フラグの
+    // 有効化はロールアウト手順上必ずQueue/Worker配備の後に行う運用規律に
+    // 委ねる（早すぎる有効化はここではなく既存20分周期cron relayが救済する）。
+    const dispatchResult = await enqueueChatNotificationWakeup(data.batchId);
+    if (dispatchResult.outcome !== 'disabled') {
+      return;
+    }
+
+    // 以下は新経路が無効な間の既存の同期経路。挙動は変更しない。
     // outbox行はカード付与と同じDB transactionで既にcommit済み。ここでは短い
     // owner-fenced claimだけを取得し、Cron/手動relayとの通常の二重送信を防ぐ。
     const claim = await claimChatNotificationBatch(data.batchId);
@@ -564,6 +590,16 @@ export async function postRedemptionNotify(
         // pending/deadへ上書きしてはならない。現在のlease失効/新所有者へ委ねる。
         deliveryStatePersisted = true;
         throw new Error(`Chat announcement aborted: ${failureReason}`);
+      }
+      if (outcome.outcome === 'deferred') {
+        // Issue #1665: このlive経路はsendClaimedChatAnnouncementへbudget/
+        // channelGateを渡さないため、'deferred'は本来発生しない不変条件。
+        // 万一発生した場合、下のretryChatNotification（一時障害用）へ通すと
+        // 正常な予算切れのはずの状態を実障害としてattempt_countを消費してしまう。
+        // 原因不明のまま試行回数を消費・誤ってDLQ化するより、abortedと同じく
+        // 状態を変更せず大きな声で失敗させ、次のclaimに委ねる。
+        deliveryStatePersisted = true;
+        throw new Error(`Chat announcement unexpectedly deferred without a budget: ${failureReason}`);
       }
       const retryState = await retryChatNotification(claim, failureReason);
       deliveryStatePersisted = true;
@@ -1079,6 +1115,17 @@ export type ChatAnnouncementOutcome = (
   | { outcome: 'terminal'; code: ChatSendTerminalCode; reason: string }
   | { outcome: 'retryable'; reason: string }
   | { outcome: 'aborted'; reason: string }
+  /**
+   * Issue #1665: paced-multi-draw-sender.tsのdeadlineAt/maxSegments/channelGate
+   * 予算内に完走できなかった正常な途中終了。sendChatAnnouncement自身（単発・
+   * summary）は予算の概念を持たないため生成しないが、sendClaimedChatAnnouncement
+   * 経由でN連のpaced送信結果をそのまま返すためunion側に必要。既存呼び出し元
+   * （postRedemptionNotify・eventsub-replay/route.ts）はdeadlineAt等を渡さない
+   * ため実際には発生せず、両者の既存fallback（retryChatNotification）へ
+   * 到達しても実害はない。新しいbounded配送経路だけがこのoutcomeを明示的に
+   * 判定してreleaseChatNotificationForContinuationへ振り分ける。
+   */
+  | { outcome: 'deferred'; reason: 'budget' }
 ) & { degradation?: ChatSendDegradation };
 
 export async function sendChatAnnouncement(
