@@ -430,6 +430,61 @@ describe('TwitchChatService', () => {
       expect(reportError).not.toHaveBeenCalled();
     });
 
+    // Issue #1725フォローアップ: drop_reason自体が欠けた・data配列が空の200応答は
+    // AutoMod等の既知content-moderationではなく、Twitch API契約崩れや自前バグの
+    // 兆候になり得るため、CONTENT_REJECTEDへは倒さずTWITCH_REJECTED（自動Issue化
+    // 対象）のまま分類する。
+    it.each([
+      ['data配列が空', { data: [] }],
+      ['dataキー自体が無い', {}],
+      ['is_sent=falseかつdrop_reasonも無い', { data: [{ message_id: '', is_sent: false }] }],
+    ])('HTTP 200でも%sならTWITCH_REJECTEDのまま分類する（自動Issue化対象を維持）', async (_label, body) => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        reason: 'Twitch API 200: Twitch returned 200 without is_sent=true',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    // Issue #1725フォローアップ: drop_reason.messageはあるがcodeが欠けた応答は
+    // Twitch Helixの正規契約（drop_reasonがあればcode/messageは必ず対で返る）から
+    // 逸脱しているため、既知のcontent-moderationシグナルとして扱わずTWITCH_REJECTED
+    // （自動Issue化対象）のまま分類する。dropMessageにはTwitchが返した実際の
+    // messageを使う（診断情報は失われない）。
+    it('drop_reasonにmessageはあるがcodeが無いならTWITCH_REJECTEDのまま分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{
+            message_id: '',
+            is_sent: false,
+            drop_reason: { message: 'unexpected shape without a code' },
+          }],
+        }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        reason: 'Twitch API 200: unexpected shape without a code',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
     // issue #842/#843: 同じ視聴者が同じカードを30秒以内に引くとテンプレート展開後の
     // 本文が完全一致し、Twitchが msg_duplicate で抑止する。障害ではないため
     // terminal（DLQ + エラー報告）と分けて分類する。

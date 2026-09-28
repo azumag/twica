@@ -162,13 +162,15 @@ export const CHAT_SEND_TERMINAL_CODES = {
   CREDENTIAL_UNAVAILABLE: 'credential_unavailable',
   TWITCH_REJECTED: 'twitch_rejected',
   /**
-   * Issue #1725: HTTP 200だがAutoMod等drop_reason付きでis_sent!==trueだったケース。
-   * 本文自体がTwitchの自動判定で拒否されただけでコード側の不具合ではなく、かつ
-   * missing_scopeと違い配信者の操作でも直らない（本文次第で再発し得る）ため、
-   * MISSING_SCOPE同様に自動Issue化の対象外へ倒す。ただしTWITCH_REJECTED
-   * （401/403等の本物のAPIレベル拒否）とは原因が異なるため別codeに分ける:
-   * TWITCH_REJECTEDへ合流させるとscope/認証系の実障害まで自動Issue対象外に
-   * なってしまう。
+   * Issue #1725: HTTP 200かつTwitchが明示的なdrop_reasonを返してis_sent!==trueだった
+   * ケース（AutoMod保留等）。本文自体がTwitchの自動判定で拒否されただけでコード側の
+   * 不具合ではなく、かつmissing_scopeと違い配信者の操作でも直らない（本文次第で
+   * 再発し得る）ため、MISSING_SCOPE同様に自動Issue化の対象外へ倒す。ただし
+   * TWITCH_REJECTED（401/403等の本物のAPIレベル拒否）とは原因が異なるため別codeに
+   * 分ける: TWITCH_REJECTEDへ合流させるとscope/認証系の実障害まで自動Issue対象外に
+   * なってしまう。逆に、drop_reason自体が欠けた・data配列が空の200応答（Twitch API
+   * 契約崩れや自前バグの兆候になり得る）はこのcodeに含めず、従来どおり
+   * TWITCH_REJECTEDとして自動報告する（sendChatMessageInternal参照）。
    */
   CONTENT_REJECTED: 'content_rejected',
 } as const
@@ -532,7 +534,15 @@ export class TwitchChatService {
             message: dropMessage,
           }
           lastException = null
-          contentRejectedByTwitch = true
+          // Issue #1725: Twitchが明示的にdrop_reasonを返した場合だけ「本文が
+          // 拒否された」と判定する。sentResult自体が無い・drop_reasonが欠けた
+          // 応答（dropCodeが上のfallback 'invalid-success-response'）は、Twitch側
+          // のAPI契約崩れや自前バグの兆候であり得るcontent-moderationとは別種の
+          // 異常のため、ここではフラグを立てずTWITCH_REJECTED（自動Issue化対象）
+          // のまま扱う。
+          if (sentResult?.drop_reason?.code !== undefined) {
+            contentRejectedByTwitch = true
+          }
           // 同じ本文を再送してもAutoMod等の判定は変わらないためterminalとし、
           // 後続通知を塞がずDLQから人間が内容を確認できるようにする。
           break
