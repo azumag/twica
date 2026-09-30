@@ -21,11 +21,11 @@
 | OVERLAY_REALTIME_SERVICE | `twica-overlay-realtime` | `twica-overlay-realtime-preview` | 同一zone global fetchへの置換不可 |
 | 公開Twitch client ID | production用 | preview用 | ビルド値・callback・報酬の環境分離を維持 |
 | Overlay Worker | `twica-overlay-realtime` | `twica-overlay-realtime-preview` | `OVERLAY_ROOMS → OverlayRoom`、`OVERLAY_PRESENCE → OverlayPresence`。両方SQLite DO、v1/v2履歴。observability有効、rate-limit varsも両環境で同じ |
-| Error Reporter | `twica-error-reporter` | 配備なし | productionのみCI配備。5分cronと20分cron、GitHub通知、park監視・drain・health |
+| Error Reporter | `twica-error-reporter` | CI配備なし（live未確認） | productionのみCI配備。5分cronと20分cron、GitHub通知、park監視・drain・health |
 | Reporter KV/DB | 本体production KV/Hyperdriveと共用 | Hyperdrive `1e3f6c4569bf4202a41c42711c878b86` のみ | previewにKV/varsを継承しない縮退設定。root preview DBとはIDが異なる。勝手に統合しない |
 | Chat Delivery | `twica-chat-delivery`（設定案のみ） | `twica-chat-delivery-preview`（設定案のみ） | CI配備なし。Queue作成やconsumer有効化は #1665 の別工程 |
 | Chat Queue | `chat-notification-wakeup` | `chat-notification-wakeup-preview` | producer `CHAT_NOTIFICATION_QUEUE`、consumer batch=1/concurrency=5/retries=5、1分cron。現物の存在は未確認 |
-| CHAT_APP | `twica` | `twica-preview` | service bindingとAPP_BASE_URLを同じ環境に向ける |
+| CHAT_APP | `twica` | `twica-preview` | service bindingとCHAT_APP_BASE_URLを同じ環境に向ける |
 
 根拠: [root](https://github.com/azumag/twica/blob/preview/wrangler.toml)、[overlay](https://github.com/azumag/twica/blob/preview/workers/overlay-realtime/wrangler.toml)、[reporter](https://github.com/azumag/twica/blob/preview/workers/error-reporter/wrangler.toml)、[chat](https://github.com/azumag/twica/blob/preview/workers/chat-delivery/wrangler.toml)
 
@@ -62,7 +62,7 @@
 | Overlay DO移行 | 既存設定維持、変換を検証 | cf migrateはDO履歴を自動変換しない。live classとSQLite storage/Worker identityの確認が必要 |
 | 新規独立Worker | cf config + Viteを優先 | 既存本体のframework置換や未配備chatの有効化を同時に行わない |
 
-cfはbeta。既存TOMLに対する未移行の `cf init/dev/build/deploy` は設定を無視して自動設定するため禁止する。dry-run deployも未設定時にはファイル変更・installが起こり得る。`cf build` はpackage scriptsを実行しないため、既存guard・typecheck・artifact scannerは明示的に連結する。buildとprebuilt deployは同じmodeに揃える。
+cfはbeta。既存TOMLに対する未移行の `cf init/dev/build/deploy` など、buildを伴うコマンドは設定を無視して自動設定するため禁止する。`cf previews deploy`、`cf workers versions create`、`cf workers triggers deploy`、`cf workers check` もこの対象に含む。dry-run deployも未設定時にはファイル変更・installが起こり得る。`cf build` はpackage scriptsを実行しないため、既存guard・typecheck・artifact scannerは明示的に連結する。buildとprebuilt deployは同じmodeに揃える。
 
 公式資料: [projects](https://developers.cloudflare.com/cf/projects/)、[migration](https://developers.cloudflare.com/cf/wrangler/migrate/)、[mapping / unsupported commands](https://developers.cloudflare.com/cf/wrangler/reference/)、[CI](https://developers.cloudflare.com/cf/ci/)、[requirements](https://developers.cloudflare.com/cf/get-started/)
 
