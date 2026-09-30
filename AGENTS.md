@@ -50,6 +50,6 @@
 ## Cloudflare 操作
 
 - 新規Cloudflare操作は cf-first とし、`cf cli search` で探索してから対象・引数を確認する。新規設定は可能な範囲で `cloudflare.config.ts`、新規独立Workerは Vite + Cloudflare Vite plugin を優先する。
-- 既存Wranglerプロジェクトでは `cf migrate` のレビュー前に `cf init/dev/build/deploy` を実行しない。自動設定が既存TOMLのentrypointやbindingを引き継がないため。
+- 既存Wranglerプロジェクトでは `cf migrate` のレビュー前に `cf init/dev/build/deploy` などbuildを伴うコマンドを実行しない（追加の対象は下記運用文書を参照）。自動設定が既存TOMLのentrypointやbindingを引き継がないため。
 - 本体のOpenNext / Workers Builds、preview/prod、secret、補助Workerの配備有無を維持する。移行のparityと明示fallbackは [Cloudflare cf-first運用](docs/cloudflare-cf-migration.md) を参照する。
 - Wranglerを無条件に追加・更新しない。利用時はfallback理由と対象を明示する。設定移行にruntime互換日更新、DB変更、secret更新、resource作成、配備を混ぜない。
