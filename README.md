@@ -114,6 +114,9 @@ npm run db:migrate:verify
 Workers Builds の設定、ロールバック前の確認、補助 Worker の責務は
 [docs/cloudflare-workers-builds.md](docs/cloudflare-workers-builds.md) を参照してください。
 
+Cloudflare操作のcf-first方針、Wranglerを残す理由、段階移行の確認項目は
+[Cloudflare cf-first運用と移行parity](docs/cloudflare-cf-migration.md) を参照してください。
+
 ## セキュリティ
 
 - HTTP-only セッション Cookie と CSRF トークンを状態変更 API に適用する
