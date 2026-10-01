@@ -112,7 +112,7 @@ export interface EffectiveWeightResult<T> {
  *
  * calculateDropRates と同じ分配式を使うが、以下の点が異なる:
  * - 対象は「抽選プール(pool)」であり、is_active によるフィルタは行わない。
- *   呼び出し側(GachaService.executeGacha)が渡す pool は既に
+ *   呼び出し側(低レベル抽選)が渡す pool は既に
  *   `is_active = true` かつパックで絞り込み済みのカード集合であるため、
  *   ここで再フィルタすると「パック内に存在するがプールから外れたカード」が
  *   誤って母数計算に混ざる/混ざらないの二重管理になり事故りやすい。

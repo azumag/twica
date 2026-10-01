@@ -85,7 +85,7 @@ describe('CardManager pack select visibility (Issue #567)', () => {
   })
 })
 
-// Issue #565: 確率列の母数は実際の抽選プール(executeGachaと同じ絞り込み)に
+// Issue #565: 確率列の母数は実際の抽選プール(低レベル抽選と同じ絞り込み)に
 // 合わせる。パックフィルタ選択中はそのパック内で再正規化された抽選確率を表示。
 describe('CardManager pack-relative probability (Issue #565)', () => {
   const packCards = [
@@ -123,7 +123,7 @@ describe('CardManager pack-relative probability (Issue #565)', () => {
 
     selectPackFilter('パックA')
 
-    // 0.1 : 0.3 → 25% : 75% (executeGacha がパック内で再正規化するのと同じ)
+    // 0.1 : 0.3 → 25% : 75% (低レベル抽選がパック内で再正規化するのと同じ)
     expect(screen.getByText('25.0%')).toBeInTheDocument()
     expect(screen.getByText('75.0%')).toBeInTheDocument()
     expect(screen.queryByText('10.0%')).not.toBeInTheDocument()

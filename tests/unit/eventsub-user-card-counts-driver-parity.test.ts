@@ -62,6 +62,7 @@ vi.mock('@/lib/twitch/chat-service', () => ({
     MISSING_SCOPE: 'missing_scope',
     CREDENTIAL_UNAVAILABLE: 'credential_unavailable',
     TWITCH_REJECTED: 'twitch_rejected',
+    CONTENT_REJECTED: 'content_rejected',
   },
   TwitchChatService: vi.fn().mockImplementation(() => ({
     buildMessage: mocks.buildMessage,
@@ -569,6 +570,44 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
     expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
       '[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization',
       expect.objectContaining({ code: 'missing_scope', streamerId: 'streamer-1' }),
+    )
+  })
+
+  // Issue #1725: AutoMod等でHTTP 200のままis_sent!==trueで拒否されたケース。
+  // コード不具合ではなく再送しても結果が変わらないため、missing_scopeと同様
+  // DLQ化はするが自動Issue化（reportError）はしない。
+  it('content_rejectedはoutboxをDLQ化するがreportErrorしない', async () => {
+    mocks.sendChatMessageDetailed.mockResolvedValueOnce({
+      outcome: 'terminal',
+      code: 'content_rejected',
+      reason: 'Twitch API 200: The message was held by AutoMod.',
+    })
+    mocks.executeGachaForEventSub.mockResolvedValueOnce({
+      success: true,
+      data: {
+        card: { id: 'card-1', name: 'Alpha', description: null, image_url: null, rarity: 'rare', drop_rate: 1 },
+        userTwitchUsername: 'Viewer',
+        streamer: {
+          id: 'streamer-1',
+          chat_announcement_enabled: true,
+          chat_announcement_template: '@{user} {card}',
+          chat_announcement_multi_template: null,
+          chat_announcement_multi_show_cards: false,
+        },
+      },
+    })
+
+    const response = await POST(await createRedemptionRequest('eventsub-chat-content-rejected'))
+
+    expect(response.status).toBe(200)
+    expect(mocks.deadLetterChatNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ batchId: 'eventsub-chat-content-rejected' }),
+      'Twitch API 200: The message was held by AutoMod.',
+    )
+    expect(mockReportError).not.toHaveBeenCalled()
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      '[postRedemptionNotify] chat announcement moved to DLQ - rejected by Twitch content filter',
+      expect.objectContaining({ code: 'content_rejected', streamerId: 'streamer-1' }),
     )
   })
 

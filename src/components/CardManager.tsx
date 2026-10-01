@@ -328,7 +328,8 @@ export default function CardManager({
     }
     // Issue #554: パックフィルタ。DEFAULT_PACK_SENTINEL は「未分類のみ」
     // (collection_name IS NULL)、それ以外は選択されたパック名との完全一致。
-    // cardMatchesPackKey は executeGacha の抽選プール絞り込みと同じ述語を
+    // cardMatchesPackKey は低レベル抽選(GachaService.executeGachaWithoutRepeatProtection)の
+    // 抽選プール絞り込みと同じ述語を
     // 共有しており(collection-packs.ts)、表示用フィルタと抽選プールの判定が
     // ズレないようにする。
     if (packFilter) {
@@ -360,7 +361,7 @@ export default function CardManager({
 
   // Calculate total weight for probability calculation.
   // Issue #565: 確率列の母数は実際の抽選プールに一致させる。パック指定の
-  // 報酬から引いた場合、GachaService.executeGacha は active + collection
+  // 報酬から引いた場合、低レベル抽選(GachaService.executeGachaWithoutRepeatProtection)は active + collection
   // で候補を絞り、selectWeightedCard が候補内の drop_rate 比で抽選する
   // (=パック内で再正規化)。そこでパックフィルタ選択中は同じ絞り込みを
   // 母数に適用し、「そのパックから引いたときの抽選確率」を表示する。
@@ -380,7 +381,7 @@ export default function CardManager({
 
   // Issue #580(#576 フェーズ3): 自動モード時、パックフィルタ選択中の確率列は
   // totalActiveWeight の単純な drop_rate 比ではなく、実際の抽選ロジック
-  // (#579 GachaService.executeGacha / computeEffectiveWeights)と同じ計算で
+  // (#579 低レベル抽選 / computeEffectiveWeights)と同じ計算で
   // 表示する。drop_rate は「配信者の全アクティブカード」を母数に計算された
   // 値であり、パック内の実際のレアリティ構成比とは一致しないことがあるため、
   // drop_rate の単純な再正規化(旧#565実装)ではパック抽選時の実確率とズレる

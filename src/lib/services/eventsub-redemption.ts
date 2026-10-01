@@ -583,6 +583,21 @@ export async function postRedemptionNotify(
           });
           return;
         }
+        // Issue #1725: AutoMod等、本文自体がTwitchの自動判定で拒否された場合も
+        // コード不具合ではない。再送しても同じ本文なら結果は変わらないため、DLQへ
+        // 落として人間がレビューする対象とし、MISSING_SCOPEと同様throw/自動Issue化
+        // の対象外にする。認証・APIレベルの拒否（TWITCH_REJECTED）や未知terminalは
+        // ここへ入らず従来どおりthrow/reportErrorされる。
+        if (outcome.code === CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED) {
+          logger.warn('[postRedemptionNotify] chat announcement moved to DLQ - rejected by Twitch content filter', {
+            code: outcome.code,
+            reason: outcome.reason,
+            streamerId: data.streamer.id,
+            broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+            outboxId: claim.id,
+          });
+          return;
+        }
         throw new Error(`Chat announcement moved to DLQ: ${failureReason}`);
       }
       if (outcome.outcome === 'aborted') {

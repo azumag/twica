@@ -424,9 +424,9 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
       collectionName: "weapons",
     }, "PUT"));
     expect(response.status).toBe(404);
-    // STREAMER_NOT_FOUND（英語）ではなく報酬不在専用の日本語文言を返す
+    // STREAMER_NOT_FOUND ではなく、追加報酬不在の共有エラー契約を返す
     expect(await response.json()).toEqual({
-      error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください",
+      error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND,
     });
     expect(updateCalls).toHaveLength(0);
   });
