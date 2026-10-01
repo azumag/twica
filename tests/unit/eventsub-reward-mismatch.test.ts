@@ -276,11 +276,14 @@ describe('EventSub reward mismatch handling', () => {
     await expect(response.json()).resolves.toEqual({ received: true })
     expect(mocks.executeGachaForEventSub).not.toHaveBeenCalled()
     expect(mocks.executeGachaForRaidEvent).toHaveBeenCalledWith({
-      to_broadcaster_user_id: 'broadcaster-1',
-      from_broadcaster_user_id: 'raider-1',
-      from_broadcaster_user_login: 'raider',
-      from_broadcaster_user_name: 'Raider',
-    }, messageId)
+      event: {
+        to_broadcaster_user_id: 'broadcaster-1',
+        from_broadcaster_user_id: 'raider-1',
+        from_broadcaster_user_login: 'raider',
+        from_broadcaster_user_name: 'Raider',
+      },
+      eventId: messageId,
+    })
     expect(mockPublishCommittedGachaBatch).toHaveBeenCalledWith(
       'streamer-1',
       expect.objectContaining({

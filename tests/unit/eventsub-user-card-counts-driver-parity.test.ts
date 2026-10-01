@@ -513,10 +513,13 @@ describe('EventSub get_user_card_counts PlanetScale経路 (#573/#708)', () => {
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ received: true })
-    expect(mocks.executeGachaForEventSub).toHaveBeenCalledWith(
-      expect.objectContaining({ broadcaster_user_id: 'broadcaster-1', user_id: 'viewer-1' }),
-      'eventsub-chat-and-reporter-reject',
-    )
+    expect(mocks.executeGachaForEventSub).toHaveBeenCalledWith({
+      event: expect.objectContaining({
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'viewer-1',
+      }),
+      eventId: 'eventsub-chat-and-reporter-reject',
+    })
     expect(mocks.sendChatMessageDetailed).toHaveBeenCalledWith(
       'broadcaster-1',
       'built message',

@@ -766,7 +766,10 @@ describe('GachaService.executeGachaForEventSub', () => {
   it('streamer未登録を明示する', async () => {
     installDbFixture({ tables: { streamers: [{ value: [] }] } })
 
-    const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-no-streamer')
+    const result = await new GachaService().executeGachaForEventSub({
+      event: baseEvent,
+      eventId: 'event-no-streamer',
+    })
 
     expect(result).toEqual({ success: false, error: 'Streamer not found' })
   })
@@ -778,7 +781,10 @@ describe('GachaService.executeGachaForEventSub', () => {
       },
     })
 
-    const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-streamer-error')
+    const result = await new GachaService().executeGachaForEventSub({
+      event: baseEvent,
+      eventId: 'event-streamer-error',
+    })
 
     expect(result).toEqual({
       success: false,
@@ -794,7 +800,10 @@ describe('GachaService.executeGachaForEventSub', () => {
       },
     })
 
-    const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-main')
+    const result = await new GachaService().executeGachaForEventSub({
+      event: baseEvent,
+      eventId: 'event-main',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -814,9 +823,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'unknown-reward', cost: 100 },
-    }, 'event-mismatch')
+      event: {
+        ...baseEvent,
+        reward: { id: 'unknown-reward', cost: 100 },
+      },
+      eventId: 'event-mismatch',
+    })
 
     expect(result).toEqual({ success: false, error: 'Reward ID mismatch' })
   })
@@ -832,9 +844,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 100 },
-    }, 'event-additional-error')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 100 },
+      },
+      eventId: 'event-additional-error',
+    })
 
     expect(result).toEqual({
       success: false,
@@ -853,9 +868,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 100 },
-    }, 'event-options-missing')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 100 },
+      },
+      eventId: 'event-options-missing',
+    })
 
     expect(result).toEqual({
       success: false,
@@ -880,9 +898,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 100 },
-    }, 'event-raid-inactive')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 100 },
+      },
+      eventId: 'event-raid-inactive',
+    })
 
     expect(result).toEqual({ success: false, error: 'Raid-limited reward inactive' })
     expect(fixture.transactionCalls).toHaveLength(0)
@@ -911,9 +932,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'raid-reward', cost: 200 },
-    }, 'event-raid-active')
+      event: {
+        ...baseEvent,
+        reward: { id: 'raid-reward', cost: 200 },
+      },
+      eventId: 'event-raid-active',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) expect(result.data.cards).toHaveLength(2)
@@ -938,9 +962,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 300 },
-    }, 'event-multi')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 300 },
+      },
+      eventId: 'event-multi',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -982,9 +1009,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 200 },
-    }, 'event-done')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 200 },
+      },
+      eventId: 'event-done',
+    })
 
     expect(result).toEqual({ success: false, error: 'Duplicate event' })
     expect(fixture.transactionCalls).toHaveLength(0)
@@ -1018,9 +1048,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 300 },
-    }, 'event-resume')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 300 },
+      },
+      eventId: 'event-resume',
+    })
 
     expect(result.success).toBe(true)
     expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
@@ -1068,9 +1101,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 300 },
-    }, 'event-response-lost-first')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 300 },
+      },
+      eventId: 'event-response-lost-first',
+    })
 
     expect(result.success).toBe(true)
     expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
@@ -1122,9 +1158,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 300 },
-    }, 'event-response-lost-middle')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 300 },
+      },
+      eventId: 'event-response-lost-middle',
+    })
 
     expect(result.success).toBe(true)
     expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
@@ -1167,9 +1206,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 300 },
-    }, 'event-gap')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 300 },
+      },
+      eventId: 'event-gap',
+    })
 
     expect(result.success).toBe(true)
     expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
@@ -1198,9 +1240,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 200 },
-    }, 'event-history-error')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 200 },
+      },
+      eventId: 'event-history-error',
+    })
 
     expect(result).toEqual({
       success: false,
@@ -1231,9 +1276,12 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
 
     const result = await new GachaService().executeGachaForEventSub({
-      ...baseEvent,
-      reward: { id: 'additional-reward', cost: 200 },
-    }, 'event-partial')
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 200 },
+      },
+      eventId: 'event-partial',
+    })
 
     expect(result.success).toBe(false)
     if (!result.success) {
@@ -1250,7 +1298,10 @@ describe('GachaService.executeGachaForEventSub', () => {
       },
     })
 
-    const result = await new GachaService().executeGachaForEventSub(baseEvent, 'event-single')
+    const result = await new GachaService().executeGachaForEventSub({
+      event: baseEvent,
+      eventId: 'event-single',
+    })
 
     expect(result.success).toBe(true)
     expect(fixture.tableCursors.has('gacha_history')).toBe(true)
@@ -1277,10 +1328,10 @@ describe('GachaService.executeGachaForEventSub', () => {
     })
     mockSecureRandomUnit(0.5)
 
-    const result = await new GachaService().executeGachaForEventSub(
-      baseEvent,
-      'event-main-weight',
-    )
+    const result = await new GachaService().executeGachaForEventSub({
+      event: baseEvent,
+      eventId: 'event-main-weight',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) expect(result.data.card.id).toBe('rare')
@@ -1313,7 +1364,10 @@ describe('GachaService.executeGachaForRaidEvent', () => {
       },
     })
 
-    const result = await new GachaService().executeGachaForRaidEvent(raidEvent, 'raid-event')
+    const result = await new GachaService().executeGachaForRaidEvent({
+      event: raidEvent,
+      eventId: 'raid-event',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -1342,7 +1396,10 @@ describe('GachaService.executeGachaForRaidEvent', () => {
       },
     })
 
-    const result = await new GachaService().executeGachaForRaidEvent(raidEvent, 'raid-disabled')
+    const result = await new GachaService().executeGachaForRaidEvent({
+      event: raidEvent,
+      eventId: 'raid-disabled',
+    })
 
     expect(result).toEqual({ success: false, error: 'Raid gacha disabled' })
     expect(fixture.transactionCalls).toHaveLength(0)
@@ -1355,7 +1412,10 @@ describe('GachaService.executeGachaForRaidEvent', () => {
       },
     })
 
-    const result = await new GachaService().executeGachaForRaidEvent(raidEvent, 'raid-error')
+    const result = await new GachaService().executeGachaForRaidEvent({
+      event: raidEvent,
+      eventId: 'raid-error',
+    })
 
     expect(result).toEqual({ success: false, error: 'Streamer not found' })
   })

@@ -285,6 +285,88 @@ export interface ExecuteGachaParams {
   previousCardId?: string | null
 }
 
+/**
+ * Issue #1723: N連ドロー(executeGachaDraws)1回分の入力。
+ *
+ * Issue #1301 で低レベル単発抽選 ExecuteGachaParams へ名前付き化したのと同じ理由で、
+ * N連側の入口も名前付きへ寄せる。旧実装は
+ * `streamerId, userTwitchId, userTwitchUsername, drawCount, eventId?, rewardCost?,
+ *  collectionName?, weightsConfig?, rewardId?` の9位置引数で、`eventId` / `rewardCost` /
+ * `rewardId` が連続する optional のため、引数の追加や並べ替えで隣の値へずれても
+ * すべて同じ型になり、型検査では検出できない。
+ *
+ * 実際にずれると、N連の event_id(`eventId:2` …形式)や消費ポイント(reward_cost)、
+ * 報酬別サウンドルールの判定キー(reward_id)が別の値としてそのまま
+ * gacha_history / chat_notification_outbox へ永続化される。ガチャは課金・付与の
+ * クリティカルパスなので、ここは低レベル側と同様の扱いが必要。
+ *
+ * previousCardId は意図的に含めない。本メソッドがバッチ冒頭で
+ * getLatestCardIdForStreamer を1回だけ呼び出して内部で引き継ぐため
+ * (Issue #1296)、呼び出し側から直前カードを渡せる余地を残さない。
+ *
+ * export しないのは消費側が gacha.ts 内の private メソッドだけのため。
+ * 参照元が他モジュールに増えた時点で初めて公開する。
+ */
+interface ExecuteGachaDrawsParams {
+  /** 抽選対象の配信者。 */
+  streamerId: string
+  /** 引き換えた視聴者の Twitch user id (gacha_history.user_twitch_id)。 */
+  userTwitchId: string
+  /** 結果に載せる表示名。通知・overlay の表示にそのまま使われる。 */
+  userTwitchUsername: string
+  /** この N 連で引く枚数。1 以下なら単発として扱われる。 */
+  drawCount: number
+  /**
+   * EventSub の messageId 相当の一意キー。N連では `${eventId}:2` … へ派生し、
+   * gacha_history.event_id の UNIQUE と RPC の advisory lock を成立させる。
+   */
+  eventId?: string
+  /** 引き換え1回で消費した点数(gacha_history.reward_cost)。N連では1枚目だけに載る。 */
+  rewardCost?: number
+  /**
+   * Issue #393: when set, each draw in the batch is restricted to this card pack.
+   * NULL/undefined keeps the legacy "all active cards" behavior.
+   */
+  collectionName?: string | null
+  /**
+   * Issue #579 (#576 フェーズ2): 各ドローに同じ重み設定を forward する
+   * (複数枚ドローでも同じレアリティ配分を一貫して適用するため)。
+   */
+  weightsConfig?: RarityWeightsDrawConfig
+  /**
+   * Issue #591: 各ドローに同じ報酬IDを forward する。rewardCost(N連ループ内の
+   * drawRewardCost)とは異なり index===0 に限定しない — reward_cost は
+   * 「引換1回で消費した合計ポイント数」なので1件だけに紐付けるが、
+   * reward_id は「どの報酬から起点になったガチャか」というN連の全カード
+   * 共通の属性であり、ポーリング経路(events API)は履歴行ごとに独立して
+   * サウンドルールを判定する(pickSoundBearingCardIndexへ1件ずつ渡す)ため、
+   * 1枚目以外が reward_id=null のままだと2枚目以降だけ報酬別ルールが
+   * 発火しないバグになる。
+   */
+  rewardId?: string | null
+}
+
+/**
+ * Issue #1723: EventSub / raid 入口の入力。
+ *
+ * これら2つの旧シグネチャは `(event, eventId?)` の2引数で、`event` は大きな
+ * オブジェクトリテラル、`eventId` は `string | undefined` だったため、引数を
+ * 入れ替えても型エラーになり、元々「隣へずれて型だけ通る」事故は起き得なかった。
+ * そのため本 interface 化は低レベル側(ExecuteGachaParams / ExecuteGachaDrawsParams)
+ * のような安全上の効果ではなく、同一サービス内の呼び出し規約を揃えるための変更である。
+ * ただし eventId は複数経路から合成されるため、名前付きに統一수록
+ * 「event を取り違えたまま eventId だけ差し替える」誤りが減る。
+ *
+ * こちらは2つの公開エントリポイントが引数オブジェクトの形を揃えるための道具で、
+ * 外部から必要とする公開 API ではないため export しない。
+ */
+interface ExecuteGachaForEventParams<TEvent> {
+  /** Twitch からのイベント本体(EventSub redemption / raid)。 */
+  event: TEvent
+  /** 冪等化キー。EventSub は messageId、raid は呼び出し元が合成した一意ID。 */
+  eventId?: string
+}
+
 export class GachaService {
   /**
    * 反復抑制(直前カードとの即時反復を減らす抽選、Issue #1296)を一切通さない
@@ -1058,27 +1140,20 @@ export class GachaService {
   }
 
   private async executeGachaDraws(
-    streamerId: string,
-    userTwitchId: string,
-    userTwitchUsername: string,
-    drawCount: number,
-    eventId?: string,
-    rewardCost?: number,
-    // Issue #393: pack scope forwarded to each individual draw.
-    collectionName?: string | null,
-    // Issue #579 (#576 フェーズ2): 各ドローに同じ重み設定を forward する
-    // (複数枚ドローでも同じレアリティ配分を一貫して適用するため)。
-    weightsConfig?: RarityWeightsDrawConfig,
-    // Issue #591: 各ドローに同じ報酬IDを forward する。rewardCost(下記
-    // drawRewardCost)とは異なり index===0 に限定しない — reward_cost は
-    // 「引換1回で消費した合計ポイント数」なので1件だけに紐付けるが、
-    // reward_id は「どの報酬から起点になったガチャか」というN連の全カード
-    // 共通の属性であり、ポーリング経路(events API)は履歴行ごとに独立して
-    // サウンドルールを判定する(pickSoundBearingCardIndexへ1件ずつ渡す)ため、
-    // 1枚目以外が reward_id=null のままだと2枚目以降だけ報酬別ルールが
-    // 発火しないバグになる。
-    rewardId?: string | null
+    params: ExecuteGachaDrawsParams
   ): Promise<Result<GachaResult>> {
+    // 名前付き化した理由と各項目の意味は ExecuteGachaDrawsParams のコメントを参照。
+    const {
+      streamerId,
+      userTwitchId,
+      userTwitchUsername,
+      drawCount,
+      eventId,
+      rewardCost,
+      collectionName,
+      weightsConfig,
+      rewardId,
+    } = params
     const cards: GachaCard[] = []
     let firstResult: GachaResult | null = null
     let persistedBatchCards: GachaCard[] | null = null
@@ -1238,16 +1313,19 @@ export class GachaService {
    * route.ts での2回目のクエリを排除するため、チャット通知設定も同時に取得する。
    */
   async executeGachaForEventSub(
-    event: {
+    params: ExecuteGachaForEventParams<{
       broadcaster_user_id: string
       user_id: string
       user_login: string
       user_name: string
       reward: { id: string; cost?: number }
-    },
-    eventId?: string
+    }>
   ): Promise<Result<GachaResult>> {
     try {
+      // 展開は try の内側に置く(低レベル抽選と同じ規約)。params が undefined 等の
+      // 不正値でも try の外へ TypeError として投げ出さず、`Unexpected error:` の
+      // Result へ正規化して呼出元の Result 処理へ流す。
+      const { event, eventId } = params
       // chat_announcement_enabled/template も同時取得してクエリ統合（CPU時間削減）
       // rarity_weights / rarity_weights_scope / pack_rarity_weights は Issue #579
       // (#576 フェーズ2) のパック内レアリティ自動配分に使う。
@@ -1336,15 +1414,15 @@ export class GachaService {
         drawCount = 1,
         collectionName?: string | null
       ): Promise<Result<GachaResult>> => {
-        const result = await this.executeGachaDraws(
-          streamer.id,
-          event.user_id,
-          event.user_name,
+        const result = await this.executeGachaDraws({
+          streamerId: streamer.id,
+          userTwitchId: event.user_id,
+          userTwitchUsername: event.user_name,
           drawCount,
           eventId,
-          event.reward.cost,
+          rewardCost: event.reward.cost,
           collectionName,
-          {
+          weightsConfig: {
             rarityWeightsScope: streamer.rarity_weights_scope,
             rarityWeights: streamer.rarity_weights,
             packRarityWeights: streamer.pack_rarity_weights,
@@ -1352,8 +1430,8 @@ export class GachaService {
           // Issue #591: gacha_history.reward_id に永続化するため、実際に
           // マッチした報酬ID(メイン報酬 or 追加報酬、いずれも event.reward.id
           // は同一のEventSub通知由来)をそのまま forward する。
-          event.reward.id
-        )
+          rewardId: event.reward.id,
+        })
         if (!result.success) return result
         return ok({
           ...result.data,
@@ -1455,15 +1533,17 @@ export class GachaService {
   }
 
   async executeGachaForRaidEvent(
-    event: {
+    params: ExecuteGachaForEventParams<{
       to_broadcaster_user_id: string
       from_broadcaster_user_id: string
       from_broadcaster_user_login?: string
       from_broadcaster_user_name?: string
-    },
-    eventId?: string
+    }>
   ): Promise<Result<GachaResult>> {
     try {
+      // 展開は try の内側に置く(低レベル抽選と同じ規約)。不正な params でも
+      // `Unexpected error:` の Result へ正規化され、reject が漏れない。
+      const { event, eventId } = params
       let streamer: {
         id: string
         chat_announcement_enabled: boolean
@@ -1505,14 +1585,15 @@ export class GachaService {
       }
 
       const userName = event.from_broadcaster_user_name || event.from_broadcaster_user_login || event.from_broadcaster_user_id
-      const result = await this.executeGachaDraws(
-        streamer.id,
-        event.from_broadcaster_user_id,
-        userName,
+      const result = await this.executeGachaDraws({
+        streamerId: streamer.id,
+        userTwitchId: event.from_broadcaster_user_id,
+        userTwitchUsername: userName,
         drawCount,
         eventId,
-        undefined
-      )
+        // レイドガチャはチャネルポイント報酬に紐付かないため reward_cost /
+        // reward_id を持たない(#591)。
+      })
 
       if (!result.success) return result
 
