@@ -28,6 +28,11 @@ enabled = true
 [observability]
 enabled = true
 
+# Workers Issues (free open beta): keep this explicit so later deployments
+# do not undo the dashboard setting. No automatic agent/webhook is enabled.
+[observability.issues]
+enabled = true
+
 [assets]
 directory = ".open-next/assets"
 binding = "ASSETS"
@@ -91,6 +96,9 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 [env.preview]
 
 [env.preview.observability]
+enabled = true
+
+[env.preview.observability.issues]
 enabled = true
 
 [env.preview.vars]
