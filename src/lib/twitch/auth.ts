@@ -421,7 +421,9 @@ export async function getTwitchUser(accessToken: string): Promise<TwitchUser> {
 
   if (!response.ok) {
     const errorBody = await response.text()
-    logger.error('Failed to get Twitch user:', { status: response.status, errorBody })
+    // callback 側の handleAuthError が reportAuthError で永続化する。
+    // logger.error も自動永続化するため、ここでは診断用warningだけに留めて二重起票を防ぐ。
+    logger.warn('Failed to get Twitch user:', { status: response.status, errorBody })
     // Twitch APIのエラー詳細をメッセージに含め、呼び出し元で原因を特定可能にする
     throw new Error(`Failed to get user information: ${response.status} ${errorBody}`)
   }

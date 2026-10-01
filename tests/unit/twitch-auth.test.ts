@@ -253,6 +253,13 @@ describe('getTwitchUser', () => {
     await expect(
       getTwitchUser('invalid-token')
     ).rejects.toThrow(/Failed to get user information: 401/)
+
+    const { logger } = await import('@/lib/logger')
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Failed to get Twitch user:',
+      { status: 401, errorBody: '{"message":"Invalid OAuth token"}' }
+    )
+    expect(logger.error).not.toHaveBeenCalled()
   })
 })
 
