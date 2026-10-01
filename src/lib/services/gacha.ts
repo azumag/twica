@@ -275,9 +275,12 @@ export interface ExecuteGachaParams {
    * Issue #1296: 呼び出し元が直前カードを取得済みなら渡す。undefined は
    * 従来の独立抽選を意味し、低レベルAPIと既存テストの後方互換を保つ。
    *
-   * 反復抑制つき公開エントリポイントはこの項目を Omit して渡さない。
-   * previousCardId を外から偽装できないことが、直前カード取得と抽選の結線を
-   * 型で保証する。
+   * 反復抑制つき公開エントリポイント(executeGachaWithRepeatProtection)は、この項目を
+   * Omit して型で渡させない。ただし Omit による Excess Property Check は
+   * オブジェクトリテラル直書きにしか効かないため、ExecuteGachaParams 型の変数や
+   * any を経由した previousCardId の偽装は型検査を通る。真正の防線は
+   * executeGachaWithRepeatProtection 側で計算した previousCardId を spread の後ろに
+   * 置くこと(同メソッドのコメント参照)。並べ替えないこと。
    */
   previousCardId?: string | null
 }
@@ -303,9 +306,9 @@ export class GachaService {
     params: ExecuteGachaParams
   ): Promise<Result<GachaResult>> {
     try {
-      // 展開も try の内側に置く。params 自体が不正(undefined等)でも従来同様、
-      // try の外へ TypeError として reject を返さず、`Unexpected error:` の
-      // Result へ正規化して呼出元の Result 処理へ流すため。
+      // 展開は try の内側に置く。params 自体が不正(undefined等)でも、try の外へ
+      // TypeError として投げ出さず、`Unexpected error:` の Result へ正規化して
+      // 呼出元の Result 処理へ流すため。
       const {
         streamerId,
         userTwitchId,
@@ -617,7 +620,9 @@ export class GachaService {
    * フォールバックするため、カード付与・履歴記録の本処理は止めない。
    *
    * Issue #1301: `Omit<ExecuteGachaParams, 'previousCardId'>` にすることで、
-   * 呼び出し側が直前カードを自分で捏装して反復抑制を迂回する経路を型で塞いでいる。
+   * 呼び出し側がオブジェクトリテラル直書きで直前カードを捏装すると型エラーになる。
+   * リテラル以外(ExecuteGachaParams 型の変数・any)経由は Excess Property Check の
+   * 適用外なので型検査を通るが、下の展開順により実際に偽装が効くことはない。
    *
    * 手動ドローAPIはこの専用ラッパーを維持する(#1301 の「executeGachaDraws の単発
    * 利用へ寄せる案」に対する比較結果)。executeGachaDraws へ寄せると、内部で
@@ -631,6 +636,11 @@ export class GachaService {
     params: Omit<ExecuteGachaParams, 'previousCardId'>
   ): Promise<Result<GachaResult>> {
     const previousCardId = await this.getLatestCardIdForStreamer(params.streamerId)
+    // 展開順が防御線。previousCardId を必ず spread の後ろに置くことで、呼び出し元が
+    // Omit をすり抜けた(any 経由、または ExecuteGachaParams 型の変数を経由して
+    // Excess Property Check が効かない)形で previousCardId を偽装しても、上で取得した
+    // 実値が必ず後勝ちで上書きされる。`{ previousCardId, ...params }` へ並べ替えると
+    // 偽装が採用され反復抑制が無効化されるため、並べ替えないこと(#1301)。
     return this.executeGachaWithoutRepeatProtection({ ...params, previousCardId })
   }
 

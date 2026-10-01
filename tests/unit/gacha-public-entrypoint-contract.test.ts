@@ -187,10 +187,16 @@ describe("GachaService production entrypoints (#1301)", () => {
     expect(violations).toEqual([]);
     // 呼び出しが1件も見つからない(=対象メソッドの実在確認に失敗)と検査が
     // 自明に通ってしまうため、各低レベル経路について許可呼び出し元が
-    // 実際に存在することも固定する。
+    // 実際に存在することも固定する。`some` で「許可呼び出し元のいずれか1件」だけを
+    // 見ると 片方の許可呼び出し元だけ経路から外れても通ってしまうため、
+    // 許可呼び出し元を1件ずつ確認する。
     for (const [method, allowedCallers] of Object.entries(ALLOWED_LOW_LEVEL_CALLERS)) {
-      const found = calls.some((call) => call.callee === method && allowedCallers.includes(call.caller ?? ""));
-      expect(found, `${method} が許可された呼び出し元から呼ばれていること`).toBe(true);
+      for (const caller of allowedCallers) {
+        const found = calls.some(
+          (call) => call.callee === method && call.caller === caller,
+        );
+        expect(found, `${method} が ${caller} から呼ばれること`).toBe(true);
+      }
     }
   });
 
