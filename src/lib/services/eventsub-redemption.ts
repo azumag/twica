@@ -305,11 +305,14 @@ export async function handleRaidNotification(messageId: string, event: {
 
   const gachaService = new GachaService();
   const result = await gachaService.executeGachaForRaidEvent({
-    to_broadcaster_user_id: toBroadcasterUserId,
-    from_broadcaster_user_id: fromBroadcasterUserId,
-    from_broadcaster_user_login: event.from_broadcaster_user_login,
-    from_broadcaster_user_name: event.from_broadcaster_user_name,
-  }, messageId);
+    event: {
+      to_broadcaster_user_id: toBroadcasterUserId,
+      from_broadcaster_user_id: fromBroadcasterUserId,
+      from_broadcaster_user_login: event.from_broadcaster_user_login,
+      from_broadcaster_user_name: event.from_broadcaster_user_name,
+    },
+    eventId: messageId,
+  });
 
   if (!result.success) {
     if (result.error === 'Raid gacha disabled') {
@@ -872,7 +875,7 @@ export async function handleRedemption(messageId: string, event: {
   // バグを再発させてしまうことから、この限定的なリスクは許容する。
   try {
     const gachaService = new GachaService();
-    const result = await gachaService.executeGachaForEventSub(event, messageId);
+    const result = await gachaService.executeGachaForEventSub({ event, eventId: messageId });
 
     if (!result.success) {
       // EventSub重複通知は正常系（リトライによる再送）なのでエラー報告しない

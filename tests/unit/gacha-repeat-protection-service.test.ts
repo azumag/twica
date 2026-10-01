@@ -319,12 +319,15 @@ describe('GachaService repeat protection', () => {
     mockSecureRandomUnit(0)
 
     const result = await new GachaService().executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'multi-reward', cost: 300 },
-    }, 'event-multi')
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'user-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'multi-reward', cost: 300 },
+      },
+      eventId: 'event-multi',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -372,12 +375,15 @@ describe('GachaService repeat protection', () => {
     mockSecureRandomUnit(0)
 
     const result = await new GachaService().executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'multi-reward', cost: 300 },
-    }, 'event-ambiguous')
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'user-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'multi-reward', cost: 300 },
+      },
+      eventId: 'event-ambiguous',
+    })
 
     expect(result.success).toBe(true)
     expect(fixture.transactionCalls.map((call) => call[3])).toEqual([
