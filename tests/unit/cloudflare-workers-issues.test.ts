@@ -26,6 +26,14 @@ describe("Workers Issues deployment contract", () => {
     expect(pkg.devDependencies["@cloudflare/workers-types"]).toBe("5.20260917.1");
     expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe("5.20260917.1");
   });
+  it("uses the required Node major for both CI and the deployment toolchain", () => {
+    expect(readFileSync(join(root, ".node-version"), "utf8").trim()).toBe("22");
+    for (const workflow of ["ci.yml", "deploy-cloudflare.yml"]) {
+      const text = readFileSync(join(root, ".github/workflows", workflow), "utf8");
+      expect(text).toContain("node-version-file: .node-version");
+      expect(text).not.toMatch(/node-version:\s*["']?20/);
+    }
+  });
   it("does not enable separately billed tracing or change the runtime date", () => {
     expect(config).not.toMatch(/^\[(?:env\.preview\.)?observability\.traces\]/m);
     expect(config).toMatch(/^compatibility_date\s*=\s*"2024-09-23"$/m);
