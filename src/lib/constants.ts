@@ -285,6 +285,9 @@ export const ERROR_MESSAGES = {
   FAILED_TO_RECORD_HISTORY: 'Failed to record gacha history',
   DATABASE_ERROR: 'Database error',
   REWARD_ID_MISMATCH: 'Reward ID mismatch',
+  // Additional reward PUT: keep the API message stable for existing clients;
+  // the dashboard localizes this condition before presenting it to users.
+  ADDITIONAL_REWARD_NOT_FOUND: 'この追加の引き換えは既に削除されています。設定を再読み込みしてください',
   UNEXPECTED_ERROR: 'Unexpected error',
 
   // File upload errors
