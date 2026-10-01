@@ -81,3 +81,12 @@ cfはbeta。既存TOMLに対する未移行の `cf init/dev/build/deploy` など
 
 実施済み: GitHub issue/最新PR確認、main/preview比較、設定・package・workflow・guard・関連テストの静的読解、Cloudflare公式仕様照合。
 この文書は cfインストール、cf migrate実行、依存更新、build/test、Cloudflare live inventory、preview QA の完了証跡ではない。生成差分やruntime parityが合格したという主張はしない。
+
+## Workers Issues 導入の限定fallback（2026-10-02 JST）
+
+- Issuesの永続設定は本体のproduction/previewの`observability.issues.enabled=true`だけを追加する。補助Workerの配備有無、resource、secret、互換日は変更しない
+- `cf@1.0.0-beta.10 cli search`でIssues/readとsettings操作を探索した。既存OpenNextプロジェクトのcf移行parityは未成立なので、本体build/deployは上表どおり既存Wrangler経路を維持する
+- [公式Issues要件](https://developers.cloudflare.com/workers/observability/issues/)のWrangler 4.134.0以上に合わせて4.134.0へ固定。要求peerに合わせworkers-typesを5.20260917.1へ更新する。force/legacy-peer-depsでpeer検証を回避しない
+- SDKやconsole.errorの追加は不要。Issuesはbeta中無料だが、別機能のTracesは有効にしない。既存Logsの設定や課金条件を変えない
+- Dashboardだけで有効化すると次のWrangler配備で解除されるため、設定をコード管理する。外部agent/webhook自動送信は設定しない
+- 反映はpreview通常配備→最新HEADのテスト・累積QA→main昇格を通す。設定PRだけでは本番有効化済みとしない。Issuesは有効化後の新規トラフィックが対象で過去障害を再集計しない
