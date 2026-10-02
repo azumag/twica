@@ -123,10 +123,10 @@ interface TwitchApiError {
 interface TwitchChatSendResponse {
   data?: Array<{
     message_id?: string
-    is_sent?: boolean
+    is_sent?: unknown
     drop_reason?: {
-      code?: string
-      message?: string
+      code?: unknown
+      message?: unknown
     } | null
   }>
 }
@@ -162,15 +162,13 @@ export const CHAT_SEND_TERMINAL_CODES = {
   CREDENTIAL_UNAVAILABLE: 'credential_unavailable',
   TWITCH_REJECTED: 'twitch_rejected',
   /**
-   * Issue #1725: HTTP 200かつTwitchが明示的なdrop_reasonを返してis_sent!==trueだった
-   * ケース（AutoMod保留等）。本文自体がTwitchの自動判定で拒否されただけでコード側の
-   * 不具合ではなく、かつmissing_scopeと違い配信者の操作でも直らない（本文次第で
-   * 再発し得る）ため、MISSING_SCOPE同様に自動Issue化の対象外へ倒す。ただし
-   * TWITCH_REJECTED（401/403等の本物のAPIレベル拒否）とは原因が異なるため別codeに
-   * 分ける: TWITCH_REJECTEDへ合流させるとscope/認証系の実障害まで自動Issue対象外に
-   * なってしまう。逆に、drop_reason自体が欠けた・data配列が空の200応答（Twitch API
-   * 契約崩れや自前バグの兆候になり得る）はこのcodeに含めず、従来どおり
-   * TWITCH_REJECTEDとして自動報告する（sendChatMessageInternal参照）。
+   * Issue #1725: HTTP 200でTwitchがis_sent=falseと非空文字列のdrop_reason.codeを
+   * 返したケース（AutoMod保留等）。本文自体がTwitchの自動判定で拒否されただけで
+   * コード側の不具合ではなく、かつmissing_scopeと違い配信者の操作でも直らない
+   * （本文次第で再発し得る）ため、MISSING_SCOPE同様に自動Issue化の対象外へ倒す。
+   * ただしTWITCH_REJECTED（401/403等の本物のAPIレベル拒否）とは原因が異なるため
+   * 別codeに分ける。明示的なis_sent=falseまたは有効なdrop codeが欠けた200応答は
+   * Twitch API契約崩れや自前バグの兆候になり得るため、TWITCH_REJECTEDとして報告する。
    */
   CONTENT_REJECTED: 'content_rejected',
 } as const
@@ -495,8 +493,8 @@ export class TwitchChatService {
         if (response.ok) {
           // HelixはHTTP 200でもAutoMod等でdata[0].is_sent=falseを返す。statusだけで
           // sent扱いするとoutboxをackして通知を永久欠落させるため、bodyを必ず確認する。
-          const successBody = await response.json().catch(() => ({})) as TwitchChatSendResponse
-          const sentResult = successBody.data?.[0]
+          const successBody = await response.json().catch(() => ({})) as TwitchChatSendResponse | null
+          const sentResult = Array.isArray(successBody?.data) ? successBody.data[0] : undefined
           if (sentResult?.is_sent === true) {
             logger.info('Chat message sent successfully', {
               broadcasterTwitchUserId,
@@ -508,16 +506,30 @@ export class TwitchChatService {
             return finishSuccessfulOutcome({ outcome: 'sent' })
           }
 
-          const dropCode = sentResult?.drop_reason?.code ?? 'invalid-success-response'
-          const dropMessage = sentResult?.drop_reason?.message
-            ?? 'Twitch returned 200 without is_sent=true'
+          const rawDropCode = sentResult?.drop_reason?.code
+          const validDropCode = typeof rawDropCode === 'string' && rawDropCode.trim().length > 0
+            ? rawDropCode
+            : undefined
+          const isValidDropCode = validDropCode !== undefined
+          // is_sent=falseと非空文字列codeの両方が揃う場合だけTwitchの拒否通知として扱う。
+          // codeは固定一覧にせず、Twitchが追加した未知の有効値も受け入れる。
+          const isExplicitDrop = sentResult?.is_sent === false && isValidDropCode
+          const dropCode = validDropCode ?? 'invalid-success-response'
+          const rawDropMessage = sentResult?.drop_reason?.message
+          const validDropMessage = typeof rawDropMessage === 'string' && rawDropMessage.trim().length > 0
+            ? rawDropMessage
+            : undefined
+          const dropMessage = validDropMessage ?? 'Twitch returned 200 without is_sent=true'
 
           // msg_duplicate は障害ではなくTwitchの連投抑止（issue #842/#843）。
           // 同じ視聴者が同じカードを30秒以内に引くとテンプレート展開後の本文が
           // 完全一致するため通常運用で発生する。同一本文は既にチャットへ出ており
           // 情報は失われないので、DLQ・エラー報告には送らずackする。
           // AutoMod等の他のdrop_reasonは本文自体が拒否されているためterminalのまま。
-          if (dropCode === DUPLICATE_DROP_CODE) {
+          if (
+            isExplicitDrop
+            && dropCode === DUPLICATE_DROP_CODE
+          ) {
             logger.info('Chat message suppressed by Twitch as a duplicate', {
               broadcasterTwitchUserId,
               senderTwitchUserId,
@@ -534,13 +546,10 @@ export class TwitchChatService {
             message: dropMessage,
           }
           lastException = null
-          // Issue #1725: Twitchが明示的にdrop_reasonを返した場合だけ「本文が
-          // 拒否された」と判定する。sentResult自体が無い・drop_reasonが欠けた
-          // 応答（dropCodeが上のfallback 'invalid-success-response'）は、Twitch側
-          // のAPI契約崩れや自前バグの兆候であり得るcontent-moderationとは別種の
-          // 異常のため、ここではフラグを立てずTWITCH_REJECTED（自動Issue化対象）
-          // のまま扱う。
-          if (sentResult?.drop_reason?.code !== undefined) {
+          // Issue #1725: is_sent=falseと有効なdrop_reason.codeの両方が明示された場合
+          // だけ「本文が拒否された」と判定する。それ以外のHTTP 200はAPI契約崩れや
+          // 自前バグの兆候になり得るため、TWITCH_REJECTED（自動Issue化対象）として扱う。
+          if (isExplicitDrop) {
             contentRejectedByTwitch = true
           }
           // 同じ本文を再送してもAutoMod等の判定は変わらないためterminalとし、
