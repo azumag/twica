@@ -814,6 +814,7 @@
     "preview": "プレビュー",
     "previewDemo": "プレビューDEMO",
     "obsDemo": "OBS DEMO",
+    "obsDemoFailed": "OBS DEMOの実行に失敗しました。ページを再読み込みしてから再度お試しください。",
     "demoHelpTitle": "デモの種類",
     "demoHelpContent": {
       "previewDemo": "管理画面のプレビュー枠内のみに表示されます。OBSには反映されません。",
