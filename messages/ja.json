@@ -595,6 +595,33 @@
       "saveFailed": "設定の保存に失敗しました"
     }
   },
+  "tradeSettings": {
+    "title": "カードトレード設定",
+    "description": "視聴者同士がカードを交換できる範囲を設定します。",
+    "status": {
+      "enabled": "許可",
+      "disabled": "停止"
+    },
+    "form": {
+      "tradeEnabled": "視聴者間のカードトレードを許可する",
+      "tradeEnabledHelp": "視聴者同士があなたのチャンネルのカードを交換できるようになります。",
+      "crossChannelEnabled": "クロスチャンネルトレードを許可する",
+      "crossChannelEnabledHelp": "相手チャンネル側もクロスチャンネルトレードを許可している必要があります。",
+      "requiresTradeEnabled": "チャンネル内トレードを許可すると変更できます"
+    },
+    "notice": "OFFにすると進行中の出品は一時的に非表示・応諾不可になります（削除はされません）。",
+    "messages": {
+      "enabled": "カードトレードを有効にしました",
+      "disabled": "カードトレードを無効にしました",
+      "crossEnabled": "クロスチャンネルトレードを有効にしました",
+      "crossDisabled": "クロスチャンネルトレードを無効にしました",
+      "saving": "保存中..."
+    },
+    "errors": {
+      "saveFailed": "トレード設定の保存に失敗しました",
+      "deployWindow": "トレード設定のDB反映がまだ完了していません。少し待ってから再度お試しください。"
+    }
+  },
   "channelPointSettings": {
     "title": "カード引き換え設定",
     "status": {
@@ -865,6 +892,8 @@
         "visibilityDesc": "未所持カードの見せ方",
         "liveDirectory": "配信中ページ",
         "liveDirectoryDesc": "配信中ページへの掲載とランキング表示",
+        "trade": "カードトレード",
+        "tradeDesc": "チャンネル内・クロスチャンネルの交換許可",
         "share": "共有",
         "shareDesc": "コレクションページのURL"
       }
