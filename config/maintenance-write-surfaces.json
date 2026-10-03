@@ -34,6 +34,17 @@
     "reviewedAt": "2026-07-18"
   },
   {
+    "path": "/api/auth/bot/callback",
+    "methods": [
+      "GET"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "redirect",
+    "reason": "Bot連携用OAuthコールバック（GETだが連携情報の書き込み副作用を持つ）。route先頭でguardWriteRedirectを個別に呼び、/?maintenance=1へ302する。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
     "path": "/api/auth/bot/connect",
     "methods": [
       "POST"
@@ -67,6 +78,17 @@
     "reviewedAt": "2026-07-18"
   },
   {
+    "path": "/api/auth/twitch/callback",
+    "methods": [
+      "GET"
+    ],
+    "category": "auth",
+    "maintenanceBehavior": "redirect",
+    "reason": "OAuthコールバック（GETだがuser upsert等の書き込み副作用を持つためmiddlewareの一律ブロック対象外）。route先頭でguardWriteRedirectを個別に呼び、/?maintenance=1へ302する。オーナー決定「ログインもブロック」。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
     "path": "/api/auth/twitch/check-subscription",
     "methods": [
       "POST"
@@ -85,28 +107,6 @@
     "category": "auth",
     "maintenanceBehavior": "block",
     "reason": "サブスク連携の無効化フラグをDBへ書き込む。allowlist未登録のため一律ブロックに従う。",
-    "owner": "azumag",
-    "reviewedAt": "2026-07-18"
-  },
-  {
-    "path": "/api/auth/twitch/callback",
-    "methods": [
-      "GET"
-    ],
-    "category": "auth",
-    "maintenanceBehavior": "redirect",
-    "reason": "OAuthコールバック（GETだがuser upsert等の書き込み副作用を持つためmiddlewareの一律ブロック対象外）。route先頭でguardWriteRedirectを個別に呼び、/?maintenance=1へ302する。オーナー決定「ログインもブロック」。",
-    "owner": "azumag",
-    "reviewedAt": "2026-07-18"
-  },
-  {
-    "path": "/api/auth/bot/callback",
-    "methods": [
-      "GET"
-    ],
-    "category": "auth",
-    "maintenanceBehavior": "redirect",
-    "reason": "Bot連携用OAuthコールバック（GETだが連携情報の書き込み副作用を持つ）。route先頭でguardWriteRedirectを個別に呼び、/?maintenance=1へ302する。",
     "owner": "azumag",
     "reviewedAt": "2026-07-18"
   },
@@ -189,6 +189,17 @@
     "reviewedAt": "2026-07-18"
   },
   {
+    "path": "/api/gacha-history/[id]",
+    "methods": [
+      "DELETE"
+    ],
+    "category": "gacha",
+    "maintenanceBehavior": "block",
+    "reason": "ガチャ履歴の削除。動的セグメント[id]。allowlist未登録のため一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-07-18"
+  },
+  {
     "path": "/api/gacha/demo",
     "methods": [
       "POST"
@@ -200,15 +211,15 @@
     "reviewedAt": "2026-07-18"
   },
   {
-    "path": "/api/gacha-history/[id]",
+    "path": "/api/internal/chat-outbox",
     "methods": [
-      "DELETE"
+      "POST"
     ],
-    "category": "gacha",
+    "category": "twitch",
     "maintenanceBehavior": "block",
-    "reason": "ガチャ履歴の削除。動的セグメント[id]。allowlist未登録のため一律ブロックに従う。",
+    "reason": "専用Chat Delivery Queue WorkerがService Binding経由で呼ぶ内部配送境界（Issue #1665）。deliverはchat_notification_outboxのclaim/ack/retry/dead、dispatch-dueはwake予約を伴うDB書き込みのため、他の書き込みAPIと同様にメンテ中はブロックし、状態を失わず延期する。",
     "owner": "azumag",
-    "reviewedAt": "2026-07-18"
+    "reviewedAt": "2026-09-22"
   },
   {
     "path": "/api/storage-bonus/vote-campaign",
@@ -244,6 +255,18 @@
     "reason": "N連チャット通知の配送方式(summary/individual/chunked)と分割枚数をDBへ保存する設定操作。メンテナンス中は他の配信者設定書き込みと同様にブロックする。",
     "owner": "azumag",
     "reviewedAt": "2026-09-12"
+  },
+  {
+    "path": "/api/streamer/pack-completion-rewards",
+    "methods": [
+      "PUT",
+      "DELETE"
+    ],
+    "category": "streamer",
+    "maintenanceBehavior": "block",
+    "reason": "パックコンプ報酬の設定・解除。既存の一般 write 拒否に従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-09-08"
   },
   {
     "path": "/api/streamer/raid-gacha",
@@ -334,6 +357,28 @@
     "reviewedAt": "2026-07-18"
   },
   {
+    "path": "/api/trades",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "カードトレードの新規オファー作成。trade_offersへのDB書き込みを伴うためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-04"
+  },
+  {
+    "path": "/api/trades/[id]/cancel",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "出品中トレードのキャンセル（open→cancelled CAS）。DB書き込みを伴うためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-04"
+  },
+  {
     "path": "/api/twitch/eventsub",
     "methods": [
       "POST"
@@ -411,28 +456,5 @@
     "reason": "効果音ファイルのアップロード・削除。allowlist未登録のため一律ブロックに従う。",
     "owner": "azumag",
     "reviewedAt": "2026-07-18"
-  },
-  {
-    "path": "/api/internal/chat-outbox",
-    "methods": [
-      "POST"
-    ],
-    "category": "twitch",
-    "maintenanceBehavior": "block",
-    "reason": "専用Chat Delivery Queue WorkerがService Binding経由で呼ぶ内部配送境界（Issue #1665）。deliverはchat_notification_outboxのclaim/ack/retry/dead、dispatch-dueはwake予約を伴うDB書き込みのため、他の書き込みAPIと同様にメンテ中はブロックし、状態を失わず延期する。",
-    "owner": "azumag",
-    "reviewedAt": "2026-09-22"
-  },
-  {
-    "path": "/api/streamer/pack-completion-rewards",
-    "methods": [
-      "PUT",
-      "DELETE"
-    ],
-    "category": "streamer",
-    "maintenanceBehavior": "block",
-    "reason": "パックコンプ報酬の設定・解除。既存の一般 write 拒否に従う。",
-    "owner": "azumag",
-    "reviewedAt": "2026-09-08"
   }
 ]
