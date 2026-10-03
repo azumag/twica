@@ -231,6 +231,67 @@ describe("trade service (#723)", () => {
     });
   });
 
+  it("recovers a post-COMMIT 23505 by requestId as an idempotent replay", async () => {
+    const pg = createDbMock({
+      selects: [
+        { rows: [{ id: OFFER.offerer_user_id, twitch_user_id: "viewer-1" }] },
+        { rows: [] },
+        {
+          rows: [{
+            userCardId: OFFER.offered_user_card_id,
+            cardId: OFFER.offered_card_id,
+            streamerId: OFFER.offered_streamer_id,
+            name: "Offer",
+            rarity: "rare",
+            imageUrl: "https://example.test/a.png",
+          }],
+        },
+        {
+          rows: [{
+            id: OFFER.wanted_card_id,
+            streamerId: OFFER.wanted_streamer_id,
+            name: "Want",
+            rarity: "epic",
+            imageUrl: "https://example.test/b.png",
+            isActive: true,
+          }],
+        },
+        {
+          rows: [{
+            id: OFFER.offered_streamer_id,
+            tradeEnabled: true,
+            crossEnabled: false,
+          }],
+        },
+        { rows: [] },
+        { rows: [{ value: 0 }] },
+        { rows: [OFFER] },
+      ],
+      inserts: [{
+        error: {
+          code: "23505",
+          constraint: "idx_trade_offers_offerer_request",
+        },
+      }],
+    });
+    primeDb(pg);
+
+    const { createTradeOffer } = await import("@/lib/trade");
+    const result = await createTradeOffer({
+      twitchUserId: "viewer-1",
+      offeredUserCardId: OFFER.offered_user_card_id,
+      wantedCardId: OFFER.wanted_card_id!,
+      requestId: OFFER.request_id!,
+    });
+
+    expect(result).toEqual({
+      kind: "ok",
+      offer: OFFER,
+      idempotentReplay: true,
+    });
+    expect(pg.insertCalls).toHaveLength(1);
+  });
+
   it("distinguishes not_owned / all_listed / yes with the same exclusion rule as the accept RPC", async () => {
     const second = {
       ...OFFER,
