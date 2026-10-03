@@ -15,18 +15,18 @@ import {
 import { isCanonicalUuid } from "@/lib/uuid-validation";
 
 function rateLimitResponse(result: {
-  limit: number;
-  remaining: number;
-  reset: number;
+  limit?: number;
+  remaining?: number;
+  reset?: number;
 }) {
   return NextResponse.json(
     { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
     {
       status: 429,
       headers: {
-        "X-RateLimit-Limit": String(result.limit),
-        "X-RateLimit-Remaining": String(result.remaining),
-        "X-RateLimit-Reset": String(result.reset),
+        "X-RateLimit-Limit": String(result.limit ?? 0),
+        "X-RateLimit-Remaining": String(result.remaining ?? 0),
+        "X-RateLimit-Reset": String(result.reset ?? Date.now() + 60_000),
       },
     },
   );
