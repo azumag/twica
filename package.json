@@ -26,7 +26,7 @@
     "overlay-realtime:build:preview": "cd workers/overlay-realtime && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js",
     "error-reporter:build:production": "cd workers/error-reporter && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js",
     "error-reporter:build:preview": "cd workers/error-reporter && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js",
-    "auxiliary-workers:build": "npm run overlay-realtime:build:production && npm run overlay-realtime:build:preview && npm run error-reporter:build:production && npm run error-reporter:build:preview",
+    "auxiliary-workers:build": "npm run overlay-realtime:build:production && npm run overlay-realtime:build:preview && npm run error-reporter:build:production && npm run error-reporter:build:preview && npm run chat-delivery:build:production && npm run chat-delivery:build:preview",
     "overlay-realtime:deploy": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/overlay-realtime/wrangler.toml",
     "overlay-realtime:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/overlay-realtime/wrangler.toml --env preview",
     "cloudflare:deploy:production": "bash scripts/cloudflare-workers-build-deploy.sh production deploy",
@@ -52,7 +52,12 @@
     "replay:maintenance-eventsub": "node scripts/replay-maintenance-eventsub.js",
     "check:analysis-dashboard-vs-sql": "node scripts/compare-analysis-dashboard-vs-sql.mjs",
     "error-reporter:deploy": "cd workers/error-reporter && OPEN_NEXT_DEPLOY=true npx wrangler deploy",
-    "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail"
+    "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail",
+    "chat-delivery:typecheck": "tsc -p workers/chat-delivery/tsconfig.json",
+    "chat-delivery:build:production": "cd workers/chat-delivery && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js",
+    "chat-delivery:build:preview": "cd workers/chat-delivery && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js",
+    "chat-delivery:deploy": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/chat-delivery/wrangler.toml",
+    "chat-delivery:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/chat-delivery/wrangler.toml --env preview"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

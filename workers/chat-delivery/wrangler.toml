@@ -1,11 +1,10 @@
 # Chat Delivery Queue Worker (Issue #1665)
 #
-# NOTE: このWorkerは現時点でどのCIパイプライン（.github/workflows/
-# deploy-cloudflare.yml）からもdeployされない。実際のCloudflare Queue
-# リソース作成（`wrangler queues create`）・下記bindingの実配備・
-# デプロイ手順への登録は、Issue #1665 導入順序 Step 2
-# （「権限のあるデプロイ手順」で行う想定）の対象であり、このPRの範囲外。
-# ここではPhase 2着手時に迷わないよう、想定するbinding構成を先に書いておく。
+# NOTE: CIではproduction/preview両bundleをdry-run検証する。実deployは
+# .github/workflows/deploy-cloudflare.yml の CHAT_DELIVERY_DEPLOY_ENABLED が
+# 明示的に true の場合だけ行う。Queue実資源・Service Binding・専用secretが
+# 揃う前にこの変数を有効化しないこと。dispatch自体の有効化はさらに別の
+# CHAT_DELIVERY_DISPATCH_ENABLED で制御し、このconfigだけでは配送ownerを切替えない。
 #
 # queue名（chat-notification-wakeup / chat-notification-wakeup-preview）は
 # 提案値。実際に`wrangler queues create`する際に必要なら変更してよい
