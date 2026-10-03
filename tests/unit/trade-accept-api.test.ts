@@ -22,7 +22,6 @@ vi.mock("@/lib/rate-limit", () => ({
     reset: Date.now() + 60_000,
   }),
   getRateLimitIdentifier: vi.fn().mockResolvedValue("user:viewer-1"),
-  getClientIp: vi.fn().mockReturnValue("203.0.113.10"),
   rateLimits: { tradeWrite: {} },
 }));
 vi.mock("@/lib/csrf", () => ({
@@ -86,7 +85,7 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     expect(mocks.loggerInfo).not.toHaveBeenCalled();
   });
 
-  it("logs participant IDs and the IP-derived identifier after success", async () => {
+  it("logs participant IDs and the actual rate-limit identifier after success", async () => {
     mocks.acceptTradeOffer.mockResolvedValue({
       success: true,
       tradeOfferId: OFFER_ID,
@@ -105,7 +104,7 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
         tradeOfferId: OFFER_ID,
         offererTwitchUserId: "offerer-1",
         accepterTwitchUserId: "viewer-1",
-        rateLimitIdentifier: "ip:203.0.113.10",
+        rateLimitIdentifier: "user:viewer-1",
         idempotentReplay: false,
       }),
     );
