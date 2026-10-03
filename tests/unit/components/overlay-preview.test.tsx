@@ -28,6 +28,7 @@ const messages = {
     preview: 'プレビュー',
     previewDemo: 'プレビューDEMO',
     obsDemo: 'OBS DEMO',
+    obsDemoFailed: 'OBS DEMOの実行に失敗しました。ページを再読み込みしてから再度お試しください。',
     demoHelpTitle: 'デモの種類',
     close: '閉じる',
     demoNote: 'デモノート',
@@ -142,6 +143,7 @@ describe('OverlayPreview', () => {
     // vi.stubGlobal で書き換えた window.localStorage を必ずリセットし、
     // 同一プロセス内の他テストファイルへ漏出しないようにする
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
     // 一部テストで vi.useFakeTimers() を使うため、他テストへ影響しないよう必ず実タイマーへ戻す
     vi.useRealTimers()
   })
@@ -210,6 +212,102 @@ describe('OverlayPreview', () => {
       const iframe = screen.getByTitle('Overlay Preview') as HTMLIFrameElement
       expect(new URL(iframe.src).searchParams.has('presence')).toBe(false)
     })
+  })
+
+  it('OBS DEMO が初回403なら /api/session でCSRF Cookieを再発行して1回だけ再試行する', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'Forbidden' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ authenticated: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    const alertMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('alert', alertMock)
+
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        baseUrl="https://example.com"
+        cards={[baseCard({})]}
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'OBS DEMO' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/gacha/demo',
+      expect.objectContaining({ method: 'POST', credentials: 'include' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/session',
+      { credentials: 'include', cache: 'no-store' },
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/gacha/demo',
+      expect.objectContaining({ method: 'POST', credentials: 'include' }),
+    )
+    expect(alertMock).not.toHaveBeenCalled()
+  })
+
+  it('OBS DEMO の403がCSRF再発行後も続く場合は利用者へ失敗を表示する', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'Forbidden' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ authenticated: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'Forbidden' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    const alertMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('alert', alertMock)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    renderWithIntl(
+      <OverlayPreview
+        streamerId="streamer-1"
+        baseUrl="https://example.com"
+        cards={[baseCard({})]}
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'OBS DEMO' }))
+
+    await waitFor(() => {
+      expect(alertMock).toHaveBeenCalledWith(
+        'OBS DEMOの実行に失敗しました。ページを再読み込みしてから再度お試しください。',
+      )
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('オプション変更を localStorage に自動保存する', async () => {
