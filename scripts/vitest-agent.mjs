@@ -309,11 +309,19 @@ async function main(argv) {
     }),
   )
   renameSync(`${recordFile}.tmp`, recordFile)
-  for (const signal of pending.splice(0)) {
-    if (signal === 'SIGTSTP') suspend()
-    else if (signal === 'SIGCONT') resume()
-    else forward(signal)
+  // pgid確定前はwrapper自身を実際には停止していないため、job-control signalを
+  // 受信順にそのまま再生すると、SIGTSTP→SIGCONT がqueue済みのケースで最初の
+  // suspend() がwrapperを停止し、後続SIGCONTへ永久に到達できなくなる。
+  // 通常signalは順序どおり転送し、job-controlは最後に観測した状態だけを適用する。
+  const queued = pending.splice(0)
+  for (const signal of queued) {
+    if (signal !== 'SIGTSTP' && signal !== 'SIGCONT') forward(signal)
   }
+  const lastJobControlSignal = queued.findLast(
+    (signal) => signal === 'SIGTSTP' || signal === 'SIGCONT',
+  )
+  if (lastJobControlSignal === 'SIGTSTP') suspend()
+  else if (lastJobControlSignal === 'SIGCONT') resume()
 
   const exitCode = await new Promise((r) =>
     child.once('exit', (code, signal) =>
