@@ -20,6 +20,16 @@ const RETRY_BASE_DELAY_MS = 100
 // と新leaderが同じrefresh tokenを同時交換し得るため禁止する。
 const TWITCH_TOKEN_REQUEST_TIMEOUT_MS = 3_000
 
+// /helix/users はGETで再送安全。Twitch/Cloudflareの一時的な408/429/5xxだけを
+// 短い上限付きで再試行し、OAuth callback全体を単発のedge障害で失敗させない。
+// authorization code交換POSTは単回使用のため、この集合を使って再送しない。
+const MAX_TWITCH_USER_ATTEMPTS = 3
+const TWITCH_USER_RETRY_BASE_DELAY_MS = 100
+
+function isTransientTwitchHttpStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599)
+}
+
 type RetryAfter = { kind: 'missing' | 'invalid' } | { kind: 'valid'; delayMs: number }
 
 const IMF_FIXDATE = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\d{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/
@@ -409,27 +419,71 @@ export async function exchangeCodeForTokens(
   )
 }
 
+class TwitchUserFetchError extends Error {
+  constructor(
+    public readonly status: number,
+    errorBody: string,
+  ) {
+    // 既存の診断互換を維持しつつ、statusを構造化して上位のauth error boundaryが
+    // Twitch一時障害(5xx等)をコード不具合と区別できるようにする。
+    super(`Failed to get user information: ${status} ${errorBody}`)
+    this.name = 'TwitchUserFetchError'
+  }
+}
+
 export async function getTwitchUser(accessToken: string): Promise<TwitchUser> {
   const clientId = getEnvVar('NEXT_PUBLIC_TWITCH_CLIENT_ID', true)!
 
-  const response = await fetch(`${TWITCH_API_URL}/users`, {
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Client-Id': clientId,
-    },
-  })
+  for (let attempt = 0; attempt < MAX_TWITCH_USER_ATTEMPTS; attempt += 1) {
+    const response = await fetch(`${TWITCH_API_URL}/users`, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Client-Id': clientId,
+      },
+    })
 
-  if (!response.ok) {
+    if (response.ok) {
+      const data = await response.json()
+      return data.data[0]
+    }
+
     const errorBody = await response.text()
-    // callback 側の handleAuthError が reportAuthError で永続化する。
+    const retryable = isTransientTwitchHttpStatus(response.status)
+    if (retryable && attempt < MAX_TWITCH_USER_ATTEMPTS - 1) {
+      const retryAfter = parseRetryAfter(response.headers.get('Retry-After'))
+      if (retryAfter.kind === 'valid' && retryAfter.delayMs > MAX_RETRY_AFTER_MS) {
+        // Retry-Afterを破って早く再送しない。callbackへ一時障害として返し、
+        // ユーザーの次回ログイン試行に委ねる。
+        logger.warn('Twitch user fetch Retry-After exceeds local retry window', {
+          status: response.status,
+          retryAfterMs: retryAfter.delayMs,
+        })
+        throw new TwitchUserFetchError(response.status, errorBody)
+      }
+      const cap = Math.min(
+        MAX_RETRY_AFTER_MS,
+        TWITCH_USER_RETRY_BASE_DELAY_MS * 2 ** attempt,
+      )
+      const delay = retryAfter.kind === 'valid'
+        ? retryAfter.delayMs
+        : Math.floor(Math.random() * (cap + 1))
+      logger.warn('Twitch user fetch transient failure; retrying', {
+        status: response.status,
+        attempt: attempt + 1,
+        delay,
+      })
+      await wait(delay)
+      continue
+    }
+
+    // callback 側の handleAuthError が必要な失敗だけ reportAuthError で永続化する。
     // logger.error も自動永続化するため、ここでは診断用warningだけに留めて二重起票を防ぐ。
     logger.warn('Failed to get Twitch user:', { status: response.status, errorBody })
-    // Twitch APIのエラー詳細をメッセージに含め、呼び出し元で原因を特定可能にする
-    throw new Error(`Failed to get user information: ${response.status} ${errorBody}`)
+    throw new TwitchUserFetchError(response.status, errorBody)
   }
 
-  const data = await response.json()
-  return data.data[0]
+  // ループは response / throw のいずれかで必ず終わる。
+  throw new Error('Failed to get Twitch user after retry budget')
 }
 
 export async function refreshTwitchToken(

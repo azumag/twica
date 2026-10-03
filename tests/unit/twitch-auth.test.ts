@@ -243,6 +243,49 @@ describe('getTwitchUser', () => {
     expect(result).toEqual(mockUser)
   })
 
+  it('520の一時障害は短く再試行し、2回目の成功を返す', async () => {
+    const mockUser = {
+      id: '12345',
+      login: 'testuser',
+      display_name: 'TestUser',
+      profile_image_url: 'https://example.com/avatar.png',
+      broadcaster_type: 'affiliate',
+    }
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('error code: 520', { status: 520 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [mockUser] }), { status: 200 }))
+
+    const { getTwitchUser } = await import('@/lib/twitch/auth')
+    await expect(getTwitchUser('test-access-token')).resolves.toEqual(mockUser)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    const { logger } = await import('@/lib/logger')
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Twitch user fetch transient failure; retrying',
+      { status: 520, attempt: 1, delay: 0 },
+    )
+  })
+
+  it('525が上限まで続く場合は3回で停止し、statusを構造化したエラーを返す', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response('error code: 525', { status: 525 })
+    )
+
+    const { getTwitchUser } = await import('@/lib/twitch/auth')
+    const error = await getTwitchUser('test-access-token').then(
+      () => null,
+      value => value as Error & { status?: number },
+    )
+
+    if (!error) throw new Error('Expected Twitch user fetch to reject')
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toContain('Failed to get user information: 525')
+    expect(error.status).toBe(525)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
   it('異常系: エラーメッセージにステータスコードとレスポンス本文が含まれる', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('{"message":"Invalid OAuth token"}', { status: 401 })
