@@ -691,16 +691,21 @@ export default function ChannelPointSettings({
         const additionalRewardNotFound =
           response.status === 404 &&
           apiErrorMessage === ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND;
+        const additionalRewardConcurrentUpdate =
+          response.status === 409 &&
+          apiErrorMessage === ERROR_MESSAGES.ADDITIONAL_REWARD_CONCURRENT_UPDATE;
         setMessage(
           maintenanceError?.message ||
             (additionalRewardNotFound
               ? t("additionalRewards.notFound")
-              : apiErrorMessage || t("additionalRewards.updateFailed"))
+              : additionalRewardConcurrentUpdate
+                ? t("additionalRewards.concurrentUpdate")
+                : apiErrorMessage || t("additionalRewards.updateFailed"))
         );
-        // 対象が削除済み（404）なら一覧を再取得し、保存開始時と同じ行を
-        // まだ編集中のときだけフォームを閉じる。保存中に別行へ切り替えた場合は、
-        // 後から開いたフォームを保護する。
-        if (response.status === 404) {
+        // 対象が削除済み、または別操作で同じ行が更新された場合は一覧を再取得し、
+        // 保存開始時と同じ行をまだ編集中のときだけフォームを閉じる。
+        // 保存中に別行へ切り替えた場合は、後から開いたフォームを保護する。
+        if (additionalRewardNotFound || additionalRewardConcurrentUpdate) {
           setEditingRewardId((current) => (current === targetRewardId ? null : current));
           await fetchAdditionalRewards();
         }
