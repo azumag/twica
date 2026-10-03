@@ -730,7 +730,9 @@ type UpdateAdditionalRewardOutcome =
  *
  * POST の insertAdditionalRewardPg と同じく、collection_name 列未デプロイ窓では
  * 当該列を剥がして再試行する（それ以外の失敗は握りつぶさない）。
- * 0 行更新（対象行が存在しない）は not-found として呼び出し元で 404 にする。
+ * 通常スキーマでは collection_name の現在値を CAS 条件へ含め、0行更新を
+ * concurrent conflict として検出する。collection_name 未デプロイ窓だけは
+ * 当該列を参照できないため従来の streamer/reward 条件へ縮退し、0行を not-found とする。
  */
 async function updateAdditionalRewardPg(
   streamerId: string,
@@ -777,8 +779,18 @@ async function updateAdditionalRewardPg(
           : query.returning(ADDITIONAL_REWARD_RESPONSE_COLUMNS);
       },
       "Additional Rewards API: PUT update",
-      // 同一条件の UPDATE は再実行しても最終状態が同じため冪等
-      { idempotent: true },
+      {
+        // CAS付きで collection_name を「別の値」へ変える更新は、初回COMMIT成功後に
+        // 応答だけ失われると再試行時の CAS が0行になり、成功済みなのに409へ誤分類
+        // し得る。そのためこのケースだけ接続断リトライを禁止する。
+        // draw_countのみ・collection_name同値更新・列未デプロイ再試行は最終状態が
+        // 同じで CAS 条件も維持されるため、従来どおり冪等リトライを許可する。
+        idempotent: !(
+          "collection_name" in payload &&
+          expectedCollectionNameForCas !== undefined &&
+          payload.collection_name !== expectedCollectionNameForCas
+        ),
+      },
     );
 
   // 空 SET を実行すると Drizzle が throw するため、実行前に空チェックで no-op へ分岐。
@@ -1034,9 +1046,12 @@ export async function PUT(request: NextRequest) {
       streamer.id,
       rewardId,
       updatePayload,
-      currentResult.collectionNameUnavailable
-        ? undefined
-        : currentResult.reward.collection_name,
+      // collection_name を実際に書く更新だけ CAS 対象にする。
+      // drawCount-only や deploy-window で pack 書き込みを見送った更新は、
+      // 同時に pack が変わっても直交する変更なので不要な409にしない。
+      "collection_name" in updatePayload && !currentResult.collectionNameUnavailable
+        ? currentResult.reward.collection_name
+        : undefined,
     );
 
     if (updateOutcome.kind === "not-found") {
