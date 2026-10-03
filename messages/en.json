@@ -595,6 +595,33 @@
       "saveFailed": "Failed to save settings"
     }
   },
+  "tradeSettings": {
+    "title": "Card Trading Settings",
+    "description": "Choose which card trades viewers are allowed to make.",
+    "status": {
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    },
+    "form": {
+      "tradeEnabled": "Allow viewer-to-viewer card trading",
+      "tradeEnabledHelp": "Viewers can trade cards from your channel with each other.",
+      "crossChannelEnabled": "Allow cross-channel trading",
+      "crossChannelEnabledHelp": "The other channel must also allow cross-channel trading.",
+      "requiresTradeEnabled": "Enable channel trading to change this setting"
+    },
+    "notice": "Turning this off temporarily hides open offers and prevents acceptance; offers are not deleted.",
+    "messages": {
+      "enabled": "Card trading enabled",
+      "disabled": "Card trading disabled",
+      "crossEnabled": "Cross-channel trading enabled",
+      "crossDisabled": "Cross-channel trading disabled",
+      "saving": "Saving..."
+    },
+    "errors": {
+      "saveFailed": "Failed to save trade settings",
+      "deployWindow": "Trade settings are not ready in the database yet. Please try again shortly."
+    }
+  },
   "channelPointSettings": {
     "title": "Card Redemption Settings",
     "status": {
@@ -865,6 +892,8 @@
         "visibilityDesc": "Unowned card display",
         "liveDirectory": "Live directory",
         "liveDirectoryDesc": "Live directory listing and ranking identity",
+        "trade": "Card trading",
+        "tradeDesc": "Channel and cross-channel trading permissions",
         "share": "Share",
         "shareDesc": "Collection page URL"
       }
