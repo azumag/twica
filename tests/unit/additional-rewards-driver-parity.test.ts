@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
@@ -625,6 +625,35 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
           // lookup 時点の collection_name を CAS 条件へ含め、membership 判定後の
           // concurrent change を stale な PUT が上書きしない。
           eq(streamerAdditionalGachaRewardsTable.collection_name, "weapons")
+        )
+      );
+    });
+
+    it("現在値がnullならcollection_name IS NULLをCAS条件に使う", async () => {
+      const pg = createDrizzleDbMock({
+        selects: [
+          { rows: [{ id: "streamer-1", channel_point_reward_id: "main-reward", card_pack_names: ["characters"] }] },
+          { rows: [{ id: "additional-1", collection_name: null }] },
+          { rows: [{ count: 2 }] },
+        ],
+        updates: [{ rows: [{ id: "additional-1", reward_id: REWARD_ID, collection_name: "characters" }] }],
+      });
+      primePgDb(pg);
+
+      const { PUT } = await loadRoute();
+      const response = await PUT(
+        jsonRequest("http://localhost/api/streamer/additional-rewards", "PUT", {
+          rewardId: REWARD_ID,
+          collectionName: "characters",
+        })
+      );
+
+      expect(response.status).toBe(200);
+      expect(pg.updateCalls[0].where).toEqual(
+        and(
+          eq(streamerAdditionalGachaRewardsTable.streamer_id, "streamer-1"),
+          eq(streamerAdditionalGachaRewardsTable.reward_id, REWARD_ID),
+          isNull(streamerAdditionalGachaRewardsTable.collection_name)
         )
       );
     });
