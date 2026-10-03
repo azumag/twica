@@ -17,8 +17,9 @@ import {
   userCards as userCardsTable,
   users as usersTable,
 } from "@/lib/db/schema";
-import { getErrorChain, isPgUniqueViolationError } from "@/lib/db/errors";
+import { getErrorChain, getSqlState, isPgUniqueViolationError } from "@/lib/db/errors";
 import { withDbRetry } from "@/lib/db/retry";
+import { isCanonicalUuid } from "@/lib/uuid-validation";
 
 export const TRADE_PAGE_SIZE = 20;
 export const TRADE_MAX_OPEN_OFFERS = 10;
@@ -703,3 +704,143 @@ export async function cancelTradeOffer(input: {
     ? { kind: "error", code: "TRADE_OFFER_NOT_OPEN" }
     : { kind: "error", code: "TRADE_OFFER_NOT_FOUND" };
 }
+
+export type TradeAcceptRpcError =
+  | "TRADE_OFFER_NOT_FOUND"
+  | "OFFER_NOT_OPEN"
+  | "SELF_ACCEPT_FORBIDDEN"
+  | "OFFER_INVALID"
+  | "TRADE_DISABLED"
+  | "CARD_NOT_OWNED";
+
+const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
+  "TRADE_OFFER_NOT_FOUND",
+  "OFFER_NOT_OPEN",
+  "SELF_ACCEPT_FORBIDDEN",
+  "OFFER_INVALID",
+  "TRADE_DISABLED",
+  "CARD_NOT_OWNED",
+]);
+
+export type TradeAcceptRpcResult = {
+  success: boolean;
+  error?: TradeAcceptRpcError;
+  tradeOfferId?: string;
+  receivedUserCardId?: string;
+  givenUserCardId?: string;
+  offeredCardSnapshot?: unknown;
+  wantedCardSnapshot?: unknown;
+  completedAt?: string;
+  idempotentReplay?: boolean;
+};
+
+function isValidTradeAcceptRpcResult(
+  value: unknown,
+  expectedTradeOfferId: string,
+): value is TradeAcceptRpcResult {
+  if (!value || typeof value !== "object") return false;
+
+  const result = value as Record<string, unknown>;
+  if (typeof result.success !== "boolean") return false;
+
+  if (result.success === false) {
+    return (
+      typeof result.error === "string"
+      && TRADE_ACCEPT_RPC_ERRORS.has(result.error as TradeAcceptRpcError)
+    );
+  }
+
+  return (
+    result.error === undefined
+    && result.tradeOfferId === expectedTradeOfferId
+    && typeof result.receivedUserCardId === "string"
+    && isCanonicalUuid(result.receivedUserCardId)
+    && typeof result.givenUserCardId === "string"
+    && isCanonicalUuid(result.givenUserCardId)
+    && Object.prototype.hasOwnProperty.call(result, "offeredCardSnapshot")
+    && Object.prototype.hasOwnProperty.call(result, "wantedCardSnapshot")
+    && typeof result.completedAt === "string"
+    && !Number.isNaN(Date.parse(result.completedAt))
+    && typeof result.idempotentReplay === "boolean"
+  );
+}
+
+async function callAcceptTradeOfferRpc(input: {
+  twitchUserId: string;
+  tradeOfferId: string;
+  requestId: string;
+}): Promise<TradeAcceptRpcResult> {
+  const { sql: query } = await getDb();
+  const rows = await query<Array<{ result: unknown }>>`
+    SELECT public.accept_trade_offer(
+      ${input.twitchUserId},
+      ${input.tradeOfferId}::uuid,
+      ${input.requestId}::uuid
+    ) AS result
+  `;
+  const result = rows[0]?.result;
+  if (!isValidTradeAcceptRpcResult(result, input.tradeOfferId)) {
+    throw new Error("accept_trade_offer returned an invalid response");
+  }
+  return result;
+}
+
+function waitForTradeRetry(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Issue #724: accept_trade_offer() owns the transaction and row locks. The API
+ * layer only retries SQLSTATE 40P01 once with the SAME requestId. The RPC checks
+ * its idempotency replay before mutable validation, so a retry after a commit
+ * cannot transfer ownership twice.
+ */
+export async function acceptTradeOffer(input: {
+  twitchUserId: string;
+  tradeOfferId: string;
+  requestId: string;
+}): Promise<TradeAcceptRpcResult | { success: false; error: "TRADE_BUSY" }> {
+  try {
+    return await callAcceptTradeOfferRpc(input);
+  } catch (error) {
+    if (getSqlState(error) !== "40P01") throw error;
+  }
+
+  // Short full-jitter delay. One retry only: sustained deadlock pressure should
+  // be surfaced to the caller instead of becoming an unbounded Worker task.
+  await waitForTradeRetry(Math.floor(Math.random() * 51));
+
+  try {
+    return await callAcceptTradeOfferRpc(input);
+  } catch (error) {
+    if (getSqlState(error) === "40P01") {
+      return { success: false, error: "TRADE_BUSY" };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Audit metadata for successful ownership transfer. This read is deliberately
+ * outside the RPC transaction: it is observability only and must never affect
+ * the committed trade result.
+ */
+export async function getTradeOfferAuditParticipants(tradeOfferId: string): Promise<{
+  offererTwitchUserId: string | null;
+}> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select({ offererTwitchUserId: usersTable.twitch_user_id })
+        .from(tradeOffersTable)
+        .innerJoin(usersTable, eq(usersTable.id, tradeOffersTable.offerer_user_id))
+        .where(eq(tradeOffersTable.id, tradeOfferId))
+        .limit(1);
+    },
+    "trade:accept-audit-participants",
+    { idempotent: true },
+  );
+  return { offererTwitchUserId: rows[0]?.offererTwitchUserId ?? null };
+}
+
