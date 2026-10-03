@@ -267,6 +267,9 @@ jobs:
           TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
           CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
 
+      - name: Typecheck Chat Delivery Worker
+        run: npm run chat-delivery:typecheck
+
       - name: Build production and preview auxiliary Worker bundles
         # Wranglerの実deployと同じbundler/config解決をdry-runし、source scan後に
         # conditional exportやpluginが旧providerを注入する回帰も検査対象にする。
