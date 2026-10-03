@@ -66,6 +66,13 @@ import {
 
 import type { Card, Streamer, GachaHistory, Database } from "@/types/database";
 
+type StreamerWithTradeSettings = Streamer & {
+  // #722/#725: full schemaではNOT NULL boolean。migration未適用のdeploy windowで
+  // STREAMERS_SAFE_COLUMNSへ縮退した行だけundefinedになり得るためoptionalにする。
+  trade_enabled?: boolean;
+  cross_channel_trade_enabled?: boolean;
+};
+
 interface CardWithDetails extends Card {
   streamer: Streamer;
   count: number;
@@ -132,7 +139,7 @@ async function reportMissingDashboardRpc(
  */
 async function getStreamerDataPg(
   twitchUserId: string
-): Promise<{ streamer: Streamer; cards: Card[] } | null> {
+): Promise<{ streamer: StreamerWithTradeSettings; cards: Card[] } | null> {
   // #834: card: cardsTable のネスト select は cards の全列を要求するが、本番実測
   // で全列とも実在することを確認済みのため無指定 select の単一経路でよい。
   // Issue #738: streamer: streamersTable は本PR追加の2列
@@ -176,7 +183,7 @@ async function getStreamerDataPg(
 
     // 既存実装は `{ cards: _cardsNested, ...streamerData }` でネストを除いた
     // streamer 列のみを返す。Drizzle の streamer 行は最初からネストを含まない。
-    const streamer = rows[0].streamer as unknown as Streamer;
+    const streamer = rows[0].streamer as unknown as StreamerWithTradeSettings;
     return { streamer, cards };
   } catch (error) {
     // 既存実装はエラー時に streamer=null → return null（呼び出し側は

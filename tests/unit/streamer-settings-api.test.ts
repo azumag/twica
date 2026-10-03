@@ -294,6 +294,47 @@ describe('POST /api/streamer/settings', () => {
     }))
   })
 
+  describe('trade settings (Issue #725)', () => {
+    it('accepts and persists both trade booleans independently', async () => {
+      const builder = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockDbFixture = builder.build()
+      const query = builder.getQueryBuilder()
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          tradeEnabled: false,
+          crossChannelTradeEnabled: true,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(expect.objectContaining({
+        trade_enabled: false,
+        cross_channel_trade_enabled: true,
+      }))
+    })
+
+    it.each([
+      { tradeEnabled: 'true' },
+      { crossChannelTradeEnabled: 1 },
+    ])('rejects non-boolean trade settings: %j', async (payload) => {
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', ...payload }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+  })
+
   it('should reject rarity weights when total is not 100%', async () => {
     const mockDbFixture = createDbFixture().build()
 
