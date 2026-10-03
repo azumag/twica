@@ -712,6 +712,15 @@ export type TradeAcceptRpcError =
   | "TRADE_DISABLED"
   | "CARD_NOT_OWNED";
 
+const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
+  "TRADE_OFFER_NOT_FOUND",
+  "OFFER_NOT_OPEN",
+  "SELF_ACCEPT_FORBIDDEN",
+  "OFFER_INVALID",
+  "TRADE_DISABLED",
+  "CARD_NOT_OWNED",
+]);
+
 export type TradeAcceptRpcResult = {
   success: boolean;
   error?: TradeAcceptRpcError;
@@ -738,7 +747,17 @@ async function callAcceptTradeOfferRpc(input: {
     ) AS result
   `;
   const result = rows[0]?.result;
-  if (!result || typeof result.success !== "boolean") {
+  if (
+    !result
+    || typeof result.success !== "boolean"
+    || (
+      result.success === false
+      && (
+        typeof result.error !== "string"
+        || !TRADE_ACCEPT_RPC_ERRORS.has(result.error as TradeAcceptRpcError)
+      )
+    )
+  ) {
     throw new Error("accept_trade_offer returned an invalid response");
   }
   return result;
