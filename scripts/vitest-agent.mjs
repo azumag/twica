@@ -26,7 +26,9 @@
  *      「同じ ID のプロセスグループが存在する間はその PID を再利用しない」ことを保証するため、
  *      残っているのは当時のワーカーと判断できる。一致しなければ何もしない
  *      （無関係なプロセスを殺すより、残留を見逃す方を安全側とする）。
- *   4. 終了は SIGTERM → 猶予 → それでも残る場合のみ SIGKILL の段階的終了にする。
+ *   4. Ctrl+Z（SIGTSTP）は child group を SIGSTOP してからラッパー自身も停止し、
+ *      fg/bg の SIGCONT を child group へ転送する。detached Vitest だけが走り続ける状態を作らない。
+ *   5. 終了は SIGTERM → 猶予 → それでも残る場合のみ SIGKILL の段階的終了にする。
  *      Vitest が正常終了してグループに生存メンバー（ゾンビ以外）が居なければ、シグナルは一切送らない。
  *
  * 対象 OS: macOS / Linux（`ps -o lstart= -p` / `ps -A -o pgid=,stat=` と負の PID への kill は両方で動作）。
@@ -246,7 +248,36 @@ async function main(argv) {
       // 既に終了済み
     }
   }
+  // Ctrl+Z は foreground の npm/ラッパー側へ SIGTSTP を送るが、Vitest は
+  // detached session にいるため自動では止まらない。ラッパーが child group を
+  // SIGSTOP した後、自分自身も SIGSTOP して通常のshell job-controlへ合流する。
+  // fg/bg で SIGCONT を受けたら child group も再開する。
+  const suspend = () => {
+    if (pgid === undefined) {
+      pending.push('SIGTSTP')
+      return
+    }
+    try {
+      process.kill(-pgid, 'SIGSTOP')
+    } catch {
+      // 既に終了済み
+    }
+    process.kill(process.pid, 'SIGSTOP')
+  }
+  const resume = () => {
+    if (pgid === undefined) {
+      pending.push('SIGCONT')
+      return
+    }
+    try {
+      process.kill(-pgid, 'SIGCONT')
+    } catch {
+      // 既に終了済み
+    }
+  }
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, forward)
+  process.on('SIGTSTP', suspend)
+  process.on('SIGCONT', resume)
 
   // npx / .bin シムを経由せず node で直接起動し、pgid == この子プロセスの PID にする。
   const child = spawn(process.execPath, [vitestEntry, ...argv], {
@@ -278,7 +309,11 @@ async function main(argv) {
     }),
   )
   renameSync(`${recordFile}.tmp`, recordFile)
-  for (const signal of pending.splice(0)) forward(signal)
+  for (const signal of pending.splice(0)) {
+    if (signal === 'SIGTSTP') suspend()
+    else if (signal === 'SIGCONT') resume()
+    else forward(signal)
+  }
 
   const exitCode = await new Promise((r) =>
     child.once('exit', (code, signal) =>
