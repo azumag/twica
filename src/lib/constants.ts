@@ -288,6 +288,7 @@ export const ERROR_MESSAGES = {
   // Additional reward PUT: keep the API message stable for existing clients;
   // the dashboard localizes this condition before presenting it to users.
   ADDITIONAL_REWARD_NOT_FOUND: 'この追加の引き換えは既に削除されています。設定を再読み込みしてください',
+  ADDITIONAL_REWARD_CONCURRENT_UPDATE: 'Additional reward changed in another request. Reload settings and try again.',
   UNEXPECTED_ERROR: 'Unexpected error',
 
   // File upload errors

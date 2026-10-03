@@ -674,6 +674,7 @@
       "updateSuccessPackPending": "Additional redemption updated (pack change pending deployment)",
       "updateFailed": "Failed to update additional redemption",
       "notFound": "This additional redemption was already removed. The list has been refreshed.",
+      "concurrentUpdate": "This additional redemption was updated elsewhere. The list has been refreshed.",
       "removeConfirm": "Remove this additional redemption? EventSub subscription will also be removed.",
       "editDiscardConfirm": "Unsaved changes will be discarded if you switch to editing another redemption. Continue?",
       "cannotUseAsMain": "This redemption is already registered as an additional redemption. Please remove it first.",

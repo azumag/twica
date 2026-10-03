@@ -331,6 +331,32 @@ describe("ChannelPointSettings additional-reward editing", () => {
     });
   });
 
+  it("localizes concurrent update conflicts, closes the stale editor, and refetches", async () => {
+    const conflictMock = mockFetch(undefined, {
+      putStatus: 409,
+      putBody: { error: ERROR_MESSAGES.ADDITIONAL_REWARD_CONCURRENT_UPDATE },
+    });
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", conflictMock);
+    renderComponent({}, "off", "en");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit pack/draws for Extra" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("This additional redemption was updated elsewhere. The list has been refreshed.")
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    const getCalls = conflictMock.mock.calls.filter(
+      ([input, init]) =>
+        String(input).includes("/api/streamer/additional-rewards") &&
+        ((init as RequestInit)?.method ?? "GET") === "GET"
+    );
+    expect(getCalls.length).toBeGreaterThan(0);
+  });
+
   it("does not relabel unrelated 404 errors as an additional-reward deletion", async () => {
     const notFoundMock = mockFetch(undefined, {
       putStatus: 404,
