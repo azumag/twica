@@ -74,7 +74,9 @@ export default async function SettingsPage({
     Boolean(streamerData.streamer.show_unowned_card_details) ||
     // Issue #738/#740: /live掲載またはランキング上のチャネル表示がONなら使用中とみなす
     Boolean(streamerData.streamer.publish_live_status) ||
-    Boolean(streamerData.streamer.publish_stats);
+    Boolean(streamerData.streamer.publish_stats) ||
+    Boolean(streamerData.streamer.trade_enabled) ||
+    Boolean(streamerData.streamer.cross_channel_trade_enabled);
 
   return (
     <SettingsLayout
@@ -112,6 +114,10 @@ export default async function SettingsPage({
       liveDirectory={{
         publishLiveStatus: streamerData.streamer.publish_live_status ?? false,
         publishStats: streamerData.streamer.publish_stats ?? false,
+      }}
+      trade={{
+        enabled: streamerData.streamer.trade_enabled ?? false,
+        crossChannelEnabled: streamerData.streamer.cross_channel_trade_enabled ?? false,
       }}
       cardPacks={{
         // canManage=false によるパックselectの非表示/disabled は progressive
