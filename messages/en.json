@@ -841,6 +841,7 @@
     "preview": "Preview",
     "previewDemo": "Preview DEMO",
     "obsDemo": "OBS DEMO",
+    "obsDemoFailed": "Failed to run OBS DEMO. Reload the page and try again.",
     "demoHelpTitle": "Demo Types",
     "demoHelpContent": {
       "previewDemo": "Shows only in the preview area on this page. Not reflected in OBS.",
