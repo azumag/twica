@@ -266,7 +266,8 @@ async function main(argv) {
   const recordFile = join(stateDir, `${pgid}.json`)
   mkdirSync(stateDir, { recursive: true })
   // 並行する cleanup が書き込み途中の空ファイルを「壊れた記録」として消さないよう、
-  // 一時ファイルに書いてから rename で原子的に公開する（cleanup は *.json だけを読む）。
+  // 一時ファイルに書いてから rename で原子的に公開する。cleanup は完全に読める tmp も
+  // 所有ラッパーが停止済みと確認できた場合だけ扱うため、active writer とは競合しない。
   writeFileSync(
     `${recordFile}.tmp`,
     JSON.stringify({
