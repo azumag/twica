@@ -31,6 +31,10 @@ const AUX_WORKER_ARTIFACT_BY_FLAG = Object.freeze({
     'workers/overlay-realtime/dist/production/index.js',
   '--require-overlay-realtime-preview':
     'workers/overlay-realtime/dist/preview/index.js',
+  '--require-chat-delivery-production':
+    'workers/chat-delivery/dist/production/index.js',
+  '--require-chat-delivery-preview':
+    'workers/chat-delivery/dist/preview/index.js',
 })
 const REQUIRED_AUX_WORKER_ARTIFACTS = Object.freeze(
   Object.values(AUX_WORKER_ARTIFACT_BY_FLAG),
