@@ -9,6 +9,7 @@ import {
   hasLiveMembers,
   isOwnedGroup,
   isWrapperActive,
+  lastQueuedJobControlSignal,
   readStartTime,
   terminateGroup,
 } from '../../scripts/vitest-agent.mjs'
@@ -218,6 +219,13 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
     const pgid = await startGroup()
     expect(hasLiveMembers(pgid, null)).toBe(true)
     expect(hasLiveMembers(await deadPid(), null)).toBe(false)
+  })
+
+  it('pgid確定前のSIGTSTP/SIGCONTは最後のjob-control状態だけを採用する', () => {
+    expect(lastQueuedJobControlSignal(['SIGTSTP', 'SIGCONT'])).toBe('SIGCONT')
+    expect(lastQueuedJobControlSignal(['SIGCONT', 'SIGTSTP'])).toBe('SIGTSTP')
+    expect(lastQueuedJobControlSignal(['SIGINT', 'SIGTSTP', 'SIGTERM', 'SIGCONT'])).toBe('SIGCONT')
+    expect(lastQueuedJobControlSignal(['SIGINT', 'SIGTERM'])).toBeUndefined()
   })
 
   it('package.json の test:agent / test:cleanup は広域 pkill を使わずラッパー経由で実行する', () => {
