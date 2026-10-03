@@ -8,6 +8,7 @@ import {
   cleanupStale,
   hasLiveMembers,
   isOwnedGroup,
+  isWrapperActive,
   readStartTime,
   terminateGroup,
 } from '../../scripts/vitest-agent.mjs'
@@ -102,11 +103,67 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
 
   it('記録したラッパーが生存中（並行実行中の test:agent）なら触らず、記録も残す', async () => {
     const running = await startGroup()
-    record(running, { wrapperPid: process.pid, startTime: readStartTime(running) })
+    record(running, {
+      wrapperPid: process.pid,
+      wrapperStartTime: readStartTime(process.pid),
+      startTime: readStartTime(running),
+    })
 
     expect(await cleanupStale({ stateDir, log: () => {} })).toEqual([])
     expect(groupAlive(running)).toBe(true)
     expect(readdirSync(stateDir)).toEqual([`${running}.json`])
+  })
+
+  it('ラッパー PID が別プロセスへ再利用されても起動時刻不一致なら stale と判定する', async () => {
+    const leftover = await startGroup()
+    const reusedWrapperRecord = {
+      wrapperPid: process.pid,
+      wrapperStartTime: 'Thu Jan  1 00:00:00 1970',
+    }
+    record(leftover, {
+      ...reusedWrapperRecord,
+      startTime: readStartTime(leftover),
+    })
+
+    expect(isWrapperActive(reusedWrapperRecord)).toBe(false)
+    expect(await cleanupStale({ stateDir, log: () => {} })).toEqual([leftover])
+    expect(await waitUntilDead(leftover)).toBe(true)
+    expect(readdirSync(stateDir)).toEqual([])
+  })
+
+  it('rename 前に残った完全な tmp 記録は、書き込み元ラッパー死亡時だけ回収する', async () => {
+    const leftover = await startGroup()
+    writeFileSync(
+      join(stateDir, `${leftover}.json.tmp`),
+      JSON.stringify({
+        pgid: leftover,
+        wrapperPid: await deadPid(),
+        wrapperStartTime: null,
+        startTime: readStartTime(leftover),
+      }),
+    )
+
+    expect(await cleanupStale({ stateDir, log: () => {} })).toEqual([leftover])
+    expect(await waitUntilDead(leftover)).toBe(true)
+    expect(readdirSync(stateDir)).toEqual([])
+  })
+
+  it('並行ラッパーが書いた tmp は削除せず、書き込み途中で壊れた tmp も次回へ残す', async () => {
+    const running = await startGroup()
+    writeFileSync(
+      join(stateDir, `${running}.json.tmp`),
+      JSON.stringify({
+        pgid: running,
+        wrapperPid: process.pid,
+        wrapperStartTime: readStartTime(process.pid),
+        startTime: readStartTime(running),
+      }),
+    )
+    writeFileSync(join(stateDir, 'partial.json.tmp'), '{')
+
+    expect(await cleanupStale({ stateDir, log: () => {} })).toEqual([])
+    expect(groupAlive(running)).toBe(true)
+    expect(readdirSync(stateDir).sort()).toEqual([`${running}.json.tmp`, 'partial.json.tmp'].sort())
   })
 
   it('リーダーの起動時刻が記録と異なる（PID 再利用）グループは終了せず、記録だけ捨てる', async () => {

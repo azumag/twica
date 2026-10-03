@@ -15,8 +15,9 @@
  *      コマンド文字列マッチ（pkill -f）は採用しない。Vitest は process.title を
  *      `node (vitest)` / `node (vitest N)` に書き換えるため ps 上にパスが残らず、worktree を区別できないことを
  *      実測で確認している。pgid は OS が割り当てた「この実行固有」の識別子なので誤爆しない。
- *   2. 起動した pgid と、そのリーダーの起動時刻を この worktree の `node_modules/.cache/` 配下に
- *      記録する。ラッパー自身が SIGKILL 等で異常終了して記録が残った場合だけ、次回の開始前
+ *   2. 起動した pgid と、そのリーダーの起動時刻に加えて、ラッパー自身の PID / 起動時刻を
+ *      この worktree の `node_modules/.cache/` 配下に記録する。ラッパー自身が SIGKILL 等で
+ *      異常終了して記録が残った場合だけ、次回の開始前
  *      （または `--cleanup`）にそのグループを終了する。記録したラッパーが生きている間は
  *      「実行中」とみなして触らない（同じ worktree で並行実行した test:agent を巻き込まない）。
  *      既知の制限: 記録は node_modules 配下なので `npm ci` をまたいだ残留は回収できない。
@@ -153,29 +154,52 @@ export async function terminateGroup(pgid, { graceMs = TERM_GRACE_MS, log = cons
 }
 
 /**
+ * 記録したラッパーが今も同じプロセスとして生きているかを判定する。
+ * wrapperStartTime を持たない旧記録は PID が生きていれば従来どおり「実行中」とみなし、
+ * 誤って別プロセスを掃除するより残留を見逃す安全側へ倒す。
+ */
+export function isWrapperActive({ wrapperPid, wrapperStartTime }) {
+  if (!Number.isInteger(wrapperPid) || wrapperPid <= 1 || !exists(wrapperPid)) return false
+  if (typeof wrapperStartTime !== 'string' || wrapperStartTime === '') return true
+
+  const currentStartTime = readStartTime(wrapperPid)
+  // ps が使えない/一時的に読めない環境では PID 存在確認だけを信頼して触らない。
+  if (currentStartTime === null) return true
+  return currentStartTime === wrapperStartTime
+}
+
+/**
  * 記録済みグループのうち「記録したラッパーが既に死んでいる」ものだけを終了する。
+ * rename 前に SIGKILL されたとき残る *.json.tmp も、内容を完全に読めて
+ * 書き込み元ラッパーが停止済みと確認できた場合だけ通常記録と同様に回収する。
+ * 書き込み途中で JSON が壊れている tmp は、並行実行中の writer と区別できないため触らない。
  * 戻り値は終了処理した pgid の一覧。
  */
 export async function cleanupStale({ stateDir, graceMs = TERM_GRACE_MS, log = console.error }) {
   let names
   try {
-    names = readdirSync(stateDir).filter((name) => name.endsWith('.json'))
+    names = readdirSync(stateDir).filter(
+      (name) => name.endsWith('.json') || name.endsWith('.json.tmp'),
+    )
   } catch {
     return [] // 記録ディレクトリが無い = 残留なし
   }
   const cleaned = []
   for (const name of names) {
     const file = join(stateDir, name)
+    const isTemp = name.endsWith('.json.tmp')
     let record
     try {
       record = JSON.parse(readFileSync(file, 'utf8'))
     } catch {
-      rmSync(file, { force: true }) // 書き込み途中で落ちた等の壊れた記録は捨てる
+      // *.json は rename 済みなので壊れていれば恒久的な不正記録として捨ててよい。
+      // *.json.tmp は active writer の途中状態かもしれないため、削除せず次回へ回す。
+      if (!isTemp) rmSync(file, { force: true })
       continue
     }
     // 記録したラッパーが生きている = 並行実行中の test:agent。触らない。
-    // （PID 再利用で無関係なプロセスが生きている場合も「掃除しない」側に倒れるので安全）
-    if (Number.isInteger(record.wrapperPid) && exists(record.wrapperPid)) continue
+    // wrapperStartTime が一致しない PID 再利用だけは「元ラッパー死亡」と判定できる。
+    if (isWrapperActive(record)) continue
     if (isOwnedGroup(record)) {
       log(`[vitest-agent] terminating leftover Vitest process group ${record.pgid}`)
       await terminateGroup(record.pgid, { graceMs, log })
@@ -242,10 +266,16 @@ async function main(argv) {
   const recordFile = join(stateDir, `${pgid}.json`)
   mkdirSync(stateDir, { recursive: true })
   // 並行する cleanup が書き込み途中の空ファイルを「壊れた記録」として消さないよう、
-  // 一時ファイルに書いてから rename で原子的に公開する（cleanup は *.json だけを読む）。
+  // 一時ファイルに書いてから rename で原子的に公開する。cleanup は完全に読める tmp も
+  // 所有ラッパーが停止済みと確認できた場合だけ扱うため、active writer とは競合しない。
   writeFileSync(
     `${recordFile}.tmp`,
-    JSON.stringify({ pgid, wrapperPid: process.pid, startTime: readStartTime(pgid) }),
+    JSON.stringify({
+      pgid,
+      wrapperPid: process.pid,
+      wrapperStartTime: readStartTime(process.pid),
+      startTime: readStartTime(pgid),
+    }),
   )
   renameSync(`${recordFile}.tmp`, recordFile)
   for (const signal of pending.splice(0)) forward(signal)
