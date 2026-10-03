@@ -334,6 +334,17 @@
     "reviewedAt": "2026-10-04"
   },
   {
+    "path": "/api/trades/[id]/accept",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "カードトレード成立処理。accept_trade_offer DB関数がuser_cards所有権とtrade_offers状態を書き換えるためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-04"
+  },
+  {
     "path": "/api/trades/[id]/cancel",
     "methods": [
       "POST"
