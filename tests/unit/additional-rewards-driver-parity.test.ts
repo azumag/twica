@@ -621,7 +621,10 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       expect(pg.updateCalls[0].where).toEqual(
         and(
           eq(streamerAdditionalGachaRewardsTable.streamer_id, "streamer-1"),
-          eq(streamerAdditionalGachaRewardsTable.reward_id, REWARD_ID)
+          eq(streamerAdditionalGachaRewardsTable.reward_id, REWARD_ID),
+          // lookup 時点の collection_name を CAS 条件へ含め、membership 判定後の
+          // concurrent change を stale な PUT が上書きしない。
+          eq(streamerAdditionalGachaRewardsTable.collection_name, "weapons")
         )
       );
     });
