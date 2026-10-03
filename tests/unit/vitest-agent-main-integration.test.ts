@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import {
   copyFileSync,
@@ -55,6 +55,27 @@ async function waitForFile(path: string, timeoutMs = 3000): Promise<void> {
   throw new Error(`timed out waiting for ${path}`)
 }
 
+function processStat(pid: number): string | null {
+  try {
+    const stat = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return stat || null
+  } catch {
+    return null
+  }
+}
+
+async function waitForStopped(pid: number, stopped: boolean, timeoutMs = 3000): Promise<void> {
+  for (let waited = 0; waited < timeoutMs; waited += 25) {
+    const stat = processStat(pid)
+    if (stat !== null && stat.startsWith('T') === stopped) return
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25))
+  }
+  throw new Error(`timed out waiting for pid ${pid} stopped=${stopped}; stat=${processStat(pid)}`)
+}
+
 function killRecordedGroups(root: string) {
   const stateDir = join(root, 'node_modules', '.cache', 'twica-vitest-agent')
   if (!existsSync(stateDir)) return
@@ -88,6 +109,35 @@ describe.skipIf(!posix)('vitest-agent main integration (#1695)', () => {
     const [code, signal] = (await once(wrapper, 'exit')) as [number | null, NodeJS.Signals | null]
 
     expect({ code, signal }).toEqual({ code: 7, signal: null })
+    expect(readdirSync(join(root, 'node_modules', '.cache', 'twica-vitest-agent'))).toEqual([])
+  })
+
+  it('SIGTSTP でラッパーと fake Vitest を停止し、SIGCONT で両方を再開する', async () => {
+    const root = createFixture(`
+import { writeFileSync } from 'node:fs'
+process.on('SIGINT', () => process.exit(43))
+writeFileSync(process.argv[2], String(process.pid))
+setInterval(() => {}, 1000)
+`)
+    const readyFile = join(root, 'job-control-ready')
+    const wrapper = startWrapper(root, [readyFile])
+    const exit = once(wrapper, 'exit')
+
+    await waitForFile(readyFile)
+    const vitestPid = Number(readFileSync(readyFile, 'utf8'))
+    expect(Number.isInteger(vitestPid)).toBe(true)
+
+    expect(wrapper.kill('SIGTSTP')).toBe(true)
+    await waitForStopped(wrapper.pid!, true)
+    await waitForStopped(vitestPid, true)
+
+    expect(wrapper.kill('SIGCONT')).toBe(true)
+    await waitForStopped(wrapper.pid!, false)
+    await waitForStopped(vitestPid, false)
+
+    expect(wrapper.kill('SIGINT')).toBe(true)
+    const [code, signal] = (await exit) as [number | null, NodeJS.Signals | null]
+    expect({ code, signal }).toEqual({ code: 43, signal: null })
     expect(readdirSync(join(root, 'node_modules', '.cache', 'twica-vitest-agent'))).toEqual([])
   })
 
