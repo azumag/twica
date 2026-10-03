@@ -323,6 +323,28 @@
     "reviewedAt": "2026-07-18"
   },
   {
+    "path": "/api/trades",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "カードトレードの新規オファー作成。trade_offersへのDB書き込みを伴うためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-04"
+  },
+  {
+    "path": "/api/trades/[id]/cancel",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "出品中トレードのキャンセル（open→cancelled CAS）。DB書き込みを伴うためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-04"
+  },
+  {
     "path": "/api/tos/accept",
     "methods": [
       "POST"
