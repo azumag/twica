@@ -50,13 +50,13 @@ describe("acceptTradeOffer (#724)", () => {
   });
 
   it.each([
-    [{ success: true }, "missing success fields"],
-    [rpcSuccess({ tradeOfferId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }), "mismatched trade offer"],
-    [rpcSuccess({ receivedUserCardId: "not-a-uuid" }), "invalid received card id"],
-    [rpcSuccess({ completedAt: "not-a-date" }), "invalid completion timestamp"],
-    [rpcSuccess({ idempotentReplay: "false" }), "invalid replay flag"],
-    [{ success: false, error: "FUTURE_UNKNOWN_ERROR" }, "unknown failure code"],
-  ])("fails closed on %s RPC payload", async (result) => {
+    ["missing success fields", { success: true }],
+    ["mismatched trade offer", rpcSuccess({ tradeOfferId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" })],
+    ["invalid received card id", rpcSuccess({ receivedUserCardId: "not-a-uuid" })],
+    ["invalid completion timestamp", rpcSuccess({ completedAt: "not-a-date" })],
+    ["invalid replay flag", rpcSuccess({ idempotentReplay: "false" })],
+    ["unknown failure code", { success: false, error: "FUTURE_UNKNOWN_ERROR" }],
+  ])("fails closed on %s RPC payload", async (_description, result) => {
     const sqlMock = vi.fn().mockResolvedValue([{ result }]);
     primeSql(sqlMock);
 
