@@ -374,7 +374,11 @@ export async function createTradeOffer(input: {
   }
 }
 
-function tradeEnabledGate(streamerColumn: typeof tradeOffersTable.offered_streamer_id) {
+function tradeEnabledGate(
+  streamerColumn:
+    | typeof tradeOffersTable.offered_streamer_id
+    | typeof tradeOffersTable.wanted_streamer_id,
+) {
   return sql<boolean>`EXISTS (
     SELECT 1
     FROM ${streamersTable} AS trade_gate
@@ -383,7 +387,11 @@ function tradeEnabledGate(streamerColumn: typeof tradeOffersTable.offered_stream
   )`;
 }
 
-function crossEnabledGate(streamerColumn: typeof tradeOffersTable.offered_streamer_id) {
+function crossEnabledGate(
+  streamerColumn:
+    | typeof tradeOffersTable.offered_streamer_id
+    | typeof tradeOffersTable.wanted_streamer_id,
+) {
   return sql<boolean>`EXISTS (
     SELECT 1
     FROM ${streamersTable} AS cross_gate
