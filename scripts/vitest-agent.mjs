@@ -110,6 +110,12 @@ function readProcessGroups() {
 
 /** プロセスの起動時刻（秒精度の文字列）。存在しなければ null。
  * 記録時と照合時で表記が揺れないよう、ロケールは LC_ALL=C、タイムゾーンは TZ=UTC に固定する。 */
+export function lastQueuedJobControlSignal(signals) {
+  return signals.findLast(
+    (signal) => signal === 'SIGTSTP' || signal === 'SIGCONT',
+  )
+}
+
 export function readStartTime(pid) {
   try {
     const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
@@ -317,9 +323,7 @@ async function main(argv) {
   for (const signal of queued) {
     if (signal !== 'SIGTSTP' && signal !== 'SIGCONT') forward(signal)
   }
-  const lastJobControlSignal = queued.findLast(
-    (signal) => signal === 'SIGTSTP' || signal === 'SIGCONT',
-  )
+  const lastJobControlSignal = lastQueuedJobControlSignal(queued)
   if (lastJobControlSignal === 'SIGTSTP') suspend()
   else if (lastJobControlSignal === 'SIGCONT') resume()
 
