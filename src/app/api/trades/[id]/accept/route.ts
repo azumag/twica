@@ -6,7 +6,6 @@ import { handleApiError } from "@/lib/error-handler";
 import { logger } from "@/lib/logger.server";
 import {
   checkRateLimit,
-  getClientIp,
   getRateLimitIdentifier,
   rateLimits,
 } from "@/lib/rate-limit";
@@ -134,7 +133,9 @@ export async function POST(
       tradeOfferId: id,
       offererTwitchUserId,
       accepterTwitchUserId: session.twitchUserId,
-      rateLimitIdentifier: `ip:${getClientIp(request)}`,
+      // Reuse the identifier that actually keyed this authenticated request's
+      // rate-limit bucket. Avoid separately retaining the raw client IP.
+      rateLimitIdentifier: identifier,
       idempotentReplay: result.idempotentReplay === true,
     });
 
