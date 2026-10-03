@@ -59,7 +59,7 @@ function killRecordedGroups(root: string) {
   const stateDir = join(root, 'node_modules', '.cache', 'twica-vitest-agent')
   if (!existsSync(stateDir)) return
   for (const name of readdirSync(stateDir)) {
-    if (!name.endsWith('.json')) continue
+    if (!name.endsWith('.json') && !name.endsWith('.json.tmp')) continue
     try {
       const { pgid } = JSON.parse(readFileSync(join(stateDir, name), 'utf8')) as { pgid?: number }
       if (typeof pgid === 'number' && Number.isInteger(pgid) && pgid > 1) {
