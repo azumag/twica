@@ -31,6 +31,18 @@ interface AuthErrorDetails {
   shouldLog: boolean
 }
 
+function isTransientTwitchProviderFailure(error: unknown, errorType: string): boolean {
+  if (errorType !== 'twitch_auth_failed' && errorType !== 'twitch_user_fetch_failed') {
+    return false
+  }
+  const status = (error as { status?: unknown } | null)?.status
+  return typeof status === 'number'
+    && (status === 408 || status === 429 || (status >= 500 && status <= 599))
+}
+
+const TWITCH_TEMPORARY_USER_MESSAGE =
+  'Twitch側で一時的な通信エラーが発生しました。少し待ってから再度お試しください。'
+
 const AUTH_ERROR_MAP: Record<string, AuthErrorDetails> = {
   twitch_auth_failed: {
     type: 'twitch_auth_failed',
@@ -117,18 +129,28 @@ export async function handleAuthError(
   options?: { returnJson?: boolean; baseUrl?: string }
 ): Promise<NextResponse> {
   const errorDetails = AUTH_ERROR_MAP[errorType] || AUTH_ERROR_MAP.unknown_error
+  // Twitch endpoint自身が返した408/429/5xxは、アプリの修正で解消する恒久バグではない。
+  // callbackの利用者には一時障害として案内し、自動GitHub Issueの永続化対象から外す。
+  // 401/403/4xx等は従来どおり各エラー種別の契約を維持する。
+  const transientTwitchFailure = isTransientTwitchProviderFailure(error, errorType)
+  const shouldPersist = errorDetails.shouldLog && !transientTwitchFailure
+  const responseStatus = transientTwitchFailure ? 503 : errorDetails.statusCode
+  const userMessage = transientTwitchFailure
+    ? TWITCH_TEMPORARY_USER_MESSAGE
+    : errorDetails.userMessage
 
   if (errorDetails.shouldLog) {
-    // reportAuthError がこの境界の唯一の errors writer。logger.error も内部で
-    // logErrorFromLogger を起動するため、同じ失敗を二重永続化して #810/#811 の
-    // ような重複issueを作る。診断用のconsole出力は warning に留める。
+    // 一時的なTwitch provider障害もWorkerログには残す。ただし logger.error は
+    // 自動永続化するためwarningに限定し、errors/GitHub Issue化はshouldPersistで分ける。
     logger.warn(`${errorDetails.message}:`, {
       error,
       errorType,
       context,
       stack: error instanceof Error ? error.stack : undefined,
     })
+  }
 
+  if (shouldPersist) {
     // Cloudflare Workersではレスポンス完了後に未完了タスクがキャンセルされるため、
     // PlanetScaleへのエラー記録をawaitして自動issue連携を確実にする。
     await reportAuthError(error, {
@@ -144,9 +166,9 @@ export async function handleAuthError(
     return NextResponse.json(
       {
         error: errorDetails.type,
-        message: errorDetails.userMessage,
+        message: userMessage,
       },
-      { status: errorDetails.statusCode }
+      { status: responseStatus }
     )
   }
 
@@ -154,7 +176,7 @@ export async function handleAuthError(
   // options.baseUrl が渡されていればそちらを優先する
   const redirectBase = options?.baseUrl || process.env.NEXT_PUBLIC_APP_URL
   return NextResponse.redirect(
-    `${redirectBase}/?error=${encodeURIComponent(errorDetails.userMessage)}`
+    `${redirectBase}/?error=${encodeURIComponent(userMessage)}`
   )
 }
 
