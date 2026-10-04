@@ -39,6 +39,15 @@ const CHAT_SEND_RETRY_DELAYS_MS = [250, 500]
  */
 const DUPLICATE_DROP_CODE = 'msg_duplicate'
 /**
+ * HTTP 200 + is_sent=false でも、Twitchが本文ではなくサーバ側の一時不調を示す
+ * drop_reason.message（"Your message could not be sent, please try again later."）。
+ * AutoMod等は本文自体の拒否なので再送無意味だが、こちらは文面どおり再試行で回復する。
+ * code は公開仕様で保証されないため、文面（"try again later"）で判定する。
+ * terminal扱いだとDLQ化され回復後も再送されず、通知が永久欠落し自動Issueも量産される
+ * （Issue #1742）。408/429/5xxと同じbounded retry + outbox backoffへ載せる。
+ */
+const TRANSIENT_DROP_MESSAGE_PATTERN = /try again later/i
+/**
  * Twitch/CDNの一時応答。408・429と全5xxを同じbounded retryへ統一する。
  * 個別の5xx列挙では522/523/524等のCloudflare障害が恒久失敗としてDLQ化され、
  * 回復後にも再送されないため、HTTPクラスで判定する。
@@ -446,6 +455,8 @@ export class TwitchChatService {
     let lastResponse: Response | null = null
     let lastResponseErrorBody: TwitchApiError | null = null
     let lastException: unknown = null
+    // 200 + is_sent=false のうち一時不調型のdrop（TRANSIENT_DROP_MESSAGE_PATTERN）。
+    let lastDropTransient = false
     // HTTP 200 + drop_reason（AutoMod等、msg_duplicateを除く）で拒否されたケースを
     // 下のterminal code決定時に区別するためのフラグ。
     let contentRejectedByTwitch = false
@@ -546,6 +557,19 @@ export class TwitchChatService {
             message: dropMessage,
           }
           lastException = null
+          lastDropTransient = TRANSIENT_DROP_MESSAGE_PATTERN.test(dropMessage)
+          if (lastDropTransient && attempt < CHAT_SEND_MAX_ATTEMPTS) {
+            logger.warn('Twitch chat message transiently dropped - retrying', {
+              broadcasterTwitchUserId,
+              senderTwitchUserId,
+              usingBotAccount: Boolean(botAccount),
+              dropCode,
+              attempt,
+              nextDelayMs: CHAT_SEND_RETRY_DELAYS_MS[attempt - 1],
+            })
+            await sleep(CHAT_SEND_RETRY_DELAYS_MS[attempt - 1])
+            continue
+          }
           // Issue #1725: is_sent=falseと有効なdrop_reason.codeの両方が明示された場合
           // だけ「本文が拒否された」と判定する。それ以外のHTTP 200はAPI契約崩れや
           // 自前バグの兆候になり得るため、TWITCH_REJECTED（自動Issue化対象）として扱う。
@@ -554,6 +578,7 @@ export class TwitchChatService {
           }
           // 同じ本文を再送してもAutoMod等の判定は変わらないためterminalとし、
           // 後続通知を塞がずDLQから人間が内容を確認できるようにする。
+          // 一時不調型は上のretryを使い切った場合のみここへ来て、retryableで返す。
           break
         }
 
@@ -561,6 +586,7 @@ export class TwitchChatService {
         lastResponse = response
         lastResponseErrorBody = errorBody
         lastException = null
+        lastDropTransient = false
 
         // 通常の4xxは恒久失敗（401 scope・403禁止・404 not found等）。
         // timeoutを表す408、rate limitの429、全5xxだけを一時障害として再試行する。
@@ -648,7 +674,7 @@ export class TwitchChatService {
           // reportApiError failure is best-effort — must not block main flow
         }
       }
-      return withCredentialDegradation(isRetryableHttpStatus(lastResponse.status)
+      return withCredentialDegradation(isRetryableHttpStatus(lastResponse.status) || lastDropTransient
         ? {
             outcome: 'retryable',
             reason: `Twitch API ${lastResponse.status}: ${errorBody.message || 'Unknown error'}`,

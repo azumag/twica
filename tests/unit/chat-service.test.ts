@@ -401,6 +401,47 @@ describe('TwitchChatService', () => {
       expect(reportError).not.toHaveBeenCalled();
     });
 
+    // Issue #1742: 200 + is_sent=false でもTwitch側の一時不調（"try again later"）は
+    // terminal(DLQ)ではなくretryableとして扱う。
+    const transientDrop = {
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        data: [{
+          message_id: '',
+          is_sent: false,
+          drop_reason: { code: 'msg_rejected', message: 'Your message could not be sent, please try again later.' },
+        }],
+      }),
+    } as Response;
+
+    it('200 + is_sent=falseの一時不調dropは最大3回後retryableに分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue(transientDrop);
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message')).resolves.toEqual({
+        outcome: 'retryable',
+        reason: 'Twitch API 200: Your message could not be sent, please try again later.',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('一時不調dropの後の再試行で成功すればsentになる', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(transientDrop)
+        .mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ data: [{ message_id: 'm', is_sent: true }] }),
+        } as Response);
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message')).resolves.toEqual({
+        outcome: 'sent',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
     it('HTTP 200でもis_sent=falseならdrop_reason付きterminalに分類する', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
       vi.mocked(global.fetch).mockResolvedValue({
