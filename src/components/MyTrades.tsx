@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useLocale, useTranslations } from "next-intl";
 import type { TradeOfferDto, TradeOfferStatus } from "@/lib/trade";
@@ -10,6 +10,7 @@ import {
   tradeBoardPath,
   tradeErrorMessageKey,
 } from "@/lib/trade-client";
+import { useTradeList, type TradeListPage } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeCardSummary from "./TradeCardSummary";
 import TradePager from "./TradePager";
@@ -20,9 +21,10 @@ const TABS: ReadonlyArray<{ status: TradeOfferStatus; labelKey: string; emptyKey
   { status: "cancelled", labelKey: "myTradesTabCancelled", emptyKey: "myTradesEmptyCancelled" },
 ];
 
-type MineResult =
-  | { key: string; status: "error" }
-  | { key: string; status: "ok"; offers: TradeOfferDto[]; hasMore: boolean };
+/** GET /api/trades/mine URL of one tab page (also the client cache key). */
+function myTradesUrl(status: TradeOfferStatus, page: number) {
+  return `/api/trades/mine?status=${status}&page=${page}`;
+}
 
 /**
  * The viewer's side of a trade row. /api/trades/mine returns the offer as
@@ -46,8 +48,13 @@ function viewerSides(offer: TradeOfferDto) {
  * case that IS visible is a deleted card definition (card id NULL), which can
  * never be accepted again; those rows are marked so the offerer knows to
  * cancel them.
+ *
+ * Tab/page results are cached per mount (useTradeList): switching back to a
+ * tab shows its rows immediately, and "loading" only appears for a tab page
+ * that has never been fetched. `initialOpen` is the first page of the open
+ * tab rendered by the server, so the default view needs no client request.
  */
-export default function MyTrades() {
+export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeListPage | null }) {
   const t = useTranslations("trade");
   const tMaintenance = useTranslations("maintenance");
   const locale = useLocale();
@@ -55,48 +62,15 @@ export default function MyTrades() {
   const writeBlocked = maintenanceMode !== "off";
   const [tab, setTab] = useState<TradeOfferStatus>("open");
   const [page, setPage] = useState(1);
-  const [reloadToken, setReloadToken] = useState(0);
-  const [result, setResult] = useState<MineResult | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; isError: boolean } | null>(null);
 
-  const queryKey = `status=${tab}&page=${page}#${reloadToken}`;
-  const list: MineResult | { status: "loading" } =
-    result && result.key === queryKey ? result : { status: "loading" };
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const [query] = queryKey.split("#");
-    fetch(`/api/trades/mine?${query}`, {
-      credentials: "include",
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data = (await res.json()) as { offers?: TradeOfferDto[]; hasMore?: boolean };
-        // A superseded query must not move the page or overwrite the result.
-        if (controller.signal.aborted) return;
-        const offers = Array.isArray(data.offers) ? data.offers : [];
-        const requestedPage = Number(new URLSearchParams(query).get("page"));
-        if (offers.length === 0 && requestedPage > 1) {
-          // e.g. the only row of the last page was just cancelled: step back
-          // instead of showing the tab's empty state.
-          setPage(requestedPage - 1);
-          return;
-        }
-        setResult({
-          key: queryKey,
-          status: "ok",
-          offers,
-          hasMore: data.hasMore === true,
-        });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setResult({ key: queryKey, status: "error" });
-      });
-    return () => controller.abort();
-  }, [queryKey]);
+  const { view: list, retry, invalidate } = useTradeList(myTradesUrl(tab, page), {
+    initial: initialOpen ? { url: myTradesUrl("open", 1), page: initialOpen } : null,
+    // e.g. the only row of the last page was just cancelled: step back
+    // instead of showing the tab's empty state.
+    onEmptyPage: setPage,
+  });
 
   const selectTab = (status: TradeOfferStatus) => {
     setTab(status);
@@ -126,8 +100,18 @@ export default function MyTrades() {
       });
     }
     // Success or not, the row's state may have changed (e.g. completed by an
-    // acceptor meanwhile → TRADE_OFFER_NOT_OPEN), so show the current list.
-    setReloadToken((value) => value + 1);
+    // acceptor meanwhile → TRADE_OFFER_NOT_OPEN), and a cancel moves the row
+    // to the cancelled tab and off the board: drop every cached page and
+    // refresh this one in the background. A confirmed cancel removes the row
+    // right away instead of leaving a stale cancel button on screen.
+    invalidate(
+      res.ok
+        ? (current) => ({
+            ...current,
+            offers: current.offers.filter((item) => item.id !== offer.id),
+          })
+        : undefined,
+    );
   };
 
   const activeTab = TABS.find((item) => item.status === tab) ?? TABS[0];
@@ -145,7 +129,7 @@ export default function MyTrades() {
         <span>{t("myTradesLoadError")}</span>
         <button
           type="button"
-          onClick={() => setReloadToken((value) => value + 1)}
+          onClick={retry}
           className="rounded-lg bg-gray-700 px-4 py-2 text-white hover:bg-gray-600"
         >
           {t("retryButton")}

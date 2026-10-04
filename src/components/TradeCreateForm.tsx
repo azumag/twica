@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { TradeableOwnedCopy, WantableCard } from "@/lib/trade";
 import { postTradeJson, tradeErrorMessageKey } from "@/lib/trade-client";
+import { clearTradeListCache } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeCardSummary from "./TradeCardSummary";
 
@@ -157,6 +158,9 @@ export default function TradeCreateForm({
     });
     if (result.ok) {
       // The board fetches on mount, so the new offer is shown first there.
+      // Its client-side page cache (useTradeList) would otherwise serve a
+      // fresh-looking list without the new offer, so drop it first.
+      clearTradeListCache();
       const separator = boardHref.includes("?") ? "&" : "?";
       router.push(`${boardHref}${separator}listed=1`);
       return;

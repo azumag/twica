@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import type { TradeOfferDto, TradeScope } from "@/lib/trade";
+import { useTradeList } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeOfferRow from "./TradeOfferRow";
 import TradeAcceptModal from "./TradeAcceptModal";
@@ -32,13 +33,8 @@ interface TradeBoardProps {
   justListed?: boolean;
 }
 
-/** Result of one GET /api/trades call, tagged with the query it answers. */
 const CTA_CLASS =
   "mt-4 inline-block rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700";
-
-type ListResult =
-  | { key: string; status: "error" }
-  | { key: string; status: "ok"; offers: TradeOfferDto[]; hasMore: boolean };
 
 /**
  * Trade board list (§6.3).
@@ -47,6 +43,11 @@ type ListResult =
  * being rendered by the server component: the endpoint's tradeRead rate
  * limit is the abuse guard for this public, login-optional list, and SSR
  * calling listTradeOffers directly would bypass it.
+ *
+ * Pages are cached in the browser (useTradeList, shared across remounts):
+ * paging back, changing a filter back, or switching the scope tab (which
+ * remounts this component) reuses fetched pages instead of refetching and
+ * showing "loading" again. Any accept drops the whole cache.
  */
 export default function TradeBoard({
   streamerId,
@@ -64,8 +65,6 @@ export default function TradeBoard({
   const [page, setPage] = useState(1);
   const [wantedCardId, setWantedCardId] = useState("");
   const [offeredCardId, setOfferedCardId] = useState("");
-  const [reloadToken, setReloadToken] = useState(0);
-  const [result, setResult] = useState<ListResult | null>(null);
   const [accepting, setAccepting] = useState<{ offer: TradeOfferDto; requestId: string } | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
   // offerId → requestId. Kept across dialog close/reopen and failed attempts
@@ -85,51 +84,14 @@ export default function TradeBoard({
     if (wantedCardId) params.set("wantedCardId", wantedCardId);
     if (offeredCardId) params.set("offeredCardId", offeredCardId);
   }
-  // reloadToken is part of the key so "retry"/refetch after a trade shows the
-  // loading state again even though the URL itself is unchanged.
-  const queryKey = `${params.toString()}#${reloadToken}`;
-  // Loading is derived (the latest result answers an older query) instead of
-  // being set synchronously inside the effect.
-  const list: ListResult | { status: "loading" } =
-    result && result.key === queryKey ? result : { status: "loading" };
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const [query] = queryKey.split("#");
-    fetch(`/api/trades?${query}`, {
-      credentials: "include",
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data = (await res.json()) as { offers?: TradeOfferDto[]; hasMore?: boolean };
-        // A superseded query must not move the page or overwrite the result.
-        if (controller.signal.aborted) return;
-        const offers = Array.isArray(data.offers) ? data.offers : [];
-        const requestedPage = Number(new URLSearchParams(query).get("page"));
-        if (offers.length === 0 && requestedPage > 1) {
-          // The last row(s) of a later page were accepted/cancelled meanwhile:
-          // step back instead of showing the "no offers yet" empty state.
-          setPage(requestedPage - 1);
-          return;
-        }
-        setResult({
-          key: queryKey,
-          status: "ok",
-          offers,
-          hasMore: data.hasMore === true,
-        });
-      })
-      .catch(() => {
-        // An aborted request belongs to a superseded query; its result must not
-        // overwrite the newer one.
-        if (!controller.signal.aborted) setResult({ key: queryKey, status: "error" });
-      });
-    return () => controller.abort();
-  }, [queryKey]);
-
-  const reload = useCallback(() => setReloadToken((value) => value + 1), []);
+  const { view: list, retry, invalidate } = useTradeList(`/api/trades?${params.toString()}`, {
+    shared: true,
+    // The last row(s) of a later page were accepted/cancelled meanwhile:
+    // step back instead of showing the "no offers yet" empty state.
+    onEmptyPage: setPage,
+  });
+  // Set when the open dialog reports a committed trade (see closeAccept).
+  const completedOfferId = useRef<string | null>(null);
 
   useEffect(() => {
     if (!justListed) return;
@@ -154,8 +116,21 @@ export default function TradeBoard({
     setAccepting(null);
     const trigger = triggerRef.current;
     triggerRef.current = null;
+    const completedId = completedOfferId.current;
+    completedOfferId.current = null;
     if (refetch) {
-      reload();
+      // An accept changes ownership (canAccept of other rows / pages / tabs)
+      // and closes the offer: drop the whole cache and refresh this page in
+      // the background, removing a row that is known to be completed so it
+      // cannot be accepted again from a stale list.
+      invalidate(
+        completedId
+          ? (current) => ({
+              ...current,
+              offers: current.offers.filter((item) => item.id !== completedId),
+            })
+          : undefined,
+      );
     } else if (trigger) {
       // Return focus to the row's button (same as CardManager's zoom dialog).
       requestAnimationFrame(() => {
@@ -185,7 +160,7 @@ export default function TradeBoard({
         <span>{t("loadError")}</span>
         <button
           type="button"
-          onClick={reload}
+          onClick={retry}
           className="rounded-lg bg-gray-700 px-4 py-2 text-white hover:bg-gray-600"
         >
           {t("retryButton")}
@@ -296,7 +271,10 @@ export default function TradeBoard({
           offer={accepting.offer}
           requestId={accepting.requestId}
           writeBlocked={writeBlocked}
-          onCompleted={() => acceptRequestIds.current.delete(accepting.offer.id)}
+          onCompleted={() => {
+            acceptRequestIds.current.delete(accepting.offer.id);
+            completedOfferId.current = accepting.offer.id;
+          }}
           onClose={closeAccept}
         />
       )}

@@ -1,17 +1,17 @@
 import {
   and,
   asc,
-  count,
   desc,
   eq,
-  inArray,
   isNotNull,
   ne,
   or,
   getTableName,
   sql,
   type AnyColumn,
+  type SQL,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import { getDb } from "@/lib/db/client";
 import {
@@ -23,7 +23,10 @@ import {
 } from "@/lib/db/schema";
 import { getErrorChain, getSqlState, isPgUniqueViolationError } from "@/lib/db/errors";
 import { withDbRetry } from "@/lib/db/retry";
-import { withLiveDirectorySettingsColumnFallback } from "@/lib/db/streamers-safe-columns";
+import {
+  isMissingTradeSettingsColumnError,
+  withLiveDirectorySettingsColumnFallback,
+} from "@/lib/db/streamers-safe-columns";
 import { isCanonicalUuid } from "@/lib/uuid-validation";
 
 export const TRADE_PAGE_SIZE = 20;
@@ -82,16 +85,53 @@ export type TradeServiceErrorCode =
  * `visible_card.id = "id"` fails with 42702 (ambiguous). Qualifying with the
  * outer table name is unambiguous because every inner table is aliased.
  *
- * Precondition: the outer query references that table exactly once and
- * without alias() (true for every caller in this file). getTableName returns
- * the base table name, so an aliased or self-joined outer table would need a
- * different reference.
+ * Precondition: the referenced table name is unique in the outer FROM list.
+ * For a column of an alias() table getTableName returns the alias, so
+ * `wanted_card.id` etc. are rendered correctly; an unaliased table must
+ * appear only once (every other occurrence of it is aliased).
  */
 function qualifiedColumn(column: AnyColumn) {
   return sql`${sql.identifier(getTableName(column.table))}.${sql.identifier(column.name)}`;
 }
 
 type CardIdExpression = AnyColumn;
+
+// -----------------------------------------------------------------------------
+// Round-trip budget (2026-10 performance work)
+//
+// Every DB round trip from the Worker goes through Hyperdrive to PlanetScale
+// and was measured at a few hundred ms on preview, while the CPU time of the
+// trade APIs was only 15–60 ms. Latency is therefore dominated by the NUMBER
+// of sequential statements, not by query cost. The service functions below
+// are written so that each one issues a fixed, small number of statements
+// (pinned by tests/unit/trade-service.test.ts):
+//
+//   * The viewer's users.id is resolved INSIDE the statement that needs it
+//     (viewerUserIdOf: an uncorrelated scalar subquery; PostgreSQL runs each
+//     occurrence once per statement as an InitPlan, a unique-index lookup on
+//     users_twitch_user_id_key) instead of a separate users round trip.
+//   * Display metadata (streamers / participants) is LEFT JOINed onto the page
+//     query instead of being fetched by follow-up queries.
+//   * Validation reads are combined into one row-returning statement and the
+//     business rules are still evaluated in TypeScript in the original order,
+//     so error precedence (and what each error reveals) is unchanged.
+//
+// An unknown twitch_user_id makes the subquery NULL. Every comparison against
+// NULL is not TRUE, which reproduces the previous "user not found" branches
+// (anonymous visibility, empty result, not-found errors) without a branch.
+// -----------------------------------------------------------------------------
+
+/**
+ * users.id of `twitchUserId` as a scalar subquery (NULL when unknown). The
+ * literal alias keeps it independent of any outer `users` reference.
+ */
+function viewerUserIdOf(twitchUserId: string): SQL {
+  return sql`(
+    SELECT viewer.id
+    FROM ${usersTable} AS viewer
+    WHERE viewer.twitch_user_id = ${twitchUserId}
+  )`;
+}
 
 /** `cardIdExpr` points at an active card definition (NULL id → false). */
 function cardIsActive(cardIdExpr: CardIdExpression) {
@@ -104,10 +144,12 @@ function cardIsActive(cardIdExpr: CardIdExpression) {
 }
 
 /**
- * `cardIdExpr` is visible to `viewerUserId` (users.id, null = anonymous)
- * according to the rule documented above. Includes the is_active condition.
+ * `cardIdExpr` is visible to `viewerUserId` according to the rule documented
+ * above. Includes the is_active condition. `viewerUserId` is an SQL
+ * expression producing users.id (viewerUserIdOf() or an outer column); null
+ * means anonymous.
  */
-function cardVisibleTo(cardIdExpr: CardIdExpression, viewerUserId: string | null) {
+function cardVisibleTo(cardIdExpr: CardIdExpression, viewerUserId: SQL | null) {
   // Anonymous viewers have no ownership branch at all instead of comparing
   // against NULL, so the intent is explicit in the generated SQL.
   const ownedByViewer = viewerUserId
@@ -214,24 +256,18 @@ function normalizeSnapshot(value: unknown): TradeCardSnapshot {
   };
 }
 
-async function getUserByTwitchId(twitchUserId: string) {
-  const rows = await withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select({
-          id: usersTable.id,
-          twitch_user_id: usersTable.twitch_user_id,
-        })
-        .from(usersTable)
-        .where(eq(usersTable.twitch_user_id, twitchUserId))
-        .limit(1);
-    },
-    "trade:get-user",
-    { idempotent: true },
-  );
-  return rows[0] ?? null;
-}
+// Aliases used by the single-statement queries below. Each one is joined at
+// most once per statement, so qualifiedColumn() on them is unambiguous.
+const createReplayOffer = alias(tradeOffersTable, "replay_offer");
+const createOfferedCopy = alias(userCardsTable, "offered_copy");
+const createOfferedCard = alias(cardsTable, "offered_card");
+const createWantedCard = alias(cardsTable, "wanted_card");
+const createOfferedGate = alias(streamersTable, "offered_gate");
+const createWantedGate = alias(streamersTable, "wanted_gate");
+const offeredStreamerMeta = alias(streamersTable, "offered_streamer");
+const wantedStreamerMeta = alias(streamersTable, "wanted_streamer");
+const offererMeta = alias(usersTable, "offerer_user");
+const acceptorMeta = alias(usersTable, "acceptor_user");
 
 async function findOfferByCreateRequest(userId: string, requestId: string) {
   const rows = await withDbRetry(
@@ -295,47 +331,106 @@ export async function createTradeOffer(input: {
   | { kind: "ok"; offer: TradeOfferRow; idempotentReplay: boolean }
   | { kind: "error"; code: TradeServiceErrorCode }
 > {
-  const user = await getUserByTwitchId(input.twitchUserId);
-  if (!user) {
-    return { kind: "error", code: "TRADE_CARD_NOT_OWNED" };
-  }
-
-  // Create idempotency is checked before mutable business validation. A client
-  // retry after a successful commit must return the original offer even if a
-  // channel setting changes between attempts.
-  const replay = await findOfferByCreateRequest(user.id, input.requestId);
-  if (replay) {
-    return { kind: "ok", offer: replay, idempotentReplay: true };
-  }
-
-  const offeredRows = await withDbRetry(
+  // One read for every create-time check (previously 7 sequential reads:
+  // user, replay, offered copy, wanted card, streamer gates, open listing of
+  // the copy, open-offer count). Each LEFT JOIN matches at most one row
+  // (primary keys / the (offerer_user_id, request_id) unique index), so the
+  // statement returns exactly one row for a known user and none otherwise.
+  // Only decisions moved to TypeScript; their order below is unchanged.
+  const checkRows = await withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
         .select({
-          userCardId: userCardsTable.id,
-          cardId: cardsTable.id,
-          streamerId: cardsTable.streamer_id,
-          name: cardsTable.name,
-          rarity: cardsTable.rarity,
-          imageUrl: cardsTable.image_url,
-          isActive: cardsTable.is_active,
+          userId: usersTable.id,
+          // Full row of a previous create with the same requestId (or null).
+          replay: createReplayOffer,
+          offeredUserCardId: createOfferedCopy.id,
+          offeredCardId: createOfferedCard.id,
+          offeredStreamerId: createOfferedCard.streamer_id,
+          offeredName: createOfferedCard.name,
+          offeredRarity: createOfferedCard.rarity,
+          offeredImageUrl: createOfferedCard.image_url,
+          offeredIsActive: createOfferedCard.is_active,
+          wantedCardId: createWantedCard.id,
+          wantedStreamerId: createWantedCard.streamer_id,
+          wantedName: createWantedCard.name,
+          wantedRarity: createWantedCard.rarity,
+          wantedImageUrl: createWantedCard.image_url,
+          // Evaluated in SQL with the same predicate as the board so that the
+          // create path cannot be used to probe hidden card ids.
+          wantedVisible: cardVisibleTo(createWantedCard.id, qualifiedColumn(usersTable.id)),
+          offeredTradeEnabled: createOfferedGate.trade_enabled,
+          offeredCrossEnabled: createOfferedGate.cross_channel_trade_enabled,
+          wantedTradeEnabled: createWantedGate.trade_enabled,
+          wantedCrossEnabled: createWantedGate.cross_channel_trade_enabled,
+          // Same predicate as the partial unique index
+          // idx_trade_offers_open_user_card (regardless of the offerer).
+          offeredCopyListed: sql<boolean>`EXISTS (
+            SELECT 1
+            FROM ${tradeOffersTable} AS open_listing
+            WHERE open_listing.offered_user_card_id = ${input.offeredUserCardId}
+              AND open_listing.status = 'open'
+          )`,
+          // count(*) is bigint → string in postgres.js.
+          openOfferCount: sql<number>`(
+            SELECT count(*)
+            FROM ${tradeOffersTable} AS open_offer
+            WHERE open_offer.offerer_user_id = ${qualifiedColumn(usersTable.id)}
+              AND open_offer.status = 'open'
+          )`.mapWith(Number),
         })
-        .from(userCardsTable)
-        .innerJoin(cardsTable, eq(cardsTable.id, userCardsTable.card_id))
-        .where(
+        .from(usersTable)
+        .leftJoin(
+          createReplayOffer,
           and(
-            eq(userCardsTable.id, input.offeredUserCardId),
-            eq(userCardsTable.user_id, user.id),
+            eq(createReplayOffer.offerer_user_id, usersTable.id),
+            eq(createReplayOffer.request_id, input.requestId),
           ),
         )
+        .leftJoin(
+          createOfferedCopy,
+          and(
+            eq(createOfferedCopy.id, input.offeredUserCardId),
+            eq(createOfferedCopy.user_id, usersTable.id),
+          ),
+        )
+        .leftJoin(createOfferedCard, eq(createOfferedCard.id, createOfferedCopy.card_id))
+        .leftJoin(
+          createWantedCard,
+          and(
+            eq(createWantedCard.id, input.wantedCardId),
+            eq(createWantedCard.is_active, true),
+          ),
+        )
+        .leftJoin(createOfferedGate, eq(createOfferedGate.id, createOfferedCard.streamer_id))
+        .leftJoin(createWantedGate, eq(createWantedGate.id, createWantedCard.streamer_id))
+        .where(eq(usersTable.twitch_user_id, input.twitchUserId))
         .limit(1);
     },
-    "trade:create-offered-card",
+    "trade:create-checks",
     { idempotent: true },
   );
-  const offered = offeredRows[0];
-  if (!offered) {
+  const check = checkRows[0];
+  if (!check) {
+    return { kind: "error", code: "TRADE_CARD_NOT_OWNED" };
+  }
+  const userId = check.userId;
+
+  // Create idempotency is checked before mutable business validation. A client
+  // retry after a successful commit must return the original offer even if a
+  // channel setting changes between attempts.
+  if (check.replay) {
+    return { kind: "ok", offer: check.replay, idempotentReplay: true };
+  }
+
+  // The copy must exist, belong to the user and reference an existing card
+  // definition (the previous INNER JOIN semantics).
+  if (
+    !check.offeredUserCardId
+    || !check.offeredCardId
+    || !check.offeredStreamerId
+  ) {
     return { kind: "error", code: "TRADE_CARD_NOT_OWNED" };
   }
 
@@ -343,118 +438,57 @@ export async function createTradeOffer(input: {
   // are excluded from trading entirely. `is_active` is nullable in the schema
   // (DEFAULT true without NOT NULL), so only an explicit TRUE is accepted.
   // The offerer owns this copy, so revealing its inactive state leaks nothing.
-  if (offered.isActive !== true) {
+  if (check.offeredIsActive !== true) {
     return { kind: "error", code: "TRADE_OFFERED_CARD_INACTIVE" };
   }
 
-  if (offered.cardId === input.wantedCardId) {
+  if (check.offeredCardId === input.wantedCardId) {
     return { kind: "error", code: "TRADE_SAME_CARD" };
   }
 
-  const wantedRows = await withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select({
-          id: cardsTable.id,
-          streamerId: cardsTable.streamer_id,
-          name: cardsTable.name,
-          rarity: cardsTable.rarity,
-          imageUrl: cardsTable.image_url,
-          // Evaluated in SQL with the same predicate as the board so that the
-          // create path cannot be used to probe hidden card ids.
-          visible: cardVisibleTo(cardsTable.id, user.id),
-        })
-        .from(cardsTable)
-        .where(
-          and(
-            eq(cardsTable.id, input.wantedCardId),
-            eq(cardsTable.is_active, true),
-          ),
-        )
-        .limit(1);
-    },
-    "trade:create-wanted-card",
-    { idempotent: true },
-  );
-  const wanted = wantedRows[0];
   // Hidden and non-existent/inactive cards share one error code on purpose:
   // a distinct "hidden" error (or reaching the TRADE_DISABLED gate below)
   // would confirm that an unrevealed card id exists. This check therefore
   // runs before the streamer gate checks.
-  if (!wanted || wanted.visible !== true) {
+  if (!check.wantedCardId || !check.wantedStreamerId || check.wantedVisible !== true) {
     return { kind: "error", code: "TRADE_WANTED_CARD_UNAVAILABLE" };
   }
 
-  const streamerIds = [...new Set([offered.streamerId, wanted.streamerId])];
-  const streamerRows = await withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select({
-          id: streamersTable.id,
-          tradeEnabled: streamersTable.trade_enabled,
-          crossEnabled: streamersTable.cross_channel_trade_enabled,
-        })
-        .from(streamersTable)
-        .where(inArray(streamersTable.id, streamerIds));
-    },
-    "trade:create-streamer-gates",
-    { idempotent: true },
-  );
-  const gates = new Map(streamerRows.map((row) => [row.id, row]));
-  const offeredGate = gates.get(offered.streamerId);
-  const wantedGate = gates.get(wanted.streamerId);
-  if (!offeredGate?.tradeEnabled || !wantedGate?.tradeEnabled) {
+  // A missing streamer row reads as NULL here, i.e. disabled (fail closed).
+  if (check.offeredTradeEnabled !== true || check.wantedTradeEnabled !== true) {
     return { kind: "error", code: "TRADE_DISABLED" };
   }
   if (
-    offered.streamerId !== wanted.streamerId
-    && (!offeredGate.crossEnabled || !wantedGate.crossEnabled)
+    check.offeredStreamerId !== check.wantedStreamerId
+    && (check.offeredCrossEnabled !== true || check.wantedCrossEnabled !== true)
   ) {
     return { kind: "error", code: "TRADE_DISABLED" };
   }
 
-  if (await findOpenOfferForUserCard(input.offeredUserCardId)) {
+  if (check.offeredCopyListed === true) {
     return { kind: "error", code: "TRADE_CARD_ALREADY_LISTED" };
   }
 
-  const openCountRows = await withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select({ value: count() })
-        .from(tradeOffersTable)
-        .where(
-          and(
-            eq(tradeOffersTable.offerer_user_id, user.id),
-            eq(tradeOffersTable.status, "open"),
-          ),
-        );
-    },
-    "trade:create-open-count",
-    { idempotent: true },
-  );
-  if (Number(openCountRows[0]?.value ?? 0) >= TRADE_MAX_OPEN_OFFERS) {
+  if (Number(check.openOfferCount ?? 0) >= TRADE_MAX_OPEN_OFFERS) {
     return { kind: "error", code: "TRADE_OFFER_LIMIT" };
   }
 
   const values = {
-    offerer_user_id: user.id,
-    offered_user_card_id: offered.userCardId,
-    offered_card_id: offered.cardId,
-    offered_streamer_id: offered.streamerId,
-    wanted_card_id: wanted.id,
-    wanted_streamer_id: wanted.streamerId,
+    offerer_user_id: userId,
+    offered_user_card_id: check.offeredUserCardId,
+    offered_card_id: check.offeredCardId,
+    offered_streamer_id: check.offeredStreamerId,
+    wanted_card_id: check.wantedCardId,
+    wanted_streamer_id: check.wantedStreamerId,
     offered_card_snapshot: cardSnapshot({
-      name: offered.name,
-      rarity: offered.rarity,
-      image_url: offered.imageUrl,
+      name: check.offeredName ?? "",
+      rarity: check.offeredRarity ?? "",
+      image_url: check.offeredImageUrl,
     }),
     wanted_card_snapshot: cardSnapshot({
-      name: wanted.name,
-      rarity: wanted.rarity,
-      image_url: wanted.imageUrl,
+      name: check.wantedName ?? "",
+      rarity: check.wantedRarity ?? "",
+      image_url: check.wantedImageUrl,
     }),
     request_id: input.requestId,
   } satisfies typeof tradeOffersTable.$inferInsert;
@@ -479,7 +513,9 @@ export async function createTradeOffer(input: {
   } catch (error) {
     if (!isPgUniqueViolationError(error)) throw error;
 
-    const byRequest = await findOfferByCreateRequest(user.id, input.requestId);
+    // Rare conflict path: kept as separate follow-up reads (not part of the
+    // round-trip budget of the normal path).
+    const byRequest = await findOfferByCreateRequest(userId, input.requestId);
     if (byRequest) {
       return { kind: "ok", offer: byRequest, idempotentReplay: true };
     }
@@ -521,183 +557,170 @@ function crossEnabledGate(
   )`;
 }
 
-type EnrichOptions = {
-  /** users.id of the viewer (undefined = anonymous). */
-  viewerUserId?: string;
-  /**
-   * "board": public listing. canAccept is computed and the internal
-   * offeredUserCardId is only exposed for the viewer's own offers.
-   * "mine": the viewer's own history. Every row is the viewer's listing or a
-   * copy the viewer received, so offeredUserCardId is kept and canAccept
-   * (meaningless for own/completed rows) is skipped to save a query.
-   */
-  context: "board" | "mine";
+type ListContext = "board" | "mine";
+
+/**
+ * Columns of one listing statement: the offer row itself plus the display
+ * metadata that used to be fetched by two follow-up queries (streamers and
+ * participants). The metadata tables are LEFT JOINed through aliases, so a
+ * missing streamer/user row (or an open offer without acceptor) yields NULL
+ * fields instead of dropping the offer.
+ */
+function offerListFields(viewerUserId: SQL | null) {
+  return {
+    offer: tradeOffersTable,
+    // The resolved viewer id is returned with every row so that isOwnOffer /
+    // mineRole are computed from the same snapshot as the WHERE clause. NULL
+    // for anonymous viewers and for unknown twitch user ids.
+    viewerUserId: viewerUserId
+      ? sql<string | null>`${viewerUserId}`
+      : sql<string | null>`NULL::uuid`,
+    offeredStreamer: streamerSummaryFields(offeredStreamerMeta),
+    wantedStreamer: streamerSummaryFields(wantedStreamerMeta),
+    offerer: userSummaryFields(offererMeta),
+    acceptedBy: userSummaryFields(acceptorMeta),
+  };
+}
+
+function streamerSummaryFields<
+  T extends typeof offeredStreamerMeta | typeof wantedStreamerMeta,
+>(table: T) {
+  return {
+    id: table.id,
+    twitchUsername: table.twitch_username,
+    twitchDisplayName: table.twitch_display_name,
+    twitchProfileImageUrl: table.twitch_profile_image_url,
+  };
+}
+
+function userSummaryFields<T extends typeof offererMeta | typeof acceptorMeta>(table: T) {
+  return {
+    // Only used to tell "joined" from "no row"; not exposed in the DTO.
+    id: table.id,
+    twitchUsername: table.twitch_username,
+    twitchDisplayName: table.twitch_display_name,
+    twitchProfileImageUrl: table.twitch_profile_image_url,
+  };
+}
+
+type NullableFields<T> = { [K in keyof T]: T[K] | null };
+type JoinedStreamer = NullableFields<TradeStreamerSummary> | null;
+type JoinedUser = (NullableFields<TradeUserSummary> & { id: string | null }) | null;
+
+type OfferListRow = {
+  offer: TradeOfferRow;
+  viewerUserId: string | null;
+  offeredStreamer: JoinedStreamer;
+  wantedStreamer: JoinedStreamer;
+  offerer: JoinedUser;
+  acceptedBy: JoinedUser;
+  acceptState?: TradeCanAccept | null;
 };
 
-async function enrichOfferRows(
-  rows: TradeOfferRow[],
-  options: EnrichOptions,
-): Promise<TradeOfferDto[]> {
-  if (rows.length === 0) return [];
+/**
+ * Drizzle returns a nested object of a LEFT JOINed table either as null or
+ * with all-null fields depending on the selection shape; both mean "no row".
+ */
+function toStreamerSummary(row: JoinedStreamer): TradeStreamerSummary | null {
+  if (!row?.id) return null;
+  return {
+    id: row.id,
+    twitchUsername: row.twitchUsername ?? "",
+    twitchDisplayName: row.twitchDisplayName ?? "",
+    twitchProfileImageUrl: row.twitchProfileImageUrl ?? null,
+  };
+}
 
-  const { viewerUserId, context } = options;
-  const streamerIds = [...new Set(
-    rows.flatMap((row) => [row.offered_streamer_id, row.wanted_streamer_id]),
-  )];
-  // Offerers and acceptors are resolved with one query (same column shape).
-  const participantIds = [...new Set(
-    rows.flatMap((row) =>
-      row.accepted_by_user_id
-        ? [row.offerer_user_id, row.accepted_by_user_id]
-        : [row.offerer_user_id],
-    ),
-  )];
+function toUserSummary(row: JoinedUser): TradeUserSummary | null {
+  if (!row?.id) return null;
+  return {
+    twitchUsername: row.twitchUsername ?? "",
+    twitchDisplayName: row.twitchDisplayName ?? "",
+    twitchProfileImageUrl: row.twitchProfileImageUrl ?? null,
+  };
+}
 
-  const [streamers, participants] = await Promise.all([
-    withDbRetry(
-      async () => {
-        const { db } = await getDb();
-        return db
-          .select({
-            id: streamersTable.id,
-            twitchUsername: streamersTable.twitch_username,
-            twitchDisplayName: streamersTable.twitch_display_name,
-            twitchProfileImageUrl: streamersTable.twitch_profile_image_url,
-          })
-          .from(streamersTable)
-          .where(inArray(streamersTable.id, streamerIds));
-      },
-      "trade:list-streamer-metadata",
-      { idempotent: true },
-    ),
-    withDbRetry(
-      async () => {
-        const { db } = await getDb();
-        return db
-          .select({
-            id: usersTable.id,
-            twitchUsername: usersTable.twitch_username,
-            twitchDisplayName: usersTable.twitch_display_name,
-            twitchProfileImageUrl: usersTable.twitch_profile_image_url,
-          })
-          .from(usersTable)
-          .where(inArray(usersTable.id, participantIds));
-      },
-      "trade:list-offerer-metadata",
-      { idempotent: true },
-    ),
-  ]);
+/**
+ * Board canAccept, evaluated per row in SQL (previously a third follow-up
+ * query over the viewer's copies). Same exclusion rule as the accept RPC: a
+ * copy that is the offered copy of ANY open offer cannot be used to pay.
+ *   not_owned  — the viewer owns no copy of the wanted card
+ *   all_listed — every owned copy is listed in an open offer
+ *   yes        — at least one unlisted copy exists
+ * The inner aliases are literal; the only outer reference is the qualified
+ * trade_offers.wanted_card_id.
+ */
+function acceptStateFor(viewerUserId: SQL) {
+  const wantedCardId = qualifiedColumn(tradeOffersTable.wanted_card_id);
+  return sql<TradeCanAccept>`CASE
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM ${userCardsTable} AS accept_owned
+      WHERE accept_owned.user_id = ${viewerUserId}
+        AND accept_owned.card_id = ${wantedCardId}
+    ) THEN 'not_owned'
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM ${userCardsTable} AS accept_free
+      WHERE accept_free.user_id = ${viewerUserId}
+        AND accept_free.card_id = ${wantedCardId}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ${tradeOffersTable} AS active_listing
+          WHERE active_listing.offered_user_card_id = accept_free.id
+            AND active_listing.status = 'open'
+        )
+    ) THEN 'all_listed'
+    ELSE 'yes'
+  END`;
+}
 
-  const streamerMap = new Map(
-    streamers.map((row) => [
-      row.id,
-      {
-        id: row.id,
-        twitchUsername: row.twitchUsername,
-        twitchDisplayName: row.twitchDisplayName,
-        twitchProfileImageUrl: row.twitchProfileImageUrl,
-      } satisfies TradeStreamerSummary,
-    ]),
-  );
-  const participantMap = new Map(
-    participants.map((row) => [
-      row.id,
-      {
-        twitchUsername: row.twitchUsername,
-        twitchDisplayName: row.twitchDisplayName,
-        twitchProfileImageUrl: row.twitchProfileImageUrl,
-      } satisfies TradeUserSummary,
-    ]),
-  );
+function toOfferDto(row: OfferListRow, context: ListContext): TradeOfferDto {
+  const offer = row.offer;
+  const viewerUserId = row.viewerUserId;
+  const isOwnOffer = viewerUserId !== null && offer.offerer_user_id === viewerUserId;
+  const dto: TradeOfferDto = {
+    id: offer.id,
+    offeredCardId: offer.offered_card_id,
+    offeredStreamerId: offer.offered_streamer_id,
+    wantedCardId: offer.wanted_card_id,
+    wantedStreamerId: offer.wanted_streamer_id,
+    offeredCard: normalizeSnapshot(offer.offered_card_snapshot),
+    wantedCard: normalizeSnapshot(offer.wanted_card_snapshot),
+    isCrossChannel: Boolean(offer.is_cross_channel),
+    status: offer.status,
+    createdAt: offer.created_at,
+    updatedAt: offer.updated_at,
+    completedAt: offer.completed_at,
+    offerer: toUserSummary(row.offerer),
+    acceptedBy: offer.accepted_by_user_id ? toUserSummary(row.acceptedBy) : null,
+    offeredStreamer: toStreamerSummary(row.offeredStreamer),
+    wantedStreamer: toStreamerSummary(row.wantedStreamer),
+  };
 
-  const computeCanAccept = context === "board" && Boolean(viewerUserId);
-  const ownership = new Map<string, Array<{ id: string; listed: boolean }>>();
-  if (computeCanAccept && viewerUserId) {
-    const wantedCardIds = [...new Set(
-      rows
-        .filter((row) => row.offerer_user_id !== viewerUserId)
-        .map((row) => row.wanted_card_id)
-        .filter((value): value is string => typeof value === "string"),
-    )];
-    if (wantedCardIds.length > 0) {
-      const ownedRows = await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          return db
-            .select({
-              id: userCardsTable.id,
-              cardId: userCardsTable.card_id,
-              listed: sql<boolean>`EXISTS (
-                SELECT 1
-                FROM ${tradeOffersTable} AS active_listing
-                WHERE active_listing.offered_user_card_id = ${qualifiedColumn(userCardsTable.id)}
-                  AND active_listing.status = 'open'
-              )`,
-            })
-            .from(userCardsTable)
-            .where(
-              and(
-                eq(userCardsTable.user_id, viewerUserId),
-                inArray(userCardsTable.card_id, wantedCardIds),
-              ),
-            );
-        },
-        "trade:list-can-accept",
-        { idempotent: true },
-      );
-      for (const row of ownedRows) {
-        const bucket = ownership.get(row.cardId) ?? [];
-        bucket.push({ id: row.id, listed: Boolean(row.listed) });
-        ownership.set(row.cardId, bucket);
-      }
-    }
+  // offered_user_card_id is an internal row id of somebody else's copy. It
+  // is not needed to accept (the RPC resolves it) and would let third
+  // parties track individual copies, so the public board only exposes it
+  // for the viewer's own listings (needed for the cancel UI). Every /mine
+  // row is the viewer's listing or a copy the viewer received.
+  if (context === "mine" || isOwnOffer) {
+    dto.offeredUserCardId = offer.offered_user_card_id;
   }
 
-  return rows.map((row) => {
-    const isOwnOffer = viewerUserId !== undefined && row.offerer_user_id === viewerUserId;
-    const dto: TradeOfferDto = {
-      id: row.id,
-      offeredCardId: row.offered_card_id,
-      offeredStreamerId: row.offered_streamer_id,
-      wantedCardId: row.wanted_card_id,
-      wantedStreamerId: row.wanted_streamer_id,
-      offeredCard: normalizeSnapshot(row.offered_card_snapshot),
-      wantedCard: normalizeSnapshot(row.wanted_card_snapshot),
-      isCrossChannel: Boolean(row.is_cross_channel),
-      status: row.status,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      completedAt: row.completed_at,
-      offerer: participantMap.get(row.offerer_user_id) ?? null,
-      acceptedBy: row.accepted_by_user_id
-        ? participantMap.get(row.accepted_by_user_id) ?? null
-        : null,
-      offeredStreamer: streamerMap.get(row.offered_streamer_id) ?? null,
-      wantedStreamer: streamerMap.get(row.wanted_streamer_id) ?? null,
-    };
-
-    // offered_user_card_id is an internal row id of somebody else's copy. It
-    // is not needed to accept (the RPC resolves it) and would let third
-    // parties track individual copies, so the public board only exposes it
-    // for the viewer's own listings (needed for the cancel UI).
-    if (context === "mine" || isOwnOffer) {
-      dto.offeredUserCardId = row.offered_user_card_id;
-    }
-
-    if (viewerUserId) {
-      dto.isOwnOffer = isOwnOffer;
-    }
-    if (computeCanAccept && !isOwnOffer && row.wanted_card_id) {
-      const copies = ownership.get(row.wanted_card_id) ?? [];
-      dto.canAccept =
-        copies.length === 0
-          ? "not_owned"
-          : copies.every((copy) => copy.listed)
-            ? "all_listed"
-            : "yes";
-    }
-    return dto;
-  });
+  if (viewerUserId !== null) {
+    dto.isOwnOffer = isOwnOffer;
+  }
+  // canAccept is meaningless for own and /mine rows (skipped as before).
+  if (
+    context === "board"
+    && viewerUserId !== null
+    && !isOwnOffer
+    && offer.wanted_card_id
+    && row.acceptState
+  ) {
+    dto.canAccept = row.acceptState;
+  }
+  return dto;
 }
 
 export async function listTradeOffers(input: {
@@ -708,10 +731,7 @@ export async function listTradeOffers(input: {
   page: number;
   twitchUserId?: string;
 }) {
-  const currentUser = input.twitchUserId
-    ? await getUserByTwitchId(input.twitchUserId)
-    : null;
-  const viewerUserId = currentUser?.id ?? null;
+  const viewerUserId = input.twitchUserId ? viewerUserIdOf(input.twitchUserId) : null;
 
   // Both sides must be revealed to the viewer. Own offers bypass only the
   // *reveal* rule (a channel switching show_unowned_* off later must not hide
@@ -766,13 +786,24 @@ export async function listTradeOffers(input: {
     conditions.push(eq(tradeOffersTable.offered_card_id, input.offeredCardId));
   }
 
+  // Single statement (previously user lookup → page → metadata → canAccept,
+  // i.e. 4 sequential round trips for a logged-in viewer).
   const offset = (input.page - 1) * TRADE_PAGE_SIZE;
-  const rows = await withDbRetry(
+  const rows: OfferListRow[] = await withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
-        .select()
+        .select({
+          ...offerListFields(viewerUserId),
+          acceptState: viewerUserId
+            ? acceptStateFor(viewerUserId)
+            : sql<TradeCanAccept | null>`NULL`,
+        })
         .from(tradeOffersTable)
+        .leftJoin(offeredStreamerMeta, eq(offeredStreamerMeta.id, tradeOffersTable.offered_streamer_id))
+        .leftJoin(wantedStreamerMeta, eq(wantedStreamerMeta.id, tradeOffersTable.wanted_streamer_id))
+        .leftJoin(offererMeta, eq(offererMeta.id, tradeOffersTable.offerer_user_id))
+        .leftJoin(acceptorMeta, eq(acceptorMeta.id, tradeOffersTable.accepted_by_user_id))
         .where(and(...conditions))
         .orderBy(desc(tradeOffersTable.created_at), desc(tradeOffersTable.id))
         .limit(TRADE_PAGE_SIZE + 1)
@@ -785,10 +816,7 @@ export async function listTradeOffers(input: {
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
   return {
-    offers: await enrichOfferRows(pageRows, {
-      viewerUserId: currentUser?.id,
-      context: "board",
-    }),
+    offers: pageRows.map((row) => toOfferDto(row, "board")),
     page: input.page,
     pageSize: TRADE_PAGE_SIZE,
     hasMore,
@@ -806,13 +834,13 @@ export async function listMyTradeOffers(
   options: { status?: TradeOfferStatus; page?: number } = {},
 ) {
   const page = options.page ?? 1;
-  const empty = { offers: [], page, pageSize: TRADE_PAGE_SIZE, hasMore: false };
-  const user = await getUserByTwitchId(twitchUserId);
-  if (!user) return empty;
+  const viewerUserId = viewerUserIdOf(twitchUserId);
 
+  // An unknown user resolves to NULL and therefore matches no row (the
+  // previous explicit "user not found → empty page" branch).
   const participantCondition = or(
-    eq(tradeOffersTable.offerer_user_id, user.id),
-    eq(tradeOffersTable.accepted_by_user_id, user.id),
+    eq(tradeOffersTable.offerer_user_id, viewerUserId),
+    eq(tradeOffersTable.accepted_by_user_id, viewerUserId),
   )!;
   const where = options.status
     ? and(participantCondition, eq(tradeOffersTable.status, options.status))
@@ -820,14 +848,19 @@ export async function listMyTradeOffers(
 
   // Bounded page (LIMIT pageSize+1 for hasMore). History grows without bound
   // for active traders, so an unpaged SELECT would eventually exceed Worker
-  // CPU/memory limits.
+  // CPU/memory limits. Single statement (previously user lookup → page →
+  // metadata, 3 sequential round trips).
   const offset = (page - 1) * TRADE_PAGE_SIZE;
-  const rows = await withDbRetry(
+  const rows: OfferListRow[] = await withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
-        .select()
+        .select(offerListFields(viewerUserId))
         .from(tradeOffersTable)
+        .leftJoin(offeredStreamerMeta, eq(offeredStreamerMeta.id, tradeOffersTable.offered_streamer_id))
+        .leftJoin(wantedStreamerMeta, eq(wantedStreamerMeta.id, tradeOffersTable.wanted_streamer_id))
+        .leftJoin(offererMeta, eq(offererMeta.id, tradeOffersTable.offerer_user_id))
+        .leftJoin(acceptorMeta, eq(acceptorMeta.id, tradeOffersTable.accepted_by_user_id))
         .where(where)
         .orderBy(desc(tradeOffersTable.created_at), desc(tradeOffersTable.id))
         .limit(TRADE_PAGE_SIZE + 1)
@@ -839,15 +872,11 @@ export async function listMyTradeOffers(
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
-  const offers = await enrichOfferRows(pageRows, {
-    viewerUserId: user.id,
-    context: "mine",
-  });
   return {
-    offers: offers.map((offer, index) => ({
-      ...offer,
+    offers: pageRows.map((row) => ({
+      ...toOfferDto(row, "mine"),
       mineRole:
-        pageRows[index]?.offerer_user_id === user.id
+        row.offer.offerer_user_id === row.viewerUserId
           ? "offerer" as const
           : "acceptor" as const,
     })),
@@ -864,10 +893,10 @@ export async function cancelTradeOffer(input: {
   | { kind: "ok"; id: string }
   | { kind: "error"; code: "TRADE_OFFER_NOT_FOUND" | "TRADE_OFFER_NOT_OPEN" }
 > {
-  const user = await getUserByTwitchId(input.twitchUserId);
-  if (!user) {
-    return { kind: "error", code: "TRADE_OFFER_NOT_FOUND" };
-  }
+  // The owner check resolves the user inside the CAS (previously a separate
+  // users lookup first). An unknown user matches no row and ends in the same
+  // TRADE_OFFER_NOT_FOUND as before via the state read below.
+  const ownerUserId = viewerUserIdOf(input.twitchUserId);
 
   const updated = await withDbRetry(
     async () => {
@@ -878,7 +907,7 @@ export async function cancelTradeOffer(input: {
         .where(
           and(
             eq(tradeOffersTable.id, input.tradeOfferId),
-            eq(tradeOffersTable.offerer_user_id, user.id),
+            eq(tradeOffersTable.offerer_user_id, ownerUserId),
             eq(tradeOffersTable.status, "open"),
           ),
         )
@@ -901,7 +930,7 @@ export async function cancelTradeOffer(input: {
         .where(
           and(
             eq(tradeOffersTable.id, input.tradeOfferId),
-            eq(tradeOffersTable.offerer_user_id, user.id),
+            eq(tradeOffersTable.offerer_user_id, ownerUserId),
           ),
         )
         .limit(1);
@@ -1032,14 +1061,15 @@ async function precheckTradeAccept(input: {
   tradeOfferId: string;
   requestId: string;
 }): Promise<TradeAcceptPrecheckError | null> {
-  const acceptor = await getUserByTwitchId(input.twitchUserId);
-  if (!acceptor) return null;
-
+  // The acceptor id is resolved inside the same statement (previously a
+  // separate users lookup round trip before this read).
+  const acceptorUserId = viewerUserIdOf(input.twitchUserId);
   const rows = await withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
         .select({
+          acceptorUserId: sql<string | null>`${acceptorUserId}`,
           status: tradeOffersTable.status,
           offererUserId: tradeOffersTable.offerer_user_id,
           acceptedByUserId: tradeOffersTable.accepted_by_user_id,
@@ -1050,7 +1080,7 @@ async function precheckTradeAccept(input: {
           wantedActive: cardIsActive(tradeOffersTable.wanted_card_id),
           // The wanted card needs no visibility check: the acceptor must own
           // a copy of it to pay, and owning a copy makes it visible.
-          offeredVisible: cardVisibleTo(tradeOffersTable.offered_card_id, acceptor.id),
+          offeredVisible: cardVisibleTo(tradeOffersTable.offered_card_id, acceptorUserId),
         })
         .from(tradeOffersTable)
         .where(eq(tradeOffersTable.id, input.tradeOfferId))
@@ -1061,17 +1091,20 @@ async function precheckTradeAccept(input: {
   );
   const offer = rows[0];
   if (!offer) return null;
+  // Unknown acceptor: delegated to the RPC, which classifies it (unchanged).
+  const acceptorId = offer.acceptorUserId;
+  if (!acceptorId) return null;
 
   // Replay first (explicit for readability; behaviorally it is also covered
   // by the `status !== "open"` delegation right below, since a replay is
   // always `completed`).
   const isReplay =
     offer.status === "completed"
-    && offer.acceptedByUserId === acceptor.id
+    && offer.acceptedByUserId === acceptorId
     && offer.acceptedRequestId === input.requestId;
   if (isReplay) return null;
   if (offer.status !== "open") return null;
-  if (offer.offererUserId === acceptor.id) return null;
+  if (offer.offererUserId === acceptorId) return null;
   if (!offer.offeredCardId || !offer.wantedCardId) return null;
 
   // One code for "inactive" and "not visible": the board already hides both
@@ -1250,8 +1283,9 @@ export async function listTradeableOwnedCopies(
   streamerId: string,
 ): Promise<TradeableOwnedCopy[]> {
   if (!isCanonicalUuid(streamerId)) return [];
-  const user = await getUserByTwitchId(twitchUserId);
-  if (!user) return [];
+  // One statement: the owner is resolved in SQL (unknown user → NULL → no
+  // rows, the previous early return).
+  const ownerUserId = viewerUserIdOf(twitchUserId);
 
   const rows = await withDbRetry(
     async () => {
@@ -1283,7 +1317,7 @@ export async function listTradeableOwnedCopies(
         .innerJoin(cardsTable, eq(cardsTable.id, userCardsTable.card_id))
         .where(
           and(
-            eq(userCardsTable.user_id, user.id),
+            eq(userCardsTable.user_id, ownerUserId),
             eq(cardsTable.streamer_id, streamerId),
             eq(cardsTable.is_active, true),
           ),
@@ -1333,8 +1367,9 @@ export async function listWantableCards(
   streamerId: string,
 ): Promise<WantableCard[]> {
   if (!isCanonicalUuid(streamerId)) return [];
-  const viewer = twitchUserId ? await getUserByTwitchId(twitchUserId) : null;
-  const viewerUserId = viewer?.id ?? null;
+  // One statement: an unknown twitch user resolves to NULL, which owns
+  // nothing — the same result as the previous anonymous fallback.
+  const viewerUserId = twitchUserId ? viewerUserIdOf(twitchUserId) : null;
 
   const rows = await withDbRetry(
     async () => {
@@ -1392,15 +1427,12 @@ export async function listCrossTradePartnerStreamers(
   twitchUserId: string,
   baseStreamerId: string,
 ): Promise<TradeStreamerSummary[]> {
-  // getTradeBoardStreamer validates the UUID and fails closed (false flags)
-  // during the trade-columns deploy window, so the partner query below, which
-  // filters on those columns, is never reached without them.
-  const base = await getTradeBoardStreamer(baseStreamerId);
-  if (!base?.tradeEnabled || !base.crossChannelTradeEnabled) return [];
+  if (!isCanonicalUuid(baseStreamerId)) return [];
 
-  const user = await getUserByTwitchId(twitchUserId);
-  if (!user) return [];
-
+  // One statement instead of base-streamer read → user lookup → partners.
+  // The base gate is an EXISTS over the same columns (a disabled or unknown
+  // base yields no rows) and the viewer is resolved in SQL (unknown → NULL →
+  // owns nothing → no rows), matching the previous early returns.
   const rows = await withDbRetry(
     async () => {
       const { db } = await getDb();
@@ -1414,15 +1446,22 @@ export async function listCrossTradePartnerStreamers(
         .from(streamersTable)
         .where(
           and(
-            ne(streamersTable.id, base.id),
+            ne(streamersTable.id, baseStreamerId),
             eq(streamersTable.trade_enabled, true),
             eq(streamersTable.cross_channel_trade_enabled, true),
+            sql`EXISTS (
+              SELECT 1
+              FROM ${streamersTable} AS base_streamer
+              WHERE base_streamer.id = ${baseStreamerId}
+                AND base_streamer.trade_enabled = TRUE
+                AND base_streamer.cross_channel_trade_enabled = TRUE
+            )`,
             sql`EXISTS (
               SELECT 1
               FROM ${userCardsTable} AS partner_owned
               INNER JOIN ${cardsTable} AS partner_card
                 ON partner_card.id = partner_owned.card_id
-              WHERE partner_owned.user_id = ${user.id}
+              WHERE partner_owned.user_id = ${viewerUserIdOf(twitchUserId)}
                 AND partner_card.streamer_id = ${qualifiedColumn(streamersTable.id)}
             )`,
           ),
@@ -1431,7 +1470,13 @@ export async function listCrossTradePartnerStreamers(
     },
     "trade:cross-partner-streamers",
     { idempotent: true },
-  );
+  ).catch((error: unknown) => {
+    // Deploy window (#722): without the trade columns the base channel cannot
+    // allow cross trade, so fail closed exactly like getTradeBoardStreamer's
+    // FALSE fallback did for the former separate base read.
+    if (isMissingTradeSettingsColumnError(error)) return [];
+    throw error;
+  });
 
   return rows.map((row) => ({
     id: row.id,

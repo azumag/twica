@@ -39,12 +39,19 @@ function jsonResponse(status: number, body: unknown) {
   });
 }
 
-function renderMine() {
+function renderMine(props: React.ComponentProps<typeof MyTrades> = {}) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
-      <MyTrades />
+      <MyTrades {...props} />
     </NextIntlClientProvider>,
   );
+}
+
+function listCalls(fetchMock: ReturnType<typeof vi.fn>, status: string) {
+  return fetchMock.mock.calls.filter(([url]) =>
+    String(url).startsWith("/api/trades/mine")
+    && new URL(String(url), "https://x.test").searchParams.get("status") === status,
+  ).length;
 }
 
 function lastListQuery(fetchMock: ReturnType<typeof vi.fn>) {
@@ -243,6 +250,108 @@ describe("MyTrades (#727 §6.6)", () => {
       const query = lastListQuery(fetchMock);
       expect(query.get("status")).toBe("completed");
       expect(query.get("page")).toBe("1");
+    });
+  });
+
+  describe("client cache (tab switching without reloading)", () => {
+    it("renders the server-rendered open tab immediately and revalidates it once in the background", async () => {
+      renderMine({ initialOpen: { offers: [makeOffer({ offeredCard: { name: "SSR Dragon", rarity: "epic", imageUrl: null } })], hasMore: false } });
+      // Synchronously present: no loading state before the client round trip.
+      expect(screen.getByText("SSR Dragon")).toBeInTheDocument();
+      expect(screen.queryByText(ja.loading)).toBeNull();
+      // The SSR payload may be a router-cache replay (browser back/forward)
+      // older than the user's last cancel, so it is always revalidated once.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(listCalls(fetchMock, "open")).toBe(1);
+      expect(screen.queryByText(ja.loading)).toBeNull();
+    });
+
+    it("shows a fetched tab again immediately, without loading or a new request", async () => {
+      renderMine();
+      await screen.findByText("Offered Dragon");
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCompleted }));
+      expect(await screen.findByText(ja.myTradesEmptyCompleted)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabOpen }));
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+      expect(screen.queryByText(ja.loading)).toBeNull();
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCompleted }));
+      expect(screen.getByText(ja.myTradesEmptyCompleted)).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(listCalls(fetchMock, "open")).toBe(1);
+      expect(listCalls(fetchMock, "completed")).toBe(1);
+    });
+
+    it("keeps showing a stale tab while refreshing it in the background", async () => {
+      const now = vi.spyOn(Date, "now");
+      now.mockReturnValue(1_000_000);
+      renderMine();
+      await screen.findByText("Offered Dragon");
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCompleted }));
+      await screen.findByText(ja.myTradesEmptyCompleted);
+
+      // Past the freshness window: shown from cache at once, then replaced.
+      now.mockReturnValue(1_000_000 + 31_000);
+      byStatus.open = [makeOffer({ id: "offer-new", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null } })];
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabOpen }));
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+      expect(screen.queryByText(ja.loading)).toBeNull();
+      expect(await screen.findByText("Fresh Golem")).toBeInTheDocument();
+      expect(listCalls(fetchMock, "open")).toBe(2);
+    });
+
+    it("keeps the cached rows when a background refresh fails", async () => {
+      const now = vi.spyOn(Date, "now");
+      now.mockReturnValue(1_000_000);
+      renderMine();
+      await screen.findByText("Offered Dragon");
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCompleted }));
+      await screen.findByText(ja.myTradesEmptyCompleted);
+
+      now.mockReturnValue(1_000_000 + 31_000);
+      fetchMock.mockImplementation(async () => jsonResponse(500, { code: "INTERNAL_ERROR" }));
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabOpen }));
+      await waitFor(() => expect(listCalls(fetchMock, "open")).toBe(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+      expect(screen.queryByText(ja.myTradesLoadError)).toBeNull();
+    });
+
+    it("after a cancel: removes the row at once and reloads the other tabs on their next visit", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      let releaseRefresh: () => void = () => {};
+      const refreshGate = new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      renderMine();
+      await screen.findByText("Offered Dragon");
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCancelled }));
+      await screen.findByText(ja.myTradesEmptyCancelled);
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabOpen }));
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+
+      const baseImpl = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === "/api/trades/offer-1/cancel") {
+          byStatus.cancelled = [makeOffer({ status: "cancelled" })];
+        }
+        // Hold the background refresh of the open tab so the optimistic
+        // removal is observable on its own.
+        if (url.startsWith("/api/trades/mine?status=open")) await refreshGate;
+        return baseImpl(url, init);
+      });
+      fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferButton }));
+      expect(await screen.findByText(ja.cancelOfferSuccess)).toBeInTheDocument();
+      expect(screen.queryByText("Offered Dragon")).toBeNull();
+      expect(screen.getByText(ja.myTradesEmptyOpen)).toBeInTheDocument();
+      releaseRefresh();
+      await waitFor(() => expect(listCalls(fetchMock, "open")).toBe(2));
+
+      // The cancelled tab was cached empty before the cancel; it must not be
+      // reused now.
+      fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCancelled }));
+      expect(await screen.findByText("Offered Dragon")).toBeInTheDocument();
+      expect(listCalls(fetchMock, "cancelled")).toBe(2);
     });
   });
 });

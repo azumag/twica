@@ -5,6 +5,7 @@ import TradeBoard from "@/components/TradeBoard";
 import TradeOfferRow from "@/components/TradeOfferRow";
 import type { TradeOfferDto } from "@/lib/trade";
 import { tradeBoardPath, tradeLoginHref } from "@/lib/trade-client";
+import { clearTradeListCache } from "@/lib/use-trade-list";
 import jaMessages from "../../../messages/ja.json";
 
 const ja = jaMessages.trade;
@@ -161,6 +162,8 @@ describe("TradeBoard", () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    // The board's page cache is module-level (shared across remounts).
+    clearTradeListCache();
   });
 
   afterEach(() => {
@@ -386,4 +389,103 @@ describe("TradeBoard", () => {
     fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCancelButton }));
     expect(await screen.findByRole("button", { name: ja.acceptButtonNotOwned })).toBeDisabled();
   });
+
+  describe("client cache (no refetch on page / tab switching)", () => {
+    function listCallsFor(predicate: (query: URLSearchParams) => boolean) {
+      return fetchMock.mock.calls.filter(([url]) => {
+        if (!String(url).startsWith("/api/trades?")) return false;
+        return predicate(new URL(String(url), "https://x.test").searchParams);
+      }).length;
+    }
+
+    it("shows a page fetched before immediately when paging back, without a request", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        const page = new URL(url, "https://x.test").searchParams.get("page");
+        return page === "1"
+          ? listResponse([makeOffer()], true)
+          : listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+      });
+      renderBoard();
+      await screen.findByText("Offered Dragon");
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
+      await screen.findByText("Page Two Card");
+
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.previous }));
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+      expect(screen.queryByText(ja.loading)).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(listCallsFor((query) => query.get("page") === "1")).toBe(1);
+    });
+
+    it("reuses pages across remounts (scope tab switch) for the same streamer and scope", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        const scope = new URL(url, "https://x.test").searchParams.get("scope");
+        return listResponse([makeOffer({ offeredCard: { name: `${scope} card`, rarity: "rare", imageUrl: null } })]);
+      });
+      const first = renderBoard();
+      await screen.findByText("in_channel card");
+      first.unmount();
+      const cross = renderBoard({ scope: "cross_channel", filterCards: [] });
+      await screen.findByText("cross_channel card");
+      cross.unmount();
+
+      renderBoard();
+      expect(screen.getByText("in_channel card")).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(listCallsFor((query) => query.get("scope") === "in_channel")).toBe(1);
+    });
+
+    it("refetches every page after clearTradeListCache() (e.g. a new listing elsewhere)", async () => {
+      fetchMock.mockImplementation(async () => listResponse([makeOffer()]));
+      const first = renderBoard();
+      await screen.findByText("Offered Dragon");
+      first.unmount();
+      clearTradeListCache();
+      renderBoard();
+      expect(screen.getByText(ja.loading)).toBeInTheDocument();
+      await screen.findByText("Offered Dragon");
+      expect(listCallsFor(() => true)).toBe(2);
+    });
+
+    it("after a completed accept: removes the row at once and drops other cached pages", async () => {
+      let releaseRefresh: () => void = () => {};
+      const refreshGate = new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      let listCalls = 0;
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.startsWith("/api/trades?")) {
+          listCalls += 1;
+          const query = new URL(url, "https://x.test").searchParams;
+          if (query.get("page") === "2") {
+            return listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+          }
+          // Hold the post-accept refresh of page 1.
+          if (listCalls > 2) await refreshGate;
+          return listResponse(listCalls > 2 ? [] : [makeOffer()], true);
+        }
+        if (url === "/api/trades/offer-1/accept") return jsonResponse(200, { success: true });
+        throw new Error(`unexpected ${url}`);
+      });
+      renderBoard();
+      await screen.findByText("Offered Dragon");
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
+      await screen.findByText("Page Two Card");
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.previous }));
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: ja.acceptButton }));
+      fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+      await screen.findByText(ja.confirmModalSuccess);
+      fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCloseButton }));
+      expect(screen.queryByText("Offered Dragon")).toBeNull();
+      releaseRefresh();
+      await waitFor(() => expect(listCallsFor((query) => query.get("page") === "1")).toBe(2));
+
+      // Page 2 was cached before the accept; it must be fetched again.
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
+      await waitFor(() => expect(listCallsFor((query) => query.get("page") === "2")).toBe(2));
+    });
+  });
 });
+

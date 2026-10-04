@@ -230,6 +230,26 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       expect(pub.ids).toEqual([OF.PUB]);
       // Internal copy id is not exposed on the public board.
       expect(pub.result.offers[0]).not.toHaveProperty("offeredUserCardId");
+      // Display metadata comes from the LEFT JOINs of the same statement:
+      // open offers have no acceptor, anonymous rows carry no viewer fields.
+      expect(pub.result.offers[0]).toMatchObject({
+        offerer: { twitchUsername: TW.O, twitchDisplayName: "Offerer O", twitchProfileImageUrl: null },
+        acceptedBy: null,
+        offeredStreamer: { id: S.PUB, twitchUsername: "tv-pub", twitchDisplayName: "TV pub", twitchProfileImageUrl: null },
+        wantedStreamer: { id: S.PUB, twitchUsername: "tv-pub", twitchDisplayName: "TV pub", twitchProfileImageUrl: null },
+      });
+      expect(pub.result.offers[0]).not.toHaveProperty("isOwnOffer");
+      expect(pub.result.offers[0]).not.toHaveProperty("canAccept");
+
+      // An unknown twitch user id resolves to NULL in SQL and is treated
+      // exactly like an anonymous viewer (no viewer-specific fields).
+      const unknown = await listIds({
+        streamerId: S.PUB,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: "trade-vis-unknown",
+      });
+      expect(unknown.result).toEqual(pub.result);
 
       const priv = await listIds({ streamerId: S.PRIV, scope: "in_channel", page: 1 });
       expect(priv.ids).toEqual([]);
@@ -375,6 +395,76 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       })).resolves.toEqual({ kind: "error", code: "TRADE_WANTED_CARD_UNAVAILABLE" });
     });
 
+    it("keeps the create-time error precedence for unknown users, foreign copies, listed copies and the open-offer limit", async () => {
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer({
+        twitchUserId: "trade-vis-unknown",
+        offeredUserCardId: UC.V_PUB_B,
+        wantedCardId: C.PUB_A,
+        requestId: req(10),
+      })).resolves.toEqual({ kind: "error", code: "TRADE_CARD_NOT_OWNED" });
+      // V's copy offered by O.
+      await expect(createTradeOffer({
+        twitchUserId: TW.O,
+        offeredUserCardId: UC.V_PUB_B,
+        wantedCardId: C.PUB_A,
+        requestId: req(11),
+      })).resolves.toEqual({ kind: "error", code: "TRADE_CARD_NOT_OWNED" });
+      // Same card on both sides is rejected before the wanted-card checks.
+      await expect(createTradeOffer({
+        twitchUserId: TW.O,
+        offeredUserCardId: UC.O_PUB_A2,
+        wantedCardId: C.PUB_A,
+        requestId: req(12),
+      })).resolves.toEqual({ kind: "error", code: "TRADE_SAME_CARD" });
+      // O_PUB_A2 is already the offered copy of PUB_WANT_INACTIVE.
+      await expect(createTradeOffer({
+        twitchUserId: TW.O,
+        offeredUserCardId: UC.O_PUB_A2,
+        wantedCardId: C.PUB_B,
+        requestId: req(13),
+      })).resolves.toEqual({ kind: "error", code: "TRADE_CARD_ALREADY_LISTED" });
+
+      // O already has 29 open offers (≥ TRADE_MAX_OPEN_OFFERS): an unlisted
+      // copy passes every other check and stops at the limit.
+      const spare = id(7101);
+      await sql!`INSERT INTO user_cards (id, user_id, card_id) VALUES (${spare}, ${U.O}, ${C.PUB_B})`;
+      try {
+        await expect(createTradeOffer({
+          twitchUserId: TW.O,
+          offeredUserCardId: spare,
+          wantedCardId: C.PUB_A,
+          requestId: req(14),
+        })).resolves.toEqual({ kind: "error", code: "TRADE_OFFER_LIMIT" });
+      } finally {
+        await sql!`DELETE FROM user_cards WHERE id = ${spare}`;
+      }
+    });
+
+    it("cancel resolves the owner in SQL: owner CAS, then NOT_OPEN / NOT_FOUND", async () => {
+      const { cancelTradeOffer, createTradeOffer } = await import("@/lib/trade");
+      const created = await createTradeOffer({
+        twitchUserId: TW.V,
+        offeredUserCardId: UC.V_PRIV_B,
+        wantedCardId: C.PRIV_C,
+        requestId: req(20),
+      });
+      expect(created.kind).toBe("ok");
+      if (created.kind !== "ok") return;
+      try {
+        await expect(cancelTradeOffer({ twitchUserId: TW.O, tradeOfferId: created.offer.id }))
+          .resolves.toEqual({ kind: "error", code: "TRADE_OFFER_NOT_FOUND" });
+        await expect(cancelTradeOffer({ twitchUserId: "trade-vis-unknown", tradeOfferId: created.offer.id }))
+          .resolves.toEqual({ kind: "error", code: "TRADE_OFFER_NOT_FOUND" });
+        await expect(cancelTradeOffer({ twitchUserId: TW.V, tradeOfferId: created.offer.id }))
+          .resolves.toEqual({ kind: "ok", id: created.offer.id });
+        await expect(cancelTradeOffer({ twitchUserId: TW.V, tradeOfferId: created.offer.id }))
+          .resolves.toEqual({ kind: "error", code: "TRADE_OFFER_NOT_OPEN" });
+      } finally {
+        await sql!`DELETE FROM trade_offers WHERE id = ${created.offer.id}`;
+      }
+    });
+
     it("rejects an inactive offered card", async () => {
       const { createTradeOffer } = await import("@/lib/trade");
       await expect(createTradeOffer({
@@ -418,7 +508,9 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         expect(replay.kind).toBe("ok");
         if (replay.kind === "ok" && owned.kind === "ok") {
           expect(replay.idempotentReplay).toBe(true);
-          expect(replay.offer.id).toBe(owned.offer.id);
+          // The replayed row (read through the LEFT JOINed alias) is the
+          // same full row the INSERT returned, timestamps included.
+          expect(replay.offer).toEqual(owned.offer);
         }
       } finally {
         await sql!`UPDATE cards SET is_active = true WHERE id = ${C.PRIV_C}`;
@@ -510,6 +602,12 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       });
       expect(completed.offers[0].mineRole).toBe("offerer");
       expect(completed.offers[0]).not.toHaveProperty("canAccept");
+      expect(completed.offers[0]).toMatchObject({
+        isOwnOffer: true,
+        offeredUserCardId: UC.O_PUB_A1,
+        offerer: { twitchUsername: TW.O, twitchDisplayName: "Offerer O" },
+        offeredStreamer: { id: S.PUB, twitchUsername: "tv-pub" },
+      });
 
       const viewerCompleted = await listMyTradeOffers(TW.V, { status: "completed" });
       expect(viewerCompleted.offers.map((offer) => offer.id)).toEqual([OF.PUB]);
@@ -528,6 +626,13 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
 
       const cancelled = await listMyTradeOffers(TW.O, { status: "cancelled" });
       expect(cancelled.offers).toEqual([]);
+
+      await expect(listMyTradeOffers("trade-vis-unknown", { status: "open" })).resolves.toEqual({
+        offers: [],
+        page: 1,
+        pageSize: 20,
+        hasMore: false,
+      });
     });
   });
 

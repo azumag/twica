@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   listWantableCards: vi.fn(),
   listTradeableOwnedCopies: vi.fn(),
   listCrossTradePartnerStreamers: vi.fn(),
+  listMyTradeOffers: vi.fn(),
+  loggerWarn: vi.fn(),
   redirect: vi.fn((url: string) => {
     throw new Error(`REDIRECT:${url}`);
   }),
@@ -30,7 +32,9 @@ vi.mock("@/lib/trade", () => ({
   listWantableCards: mocks.listWantableCards,
   listTradeableOwnedCopies: mocks.listTradeableOwnedCopies,
   listCrossTradePartnerStreamers: mocks.listCrossTradePartnerStreamers,
+  listMyTradeOffers: mocks.listMyTradeOffers,
 }));
+vi.mock("@/lib/logger", () => ({ logger: { warn: mocks.loggerWarn, info: vi.fn(), error: vi.fn() } }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect, notFound: mocks.notFound }));
 vi.mock("next-intl/server", () => ({
   getTranslations: async () => (key: string) => key,
@@ -57,7 +61,11 @@ vi.mock("@/components/TradeCreateForm", () => ({
     <div data-testid="trade-create-form" data-props={JSON.stringify(props)} />
   ),
 }));
-vi.mock("@/components/MyTrades", () => ({ default: () => <div data-testid="my-trades" /> }));
+vi.mock("@/components/MyTrades", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="my-trades" data-props={JSON.stringify(props)} />
+  ),
+}));
 
 import TradeLayout, { metadata } from "@/app/trade/layout";
 import TradeBoardPage from "@/app/trade/[streamerId]/page";
@@ -94,6 +102,7 @@ beforeEach(() => {
   ]);
   mocks.listTradeableOwnedCopies.mockResolvedValue([]);
   mocks.listCrossTradePartnerStreamers.mockResolvedValue([]);
+  mocks.listMyTradeOffers.mockResolvedValue({ offers: [], page: 1, pageSize: 20, hasMore: false });
 });
 
 describe("/trade layout", () => {
@@ -169,6 +178,35 @@ describe("/trade/[streamerId] board page", () => {
     render(await TradeBoardPage({ params, searchParams: Promise.resolve({ scope: "cross" }) }));
     expect(screen.getByText("crossDisabledNotice")).toBeInTheDocument();
     expect(screen.queryByTestId("trade-board")).toBeNull();
+  });
+
+  it("starts the filter query in parallel with the channel read (one SSR round trip)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    let resolveStreamer: (value: unknown) => void = () => {};
+    mocks.getTradeBoardStreamer.mockReturnValue(new Promise((resolve) => {
+      resolveStreamer = resolve;
+    }));
+    const pending = TradeBoardPage({ params, searchParams: Promise.resolve({}) });
+    await vi.waitFor(() => expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", STREAMER_ID));
+    // The channel read has not finished yet when the filter query starts.
+    resolveStreamer(boardStreamer());
+    render(await pending);
+    expect(props("trade-board").filterCards).toEqual([{ cardId: "c-1", name: "Visible Card" }]);
+  });
+
+  it("ignores a failed (unused) filter query when trading is disabled", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer({ tradeEnabled: false }));
+    mocks.listWantableCards.mockRejectedValue(new Error("db down"));
+    render(await TradeBoardPage({ params, searchParams: Promise.resolve({}) }));
+    expect(screen.getByText("tradeDisabledNotice")).toBeInTheDocument();
+  });
+
+  it("still fails the page when the filter query it needs fails", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    const error = new Error("db down");
+    mocks.listWantableCards.mockRejectedValue(error);
+    await expect(TradeBoardPage({ params, searchParams: Promise.resolve({}) })).rejects.toBe(error);
   });
 
   it("404s for an unknown channel", async () => {
@@ -258,9 +296,26 @@ describe("/trade/mine page", () => {
     );
   });
 
-  it("renders the trade list for logged-in users", async () => {
+  it("renders the trade list for logged-in users with the open tab's first page prefetched", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
+    const offer = { id: "o-1", status: "open", mineRole: "offerer" };
+    mocks.listMyTradeOffers.mockResolvedValue({ offers: [offer], page: 1, pageSize: 20, hasMore: true });
     render(await MyTradesPage());
-    expect(screen.getByTestId("my-trades")).toBeInTheDocument();
+    expect(mocks.listMyTradeOffers).toHaveBeenCalledWith("viewer-1", { status: "open", page: 1 });
+    expect(props("my-trades")).toEqual({ initialOpen: { offers: [offer], hasMore: true } });
+  });
+
+  it("falls back to the client fetch when the prefetch fails", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.listMyTradeOffers.mockRejectedValue(new Error("db down"));
+    render(await MyTradesPage());
+    expect(props("my-trades")).toEqual({ initialOpen: null });
+    expect(mocks.loggerWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not prefetch for anonymous visitors", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    await expect(MyTradesPage()).rejects.toThrow("REDIRECT:");
+    expect(mocks.listMyTradeOffers).not.toHaveBeenCalled();
   });
 });
