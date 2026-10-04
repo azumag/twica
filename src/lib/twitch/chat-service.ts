@@ -557,7 +557,9 @@ export class TwitchChatService {
             message: dropMessage,
           }
           lastException = null
-          lastDropTransient = TRANSIENT_DROP_MESSAGE_PATTERN.test(dropMessage)
+          // 一時不調の文面でも、明示的な拒否通知の契約を満たす場合だけ再試行する。
+          // 必須フィールドが不正なHTTP 200はTWITCH_REJECTEDの診断経路を維持する。
+          lastDropTransient = isExplicitDrop && TRANSIENT_DROP_MESSAGE_PATTERN.test(dropMessage)
           if (lastDropTransient && attempt < CHAT_SEND_MAX_ATTEMPTS) {
             logger.warn('Twitch chat message transiently dropped - retrying', {
               broadcasterTwitchUserId,
