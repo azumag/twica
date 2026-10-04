@@ -25,6 +25,8 @@ type BotAccountDisplay = { username: string | null; displayName: string | null }
 // 配信設定ページのレイアウト切替クライアントコンポーネント。
 // Simple = 集中度の高いクイックスタート 2 ステップ表示。
 // Advanced = sticky 左サイドバー + 右コンテンツの単一セクション表示。
+// コレクション公開設定とカードトレード設定は配信設定ではなくアカウント側の
+// 設定として /dashboard/account へ移した（#715 §6.7）。ここには置かない。
 // 各モードで実コンポーネント (OverlayPreview / ChannelPointSettings 等) を
 // 個別にマウントするため、トグル時は子の内部状態がリセットされる。
 // これは fetch 重複を避けるため意図的にした設計判断。
@@ -46,15 +48,7 @@ const ChatAnnouncementSettings = dynamic(() => import("@/components/ChatAnnounce
   ssr: false,
   loading: () => <SettingsPanelSkeleton />,
 });
-const CardVisibilitySettings = dynamic(() => import("@/components/CardVisibilitySettings"), {
-  ssr: false,
-  loading: () => <SettingsPanelSkeleton />,
-});
 const LiveDirectorySettings = dynamic(() => import("@/components/LiveDirectorySettings"), {
-  ssr: false,
-  loading: () => <SettingsPanelSkeleton />,
-});
-const TradeSettings = dynamic(() => import("@/components/TradeSettings"), {
   ssr: false,
   loading: () => <SettingsPanelSkeleton />,
 });
@@ -97,17 +91,9 @@ export interface SettingsLayoutData {
     multiTemplate: string | null;
     multiShowCards: boolean;
   };
-  visibility: {
-    showUnowned: boolean;
-    showUnownedDetails: boolean;
-  };
   liveDirectory: {
     publishLiveStatus: boolean;
     publishStats: boolean;
-  };
-  trade: {
-    enabled: boolean;
-    crossChannelEnabled: boolean;
   };
   // Issue #554: カードパックのプルダウン表示制御 + デフォルト名。未指定
   // (undefined)の場合は ChannelPointSettings 側が従来どおりの表示にフォール
@@ -275,16 +261,12 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
     enabled: data.chatAnnouncement.enabled,
     needsAttention: announcementNeedsAttention,
   });
-  const visibilityStatus: SettingsSection["status"] = data.visibility.showUnowned
-    ? "active"
-    : "empty";
   // 配信一覧への掲載とランキングでのチャネル表示は独立した設定なので、
   // どちらか一方でも有効ならセクション全体を設定済みとして示す。
   const liveDirectoryStatus: SettingsSection["status"] =
     data.liveDirectory.publishLiveStatus || data.liveDirectory.publishStats
       ? "active"
       : "empty";
-  const tradeStatus: SettingsSection["status"] = data.trade.enabled ? "active" : "empty";
 
   const sections: SettingsSection[] = [
     {
@@ -358,20 +340,6 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       ),
     },
     {
-      id: "visibility",
-      label: t("advanced.section.visibility"),
-      description: t("advanced.section.visibilityDesc"),
-      icon: <SectionIcon name="eye" />,
-      status: visibilityStatus,
-      content: (
-        <CardVisibilitySettings
-          streamerId={data.streamerId}
-          currentShowUnowned={data.visibility.showUnowned}
-          currentShowUnownedDetails={data.visibility.showUnownedDetails}
-        />
-      ),
-    },
-    {
       id: "liveDirectory",
       label: t("advanced.section.liveDirectory"),
       description: t("advanced.section.liveDirectoryDesc"),
@@ -382,20 +350,6 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           streamerId={data.streamerId}
           currentPublishLiveStatus={data.liveDirectory.publishLiveStatus}
           currentPublishStats={data.liveDirectory.publishStats}
-        />
-      ),
-    },
-    {
-      id: "trade",
-      label: t("advanced.section.trade"),
-      description: t("advanced.section.tradeDesc"),
-      icon: <SectionIcon name="trade" />,
-      status: tradeStatus,
-      content: (
-        <TradeSettings
-          streamerId={data.streamerId}
-          currentTradeEnabled={data.trade.enabled}
-          currentCrossChannelTradeEnabled={data.trade.crossChannelEnabled}
         />
       ),
     },
@@ -457,7 +411,7 @@ function PageHeader({ title, description }: { title: string; description?: strin
 // 一つの <SectionIcon> でラップし、共通の svg 属性を共有することで boilerplate を削減。
 // ---------------------------------------------------------------------------
 
-type IconName = "overlay" | "reward" | "sound" | "chat" | "eye" | "broadcast" | "trade" | "share";
+type IconName = "overlay" | "reward" | "sound" | "chat" | "broadcast" | "share";
 
 const ICON_PATHS: Record<IconName, React.ReactNode> = {
   overlay: (
@@ -480,24 +434,10 @@ const ICON_PATHS: Record<IconName, React.ReactNode> = {
     </>
   ),
   chat: <path d="M4 5h16v11H8l-4 4V5z" />,
-  eye: (
-    <>
-      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
-      <circle cx="12" cy="12" r="3" />
-    </>
-  ),
   broadcast: (
     <>
       <circle cx="12" cy="12" r="2" />
       <path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8" />
-    </>
-  ),
-  trade: (
-    <>
-      <path d="M4 7h12" />
-      <path d="m13 4 3 3-3 3" />
-      <path d="M20 17H8" />
-      <path d="m11 14-3 3 3 3" />
     </>
   ),
   share: (

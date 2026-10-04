@@ -571,7 +571,7 @@
     "reauthFailed": "再認証を開始できませんでした。しばらくしてから再度お試しください。"
   },
   "cardVisibilitySettings": {
-    "title": "未所持カードの表示設定",
+    "title": "コレクション公開設定",
     "description": "視聴者向けコレクションページで、未所持カードを並べて見せるかどうかを設定します。",
     "status": {
       "enabled": "表示",
@@ -620,7 +620,9 @@
     "errors": {
       "saveFailed": "トレード設定の保存に失敗しました",
       "deployWindow": "トレード設定のDB反映がまだ完了していません。少し待ってから再度お試しください。"
-    }
+    },
+    "visibilityNotice": "視聴者が未所持のカードを「欲しいカード」に指定したり、未所持カードの出品を見たりするには、上の「コレクション公開設定」で未所持カードの表示と詳細（名前・画像）の公開が両方必要です。公開していない場合、視聴者は自分が持っているカード同士でのみ交換できます。",
+    "visibilityNoticeLink": "コレクション公開設定へ移動"
   },
   "channelPointSettings": {
     "title": "カード引き換え設定",
@@ -889,12 +891,8 @@
         "soundDesc": "ガチャ演出のサウンド",
         "announcement": "チャット通知",
         "announcementDesc": "獲得時の自動メッセージ",
-        "visibility": "公開設定",
-        "visibilityDesc": "未所持カードの見せ方",
         "liveDirectory": "配信中ページ",
         "liveDirectoryDesc": "配信中ページへの掲載とランキング表示",
-        "trade": "カードトレード",
-        "tradeDesc": "チャンネル内・クロスチャンネルの交換許可",
         "share": "共有",
         "shareDesc": "コレクションページのURL"
       }
@@ -1183,6 +1181,10 @@
     "language": {
       "title": "言語設定",
       "description": "表示言語を選択してください。"
+    },
+    "collectionSharing": {
+      "title": "配信者向け: コレクションの公開とトレード",
+      "description": "あなたのチャンネルのコレクションページの公開範囲と、視聴者間のカードトレードを設定します。"
     }
   },
   "gachaHistoryPage": {

@@ -66,17 +66,17 @@ export default async function SettingsPage({
   const hasEnabledGachaSoundRule = normalizeGachaSoundRules(streamerData.streamer.gacha_sound_rules)
     .some((rule) => rule.enabled);
 
+  // コレクション公開設定(show_unowned_*)とカードトレード設定は /dashboard/account へ
+  // 移動済みで、このページの Advanced セクションには存在しない。それらを「詳細設定を
+  // 使用中」の判定に含めると、移動先の無い設定のために Advanced が初期表示される
+  // 不整合になるため、ここでは見ない。
   const hasAdvancedSettingsInUse =
     Boolean(streamerData.streamer.gacha_sound_enabled) ||
     hasEnabledGachaSoundRule ||
     Boolean(streamerData.streamer.chat_announcement_enabled) ||
-    Boolean(streamerData.streamer.show_unowned_cards) ||
-    Boolean(streamerData.streamer.show_unowned_card_details) ||
     // Issue #738/#740: /live掲載またはランキング上のチャネル表示がONなら使用中とみなす
     Boolean(streamerData.streamer.publish_live_status) ||
-    Boolean(streamerData.streamer.publish_stats) ||
-    Boolean(streamerData.streamer.trade_enabled) ||
-    Boolean(streamerData.streamer.cross_channel_trade_enabled);
+    Boolean(streamerData.streamer.publish_stats);
 
   return (
     <SettingsLayout
@@ -107,17 +107,9 @@ export default async function SettingsPage({
         multiTemplate: streamerData.streamer.chat_announcement_multi_template ?? null,
         multiShowCards: streamerData.streamer.chat_announcement_multi_show_cards ?? true,
       }}
-      visibility={{
-        showUnowned: streamerData.streamer.show_unowned_cards ?? false,
-        showUnownedDetails: streamerData.streamer.show_unowned_card_details ?? false,
-      }}
       liveDirectory={{
         publishLiveStatus: streamerData.streamer.publish_live_status ?? false,
         publishStats: streamerData.streamer.publish_stats ?? false,
-      }}
-      trade={{
-        enabled: streamerData.streamer.trade_enabled ?? false,
-        crossChannelEnabled: streamerData.streamer.cross_channel_trade_enabled ?? false,
       }}
       cardPacks={{
         // canManage=false によるパックselectの非表示/disabled は progressive

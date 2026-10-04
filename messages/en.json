@@ -571,7 +571,7 @@
     "reauthFailed": "Could not start re-authorization. Please try again shortly."
   },
   "cardVisibilitySettings": {
-    "title": "Unowned Card Visibility",
+    "title": "Collection visibility",
     "description": "Choose whether viewers can see cards they haven't collected yet on your collection page.",
     "status": {
       "enabled": "Visible",
@@ -620,7 +620,9 @@
     "errors": {
       "saveFailed": "Failed to save trade settings",
       "deployWindow": "Trade settings are not ready in the database yet. Please try again shortly."
-    }
+    },
+    "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, both showing unowned cards and revealing their details (name and image) must be enabled in \"Collection visibility\" above. If they are not public, viewers can only trade cards they already own.",
+    "visibilityNoticeLink": "Go to Collection visibility"
   },
   "channelPointSettings": {
     "title": "Card Redemption Settings",
@@ -889,12 +891,8 @@
         "soundDesc": "Gacha sound effect",
         "announcement": "Chat alert",
         "announcementDesc": "Auto chat message",
-        "visibility": "Visibility",
-        "visibilityDesc": "Unowned card display",
         "liveDirectory": "Live directory",
         "liveDirectoryDesc": "Live directory listing and ranking identity",
-        "trade": "Card trading",
-        "tradeDesc": "Channel and cross-channel trading permissions",
         "share": "Share",
         "shareDesc": "Collection page URL"
       }
@@ -1183,6 +1181,10 @@
     "language": {
       "title": "Language",
       "description": "Select your preferred display language."
+    },
+    "collectionSharing": {
+      "title": "For streamers: collection visibility and trading",
+      "description": "Control what viewers can see on your channel collection page and whether they can trade cards with each other."
     }
   },
   "gachaHistoryPage": {
