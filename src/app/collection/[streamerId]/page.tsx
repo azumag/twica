@@ -98,14 +98,40 @@ export default async function StreamerCollectionPage({
   // Unowned-card visibility for viewers (Issue #395):
   //  - show_unowned_cards=false (default): viewer sees only owned cards (legacy behavior)
   //  - show_unowned_cards=true: viewer also sees unowned active cards (sorted by rarity, after owned)
-  // 「未所持の詳細を隠す」表示制御は SortedCardGrid の props で行うため、ここではカード自体を含めるかだけを判定する。
-  // The "hide details" toggle is enforced in SortedCardGrid; here we only decide inclusion.
+  // Client-side masking cannot protect the RSC payload. For private unowned
+  // cards, copy only public metadata and use neutral values for the detail
+  // fields required by the grid's Card type. Do not spread the database row:
+  // skill names or future columns could otherwise reveal private details.
+  // 公開メタデータは番号・ソート・パック絞り込みを維持し、元のカード行は変更しない。
   const ownedCardIds = new Set(ownedCards.map((card) => card.id));
   const unownedCards: StreamerCollectionCard[] = streamer.show_unowned_cards
     ? sortCollectedCards(
         activeCards.filter((card) => !ownedCardIds.has(card.id))
       ).map((card) => ({
-        ...card,
+        ...(streamer.show_unowned_card_details === true ? card : {
+          id: card.id,
+          streamer_id: card.streamer_id,
+          rarity: card.rarity,
+          card_number: card.card_number,
+          collection_name: card.collection_name,
+          is_active: card.is_active,
+          created_at: card.created_at,
+          updated_at: "",
+          name: "",
+          description: null,
+          image_url: null,
+          image_padding_color: null,
+          max_issuance_count: null,
+          drop_rate: 0,
+          intra_rarity_weight: 0,
+          hp: 0,
+          atk: 0,
+          def: 0,
+          spd: 0,
+          skill_type: "attack" as const,
+          skill_name: "",
+          skill_power: 0,
+        }),
         count: 0,
         isOwned: false,
         collectionNumber: collectionNumberMap.get(card.id),
