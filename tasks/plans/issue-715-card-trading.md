@@ -42,9 +42,39 @@
 
 ### カードの is_active との関係
 
-- 出品時の「欲しいカード」選択肢はアクティブカードのみ(カタログから選ぶため)
-- 応諾・既存オファーの表示は、カードが後から非アクティブ化されても許可する
-  (トレードは所有済みコピーの移転であり新規発行ではないため、非アクティブ化の意図「新規入手停止」と矛盾しない)
+**プロダクトオーナー決定(2026-10, PR-C)により改訂**。旧方針(「後から非アクティブ化されても応諾・表示を許可」)は廃止。
+
+- **非アクティブカード(コンプ報酬カードを含む)はトレード不可**。出品(渡すカード・欲しいカードとも)も応諾もできない
+  - 渡すカードが非アクティブ → 作成時 `TRADE_OFFERED_CARD_INACTIVE`(409)
+  - 欲しいカードが非アクティブ → 作成時 `TRADE_WANTED_CARD_UNAVAILABLE`(400。非公開カードと同じコード)
+- 既存openオファーの片側が後から非アクティブになった場合は、`trade_enabled` オフ時と同じ**動的判定**:
+  一覧(自分の出品を含む)に出さず、応諾は `TRADE_OFFER_UNAVAILABLE`(409)で拒否する。オファー自体は削除・キャンセルしない
+  (再アクティブ化で復活。出品者は `/api/trades/mine` から確認・キャンセルできる)
+- `cards.is_active` は NULL 許容(DEFAULT true のみ)のため、明示的な `TRUE` のみをアクティブとみなす
+
+### カードの公開判定(visibility、PR-C)
+
+未所持カードの名前が公開されていないコレクション(`show_unowned_card_details=false` では未所持カードの名前もプレースホルダー表示になる。
+`src/components/SortedCardGrid.tsx` の `maskUnownedDetails`)で、トレードが非公開カード名のサイドチャネルにならないよう、次の判定を全経路に適用する:
+
+```
+visible(card, viewer) ⇔ card.is_active
+  AND ( viewer がその card_id のコピーを1枚以上所持(出品中含む)
+        OR ( そのカードの配信者の show_unowned_cards AND show_unowned_card_details ) )
+```
+
+- 未ログインは何も所持していない扱い。クロスチャンネルでは**各カードにそのカードの配信者の設定を個別に適用**する
+- 一覧(GET /api/trades): 出品側・募集側の**両方**が visible なオファーのみ。ただし閲覧者自身の出品は公開判定(所持/公開設定)をバイパスする
+  (設定が後からOFFになっても自分の出品が見えるように)。is_active・trade_enabled のゲートは自分の出品にも適用する
+- 判定は**SQLのWHERE**(相関 EXISTS)で行い、件数・hasMore・wantedCardId/offeredCardId フィルタから非公開カードの存在を推測できないようにする
+- 作成: 欲しいカードが作成者に visible でなければ `TRADE_WANTED_CARD_UNAVAILABLE`(存在しない/非アクティブと同一コード。配信者ゲート判定より前に評価し、
+  `TRADE_DISABLED` で非公開カードIDの存在が確定しないようにする)
+- 応諾: 渡されるカード(offered)が応諾者に visible でなければ `TRADE_OFFER_UNAVAILABLE`(募集側は応諾者が所持している=visible なので判定不要)
+- 応諾の is_active / visible 検証は **API層**(`src/lib/trade.ts` の `precheckTradeAccept`)で RPC 呼び出し前に行う。
+  RPC 変更は PlanetScale migration のデプロイ窓を伴うため DB migration は追加しない。判定順は RPC と同じく**冪等リプレイを最優先**:
+  open 以外(リプレイ=同一応諾者+同一 accepted_request_id の completed を含む)・自己応諾・カード定義削除済み・応諾者不明は検証せず RPC にそのまま委譲する
+  (受け取ったカードを手放した後のリプレイも成功を返す)。検証とRPCの間の競合は、既存コピー同士の移転に留まり新規発行が無いため許容する
+- 公開一覧の DTO から他人の出品の `offeredUserCardId`(内部ID)は除外する(自分の出品と /mine では返す)
 
 ## 4. DB設計
 
@@ -227,7 +257,7 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
 |---|---|---|
 | GET | `/api/trades?streamerId=&scope=in_channel\|cross_channel&wantedCardId=&offeredCardId=&page=` | openオファー一覧。設定ゲートを満たすもののみ返す。ページネーション必須(20件/頁) |
 | POST | `/api/trades` | オファー作成 `{ offeredUserCardId, wantedCardId, requestId }` |
-| GET | `/api/trades/mine` | 自分のオファー一覧(open/completed/cancelled、自分が応諾した取引も含む) |
+| GET | `/api/trades/mine?status=open\|completed\|cancelled&page=` | 自分のオファー一覧(自分が応諾した取引も含む)。`status` 省略時は全件。20件/頁+`hasMore`。各行に `acceptedBy`(displayName等)と `mineRole` |
 | POST | `/api/trades/[id]/accept` | 応諾 `{ requestId }` → RPC呼び出し |
 | POST | `/api/trades/[id]/cancel` | 出品者本人のキャンセル |
 | POST | `/api/streamer/settings` | 既存エンドポイントに `tradeEnabled` / `crossChannelTradeEnabled` キーを追加(既存の厳格boolean検証パターンに従う) |
@@ -278,7 +308,34 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
 
 ### エラーコード
 
-`ERROR_MESSAGES` に追加: `TRADE_DISABLED` / `TRADE_OFFER_NOT_FOUND` / `TRADE_ALREADY_COMPLETED` / `TRADE_SELF_ACCEPT` / `TRADE_CARD_NOT_OWNED` / `TRADE_OFFER_LIMIT` / `TRADE_BUSY`(デッドロックリトライ失敗)など。i18nはUI側で対応表を持つ。
+全トレードAPIのエラー応答は `{ error: <既存の英語メッセージ>, code: <機械可読コード> }`(PR-C)。
+`error` は既存クライアント互換のため維持し、UIは `code` だけで文言を選ぶ。コードとHTTPステータスの正本は
+`src/lib/trade-api.ts`(共通)、`src/app/api/trades/route.ts`(作成)、`src/app/api/trades/[id]/accept/route.ts`(応諾)。
+RPC 内部名(`OFFER_NOT_OPEN` 等)は API では `TRADE_*` に正規化する。
+
+| code | HTTP | 発生箇所 | 意味 |
+|---|---|---|---|
+| `UNAUTHORIZED` | 401 | POST全般, GET mine | 未ログイン |
+| `CSRF_TOKEN_INVALID` | 403 | POST全般 | CSRFトークン不正(`error` は従来どおり `Forbidden`) |
+| `RATE_LIMIT_EXCEEDED` | 429 | 全API | rate limit 超過(`X-RateLimit-*` ヘッダ付き) |
+| `INVALID_REQUEST` | 400 | 全API | UUID/scope/page/status 不正、JSON不正 |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | POST全般 | Content-Type 不正 |
+| `INTERNAL_ERROR` | 500 | 全API | 予期しない失敗 |
+| `TRADE_DISABLED` | 403 | 作成, 応諾 | 設定ゲート不成立 |
+| `TRADE_CARD_NOT_OWNED` | 400(作成) / 409(応諾) | 作成, 応諾 | 作成: 渡すコピーが自分の物でない / 応諾: 支払える手持ちが無い |
+| `TRADE_CARD_ALREADY_LISTED` | 409 | 作成 | そのコピーは出品中 |
+| `TRADE_OFFER_LIMIT` | 409 | 作成 | 同時出品上限(10件) |
+| `TRADE_SAME_CARD` | 400 | 作成 | 渡す・欲しいが同一カード |
+| `TRADE_WANTED_CARD_UNAVAILABLE` | 400 | 作成 | 欲しいカードが存在しない/非アクティブ/非公開 |
+| `TRADE_OFFERED_CARD_INACTIVE` | 409 | 作成 | 渡すカードが非アクティブ(PR-C) |
+| `TRADE_OFFER_NOT_FOUND` | 404 | 応諾, キャンセル | オファーが無い |
+| `TRADE_OFFER_NOT_OPEN` | 409 | 応諾, キャンセル | 成立済み/キャンセル済み(RPC `OFFER_NOT_OPEN`) |
+| `TRADE_OFFER_INVALID` | 409 | 応諾 | カード定義削除・出品コピー喪失で無効化(RPC `OFFER_INVALID`) |
+| `TRADE_SELF_ACCEPT` | 400 | 応諾 | 自分の出品(RPC `SELF_ACCEPT_FORBIDDEN`) |
+| `TRADE_OFFER_UNAVAILABLE` | 409 | 応諾 | カードが非アクティブ、または渡されるカードが非公開(PR-C、API層precheck) |
+| `TRADE_BUSY` | 503 | 応諾 | 40P01 リトライ失敗 |
+
+i18nはUI側で対応表(§11)を持つ。
 
 ## 6. UI/UX設計
 
@@ -527,11 +584,19 @@ ja案は §6 の画面文言と一致させている。en訳は実装時に確�
 | confirmModalSuccess | 交換が成立しました! | 応諾成立後(§6.4) |
 | errorTradeDisabled | この配信者はトレードを許可していません | エラー(TRADE_DISABLED、§4.5, §6.4) |
 | errorTradeOfferNotFound | 指定された出品が見つかりません | エラー(TRADE_OFFER_NOT_FOUND、§4.5) |
-| errorTradeAlreadyCompletedOrInvalid | この取引は成立済み(または無効)です | エラー(TRADE_ALREADY_COMPLETED / OFFER_INVALID、§6.4) |
+| errorTradeAlreadyCompletedOrInvalid | この取引は成立済み(または無効)です | エラー(TRADE_OFFER_NOT_OPEN / TRADE_OFFER_INVALID、§5, §6.4) |
 | errorTradeBusy | 混雑しています。しばらくしてから再試行してください | エラー(TRADE_BUSY、§6.4) |
 | errorTradeCardNotOwned | 交換に出せるカードがありません | エラー(TRADE_CARD_NOT_OWNED、§6.4) |
 | errorTradeSelfAccept | 自分の出品には応じられません | エラー(TRADE_SELF_ACCEPT、§6.4) |
 | errorTradeOfferLimit | 出品数の上限に達しています(最大10件) | エラー(TRADE_OFFER_LIMIT、§4.5, §5) |
+| errorTradeOfferedCardInactive | このカードは現在トレードに出せません | エラー(TRADE_OFFERED_CARD_INACTIVE、§3, §5。PR-C) |
+| errorTradeWantedCardUnavailable | このカードは指定できません | エラー(TRADE_WANTED_CARD_UNAVAILABLE、§3, §5) |
+| errorTradeOfferUnavailable | この取引は現在応じられません | エラー(TRADE_OFFER_UNAVAILABLE、§3, §5。PR-C。閉じたら一覧refetch) |
+| errorTradeSameCard | 同じカード同士は交換できません | エラー(TRADE_SAME_CARD、§5) |
+| errorTradeCardAlreadyListed | このカードは既に出品中です | エラー(TRADE_CARD_ALREADY_LISTED、§5) |
+| errorUnauthorized | ログインが必要です | エラー(UNAUTHORIZED、§5) |
+| errorRateLimited | 操作が多すぎます。しばらくしてから再試行してください | エラー(RATE_LIMIT_EXCEEDED、§5) |
+| errorGeneric | エラーが発生しました。時間をおいて再試行してください | エラー(CSRF_TOKEN_INVALID / INVALID_REQUEST / UNSUPPORTED_MEDIA_TYPE / INTERNAL_ERROR、§5) |
 | emptyStateMessage | まだ出品がありません。最初の出品をしてみましょう | 空状態(§6.8) |
 | emptyStateCta | 出品する | 空状態(§6.8) |
 | createStep1Title | 渡すカードを選ぶ | 出品フローStep1(§6.5) |
