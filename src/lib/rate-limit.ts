@@ -343,6 +343,9 @@ export const rateLimits = {
   // read limits above.
   cardsPatch: createRatelimit("cardsPatch", 10, 60 * 1000),
   streamerSettings: createRatelimit("streamerSettings", 10, 60 * 1000),
+  // Issue #723: card trading. Writes are intentionally tighter than reads.
+  tradeWrite: createRatelimit("tradeWrite", 10, 60 * 1000),
+  tradeRead: createRatelimit("tradeRead", 100, 60 * 1000),
   gacha: createRatelimit("gacha", 30, 60 * 1000),
   // Issue #783 fable review: /api/gacha/demo の broadcast&&streamerId 経路
   // （#783で認可チェックのみ追加済み）は、認証済みユーザーであればグローバル

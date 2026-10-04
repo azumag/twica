@@ -109,3 +109,5 @@ twica-maker-*/
 
 # Unit-test scratch repositories. May survive SIGKILL; never commit them.
 .tmp-i18n-static-keys-*/
+__pycache__/
+*.pyc

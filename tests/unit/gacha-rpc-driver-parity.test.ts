@@ -116,7 +116,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-1')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-1',
+      })
 
       expect(result.success).toBe(true)
       if (result.success) {
@@ -150,9 +155,14 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha(
-        'streamer-1', 'user-1', 'testuser', 'event-reward', 500, undefined, undefined, 'reward-abc'
-      )
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-reward',
+        rewardCost: 500,
+        rewardId: 'reward-abc',
+      })
 
       expect(result.success).toBe(true)
       const { values } = renderSqlCall(sqlMock, 0)
@@ -164,7 +174,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       // 再送として安全に扱える Result エラーへ変換する。
       setupCards()
       setupPgSql([{ rows: [{ result: { is_duplicate: true } }] }])
-      const result = await new GachaService().executeGacha('streamer-1', 'user-1', 'testuser', 'event-dup')
+      const result = await new GachaService().executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-dup',
+      })
 
       expect(result.success).toBe(false)
       if (!result.success) {
@@ -183,7 +198,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-retry')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-retry',
+      })
 
       expect(result.success).toBe(true)
       expect(sqlMock).toHaveBeenCalledTimes(2)
@@ -209,7 +229,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-exhausted')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-exhausted',
+      })
 
       expect(result.success).toBe(false)
       if (!result.success) {
@@ -225,7 +250,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-fallback')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-fallback',
+      })
 
       expect(result.success).toBe(false)
       if (!result.success) {
@@ -252,7 +282,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       setupPgSql([{ reject: pgError('23503', 'insert or update violates foreign key constraint') }])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-err')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-err',
+      })
 
       expect(result.success).toBe(false)
       if (!result.success) {
@@ -274,7 +309,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-conn-retry')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-conn-retry',
+      })
 
       expect(result.success).toBe(true)
       expect(sqlMock).toHaveBeenCalledTimes(2)
@@ -292,7 +332,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-ambiguous')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-ambiguous',
+      })
 
       expect(result.success).toBe(false)
       if (!result.success) {
@@ -312,7 +357,11 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+      })
 
       expect(result.success).toBe(false)
       if (!result.success) {
@@ -335,7 +384,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-limited')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-limited',
+      })
 
       expect(result.success).toBe(true)
       expect(sqlMock).toHaveBeenCalledTimes(2)
@@ -362,7 +416,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       ], limitedTestCards, [{ cardId: 'sold-out-card', issuedCount: 1 }])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-fallthrough')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-fallthrough',
+      })
 
       expect(result.success).toBe(true)
       // 抽選トランザクション本体は次のSQL呼び出しで続行する。
@@ -386,7 +445,12 @@ describe('ガチャ RPC ドライバパリティ (#573)', () => {
       setupPgSql([{ reject: pgError('57014', 'canceling statement due to statement timeout') }])
 
       const service = new GachaService()
-      const result = await service.executeGacha('streamer-1', 'user-1', 'testuser', 'event-counts-err')
+      const result = await service.executeGachaWithoutRepeatProtection({
+        streamerId: 'streamer-1',
+        userTwitchId: 'user-1',
+        userTwitchUsername: 'testuser',
+        eventId: 'event-counts-err',
+      })
 
       expect(result.success).toBe(false)
       if (!result.success) {

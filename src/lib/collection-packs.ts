@@ -32,7 +32,7 @@ export interface CollectionPackGroup {
  * Does a card belong to the pack identified by `packKey`?
  * DEFAULT_PACK_SENTINEL selects unclassified cards (collection_name === null);
  * any other key is an exact collection_name match. This is the same sentinel
- * resolution rule executeGacha / checkCollectionHasActiveCards already apply
+ * resolution rule in the low-level gacha draw / checkCollectionHasActiveCards already apply
  * on their DB queries (`.is(...)` vs `.eq(...)`), expressed as an in-memory
  * predicate.
  */

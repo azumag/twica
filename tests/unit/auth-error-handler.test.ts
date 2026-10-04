@@ -56,6 +56,41 @@ describe('handleAuthError', () => {
     })
   })
 
+  it('Twitch 520/525等の一時障害は503で返し、自動Issue用には永続化しない', async () => {
+    for (const status of [520, 525]) {
+      vi.clearAllMocks()
+      const error = Object.assign(new Error(`provider failed: ${status}`), { status })
+
+      const response = await handleAuthError(
+        error,
+        status === 520 ? 'twitch_auth_failed' : 'twitch_user_fetch_failed',
+        undefined,
+        { returnJson: true },
+      )
+
+      expect(response.status).toBe(503)
+      await expect(response.json()).resolves.toMatchObject({
+        message: 'Twitch側で一時的な通信エラーが発生しました。少し待ってから再度お試しください。',
+      })
+      expect(mocks.loggerWarn).toHaveBeenCalledTimes(1)
+      expect(mocks.reportAuthError).not.toHaveBeenCalled()
+    }
+  })
+
+  it('Twitch 401は一時障害扱いせず従来どおり永続化する', async () => {
+    const error = Object.assign(new Error('provider rejected credentials'), { status: 401 })
+
+    const response = await handleAuthError(
+      error,
+      'twitch_auth_failed',
+      undefined,
+      { returnJson: true },
+    )
+
+    expect(response.status).toBe(500)
+    expect(mocks.reportAuthError).toHaveBeenCalledTimes(1)
+  })
+
   it('利用者操作で起こり得る validation error は永続化せず JSON 400 を返す', async () => {
     const response = await handleAuthError(
       new Error('state mismatch'),

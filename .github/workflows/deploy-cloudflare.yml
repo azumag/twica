@@ -49,7 +49,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies
@@ -84,6 +84,58 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+  chat-delivery:
+    # Issue #1665 Step 2 preparation. The Worker is deployable only after the
+    # Queue resource and environment-specific CHAT_DELIVERY_SECRET are provisioned.
+    # Keep this opt-in so merging code cannot enable or deploy the new delivery path.
+    if: vars.CHAT_DELIVERY_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck Chat Delivery Worker
+        run: npm run chat-delivery:typecheck
+
+      - name: Build and verify preview Chat Delivery Worker bundle
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
+        run: |
+          npm run chat-delivery:build:preview
+          npm run check:supabase-shutdown -- --require-chat-delivery-preview
+
+      - name: Build and verify production Chat Delivery Worker bundle
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        run: |
+          npm run chat-delivery:build:production
+          npm run check:supabase-shutdown -- --require-chat-delivery-production
+
+      - name: Deploy preview Chat Delivery Worker
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
+        run: npm run chat-delivery:deploy:preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy production Chat Delivery Worker
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        run: npm run chat-delivery:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
   legacy-app-deploy:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'
     runs-on: ubuntu-latest
@@ -108,7 +160,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies
@@ -162,7 +214,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies

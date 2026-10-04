@@ -80,7 +80,7 @@ describe("POST /api/gacha", () => {
   });
 
   // Issue #661: execute_gacha_transaction RPC (migration 00076) now rejects
-  // p_event_id = NULL. This route previously called executeGacha without an
+  // p_event_id = NULL. This route previously called the low-level draw without an
   // eventId at all, which propagated as NULL all the way to the RPC. It must
   // now always supply a non-null, per-request-unique synthetic event id so
   // the manual "draw a real gacha" flow keeps working.
@@ -89,7 +89,7 @@ describe("POST /api/gacha", () => {
 
     expect(res.status).toBe(200);
     expect(executeGachaMock).toHaveBeenCalledTimes(1);
-    const eventIdArg = executeGachaMock.mock.calls[0][3];
+    const eventIdArg = executeGachaMock.mock.calls[0][0].eventId;
     expect(eventIdArg).toBeTruthy();
     expect(typeof eventIdArg).toBe("string");
   });
@@ -98,8 +98,8 @@ describe("POST /api/gacha", () => {
     await POST(makeRequest({ streamerId: "streamer-1" }));
     await POST(makeRequest({ streamerId: "streamer-1" }));
 
-    const firstEventId = executeGachaMock.mock.calls[0][3];
-    const secondEventId = executeGachaMock.mock.calls[1][3];
+    const firstEventId = executeGachaMock.mock.calls[0][0].eventId;
+    const secondEventId = executeGachaMock.mock.calls[1][0].eventId;
     expect(firstEventId).not.toBe(secondEventId);
   });
 

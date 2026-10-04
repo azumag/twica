@@ -393,6 +393,28 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
     expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "weapons" }));
   });
 
+  it("returns 409 when collection_name changes between lookup and UPDATE", async () => {
+    // lookup 時点では orphaned binding "weapons" の同値再送として許可されるが、
+    // UPDATE の CAS が0行なら別リクエストが collection_name を変更したとみなす。
+    const { updateCalls } = primeDb({
+      selects: [
+        { rows: [streamer(["characters"])] },
+        { rows: [currentAdditionalReward("weapons")] },
+      ],
+      updates: [{ rows: [] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionName: "weapons",
+    }, "PUT"));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: ERROR_MESSAGES.ADDITIONAL_REWARD_CONCURRENT_UPDATE,
+    });
+    expect(updateCalls[0]).toEqual(expect.objectContaining({ collection_name: "weapons" }));
+  });
+
   it("accepts DEFAULT_PACK_SENTINEL when active unclassified cards exist", async () => {
     const db = primeDb({
       selects: [
@@ -424,9 +446,9 @@ describe("/api/streamer/additional-rewards PUT (update)", () => {
       collectionName: "weapons",
     }, "PUT"));
     expect(response.status).toBe(404);
-    // STREAMER_NOT_FOUND（英語）ではなく報酬不在専用の日本語文言を返す
+    // STREAMER_NOT_FOUND ではなく、追加報酬不在の共有エラー契約を返す
     expect(await response.json()).toEqual({
-      error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください",
+      error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND,
     });
     expect(updateCalls).toHaveLength(0);
   });

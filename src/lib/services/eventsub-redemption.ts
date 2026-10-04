@@ -305,11 +305,14 @@ export async function handleRaidNotification(messageId: string, event: {
 
   const gachaService = new GachaService();
   const result = await gachaService.executeGachaForRaidEvent({
-    to_broadcaster_user_id: toBroadcasterUserId,
-    from_broadcaster_user_id: fromBroadcasterUserId,
-    from_broadcaster_user_login: event.from_broadcaster_user_login,
-    from_broadcaster_user_name: event.from_broadcaster_user_name,
-  }, messageId);
+    event: {
+      to_broadcaster_user_id: toBroadcasterUserId,
+      from_broadcaster_user_id: fromBroadcasterUserId,
+      from_broadcaster_user_login: event.from_broadcaster_user_login,
+      from_broadcaster_user_name: event.from_broadcaster_user_name,
+    },
+    eventId: messageId,
+  });
 
   if (!result.success) {
     if (result.error === 'Raid gacha disabled') {
@@ -575,6 +578,21 @@ export async function postRedemptionNotify(
         // 入らず従来どおりthrow/reportErrorされる。
         if (outcome.code === CHAT_SEND_TERMINAL_CODES.MISSING_SCOPE) {
           logger.warn('[postRedemptionNotify] chat announcement moved to DLQ pending Twitch reauthorization', {
+            code: outcome.code,
+            reason: outcome.reason,
+            streamerId: data.streamer.id,
+            broadcasterTwitchUserId: data.broadcasterTwitchUserId,
+            outboxId: claim.id,
+          });
+          return;
+        }
+        // Issue #1725: AutoMod等、本文自体がTwitchの自動判定で拒否された場合も
+        // コード不具合ではない。再送しても同じ本文なら結果は変わらないため、DLQへ
+        // 落として人間がレビューする対象とし、MISSING_SCOPEと同様throw/自動Issue化
+        // の対象外にする。認証・APIレベルの拒否（TWITCH_REJECTED）や未知terminalは
+        // ここへ入らず従来どおりthrow/reportErrorされる。
+        if (outcome.code === CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED) {
+          logger.warn('[postRedemptionNotify] chat announcement moved to DLQ - rejected by Twitch content filter', {
             code: outcome.code,
             reason: outcome.reason,
             streamerId: data.streamer.id,
@@ -857,7 +875,7 @@ export async function handleRedemption(messageId: string, event: {
   // バグを再発させてしまうことから、この限定的なリスクは許容する。
   try {
     const gachaService = new GachaService();
-    const result = await gachaService.executeGachaForEventSub(event, messageId);
+    const result = await gachaService.executeGachaForEventSub({ event, eventId: messageId });
 
     if (!result.success) {
       // EventSub重複通知は正常系（リトライによる再送）なのでエラー報告しない
