@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { TradeOfferDto } from "@/lib/trade";
 
 /**
@@ -74,11 +74,6 @@ export function clearTradeListCache() {
   sharedCache.clear();
 }
 
-/**
- * fetchedAt of a page rendered by the server: fresh, and its window starts
- * when the client first sees it (Date.now() must not run during render).
- */
-const SERVER_RENDERED = -1;
 /** fetchedAt of a page that is still shown but must be refreshed. */
 const STALE = 0;
 
@@ -139,12 +134,14 @@ export function useTradeList(
       }
     }
     if (initial) {
-      seeded[initial.url] = { status: "ok", page: initial.page, fetchedAt: SERVER_RENDERED };
+      // The server-rendered page is shown immediately but always revalidated
+      // once on mount. App Router replays a cached RSC payload on browser
+      // back/forward, so `initial` can be older than the user's last mutation
+      // (e.g. an offer already cancelled would still show a cancel button).
+      seeded[initial.url] = { status: "ok", page: initial.page, fetchedAt: STALE };
     }
     return seeded;
   });
-  // When the server-rendered page was first seen (effects only).
-  const serverRenderedSeenAt = useRef<number | null>(null);
   // Bumped to force a refetch of the same url (retry / invalidate).
   const [revalidation, setRevalidation] = useState(0);
 
@@ -152,11 +149,7 @@ export function useTradeList(
   const entryFetchedAt = entry?.status === "ok" ? entry.fetchedAt : undefined;
 
   useEffect(() => {
-    let stamp = entryFetchedAt;
-    if (stamp === SERVER_RENDERED) {
-      serverRenderedSeenAt.current ??= Date.now();
-      stamp = serverRenderedSeenAt.current;
-    }
+    const stamp = entryFetchedAt;
     if (stamp !== undefined && stamp !== STALE && Date.now() - stamp < TRADE_LIST_FRESH_MS) {
       return;
     }

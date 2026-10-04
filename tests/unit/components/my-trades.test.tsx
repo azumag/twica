@@ -254,13 +254,16 @@ describe("MyTrades (#727 §6.6)", () => {
   });
 
   describe("client cache (tab switching without reloading)", () => {
-    it("renders the server-rendered open tab without requesting it", async () => {
+    it("renders the server-rendered open tab immediately and revalidates it once in the background", async () => {
       renderMine({ initialOpen: { offers: [makeOffer({ offeredCard: { name: "SSR Dragon", rarity: "epic", imageUrl: null } })], hasMore: false } });
-      // Synchronously present: no loading state, no client round trip.
+      // Synchronously present: no loading state before the client round trip.
       expect(screen.getByText("SSR Dragon")).toBeInTheDocument();
       expect(screen.queryByText(ja.loading)).toBeNull();
+      // The SSR payload may be a router-cache replay (browser back/forward)
+      // older than the user's last cancel, so it is always revalidated once.
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(listCalls(fetchMock, "open")).toBe(0);
+      expect(listCalls(fetchMock, "open")).toBe(1);
+      expect(screen.queryByText(ja.loading)).toBeNull();
     });
 
     it("shows a fetched tab again immediately, without loading or a new request", async () => {
