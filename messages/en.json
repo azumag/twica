@@ -621,8 +621,7 @@
       "saveFailed": "Failed to save trade settings",
       "deployWindow": "Trade settings are not ready in the database yet. Please try again shortly."
     },
-    "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, both showing unowned cards and revealing their details (name and image) must be enabled in \"Collection visibility\" above. If they are not public, viewers can only trade cards they already own.",
-    "visibilityNoticeLink": "Go to Collection visibility"
+    "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, both showing unowned cards and revealing their details (name and image) must be enabled in \"Collection visibility\" above. If they are not public, viewers can only trade cards they already own."
   },
   "trade": {
     "collectionTradeButton": "Trade",
