@@ -442,6 +442,43 @@ describe('TwitchChatService', () => {
       expect(global.fetch).toHaveBeenCalledTimes(2);
     });
 
+    // 一時不調文面だけでは、is_sent=falseと有効なcodeが揃った拒否通知とは限らない。
+    // 契約が崩れた200応答は再送せず、詳細APIとlegacy経路の報告境界を維持する。
+    it.each([
+      ['missing is_sent', { drop_reason: { code: 'msg_rejected' } }],
+      ['null is_sent', { is_sent: null, drop_reason: { code: 'msg_rejected' } }],
+      ['string is_sent', { is_sent: 'false', drop_reason: { code: 'msg_rejected' } }],
+      ['numeric is_sent', { is_sent: 0, drop_reason: { code: 'msg_rejected' } }],
+      ['missing code', { is_sent: false, drop_reason: {} }],
+      ['null code', { is_sent: false, drop_reason: { code: null } }],
+      ['empty code', { is_sent: false, drop_reason: { code: '' } }],
+      ['whitespace code', { is_sent: false, drop_reason: { code: '  ' } }],
+      ['numeric code', { is_sent: false, drop_reason: { code: 42 } }],
+    ])('一時不調文面でもHTTP 200の%sは再送せずTWITCH_REJECTEDに分類する', async (_label, sentResult) => {
+      const message = 'Your message could not be sent, please try again later.';
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{ ...sentResult, drop_reason: { ...sentResult.drop_reason, message } }],
+        }),
+      } as Response);
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message')).resolves.toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        reason: `Twitch API 200: ${message}`,
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(reportApiError).not.toHaveBeenCalled();
+
+      vi.mocked(global.fetch).mockClear();
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(reportApiError).toHaveBeenCalledTimes(1);
+    });
+
     it('HTTP 200でもis_sent=falseならdrop_reason付きterminalに分類する', async () => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
       vi.mocked(global.fetch).mockResolvedValue({
