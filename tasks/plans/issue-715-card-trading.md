@@ -450,11 +450,15 @@ Step 2: 欲しいカードを選ぶ
   (出品後にボードを離れたユーザーが、配信者URLを踏み直さなくても出品確認・キャンセルに到達できるように)
 - 出品フローの送信中ボタンdisabledは §6.4 と同様
 
-### 6.7 配信者ダッシュボード設定UI
+### 6.7 配信者向けトレード設定UI(/dashboard/account に配置)
 
 既存 `src/components/CardVisibilitySettings.tsx` と同型の `TradeSettings.tsx` を
-`src/components/` に追加し、`src/app/dashboard/settings/page.tsx` に組み込む
-(hand-rolled toggle + `POST /api/streamer/settings` + 楽観的更新):
+`src/components/` に追加し、**`src/app/dashboard/account/page.tsx`(ユーザー設定)** に
+「配信者向け: コレクションの公開とトレード」セクションとして組み込む
+(hand-rolled toggle + `POST /api/streamer/settings` + 楽観的更新)。
+当初は `/dashboard/settings`(配信設定)に置く計画だったが、コレクション公開設定
+(`CardVisibilitySettings`、「コレクション公開設定」)とあわせて視聴者向け公開範囲に
+関わる設定のためユーザー設定へ移した。配信設定側(`SettingsLayout`)には置かない:
 
 ```
 カードトレード
@@ -467,8 +471,14 @@ Step 2: 欲しいカードを選ぶ
 
 - 親トグルOFF時は子トグルをdisabled表示(依存関係を視覚化)
 - 注意書き: 「OFFにすると進行中の出品は一時的に非表示・応諾不可になります(削除はされません)」
-- 実装漏れ注意: `src/app/dashboard/settings/page.tsx` 側の streamers SELECT に新フラグを追加(初期値取得)、
-  `/collection/[streamerId]` のトレードボタン表示用に streamer フェッチへ `trade_enabled` を追加
+- 表示条件: `canUseStreamerFeatures(session)`(`POST /api/streamer/settings` と同条件)かつ streamers 行が存在する場合のみ。
+  それ以外は何も表示しない
+- 初期値取得: `getStreamerData`(cards を全件JOIN)は使わず、`getStreamerCollectionSettings`
+  (`src/lib/dashboard-data.ts`)で `id` / `show_unowned_*` / `trade_enabled` / `cross_channel_trade_enabled` だけを取得。
+  列未デプロイ(42703)のデプロイ窓では trade 2列を除いて再試行し false 扱い、DBエラー時はセクション非表示
+- 注意書き: 未所持カードを「欲しいカード」に指定する/未所持カードの出品を見るには、コレクション公開設定で
+  未所持カードの表示と詳細(名前・画像)の公開が両方必要。同画面の公開設定カードへのアンカーリンクを添える
+- 実装漏れ注意: `/collection/[streamerId]` のトレードボタン表示用に streamer フェッチへ `trade_enabled` を追加
 
 ### 6.8 アクセシビリティ / 空状態
 

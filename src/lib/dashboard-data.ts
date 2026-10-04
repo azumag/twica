@@ -2407,6 +2407,86 @@ export const getStreamerById = cache(async (streamerId: string): Promise<Streame
 });
 
 /**
+ * コレクション公開設定・カードトレード設定の初期値 (/dashboard/account 用)
+ */
+export interface StreamerCollectionSettings {
+  streamerId: string;
+  showUnownedCards: boolean;
+  showUnownedCardDetails: boolean;
+  tradeEnabled: boolean;
+  crossChannelTradeEnabled: boolean;
+}
+
+/**
+ * アカウント設定画面に置くコレクション公開設定/トレード設定の初期値だけを取得する。
+ *
+ * getStreamerData は cards を全件 JOIN するため、4つのフラグのためだけに使うには
+ * 重すぎる。twitch_user_id(UNIQUE) で streamers を1行・5列だけ読む。
+ *
+ * - trade_enabled / cross_channel_trade_enabled が未デプロイ(42703)のデプロイ窓では
+ *   既存の withLiveDirectorySettingsColumnFallback で2列を除いた射影へ再試行し、欠けた
+ *   値は false(fail-closed)にする。show_unowned_* は STREAMERS_SAFE_COLUMNS にも含まれる
+ *   既存列なので再試行側にも残す。
+ * - 配信者行が無い / DBエラーの場合は null。呼び出し側は null ならセクションを出さない。
+ *   設定セクションの初期値が取れないだけでアカウントページ全体を落とさないため、例外は
+ *   ここで握りつぶしてログだけ残す。
+ */
+export const getStreamerCollectionSettings = cache(
+  async (twitchUserId: string): Promise<StreamerCollectionSettings | null> => {
+    try {
+      const rows = await withLiveDirectorySettingsColumnFallback(async (useSafeColumns) =>
+        withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            const query = useSafeColumns
+              ? db.select({
+                  id: streamersTable.id,
+                  show_unowned_cards: streamersTable.show_unowned_cards,
+                  show_unowned_card_details: streamersTable.show_unowned_card_details,
+                })
+              : db.select({
+                  id: streamersTable.id,
+                  show_unowned_cards: streamersTable.show_unowned_cards,
+                  show_unowned_card_details: streamersTable.show_unowned_card_details,
+                  trade_enabled: streamersTable.trade_enabled,
+                  cross_channel_trade_enabled: streamersTable.cross_channel_trade_enabled,
+                });
+            return query
+              .from(streamersTable)
+              .where(eq(streamersTable.twitch_user_id, twitchUserId))
+              .limit(1);
+          },
+          "getStreamerCollectionSettings",
+          { idempotent: true },
+        )
+      );
+      // 再試行側の行型には trade 列が無いため、実行時に undefined になり得る列を
+      // optional として読み、`?? false` で fail-closed に倒す。
+      const row = rows[0] as
+        | {
+            id: string;
+            show_unowned_cards: boolean | null;
+            show_unowned_card_details: boolean | null;
+            trade_enabled?: boolean | null;
+            cross_channel_trade_enabled?: boolean | null;
+          }
+        | undefined;
+      if (!row) return null;
+      return {
+        streamerId: row.id,
+        showUnownedCards: row.show_unowned_cards ?? false,
+        showUnownedCardDetails: row.show_unowned_card_details ?? false,
+        tradeEnabled: row.trade_enabled ?? false,
+        crossChannelTradeEnabled: row.cross_channel_trade_enabled ?? false,
+      };
+    } catch (error) {
+      logger.error("Error in getStreamerCollectionSettings (pg)", { error });
+      return null;
+    }
+  }
+);
+
+/**
  * getUserCardDetail の Drizzle（pg 直結）実装 (#571)
  *
  * 1. cards + streamers 埋め込み: `*, streamers!cards_streamer_id_fkey(*)` は

@@ -467,3 +467,10 @@ export const STORAGE_LIMIT_MESSAGES = {
   // GLOBAL_LIMIT_REACHED も同じく外部・未知クライアント向けの互換文言として維持する。
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
 } as const
+
+/**
+ * /dashboard/account のコレクション公開設定カードの anchor id。
+ * TradeSettings の注記が「上の公開設定」へジャンプするリンク先として使う。
+ * 2コンポーネントは別ファイルの client component のため、定数でid/hrefを揃える。
+ */
+export const COLLECTION_VISIBILITY_ANCHOR_ID = "collection-visibility-settings";
