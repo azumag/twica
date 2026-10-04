@@ -274,7 +274,7 @@ API側で `UPDATE trade_offers SET status='cancelled' WHERE id=? AND offerer_use
 - **応諾可否(canAccept)**: ログインユーザーの支払い可能カードを別クエリ1本で取得し
   (自分の所持 `user_cards` から「自分がopenオファーに出品中の `offered_user_card_id`」を除外して card_id 集合を作る)、
   アプリ側で各オファーに `canAccept` を付与して返す。自分の出品は `isOwnOffer: true` を返して
-  `canAccept` 計算から除外する(UIは「自分の出品」バッジ+キャンセルボタン表示。
+  `canAccept` 計算から除外する(UIは「自分の出品」バッジ表示。キャンセルは /trade/mine に集約(PR-B、§6.3)。
   自己応諾はサーバ側でも `TRADE_SELF_ACCEPT` で禁止済み)。
   **除外規則を §4.4 手順4 と完全に一致させる**こと(「ボタン有効なのに押すと CARD_NOT_OWNED」の食い違い防止)。
   クエリは2本固定でありN+1にはならない
@@ -393,6 +393,15 @@ i18nはUI側で対応表(§11)を持つ。
 - 一覧行はモバイル(375px幅程度)ではカード画像2枚を縦積み(もらう→渡す)に折り返す。
   デスクトップ(sm以上)で横並び。既存 `SortedCardGrid` のレスポンシブ切替パターンに準じる
 - クロスチャンネルタブでは各カードに配信者アイコン+名前を小さく併記(どのチャンネルのカードか一目で分かるように)
+- **プロダクトオーナー決定(PR-B、2026-10)**:
+  - フィルタは**チャンネル内タブのみ**「欲しいカード / 出ているカード」の2種。レアリティフィルタは見送り
+    (GET /api/trades にレアリティ条件が無く、クライアント側で1ページ分だけ絞ると件数・hasMore が崩れるため。
+    要望が出たら API に `rarity` 条件を追加して対応)。クロスチャンネルタブはカードフィルタなし(MVP)
+  - フィルタ候補は `listWantableCards`(公開判定済み)の id/name のみをサーバーから渡す(非公開カード名をクライアントへ出さない)
+  - 自分の出品は「自分の出品」バッジ+マイトレードへのリンクのみ。キャンセル操作は `/trade/mine` に集約する
+    (ボード上に破壊的操作を増やさない。§11.3 の own_offer 行も同様に更新)
+  - 未所持カード非公開(`show_unowned_cards && show_unowned_card_details` が偽)のチャンネルでは、ボード上部に
+    「所持カードを含む出品のみ表示」の注記を常設し、0件時は通常と異なる空状態文言を出す
 - エラー表示の共通方針: 応諾・出品モーダル内のエラーはモーダル内インライン表示、
   一覧取得エラーは一覧上部のインラインバナー。既存の `setMessage`/`isError` インライン方式に従い、
   新規トーストコンポーネントは導入しない(YAGNI)
@@ -566,7 +575,7 @@ ja案は §6 の画面文言と一致させている。en訳は実装時に確�
 | myTradesLink | マイトレード | ボード共通ヘッダ・マイコレクションヘッダ(§6.3, §6.6) |
 | filterWantedCard | 欲しいカード | フィルタ(§6.3) |
 | filterOfferedCard | 出ているカード | フィルタ(§6.3) |
-| filterRarity | レアリティ | フィルタ(§6.3) |
+| filterRarity | レアリティ | (PR-Bで見送り・未追加。§6.3) |
 | offeredByLabel | 出品者 | オファー行(§6.3) |
 | acceptButton | この取引に応じる | 応諾ボタン状態1(§6.3) |
 | acceptButtonNotOwned | 所持していません | 応諾ボタン状態2(§6.3) |
@@ -630,4 +639,4 @@ ja案は §6 の画面文言と一致させている。en訳は実装時に確�
 | not_owned | ログイン済み・対象カード自体を未所持 | `acceptButtonNotOwned`(gray) | 不可 |
 | all_listed | ログイン済み・所持はするが全コピーが自分の出品中 | `acceptButtonAllListed`(gray) | 不可 |
 | login_required | 未ログイン | `acceptButtonLoginRequired`(purple、`returnTo`付きログイン導線) | 可(ログインへ遷移) |
-| own_offer | 自分自身の出品 | `ownOfferBadge` + `cancelOfferButton`(応諾ボタンの代わりに表示) | 応諾不可・キャンセル可 |
+| own_offer | 自分自身の出品 | `ownOfferBadge` + `ownOfferManageLink`(応諾ボタンの代わりに表示。キャンセルは /trade/mine) | 応諾不可(ボード上でのキャンセル操作なし) |

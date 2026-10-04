@@ -48,6 +48,9 @@ interface StreamerCollectionProps {
   // 配信者では見た目・挙動とも完全に不変）。
   // Pack filter tabs. Empty (default) = no filter UI, legacy layout untouched.
   packs?: CollectionPackDisplay[];
+  // #726: the channel allows card trading (streamers.trade_enabled). Only then
+  // is the "Trade" entry point shown; the board itself re-checks the gate.
+  tradeEnabled?: boolean;
 }
 
 /**
@@ -66,6 +69,7 @@ export default async function StreamerCollection({
   hideUnownedDetails = false,
   packs = [],
   completionRewards = [],
+  tradeEnabled = false,
 }: StreamerCollectionProps) {
   const t = await getTranslations("collection");
   const tStreamer = await getTranslations("streamerCollection");
@@ -77,6 +81,7 @@ export default async function StreamerCollection({
   // Pass template strings instead of functions (Server -> Client serialization)
   // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
   const tReward = await getTranslations("packCompletionReward");
+  const tTrade = await getTranslations("trade");
   const gridTranslations = {
     completionRewardStatus: tReward("rewardBadge"),
     cardCountTemplate: t("cardCount", { count: "{count}" }),
@@ -108,7 +113,7 @@ export default async function StreamerCollection({
               unoptimized
             />
           )}
-          <div>
+          <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-bold text-white">
               {tStreamer("title", { streamerName: streamer.twitch_display_name })}
             </h1>
@@ -116,6 +121,14 @@ export default async function StreamerCollection({
               {t("cardTypes", { count: visibleCardTypes })}
             </p>
           </div>
+          {tradeEnabled && (
+            <Link
+              href={`/trade/${streamer.id}`}
+              className="shrink-0 rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-purple-700"
+            >
+              {tTrade("collectionTradeButton")}
+            </Link>
+          )}
         </div>
 
         {/* Stats */}
