@@ -31,8 +31,24 @@ export default async function TradeBoardPage({
 }) {
   const [{ streamerId }, query] = await Promise.all([params, searchParams]);
   const scope = parseTradeScope(query.scope);
-  const [session, streamer, t] = await Promise.all([
-    getSession(),
+  // getSession only verifies the cookie (no DB), so it is awaited first to
+  // give the filter query its viewer.
+  const session = await getSession();
+  // The in-channel filter options are fetched IN PARALLEL with the channel
+  // header (one DB round trip of SSR latency instead of two). Starting the
+  // read before the gates are known is safe: it only depends on the
+  // already-validated id, listWantableCards applies the visibility rule in
+  // SQL, and the result is discarded (never rendered) when the board or the
+  // tab is disabled. The rejection is captured so an unused failed read can
+  // neither become an unhandled rejection nor fail a disabled board.
+  const filterCardsTask =
+    scope === "in_channel"
+      ? listWantableCards(session?.twitchUserId ?? null, streamerId).then(
+          (cards) => ({ ok: true as const, cards }),
+          (error: unknown) => ({ ok: false as const, error }),
+        )
+      : null;
+  const [streamer, t] = await Promise.all([
     getTradeBoardStreamer(streamerId),
     getTranslations("trade"),
   ]);
@@ -45,14 +61,17 @@ export default async function TradeBoardPage({
   const createHref = isLoggedIn ? createPath : tradeLoginHref(createPath);
   const scopeEnabled = streamer.tradeEnabled && (scope === "in_channel" || streamer.crossChannelTradeEnabled);
 
-  // Card filter is in-channel only (MVP decision); skip the query otherwise.
-  const filterCards =
-    scopeEnabled && scope === "in_channel"
-      ? (await listWantableCards(session?.twitchUserId ?? null, streamer.id)).map((card) => ({
-          cardId: card.cardId,
-          name: card.name,
-        }))
-      : [];
+  // Card filter is in-channel only (MVP decision); the query is not even
+  // started for the cross tab.
+  let filterCards: Array<{ cardId: string; name: string }> = [];
+  if (scopeEnabled && filterCardsTask) {
+    const filterResult = await filterCardsTask;
+    if (!filterResult.ok) throw filterResult.error;
+    filterCards = filterResult.cards.map((card) => ({
+      cardId: card.cardId,
+      name: card.name,
+    }));
+  }
 
   const tabClass = (active: boolean) =>
     `shrink-0 rounded-lg px-4 py-2 text-sm ${

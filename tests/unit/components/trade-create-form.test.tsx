@@ -11,6 +11,8 @@ const push = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push, refresh: vi.fn() }),
 }));
+const clearTradeListCache = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/use-trade-list", () => ({ clearTradeListCache }));
 
 function copy(overrides: Partial<TradeableOwnedCopy>): TradeableOwnedCopy {
   return {
@@ -77,6 +79,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
 
   beforeEach(() => {
     push.mockReset();
+    clearTradeListCache.mockReset();
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -131,6 +134,9 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     fireEvent.click(submit);
 
     await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?listed=1"));
+    // The board's cached pages predate the new offer: dropped before navigating.
+    expect(clearTradeListCache).toHaveBeenCalledTimes(1);
+    expect(clearTradeListCache.mock.invocationCallOrder[0]).toBeLessThan(push.mock.invocationCallOrder[0]);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/trades");
     const body = JSON.parse(init.body as string);
@@ -187,6 +193,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
     expect(await screen.findByRole("alert")).toHaveTextContent(text);
     expect(push).not.toHaveBeenCalled();
+    expect(clearTradeListCache).not.toHaveBeenCalled();
   });
 
   it("cross-channel: lists partner channels as links and hides Step 2 cards until one is chosen", () => {
