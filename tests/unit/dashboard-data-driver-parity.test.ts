@@ -17,6 +17,7 @@ import {
   getGachaHistoryForUser,
   getRecentGachaHistory,
   getStreamerById,
+  getStreamerCollectionSettings,
   getStreamerData,
   getStreamerDataPaginated,
   getUserCardDetail,
@@ -698,5 +699,103 @@ describe('dashboard-data: Drizzle 読み取り', () => {
       )
       expect(result).toEqual([])
     })
+  })
+})
+
+describe('dashboard-data: getStreamerCollectionSettings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('4つの設定値と配信者IDだけを細い射影で取得する（cards を JOIN しない）', async () => {
+    const { result, db } = await runWithDb(
+      {
+        tables: tableRows([
+          [
+            streamersTable,
+            [
+              makeStreamerRow({
+                show_unowned_cards: true,
+                show_unowned_card_details: true,
+                trade_enabled: true,
+                cross_channel_trade_enabled: true,
+              }),
+            ],
+          ],
+        ]),
+      },
+      () => getStreamerCollectionSettings('twitch-user-1')
+    )
+
+    expect(result).toEqual({
+      streamerId: 'streamer-1',
+      showUnownedCards: true,
+      showUnownedCardDetails: true,
+      tradeEnabled: true,
+      crossChannelTradeEnabled: true,
+    })
+    expect(db.select).toHaveBeenCalledTimes(1)
+    expect(Object.keys(db.select.mock.calls[0][0] as object).sort()).toEqual([
+      'cross_channel_trade_enabled',
+      'id',
+      'show_unowned_card_details',
+      'show_unowned_cards',
+      'trade_enabled',
+    ])
+  })
+
+  it('配信者行が無ければ null を返す', async () => {
+    const { result } = await runWithDb(
+      { tables: tableRows([[streamersTable, []]]) },
+      () => getStreamerCollectionSettings('missing-user')
+    )
+    expect(result).toBeNull()
+  })
+
+  it('trade 列が未デプロイ(42703)なら trade 列を除いて再試行し、trade は false にする', async () => {
+    const { result, db } = await runWithDb(
+      {
+        tables: tableRows([
+          [
+            streamersTable,
+            [makeStreamerRow({ show_unowned_cards: true, show_unowned_card_details: true })],
+          ],
+        ]),
+        errors: new Map([[streamersTable, [missingColumnError('trade_enabled')]]]),
+      },
+      () => getStreamerCollectionSettings('twitch-user-1')
+    )
+
+    expect(result).toEqual({
+      streamerId: 'streamer-1',
+      showUnownedCards: true,
+      showUnownedCardDetails: true,
+      tradeEnabled: false,
+      crossChannelTradeEnabled: false,
+    })
+    expect(db.select).toHaveBeenCalledTimes(2)
+    expect(Object.keys(db.select.mock.calls[1][0] as object).sort()).toEqual([
+      'id',
+      'show_unowned_card_details',
+      'show_unowned_cards',
+    ])
+  })
+
+  it('列欠落以外のDBエラーは握りつぶして null を返し、ログに残す（ページを落とさない）', async () => {
+    const { result } = await runWithDb(
+      {
+        tables: tableRows([[streamersTable, [STREAMER]]]),
+        errors: new Map([
+          [streamersTable, [Object.assign(new Error('permission denied'), { code: '42501' })]],
+        ]),
+      },
+      () => getStreamerCollectionSettings('twitch-user-1')
+    )
+
+    expect(result).toBeNull()
+    expect(logger.error).toHaveBeenCalledWith(
+      'Error in getStreamerCollectionSettings (pg)',
+      expect.objectContaining({ error: expect.any(Error) })
+    )
   })
 })
