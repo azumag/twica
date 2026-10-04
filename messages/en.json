@@ -580,7 +580,7 @@
     "form": {
       "showUnowned": "Show unowned cards to viewers",
       "showUnownedHelp": "When off, viewers see only cards they have collected (default).",
-      "showDetails": "Reveal image and description of unowned cards",
+      "showDetails": "Reveal name, image, and description of unowned cards",
       "showDetailsHelp": "When off, unowned cards show only their rarity; the image, name, and description are masked as placeholders.",
       "requiresShowUnowned": "requires \"Show unowned cards\""
     },
@@ -621,8 +621,7 @@
       "saveFailed": "Failed to save trade settings",
       "deployWindow": "Trade settings are not ready in the database yet. Please try again shortly."
     },
-    "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, both showing unowned cards and revealing their details (name and image) must be enabled in \"Collection visibility\" above. If they are not public, viewers can only trade cards they already own.",
-    "visibilityNoticeLink": "Go to Collection visibility"
+    "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, turn on both \"Show unowned cards to viewers\" and \"Reveal name, image, and description of unowned cards\" in \"Collection visibility\" above. If they are not public, viewers can only trade cards they already own."
   },
   "trade": {
     "collectionTradeButton": "Trade",
@@ -651,7 +650,7 @@
     "autoSelectNotice": "* If you own several copies, your oldest copy is used automatically.",
     "ownOfferBadge": "Your offer",
     "ownOfferManageLink": "Cancel it from My trades",
-    "unrevealedNotice": "This channel does not reveal cards you don't own, so only offers that include a card you own are shown.",
+    "unrevealedNotice": "This channel does not reveal the names of cards you don't own, so only offers that include a card you own are shown.",
     "emptyStateMessage": "No offers yet. Be the first to create one!",
     "emptyStateUnrevealed": "There are no offers that include a card you own yet.",
     "emptyStateFiltered": "No offers match the filter.",
@@ -703,7 +702,7 @@
     "createStep2UnownedBadge": "Not owned",
     "createStep2SameCard": "You cannot choose the same card you give.",
     "createStep2Empty": "There are no cards you can request.",
-    "createStep2UnrevealedNotice": "This streamer does not reveal cards you don't own, so you can only request cards you own.",
+    "createStep2UnrevealedNotice": "This streamer does not reveal the names of cards you don't own, so you can only request cards you own.",
     "createStep2SelectStreamer": "Choose the partner streamer",
     "createStep2NoPartners": "No streamers are available for cross-channel trades. The partner streamer must allow cross-channel trades and you must own at least one of their cards.",
     "createConfirmTitle": "3. Confirm",

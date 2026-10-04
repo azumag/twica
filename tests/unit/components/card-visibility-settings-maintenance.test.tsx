@@ -4,7 +4,6 @@ import { NextIntlClientProvider } from 'next-intl'
 import CardVisibilitySettings from '@/components/CardVisibilitySettings'
 import { MaintenanceStatusContext } from '@/components/MaintenanceStatusProvider'
 import type { MaintenanceStatusResponse } from '@/lib/maintenance/client'
-import { COLLECTION_VISIBILITY_ANCHOR_ID } from '@/lib/constants'
 import jaMessages from '../../../messages/ja.json'
 
 vi.mock('@/lib/logger')
@@ -39,10 +38,9 @@ function getToggles() {
 }
 
 describe('CardVisibilitySettings accessible descriptions', () => {
-  it('TradeSettings の注記リンクが指す anchor id をルート要素に持つ', () => {
-    const { container } = renderSettings({ mode: 'off' })
+  it('コレクション公開設定の見出しを表示する', () => {
+    renderSettings({ mode: 'off' })
 
-    expect(container.querySelector(`#${COLLECTION_VISIBILITY_ANCHOR_ID}`)).not.toBeNull()
     expect(
       screen.getByRole('heading', { name: jaMessages.cardVisibilitySettings.title })
     ).toBeInTheDocument()

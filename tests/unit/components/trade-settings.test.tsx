@@ -4,7 +4,6 @@ import { NextIntlClientProvider } from "next-intl";
 import TradeSettings from "@/components/TradeSettings";
 import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider";
 import type { MaintenanceStatusResponse } from "@/lib/maintenance/client";
-import { COLLECTION_VISIBILITY_ANCHOR_ID } from "@/lib/constants";
 import jaMessages from "../../../messages/ja.json";
 
 function renderSettings({
@@ -46,15 +45,12 @@ describe("TradeSettings (#725)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("explains that unowned-card trading requires collection visibility and links to it", () => {
+  it("explains that unowned-card trading requires collection visibility without a redundant link", () => {
     renderSettings();
 
-    expect(screen.getByText(new RegExp(jaMessages.tradeSettings.visibilityNotice.slice(0, 20)))).toBeInTheDocument();
-    // リンク先は CardVisibilitySettings のルート要素 id と同じ定数で揃えている。
-    const link = screen.getByRole("link", {
-      name: jaMessages.tradeSettings.visibilityNoticeLink,
-    });
-    expect(link).toHaveAttribute("href", `#${COLLECTION_VISIBILITY_ANCHOR_ID}`);
+    expect(screen.getByText(jaMessages.tradeSettings.visibilityNotice)).toBeInTheDocument();
+    // 公開設定カードは同じ画面のすぐ上にあるため、注記にリンクは置かない。
+    expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("disables cross-channel toggle while the master trade toggle is off", () => {

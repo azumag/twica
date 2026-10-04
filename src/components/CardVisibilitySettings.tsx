@@ -3,7 +3,6 @@
 import { useCallback, useState } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
-import { COLLECTION_VISIBILITY_ANCHOR_ID } from "@/lib/constants";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
@@ -126,7 +125,7 @@ export default function CardVisibilitySettings({
   const showUnownedDisabled = saving || isMaintenanceBlocked;
 
   return (
-    <div id={COLLECTION_VISIBILITY_ANCHOR_ID} className="rounded-xl bg-gray-800 p-6">
+    <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
         <span

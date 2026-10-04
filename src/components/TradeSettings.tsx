@@ -3,7 +3,6 @@
 import { useCallback, useState } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
-import { COLLECTION_VISIBILITY_ANCHOR_ID } from "@/lib/constants";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
@@ -120,16 +119,8 @@ export default function TradeSettings({
       {/* 未所持カードを「欲しいカード」にしたり出品を見たりできるかは、トレード設定ではなく
           コレクション公開設定(show_unowned_cards + show_unowned_card_details)で決まる。
           配信者が「トレードをONにしたのに視聴者が未所持カードを選べない」と混乱しないよう、
-          依存関係を静的に明示し、同じ画面の公開設定カードへのリンクを添える。 */}
-      <p className="mb-4 text-xs text-gray-500">
-        {t("visibilityNotice")}{" "}
-        <a
-          href={`#${COLLECTION_VISIBILITY_ANCHOR_ID}`}
-          className="text-purple-400 underline hover:text-purple-300"
-        >
-          {t("visibilityNoticeLink")}
-        </a>
-      </p>
+          依存関係を静的に明示する。公開設定カードは同じ画面のすぐ上にあるため、リンクは置かない。 */}
+      <p className="mb-4 text-xs text-gray-500">{t("visibilityNotice")}</p>
       {isMaintenanceBlocked && (
         <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
       )}
