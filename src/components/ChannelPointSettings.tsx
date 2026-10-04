@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useId } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
+import { ERROR_MESSAGES } from "@/lib/constants";
 import { CHANNEL_POINT_SCOPES } from "@/lib/twitch/scopes";
 import { parseTwitchAuthorizationResponse } from "@/lib/twitch/authorization-response";
 import { DEFAULT_PACK_SENTINEL, isReservedCollectionName } from "@/lib/validation/collection-name";
@@ -682,13 +683,29 @@ export default function ChannelPointSettings({
       if (!response.ok) {
         // maintenance mode による503拒否時はサーバーの案内文言を優先する。
         const maintenanceError = parseMaintenanceError(response, data);
-        // API は文字列 error だけを返す契約だが、将来のオブジェクト形状でも
-        // "[object Object]" 表示にならないよう型ガードする（EventSub 側の既存方針）。
-        setMessage(maintenanceError?.message || (typeof data.error === "string" ? data.error : t("additionalRewards.updateFailed")));
-        // 対象が削除済み（404）なら一覧を再取得し、保存開始時と同じ行を
-        // まだ編集中のときだけフォームを閉じる。保存中に別行へ切り替えた場合は、
-        // 後から開いたフォームを保護する。
-        if (response.status === 404) {
+        // API の互換用 error 文字列は維持するが、追加報酬不在だけは
+        // shared constant で識別して現在ロケールのUI文言へ変換する。
+        // それ以外は従来どおりサーバー文言を表示し、将来のオブジェクト形状でも
+        // "[object Object]" にならないよう型ガードする。
+        const apiErrorMessage = typeof data.error === "string" ? data.error : null;
+        const additionalRewardNotFound =
+          response.status === 404 &&
+          apiErrorMessage === ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND;
+        const additionalRewardConcurrentUpdate =
+          response.status === 409 &&
+          apiErrorMessage === ERROR_MESSAGES.ADDITIONAL_REWARD_CONCURRENT_UPDATE;
+        setMessage(
+          maintenanceError?.message ||
+            (additionalRewardNotFound
+              ? t("additionalRewards.notFound")
+              : additionalRewardConcurrentUpdate
+                ? t("additionalRewards.concurrentUpdate")
+                : apiErrorMessage || t("additionalRewards.updateFailed"))
+        );
+        // 対象が削除済み、または別操作で同じ行が更新された場合は一覧を再取得し、
+        // 保存開始時と同じ行をまだ編集中のときだけフォームを閉じる。
+        // 保存中に別行へ切り替えた場合は、後から開いたフォームを保護する。
+        if (additionalRewardNotFound || additionalRewardConcurrentUpdate) {
           setEditingRewardId((current) => (current === targetRewardId ? null : current));
           await fetchAdditionalRewards();
         }

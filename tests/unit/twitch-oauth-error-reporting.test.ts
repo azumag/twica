@@ -167,19 +167,27 @@ describe('OAuth error reporting has exactly one durable writer', () => {
     expect(mocks.logErrorFromLogger).not.toHaveBeenCalled()
   })
 
-  it('callback の 522 token exchange は reportAuthError だけに一度記録し、code/body を渡さない', async () => {
+  it('callback の 522 token exchange は単回送信のまま一時障害へ縮退し、自動Issueには永続化しない', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(SECRET, { status: 522 })
     )
     try {
       const response = await callbackGet(new NextRequest(`http://localhost:3000/api/auth/twitch/callback?code=${CODE}&state=state-1`))
 
-      // NextResponse.redirect の既定 status は 307。ここでは redirect 種別ではなく、
-      // exchange failure が callback 境界まで到達したことだけを確認する。
+      // authorization code は単回使用なので522でも同じcodeを再送しない。
       expect(response.status).toBe(307)
       expect(fetchMock).toHaveBeenCalledTimes(1)
-      expect(mocks.reportAuthError).toHaveBeenCalledTimes(1)
+      expect(mocks.reportAuthError).not.toHaveBeenCalled()
       expect(mocks.logErrorFromLogger).not.toHaveBeenCalled()
+
+      // 利用者には provider 側の一時障害として案内し、次回ログイン試行へ委ねる。
+      const location = response.headers.get('location')
+      expect(location).not.toBeNull()
+      expect(decodeURIComponent(location as string)).toContain(
+        'Twitch側で一時的な通信エラーが発生しました。少し待ってから再度お試しください。',
+      )
+
+      // provider body / authorization code は durable writer へ流さない。
       const serialized = allPersistedArguments()
       expect(serialized).not.toContain(SECRET)
       expect(serialized).not.toContain(CODE)

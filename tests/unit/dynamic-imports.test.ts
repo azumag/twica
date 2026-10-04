@@ -34,5 +34,6 @@ describe("dashboard dynamic imports", () => {
     expect(source).toContain('dynamic(() => import("@/components/GachaSoundSettings")');
     expect(source).toContain('dynamic(() => import("@/components/ChatAnnouncementSettings")');
     expect(source).toContain('dynamic(() => import("@/components/CardVisibilitySettings")');
+    expect(source).toContain('dynamic(() => import("@/components/TradeSettings")');
   });
 });

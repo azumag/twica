@@ -18,7 +18,7 @@ import {
 // GET、POST、DELETE の DB アクセスはすべて PlanetScale の単一接続を使う。
 // 接続は withDbRetry の queryFn 内で取得し、リトライ時に新しいクライアントを使う。
 // -----------------------------------------------------------------------------
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
@@ -66,12 +66,6 @@ const RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
 // 文脈に合わないため、更新用の文言を分ける。
 const PUT_RAID_OPTIONS_SCHEMA_PENDING_MESSAGE =
   "追加の引き換えのN連ガチャ設定がまだDBに反映されていません。少し待ってから再度お試しください。";
-
-// PUT 専用: 対象の追加報酬が存在しない場合の文言（別タブ等で削除済み）。
-// 日本語固定は POST の既存エラーメッセージと同じ方針（en 対応は次 PR で
-// ERROR_MESSAGES へ寄せる余地あり）。
-const ADDITIONAL_REWARD_NOT_FOUND_MESSAGE =
-  "この追加の引き換えは既に削除されています。設定を再読み込みしてください";
 
 interface AdditionalRewardRow {
   id: string;
@@ -647,7 +641,11 @@ export async function POST(request: NextRequest) {
 async function getAdditionalRewardForUpdatePg(
   streamerId: string,
   rewardId: string,
-): Promise<{ reward: { id: string; collection_name: string | null } | null; error: unknown }> {
+): Promise<{
+  reward: { id: string; collection_name: string | null } | null;
+  collectionNameUnavailable: boolean;
+  error: unknown;
+}> {
   const selectWithCollectionName = () =>
     withDbRetry(
       async () => {
@@ -691,18 +689,22 @@ async function getAdditionalRewardForUpdatePg(
 
   try {
     const rows = await selectWithCollectionName();
-    return { reward: rows[0] ?? null, error: null };
+    return { reward: rows[0] ?? null, collectionNameUnavailable: false, error: null };
   } catch (error) {
     if (isMissingCollectionNameColumn(error as GenericDbError)) {
       try {
         const rows = await selectWithoutCollectionName();
         const row = rows[0] ?? null;
-        return { reward: row ? { ...row, collection_name: null } : null, error: null };
+        return {
+          reward: row ? { ...row, collection_name: null } : null,
+          collectionNameUnavailable: true,
+          error: null,
+        };
       } catch (fallbackError) {
-        return { reward: null, error: fallbackError };
+        return { reward: null, collectionNameUnavailable: true, error: fallbackError };
       }
     }
-    return { reward: null, error };
+    return { reward: null, collectionNameUnavailable: false, error };
   }
 }
 
@@ -712,6 +714,9 @@ type UpdateAdditionalRewardOutcome =
   // 応答に collectionNameSkippedDeployWindow として反映する（黙って破棄しない）。
   | { kind: "ok"; reward: unknown; collectionNameStripped?: boolean }
   | { kind: "not-found" }
+  // lookup 後に collection_name が別リクエストで変わった場合の CAS 不一致。
+  // 「削除済み」とは区別し、呼び出し元で 409 + 再取得へ誘導する。
+  | { kind: "conflict" }
   // collection_name 列未デプロイ窓でパック変更のみの更新を送ると、ストリップ後に
   // 更新フィールドが空になる。空 SET は Drizzle が "No values to set" で throw する
   // ため、実行前に no-op へ分岐させる（500 にしない）。
@@ -725,39 +730,67 @@ type UpdateAdditionalRewardOutcome =
  *
  * POST の insertAdditionalRewardPg と同じく、collection_name 列未デプロイ窓では
  * 当該列を剥がして再試行する（それ以外の失敗は握りつぶさない）。
- * 0 行更新（対象行が存在しない）は not-found として呼び出し元で 404 にする。
+ * 通常スキーマでは collection_name の現在値を CAS 条件へ含め、0行更新を
+ * concurrent conflict として検出する。collection_name 未デプロイ窓だけは
+ * 当該列を参照できないため従来の streamer/reward 条件へ縮退し、0行を not-found とする。
  */
 async function updateAdditionalRewardPg(
   streamerId: string,
   rewardId: string,
   updatePayload: Record<string, unknown>,
+  expectedCollectionName?: string | null,
 ): Promise<UpdateAdditionalRewardOutcome> {
   // collection_name 列未デプロイ窓では RETURNING にも collection_name を含めない。
   // Drizzle の引数なし returning() はスキーマ定義の全列を明示列挙するため、
   // SET から外しても RETURNING 側で 42703 が再発する（レビュー指摘対応）。
   // 成功時の RETURNING は GET（listAdditionalRewardsPg の selectFull）と同じ
   // 明示列に揃え、API 全体で streamer_id の有無を統一する（streamer_id は返さない）。
-  const runUpdate = (payload: Record<string, unknown>, returningMinimal: boolean) =>
+  const runUpdate = (
+    payload: Record<string, unknown>,
+    returningMinimal: boolean,
+    expectedCollectionNameForCas?: string | null,
+  ) =>
     withDbRetry(
       async () => {
         const { db } = await getDb();
+        const predicates = [
+          eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
+          eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId),
+        ];
+        // lookup → membership 判定 → UPDATE の間で collection_name が変わると、
+        // lookup 時点では「現在値と同じ」として許可した登録解除済みパックを
+        // stale なリクエストが後から書き戻せる。通常スキーマでは現在値を
+        // WHERE に含める compare-and-swap にし、その競合を0行更新として検出する。
+        // collection_name 列未デプロイ窓はこの列自体を参照できないため CAS を外す。
+        if (expectedCollectionNameForCas !== undefined) {
+          predicates.push(
+            expectedCollectionNameForCas === null
+              ? isNull(streamerAdditionalGachaRewardsTable.collection_name)
+              : eq(streamerAdditionalGachaRewardsTable.collection_name, expectedCollectionNameForCas),
+          );
+        }
         const query = db
           .update(streamerAdditionalGachaRewardsTable)
           .set(payload as typeof streamerAdditionalGachaRewardsTable.$inferInsert)
-          .where(
-            and(
-              eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
-              eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
-            )
-          );
+          .where(and(...predicates));
         const baseReturning = ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME;
         return returningMinimal
           ? query.returning(baseReturning)
           : query.returning(ADDITIONAL_REWARD_RESPONSE_COLUMNS);
       },
       "Additional Rewards API: PUT update",
-      // 同一条件の UPDATE は再実行しても最終状態が同じため冪等
-      { idempotent: true },
+      {
+        // CAS付きで collection_name を「別の値」へ変える更新は、初回COMMIT成功後に
+        // 応答だけ失われると再試行時の CAS が0行になり、成功済みなのに409へ誤分類
+        // し得る。そのためこのケースだけ接続断リトライを禁止する。
+        // draw_countのみ・collection_name同値更新・列未デプロイ再試行は最終状態が
+        // 同じで CAS 条件も維持されるため、従来どおり冪等リトライを許可する。
+        idempotent: !(
+          "collection_name" in payload &&
+          expectedCollectionNameForCas !== undefined &&
+          payload.collection_name !== expectedCollectionNameForCas
+        ),
+      },
     );
 
   // 空 SET を実行すると Drizzle が throw するため、実行前に空チェックで no-op へ分岐。
@@ -770,15 +803,20 @@ async function updateAdditionalRewardPg(
     payload: Record<string, unknown>,
     collectionNameStripped: boolean,
     returningMinimal: boolean,
+    expectedCollectionNameForCas?: string | null,
   ): Promise<UpdateAdditionalRewardOutcome> => {
     if (Object.keys(payload).length === 0) return { kind: "no-op", collectionNameStripped };
-    const rows = await runUpdate(payload, returningMinimal);
-    if (rows.length === 0) return { kind: "not-found" };
+    const rows = await runUpdate(payload, returningMinimal, expectedCollectionNameForCas);
+    if (rows.length === 0) {
+      return expectedCollectionNameForCas === undefined
+        ? { kind: "not-found" }
+        : { kind: "conflict" };
+    }
     return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
   };
 
   try {
-    return await tryUpdate(updatePayload, false, false);
+    return await tryUpdate(updatePayload, false, false, expectedCollectionName);
   } catch (error) {
     // collection_name 列未デプロイ窓: 成功時の RETURNING に collection_name が
     // 含まれるため、SET が draw_count のみの更新でも 42703 になり得る。そのため
@@ -793,7 +831,8 @@ async function updateAdditionalRewardPg(
       const hadCollectionName = "collection_name" in stripped;
       delete stripped.collection_name;
       try {
-        return await tryUpdate(stripped, hadCollectionName, true);
+        // collection_name 列欠落が確定した再試行では CAS 条件にも同列を使えない。
+        return await tryUpdate(stripped, hadCollectionName, true, undefined);
       } catch (retryError) {
         if (isRaidOptionsSchemaErrorPg(retryError)) {
           return { kind: "raid-options-unavailable", error: retryError };
@@ -924,7 +963,7 @@ export async function PUT(request: NextRequest) {
       // 対象の追加報酬が存在しない（別タブ等で削除済み）。報酬不在を意味する
       // 専用文言を返す（STREAMER_NOT_FOUND は英語かつ実態と合わないため）。
       return NextResponse.json(
-        { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
+        { error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND },
         { status: 404 }
       );
     }
@@ -1003,15 +1042,31 @@ export async function PUT(request: NextRequest) {
       });
     }
 
-    const updateOutcome = await updateAdditionalRewardPg(streamer.id, rewardId, updatePayload);
+    const updateOutcome = await updateAdditionalRewardPg(
+      streamer.id,
+      rewardId,
+      updatePayload,
+      // collection_name を実際に書く更新だけ CAS 対象にする。
+      // drawCount-only や deploy-window で pack 書き込みを見送った更新は、
+      // 同時に pack が変わっても直交する変更なので不要な409にしない。
+      "collection_name" in updatePayload && !currentResult.collectionNameUnavailable
+        ? currentResult.reward.collection_name
+        : undefined,
+    );
 
     if (updateOutcome.kind === "not-found") {
-      // 事前 lookup（上記 currentResult）との間に削除された場合のみ到達する
-      // 防御的分岐（TOCTOU）。通常の存在チェックは lookup 側で行っている。
-      // DELETE は0件でも200のため、この分岐は PUT 固有。
+      // collection_name 列未デプロイ窓で CAS を使えない場合に、lookup 後の削除が
+      // 起きると到達し得る。通常スキーマの concurrent mutation は下の conflict。
       return NextResponse.json(
-        { error: ADDITIONAL_REWARD_NOT_FOUND_MESSAGE },
+        { error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND },
         { status: 404 }
+      );
+    }
+
+    if (updateOutcome.kind === "conflict") {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.ADDITIONAL_REWARD_CONCURRENT_UPDATE },
+        { status: 409 }
       );
     }
 

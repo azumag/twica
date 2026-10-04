@@ -285,6 +285,22 @@ export const ERROR_MESSAGES = {
   FAILED_TO_RECORD_HISTORY: 'Failed to record gacha history',
   DATABASE_ERROR: 'Database error',
   REWARD_ID_MISMATCH: 'Reward ID mismatch',
+  // Additional reward PUT: keep the API message stable for existing clients;
+  // the dashboard localizes this condition before presenting it to users.
+  ADDITIONAL_REWARD_NOT_FOUND: 'この追加の引き換えは既に削除されています。設定を再読み込みしてください',
+  ADDITIONAL_REWARD_CONCURRENT_UPDATE: 'Additional reward changed in another request. Reload settings and try again.',
+  // Card trading (Issue #723/#724)
+  TRADE_DISABLED: 'Card trading is disabled for one or both channels',
+  TRADE_OFFER_NOT_FOUND: 'Trade offer not found',
+  TRADE_OFFER_NOT_OPEN: 'Trade offer is no longer open',
+  TRADE_OFFER_INVALID: 'Trade offer is no longer valid',
+  TRADE_SELF_ACCEPT: 'You cannot accept your own trade offer',
+  TRADE_CARD_NOT_OWNED: 'You do not own a usable copy of the required card',
+  TRADE_CARD_ALREADY_LISTED: 'This card copy is already listed in another open trade',
+  TRADE_OFFER_LIMIT: 'You have reached the maximum number of open trade offers',
+  TRADE_BUSY: 'Trade processing is busy. Please try again',
+  TRADE_SAME_CARD: 'Offered and wanted cards must be different',
+  TRADE_WANTED_CARD_UNAVAILABLE: 'The requested card is not available for trading',
   UNEXPECTED_ERROR: 'Unexpected error',
 
   // File upload errors

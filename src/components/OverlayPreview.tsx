@@ -501,7 +501,7 @@ export default function OverlayPreview({
 
     setIsObsDemoExecuting(true);
     try {
-      const response = await fetch("/api/gacha/demo", {
+      const requestObsDemo = () => fetch("/api/gacha/demo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // 相対URLの same-origin fetch では Cookie は既定でも送信されるが、認証必須の
@@ -513,26 +513,42 @@ export default function OverlayPreview({
           broadcast: true,
         }),
       });
-      // #694 Stage 6c: 元々このボタンはレスポンスの成否を一切確認していなかった
-      // （fire-and-forget）。maintenance mode による503拒否時にユーザーへ何の
-      // フィードバックも無いのは「事前disableをすり抜けた場合の明確な案内」という
-      // 要求を満たさないため、maintenanceエラーの場合のみ最小限のalertを追加する
-      // （このボタンの一般的なエラーハンドリング自体を拡張するのはスコープ外）。
+
+      let response = await requestObsDemo();
+
+      // #1331: CSRF Cookie がまだ発行されていない場合、broadcast 経路は副作用へ
+      // 入る前に403で拒否する。共通CSRF規約どおり /api/session でCookieを遅延発行し、
+      // 成功した場合だけ同じOBS DEMOを1回だけ再試行する。所有権403でも余分に1回
+      // session確認するだけで、どちらの403も副作用前なので二重demoにはならない。
+      if (response.status === 403) {
+        const refresh = await fetch("/api/session", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (refresh.ok) {
+          response = await requestObsDemo();
+        }
+      }
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         const maintenanceError = parseMaintenanceError(response, errorData);
         if (maintenanceError) {
           alert(maintenanceError.message);
         } else {
+          // 以前はconsoleだけで利用者には無反応だった。自動復旧できない403や
+          // その他の失敗も、少なくとも設定画面上で再試行可能と分かるようにする。
+          alert(t("obsDemoFailed"));
           console.error("Failed to trigger OBS demo:", errorData);
         }
       }
     } catch (error) {
+      alert(t("obsDemoFailed"));
       console.error("Failed to trigger OBS demo:", error);
     } finally {
       setIsObsDemoExecuting(false);
     }
-  }, [streamerId, selectedCardId, isObsDemoExecuting, isMaintenanceBlocked, tMaintenance]);
+  }, [streamerId, selectedCardId, isObsDemoExecuting, isMaintenanceBlocked, t, tMaintenance]);
 
   // 実際にガチャを引く（DBに記録される本番のガチャAPI呼び出し）
   // Execute real gacha (calls production gacha API and records to DB)

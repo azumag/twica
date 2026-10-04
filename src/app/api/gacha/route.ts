@@ -120,12 +120,12 @@ export async function POST(request: NextRequest) {
     // 既存挙動(呼ぶたびに新しい抽選として成功する)を変えずにNULL拒否と
     // 両立させる。
     const manualDrawEventId = `manual:${crypto.randomUUID()}`;
-    const result = await gachaService.executeGachaWithRepeatProtection(
+    const result = await gachaService.executeGachaWithRepeatProtection({
       streamerId,
-      session.twitchUserId,
-      session.twitchUsername,
-      manualDrawEventId
-    );
+      userTwitchId: session.twitchUserId,
+      userTwitchUsername: session.twitchUsername,
+      eventId: manualDrawEventId,
+    });
 
     if (!result.success) {
       // Map GachaService errors to standardized error messages

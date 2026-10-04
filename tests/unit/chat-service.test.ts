@@ -463,12 +463,160 @@ describe('TwitchChatService', () => {
         service.sendChatMessageDetailed('123456789', 'test message')
       ).resolves.toEqual({
         outcome: 'terminal',
-        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        code: CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED,
         reason: 'Twitch API 200: The message was held by AutoMod.',
       });
       expect(global.fetch).toHaveBeenCalledTimes(1);
       expect(reportApiError).not.toHaveBeenCalled();
       expect(reportError).not.toHaveBeenCalled();
+    });
+
+    // Issue #1725フォローアップ: drop_reason自体が欠けた・data配列が空の200応答は
+    // AutoMod等の既知content-moderationではなく、Twitch API契約崩れや自前バグの
+    // 兆候になり得るため、CONTENT_REJECTEDへは倒さずTWITCH_REJECTED（自動Issue化
+    // 対象）のまま分類する。
+    it.each([
+      ['data配列が空', { data: [] }],
+      ['dataキー自体が無い', {}],
+      ['JSONのrootがnull', null],
+      ['is_sent=falseかつdrop_reasonも無い', { data: [{ message_id: '', is_sent: false }] }],
+    ])('HTTP 200でも%sならTWITCH_REJECTEDのまま分類する（自動Issue化対象を維持）', async (_label, body) => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        reason: 'Twitch API 200: Twitch returned 200 without is_sent=true',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('dataが配列でない場合は数値キーのis_sent=trueを送信成功として扱わない', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: { 0: { message_id: 'malformed', is_sent: true } },
+        }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        reason: 'Twitch API 200: Twitch returned 200 without is_sent=true',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    // Issue #1725フォローアップ: drop_reason.messageはあるがcodeが欠けた応答は
+    // Twitch Helixの正規契約（drop_reasonがあればcode/messageは必ず対で返る）から
+    // 逸脱しているため、既知のcontent-moderationシグナルとして扱わずTWITCH_REJECTED
+    // （自動Issue化対象）のまま分類する。dropMessageにはTwitchが返した実際の
+    // messageを使う（診断情報は失われない）。
+    it('drop_reasonにmessageはあるがcodeが無いならTWITCH_REJECTEDのまま分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{
+            message_id: '',
+            is_sent: false,
+            drop_reason: { message: 'unexpected shape without a code' },
+          }],
+        }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        reason: 'Twitch API 200: unexpected shape without a code',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['null code', { is_sent: false, drop_reason: { code: null, message: 'invalid code' } }],
+      ['empty code', { is_sent: false, drop_reason: { code: '', message: 'invalid code' } }],
+      ['whitespace code', { is_sent: false, drop_reason: { code: '  ', message: 'invalid code' } }],
+      ['numeric code', { is_sent: false, drop_reason: { code: 42, message: 'invalid code' } }],
+      ['missing is_sent', { drop_reason: { code: 'automod_held', message: 'missing explicit rejection' } }],
+    ])('HTTP 200の%sは不正な拒否シグナルとしてTWITCH_REJECTEDに分類する', async (_label, sentResult) => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: [sentResult] }),
+      } as Response);
+
+      const result = await service.sendChatMessageDetailed('123456789', 'test message');
+      expect(result).toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
+        reason: expect.stringMatching(/^Twitch API 200: /),
+      });
+      if (result.outcome === 'terminal') {
+        expect(typeof result.reason).toBe('string');
+      }
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('未知でも非空文字列のdrop codeとis_sent=falseが揃えばCONTENT_REJECTEDに分類する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{
+            is_sent: false,
+            drop_reason: { code: 'future_twitch_reason', message: 'unknown but valid rejection' },
+          }],
+        }),
+      } as Response);
+
+      await expect(
+        service.sendChatMessageDetailed('123456789', 'test message')
+      ).resolves.toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED,
+        reason: 'Twitch API 200: unknown but valid rejection',
+      });
+    });
+
+    it('drop_reason.messageが文字列でない場合も文字列の診断理由を返す', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{
+            is_sent: false,
+            drop_reason: { code: 'automod_held', message: { detail: 'unexpected object' } },
+          }],
+        }),
+      } as Response);
+
+      const result = await service.sendChatMessageDetailed('123456789', 'test message');
+      expect(result).toEqual({
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED,
+        reason: 'Twitch API 200: Twitch returned 200 without is_sent=true',
+      });
+      if (result.outcome === 'terminal') {
+        expect(typeof result.reason).toBe('string');
+      }
     });
 
     // issue #842/#843: 同じ視聴者が同じカードを30秒以内に引くとテンプレート展開後の
@@ -516,6 +664,21 @@ describe('TwitchChatService', () => {
       } as Response);
 
       await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(true);
+    });
+
+    it('msg_duplicateでもis_sent=falseが欠けるなら不正応答として失敗報告する', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          data: [{ drop_reason: { code: 'msg_duplicate', message: 'duplicate' } }],
+        }),
+      } as Response);
+
+      await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
+      expect(reportApiError).toHaveBeenCalledTimes(1);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
     });
   });
 

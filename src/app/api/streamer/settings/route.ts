@@ -507,6 +507,7 @@ interface ApplyStreamerSettingsUpdateResult {
   defaultCardPackNameWriteSkipped: boolean;
   gachaSoundRulesWriteSkipped: boolean;
   liveDirectorySettingsWriteSkipped: boolean;
+  tradeSettingsWriteSkipped: boolean;
 }
 
 /**
@@ -577,6 +578,14 @@ function isMissingLiveDirectorySettingsColumnsError(error: unknown): boolean {
 }
 
 /**
+ * Issue #725/#722: trade_enabled / cross_channel_trade_enabled は同一migrationで
+ * 追加されるため、デプロイ窓では2列まとめて剥がして再試行する。
+ */
+function isMissingTradeSettingsColumnsError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, ["trade_enabled", "cross_channel_trade_enabled"]);
+}
+
+/**
  * applyStreamerSettingsUpdate の pg 直結実装 (#663)
  *
  * フォールバックチェイン + gacha_sound_rules 用の最終フォールバックを throw
@@ -601,6 +610,7 @@ async function applyStreamerSettingsUpdatePg(
   let defaultCardPackNameWriteSkipped = false;
   let gachaSoundRulesWriteSkipped = false;
   let liveDirectorySettingsWriteSkipped = false;
+  let tradeSettingsWriteSkipped = false;
 
   const runUpdate = (data: Record<string, unknown>, context: string) =>
     withDbRetry(
@@ -685,6 +695,19 @@ async function applyStreamerSettingsUpdatePg(
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no live directory settings)");
   }
 
+  if (
+    error
+    && isMissingTradeSettingsColumnsError(error as GenericDbError)
+    && ("trade_enabled" in updateData || "cross_channel_trade_enabled" in updateData)
+  ) {
+    // #725: migration未反映窓では2キーをまとめて剥がし、他の設定だけ保存する。
+    // UIにはskipフラグを返して楽観反映をロールバックさせる。
+    delete updateData.trade_enabled;
+    delete updateData.cross_channel_trade_enabled;
+    tradeSettingsWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no trade settings)");
+  }
+
   return {
     error,
     rarityWeightsScopeWriteSkipped,
@@ -693,6 +716,7 @@ async function applyStreamerSettingsUpdatePg(
     defaultCardPackNameWriteSkipped,
     gachaSoundRulesWriteSkipped,
     liveDirectorySettingsWriteSkipped,
+    tradeSettingsWriteSkipped,
   };
 }
 
@@ -803,6 +827,9 @@ export async function POST(request: NextRequest) {
       // Live listing / ranking identity opt-ins (optional, Issue #632/#738/#740)
       publishLiveStatus,
       publishStats,
+      // カードトレード設定（オプション、Issue #725）
+      tradeEnabled,
+      crossChannelTradeEnabled,
       // BOTアカウント連携解除（オプション）
       // Disconnect optional BOT account used for chat announcements
       disconnectBot,
@@ -881,6 +908,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (publishStats !== undefined && typeof publishStats !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (tradeEnabled !== undefined && typeof tradeEnabled !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (crossChannelTradeEnabled !== undefined && typeof crossChannelTradeEnabled !== "boolean") {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
@@ -1245,6 +1278,15 @@ export async function POST(request: NextRequest) {
       updateData.publish_stats = publishStats;
     }
 
+    // #725: サーバー側では2設定を独立booleanとして保存する。
+    // cross=true / trade=false も許容し、実際のゲートは利用時にANDで判定する。
+    if (tradeEnabled !== undefined) {
+      updateData.trade_enabled = tradeEnabled;
+    }
+    if (crossChannelTradeEnabled !== undefined) {
+      updateData.cross_channel_trade_enabled = crossChannelTradeEnabled;
+    }
+
     let botDisconnected = false;
     if (disconnectBot === true) {
       const disconnectFailure = await disconnectBotAccount(streamerId);
@@ -1283,6 +1325,7 @@ export async function POST(request: NextRequest) {
     // Issue #738: publish_live_status / publish_stats は同一migrationで入るため
     // 「両方同時に欠落」しかあり得ない。2キーをまとめて剥がす1段のみ追加する。
     let liveDirectorySettingsWriteSkipped = false;
+    let tradeSettingsWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
@@ -1296,6 +1339,7 @@ export async function POST(request: NextRequest) {
       defaultCardPackNameWriteSkipped = updateResult.defaultCardPackNameWriteSkipped;
       gachaSoundRulesWriteSkipped = updateResult.gachaSoundRulesWriteSkipped;
       liveDirectorySettingsWriteSkipped = updateResult.liveDirectorySettingsWriteSkipped;
+      tradeSettingsWriteSkipped = updateResult.tradeSettingsWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
@@ -1369,6 +1413,7 @@ export async function POST(request: NextRequest) {
       ...(gachaSoundRulesWriteSkipped ? { gachaSoundRulesSkippedDeployWindow: true } : {}),
       ...(gachaSoundRulesPremiumRequired ? { gachaSoundRulesPremiumRequired: true } : {}),
       ...(liveDirectorySettingsWriteSkipped ? { liveDirectorySettingsSkippedDeployWindow: true } : {}),
+      ...(tradeSettingsWriteSkipped ? { tradeSettingsSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");

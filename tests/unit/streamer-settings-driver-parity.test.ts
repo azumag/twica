@@ -412,6 +412,43 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     expect(pg.updateCalls[1].set).toEqual({ show_unowned_cards: true });
   });
 
+  it("trade_enabled/cross_channel_trade_enabled 列欠落 → 2キーまとめて剥がし、tradeSettingsSkippedDeployWindow を返す", async () => {
+    const pg = createDrizzleDbMock({
+      selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
+      updates: [
+        {
+          error: {
+            code: "42703",
+            message: 'column "trade_enabled" of relation "streamers" does not exist',
+          },
+        },
+        { rows: [] },
+      ],
+    });
+    primePgDb(pg);
+
+    const { POST } = await loadRoute();
+    const response = await POST(
+      postRequest({
+        streamerId: "streamer123",
+        tradeEnabled: true,
+        crossChannelTradeEnabled: true,
+        showUnownedCards: true,
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.tradeSettingsSkippedDeployWindow).toBe(true);
+    expect(pg.updateCalls).toHaveLength(2);
+    expect(pg.updateCalls[0].set).toEqual({
+      trade_enabled: true,
+      cross_channel_trade_enabled: true,
+      show_unowned_cards: true,
+    });
+    expect(pg.updateCalls[1].set).toEqual({ show_unowned_cards: true });
+  });
+
   it("publish_live_status/publish_stats を通常保存し、skip フラグを立てない", async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],

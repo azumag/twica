@@ -228,12 +228,12 @@ describe('GachaService repeat protection', () => {
     const fixture = installDbFixture({ latestCardId: 'card-a' })
     mockSecureRandomUnit(0)
 
-    const result = await new GachaService().executeGachaWithRepeatProtection(
-      'streamer-1',
-      'user-1',
-      'Viewer',
-      'event-1',
-    )
+    const result = await new GachaService().executeGachaWithRepeatProtection({
+      streamerId: 'streamer-1',
+      userTwitchId: 'user-1',
+      userTwitchUsername: 'Viewer',
+      eventId: 'event-1',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -250,12 +250,12 @@ describe('GachaService repeat protection', () => {
     const fixture = installDbFixture({ latestCardId: null })
     mockSecureRandomUnit(0)
 
-    const result = await new GachaService().executeGachaWithRepeatProtection(
-      'streamer-1',
-      'user-1',
-      'Viewer',
-      'event-empty-history',
-    )
+    const result = await new GachaService().executeGachaWithRepeatProtection({
+      streamerId: 'streamer-1',
+      userTwitchId: 'user-1',
+      userTwitchUsername: 'Viewer',
+      eventId: 'event-empty-history',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -272,12 +272,12 @@ describe('GachaService repeat protection', () => {
     })
     mockSecureRandomUnit(0)
 
-    const result = await new GachaService().executeGachaWithRepeatProtection(
-      'streamer-1',
-      'user-1',
-      'Viewer',
-      'event-fallback',
-    )
+    const result = await new GachaService().executeGachaWithRepeatProtection({
+      streamerId: 'streamer-1',
+      userTwitchId: 'user-1',
+      userTwitchUsername: 'Viewer',
+      eventId: 'event-fallback',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -298,12 +298,12 @@ describe('GachaService repeat protection', () => {
 
     const service = new GachaService()
     const selectSpy = vi.spyOn(service as any, 'selectCardFromPool')
-    const result = await service.executeGachaWithRepeatProtection(
-      'streamer-1',
-      'user-1',
-      'Viewer',
-      'event-limit-retry',
-    )
+    const result = await service.executeGachaWithRepeatProtection({
+      streamerId: 'streamer-1',
+      userTwitchId: 'user-1',
+      userTwitchUsername: 'Viewer',
+      eventId: 'event-limit-retry',
+    })
 
     expect(result.success).toBe(true)
     expect(fixture.transactionCalls.map((call) => call[3])).toEqual(['card-b', 'card-a'])
@@ -319,12 +319,15 @@ describe('GachaService repeat protection', () => {
     mockSecureRandomUnit(0)
 
     const result = await new GachaService().executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'multi-reward', cost: 300 },
-    }, 'event-multi')
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'user-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'multi-reward', cost: 300 },
+      },
+      eventId: 'event-multi',
+    })
 
     expect(result.success).toBe(true)
     if (result.success) {
@@ -372,12 +375,15 @@ describe('GachaService repeat protection', () => {
     mockSecureRandomUnit(0)
 
     const result = await new GachaService().executeGachaForEventSub({
-      broadcaster_user_id: 'broadcaster-1',
-      user_id: 'user-1',
-      user_login: 'viewer',
-      user_name: 'Viewer',
-      reward: { id: 'multi-reward', cost: 300 },
-    }, 'event-ambiguous')
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'user-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'multi-reward', cost: 300 },
+      },
+      eventId: 'event-ambiguous',
+    })
 
     expect(result.success).toBe(true)
     expect(fixture.transactionCalls.map((call) => call[3])).toEqual([

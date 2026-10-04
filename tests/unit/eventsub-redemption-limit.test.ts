@@ -156,7 +156,7 @@ async function buildRedemptionRequest(messageId: string, redemptionId?: string):
 
 describe('EventSub redemption: card issuance limit error handling', () => {
   it("soldOut(発行可能枚数到達)を返した場合 reportError を呼ばず warn ログのみで 200 を返す", async () => {
-    // 実際に GachaService.executeGacha / executeGachaForEventSub が返すのは
+    // 実際に 低レベル抽選 / GachaService.executeGachaForEventSub が返すのは
     // CARD_ISSUANCE_MESSAGES.soldOut であり、'limit_reached' という文字列
     // (RPCの内部フィールド名)がエラーとして返ることはない。past実装の
     // route.ts側の条件分岐に 'limit_reached' との文字列比較が残っていたが、

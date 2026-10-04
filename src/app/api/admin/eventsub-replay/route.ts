@@ -439,6 +439,18 @@ export async function POST(request: NextRequest) {
               reason: outcome.reason,
               persisted,
             });
+          } else if (outcome.code === CHAT_SEND_TERMINAL_CODES.CONTENT_REJECTED && persisted) {
+            // Issue #1725: live EventSub経路と同じ契約。AutoMod等の本文拒否は
+            // コード不具合ではなく再送しても結果が変わらないため、DLQと構造化ログは
+            // 残すが自動Issue化しない。
+            logger.info("[eventsub-replay] chat notification moved to DLQ - rejected by Twitch content filter", {
+              key: baseResult.key,
+              messageId: claim.batchId,
+              outboxId: claim.id,
+              code: outcome.code,
+              reason: outcome.reason,
+              persisted,
+            });
           } else {
             await reportErrorSafely(
               new Error(

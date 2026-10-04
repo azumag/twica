@@ -4,7 +4,9 @@ import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider";
 import type { MaintenanceStatusResponse } from "@/lib/maintenance/client";
+import { ERROR_MESSAGES } from "@/lib/constants";
 import jaMessages from "../../../messages/ja.json";
+import enMessages from "../../../messages/en.json";
 
 vi.mock("@/lib/logger");
 
@@ -80,10 +82,12 @@ function mockFetch(
 
 function renderComponent(
   props: Partial<React.ComponentProps<typeof ChannelPointSettings>> = {},
-  mode: "off" | "read_only" = "off"
+  mode: "off" | "read_only" = "off",
+  locale: "ja" | "en" = "ja"
 ) {
+  const messages = locale === "en" ? enMessages : jaMessages;
   return render(
-    <NextIntlClientProvider locale="ja" messages={jaMessages}>
+    <NextIntlClientProvider locale={locale} messages={messages}>
       <MaintenanceStatusContext.Provider value={{ mode } as unknown as MaintenanceStatusResponse}>
         <ChannelPointSettings
           streamerId="streamer-1"
@@ -277,10 +281,10 @@ describe("ChannelPointSettings additional-reward editing", () => {
 
   // PUT が 404（別タブで削除済み）を返したら、存在しない行の編集フォームを
   // 閉じて一覧を再取得する（手動リロードを強いる表示にしない）。
-  it("closes the edit form and refetches the list when PUT returns 404", async () => {
+  it("closes the edit form, refetches, and localizes reward-not-found in Japanese", async () => {
     const notFoundMock = mockFetch(undefined, {
       putStatus: 404,
-      putBody: { error: "この追加の引き換えは既に削除されています。設定を再読み込みしてください" },
+      putBody: { error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND },
     });
     vi.unstubAllGlobals();
     vi.stubGlobal("fetch", notFoundMock);
@@ -294,7 +298,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("この追加の引き換えは既に削除されています。設定を再読み込みしてください")
+        screen.getByText("この追加の引き換えは既に削除されています。一覧を再読み込みしました")
       ).toBeInTheDocument();
     });
     // 編集フォームは閉じる
@@ -306,6 +310,71 @@ describe("ChannelPointSettings additional-reward editing", () => {
         ((init as RequestInit)?.method ?? "GET") === "GET"
     );
     expect(getCalls.length).toBeGreaterThan(0);
+  });
+
+  it("localizes the same reward-not-found API error in English", async () => {
+    const notFoundMock = mockFetch(undefined, {
+      putStatus: 404,
+      putBody: { error: ERROR_MESSAGES.ADDITIONAL_REWARD_NOT_FOUND },
+    });
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", notFoundMock);
+    renderComponent({}, "off", "en");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit pack/draws for Extra" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("This additional redemption was already removed. The list has been refreshed.")
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("localizes concurrent update conflicts, closes the stale editor, and refetches", async () => {
+    const conflictMock = mockFetch(undefined, {
+      putStatus: 409,
+      putBody: { error: ERROR_MESSAGES.ADDITIONAL_REWARD_CONCURRENT_UPDATE },
+    });
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", conflictMock);
+    renderComponent({}, "off", "en");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit pack/draws for Extra" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("This additional redemption was updated elsewhere. The list has been refreshed.")
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    const getCalls = conflictMock.mock.calls.filter(
+      ([input, init]) =>
+        String(input).includes("/api/streamer/additional-rewards") &&
+        ((init as RequestInit)?.method ?? "GET") === "GET"
+    );
+    expect(getCalls.length).toBeGreaterThan(0);
+  });
+
+  it("does not relabel unrelated 404 errors as an additional-reward deletion", async () => {
+    const notFoundMock = mockFetch(undefined, {
+      putStatus: 404,
+      putBody: { error: ERROR_MESSAGES.STREAMER_NOT_FOUND },
+    });
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", notFoundMock);
+    renderComponent({}, "off", "en");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit pack/draws for Extra" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(ERROR_MESSAGES.STREAMER_NOT_FOUND)).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText("This additional redemption was already removed. The list has been refreshed.")
+    ).not.toBeInTheDocument();
   });
 
   // 別の行の「編集」を押したとき、編集中の未保存入力が無告知で破棄されないこと。
