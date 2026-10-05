@@ -191,36 +191,41 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
               {unavailable && (
                 <p className="mt-2 text-xs text-yellow-200">{t("myTradesUnavailableHelp")}</p>
               )}
-              <div className="mt-3 flex flex-col gap-2 border-t border-gray-700 pt-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-gray-300">
-                  {isCompleted && (
-                    <span>
-                      {t("myTradesPartner", { name: partner?.twitchDisplayName ?? t("unknownUser") })}
-                    </span>
-                  )}
-                  {offer.status === "open" && (
-                    <Link
-                      href={tradeBoardPath(
-                        offer.offeredStreamerId,
-                        offer.isCrossChannel ? "cross_channel" : "in_channel",
-                      )}
-                      className="text-purple-300 hover:text-purple-200"
+              {/* Only open/completed rows have footer content. Omit the whole
+                  wrapper for cancelled rows so its border/padding cannot leave
+                  an empty action area beneath their preserved trade history. */}
+              {(offer.status === "open" || isCompleted) && (
+                <div className="mt-3 flex flex-col gap-2 border-t border-gray-700 pt-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-gray-300">
+                    {isCompleted && (
+                      <span>
+                        {t("myTradesPartner", { name: partner?.twitchDisplayName ?? t("unknownUser") })}
+                      </span>
+                    )}
+                    {offer.status === "open" && (
+                      <Link
+                        href={tradeBoardPath(
+                          offer.offeredStreamerId,
+                          offer.isCrossChannel ? "cross_channel" : "in_channel",
+                        )}
+                        className="text-purple-300 hover:text-purple-200"
+                      >
+                        {t("myTradesBoardLink")}
+                      </Link>
+                    )}
+                  </div>
+                  {offer.status === "open" && offer.mineRole === "offerer" && (
+                    <button
+                      type="button"
+                      onClick={() => cancelOffer(offer)}
+                      disabled={cancellingId !== null || writeBlocked}
+                      className="rounded-lg bg-gray-700 px-4 py-2 text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {t("myTradesBoardLink")}
-                    </Link>
+                      {cancellingId === offer.id ? t("cancelOfferSubmitting") : t("cancelOfferButton")}
+                    </button>
                   )}
                 </div>
-                {offer.status === "open" && offer.mineRole === "offerer" && (
-                  <button
-                    type="button"
-                    onClick={() => cancelOffer(offer)}
-                    disabled={cancellingId !== null || writeBlocked}
-                    className="rounded-lg bg-gray-700 px-4 py-2 text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {cancellingId === offer.id ? t("cancelOfferSubmitting") : t("cancelOfferButton")}
-                  </button>
-                )}
-              </div>
+              )}
             </li>
           );
         })}

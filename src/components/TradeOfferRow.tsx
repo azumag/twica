@@ -27,8 +27,11 @@ const INACTIVE_BUTTON =
  * One open offer on the board, rendered from the ACCEPTOR's point of view
  * (§6.3): the offerer's card is what the viewer receives ("もらう", first /
  * left), the requested card is what the viewer gives ("渡す", second / right).
+ * An own offer instead uses the offerer's labels (give → want), because the
+ * viewer is viewing their own listing. Card/channel order stays
+ * offered → wanted for both perspectives; only the localized labels change.
  *
- * Narrow screens (375px) stack the two cards vertically (receive → give);
+ * Narrow screens (375px) stack the two cards vertically (offered → wanted);
  * from `sm` they sit side by side. Direction is conveyed by text labels and
  * the ⇄ glyph, never by colour alone (§6.8).
  *
@@ -104,7 +107,7 @@ export default function TradeOfferRow({
         <div className="min-w-0 flex-1">
           <TradeCardSummary
             card={offer.offeredCard}
-            label={t("receiveLabel")}
+            label={t(offer.isOwnOffer ? "myTradesGive" : "receiveLabel")}
             streamer={showStreamers ? offer.offeredStreamer : null}
           />
         </div>
@@ -118,7 +121,7 @@ export default function TradeOfferRow({
         <div className="min-w-0 flex-1">
           <TradeCardSummary
             card={offer.wantedCard}
-            label={t("giveLabel")}
+            label={t(offer.isOwnOffer ? "myTradesWant" : "giveLabel")}
             streamer={showStreamers ? offer.wantedStreamer : null}
           />
         </div>

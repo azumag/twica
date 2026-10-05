@@ -7,6 +7,7 @@ import type { TradeOfferDto } from "@/lib/trade";
 import { tradeBoardPath, tradeLoginHref } from "@/lib/trade-client";
 import { clearTradeListCache } from "@/lib/use-trade-list";
 import jaMessages from "../../../messages/ja.json";
+import enMessages from "../../../messages/en.json";
 
 const ja = jaMessages.trade;
 
@@ -47,10 +48,14 @@ function listResponse(offers: TradeOfferDto[], hasMore = false) {
 
 const LOGIN_HREF = tradeLoginHref(tradeBoardPath("s-1", "cross_channel"));
 
-function renderRow(offer: TradeOfferDto, props: Partial<React.ComponentProps<typeof TradeOfferRow>> = {}) {
+function renderRow(
+  offer: TradeOfferDto,
+  props: Partial<React.ComponentProps<typeof TradeOfferRow>> = {},
+  locale: "ja" | "en" = "ja",
+) {
   const onAccept = vi.fn();
   render(
-    <NextIntlClientProvider locale="ja" messages={jaMessages}>
+    <NextIntlClientProvider locale={locale} messages={locale === "ja" ? jaMessages : enMessages}>
       <ul>
         <TradeOfferRow
           offer={offer}
@@ -98,6 +103,9 @@ describe("TradeOfferRow accept states (§11.3)", () => {
       "/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade%2Fs-1%3Fscope%3Dcross",
     );
     expect(screen.queryByRole("button", { name: ja.acceptButton })).toBeNull();
+    expect(screen.getByText(ja.receiveLabel).parentElement).toHaveTextContent("Offered Dragon");
+    expect(screen.getByText(ja.giveLabel).parentElement).toHaveTextContent("Wanted Slime");
+    expect(screen.queryByText(ja.myTradesWant)).toBeNull();
   });
 
   it("own offer → badge and /trade/mine link instead of an accept button", () => {
@@ -117,9 +125,35 @@ describe("TradeOfferRow accept states (§11.3)", () => {
     renderRow(makeOffer());
     const receive = screen.getByText(ja.receiveLabel);
     const give = screen.getByText(ja.giveLabel);
+    expect(receive.parentElement).toHaveTextContent("Offered Dragon");
+    expect(give.parentElement).toHaveTextContent("Wanted Slime");
     // DOCUMENT_POSITION_FOLLOWING: give comes after receive.
     expect(receive.compareDocumentPosition(give) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("img", { name: ja.directionIconLabel })).toHaveTextContent("⇄");
+  });
+
+  it.each([
+    { locale: "ja" as const, isCrossChannel: false },
+    { locale: "ja" as const, isCrossChannel: true },
+    { locale: "en" as const, isCrossChannel: false },
+    { locale: "en" as const, isCrossChannel: true },
+  ])("labels my own offer from the offerer's direction ($locale, cross-channel: $isCrossChannel)", ({ locale, isCrossChannel }) => {
+    const trade = (locale === "ja" ? jaMessages : enMessages).trade;
+    renderRow(makeOffer({ isOwnOffer: true, canAccept: undefined, isCrossChannel }), {
+      showStreamers: isCrossChannel,
+    }, locale);
+    const give = screen.getByText(trade.myTradesGive);
+    const want = screen.getByText(trade.myTradesWant);
+    expect(give.parentElement).toHaveTextContent("Offered Dragon");
+    expect(want.parentElement).toHaveTextContent("Wanted Slime");
+    expect(give.compareDocumentPosition(want) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(trade.receiveLabel)).toBeNull();
+    expect(screen.getByRole("link", { name: trade.ownOfferManageLink })).toHaveAttribute("href", "/trade/mine");
+    expect(screen.queryByRole("button")).toBeNull();
+    if (isCrossChannel) {
+      expect(give.parentElement).toHaveTextContent("ChanOne");
+      expect(want.parentElement).toHaveTextContent("ChanTwo");
+    }
   });
 
   it("stacks vertically on mobile and side by side from sm", () => {
@@ -133,6 +167,8 @@ describe("TradeOfferRow accept states (§11.3)", () => {
     renderRow(makeOffer({ isCrossChannel: true }), { showStreamers: true });
     expect(screen.getByText("ChanOne のカード")).toBeInTheDocument();
     expect(screen.getByText("ChanTwo のカード")).toBeInTheDocument();
+    expect(screen.getByText(ja.receiveLabel).parentElement).toHaveTextContent("ChanOne");
+    expect(screen.getByText(ja.giveLabel).parentElement).toHaveTextContent("ChanTwo");
   });
 });
 
@@ -488,4 +524,3 @@ describe("TradeBoard", () => {
     });
   });
 });
-
