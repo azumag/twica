@@ -1414,7 +1414,7 @@ export async function listWantableCards(
 
 /**
  * Candidate partner channels for a cross-channel listing from the board of
- * `baseStreamerId`: channels where the viewer owns ≥1 card copy AND that allow
+ * `baseStreamerId`: channels where the viewer owns ≥1 active card copy AND that allow
  * trade + cross-channel trade. The base channel itself is excluded, and the
  * result is empty unless the base channel also allows cross-channel trade.
  *
@@ -1432,7 +1432,9 @@ export async function listCrossTradePartnerStreamers(
   // One statement instead of base-streamer read → user lookup → partners.
   // The base gate is an EXISTS over the same columns (a disabled or unknown
   // base yields no rows) and the viewer is resolved in SQL (unknown → NULL →
-  // owns nothing → no rows), matching the previous early returns.
+  // owns nothing → no rows), matching the previous early returns. The owned
+  // copy must be active so retired/completion-reward cards alone cannot make
+  // a channel selectable when its cards cannot be traded (Refs #1749).
   const rows = await withDbRetry(
     async () => {
       const { db } = await getDb();
@@ -1463,6 +1465,7 @@ export async function listCrossTradePartnerStreamers(
                 ON partner_card.id = partner_owned.card_id
               WHERE partner_owned.user_id = ${viewerUserIdOf(twitchUserId)}
                 AND partner_card.streamer_id = ${qualifiedColumn(streamersTable.id)}
+                AND partner_card.is_active = TRUE
             )`,
           ),
         )

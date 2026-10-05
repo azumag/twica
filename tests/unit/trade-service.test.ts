@@ -1014,7 +1014,7 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
       expect(pg.selectCalls).toHaveLength(0);
     });
 
-    it("selects owned ∩ trade+cross channels, excluding the base, gated on the base in the same statement", async () => {
+    it("selects active-owned ∩ trade+cross channels, excluding the base, gated on the base in the same statement", async () => {
       const partner = {
         id: "50000000-0000-4000-8000-000000000002",
         twitchUsername: "partner",
@@ -1036,6 +1036,7 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
       expect(where.sql).toContain("base_streamer.trade_enabled = TRUE");
       expect(where.sql).toContain("base_streamer.cross_channel_trade_enabled = TRUE");
       expect(where.sql).toContain('partner_card.streamer_id = "streamers"."id"');
+      expect(where.sql).toContain("partner_card.is_active = TRUE");
       expect(where.sql).toMatch(/partner_owned\.user_id = \(\s*SELECT viewer\.id/);
       expect(where.params).toEqual([STREAMER_ID, true, true, STREAMER_ID, "viewer-2"]);
     });

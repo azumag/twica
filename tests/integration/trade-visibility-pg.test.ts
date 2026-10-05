@@ -55,6 +55,8 @@ const S = {
   HALF: id(3), // show_unowned_cards=true but details=false → names still private
   OFF: id(4), // trade disabled
   NOCROSS: id(5), // trade on, cross off
+  INACTIVE_PARTNER: id(6), // seeded only by the inactive-only partner regression
+  MIXED_PARTNER: id(7), // seeded only by the mixed-ownership partner regression
 };
 const U = { O: id(11), V: id(12) };
 const TW = { O: "trade-vis-offerer", V: "trade-vis-viewer" };
@@ -701,6 +703,41 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       const offererFromPub = await listCrossTradePartnerStreamers(TW.O, S.PUB);
       expect(offererFromPub.map((streamer) => streamer.id).sort()).toEqual([S.PRIV, S.HALF].sort());
       await expect(listCrossTradePartnerStreamers("unknown-user", S.PUB)).resolves.toEqual([]);
+    });
+
+    it.each([
+      { name: "inactive-only", streamerId: S.INACTIVE_PARTNER, cardStart: 71, copyStart: 601, active: [false, false], included: false },
+      { name: "mixed active/inactive", streamerId: S.MIXED_PARTNER, cardStart: 81, copyStart: 611, active: [false, true], included: true },
+    ])("listCrossTradePartnerStreamers filters $name ownership", async ({ name, streamerId, cardStart, copyStart, active, included }) => {
+      const { listCrossTradePartnerStreamers } = await import("@/lib/trade");
+      const s = sql!;
+      const cardIds = active.map((_, i) => id(cardStart + i));
+
+      // Keep the suite's order-dependent shared cards untouched. Dedicated
+      // channels have both trade gates on and private names, so eligibility
+      // depends on the viewer's active ownership, not public card visibility.
+      try {
+        await s`INSERT INTO streamers (
+          id, twitch_user_id, twitch_username, twitch_display_name,
+          trade_enabled, cross_channel_trade_enabled, show_unowned_cards, show_unowned_card_details
+        ) VALUES (${streamerId}, ${`tv-partner-${cardStart}`}, ${`tv-partner-${cardStart}`}, ${name}, TRUE, TRUE, FALSE, FALSE)`;
+        for (const [i, isActive] of active.entries()) {
+          await s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
+            VALUES (${cardIds[i]}, ${streamerId}, ${`Partner card ${i}`}, 'common', 0.1, ${isActive})`;
+          await s`INSERT INTO user_cards (id, user_id, card_id)
+            VALUES (${id(copyStart + i)}, ${U.V}, ${cardIds[i]})`;
+        }
+
+        const partners = await listCrossTradePartnerStreamers(TW.V, S.PUB);
+        expect(partners.filter((partner) => partner.id === streamerId)).toHaveLength(included ? 1 : 0);
+        // Existing eligible channels still appear and the base stays excluded.
+        expect(partners.map((partner) => partner.id)).toContain(S.PRIV);
+        expect(partners.map((partner) => partner.id)).not.toContain(S.PUB);
+      } finally {
+        await s`DELETE FROM user_cards WHERE card_id IN ${s(cardIds)}`;
+        await s`DELETE FROM cards WHERE streamer_id = ${streamerId}`;
+        await s`DELETE FROM streamers WHERE id = ${streamerId}`;
+      }
     });
   });
 });
