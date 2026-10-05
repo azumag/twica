@@ -93,7 +93,12 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(lastListQuery(fetchMock).get("status")).toBe("open");
     expect(screen.getByText(ja.myTradesGive)).toBeInTheDocument();
     expect(screen.getByText(ja.myTradesWant)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: ja.myTradesBoardLink })).toHaveAttribute("href", "/trade/s-1");
+    const boardLink = screen.getByRole("link", { name: ja.myTradesBoardLink });
+    expect(boardLink).toHaveAttribute("href", "/trade/s-1");
+    // Open offers keep a real action footer and its cancel button.
+    const footer = boardLink.closest(".border-t");
+    expect(footer).not.toBeNull();
+    expect(within(footer as HTMLElement).getByRole("button", { name: ja.cancelOfferButton })).toBeEnabled();
   });
 
   it("cancels an open offer after confirmation and refetches", async () => {
@@ -167,6 +172,45 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(gave).toHaveTextContent("My Old Card");
     expect(received).toHaveTextContent("Carol Card");
     expect(within(accepted).queryByRole("button", { name: ja.cancelOfferButton })).toBeNull();
+    // Completed rows still need the footer for counterpart information.
+    for (const item of items) {
+      expect(item.querySelector(".border-t")).toHaveTextContent("取引相手:");
+    }
+  });
+
+  it("omits the empty action footer on cancelled history, including a cached tab revisit", async () => {
+    byStatus.cancelled = [makeOffer({ status: "cancelled" })];
+    byStatus.completed = [makeOffer({
+      id: "completed-offer",
+      status: "completed",
+      offeredCard: { name: "Completed Dragon", rarity: "epic", imageUrl: null },
+      acceptedBy: { twitchUsername: "bob", twitchDisplayName: "Bob", twitchProfileImageUrl: null },
+    })];
+    renderMine();
+    await screen.findByText("Offered Dragon");
+    fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCancelled }));
+    await waitFor(() => expect(lastListQuery(fetchMock).get("status")).toBe("cancelled"));
+    await screen.findByText(/^キャンセル日時:/);
+
+    const assertCancelledRow = () => {
+      const item = screen.getByRole("listitem");
+      expect(within(item).getByText("Offered Dragon")).toBeInTheDocument();
+      expect(within(item).getByText("Wanted Slime")).toBeInTheDocument();
+      expect(within(item).getByText(ja.myTradesRoleOfferer)).toBeInTheDocument();
+      expect(within(item).getByText(/^キャンセル日時:/)).toBeInTheDocument();
+      expect(item.querySelector(".border-t")).toBeNull();
+      expect(within(item).queryByRole("link")).toBeNull();
+      expect(within(item).queryByRole("button")).toBeNull();
+    };
+    assertCancelledRow();
+
+    fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCompleted }));
+    await screen.findByText("Completed Dragon");
+    expect(screen.getByRole("listitem").querySelector(".border-t")).toHaveTextContent("取引相手: Bob");
+    fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabOpen }));
+    expect(screen.getByRole("button", { name: ja.cancelOfferButton })).toBeEnabled();
+    fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCancelled }));
+    assertCancelledRow();
   });
 
   it("shows deleted card definitions from the snapshot with a deleted label", async () => {
