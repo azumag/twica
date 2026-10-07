@@ -71,6 +71,7 @@ export default async function StreamerCollection({
   const tStreamer = await getTranslations("streamerCollection");
   const tCommon = await getTranslations("common");
   const tCardManager = await getTranslations("cardManager");
+  const tTrade = await getTranslations("trade");
 
   // SortedCardGrid 向けのシリアライズ済み翻訳。従来表示とパックフィルタ表示の
   // 両方でグリッドを描画するため、1回だけ組み立てて共有する。
@@ -116,6 +117,15 @@ export default async function StreamerCollection({
               {t("cardTypes", { count: visibleCardTypes })}
             </p>
           </div>
+          {/* #726: trade_enabled 時のみトレードボードへの導線を表示 */}
+          {streamer.trade_enabled === true && (
+            <Link
+              href={`/trade/${streamer.id}`}
+              className="ml-auto shrink-0 rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+            >
+              {tTrade("tradeButton")}
+            </Link>
+          )}
         </div>
 
         {/* Stats */}
