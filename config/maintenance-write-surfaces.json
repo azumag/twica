@@ -457,6 +457,17 @@
     "reviewedAt": "2026-09-22"
   },
   {
+    "path": "/api/internal/stats/refresh",
+    "methods": [
+      "POST"
+    ],
+    "category": "streamer",
+    "maintenanceBehavior": "block",
+    "reason": "stats-aggregator cron Workerが呼ぶランキング統計バッチの内部実行境界（Issue #741）。refresh_streamer_ranking()は日次ロールアップのupsertとスナップショットのDELETE→INSERTを伴うDB書き込みのため、他の書き込みAPIと同様にメンテ中はブロックし、状態を失わず延期する（前回snapshotが残るため数時間の停滞は壊れない）。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-07"
+  },
+  {
     "path": "/api/streamer/pack-completion-rewards",
     "methods": [
       "PUT",

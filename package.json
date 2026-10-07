@@ -57,7 +57,10 @@
     "chat-delivery:build:production": "cd workers/chat-delivery && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js",
     "chat-delivery:build:preview": "cd workers/chat-delivery && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js",
     "chat-delivery:deploy": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/chat-delivery/wrangler.toml",
-    "chat-delivery:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/chat-delivery/wrangler.toml --env preview"
+    "chat-delivery:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/chat-delivery/wrangler.toml --env preview",
+    "stats-aggregator:typecheck": "tsc -p workers/stats-aggregator/tsconfig.json",
+    "stats-aggregator:build:production": "cd workers/stats-aggregator && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js",
+    "stats-aggregator:build:preview": "cd workers/stats-aggregator && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

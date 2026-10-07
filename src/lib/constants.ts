@@ -267,6 +267,10 @@ export const ERROR_MESSAGES = {
   // the `rename_card_pack` RPC is not deployed yet (deploy-window fallback,
   // mirrors the cardPackNamesSkippedDeployWindow pattern used elsewhere).
   PACK_RENAME_NOT_READY: 'Pack renaming is not available yet. Please try again shortly.',
+  // Issue #741: POST /api/internal/stats/refresh returns this when the
+  // aggregation migration is not deployed yet (deploy-window fallback,
+  // mirrors PACK_RENAME_NOT_READY).
+  STATS_REFRESH_NOT_READY: 'Stats aggregation is not available yet. Please try again shortly.',
   CONTENT_TYPE_MISSING: 'Content-Type header is required',
   CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
   CARD_NAME_REQUIRED: 'Card name is required',
