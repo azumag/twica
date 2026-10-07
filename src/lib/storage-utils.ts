@@ -54,6 +54,9 @@ export function isR2Url(url: string): boolean {
 /**
  * URLがVercel BlobのURLかどうかを判定
  *
+ * R2移行完了後の互換層。保存済みURLの実データで 0 件確認ができるまで維持する
+ * (#1688)。0 件未確認のまま isStorageUrl から外さないこと。
+ *
  * `includes()` だとクエリ文字列やパスに文字列を仕込むだけで一致してしまうため、
  * ホスト名で判定する (#830 / isR2Url と同種の修正)。
  *
