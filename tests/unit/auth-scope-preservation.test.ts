@@ -109,10 +109,19 @@ vi.mock('@/lib/twitch/token-manager', () => ({
 }))
 
 // rate-limit
+const mockGetTrustedClientIp = vi.fn((_request?: unknown) => {
+  void _request
+  return '127.0.0.1'
+})
+const mockCheckRateLimit = vi.fn((_limiter: unknown, _identifier: string, _limit?: number, _windowMs?: number) => {
+  void [_limiter, _identifier, _limit, _windowMs]
+  return Promise.resolve({ success: true, limit: 5, remaining: 4, reset: Date.now() + 60000 })
+})
 vi.mock('@/lib/rate-limit', () => ({
-  checkRateLimit: vi.fn(() => Promise.resolve({ success: true, limit: 5, remaining: 4, reset: Date.now() + 60000 })),
+  checkRateLimit: mockCheckRateLimit,
   rateLimits: { authLogin: 'authLogin', authCallback: 'authCallback' },
   getClientIp: vi.fn(() => '127.0.0.1'),
+  getTrustedClientIp: mockGetTrustedClientIp,
 }))
 
 // error handlers and sentry
@@ -178,6 +187,8 @@ function createMockRequest(url = 'http://localhost:3000/api/auth/twitch/login'):
 describe('Auth scope preservation: login route', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCheckRateLimit.mockReset().mockResolvedValue({ success: true, limit: 5, remaining: 4, reset: Date.now() + 60000 })
+    mockGetTrustedClientIp.mockReturnValue('127.0.0.1')
     mockCookieStore.get.mockReturnValue(undefined)
     mockCookieStore.set.mockReturnValue(undefined)
     mockGetSession.mockResolvedValue(null)
@@ -187,6 +198,39 @@ describe('Auth scope preservation: login route', () => {
     mockReadChannelPointsEnabled.mockReset().mockResolvedValue([])
     mockReadTosAccepted.mockReset().mockResolvedValue([{ tos_accepted_at: '2024-01-01' }])
     vi.mocked(getDb).mockResolvedValue({ db: createDbMock(), sql: {} } as any)
+  })
+
+  it('login rate limit uses the Cloudflare IP and ignores forwarded client values', async () => {
+    mockGetTrustedClientIp.mockReturnValue('203.0.113.9')
+    const { checkRateLimit, rateLimits } = await import('@/lib/rate-limit')
+    const { GET } = await import('@/app/api/auth/twitch/login/route')
+
+    await GET(new Request('http://localhost:3000/api/auth/twitch/login', {
+      headers: {
+        'cf-connecting-ip': '203.0.113.9',
+        'x-forwarded-for': '198.51.100.77',
+        'x-real-ip': '192.0.2.88',
+      },
+    }))
+
+    expect(checkRateLimit).toHaveBeenCalledWith(
+      rateLimits.authLogin,
+      'ip:203.0.113.9',
+      5,
+      60000,
+      'ip:127.0.0.1',
+    )
+  })
+
+  it('returns 503 before OAuth state issuance when the strict backend is unavailable', async () => {
+    const { checkRateLimit } = await import('@/lib/rate-limit')
+    vi.mocked(checkRateLimit).mockResolvedValue({ success: false, unavailable: true } as any)
+    const { GET } = await import('@/app/api/auth/twitch/login/route')
+
+    const response = await GET(createMockRequest())
+
+    expect(response.status).toBe(503)
+    expect(mockCookieStore.set).not.toHaveBeenCalled()
   })
 
   it('DB障害時にスコープ復元失敗ガードCookieが設定される', async () => {
@@ -344,6 +388,7 @@ describe('Auth scope preservation: callback route', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    mockCheckRateLimit.mockReset().mockResolvedValue({ success: true, limit: 5, remaining: 4, reset: Date.now() + 60000 })
     mockSaveTwitchScopes.mockResolvedValue(undefined)
 
     const auth = await import('@/lib/twitch/auth')
