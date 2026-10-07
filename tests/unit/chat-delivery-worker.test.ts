@@ -230,6 +230,25 @@ describe('handleChatDeliveryMessage', () => {
     expect(message.retry).not.toHaveBeenCalled();
     expect(env.CHAT_NOTIFICATION_QUEUE.send).not.toHaveBeenCalled();
   });
+
+  it('acks a repeated wake-up after the DB reports the batch is no longer claimable', async () => {
+    const env = makeEnv();
+    (env.CHAT_APP.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(okResponse({ outcome: { kind: 'complete' } }))
+      .mockResolvedValueOnce(okResponse({ outcome: { kind: 'not_claimable' } }));
+    const duplicateWakeup = { version: 1, batchId: 'batch-already-complete' };
+    const firstDelivery = makeMessage(duplicateWakeup);
+    const repeatedDelivery = makeMessage(duplicateWakeup);
+
+    await handleChatDeliveryMessage(firstDelivery as any, env);
+    await handleChatDeliveryMessage(repeatedDelivery as any, env);
+
+    expect(firstDelivery.ack).toHaveBeenCalledTimes(1);
+    expect(repeatedDelivery.ack).toHaveBeenCalledTimes(1);
+    expect(firstDelivery.retry).not.toHaveBeenCalled();
+    expect(repeatedDelivery.retry).not.toHaveBeenCalled();
+    expect(env.CHAT_NOTIFICATION_QUEUE.send).not.toHaveBeenCalled();
+  });
 });
 
 describe('runChatDeliveryDueSweep', () => {

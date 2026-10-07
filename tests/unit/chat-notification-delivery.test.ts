@@ -30,6 +30,7 @@ import {
   deadLetterChatNotification,
   markChatNotificationSent,
   releaseChatNotificationForContinuation,
+  renewChatNotificationLease,
   retryChatNotificationForBoundedDelivery,
 } from '@/lib/services/chat-notification-outbox'
 import { reserveChatChannelSendSlot } from '@/lib/services/chat-channel-gate'
@@ -41,6 +42,7 @@ const mockDecode = vi.mocked(decodeChatNotificationPayload)
 const mockDeadLetter = vi.mocked(deadLetterChatNotification)
 const mockMarkSent = vi.mocked(markChatNotificationSent)
 const mockRelease = vi.mocked(releaseChatNotificationForContinuation)
+const mockRenew = vi.mocked(renewChatNotificationLease)
 const mockRetry = vi.mocked(retryChatNotificationForBoundedDelivery)
 const mockSend = vi.mocked(sendClaimedChatAnnouncement)
 const mockGate = vi.mocked(reserveChatChannelSendSlot)
@@ -130,6 +132,56 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
     expect(mockRelease.mock.calls[0]?.[1]).toBeInstanceOf(Date)
     expect(mockRetry).not.toHaveBeenCalled()
     expect(mockDeadLetter).not.toHaveBeenCalled()
+  })
+
+  it('counts the DB claim against the slice budget and releases without starting a send', async () => {
+    let currentTime = Date.now()
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => currentTime)
+    mockClaim.mockImplementation(async () => {
+      currentTime += 1_000
+      return claim
+    })
+    mockDecode.mockReturnValue(decodedData)
+    mockRelease.mockResolvedValue(true)
+
+    try {
+      await expect(deliverChatNotificationSlice('batch-1', { timeBudgetMs: 1_000 })).resolves.toMatchObject({
+        kind: 'deferred',
+        nextAttemptAt: expect.any(String),
+      })
+
+      expect(mockSend).not.toHaveBeenCalled()
+      expect(mockRelease).toHaveBeenCalledWith(claim, expect.any(Date))
+      expect(mockRetry).not.toHaveBeenCalled()
+    } finally {
+      dateNow.mockRestore()
+    }
+  })
+
+  it('returns a normal continuation when only 3.5s remain, below the send+checkpoint reserve', async () => {
+    const startedAt = Date.now()
+    let currentTime = startedAt
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => currentTime)
+    mockClaim.mockResolvedValue(claim)
+    mockDecode.mockReturnValue(decodedData)
+    mockRelease.mockResolvedValue(true)
+    mockSend.mockImplementation(async (_claim, _data, beforeExternalSend) => {
+      currentTime = startedAt + 1_500 // 5s budget - 1.5s elapsed = 3.5s remaining
+      await expect(beforeExternalSend()).resolves.toBe('budget-exhausted')
+      return { outcome: 'deferred', reason: 'budget' }
+    })
+
+    try {
+      await expect(deliverChatNotificationSlice('batch-1', { timeBudgetMs: 5_000 })).resolves.toMatchObject({
+        kind: 'deferred',
+      })
+
+      expect(mockRenew).not.toHaveBeenCalled()
+      expect(mockRelease).toHaveBeenCalledWith(claim, expect.any(Date))
+      expect(mockRetry).not.toHaveBeenCalled()
+    } finally {
+      dateNow.mockRestore()
+    }
   })
 
   it('returns lease_lost when the continuation release loses its lease', async () => {
