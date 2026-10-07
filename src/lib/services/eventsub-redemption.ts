@@ -28,6 +28,7 @@ import {
   TwitchChatService,
   DEFAULT_CHAT_TEMPLATE,
   CHAT_SEND_TERMINAL_CODES,
+  type ChatSendFenceResult,
   type ChatSendDegradation,
   type ChatMessagePlaceholders,
   type ChatSendTerminalCode,
@@ -1125,7 +1126,8 @@ async function fetchActiveCardCountPg(
  * @param cards - 複数枚ガチャ時の獲得カード一覧
  * @param collectionName - 抽選が絞られたパックの collection_name（無制限ガチャは null/undefined、Issue #597）
  * @param snapshot - ガチャcommit時点の所有数系placeholder（outbox v1では必須）
- * @param beforeExternalSend - 資格情報解決後・Twitch送信直前に行うowner fence
+ * @param beforeExternalSend - 資格情報解決後・各Twitch送信直前に行うowner fence。
+ *   bounded配送では、送信+checkpointの最低予算が無い場合にbudget-exhaustedを返す。
  */
 export type ChatAnnouncementOutcome = (
   | { outcome: 'sent' }
@@ -1134,14 +1136,9 @@ export type ChatAnnouncementOutcome = (
   | { outcome: 'retryable'; reason: string }
   | { outcome: 'aborted'; reason: string }
   /**
-   * Issue #1665: paced-multi-draw-sender.tsのdeadlineAt/maxSegments/channelGate
-   * 予算内に完走できなかった正常な途中終了。sendChatAnnouncement自身（単発・
-   * summary）は予算の概念を持たないため生成しないが、sendClaimedChatAnnouncement
-   * 経由でN連のpaced送信結果をそのまま返すためunion側に必要。既存呼び出し元
-   * （postRedemptionNotify・eventsub-replay/route.ts）はdeadlineAt等を渡さない
-   * ため実際には発生せず、両者の既存fallback（retryChatNotification）へ
-   * 到達しても実害はない。新しいbounded配送経路だけがこのoutcomeを明示的に
-   * 判定してreleaseChatNotificationForContinuationへ振り分ける。
+   * Issue #1665: bounded deliveryで次のTwitch fetchに必要な最低予算が無い場合の
+   * 正常な途中終了。複数segmentのpaced送信だけでなく、単発/summaryも共通の
+   * beforeExternalSend fenceから返る。既存live/replay呼び出しは予算不足を返さない。
    */
   | { outcome: 'deferred'; reason: 'budget' }
 ) & { degradation?: ChatSendDegradation };
@@ -1162,7 +1159,7 @@ export async function sendChatAnnouncement(
   cards?: GachaCard[],
   collectionName?: string | null,
   snapshot?: ChatAnnouncementSnapshot,
-  beforeExternalSend?: () => Promise<boolean>,
+  beforeExternalSend?: () => Promise<ChatSendFenceResult>,
 ): Promise<ChatAnnouncementOutcome> {
   const drawnCards = cards && cards.length > 0 ? cards : [card];
   const isMultiDraw = drawnCards.length > 1;
@@ -1472,6 +1469,15 @@ export async function sendChatAnnouncement(
     return outcome.degradation
       ? { outcome: 'skipped', degradation: outcome.degradation }
       : { outcome: 'skipped' };
+  } else if (outcome.outcome === 'deferred') {
+    // bounded sliceが外部fetch開始前に予算切れを検出した正常なcontinuation。
+    // 障害警告へ分類せず、そのままoutbox ownerへ返してcursorを保ったまま再開する。
+    logger.info('Chat announcement deferred - delivery budget exhausted', {
+      broadcasterTwitchUserId,
+      streamerId: streamer.id,
+      cardName: card.name,
+      drawCount: drawnCards.length,
+    });
   } else {
     // sendChatMessage が false を返した場合のログ（API呼び出し失敗）
     // Log when sendChatMessage returns false (API call failure)

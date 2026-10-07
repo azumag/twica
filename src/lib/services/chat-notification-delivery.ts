@@ -21,7 +21,7 @@
  */
 import { logger } from '@/lib/logger.server'
 import { reportError } from '@/lib/sentry/error-handler'
-import { CHAT_SEND_TERMINAL_CODES } from '@/lib/twitch/chat-service'
+import { CHAT_SEND_MIN_START_BUDGET_MS, CHAT_SEND_TERMINAL_CODES } from '@/lib/twitch/chat-service'
 import { formatChatFailureReason } from '@/lib/twitch/chat-failure-reason'
 import { MULTI_DRAW_CHAT_INTERVAL_MS } from '@/lib/twitch/multi-draw-chat'
 import { reserveChatChannelSendSlot } from '@/lib/services/chat-channel-gate'
@@ -97,15 +97,16 @@ export async function deliverChatNotificationSlice(
   batchId: string,
   options: DeliverChatNotificationSliceOptions = {},
 ): Promise<ChatDeliverySliceOutcome> {
-  const claim = await claimChatNotificationForBoundedDelivery(batchId)
-  if (!claim) return { kind: 'not_claimable' }
-
+  // 予算時計はDB claimより前に始める。claim query自体が遅れた場合も、
+  // その遅延を配送sliceの予算外にして新しいTwitch送信を許可しない。
   const timeBudgetMs = Math.max(1_000, Math.min(
     options.timeBudgetMs ?? DEFAULT_CHAT_DELIVERY_TIME_BUDGET_MS,
     60_000,
   ))
   const maxSegments = Math.max(1, Math.min(options.maxSegments ?? DEFAULT_CHAT_DELIVERY_MAX_SEGMENTS, 50))
   const deadlineAt = Date.now() + timeBudgetMs
+  const claim = await claimChatNotificationForBoundedDelivery(batchId)
+  if (!claim) return { kind: 'not_claimable' }
 
   const data = decodeChatNotificationPayload(claim)
   if (!data) {
@@ -120,10 +121,34 @@ export async function deliverChatNotificationSlice(
     return { kind: 'terminal', code: 'invalid_payload' }
   }
 
-  const beforeExternalSend = async (): Promise<boolean> => {
-    if (Date.now() >= deadlineAt) return false
+  if (Date.now() >= deadlineAt) {
+    // claimに予算を使い切った場合は送信へ進まず、fenced releaseで正常な続きへ戻す。
+    // ownerが既に切り替わっていればreleaseが失敗するため、新ownerの状態は上書きしない。
+    const nextAttemptAt = new Date(Date.now() + CONTINUATION_MIN_DELAY_MS)
+    const persisted = await releaseChatNotificationForContinuation(claim, nextAttemptAt, { beforeSend: true })
+    if (!persisted) return { kind: 'lease_lost' }
+    logger.info('[chat-notification-delivery] slice deferred before send - claim used budget', {
+      outboxId: claim.id,
+      batchId,
+      nextAttemptAt: nextAttemptAt.toISOString(),
+    })
+    return { kind: 'deferred', nextAttemptAt: nextAttemptAt.toISOString() }
+  }
+
+  let externalSendStarted = false
+  const beforeExternalSend = async (): Promise<boolean | 'budget-exhausted'> => {
+    // Helix fetchは各試行3秒timeout。応答処理とcursor保存にも1秒を残し、
+    // 各内部retry直前に同じ判定を行う。残り予算が足りない状態はlease喪失と
+    // 混同せずdeferredとして保存し、正常なslice分割でattempt_countを消費しない。
+    if (deadlineAt - Date.now() < CHAT_SEND_MIN_START_BUDGET_MS) return 'budget-exhausted'
     const renewed = await renewChatNotificationLease(claim)
-    return renewed && Date.now() < deadlineAt
+    if (!renewed) return false
+    if (deadlineAt - Date.now() < CHAT_SEND_MIN_START_BUDGET_MS) return 'budget-exhausted'
+    // このfence成功直後にchat-serviceがHelix fetchを開始する。cursorだけでは
+    // 実送信失敗やcheckpoint失敗を判別できないため、送信許可を一度でも出した
+    // sliceのclaim増分は戻さない（内部retryにも同じfenceが呼ばれる）。
+    externalSendStarted = true
+    return true
   }
 
   let deliveryStatePersisted = false
@@ -169,7 +194,9 @@ export async function deliverChatNotificationSlice(
 
     if (outcome.outcome === 'deferred') {
       const nextAttemptAt = new Date(Date.now() + CONTINUATION_MIN_DELAY_MS)
-      const persisted = await releaseChatNotificationForContinuation(claim, nextAttemptAt)
+      const persisted = await releaseChatNotificationForContinuation(claim, nextAttemptAt, {
+        beforeSend: !externalSendStarted,
+      })
       deliveryStatePersisted = true
       if (!persisted) return { kind: 'lease_lost' }
       logger.info('[chat-notification-delivery] slice deferred - budget exhausted', {
@@ -218,20 +245,8 @@ export async function deliverChatNotificationSlice(
     if (outcome.outcome === 'aborted') {
       // leaseを失った（またはfence確認不能な）所有者は状態を上書きしない。
       // 新所有者かsweepの回収に委ねる（DB writeはしない）。
-      //
-      // 既知のtrade-off: このfence（beforeExternalSend）はlease喪失と
-      // deadline到達を区別できずどちらも'aborted'にする
-      // （chat-service.ts/paced-multi-draw-sender.tsの契約）。segmentの
-      // 429/5xxリトライ中にdeadlineへ到達した場合もここへ来るため、正常な
-      // 予算切れのはずが、回収後はclaimChatNotificationForBoundedDeliveryの
-      // クラッシュ回収分岐（processing+lease失効）を通りattempt_countを
-      // 消費する。lease喪失時にDB状態を上書きしない安全側の原則
-      // （新所有者の処理中状態を壊さない）をdeadline側でも譲れないため、
-      // ここをdeferred（試行回数を消費しない）へread替えることはしない。
-      // 実害は「試行回数を1つ余分に消費し、最大60秒+sweep周期だけ遅れて
-      // 回収される」ことに留まり、CHAT_OUTBOX_MAX_ATTEMPTSの有限上限で
-      // 依然bound済み。ここでのreportErrorはsent/DLQ/retryの各分岐と同様に
-      // 運用側が検知できるようにするためのものであり、状態遷移は変えない。
+      // 予算不足は上のdeferred分岐で別扱いするため、ここへ来るのはlease喪失か
+      // fence確認失敗だけ。新所有者のprocessing状態をretry/deadで上書きしない。
       deliveryStatePersisted = true
       await reportDeliveryError(
         new Error(`[chat-notification-delivery] aborted before an external send completed: ${
