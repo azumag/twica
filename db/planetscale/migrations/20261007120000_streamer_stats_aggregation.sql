@@ -126,20 +126,23 @@ COMMENT ON TABLE public.stats_meta IS
   (Issue #741)。';
 
 -- ---------------------------------------------------------------------------
--- gacha_history へのインデックス追加
+-- gacha_history の redeemed_at インデックスは新設しない
 -- ---------------------------------------------------------------------------
--- 既存インデックスは (streamer_id) / (user_twitch_id) / (event_id) (00001)、
--- (streamer_id, redeemed_at DESC) WHERE reward_cost>0 (00036 部分)、
--- (streamer_id, user_twitch_id) (00032/00039)、(card_id) (00071) で、
--- redeemed_at 先頭のものがない。バッチは全 streamer 横断で redeemed_at 範囲
--- スキャンするため追加する。
+-- バッチは全 streamer 横断で redeemed_at 範囲スキャンを行うが、redeemed_at を
+-- 先頭に持つインデックスは既に存在する:
+--   idx_gacha_history_redeemed_at_analysis
+--     ON public.gacha_history (redeemed_at DESC)
+--     (db/planetscale/migrations/20260801090003_create_analysis_gacha_history_redeemed_at_index.sql)
+-- これは本 migration (20261007120000) より前に適用されるため、そのまま利用できる。
+-- btree は ASC/DESC 双方向に走査できるので ORDER BY redeemed_at DESC の範囲
+-- スキャンにも使える。
 --
--- 運用注意: gacha_history は最ホットテーブルなので、本番適用時は低トラフィック
--- 帯に実施すること。テーブルが大きい場合は事前に手動で
--- CREATE INDEX CONCURRENTLY を先行実行してよい (IF NOT EXISTS により本
--- migration は冪等にスキップする。00032 と同一運用)。
-CREATE INDEX IF NOT EXISTS idx_gacha_history_redeemed_at
-  ON public.gacha_history(redeemed_at);
+-- 同価値の重複インデックスを最ホットテーブルに追加すると書き込みコストが増える
+-- だけでなく、プランナが2つのインデックス間で選択を変えるため
+-- tests/fixtures/analysis-dashboard-pagination-postgres.sql の
+-- 「gacha 7-day plan は idx_gacha_history_redeemed_at_analysis を使う」断言が
+-- 落ちる (CI の 'PlanetScale migration PostgreSQL 17' で実際に検出)。
+-- よってここではインデックスを追加しない。
 
 -- ---------------------------------------------------------------------------
 -- refresh_streamer_daily_stats(p_from, p_to)

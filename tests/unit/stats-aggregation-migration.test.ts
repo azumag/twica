@@ -39,9 +39,15 @@ describe('streamer stats aggregation migration', () => {
     expect(migration).toContain('idx_ranking_snapshots_position')
   })
 
-  it('gacha_history の redeemed_at 先頭indexを追加する', () => {
-    expect(migration).toContain('idx_gacha_history_redeemed_at')
-    expect(migration).toContain('ON public.gacha_history(redeemed_at)')
+  it('redeemed_at 先頭 index は既存の idx_gacha_history_redeemed_at_analysis を再利用する', () => {
+    // 同価値の重複インデックスを最ホットテーブルへ追加しないこと。
+    // 追加すると planner が 2 つのインデックス間で選択を変え、
+    // tests/fixtures/analysis-dashboard-pagination-postgres.sql の
+    // 「gacha 7-day plan は idx_gacha_history_redeemed_at_analysis を使う」
+    // 断言が落ちる (CI の PlanetScale migration PostgreSQL 17 で検出)。
+    const gachaIndexes = migration.match(/CREATE INDEX[^;]*gacha_history[^;]*;/g) ?? []
+    expect(gachaIndexes).toEqual([])
+    expect(migration).toContain('idx_gacha_history_redeemed_at_analysis')
   })
 
   it('新オブジェクトをruntimeロールだけに公開する', () => {
