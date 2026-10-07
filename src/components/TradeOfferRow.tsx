@@ -236,7 +236,7 @@ export default function TradeOfferRow({
       )}
       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-gray-400">
-          {t("offeredByLabel")}: {offer.offerer?.twitchDisplayName ?? "-"} ・{" "}
+          {t("offeredByLabel")}: {offer.offerer?.twitchDisplayName ?? "-"} {t("metaSeparator")}{" "}
           {formatListedAt(offer.createdAt, locale)}
         </p>
         <div className="flex flex-col gap-1">

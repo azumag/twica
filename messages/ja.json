@@ -608,6 +608,7 @@
     "filterRarity": "レアリティ",
     "filterAllRarities": "すべて",
     "offeredByLabel": "出品者",
+    "metaSeparator": "・",
     "acceptButton": "この取引に応じる",
     "acceptButtonNotOwned": "所持していません",
     "acceptButtonAllListed": "交換可能な手持ちがありません(出品中)",

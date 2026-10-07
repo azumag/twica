@@ -608,6 +608,7 @@
     "filterRarity": "Rarity",
     "filterAllRarities": "All",
     "offeredByLabel": "Offered by",
+    "metaSeparator": "·",
     "acceptButton": "Accept this trade",
     "acceptButtonNotOwned": "Not owned",
     "acceptButtonAllListed": "No tradable copies (all listed)",
