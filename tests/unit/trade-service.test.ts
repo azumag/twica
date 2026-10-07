@@ -178,7 +178,6 @@ function checkRow(overrides: Record<string, unknown> = {}) {
     wantedName: "Want",
     wantedRarity: "epic",
     wantedImageUrl: "https://example.test/b.png",
-    wantedVisible: true,
     offeredTradeEnabled: true,
     offeredCrossEnabled: false,
     wantedTradeEnabled: true,
@@ -233,7 +232,6 @@ describe("trade service (#723)", () => {
         rows: [checkRow({
           replay: OFFER,
           offeredIsActive: false,
-          wantedVisible: false,
           offeredTradeEnabled: false,
           offeredCopyListed: true,
         })],
@@ -329,6 +327,10 @@ describe("trade service (#723)", () => {
     expect(render(joins[1].on).sql).toContain('"offered_copy"."user_id" = "users"."id"');
     // Inactive wanted cards never join (→ TRADE_WANTED_CARD_UNAVAILABLE).
     expect(render(joins[3].on).sql).toContain('"wanted_card"."is_active" = $');
+    // Visibility is part of the wanted-card JOIN condition, so hidden card
+    // names/images are never read into the Worker (Refs #1749 item 1).
+    expect(render(joins[3].on).sql).toContain('visible_card.id = "wanted_card"."id"');
+    expect(render(joins[3].on).sql).toContain('visible_owned.user_id = "users"."id"');
 
     const fields = call.fields as Record<string, unknown>;
     expect(render(fields.offeredCopyListed).sql).toContain("open_listing.status = 'open'");
@@ -639,7 +641,10 @@ describe("listTradeOffers visibility (#715 PR-C)", () => {
     // A bare "id" would bind to active_listing.id (trade_offers.id).
     expect(state.sql).toContain("active_listing.offered_user_card_id = accept_free.id");
     expect(state.sql).toContain("active_listing.status = 'open'");
-    expect(state.params).toEqual(["viewer-2", "viewer-2"]);
+    // Same exclusion rule as the accept RPC: only the viewer's own open
+    // offers make a copy count as listed (Refs #1749 item 3).
+    expect(state.sql).toContain("active_listing.offerer_user_id = ");
+    expect(state.params).toEqual(["viewer-2", "viewer-2", "viewer-2"]);
   });
 });
 
@@ -661,7 +666,6 @@ describe("createTradeOffer visibility / is_active (#715 PR-C)", () => {
         rows: [checkRow({
           offeredIsActive: isActive,
           offeredCardId: OFFER.wanted_card_id,
-          wantedVisible: false,
           offeredTradeEnabled: false,
         })],
       }],
@@ -678,18 +682,27 @@ describe("createTradeOffer visibility / is_active (#715 PR-C)", () => {
   });
 
   it.each([
-    ["hidden from the offerer", { wantedVisible: false }],
+    ["hidden from the offerer", {
+      wantedCardId: null,
+      wantedStreamerId: null,
+      wantedName: null,
+      wantedRarity: null,
+      wantedImageUrl: null,
+      wantedTradeEnabled: null,
+      wantedCrossEnabled: null,
+    }],
     ["missing or inactive", {
       wantedCardId: null,
       wantedStreamerId: null,
       wantedName: null,
-      wantedVisible: false,
       wantedTradeEnabled: null,
       wantedCrossEnabled: null,
     }],
   ])("answers TRADE_WANTED_CARD_UNAVAILABLE when the wanted card is %s, before the streamer gates", async (_label, overrides) => {
     // The gates would answer TRADE_DISABLED; the visibility decision comes
     // first so the response cannot confirm that a hidden card id exists.
+    // Visibility is enforced in the wanted-card JOIN condition, so a hidden
+    // card joins to NULL exactly like a missing/inactive one (Refs #1749).
     const pg = createDbMock({
       selects: [{ rows: [checkRow({ ...overrides, offeredTradeEnabled: false })] }],
     });
@@ -702,17 +715,18 @@ describe("createTradeOffer visibility / is_active (#715 PR-C)", () => {
     });
     expect(pg.insertCalls).toHaveLength(0);
 
-    const fields = pg.selectCalls[0].fields as Record<string, unknown>;
-    const visible = render(fields.wantedVisible);
-    expect(visible.sql).toContain('visible_card.id = "wanted_card"."id"');
+    // The wanted-card JOIN condition carries the board's visibility predicate,
+    // so hidden names/images are never selected into the Worker.
+    const joins = pg.selectCalls[0].leftJoins as Array<{ on: unknown }>;
+    const wantedOn = render(joins[3].on);
+    expect(wantedOn.sql).toContain('visible_card.id = "wanted_card"."id"');
     // Ownership branch is evaluated for the outer users row of this statement.
-    expect(visible.sql).toContain('visible_owned.user_id = "users"."id"');
-    expect(visible.params).toEqual([]);
+    expect(wantedOn.sql).toContain('visible_owned.user_id = "users"."id"');
   });
 
   it("replays by requestId before the is_active / visibility checks", async () => {
     const pg = createDbMock({
-      selects: [{ rows: [checkRow({ replay: OFFER, offeredIsActive: false, wantedVisible: false })] }],
+      selects: [{ rows: [checkRow({ replay: OFFER, offeredIsActive: false })] }],
     });
     primeDb(pg);
 

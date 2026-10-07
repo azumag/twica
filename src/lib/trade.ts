@@ -75,8 +75,10 @@ export type TradeServiceErrorCode =
 /**
  * Always render `"table"."column"` for a correlated outer reference.
  *
- * Drizzle renders `${table.column}` as a bare `"column"` when the outer query
- * selects from a single table without joins. Inside a correlated subquery a
+ * Drizzle renders `${table.column}` as a bare `"column"` only for top-level
+ * columns in the SELECT list of a single-table statement without joins;
+ * WHERE and other clauses keep the table qualification. Inside a correlated
+ * subquery in the SELECT list (or in a JOIN .. ON clause) a
  * bare name binds to the INNER table first if it has a column of that name:
  * e.g. `active_listing.offered_user_card_id = "id"` silently compared two
  * columns of the same inner row (active_listing.id) instead of user_cards.id
@@ -357,9 +359,6 @@ export async function createTradeOffer(input: {
           wantedName: createWantedCard.name,
           wantedRarity: createWantedCard.rarity,
           wantedImageUrl: createWantedCard.image_url,
-          // Evaluated in SQL with the same predicate as the board so that the
-          // create path cannot be used to probe hidden card ids.
-          wantedVisible: cardVisibleTo(createWantedCard.id, qualifiedColumn(usersTable.id)),
           offeredTradeEnabled: createOfferedGate.trade_enabled,
           offeredCrossEnabled: createOfferedGate.cross_channel_trade_enabled,
           wantedTradeEnabled: createWantedGate.trade_enabled,
@@ -401,6 +400,12 @@ export async function createTradeOffer(input: {
           and(
             eq(createWantedCard.id, input.wantedCardId),
             eq(createWantedCard.is_active, true),
+            // Visibility is part of the JOIN condition (not a post-read
+            // filter) with the same predicate as the board, so the name and
+            // image of a hidden card are never read into the Worker (the same
+            // policy as listWantableCards). A hidden card joins to NULL and
+            // falls into TRADE_WANTED_CARD_UNAVAILABLE below.
+            cardVisibleTo(createWantedCard.id, qualifiedColumn(usersTable.id)),
           ),
         )
         .leftJoin(createOfferedGate, eq(createOfferedGate.id, createOfferedCard.streamer_id))
@@ -449,8 +454,10 @@ export async function createTradeOffer(input: {
   // Hidden and non-existent/inactive cards share one error code on purpose:
   // a distinct "hidden" error (or reaching the TRADE_DISABLED gate below)
   // would confirm that an unrevealed card id exists. This check therefore
-  // runs before the streamer gate checks.
-  if (!check.wantedCardId || !check.wantedStreamerId || check.wantedVisible !== true) {
+  // runs before the streamer gate checks. (Visibility already filtered the
+  // JOIN above, so a hidden card arrives here as NULL, indistinguishable
+  // from a missing/inactive one, and its name was never read.)
+  if (!check.wantedCardId || !check.wantedStreamerId) {
     return { kind: "error", code: "TRADE_WANTED_CARD_UNAVAILABLE" };
   }
 
@@ -642,13 +649,15 @@ function toUserSummary(row: JoinedUser): TradeUserSummary | null {
 
 /**
  * Board canAccept, evaluated per row in SQL (previously a third follow-up
- * query over the viewer's copies). Same exclusion rule as the accept RPC: a
- * copy that is the offered copy of ANY open offer cannot be used to pay.
+ * query over the viewer's copies). Same exclusion rule as the accept RPC
+ * (which excludes the acceptor's own open offers via
+ * `offerer_user_id = acceptor`): a copy listed in one of the viewer's own
+ * open offers cannot be used to pay.
  *   not_owned  — the viewer owns no copy of the wanted card
- *   all_listed — every owned copy is listed in an open offer
+ *   all_listed — every owned copy is listed in one of the viewer's own open offers
  *   yes        — at least one unlisted copy exists
- * The inner aliases are literal; the only outer reference is the qualified
- * trade_offers.wanted_card_id.
+ * The inner aliases are literal; the only outer references are the qualified
+ * trade_offers.wanted_card_id and the viewer id.
  */
 function acceptStateFor(viewerUserId: SQL) {
   const wantedCardId = qualifiedColumn(tradeOffersTable.wanted_card_id);
@@ -669,6 +678,7 @@ function acceptStateFor(viewerUserId: SQL) {
           FROM ${tradeOffersTable} AS active_listing
           WHERE active_listing.offered_user_card_id = accept_free.id
             AND active_listing.status = 'open'
+            AND active_listing.offerer_user_id = ${viewerUserId}
         )
     ) THEN 'all_listed'
     ELSE 'yes'
