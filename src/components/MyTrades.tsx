@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { useLocale, useTranslations } from "next-intl";
 import type { TradeOfferDto, TradeOfferStatus } from "@/lib/trade";
@@ -9,9 +9,11 @@ import {
   postTradeJson,
   tradeBoardPath,
   tradeErrorMessageKey,
+  viewerSides,
 } from "@/lib/trade-client";
 import { useTradeList, type TradeListPage } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
+import TradeCancelModal from "./TradeCancelModal";
 import TradeCardSummary from "./TradeCardSummary";
 import TradePager from "./TradePager";
 
@@ -27,27 +29,14 @@ function myTradesUrl(status: TradeOfferStatus, page: number) {
 }
 
 /**
- * The viewer's side of a trade row. /api/trades/mine returns the offer as
- * stored (offerer → offeredCard, requested → wantedCard); `mineRole` tells
- * whether the viewer listed it or accepted it, so the cards are swapped for
- * offers the viewer accepted.
- */
-function viewerSides(offer: TradeOfferDto) {
-  const offeredSide = { card: offer.offeredCard, deleted: offer.offeredCardId === null };
-  const wantedSide = { card: offer.wantedCard, deleted: offer.wantedCardId === null };
-  return offer.mineRole === "acceptor"
-    ? { give: wantedSide, get: offeredSide, partner: offer.offerer }
-    : { give: offeredSide, get: wantedSide, partner: offer.acceptedBy };
-}
-
-/**
  * /trade/mine (§6.6): open / completed / cancelled tabs, paged by the API.
  *
- * Whether an open offer is still acceptable cannot be fully determined here:
- * the /mine DTO carries no is_active or trade_enabled information. The one
- * case that IS visible is a deleted card definition (card id NULL), which can
- * never be accepted again; those rows are marked so the offerer knows to
- * cancel them.
+ * Whether an open offer can still be accepted is reported by the API
+ * (`tradeable`, #1754 item 4): false once a card definition was deleted or
+ * deactivated, or a participating channel's trade setting was turned off. Such
+ * rows are marked so the offerer knows to cancel them instead of waiting for an
+ * acceptance that can no longer happen. A deleted card definition is called out
+ * separately (its name is only a listing-time snapshot).
  *
  * Tab/page results are cached per mount (useTradeList): switching back to a
  * tab shows its rows immediately, and "loading" only appears for a tab page
@@ -63,7 +52,10 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
   const [tab, setTab] = useState<TradeOfferStatus>("open");
   const [page, setPage] = useState(1);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [confirmingCancel, setConfirmingCancel] = useState<TradeOfferDto | null>(null);
   const [notice, setNotice] = useState<{ text: string; isError: boolean } | null>(null);
+  // Row button that opened the confirmation dialog (focus returns to it).
+  const cancelTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const { view: list, retry, invalidate } = useTradeList(myTradesUrl(tab, page), {
     initial: initialOpen ? { url: myTradesUrl("open", 1), page: initialOpen } : null,
@@ -78,13 +70,37 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
     setNotice(null);
   };
 
-  const cancelOffer = async (offer: TradeOfferDto) => {
+  /**
+   * Open the confirmation dialog for one of the viewer's open offers. Same as
+   * the accept flow this is our own dialog (#1754 item 5) instead of
+   * window.confirm, so the offer being withdrawn is shown explicitly; the POST
+   * still happens in this component (see confirmCancel).
+   */
+  const openCancelConfirm = (offer: TradeOfferDto, trigger: HTMLButtonElement) => {
     if (cancellingId) return;
     if (writeBlocked) {
       setNotice({ text: tMaintenance("writeDisabled"), isError: true });
       return;
     }
-    if (!window.confirm(t("cancelOfferConfirm"))) return;
+    cancelTriggerRef.current = trigger;
+    setConfirmingCancel(offer);
+  };
+
+  /** Row button focused again, unless the row is gone (cancel succeeded). */
+  const restoreCancelFocus = () => {
+    const trigger = cancelTriggerRef.current;
+    cancelTriggerRef.current = null;
+    requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus();
+    });
+  };
+
+  const closeCancelConfirm = () => {
+    setConfirmingCancel(null);
+    restoreCancelFocus();
+  };
+
+  const cancelOffer = async (offer: TradeOfferDto) => {
     setCancellingId(offer.id);
     setNotice(null);
     const res = await postTradeJson(`/api/trades/${offer.id}/cancel`, {});
@@ -112,6 +128,14 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
           })
         : undefined,
     );
+  };
+
+  /** Confirmed in the dialog: perform the cancel and return focus to the row. */
+  const confirmCancel = () => {
+    const offer = confirmingCancel;
+    if (!offer) return;
+    setConfirmingCancel(null);
+    void cancelOffer(offer).finally(restoreCancelFocus);
   };
 
   const activeTab = TABS.find((item) => item.status === tab) ?? TABS[0];
@@ -146,7 +170,12 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
         {list.offers.map((offer) => {
           const { give, get, partner } = viewerSides(offer);
           const isCompleted = offer.status === "completed";
-          const unavailable = offer.status === "open" && (give.deleted || get.deleted);
+          // An open offer nobody can accept any more: the API reports it as
+          // `tradeable: false` (deleted/inactive card, trade setting off). The
+          // deleted-card case gets its own copy, because its name is only a
+          // listing-time snapshot.
+          const cardDeleted = give.deleted || get.deleted;
+          const unavailable = offer.status === "open" && (cardDeleted || offer.tradeable !== true);
           const dateText = isCompleted
             ? t("myTradesCompletedAt", { date: formatTradeDateTime(offer.completedAt ?? offer.updatedAt, locale) })
             : offer.status === "cancelled"
@@ -189,7 +218,9 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
                 </div>
               </div>
               {unavailable && (
-                <p className="mt-2 text-xs text-yellow-200">{t("myTradesUnavailableHelp")}</p>
+                <p className="mt-2 text-xs text-yellow-200">
+                  {t(cardDeleted ? "myTradesUnavailableHelp" : "myTradesUnavailableHelpNotTradeable")}
+                </p>
               )}
               {/* Only open/completed rows have footer content. Omit the whole
                   wrapper for cancelled rows so its border/padding cannot leave
@@ -217,7 +248,7 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
                   {offer.status === "open" && offer.mineRole === "offerer" && (
                     <button
                       type="button"
-                      onClick={() => cancelOffer(offer)}
+                      onClick={(event) => openCancelConfirm(offer, event.currentTarget)}
                       disabled={cancellingId !== null || writeBlocked}
                       className="rounded-lg bg-gray-700 px-4 py-2 text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -292,6 +323,13 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
       </div>
       {list.status === "ok" && (
         <TradePager page={page} hasMore={list.hasMore} onPageChange={setPage} />
+      )}
+      {confirmingCancel && (
+        <TradeCancelModal
+          offer={confirmingCancel}
+          onConfirm={confirmCancel}
+          onClose={closeCancelConfirm}
+        />
       )}
     </section>
   );
