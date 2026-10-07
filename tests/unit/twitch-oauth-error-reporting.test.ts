@@ -32,7 +32,8 @@ vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: mocks.checkRateLimit,
   getRateLimitIdentifier: mocks.getRateLimitIdentifier,
   getClientIp: vi.fn(() => '127.0.0.1'),
-  rateLimits: { authCallback: {}, twitchRewardsGet: {} },
+  getTrustedClientIp: vi.fn(() => '127.0.0.1'),
+  rateLimits: { authLogin: {}, authCallback: {}, twitchRewardsGet: {} },
 }))
 vi.mock('@/lib/sentry/error-handler', () => ({
   reportAuthError: mocks.reportAuthError,

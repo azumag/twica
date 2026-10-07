@@ -6,6 +6,7 @@
 // server-only Route Handler は、その境界で logger.server を別途使用する。
 import { logger } from "./logger";
 import { getKvBinding, KV_MIN_EXPIRATION_TTL_SECONDS } from "./cloudflare-kv";
+import { getStrictRateLimitNamespace } from "./cloudflare-strict-rate-limit";
 
 /**
  * Rate limit store data structure
@@ -25,6 +26,7 @@ interface RateLimitResult {
   limit: number;
   remaining: number;
   reset: number;
+  unavailable?: boolean;
 }
 
 /**
@@ -32,7 +34,13 @@ interface RateLimitResult {
  * レートリミッターインターフェース
  */
 interface RateLimiter {
-  limit: (identifier: string) => Promise<RateLimitResult>;
+  limit: (identifier: string, softFallbackIdentifier?: string) => Promise<RateLimitResult>;
+  strict: boolean;
+}
+
+interface StrictRateLimitNamespace {
+  idFromName(name: string): unknown;
+  get(id: unknown): { fetch(request: Request): Promise<Response> };
 }
 
 /**
@@ -251,8 +259,48 @@ async function checkRateLimitInternal(
   name: string,
   limit: number,
   windowMs: number,
-  identifier: string
+  identifier: string,
+  strict = false,
+  softFallbackIdentifier?: string,
 ): Promise<RateLimitResult> {
+  let storageIdentifier = identifier;
+  if (strict) {
+    try {
+      const namespace = await getStrictRateLimitNamespace() as StrictRateLimitNamespace | null;
+      if (namespace) {
+        // A single Durable Object per limiter/identifier serializes all requests
+        // for that account or IP. Never fall back to KV after an enabled DO fails:
+        // doing so would silently restore the non-atomic, fail-open behavior this
+        // stricter path exists to prevent.
+        if (identifier.endsWith(":unknown")) {
+          return { success: false, limit, remaining: 0, reset: Date.now() + windowMs, unavailable: true };
+        }
+        const id = namespace.idFromName(`${name}:${identifier}`);
+        const response = await namespace.get(id).fetch(new Request("https://rate-limit/check", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ limit, windowMs }),
+        }));
+        if (!response.ok) throw new Error(`Durable Object returned ${response.status}`);
+        const result = await response.json() as RateLimitResult;
+        if (typeof result.success !== "boolean" || typeof result.remaining !== "number" || typeof result.reset !== "number") {
+          throw new Error("Durable Object returned an invalid rate-limit result");
+        }
+        return { ...result, limit };
+      }
+      // Preserve existing local/non-Cloudflare behavior while the optional
+      // Durable Object binding is absent. Once present, only the trusted primary
+      // identifier above reaches the strict backend.
+      storageIdentifier = softFallbackIdentifier ?? identifier;
+    } catch {
+      // Strict routes fail closed if a configured backend cannot be reached.
+      // Return a distinct state so handlers can respond 503 instead of treating
+      // an infrastructure outage as either an allow or a known rate-limit hit.
+      logger.warn("Strict rate limit backend unavailable", { name });
+      return { success: false, limit, remaining: 0, reset: Date.now() + windowMs, unavailable: true };
+    }
+  }
+
   // 初回呼び出し時に KV バインディングを確認し、利用可能なら KV ストレージへ
   // 切り替える（分散環境でのレート制限共有。無ければメモリ実装のまま）。
   await ensureKvRateLimitStorage();
@@ -260,7 +308,7 @@ async function checkRateLimitInternal(
   const now = Date.now();
   // エンドポイント名をキーに含めることで、異なるエンドポイント間でカウンタが共有されないようにする
   // Include endpoint name in key so counters are not shared across different endpoints
-  const key = `ratelimit:${name}:${identifier}`;
+  const key = `ratelimit:${name}:${storageIdentifier}`;
 
   try {
     const existing = await currentStorage.get(key);
@@ -315,10 +363,11 @@ async function checkRateLimitInternal(
  * @param limit - ウィンドウ内の最大リクエスト数 / Max requests within window
  * @param windowMs - レート制限ウィンドウ（ミリ秒） / Rate limit window in milliseconds
  */
-function createRatelimit(name: string, limit: number, windowMs: number): RateLimiter {
+function createRatelimit(name: string, limit: number, windowMs: number, strict = false): RateLimiter {
   return {
-    limit: async (identifier: string): Promise<RateLimitResult> => {
-      return checkRateLimitInternal(name, limit, windowMs, identifier);
+    strict,
+    limit: async (identifier: string, softFallbackIdentifier?: string): Promise<RateLimitResult> => {
+      return checkRateLimitInternal(name, limit, windowMs, identifier, strict, softFallbackIdentifier);
     },
   };
 }
@@ -358,7 +407,7 @@ export const rateLimits = {
   // 全リクエスト共通の制限（gachaDemoBroadcastとは別枠。broadcast分岐は
   // 認証済みユーザー操作でIDベース、こちらは匿名IPベースのため識別子が異なる）。
   gachaDemoCard: createRatelimit("gachaDemoCard", 30, 60 * 1000),
-  authLogin: createRatelimit("authLogin", 5, 60 * 1000),
+  authLogin: createRatelimit("authLogin", 5, 60 * 1000, true),
   authCallback: createRatelimit("authCallback", 10, 60 * 1000),
   authLogout: createRatelimit("authLogout", 10, 60 * 1000),
   // Issue #836: 利用規約同意（一度きりの操作）。誤発火・連打対策に authLogout と同水準。
@@ -388,7 +437,7 @@ export const rateLimits = {
   // お知らせ既読はupsertで冪等だが、DoS対策として制限（分あたり20回）
   announcementRead: createRatelimit("announcementRead", 20, 60 * 1000),
   // 支援コードアクティベーション（1時間5回、Issue仕様に基づく総当り攻撃対策）
-  activateCode: createRatelimit("activateCode", 5, 3600 * 1000),
+  activateCode: createRatelimit("activateCode", 5, 3600 * 1000, true),
   // プランダウングレード（1時間10回、activateとは独立したレート制限）
   deactivatePlan: createRatelimit("deactivatePlan", 10, 3600 * 1000),
   // 問い合わせ一覧取得（読み取り専用のため比較的緩い制限）
@@ -439,23 +488,38 @@ export async function checkRateLimit(
   ratelimit: RateLimiter,
   identifier: string,
   limit?: number,
-  windowMs?: number
-): Promise<{ success: boolean; limit?: number; remaining?: number; reset?: number }> {
+  windowMs?: number,
+  softFallbackIdentifier?: string,
+): Promise<{ success: boolean; limit?: number; remaining?: number; reset?: number; unavailable?: boolean }> {
   try {
-    const result = await ratelimit.limit(identifier);
+    const result = await ratelimit.limit(identifier, softFallbackIdentifier);
     return {
       success: result.success,
       limit: result.limit,
       remaining: result.remaining,
       reset: result.reset,
+      unavailable: result.unavailable,
     };
   } catch (error) {
     logger.error("Rate limit check failed:", error);
 
+    // Preserve fail-closed behavior even if an unexpected exception escapes a
+    // strict limiter's own backend boundary. The legacy fallback below remains
+    // intentionally fail-open for ordinary endpoint limits.
+    if (ratelimit.strict) {
+      return {
+        success: false,
+        unavailable: true,
+        limit: limit || 0,
+        remaining: 0,
+        reset: Date.now() + (windowMs || 60000),
+      };
+    }
+
     if (limit && windowMs) {
       // フォールバック時はidentifierをそのままname代わりに使用（エラー時の安全策）
       // Use identifier as name fallback during error recovery
-      return checkRateLimitInternal("fallback", limit, windowMs, identifier);
+      return checkRateLimitInternal("fallback", limit, windowMs, identifier, false, softFallbackIdentifier);
     }
 
     return {
@@ -499,6 +563,17 @@ export async function getRateLimitIdentifier(
 
   const ip = getClientIp(request);
   return `ip:${ip}`;
+}
+
+/**
+ * Cloudflare's edge supplies this single-address header to the Worker. Do not
+ * use X-Forwarded-For/X-Real-IP for strict login limits: clients can supply
+ * those headers and rotate the apparent address to evade a per-IP counter.
+ */
+export function getTrustedClientIp(request: Request): string | null {
+  const ip = request.headers.get("cf-connecting-ip")?.trim();
+  if (!ip || ip.includes(",") || /[\r\n\s]/.test(ip)) return null;
+  return ip;
 }
 
 /**
