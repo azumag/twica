@@ -82,6 +82,12 @@ export interface Database {
           // 未所持カード表示時に画像/説明まで公開するか（false=プレースホルダーのみ）
           // When unowned cards are shown, whether to reveal card image/description
           show_unowned_card_details: boolean
+          // 視聴者間のカードトレード許可フラグ (#722/#725)
+          // Whether viewers may trade this channel's cards (#722/#725)
+          trade_enabled: boolean
+          // クロスチャンネルトレード許可フラグ (#722/#725)
+          // Whether cross-channel trades are allowed (#722/#725)
+          cross_channel_trade_enabled: boolean
           // 配信中ディレクトリ(/live)への掲載オプトイン（デフォルトfalse）
           // Whether the streamer opts into the live directory listing (default false)
           publish_live_status: boolean
@@ -122,6 +128,8 @@ export interface Database {
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          trade_enabled?: boolean
+          cross_channel_trade_enabled?: boolean
           publish_live_status?: boolean
           publish_stats?: boolean
           raid_gacha_active_until?: string | null
@@ -154,6 +162,8 @@ export interface Database {
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          trade_enabled?: boolean
+          cross_channel_trade_enabled?: boolean
           publish_live_status?: boolean
           publish_stats?: boolean
           raid_gacha_active_until?: string | null
