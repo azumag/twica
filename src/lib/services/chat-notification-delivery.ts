@@ -125,7 +125,7 @@ export async function deliverChatNotificationSlice(
     // claimに予算を使い切った場合は送信へ進まず、fenced releaseで正常な続きへ戻す。
     // ownerが既に切り替わっていればreleaseが失敗するため、新ownerの状態は上書きしない。
     const nextAttemptAt = new Date(Date.now() + CONTINUATION_MIN_DELAY_MS)
-    const persisted = await releaseChatNotificationForContinuation(claim, nextAttemptAt)
+    const persisted = await releaseChatNotificationForContinuation(claim, nextAttemptAt, { beforeSend: true })
     if (!persisted) return { kind: 'lease_lost' }
     logger.info('[chat-notification-delivery] slice deferred before send - claim used budget', {
       outboxId: claim.id,
@@ -135,6 +135,7 @@ export async function deliverChatNotificationSlice(
     return { kind: 'deferred', nextAttemptAt: nextAttemptAt.toISOString() }
   }
 
+  let externalSendStarted = false
   const beforeExternalSend = async (): Promise<boolean | 'budget-exhausted'> => {
     // Helix fetchは各試行3秒timeout。応答処理とcursor保存にも1秒を残し、
     // 各内部retry直前に同じ判定を行う。残り予算が足りない状態はlease喪失と
@@ -142,9 +143,12 @@ export async function deliverChatNotificationSlice(
     if (deadlineAt - Date.now() < CHAT_SEND_MIN_START_BUDGET_MS) return 'budget-exhausted'
     const renewed = await renewChatNotificationLease(claim)
     if (!renewed) return false
-    return deadlineAt - Date.now() >= CHAT_SEND_MIN_START_BUDGET_MS
-      ? true
-      : 'budget-exhausted'
+    if (deadlineAt - Date.now() < CHAT_SEND_MIN_START_BUDGET_MS) return 'budget-exhausted'
+    // このfence成功直後にchat-serviceがHelix fetchを開始する。cursorだけでは
+    // 実送信失敗やcheckpoint失敗を判別できないため、送信許可を一度でも出した
+    // sliceのclaim増分は戻さない（内部retryにも同じfenceが呼ばれる）。
+    externalSendStarted = true
+    return true
   }
 
   let deliveryStatePersisted = false
@@ -190,7 +194,9 @@ export async function deliverChatNotificationSlice(
 
     if (outcome.outcome === 'deferred') {
       const nextAttemptAt = new Date(Date.now() + CONTINUATION_MIN_DELAY_MS)
-      const persisted = await releaseChatNotificationForContinuation(claim, nextAttemptAt)
+      const persisted = await releaseChatNotificationForContinuation(claim, nextAttemptAt, {
+        beforeSend: !externalSendStarted,
+      })
       deliveryStatePersisted = true
       if (!persisted) return { kind: 'lease_lost' }
       logger.info('[chat-notification-delivery] slice deferred - budget exhausted', {

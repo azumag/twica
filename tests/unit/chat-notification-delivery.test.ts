@@ -54,6 +54,7 @@ const claim = {
   payload: { any: 'thing' },
   leaseId: 'lease-1',
   attemptCount: 1,
+  claimAttemptIncrement: 1 as const,
   createdAt: '2026-09-22T00:00:00.000Z',
 }
 
@@ -69,6 +70,7 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGate.mockResolvedValue({ outcome: 'reserved' })
+    mockRenew.mockResolvedValue(true)
   })
 
   it('returns not_claimable without any state change when claim fails', async () => {
@@ -118,7 +120,7 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
     await expect(deliverChatNotificationSlice('batch-1')).resolves.toEqual({ kind: 'lease_lost' })
   })
 
-  it('releases for continuation on a budget-deferred outcome, without consuming a retry attempt', async () => {
+  it('releases a sender budget deferral before any external send with the claim refund enabled', async () => {
     mockClaim.mockResolvedValue(claim)
     mockDecode.mockReturnValue(decodedData)
     mockSend.mockResolvedValue({ outcome: 'deferred', reason: 'budget' })
@@ -130,16 +132,22 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
     expect(mockRelease).toHaveBeenCalledTimes(1)
     expect(mockRelease.mock.calls[0]?.[0]).toBe(claim)
     expect(mockRelease.mock.calls[0]?.[1]).toBeInstanceOf(Date)
+    expect(mockRelease.mock.calls[0]?.[2]).toEqual({ beforeSend: true })
+    expect(mockRenew).not.toHaveBeenCalled()
     expect(mockRetry).not.toHaveBeenCalled()
     expect(mockDeadLetter).not.toHaveBeenCalled()
   })
 
-  it('counts the DB claim against the slice budget and releases without starting a send', async () => {
+  it.each([
+    ['initial', { ...claim, attemptCount: 1, claimAttemptIncrement: 1 as const }],
+    ['retry', { ...claim, attemptCount: 3, claimAttemptIncrement: 1 as const }],
+    ['continuation', { ...claim, attemptCount: 3, claimAttemptIncrement: 0 as const }],
+  ])('counts the %s DB claim against the slice budget and releases before any send', async (_kind, claimed) => {
     let currentTime = Date.now()
     const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => currentTime)
     mockClaim.mockImplementation(async () => {
       currentTime += 1_000
-      return claim
+      return claimed
     })
     mockDecode.mockReturnValue(decodedData)
     mockRelease.mockResolvedValue(true)
@@ -151,7 +159,7 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
       })
 
       expect(mockSend).not.toHaveBeenCalled()
-      expect(mockRelease).toHaveBeenCalledWith(claim, expect.any(Date))
+      expect(mockRelease).toHaveBeenCalledWith(claimed, expect.any(Date), { beforeSend: true })
       expect(mockRetry).not.toHaveBeenCalled()
     } finally {
       dateNow.mockRestore()
@@ -177,11 +185,110 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
       })
 
       expect(mockRenew).not.toHaveBeenCalled()
-      expect(mockRelease).toHaveBeenCalledWith(claim, expect.any(Date))
+      expect(mockRelease).toHaveBeenCalledWith(claim, expect.any(Date), { beforeSend: true })
       expect(mockRetry).not.toHaveBeenCalled()
     } finally {
       dateNow.mockRestore()
     }
+  })
+
+  it('refunds a claim when lease renewal consumes the send reserve before granting any send permission', async () => {
+    const startedAt = Date.now()
+    let currentTime = startedAt
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => currentTime)
+    mockClaim.mockResolvedValue(claim)
+    mockDecode.mockReturnValue(decodedData)
+    mockRelease.mockResolvedValue(true)
+    mockRenew.mockImplementation(async () => {
+      currentTime = startedAt + 1_500 // 3.5s remaining after a successful renewal is still too little to send.
+      return true
+    })
+    mockSend.mockImplementation(async (_claim, _data, beforeExternalSend) => {
+      await expect(beforeExternalSend()).resolves.toBe('budget-exhausted')
+      return { outcome: 'deferred', reason: 'budget' }
+    })
+
+    try {
+      await expect(deliverChatNotificationSlice('batch-1', { timeBudgetMs: 5_000 })).resolves.toMatchObject({
+        kind: 'deferred',
+      })
+
+      expect(mockRenew).toHaveBeenCalledTimes(1)
+      expect(mockRelease).toHaveBeenCalledWith(claim, expect.any(Date), { beforeSend: true })
+      expect(mockRetry).not.toHaveBeenCalled()
+    } finally {
+      dateNow.mockRestore()
+    }
+  })
+
+  it('keeps the claim counted when a partial send defers after a successful external-send fence', async () => {
+    const startedAt = Date.now()
+    let currentTime = startedAt
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => currentTime)
+    mockClaim.mockResolvedValue(claim)
+    mockDecode.mockReturnValue(decodedData)
+    mockRelease.mockResolvedValue(true)
+    mockSend.mockImplementation(async (_claim, _data, beforeExternalSend) => {
+      await expect(beforeExternalSend()).resolves.toBe(true)
+      // A sent segment consumes the slice; a later segment cannot start. The earlier
+      // permission must remain recorded even though the last fence returns budget-exhausted.
+      currentTime = startedAt + 1_500
+      await expect(beforeExternalSend()).resolves.toBe('budget-exhausted')
+      return { outcome: 'deferred', reason: 'budget' }
+    })
+
+    try {
+      await expect(deliverChatNotificationSlice('batch-1', { timeBudgetMs: 5_000 })).resolves.toMatchObject({
+        kind: 'deferred',
+      })
+
+      expect(mockRenew).toHaveBeenCalledTimes(1)
+      expect(mockRelease).toHaveBeenCalledWith(claim, expect.any(Date), { beforeSend: false })
+      expect(mockRetry).not.toHaveBeenCalled()
+    } finally {
+      dateNow.mockRestore()
+    }
+  })
+
+  it.each(['retryable', 'throw'] as const)(
+    'keeps the claim counted for a %s failure after granting external-send permission',
+    async (failure) => {
+      mockClaim.mockResolvedValue(claim)
+      mockDecode.mockReturnValue(decodedData)
+      mockRetry.mockResolvedValue('pending')
+      mockSend.mockImplementation(async (_claim, _data, beforeExternalSend) => {
+        await expect(beforeExternalSend()).resolves.toBe(true)
+        if (failure === 'throw') throw new Error('send failed')
+        return { outcome: 'retryable', reason: 'send failed' }
+      })
+
+      const result = deliverChatNotificationSlice('batch-1')
+      if (failure === 'throw') {
+        await expect(result).rejects.toThrow('send failed')
+      } else {
+        await expect(result).resolves.toMatchObject({ kind: 'retryable' })
+      }
+
+      expect(mockRenew).toHaveBeenCalledWith(claim)
+      expect(mockRetry).toHaveBeenCalledWith(claim, 'send failed')
+      expect(mockRelease).not.toHaveBeenCalled()
+    },
+  )
+
+  it('does not refund or retry when the external-send fence loses ownership', async () => {
+    mockClaim.mockResolvedValue(claim)
+    mockDecode.mockReturnValue(decodedData)
+    mockRenew.mockResolvedValue(false)
+    mockSend.mockImplementation(async (_claim, _data, beforeExternalSend) => {
+      await expect(beforeExternalSend()).resolves.toBe(false)
+      return { outcome: 'aborted', reason: 'lease lost before send' }
+    })
+
+    await expect(deliverChatNotificationSlice('batch-1')).resolves.toEqual({ kind: 'lease_lost' })
+
+    expect(mockRelease).not.toHaveBeenCalled()
+    expect(mockRetry).not.toHaveBeenCalled()
+    expect(mockDeadLetter).not.toHaveBeenCalled()
   })
 
   it('returns lease_lost when the continuation release loses its lease', async () => {
@@ -248,6 +355,7 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
 
     expect(mockDeadLetter).not.toHaveBeenCalled()
     expect(mockRetry).not.toHaveBeenCalled()
+    expect(mockRelease).not.toHaveBeenCalled()
     // Issue #1665: abortedはstate遷移を伴わない(no DB write)ため唯一の
     // 診断手段がログ/reportError。他のsent/deferred/terminal/retryable分岐と
     // 同様に、無音のままにしない。

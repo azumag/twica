@@ -32,6 +32,8 @@ export interface ClaimedChatNotification {
   payload: unknown
   leaseId: string
   attemptCount: number
+  /** bounded claim自身が加算した0/1。送信前のbudget yieldでだけ取り消す。 */
+  claimAttemptIncrement?: 0 | 1
   createdAt: string
   /** Issue #1549 additive fields. Optional keeps legacy test doubles/source-compatible. */
   deliveryMode?: MultiDrawChatDeliveryMode
@@ -57,6 +59,7 @@ interface ClaimedRow {
   delivery_mode?: MultiDrawChatDeliveryMode
   delivery_chunk_size?: number
   delivery_cursor?: number
+  claim_attempt_increment?: 0 | 1
 }
 
 function toClaimed(row: ClaimedRow): ClaimedChatNotification {
@@ -74,6 +77,7 @@ function toClaimed(row: ClaimedRow): ClaimedChatNotification {
   if (row.delivery_mode !== undefined) claim.deliveryMode = row.delivery_mode
   if (row.delivery_chunk_size !== undefined) claim.deliveryChunkSize = Number(row.delivery_chunk_size)
   if (row.delivery_cursor !== undefined) claim.deliveryCursor = Number(row.delivery_cursor)
+  if (row.claim_attempt_increment !== undefined) claim.claimAttemptIncrement = row.claim_attempt_increment
   return claim
 }
 
@@ -480,8 +484,10 @@ export async function retryChatNotification(
  * pending状態から再claimする場合だけ、attempt_countを増やさない。lease失効後の
  * processing行の回収（クラッシュ回収）は、continuationかどうかに関係なく通常の
  * 失敗試行として扱い、無限再試行へ化けないようattempt_countを増やす。
- * SET句のCASE式はUPDATE前（更新前）の行の値を参照するPostgreSQLの仕様に
- * 依拠しており、他の列への代入順序には依存しない。
+ * candidateを行ロックして更新前のstatus/pending_kindから今回の増分を求め、
+ * UPDATEとRETURNINGで同じ値を使う。送信前のbudget yieldはこの増分だけを
+ * fenced releaseで取り消せる。更新後のpending_kindだけから推測すると、
+ * continuationの期限切れprocessing回収（増分あり）を区別できない。
  *
  * WHERE句の`attempt_count < MAX`はcontinuation行には課さない
  * （2026-09-22 azumagレビュー指摘の回帰修正）。continuationはattempt_countを
@@ -503,48 +509,62 @@ export async function claimChatNotificationForBoundedDelivery(
   const leaseId = crypto.randomUUID()
   const { sql } = await getDb()
   const rows = await sql<ClaimedRow[]>`
-    update chat_notification_outbox
+    with candidate as (
+      select id, case
+        when status = 'pending' and pending_kind = 'continuation' then 0
+        else 1
+      end as claim_attempt_increment
+      from chat_notification_outbox
+      where batch_id = ${batchId}
+        and (
+          (status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())
+          or (
+            attempt_count < ${CHAT_OUTBOX_MAX_ATTEMPTS}::integer
+            and (
+              (status = 'pending' and next_attempt_at <= now())
+              or (status = 'processing' and lease_expires_at <= now())
+            )
+          )
+        )
+      for update
+    )
+    update chat_notification_outbox as outbox
     set status = 'processing',
         lease_id = ${leaseId}::uuid,
         lease_expires_at = now() + (${CHAT_OUTBOX_LEASE_SECONDS}::integer * interval '1 second'),
-        attempt_count = attempt_count + case
-          when status = 'pending' and pending_kind = 'continuation' then 0
-          else 1
-        end,
+        attempt_count = outbox.attempt_count + candidate.claim_attempt_increment,
         wake_reserved_until = null,
         updated_at = now()
-    where batch_id = ${batchId}
-      and (
-        (status = 'pending' and pending_kind = 'continuation' and next_attempt_at <= now())
-        or (
-          attempt_count < ${CHAT_OUTBOX_MAX_ATTEMPTS}::integer
-          and (
-            (status = 'pending' and next_attempt_at <= now())
-            or (status = 'processing' and lease_expires_at <= now())
-          )
-        )
-      )
-    returning *
+    from candidate
+    where outbox.id = candidate.id
+    returning outbox.*, candidate.claim_attempt_increment
   `
   return rows[0] ? toClaimed(rows[0]) : null
 }
 
 /**
- * 予算内に完走できなかったが失敗ではない正常な途中終了。cursor/lease以外の
- * delivery_cursor自体は呼び出し前にadvanceChatNotificationDeliveryCursorで
- * 既に保存済みである前提。ここではstatusをpendingへ戻し、次のclaimが
- * attempt_countを消費しないよう pending_kind='continuation' を記録する。
- * last_error/attempt_countには触れない（正常系であり障害ログではないため）。
+ * 予算内に完走できなかったが失敗ではない正常な途中終了。delivery_cursorは
+ * 変更せず、送信済みsegmentの位置は呼び出し前のcheckpointを維持する。
+ * 送信開始済みのsliceはpending_kind='continuation'として同じattemptを継続する。
+ * beforeSendの場合だけ今回のclaim増分を取り消す（既存continuationは増分0）。
+ * 取り消した行はpending_kind='retry'として次claimで再加算させる。ここでも
+ * continuationを記録すると、次の実送信失敗まで未計上になり上限が緩むため。
+ * last_errorは維持し、外部送信開始後のcontinuationはattempt_countに触れない。
  */
 export async function releaseChatNotificationForContinuation(
-  claim: Pick<ClaimedChatNotification, 'id' | 'leaseId'>,
+  claim: Pick<ClaimedChatNotification, 'id' | 'leaseId' | 'claimAttemptIncrement'>,
   nextAttemptAt: Date,
+  options: { beforeSend?: boolean } = {},
 ): Promise<boolean> {
+  // metadataのない旧callerは減算しない。status/lease fenceと同一UPDATEで
+  // releaseするので、古いownerや重複releaseは新ownerのcounterを変更できない。
+  const attemptRefund = options.beforeSend ? claim.claimAttemptIncrement ?? 0 : 0
   const { sql } = await getDb()
   const rows = await sql<{ id: string }[]>`
     update chat_notification_outbox
     set status = 'pending',
-        pending_kind = 'continuation',
+        pending_kind = case when ${attemptRefund}::integer = 1 then 'retry' else 'continuation' end,
+        attempt_count = attempt_count - ${attemptRefund}::integer,
         next_attempt_at = ${nextAttemptAt.toISOString()}::timestamptz,
         lease_id = null,
         lease_expires_at = null,
