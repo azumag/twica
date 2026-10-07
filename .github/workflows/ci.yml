@@ -91,6 +91,7 @@ jobs:
               - 'tests/fixtures/add-card-trading-postgres.sql'
               - 'tests/fixtures/add-card-trading-concurrency.sh'
               - 'tests/fixtures/redemption-ranking-exclusions-postgres.sql'
+              - 'tests/fixtures/stats-ranking-ties-postgres.sql'
               - 'tests/fixtures/pack-completion-rewards-postgres.sql'
               # These suites execute real SQL through the application DB layer;
               # changes to their runtime, schema or test setup must re-run PG17.
@@ -589,6 +590,14 @@ jobs:
         run: |
           psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
             -f tests/fixtures/redemption-ranking-exclusions-postgres.sql
+
+      - name: Verify streamer ranking ties and stable positions
+        # Calls the migrated runtime functions and rolls all fixture data back.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/stats-ranking-ties-postgres.sql
 
       - name: Setup Node.js for PostgreSQL integration tests
         uses: actions/setup-node@v4
