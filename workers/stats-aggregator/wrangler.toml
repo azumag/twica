@@ -1,0 +1,58 @@
+# Stats Aggregator Cron Worker (Issue #741)
+#
+# ランキング用統計バッチの定期実行Worker。毎時1回、本体アプリの内部API
+# POST /api/internal/stats/refresh をHTTP経由で叩く「トリガー」に徹する。
+#
+# このWorkerはDB接続・Supabase依存を持たない (#711 の教訓: Worker側に
+# DB直結を持たせるとcutover後に無音停止しうる。集計ロジックは本体アプリ側の
+# refresh_streamer_ranking() に集約し、ここでは複製しない)。
+# 失敗時はconsole.errorに残すのみ (errorsテーブルへの書き込みは行わない。
+# スナップショットは前回値が残るため、数時間の停滞は「computed_atが古い」
+# だけで壊れず、次回tickで回復する。そのため失敗時の60秒後リトライは持たない)。
+#
+# NOTE: 実deploy・secret設定はこのPRの範囲外
+# (workers/chat-delivery と同じ導入順序)。デプロイ前にオーナーが行うこと:
+#   1. `wrangler secret put STATS_REFRESH_SECRET_PROD` に本番アプリの
+#      STATS_REFRESH_SECRET と同じ値を設定 (previewも同様に_PREVIEWへ)
+#   2. .github/workflows/deploy-cloudflare.yml へ chat-delivery と同型の
+#      opt-in deploy job を追加 (CHAT_DELIVERY_DEPLOY_ENABLED相当のflagで gating)
+#   3. backfill_streamer_daily_stats() の手動実行 (migration内コメント参照)
+# 上記が揃う前にデプロイすると、backfill-pendingでsnapshotが生成されない
+# (読み取りAPIは「集計準備中」を返す) だけで事故にはならない。
+
+name = "twica-stats-aggregator"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# 毎時5分に1回。ランキングsnapshotの鮮度目標 (1時間) に対し、
+# アプリ側cooldown (10分) と干渉しない間隔。
+# src/index.ts の STATS_REFRESH_CRON 定数と完全に一致させること
+# (scheduled() がこの文字列をログ・分岐に使う)。
+[triggers]
+crons = ["5 * * * *"]
+
+# 集計対象アプリのベースURL。機密ではないため公開変数でよい。
+# prod/preview両方を対象にする理由は src/index.ts の Env 型コメント参照。
+[vars]
+APP_BASE_URL_PROD = "https://twica.bluemoon.works"
+APP_BASE_URL_PREVIEW = "https://twica-preview.tsubasa-azumagakito.workers.dev"
+
+# 機密変数 (wrangler secret put で設定):
+# - STATS_REFRESH_SECRET_PROD: 本番アプリの STATS_REFRESH_SECRET と同じ値
+#   (新しい値を生成しない。値を変えると本体アプリ側との認証が一致しなくなる)
+# - STATS_REFRESH_SECRET_PREVIEW: previewアプリの STATS_REFRESH_SECRET と同じ値
+# どちらも未設定の場合、該当ターゲットへの呼び出しのみを安全にスキップし
+# 警告ログを出す (他方のターゲットには影響しない)。
+
+# preview 環境。workers/chat-delivery と同じく [vars] と [triggers] を再宣言する
+# (environment はトップレベル設定をキーごとに上書きするため、再宣言しない分は
+# preview 実行時に存在しない。error-reporter の wrangler.toml コメント参照)。
+[env.preview]
+
+[env.preview.vars]
+APP_BASE_URL_PROD = "https://twica.bluemoon.works"
+APP_BASE_URL_PREVIEW = "https://twica-preview.tsubasa-azumagakito.workers.dev"
+
+[env.preview.triggers]
+crons = ["5 * * * *"]
