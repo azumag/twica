@@ -21,6 +21,24 @@
 BEGIN;
 
 -- ---------------------------------------------------------------------------
+-- 0. 集計対象の初期化
+-- ---------------------------------------------------------------------------
+-- CI では先行する fixture（transaction: required で `psql -1` 実行のもの、
+-- paced-multi-draw-chat / pack-completion-rewards / add-card-trading /
+-- redemption-ranking-exclusions 等）が streamers / gacha_history へデータを
+-- コミットしたまま残っている。本 fixture は「母集団＝自分の 13 配信者」という
+-- 固定の期待値（participant_count / snapshot 行数 / 順位）を検証するため、
+-- 先に集計の入力と出力を空にしてから自分のデータだけを投入する。
+--
+-- すべて同一トランザクション内の変更であり、末尾の ROLLBACK で元に戻るため
+-- 先行 fixture のデータは後続 step へそのまま残る（他の streamers / cards は
+-- 母集団判定に使われないので消さない = FK 影響を最小化する）。
+DELETE FROM public.streamer_ranking_snapshots;
+DELETE FROM public.streamer_daily_stats;
+DELETE FROM public.stats_meta;
+DELETE FROM public.gacha_history;
+
+-- ---------------------------------------------------------------------------
 -- 1. 配信者 / カード / 排出履歴の投入
 -- ---------------------------------------------------------------------------
 
