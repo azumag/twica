@@ -100,16 +100,31 @@ export default async function StreamerCollectionPage({
   //  - show_unowned_cards=true: viewer also sees unowned active cards (sorted by rarity, after owned)
   // 「未所持の詳細を隠す」表示制御は SortedCardGrid の props で行うため、ここではカード自体を含めるかだけを判定する。
   // The "hide details" toggle is enforced in SortedCardGrid; here we only decide inclusion.
+  // Issue #1748: クライアント側のマスクだけでは RSC ペイロードに name / image_url が
+  // 含まれたままになるため、details 非公開時はサーバ側で未所持カードの詳細を落としてから
+  // client component へ渡す。並び替え・パック絞り込みに必要な rarity / card_number /
+  // collection_name / id は残す。表示名はクライアント側の translations.unownedCard
+  // プレースホルダーで描画されるため、ここでは空文字に置き換える。
+  // Strip unowned-card details server-side so they never reach the browser via the
+  // RSC payload when show_unowned_card_details=false (client-side masking alone leaks).
+  const hideUnownedDetails = !streamer.show_unowned_card_details;
   const ownedCardIds = new Set(ownedCards.map((card) => card.id));
   const unownedCards: StreamerCollectionCard[] = streamer.show_unowned_cards
     ? sortCollectedCards(
         activeCards.filter((card) => !ownedCardIds.has(card.id))
-      ).map((card) => ({
-        ...card,
-        count: 0,
-        isOwned: false,
-        collectionNumber: collectionNumberMap.get(card.id),
-      }))
+      ).map((card) => {
+        const base = {
+          ...card,
+          count: 0,
+          isOwned: false as const,
+          collectionNumber: collectionNumberMap.get(card.id),
+        };
+        // details 非公開時は name / image_url / description を落とす
+        // （client 側は translations.unownedCard のプレースホルダーで描画）。
+        return hideUnownedDetails
+          ? { ...base, name: "", image_url: null, description: null }
+          : base;
+      })
     : [];
 
   // 所持カードを先頭に、未所持カードを後ろに連結
