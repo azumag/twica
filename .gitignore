@@ -73,7 +73,7 @@ next-env.d.ts
 supabase/.temp/
 
 # PlanetScale schema baseline: 生dump/manifestは実行のたびに再生成される作業ディレクトリ
-# （scripts/db-phase2/export-public-schema.mjs の出力）。機密情報は含まないが、
+# （旧 scripts/db-phase2/export-public-schema.mjs の出力。#837 で撤去済み）。機密情報は含まないが、
 # 生成物であり内容が実行ごとに変わりうるためgit管理しない。
 # db/planetscale/*.sql（bootstrap.sql/public-schema.sql/grants.sql）はコミット対象
 # （docs/planetscale-schema-baseline.md 参照）。
