@@ -3,7 +3,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { getTwitchAccessToken, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
+import { handleTwitchTokenError, requireTwitchAccessToken } from "@/lib/twitch/token-error-handler";
 import { validateCSRFToken } from "@/lib/csrf";
 import { recordChannelPointsApiFailure } from "@/lib/twitch/channel-points-access";
 
@@ -18,14 +18,6 @@ async function syncCapabilityOnTwitchFailure(twitchUserId: string, status: numbe
 }
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
-
-async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string> {
-  const accessToken = await getTwitchAccessToken(twitchUserId);
-  if (accessToken === null) {
-    throw new Error(ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED);
-  }
-  return accessToken;
-}
 
 export async function GET(request: Request) {
   const session = await getSession();
@@ -52,7 +44,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
+    const accessToken = await requireTwitchAccessToken(session.twitchUserId);
 
     const response = await fetch(
       `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
@@ -73,15 +65,9 @@ export async function GET(request: Request) {
     const data = await response.json();
     return NextResponse.json(data.data || []);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : '';
-    if (errorMessage === ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED) {
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED, requiresReauth: true },
-        { status: 401 }
-      );
-    }
-    // refresh診断の永続化・非二重報告契約は twitchTokenErrorReportContext のJSDocを参照。
-    return handleApiError(error, "Twitch rewards fetch", twitchTokenErrorReportContext(error));
+    // Issue #1088: token error の catch を共通ヘルパへ集約する
+    // (未保持は401+requiresReauth、恒久refresh失効は記録のうえ401、一過性は500)。
+    return handleTwitchTokenError(error, "Twitch rewards fetch");
   }
 }
 
@@ -118,7 +104,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
+    const accessToken = await requireTwitchAccessToken(session.twitchUserId);
     const response = await fetch(
       `${TWITCH_API_URL}/channel_points/custom_rewards?broadcaster_id=${session.twitchUserId}`,
       {
@@ -147,14 +133,8 @@ export async function POST(request: Request) {
     const data = await response.json();
     return NextResponse.json(data.data[0]);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : '';
-    if (errorMessage === ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED) {
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED, requiresReauth: true },
-        { status: 401 }
-      );
-    }
-    // refresh診断の永続化・非二重報告契約は twitchTokenErrorReportContext のJSDocを参照。
-    return handleApiError(error, "Twitch reward creation", twitchTokenErrorReportContext(error));
+    // Issue #1088: token error の catch を共通ヘルパへ集約する
+    // (未保持は401+requiresReauth、恒久refresh失効は記録のうえ401、一過性は500)。
+    return handleTwitchTokenError(error, "Twitch reward creation");
   }
 }
