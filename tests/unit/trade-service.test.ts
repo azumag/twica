@@ -433,6 +433,9 @@ describe("trade service (#723)", () => {
       "yes",
       undefined,
     ]);
+    // The board never reports tradeability: /mine owns that flag (#1754).
+    expect(result.offers[0]).not.toHaveProperty("tradeable");
+    expect((pg.selectCalls[0].fields as Record<string, unknown>).tradeableState).toBeUndefined();
     // Round-trip budget: one statement (was user + page + metadata + canAccept).
     expect(roundTrips()).toBe(1);
   });
@@ -808,6 +811,60 @@ describe("listMyTradeOffers status filter / paging (#715 PR-C)", () => {
     expect(where.sql).toMatch(/"trade_offers"\."offerer_user_id" = \(\s*SELECT viewer\.id/);
     expect(where.sql).toMatch(/"trade_offers"\."accepted_by_user_id" = \(\s*SELECT viewer\.id/);
     expect(where.params.filter((param) => param === "viewer-1")).toHaveLength(2);
+  });
+
+  it("reports tradeability for open offers in the same statement as the page (#1754 item 4)", async () => {
+    const open = { ...OFFER, id: "10000000-0000-4000-8000-000000000011" };
+    const notTradeable = { ...OFFER, id: "10000000-0000-4000-8000-000000000012" };
+    const completed = {
+      ...OFFER,
+      id: "10000000-0000-4000-8000-000000000013",
+      status: "completed",
+      accepted_by_user_id: ACCEPTOR_ID,
+    };
+    const pg = createDbMock({
+      selects: [{
+        rows: [
+          listRow(open, { viewerUserId: OFFER.offerer_user_id, tradeableState: true }),
+          listRow(notTradeable, { viewerUserId: OFFER.offerer_user_id, tradeableState: false }),
+          // A finished offer is not acceptable, whatever the gate state is.
+          listRow(completed, { viewerUserId: OFFER.offerer_user_id, tradeableState: true }),
+        ],
+      }],
+    });
+    primeDb(pg);
+
+    const { listMyTradeOffers } = await import("@/lib/trade");
+    const { offers } = await listMyTradeOffers("viewer-1", { status: "open" });
+
+    expect(offers.map((offer) => offer.tradeable)).toEqual([true, false, false]);
+    // Round-trip budget: the flag rides along in the page statement.
+    expect(roundTrips()).toBe(1);
+
+    // The gates mirror the board's SQL predicates (an active card definition
+    // on both sides, trade_enabled on both channels, and — for cross-channel
+    // offers — cross_channel_trade_enabled on both).
+    const state = render((pg.selectCalls[0].fields as Record<string, unknown>).tradeableState);
+    expect(state.params).toEqual([]);
+    expect(state.sql).toMatch(
+      /"cards" AS active_card\s+WHERE active_card\.id = "trade_offers"\."offered_card_id"\s+AND active_card\.is_active = TRUE/,
+    );
+    expect(state.sql).toMatch(
+      /"cards" AS active_card\s+WHERE active_card\.id = "trade_offers"\."wanted_card_id"\s+AND active_card\.is_active = TRUE/,
+    );
+    expect(state.sql).toMatch(
+      /"streamers" AS trade_gate\s+WHERE trade_gate\.id = "trade_offers"\."offered_streamer_id"\s+AND trade_gate\.trade_enabled = TRUE/,
+    );
+    expect(state.sql).toMatch(
+      /"streamers" AS trade_gate\s+WHERE trade_gate\.id = "trade_offers"\."wanted_streamer_id"\s+AND trade_gate\.trade_enabled = TRUE/,
+    );
+    expect(state.sql).toMatch(
+      /"streamers" AS cross_gate\s+WHERE cross_gate\.id = "trade_offers"\."offered_streamer_id"\s+AND cross_gate\.cross_channel_trade_enabled = TRUE/,
+    );
+    expect(state.sql).toMatch(
+      /"streamers" AS cross_gate\s+WHERE cross_gate\.id = "trade_offers"\."wanted_streamer_id"\s+AND cross_gate\.cross_channel_trade_enabled = TRUE/,
+    );
+    expect(state.sql).toContain('"trade_offers"."is_cross_channel" IS NOT TRUE');
   });
 
   it("marks offers the viewer accepted as acceptor rows", async () => {

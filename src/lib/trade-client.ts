@@ -6,6 +6,7 @@
  * (`@/lib/trade`, `@/lib/trade-api`) is `import type` and erased at build time.
  */
 import type { TradeApiErrorCode } from "@/lib/trade-api";
+import type { TradeOfferDto } from "@/lib/trade";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 
 /** i18n keys (in the `trade` namespace) used for API error copy. */
@@ -190,6 +191,31 @@ export function tradeCreatePath(streamerId: string, scope: "in_channel" | "cross
   return scope === "cross_channel"
     ? `/trade/${streamerId}/new?scope=cross`
     : `/trade/${streamerId}/new`;
+}
+
+/** One side of a trade row as the viewer sees it (card + deleted snapshot). */
+type ViewerTradeSide = { card: TradeOfferDto["offeredCard"]; deleted: boolean };
+
+/**
+ * The viewer's side of one trade row, for /trade/mine rows (and the cancel
+ * confirmation dialog).
+ *
+ * /api/trades/mine returns the offer as stored (offerer → offeredCard,
+ * requested → wantedCard); `mineRole` tells whether the viewer listed it or
+ * accepted it, so the cards are swapped for offers the viewer accepted. A
+ * side whose card definition was deleted (id NULL) is marked so the caller can
+ * render the snapshot as deleted.
+ */
+export function viewerSides(offer: TradeOfferDto): {
+  give: ViewerTradeSide;
+  get: ViewerTradeSide;
+  partner: TradeOfferDto["offerer"];
+} {
+  const offeredSide = { card: offer.offeredCard, deleted: offer.offeredCardId === null };
+  const wantedSide = { card: offer.wantedCard, deleted: offer.wantedCardId === null };
+  return offer.mineRole === "acceptor"
+    ? { give: wantedSide, get: offeredSide, partner: offer.offerer }
+    : { give: offeredSide, get: wantedSide, partner: offer.acceptedBy };
 }
 
 /**

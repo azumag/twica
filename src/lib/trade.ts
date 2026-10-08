@@ -223,6 +223,20 @@ export type TradeOfferDto = {
   wantedStreamer: TradeStreamerSummary | null;
   isOwnOffer?: boolean;
   canAccept?: TradeCanAccept;
+  /**
+   * GET /api/trades/mine rows only: whether anybody can still accept this
+   * listing (#1754 item 4). Always false outside `status === "open"` (a
+   * completed/cancelled offer is not acceptable by definition). For an open
+   * offer it is false when a card definition was deleted or deactivated, or
+   * when a channel's trade_enabled / (for cross-channel offers)
+   * cross_channel_trade_enabled is off — the same gates that decide whether
+   * the board lists the offer, so "not tradeable" is exactly a row nobody can
+   * accept and the offerer has to cancel. The viewer-dependent visibility
+   * rule is deliberately NOT part of it: visibility decides who may SEE the
+   * offer, while an acceptor must own a copy of the wanted card to pay with
+   * it anyway.
+   */
+  tradeable?: boolean;
   mineRole?: "offerer" | "acceptor";
 };
 
@@ -619,6 +633,8 @@ type OfferListRow = {
   offerer: JoinedUser;
   acceptedBy: JoinedUser;
   acceptState?: TradeCanAccept | null;
+  /** Only computed (and only used) by listMyTradeOffers — see the DTO field. */
+  tradeableState?: boolean | null;
 };
 
 /**
@@ -680,6 +696,37 @@ function acceptStateFor(viewerUserId: SQL) {
     ) THEN 'all_listed'
     ELSE 'yes'
   END`;
+}
+
+/**
+ * Whether an open offer can still be accepted by somebody, evaluated in SQL
+ * with the exact gate predicates the board filters with (#1754 item 4):
+ *
+ *   tradeable(offer) ⇔ both card definitions are active
+ *     AND both channels have trade_enabled = TRUE
+ *     AND (the offer is not cross-channel
+ *          OR both channels have cross_channel_trade_enabled = TRUE)
+ *
+ * A deleted card definition (offered_card_id / wanted_card_id NULL) makes
+ * cardIsActive() false, and a missing streamer row makes the gates false, so
+ * both fail closed exactly like listTradeOffers and precheckTradeAccept.
+ * `IS NOT TRUE` (instead of NOT) keeps a NULL is_cross_channel on the
+ * "in-channel" side rather than turning the whole expression into NULL.
+ */
+function tradeableStateFor() {
+  return sql<boolean>`(
+    ${cardIsActive(tradeOffersTable.offered_card_id)}
+    AND ${cardIsActive(tradeOffersTable.wanted_card_id)}
+    AND ${tradeEnabledGate(tradeOffersTable.offered_streamer_id)}
+    AND ${tradeEnabledGate(tradeOffersTable.wanted_streamer_id)}
+    AND (
+      ${qualifiedColumn(tradeOffersTable.is_cross_channel)} IS NOT TRUE
+      OR (
+        ${crossEnabledGate(tradeOffersTable.offered_streamer_id)}
+        AND ${crossEnabledGate(tradeOffersTable.wanted_streamer_id)}
+      )
+    )
+  )`;
 }
 
 function toOfferDto(row: OfferListRow, context: ListContext): TradeOfferDto {
@@ -861,13 +908,18 @@ export async function listMyTradeOffers(
   // Bounded page (LIMIT pageSize+1 for hasMore). History grows without bound
   // for active traders, so an unpaged SELECT would eventually exceed Worker
   // CPU/memory limits. Single statement (previously user lookup → page →
-  // metadata, 3 sequential round trips).
+  // metadata, 3 sequential round trips); `tradeableState` rides along in the
+  // same SELECT list as one boolean expression, so the flag costs no extra
+  // round trip.
   const offset = (page - 1) * TRADE_PAGE_SIZE;
   const rows: OfferListRow[] = await withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
-        .select(offerListFields(viewerUserId))
+        .select({
+          ...offerListFields(viewerUserId),
+          tradeableState: tradeableStateFor(),
+        })
         .from(tradeOffersTable)
         .leftJoin(offeredStreamerMeta, eq(offeredStreamerMeta.id, tradeOffersTable.offered_streamer_id))
         .leftJoin(wantedStreamerMeta, eq(wantedStreamerMeta.id, tradeOffersTable.wanted_streamer_id))
@@ -891,6 +943,7 @@ export async function listMyTradeOffers(
         row.offer.offerer_user_id === row.viewerUserId
           ? "offerer" as const
           : "acceptor" as const,
+      tradeable: row.offer.status === "open" && row.tradeableState === true,
     })),
     page,
     pageSize: TRADE_PAGE_SIZE,

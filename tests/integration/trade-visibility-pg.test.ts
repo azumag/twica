@@ -810,6 +810,44 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         hasMore: false,
       });
     });
+
+    it("reports tradeability per offer without filtering the owner's history (#1754 item 4)", async () => {
+      const { listMyTradeOffers } = await import("@/lib/trade");
+      const openPages = async () => {
+        const first = await listMyTradeOffers(TW.O, { status: "open", page: 1 });
+        const second = await listMyTradeOffers(TW.O, { status: "open", page: 2 });
+        return { first, second, all: [...first.offers, ...second.offers] };
+      };
+      const tradeableOf = (offers: Awaited<ReturnType<typeof openPages>>["all"], offerId: string) =>
+        offers.find((offer) => offer.id === offerId)?.tradeable;
+
+      const before = await openPages();
+      // Page 1 is the 20 bulk offers (PRIV_A → PRIV_B): active cards, both
+      // channels trading on.
+      expect(before.first.offers.every((offer) => offer.tradeable === true)).toBe(true);
+      // Page 2 mixes acceptable offers with ones nobody can accept any more.
+      expect(tradeableOf(before.all, OF.PRIV_BC)).toBe(true);
+      expect(tradeableOf(before.all, OF.CROSS_PUB_PRIV)).toBe(true);
+      expect(tradeableOf(before.all, OF.CROSS_PRIV_PUB)).toBe(true);
+      expect(tradeableOf(before.all, OF.PUB_WANT_INACTIVE)).toBe(false);
+      expect(tradeableOf(before.all, OF.PUB_GIVE_INACTIVE)).toBe(false);
+
+      // Turning PUBLIC's trade switch off makes its offers unacceptable (both
+      // the in-channel and the cross-channel ones), while the rows stay in the
+      // offerer's own history so they can still be cancelled.
+      await sql!`UPDATE streamers SET trade_enabled = FALSE WHERE id = ${S.PUB}`;
+      try {
+        const after = await openPages();
+        expect(after.all.map((offer) => offer.id)).toEqual(before.all.map((offer) => offer.id));
+        expect(after.first.offers.every((offer) => offer.tradeable === true)).toBe(true);
+        expect(tradeableOf(after.all, OF.PRIV_BC)).toBe(true);
+        expect(tradeableOf(after.all, OF.CROSS_PUB_PRIV)).toBe(false);
+        expect(tradeableOf(after.all, OF.CROSS_PRIV_PUB)).toBe(false);
+      } finally {
+        // Restore the seeded world for the suites that follow.
+        await sql!`UPDATE streamers SET trade_enabled = TRUE WHERE id = ${S.PUB}`;
+      }
+    });
   });
 
   describe("viewer UI server helpers", () => {

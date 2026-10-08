@@ -27,6 +27,7 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     offeredStreamer: null,
     wantedStreamer: null,
     isOwnOffer: true,
+    tradeable: true,
     mineRole: "offerer",
     ...overrides,
   };
@@ -101,27 +102,43 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(within(footer as HTMLElement).getByRole("button", { name: ja.cancelOfferButton })).toBeEnabled();
   });
 
-  it("cancels an open offer after confirmation and refetches", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("cancels an open offer after the confirmation dialog and refetches", async () => {
     renderMine();
     fireEvent.click(await screen.findByRole("button", { name: ja.cancelOfferButton }));
 
-    expect(window.confirm).toHaveBeenCalledWith(ja.cancelOfferConfirm);
+    // In-app dialog instead of window.confirm (#1754 item 5): it names the
+    // offer being withdrawn and focuses the non-destructive button.
+    const dialog = screen.getByRole("dialog", { name: ja.cancelOfferConfirm });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(within(dialog).getByText("Offered Dragon")).toBeInTheDocument();
+    expect(within(dialog).getByText("Wanted Slime")).toBeInTheDocument();
+    expect(within(dialog).getByText(ja.myTradesGive)).toBeInTheDocument();
+    expect(within(dialog).getByText(ja.myTradesWant)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: ja.cancelOfferModalDismissButton })).toHaveFocus();
+    // Opening the dialog must not send anything yet.
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/cancel"))).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferModalConfirmButton }));
     expect(await screen.findByText(ja.cancelOfferSuccess)).toBeInTheDocument();
     expect(await screen.findByText(ja.myTradesEmptyOpen)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
     const cancelCall = fetchMock.mock.calls.find(([url]) => url === "/api/trades/offer-1/cancel");
     expect(cancelCall![1]).toEqual(expect.objectContaining({ method: "POST" }));
   });
 
-  it("does nothing when the confirmation is dismissed", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(false);
+  it("does not cancel when the confirmation dialog is dismissed", async () => {
     renderMine();
-    fireEvent.click(await screen.findByRole("button", { name: ja.cancelOfferButton }));
+    const openButton = await screen.findByRole("button", { name: ja.cancelOfferButton });
+    fireEvent.click(openButton);
+    fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferModalDismissButton }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/cancel"))).toBe(false);
+    // The row is still there, so focus returns to its cancel button.
+    await waitFor(() => expect(openButton).toHaveFocus());
   });
 
   it("shows the coded error when the offer was completed meanwhile", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchMock.mockImplementation(async (url: string) => {
       if (url.startsWith("/api/trades/mine")) {
         return jsonResponse(200, { offers: byStatus.open, page: 1, pageSize: 20, hasMore: false });
@@ -130,6 +147,7 @@ describe("MyTrades (#727 §6.6)", () => {
     });
     renderMine();
     fireEvent.click(await screen.findByRole("button", { name: ja.cancelOfferButton }));
+    fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferModalConfirmButton }));
     expect(await screen.findByRole("alert")).toHaveTextContent(ja.errorTradeAlreadyCompletedOrInvalid);
   });
 
@@ -231,12 +249,30 @@ describe("MyTrades (#727 §6.6)", () => {
   });
 
   it("marks open offers that can no longer be accepted (deleted card)", async () => {
-    byStatus.open = [makeOffer({ wantedCardId: null })];
+    byStatus.open = [makeOffer({ wantedCardId: null, tradeable: false })];
     renderMine();
     expect(await screen.findByText(ja.myTradesUnavailableBadge)).toBeInTheDocument();
     expect(screen.getByText(ja.myTradesUnavailableHelp)).toBeInTheDocument();
     // Still cancellable.
     expect(screen.getByRole("button", { name: ja.cancelOfferButton })).toBeEnabled();
+  });
+
+  it("marks open offers the API reports as no longer tradeable (#1754 item 4)", async () => {
+    byStatus.open = [makeOffer({ tradeable: false })];
+    renderMine();
+    expect(await screen.findByText(ja.myTradesUnavailableBadge)).toBeInTheDocument();
+    // The cards still exist, so the copy explains the setting change instead
+    // of blaming a deleted card.
+    expect(screen.getByText(ja.myTradesUnavailableHelpNotTradeable)).toBeInTheDocument();
+    expect(screen.queryByText(ja.myTradesUnavailableHelp)).toBeNull();
+    expect(screen.getByRole("button", { name: ja.cancelOfferButton })).toBeEnabled();
+  });
+
+  it("keeps tradeable open offers unmarked", async () => {
+    byStatus.open = [makeOffer()];
+    renderMine();
+    await screen.findByText("Offered Dragon");
+    expect(screen.queryByText(ja.myTradesUnavailableBadge)).toBeNull();
   });
 
   it("supports arrow-key navigation between tabs (roving tabindex)", async () => {
@@ -362,7 +398,6 @@ describe("MyTrades (#727 §6.6)", () => {
     });
 
     it("after a cancel: removes the row at once and reloads the other tabs on their next visit", async () => {
-      vi.spyOn(window, "confirm").mockReturnValue(true);
       let releaseRefresh: () => void = () => {};
       const refreshGate = new Promise<void>((resolve) => {
         releaseRefresh = resolve;
@@ -385,6 +420,7 @@ describe("MyTrades (#727 §6.6)", () => {
         return baseImpl(url, init);
       });
       fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferButton }));
+      fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferModalConfirmButton }));
       expect(await screen.findByText(ja.cancelOfferSuccess)).toBeInTheDocument();
       expect(screen.queryByText("Offered Dragon")).toBeNull();
       expect(screen.getByText(ja.myTradesEmptyOpen)).toBeInTheDocument();
