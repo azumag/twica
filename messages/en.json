@@ -1422,7 +1422,8 @@
       "7d": "7 Days",
       "30d": "30 Days",
       "channelPoints": "Channel Points",
-      "byCard": "By Card"
+      "byCard": "By Card",
+      "comparison": "Compare Channels"
     },
     "totalDraws": "Total Draws",
     "draws": "draws",
@@ -1456,9 +1457,37 @@
       "noOwners": "No owners"
     },
     "raritySummary": "Rarity Summary",
+    "comparison": {
+      "anonymityNotice": "Channel names are never shown in the ranking (your name is not visible to other streamers either). Updated hourly.",
+      "updatedAt": "Updated: {time}",
+      "minutesAgo": "{minutes} min ago",
+      "hoursAgo": "{hours} h ago",
+      "loadError": "Failed to load the ranking.",
+      "retry": "Retry",
+      "preparing": "Statistics are being prepared. Please wait a moment.",
+      "summaryHeading": "Your standing",
+      "boardHeading": "Ranking",
+      "boardLabel": "{metric} ranking",
+      "rank": "Rank",
+      "you": "You",
+      "rankOf": "#{rank} / {count}",
+      "percentileTop": "Top {pct}%",
+      "noDataInPeriod": "No draws in this period yet",
+      "outOfPopulation": "Not ranked: there were no draws in the last 30 days",
+      "rankUnavailable": "Not ranked",
+      "insufficientData": "The ranking is hidden because fewer than 5 channels can be compared (it updates hourly).",
+      "valueDraws": "Draws",
+      "valueCardCount": "Registered cards",
+      "metrics": {
+        "drawsTotal": "Total gacha draws",
+        "drawsDaily": "Today",
+        "drawsWeekly": "Last 7 days",
+        "cardCount": "Registered cards"
+      }
+    },
     "fullPeriodStats": {
       "title": "About Full Period Stats",
-      "message": "Full period statistics require significant server resources for aggregation. We will decide whether to implement this feature once a monetization plan is in place."
+      "message": "Cumulative gacha draws are available in the \"Compare Channels\" tab (pre-aggregated and updated hourly). For other full-period statistics, aggregation requires significant server resources, so we will decide whether to implement them once a monetization plan is in place."
     }
   },
   "inquiriesPage": {
