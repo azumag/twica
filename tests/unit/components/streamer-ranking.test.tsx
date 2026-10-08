@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { NextIntlClientProvider } from 'next-intl'
 import StreamerRanking from '@/components/StreamerRanking'
 import type {
@@ -105,6 +105,7 @@ function bodyRanks() {
 describe('StreamerRanking (#642 子C)', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   it('自分の順位サマリーと匿名ランキングを描画し、他チャンネル識別子を拾わない', async () => {
@@ -273,5 +274,54 @@ describe('StreamerRanking (#642 子C)', () => {
       expect(screen.getByText(ja.summaryHeading)).toBeTruthy()
     })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('mounted 中に経過表示を更新し、3時間で stale 表示を amber にする', async () => {
+    const computedAt = new Date('2026-01-01T00:00:00.000Z')
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(computedAt.getTime() + 25 * 60_000))
+    const fetchMock = mockFetch(response({ computedAt: computedAt.toISOString() }))
+
+    renderComponent()
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // 表示中の時計に従って分表示を更新し、 stale 閾値の直前までは通常色を保つ。
+    expect(screen.getByText(ja.updatedAt.replace('{time}', '25分前'))).toBeTruthy()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(screen.getByText(ja.updatedAt.replace('{time}', '26分前'))).toBeTruthy()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(153 * 60_000)
+    })
+    const beforeStale = screen.getByText(ja.updatedAt.replace('{time}', '2時間前'))
+    expect(beforeStale.className).toContain('text-gray-500')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(screen.getByText(ja.updatedAt.replace('{time}', '3時間前'))).toBeTruthy()
+    expect(screen.getByText(ja.updatedAt.replace('{time}', '3時間前')).className).toContain(
+      'text-amber-400',
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('unmount 時に経過表示 interval を解除する', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T03:00:00.000Z'))
+    mockFetch(response({ computedAt: '2026-01-01T00:00:00.000Z' }))
+    const { unmount } = renderComponent()
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(screen.getByText(ja.summaryHeading)).toBeTruthy()
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

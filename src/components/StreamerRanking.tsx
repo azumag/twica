@@ -91,15 +91,23 @@ function relativeAge(computedAt: string, now: number) {
 type LoadState =
   | { status: 'loading' }
   | { status: 'error' }
-  | { status: 'ready'; data: StreamerRankingResponse; loadedAt: number }
+  | { status: 'ready'; data: StreamerRankingResponse }
 
 export default function StreamerRanking() {
   const t = useTranslations('gachaStatsPage')
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [attempt, setAttempt] = useState(0)
   const [selected, setSelected] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
 
   const retry = useCallback(() => setAttempt((value) => value + 1), [])
+
+  useEffect(() => {
+    // computedAt の経過と stale 色を表示中にも正しく反映するため、時計だけを分単位で更新する。
+    // API データの再取得とは独立させ、アンマウント時には interval を必ず解放する。
+    const interval = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(interval)
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -116,7 +124,8 @@ export default function StreamerRanking() {
         }
         const data = (await res.json()) as StreamerRankingResponse
         if (!cancelled) {
-          setState({ status: 'ready', data, loadedAt: Date.now() })
+          setNow(Date.now())
+          setState({ status: 'ready', data })
         }
       } catch (error) {
         // abort はタブ切替/アンマウントによる正常系なのでエラー表示しない。
@@ -166,7 +175,7 @@ export default function StreamerRanking() {
     )
   }
 
-  const { data, loadedAt } = state
+  const { data } = state
 
   // backfill 完了前は snapshot が一切生成されない（computedAt: null）。
   // 誤った累計・週間ランキングを見せないため、この状態では数値を出さない。
@@ -181,7 +190,7 @@ export default function StreamerRanking() {
     )
   }
 
-  const age = relativeAge(data.computedAt, loadedAt)
+  const age = relativeAge(data.computedAt, now)
   const updatedAt =
     age.minutes < 60
       ? t('comparison.minutesAgo', { minutes: age.minutes })
