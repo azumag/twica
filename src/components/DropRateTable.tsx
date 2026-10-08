@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { formatRarityLabel, getRarityColorClass } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
+import StreamerRanking from "@/components/StreamerRanking";
 
 interface CardStat {
   cardId: string;
@@ -68,7 +69,7 @@ interface CardOwnerStatsData {
   cardStats: CardOwnerStat[];
 }
 
-type StatsTab = "7d" | "30d" | "channelPoints" | "byCard";
+type StatsTab = "7d" | "30d" | "channelPoints" | "byCard" | "comparison";
 
 /**
  * Drop rate comparison table for streamer statistics page
@@ -92,12 +93,22 @@ export default function DropRateTable() {
   // 期間統計の取得期間。channelPoints タブは 7d 取得分の
   // channelPointStats を流用するため 7d 扱いとする。
   const period = activeTab === "30d" ? "30d" : "7d";
-  const loading = activeTab === "byCard" ? cardOwnerLoading : periodLoading;
+  // 「他チャンネル比較」タブは期間統計を使わず、専用コンポーネント
+  // (StreamerRanking) が自前でローディング/エラーを表示するため、
+  // ここでは期間統計のスピナーを出さない。
+  const loading =
+    activeTab === "byCard"
+      ? cardOwnerLoading
+      : activeTab === "comparison"
+        ? false
+        : periodLoading;
 
   // 期間統計（7日/30日、およびチャネルポイントランキングの土台）。
   // 「カード別」タブは期間に依存しないため別エフェクトで取得する。
   useEffect(() => {
-    if (activeTab === "byCard") return;
+    // 「カード別」「他チャンネル比較」タブは期間統計を使わないため取得しない
+    // （比較タブは専用 API /api/streamer-ranking を自前で叩く）。
+    if (activeTab === "byCard" || activeTab === "comparison") return;
     const fetchStats = async () => {
       setPeriodLoading(true);
       try {
@@ -456,7 +467,7 @@ export default function DropRateTable() {
     <div>
       {/* Period tabs / 期間タブ */}
       <div className="mb-6 flex flex-wrap gap-2">
-        {(["7d", "30d", "channelPoints", "byCard"] as const).map((tab) => (
+        {(["7d", "30d", "channelPoints", "byCard", "comparison"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -471,7 +482,9 @@ export default function DropRateTable() {
         ))}
       </div>
 
-      {loading ? (
+      {activeTab === "comparison" ? (
+        <StreamerRanking />
+      ) : loading ? (
         <div className="py-12 text-center text-gray-400">
           <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-gray-500 border-t-purple-500" />
         </div>
@@ -490,9 +503,11 @@ export default function DropRateTable() {
       )}
 
       {/* Full period stats notice / 全期間統計についてのお知らせ
-          「カード別」タブは全期間の所持統計そのものなので、
-          「全期間統計は未実装」という告知と矛盾するため非表示にする。 */}
-      {activeTab !== "byCard" && (
+          「カード別」タブは全期間の所持統計そのものなので非表示にする。
+          「他チャンネル比較」タブは全期間の排出数を提供する当のタブであり、
+          「比較タブで確認できます」という案内をそのタブ上で出すのは冗長なため
+          ここでも非表示にする。 */}
+      {activeTab !== "byCard" && activeTab !== "comparison" && (
         <div className="mt-8 rounded-xl border border-gray-700 bg-gray-800/50 p-4">
           <h4 className="mb-2 text-sm font-semibold text-gray-300">
             {t("fullPeriodStats.title")}
