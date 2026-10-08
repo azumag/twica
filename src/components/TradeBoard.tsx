@@ -1,302 +1,283 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useTranslations } from "next-intl";
-
 import type { TradeOfferDto, TradeScope } from "@/lib/trade";
+import { useTradeList } from "@/lib/use-trade-list";
+import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeOfferRow from "./TradeOfferRow";
 import TradeAcceptModal from "./TradeAcceptModal";
+import TradePager from "./TradePager";
 
-type ListResponse = {
-  offers: TradeOfferDto[];
-  page: number;
-  pageSize: number;
-  hasMore: boolean;
-};
+/** Filter option. Only cards already visible to the viewer are ever passed. */
+export type TradeBoardFilterCard = { cardId: string; name: string };
 
-const FILTER_PAGE_BUDGET = 5;
-
-async function fetchOfferPage(
-  streamerId: string,
-  scope: TradeScope,
-  page: number,
-): Promise<ListResponse> {
-  const params = new URLSearchParams({
-    streamerId,
-    scope,
-    page: String(page),
-  });
-  const response = await fetch(`/api/trades?${params.toString()}`);
-  if (!response.ok) {
-    throw new Error(`list failed: ${response.status}`);
-  }
-  return (await response.json()) as ListResponse;
+interface TradeBoardProps {
+  streamerId: string;
+  scope: TradeScope;
+  isLoggedIn: boolean;
+  /**
+   * The channel shows unowned cards with details. When false the API only
+   * returns offers whose cards the viewer owns (design doc §3 visibility), so
+   * the board says so explicitly and uses a dedicated empty state.
+   */
+  revealsUnownedCards: boolean;
+  /** In-channel tab only (cross tab has no card filter in the MVP). */
+  filterCards: TradeBoardFilterCard[];
+  /** Login URL returning to this exact board (scope included). */
+  loginHref: string;
+  /** Listing flow URL (or login URL for anonymous viewers). */
+  createHref: string;
+  /** Arrived right after creating an offer (?listed=1). */
+  justListed?: boolean;
 }
 
+const CTA_CLASS =
+  "mt-4 inline-block rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700";
+
 /**
- * トレードボード (#726, §6.3)。
- * - 「チャンネル内」「クロスチャンネル」2タブ (?scope=cross)。
- * - フィルタ: 欲しいカード名 / 出ているカード名 / レアリティ。20件/頁。
- *   フィルタ指定時は最大5頁まで逐次取得してクライアント側で絞り込む
- *   (一覧APIはカードID指定のみのため、名前・レアリティの絞り込みは
- *   クライアント側で行う。MVPの暫定方式)。
- * - 一覧取得エラーは一覧上部のインラインバナー (setMessage 方式、トースト新設なし)。
- * - 未ログインでも閲覧可。
+ * Trade board list (§6.3).
+ *
+ * Offers are fetched from the browser through GET /api/trades instead of
+ * being rendered by the server component: the endpoint's tradeRead rate
+ * limit is the abuse guard for this public, login-optional list, and SSR
+ * calling listTradeOffers directly would bypass it.
+ *
+ * Pages are cached in the browser (useTradeList, shared across remounts):
+ * paging back, changing a filter back, or switching the scope tab (which
+ * remounts this component) reuses fetched pages instead of refetching and
+ * showing "loading" again. Any accept drops the whole cache.
  */
 export default function TradeBoard({
   streamerId,
-  initialScope,
-  crossChannelEnabled,
-}: {
-  streamerId: string;
-  initialScope: TradeScope;
-  crossChannelEnabled: boolean;
-}) {
+  scope,
+  isLoggedIn,
+  revealsUnownedCards,
+  filterCards,
+  loginHref,
+  createHref,
+  justListed = false,
+}: TradeBoardProps) {
   const t = useTranslations("trade");
-  const router = useRouter();
-  const [scope, setScope] = useState<TradeScope>(initialScope);
+  const { mode: maintenanceMode } = useMaintenanceStatus();
+  const writeBlocked = maintenanceMode !== "off";
   const [page, setPage] = useState(1);
-  const [offers, setOffers] = useState<TradeOfferDto[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [listError, setListError] = useState(false);
-  const [wantedName, setWantedName] = useState("");
-  const [offeredName, setOfferedName] = useState("");
-  const [rarity, setRarity] = useState("");
-  const [acceptTarget, setAcceptTarget] = useState<TradeOfferDto | null>(null);
+  const [wantedCardId, setWantedCardId] = useState("");
+  const [offeredCardId, setOfferedCardId] = useState("");
+  const [accepting, setAccepting] = useState<{ offer: TradeOfferDto; requestId: string } | null>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  // offerId → requestId. Kept across dialog close/reopen and failed attempts
+  // (network error, TRADE_BUSY, CSRF retry...) so a retried accept that the
+  // server already committed is answered as an idempotent replay instead of
+  // being treated as a second trade. Dropped only after a confirmed success.
+  // Known limitation: the map lives in memory, so a reload/tab switch after a
+  // lost success response yields "already completed" on retry instead of the
+  // replayed success. Ownership is still transferred exactly once.
+  const acceptRequestIds = useRef(new Map<string, string>());
 
-  const filtersActive = wantedName.trim() !== "" || offeredName.trim() !== "" || rarity !== "";
+  const showCardFilter = scope === "in_channel" && filterCards.length > 0;
+  const isFiltered = scope === "in_channel" && (wantedCardId !== "" || offeredCardId !== "");
 
-  const loadPage = useCallback(
-    async (nextScope: TradeScope, nextPage: number) => {
-      setLoading(true);
-      setListError(false);
-      try {
-        const data = await fetchOfferPage(streamerId, nextScope, nextPage);
-        setOffers(data.offers);
-        setHasMore(data.hasMore);
-        setPage(data.page);
-      } catch {
-        setListError(true);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [streamerId],
-  );
-
-  // フィルタ指定時は全頁 (上限5頁) を取得してクライアント側で絞り込む
-  const loadFiltered = useCallback(async () => {
-    setLoading(true);
-    setListError(false);
-    try {
-      const all: TradeOfferDto[] = [];
-      for (let p = 1; p <= FILTER_PAGE_BUDGET; p += 1) {
-        const data = await fetchOfferPage(streamerId, scope, p);
-        all.push(...data.offers);
-        if (!data.hasMore) break;
-      }
-      setOffers(all);
-      setHasMore(false);
-      setPage(1);
-    } catch {
-      setListError(true);
-    } finally {
-      setLoading(false);
-    }
-  }, [streamerId, scope]);
+  const params = new URLSearchParams({ streamerId, scope, page: String(page) });
+  if (scope === "in_channel") {
+    if (wantedCardId) params.set("wantedCardId", wantedCardId);
+    if (offeredCardId) params.set("offeredCardId", offeredCardId);
+  }
+  const { view: list, retry, invalidate } = useTradeList(`/api/trades?${params.toString()}`, {
+    shared: true,
+    // The last row(s) of a later page were accepted/cancelled meanwhile:
+    // step back instead of showing the "no offers yet" empty state.
+    onEmptyPage: setPage,
+  });
+  // Set when the open dialog reports a committed trade (see closeAccept).
+  const completedOfferId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (filtersActive) {
-      void loadFiltered();
-    } else {
-      void loadPage(scope, 1);
+    if (!justListed) return;
+    // Drop ?listed=1 from the address bar so a reload does not show the
+    // "listed" notice again (no navigation / server re-render).
+    const url = new URL(window.location.href);
+    url.searchParams.delete("listed");
+    window.history.replaceState(window.history.state, "", url);
+  }, [justListed]);
+
+  const openAccept = (offer: TradeOfferDto, trigger: HTMLButtonElement) => {
+    let requestId = acceptRequestIds.current.get(offer.id);
+    if (!requestId) {
+      requestId = crypto.randomUUID();
+      acceptRequestIds.current.set(offer.id, requestId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, filtersActive]);
+    triggerRef.current = trigger;
+    setAccepting({ offer, requestId });
+  };
 
-  const switchScope = useCallback(
-    (next: TradeScope) => {
-      setScope(next);
-      setWantedName("");
-      setOfferedName("");
-      setRarity("");
-      router.replace(next === "cross_channel" ? `/trade/${streamerId}?scope=cross` : `/trade/${streamerId}`);
-    },
-    [router, streamerId],
-  );
-
-  const refetch = useCallback(() => {
-    if (filtersActive) {
-      void loadFiltered();
-    } else {
-      void loadPage(scope, page);
+  const closeAccept = ({ refetch }: { refetch: boolean }) => {
+    setAccepting(null);
+    const trigger = triggerRef.current;
+    triggerRef.current = null;
+    const completedId = completedOfferId.current;
+    completedOfferId.current = null;
+    if (refetch) {
+      // An accept changes ownership (canAccept of other rows / pages / tabs)
+      // and closes the offer: drop the whole cache and refresh this page in
+      // the background, removing a row that is known to be completed so it
+      // cannot be accepted again from a stale list.
+      invalidate(
+        completedId
+          ? (current) => ({
+              ...current,
+              offers: current.offers.filter((item) => item.id !== completedId),
+            })
+          : undefined,
+      );
+    } else if (trigger) {
+      // Return focus to the row's button (same as CardManager's zoom dialog).
+      requestAnimationFrame(() => {
+        if (trigger.isConnected) trigger.focus();
+      });
     }
-  }, [filtersActive, loadFiltered, loadPage, scope, page]);
+  };
 
-  const visibleOffers = useMemo(() => {
-    if (!filtersActive) return offers;
-    const wanted = wantedName.trim().toLowerCase();
-    const offered = offeredName.trim().toLowerCase();
-    return offers.filter((offer) => {
-      if (wanted !== "" && !offer.wantedCard.name.toLowerCase().includes(wanted)) return false;
-      if (offered !== "" && !offer.offeredCard.name.toLowerCase().includes(offered)) return false;
-      if (rarity !== "" && offer.wantedCard.rarity !== rarity && offer.offeredCard.rarity !== rarity) {
-        return false;
-      }
-      return true;
-    });
-  }, [offers, filtersActive, wantedName, offeredName, rarity]);
+  const changeFilter = (setter: (value: string) => void, value: string) => {
+    setter(value);
+    setPage(1);
+  };
 
-  const rarityOptions = useMemo(() => {
-    const seen = new Set<string>();
-    for (const offer of offers) {
-      if (offer.wantedCard.rarity) seen.add(offer.wantedCard.rarity);
-      if (offer.offeredCard.rarity) seen.add(offer.offeredCard.rarity);
-    }
-    return [...seen].sort();
-  }, [offers]);
+  const selectClass =
+    "w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400";
 
-  return (
-    <div>
-      <div role="tablist" className="flex gap-2">
+  let body: React.ReactNode;
+  if (list.status === "loading") {
+    body = (
+      <p className="py-8 text-center text-gray-400" role="status">
+        {t("loading")}
+      </p>
+    );
+  } else if (list.status === "error") {
+    body = (
+      <div role="alert" className="flex flex-col items-center gap-3 rounded-xl bg-red-900/40 p-4 text-sm text-red-200 sm:flex-row sm:justify-between">
+        <span>{t("loadError")}</span>
         <button
           type="button"
-          role="tab"
-          aria-selected={scope === "in_channel"}
-          onClick={() => switchScope("in_channel")}
-          className={`rounded-lg px-4 py-2 text-sm font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 ${
-            scope === "in_channel" ? "bg-purple-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-          }`}
+          onClick={retry}
+          className="rounded-lg bg-gray-700 px-4 py-2 text-white hover:bg-gray-600"
         >
-          {t("tabInChannel")}
+          {t("retryButton")}
         </button>
-        {crossChannelEnabled && (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={scope === "cross_channel"}
-            onClick={() => switchScope("cross_channel")}
-            className={`rounded-lg px-4 py-2 text-sm font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 ${
-              scope === "cross_channel" ? "bg-purple-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-            }`}
-          >
-            {t("tabCrossChannel")}
-          </button>
+      </div>
+    );
+  } else if (list.offers.length === 0) {
+    // Three distinct empty states: a filter matched nothing; the channel hides
+    // unowned cards (so "no offers" only means "none with your cards"); or the
+    // board is genuinely empty (invite the first listing, §6.8).
+    body = (
+      <div className="rounded-xl bg-gray-800 p-8 text-center">
+        {isFiltered ? (
+          <p className="text-gray-400">{t("emptyStateFiltered")}</p>
+        ) : !revealsUnownedCards ? (
+          <p className="text-gray-400">{t("emptyStateUnrevealed")}</p>
+        ) : (
+          <>
+            <p className="text-gray-400">{t("emptyStateMessage")}</p>
+            {/* Anonymous: createHref is the OAuth API route → plain <a> (no prefetch). */}
+            {isLoggedIn ? (
+              <Link href={createHref} className={CTA_CLASS}>
+                {t("emptyStateCta")}
+              </Link>
+            ) : (
+              <a href={createHref} className={CTA_CLASS}>
+                {t("emptyStateCta")}
+              </a>
+            )}
+          </>
         )}
       </div>
-
-      <div className="mt-4 flex flex-col gap-2 rounded-xl bg-gray-800 p-4 sm:flex-row">
-        <label className="flex flex-1 flex-col gap-1 text-sm text-gray-300">
-          {t("filterWantedCard")}
-          <input
-            type="text"
-            value={wantedName}
-            onChange={(event) => setWantedName(event.target.value)}
-            placeholder={t("filterWantedPlaceholder")}
-            className="rounded-lg bg-gray-900 px-3 py-2 text-white placeholder:text-gray-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+    );
+  } else {
+    body = (
+      <ul className="flex flex-col gap-3">
+        {list.offers.map((offer) => (
+          <TradeOfferRow
+            key={offer.id}
+            offer={offer}
+            showStreamers={scope === "cross_channel"}
+            isLoggedIn={isLoggedIn}
+            loginHref={loginHref}
+            writeBlocked={writeBlocked}
+            onAccept={openAccept}
           />
-        </label>
-        <label className="flex flex-1 flex-col gap-1 text-sm text-gray-300">
-          {t("filterOfferedCard")}
-          <input
-            type="text"
-            value={offeredName}
-            onChange={(event) => setOfferedName(event.target.value)}
-            placeholder={t("filterOfferedPlaceholder")}
-            className="rounded-lg bg-gray-900 px-3 py-2 text-white placeholder:text-gray-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-          />
-        </label>
-        <label className="flex flex-1 flex-col gap-1 text-sm text-gray-300">
-          {t("filterRarity")}
-          <select
-            value={rarity}
-            onChange={(event) => setRarity(event.target.value)}
-            className="rounded-lg bg-gray-900 px-3 py-2 text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-          >
-            <option value="">{t("filterAllRarities")}</option>
-            {rarityOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+        ))}
+      </ul>
+    );
+  }
 
-      {listError && (
-        <div role="alert" className="mt-4 rounded-xl bg-red-900/60 p-4 text-sm text-red-200">
-          <p>{t("errorLoadFailed")}</p>
-          <button
-            type="button"
-            onClick={refetch}
-            className="mt-2 rounded-lg bg-red-700 px-3 py-1 font-semibold text-white hover:bg-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-          >
-            {t("retryButton")}
-          </button>
+  return (
+    <section>
+      {justListed && (
+        <div role="status" className="mb-4 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+          <p>{t("listedNotice")}</p>
         </div>
       )}
-
-      {loading ? (
-        <div className="mt-4 space-y-3" aria-hidden="true">
-          {[0, 1].map((index) => (
-            <div key={index} className="h-40 animate-pulse rounded-xl bg-gray-800" />
-          ))}
-        </div>
-      ) : visibleOffers.length === 0 ? (
-        <div className="mt-4 rounded-xl bg-gray-800 p-8 text-center">
-          <p className="text-gray-300">{t("emptyStateMessage")}</p>
-        </div>
-      ) : (
-        <ul className="mt-4 space-y-3">
-          {visibleOffers.map((offer) => (
-            <TradeOfferRow
-              key={offer.id}
-              offer={offer}
-              streamerId={streamerId}
-              showStreamerBadges={scope === "cross_channel"}
-              onAccept={setAcceptTarget}
-              onCancelled={refetch}
-              onListError={(messageKey) => {
-                if (messageKey === "errorRateLimited" || messageKey === "errorGeneric") {
-                  setListError(true);
-                }
-              }}
-            />
-          ))}
-        </ul>
+      {!revealsUnownedCards && (
+        <p className="mb-4 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
+          {t("unrevealedNotice")}
+        </p>
+      )}
+      {showCardFilter && (
+        <fieldset className="mb-4 grid gap-3 sm:grid-cols-2">
+          <legend className="sr-only">{t("filterLabel")}</legend>
+          <label className="text-sm text-gray-300">
+            {t("filterWantedCard")}
+            <select
+              className={`mt-1 ${selectClass}`}
+              value={wantedCardId}
+              onChange={(event) => changeFilter(setWantedCardId, event.target.value)}
+            >
+              <option value="">{t("filterAll")}</option>
+              {filterCards.map((card) => (
+                <option key={card.cardId} value={card.cardId}>
+                  {card.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm text-gray-300">
+            {t("filterOfferedCard")}
+            <select
+              className={`mt-1 ${selectClass}`}
+              value={offeredCardId}
+              onChange={(event) => changeFilter(setOfferedCardId, event.target.value)}
+            >
+              <option value="">{t("filterAll")}</option>
+              {filterCards.map((card) => (
+                <option key={card.cardId} value={card.cardId}>
+                  {card.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </fieldset>
       )}
 
-      {!filtersActive && !loading && visibleOffers.length > 0 && (
-        <div className="mt-4 flex items-center justify-center gap-4">
-          <button
-            type="button"
-            disabled={page <= 1}
-            onClick={() => void loadPage(scope, page - 1)}
-            className="rounded-lg bg-gray-800 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-          >
-            {t("paginationPrev")}
-          </button>
-          <span className="text-sm text-gray-400">{t("paginationPage", { page })}</span>
-          <button
-            type="button"
-            disabled={!hasMore}
-            onClick={() => void loadPage(scope, page + 1)}
-            className="rounded-lg bg-gray-800 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-          >
-            {t("paginationNext")}
-          </button>
-        </div>
+      {body}
+
+      {list.status === "ok" && (
+        <TradePager page={page} hasMore={list.hasMore} onPageChange={setPage} />
       )}
 
-      {acceptTarget && (
+      {accepting && (
         <TradeAcceptModal
-          offer={acceptTarget}
-          onClose={() => setAcceptTarget(null)}
-          onSettled={refetch}
+          offer={accepting.offer}
+          requestId={accepting.requestId}
+          writeBlocked={writeBlocked}
+          onCompleted={() => {
+            acceptRequestIds.current.delete(accepting.offer.id);
+            completedOfferId.current = accepting.offer.id;
+          }}
+          onClose={closeAccept}
         />
       )}
-    </div>
+    </section>
   );
 }
