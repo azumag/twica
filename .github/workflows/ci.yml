@@ -589,6 +589,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify trade visibility against PostgreSQL
+        # tests/integration/trade-visibility-pg.test.ts は unit テストがモックで
+        # 検証できない公開判定SQL（相関EXISTS・NULLカードid・配信者別設定・
+        # 窓関数COUNT/LIMIT・accept_trade_offer RPC）を、baseline+migration適用済みの
+        # 実PostgreSQL 17で駆動する。TRADE_TEST_DATABASE_URL 未設定だと全件skipされるため
+        # ここで必ず渡す。テストは 7e1a… prefix の専用データのみを扱い、末尾で掃除する。
+        # pack完了報酬テストより先に実行する: 後者は共有テーブルを truncate するため、
+        # 同一DB上では順序を固定して競合させない（#1747 と同じ方針）。
+        env:
+          TRADE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/trade-visibility-pg.test.ts
+
       - name: Run pack completion reward tests on disposable PostgreSQL
         # tests/integration/pack-completion-rewards-pg.test.ts は共有DBではなく
         # 専用の破棄可能なDBで実行する（#1747）。空DBへ簡略fixture→対象migration
