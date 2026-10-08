@@ -23,6 +23,15 @@ type AcceptError = TradeAcceptRpcError | TradeAcceptPrecheckError | "TRADE_BUSY"
  * (OFFER_NOT_OPEN, CARD_NOT_OWNED, ...) are normalized to the TRADE_* codes
  * used by every other trade endpoint so the UI keeps one code table. Statuses
  * are unchanged from #724.
+ *
+ * Recorded limitation (#1749 item 7, no behavior change): for a known
+ * trade-offer UUID the status code distinguishes "an open offer exists that
+ * this viewer may not see" (409 TRADE_OFFER_UNAVAILABLE, decided by
+ * precheckTradeAccept) from "no open offer with that id" (404
+ * TRADE_OFFER_NOT_FOUND, decided by the RPC). Nothing about the offer leaks
+ * beyond that bit — no card name, no offerer — and the same bit was already
+ * inferable from the pre-existing accept endpoint before the visibility
+ * precheck existed, so it is accepted rather than remapped to a single code.
  */
 const ACCEPT_ERRORS: Record<AcceptError, { code: TradeAcceptApiErrorCode; status: number }> = {
   TRADE_OFFER_NOT_FOUND: { code: "TRADE_OFFER_NOT_FOUND", status: 404 },

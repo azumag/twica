@@ -3,7 +3,6 @@ import {
   asc,
   desc,
   eq,
-  isNotNull,
   ne,
   or,
   getTableName,
@@ -96,8 +95,6 @@ function qualifiedColumn(column: AnyColumn) {
   return sql`${sql.identifier(getTableName(column.table))}.${sql.identifier(column.name)}`;
 }
 
-type CardIdExpression = AnyColumn;
-
 // -----------------------------------------------------------------------------
 // Round-trip budget (2026-10 performance work)
 //
@@ -136,7 +133,7 @@ function viewerUserIdOf(twitchUserId: string): SQL {
 }
 
 /** `cardIdExpr` points at an active card definition (NULL id → false). */
-function cardIsActive(cardIdExpr: CardIdExpression) {
+function cardIsActive(cardIdExpr: AnyColumn) {
   return sql<boolean>`EXISTS (
     SELECT 1
     FROM ${cardsTable} AS active_card
@@ -151,7 +148,7 @@ function cardIsActive(cardIdExpr: CardIdExpression) {
  * expression producing users.id (viewerUserIdOf() or an outer column); null
  * means anonymous.
  */
-function cardVisibleTo(cardIdExpr: CardIdExpression, viewerUserId: SQL | null) {
+function cardVisibleTo(cardIdExpr: AnyColumn, viewerUserId: SQL | null) {
   // Anonymous viewers have no ownership branch at all instead of comparing
   // against NULL, so the intent is explicit in the generated SQL.
   const ownedByViewer = viewerUserId
@@ -761,10 +758,15 @@ export async function listTradeOffers(input: {
   // hasMore and the wantedCardId/offeredCardId filters are all computed over
   // the visible set only. Post-filtering a fetched page would let a client
   // infer hidden offers from short pages or hasMore=true with no rows.
+  //
+  // cardIsActive() covers a NULL card_id on its own: a card definition deleted
+  // after the offer was created sets offered_card_id/wanted_card_id to NULL
+  // (ON DELETE SET NULL, see 20260817100000_add_card_trading.sql), and then
+  // `active_card.id = NULL` is never TRUE so the EXISTS is false. No separate
+  // IS NOT NULL condition is needed (verified on real PostgreSQL by
+  // tests/integration/trade-visibility-pg.test.ts).
   const conditions = [
     eq(tradeOffersTable.status, "open"),
-    isNotNull(tradeOffersTable.offered_card_id),
-    isNotNull(tradeOffersTable.wanted_card_id),
     tradeEnabledGate(tradeOffersTable.offered_streamer_id),
     tradeEnabledGate(tradeOffersTable.wanted_streamer_id),
     cardIsActive(tradeOffersTable.offered_card_id),
