@@ -389,6 +389,16 @@
       "number": "Number",
       "rarity": "Rarity"
     },
+    "album": {
+      "viewLabel": "View",
+      "gridView": "Cards",
+      "albumView": "Album",
+      "pageIndicator": "{page} / {total}",
+      "prevPage": "Previous page",
+      "nextPage": "Next page",
+      "emptySlot": "Empty slot",
+      "cardPosition": "Slot {number}"
+    },
     "viewCollection": "View Collection",
     "unownedCard": "???",
     "unownedStatus": "Unowned card"
