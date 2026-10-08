@@ -1,265 +1,183 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useId, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-
-import { ERROR_MESSAGES } from "@/lib/constants";
 import type { TradeOfferDto } from "@/lib/trade";
+import {
+  isListStaleCode,
+  isOfferGoneCode,
+  postTradeJson,
+  tradeErrorMessageKey,
+} from "@/lib/trade-client";
+import TradeCardSummary from "./TradeCardSummary";
+import TradeDialog from "./TradeDialog";
 
-type AcceptPhase =
-  | { kind: "confirm" }
-  | { kind: "submitting" }
-  | { kind: "success" }
-  | { kind: "error"; messageKey: string; refetchOnClose: boolean };
-
-function mapAcceptError(status: number, serverMessage: string): {
-  messageKey: string;
-  refetchOnClose: boolean;
-} {
-  if (status === 429) return { messageKey: "errorRateLimited", refetchOnClose: false };
-  switch (serverMessage) {
-    case ERROR_MESSAGES.TRADE_OFFER_NOT_OPEN:
-    case ERROR_MESSAGES.TRADE_OFFER_INVALID:
-    case ERROR_MESSAGES.TRADE_OFFER_NOT_FOUND:
-      // 成立済み・無効・削除済みは閲覧者への見え方が同じため一つの文言に集約し、
-      // 閉じたら一覧を refetch する (§6.4)
-      return { messageKey: "errorTradeAlreadyCompletedOrInvalid", refetchOnClose: true };
-    case ERROR_MESSAGES.TRADE_BUSY:
-      return { messageKey: "errorTradeBusy", refetchOnClose: false };
-    case ERROR_MESSAGES.TRADE_CARD_NOT_OWNED:
-      return { messageKey: "errorTradeCardNotOwned", refetchOnClose: true };
-    case ERROR_MESSAGES.TRADE_SELF_ACCEPT:
-      return { messageKey: "errorTradeSelfAccept", refetchOnClose: false };
-    case ERROR_MESSAGES.TRADE_DISABLED:
-      return { messageKey: "errorTradeDisabled", refetchOnClose: false };
-    default:
-      return { messageKey: "errorGeneric", refetchOnClose: false };
-  }
-}
-
-function CardFace({
-  name,
-  rarity,
-  imageUrl,
-  label,
-}: {
-  name: string;
-  rarity: string;
-  imageUrl: string | null;
-  label: string;
-}) {
-  return (
-    <div className="flex flex-1 flex-col items-center gap-1 text-center">
-      {imageUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={imageUrl} alt={name} className="h-24 w-24 rounded-lg object-cover" />
-      ) : (
-        <div className="flex h-24 w-24 items-center justify-center rounded-lg bg-gray-700 text-xs text-gray-400">
-          {name}
-        </div>
-      )}
-      <p className="text-xs text-gray-400">{label}</p>
-      <p className="text-sm font-semibold text-white">{name}</p>
-      <p className="text-xs text-gray-400">{rarity}</p>
-    </div>
-  );
+interface TradeAcceptModalProps {
+  offer: TradeOfferDto;
+  /**
+   * Idempotency key for this offer, owned by the board so that it survives
+   * closing/reopening the dialog until the server confirms the trade (§5).
+   */
+  requestId: string;
+  /** writes blocked by maintenance mode */
+  writeBlocked: boolean;
+  /** Called once the server confirmed the trade (board drops the requestId). */
+  onCompleted: () => void;
+  /** `refetch`: the list is stale (trade completed or offer gone). */
+  onClose: (result: { refetch: boolean }) => void;
 }
 
 /**
- * 応諾確認モーダル (#726, §6.4)。
- * - focus trap + aria-modal + Esc で閉じる。初期フォーカスは非破壊的な
- *   「キャンセル」ボタン (Enter 連打での誤成立を防ぐ)。
- * - requestId は crypto.randomUUID() でモーダル表示時に生成し、リトライ間保持する。
- * - 送信中はボタンを disabled + ローディング表示にする。
+ * Accept confirmation dialog (§6.4).
+ *
+ * Accessibility (aria-modal, Escape, the focus trap and the background scroll
+ * lock) lives in the shared <TradeDialog> shell, which both trade dialogs use
+ * (#1754 item 5). This dialog only decides the initial focus target — the
+ * non-destructive `Cancel` button, because the trade is immediate and
+ * irreversible — and the copy shown per phase.
  */
 export default function TradeAcceptModal({
   offer,
+  requestId,
+  writeBlocked,
+  onCompleted,
   onClose,
-  onSettled,
-}: {
-  offer: TradeOfferDto;
-  onClose: () => void;
-  /** 成功・成立済み系エラーの確定後に一覧を refetch するための通知 */
-  onSettled: () => void;
-}) {
+}: TradeAcceptModalProps) {
   const t = useTranslations("trade");
-  // リトライ間で同一 requestId を使い回すため、モーダル表示時に1回だけ生成する
-  const [requestId] = useState(() => crypto.randomUUID());
-  const [phase, setPhase] = useState<AcceptPhase>({ kind: "confirm" });
-  const dialogRef = useRef<HTMLDivElement>(null);
+  const tMaintenance = useTranslations("maintenance");
+  const titleId = useId();
+  const warningId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const phaseRef = useRef(phase);
-  useEffect(() => {
-    phaseRef.current = phase;
-  }, [phase]);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [phase, setPhase] = useState<"confirm" | "submitting" | "success">("confirm");
+  const [errorText, setErrorText] = useState<string | null>(null);
+  // offerGone: the offer is completed/invalid/unavailable, re-submitting
+  // cannot succeed. listStale: the row shown on the board (offer, canAccept or
+  // channel gate) is outdated, so the board refetches once the dialog closes.
+  const [offerGone, setOfferGone] = useState(false);
+  const [listStale, setListStale] = useState(false);
 
-  // Esc で閉じる (送信中・成功表示中は閉じさせない)
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      const current = phaseRef.current;
-      if (current.kind === "submitting" || current.kind === "success") return;
-      if (current.kind === "error") {
-        if (current.refetchOnClose) onSettled();
-        onClose();
-        return;
-      }
-      onClose();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose, onSettled]);
+  const close = () => {
+    if (phase === "submitting") return;
+    onClose({ refetch: phase === "success" || listStale });
+  };
 
-  // 初期フォーカスはキャンセルボタンへ
-  useEffect(() => {
-    cancelRef.current?.focus();
-  }, []);
-
-  // focus trap: モーダル内で Tab を循環させる
-  const onTrapTab = useCallback((event: ReactKeyboardEvent) => {
-    if (event.key !== "Tab" || !dialogRef.current) return;
-    const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+  const submit = async () => {
+    if (phase !== "confirm") return;
+    if (writeBlocked) {
+      setErrorText(tMaintenance("writeDisabled"));
+      return;
+    }
+    setPhase("submitting");
+    setErrorText(null);
+    const result = await postTradeJson<{ success: true }>(
+      `/api/trades/${offer.id}/accept`,
+      { requestId },
     );
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
+    if (result.ok) {
+      onCompleted();
+      setPhase("success");
+      return;
     }
-  }, []);
+    setErrorText(
+      result.maintenanceMessage
+        ?? t(result.networkError ? "errorNetwork" : tradeErrorMessageKey(result.code)),
+    );
+    if (isOfferGoneCode(result.code)) setOfferGone(true);
+    if (isListStaleCode(result.code)) setListStale(true);
+    setPhase("confirm");
+  };
 
-  const submit = useCallback(async () => {
-    setPhase({ kind: "submitting" });
-    try {
-      const response = await fetch(`/api/trades/${offer.id}/accept`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ requestId }),
-      });
-      const body = (await response.json().catch(() => null)) as {
-        error?: string;
-      } | null;
-      if (response.ok) {
-        setPhase({ kind: "success" });
-        return;
-      }
-      const mapped = mapAcceptError(response.status, body?.error ?? "");
-      setPhase({ kind: "error", ...mapped });
-    } catch {
-      setPhase({ kind: "error", messageKey: "errorGeneric", refetchOnClose: false });
-    }
-  }, [offer.id, requestId]);
-
-  const closeWithRefetch = useCallback(() => {
-    onSettled();
-    onClose();
-  }, [onSettled, onClose]);
+  // The viewer receives the offerer's card and gives the requested one.
+  const receive = offer.offeredCard;
+  const give = offer.wantedCard;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("confirmModalTitle")}
-        onKeyDown={onTrapTab}
-        className="w-full max-w-md rounded-xl bg-gray-800 p-6"
-      >
-        {phase.kind === "success" ? (
-          <div className="text-center">
-            <p className="text-lg font-bold text-white">{t("confirmModalSuccess")}</p>
-            <div className="mt-4 flex justify-center">
-              {offer.wantedCard.imageUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={offer.wantedCard.imageUrl}
-                  alt={offer.wantedCard.name}
-                  className="h-40 w-40 rounded-xl object-cover"
-                />
-              ) : null}
+    <TradeDialog
+      labelId={titleId}
+      descriptionId={phase === "success" ? undefined : warningId}
+      onClose={close}
+      initialFocusRef={phase === "success" ? closeButtonRef : cancelRef}
+      focusKey={phase}
+    >
+      {phase === "success" ? (
+        <>
+          <h2 id={titleId} className="mb-4 text-center text-lg font-bold">
+            {t("confirmModalSuccess")}
+          </h2>
+          <p className="mb-2 text-center text-sm text-gray-300">{t("confirmModalReceivedLabel")}</p>
+          <div className="flex justify-center">
+            <TradeCardSummary card={receive} size="lg" />
+          </div>
+          <p className="mt-4 text-center text-xs text-gray-400">{t("collectionDelayNotice")}</p>
+          <div className="mt-5 flex justify-center">
+            <button
+              ref={closeButtonRef}
+              type="button"
+              onClick={close}
+              className="rounded-lg bg-purple-600 px-6 py-2 font-semibold text-white hover:bg-purple-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+            >
+              {t("confirmModalCloseButton")}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <h2 id={titleId} className="mb-4 text-lg font-bold">
+            {t("confirmModalTitle")}
+          </h2>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="min-w-0 flex-1">
+              <TradeCardSummary card={give} label={t("confirmModalGiveLabel")} />
             </div>
-            <p className="mt-2 text-sm font-semibold text-white">{offer.wantedCard.name}</p>
-            <p className="text-xs text-gray-400">{offer.wantedCard.rarity}</p>
+            <span
+              role="img"
+              aria-label={t("directionIconLabel")}
+              className="self-center text-2xl text-purple-300 max-sm:rotate-90"
+            >
+              ⇄
+            </span>
+            <div className="min-w-0 flex-1">
+              <TradeCardSummary card={receive} label={t("confirmModalReceiveLabel")} />
+            </div>
+          </div>
+          <p id={warningId} className="mt-4 rounded-lg border border-yellow-600/60 bg-yellow-900/30 p-3 text-sm text-yellow-100">
+            {t("confirmModalWarning")}
+          </p>
+          {errorText && (
+            <p role="alert" className="mt-3 rounded-lg bg-red-900/40 p-3 text-sm text-red-200">
+              {errorText}
+            </p>
+          )}
+          <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <button
               ref={cancelRef}
               type="button"
-              onClick={closeWithRefetch}
-              className="mt-6 w-full rounded-lg bg-purple-600 px-4 py-2 font-semibold text-white hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+              onClick={close}
+              disabled={phase === "submitting"}
+              className="rounded-lg bg-gray-700 px-4 py-2 text-sm text-white hover:bg-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {t("modalCloseButton")}
+              {t("confirmModalCancelButton")}
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              // Once the offer is known to be gone, re-submitting cannot succeed.
+              disabled={phase === "submitting" || offerGone}
+              aria-busy={phase === "submitting"}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {phase === "submitting" && (
+                <span
+                  aria-hidden="true"
+                  className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                />
+              )}
+              {phase === "submitting" ? t("confirmModalSubmitting") : t("confirmModalSubmitButton")}
             </button>
           </div>
-        ) : (
-          <>
-            <h2 className="text-lg font-bold text-white">{t("confirmModalTitle")}</h2>
-            <div className="mt-4 flex items-start gap-2">
-              <CardFace
-                name={offer.wantedCard.name}
-                rarity={offer.wantedCard.rarity}
-                imageUrl={offer.wantedCard.imageUrl}
-                label={`${t("confirmModalGiveLabel")}: ${offer.wantedCard.name}`}
-              />
-              <span
-                role="img"
-                aria-label={t("directionIconLabel")}
-                className="mt-8 text-xl text-gray-300"
-              >
-                →
-              </span>
-              <CardFace
-                name={offer.offeredCard.name}
-                rarity={offer.offeredCard.rarity}
-                imageUrl={offer.offeredCard.imageUrl}
-                label={`${t("confirmModalReceiveLabel")}: ${offer.offeredCard.name}`}
-              />
-            </div>
-            <p className="mt-2 text-sm text-gray-300">
-              {t("confirmModalGiveLabel")}: {offer.wantedCard.name} / {t("confirmModalReceiveLabel")}:{" "}
-              {offer.offeredCard.name}
-            </p>
-            <p className="mt-2 text-sm font-semibold text-yellow-300">{t("confirmModalWarning")}</p>
-            {phase.kind === "error" && (
-              <p role="alert" className="mt-3 rounded-lg bg-red-900/60 p-2 text-sm text-red-200">
-                {t(phase.messageKey)}
-              </p>
-            )}
-            <div className="mt-6 flex gap-3">
-              <button
-                ref={cancelRef}
-                type="button"
-                onClick={() => {
-                  if (phase.kind === "error" && phase.refetchOnClose) {
-                    closeWithRefetch();
-                    return;
-                  }
-                  onClose();
-                }}
-                disabled={phase.kind === "submitting"}
-                className="flex-1 rounded-lg bg-gray-700 px-4 py-2 font-semibold text-white hover:bg-gray-600 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-              >
-                {phase.kind === "error" && phase.refetchOnClose
-                  ? t("modalCloseButton")
-                  : t("confirmModalCancelButton")}
-              </button>
-              {phase.kind !== "error" && (
-                <button
-                  type="button"
-                  onClick={submit}
-                  disabled={phase.kind === "submitting"}
-                  className="flex-1 rounded-lg bg-purple-600 px-4 py-2 font-semibold text-white hover:bg-purple-500 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-                >
-                  {phase.kind === "submitting" ? t("confirmModalSubmitting") : t("confirmModalSubmitButton")}
-                </button>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+        </>
+      )}
+    </TradeDialog>
   );
 }
