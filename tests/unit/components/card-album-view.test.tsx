@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import CardAlbumView from '@/components/CardAlbumView'
 import type { AlbumCard, AlbumTranslations } from '@/components/CardAlbumView'
 import SortedCardGrid from '@/components/SortedCardGrid'
@@ -66,7 +67,7 @@ describe('CardAlbumView - 3x3 固定・画像のみのアルバム表示 (Issue 
   it('名前やレアリティの文字を描かず、画像だけを並べる', () => {
     renderAlbum([albumCard(1)])
 
-    // カード名は alt としてのみ存在し、テキストとしては描画されない
+    // カード名は alt とリンク名に保持し、テキストとしては描画されない
     expect(screen.queryByText('CardName1')).not.toBeInTheDocument()
     expect(screen.getByAltText('CardName1')).toBeInTheDocument()
     // レアリティラベル・枚数バッジ・見出しは出ない
@@ -107,15 +108,46 @@ describe('CardAlbumView - 3x3 固定・画像のみのアルバム表示 (Issue 
     // 未所持カードの画像・名前はアルバムに出ない
     expect(screen.queryByAltText('UnownedCard')).not.toBeInTheDocument()
     expect(screen.queryByText('UnownedCard')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /UnownedCard/ })).not.toBeInTheDocument()
     // 2枠目は空きスロット、残り7枠も空きスロット
     expect(screen.getAllByLabelText('空きスロット')).toHaveLength(8)
   })
 
-  it('所持カードのタイルはカード詳細へ遷移できる（並び位置の読み上げラベル付き）', () => {
-    renderAlbum([albumCard(1)])
+  it('所持カードのリンク名に位置とカード名を含め、画像なしでもTabでカードを識別できる', async () => {
+    renderAlbum([
+      albumCard(1),
+      albumCard(2, { image_url: null }),
+      albumCard(3),
+    ])
 
-    const link = screen.getByRole('link', { name: '1枠目' })
-    expect(link).toHaveAttribute('href', '/collection/streamer-1/card/card-1')
+    const firstLink = screen.getByRole('link', { name: '1枠目: CardName1' })
+    const noImageLink = screen.getByRole('link', { name: '2枠目: CardName2' })
+    const thirdLink = screen.getByRole('link', { name: '3枠目: CardName3' })
+
+    expect(firstLink).toHaveAttribute('href', '/collection/streamer-1/card/card-1')
+    expect(noImageLink).toHaveAttribute('href', '/collection/streamer-1/card/card-2')
+    expect(thirdLink).toHaveAttribute('href', '/collection/streamer-1/card/card-3')
+    expect(noImageLink.querySelector('img')).not.toBeInTheDocument()
+    await userEvent.tab()
+    expect(firstLink).toHaveFocus()
+    await userEvent.tab()
+    expect(noImageLink).toHaveFocus()
+    // 読み上げ名を補っても、画像のみのタイルにカード名の文字は増やさない
+    expect(screen.queryByText('CardName1')).not.toBeInTheDocument()
+    expect(screen.queryByText('CardName2')).not.toBeInTheDocument()
+    expect(screen.queryByText('CardName3')).not.toBeInTheDocument()
+  })
+
+  it('2ページ目の所持カードリンク名に通し位置を使う', () => {
+    const cards = Array.from({ length: 10 }, (_, i) => albumCard(i + 1))
+    renderAlbum(cards)
+
+    fireEvent.click(screen.getByRole('button', { name: '次のページ' }))
+
+    expect(screen.getByRole('link', { name: '10枠目: CardName10' })).toHaveAttribute(
+      'href',
+      '/collection/streamer-1/card/card-10'
+    )
   })
 })
 
@@ -178,7 +210,7 @@ describe('SortedCardGrid - アルバム表示への切替 (Issue #1765)', () => 
     fireEvent.click(screen.getByRole('button', { name: 'アルバム' }))
 
     expect(screen.getByTestId('card-album')).toBeInTheDocument()
-    // アルバムではカード名は alt のみ（テキストとしては出ない）
+    // アルバムではカード名は alt とリンク名に保持する（テキストとしては出ない）
     expect(screen.queryByText('FirstCard')).not.toBeInTheDocument()
     expect(screen.getByAltText('FirstCard')).toBeInTheDocument()
 

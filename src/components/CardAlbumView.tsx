@@ -18,7 +18,7 @@ import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
  *  - 列数は常に 3（レスポンシブ分岐を一切持たない。`sm:`/`lg:` 等を書かない）
  *  - 1ページ = 9 枠固定。最終ページも空き枠で埋めて常に 3×3 の枠を描く
  *  - タイルに表示するのは画像のみ（名前・レアリティ・枚数バッジを出さない。
- *    カード名は画像の alt としてのみ保持し、読み上げとフォールバックに使う）
+ *    カード名は画像の alt とリンクの accessible name に保持し、読み上げに使う）
  *  - 未所持カードは画像を出さず「空きスロット」として残す（アルバム＝所持カードの
  *    コレクション。未所持を画像で埋めると要望の「集めた画像を並べる」体験と
  *    パズルの穴の両方が壊れるため、公開モードでもアルバムでは伏せる）
@@ -118,16 +118,19 @@ export default function CardAlbumView({
             );
           }
 
+          // aria-label は画像の alt より優先されるため、画像なしでも位置とカード名を
+          // 読めるようにする。外向きの ring は overflow-hidden 内のリンクで切れるので、
+          // 子リンクの focus-visible に応じてラッパー自身に描き、画像の角丸は維持する。
           return (
             <div
               key={slotKey}
-              className="aspect-square overflow-hidden rounded-lg bg-gray-700 transition-transform hover:scale-105"
+              className="aspect-square overflow-hidden rounded-lg bg-gray-700 transition-transform hover:scale-105 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-purple-400"
             >
               <Link
                 href={`/collection/${streamerId}/card/${card.id}`}
                 prefetch={false}
-                aria-label={positionLabel}
-                className="block h-full w-full rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+                aria-label={`${positionLabel}: ${card.name}`}
+                className="block h-full w-full rounded-lg focus:outline-none"
               >
                 {card.image_url ? (
                   <Image
