@@ -282,6 +282,17 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       });
       expect(page2.ids).toEqual([]);
       expect(page2.result.hasMore).toBe(false);
+
+      // HALF reveals unowned cards but not their details, so a logged-in
+      // viewer who owns none of its cards still sees no offer (same as the
+      // anonymous case asserted above).
+      const halfViewer = await listIds({
+        streamerId: S.HALF,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: TW.V,
+      });
+      expect(halfViewer.ids).toEqual([]);
     });
 
     it("canAccept reports all_listed when the viewer's only copy is in their own open offer", async () => {
@@ -367,6 +378,125 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.V,
       });
       expect(viewerPriv.ids).toEqual([OF.CROSS_PUB_PRIV]);
+    });
+
+    it("hides offers of a trade-disabled channel and of cross-disabled partners", async () => {
+      const s = sql!;
+      // Dedicated fixtures (cleaned up below) so the order-dependent shared
+      // world keeps its offer counts for the /mine and helper assertions.
+      const cards = { offB: id(7301), nocrossB: id(7302) };
+      const copies = {
+        offA: id(7311),
+        offB: id(7312),
+        nocrossA: id(7313),
+        nocrossB: id(7314),
+        pubA: id(7315),
+        pubB: id(7316),
+      };
+      const offers = {
+        offInChannel: id(7321),
+        crossPubOff: id(7322),
+        crossPubNocross: id(7323),
+        crossNocrossPub: id(7324),
+      };
+      const insertOffer = (
+        oid: string,
+        ucid: string,
+        offered: string,
+        offeredStreamer: string,
+        wanted: string,
+        wantedStreamer: string,
+        secsAgo: number,
+      ) => s`
+        INSERT INTO trade_offers (
+          id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+          wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot, created_at
+        ) VALUES (
+          ${oid}, ${U.O}, ${ucid}, ${offered}, ${offeredStreamer}, ${wanted}, ${wantedStreamer},
+          '{}'::jsonb, '{}'::jsonb, now() - make_interval(secs => ${secsAgo})
+        )`;
+
+      try {
+        // Both cards are active, so only the streamer gates can hide these
+        // offers (is_active is not the reason).
+        await s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active) VALUES
+          (${cards.offB}, ${S.OFF}, 'Off B', 'common', 0.1, TRUE),
+          (${cards.nocrossB}, ${S.NOCROSS}, 'NoCross B', 'common', 0.1, TRUE)`;
+        await s`INSERT INTO user_cards (id, user_id, card_id) VALUES
+          (${copies.offA}, ${U.O}, ${C.OFF_A}),
+          (${copies.offB}, ${U.O}, ${cards.offB}),
+          (${copies.nocrossA}, ${U.O}, ${C.NOCROSS_A}),
+          (${copies.nocrossB}, ${U.O}, ${cards.nocrossB}),
+          (${copies.pubA}, ${U.O}, ${C.PUB_A}),
+          (${copies.pubB}, ${U.O}, ${C.PUB_B})`;
+        // In-channel offer inside the trade-disabled channel OFF.
+        await insertOffer(offers.offInChannel, copies.offA, C.OFF_A, S.OFF, cards.offB, S.OFF, 5);
+        // Cross offers where one side is disabled: OFF is trade-disabled,
+        // NOCROSS has cross-channel trade off (covered on both sides).
+        await insertOffer(offers.crossPubOff, copies.pubA, C.PUB_A, S.PUB, C.OFF_A, S.OFF, 4);
+        await insertOffer(offers.crossPubNocross, copies.pubB, C.PUB_B, S.PUB, C.NOCROSS_A, S.NOCROSS, 3);
+        await insertOffer(offers.crossNocrossPub, copies.nocrossA, C.NOCROSS_A, S.NOCROSS, C.PUB_B, S.PUB, 2);
+
+        // OFF's own board hides its offer from anonymous viewers and from the
+        // offerer (own offers bypass the reveal rule, not the trade gate).
+        expect((await listIds({ streamerId: S.OFF, scope: "in_channel", page: 1 })).ids).toEqual([]);
+        expect((await listIds({ streamerId: S.OFF, scope: "in_channel", page: 1, twitchUserId: TW.O })).ids)
+          .toEqual([]);
+
+        // PUB's cross board: V owns OFF_A, NOCROSS_A and PUB_B, so every card
+        // is revealed to V and only the gates can be responsible.
+        const viewerPub = await listIds({
+          streamerId: S.PUB,
+          scope: "cross_channel",
+          page: 1,
+          twitchUserId: TW.V,
+        });
+        expect(viewerPub.ids).toEqual([OF.CROSS_PUB_PRIV]);
+      } finally {
+        await s`DELETE FROM trade_offers WHERE id IN ${s(Object.values(offers))}`;
+        await s`DELETE FROM user_cards WHERE id IN ${s(Object.values(copies))}`;
+        await s`DELETE FROM cards WHERE id IN ${s(Object.values(cards))}`;
+      }
+    });
+
+    it("drops offers whose card definition was deleted, for every viewer including the offerer", async () => {
+      const s = sql!;
+      const goneCard = id(7401);
+      const goneCopy = id(7411);
+      const goneOffer = id(7421);
+      await s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
+        VALUES (${goneCard}, ${S.PUB}, 'Temp Gone', 'common', 0.1, TRUE)`;
+      await s`INSERT INTO user_cards (id, user_id, card_id) VALUES (${goneCopy}, ${U.O}, ${goneCard})`;
+      await s`INSERT INTO trade_offers (
+        id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+        wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot
+      ) VALUES (
+        ${goneOffer}, ${U.O}, ${goneCopy}, ${goneCard}, ${S.PUB}, ${C.PUB_B}, ${S.PUB},
+        '{}'::jsonb, '{}'::jsonb
+      )`;
+      try {
+        // Live and visible while the card definition exists (the offerer's
+        // own offer on a traded-enabled, revealing channel).
+        expect((await listIds({ streamerId: S.PUB, scope: "in_channel", page: 1, twitchUserId: TW.O })).ids)
+          .toContain(goneOffer);
+
+        // Deleting the definition nulls offered_card_id (ON DELETE SET NULL).
+        await s`DELETE FROM cards WHERE id = ${goneCard}`;
+        const [row] = await s`SELECT offered_card_id, status FROM trade_offers WHERE id = ${goneOffer}`;
+        expect(row.offered_card_id).toBeNull();
+        expect(row.status).toBe("open"); // history kept; only the board hides it
+
+        const anon = await listIds({ streamerId: S.PUB, scope: "in_channel", page: 1 });
+        expect(anon.ids).not.toContain(goneOffer);
+        // Own offers bypass the reveal rule, not cardIsActive(), so the
+        // offerer does not see the NULL-card offer either.
+        const owner = await listIds({ streamerId: S.PUB, scope: "in_channel", page: 1, twitchUserId: TW.O });
+        expect(owner.ids).not.toContain(goneOffer);
+        expect(owner.ids).toEqual([OF.PUB]);
+      } finally {
+        await s`DELETE FROM trade_offers WHERE id = ${goneOffer}`;
+        await s`DELETE FROM cards WHERE id = ${goneCard}`;
+      }
     });
   });
 
@@ -546,6 +676,50 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       })).resolves.toEqual({ success: false, error: "TRADE_OFFER_UNAVAILABLE" });
       const [row] = await sql!`SELECT status FROM trade_offers WHERE id = ${OF.PUB_GIVE_INACTIVE}`;
       expect(row.status).toBe("open");
+
+      // Inactive on the wanted (募集) side is rejected by the same precheck and
+      // likewise leaves the offer open.
+      await expect(acceptTradeOffer({
+        twitchUserId: TW.V,
+        tradeOfferId: OF.PUB_WANT_INACTIVE,
+        requestId: req(7),
+      })).resolves.toEqual({ success: false, error: "TRADE_OFFER_UNAVAILABLE" });
+      const [wantedRow] = await sql!`SELECT status FROM trade_offers WHERE id = ${OF.PUB_WANT_INACTIVE}`;
+      expect(wantedRow.status).toBe("open");
+    });
+
+    it("returns CARD_NOT_OWNED without revealing a hidden wanted card", async () => {
+      const { acceptTradeOffer } = await import("@/lib/trade");
+      const s = sql!;
+      // Offered side is public (so V may see the offer); the wanted side is
+      // PRIV_A, a card of a details=false channel that V does not own. The
+      // acceptor cannot pay, so the RPC answers CARD_NOT_OWNED. The wanted
+      // card's name is never read into the Worker for this path (the visibility
+      // precheck does not read names and the RPC returns a bare code).
+      const pubCopy = id(7501);
+      const hiddenWantedOffer = id(7511);
+      await s`INSERT INTO user_cards (id, user_id, card_id) VALUES (${pubCopy}, ${U.O}, ${C.PUB_A})`;
+      await s`INSERT INTO trade_offers (
+        id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+        wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot
+      ) VALUES (
+        ${hiddenWantedOffer}, ${U.O}, ${pubCopy}, ${C.PUB_A}, ${S.PUB},
+        ${C.PRIV_A}, ${S.PRIV}, '{}'::jsonb, '{}'::jsonb
+      )`;
+      try {
+        const result = await acceptTradeOffer({
+          twitchUserId: TW.V,
+          tradeOfferId: hiddenWantedOffer,
+          requestId: req(8),
+        });
+        expect(result).toEqual({ success: false, error: "CARD_NOT_OWNED" });
+        expect(JSON.stringify(result)).not.toContain("Secret");
+        const [row] = await s`SELECT status FROM trade_offers WHERE id = ${hiddenWantedOffer}`;
+        expect(row.status).toBe("open");
+      } finally {
+        await s`DELETE FROM trade_offers WHERE id = ${hiddenWantedOffer}`;
+        await s`DELETE FROM user_cards WHERE id = ${pubCopy}`;
+      }
     });
 
     it("completes a visible offer and replays it even after the received card becomes inactive", async () => {
@@ -716,6 +890,9 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       await expect(listWantableCards(null, S.PRIV)).resolves.toEqual([]);
       const half = await listWantableCards(null, S.HALF);
       expect(half).toEqual([]);
+      // A logged-in viewer who owns none of HALF's cards gets the same empty
+      // set: show_unowned_cards without details never reveals names.
+      await expect(listWantableCards(TW.V, S.HALF)).resolves.toEqual([]);
 
       const pubAnon = await listWantableCards(null, S.PUB);
       expect(pubAnon.map((card) => card.cardId).sort()).toEqual([C.PUB_A, C.PUB_B].sort());
