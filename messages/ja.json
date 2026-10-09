@@ -940,7 +940,8 @@
         "bubbles": "シャボン玉",
         "petals": "花びら",
         "snow": "雪",
-        "coins": "コイン"
+        "coins": "コイン",
+        "aura": "オーラ"
       },
       "smallMode": "小さい画像モード",
       "smallModeDescription": "400x400未満の画像用に縮小表示（自動適用）",

@@ -45,7 +45,7 @@ describe('overlay-effect: normalizeOverlayEffectStyle', () => {
 
   it('種類が増えている（sparkle/confetti/hearts に加え新演出がある）', () => {
     // 品質改善で種類を増やしたことの回帰防止
-    for (const style of ['sparkle', 'confetti', 'hearts', 'fireworks', 'stars', 'bubbles', 'petals', 'snow', 'coins', 'none']) {
+    for (const style of ['sparkle', 'confetti', 'hearts', 'fireworks', 'stars', 'bubbles', 'petals', 'snow', 'coins', 'aura', 'none']) {
       expect(OVERLAY_EFFECT_STYLES).toContain(style)
     }
   })
@@ -165,6 +165,17 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
     }
   })
 
+  it('aura は少数の相対サイズ光輪を生成し、縮小表示でもカードの大きさに追従する', () => {
+    const particles = generateOverlayEffectParticles('aura')
+    expect(particles).toHaveLength(3)
+    for (const particle of particles) {
+      expect(particle.content).toBe('')
+      expect(particle.visualStyle.width).toMatch(/^\d+(\.\d+)?%$/)
+      expect(particle.visualStyle.height).toMatch(/^\d+(\.\d+)?%$/)
+      expect(particle.visualStyle.borderRadius).toBe('50%')
+    }
+  })
+
   it('各パーティクルの位置・タイミング・色はランダム化され、全てが同一にはならない（機械的な動き防止）', () => {
     const particles = generateOverlayEffectParticles('confetti')
     const uniqueLefts = new Set(particles.map((p) => p.left))
@@ -221,6 +232,13 @@ describe('overlay-effect: レアリティ別マップ', () => {
 
   it('parse: fx が優先され、レガシー effect は無視される', () => {
     expect(parseRarityEffectMap('epic:hearts', 'confetti')).toEqual({ epic: 'hearts' })
+  })
+
+  it('aura は fx の往復とレガシー effect の両方で扱え、fx が優先される', () => {
+    const map = { epic: 'aura' as const, legendary: 'sparkle' as const }
+    expect(parseRarityEffectMap(serializeRarityEffectMap(map), 'hearts')).toEqual(map)
+    expect(resolveEffectForRarity(map, 'epic')).toBe('aura')
+    expect(parseRarityEffectMap(null, 'aura')).toEqual({ legendary: 'aura' })
   })
 
   it('parse: 不正なペア（未知スタイル・空レアリティ名）はスキップする', () => {
