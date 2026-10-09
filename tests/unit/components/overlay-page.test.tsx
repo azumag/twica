@@ -2003,7 +2003,7 @@ describe('OverlayPage', () => {
   // エフェクト演出を1枚のカードで発火させる共通ヘルパ
   const renderWithGacha = async (
     search: string,
-    card: { id: string; name: string; rarity: string },
+    card: { id: string; name: string; rarity: string; image_url?: string },
   ) => {
     window.history.replaceState({}, '', `/overlay/streamer-1${search}`)
 
@@ -2080,6 +2080,41 @@ describe('OverlayPage', () => {
     expect(container.querySelectorAll('.animate-ping')).toHaveLength(0)
   })
 
+  it.each([
+    { label: '通常表示', query: '', width: 600, height: 600, renderedWidth: '300' },
+    { label: '画像のみ', query: '&imageOnly=true', width: 600, height: 600, renderedWidth: '320' },
+    { label: '縦長画像', query: '', width: 600, height: 900, renderedWidth: '320' },
+    { label: '横長画像', query: '', width: 900, height: 600, renderedWidth: '300' },
+    { label: '縮小カード', query: '', width: 200, height: 200, renderedWidth: '180' },
+    { label: '縮小縦長画像', query: '', width: 200, height: 300, renderedWidth: '192' },
+  ])('aura はカード内の装飾レイヤーにだけ描画する($label)', async ({ query, width, height, renderedWidth }) => {
+    vi.useFakeTimers()
+    class LoadedImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      width = width
+      height = height
+      set src(_value: string) {
+        setTimeout(() => this.onload?.(), 0)
+      }
+    }
+    vi.stubGlobal('Image', LoadedImage)
+    const { container } = await renderWithGacha(`?effect=aura${query}`, {
+      id: 'card-aura', name: 'Aura Card', rarity: 'legendary', image_url: 'https://example.com/aura.png',
+    })
+
+    // DOM テストではクリップを担う既存レイヤーへの所属を確認し、画素の境界は実ブラウザで検証する。
+    const particles = container.querySelectorAll('.animate-overlay-effect-aura')
+    expect(particles).toHaveLength(OVERLAY_EFFECT_PARTICLE_CONFIG.aura.particleCount)
+    const cardRoot = container.querySelector('[data-overlay-card="true"]')
+    const effectLayer = particles[0].parentElement
+    expect(effectLayer).toHaveAttribute('aria-hidden', 'true')
+    expect(effectLayer).toHaveClass('pointer-events-none', 'absolute', 'inset-0', 'overflow-hidden')
+    expect(effectLayer?.closest('[data-overlay-card="true"]')).toBe(cardRoot)
+    expect(screen.getByAltText('Aura Card')).toHaveAttribute('width', renderedWidth)
+    expect(container.querySelectorAll('[class*="animate-overlay-effect-"]')).toHaveLength(particles.length)
+  })
+
   it('レアリティ別: 既定では legendary 以外にエフェクトを出さない（従来挙動の維持）', async () => {
     vi.useFakeTimers()
     const { container } = await renderWithGacha('', {
@@ -2108,9 +2143,9 @@ describe('OverlayPage', () => {
     expect(container.querySelectorAll('.animate-overlay-effect-fireworks')).toHaveLength(0)
   })
 
-  it('effects=false のときは legendary でもエフェクトを出さない', async () => {
+  it.each(['fireworks', 'aura'])('effects=false のときは legendary でもエフェクトを出さない(%s)', async (style) => {
     vi.useFakeTimers()
-    const { container } = await renderWithGacha('?effects=false&effect=fireworks', {
+    const { container } = await renderWithGacha(`?effects=false&effect=${style}`, {
       id: 'card-legendary',
       name: 'Legend',
       rarity: 'legendary',
