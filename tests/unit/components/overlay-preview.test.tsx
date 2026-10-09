@@ -57,6 +57,7 @@ const messages = {
         petals: '花びら',
         snow: '雪',
         coins: 'コイン',
+        aura: 'オーラ',
       },
       smallMode: '小さい画像モード',
       smallModeDescription: '説明',
@@ -542,6 +543,56 @@ describe('OverlayPreview', () => {
         screen.getByDisplayValue('https://example.com/overlay/streamer-1?fx=common%3Asnow%2Clegendary%3Asparkle')
       ).toBeInTheDocument()
     })
+  })
+
+  it('aura と既存効果を繰り返し切り替え、無効化しても割り当てを保存・復元する', async () => {
+    const view = renderWithIntl(
+      <OverlayPreview streamerId="streamer-1" baseUrl="https://example.com" showPreview={false} />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+
+    // 新演出と既存演出の往復で、選択・旧形式URL・保存データが食い違わないことを確認する。
+    const legendarySelect = screen.getByLabelText('レジェンダリー のエフェクト')
+    expect(Array.from((legendarySelect as HTMLSelectElement).options).map((option) => option.value))
+      .toContain('aura')
+    for (const style of ['aura', 'hearts', 'aura']) {
+      fireEvent.change(legendarySelect, { target: { value: style } })
+      await waitFor(() => {
+        expect(screen.getByDisplayValue(`https://example.com/overlay/streamer-1?effect=${style}`))
+          .toBeInTheDocument()
+        expect(JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}').rarityEffects.legendary).toBe(style)
+      })
+    }
+
+    fireEvent.click(screen.getByText('エフェクト表示'))
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('https://example.com/overlay/streamer-1?effects=false')).toBeInTheDocument()
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')).toMatchObject({
+        effects: false,
+        rarityEffects: { legendary: 'aura' },
+      })
+    })
+    fireEvent.click(screen.getByText('エフェクト表示'))
+    expect(screen.getByLabelText('レジェンダリー のエフェクト')).toHaveValue('aura')
+    fireEvent.change(screen.getByLabelText('コモン のエフェクト'), { target: { value: 'aura' } })
+
+    const auraUrl = 'https://example.com/overlay/streamer-1?fx=common%3Aaura%2Clegendary%3Aaura'
+    await waitFor(() => {
+      expect(screen.getByDisplayValue(auraUrl)).toBeInTheDocument()
+      expect(JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')).toMatchObject({
+        effects: true,
+        rarityEffects: { common: 'aura', legendary: 'aura' },
+      })
+    })
+
+    view.unmount()
+    renderWithIntl(
+      <OverlayPreview streamerId="streamer-1" baseUrl="https://example.com" showPreview={false} />
+    )
+    await waitFor(() => expect(screen.getByDisplayValue(auraUrl)).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'オーバーレイカスタマイズ' }))
+    expect(screen.getByLabelText('コモン のエフェクト')).toHaveValue('aura')
+    expect(screen.getByLabelText('レジェンダリー のエフェクト')).toHaveValue('aura')
   })
 
   // Issue #532: オプション変更はiframeのURLには正しく反映されるが、カード非表示中は

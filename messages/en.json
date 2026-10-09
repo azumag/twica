@@ -940,7 +940,8 @@
         "bubbles": "Bubbles",
         "petals": "Petals",
         "snow": "Snow",
-        "coins": "Coins"
+        "coins": "Coins",
+        "aura": "Aura"
       },
       "smallMode": "Small Image Mode",
       "smallModeDescription": "Smaller display for images under 400x400 (auto-applied)",
