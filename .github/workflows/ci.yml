@@ -92,6 +92,7 @@ jobs:
               - 'tests/fixtures/add-card-trading-concurrency.sh'
               - 'tests/fixtures/redemption-ranking-exclusions-postgres.sql'
               - 'tests/fixtures/pack-completion-rewards-postgres.sql'
+              - 'tests/fixtures/streamer-ranking-read-postgres.sql'
               # These suites execute real SQL through the application DB layer;
               # changes to their runtime, schema or test setup must re-run PG17.
               - 'src/lib/trade.ts'
@@ -589,6 +590,17 @@ jobs:
         run: |
           psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
             -f tests/fixtures/redemption-ranking-exclusions-postgres.sql
+
+      - name: Verify streamer ranking read function
+        # #742 子B: get_streamer_ranking() の匿名化・順位/位置の使い分け・self フォールバック・
+        # insufficientData 境界・snapshot 0 行・権限は SQL 文字列テストでは検証できない。
+        # 全 migration 適用済みの実 PostgreSQL 17 で関数を呼び、末尾の ROLLBACK で
+        # 投入データを残さない (後続の fixture / integration suite に影響させない)。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/streamer-ranking-read-postgres.sql
 
       - name: Setup Node.js for PostgreSQL integration tests
         uses: actions/setup-node@v4

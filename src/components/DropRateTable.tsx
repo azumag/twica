@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { formatRarityLabel, getRarityColorClass } from "@/lib/rarity";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
+import StreamerRanking from "@/components/StreamerRanking";
 
 interface CardStat {
   cardId: string;
@@ -68,7 +69,7 @@ interface CardOwnerStatsData {
   cardStats: CardOwnerStat[];
 }
 
-type StatsTab = "7d" | "30d" | "channelPoints" | "byCard";
+type StatsTab = "7d" | "30d" | "channelPoints" | "byCard" | "comparison";
 
 /**
  * Drop rate comparison table for streamer statistics page
@@ -81,7 +82,10 @@ export default function DropRateTable() {
   const tRarity = useTranslations("rarity");
 
   const [activeTab, setActiveTab] = useState<StatsTab>("7d");
-  const [stats, setStats] = useState<GachaStatsData | null>(null);
+  const [periodPayload, setPeriodPayload] = useState<{
+    period: "7d" | "30d";
+    stats: GachaStatsData;
+  } | null>(null);
   const [cardOwnerStats, setCardOwnerStats] =
     useState<CardOwnerStatsData | null>(null);
   // 期間統計とカード別統計は独立して非同期取得するため、
@@ -91,31 +95,66 @@ export default function DropRateTable() {
   const [cardOwnerLoading, setCardOwnerLoading] = useState(false);
   // 期間統計の取得期間。channelPoints タブは 7d 取得分の
   // channelPointStats を流用するため 7d 扱いとする。
-  const period = activeTab === "30d" ? "30d" : "7d";
-  const loading = activeTab === "byCard" ? cardOwnerLoading : periodLoading;
+  const period: "7d" | "30d" | null =
+    activeTab === "30d"
+      ? "30d"
+      : activeTab === "7d" || activeTab === "channelPoints"
+        ? "7d"
+        : null;
+  // 「他チャンネル比較」タブは期間統計を使わず、専用コンポーネント
+  // (StreamerRanking) が自前でローディング/エラーを表示するため、
+  // ここでは期間統計のスピナーを出さない。
+  // 取得期間と一致するpayloadだけを表示し、新しい期間の取得失敗後に
+  // 以前の期間のpayloadを選択中の期間として見せない。
+  const stats = periodPayload?.period === period ? periodPayload.stats : null;
+  const loading =
+    activeTab === "byCard"
+      ? cardOwnerLoading
+      : activeTab === "comparison"
+        ? false
+        : periodLoading;
 
   // 期間統計（7日/30日、およびチャネルポイントランキングの土台）。
   // 「カード別」タブは期間に依存しないため別エフェクトで取得する。
   useEffect(() => {
-    if (activeTab === "byCard") return;
+    // 「カード別」「他チャンネル比較」タブは期間統計を使わない。
+    // comparison は period=null になるため、タブを戻したときに期間値の
+    // null → 7d 変化を検出して必要な7d取得を起動できる。
+    if (!period) {
+      setPeriodLoading(false);
+      return;
+    }
+    // 既に同期間の成功済みデータがある場合は再利用してRPCを重ねず、
+    // 以前のリクエストで残ったローディング状態も確実に解除する。
+    if (periodPayload?.period === period) {
+      setPeriodLoading(false);
+      return;
+    }
+    // タブ移動後に古い期間の応答が到着して現在の表示データを上書きしないよう、
+    // エフェクトの cleanup で無効化する。通常の期間切替で旧応答をabortせずとも、
+    // state更新だけ防げば表示整合性を保てる。
+    let isCurrent = true;
     const fetchStats = async () => {
       setPeriodLoading(true);
       try {
         const res = await fetch(`/api/gacha-stats?period=${period}`);
         if (res.ok) {
           const data = await res.json();
-          setStats(data);
+          if (isCurrent) {
+            setPeriodPayload({ period, stats: data });
+          }
         }
       } finally {
-        setPeriodLoading(false);
+        if (isCurrent) setPeriodLoading(false);
       }
     };
     fetchStats();
-    // 依存は period のみ。activeTab を含めると 7日↔ランキング 等の
-    // 同一 period 間タブ切替でも RPC を二重に叩き、DB負荷低減の目的に
-    // 反するため。period が変わらない限り取得済み stats を再利用する。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period]);
+    return () => {
+      isCurrent = false;
+    };
+    // periodPayload も依存に含め、同期間データが保存されたら次のeffectでは
+    // キャッシュを再利用する。同一期間タブ間では period が変わらず再取得しない。
+  }, [period, periodPayload]);
 
   // 「カード別」タブ用: 全期間のカード別所持ユーザー統計を遅延取得。
   // 一度取得したらタブ切替で再フェッチしない（DB負荷低減）。
@@ -456,7 +495,7 @@ export default function DropRateTable() {
     <div>
       {/* Period tabs / 期間タブ */}
       <div className="mb-6 flex flex-wrap gap-2">
-        {(["7d", "30d", "channelPoints", "byCard"] as const).map((tab) => (
+        {(["7d", "30d", "channelPoints", "byCard", "comparison"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -471,7 +510,9 @@ export default function DropRateTable() {
         ))}
       </div>
 
-      {loading ? (
+      {activeTab === "comparison" ? (
+        <StreamerRanking />
+      ) : loading ? (
         <div className="py-12 text-center text-gray-400">
           <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-gray-500 border-t-purple-500" />
         </div>
@@ -490,9 +531,11 @@ export default function DropRateTable() {
       )}
 
       {/* Full period stats notice / 全期間統計についてのお知らせ
-          「カード別」タブは全期間の所持統計そのものなので、
-          「全期間統計は未実装」という告知と矛盾するため非表示にする。 */}
-      {activeTab !== "byCard" && (
+          「カード別」タブは全期間の所持統計そのものなので非表示にする。
+          「他チャンネル比較」タブは全期間の排出数を提供する当のタブであり、
+          「比較タブで確認できます」という案内をそのタブ上で出すのは冗長なため
+          ここでも非表示にする。 */}
+      {activeTab !== "byCard" && activeTab !== "comparison" && (
         <div className="mt-8 rounded-xl border border-gray-700 bg-gray-800/50 p-4">
           <h4 className="mb-2 text-sm font-semibold text-gray-300">
             {t("fullPeriodStats.title")}

@@ -379,6 +379,9 @@ export const rateLimits = {
   // ガチャ統計は集計処理があるため少し厳しめ
   // Gacha stats involves aggregation, so use a slightly stricter limit
   gachaStatsGet: createRatelimit("gachaStatsGet", 30, 60 * 1000),
+  // Issue #742: 匿名ランキング取得。snapshot への数行 lookup のみで毎リクエスト
+  // DB 到達しても軽いが、/api/gacha-stats と同水準（30req/60s）に揃える。
+  streamerRankingGet: createRatelimit("streamerRankingGet", 30, 60 * 1000),
   // OBS overlay polling fallback. One browser source polling every few seconds
   // should fit comfortably while still limiting accidental tight loops.
   overlayEventsGet: createRatelimit("overlayEventsGet", 120, 60 * 1000),

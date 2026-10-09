@@ -1427,7 +1427,8 @@
       "7d": "7日間",
       "30d": "30日間",
       "channelPoints": "チャネルポイント",
-      "byCard": "カード別"
+      "byCard": "カード別",
+      "comparison": "他チャンネル比較"
     },
     "totalDraws": "総ガチャ回数",
     "draws": "回",
@@ -1461,9 +1462,37 @@
       "noOwners": "所持ユーザーなし"
     },
     "raritySummary": "レアリティ別サマリー",
+    "comparison": {
+      "anonymityNotice": "ランキングにチャンネル名は表示されません（自分の名前も他の配信者には見えません）。毎時更新です。",
+      "updatedAt": "更新: {time}",
+      "minutesAgo": "{minutes}分前",
+      "hoursAgo": "{hours}時間前",
+      "loadError": "ランキングの取得に失敗しました。",
+      "retry": "再試行",
+      "preparing": "集計準備中です。しばらくお待ちください。",
+      "summaryHeading": "自分の順位",
+      "boardHeading": "ランキング",
+      "boardLabel": "{metric}のランキング",
+      "rank": "順位",
+      "you": "あなた",
+      "rankOf": "{rank}位/{count}",
+      "percentileTop": "上位{pct}%",
+      "noDataInPeriod": "この期間の排出はまだありません",
+      "outOfPopulation": "直近30日間の排出がないため、ランキング対象外です",
+      "rankUnavailable": "ランキング対象外",
+      "insufficientData": "比較できるチャンネルが5チャンネル未満のため、ランキングは表示されません（毎時更新されます）。",
+      "valueDraws": "排出数",
+      "valueCardCount": "カード登録数",
+      "metrics": {
+        "drawsTotal": "ガチャ累計",
+        "drawsDaily": "今日",
+        "drawsWeekly": "直近7日",
+        "cardCount": "カード登録数"
+      }
+    },
     "fullPeriodStats": {
       "title": "全期間統計について",
-      "message": "全期間統計については、集計にかかるサーバーコストが大きいため、本サービスのマネタイズの見通しが立ち次第、着手するか判断します。"
+      "message": "全期間のガチャ排出数は「他チャンネル比較」タブで確認できます（毎時更新の事前集計）。その他の全期間統計については、集計にかかるサーバーコストが大きいため、本サービスのマネタイズの見通しが立ち次第、着手するか判断します。"
     }
   },
   "inquiriesPage": {
