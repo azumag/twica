@@ -194,7 +194,8 @@ export function tradeCreatePath(streamerId: string, scope: "in_channel" | "cross
 }
 
 /** One side of a trade row as the viewer sees it (card + deleted snapshot). */
-type ViewerTradeSide = { card: TradeOfferDto["offeredCard"]; deleted: boolean };
+/** `quantity`: copies on this side (the offered side is always 1, #1789). */
+type ViewerTradeSide = { card: TradeOfferDto["offeredCard"]; deleted: boolean; quantity: number };
 
 /**
  * The viewer's side of one trade row, for /trade/mine rows (and the cancel
@@ -211,8 +212,12 @@ export function viewerSides(offer: TradeOfferDto): {
   get: ViewerTradeSide;
   partner: TradeOfferDto["offerer"];
 } {
-  const offeredSide = { card: offer.offeredCard, deleted: offer.offeredCardId === null };
-  const wantedSide = { card: offer.wantedCard, deleted: offer.wantedCardId === null };
+  const offeredSide = { card: offer.offeredCard, deleted: offer.offeredCardId === null, quantity: 1 };
+  const wantedSide = {
+    card: offer.wantedCard,
+    deleted: offer.wantedCardId === null,
+    quantity: offer.wantedQuantity,
+  };
   return offer.mineRole === "acceptor"
     ? { give: wantedSide, get: offeredSide, partner: offer.offerer }
     : { give: offeredSide, get: wantedSide, partner: offer.acceptedBy };

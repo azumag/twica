@@ -57,9 +57,15 @@ const S = {
   NOCROSS: id(5), // trade on, cross off
   INACTIVE_PARTNER: id(6), // seeded only by the inactive-only partner regression
   MIXED_PARTNER: id(7), // seeded only by the mixed-ownership partner regression
+  QTY: id(8), // seeded only by the wanted-quantity block (#1789)
 };
-const U = { O: id(11), V: id(12) };
-const TW = { O: "trade-vis-offerer", V: "trade-vis-viewer" };
+const U = { O: id(11), V: id(12), QO: id(13), QV: id(14) };
+const TW = {
+  O: "trade-vis-offerer",
+  V: "trade-vis-viewer",
+  QO: "trade-vis-qty-offerer",
+  QV: "trade-vis-qty-viewer",
+};
 const C = {
   PUB_A: id(21),
   PUB_B: id(22),
@@ -952,6 +958,258 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         await s`DELETE FROM user_cards WHERE card_id IN ${s(cardIds)}`;
         await s`DELETE FROM cards WHERE streamer_id = ${streamerId}`;
         await s`DELETE FROM streamers WHERE id = ${streamerId}`;
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #1789 wanted quantity. A self-contained world (ids 8xxx, its own channel
+  // and users) seeded when this block starts, so the order-dependent shared
+  // world above is neither read nor changed. The tests inside are still
+  // order-dependent among themselves (listing → accept → shortage → window).
+  // ---------------------------------------------------------------------------
+  describe("wanted quantity (#1789)", () => {
+    const QC = { A: id(8001), B: id(8002), C: id(8003) };
+    // QO owns three copies of A to list; QV owns four copies of B (oldest
+    // first) and one of C.
+    const QUC = {
+      O_A1: id(8101),
+      O_A2: id(8102),
+      O_A3: id(8103),
+      V_B1: id(8201),
+      V_B2: id(8202),
+      V_B3: id(8203),
+      V_B4: id(8204),
+    };
+    const req = (n: number) => id(8900 + n);
+    const offerIds: Record<string, string> = {};
+
+    const ownerOf = async (userCardIds: string[]) => {
+      const rows = await sql!<Array<{ id: string; user_id: string }>>`
+        SELECT id, user_id FROM user_cards WHERE id IN ${sql!(userCardIds)} ORDER BY id`;
+      return Object.fromEntries(rows.map((row) => [row.id, row.user_id]));
+    };
+
+    beforeAll(async () => {
+      const s = sql!;
+      await s`INSERT INTO streamers (
+        id, twitch_user_id, twitch_username, twitch_display_name,
+        trade_enabled, cross_channel_trade_enabled, show_unowned_cards, show_unowned_card_details
+      ) VALUES (${S.QTY}, 'tv-qty', 'tv-qty', 'TV qty', TRUE, FALSE, TRUE, TRUE)`;
+      await s`INSERT INTO users (id, twitch_user_id, twitch_username, twitch_display_name) VALUES
+        (${U.QO}, ${TW.QO}, ${TW.QO}, 'Qty Offerer'),
+        (${U.QV}, ${TW.QV}, ${TW.QV}, 'Qty Viewer')`;
+      for (const [cid, name] of [[QC.A, "Qty A"], [QC.B, "Qty B"], [QC.C, "Qty C"]]) {
+        await s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
+          VALUES (${cid}, ${S.QTY}, ${name}, 'common', 0.1, TRUE)`;
+      }
+      const own = (ucid: string, uid: string, cid: string, minutesAgo: number) =>
+        s`INSERT INTO user_cards (id, user_id, card_id, obtained_at)
+          VALUES (${ucid}, ${uid}, ${cid}, now() - make_interval(secs => ${minutesAgo * 60}))`;
+      await own(QUC.O_A1, U.QO, QC.A, 60);
+      await own(QUC.O_A2, U.QO, QC.A, 59);
+      await own(QUC.O_A3, U.QO, QC.A, 58);
+      await own(QUC.V_B1, U.QV, QC.B, 50);
+      await own(QUC.V_B2, U.QV, QC.B, 40);
+      await own(QUC.V_B3, U.QV, QC.B, 30);
+      await own(QUC.V_B4, U.QV, QC.B, 20);
+    });
+
+    it("stores the quantity and compares canAccept with counts of owned / unlisted copies", async () => {
+      const { createTradeOffer, listTradeOffers, cancelTradeOffer } = await import("@/lib/trade");
+      const create = async (
+        twitchUserId: string,
+        offeredUserCardId: string,
+        wantedCardId: string,
+        wantedQuantity: number,
+        requestId: string,
+      ) => {
+        const result = await createTradeOffer({
+          twitchUserId,
+          offeredUserCardId,
+          wantedCardId,
+          wantedQuantity,
+          requestId,
+        });
+        if (result.kind !== "ok") throw new Error(`create failed: ${result.code}`);
+        expect(result.offer.wanted_quantity).toBe(wantedQuantity);
+        return result.offer.id;
+      };
+      offerIds.x3 = await create(TW.QO, QUC.O_A1, QC.B, 3, req(1));
+      offerIds.x5 = await create(TW.QO, QUC.O_A2, QC.B, 5, req(2));
+
+      const stateFor = async (twitchUserId?: string) => {
+        const page = await listTradeOffers({ streamerId: S.QTY, scope: "in_channel", page: 1, twitchUserId });
+        return Object.fromEntries(
+          page.offers.map((offer) => [offer.id, { quantity: offer.wantedQuantity, canAccept: offer.canAccept }]),
+        );
+      };
+      // QV owns 4 unlisted copies of B.
+      expect(await stateFor(TW.QV)).toEqual({
+        [offerIds.x3]: { quantity: 3, canAccept: "yes" },
+        [offerIds.x5]: { quantity: 5, canAccept: "not_enough" },
+      });
+      // Anonymous viewers get the quantity but no canAccept.
+      expect(await stateFor()).toEqual({
+        [offerIds.x3]: { quantity: 3, canAccept: undefined },
+        [offerIds.x5]: { quantity: 5, canAccept: undefined },
+      });
+
+      // QV lists two of its B copies: 4 owned but only 2 unlisted < 3.
+      offerIds.vListB3 = await create(TW.QV, QUC.V_B3, QC.A, 1, req(3));
+      offerIds.vListB4 = await create(TW.QV, QUC.V_B4, QC.A, 1, req(4));
+      const listed = await stateFor(TW.QV);
+      expect(listed[offerIds.x3]).toEqual({ quantity: 3, canAccept: "all_listed" });
+      expect(listed[offerIds.x5]).toEqual({ quantity: 5, canAccept: "not_enough" });
+
+      // Withdraw one listing → 3 unlisted copies (B1, B2, B3), B4 stays listed.
+      await expect(cancelTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.vListB3 }))
+        .resolves.toEqual({ kind: "ok", id: offerIds.vListB3 });
+      expect((await stateFor(TW.QV))[offerIds.x3]).toEqual({ quantity: 3, canAccept: "yes" });
+    });
+
+    it("accept transfers exactly the N oldest unlisted copies and replays idempotently", async () => {
+      const { acceptTradeOffer, listMyTradeOffers } = await import("@/lib/trade");
+      const result = await acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.x3, requestId: req(11) });
+      expect(result).toMatchObject({
+        success: true,
+        idempotentReplay: false,
+        tradeOfferId: offerIds.x3,
+        receivedUserCardId: QUC.O_A1,
+        // The oldest of the transferred copies is the one recorded.
+        givenUserCardId: QUC.V_B1,
+      });
+
+      expect(await ownerOf([QUC.O_A1, QUC.V_B1, QUC.V_B2, QUC.V_B3, QUC.V_B4])).toEqual({
+        [QUC.O_A1]: U.QV,
+        [QUC.V_B1]: U.QO,
+        [QUC.V_B2]: U.QO,
+        [QUC.V_B3]: U.QO,
+        // Listed in QV's own open offer → never used to pay.
+        [QUC.V_B4]: U.QV,
+      });
+      const [row] = await sql!<Array<{ status: string; accepted_user_card_id: string }>>`
+        SELECT status, accepted_user_card_id FROM trade_offers WHERE id = ${offerIds.x3}`;
+      expect(row).toEqual({ status: "completed", accepted_user_card_id: QUC.V_B1 });
+
+      await expect(acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.x3, requestId: req(11) }))
+        .resolves.toMatchObject({ success: true, idempotentReplay: true, givenUserCardId: QUC.V_B1 });
+
+      const mine = await listMyTradeOffers(TW.QV, { status: "completed" });
+      expect(mine.offers.map((offer) => [offer.id, offer.wantedQuantity, offer.mineRole]))
+        .toEqual([[offerIds.x3, 3, "acceptor"]]);
+    });
+
+    it("rejects with CARD_NOT_OWNED and moves nothing when fewer than N copies are available", async () => {
+      const { acceptTradeOffer, cancelTradeOffer } = await import("@/lib/trade");
+      // Free B4 again: QV now has exactly 1 unlisted copy of B for a ×5 offer.
+      await cancelTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.vListB4 });
+      const copies = [QUC.O_A2, QUC.V_B1, QUC.V_B2, QUC.V_B3, QUC.V_B4];
+      const before = await ownerOf(copies);
+
+      await expect(acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.x5, requestId: req(21) }))
+        .resolves.toEqual({ success: false, error: "CARD_NOT_OWNED" });
+
+      expect(await ownerOf(copies)).toEqual(before);
+      const [row] = await sql!<Array<{ status: string }>>`
+        SELECT status FROM trade_offers WHERE id = ${offerIds.x5}`;
+      expect(row.status).toBe("open");
+    });
+
+    it("the DB CHECK rejects quantities outside 1..TRADE_MAX_WANTED_QUANTITY", async () => {
+      const { TRADE_MAX_WANTED_QUANTITY } = await import("@/lib/trade");
+      for (const quantity of [0, TRADE_MAX_WANTED_QUANTITY + 1]) {
+        await expect(sql!`UPDATE trade_offers SET wanted_quantity = ${quantity} WHERE id = ${offerIds.x5}`)
+          .rejects.toMatchObject({ code: "23514" });
+      }
+      await sql!`UPDATE trade_offers SET wanted_quantity = ${TRADE_MAX_WANTED_QUANTITY} WHERE id = ${offerIds.x5}`;
+      await sql!`UPDATE trade_offers SET wanted_quantity = 5 WHERE id = ${offerIds.x5}`;
+    });
+
+    it("concurrent accepts by the same acceptor never spend more copies than owned", async () => {
+      const { createTradeOffer, acceptTradeOffer } = await import("@/lib/trade");
+      const s = sql!;
+      // QV: B4 plus three new copies = 4 unlisted copies of B. QO lists two
+      // ×3 offers; accepting both would need 6, so exactly one may succeed.
+      const extraB = [id(8205), id(8206), id(8207)];
+      for (const [i, ucid] of extraB.entries()) {
+        await s`INSERT INTO user_cards (id, user_id, card_id, obtained_at)
+          VALUES (${ucid}, ${U.QV}, ${QC.B}, now() - make_interval(secs => ${(10 - i) * 60}))`;
+      }
+      const extraA = [id(8104), id(8105)];
+      for (const ucid of extraA) {
+        await s`INSERT INTO user_cards (id, user_id, card_id) VALUES (${ucid}, ${U.QO}, ${QC.A})`;
+      }
+      const offers: string[] = [];
+      for (const [i, ucid] of extraA.entries()) {
+        const result = await createTradeOffer({
+          twitchUserId: TW.QO,
+          offeredUserCardId: ucid,
+          wantedCardId: QC.B,
+          wantedQuantity: 3,
+          requestId: req(41 + i),
+        });
+        if (result.kind !== "ok") throw new Error(`create failed: ${result.code}`);
+        offers.push(result.offer.id);
+      }
+
+      const results = await Promise.all(offers.map((tradeOfferId, i) =>
+        acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId, requestId: req(51 + i) })));
+      expect(results.map((result) => result.success).sort()).toEqual([false, true]);
+      expect(results.find((result) => !result.success)).toEqual({ success: false, error: "CARD_NOT_OWNED" });
+
+      const [counts] = await s<Array<{ viewer: number; offerer: number }>>`
+        SELECT
+          count(*) FILTER (WHERE user_id = ${U.QV})::int AS viewer,
+          count(*) FILTER (WHERE user_id = ${U.QO})::int AS offerer
+        FROM user_cards
+        WHERE id IN ${s([QUC.V_B4, ...extraB])}`;
+      expect(counts).toEqual({ viewer: 1, offerer: 3 });
+    });
+
+    it("deploy window: works as 1-copy offers while the column does not exist yet", async () => {
+      const { createTradeOffer, listTradeOffers, listMyTradeOffers } = await import("@/lib/trade");
+      // Simulate the database before 20261011120000 for the app code: the
+      // generated SQL must not reference the column (rename instead of drop so
+      // the column and its CHECK come back unchanged).
+      await sql!`ALTER TABLE trade_offers RENAME COLUMN wanted_quantity TO wanted_quantity_hidden`;
+      try {
+        const created = await createTradeOffer({
+          twitchUserId: TW.QO,
+          offeredUserCardId: QUC.O_A3,
+          wantedCardId: QC.C,
+          requestId: req(31),
+        });
+        expect(created).toMatchObject({ kind: "ok", idempotentReplay: false });
+        if (created.kind !== "ok") throw new Error("unreachable");
+        expect(created.offer.wanted_quantity).toBe(1);
+
+        // Same requestId → replay through the column-less projection.
+        await expect(createTradeOffer({
+          twitchUserId: TW.QO,
+          offeredUserCardId: QUC.O_A3,
+          wantedCardId: QC.C,
+          requestId: req(31),
+        })).resolves.toMatchObject({ kind: "ok", idempotentReplay: true, offer: { id: created.offer.id, wanted_quantity: 1 } });
+
+        // A multi-copy listing cannot be stored: the error surfaces instead
+        // of silently listing ×1.
+        await expect(createTradeOffer({
+          twitchUserId: TW.QO,
+          offeredUserCardId: QUC.O_A2,
+          wantedCardId: QC.C,
+          wantedQuantity: 2,
+          requestId: req(32),
+        })).rejects.toMatchObject({ cause: { code: "42703" } });
+
+        const board = await listTradeOffers({ streamerId: S.QTY, scope: "in_channel", page: 1, twitchUserId: TW.QV });
+        // Every row reads as ×1 (the stored ×5 is not visible to the old schema).
+        expect(board.offers.map((offer) => offer.wantedQuantity)).toEqual(board.offers.map(() => 1));
+        expect(board.offers.find((offer) => offer.id === created.offer.id)).toMatchObject({ canAccept: "not_owned" });
+        const mine = await listMyTradeOffers(TW.QO, { status: "open" });
+        expect(mine.offers.map((offer) => offer.id)).toContain(created.offer.id);
+      } finally {
+        await sql!`ALTER TABLE trade_offers RENAME COLUMN wanted_quantity_hidden TO wanted_quantity`;
       }
     });
   });

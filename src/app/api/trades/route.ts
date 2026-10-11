@@ -4,6 +4,7 @@ import { getSession } from "@/lib/session";
 import {
   createTradeOffer,
   listTradeOffers,
+  TRADE_MAX_WANTED_QUANTITY,
   type TradeServiceErrorCode,
   type TradeScope,
 } from "@/lib/trade";
@@ -92,11 +93,20 @@ export async function POST(request: NextRequest) {
       typeof body.offeredUserCardId === "string" ? body.offeredUserCardId : "";
     const wantedCardId = typeof body.wantedCardId === "string" ? body.wantedCardId : "";
     const requestId = typeof body.requestId === "string" ? body.requestId : "";
+    // #1789: optional for compatibility with clients that predate the field
+    // (an open tab with the previous bundle keeps creating 1-copy offers).
+    // Only an integer in 1..TRADE_MAX_WANTED_QUANTITY is accepted; the DB
+    // CHECK repeats the range as the last line of defence.
+    const wantedQuantity = body.wantedQuantity === undefined ? 1 : body.wantedQuantity;
 
     if (
       !isCanonicalUuid(offeredUserCardId)
       || !isCanonicalUuid(wantedCardId)
       || !isCanonicalUuid(requestId)
+      || typeof wantedQuantity !== "number"
+      || !Number.isInteger(wantedQuantity)
+      || wantedQuantity < 1
+      || wantedQuantity > TRADE_MAX_WANTED_QUANTITY
     ) {
       return tradeErrorResponse("INVALID_REQUEST", 400);
     }
@@ -105,6 +115,7 @@ export async function POST(request: NextRequest) {
       twitchUserId: auth.session.twitchUserId,
       offeredUserCardId,
       wantedCardId,
+      wantedQuantity,
       requestId,
     });
     if (result.kind === "error") {
@@ -119,6 +130,7 @@ export async function POST(request: NextRequest) {
         offeredStreamerId: result.offer.offered_streamer_id,
         wantedCardId: result.offer.wanted_card_id,
         wantedStreamerId: result.offer.wanted_streamer_id,
+        wantedQuantity: result.offer.wanted_quantity,
         offeredCard: result.offer.offered_card_snapshot,
         wantedCard: result.offer.wanted_card_snapshot,
         isCrossChannel: Boolean(result.offer.is_cross_channel),

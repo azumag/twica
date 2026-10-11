@@ -627,9 +627,12 @@ export const cardStoneTransactions = pgTable('card_stone_transactions', {
 
 // -----------------------------------------------------------------------------
 // trade_offers（カードトレードのオープンオファー。completed 行がそのまま履歴になる）
-// 根拠: 20260817100000 初版（Issue #722, #715 子2）
+// 根拠: 20260817100000 初版（Issue #722, #715 子2）、20261011120000（#1789 wanted_quantity）
 // -----------------------------------------------------------------------------
-export const tradeOffers = pgTable('trade_offers', {
+// 列定義はファクトリで共有する。Drizzle の pgTable は列ビルダーからテーブルごとに列
+// オブジェクトを生成するため、同じビルダーを2つのテーブルへ渡さず、呼び出しごとに新しい
+// ビルダーを作る。
+const tradeOfferBaseColumns = () => ({
   id: uuid('id').primaryKey().default(sql`extensions.uuid_generate_v4()`),
   offerer_user_id: uuid('offerer_user_id').notNull(),
   // 意図的に FK なし（migration のコメント参照。user_cards 行はカードストーン交換で
@@ -658,6 +661,24 @@ export const tradeOffers = pgTable('trade_offers', {
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
 })
+
+export const tradeOffers = pgTable('trade_offers', {
+  ...tradeOfferBaseColumns(),
+  // #1789: 応諾者が渡す wanted_card_id のコピー枚数（1〜10。CHECK は DB 側で担保）
+  wanted_quantity: smallint('wanted_quantity').notNull().default(1),
+})
+
+/**
+ * 20261011120000 適用前の trade_offers（wanted_quantity 列なし）。
+ *
+ * デプロイ窓（planetscale-migrate とアプリデプロイが非同期、issue #788）専用。
+ * Drizzle の INSERT は values に無い列も `default` として列挙し、無指定の
+ * `.select()` / `.returning()` も schema の全列を要求するため、列が未作成の DB では
+ * tradeOffers を使う文がすべて 42703 で失敗する。src/lib/trade.ts はその場合だけ
+ * この定義で再試行する。migration 適用後は到達しない死に分岐になるので、本番・preview
+ * 双方の適用を確認したら tradeOffers に一本化して削除してよい。
+ */
+export const tradeOffersWithoutQuantity = pgTable('trade_offers', tradeOfferBaseColumns())
 
 // =============================================================================
 // database.ts（src/types/database.ts）と migrations（DDL）の食い違い一覧

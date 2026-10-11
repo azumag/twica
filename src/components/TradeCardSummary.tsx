@@ -29,6 +29,12 @@ interface TradeCardSummaryProps {
   label?: string;
   streamer?: TradeCardStreamer | null;
   size?: "sm" | "lg";
+  /**
+   * Copies exchanged on this side (#1789). Only the wanted side of an offer
+   * can be > 1; a "×N" badge is shown then, so a multi-copy offer is never
+   * mistaken for a 1:1 trade.
+   */
+  quantity?: number;
 }
 
 /**
@@ -44,6 +50,7 @@ export default function TradeCardSummary({
   label,
   streamer,
   size = "sm",
+  quantity = 1,
 }: TradeCardSummaryProps) {
   const t = useTranslations("trade");
   const tRarity = useTranslations("rarity");
@@ -78,6 +85,11 @@ export default function TradeCardSummary({
         {label && <p className="text-xs font-semibold text-gray-400">{label}</p>}
         <p className="break-words font-semibold text-white">{name}</p>
         <div className="mt-1 flex flex-wrap items-center gap-1">
+          {quantity > 1 && (
+            <span className="rounded bg-purple-600 px-1.5 py-0.5 text-xs font-semibold text-white">
+              {t("quantityBadge", { count: quantity })}
+            </span>
+          )}
           {card.rarity && (
             <span
               className={`rounded px-1.5 py-0.5 text-xs text-white ${getRarityColorClass(card.rarity)}`}

@@ -48,7 +48,12 @@ export default function TradeCancelModal({ offer, onConfirm, onClose }: TradeCan
       </h2>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="min-w-0 flex-1">
-          <TradeCardSummary card={give.card} deleted={give.deleted} label={t("myTradesGive")} />
+          <TradeCardSummary
+            card={give.card}
+            deleted={give.deleted}
+            quantity={give.quantity}
+            label={t("myTradesGive")}
+          />
         </div>
         <span
           role="img"
@@ -58,7 +63,12 @@ export default function TradeCancelModal({ offer, onConfirm, onClose }: TradeCan
           ⇄
         </span>
         <div className="min-w-0 flex-1">
-          <TradeCardSummary card={get.card} deleted={get.deleted} label={t("myTradesWant")} />
+          <TradeCardSummary
+            card={get.card}
+            deleted={get.deleted}
+            quantity={get.quantity}
+            label={t("myTradesWant")}
+          />
         </div>
       </div>
       <p id={warningId} className="mt-4 rounded-lg border border-yellow-600/60 bg-yellow-900/30 p-3 text-sm text-yellow-100">

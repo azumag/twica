@@ -37,7 +37,7 @@ const INACTIVE_BUTTON =
  *
  * Action states (§11.3): own offer → badge (cancel lives in /trade/mine),
  * anonymous → "log in to accept" link, otherwise canAccept yes / not_owned /
- * all_listed. A logged-in row without canAccept (not computed by the API)
+ * not_enough (fewer copies than wantedQuantity, #1789) / all_listed. A logged-in row without canAccept (not computed by the API)
  * fails closed to the not-owned state rather than offering a doomed accept.
  */
 export default function TradeOfferRow({
@@ -87,7 +87,11 @@ export default function TradeOfferRow({
     } else {
       button = (
         <button type="button" className={INACTIVE_BUTTON} disabled>
-          {offer.canAccept === "all_listed" ? t("acceptButtonAllListed") : t("acceptButtonNotOwned")}
+          {offer.canAccept === "all_listed"
+            ? t("acceptButtonAllListed")
+            : offer.canAccept === "not_enough"
+              ? t("acceptButtonNotEnough")
+              : t("acceptButtonNotOwned")}
         </button>
       );
     }
@@ -96,7 +100,11 @@ export default function TradeOfferRow({
         {button}
         {/* Always visible: the payment copy is chosen automatically and the
             trade cannot be undone, so this is announced before the dialog. */}
-        <p className="text-xs text-gray-400">{t("autoSelectNotice")}</p>
+        <p className="text-xs text-gray-400">
+          {offer.wantedQuantity > 1
+            ? t("autoSelectNoticeMultiple", { count: offer.wantedQuantity })
+            : t("autoSelectNotice")}
+        </p>
       </div>
     );
   }
@@ -121,6 +129,7 @@ export default function TradeOfferRow({
         <div className="min-w-0 flex-1">
           <TradeCardSummary
             card={offer.wantedCard}
+            quantity={offer.wantedQuantity}
             label={t(offer.isOwnOffer ? "myTradesWant" : "giveLabel")}
             streamer={showStreamers ? offer.wantedStreamer : null}
           />
