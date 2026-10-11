@@ -45,6 +45,14 @@ describe("TradeSettings (#725)", () => {
     vi.unstubAllGlobals();
   });
 
+  it("explains that unowned-card trading requires collection visibility without a redundant link", () => {
+    renderSettings();
+
+    expect(screen.getByText(jaMessages.tradeSettings.visibilityNotice)).toBeInTheDocument();
+    // 公開設定カードは同じ画面のすぐ上にあるため、注記にリンクは置かない。
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
   it("disables cross-channel toggle while the master trade toggle is off", () => {
     renderSettings({ tradeEnabled: false, crossChannelTradeEnabled: true });
 

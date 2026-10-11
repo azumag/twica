@@ -2,274 +2,525 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import TradeBoard from "@/components/TradeBoard";
+import TradeOfferRow from "@/components/TradeOfferRow";
 import type { TradeOfferDto } from "@/lib/trade";
+import { tradeBoardPath, tradeLoginHref } from "@/lib/trade-client";
+import { clearTradeListCache } from "@/lib/use-trade-list";
 import jaMessages from "../../../messages/ja.json";
+import enMessages from "../../../messages/en.json";
 
-const replaceMock = vi.fn();
-
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: replaceMock }),
-}));
+const ja = jaMessages.trade;
 
 function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
   return {
-    id: "11111111-1111-4111-8111-111111111111",
-    offeredUserCardId: "22222222-2222-4222-8222-222222222222",
-    offeredCardId: "33333333-3333-4333-8333-333333333333",
-    offeredStreamerId: "streamer-1",
-    wantedCardId: "44444444-4444-4444-8444-444444444444",
-    wantedStreamerId: "streamer-1",
-    offeredCard: { name: "もらえるカード", rarity: "SR", imageUrl: null },
-    wantedCard: { name: "渡すカード", rarity: "R", imageUrl: null },
+    id: "offer-1",
+    offeredCardId: "card-offered",
+    offeredStreamerId: "s-1",
+    wantedCardId: "card-wanted",
+    wantedStreamerId: "s-1",
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
     isCrossChannel: false,
     status: "open",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
     completedAt: null,
-    offerer: { twitchUsername: "seller_a", twitchDisplayName: "出品者A", twitchProfileImageUrl: null },
-    offeredStreamer: null,
-    wantedStreamer: null,
+    offerer: { twitchUsername: "alice", twitchDisplayName: "Alice", twitchProfileImageUrl: null },
+    acceptedBy: null,
+    offeredStreamer: { id: "s-1", twitchUsername: "chan", twitchDisplayName: "ChanOne", twitchProfileImageUrl: null },
+    wantedStreamer: { id: "s-2", twitchUsername: "other", twitchDisplayName: "ChanTwo", twitchProfileImageUrl: null },
     isOwnOffer: false,
     canAccept: "yes",
     ...overrides,
   };
 }
 
-function mockList(offers: TradeOfferDto[], hasMore = false) {
-  return vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.startsWith("/api/trades?")) {
-      return new Response(JSON.stringify({ offers, page: 1, pageSize: 20, hasMore }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    throw new Error(`unexpected fetch: ${url}`);
+function jsonResponse(status: number, body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
   });
 }
 
-function renderBoard(props: { crossChannelEnabled?: boolean; initialScope?: "in_channel" | "cross_channel" } = {}) {
+function listResponse(offers: TradeOfferDto[], hasMore = false) {
+  return jsonResponse(200, { offers, page: 1, pageSize: 20, hasMore });
+}
+
+const LOGIN_HREF = tradeLoginHref(tradeBoardPath("s-1", "cross_channel"));
+
+function renderRow(
+  offer: TradeOfferDto,
+  props: Partial<React.ComponentProps<typeof TradeOfferRow>> = {},
+  locale: "ja" | "en" = "ja",
+) {
+  const onAccept = vi.fn();
+  render(
+    <NextIntlClientProvider locale={locale} messages={locale === "ja" ? jaMessages : enMessages}>
+      <ul>
+        <TradeOfferRow
+          offer={offer}
+          showStreamers={false}
+          isLoggedIn
+          loginHref={LOGIN_HREF}
+          writeBlocked={false}
+          onAccept={onAccept}
+          {...props}
+        />
+      </ul>
+    </NextIntlClientProvider>,
+  );
+  return { onAccept };
+}
+
+describe("TradeOfferRow accept states (§11.3)", () => {
+  it("yes → enabled purple accept button that opens the dialog", () => {
+    const { onAccept } = renderRow(makeOffer({ canAccept: "yes" }));
+    const button = screen.getByRole("button", { name: ja.acceptButton });
+    expect(button).toBeEnabled();
+    expect(button.className).toContain("bg-purple-600");
+    fireEvent.click(button);
+    expect(onAccept).toHaveBeenCalledWith(expect.objectContaining({ id: "offer-1" }), button);
+  });
+
+  it("not_owned → disabled gray 'not owned'", () => {
+    renderRow(makeOffer({ canAccept: "not_owned" }));
+    const button = screen.getByRole("button", { name: ja.acceptButtonNotOwned });
+    expect(button).toBeDisabled();
+    expect(button.className).toContain("bg-gray-700");
+  });
+
+  it("all_listed → disabled gray with a label distinct from not_owned", () => {
+    renderRow(makeOffer({ canAccept: "all_listed" }));
+    expect(screen.getByRole("button", { name: ja.acceptButtonAllListed })).toBeDisabled();
+    expect(screen.queryByText(ja.acceptButtonNotOwned)).toBeNull();
+  });
+
+  it("anonymous → 'log in to accept' link carrying the encoded returnTo with scope", () => {
+    renderRow(makeOffer({ canAccept: undefined, isOwnOffer: undefined }), { isLoggedIn: false });
+    const link = screen.getByRole("link", { name: ja.acceptButtonLoginRequired });
+    expect(link).toHaveAttribute(
+      "href",
+      "/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade%2Fs-1%3Fscope%3Dcross",
+    );
+    expect(screen.queryByRole("button", { name: ja.acceptButton })).toBeNull();
+    expect(screen.getByText(ja.receiveLabel).parentElement).toHaveTextContent("Offered Dragon");
+    expect(screen.getByText(ja.giveLabel).parentElement).toHaveTextContent("Wanted Slime");
+    expect(screen.queryByText(ja.myTradesWant)).toBeNull();
+  });
+
+  it("own offer → badge and /trade/mine link instead of an accept button", () => {
+    renderRow(makeOffer({ isOwnOffer: true, canAccept: undefined }));
+    expect(screen.getByText(ja.ownOfferBadge)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: ja.ownOfferManageLink })).toHaveAttribute("href", "/trade/mine");
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByText(ja.autoSelectNotice)).toBeNull();
+  });
+
+  it("always shows the auto-select notice next to the accept action", () => {
+    renderRow(makeOffer({ canAccept: "not_owned" }));
+    expect(screen.getByText(ja.autoSelectNotice)).toBeInTheDocument();
+  });
+
+  it("shows the viewer's direction: receive (offered card) first, then give", () => {
+    renderRow(makeOffer());
+    const receive = screen.getByText(ja.receiveLabel);
+    const give = screen.getByText(ja.giveLabel);
+    expect(receive.parentElement).toHaveTextContent("Offered Dragon");
+    expect(give.parentElement).toHaveTextContent("Wanted Slime");
+    // DOCUMENT_POSITION_FOLLOWING: give comes after receive.
+    expect(receive.compareDocumentPosition(give) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("img", { name: ja.directionIconLabel })).toHaveTextContent("⇄");
+  });
+
+  it.each([
+    { locale: "ja" as const, isCrossChannel: false },
+    { locale: "ja" as const, isCrossChannel: true },
+    { locale: "en" as const, isCrossChannel: false },
+    { locale: "en" as const, isCrossChannel: true },
+  ])("labels my own offer from the offerer's direction ($locale, cross-channel: $isCrossChannel)", ({ locale, isCrossChannel }) => {
+    const trade = (locale === "ja" ? jaMessages : enMessages).trade;
+    renderRow(makeOffer({ isOwnOffer: true, canAccept: undefined, isCrossChannel }), {
+      showStreamers: isCrossChannel,
+    }, locale);
+    const give = screen.getByText(trade.myTradesGive);
+    const want = screen.getByText(trade.myTradesWant);
+    expect(give.parentElement).toHaveTextContent("Offered Dragon");
+    expect(want.parentElement).toHaveTextContent("Wanted Slime");
+    expect(give.compareDocumentPosition(want) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(trade.receiveLabel)).toBeNull();
+    expect(screen.getByRole("link", { name: trade.ownOfferManageLink })).toHaveAttribute("href", "/trade/mine");
+    expect(screen.queryByRole("button")).toBeNull();
+    if (isCrossChannel) {
+      expect(give.parentElement).toHaveTextContent("ChanOne");
+      expect(want.parentElement).toHaveTextContent("ChanTwo");
+    }
+  });
+
+  it("stacks vertically on mobile and side by side from sm", () => {
+    renderRow(makeOffer());
+    const cardsRow = screen.getByRole("img", { name: ja.directionIconLabel }).parentElement!;
+    expect(cardsRow.className).toContain("flex-col");
+    expect(cardsRow.className).toContain("sm:flex-row");
+  });
+
+  it("shows each card's channel only on the cross-channel tab", () => {
+    renderRow(makeOffer({ isCrossChannel: true }), { showStreamers: true });
+    expect(screen.getByText("ChanOne のカード")).toBeInTheDocument();
+    expect(screen.getByText("ChanTwo のカード")).toBeInTheDocument();
+    expect(screen.getByText(ja.receiveLabel).parentElement).toHaveTextContent("ChanOne");
+    expect(screen.getByText(ja.giveLabel).parentElement).toHaveTextContent("ChanTwo");
+  });
+});
+
+function renderBoard(props: Partial<React.ComponentProps<typeof TradeBoard>> = {}) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <TradeBoard
-        streamerId="streamer-1"
-        initialScope={props.initialScope ?? "in_channel"}
-        crossChannelEnabled={props.crossChannelEnabled ?? true}
+        streamerId="s-1"
+        scope="in_channel"
+        isLoggedIn
+        revealsUnownedCards
+        filterCards={[
+          { cardId: "card-a", name: "Card A" },
+          { cardId: "card-b", name: "Card B" },
+        ]}
+        loginHref="/login"
+        createHref="/trade/s-1/new"
+        {...props}
       />
     </NextIntlClientProvider>,
   );
 }
 
-describe("TradeBoard (#726)", () => {
+describe("TradeBoard", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
-    replaceMock.mockClear();
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    // The board's page cache is module-level (shared across remounts).
+    clearTradeListCache();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("renders offers with the accepter's perspective and the auto-select notice", async () => {
-    const offer = makeOffer({
-      offeredCard: { name: "もらえるカード", rarity: "SR", imageUrl: "https://example.com/a.png" },
-      wantedCard: { name: "渡すカード", rarity: "R", imageUrl: "https://example.com/b.png" },
+  it("loads offers from GET /api/trades (client side, rate limited) with scope", async () => {
+    fetchMock.mockImplementation(async () => listResponse([makeOffer()]));
+    renderBoard({ scope: "cross_channel", filterCards: [] });
+    expect(await screen.findByText("Offered Dragon")).toBeInTheDocument();
+    const url = new URL(fetchMock.mock.calls[0][0] as string, "https://x.test");
+    expect(url.pathname).toBe("/api/trades");
+    expect(url.searchParams.get("streamerId")).toBe("s-1");
+    expect(url.searchParams.get("scope")).toBe("cross_channel");
+    expect(url.searchParams.get("page")).toBe("1");
+  });
+
+  it("offers wanted/offered filters on the in-channel tab and sends them", async () => {
+    fetchMock.mockImplementation(async () => listResponse([]));
+    renderBoard();
+    const wanted = await screen.findByLabelText(ja.filterWantedCard);
+    fireEvent.change(wanted, { target: { value: "card-b" } });
+    await waitFor(() => {
+      const last = new URL(fetchMock.mock.calls.at(-1)![0] as string, "https://x.test");
+      expect(last.searchParams.get("wantedCardId")).toBe("card-b");
     });
-    vi.stubGlobal("fetch", mockList([offer]));
+    expect(await screen.findByText(ja.emptyStateFiltered)).toBeInTheDocument();
+  });
+
+  it("has no card filter on the cross-channel tab (MVP)", async () => {
+    fetchMock.mockImplementation(async () => listResponse([]));
+    renderBoard({ scope: "cross_channel" });
+    await screen.findByText(ja.emptyStateMessage);
+    expect(screen.queryByLabelText(ja.filterWantedCard)).toBeNull();
+  });
+
+  it("shows the normal empty state with a create CTA", async () => {
+    fetchMock.mockImplementation(async () => listResponse([]));
     renderBoard();
-
-    // 応諾者視点: もらえるカードが先に表示される
-    expect(await screen.findByText("もらえるカード")).toBeTruthy();
-    expect(screen.getByText("渡すカード")).toBeTruthy();
-    expect(screen.getByText(jaMessages.trade.autoSelectNotice)).toBeTruthy();
-    expect(screen.getByRole("button", { name: jaMessages.trade.acceptButton })).toBeTruthy();
+    expect(await screen.findByText(ja.emptyStateMessage)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: ja.emptyStateCta })).toHaveAttribute("href", "/trade/s-1/new");
+    expect(screen.queryByText(ja.unrevealedNotice)).toBeNull();
   });
 
-  it("disables the accept button for not_owned and all_listed states", async () => {
-    vi.stubGlobal(
-      "fetch",
-      mockList([
-        makeOffer({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", canAccept: "not_owned" }),
-        makeOffer({ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", canAccept: "all_listed" }),
-      ]),
-    );
+  it("explains the owned-cards-only listing and uses a distinct empty state when unowned cards are hidden", async () => {
+    fetchMock.mockImplementation(async () => listResponse([]));
+    renderBoard({ revealsUnownedCards: false });
+    expect(screen.getByText(ja.unrevealedNotice)).toBeInTheDocument();
+    expect(await screen.findByText(ja.emptyStateUnrevealed)).toBeInTheDocument();
+    expect(screen.queryByText(ja.emptyStateMessage)).toBeNull();
+  });
+
+  it("keeps the unrevealed notice above a non-empty list", async () => {
+    fetchMock.mockImplementation(async () => listResponse([makeOffer()]));
+    renderBoard({ revealsUnownedCards: false });
+    expect(await screen.findByText("Offered Dragon")).toBeInTheDocument();
+    expect(screen.getByText(ja.unrevealedNotice)).toBeInTheDocument();
+  });
+
+  it("shows an inline error banner with retry when loading fails", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(429, { code: "RATE_LIMIT_EXCEEDED" }));
+    fetchMock.mockResolvedValueOnce(listResponse([makeOffer()]));
     renderBoard();
-
-    const notOwned = await screen.findByRole("button", { name: jaMessages.trade.acceptButtonNotOwned });
-    expect((notOwned as HTMLButtonElement).disabled).toBe(true);
-    const allListed = screen.getByRole("button", { name: jaMessages.trade.acceptButtonAllListed });
-    expect((allListed as HTMLButtonElement).disabled).toBe(true);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(ja.loadError);
+    fireEvent.click(within(alert).getByRole("button", { name: ja.retryButton }));
+    expect(await screen.findByText("Offered Dragon")).toBeInTheDocument();
   });
 
-  it("shows a login link with returnTo when logged out (canAccept omitted)", async () => {
-    vi.stubGlobal("fetch", mockList([makeOffer({ canAccept: undefined })]));
+  it("pages with hasMore", async () => {
+    fetchMock.mockResolvedValueOnce(listResponse([makeOffer()], true));
+    fetchMock.mockResolvedValueOnce(listResponse([makeOffer({ id: "offer-2" })], false));
     renderBoard();
-
-    const loginLink = await screen.findByRole("link", { name: jaMessages.trade.acceptButtonLoginRequired });
-    expect(loginLink.getAttribute("href")).toContain(encodeURIComponent("/trade/streamer-1"));
-  });
-
-  it("shows the empty state when there are no offers", async () => {
-    vi.stubGlobal("fetch", mockList([]));
-    renderBoard();
-
-    expect(await screen.findByText(jaMessages.trade.emptyStateMessage)).toBeTruthy();
-  });
-
-  it("shows an inline error banner with retry on list failure", async () => {
-    const fetchMock = vi.fn(async () => new Response("ng", { status: 500 }));
-    vi.stubGlobal("fetch", fetchMock);
-    renderBoard();
-
-    expect(await screen.findByText(jaMessages.trade.errorLoadFailed)).toBeTruthy();
-    fetchMock.mockImplementationOnce(async () =>
-      new Response(JSON.stringify({ offers: [], page: 1, pageSize: 20, hasMore: false }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: jaMessages.trade.retryButton }));
-    await waitFor(() => expect(screen.getByText(jaMessages.trade.emptyStateMessage)).toBeTruthy());
-  });
-
-  it("hides the cross-channel tab when cross-channel trading is disabled", async () => {
-    vi.stubGlobal("fetch", mockList([]));
-    renderBoard({ crossChannelEnabled: false });
-
-    await waitFor(() => expect(fetchMockCalled()).toBe(true));
-    expect(screen.queryByRole("tab", { name: jaMessages.trade.tabCrossChannel })).toBeNull();
-    expect(screen.getByRole("tab", { name: jaMessages.trade.tabInChannel })).toBeTruthy();
-  });
-
-  function fetchMockCalled() {
-    return (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length > 0;
-  }
-
-  it("switches scope with ?scope=cross and shows streamer badges", async () => {
-    const crossOffer = makeOffer({
-      isCrossChannel: true,
-      offeredStreamer: { id: "streamer-a", twitchUsername: "a", twitchDisplayName: "配信者A", twitchProfileImageUrl: null },
-      wantedStreamer: { id: "streamer-b", twitchUsername: "b", twitchDisplayName: "配信者B", twitchProfileImageUrl: null },
+    await screen.findByText("Offered Dragon");
+    fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
+    await waitFor(() => {
+      const last = new URL(fetchMock.mock.calls.at(-1)![0] as string, "https://x.test");
+      expect(last.searchParams.get("page")).toBe("2");
     });
-    vi.stubGlobal("fetch", mockList([crossOffer]));
-    renderBoard({ initialScope: "cross_channel" });
-
-    expect(await screen.findByText(/配信者A/)).toBeTruthy();
-    expect(screen.getByText(/配信者B/)).toBeTruthy();
   });
 
-  it("opens the accept modal with cancel as the initial focus and closes on Escape", async () => {
-    vi.stubGlobal("fetch", mockList([makeOffer()]));
-    renderBoard();
-
-    fireEvent.click(await screen.findByRole("button", { name: jaMessages.trade.acceptButton }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog.getAttribute("aria-modal")).toBe("true");
-    // 初期フォーカスは非破壊的なキャンセルボタン
-    expect(document.activeElement?.textContent).toBe(jaMessages.trade.confirmModalCancelButton);
-    expect(screen.getByText(jaMessages.trade.confirmModalWarning)).toBeTruthy();
-
-    fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  });
-
-  it("keeps the same requestId across retries and shows the busy message on TRADE_BUSY", async () => {
-    const bodies: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.startsWith("/api/trades?")) {
-          return new Response(JSON.stringify({ offers: [makeOffer()], page: 1, pageSize: 20, hasMore: false }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        bodies.push(String(init?.body ?? ""));
-        return new Response(JSON.stringify({ error: "Trade processing is busy. Please try again" }), {
-          status: 503,
-          headers: { "content-type": "application/json" },
-        });
-      }),
-    );
-    renderBoard();
-
-    fireEvent.click(await screen.findByRole("button", { name: jaMessages.trade.acceptButton }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: jaMessages.trade.confirmModalSubmitButton }));
-    expect(await within(dialog).findByText(jaMessages.trade.errorTradeBusy)).toBeTruthy();
-    expect(bodies.length).toBe(1);
-
-    // モーダル内でリトライ相当の再送信をしても requestId は同一
-    const firstId = (JSON.parse(bodies[0]) as { requestId: string }).requestId;
-    expect(firstId).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
-  it("shows success and refetches the list after a completed trade", async () => {
+  it("keeps the same requestId for an offer across failed attempts and reopening, and refetches after success", async () => {
+    const acceptBodies: string[] = [];
     let acceptCalls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.startsWith("/api/trades?")) {
-          return new Response(JSON.stringify({ offers: [makeOffer()], page: 1, pageSize: 20, hasMore: false }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/trades?")) return listResponse([makeOffer()]);
+      if (url === "/api/trades/offer-1/accept") {
+        acceptBodies.push(init!.body as string);
         acceptCalls += 1;
-        return new Response(
-          JSON.stringify({ success: true, tradeOfferId: "11111111-1111-4111-8111-111111111111" }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }),
-    );
+        return acceptCalls === 1
+          ? jsonResponse(503, { code: "TRADE_BUSY" })
+          : jsonResponse(200, { success: true });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
     renderBoard();
 
-    fireEvent.click(await screen.findByRole("button", { name: jaMessages.trade.acceptButton }));
-    const dialog = await screen.findByRole("dialog");
-    const submit = within(dialog).getByRole("button", { name: jaMessages.trade.confirmModalSubmitButton });
-    // 送信中は disabled になる
-    fireEvent.click(submit);
-    expect(await within(dialog).findByText(jaMessages.trade.confirmModalSuccess)).toBeTruthy();
-    expect(acceptCalls).toBe(1);
+    fireEvent.click(await screen.findByRole("button", { name: ja.acceptButton }));
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(ja.errorTradeBusy);
+    // Close and reopen the same offer, then retry.
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCancelButton }));
+    fireEvent.click(screen.getByRole("button", { name: ja.acceptButton }));
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+    expect(await screen.findByText(ja.confirmModalSuccess)).toBeInTheDocument();
 
-    // 閉じたら一覧を refetch する
-    fireEvent.click(within(dialog).getByRole("button", { name: jaMessages.trade.modalCloseButton }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(acceptBodies).toHaveLength(2);
+    const [first, second] = acceptBodies.map((body) => JSON.parse(body).requestId);
+    expect(first).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second).toBe(first);
+
+    const listCallsBefore = fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/trades?")).length;
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCloseButton }));
+    await waitFor(() => {
+      const listCalls = fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/trades?")).length;
+      expect(listCalls).toBe(listCallsBefore + 1);
+    });
   });
 
-  it("maps a completed/invalid offer to the refetch message", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
+  it("uses a different requestId for a different offer", async () => {
+    const requestIds = new Map<string, string>();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/trades?")) return listResponse([makeOffer(), makeOffer({ id: "offer-2" })]);
+      const match = /\/api\/trades\/(offer-\d)\/accept/.exec(url);
+      if (match) {
+        requestIds.set(match[1], JSON.parse(init!.body as string).requestId);
+        // Transient error: no refetch, so both rows stay on screen.
+        return jsonResponse(503, { code: "TRADE_BUSY" });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    renderBoard();
+    const buttons = await screen.findAllByRole("button", { name: ja.acceptButton });
+    fireEvent.click(buttons[0]);
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCancelButton }));
+    fireEvent.click(screen.getAllByRole("button", { name: ja.acceptButton })[1]);
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+    await screen.findByRole("alert");
+    expect(requestIds.get("offer-1")).toBeTruthy();
+    expect(requestIds.get("offer-2")).toBeTruthy();
+    expect(requestIds.get("offer-1")).not.toBe(requestIds.get("offer-2"));
+  });
+
+  it("shows the post-listing notice once and drops ?listed=1 from the URL", async () => {
+    window.history.replaceState(null, "", "/trade/s-1?listed=1");
+    fetchMock.mockImplementation(async () => listResponse([]));
+    renderBoard({ justListed: true });
+    expect(screen.getByText(ja.listedNotice)).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    await screen.findByText(ja.emptyStateMessage);
+  });
+
+  it("ignores a superseded (slow) response when the filter changes", async () => {
+    let resolveFirst: (value: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          resolveFirst = resolve;
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }),
+    );
+    fetchMock.mockImplementation(async () => listResponse([makeOffer({ id: "new", offeredCard: { name: "Filtered Card", rarity: "rare", imageUrl: null } })]));
+    renderBoard();
+    fireEvent.change(screen.getByLabelText(ja.filterOfferedCard), { target: { value: "card-a" } });
+    expect(await screen.findByText("Filtered Card")).toBeInTheDocument();
+    // The first request was aborted; even if its body arrives late it is not shown.
+    resolveFirst(listResponse([makeOffer({ offeredCard: { name: "Stale Card", rarity: "rare", imageUrl: null } })]));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText("Stale Card")).toBeNull();
+    expect(screen.getByText("Filtered Card")).toBeInTheDocument();
+  });
+
+  it("returns focus to the row's accept button when the dialog is cancelled", async () => {
+    fetchMock.mockImplementation(async () => listResponse([makeOffer()]));
+    renderBoard();
+    const accept = await screen.findByRole("button", { name: ja.acceptButton });
+    fireEvent.click(accept);
+    expect(screen.getByRole("button", { name: ja.confirmModalCancelButton })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCancelButton }));
+    await waitFor(() => expect(accept).toHaveFocus());
+  });
+
+  it("steps back a page when a later page became empty (e.g. last offer accepted)", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      const page = new URL(url, "https://x.test").searchParams.get("page");
+      return page === "1" ? listResponse([makeOffer()], true) : listResponse([]);
+    });
+    renderBoard();
+    await screen.findByText("Offered Dragon");
+    fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
+    await waitFor(() => {
+      const pages = fetchMock.mock.calls.map(([url]) => new URL(String(url), "https://x.test").searchParams.get("page"));
+      expect(pages).toEqual(["1", "2", "1"]);
+    });
+    expect(await screen.findByText("Offered Dragon")).toBeInTheDocument();
+    expect(screen.queryByText(ja.emptyStateMessage)).toBeNull();
+  });
+
+  it("uses a plain login link for the anonymous create CTA", async () => {
+    fetchMock.mockImplementation(async () => listResponse([]));
+    renderBoard({ isLoggedIn: false, createHref: "/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade%2Fs-1%2Fnew" });
+    expect(await screen.findByRole("link", { name: ja.emptyStateCta })).toHaveAttribute(
+      "href",
+      "/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade%2Fs-1%2Fnew",
+    );
+  });
+
+  it("refetches after TRADE_CARD_NOT_OWNED so the row's state is current", async () => {
+    let listCalls = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith("/api/trades?")) {
+        listCalls += 1;
+        return listResponse([makeOffer({ canAccept: listCalls === 1 ? "yes" : "not_owned" })]);
+      }
+      return jsonResponse(409, { code: "TRADE_CARD_NOT_OWNED" });
+    });
+    renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: ja.acceptButton }));
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCancelButton }));
+    expect(await screen.findByRole("button", { name: ja.acceptButtonNotOwned })).toBeDisabled();
+  });
+
+  describe("client cache (no refetch on page / tab switching)", () => {
+    function listCallsFor(predicate: (query: URLSearchParams) => boolean) {
+      return fetchMock.mock.calls.filter(([url]) => {
+        if (!String(url).startsWith("/api/trades?")) return false;
+        return predicate(new URL(String(url), "https://x.test").searchParams);
+      }).length;
+    }
+
+    it("shows a page fetched before immediately when paging back, without a request", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        const page = new URL(url, "https://x.test").searchParams.get("page");
+        return page === "1"
+          ? listResponse([makeOffer()], true)
+          : listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+      });
+      renderBoard();
+      await screen.findByText("Offered Dragon");
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
+      await screen.findByText("Page Two Card");
+
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.previous }));
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+      expect(screen.queryByText(ja.loading)).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(listCallsFor((query) => query.get("page") === "1")).toBe(1);
+    });
+
+    it("reuses pages across remounts (scope tab switch) for the same streamer and scope", async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        const scope = new URL(url, "https://x.test").searchParams.get("scope");
+        return listResponse([makeOffer({ offeredCard: { name: `${scope} card`, rarity: "rare", imageUrl: null } })]);
+      });
+      const first = renderBoard();
+      await screen.findByText("in_channel card");
+      first.unmount();
+      const cross = renderBoard({ scope: "cross_channel", filterCards: [] });
+      await screen.findByText("cross_channel card");
+      cross.unmount();
+
+      renderBoard();
+      expect(screen.getByText("in_channel card")).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(listCallsFor((query) => query.get("scope") === "in_channel")).toBe(1);
+    });
+
+    it("refetches every page after clearTradeListCache() (e.g. a new listing elsewhere)", async () => {
+      fetchMock.mockImplementation(async () => listResponse([makeOffer()]));
+      const first = renderBoard();
+      await screen.findByText("Offered Dragon");
+      first.unmount();
+      clearTradeListCache();
+      renderBoard();
+      expect(screen.getByText(ja.loading)).toBeInTheDocument();
+      await screen.findByText("Offered Dragon");
+      expect(listCallsFor(() => true)).toBe(2);
+    });
+
+    it("after a completed accept: removes the row at once and drops other cached pages", async () => {
+      let releaseRefresh: () => void = () => {};
+      const refreshGate = new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      let listCalls = 0;
+      fetchMock.mockImplementation(async (url: string) => {
         if (url.startsWith("/api/trades?")) {
-          return new Response(JSON.stringify({ offers: [makeOffer()], page: 1, pageSize: 20, hasMore: false }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
+          listCalls += 1;
+          const query = new URL(url, "https://x.test").searchParams;
+          if (query.get("page") === "2") {
+            return listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+          }
+          // Hold the post-accept refresh of page 1.
+          if (listCalls > 2) await refreshGate;
+          return listResponse(listCalls > 2 ? [] : [makeOffer()], true);
         }
-        return new Response(JSON.stringify({ error: "Trade offer is no longer open" }), {
-          status: 409,
-          headers: { "content-type": "application/json" },
-        });
-      }),
-    );
-    renderBoard();
+        if (url === "/api/trades/offer-1/accept") return jsonResponse(200, { success: true });
+        throw new Error(`unexpected ${url}`);
+      });
+      renderBoard();
+      await screen.findByText("Offered Dragon");
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
+      await screen.findByText("Page Two Card");
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.previous }));
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
 
-    fireEvent.click(await screen.findByRole("button", { name: jaMessages.trade.acceptButton }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: jaMessages.trade.confirmModalSubmitButton }));
-    expect(
-      await within(dialog).findByText(jaMessages.trade.errorTradeAlreadyCompletedOrInvalid),
-    ).toBeTruthy();
-  });
+      fireEvent.click(screen.getByRole("button", { name: ja.acceptButton }));
+      fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+      await screen.findByText(ja.confirmModalSuccess);
+      fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCloseButton }));
+      expect(screen.queryByText("Offered Dragon")).toBeNull();
+      releaseRefresh();
+      await waitFor(() => expect(listCallsFor((query) => query.get("page") === "1")).toBe(2));
 
-  it("shows own offers with a badge instead of the accept button", async () => {
-    vi.stubGlobal("fetch", mockList([makeOffer({ isOwnOffer: true })]));
-    renderBoard();
-
-    expect(await screen.findByText(jaMessages.trade.ownOfferBadge)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: jaMessages.trade.acceptButton })).toBeNull();
+      // Page 2 was cached before the accept; it must be fetched again.
+      fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
+      await waitFor(() => expect(listCallsFor((query) => query.get("page") === "2")).toBe(2));
+    });
   });
 });

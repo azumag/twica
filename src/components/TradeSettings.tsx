@@ -116,6 +116,12 @@ export default function TradeSettings({
       </div>
 
       <p className="mb-4 text-sm text-gray-400">{t("description")}</p>
+      {/* 未所持カードを「欲しいカード」にしたり出品を見たりできるかは、トレード設定ではなく
+          公開設定(show_unowned_cards + show_unowned_card_details)で決まる。
+          配信者が「トレードをONにしたのに視聴者が未所持カードを選べない」と混乱しないよう、
+          依存関係を静的に明示する。公開設定セクションは同じ画面のすぐ上（SettingsLayout の
+          advanced セクション並び、visibility → liveDirectory → trade）にあるため、リンクは置かない。 */}
+      <p className="mb-4 text-xs text-gray-500">{t("visibilityNotice")}</p>
       {isMaintenanceBlocked && (
         <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
       )}

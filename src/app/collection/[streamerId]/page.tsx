@@ -227,6 +227,11 @@ export default async function StreamerCollectionPage({
       completionHistory={completionHistoryForDisplay}
       // 未所持カードの画像/詳細を隠すかどうか（show_unowned_cards=false の場合は意味を持たない）
       hideUnownedDetails={!streamer.show_unowned_card_details}
+      // #726: getStreamerById selects every streamers column, so trade_enabled
+      // is present at runtime (the shared Streamer type predates it). During
+      // the trade-columns deploy window the safe-column fallback omits it and
+      // the button stays hidden (fail closed).
+      tradeEnabled={(streamer as typeof streamer & { trade_enabled?: boolean }).trade_enabled === true}
       // Issue #557: パック絞り込みタブ。isComplete/hasStoredRecord は記録判定用の
       // サーバー内部値なのでUIへは渡さない。
       packs={packs.map(({ key, displayName, progress: packProgress, completionHistory: packCompletionHistory }) => ({

@@ -1,108 +1,70 @@
 import { type NextRequest, NextResponse } from "next/server";
 
-import { ERROR_MESSAGES } from "@/lib/constants";
-import { validateCSRFToken } from "@/lib/csrf";
-import { handleApiError } from "@/lib/error-handler";
 import { logger } from "@/lib/logger.server";
-import {
-  checkRateLimit,
-  getRateLimitIdentifier,
-  rateLimits,
-} from "@/lib/rate-limit";
-import { validateContentType } from "@/lib/request-validation";
-import { getSession } from "@/lib/session";
 import {
   acceptTradeOffer,
   getTradeOfferAuditParticipants,
+  type TradeAcceptPrecheckError,
   type TradeAcceptRpcError,
 } from "@/lib/trade";
+import {
+  authorizeTradeWrite,
+  readTradeJsonBody,
+  tradeErrorResponse,
+  tradeInternalErrorResponse,
+  type TradeAcceptApiErrorCode,
+} from "@/lib/trade-api";
 import { isCanonicalUuid } from "@/lib/uuid-validation";
 
-type AcceptError = TradeAcceptRpcError | "TRADE_BUSY";
+type AcceptError = TradeAcceptRpcError | TradeAcceptPrecheckError | "TRADE_BUSY";
 
-function errorResponse(code: AcceptError) {
-  switch (code) {
-    case "TRADE_OFFER_NOT_FOUND":
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TRADE_OFFER_NOT_FOUND },
-        { status: 404 },
-      );
-    case "OFFER_NOT_OPEN":
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TRADE_OFFER_NOT_OPEN },
-        { status: 409 },
-      );
-    case "SELF_ACCEPT_FORBIDDEN":
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TRADE_SELF_ACCEPT },
-        { status: 400 },
-      );
-    case "OFFER_INVALID":
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TRADE_OFFER_INVALID },
-        { status: 409 },
-      );
-    case "TRADE_DISABLED":
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TRADE_DISABLED },
-        { status: 403 },
-      );
-    case "CARD_NOT_OWNED":
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TRADE_CARD_NOT_OWNED },
-        { status: 409 },
-      );
-    case "TRADE_BUSY":
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TRADE_BUSY },
-        { status: 503 },
-      );
-  }
-}
+/**
+ * RPC/service error → { API code, HTTP status }. The RPC's internal names
+ * (OFFER_NOT_OPEN, CARD_NOT_OWNED, ...) are normalized to the TRADE_* codes
+ * used by every other trade endpoint so the UI keeps one code table. Statuses
+ * are unchanged from #724.
+ *
+ * Recorded limitation (#1749 item 7, no behavior change): for a known
+ * trade-offer UUID the status code distinguishes "an open offer exists that
+ * this viewer may not see" (409 TRADE_OFFER_UNAVAILABLE, decided by
+ * precheckTradeAccept) from "no open offer with that id" (404
+ * TRADE_OFFER_NOT_FOUND, decided by the RPC). Nothing about the offer leaks
+ * beyond that bit — no card name, no offerer — and the same bit was already
+ * inferable from the pre-existing accept endpoint before the visibility
+ * precheck existed, so it is accepted rather than remapped to a single code.
+ */
+const ACCEPT_ERRORS: Record<AcceptError, { code: TradeAcceptApiErrorCode; status: number }> = {
+  TRADE_OFFER_NOT_FOUND: { code: "TRADE_OFFER_NOT_FOUND", status: 404 },
+  OFFER_NOT_OPEN: { code: "TRADE_OFFER_NOT_OPEN", status: 409 },
+  SELF_ACCEPT_FORBIDDEN: { code: "TRADE_SELF_ACCEPT", status: 400 },
+  OFFER_INVALID: { code: "TRADE_OFFER_INVALID", status: 409 },
+  TRADE_DISABLED: { code: "TRADE_DISABLED", status: 403 },
+  CARD_NOT_OWNED: { code: "TRADE_CARD_NOT_OWNED", status: 409 },
+  // Card retired or offered card hidden from this acceptor (API precheck).
+  TRADE_OFFER_UNAVAILABLE: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
+  TRADE_BUSY: { code: "TRADE_BUSY", status: 503 },
+};
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const contentTypeValidation = validateContentType(request, "application/json");
-  if (contentTypeValidation) return contentTypeValidation;
-
-  const csrfValidation = await validateCSRFToken(request);
-  if (!csrfValidation.valid) {
-    return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
-  }
-
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: ERROR_MESSAGES.UNAUTHORIZED }, { status: 401 });
-  }
-
-  const identifier = await getRateLimitIdentifier(request, session.twitchUserId);
-  const rate = await checkRateLimit(rateLimits.tradeWrite, identifier);
-  if (!rate.success) {
-    return NextResponse.json(
-      { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED },
-      {
-        status: 429,
-        headers: {
-          "X-RateLimit-Limit": String(rate.limit),
-          "X-RateLimit-Remaining": String(rate.remaining),
-          "X-RateLimit-Reset": String(rate.reset),
-        },
-      },
-    );
-  }
+  const auth = await authorizeTradeWrite(request);
+  if (!auth.ok) return auth.response;
+  const { session, rateLimitIdentifier: identifier } = auth;
 
   const { id } = await params;
   if (!isCanonicalUuid(id)) {
-    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    return tradeErrorResponse("INVALID_REQUEST", 400);
   }
 
   try {
-    const body = await request.json();
-    const requestId = typeof body?.requestId === "string" ? body.requestId : "";
+    const parsed = await readTradeJsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    const requestId =
+      typeof parsed.body.requestId === "string" ? parsed.body.requestId : "";
     if (!isCanonicalUuid(requestId)) {
-      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      return tradeErrorResponse("INVALID_REQUEST", 400);
     }
 
     const result = await acceptTradeOffer({
@@ -112,7 +74,11 @@ export async function POST(
     });
 
     if (!result.success) {
-      return errorResponse(result.error as AcceptError);
+      const mapped = ACCEPT_ERRORS[result.error as AcceptError];
+      // acceptTradeOffer validates RPC payloads (unknown codes throw), so an
+      // unmapped value here is a programming error: fail as 500, not 200.
+      if (!mapped) throw new Error(`Unmapped trade accept error: ${String(result.error)}`);
+      return tradeErrorResponse(mapped.code, mapped.status);
     }
 
     // Audit-only lookup must never make a committed ownership transfer appear
@@ -141,6 +107,6 @@ export async function POST(
 
     return NextResponse.json(result);
   } catch (error) {
-    return handleApiError(error, "Trade offer accept");
+    return tradeInternalErrorResponse(error, "Trade offer accept");
   }
 }

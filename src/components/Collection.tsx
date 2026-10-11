@@ -40,10 +40,22 @@ export default async function Collection({ cardsByStreamer }: CollectionProps) {
   const t = await getTranslations("collection");
   const tStats = await getTranslations("stats");
   const tCollectionPage = await getTranslations("collectionPage");
+  const tTrade = await getTranslations("trade");
 
   return (
     <section>
-      <h2 className="mb-6 text-2xl font-semibold text-white">{t("title")}</h2>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-2xl font-semibold text-white">{t("title")}</h2>
+        {/* #727: permanent entry point to /trade/mine. Trade completion has no
+            notifications in the MVP, so users must be able to reach their
+            listings without going back through a streamer's board. */}
+        <Link
+          href="/trade/mine"
+          className="rounded-lg bg-gray-800 px-4 py-2 text-sm text-purple-300 transition-colors hover:bg-gray-700 hover:text-purple-200"
+        >
+          {tTrade("myTradesLink")}
+        </Link>
+      </div>
 
       {/* Streamer List with Summary - 配信者一覧とサマリ */}
       {Object.keys(cardsByStreamer).length === 0 ? (
