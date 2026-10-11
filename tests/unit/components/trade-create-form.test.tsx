@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from "next-intl";
 import TradeCreateForm from "@/components/TradeCreateForm";
 import type { TradeableOwnedCopy, WantableCard } from "@/lib/trade";
 import jaMessages from "../../../messages/ja.json";
+import enMessages from "../../../messages/en.json";
 
 const ja = jaMessages.trade;
 const push = vi.fn();
@@ -50,9 +51,12 @@ function jsonResponse(status: number, body: unknown) {
   });
 }
 
-function renderForm(props: Partial<React.ComponentProps<typeof TradeCreateForm>> = {}) {
+function renderForm(
+  props: Partial<React.ComponentProps<typeof TradeCreateForm>> = {},
+  locale: "ja" | "en" = "ja",
+) {
   return render(
-    <NextIntlClientProvider locale="ja" messages={jaMessages}>
+    <NextIntlClientProvider locale={locale} messages={locale === "ja" ? jaMessages : enMessages}>
       <TradeCreateForm
         streamerId="s-1"
         cross={null}
@@ -286,8 +290,26 @@ describe("TradeCreateForm (#727 §6.5)", () => {
       expect(within(step(ja.createStep2Title)).getByText(ja.createStep2QuantityLabel)).toBeInTheDocument();
       expect(el).toHaveValue("1");
       expect(within(el).getAllByRole("option").map((option) => option.textContent)).toEqual(
-        [1, 2, 3, 4].map((n) => ja.quantityBadge.replace("{count}", String(n))),
+        ["1枚", "2枚", "3枚", "4枚"],
       );
+    });
+
+    it.each(["ja", "en"] as const)("exposes the unit in every %s option's text and accessible name", (locale) => {
+      renderForm({}, locale);
+      const messages = locale === "ja" ? jaMessages : enMessages;
+      const el = screen.getByRole("combobox", { name: messages.trade.createStep2QuantityLabel });
+      const options = within(el).getAllByRole("option");
+      expect(options).toHaveLength(10);
+      expect(el).toHaveValue("1");
+
+      options.forEach((option, index) => {
+        const count = index + 1;
+        const name = locale === "ja" ? `${count}枚` : `${count} ${count === 1 ? "copy" : "copies"}`;
+        expect(option).toHaveTextContent(name);
+        expect(option).toHaveAccessibleName(name);
+        // The readable unit is presentation only; selected/posted values stay numeric.
+        expect(option).toHaveAttribute("value", String(count));
+      });
     });
 
     it("is hidden while there is nothing to pick (cross-channel without a chosen partner)", () => {
