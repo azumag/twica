@@ -53,6 +53,19 @@ describe("TradeSettings (#725)", () => {
     expect(screen.queryByRole("link")).toBeNull();
   });
 
+  // #1779 のレビュー指摘: 注記が参照する見出し・トグル名が実在するかを固定する。
+  // 表示一致の assert だけでは「存在しないセクション名」を書いても green だった。
+  it("quotes only headings and toggle labels that actually exist", () => {
+    const notice = jaMessages.tradeSettings.visibilityNotice;
+    const visibility = jaMessages.cardVisibilitySettings;
+
+    // 注記が引用する見出しは CardVisibilitySettings の <h2>（t("title")）実値と一致する。
+    expect(notice).toContain(visibility.title);
+    // 参照するトグルは form.showUnowned / form.showDetails の実値と一致する。
+    expect(notice).toContain(visibility.form.showUnowned);
+    expect(notice).toContain(visibility.form.showDetails);
+  });
+
   it("disables cross-channel toggle while the master trade toggle is off", () => {
     renderSettings({ tradeEnabled: false, crossChannelTradeEnabled: true });
 

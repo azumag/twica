@@ -117,9 +117,14 @@ export default function TradeSettings({
 
       <p className="mb-4 text-sm text-gray-400">{t("description")}</p>
       {/* 未所持カードを「欲しいカード」にしたり出品を見たりできるかは、トレード設定ではなく
-          コレクション公開設定(show_unowned_cards + show_unowned_card_details)で決まる。
+          CardVisibilitySettings(show_unowned_cards + show_unowned_card_details)で決まる。
           配信者が「トレードをONにしたのに視聴者が未所持カードを選べない」と混乱しないよう、
-          依存関係を静的に明示する。公開設定カードは同じ画面のすぐ上にあるため、リンクは置かない。 */}
+          依存関係を静的に明示する。両者は dashboard/account の「配信者向け: コレクションの
+          公開とトレード」セクション内に CardVisibilitySettings → TradeSettings の順で
+          並ぶので、同じ画面のすぐ上にある。リンクは置かない。
+          注意: 文案が参照する見出しは cardVisibilitySettings.title（preview では
+          「コレクション公開設定」 / "Collection visibility"）で、main の
+          「未所持カードの表示設定」とは別値。base を変えたときは必ず実値を取り直す。 */}
       <p className="mb-4 text-xs text-gray-500">{t("visibilityNotice")}</p>
       {isMaintenanceBlocked && (
         <p className="mb-4 text-sm text-yellow-400">{tMaintenance("writeDisabled")}</p>
