@@ -116,8 +116,10 @@ export async function POST(
       tradeOfferId: id,
       offererTwitchUserId,
       accepterTwitchUserId: session.twitchUserId,
-      // Copies the acceptor gave (equals the offer's wanted_quantity: the RPC
-      // only transfers when they match).
+      // Copies the acceptor agreed to give. For a first acceptance this equals
+      // the offer's wanted_quantity (the RPC only transfers on a match); an
+      // idempotent replay returns before that check, so there it is the value
+      // the client re-sent.
       wantedQuantity,
       // Reuse the identifier that actually keyed this authenticated request's
       // rate-limit bucket. Avoid separately retaining the raw client IP.

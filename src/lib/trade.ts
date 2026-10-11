@@ -1181,6 +1181,20 @@ function isValidTradeAcceptRpcResult(
 }
 
 /**
+ * 42883 because the 4-argument accept_trade_offer itself does not exist yet
+ * (deploy window). Other 42883 errors raised INSIDE the function (e.g. a
+ * missing operator after a future change) must not be mistaken for the
+ * window: they would otherwise turn every ×N accept into a silent mismatch.
+ */
+function isAcceptRpcMissingError(error: unknown): boolean {
+  if (!isPgFunctionNotFoundError(error)) return false;
+  return getErrorChain(error).some((layer) => {
+    const message = (layer as { message?: unknown } | null)?.message;
+    return typeof message === "string" && message.includes("accept_trade_offer(");
+  });
+}
+
+/**
  * Calls the 4-argument accept_trade_offer (#1789), which transfers only when
  * `expectedQuantity` — the quantity the viewer was shown and agreed to —
  * equals the offer's wanted_quantity (compare-and-set). Deploy window: before
@@ -1207,7 +1221,7 @@ async function callAcceptTradeOfferRpc(input: {
       ) AS result
     `;
   } catch (error) {
-    if (!isPgFunctionNotFoundError(error)) throw error;
+    if (!isAcceptRpcMissingError(error)) throw error;
     if (input.expectedQuantity !== 1) {
       return { success: false, error: "QUANTITY_MISMATCH" };
     }

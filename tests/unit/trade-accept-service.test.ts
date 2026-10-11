@@ -396,6 +396,22 @@ describe("acceptTradeOffer deploy window: 4-argument RPC not created yet (#1789)
     expect(sqlCall(sqlMock, 1).values).toEqual(["viewer-1", TRADE_ID, REQUEST_ID]);
   });
 
+  it("a 42883 raised inside the 4-argument function is rethrown, not treated as the deploy window", async () => {
+    // e.g. a missing operator after a future change of the function body.
+    const insideError = { code: "42883", message: "operator does not exist: smallint = text" };
+    const sqlMock = vi.fn().mockRejectedValue(insideError);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    for (const expectedQuantity of [1, 3]) {
+      await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity })).rejects.toBe(insideError);
+    }
+    // Never retried through the 3-argument function.
+    for (const call of sqlMock.mock.calls.keys()) {
+      expect(sqlCall(sqlMock, call).text).toContain("::smallint");
+    }
+  });
+
   it("default expected quantity (omitted) also falls back to the 3-argument function", async () => {
     const sqlMock = vi.fn()
       .mockRejectedValueOnce(FUNCTION_MISSING)
