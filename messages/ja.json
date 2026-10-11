@@ -681,7 +681,7 @@
     "errorTradeOfferNotFound": "指定された出品が見つかりません",
     "errorTradeAlreadyCompletedOrInvalid": "この取引は成立済み（または無効）です",
     "errorTradeBusy": "混雑しています。しばらくしてから再試行してください",
-    "errorTradeCardNotOwned": "交換に出せるカードが足りません",
+    "errorTradeCardNotOwned": "交換に出せるカードがありません",
     "errorTradeSelfAccept": "自分の出品には応じられません",
     "errorTradeOfferLimit": "出品数の上限に達しています（最大10件）",
     "errorTradeOfferedCardInactive": "このカードは現在トレードに出せません",

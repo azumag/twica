@@ -1055,45 +1055,86 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         [offerIds.x5]: { quantity: 5, canAccept: undefined },
       });
 
-      // QV lists two of its B copies: 4 owned but only 2 unlisted < 3.
-      offerIds.vListB3 = await create(TW.QV, QUC.V_B3, QC.A, 1, req(3));
+      // QV lists its oldest and newest B copies: 4 owned but only 2 unlisted < 3.
+      offerIds.vListB1 = await create(TW.QV, QUC.V_B1, QC.A, 1, req(3));
       offerIds.vListB4 = await create(TW.QV, QUC.V_B4, QC.A, 1, req(4));
       const listed = await stateFor(TW.QV);
       expect(listed[offerIds.x3]).toEqual({ quantity: 3, canAccept: "all_listed" });
       expect(listed[offerIds.x5]).toEqual({ quantity: 5, canAccept: "not_enough" });
 
-      // Withdraw one listing → 3 unlisted copies (B1, B2, B3), B4 stays listed.
-      await expect(cancelTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.vListB3 }))
-        .resolves.toEqual({ kind: "ok", id: offerIds.vListB3 });
+      // Withdraw the B4 listing → 3 unlisted copies (B2, B3, B4); the OLDEST
+      // copy B1 stays listed, so payment must skip it.
+      await expect(cancelTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.vListB4 }))
+        .resolves.toEqual({ kind: "ok", id: offerIds.vListB4 });
       expect((await stateFor(TW.QV))[offerIds.x3]).toEqual({ quantity: 3, canAccept: "yes" });
+    });
+
+    it("never transfers N copies without the viewer agreeing to N (stale clients, old app)", async () => {
+      const { acceptTradeOffer } = await import("@/lib/trade");
+      const copies = [QUC.O_A1, QUC.V_B1, QUC.V_B2, QUC.V_B3, QUC.V_B4];
+      const before = await ownerOf(copies);
+
+      // A client that was shown "1 copy" (or sends nothing) gets a mismatch.
+      await expect(acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.x3, requestId: req(9) }))
+        .resolves.toEqual({ success: false, error: "QUANTITY_MISMATCH" });
+      await expect(acceptTradeOffer({
+        twitchUserId: TW.QV,
+        tradeOfferId: offerIds.x3,
+        requestId: req(9),
+        expectedQuantity: 2,
+      })).resolves.toEqual({ success: false, error: "QUANTITY_MISMATCH" });
+      // The pre-#1789 app calls the 3-argument RPC: refused with a code it
+      // already knows, instead of silently giving 3 copies.
+      const [legacy] = await sql!<Array<{ result: { success: boolean; error?: string } }>>`
+        SELECT public.accept_trade_offer(${TW.QV}, ${offerIds.x3}::uuid, ${req(10)}::uuid) AS result`;
+      expect(legacy.result).toEqual({ success: false, error: "OFFER_NOT_OPEN" });
+
+      expect(await ownerOf(copies)).toEqual(before);
+      const [row] = await sql!<Array<{ status: string }>>`
+        SELECT status FROM trade_offers WHERE id = ${offerIds.x3}`;
+      expect(row.status).toBe("open");
     });
 
     it("accept transfers exactly the N oldest unlisted copies and replays idempotently", async () => {
       const { acceptTradeOffer, listMyTradeOffers } = await import("@/lib/trade");
-      const result = await acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.x3, requestId: req(11) });
+      const result = await acceptTradeOffer({
+        twitchUserId: TW.QV,
+        tradeOfferId: offerIds.x3,
+        requestId: req(11),
+        expectedQuantity: 3,
+      });
       expect(result).toMatchObject({
         success: true,
         idempotentReplay: false,
         tradeOfferId: offerIds.x3,
         receivedUserCardId: QUC.O_A1,
         // The oldest of the transferred copies is the one recorded.
-        givenUserCardId: QUC.V_B1,
+        givenUserCardId: QUC.V_B2,
       });
 
       expect(await ownerOf([QUC.O_A1, QUC.V_B1, QUC.V_B2, QUC.V_B3, QUC.V_B4])).toEqual({
         [QUC.O_A1]: U.QV,
-        [QUC.V_B1]: U.QO,
+        // The oldest copy is listed in QV's own open offer → skipped.
+        [QUC.V_B1]: U.QV,
         [QUC.V_B2]: U.QO,
         [QUC.V_B3]: U.QO,
-        // Listed in QV's own open offer → never used to pay.
-        [QUC.V_B4]: U.QV,
+        [QUC.V_B4]: U.QO,
       });
       const [row] = await sql!<Array<{ status: string; accepted_user_card_id: string }>>`
         SELECT status, accepted_user_card_id FROM trade_offers WHERE id = ${offerIds.x3}`;
-      expect(row).toEqual({ status: "completed", accepted_user_card_id: QUC.V_B1 });
+      expect(row).toEqual({ status: "completed", accepted_user_card_id: QUC.V_B2 });
 
-      await expect(acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.x3, requestId: req(11) }))
-        .resolves.toMatchObject({ success: true, idempotentReplay: true, givenUserCardId: QUC.V_B1 });
+      await expect(acceptTradeOffer({
+        twitchUserId: TW.QV,
+        tradeOfferId: offerIds.x3,
+        requestId: req(11),
+        expectedQuantity: 3,
+      })).resolves.toMatchObject({ success: true, idempotentReplay: true, givenUserCardId: QUC.V_B2 });
+      // A replay of the same requestId through the 3-argument RPC (an old tab
+      // retrying after a deploy) still reports the original success.
+      const [legacyReplay] = await sql!<Array<{ result: { success: boolean; idempotentReplay?: boolean } }>>`
+        SELECT public.accept_trade_offer(${TW.QV}, ${offerIds.x3}::uuid, ${req(11)}::uuid) AS result`;
+      expect(legacyReplay.result).toMatchObject({ success: true, idempotentReplay: true });
 
       const mine = await listMyTradeOffers(TW.QV, { status: "completed" });
       expect(mine.offers.map((offer) => [offer.id, offer.wantedQuantity, offer.mineRole]))
@@ -1102,13 +1143,17 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
 
     it("rejects with CARD_NOT_OWNED and moves nothing when fewer than N copies are available", async () => {
       const { acceptTradeOffer, cancelTradeOffer } = await import("@/lib/trade");
-      // Free B4 again: QV now has exactly 1 unlisted copy of B for a ×5 offer.
-      await cancelTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.vListB4 });
+      // Free B1 again: QV now has exactly 1 unlisted copy of B for a ×5 offer.
+      await cancelTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.vListB1 });
       const copies = [QUC.O_A2, QUC.V_B1, QUC.V_B2, QUC.V_B3, QUC.V_B4];
       const before = await ownerOf(copies);
 
-      await expect(acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId: offerIds.x5, requestId: req(21) }))
-        .resolves.toEqual({ success: false, error: "CARD_NOT_OWNED" });
+      await expect(acceptTradeOffer({
+        twitchUserId: TW.QV,
+        tradeOfferId: offerIds.x5,
+        requestId: req(21),
+        expectedQuantity: 5,
+      })).resolves.toEqual({ success: false, error: "CARD_NOT_OWNED" });
 
       expect(await ownerOf(copies)).toEqual(before);
       const [row] = await sql!<Array<{ status: string }>>`
@@ -1129,7 +1174,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
     it("concurrent accepts by the same acceptor never spend more copies than owned", async () => {
       const { createTradeOffer, acceptTradeOffer } = await import("@/lib/trade");
       const s = sql!;
-      // QV: B4 plus three new copies = 4 unlisted copies of B. QO lists two
+      // QV: B1 plus three new copies = 4 unlisted copies of B. QO lists two
       // ×3 offers; accepting both would need 6, so exactly one may succeed.
       const extraB = [id(8205), id(8206), id(8207)];
       for (const [i, ucid] of extraB.entries()) {
@@ -1154,7 +1199,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       }
 
       const results = await Promise.all(offers.map((tradeOfferId, i) =>
-        acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId, requestId: req(51 + i) })));
+        acceptTradeOffer({ twitchUserId: TW.QV, tradeOfferId, requestId: req(51 + i), expectedQuantity: 3 })));
       expect(results.map((result) => result.success).sort()).toEqual([false, true]);
       expect(results.find((result) => !result.success)).toEqual({ success: false, error: "CARD_NOT_OWNED" });
 
@@ -1163,7 +1208,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
           count(*) FILTER (WHERE user_id = ${U.QV})::int AS viewer,
           count(*) FILTER (WHERE user_id = ${U.QO})::int AS offerer
         FROM user_cards
-        WHERE id IN ${s([QUC.V_B4, ...extraB])}`;
+        WHERE id IN ${s([QUC.V_B1, ...extraB])}`;
       expect(counts).toEqual({ viewer: 1, offerer: 3 });
     });
 

@@ -681,7 +681,7 @@
     "errorTradeOfferNotFound": "The offer could not be found.",
     "errorTradeAlreadyCompletedOrInvalid": "This trade has already been completed (or is no longer valid).",
     "errorTradeBusy": "The server is busy. Please try again shortly.",
-    "errorTradeCardNotOwned": "You don't have enough copies available to trade.",
+    "errorTradeCardNotOwned": "You have no card available to trade.",
     "errorTradeSelfAccept": "You cannot accept your own offer.",
     "errorTradeOfferLimit": "You have reached the offer limit (max 10).",
     "errorTradeOfferedCardInactive": "This card cannot be traded right now.",

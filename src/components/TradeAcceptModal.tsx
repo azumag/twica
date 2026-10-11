@@ -72,7 +72,9 @@ export default function TradeAcceptModal({
     setErrorText(null);
     const result = await postTradeJson<{ success: true }>(
       `/api/trades/${offer.id}/accept`,
-      { requestId },
+      // The quantity shown in this dialog: the server transfers only if it
+      // still equals the offer's wanted_quantity (#1789 compare-and-set).
+      { requestId, wantedQuantity: offer.wantedQuantity },
     );
     if (result.ok) {
       onCompleted();
