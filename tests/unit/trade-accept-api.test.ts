@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/session", () => ({ getSession: mocks.getSession }));
 vi.mock("@/lib/trade", () => ({
+  // Mirrors the real constant (the real module pulls in the DB layer).
+  TRADE_MAX_WANTED_QUANTITY: 10,
   acceptTradeOffer: mocks.acceptTradeOffer,
   getTradeOfferAuditParticipants: mocks.getTradeOfferAuditParticipants,
 }));
@@ -34,11 +36,11 @@ vi.mock("@/lib/logger.server", () => ({
 const OFFER_ID = "11111111-1111-4111-8111-111111111111";
 const REQUEST_ID = "22222222-2222-4222-8222-222222222222";
 
-function request(body: string = JSON.stringify({ requestId: REQUEST_ID })) {
+function request(body: string | Record<string, unknown> = { requestId: REQUEST_ID }) {
   return new NextRequest(`http://localhost/api/trades/${OFFER_ID}/accept`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body,
+    body: typeof body === "string" ? body : JSON.stringify(body),
   });
 }
 
@@ -74,6 +76,8 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     ["OFFER_INVALID", 409, "TRADE_OFFER_INVALID"],
     ["TRADE_DISABLED", 403, "TRADE_DISABLED"],
     ["CARD_NOT_OWNED", 409, "TRADE_CARD_NOT_OWNED"],
+    // #1789: stale quantity → the row is outdated, same code as the precheck.
+    ["QUANTITY_MISMATCH", 409, "TRADE_OFFER_UNAVAILABLE"],
     ["TRADE_OFFER_UNAVAILABLE", 409, "TRADE_OFFER_UNAVAILABLE"],
     ["TRADE_BUSY", 503, "TRADE_BUSY"],
   ])("maps service error %s to HTTP %d and code %s", async (error, status, code) => {
@@ -132,6 +136,65 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     expect((await response.json()).code).toBe("INVALID_REQUEST");
     expect(mocks.acceptTradeOffer).not.toHaveBeenCalled();
     expect(mocks.recordApiError).not.toHaveBeenCalled();
+  });
+
+  describe("wantedQuantity (expected quantity, #1789)", () => {
+    const post = async (body: string | Record<string, unknown>) => {
+      const { POST } = await import("@/app/api/trades/[id]/accept/route");
+      return POST(request(body), { params: Promise.resolve({ id: OFFER_ID }) });
+    };
+    const ok = () =>
+      mocks.acceptTradeOffer.mockResolvedValue({ success: true, tradeOfferId: OFFER_ID, idempotentReplay: false });
+
+    it("defaults a missing wantedQuantity to 1 (bundles that predate the field)", async () => {
+      ok();
+      const response = await post({ requestId: REQUEST_ID });
+      expect(response.status).toBe(200);
+      expect(mocks.acceptTradeOffer).toHaveBeenCalledWith({
+        twitchUserId: "viewer-1",
+        tradeOfferId: OFFER_ID,
+        requestId: REQUEST_ID,
+        expectedQuantity: 1,
+      });
+    });
+
+    it.each([1, 3, 10])("passes wantedQuantity %d as expectedQuantity and logs it", async (quantity) => {
+      ok();
+      const response = await post({ requestId: REQUEST_ID, wantedQuantity: quantity });
+      expect(response.status).toBe(200);
+      expect(mocks.acceptTradeOffer).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedQuantity: quantity }),
+      );
+      expect(mocks.loggerInfo).toHaveBeenCalledWith(
+        "Card trade completed",
+        expect.objectContaining({ wantedQuantity: quantity }),
+      );
+    });
+
+    it.each([
+      ["0", 0],
+      ["-1", -1],
+      ["11", 11],
+      ["1.5", 1.5],
+      ["a string", "2"],
+      ["null", null],
+      ["an array", [3]],
+      ["a boolean", true],
+    ])("answers 400 INVALID_REQUEST for wantedQuantity %s without calling the service", async (_label, value) => {
+      const response = await post({ requestId: REQUEST_ID, wantedQuantity: value });
+      expect(response.status).toBe(400);
+      expect((await response.json()).code).toBe("INVALID_REQUEST");
+      expect(mocks.acceptTradeOffer).not.toHaveBeenCalled();
+      expect(mocks.recordApiError).not.toHaveBeenCalled();
+    });
+
+    it("answers 409 TRADE_OFFER_UNAVAILABLE when the service reports QUANTITY_MISMATCH and does not log a completion", async () => {
+      mocks.acceptTradeOffer.mockResolvedValue({ success: false, error: "QUANTITY_MISMATCH" });
+      const response = await post({ requestId: REQUEST_ID, wantedQuantity: 2 });
+      expect(response.status).toBe(409);
+      expect((await response.json()).code).toBe("TRADE_OFFER_UNAVAILABLE");
+      expect(mocks.loggerInfo).not.toHaveBeenCalled();
+    });
   });
 
   it.each([

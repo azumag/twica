@@ -146,7 +146,10 @@ describe("TradeAcceptModal (#726 §6.4)", () => {
       "/api/trades/offer-1/accept",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ requestId: "11111111-1111-4111-8111-111111111111" }),
+        body: JSON.stringify({
+          requestId: "11111111-1111-4111-8111-111111111111",
+          wantedQuantity: 1,
+        }),
       }),
     );
     expect(onCompleted).toHaveBeenCalledTimes(1);
@@ -205,6 +208,10 @@ describe("TradeAcceptModal (#726 §6.4)", () => {
 });
 
 describe("TradeAcceptModal wanted quantity (#1789)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("announces the number of copies in the warning, the description and a badge on the give side", () => {
     renderModal({ offer: makeOffer({ wantedQuantity: 3 }) });
     const warning = ja.confirmModalWarningMultiple.replace("{count}", "3");
@@ -223,5 +230,20 @@ describe("TradeAcceptModal wanted quantity (#1789)", () => {
     renderModal({ offer: makeOffer({ wantedQuantity: 1 }) });
     expect(screen.getByText(ja.confirmModalWarning)).toBeInTheDocument();
     expect(screen.getByText(ja.confirmModalGiveLabel).parentElement).not.toHaveTextContent("×");
+  });
+
+  it("posts the quantity the dialog showed so the server can compare-and-set it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { success: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderModal({ offer: makeOffer({ wantedQuantity: 3 }) });
+
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+    await screen.findByRole("heading", { name: ja.confirmModalSuccess });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      requestId: "11111111-1111-4111-8111-111111111111",
+      wantedQuantity: 3,
+    });
   });
 });
