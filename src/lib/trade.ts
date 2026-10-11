@@ -5,6 +5,7 @@ import {
   eq,
   ne,
   or,
+  getTableColumns,
   getTableName,
   sql,
   type AnyColumn,
@@ -17,10 +18,17 @@ import {
   cards as cardsTable,
   streamers as streamersTable,
   tradeOffers as tradeOffersTable,
+  tradeOffersWithoutQuantity,
   userCards as userCardsTable,
   users as usersTable,
 } from "@/lib/db/schema";
-import { getErrorChain, getSqlState, isPgUniqueViolationError } from "@/lib/db/errors";
+import {
+  getErrorChain,
+  getSqlState,
+  isPgFunctionNotFoundError,
+  isPgMissingNamedColumnError,
+  isPgUniqueViolationError,
+} from "@/lib/db/errors";
 import { withDbRetry } from "@/lib/db/retry";
 import {
   isMissingTradeSettingsColumnError,
@@ -30,9 +38,23 @@ import { isCanonicalUuid } from "@/lib/uuid-validation";
 
 export const TRADE_PAGE_SIZE = 20;
 export const TRADE_MAX_OPEN_OFFERS = 10;
+/**
+ * Upper bound of trade_offers.wanted_quantity (#1789). Must match the
+ * trade_offers_wanted_quantity_range CHECK of 20261011120000. Small on
+ * purpose: an offer asks the acceptor to give up to this many copies at once,
+ * and the RPC locks that many rows.
+ */
+export const TRADE_MAX_WANTED_QUANTITY = 10;
 
 export type TradeScope = "in_channel" | "cross_channel";
-export type TradeCanAccept = "yes" | "not_owned" | "all_listed";
+/**
+ *   yes        — the viewer can pay wanted_quantity unlisted copies
+ *   not_owned  — the viewer owns no copy of the wanted card
+ *   not_enough — the viewer owns some copies, but fewer than wanted_quantity
+ *   all_listed — enough copies are owned, but too many of them are listed in
+ *                the viewer's own open offers
+ */
+export type TradeCanAccept = "yes" | "not_owned" | "not_enough" | "all_listed";
 export type TradeOfferStatus = "open" | "completed" | "cancelled";
 
 export type TradeServiceErrorCode =
@@ -132,6 +154,50 @@ function viewerUserIdOf(twitchUserId: string): SQL {
   )`;
 }
 
+// -----------------------------------------------------------------------------
+// Deploy window of trade_offers.wanted_quantity (#1789)
+//
+// planetscale-migrate and the app deploy run independently (issue #788), so
+// the new app can briefly run against a database without the column. Drizzle
+// lists EVERY schema column in INSERT (unset ones as `default`) and in
+// unqualified SELECT/RETURNING, so without a fallback every trade statement
+// would fail with 42703. Same "try full columns → on 42703 of the new column
+// retry without it" pattern as src/lib/db/streamers-safe-columns.ts. Without
+// the column every stored offer is a 1-copy offer (the column default), so
+// reading it as the literal 1 is exact, not an approximation. Becomes a dead
+// branch once 20261011120000 is applied everywhere.
+// -----------------------------------------------------------------------------
+
+const TRADE_QUANTITY_COLUMNS = ["wanted_quantity"] as const;
+
+async function withTradeQuantityColumnFallback<T>(
+  attempt: (withoutQuantity: boolean) => Promise<T>,
+): Promise<T> {
+  try {
+    return await attempt(false);
+  } catch (error) {
+    if (!isPgMissingNamedColumnError(error, TRADE_QUANTITY_COLUMNS)) throw error;
+    return attempt(true);
+  }
+}
+
+/**
+ * Every trade_offers column of `table` (the table or one of its aliases) with
+ * wanted_quantity read as the literal 1 while the column does not exist.
+ */
+function offerRowFields(
+  table: typeof tradeOffersTable | typeof createReplayOffer,
+  withoutQuantity: boolean,
+) {
+  const { wanted_quantity: wantedQuantity, ...columns } = getTableColumns(table);
+  return {
+    ...columns,
+    wanted_quantity: withoutQuantity
+      ? sql<number>`1`.mapWith(Number)
+      : sql<number>`${qualifiedColumn(wantedQuantity)}`.mapWith(Number),
+  };
+}
+
 /** `cardIdExpr` points at an active card definition (NULL id → false). */
 function cardIsActive(cardIdExpr: AnyColumn) {
   return sql<boolean>`EXISTS (
@@ -212,6 +278,8 @@ export type TradeOfferDto = {
   offeredCard: TradeCardSnapshot;
   wantedCard: TradeCardSnapshot;
   isCrossChannel: boolean;
+  /** Copies of the wanted card the acceptor gives (1 = classic 1:1 offer, #1789). */
+  wantedQuantity: number;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -282,12 +350,16 @@ const wantedStreamerMeta = alias(streamersTable, "wanted_streamer");
 const offererMeta = alias(usersTable, "offerer_user");
 const acceptorMeta = alias(usersTable, "acceptor_user");
 
-async function findOfferByCreateRequest(userId: string, requestId: string) {
+async function findOfferByCreateRequest(
+  userId: string,
+  requestId: string,
+  withoutQuantity: boolean,
+) {
   const rows = await withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
-        .select()
+        .select(offerRowFields(tradeOffersTable, withoutQuantity))
         .from(tradeOffersTable)
         .where(
           and(
@@ -339,6 +411,8 @@ export async function createTradeOffer(input: {
   twitchUserId: string;
   offeredUserCardId: string;
   wantedCardId: string;
+  /** 1..TRADE_MAX_WANTED_QUANTITY (validated by the API route). Default 1. */
+  wantedQuantity?: number;
   requestId: string;
 }): Promise<
   | { kind: "ok"; offer: TradeOfferRow; idempotentReplay: boolean }
@@ -350,83 +424,97 @@ export async function createTradeOffer(input: {
   // (primary keys / the (offerer_user_id, request_id) unique index), so the
   // statement returns exactly one row for a known user and none otherwise.
   // Only decisions moved to TypeScript; their order below is unchanged.
-  const checkRows = await withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select({
-          userId: usersTable.id,
-          // Full row of a previous create with the same requestId (or null).
-          replay: createReplayOffer,
-          offeredUserCardId: createOfferedCopy.id,
-          offeredCardId: createOfferedCard.id,
-          offeredStreamerId: createOfferedCard.streamer_id,
-          offeredName: createOfferedCard.name,
-          offeredRarity: createOfferedCard.rarity,
-          offeredImageUrl: createOfferedCard.image_url,
-          offeredIsActive: createOfferedCard.is_active,
-          wantedCardId: createWantedCard.id,
-          wantedStreamerId: createWantedCard.streamer_id,
-          wantedName: createWantedCard.name,
-          wantedRarity: createWantedCard.rarity,
-          wantedImageUrl: createWantedCard.image_url,
-          offeredTradeEnabled: createOfferedGate.trade_enabled,
-          offeredCrossEnabled: createOfferedGate.cross_channel_trade_enabled,
-          wantedTradeEnabled: createWantedGate.trade_enabled,
-          wantedCrossEnabled: createWantedGate.cross_channel_trade_enabled,
-          // Same predicate as the partial unique index
-          // idx_trade_offers_open_user_card (regardless of the offerer).
-          offeredCopyListed: sql<boolean>`EXISTS (
-            SELECT 1
-            FROM ${tradeOffersTable} AS open_listing
-            WHERE open_listing.offered_user_card_id = ${input.offeredUserCardId}
-              AND open_listing.status = 'open'
-          )`,
-          // count(*) is bigint → string in postgres.js.
-          openOfferCount: sql<number>`(
-            SELECT count(*)
-            FROM ${tradeOffersTable} AS open_offer
-            WHERE open_offer.offerer_user_id = ${qualifiedColumn(usersTable.id)}
-              AND open_offer.status = 'open'
-          )`.mapWith(Number),
-        })
-        .from(usersTable)
-        .leftJoin(
-          createReplayOffer,
-          and(
-            eq(createReplayOffer.offerer_user_id, usersTable.id),
-            eq(createReplayOffer.request_id, input.requestId),
-          ),
-        )
-        .leftJoin(
-          createOfferedCopy,
-          and(
-            eq(createOfferedCopy.id, input.offeredUserCardId),
-            eq(createOfferedCopy.user_id, usersTable.id),
-          ),
-        )
-        .leftJoin(createOfferedCard, eq(createOfferedCard.id, createOfferedCopy.card_id))
-        .leftJoin(
-          createWantedCard,
-          and(
-            eq(createWantedCard.id, input.wantedCardId),
-            eq(createWantedCard.is_active, true),
-            // Visibility is part of the JOIN condition (not a post-read
-            // filter) with the same predicate as the board, so the name and
-            // image of a hidden card are never read into the Worker (the same
-            // policy as listWantableCards). A hidden card joins to NULL and
-            // falls into TRADE_WANTED_CARD_UNAVAILABLE below.
-            cardVisibleTo(createWantedCard.id, qualifiedColumn(usersTable.id)),
-          ),
-        )
-        .leftJoin(createOfferedGate, eq(createOfferedGate.id, createOfferedCard.streamer_id))
-        .leftJoin(createWantedGate, eq(createWantedGate.id, createWantedCard.streamer_id))
-        .where(eq(usersTable.twitch_user_id, input.twitchUserId))
-        .limit(1);
-    },
-    "trade:create-checks",
-    { idempotent: true },
-  );
+  //
+  // Deploy window (#1789): the column-less retry is only allowed for a 1-copy
+  // request. A multi-copy offer cannot be stored without the column, so its
+  // 42703 is left to surface as a 500 ("try again later") instead of silently
+  // listing a ×1 offer the viewer did not ask for. The returned
+  // `withoutQuantity` is the shape the check ran with; the INSERT below uses
+  // the same shape.
+  const wantedQuantity = input.wantedQuantity ?? 1;
+  const runChecks = async (withoutQuantity: boolean) => ({
+    withoutQuantity,
+    rows: await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            userId: usersTable.id,
+            // Full row of a previous create with the same requestId (or null).
+            replay: offerRowFields(createReplayOffer, withoutQuantity),
+            offeredUserCardId: createOfferedCopy.id,
+            offeredCardId: createOfferedCard.id,
+            offeredStreamerId: createOfferedCard.streamer_id,
+            offeredName: createOfferedCard.name,
+            offeredRarity: createOfferedCard.rarity,
+            offeredImageUrl: createOfferedCard.image_url,
+            offeredIsActive: createOfferedCard.is_active,
+            wantedCardId: createWantedCard.id,
+            wantedStreamerId: createWantedCard.streamer_id,
+            wantedName: createWantedCard.name,
+            wantedRarity: createWantedCard.rarity,
+            wantedImageUrl: createWantedCard.image_url,
+            offeredTradeEnabled: createOfferedGate.trade_enabled,
+            offeredCrossEnabled: createOfferedGate.cross_channel_trade_enabled,
+            wantedTradeEnabled: createWantedGate.trade_enabled,
+            wantedCrossEnabled: createWantedGate.cross_channel_trade_enabled,
+            // Same predicate as the partial unique index
+            // idx_trade_offers_open_user_card (regardless of the offerer).
+            offeredCopyListed: sql<boolean>`EXISTS (
+              SELECT 1
+              FROM ${tradeOffersTable} AS open_listing
+              WHERE open_listing.offered_user_card_id = ${input.offeredUserCardId}
+                AND open_listing.status = 'open'
+            )`,
+            // count(*) is bigint → string in postgres.js.
+            openOfferCount: sql<number>`(
+              SELECT count(*)
+              FROM ${tradeOffersTable} AS open_offer
+              WHERE open_offer.offerer_user_id = ${qualifiedColumn(usersTable.id)}
+                AND open_offer.status = 'open'
+            )`.mapWith(Number),
+          })
+          .from(usersTable)
+          .leftJoin(
+            createReplayOffer,
+            and(
+              eq(createReplayOffer.offerer_user_id, usersTable.id),
+              eq(createReplayOffer.request_id, input.requestId),
+            ),
+          )
+          .leftJoin(
+            createOfferedCopy,
+            and(
+              eq(createOfferedCopy.id, input.offeredUserCardId),
+              eq(createOfferedCopy.user_id, usersTable.id),
+            ),
+          )
+          .leftJoin(createOfferedCard, eq(createOfferedCard.id, createOfferedCopy.card_id))
+          .leftJoin(
+            createWantedCard,
+            and(
+              eq(createWantedCard.id, input.wantedCardId),
+              eq(createWantedCard.is_active, true),
+              // Visibility is part of the JOIN condition (not a post-read
+              // filter) with the same predicate as the board, so the name and
+              // image of a hidden card are never read into the Worker (the same
+              // policy as listWantableCards). A hidden card joins to NULL and
+              // falls into TRADE_WANTED_CARD_UNAVAILABLE below.
+              cardVisibleTo(createWantedCard.id, qualifiedColumn(usersTable.id)),
+            ),
+          )
+          .leftJoin(createOfferedGate, eq(createOfferedGate.id, createOfferedCard.streamer_id))
+          .leftJoin(createWantedGate, eq(createWantedGate.id, createWantedCard.streamer_id))
+          .where(eq(usersTable.twitch_user_id, input.twitchUserId))
+          .limit(1);
+      },
+      "trade:create-checks",
+      { idempotent: true },
+    ),
+  });
+  const { rows: checkRows, withoutQuantity } = wantedQuantity === 1
+    ? await withTradeQuantityColumnFallback(runChecks)
+    : await runChecks(false);
   const check = checkRows[0];
   if (!check) {
     return { kind: "error", code: "TRADE_CARD_NOT_OWNED" };
@@ -509,15 +597,23 @@ export async function createTradeOffer(input: {
       image_url: check.wantedImageUrl,
     }),
     request_id: input.requestId,
-  } satisfies typeof tradeOffersTable.$inferInsert;
+  } satisfies typeof tradeOffersWithoutQuantity.$inferInsert;
 
   try {
-    const rows = await withDbRetry(
+    const rows: TradeOfferRow[] = await withDbRetry(
       async () => {
         const { db } = await getDb();
+        if (withoutQuantity) {
+          // Deploy window: only reachable for wantedQuantity === 1 (see the
+          // check above), which is exactly the column default.
+          return db
+            .insert(tradeOffersWithoutQuantity)
+            .values(values)
+            .returning(offerRowFields(tradeOffersTable, true));
+        }
         return db
           .insert(tradeOffersTable)
-          .values(values)
+          .values({ ...values, wanted_quantity: wantedQuantity })
           .returning();
       },
       "trade:create-insert",
@@ -533,7 +629,7 @@ export async function createTradeOffer(input: {
 
     // Rare conflict path: kept as separate follow-up reads (not part of the
     // round-trip budget of the normal path).
-    const byRequest = await findOfferByCreateRequest(userId, input.requestId);
+    const byRequest = await findOfferByCreateRequest(userId, input.requestId, withoutQuantity);
     if (byRequest) {
       return { kind: "ok", offer: byRequest, idempotentReplay: true };
     }
@@ -584,9 +680,9 @@ type ListContext = "board" | "mine";
  * missing streamer/user row (or an open offer without acceptor) yields NULL
  * fields instead of dropping the offer.
  */
-function offerListFields(viewerUserId: SQL | null) {
+function offerListFields(viewerUserId: SQL | null, withoutQuantity: boolean) {
   return {
-    offer: tradeOffersTable,
+    offer: offerRowFields(tradeOffersTable, withoutQuantity),
     // The resolved viewer id is returned with every row so that isOwnOffer /
     // mineRole are computed from the same snapshot as the WHERE clause. NULL
     // for anonymous viewers and for unknown twitch user ids.
@@ -665,35 +761,46 @@ function toUserSummary(row: JoinedUser): TradeUserSummary | null {
  * query over the viewer's copies). Same exclusion rule as the accept RPC
  * (which excludes the acceptor's own open offers via
  * `offerer_user_id = acceptor`): a copy listed in one of the viewer's own
- * open offers cannot be used to pay.
- *   not_owned  — the viewer owns no copy of the wanted card
- *   all_listed — every owned copy is listed in one of the viewer's own open offers
- *   yes        — at least one unlisted copy exists
- * The inner aliases are literal; the only outer references are the qualified
- * trade_offers.wanted_card_id and the viewer id.
+ * open offers cannot be used to pay. The RPC needs wanted_quantity such
+ * copies (#1789), so the states compare COUNTS with it (see TradeCanAccept).
+ * With wanted_quantity = 1 they reduce to the previous EXISTS checks.
+ *
+ * Unlike the former EXISTS probes, count(*) does not stop at the first row,
+ * but it only scans the viewer's copies of ONE card definition
+ * (idx_user_cards_user_card), a handful of rows in practice; the owned count
+ * may be evaluated twice per row by the CASE. Kept as plain scalar subqueries
+ * for readability over a LATERAL join. The inner aliases are literal; the
+ * only outer references are the qualified trade_offers columns and the
+ * viewer id.
  */
-function acceptStateFor(viewerUserId: SQL) {
+function acceptStateFor(viewerUserId: SQL, withoutQuantity: boolean) {
   const wantedCardId = qualifiedColumn(tradeOffersTable.wanted_card_id);
+  const wantedQuantity = withoutQuantity
+    ? sql`1`
+    : qualifiedColumn(tradeOffersTable.wanted_quantity);
+  const ownedCount = sql`(
+    SELECT count(*)
+    FROM ${userCardsTable} AS accept_owned
+    WHERE accept_owned.user_id = ${viewerUserId}
+      AND accept_owned.card_id = ${wantedCardId}
+  )`;
+  const freeCount = sql`(
+    SELECT count(*)
+    FROM ${userCardsTable} AS accept_free
+    WHERE accept_free.user_id = ${viewerUserId}
+      AND accept_free.card_id = ${wantedCardId}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${tradeOffersTable} AS active_listing
+        WHERE active_listing.offered_user_card_id = accept_free.id
+          AND active_listing.status = 'open'
+          AND active_listing.offerer_user_id = ${viewerUserId}
+      )
+  )`;
   return sql<TradeCanAccept>`CASE
-    WHEN NOT EXISTS (
-      SELECT 1
-      FROM ${userCardsTable} AS accept_owned
-      WHERE accept_owned.user_id = ${viewerUserId}
-        AND accept_owned.card_id = ${wantedCardId}
-    ) THEN 'not_owned'
-    WHEN NOT EXISTS (
-      SELECT 1
-      FROM ${userCardsTable} AS accept_free
-      WHERE accept_free.user_id = ${viewerUserId}
-        AND accept_free.card_id = ${wantedCardId}
-        AND NOT EXISTS (
-          SELECT 1
-          FROM ${tradeOffersTable} AS active_listing
-          WHERE active_listing.offered_user_card_id = accept_free.id
-            AND active_listing.status = 'open'
-            AND active_listing.offerer_user_id = ${viewerUserId}
-        )
-    ) THEN 'all_listed'
+    WHEN ${ownedCount} = 0 THEN 'not_owned'
+    WHEN ${ownedCount} < ${wantedQuantity} THEN 'not_enough'
+    WHEN ${freeCount} < ${wantedQuantity} THEN 'all_listed'
     ELSE 'yes'
   END`;
 }
@@ -739,6 +846,7 @@ function toOfferDto(row: OfferListRow, context: ListContext): TradeOfferDto {
     offeredStreamerId: offer.offered_streamer_id,
     wantedCardId: offer.wanted_card_id,
     wantedStreamerId: offer.wanted_streamer_id,
+    wantedQuantity: offer.wanted_quantity,
     offeredCard: normalizeSnapshot(offer.offered_card_snapshot),
     wantedCard: normalizeSnapshot(offer.wanted_card_snapshot),
     isCrossChannel: Boolean(offer.is_cross_channel),
@@ -848,14 +956,14 @@ export async function listTradeOffers(input: {
   // Single statement (previously user lookup → page → metadata → canAccept,
   // i.e. 4 sequential round trips for a logged-in viewer).
   const offset = (input.page - 1) * TRADE_PAGE_SIZE;
-  const rows: OfferListRow[] = await withDbRetry(
+  const rows: OfferListRow[] = await withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
         .select({
-          ...offerListFields(viewerUserId),
+          ...offerListFields(viewerUserId, withoutQuantity),
           acceptState: viewerUserId
-            ? acceptStateFor(viewerUserId)
+            ? acceptStateFor(viewerUserId, withoutQuantity)
             : sql<TradeCanAccept | null>`NULL`,
         })
         .from(tradeOffersTable)
@@ -870,7 +978,7 @@ export async function listTradeOffers(input: {
     },
     "trade:list-open",
     { idempotent: true },
-  );
+  ));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
@@ -912,12 +1020,12 @@ export async function listMyTradeOffers(
   // same SELECT list as one boolean expression, so the flag costs no extra
   // round trip.
   const offset = (page - 1) * TRADE_PAGE_SIZE;
-  const rows: OfferListRow[] = await withDbRetry(
+  const rows: OfferListRow[] = await withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
         .select({
-          ...offerListFields(viewerUserId),
+          ...offerListFields(viewerUserId, withoutQuantity),
           tradeableState: tradeableStateFor(),
         })
         .from(tradeOffersTable)
@@ -932,7 +1040,7 @@ export async function listMyTradeOffers(
     },
     "trade:list-mine",
     { idempotent: true },
-  );
+  ));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
@@ -1014,7 +1122,10 @@ export type TradeAcceptRpcError =
   | "SELF_ACCEPT_FORBIDDEN"
   | "OFFER_INVALID"
   | "TRADE_DISABLED"
-  | "CARD_NOT_OWNED";
+  | "CARD_NOT_OWNED"
+  // #1789: the offer's wanted_quantity differs from the quantity the viewer
+  // was shown and agreed to (stale client). Nothing was transferred.
+  | "QUANTITY_MISMATCH";
 
 const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
   "TRADE_OFFER_NOT_FOUND",
@@ -1023,6 +1134,7 @@ const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
   "OFFER_INVALID",
   "TRADE_DISABLED",
   "CARD_NOT_OWNED",
+  "QUANTITY_MISMATCH",
 ]);
 
 export type TradeAcceptRpcResult = {
@@ -1068,19 +1180,59 @@ function isValidTradeAcceptRpcResult(
   );
 }
 
+/**
+ * 42883 because the 4-argument accept_trade_offer itself does not exist yet
+ * (deploy window). Other 42883 errors raised INSIDE the function (e.g. a
+ * missing operator after a future change) must not be mistaken for the
+ * window: they would otherwise turn every ×N accept into a silent mismatch.
+ */
+function isAcceptRpcMissingError(error: unknown): boolean {
+  if (!isPgFunctionNotFoundError(error)) return false;
+  return getErrorChain(error).some((layer) => {
+    const message = (layer as { message?: unknown } | null)?.message;
+    return typeof message === "string" && message.includes("accept_trade_offer(");
+  });
+}
+
+/**
+ * Calls the 4-argument accept_trade_offer (#1789), which transfers only when
+ * `expectedQuantity` — the quantity the viewer was shown and agreed to —
+ * equals the offer's wanted_quantity (compare-and-set). Deploy window: before
+ * 20261011120000 the function does not exist (42883); every offer is then a
+ * 1-copy offer, so the 3-argument original is exactly equivalent for an
+ * expected quantity of 1. Any other expectation cannot match a column-less
+ * offer and is reported as a mismatch without calling the old function.
+ */
 async function callAcceptTradeOfferRpc(input: {
   twitchUserId: string;
   tradeOfferId: string;
   requestId: string;
+  expectedQuantity: number;
 }): Promise<TradeAcceptRpcResult> {
   const { sql: query } = await getDb();
-  const rows = await query<Array<{ result: unknown }>>`
-    SELECT public.accept_trade_offer(
-      ${input.twitchUserId},
-      ${input.tradeOfferId}::uuid,
-      ${input.requestId}::uuid
-    ) AS result
-  `;
+  let rows: Array<{ result: unknown }>;
+  try {
+    rows = await query<Array<{ result: unknown }>>`
+      SELECT public.accept_trade_offer(
+        ${input.twitchUserId},
+        ${input.tradeOfferId}::uuid,
+        ${input.requestId}::uuid,
+        ${input.expectedQuantity}::smallint
+      ) AS result
+    `;
+  } catch (error) {
+    if (!isAcceptRpcMissingError(error)) throw error;
+    if (input.expectedQuantity !== 1) {
+      return { success: false, error: "QUANTITY_MISMATCH" };
+    }
+    rows = await query<Array<{ result: unknown }>>`
+      SELECT public.accept_trade_offer(
+        ${input.twitchUserId},
+        ${input.tradeOfferId}::uuid,
+        ${input.requestId}::uuid
+      ) AS result
+    `;
+  }
   const result = rows[0]?.result;
   if (!isValidTradeAcceptRpcResult(result, input.tradeOfferId)) {
     throw new Error("accept_trade_offer returned an invalid response");
@@ -1196,6 +1348,8 @@ export async function acceptTradeOffer(input: {
   twitchUserId: string;
   tradeOfferId: string;
   requestId: string;
+  /** wantedQuantity the viewer agreed to (validated by the API route). Default 1. */
+  expectedQuantity?: number;
 }): Promise<
   | TradeAcceptRpcResult
   | { success: false; error: "TRADE_BUSY" | TradeAcceptPrecheckError }
@@ -1204,9 +1358,10 @@ export async function acceptTradeOffer(input: {
   if (precheckError) {
     return { success: false, error: precheckError };
   }
+  const rpcInput = { ...input, expectedQuantity: input.expectedQuantity ?? 1 };
 
   try {
-    return await callAcceptTradeOfferRpc(input);
+    return await callAcceptTradeOfferRpc(rpcInput);
   } catch (error) {
     if (getSqlState(error) !== "40P01") throw error;
   }
@@ -1216,7 +1371,7 @@ export async function acceptTradeOffer(input: {
   await waitForTradeRetry(Math.floor(Math.random() * 51));
 
   try {
-    return await callAcceptTradeOfferRpc(input);
+    return await callAcceptTradeOfferRpc(rpcInput);
   } catch (error) {
     if (getSqlState(error) === "40P01") {
       return { success: false, error: "TRADE_BUSY" };

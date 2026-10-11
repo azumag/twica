@@ -95,6 +95,12 @@ const ACCEPT_INPUT = {
   requestId: REQUEST_ID,
 };
 
+/** Text and bound values of the n-th tagged-template call of the sql mock. */
+function sqlCall(sqlMock: ReturnType<typeof vi.fn>, n: number) {
+  const [strings, ...values] = sqlMock.mock.calls[n] as [readonly string[], ...unknown[]];
+  return { text: strings.join("?"), values };
+}
+
 describe("acceptTradeOffer (#724)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -190,6 +196,58 @@ describe("acceptTradeOffer (#724)", () => {
       }),
     ).rejects.toBe(error);
     expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls the 4-argument RPC with the viewer's expected quantity cast to smallint (#1789)", async () => {
+    const sqlMock = vi.fn().mockResolvedValue([{ result: rpcSuccess() }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity: 3 });
+
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+    const call = sqlCall(sqlMock, 0);
+    expect(call.text).toContain("public.accept_trade_offer(");
+    expect(call.text).toContain("::uuid");
+    expect(call.text).toContain("::smallint");
+    expect(call.values).toEqual(["viewer-1", TRADE_ID, REQUEST_ID, 3]);
+  });
+
+  it("defaults the expected quantity to 1 (#1789)", async () => {
+    const sqlMock = vi.fn().mockResolvedValue([{ result: rpcSuccess() }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await acceptTradeOffer(ACCEPT_INPUT);
+
+    expect(sqlCall(sqlMock, 0).values).toEqual(["viewer-1", TRADE_ID, REQUEST_ID, 1]);
+  });
+
+  it("passes QUANTITY_MISMATCH through as a known RPC error (#1789)", async () => {
+    const mismatch = { success: false, error: "QUANTITY_MISMATCH" };
+    const sqlMock = vi.fn().mockResolvedValue([{ result: mismatch }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(mismatch);
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries SQLSTATE 40P01 with the 4-argument call again, keeping the expected quantity (#1789)", async () => {
+    const success = rpcSuccess();
+    const sqlMock = vi.fn()
+      .mockRejectedValueOnce({ code: "40P01" })
+      .mockResolvedValueOnce([{ result: success }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity: 2 })).resolves.toEqual(success);
+
+    expect(sqlMock).toHaveBeenCalledTimes(2);
+    for (const n of [0, 1]) {
+      expect(sqlCall(sqlMock, n).text).toContain("::smallint");
+      expect(sqlCall(sqlMock, n).values).toEqual(["viewer-1", TRADE_ID, REQUEST_ID, 2]);
+    }
   });
 
   it("prechecks once before the first RPC attempt, not again on the 40P01 retry", async () => {
@@ -310,5 +368,106 @@ describe("acceptTradeOffer visibility / is_active precheck (#715 PR-C)", () => {
     const wantedActive = dialect.sqlToQuery(drizzleSql`${fields.wantedActive}`);
     expect(wantedActive.sql).toContain('active_card.id = "trade_offers"."wanted_card_id"');
     expect(wantedActive.sql).toContain("active_card.is_active = TRUE");
+  });
+});
+
+describe("acceptTradeOffer deploy window: 4-argument RPC not created yet (#1789)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+  });
+
+  /** What Postgres raises for a call to a function that does not exist. */
+  const FUNCTION_MISSING = { code: "42883", message: "function public.accept_trade_offer(text, uuid, uuid, smallint) does not exist" };
+
+  it("expected quantity 1: falls back to the original 3-argument function", async () => {
+    const success = rpcSuccess();
+    const sqlMock = vi.fn()
+      .mockRejectedValueOnce(FUNCTION_MISSING)
+      .mockResolvedValueOnce([{ result: success }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity: 1 })).resolves.toEqual(success);
+
+    expect(sqlMock).toHaveBeenCalledTimes(2);
+    expect(sqlCall(sqlMock, 0).text).toContain("::smallint");
+    expect(sqlCall(sqlMock, 1).text).not.toContain("smallint");
+    expect(sqlCall(sqlMock, 1).values).toEqual(["viewer-1", TRADE_ID, REQUEST_ID]);
+  });
+
+  it("a 42883 raised inside the 4-argument function is rethrown, not treated as the deploy window", async () => {
+    // e.g. a missing operator after a future change of the function body.
+    const insideError = { code: "42883", message: "operator does not exist: smallint = text" };
+    const sqlMock = vi.fn().mockRejectedValue(insideError);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    for (const expectedQuantity of [1, 3]) {
+      await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity })).rejects.toBe(insideError);
+    }
+    // Never retried through the 3-argument function.
+    for (const call of sqlMock.mock.calls.keys()) {
+      expect(sqlCall(sqlMock, call).text).toContain("::smallint");
+    }
+  });
+
+  it("default expected quantity (omitted) also falls back to the 3-argument function", async () => {
+    const sqlMock = vi.fn()
+      .mockRejectedValueOnce(FUNCTION_MISSING)
+      .mockResolvedValueOnce([{ result: rpcSuccess() }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toMatchObject({ success: true });
+    expect(sqlCall(sqlMock, 1).values).toEqual(["viewer-1", TRADE_ID, REQUEST_ID]);
+  });
+
+  it.each([2, 3, 10])("expected quantity %d: reports QUANTITY_MISMATCH and never calls the 3-argument function", async (expectedQuantity) => {
+    const sqlMock = vi.fn().mockRejectedValue(FUNCTION_MISSING);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity })).resolves.toEqual({
+      success: false,
+      error: "QUANTITY_MISMATCH",
+    });
+    // Only the failed 4-argument attempt: nothing was transferred.
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+    expect(sqlCall(sqlMock, 0).text).toContain("::smallint");
+  });
+
+  it("the fallback result is validated like any RPC result", async () => {
+    const sqlMock = vi.fn()
+      .mockRejectedValueOnce(FUNCTION_MISSING)
+      .mockResolvedValueOnce([{ result: { success: true } }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).rejects.toThrow("accept_trade_offer returned an invalid response");
+  });
+
+  it("does not fall back on other database errors (e.g. 42P01)", async () => {
+    const other = { code: "42P01", message: "relation does not exist" };
+    const sqlMock = vi.fn().mockRejectedValue(other);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).rejects.toBe(other);
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a 40P01 on the 3-argument fallback is retried once and keeps working", async () => {
+    const success = rpcSuccess();
+    const sqlMock = vi.fn()
+      .mockRejectedValueOnce(FUNCTION_MISSING) // 4-arg (attempt 1)
+      .mockRejectedValueOnce({ code: "40P01" }) // 3-arg (attempt 1)
+      .mockRejectedValueOnce(FUNCTION_MISSING) // 4-arg (attempt 2)
+      .mockResolvedValueOnce([{ result: success }]); // 3-arg (attempt 2)
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(success);
+    expect(sqlMock).toHaveBeenCalledTimes(4);
   });
 });

@@ -60,6 +60,7 @@ function renderForm(props: Partial<React.ComponentProps<typeof TradeCreateForm>>
         wantableCards={WANTABLE}
         wantableRevealsUnowned
         boardHref="/trade/s-1"
+        maxWantedQuantity={10}
         {...props}
       />
     </NextIntlClientProvider>,
@@ -143,6 +144,8 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     expect(body.offeredUserCardId).toBe("uc-dup-mid");
     expect(body.wantedCardId).toBe("card-want-2");
     expect(body.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    // #1789: an untouched quantity selector posts the classic 1:1 offer.
+    expect(body.wantedQuantity).toBe(1);
   });
 
   it("reuses the requestId when retrying the same selection and regenerates it when the selection changes", async () => {
@@ -267,5 +270,128 @@ describe("TradeCreateForm (#727 §6.5)", () => {
   it("explains when the viewer has nothing to give", () => {
     renderForm({ ownedCopies: [] });
     expect(screen.getByText(ja.createStep1Empty)).toBeInTheDocument();
+  });
+
+  describe("wanted quantity (#1789)", () => {
+    const quantitySelect = () => within(step(ja.createStep2Title)).getByRole("combobox");
+    const select = (cardTile: string, wantedTile: RegExp) => {
+      fireEvent.click(tile(step(ja.createStep1Title), cardTile));
+      fireEvent.click(within(step(ja.createStep2Title)).getByRole("button", { name: wantedTile }));
+    };
+    const bodyOf = (call: number) => JSON.parse((fetchMock.mock.calls[call][1] as RequestInit).body as string);
+
+    it("offers 1..maxWantedQuantity (default 1) with the localized label", () => {
+      renderForm({ maxWantedQuantity: 4 });
+      const el = quantitySelect();
+      expect(within(step(ja.createStep2Title)).getByText(ja.createStep2QuantityLabel)).toBeInTheDocument();
+      expect(el).toHaveValue("1");
+      expect(within(el).getAllByRole("option").map((option) => option.textContent)).toEqual(
+        [1, 2, 3, 4].map((n) => ja.quantityBadge.replace("{count}", String(n))),
+      );
+    });
+
+    it("is hidden while there is nothing to pick (cross-channel without a chosen partner)", () => {
+      renderForm({
+        cross: {
+          partners: [{ id: "s-2", twitchDisplayName: "PartnerTwo", twitchProfileImageUrl: null }],
+          selectedPartnerId: null,
+        },
+        wantableCards: [],
+      });
+      expect(screen.queryByRole("combobox")).toBeNull();
+    });
+
+    it("posts the selected quantity and confirms it in the multiple summary", async () => {
+      fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
+      renderForm();
+      select("Dup Card", /Want Card Two/);
+      // 1:1 keeps the classic summary.
+      expect(screen.getByText("渡す Dup Card ⇄ 欲しい Want Card Two で出品します")).toBeInTheDocument();
+
+      fireEvent.change(quantitySelect(), { target: { value: "3" } });
+      expect(
+        screen.getByText(
+          ja.createConfirmSummaryMultiple
+            .replace("{offeredCard}", "Dup Card")
+            .replace("{wantedCard}", "Want Card Two")
+            .replace("{count}", "3"),
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("渡す Dup Card ⇄ 欲しい Want Card Two で出品します")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
+      await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?listed=1"));
+      expect(bodyOf(0)).toMatchObject({
+        offeredUserCardId: "uc-dup-mid",
+        wantedCardId: "card-want-2",
+        wantedQuantity: 3,
+      });
+    });
+
+    it("sends a number (not the select's string value)", async () => {
+      fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
+      renderForm();
+      select("Single Card", /Want Card Two/);
+      fireEvent.change(quantitySelect(), { target: { value: "10" } });
+      fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(bodyOf(0).wantedQuantity).toBe(10);
+    });
+
+    it("reuses the requestId for the same quantity and issues a new one when the quantity changes", async () => {
+      fetchMock.mockImplementation(async () => jsonResponse(503, { code: "TRADE_BUSY" }));
+      renderForm();
+      const submit = () => fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
+      const idOf = (call: number) => bodyOf(call).requestId;
+      const settle = () => screen.findByRole("button", { name: ja.createSubmitButton });
+
+      select("Single Card", /Want Card Two/);
+      fireEvent.change(quantitySelect(), { target: { value: "3" } });
+      submit();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await settle();
+
+      // Retrying the identical selection (same quantity) replays the same key.
+      submit();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await settle();
+      expect(idOf(1)).toBe(idOf(0));
+
+      // Only the quantity changes → a different offer → a new key, otherwise
+      // the server would replay the old ×3 offer instead of creating ×2.
+      fireEvent.change(quantitySelect(), { target: { value: "2" } });
+      submit();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      await settle();
+      expect(bodyOf(2).wantedQuantity).toBe(2);
+      expect(idOf(2)).not.toBe(idOf(0));
+
+      // Going back to the first quantity is still a fresh key (the ref holds
+      // only the latest selection), never the stale one.
+      fireEvent.change(quantitySelect(), { target: { value: "3" } });
+      submit();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+      expect(bodyOf(3).wantedQuantity).toBe(3);
+      expect(idOf(3)).not.toBe(idOf(2));
+    });
+
+    it("clears a previous error when the quantity changes and is disabled while submitting", async () => {
+      let resolveFetch: (value: Response) => void = () => {};
+      fetchMock
+        .mockImplementationOnce(async () => jsonResponse(503, { code: "TRADE_BUSY" }))
+        .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveFetch = resolve; }));
+      renderForm();
+      select("Single Card", /Want Card Two/);
+      fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(ja.errorTradeBusy);
+
+      fireEvent.change(quantitySelect(), { target: { value: "2" } });
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
+      await vi.waitFor(() => expect(quantitySelect()).toBeDisabled());
+      resolveFetch(jsonResponse(503, { code: "TRADE_BUSY" }));
+      await vi.waitFor(() => expect(quantitySelect()).toBeEnabled());
+    });
   });
 });

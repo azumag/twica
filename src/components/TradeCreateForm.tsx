@@ -37,6 +37,12 @@ interface TradeCreateFormProps {
   /** Board to return to after listing. */
   boardHref: string;
   /**
+   * Upper bound of the wanted quantity (TRADE_MAX_WANTED_QUANTITY, #1789).
+   * Passed from the server page so this client component does not import the
+   * server-only trade module; the API re-validates the range.
+   */
+  maxWantedQuantity: number;
+  /**
    * Step 1 selection carried over the partner-selection navigation
    * (?offered=<cardId>). Ignored unless it is a listable card of this viewer.
    */
@@ -107,6 +113,7 @@ export default function TradeCreateForm({
   wantableCards,
   wantableRevealsUnowned,
   boardHref,
+  maxWantedQuantity,
   initialOfferedCardId = null,
 }: TradeCreateFormProps) {
   const t = useTranslations("trade");
@@ -121,13 +128,14 @@ export default function TradeCreateForm({
       : null,
   );
   const [wantedCardId, setWantedCardId] = useState<string | null>(null);
+  const [wantedQuantity, setWantedQuantity] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
-  // requestId is bound to the exact selection (offered copy + wanted card).
-  // Retrying the same selection reuses it (idempotent replay of a create the
-  // server may already have committed); changing either card creates a new
-  // key, because replaying an old key would return the OLD offer instead of
-  // creating the newly selected one.
+  // requestId is bound to the exact selection (offered copy + wanted card +
+  // wanted quantity). Retrying the same selection reuses it (idempotent replay
+  // of a create the server may already have committed); changing any of them
+  // creates a new key, because replaying an old key would return the OLD
+  // offer instead of creating the newly selected one.
   const requestIdRef = useRef<{ selection: string; id: string } | null>(null);
 
   const offered = groups.find((group) => group.cardId === offeredCardId) ?? null;
@@ -150,10 +158,11 @@ export default function TradeCreateForm({
     }
     setSubmitting(true);
     setErrorText(null);
-    const requestId = requestIdFor(`${offeredUserCardId}:${wanted.cardId}`);
+    const requestId = requestIdFor(`${offeredUserCardId}:${wanted.cardId}:${wantedQuantity}`);
     const result = await postTradeJson("/api/trades", {
       offeredUserCardId,
       wantedCardId: wanted.cardId,
+      wantedQuantity,
       requestId,
     });
     if (result.ok) {
@@ -334,6 +343,29 @@ export default function TradeCreateForm({
                 })}
               </ul>
             )}
+            {wantableCards.length > 0 && (
+              // A native <select> (1..max) instead of a free number input:
+              // no parsing/clamping of typed text, and every value offered
+              // is one the API accepts.
+              <label className="mt-4 flex items-center gap-3 text-sm text-gray-200">
+                {t("createStep2QuantityLabel")}
+                <select
+                  value={wantedQuantity}
+                  disabled={submitting}
+                  onChange={(event) => {
+                    setWantedQuantity(Number(event.target.value));
+                    setErrorText(null);
+                  }}
+                  className="rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+                >
+                  {Array.from({ length: maxWantedQuantity }, (_, index) => index + 1).map((value) => (
+                    <option key={value} value={value}>
+                      {t("quantityBadge", { count: value })}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </>
         )}
       </section>
@@ -344,7 +376,13 @@ export default function TradeCreateForm({
         </h2>
         <p className="text-sm text-gray-200">
           {offered && wanted
-            ? t("createConfirmSummary", { offeredCard: offered.name, wantedCard: wanted.name })
+            ? wantedQuantity > 1
+              ? t("createConfirmSummaryMultiple", {
+                  offeredCard: offered.name,
+                  wantedCard: wanted.name,
+                  count: wantedQuantity,
+                })
+              : t("createConfirmSummary", { offeredCard: offered.name, wantedCard: wanted.name })
             : t("createConfirmPending")}
         </p>
         <p className="mt-2 text-xs text-gray-400">{t("createLimitNotice")}</p>

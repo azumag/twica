@@ -4,6 +4,7 @@ import { getTableName, sql as drizzleSql, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 import { getDb } from "@/lib/db/client";
+import { tradeOffers, tradeOffersWithoutQuantity } from "@/lib/db/schema";
 import { withDbRetry } from "@/lib/db/retry";
 
 vi.mock("@/lib/db/client", () => ({
@@ -147,6 +148,7 @@ const OFFER = {
   wanted_streamer_id: "50000000-0000-4000-8000-000000000001",
   offered_card_snapshot: { name: "Offer", rarity: "rare", imageUrl: "https://example.test/a.png" },
   wanted_card_snapshot: { name: "Want", rarity: "epic", imageUrl: "https://example.test/b.png" },
+  wanted_quantity: 1,
   is_cross_channel: false,
   status: "open",
   accepted_by_user_id: null,
@@ -647,7 +649,10 @@ describe("listTradeOffers visibility (#715 PR-C)", () => {
     // Same exclusion rule as the accept RPC: only the viewer's own open
     // offers make a copy count as listed (Refs #1749 item 3).
     expect(state.sql).toContain("active_listing.offerer_user_id = ");
-    expect(state.params).toEqual(["viewer-2", "viewer-2", "viewer-2"]);
+    // #1789: the viewer id is bound once per subquery that filters on it —
+    // accept_owned (compared twice: = 0 and < wanted_quantity), accept_free
+    // (user_id) and its active_listing.offerer_user_id.
+    expect(state.params).toEqual(["viewer-2", "viewer-2", "viewer-2", "viewer-2"]);
   });
 });
 
@@ -1127,6 +1132,329 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
       primeDb(pg);
       const { listCrossTradePartnerStreamers } = await import("@/lib/trade");
       await expect(listCrossTradePartnerStreamers("viewer-2", STREAMER_ID)).rejects.toBe(error);
+    });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #1789: wanted quantity ("give 1 specific copy ⇄ want card × N")
+// -----------------------------------------------------------------------------
+describe("trade wanted quantity (#1789)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** What Postgres raises while 20261011120000 is not applied yet. */
+  const MISSING_QUANTITY_COLUMN = {
+    code: "42703",
+    message: 'column "wanted_quantity" does not exist',
+  };
+  const createInput = {
+    twitchUserId: "viewer-1",
+    offeredUserCardId: OFFER.offered_user_card_id,
+    wantedCardId: OFFER.wanted_card_id!,
+    requestId: OFFER.request_id!,
+  };
+  const listInput = {
+    streamerId: STREAMER_ID,
+    scope: "in_channel" as const,
+    page: 1,
+    twitchUserId: "viewer-2",
+  };
+  /** Fields of the `offer` / `replay` object that carry the quantity. */
+  const quantityOf = (fields: unknown) => render((fields as { wanted_quantity: unknown }).wanted_quantity).sql;
+
+  it("keeps TRADE_MAX_WANTED_QUANTITY in sync with the migration CHECK range", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { TRADE_MAX_WANTED_QUANTITY } = await import("@/lib/trade");
+    const migration = readFileSync(
+      join(process.cwd(), "db/planetscale/migrations/20261011120000_trade_wanted_quantity.sql"),
+      "utf8",
+    );
+    expect(TRADE_MAX_WANTED_QUANTITY).toBe(10);
+    expect(migration).toContain(`CHECK (wanted_quantity BETWEEN 1 AND ${TRADE_MAX_WANTED_QUANTITY})`);
+  });
+
+  describe("createTradeOffer", () => {
+    it("inserts wanted_quantity into trade_offers and returns the stored row for N > 1", async () => {
+      const stored = { ...OFFER, wanted_quantity: 3 };
+      const pg = createDbMock({ selects: [{ rows: [checkRow()] }], inserts: [{ rows: [stored] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      const result = await createTradeOffer({ ...createInput, wantedQuantity: 3 });
+
+      expect(result).toEqual({ kind: "ok", offer: stored, idempotentReplay: false });
+      // Normal path: still 1 check + 1 INSERT.
+      expect(roundTrips()).toBe(2);
+      expect(pg.insertCalls).toHaveLength(1);
+      expect(pg.insertCalls[0].table).toBe(tradeOffers);
+      expect(pg.insertCalls[0].values).toMatchObject({
+        wanted_card_id: OFFER.wanted_card_id,
+        wanted_quantity: 3,
+      });
+      // The replay row of the check statement reads the real column.
+      const replay = (pg.selectCalls[0].fields as { replay: unknown }).replay;
+      expect(quantityOf(replay)).toBe('"replay_offer"."wanted_quantity"');
+    });
+
+    it("defaults to a 1-copy offer when wantedQuantity is omitted", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow()] }], inserts: [{ rows: [OFFER] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await createTradeOffer(createInput);
+
+      expect(pg.insertCalls[0].table).toBe(tradeOffers);
+      expect(pg.insertCalls[0].values).toMatchObject({ wanted_quantity: 1 });
+    });
+
+    it("deploy window: retries the check without the column and INSERTs into the column-less table for wantedQuantity 1", async () => {
+      const pg = createDbMock({
+        selects: [{ error: MISSING_QUANTITY_COLUMN }, { rows: [checkRow()] }],
+        inserts: [{ rows: [OFFER] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      const result = await createTradeOffer({ ...createInput, wantedQuantity: 1 });
+
+      expect(result).toEqual({ kind: "ok", offer: OFFER, idempotentReplay: false });
+      // failed check + retried check + INSERT.
+      expect(pg.selectCalls).toHaveLength(2);
+      expect(roundTrips()).toBe(3);
+      // The first attempt reads the column, the retry the literal 1.
+      expect(quantityOf((pg.selectCalls[0].fields as { replay: unknown }).replay))
+        .toBe('"replay_offer"."wanted_quantity"');
+      expect(quantityOf((pg.selectCalls[1].fields as { replay: unknown }).replay)).toBe("1");
+      // INSERT targets the table object without wanted_quantity, and the
+      // values must not name the missing column either.
+      expect(pg.insertCalls).toHaveLength(1);
+      expect(pg.insertCalls[0].table).toBe(tradeOffersWithoutQuantity);
+      expect(pg.insertCalls[0].table).not.toBe(tradeOffers);
+      expect(pg.insertCalls[0].values).not.toHaveProperty("wanted_quantity");
+      expect(pg.insertCalls[0].values).toMatchObject({
+        offered_user_card_id: OFFER.offered_user_card_id,
+        wanted_card_id: OFFER.wanted_card_id,
+        request_id: OFFER.request_id,
+      });
+    });
+
+    it("deploy window: the default quantity (omitted) also falls back", async () => {
+      const pg = createDbMock({
+        selects: [{ error: MISSING_QUANTITY_COLUMN }, { rows: [checkRow()] }],
+        inserts: [{ rows: [OFFER] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toMatchObject({ kind: "ok" });
+      expect(pg.insertCalls[0].table).toBe(tradeOffersWithoutQuantity);
+    });
+
+    it("deploy window: a multi-copy offer is NOT downgraded; the 42703 propagates and nothing is inserted", async () => {
+      const pg = createDbMock({
+        selects: [{ error: MISSING_QUANTITY_COLUMN }, { rows: [checkRow()] }],
+        inserts: [{ rows: [OFFER] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer({ ...createInput, wantedQuantity: 2 })).rejects.toBe(
+        MISSING_QUANTITY_COLUMN,
+      );
+      // No retry of the check and, above all, no silent ×1 INSERT.
+      expect(pg.selectCalls).toHaveLength(1);
+      expect(pg.insertCalls).toHaveLength(0);
+    });
+
+    it("rethrows a 42703 that is about another column (wantedQuantity 1) without retrying", async () => {
+      const unrelated = { code: "42703", message: 'column "something_else" does not exist' };
+      const pg = createDbMock({ selects: [{ error: unrelated }, { rows: [checkRow()] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer({ ...createInput, wantedQuantity: 1 })).rejects.toBe(unrelated);
+      expect(pg.selectCalls).toHaveLength(1);
+      expect(pg.insertCalls).toHaveLength(0);
+    });
+
+    it("rethrows a wanted_quantity message that is not SQLSTATE 42703", async () => {
+      const other = { code: "XX000", message: 'column "wanted_quantity" does not exist' };
+      const pg = createDbMock({ selects: [{ error: other }, { rows: [checkRow()] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).rejects.toBe(other);
+      expect(pg.selectCalls).toHaveLength(1);
+    });
+
+    it("deploy window: the 23505 recovery lookup also reads wanted_quantity as the literal 1", async () => {
+      const pg = createDbMock({
+        selects: [{ error: MISSING_QUANTITY_COLUMN }, { rows: [checkRow()] }, { rows: [OFFER] }],
+        inserts: [{ error: { code: "23505", constraint: "idx_trade_offers_offerer_request" } }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      const result = await createTradeOffer(createInput);
+
+      expect(result).toEqual({ kind: "ok", offer: OFFER, idempotentReplay: true });
+      expect(pg.insertCalls[0].table).toBe(tradeOffersWithoutQuantity);
+      expect(pg.selectCalls).toHaveLength(3);
+      expect(quantityOf(pg.selectCalls[2].fields)).toBe("1");
+    });
+
+    it("normal path: the 23505 recovery lookup reads the real column", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [checkRow()] }, { rows: [{ ...OFFER, wanted_quantity: 4 }] }],
+        inserts: [{ error: { code: "23505", constraint: "idx_trade_offers_offerer_request" } }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await createTradeOffer({ ...createInput, wantedQuantity: 4 });
+      expect(quantityOf(pg.selectCalls[1].fields)).toBe('"trade_offers"."wanted_quantity"');
+    });
+  });
+
+  describe("listTradeOffers", () => {
+    it("maps wantedQuantity and not_enough into the DTO", async () => {
+      const pg = createDbMock({
+        selects: [{
+          rows: [
+            listRow({ ...OFFER, wanted_quantity: 3 }, { viewerUserId: VIEWER_ID, acceptState: "not_enough" }),
+            listRow(
+              { ...OFFER, id: "10000000-0000-4000-8000-000000000002", wanted_quantity: 1 },
+              { viewerUserId: VIEWER_ID, acceptState: "yes" },
+            ),
+          ],
+        }],
+      });
+      primeDb(pg);
+
+      const { listTradeOffers } = await import("@/lib/trade");
+      const { offers } = await listTradeOffers(listInput);
+
+      expect(offers.map((offer) => offer.wantedQuantity)).toEqual([3, 1]);
+      expect(offers.map((offer) => offer.canAccept)).toEqual(["not_enough", "yes"]);
+      expect(roundTrips()).toBe(1);
+      // The page statement selects the real column.
+      expect(quantityOf((pg.selectCalls[0].fields as { offer: unknown }).offer))
+        .toBe('"trade_offers"."wanted_quantity"');
+    });
+
+    it("compares owned / unlisted copy COUNTS with wanted_quantity (not_owned → not_enough → all_listed → yes)", async () => {
+      const pg = createDbMock({ selects: [{ rows: [] }] });
+      primeDb(pg);
+
+      const { listTradeOffers } = await import("@/lib/trade");
+      await listTradeOffers(listInput);
+
+      const { sql } = render((pg.selectCalls[0].fields as Record<string, unknown>).acceptState);
+      expect(sql).toContain("SELECT count(*)");
+      expect(sql).toContain("'not_enough'");
+      expect(sql).toContain('"trade_offers"."wanted_quantity"');
+      const order = ["'not_owned'", "'not_enough'", "'all_listed'", "'yes'"].map((label) => sql.indexOf(label));
+      expect(order.every((index) => index >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+    });
+
+    it("deploy window: retries once with wanted_quantity as the literal 1 everywhere", async () => {
+      const pg = createDbMock({
+        selects: [
+          { error: MISSING_QUANTITY_COLUMN },
+          { rows: [listRow(OFFER, { viewerUserId: VIEWER_ID, acceptState: "yes" })] },
+        ],
+      });
+      primeDb(pg);
+
+      const { listTradeOffers } = await import("@/lib/trade");
+      const { offers } = await listTradeOffers(listInput);
+
+      expect(pg.selectCalls).toHaveLength(2);
+      expect(roundTrips()).toBe(2);
+      expect(offers[0]).toMatchObject({ wantedQuantity: 1, canAccept: "yes" });
+
+      const first = pg.selectCalls[0].fields as Record<string, unknown>;
+      const retry = pg.selectCalls[1].fields as Record<string, unknown>;
+      expect(quantityOf(first.offer)).toBe('"trade_offers"."wanted_quantity"');
+      expect(render(first.acceptState).sql).toContain("wanted_quantity");
+      // The retry must not reference the missing column anywhere in the
+      // projection: neither the row fields nor the canAccept state.
+      expect(quantityOf(retry.offer)).toBe("1");
+      expect(render(retry.acceptState).sql).not.toContain("wanted_quantity");
+      // Every count is compared with the literal 1 instead.
+      expect(render(retry.acceptState).sql).toContain("< 1");
+      expect(render(retry.acceptState).sql).toContain("'not_enough'");
+    });
+
+    it("retries only once: a second 42703 propagates", async () => {
+      const pg = createDbMock({
+        selects: [{ error: MISSING_QUANTITY_COLUMN }, { error: MISSING_QUANTITY_COLUMN }],
+      });
+      primeDb(pg);
+
+      const { listTradeOffers } = await import("@/lib/trade");
+      await expect(listTradeOffers(listInput)).rejects.toBe(MISSING_QUANTITY_COLUMN);
+      expect(pg.selectCalls).toHaveLength(2);
+    });
+
+    it("does not retry an unrelated 42703", async () => {
+      const unrelated = { code: "42703", message: 'column "trade_enabled" does not exist' };
+      const pg = createDbMock({ selects: [{ error: unrelated }, { rows: [] }] });
+      primeDb(pg);
+
+      const { listTradeOffers } = await import("@/lib/trade");
+      await expect(listTradeOffers(listInput)).rejects.toBe(unrelated);
+      expect(pg.selectCalls).toHaveLength(1);
+    });
+  });
+
+  describe("listMyTradeOffers", () => {
+    it("maps wantedQuantity into the DTO", async () => {
+      const pg = createDbMock({
+        selects: [{
+          rows: [listRow({ ...OFFER, wanted_quantity: 5 }, { viewerUserId: OFFER.offerer_user_id, tradeableState: true })],
+        }],
+      });
+      primeDb(pg);
+
+      const { listMyTradeOffers } = await import("@/lib/trade");
+      const { offers } = await listMyTradeOffers("viewer-1", { status: "open" });
+
+      expect(offers[0].wantedQuantity).toBe(5);
+      expect(roundTrips()).toBe(1);
+    });
+
+    it("deploy window: retries once with wanted_quantity as the literal 1", async () => {
+      const pg = createDbMock({
+        selects: [
+          { error: MISSING_QUANTITY_COLUMN },
+          { rows: [listRow(OFFER, { viewerUserId: OFFER.offerer_user_id, tradeableState: true })] },
+        ],
+      });
+      primeDb(pg);
+
+      const { listMyTradeOffers } = await import("@/lib/trade");
+      const { offers } = await listMyTradeOffers("viewer-1", { status: "open" });
+
+      expect(pg.selectCalls).toHaveLength(2);
+      expect(offers[0]).toMatchObject({ wantedQuantity: 1, tradeable: true });
+      expect(quantityOf((pg.selectCalls[0].fields as { offer: unknown }).offer))
+        .toBe('"trade_offers"."wanted_quantity"');
+      expect(quantityOf((pg.selectCalls[1].fields as { offer: unknown }).offer)).toBe("1");
+    });
+
+    it("does not retry an unrelated 42703", async () => {
+      const unrelated = { code: "42703", message: 'column "other" does not exist' };
+      const pg = createDbMock({ selects: [{ error: unrelated }, { rows: [] }] });
+      primeDb(pg);
+
+      const { listMyTradeOffers } = await import("@/lib/trade");
+      await expect(listMyTradeOffers("viewer-1", {})).rejects.toBe(unrelated);
+      expect(pg.selectCalls).toHaveLength(1);
     });
   });
 });

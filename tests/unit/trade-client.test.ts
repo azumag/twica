@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TradeApiErrorCode } from "@/lib/trade-api";
+import type { TradeOfferDto } from "@/lib/trade";
 import {
   TRADE_ERROR_MESSAGE_KEYS,
   isOfferGoneCode,
@@ -8,6 +9,7 @@ import {
   tradeCreatePath,
   tradeErrorMessageKey,
   tradeLoginHref,
+  viewerSides,
 } from "@/lib/trade-client";
 import jaMessages from "../../messages/ja.json";
 import enMessages from "../../messages/en.json";
@@ -161,5 +163,41 @@ describe("trade URLs", () => {
     expect(tradeBoardPath("s-1", "in_channel")).toBe("/trade/s-1");
     expect(tradeCreatePath("s-1", "in_channel")).toBe("/trade/s-1/new");
     expect(tradeCreatePath("s-1", "cross_channel")).toBe("/trade/s-1/new?scope=cross");
+  });
+});
+
+describe("viewerSides (#1789)", () => {
+  const card = (name: string) => ({ name, rarity: "rare", imageUrl: null }) as TradeOfferDto["offeredCard"];
+  const offer = (overrides: Partial<TradeOfferDto>) =>
+    ({
+      offeredCard: card("Offered"),
+      wantedCard: card("Wanted"),
+      offeredCardId: "card-offered",
+      wantedCardId: "card-wanted",
+      wantedQuantity: 3,
+      offerer: { twitchUsername: "offerer" },
+      acceptedBy: { twitchUsername: "acceptor" },
+      mineRole: "offerer",
+      ...overrides,
+    }) as unknown as TradeOfferDto;
+
+  it("offerer gives the offered card (always 1) and gets wantedQuantity copies of the wanted card", () => {
+    const sides = viewerSides(offer({ mineRole: "offerer" }));
+    expect(sides.give).toMatchObject({ card: card("Offered"), deleted: false, quantity: 1 });
+    expect(sides.get).toMatchObject({ card: card("Wanted"), deleted: false, quantity: 3 });
+  });
+
+  it("acceptor gives wantedQuantity copies of the wanted card and gets the offered card (always 1)", () => {
+    const sides = viewerSides(offer({ mineRole: "acceptor" }));
+    expect(sides.give).toMatchObject({ card: card("Wanted"), deleted: false, quantity: 3 });
+    expect(sides.get).toMatchObject({ card: card("Offered"), deleted: false, quantity: 1 });
+  });
+
+  it("keeps quantity 1 on both sides for a classic 1:1 offer", () => {
+    for (const mineRole of ["offerer", "acceptor"] as const) {
+      const sides = viewerSides(offer({ mineRole, wantedQuantity: 1 }));
+      expect(sides.give.quantity).toBe(1);
+      expect(sides.get.quantity).toBe(1);
+    }
   });
 });

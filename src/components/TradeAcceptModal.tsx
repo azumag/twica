@@ -72,7 +72,9 @@ export default function TradeAcceptModal({
     setErrorText(null);
     const result = await postTradeJson<{ success: true }>(
       `/api/trades/${offer.id}/accept`,
-      { requestId },
+      // The quantity shown in this dialog: the server transfers only if it
+      // still equals the offer's wanted_quantity (#1789 compare-and-set).
+      { requestId, wantedQuantity: offer.wantedQuantity },
     );
     if (result.ok) {
       onCompleted();
@@ -128,7 +130,11 @@ export default function TradeAcceptModal({
           </h2>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <div className="min-w-0 flex-1">
-              <TradeCardSummary card={give} label={t("confirmModalGiveLabel")} />
+              <TradeCardSummary
+                card={give}
+                quantity={offer.wantedQuantity}
+                label={t("confirmModalGiveLabel")}
+              />
             </div>
             <span
               role="img"
@@ -142,7 +148,9 @@ export default function TradeAcceptModal({
             </div>
           </div>
           <p id={warningId} className="mt-4 rounded-lg border border-yellow-600/60 bg-yellow-900/30 p-3 text-sm text-yellow-100">
-            {t("confirmModalWarning")}
+            {offer.wantedQuantity > 1
+              ? t("confirmModalWarningMultiple", { count: offer.wantedQuantity })
+              : t("confirmModalWarning")}
           </p>
           {errorText && (
             <p role="alert" className="mt-3 rounded-lg bg-red-900/40 p-3 text-sm text-red-200">

@@ -18,6 +18,7 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     offeredStreamerId: "s-1",
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
+    wantedQuantity: 1,
     offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
     wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
     isCrossChannel: false,
@@ -522,5 +523,105 @@ describe("TradeBoard", () => {
       fireEvent.click(screen.getByRole("button", { name: jaMessages.pagination.next }));
       await waitFor(() => expect(listCallsFor((query) => query.get("page") === "2")).toBe(2));
     });
+  });
+});
+
+/** Fill the `{count}` placeholder of a ja message the way next-intl does. */
+function withCount(message: string, count: number) {
+  return message.replace("{count}", String(count));
+}
+
+describe("TradeOfferRow wanted quantity (#1789)", () => {
+  it("shows a ×N badge on the card the acceptor gives and the multiple auto-select notice", () => {
+    renderRow(makeOffer({ wantedQuantity: 3, canAccept: "yes" }));
+    const give = screen.getByText(ja.giveLabel).parentElement!;
+    expect(give).toHaveTextContent("Wanted Slime");
+    expect(give).toHaveTextContent(withCount(ja.quantityBadge, 3));
+    // The card the viewer receives is always a single copy: no badge there.
+    expect(screen.getByText(ja.receiveLabel).parentElement).not.toHaveTextContent("×");
+    expect(screen.getByText(withCount(ja.autoSelectNoticeMultiple, 3))).toBeInTheDocument();
+    expect(screen.queryByText(ja.autoSelectNotice)).toBeNull();
+    expect(screen.getByRole("button", { name: ja.acceptButton })).toBeEnabled();
+  });
+
+  it("shows no badge and the single-copy notice for a 1:1 offer", () => {
+    renderRow(makeOffer({ wantedQuantity: 1 }));
+    expect(screen.queryByText(withCount(ja.quantityBadge, 1))).toBeNull();
+    expect(screen.getByText(ja.giveLabel).parentElement).not.toHaveTextContent("×");
+    expect(screen.getByText(ja.autoSelectNotice)).toBeInTheDocument();
+    expect(screen.queryByText(withCount(ja.autoSelectNoticeMultiple, 1))).toBeNull();
+  });
+
+  it("not_enough → disabled gray 'not enough copies', distinct from not_owned and all_listed", () => {
+    renderRow(makeOffer({ wantedQuantity: 3, canAccept: "not_enough" }));
+    const button = screen.getByRole("button", { name: ja.acceptButtonNotEnough });
+    expect(button).toBeDisabled();
+    expect(button.className).toContain("bg-gray-700");
+    expect(screen.queryByText(ja.acceptButtonNotOwned)).toBeNull();
+    expect(screen.queryByText(ja.acceptButtonAllListed)).toBeNull();
+    // The multi-copy notice is still shown next to the (disabled) action.
+    expect(screen.getByText(withCount(ja.autoSelectNoticeMultiple, 3))).toBeInTheDocument();
+  });
+
+  it("labels my own multi-copy offer from the offerer's direction with the badge on the wanted side", () => {
+    renderRow(makeOffer({ isOwnOffer: true, canAccept: undefined, wantedQuantity: 4 }));
+    expect(screen.getByText(ja.myTradesWant).parentElement).toHaveTextContent(withCount(ja.quantityBadge, 4));
+    expect(screen.getByText(ja.myTradesGive).parentElement).not.toHaveTextContent("×");
+    // Own offers have no accept action, hence no auto-select notice.
+    expect(screen.queryByText(withCount(ja.autoSelectNoticeMultiple, 4))).toBeNull();
+  });
+});
+
+describe("TradeBoard wanted quantity (#1789)", () => {
+  beforeEach(() => {
+    clearTradeListCache();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders the badge for multi-copy offers only, per row", async () => {
+    const fetchMock = vi.fn(async () =>
+      listResponse([
+        makeOffer({ id: "multi", wantedQuantity: 3, wantedCard: { name: "Triple Slime", rarity: "common", imageUrl: null } }),
+        makeOffer({ id: "single", wantedQuantity: 1, wantedCard: { name: "Single Slime", rarity: "common", imageUrl: null } }),
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderBoard();
+
+    const items = await screen.findAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(within(items[0]).getByText(withCount(ja.quantityBadge, 3))).toBeInTheDocument();
+    expect(within(items[0]).getByText(withCount(ja.autoSelectNoticeMultiple, 3))).toBeInTheDocument();
+    expect(within(items[1]).queryByText(/×/)).toBeNull();
+    expect(within(items[1]).getByText(ja.autoSelectNotice)).toBeInTheDocument();
+  });
+
+  it("the accept dialog opened from a multi-copy row announces the count", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => listResponse([makeOffer({ wantedQuantity: 3 })])));
+    renderBoard();
+
+    fireEvent.click(await screen.findByRole("button", { name: ja.acceptButton }));
+    const dialog = screen.getByRole("dialog", { name: ja.confirmModalTitle });
+    expect(within(dialog).getByText(withCount(ja.confirmModalWarningMultiple, 3))).toBeInTheDocument();
+    expect(within(dialog).getByText(withCount(ja.quantityBadge, 3))).toBeInTheDocument();
+  });
+
+  it("refetches after TRADE_CARD_NOT_OWNED and shows the not_enough state when copies are short", async () => {
+    let listCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/trades?")) {
+        listCalls += 1;
+        return listResponse([makeOffer({ wantedQuantity: 3, canAccept: listCalls === 1 ? "yes" : "not_enough" })]);
+      }
+      return jsonResponse(400, { code: "TRADE_CARD_NOT_OWNED" });
+    }));
+    renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: ja.acceptButton }));
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(ja.errorTradeCardNotOwned);
+    fireEvent.click(screen.getByRole("button", { name: ja.confirmModalCancelButton }));
+    expect(await screen.findByRole("button", { name: ja.acceptButtonNotEnough })).toBeDisabled();
   });
 });

@@ -28,6 +28,9 @@ vi.mock("@/lib/session", () => ({
 vi.mock("@/lib/announcements", () => ({ getUnreadAnnouncements: async () => [] }));
 vi.mock("@/lib/plan", () => ({ getUserPlan: async () => "basic" }));
 vi.mock("@/lib/trade", () => ({
+  // The page passes this constant to the create form (#1789); the real module
+  // pulls in the DB layer, so the value is mirrored here.
+  TRADE_MAX_WANTED_QUANTITY: 10,
   getTradeBoardStreamer: mocks.getTradeBoardStreamer,
   listWantableCards: mocks.listWantableCards,
   listTradeableOwnedCopies: mocks.listTradeableOwnedCopies,
@@ -236,6 +239,8 @@ describe("/trade/[streamerId]/new listing page", () => {
     expect(form.cross).toBeNull();
     expect(form.wantableCards).toHaveLength(1);
     expect(form.boardHref).toBe(`/trade/${STREAMER_ID}`);
+    // #1789: the server page hands the quantity ceiling to the client form.
+    expect(form.maxWantedQuantity).toBe(10);
   });
 
   it("cross: ignores a ?partner= that is not an allowed partner and loads no catalogue", async () => {

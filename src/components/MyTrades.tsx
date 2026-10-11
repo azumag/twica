@@ -199,6 +199,7 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
                   <TradeCardSummary
                     card={give.card}
                     deleted={give.deleted}
+                    quantity={give.quantity}
                     label={isCompleted ? t("myTradesGave") : t("myTradesGive")}
                   />
                 </div>
@@ -213,6 +214,7 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
                   <TradeCardSummary
                     card={get.card}
                     deleted={get.deleted}
+                    quantity={get.quantity}
                     label={isCompleted ? t("myTradesReceived") : t("myTradesWant")}
                   />
                 </div>

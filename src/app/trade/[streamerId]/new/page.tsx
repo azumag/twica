@@ -8,6 +8,7 @@ import {
   listTradeableOwnedCopies,
   listWantableCards,
   type WantableCard,
+  TRADE_MAX_WANTED_QUANTITY,
 } from "@/lib/trade";
 import {
   parseTradeScope,
@@ -154,6 +155,7 @@ export default async function TradeCreatePage({
         wantableCards={wantableCards}
         wantableRevealsUnowned={wantableRevealsUnowned}
         boardHref={boardHref}
+        maxWantedQuantity={TRADE_MAX_WANTED_QUANTITY}
         initialOfferedCardId={typeof query.offered === "string" ? query.offered : null}
       />
     </div>

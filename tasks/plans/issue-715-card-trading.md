@@ -197,6 +197,12 @@ accept_trade_offer(
 ) RETURNS JSONB
 ```
 
+> **#1789 追記(枚数指定)**: `trade_offers.wanted_quantity`(1〜10、既定1)を追加し、本RPCは
+> 応諾者のコピーを `wanted_quantity` 枚まとめて移転する(migration `20261011120000`)。
+> 下記手順4の「最古1枚の選定」は「最古N枚の選定 → 選定行の再ロックと数え直し → N枚
+> そろわなければ書き込み前に CARD_NOT_OWNED」になる。`accepted_user_card_id` には移転した
+> うち最古の1枚を記録する。
+
 処理手順(単一トランザクション):
 
 1. 応諾者 `users.id` を解決

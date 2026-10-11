@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger.server";
 import {
   acceptTradeOffer,
   getTradeOfferAuditParticipants,
+  TRADE_MAX_WANTED_QUANTITY,
   type TradeAcceptPrecheckError,
   type TradeAcceptRpcError,
 } from "@/lib/trade";
@@ -40,6 +41,10 @@ const ACCEPT_ERRORS: Record<AcceptError, { code: TradeAcceptApiErrorCode; status
   OFFER_INVALID: { code: "TRADE_OFFER_INVALID", status: 409 },
   TRADE_DISABLED: { code: "TRADE_DISABLED", status: 403 },
   CARD_NOT_OWNED: { code: "TRADE_CARD_NOT_OWNED", status: 409 },
+  // #1789: the viewer agreed to a different quantity than the offer asks for
+  // (stale row / old bundle). Same "this row is outdated" code as the
+  // precheck, so the board drops the dialog's offer and refetches.
+  QUANTITY_MISMATCH: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
   // Card retired or offered card hidden from this acceptor (API precheck).
   TRADE_OFFER_UNAVAILABLE: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
   TRADE_BUSY: { code: "TRADE_BUSY", status: 503 },
@@ -63,7 +68,18 @@ export async function POST(
     if (!parsed.ok) return parsed.response;
     const requestId =
       typeof parsed.body.requestId === "string" ? parsed.body.requestId : "";
-    if (!isCanonicalUuid(requestId)) {
+    // #1789: the quantity the viewer was shown and agreed to. A bundle that
+    // predates the field sends none and has only ever shown "1 copy", so the
+    // default 1 makes the RPC refuse a ×N offer instead of transferring N.
+    const wantedQuantity =
+      parsed.body.wantedQuantity === undefined ? 1 : parsed.body.wantedQuantity;
+    if (
+      !isCanonicalUuid(requestId)
+      || typeof wantedQuantity !== "number"
+      || !Number.isInteger(wantedQuantity)
+      || wantedQuantity < 1
+      || wantedQuantity > TRADE_MAX_WANTED_QUANTITY
+    ) {
       return tradeErrorResponse("INVALID_REQUEST", 400);
     }
 
@@ -71,6 +87,7 @@ export async function POST(
       twitchUserId: session.twitchUserId,
       tradeOfferId: id,
       requestId,
+      expectedQuantity: wantedQuantity,
     });
 
     if (!result.success) {
@@ -99,6 +116,11 @@ export async function POST(
       tradeOfferId: id,
       offererTwitchUserId,
       accepterTwitchUserId: session.twitchUserId,
+      // Copies the acceptor agreed to give. For a first acceptance this equals
+      // the offer's wanted_quantity (the RPC only transfers on a match); an
+      // idempotent replay returns before that check, so there it is the value
+      // the client re-sent.
+      wantedQuantity,
       // Reuse the identifier that actually keyed this authenticated request's
       // rate-limit bucket. Avoid separately retaining the raw client IP.
       rateLimitIdentifier: identifier,
