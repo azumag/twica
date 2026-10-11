@@ -346,7 +346,8 @@ export default function TradeCreateForm({
             {wantableCards.length > 0 && (
               // A native <select> (1..max) instead of a free number input:
               // no parsing/clamping of typed text, and every value offered
-              // is one the API accepts.
+              // is one the API accepts. Options include the unit in their
+              // text so assistive technology need not interpret the ×N badge.
               <label className="mt-4 flex items-center gap-3 text-sm text-gray-200">
                 {t("createStep2QuantityLabel")}
                 <select
@@ -360,7 +361,10 @@ export default function TradeCreateForm({
                 >
                   {Array.from({ length: maxWantedQuantity }, (_, index) => index + 1).map((value) => (
                     <option key={value} value={value}>
-                      {t("quantityBadge", { count: value })}
+                      {t(
+                        value === 1 ? "createStep2QuantityOption" : "createStep2QuantityOptionMultiple",
+                        { count: value },
+                      )}
                     </option>
                   ))}
                 </select>

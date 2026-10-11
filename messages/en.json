@@ -704,6 +704,8 @@
     "createStep1Empty": "You have no cards from this channel that can be traded.",
     "createStep2Title": "2. Choose the card you want",
     "createStep2QuantityLabel": "Number of copies you want",
+    "createStep2QuantityOption": "{count} copy",
+    "createStep2QuantityOptionMultiple": "{count} copies",
     "createStep2UnownedBadge": "Not owned",
     "createStep2SameCard": "You cannot choose the same card you give.",
     "createStep2Empty": "There are no cards you can request.",

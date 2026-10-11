@@ -704,6 +704,8 @@
     "createStep1Empty": "このチャンネルの交換に出せるカードを持っていません",
     "createStep2Title": "2. 欲しいカードを選ぶ",
     "createStep2QuantityLabel": "欲しい枚数",
+    "createStep2QuantityOption": "{count}枚",
+    "createStep2QuantityOptionMultiple": "{count}枚",
     "createStep2UnownedBadge": "未所持",
     "createStep2SameCard": "渡すカードと同じカードは選べません",
     "createStep2Empty": "指定できるカードがありません",
