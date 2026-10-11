@@ -15,6 +15,7 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     offeredStreamerId: "s-1",
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
+    wantedQuantity: 1,
     offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
     wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
     isCrossChannel: false,
@@ -63,6 +64,16 @@ describe("TradeCancelModal (#1754)", () => {
     expect(screen.getByText("Wanted Slime")).toBeInTheDocument();
     expect(screen.getByText(ja.myTradesGive)).toBeInTheDocument();
     expect(screen.getByText(ja.myTradesWant)).toBeInTheDocument();
+  });
+
+  it("shows ×N on the wanted side only for a multi-copy offer (#1789)", () => {
+    const { unmount } = renderModal({ offer: makeOffer({ wantedQuantity: 3 }) });
+    expect(screen.getByText(ja.myTradesWant).parentElement).toHaveTextContent(ja.quantityBadge.replace("{count}", "3"));
+    expect(screen.getByText(ja.myTradesGive).parentElement).not.toHaveTextContent("×");
+    unmount();
+
+    renderModal({ offer: makeOffer({ wantedQuantity: 1 }) });
+    expect(screen.getByText(ja.myTradesWant).parentElement).not.toHaveTextContent("×");
   });
 
   it("puts initial focus on the dismiss button (not the irreversible action)", () => {

@@ -15,6 +15,7 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     offeredStreamerId: "s-1",
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
+    wantedQuantity: 1,
     offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
     wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
     isCrossChannel: false,
@@ -194,6 +195,47 @@ describe("MyTrades (#727 §6.6)", () => {
     for (const item of items) {
       expect(item.querySelector(".border-t")).toHaveTextContent("取引相手:");
     }
+  });
+
+  it("shows ×N on the wanted side for my offers and for offers I accepted (#1789)", async () => {
+    const badge = (count: number) => ja.quantityBadge.replace("{count}", String(count));
+    byStatus.open = [makeOffer({ id: "open-multi", wantedQuantity: 3 })];
+    byStatus.completed = [
+      makeOffer({
+        id: "done-offerer",
+        status: "completed",
+        completedAt: "2026-10-02T00:00:00.000Z",
+        acceptedBy: { twitchUsername: "bob", twitchDisplayName: "Bob", twitchProfileImageUrl: null },
+        wantedQuantity: 2,
+        mineRole: "offerer",
+      }),
+      makeOffer({
+        id: "done-acceptor",
+        status: "completed",
+        completedAt: "2026-10-03T00:00:00.000Z",
+        offerer: { twitchUsername: "carol", twitchDisplayName: "Carol", twitchProfileImageUrl: null },
+        acceptedBy: { twitchUsername: "me", twitchDisplayName: "Me", twitchProfileImageUrl: null },
+        wantedQuantity: 5,
+        isOwnOffer: false,
+        mineRole: "acceptor",
+      }),
+    ];
+    renderMine();
+
+    // Open offerer row: I give 1 copy, I want 3.
+    const open = (await screen.findAllByRole("listitem"))[0];
+    expect(within(open).getByText(ja.myTradesWant).parentElement).toHaveTextContent(badge(3));
+    expect(within(open).getByText(ja.myTradesGive).parentElement).not.toHaveTextContent("×");
+
+    fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabCompleted }));
+    await screen.findByText("取引相手: Bob");
+    const [offerer, acceptor] = await screen.findAllByRole("listitem");
+    // Offerer: received N copies of the wanted card, gave 1.
+    expect(within(offerer).getByText(ja.myTradesReceived).parentElement).toHaveTextContent(badge(2));
+    expect(within(offerer).getByText(ja.myTradesGave).parentElement).not.toHaveTextContent("×");
+    // Acceptor: gave N copies of the wanted card, received 1.
+    expect(within(acceptor).getByText(ja.myTradesGave).parentElement).toHaveTextContent(badge(5));
+    expect(within(acceptor).getByText(ja.myTradesReceived).parentElement).not.toHaveTextContent("×");
   });
 
   it("omits the empty action footer on cancelled history, including a cached tab revisit", async () => {

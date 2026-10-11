@@ -14,6 +14,7 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     offeredStreamerId: "s-1",
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
+    wantedQuantity: 1,
     offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
     wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
     isCrossChannel: false,
@@ -200,5 +201,27 @@ describe("TradeAcceptModal (#726 §6.4)", () => {
     fireEvent.click(screen.getByRole("button", { name: ja.confirmModalSubmitButton }));
     expect(await screen.findByRole("alert")).toHaveTextContent(jaMessages.maintenance.writeDisabled);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("TradeAcceptModal wanted quantity (#1789)", () => {
+  it("announces the number of copies in the warning, the description and a badge on the give side", () => {
+    renderModal({ offer: makeOffer({ wantedQuantity: 3 }) });
+    const warning = ja.confirmModalWarningMultiple.replace("{count}", "3");
+    const dialog = screen.getByRole("dialog", { name: ja.confirmModalTitle });
+    expect(screen.getByText(warning)).toBeInTheDocument();
+    expect(dialog).toHaveAccessibleDescription(warning);
+    expect(screen.queryByText(ja.confirmModalWarning)).toBeNull();
+    const give = screen.getByText(ja.confirmModalGiveLabel).parentElement!;
+    expect(give).toHaveTextContent("Wanted Slime");
+    expect(give).toHaveTextContent(ja.quantityBadge.replace("{count}", "3"));
+    // The received card is always a single copy.
+    expect(screen.getByText(ja.confirmModalReceiveLabel).parentElement).not.toHaveTextContent("×");
+  });
+
+  it("keeps the single-copy warning and no badge for a 1:1 offer", () => {
+    renderModal({ offer: makeOffer({ wantedQuantity: 1 }) });
+    expect(screen.getByText(ja.confirmModalWarning)).toBeInTheDocument();
+    expect(screen.getByText(ja.confirmModalGiveLabel).parentElement).not.toHaveTextContent("×");
   });
 });

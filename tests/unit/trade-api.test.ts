@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/session", () => ({ getSession: mocks.getSession }));
 vi.mock("@/lib/trade", () => ({
+  // Mirrors the real constant (the real module pulls in the DB layer).
+  TRADE_MAX_WANTED_QUANTITY: 10,
   listTradeOffers: mocks.listTradeOffers,
   createTradeOffer: mocks.createTradeOffer,
   listMyTradeOffers: mocks.listMyTradeOffers,
@@ -202,6 +204,14 @@ describe("POST /api/trades (#723, #715 PR-C)", () => {
     ["array body", "[]"],
     ["bad offeredUserCardId", { ...VALID_CREATE_BODY, offeredUserCardId: "bad" }],
     ["missing requestId", { ...VALID_CREATE_BODY, requestId: undefined }],
+    // #1789: wantedQuantity must be an integer number in 1..10.
+    ["wantedQuantity 0", { ...VALID_CREATE_BODY, wantedQuantity: 0 }],
+    ["wantedQuantity below range (-1)", { ...VALID_CREATE_BODY, wantedQuantity: -1 }],
+    ["wantedQuantity above range (11)", { ...VALID_CREATE_BODY, wantedQuantity: 11 }],
+    ["fractional wantedQuantity", { ...VALID_CREATE_BODY, wantedQuantity: 1.5 }],
+    ["string wantedQuantity", { ...VALID_CREATE_BODY, wantedQuantity: "2" }],
+    ["null wantedQuantity", { ...VALID_CREATE_BODY, wantedQuantity: null }],
+    ["array wantedQuantity", { ...VALID_CREATE_BODY, wantedQuantity: [3] }],
   ])("answers 400 INVALID_REQUEST for %s", async (_label, body) => {
     mocks.getSession.mockResolvedValue(SESSION);
     const { POST } = await import("@/app/api/trades/route");
@@ -265,9 +275,66 @@ describe("POST /api/trades (#723, #715 PR-C)", () => {
       idempotentReplay: true,
       tradeOffer: { id: OFFER_ID },
     });
+    // A body without wantedQuantity (client bundle that predates #1789) is a
+    // 1-copy offer.
     expect(mocks.createTradeOffer).toHaveBeenCalledWith({
       twitchUserId: "viewer-1",
       ...VALID_CREATE_BODY,
+      wantedQuantity: 1,
+    });
+  });
+
+  describe("wantedQuantity (#1789)", () => {
+    const createdOffer = (wantedQuantity: number) => ({
+      kind: "ok",
+      idempotentReplay: false,
+      offer: {
+        id: OFFER_ID,
+        offered_user_card_id: USER_CARD_ID,
+        offered_card_id: "66666666-6666-4666-8666-666666666666",
+        offered_streamer_id: STREAMER_ID,
+        wanted_card_id: WANTED_CARD_ID,
+        wanted_streamer_id: STREAMER_ID,
+        wanted_quantity: wantedQuantity,
+        offered_card_snapshot: { name: "A" },
+        wanted_card_snapshot: { name: "B" },
+        is_cross_channel: false,
+        status: "open",
+        created_at: "2026-10-04T00:00:00.000Z",
+      },
+    });
+
+    it.each([1, 3, 10])("passes wantedQuantity %d to the service and echoes it in the response", async (quantity) => {
+      mocks.getSession.mockResolvedValue(SESSION);
+      mocks.createTradeOffer.mockResolvedValue(createdOffer(quantity));
+
+      const { POST } = await import("@/app/api/trades/route");
+      const response = await POST(
+        postJson("/api/trades", { ...VALID_CREATE_BODY, wantedQuantity: quantity }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mocks.createTradeOffer).toHaveBeenCalledWith({
+        twitchUserId: "viewer-1",
+        ...VALID_CREATE_BODY,
+        wantedQuantity: quantity,
+      });
+      await expect(response.json()).resolves.toMatchObject({
+        tradeOffer: { id: OFFER_ID, wantedQuantity: quantity },
+      });
+    });
+
+    it("treats a missing wantedQuantity as 1", async () => {
+      mocks.getSession.mockResolvedValue(SESSION);
+      mocks.createTradeOffer.mockResolvedValue(createdOffer(1));
+
+      const { POST } = await import("@/app/api/trades/route");
+      const response = await POST(postJson("/api/trades", VALID_CREATE_BODY));
+
+      expect(mocks.createTradeOffer).toHaveBeenCalledWith(
+        expect.objectContaining({ wantedQuantity: 1 }),
+      );
+      await expect(response.json()).resolves.toMatchObject({ tradeOffer: { wantedQuantity: 1 } });
     });
   });
 });
