@@ -45,6 +45,11 @@ const ACCEPT_ERRORS: Record<AcceptError, { code: TradeAcceptApiErrorCode; status
   // (stale row / old bundle). Same "this row is outdated" code as the
   // precheck, so the board drops the dialog's offer and refetches.
   QUANTITY_MISMATCH: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
+  // #1790: the wanted card was switched to "cannot be requested" between the
+  // API precheck and the RPC (the precheck answers the same code for the
+  // common case). The offer stays open but is hidden from the board, so the
+  // client treats it as gone and refetches.
+  WANTED_CARD_NOT_WANTABLE: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
   // Card retired or offered card hidden from this acceptor (API precheck).
   TRADE_OFFER_UNAVAILABLE: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
   TRADE_BUSY: { code: "TRADE_BUSY", status: 503 },

@@ -180,6 +180,7 @@ function checkRow(overrides: Record<string, unknown> = {}) {
     wantedName: "Want",
     wantedRarity: "epic",
     wantedImageUrl: "https://example.test/b.png",
+    wantedWantable: true,
     offeredTradeEnabled: true,
     offeredCrossEnabled: false,
     wantedTradeEnabled: true,
@@ -354,6 +355,10 @@ describe("trade service (#723)", () => {
         })],
       }],
     }, "TRADE_DISABLED"],
+    // #1790: checked after the channel gates and before the listing checks.
+    ["wanted card not wantable", { selects: [{ rows: [checkRow({ wantedWantable: false, offeredCopyListed: true, openOfferCount: 10 })] }] }, "TRADE_WANTED_CARD_NOT_WANTABLE"],
+    ["wanted card wantable flag NULL (fail closed)", { selects: [{ rows: [checkRow({ wantedWantable: null })] }] }, "TRADE_WANTED_CARD_NOT_WANTABLE"],
+    ["channel disabled wins over not wantable", { selects: [{ rows: [checkRow({ wantedWantable: false, wantedTradeEnabled: false })] }] }, "TRADE_DISABLED"],
     ["copy already listed", { selects: [{ rows: [checkRow({ offeredCopyListed: true, openOfferCount: 10 })] }] }, "TRADE_CARD_ALREADY_LISTED"],
     ["open-offer limit", { selects: [{ rows: [checkRow({ openOfferCount: 10 })] }] }, "TRADE_OFFER_LIMIT"],
   ])("rejects %s without INSERT (1 round trip)", async (_label, config, code) => {
@@ -1523,6 +1528,241 @@ describe("trade wanted quantity (#1789)", () => {
       const { listMyTradeOffers } = await import("@/lib/trade");
       await expect(listMyTradeOffers("viewer-1", {})).rejects.toBe(unrelated);
       expect(pg.selectCalls).toHaveLength(1);
+    });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #1790: cards.trade_wantable (「求に指定できる」). The SQL shape of each
+// statement and the deploy-window retry are pinned here; the row semantics
+// (hidden from the board, refused by the RPC, revived when switched back) are
+// proven on real PostgreSQL by tests/integration/trade-visibility-pg.test.ts.
+// -----------------------------------------------------------------------------
+describe("trade wantable restriction (#1790)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** What Postgres raises while 20261014100000 is not applied yet. */
+  const MISSING_WANTABLE_COLUMN = {
+    code: "42703",
+    message: "column wantable_card.trade_wantable does not exist",
+  };
+  const MISSING_QUANTITY_COLUMN = {
+    code: "42703",
+    message: 'column "wanted_quantity" does not exist',
+  };
+  const createInput = {
+    twitchUserId: "viewer-1",
+    offeredUserCardId: OFFER.offered_user_card_id,
+    wantedCardId: OFFER.wanted_card_id!,
+    requestId: OFFER.request_id!,
+  };
+  const listInput = {
+    streamerId: STREAMER_ID,
+    scope: "in_channel" as const,
+    page: 1,
+    twitchUserId: "viewer-2",
+  };
+  const WANTABLE_WANTED_OFFER =
+    /"cards" AS wantable_card\s+WHERE wantable_card\.id = "trade_offers"\."wanted_card_id"\s+AND wantable_card\.trade_wantable = TRUE/;
+
+  describe("createTradeOffer", () => {
+    it("reads the wanted card's flag in the same check statement (no extra round trip)", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow()] }], inserts: [{ rows: [OFFER] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toMatchObject({ kind: "ok" });
+      expect(roundTrips()).toBe(2);
+      const wantable = render((pg.selectCalls[0].fields as Record<string, unknown>).wantedWantable);
+      expect(wantable.sql).toMatch(
+        /"cards" AS wantable_card\s+WHERE wantable_card\.id = "wanted_card"\."id"\s+AND wantable_card\.trade_wantable = TRUE/,
+      );
+    });
+
+    it("rejects a non-wantable wanted card without INSERT", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow({ wantedWantable: false })] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toEqual({
+        kind: "error",
+        code: "TRADE_WANTED_CARD_NOT_WANTABLE",
+      });
+      expect(pg.insertCalls).toHaveLength(0);
+    });
+
+    it("keeps answering TRADE_WANTED_CARD_UNAVAILABLE for a hidden card even if it is also not wantable", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [checkRow({ wantedCardId: null, wantedStreamerId: null, wantedWantable: false })] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toEqual({
+        kind: "error",
+        code: "TRADE_WANTED_CARD_UNAVAILABLE",
+      });
+    });
+
+    it("replays by requestId before the wantable check", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow({ replay: OFFER, wantedWantable: false })] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toEqual({
+        kind: "ok",
+        offer: OFFER,
+        idempotentReplay: true,
+      });
+    });
+
+    it("deploy window: retries the check with every card wantable, for any quantity", async () => {
+      const pg = createDbMock({
+        selects: [{ error: MISSING_WANTABLE_COLUMN }, { rows: [checkRow()] }],
+        inserts: [{ rows: [{ ...OFFER, wanted_quantity: 3 }] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer({ ...createInput, wantedQuantity: 3 })).resolves.toMatchObject({ kind: "ok" });
+      expect(pg.selectCalls).toHaveLength(2);
+      expect(render((pg.selectCalls[0].fields as Record<string, unknown>).wantedWantable).sql)
+        .toContain("trade_wantable");
+      expect(render((pg.selectCalls[1].fields as Record<string, unknown>).wantedWantable).sql).toBe("TRUE");
+      // The quantity column exists, so the INSERT keeps using it.
+      expect(pg.insertCalls[0].table).toBe(tradeOffers);
+    });
+
+    it("deploy window: both columns missing converge to the column-less shape", async () => {
+      const pg = createDbMock({
+        selects: [
+          { error: MISSING_WANTABLE_COLUMN },
+          { error: MISSING_QUANTITY_COLUMN },
+          { rows: [checkRow()] },
+        ],
+        inserts: [{ rows: [OFFER] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toMatchObject({ kind: "ok" });
+      expect(pg.selectCalls).toHaveLength(3);
+      const last = pg.selectCalls[2].fields as Record<string, unknown>;
+      expect(render(last.wantedWantable).sql).toBe("TRUE");
+      expect(render((last.replay as { wanted_quantity: unknown }).wanted_quantity).sql).toBe("1");
+      expect(pg.insertCalls[0].table).toBe(tradeOffersWithoutQuantity);
+    });
+
+    it("does not retry a wantable message that is not SQLSTATE 42703", async () => {
+      const other = { code: "XX000", message: "column wantable_card.trade_wantable does not exist" };
+      const pg = createDbMock({ selects: [{ error: other }, { rows: [checkRow()] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).rejects.toBe(other);
+      expect(pg.selectCalls).toHaveLength(1);
+    });
+  });
+
+  describe("listTradeOffers", () => {
+    it("hides offers whose wanted card is not wantable, for every viewer, in the SQL WHERE", async () => {
+      const pg = createDbMock({ selects: [{ rows: [] }] });
+      primeDb(pg);
+
+      const { listTradeOffers } = await import("@/lib/trade");
+      await listTradeOffers(listInput);
+      await listTradeOffers({ ...listInput, twitchUserId: undefined });
+
+      for (const call of pg.selectCalls) {
+        expect(render(call.where).sql).toMatch(WANTABLE_WANTED_OFFER);
+      }
+      // Only the wanted side is restricted (giving a card is never limited).
+      expect(render(pg.selectCalls[0].where).sql).not.toMatch(
+        /wantable_card\.id = "trade_offers"\."offered_card_id"/,
+      );
+      expect(roundTrips()).toBe(2);
+    });
+
+    it("deploy window: retries once without the wantable condition", async () => {
+      const pg = createDbMock({
+        selects: [
+          { error: MISSING_WANTABLE_COLUMN },
+          { rows: [listRow(OFFER, { viewerUserId: VIEWER_ID, acceptState: "yes" })] },
+        ],
+      });
+      primeDb(pg);
+
+      const { listTradeOffers } = await import("@/lib/trade");
+      const { offers } = await listTradeOffers(listInput);
+      expect(offers).toHaveLength(1);
+      expect(pg.selectCalls).toHaveLength(2);
+      expect(render(pg.selectCalls[1].where).sql).not.toContain("trade_wantable");
+    });
+  });
+
+  describe("listMyTradeOffers", () => {
+    it("counts a non-wantable wanted card as not tradeable (same statement)", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [listRow(OFFER, { viewerUserId: OFFER.offerer_user_id, tradeableState: false })] }],
+      });
+      primeDb(pg);
+
+      const { listMyTradeOffers } = await import("@/lib/trade");
+      const { offers } = await listMyTradeOffers("viewer-1", { status: "open" });
+      expect(offers[0].tradeable).toBe(false);
+      expect(roundTrips()).toBe(1);
+      const state = render((pg.selectCalls[0].fields as Record<string, unknown>).tradeableState);
+      expect(state.sql).toMatch(WANTABLE_WANTED_OFFER);
+      // The listing itself is not filtered: the offerer must still find it.
+      expect(render(pg.selectCalls[0].where).sql).not.toContain("trade_wantable");
+    });
+
+    it("deploy window: retries once with every card wantable", async () => {
+      const pg = createDbMock({
+        selects: [
+          { error: MISSING_WANTABLE_COLUMN },
+          { rows: [listRow(OFFER, { viewerUserId: OFFER.offerer_user_id, tradeableState: true })] },
+        ],
+      });
+      primeDb(pg);
+
+      const { listMyTradeOffers } = await import("@/lib/trade");
+      const { offers } = await listMyTradeOffers("viewer-1", { status: "open" });
+      expect(offers[0].tradeable).toBe(true);
+      expect(pg.selectCalls).toHaveLength(2);
+      const retryState = render((pg.selectCalls[1].fields as Record<string, unknown>).tradeableState);
+      expect(retryState.sql).not.toContain("trade_wantable");
+    });
+  });
+
+  describe("listWantableCards", () => {
+    it("drops non-wantable cards in the SQL WHERE", async () => {
+      const pg = createDbMock({ selects: [{ rows: [] }] });
+      primeDb(pg);
+
+      const { listWantableCards } = await import("@/lib/trade");
+      await listWantableCards("viewer-2", STREAMER_ID);
+      expect(render(pg.selectCalls[0].where).sql).toMatch(
+        /"cards" AS wantable_card\s+WHERE wantable_card\.id = "cards"\."id"\s+AND wantable_card\.trade_wantable = TRUE/,
+      );
+      expect(roundTrips()).toBe(1);
+    });
+
+    it("deploy window: retries once with every card wantable", async () => {
+      const pg = createDbMock({
+        selects: [
+          { error: MISSING_WANTABLE_COLUMN },
+          { rows: [{ cardId: OFFER.wanted_card_id, name: "Want", rarity: "epic", imageUrl: null, isOwned: false }] },
+        ],
+      });
+      primeDb(pg);
+
+      const { listWantableCards } = await import("@/lib/trade");
+      await expect(listWantableCards(null, STREAMER_ID)).resolves.toHaveLength(1);
+      expect(pg.selectCalls).toHaveLength(2);
+      expect(render(pg.selectCalls[1].where).sql).not.toContain("trade_wantable");
     });
   });
 });

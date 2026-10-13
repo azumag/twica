@@ -35,6 +35,7 @@ import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
 import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
+import { updateCardTradeWantable } from "@/lib/card-trade-wantable";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -385,7 +386,14 @@ export async function PUT(
   try {
 
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber, maxIssuanceCount, imagePaddingColor } = body;
+    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber, maxIssuanceCount, imagePaddingColor, tradeWantable } = body;
+
+    // #1790: 「求めるカードに指定できる」(cards.trade_wantable)。省略時は変更しない。
+    // 真偽値以外（文字列 "false" 等）を truthy/falsy で解釈すると意図と逆の値を
+    // 保存しうるため、boolean だけを受け付ける。
+    if (tradeWantable !== undefined && typeof tradeWantable !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
 
     // Issue #393: optional card pack name (null clears it = all cards).
     const collectionNameResult = resolveCollectionNameField(body, "collectionName");
@@ -560,7 +568,13 @@ export async function PUT(
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
     if (isActive !== undefined) updateData.is_active = isActive;
 
-    const { updatedCard, error } = await updateCardPg(id, updateData);
+    // #1790: tradeWantable だけを送る要求では本体の UPDATE を行わない
+    // （空の set() は Drizzle が例外にする）。現在の本体行は返さず、
+    // id と trade_wantable だけを返す。
+    const tradeWantableOnly = tradeWantable !== undefined && Object.keys(updateData).length === 0;
+    const { updatedCard, error } = tradeWantableOnly
+      ? { updatedCard: { id } as Record<string, unknown>, error: null }
+      : await updateCardPg(id, updateData);
 
     if (error) {
       const rewardPack = getRewardCardProtectionPack(error);
@@ -575,6 +589,32 @@ export async function PUT(
         );
       }
       return handleDatabaseError(error, "Failed to update card");
+    }
+
+    // #1790: trade_wantable は cards 本体の Drizzle 定義に無い列のため
+    // （src/lib/db/schema.ts の cardTradeSettings 参照）、本体の UPDATE の後に
+    // 別の UPDATE で書く。所有者の認可は上の所有権確認（このカードの配信者
+    // 本人であること）がそのまま担保する。
+    //   - 本体の UPDATE が失敗した場合（409 等）は上で return 済みで、ここへは
+    //     来ない。本体だけ成功してこちらが失敗した場合は 500 になるが、どちらも
+    //     明示的な最終値を書く冪等な UPDATE なので、同じ内容の再送で収束する。
+    //   - 応答の trade_wantable は tradeWantable を送った要求にだけ含める。
+    //     CardManager は指定可否をカード行とは別の state で持ち、この値で更新する
+    //     （カード行は本体の無指定 RETURNING 等で丸ごと置き換わるため）。
+    let tradeWantableSkippedDeployWindow = false;
+    let tradeWantableResult: boolean | undefined;
+    if (updatedCard && tradeWantable !== undefined) {
+      const written = await updateCardTradeWantable(id, tradeWantable);
+      if (written === "column_missing") {
+        // デプロイ窓: 列が無い = 全カード指定可。指定不可は保存できない。
+        tradeWantableSkippedDeployWindow = tradeWantable === false;
+        tradeWantableResult = true;
+      } else if (written === null) {
+        // 並行削除: 本体の UPDATE と同じく 0 行更新。値は応答に載せない。
+        tradeWantableResult = undefined;
+      } else {
+        tradeWantableResult = written.trade_wantable;
+      }
     }
 
     // 旧画像のクリーンアップ (#830: 所有権検証は deleteOwnedStorageImage が担当)
@@ -607,8 +647,10 @@ export async function PUT(
 
     return NextResponse.json({
       ...updatedCard,
+      ...(tradeWantableResult !== undefined ? { trade_wantable: tradeWantableResult } : {}),
       recalculatedCards,
       ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
+      ...(tradeWantableSkippedDeployWindow ? { tradeWantableSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Cards API: PUT");

@@ -102,7 +102,9 @@
       },
       "fitColorNote": "The whole image is fitted into a square card frame, so padding is added depending on the image shape. Transparent is saved as PNG.",
       "fitProceed": "Add padding with this color",
-      "fitDescription": "Fits the whole image"
+      "fitDescription": "Fits the whole image",
+      "tradeWantable": "Can be requested in trades",
+      "tradeWantableHelp": "When off, viewers cannot list offers that ask for this card. Existing offers asking for it are hidden from the trade board and cannot be accepted (they come back when you turn this on again). Viewers can still offer this card to others."
     },
     "fileUpload": {
       "formats": "Supported: JPEG, PNG, GIF, WebP | ",
@@ -685,6 +687,7 @@
     "errorTradeOfferLimit": "You have reached the offer limit (max 10).",
     "errorTradeOfferedCardInactive": "This card cannot be traded right now.",
     "errorTradeWantedCardUnavailable": "This card cannot be requested.",
+    "errorTradeWantedCardNotWantable": "The streamer does not allow requesting this card in trades.",
     "errorTradeOfferUnavailable": "This trade is not available right now.",
     "errorTradeSameCard": "You cannot trade a card for the same card.",
     "errorTradeCardAlreadyListed": "This card is already listed.",
@@ -737,7 +740,7 @@
     "myTradesUpdatedAt": "Cancelled: {date}",
     "myTradesUnavailableBadge": "No longer acceptable",
     "myTradesUnavailableHelp": "A card in this offer was deleted, so nobody can accept it.",
-    "myTradesUnavailableHelpNotTradeable": "This offer can no longer be accepted: the channel's trade setting is off or a card is no longer available.",
+    "myTradesUnavailableHelpNotTradeable": "This offer can no longer be accepted: the channel's trade setting is off, the wanted card can no longer be requested, or a card is no longer available.",
     "myTradesBoardLink": "View trade board",
     "myTradesLoadError": "Could not load your trades.",
     "cancelOfferButton": "Cancel",

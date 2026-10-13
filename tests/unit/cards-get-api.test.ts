@@ -246,10 +246,12 @@ describe("GET /api/cards errors", () => {
 
 describe("GET /api/cards issued_count", () => {
   it("skips user_cards for unlimited cards", async () => {
-    const mock = primeCards([{ ...BASE_CARD, max_issuance_count: null }]);
+    // 4th select = the #1790 trade_wantable lookup (not user_cards).
+    const mock = primeCards([{ ...BASE_CARD, max_issuance_count: null }], [{ rows: [] }]);
     const response = await GET(request());
     expect(response.status).toBe(200);
-    expect(mock.calls).toHaveLength(3);
+    expect(mock.calls).toHaveLength(4);
+    expect(Object.keys(mock.calls[3].fields ?? {})).toEqual(["id"]);
     expect((await response.json()).cards[0]).not.toHaveProperty("issued_count");
   });
 
@@ -258,10 +260,10 @@ describe("GET /api/cards issued_count", () => {
     const unlimited = { ...BASE_CARD, id: "card-2", max_issuance_count: null };
     const mock = primeCards(
       [limited, unlimited],
-      [{ rows: [{ card_id: "card-1" }, { card_id: "card-1" }] }],
+      [{ rows: [{ card_id: "card-1" }, { card_id: "card-1" }] }, { rows: [] }],
     );
     const body = await (await GET(request())).json();
-    expect(mock.calls).toHaveLength(4);
+    expect(mock.calls).toHaveLength(5);
     expect(body.cards[0].issued_count).toBe(2);
     expect(body.cards[1]).not.toHaveProperty("issued_count");
   });
@@ -275,11 +277,33 @@ describe("GET /api/cards issued_count", () => {
   it("returns cards without issued_count when user_cards lookup fails", async () => {
     primeCards(
       [{ ...BASE_CARD, max_issuance_count: 3 }],
-      [{ error: { code: "XX000", message: "lookup failed" } }],
+      [{ error: { code: "XX000", message: "lookup failed" } }, { rows: [] }],
     );
     const response = await GET(request());
     expect(response.status).toBe(200);
     expect((await response.json()).cards[0]).not.toHaveProperty("issued_count");
+  });
+});
+
+describe("GET /api/cards trade_wantable (#1790)", () => {
+  it("marks only the ids returned by the non-wantable lookup as trade_wantable=false", async () => {
+    const other = { ...BASE_CARD, id: "card-2" };
+    primeCards([BASE_CARD, other], [{ rows: [{ id: "card-2" }] }]);
+    const body = await (await GET(request())).json();
+    expect(body.cards.map((card: { id: string; trade_wantable: boolean }) => [card.id, card.trade_wantable]))
+      .toEqual([["card-1", true], ["card-2", false]]);
+  });
+
+  it("treats every card as wantable while the column does not exist yet (deploy window)", async () => {
+    primeCards([BASE_CARD], [{ error: { code: "42703", message: "column cards.trade_wantable does not exist" } }]);
+    const response = await GET(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).cards[0].trade_wantable).toBe(true);
+  });
+
+  it("does not swallow other lookup errors", async () => {
+    primeCards([BASE_CARD], [{ error: { code: "XX000", message: "lookup failed" } }]);
+    expect((await GET(request())).status).toBe(500);
   });
 });
 

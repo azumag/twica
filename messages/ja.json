@@ -102,7 +102,9 @@
       },
       "fitColorNote": "画像全体を正方形のカード枠に収めるため、画像の形に応じて余白が追加されます。透明は PNG 形式で保存されます。",
       "fitProceed": "この色で余白を追加",
-      "fitDescription": "画像全体を収める"
+      "fitDescription": "画像全体を収める",
+      "tradeWantable": "トレードで「求めるカード」に指定できる",
+      "tradeWantableHelp": "オフにすると、視聴者はこのカードを求めるカードに指定して出品できなくなります。このカードを求める既存の出品もトレードボードに表示されず、応じられなくなります（オンに戻すと復活します）。このカードを「渡す」側に出すことは引き続きできます。"
     },
     "fileUpload": {
       "formats": "対応形式: JPEG, PNG, GIF, WebP | ",
@@ -685,6 +687,7 @@
     "errorTradeOfferLimit": "出品数の上限に達しています（最大10件）",
     "errorTradeOfferedCardInactive": "このカードは現在トレードに出せません",
     "errorTradeWantedCardUnavailable": "このカードは指定できません",
+    "errorTradeWantedCardNotWantable": "このカードは配信者の設定により「求めるカード」に指定できません",
     "errorTradeOfferUnavailable": "この取引は現在応じられません",
     "errorTradeSameCard": "同じカード同士は交換できません",
     "errorTradeCardAlreadyListed": "このカードは既に出品中です",
@@ -737,7 +740,7 @@
     "myTradesUpdatedAt": "キャンセル日時: {date}",
     "myTradesUnavailableBadge": "応じられなくなった出品",
     "myTradesUnavailableHelp": "カードが削除されたため、この出品には応じられません",
-    "myTradesUnavailableHelpNotTradeable": "配信者のトレード設定がオフになったか、カードが利用できなくなったため、この出品には応じられません",
+    "myTradesUnavailableHelpNotTradeable": "配信者のトレード設定がオフになったか、求めるカードが指定できなくなったか、カードが利用できなくなったため、この出品には応じられません",
     "myTradesBoardLink": "トレードボードを見る",
     "myTradesLoadError": "トレード履歴を取得できませんでした",
     "cancelOfferButton": "キャンセル",

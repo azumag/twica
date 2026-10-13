@@ -192,6 +192,8 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     ["TRADE_DISABLED", 403, ja.errorTradeDisabled],
     ["TRADE_CARD_ALREADY_LISTED", 409, ja.errorTradeCardAlreadyListed],
     ["TRADE_WANTED_CARD_UNAVAILABLE", 400, ja.errorTradeWantedCardUnavailable],
+    // #1790: the form was opened before the streamer made the card non-wantable.
+    ["TRADE_WANTED_CARD_NOT_WANTABLE", 409, ja.errorTradeWantedCardNotWantable],
   ])("shows the inline copy for %s", async (code, status, text) => {
     fetchMock.mockResolvedValue(jsonResponse(status, { error: "x", code }));
     renderForm();

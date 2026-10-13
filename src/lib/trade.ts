@@ -16,6 +16,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { getDb } from "@/lib/db/client";
 import {
   cards as cardsTable,
+  cardTradeSettings as cardTradeSettingsTable,
   streamers as streamersTable,
   tradeOffers as tradeOffersTable,
   tradeOffersWithoutQuantity,
@@ -66,6 +67,9 @@ export type TradeServiceErrorCode =
   | "TRADE_OFFER_LIMIT"
   | "TRADE_SAME_CARD"
   | "TRADE_WANTED_CARD_UNAVAILABLE"
+  // #1790: the wanted card is visible and active, but its streamer turned
+  // off "can be requested in trades" (cards.trade_wantable = false).
+  | "TRADE_WANTED_CARD_NOT_WANTABLE"
   // The copy the offerer wants to give belongs to a card definition that is
   // no longer active (including pack completion reward cards, which are kept
   // inactive by design). Inactive cards cannot enter the trade market.
@@ -198,6 +202,54 @@ function offerRowFields(
   };
 }
 
+// -----------------------------------------------------------------------------
+// Deploy window of cards.trade_wantable (#1790)
+//
+// Same situation as wanted_quantity above: the new app can briefly run
+// against a database without 20261014100000. The column lives in the narrow
+// cardTradeSettings definition (src/lib/db/schema.ts explains why it is not
+// part of `cards`), so only the trade statements below reference it, and
+// only through explicit fragments. On 42703 for that column they are retried
+// with every card treated as wantable. That is exact, not an approximation:
+// before the migration no card can be non-wantable (the column default is
+// true and the old schema has no way to store anything else). Becomes a dead
+// branch once 20261014100000 is applied everywhere.
+//
+// Wraps the wanted_quantity fallback (outer = trade_wantable, inner =
+// wanted_quantity): an error for the other column is rethrown by the inner
+// wrapper and handled here, so any combination of missing columns converges
+// in at most four attempts, and only during the deploy window.
+// -----------------------------------------------------------------------------
+
+const TRADE_WANTABLE_COLUMNS = ["trade_wantable"] as const;
+
+async function withTradeWantableColumnFallback<T>(
+  attempt: (withoutWantable: boolean) => Promise<T>,
+): Promise<T> {
+  try {
+    return await attempt(false);
+  } catch (error) {
+    if (!isPgMissingNamedColumnError(error, TRADE_WANTABLE_COLUMNS)) throw error;
+    return attempt(true);
+  }
+}
+
+/**
+ * `cardIdExpr` points at a card definition that may be requested in trades
+ * (cards.trade_wantable = TRUE, #1790). A NULL id is false, like
+ * cardIsActive; every caller also requires cardIsActive, so a deleted card is
+ * excluded either way. `withoutWantable` (deploy window) renders TRUE.
+ */
+function cardIsWantable(cardIdExpr: AnyColumn, withoutWantable: boolean) {
+  if (withoutWantable) return sql<boolean>`TRUE`;
+  return sql<boolean>`EXISTS (
+    SELECT 1
+    FROM ${cardTradeSettingsTable} AS wantable_card
+    WHERE wantable_card.id = ${qualifiedColumn(cardIdExpr)}
+      AND wantable_card.trade_wantable = TRUE
+  )`;
+}
+
 /** `cardIdExpr` points at an active card definition (NULL id → false). */
 function cardIsActive(cardIdExpr: AnyColumn) {
   return sql<boolean>`EXISTS (
@@ -295,7 +347,8 @@ export type TradeOfferDto = {
    * GET /api/trades/mine rows only: whether anybody can still accept this
    * listing (#1754 item 4). Always false outside `status === "open"` (a
    * completed/cancelled offer is not acceptable by definition). For an open
-   * offer it is false when a card definition was deleted or deactivated, or
+   * offer it is false when a card definition was deleted or deactivated, when
+   * the wanted card was switched to "cannot be requested" (#1790), or
    * when a channel's trade_enabled / (for cross-channel offers)
    * cross_channel_trade_enabled is off — the same gates that decide whether
    * the board lists the offer, so "not tradeable" is exactly a row nobody can
@@ -430,9 +483,10 @@ export async function createTradeOffer(input: {
   // 42703 is left to surface as a 500 ("try again later") instead of silently
   // listing a ×1 offer the viewer did not ask for. The returned
   // `withoutQuantity` is the shape the check ran with; the INSERT below uses
-  // the same shape.
+  // the same shape. The trade_wantable fallback (#1790) only affects this
+  // read (the INSERT does not touch cards) and is allowed for any quantity.
   const wantedQuantity = input.wantedQuantity ?? 1;
-  const runChecks = async (withoutQuantity: boolean) => ({
+  const runChecks = async (withoutQuantity: boolean, withoutWantable: boolean) => ({
     withoutQuantity,
     rows: await withDbRetry(
       async () => {
@@ -454,6 +508,10 @@ export async function createTradeOffer(input: {
             wantedName: createWantedCard.name,
             wantedRarity: createWantedCard.rarity,
             wantedImageUrl: createWantedCard.image_url,
+            // #1790: whether the wanted card may be requested at all. Only
+            // read for a card that already passed the visibility JOIN, so it
+            // reveals nothing about hidden cards.
+            wantedWantable: cardIsWantable(createWantedCard.id, withoutWantable),
             offeredTradeEnabled: createOfferedGate.trade_enabled,
             offeredCrossEnabled: createOfferedGate.cross_channel_trade_enabled,
             wantedTradeEnabled: createWantedGate.trade_enabled,
@@ -512,9 +570,11 @@ export async function createTradeOffer(input: {
       { idempotent: true },
     ),
   });
-  const { rows: checkRows, withoutQuantity } = wantedQuantity === 1
-    ? await withTradeQuantityColumnFallback(runChecks)
-    : await runChecks(false);
+  const { rows: checkRows, withoutQuantity } = await withTradeWantableColumnFallback(
+    (withoutWantable) => wantedQuantity === 1
+      ? withTradeQuantityColumnFallback((withoutQuantity) => runChecks(withoutQuantity, withoutWantable))
+      : runChecks(false, withoutWantable),
+  );
   const check = checkRows[0];
   if (!check) {
     return { kind: "error", code: "TRADE_CARD_NOT_OWNED" };
@@ -569,6 +629,16 @@ export async function createTradeOffer(input: {
     && (check.offeredCrossEnabled !== true || check.wantedCrossEnabled !== true)
   ) {
     return { kind: "error", code: "TRADE_DISABLED" };
+  }
+
+  // #1790: the wanted card's streamer does not allow requesting it. Checked
+  // after the visibility check above (a hidden card must keep answering
+  // TRADE_WANTED_CARD_UNAVAILABLE so its existence is not confirmed) and after
+  // the channel gates (a disabled channel is the more fundamental answer).
+  // This server check is authoritative; listWantableCards only keeps such
+  // cards out of the listing form. Only an explicit TRUE passes.
+  if (check.wantedWantable !== true) {
+    return { kind: "error", code: "TRADE_WANTED_CARD_NOT_WANTABLE" };
   }
 
   if (check.offeredCopyListed === true) {
@@ -820,6 +890,7 @@ function acceptStateFor(viewerUserId: SQL, withoutQuantity: boolean) {
  * with the exact gate predicates the board filters with (#1754 item 4):
  *
  *   tradeable(offer) ⇔ both card definitions are active
+ *     AND the wanted card may be requested (cards.trade_wantable, #1790)
  *     AND both channels have trade_enabled = TRUE
  *     AND (the offer is not cross-channel
  *          OR both channels have cross_channel_trade_enabled = TRUE)
@@ -830,10 +901,11 @@ function acceptStateFor(viewerUserId: SQL, withoutQuantity: boolean) {
  * `IS NOT TRUE` (instead of NOT) keeps a NULL is_cross_channel on the
  * "in-channel" side rather than turning the whole expression into NULL.
  */
-function tradeableStateFor() {
+function tradeableStateFor(withoutWantable: boolean) {
   return sql<boolean>`(
     ${cardIsActive(tradeOffersTable.offered_card_id)}
     AND ${cardIsActive(tradeOffersTable.wanted_card_id)}
+    AND ${cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable)}
     AND ${tradeEnabledGate(tradeOffersTable.offered_streamer_id)}
     AND ${tradeEnabledGate(tradeOffersTable.wanted_streamer_id)}
     AND (
@@ -965,8 +1037,16 @@ export async function listTradeOffers(input: {
 
   // Single statement (previously user lookup → page → metadata → canAccept,
   // i.e. 4 sequential round trips for a logged-in viewer).
+  //
+  // #1790: an offer whose wanted card was switched to "cannot be requested"
+  // after listing is hidden for everyone, the offerer included — the same
+  // treatment as an inactive card above (nobody can accept it; the offerer
+  // finds it on /mine as not tradeable). It is not cancelled, so switching
+  // the card back brings the offer back. The condition is added inside the
+  // fallback closure because its SQL depends on the deploy-window shape.
   const offset = (input.page - 1) * TRADE_PAGE_SIZE;
-  const rows: OfferListRow[] = await withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
+  const rows: OfferListRow[] = await withTradeWantableColumnFallback((withoutWantable) =>
+    withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -981,14 +1061,14 @@ export async function listTradeOffers(input: {
         .leftJoin(wantedStreamerMeta, eq(wantedStreamerMeta.id, tradeOffersTable.wanted_streamer_id))
         .leftJoin(offererMeta, eq(offererMeta.id, tradeOffersTable.offerer_user_id))
         .leftJoin(acceptorMeta, eq(acceptorMeta.id, tradeOffersTable.accepted_by_user_id))
-        .where(and(...conditions))
+        .where(and(...conditions, cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable)))
         .orderBy(desc(tradeOffersTable.created_at), desc(tradeOffersTable.id))
         .limit(TRADE_PAGE_SIZE + 1)
         .offset(offset);
     },
     "trade:list-open",
     { idempotent: true },
-  ));
+  )));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
@@ -1030,13 +1110,14 @@ export async function listMyTradeOffers(
   // same SELECT list as one boolean expression, so the flag costs no extra
   // round trip.
   const offset = (page - 1) * TRADE_PAGE_SIZE;
-  const rows: OfferListRow[] = await withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
+  const rows: OfferListRow[] = await withTradeWantableColumnFallback((withoutWantable) =>
+    withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
         .select({
           ...offerListFields(viewerUserId, withoutQuantity),
-          tradeableState: tradeableStateFor(),
+          tradeableState: tradeableStateFor(withoutWantable),
         })
         .from(tradeOffersTable)
         .leftJoin(offeredStreamerMeta, eq(offeredStreamerMeta.id, tradeOffersTable.offered_streamer_id))
@@ -1050,7 +1131,7 @@ export async function listMyTradeOffers(
     },
     "trade:list-mine",
     { idempotent: true },
-  ));
+  )));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
@@ -1135,7 +1216,11 @@ export type TradeAcceptRpcError =
   | "CARD_NOT_OWNED"
   // #1789: the offer's wanted_quantity differs from the quantity the viewer
   // was shown and agreed to (stale client). Nothing was transferred.
-  | "QUANTITY_MISMATCH";
+  | "QUANTITY_MISMATCH"
+  // #1790 (20261014100000): the wanted card's cards.trade_wantable is false.
+  // The offer stays open (it comes back if the streamer switches the card
+  // back). Nothing was transferred.
+  | "WANTED_CARD_NOT_WANTABLE";
 
 const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
   "TRADE_OFFER_NOT_FOUND",
@@ -1145,6 +1230,7 @@ const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
   "TRADE_DISABLED",
   "CARD_NOT_OWNED",
   "QUANTITY_MISMATCH",
+  "WANTED_CARD_NOT_WANTABLE",
 ]);
 
 export type TradeAcceptRpcResult = {
@@ -1291,7 +1377,7 @@ async function precheckTradeAccept(input: {
   // The acceptor id is resolved inside the same statement (previously a
   // separate users lookup round trip before this read).
   const acceptorUserId = viewerUserIdOf(input.twitchUserId);
-  const rows = await withDbRetry(
+  const rows = await withTradeWantableColumnFallback((withoutWantable) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -1305,6 +1391,12 @@ async function precheckTradeAccept(input: {
           wantedCardId: tradeOffersTable.wanted_card_id,
           offeredActive: cardIsActive(tradeOffersTable.offered_card_id),
           wantedActive: cardIsActive(tradeOffersTable.wanted_card_id),
+          // #1790: the board hides offers whose wanted card can no longer be
+          // requested, so a direct API call must not complete one either.
+          // accept_trade_offer re-checks it (WANTED_CARD_NOT_WANTABLE); this
+          // read only turns the common case into the board's
+          // "offer unavailable" answer without calling the RPC.
+          wantedWantable: cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable),
           // The wanted card needs no visibility check: the acceptor must own
           // a copy of it to pay, and owning a copy makes it visible.
           offeredVisible: cardVisibleTo(tradeOffersTable.offered_card_id, acceptorUserId),
@@ -1315,7 +1407,7 @@ async function precheckTradeAccept(input: {
     },
     "trade:accept-precheck",
     { idempotent: true },
-  );
+  ));
   const offer = rows[0];
   if (!offer) return null;
   // Unknown acceptor: delegated to the RPC, which classifies it (unchanged).
@@ -1334,12 +1426,14 @@ async function precheckTradeAccept(input: {
   if (offer.offererUserId === acceptorId) return null;
   if (!offer.offeredCardId || !offer.wantedCardId) return null;
 
-  // One code for "inactive" and "not visible": the board already hides both
-  // kinds of offers, and distinguishing them would tell a non-owner whether
-  // a hidden card is merely secret or retired.
+  // One code for "inactive", "not visible" and "wanted card not wantable"
+  // (#1790): the board already hides all of these offers, and distinguishing
+  // them would tell a non-owner whether a hidden card is merely secret or
+  // retired.
   if (
     offer.offeredActive !== true
     || offer.wantedActive !== true
+    || offer.wantedWantable !== true
     || offer.offeredVisible !== true
   ) {
     return "TRADE_OFFER_UNAVAILABLE";
@@ -1616,8 +1710,10 @@ export type WantableCard = {
 
 /**
  * Step 2 of the listing flow: active cards of one channel that the viewer may
- * ask for. In a channel that does not reveal unowned cards this is exactly the
- * set of cards the viewer owns; hidden cards are dropped by the SQL WHERE
+ * ask for, excluding cards the streamer marked as not requestable
+ * (cards.trade_wantable = false, #1790). In a channel that does not reveal
+ * unowned cards this is otherwise exactly the set of cards the viewer owns;
+ * hidden cards are dropped by the SQL WHERE
  * (cardVisibleTo), so their names/images are never read into the Worker.
  * `twitchUserId = null` (anonymous) only sees cards of revealing channels.
  */
@@ -1630,7 +1726,9 @@ export async function listWantableCards(
   // nothing — the same result as the previous anonymous fallback.
   const viewerUserId = twitchUserId ? viewerUserIdOf(twitchUserId) : null;
 
-  const rows = await withDbRetry(
+  // #1790: cards whose streamer turned off "can be requested" are left out of
+  // the choices. This is only a UI aid; createTradeOffer is authoritative.
+  const rows = await withTradeWantableColumnFallback((withoutWantable) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -1653,6 +1751,7 @@ export async function listWantableCards(
           and(
             eq(cardsTable.streamer_id, streamerId),
             eq(cardsTable.is_active, true),
+            cardIsWantable(cardsTable.id, withoutWantable),
             cardVisibleTo(cardsTable.id, viewerUserId),
           ),
         )
@@ -1660,7 +1759,7 @@ export async function listWantableCards(
     },
     "trade:wantable-cards",
     { idempotent: true },
-  );
+  ));
 
   return rows.map((row) => ({
     cardId: row.cardId,
