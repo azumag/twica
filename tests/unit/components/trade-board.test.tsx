@@ -1,15 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { createTranslator, NextIntlClientProvider } from "next-intl";
 import TradeBoard from "@/components/TradeBoard";
 import TradeOfferRow from "@/components/TradeOfferRow";
 import type { TradeOfferDto } from "@/lib/trade";
 import { tradeBoardPath, tradeLoginHref } from "@/lib/trade-client";
-import { clearTradeListCache } from "@/lib/use-trade-list";
+import { clearTradeListCache, TRADE_LIST_FRESH_MS } from "@/lib/use-trade-list";
 import jaMessages from "../../../messages/ja.json";
 import enMessages from "../../../messages/en.json";
 
 const ja = jaMessages.trade;
+/**
+ * Renders a ja message the way next-intl does (ICU plural included), so tests
+ * assert the text a viewer reads instead of re-implementing placeholder
+ * substitution for messages that are ICU plurals (#1792 item 4).
+ */
+const trJa = createTranslator({ locale: "ja", messages: jaMessages, namespace: "trade" });
 
 function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
   return {
@@ -114,12 +120,12 @@ describe("TradeOfferRow accept states (§11.3)", () => {
     expect(screen.getByText(ja.ownOfferBadge)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: ja.ownOfferManageLink })).toHaveAttribute("href", "/trade/mine");
     expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.queryByText(ja.autoSelectNotice)).toBeNull();
+    expect(screen.queryByText(trJa("autoSelectNotice", { count: 1 }))).toBeNull();
   });
 
   it("always shows the auto-select notice next to the accept action", () => {
     renderRow(makeOffer({ canAccept: "not_owned" }));
-    expect(screen.getByText(ja.autoSelectNotice)).toBeInTheDocument();
+    expect(screen.getByText(trJa("autoSelectNotice", { count: 1 }))).toBeInTheDocument();
   });
 
   it("shows the viewer's direction: receive (offered card) first, then give", () => {
@@ -180,6 +186,7 @@ function renderBoard(props: Partial<React.ComponentProps<typeof TradeBoard>> = {
         streamerId="s-1"
         scope="in_channel"
         isLoggedIn
+        viewerKey="viewer-a"
         revealsUnownedCards
         filterCards={[
           { cardId: "card-a", name: "Card A" },
@@ -484,6 +491,67 @@ describe("TradeBoard", () => {
       expect(listCallsFor(() => true)).toBe(2);
     });
 
+    it("never reuses another account's cached rows (viewer-specific isOwnOffer / canAccept, #1754)", async () => {
+      // Same URL, different viewer: the row is "yes" for A and "not_owned" for B.
+      fetchMock.mockImplementation(async () =>
+        fetchMock.mock.calls.length === 1
+          ? listResponse([makeOffer({ offeredCard: { name: "Row for A", rarity: "rare", imageUrl: null }, canAccept: "yes" })])
+          : listResponse([makeOffer({ offeredCard: { name: "Row for B", rarity: "rare", imageUrl: null }, canAccept: "not_owned" })]),
+      );
+      const a = renderBoard({ viewerKey: "u:aaaa" });
+      await screen.findByText("Row for A");
+      a.unmount();
+
+      // Another account in the same browser: A's entry must not be shown, not
+      // even for the fresh window; the board starts from "loading".
+      const b = renderBoard({ viewerKey: "u:bbbb" });
+      expect(screen.queryByText("Row for A")).toBeNull();
+      expect(screen.getByText(ja.loading)).toBeInTheDocument();
+      await screen.findByText("Row for B");
+      expect(screen.getByRole("button", { name: ja.acceptButtonNotOwned })).toBeDisabled();
+      expect(listCallsFor(() => true)).toBe(2);
+      b.unmount();
+
+      // Each account still reuses its own namespace without a request.
+      renderBoard({ viewerKey: "u:aaaa" });
+      expect(screen.getByText("Row for A")).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(listCallsFor(() => true)).toBe(2);
+    });
+
+    it("keeps the stale rows and shows a retryable notice when a background refresh fails (#1754)", async () => {
+      const now = vi.spyOn(Date, "now");
+      now.mockReturnValue(1_000_000);
+      fetchMock.mockImplementationOnce(async () => listResponse([makeOffer()]));
+      const first = renderBoard();
+      await screen.findByText("Offered Dragon");
+      first.unmount();
+
+      // Past the freshness window: cached rows are shown, the refresh fails.
+      now.mockReturnValue(1_000_000 + TRADE_LIST_FRESH_MS + 1);
+      fetchMock.mockImplementationOnce(async () => jsonResponse(500, { code: "INTERNAL_ERROR" }));
+      renderBoard();
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+      const notice = await screen.findByRole("status");
+      expect(notice).toHaveTextContent(ja.refreshFailedNotice);
+      // Data stays; the hard error banner is for pages without data only.
+      expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).toBeNull();
+      // Failures wait for the viewer instead of looping.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(listCallsFor(() => true)).toBe(2);
+
+      fetchMock.mockImplementationOnce(async () => listResponse([
+        makeOffer({ id: "offer-2", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null } }),
+      ]));
+      fireEvent.click(within(notice).getByRole("button", { name: ja.retryButton }));
+      expect(screen.queryByText(ja.loading)).toBeNull();
+      expect(await screen.findByText("Fresh Golem")).toBeInTheDocument();
+      expect(screen.queryByText(ja.refreshFailedNotice)).toBeNull();
+      expect(listCallsFor(() => true)).toBe(3);
+      now.mockRestore();
+    });
+
     it("after a completed accept: removes the row at once and drops other cached pages", async () => {
       let releaseRefresh: () => void = () => {};
       const refreshGate = new Promise<void>((resolve) => {
@@ -539,8 +607,8 @@ describe("TradeOfferRow wanted quantity (#1789)", () => {
     expect(give).toHaveTextContent(withCount(ja.quantityBadge, 3));
     // The card the viewer receives is always a single copy: no badge there.
     expect(screen.getByText(ja.receiveLabel).parentElement).not.toHaveTextContent("×");
-    expect(screen.getByText(withCount(ja.autoSelectNoticeMultiple, 3))).toBeInTheDocument();
-    expect(screen.queryByText(ja.autoSelectNotice)).toBeNull();
+    expect(screen.getByText(trJa("autoSelectNotice", { count: 3 }))).toBeInTheDocument();
+    expect(screen.queryByText(trJa("autoSelectNotice", { count: 1 }))).toBeNull();
     expect(screen.getByRole("button", { name: ja.acceptButton })).toBeEnabled();
   });
 
@@ -548,8 +616,8 @@ describe("TradeOfferRow wanted quantity (#1789)", () => {
     renderRow(makeOffer({ wantedQuantity: 1 }));
     expect(screen.queryByText(withCount(ja.quantityBadge, 1))).toBeNull();
     expect(screen.getByText(ja.giveLabel).parentElement).not.toHaveTextContent("×");
-    expect(screen.getByText(ja.autoSelectNotice)).toBeInTheDocument();
-    expect(screen.queryByText(withCount(ja.autoSelectNoticeMultiple, 1))).toBeNull();
+    expect(screen.getByText(trJa("autoSelectNotice", { count: 1 }))).toBeInTheDocument();
+    expect(screen.queryByText(trJa("autoSelectNotice", { count: 3 }))).toBeNull();
   });
 
   it("not_enough → disabled gray 'not enough copies', distinct from not_owned and all_listed", () => {
@@ -560,7 +628,7 @@ describe("TradeOfferRow wanted quantity (#1789)", () => {
     expect(screen.queryByText(ja.acceptButtonNotOwned)).toBeNull();
     expect(screen.queryByText(ja.acceptButtonAllListed)).toBeNull();
     // The multi-copy notice is still shown next to the (disabled) action.
-    expect(screen.getByText(withCount(ja.autoSelectNoticeMultiple, 3))).toBeInTheDocument();
+    expect(screen.getByText(trJa("autoSelectNotice", { count: 3 }))).toBeInTheDocument();
   });
 
   it("labels my own multi-copy offer from the offerer's direction with the badge on the wanted side", () => {
@@ -568,7 +636,7 @@ describe("TradeOfferRow wanted quantity (#1789)", () => {
     expect(screen.getByText(ja.myTradesWant).parentElement).toHaveTextContent(withCount(ja.quantityBadge, 4));
     expect(screen.getByText(ja.myTradesGive).parentElement).not.toHaveTextContent("×");
     // Own offers have no accept action, hence no auto-select notice.
-    expect(screen.queryByText(withCount(ja.autoSelectNoticeMultiple, 4))).toBeNull();
+    expect(screen.queryByText(trJa("autoSelectNotice", { count: 4 }))).toBeNull();
   });
 });
 
@@ -593,9 +661,9 @@ describe("TradeBoard wanted quantity (#1789)", () => {
     const items = await screen.findAllByRole("listitem");
     expect(items).toHaveLength(2);
     expect(within(items[0]).getByText(withCount(ja.quantityBadge, 3))).toBeInTheDocument();
-    expect(within(items[0]).getByText(withCount(ja.autoSelectNoticeMultiple, 3))).toBeInTheDocument();
+    expect(within(items[0]).getByText(trJa("autoSelectNotice", { count: 3 }))).toBeInTheDocument();
     expect(within(items[1]).queryByText(/×/)).toBeNull();
-    expect(within(items[1]).getByText(ja.autoSelectNotice)).toBeInTheDocument();
+    expect(within(items[1]).getByText(trJa("autoSelectNotice", { count: 1 }))).toBeInTheDocument();
   });
 
   it("the accept dialog opened from a multi-copy row announces the count", async () => {
@@ -604,7 +672,7 @@ describe("TradeBoard wanted quantity (#1789)", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: ja.acceptButton }));
     const dialog = screen.getByRole("dialog", { name: ja.confirmModalTitle });
-    expect(within(dialog).getByText(withCount(ja.confirmModalWarningMultiple, 3))).toBeInTheDocument();
+    expect(within(dialog).getByText(trJa("confirmModalWarning", { count: 3 }))).toBeInTheDocument();
     expect(within(dialog).getByText(withCount(ja.quantityBadge, 3))).toBeInTheDocument();
   });
 

@@ -176,6 +176,35 @@ export function tradeLoginHref(returnTo: string): string {
   return `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(returnTo)}`;
 }
 
+/**
+ * Opaque, stable identifier of the signed-in viewer for the browser-side trade
+ * list cache (useTradeList, #1754 follow-up); "anon" for anonymous viewers.
+ *
+ * Why: trade rows carry viewer-specific fields (isOwnOffer, canAccept,
+ * offeredUserCardId). Logging in as another account in a second tab of the
+ * same browser does not reload an already open tab, so a module-level cache
+ * keyed by URL alone could show the previous account's rows after a
+ * client-side navigation. The server component computes this key from the
+ * session on every render and passes it down, so a navigation after an
+ * account switch gets a different namespace.
+ *
+ * It is a truncated SHA-256 (64 bits) of the Twitch user id with a fixed
+ * context prefix instead of the raw id: it only has to differ between
+ * accounts, and the page payload then does not carry the raw identifier a
+ * second time. It is not a secret or an authorization token (the server
+ * re-checks the session on every API call), so no salt is needed. Web Crypto
+ * is available in Workers, browsers and Node.
+ */
+export async function tradeViewerKey(twitchUserId: string | null): Promise<string> {
+  if (!twitchUserId) return "anon";
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`twica-trade-viewer:${twitchUserId}`),
+  );
+  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `u:${hex.slice(0, 16)}`;
+}
+
 /** `?scope=cross` selects the cross-channel tab/flow; anything else is in-channel. */
 export function parseTradeScope(raw: string | string[] | undefined): "in_channel" | "cross_channel" {
   return raw === "cross" ? "cross_channel" : "in_channel";

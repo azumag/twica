@@ -767,42 +767,52 @@ function toUserSummary(row: JoinedUser): TradeUserSummary | null {
  *
  * Unlike the former EXISTS probes, count(*) does not stop at the first row,
  * but it only scans the viewer's copies of ONE card definition
- * (idx_user_cards_user_card), a handful of rows in practice; the owned count
- * may be evaluated twice per row by the CASE. Kept as plain scalar subqueries
- * for readability over a LATERAL join. The inner aliases are literal; the
- * only outer references are the qualified trade_offers columns and the
- * viewer id.
+ * (idx_user_cards_user_card), a handful of rows in practice.
+ *
+ * Both counts come from ONE pass over those copies (#1792 item 3): `owned`
+ * is count(*) and `free` is the same count restricted by FILTER to copies
+ * that are not in the viewer's own open offers. The CASE then reads the two
+ * numbers from the derived table `counts`, so `owned` is computed once (it
+ * used to be a scalar subquery repeated in two CASE branches, i.e. up to
+ * twice per row) and the viewer's copies are scanned once instead of twice.
+ * The `free` probe now runs for every owned copy instead of only when
+ * owned >= wanted_quantity; that is one index probe on
+ * trade_offers(offered_user_card_id) per copy, negligible for the same
+ * handful of rows. A plain derived table (not LATERAL) is enough because the
+ * only outer references are the qualified trade_offers columns and the viewer
+ * id, which a correlated sub-select may use from the enclosing query. The
+ * inner aliases are literal; the result is identical to the previous form.
  */
 function acceptStateFor(viewerUserId: SQL, withoutQuantity: boolean) {
   const wantedCardId = qualifiedColumn(tradeOffersTable.wanted_card_id);
   const wantedQuantity = withoutQuantity
     ? sql`1`
     : qualifiedColumn(tradeOffersTable.wanted_quantity);
-  const ownedCount = sql`(
-    SELECT count(*)
+  const counts = sql`(
+    SELECT
+      count(*) AS owned,
+      count(*) FILTER (
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM ${tradeOffersTable} AS active_listing
+          WHERE active_listing.offered_user_card_id = accept_owned.id
+            AND active_listing.status = 'open'
+            AND active_listing.offerer_user_id = ${viewerUserId}
+        )
+      ) AS free
     FROM ${userCardsTable} AS accept_owned
     WHERE accept_owned.user_id = ${viewerUserId}
       AND accept_owned.card_id = ${wantedCardId}
   )`;
-  const freeCount = sql`(
-    SELECT count(*)
-    FROM ${userCardsTable} AS accept_free
-    WHERE accept_free.user_id = ${viewerUserId}
-      AND accept_free.card_id = ${wantedCardId}
-      AND NOT EXISTS (
-        SELECT 1
-        FROM ${tradeOffersTable} AS active_listing
-        WHERE active_listing.offered_user_card_id = accept_free.id
-          AND active_listing.status = 'open'
-          AND active_listing.offerer_user_id = ${viewerUserId}
-      )
+  return sql<TradeCanAccept>`(
+    SELECT CASE
+      WHEN counts.owned = 0 THEN 'not_owned'
+      WHEN counts.owned < ${wantedQuantity} THEN 'not_enough'
+      WHEN counts.free < ${wantedQuantity} THEN 'all_listed'
+      ELSE 'yes'
+    END
+    FROM ${counts} AS counts
   )`;
-  return sql<TradeCanAccept>`CASE
-    WHEN ${ownedCount} = 0 THEN 'not_owned'
-    WHEN ${ownedCount} < ${wantedQuantity} THEN 'not_enough'
-    WHEN ${freeCount} < ${wantedQuantity} THEN 'all_listed'
-    ELSE 'yes'
-  END`;
 }
 
 /**
@@ -1384,24 +1394,53 @@ export async function acceptTradeOffer(input: {
  * Audit metadata for successful ownership transfer. This read is deliberately
  * outside the RPC transaction: it is observability only and must never affect
  * the committed trade result.
+ *
+ * `givenUserCardIds` (#1792 item 2): accept_trade_offer returns only the
+ * OLDEST of the N copies the acceptor gave (`givenUserCardId`), and returning
+ * the whole set would need a new migration. The transfer sets
+ * `user_cards.obtained_at = now()` on every moved copy and
+ * `trade_offers.completed_at = now()` in the same transaction, so right after
+ * commit the offerer's copies of the wanted card whose obtained_at equals the
+ * offer's completed_at are exactly the copies that were given. This is a
+ * best-effort reconstruction, not a stored record: once the offerer trades
+ * those copies on again their obtained_at changes, so a later idempotent
+ * replay can see fewer ids. Callers must therefore treat the list as
+ * trustworthy only when its length equals the agreed quantity.
+ * One statement: the LEFT JOIN yields one row per copy (or a single row with a
+ * NULL copy), so no extra round trip is added to the accept request.
  */
 export async function getTradeOfferAuditParticipants(tradeOfferId: string): Promise<{
   offererTwitchUserId: string | null;
+  givenUserCardIds: string[];
 }> {
   const rows = await withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
-        .select({ offererTwitchUserId: usersTable.twitch_user_id })
+        .select({
+          offererTwitchUserId: usersTable.twitch_user_id,
+          givenUserCardId: userCardsTable.id,
+        })
         .from(tradeOffersTable)
         .innerJoin(usersTable, eq(usersTable.id, tradeOffersTable.offerer_user_id))
+        .leftJoin(
+          userCardsTable,
+          and(
+            eq(userCardsTable.user_id, tradeOffersTable.offerer_user_id),
+            eq(userCardsTable.card_id, tradeOffersTable.wanted_card_id),
+            eq(userCardsTable.obtained_at, tradeOffersTable.completed_at),
+          ),
+        )
         .where(eq(tradeOffersTable.id, tradeOfferId))
-        .limit(1);
+        .orderBy(asc(userCardsTable.id));
     },
     "trade:accept-audit-participants",
     { idempotent: true },
   );
-  return { offererTwitchUserId: rows[0]?.offererTwitchUserId ?? null };
+  return {
+    offererTwitchUserId: rows[0]?.offererTwitchUserId ?? null,
+    givenUserCardIds: rows.flatMap((row) => (row.givenUserCardId ? [row.givenUserCardId] : [])),
+  };
 }
 
 

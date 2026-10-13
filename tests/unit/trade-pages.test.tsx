@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 
 /**
  * /trade/** server pages and layout (#726/#727): login gates, returnTo,
@@ -148,6 +148,21 @@ describe("/trade/[streamerId] board page", () => {
     expect(board.filterCards).toEqual([]);
     expect(mocks.listWantableCards).not.toHaveBeenCalled();
     expect(mocks.redirect).not.toHaveBeenCalled();
+    // Anonymous viewers share one cache namespace that no account can reach.
+    expect(board.viewerKey).toBe("anon");
+  });
+
+  it("hands the board an opaque per-viewer cache key, never the raw Twitch user id (#1754)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeBoardPage({ params, searchParams: Promise.resolve({}) }));
+    const first = props("trade-board").viewerKey as string;
+    expect(first).toMatch(/^u:[0-9a-f]{16}$/);
+    expect(first).not.toContain(SESSION.twitchUserId);
+    cleanup();
+
+    mocks.getSession.mockResolvedValue({ ...SESSION, twitchUserId: "viewer-2" });
+    render(await TradeBoardPage({ params, searchParams: Promise.resolve({}) }));
+    expect(props("trade-board").viewerKey).not.toBe(first);
   });
 
   it("passes only visibility-filtered card names (id + name) as in-channel filter options", async () => {

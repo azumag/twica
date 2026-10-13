@@ -148,9 +148,8 @@ export default function TradeAcceptModal({
             </div>
           </div>
           <p id={warningId} className="mt-4 rounded-lg border border-yellow-600/60 bg-yellow-900/30 p-3 text-sm text-yellow-100">
-            {offer.wantedQuantity > 1
-              ? t("confirmModalWarningMultiple", { count: offer.wantedQuantity })
-              : t("confirmModalWarning")}
+            {/* Singular / plural wording lives in the message as an ICU plural. */}
+            {t("confirmModalWarning", { count: offer.wantedQuantity })}
           </p>
           {errorText && (
             <p role="alert" className="mt-3 rounded-lg bg-red-900/40 p-3 text-sm text-red-200">

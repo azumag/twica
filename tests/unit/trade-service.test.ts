@@ -642,17 +642,84 @@ describe("listTradeOffers visibility (#715 PR-C)", () => {
     const fields = pg.selectCalls[0].fields as Record<string, unknown>;
     const state = render(fields.acceptState);
     expect(state.sql).toContain('accept_owned.card_id = "trade_offers"."wanted_card_id"');
-    expect(state.sql).toContain('accept_free.card_id = "trade_offers"."wanted_card_id"');
+    // #1792 item 3: ONE pass over the viewer's copies yields both counts, so
+    // the second per-state scan (accept_free) no longer exists.
+    expect(state.sql).not.toContain("accept_free");
+    expect(state.sql.match(/FROM "user_cards" AS accept_owned/g)).toHaveLength(1);
+    expect(state.sql).toContain("count(*) FILTER");
     // A bare "id" would bind to active_listing.id (trade_offers.id).
-    expect(state.sql).toContain("active_listing.offered_user_card_id = accept_free.id");
+    expect(state.sql).toContain("active_listing.offered_user_card_id = accept_owned.id");
     expect(state.sql).toContain("active_listing.status = 'open'");
     // Same exclusion rule as the accept RPC: only the viewer's own open
     // offers make a copy count as listed (Refs #1749 item 3).
     expect(state.sql).toContain("active_listing.offerer_user_id = ");
-    // #1789: the viewer id is bound once per subquery that filters on it —
-    // accept_owned (compared twice: = 0 and < wanted_quantity), accept_free
-    // (user_id) and its active_listing.offerer_user_id.
-    expect(state.params).toEqual(["viewer-2", "viewer-2", "viewer-2", "viewer-2"]);
+    // The viewer id is bound once per place that filters on it: the FILTERed
+    // active_listing.offerer_user_id and accept_owned.user_id. Before #1792
+    // the owned count was a separate scalar subquery used by two CASE
+    // branches, so it was bound (and evaluated) more often.
+    expect(state.params).toEqual(["viewer-2", "viewer-2"]);
+    // The CASE reads the single pair of counts by name instead of repeating
+    // a count(*) subquery per branch.
+    expect(state.sql.match(/count\(\*\)/g)).toHaveLength(2);
+    expect(state.sql).toContain("counts.owned = 0");
+    expect(state.sql).toContain("counts.owned < ");
+    expect(state.sql).toContain("counts.free < ");
+  });
+});
+
+describe("getTradeOfferAuditParticipants (#1792 item 2: transferred copy ids)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reconstructs every given copy in ONE statement via the obtained_at = completed_at join", async () => {
+    const ids = ["c0000000-0000-4000-8000-000000000001", "c0000000-0000-4000-8000-000000000002"];
+    const pg = createDbMock({
+      selects: [{
+        rows: ids.map((givenUserCardId) => ({ offererTwitchUserId: "offerer-tw", givenUserCardId })),
+      }],
+    });
+    primeDb(pg);
+
+    const { getTradeOfferAuditParticipants } = await import("@/lib/trade");
+    const result = await getTradeOfferAuditParticipants(OFFER.id);
+
+    expect(result).toEqual({ offererTwitchUserId: "offerer-tw", givenUserCardIds: ids });
+    // Still a single round trip: the copies ride along in the audit read.
+    expect(roundTrips()).toBe(1);
+    const call = pg.selectCalls[0];
+    const joins = call.leftJoins as Array<{ on: unknown }>;
+    expect(joins).toHaveLength(1);
+    const on = render(joins[0].on).sql;
+    expect(on).toContain('"user_cards"."user_id" = "trade_offers"."offerer_user_id"');
+    expect(on).toContain('"user_cards"."card_id" = "trade_offers"."wanted_card_id"');
+    expect(on).toContain('"user_cards"."obtained_at" = "trade_offers"."completed_at"');
+  });
+
+  it("returns no ids (and still the offerer) when no copy matches the completion time", async () => {
+    const pg = createDbMock({
+      selects: [{ rows: [{ offererTwitchUserId: "offerer-tw", givenUserCardId: null }] }],
+    });
+    primeDb(pg);
+
+    const { getTradeOfferAuditParticipants } = await import("@/lib/trade");
+
+    await expect(getTradeOfferAuditParticipants(OFFER.id)).resolves.toEqual({
+      offererTwitchUserId: "offerer-tw",
+      givenUserCardIds: [],
+    });
+  });
+
+  it("returns a null offerer and no ids for an unknown offer", async () => {
+    const pg = createDbMock({ selects: [{ rows: [] }] });
+    primeDb(pg);
+
+    const { getTradeOfferAuditParticipants } = await import("@/lib/trade");
+
+    await expect(getTradeOfferAuditParticipants(OFFER.id)).resolves.toEqual({
+      offererTwitchUserId: null,
+      givenUserCardIds: [],
+    });
   });
 });
 
@@ -1353,7 +1420,8 @@ describe("trade wanted quantity (#1789)", () => {
       await listTradeOffers(listInput);
 
       const { sql } = render((pg.selectCalls[0].fields as Record<string, unknown>).acceptState);
-      expect(sql).toContain("SELECT count(*)");
+      expect(sql).toContain("count(*) AS owned");
+      expect(sql).toContain("count(*) FILTER");
       expect(sql).toContain("'not_enough'");
       expect(sql).toContain('"trade_offers"."wanted_quantity"');
       const order = ["'not_owned'", "'not_enough'", "'all_listed'", "'yes'"].map((label) => sql.indexOf(label));

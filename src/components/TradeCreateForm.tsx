@@ -159,7 +159,7 @@ export default function TradeCreateForm({
     setSubmitting(true);
     setErrorText(null);
     const requestId = requestIdFor(`${offeredUserCardId}:${wanted.cardId}:${wantedQuantity}`);
-    const result = await postTradeJson("/api/trades", {
+    const result = await postTradeJson<{ tradeOffer?: { wantedQuantity?: unknown } }>("/api/trades", {
       offeredUserCardId,
       wantedCardId: wanted.cardId,
       wantedQuantity,
@@ -168,8 +168,26 @@ export default function TradeCreateForm({
     if (result.ok) {
       // The board fetches on mount, so the new offer is shown first there.
       // Its client-side page cache (useTradeList) would otherwise serve a
-      // fresh-looking list without the new offer, so drop it first.
+      // fresh-looking list without the new offer, so drop it first. This also
+      // applies to the mismatch branch below, where an offer WAS created.
       clearTradeListCache();
+      // #1792 item 1: after a rollback to a server that predates
+      // wantedQuantity, this (newer) bundle's xN request is accepted but the
+      // old server ignores the field and lists a 1-copy offer, and its
+      // response does not carry wantedQuantity at all (absent means exactly
+      // one copy). Treating that as success would silently list a different,
+      // cheaper trade than the one the viewer confirmed, so compare the
+      // stored quantity with what was sent. The offer already exists (and a
+      // retry of the same selection would just replay it), so do not
+      // navigate away: tell the viewer to cancel it in My Trades. Only the
+      // lister can lose out and the offer is cancellable, hence a message
+      // instead of an automatic cancel call (no new write path).
+      const storedQuantity = result.data?.tradeOffer?.wantedQuantity ?? 1;
+      if (storedQuantity !== wantedQuantity) {
+        setErrorText(t("errorTradeQuantityMismatch", { requested: wantedQuantity }));
+        setSubmitting(false);
+        return;
+      }
       const separator = boardHref.includes("?") ? "&" : "?";
       router.push(`${boardHref}${separator}listed=1`);
       return;
@@ -221,7 +239,7 @@ export default function TradeCreateForm({
                     <div className="ml-2 flex shrink-0 flex-col items-end gap-1 text-xs">
                       {group.ownedCount > 1 && (
                         <span className="rounded bg-purple-600 px-1.5 py-0.5 font-semibold text-white">
-                          {t("createStep1OwnedCount", { count: group.ownedCount })}
+                          {t("quantityBadge", { count: group.ownedCount })}
                         </span>
                       )}
                       {!selectable ? (
@@ -361,10 +379,7 @@ export default function TradeCreateForm({
                 >
                   {Array.from({ length: maxWantedQuantity }, (_, index) => index + 1).map((value) => (
                     <option key={value} value={value}>
-                      {t(
-                        value === 1 ? "createStep2QuantityOption" : "createStep2QuantityOptionMultiple",
-                        { count: value },
-                      )}
+                      {t("createStep2QuantityOption", { count: value })}
                     </option>
                   ))}
                 </select>

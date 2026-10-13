@@ -16,6 +16,7 @@ import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeCancelModal from "./TradeCancelModal";
 import TradeCardSummary from "./TradeCardSummary";
 import TradePager from "./TradePager";
+import TradeRefreshFailedNotice from "./TradeRefreshFailedNotice";
 
 const TABS: ReadonlyArray<{ status: TradeOfferStatus; labelKey: string; emptyKey: string }> = [
   { status: "open", labelKey: "myTradesTabOpen", emptyKey: "myTradesEmptyOpen" },
@@ -57,7 +58,7 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
   // Row button that opened the confirmation dialog (focus returns to it).
   const cancelTriggerRef = useRef<HTMLButtonElement | null>(null);
 
-  const { view: list, retry, invalidate } = useTradeList(myTradesUrl(tab, page), {
+  const { view: list, retry, refresh, invalidate } = useTradeList(myTradesUrl(tab, page), {
     initial: initialOpen ? { url: myTradesUrl("open", 1), page: initialOpen } : null,
     // e.g. the only row of the last page was just cancelled: step back
     // instead of showing the tab's empty state.
@@ -321,6 +322,8 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
         </p>
       )}
       <div id="my-trades-panel" role="tabpanel" aria-labelledby={`my-trades-tab-${tab}`}>
+        {/* The list stays visible when a background refresh fails; say so. */}
+        {list.status === "ok" && list.refreshFailed && <TradeRefreshFailedNotice onRetry={refresh} />}
         {body}
       </div>
       {list.status === "ok" && (

@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { createTranslator, NextIntlClientProvider } from "next-intl";
 import TradeAcceptModal from "@/components/TradeAcceptModal";
 import type { TradeOfferDto } from "@/lib/trade";
 import jaMessages from "../../../messages/ja.json";
 
 const ja = jaMessages.trade;
+/** ICU-aware rendering of a ja message (the warning is an ICU plural, #1792). */
+const trJa = createTranslator({ locale: "ja", messages: jaMessages, namespace: "trade" });
 
 function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
   return {
@@ -68,8 +70,8 @@ describe("TradeAcceptModal (#726 §6.4)", () => {
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(screen.getByText("Wanted Slime")).toBeInTheDocument();
     expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
-    expect(screen.getByText(ja.confirmModalWarning)).toBeInTheDocument();
-    expect(dialog).toHaveAccessibleDescription(ja.confirmModalWarning);
+    expect(screen.getByText(trJa("confirmModalWarning", { count: 1 }))).toBeInTheDocument();
+    expect(dialog).toHaveAccessibleDescription(trJa("confirmModalWarning", { count: 1 }));
     expect(screen.getByText(ja.confirmModalGiveLabel)).toBeInTheDocument();
     expect(screen.getByText(ja.confirmModalReceiveLabel)).toBeInTheDocument();
   });
@@ -214,11 +216,11 @@ describe("TradeAcceptModal wanted quantity (#1789)", () => {
 
   it("announces the number of copies in the warning, the description and a badge on the give side", () => {
     renderModal({ offer: makeOffer({ wantedQuantity: 3 }) });
-    const warning = ja.confirmModalWarningMultiple.replace("{count}", "3");
+    const warning = trJa("confirmModalWarning", { count: 3 });
     const dialog = screen.getByRole("dialog", { name: ja.confirmModalTitle });
     expect(screen.getByText(warning)).toBeInTheDocument();
     expect(dialog).toHaveAccessibleDescription(warning);
-    expect(screen.queryByText(ja.confirmModalWarning)).toBeNull();
+    expect(screen.queryByText(trJa("confirmModalWarning", { count: 1 }))).toBeNull();
     const give = screen.getByText(ja.confirmModalGiveLabel).parentElement!;
     expect(give).toHaveTextContent("Wanted Slime");
     expect(give).toHaveTextContent(ja.quantityBadge.replace("{count}", "3"));
@@ -228,7 +230,7 @@ describe("TradeAcceptModal wanted quantity (#1789)", () => {
 
   it("keeps the single-copy warning and no badge for a 1:1 offer", () => {
     renderModal({ offer: makeOffer({ wantedQuantity: 1 }) });
-    expect(screen.getByText(ja.confirmModalWarning)).toBeInTheDocument();
+    expect(screen.getByText(trJa("confirmModalWarning", { count: 1 }))).toBeInTheDocument();
     expect(screen.getByText(ja.confirmModalGiveLabel).parentElement).not.toHaveTextContent("×");
   });
 

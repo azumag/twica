@@ -4,7 +4,13 @@ import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
 import { getTradeBoardStreamer, listWantableCards } from "@/lib/trade";
-import { parseTradeScope, tradeBoardPath, tradeCreatePath, tradeLoginHref } from "@/lib/trade-client";
+import {
+  parseTradeScope,
+  tradeBoardPath,
+  tradeCreatePath,
+  tradeLoginHref,
+  tradeViewerKey,
+} from "@/lib/trade-client";
 import TradeBoard from "@/components/TradeBoard";
 
 const CREATE_CLASS =
@@ -55,6 +61,9 @@ export default async function TradeBoardPage({
   if (!streamer) notFound();
 
   const isLoggedIn = Boolean(session);
+  // Namespace of the browser-side page cache (see useTradeList): rows contain
+  // viewer-specific fields, so another account must never reuse them.
+  const viewerKey = await tradeViewerKey(session?.twitchUserId ?? null);
   const boardPath = tradeBoardPath(streamer.id, scope);
   const createPath = tradeCreatePath(streamer.id, scope);
   // Anonymous viewers are sent to login and come back to the listing flow.
@@ -146,8 +155,10 @@ export default async function TradeBoardPage({
                 )}
               </div>
               <TradeBoard
-                // Remount per tab so page/filter state never leaks across scopes.
-                key={scope}
+                // Remount per tab so page/filter state never leaks across scopes,
+                // and per viewer so state seeded for another account is dropped.
+                key={`${scope}:${viewerKey}`}
+                viewerKey={viewerKey}
                 streamerId={streamer.id}
                 scope={scope}
                 isLoggedIn={isLoggedIn}

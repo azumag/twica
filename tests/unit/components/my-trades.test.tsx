@@ -437,6 +437,23 @@ describe("MyTrades (#727 §6.6)", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
       expect(screen.queryByText(ja.myTradesLoadError)).toBeNull();
+      // #1754: the stale rows stay, but the viewer is told they may be old.
+      expect(await screen.findByRole("status")).toHaveTextContent(ja.refreshFailedNotice);
+      // No automatic retry loop: the failure waits for the viewer's action.
+      expect(listCalls(fetchMock, "open")).toBe(2);
+
+      // The notice's retry refreshes in the background without a loading state.
+      fetchMock.mockImplementation(async () => jsonResponse(200, {
+        offers: [makeOffer({ id: "offer-new", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null } })],
+        page: 1,
+        pageSize: 20,
+        hasMore: false,
+      }));
+      fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: ja.retryButton }));
+      expect(screen.queryByText(ja.loading)).toBeNull();
+      expect(await screen.findByText("Fresh Golem")).toBeInTheDocument();
+      expect(screen.queryByText(ja.refreshFailedNotice)).toBeNull();
+      expect(listCalls(fetchMock, "open")).toBe(3);
     });
 
     it("after a cancel: removes the row at once and reloads the other tabs on their next visit", async () => {

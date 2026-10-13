@@ -9,6 +9,7 @@ import {
   tradeCreatePath,
   tradeErrorMessageKey,
   tradeLoginHref,
+  tradeViewerKey,
   viewerSides,
 } from "@/lib/trade-client";
 import jaMessages from "../../messages/ja.json";
@@ -163,6 +164,22 @@ describe("trade URLs", () => {
     expect(tradeBoardPath("s-1", "in_channel")).toBe("/trade/s-1");
     expect(tradeCreatePath("s-1", "in_channel")).toBe("/trade/s-1/new");
     expect(tradeCreatePath("s-1", "cross_channel")).toBe("/trade/s-1/new?scope=cross");
+  });
+});
+
+describe("tradeViewerKey (#1754 browser cache namespace)", () => {
+  it("is 'anon' without a session", async () => {
+    await expect(tradeViewerKey(null)).resolves.toBe("anon");
+  });
+
+  it("is stable per user, differs between users and does not contain the raw id", async () => {
+    const a = await tradeViewerKey("123456789");
+    expect(a).toMatch(/^u:[0-9a-f]{16}$/);
+    expect(a).not.toContain("123456789");
+    await expect(tradeViewerKey("123456789")).resolves.toBe(a);
+    expect(await tradeViewerKey("987654321")).not.toBe(a);
+    // A logged-in viewer can never collide with the anonymous namespace.
+    expect(a).not.toBe("anon");
   });
 });
 
