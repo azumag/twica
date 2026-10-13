@@ -172,8 +172,10 @@
 2. 1件目、2件目が引き換え順にそれぞれ1回だけoverlayへ表示される。
 3. 軽い静止画カードでも2件目が表示され、GIFのpreload時間に依存しない。
 4. 各引き換えに対応するチャットが送信され、ユーザー名・カード名が一致する。
-5. `gacha_history`、`user_cards`、`chat_notification_outbox`の`batch_id`を照合し、
-   outboxが`sent`で`attempt_count=1`、`pending/processing/dead`滞留なしを確認する。
+5. 利用者画面の履歴、overlay、chatの結果を同じ引き換えに対応付ける。利用可能な
+   redacted Worker/DBログまたはObservabilityの相関証拠で`batch_id`、outboxの`sent`、
+   `attempt_count=1`、滞留なしを確認してよいが、権限付きDB接続や管理APIを呼び出すために
+   秘密情報を要求・取得・入力してはならない。内部状態はE2Eそのものではない。
 
 ### N連を引き換える
 
@@ -229,8 +231,10 @@ mode別:
 4. 完成したoutboxが1件だけ作られ、payloadのカード順・枚数が3連結果と一致する。
 5. KV保存自体を失敗させた場合はWebhookが503となり、Twitch再送後に同じ冪等結果へ収束する。
 
-上記をpreviewで完了し、Cloudflare/DB/error-reporterに新規エラーがないことを確認するまで
-productionへ進めません。production反映後も単発を2回実引き換えし、overlayとchatを
+単発およびN連の利用者向けE2Eをpreviewで完了し、Cloudflare/DB/error-reporterに新規エラーが
+ないことを確認するまでproductionへ進めません。relay障害回復とN連途中DB障害回復は、
+該当する内部経路を変更した場合だけ別枠で確認し、安全なテストハーネスがなければ内部テスト
+基盤の`blocked`として記録します。production反映後も単発を2回実引き換えし、overlayとchatを
 同じ観点でsmoke testします。
 ## トレードボード + 応諾フロー UI テスト (#726)
 
