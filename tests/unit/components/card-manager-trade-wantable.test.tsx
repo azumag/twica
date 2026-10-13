@@ -51,6 +51,59 @@ describe('CardManager trade wantable toggle (Issue #1790)', () => {
     expect(screen.getByRole('checkbox', { name: LABEL })).not.toBeChecked()
   })
 
+  it('does not send tradeWantable when the toggle was not changed (stale cached value must not be written back)', async () => {
+    const card = baseCard({ id: 'card-2', name: 'Rare Item' })
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/cards/card-2' && init?.method === 'PUT') {
+        return putResponse({ ...card, name: 'Renamed', recalculatedCards: null })
+      }
+      return new Promise(() => {})
+    })
+    // 実際は指定不可でも、画面の状態が古い（指定可に見える）ケースを想定
+    renderCardManager([card])
+
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    fireEvent.change(document.querySelector('input[name="name"]') as HTMLInputElement, {
+      target: { value: 'Renamed' },
+    })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      const put = fetchMock.mock.calls.find(
+        ([url, init]) => url === '/api/cards/card-2' && (init as RequestInit | undefined)?.method === 'PUT'
+      )
+      expect(put).toBeDefined()
+      const body = JSON.parse((put![1] as RequestInit).body as string)
+      expect(body).toMatchObject({ name: 'Renamed' })
+      expect(body).not.toHaveProperty('tradeWantable')
+    })
+  })
+
+  it('shows a notice when the server could not save the setting (deploy window)', async () => {
+    const card = baseCard({ id: 'card-1', name: 'Rare Item' })
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/cards/card-1' && init?.method === 'PUT') {
+        return putResponse({
+          ...card,
+          trade_wantable: true,
+          tradeWantableSkippedDeployWindow: true,
+          recalculatedCards: null,
+        })
+      }
+      return new Promise(() => {})
+    })
+    renderCardManager([card])
+
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: LABEL }))
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    expect(await screen.findByText(jaMessages.cardManager.form.tradeWantableDeployWindow)).toBeInTheDocument()
+    // 保存されなかった（実際の値は指定可）ので、次に開くと指定可のまま
+    fireEvent.click(screen.getByRole('button', { name: '編集' }))
+    expect(screen.getByRole('checkbox', { name: LABEL })).toBeChecked()
+  })
+
   it('sends tradeWantable on save and keeps the saved value for the next edit', async () => {
     const card = baseCard({ id: 'card-1', name: 'Rare Item' })
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {

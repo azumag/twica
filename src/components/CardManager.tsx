@@ -464,6 +464,15 @@ export default function CardManager({
   const [nonWantableCardIds, setNonWantableCardIds] = useState<Set<string>>(
     () => new Set(initialNonWantableCardIds)
   );
+  // Issue #1790: 編集フォームを開いた時点の指定可否。保存時はこれと比べて
+  // 変わったときだけ tradeWantable を送る。GET /api/cards はキャッシュ
+  // (unstable_cache)経由のため nonWantableCardIds が古い値になりうる。
+  // 未変更でも毎回送ると、名前だけの編集で古い「指定可」が書き戻され、
+  // 配信者が設定した「指定不可」が黙って外れてしまう。
+  const [tradeWantableAtOpen, setTradeWantableAtOpen] = useState(true);
+  // Issue #1790: デプロイ窓(trade_wantable列未作成)で指定不可を保存できなかった通知。
+  // deployWindowNotice(パック名)と同じく、resetForm()から独立させる。
+  const [tradeWantableDeployWindowNotice, setTradeWantableDeployWindowNotice] = useState(false);
   // Issue #393再設計: 事前登録パック一覧 + (編集中カードの現在値がその一覧に
   // 無ければ)孤立参照を選択肢として残す(ChannelPointSettingsの「一覧に無い
   // パックも表示」パターンと同じ。パック管理から削除された後の既存紐付けを
@@ -1458,6 +1467,7 @@ export default function CardManager({
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
       tradeWantable: !nonWantableCardIds.has(card.id),
     });
+    setTradeWantableAtOpen(!nonWantableCardIds.has(card.id));
     setConfirmedImageUrl(card.image_url || "");
     // Issue #899: 余白付きカードの編集時は既存の余白色を復元する
     setImagePaddingColor(card.image_padding_color ?? null);
@@ -1571,9 +1581,12 @@ export default function CardManager({
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
-          // Issue #1790: 指定可否は既存カードの編集時だけ送る(新規作成は既定の
-          // 指定可。POST /api/cards はこの項目を扱わない)。
-          ...(editingCard ? { tradeWantable: formData.tradeWantable } : {}),
+          // Issue #1790: 指定可否は既存カードの編集時に、フォームを開いた時点から
+          // 変わった場合だけ送る(理由は tradeWantableAtOpen の説明参照)。新規作成は
+          // 既定の指定可で、POST /api/cards はこの項目を扱わない。
+          ...(editingCard && formData.tradeWantable !== tradeWantableAtOpen
+            ? { tradeWantable: formData.tradeWantable }
+            : {}),
         }),
       });
 
@@ -1593,10 +1606,12 @@ export default function CardManager({
         // trade_wantable は保存後の実際の値(デプロイ窓で保存できなかった場合は
         // true)なので、それで state を更新し、カード行からは取り除く。
         const savedTradeWantable = savedCardData.trade_wantable;
+        const tradeWantableSkippedDeployWindow = savedCardData.tradeWantableSkippedDeployWindow === true;
         delete savedCardData.trade_wantable;
         delete savedCardData.tradeWantableSkippedDeployWindow;
         const savedCard = savedCardData as unknown as Card;
         setDeployWindowNotice(collectionNameSkippedDeployWindow);
+        setTradeWantableDeployWindowNotice(tradeWantableSkippedDeployWindow);
         if (typeof savedTradeWantable === "boolean") {
           setNonWantableCardIds((prev) => {
             const next = new Set(prev);
@@ -1829,6 +1844,12 @@ export default function CardManager({
       {deployWindowNotice && (
         <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
           <p className="text-sm text-yellow-300">{t("form.collectionNameDeployWindow")}</p>
+        </div>
+      )}
+      {/* Issue #1790: 指定不可がデプロイ窓で保存できなかった通知(パック名と同じ方式) */}
+      {tradeWantableDeployWindowNotice && (
+        <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
+          <p className="text-sm text-yellow-300">{t("form.tradeWantableDeployWindow")}</p>
         </div>
       )}
 

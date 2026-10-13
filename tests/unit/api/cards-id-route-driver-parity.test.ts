@@ -20,11 +20,14 @@ import { deleteFromR2 } from "@/lib/r2-client";
 import { sha256Prefix } from "@/lib/crypto-utils";
 import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
 import { cards as cardsTable, cardTradeSettings } from "@/lib/db/schema";
+import { revalidateTag } from "next/cache";
 
 // #830: 画像削除経路で参照される R2 の公開URL・削除操作を差し替える
 const R2_PUBLIC_URL = "https://images.example.test";
 
 vi.mock("@/lib/session");
+// #1790: trade_wantable 保存後の GET /api/cards キャッシュ無効化を検証する
+vi.mock("next/cache", () => ({ revalidateTag: vi.fn() }));
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
 vi.mock("@/lib/storage-db");
@@ -336,6 +339,8 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
         expect(pg.updateCalls[0].values).toEqual({ name: "Renamed" });
         expect(pg.updateCalls[1].table).toBe(cardTradeSettings);
         expect(pg.updateCalls[1].values).toEqual({ trade_wantable: false });
+        // 保存後は GET /api/cards のキャッシュ（unstable_cache）を即時失効させる
+        expect(vi.mocked(revalidateTag)).toHaveBeenCalledWith("cards-streamer-1", { expire: 0 });
       });
 
       it("tradeWantable だけの要求では本体の UPDATE を行わない", async () => {
@@ -365,6 +370,7 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
         expect(res.status).toBe(200);
         expect(await res.json()).not.toHaveProperty("trade_wantable");
         expect(pg.updateCalls).toHaveLength(1);
+        expect(vi.mocked(revalidateTag)).not.toHaveBeenCalled();
       });
 
       it.each([["文字列", "false"], ["数値", 0], ["null", null]])(
@@ -429,6 +435,8 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
           trade_wantable: true,
           tradeWantableSkippedDeployWindow: true,
         });
+        // 何も書いていないのでキャッシュは無効化しない
+        expect(vi.mocked(revalidateTag)).not.toHaveBeenCalled();
       });
     });
 

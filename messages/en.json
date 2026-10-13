@@ -104,7 +104,8 @@
       "fitProceed": "Add padding with this color",
       "fitDescription": "Fits the whole image",
       "tradeWantable": "Can be requested in trades",
-      "tradeWantableHelp": "When off, viewers cannot list offers that ask for this card. Existing offers asking for it are hidden from the trade board and cannot be accepted (they come back when you turn this on again). Viewers can still offer this card to others."
+      "tradeWantableHelp": "When off, viewers cannot list offers that ask for this card. Existing offers asking for it are hidden from the trade board and cannot be accepted (they come back when you turn this on again). Viewers can still offer this card to others.",
+      "tradeWantableDeployWindow": "The \"cannot be requested in trades\" setting could not be saved because the feature is still being prepared (your other changes were saved). Please try again shortly."
     },
     "fileUpload": {
       "formats": "Supported: JPEG, PNG, GIF, WebP | ",

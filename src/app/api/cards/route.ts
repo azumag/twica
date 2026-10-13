@@ -35,7 +35,7 @@ import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable, userCards as userCardsTable } from "@/lib/db/schema";
 import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
-import { withCardTradeWantable } from "@/lib/card-trade-wantable";
+import { cardsListCacheTag, withCardTradeWantable } from "@/lib/card-trade-wantable";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -821,7 +821,7 @@ export async function GET(request: NextRequest) {
       [cacheKey],
       {
         revalidate: CARDS_CACHE_TTL,
-        tags: [`cards-${streamerId}`],
+        tags: [cardsListCacheTag(streamerId)],
       }
     );
 

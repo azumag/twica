@@ -35,7 +35,8 @@ import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
 import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
-import { updateCardTradeWantable } from "@/lib/card-trade-wantable";
+import { revalidateTag } from "next/cache";
+import { cardsListCacheTag, updateCardTradeWantable } from "@/lib/card-trade-wantable";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -614,6 +615,13 @@ export async function PUT(
         tradeWantableResult = undefined;
       } else {
         tradeWantableResult = written.trade_wantable;
+        // GET /api/cards は unstable_cache（TTL 30秒）で trade_wantable を含む
+        // 一覧を返す。無効化しないと、保存直後の CardManager の再読み込み
+        // （並び替え・フィルター変更）が古い値を受け取り、トグルが保存前の
+        // 状態に戻って見える。古い値のまま別の編集を保存すると制限が意図せず
+        // 外れうる（CardManager 側でも未変更なら送らないが、表示も正しく保つ）。
+        // revalidateTag の使い方は pack-completion-rewards と同じ（即時失効）。
+        revalidateTag(cardsListCacheTag(card.streamer_id), { expire: 0 });
       }
     }
 

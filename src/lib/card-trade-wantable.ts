@@ -26,6 +26,15 @@ import { isPgMissingNamedColumnError } from "@/lib/db/errors";
 import { withDbRetry } from "@/lib/db/retry";
 import { cardTradeSettings } from "@/lib/db/schema";
 
+/**
+ * GET /api/cards の unstable_cache に付けるタグ（PUT で trade_wantable を
+ * 書いた後の無効化に使う）。GET と PUT で同じ文字列を使うためここに置く
+ * （route.ts は Next.js の制約で任意の export を持てない）。
+ */
+export function cardsListCacheTag(streamerId: string): string {
+  return `cards-${streamerId}`;
+}
+
 export function isMissingCardTradeWantableColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, ["trade_wantable"]);
 }
