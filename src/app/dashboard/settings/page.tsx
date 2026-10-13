@@ -74,9 +74,13 @@ export default async function SettingsPage({
     Boolean(streamerData.streamer.show_unowned_card_details) ||
     // Issue #738/#740: /live掲載またはランキング上のチャネル表示がONなら使用中とみなす
     Boolean(streamerData.streamer.publish_live_status) ||
-    Boolean(streamerData.streamer.publish_stats) ||
-    Boolean(streamerData.streamer.trade_enabled) ||
-    Boolean(streamerData.streamer.cross_channel_trade_enabled);
+    Boolean(streamerData.streamer.publish_stats);
+  // 注: trade_enabled / cross_channel_trade_enabled はここに含めない。
+  // カードトレード設定セクションは SettingsLayout の
+  // TRADE_SETTINGS_SECTION_VISIBLE=false で非表示中であり、表示されない設定を
+  // 「使用中」と数えて初期モードを advanced に固定すると、該当UIが存在しないのに
+  // 詳細モードで開いて「設定が消えた」ように見える混乱を招くため。
+  // 内部の設定値・API・ゲート判定は従来どおり維持する。
 
   return (
     <SettingsLayout
