@@ -102,13 +102,36 @@ export async function POST(
     // failed. If participant metadata cannot be read, keep the success response
     // and leave a warning for operators.
     let offererTwitchUserId: string | null = null;
+    let lookedUpUserCardIds: string[] = [];
     try {
       const participants = await getTradeOfferAuditParticipants(id);
       offererTwitchUserId = participants.offererTwitchUserId;
+      lookedUpUserCardIds = participants.givenUserCardIds;
     } catch (auditError) {
       logger.warn("Trade completion audit participant lookup failed", {
         tradeOfferId: id,
         error: auditError instanceof Error ? auditError.message : String(auditError),
+      });
+    }
+
+    // #1792 item 2: every copy the acceptor gave, not just the oldest one the
+    // RPC returns. The lookup is a post-commit reconstruction (see
+    // getTradeOfferAuditParticipants), so it is only used when it is
+    // consistent with what the RPC reported (contains givenUserCardId and has
+    // exactly the agreed quantity). Otherwise fall back to the one id that is
+    // known for certain and say so in the log. An idempotent replay may
+    // legitimately see fewer ids if the offerer already traded the copies on,
+    // so it only warns for a first acceptance.
+    const givenUserCardId = result.givenUserCardId as string;
+    const lookupConsistent =
+      lookedUpUserCardIds.length === wantedQuantity
+      && lookedUpUserCardIds.includes(givenUserCardId);
+    const givenUserCardIds = lookupConsistent ? lookedUpUserCardIds : [givenUserCardId];
+    if (!lookupConsistent && result.idempotentReplay !== true) {
+      logger.warn("Trade given user card ids could not be fully reconstructed", {
+        tradeOfferId: id,
+        wantedQuantity,
+        lookedUpCount: lookedUpUserCardIds.length,
       });
     }
 
@@ -121,13 +144,17 @@ export async function POST(
       // idempotent replay returns before that check, so there it is the value
       // the client re-sent.
       wantedQuantity,
+      // Copy ids that moved (user_cards.id of the acceptor's former copies).
+      givenUserCardIds,
       // Reuse the identifier that actually keyed this authenticated request's
       // rate-limit bucket. Avoid separately retaining the raw client IP.
       rateLimitIdentifier: identifier,
       idempotentReplay: result.idempotentReplay === true,
     });
 
-    return NextResponse.json(result);
+    // `givenUserCardId` (oldest copy) stays for compatibility with existing
+    // clients; `givenUserCardIds` is the additive full list.
+    return NextResponse.json({ ...result, givenUserCardIds });
   } catch (error) {
     return tradeInternalErrorResponse(error, "Trade offer accept");
   }

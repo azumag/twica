@@ -1124,6 +1124,15 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         SELECT status, accepted_user_card_id FROM trade_offers WHERE id = ${offerIds.x3}`;
       expect(row).toEqual({ status: "completed", accepted_user_card_id: QUC.V_B2 });
 
+      // #1792 item 2: the accept route reports EVERY transferred copy. The RPC
+      // only returns the oldest, so they are reconstructed from the moved rows
+      // (obtained_at = the offer's completed_at). B1 stayed with QV (listed),
+      // so exactly the three copies that moved are returned.
+      const { getTradeOfferAuditParticipants } = await import("@/lib/trade");
+      const audit = await getTradeOfferAuditParticipants(offerIds.x3);
+      expect(audit.offererTwitchUserId).toBe(TW.QO);
+      expect([...audit.givenUserCardIds].sort()).toEqual([QUC.V_B2, QUC.V_B3, QUC.V_B4].sort());
+
       await expect(acceptTradeOffer({
         twitchUserId: TW.QV,
         tradeOfferId: offerIds.x3,

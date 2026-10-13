@@ -37,8 +37,9 @@ const INACTIVE_BUTTON =
  *
  * Action states (§11.3): own offer → badge (cancel lives in /trade/mine),
  * anonymous → "log in to accept" link, otherwise canAccept yes / not_owned /
- * not_enough (fewer copies than wantedQuantity, #1789) / all_listed. A logged-in row without canAccept (not computed by the API)
- * fails closed to the not-owned state rather than offering a doomed accept.
+ * not_enough (fewer copies than wantedQuantity, #1789) / all_listed. A
+ * logged-in row without canAccept (not computed by the API) fails closed to
+ * the not-owned state rather than offering a doomed accept.
  */
 export default function TradeOfferRow({
   offer,
@@ -101,9 +102,10 @@ export default function TradeOfferRow({
         {/* Always visible: the payment copy is chosen automatically and the
             trade cannot be undone, so this is announced before the dialog. */}
         <p className="text-xs text-gray-400">
-          {offer.wantedQuantity > 1
-            ? t("autoSelectNoticeMultiple", { count: offer.wantedQuantity })
-            : t("autoSelectNotice")}
+          {/* Singular / plural wording is an ICU plural inside the message
+              (#1792): the ja text differs for exactly 1 copy (=1), the en text
+              follows CLDR "one"/"other". */}
+          {t("autoSelectNotice", { count: offer.wantedQuantity })}
         </p>
       </div>
     );

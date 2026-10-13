@@ -36,6 +36,13 @@ vi.mock("@/lib/logger.server", () => ({
 const OFFER_ID = "11111111-1111-4111-8111-111111111111";
 const REQUEST_ID = "22222222-2222-4222-8222-222222222222";
 
+/** user_cards ids of the copies the acceptor gave (oldest first). */
+const GIVEN_IDS = Array.from(
+  { length: 10 },
+  (_, index) => `33333333-3333-4333-8333-${String(index + 1).padStart(12, "0")}`,
+);
+const givenIds = (count: number) => GIVEN_IDS.slice(0, count);
+
 function request(body: string | Record<string, unknown> = { requestId: REQUEST_ID }) {
   return new NextRequest(`http://localhost/api/trades/${OFFER_ID}/accept`, {
     method: "POST",
@@ -58,6 +65,7 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     });
     mocks.getTradeOfferAuditParticipants.mockResolvedValue({
       offererTwitchUserId: "offerer-1",
+      givenUserCardIds: givenIds(1),
     });
     mocks.validateCSRFToken.mockResolvedValue({ valid: true });
     mocks.checkRateLimit.mockResolvedValue({
@@ -144,7 +152,12 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
       return POST(request(body), { params: Promise.resolve({ id: OFFER_ID }) });
     };
     const ok = () =>
-      mocks.acceptTradeOffer.mockResolvedValue({ success: true, tradeOfferId: OFFER_ID, idempotentReplay: false });
+      mocks.acceptTradeOffer.mockResolvedValue({
+        success: true,
+        tradeOfferId: OFFER_ID,
+        givenUserCardId: GIVEN_IDS[0],
+        idempotentReplay: false,
+      });
 
     it("defaults a missing wantedQuantity to 1 (bundles that predate the field)", async () => {
       ok();
@@ -160,6 +173,10 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
 
     it.each([1, 3, 10])("passes wantedQuantity %d as expectedQuantity and logs it", async (quantity) => {
       ok();
+      mocks.getTradeOfferAuditParticipants.mockResolvedValue({
+        offererTwitchUserId: "offerer-1",
+        givenUserCardIds: givenIds(quantity),
+      });
       const response = await post({ requestId: REQUEST_ID, wantedQuantity: quantity });
       expect(response.status).toBe(200);
       expect(mocks.acceptTradeOffer).toHaveBeenCalledWith(
@@ -213,6 +230,7 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     mocks.acceptTradeOffer.mockResolvedValue({
       success: true,
       tradeOfferId: OFFER_ID,
+      givenUserCardId: GIVEN_IDS[0],
       idempotentReplay: false,
     });
     const { POST } = await import("@/app/api/trades/[id]/accept/route");
@@ -238,6 +256,7 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     mocks.acceptTradeOffer.mockResolvedValue({
       success: true,
       tradeOfferId: OFFER_ID,
+      givenUserCardId: GIVEN_IDS[0],
       idempotentReplay: true,
     });
     mocks.getTradeOfferAuditParticipants.mockRejectedValue(new Error("audit read failed"));
@@ -251,7 +270,79 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     expect(mocks.loggerWarn).toHaveBeenCalledTimes(1);
     expect(mocks.loggerInfo).toHaveBeenCalledWith(
       "Card trade completed",
-      expect.objectContaining({ offererTwitchUserId: null }),
+      // The oldest copy reported by the RPC is still logged.
+      expect.objectContaining({ offererTwitchUserId: null, givenUserCardIds: [GIVEN_IDS[0]] }),
     );
+  });
+
+  describe("givenUserCardIds (every transferred copy, #1792)", () => {
+    const post = async (wantedQuantity: number) => {
+      const { POST } = await import("@/app/api/trades/[id]/accept/route");
+      return POST(request({ requestId: REQUEST_ID, wantedQuantity }), {
+        params: Promise.resolve({ id: OFFER_ID }),
+      });
+    };
+    const accepted = (idempotentReplay: boolean) =>
+      mocks.acceptTradeOffer.mockResolvedValue({
+        success: true,
+        tradeOfferId: OFFER_ID,
+        givenUserCardId: GIVEN_IDS[0],
+        idempotentReplay,
+      });
+
+    it("returns all N ids next to the legacy givenUserCardId and logs them", async () => {
+      accepted(false);
+      mocks.getTradeOfferAuditParticipants.mockResolvedValue({
+        offererTwitchUserId: "offerer-1",
+        givenUserCardIds: givenIds(3),
+      });
+
+      const response = await post(3);
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.givenUserCardId).toBe(GIVEN_IDS[0]);
+      expect(body.givenUserCardIds).toEqual(givenIds(3));
+      expect(mocks.loggerInfo).toHaveBeenCalledWith(
+        "Card trade completed",
+        expect.objectContaining({ givenUserCardIds: givenIds(3) }),
+      );
+      expect(mocks.loggerWarn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["fewer ids than the agreed quantity", givenIds(2)],
+      ["more ids than the agreed quantity", givenIds(4)],
+      ["ids that do not include the RPC's oldest copy", [GIVEN_IDS[5], GIVEN_IDS[6], GIVEN_IDS[7]]],
+    ])("falls back to the known oldest id and warns on a first acceptance when the lookup has %s", async (_label, looked) => {
+      accepted(false);
+      mocks.getTradeOfferAuditParticipants.mockResolvedValue({
+        offererTwitchUserId: "offerer-1",
+        givenUserCardIds: looked,
+      });
+
+      const response = await post(3);
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).givenUserCardIds).toEqual([GIVEN_IDS[0]]);
+      expect(mocks.loggerWarn).toHaveBeenCalledWith(
+        "Trade given user card ids could not be fully reconstructed",
+        expect.objectContaining({ tradeOfferId: OFFER_ID, wantedQuantity: 3, lookedUpCount: looked.length }),
+      );
+    });
+
+    it("does not warn for an idempotent replay whose copies were traded on meanwhile", async () => {
+      accepted(true);
+      mocks.getTradeOfferAuditParticipants.mockResolvedValue({
+        offererTwitchUserId: "offerer-1",
+        givenUserCardIds: [],
+      });
+
+      const response = await post(3);
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).givenUserCardIds).toEqual([GIVEN_IDS[0]]);
+      expect(mocks.loggerWarn).not.toHaveBeenCalled();
+    });
   });
 });

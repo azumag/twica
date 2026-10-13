@@ -324,7 +324,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     });
 
     it("posts the selected quantity and confirms it in the multiple summary", async () => {
-      fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
+      fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1", wantedQuantity: 3 } }));
       renderForm();
       select("Dup Card", /Want Card Two/);
       // 1:1 keeps the classic summary.
@@ -350,8 +350,58 @@ describe("TradeCreateForm (#727 §6.5)", () => {
       });
     });
 
+    describe("rollback to a server that ignores wantedQuantity (#1792 item 1)", () => {
+      const submit = () => fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
+
+      it.each([
+        ["omits wantedQuantity (pre-#1789 response shape)", { id: "o-1" }],
+        ["stores a different quantity", { id: "o-1", wantedQuantity: 1 }],
+      ])("does not report success when the server %s: shows the cancel guidance and stays on the form", async (_label, tradeOffer) => {
+        fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer }));
+        renderForm();
+        select("Single Card", /Want Card Two/);
+        fireEvent.change(quantitySelect(), { target: { value: "3" } });
+
+        submit();
+
+        const alert = await screen.findByRole("alert");
+        expect(alert).toHaveTextContent(ja.errorTradeQuantityMismatch.replace("{requested}", "3"));
+        expect(alert).toHaveTextContent("マイトレード");
+        expect(push).not.toHaveBeenCalled();
+        // An offer exists now, so the cached board / my-trades pages are stale.
+        expect(clearTradeListCache).toHaveBeenCalled();
+        // The form is usable again (not stuck in "submitting").
+        expect(screen.getByRole("button", { name: ja.createSubmitButton })).toBeEnabled();
+      });
+
+      it("uses the English guidance in the en locale", async () => {
+        fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
+        renderForm({}, "en");
+        const en = enMessages.trade;
+        fireEvent.click(within(screen.getByRole("region", { name: en.createStep1Title })).getByRole("button", { name: /Single Card/ }));
+        fireEvent.click(within(screen.getByRole("region", { name: en.createStep2Title })).getByRole("button", { name: /Want Card Two/ }));
+        fireEvent.change(screen.getByRole("combobox", { name: en.createStep2QuantityLabel }), { target: { value: "2" } });
+
+        fireEvent.click(screen.getByRole("button", { name: en.createSubmitButton }));
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(en.errorTradeQuantityMismatch.replace("{requested}", "2"));
+        expect(push).not.toHaveBeenCalled();
+      });
+
+      it("keeps the normal success path for a 1:1 offer on an old server (absent means one copy)", async () => {
+        fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
+        renderForm();
+        select("Single Card", /Want Card Two/);
+
+        submit();
+
+        await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?listed=1"));
+        expect(screen.queryByRole("alert")).toBeNull();
+      });
+    });
+
     it("sends a number (not the select's string value)", async () => {
-      fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
+      fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1", wantedQuantity: 10 } }));
       renderForm();
       select("Single Card", /Want Card Two/);
       fireEvent.change(quantitySelect(), { target: { value: "10" } });

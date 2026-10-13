@@ -9,6 +9,7 @@ import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeOfferRow from "./TradeOfferRow";
 import TradeAcceptModal from "./TradeAcceptModal";
 import TradePager from "./TradePager";
+import TradeRefreshFailedNotice from "./TradeRefreshFailedNotice";
 
 /** Filter option. Only cards already visible to the viewer are ever passed. */
 export type TradeBoardFilterCard = { cardId: string; name: string };
@@ -17,6 +18,12 @@ interface TradeBoardProps {
   streamerId: string;
   scope: TradeScope;
   isLoggedIn: boolean;
+  /**
+   * Opaque identity of the signed-in viewer (tradeViewerKey; a constant for
+   * anonymous viewers). It namespaces the browser page cache so rows computed
+   * for another account (isOwnOffer / canAccept) are never reused (#1754).
+   */
+  viewerKey: string;
   /**
    * The channel shows unowned cards with details. When false the API only
    * returns offers whose cards the viewer owns (design doc §3 visibility), so
@@ -53,6 +60,7 @@ export default function TradeBoard({
   streamerId,
   scope,
   isLoggedIn,
+  viewerKey,
   revealsUnownedCards,
   filterCards,
   loginHref,
@@ -84,8 +92,9 @@ export default function TradeBoard({
     if (wantedCardId) params.set("wantedCardId", wantedCardId);
     if (offeredCardId) params.set("offeredCardId", offeredCardId);
   }
-  const { view: list, retry, invalidate } = useTradeList(`/api/trades?${params.toString()}`, {
+  const { view: list, retry, refresh, invalidate } = useTradeList(`/api/trades?${params.toString()}`, {
     shared: true,
+    viewerKey,
     // The last row(s) of a later page were accepted/cancelled meanwhile:
     // step back instead of showing the "no offers yet" empty state.
     onEmptyPage: setPage,
@@ -260,6 +269,8 @@ export default function TradeBoard({
         </fieldset>
       )}
 
+      {/* The list stays visible when a background refresh fails; say so. */}
+      {list.status === "ok" && list.refreshFailed && <TradeRefreshFailedNotice onRetry={refresh} />}
       {body}
 
       {list.status === "ok" && (
