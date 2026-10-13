@@ -93,13 +93,21 @@ export default async function StreamerCollectionPage({
     isCompletionReward: rewardCardIds.has(card.id),
     collectionNumber: collectionNumberMap.get(card.id),
   }));
+  // 付与履歴は現在所持を意味しない。serviceが最新countで補正したカードを
+  // 正本とし、未所持報酬は両設定が明示公開の場合だけクライアントへ渡す。
+  const ownedCardIds = new Set(userCards.filter((card) => card.count > 0).map((card) => card.id));
+  const showUnownedRewardDetails = streamer.show_unowned_cards === true
+    && streamer.show_unowned_card_details === true;
+  const completionRewards = rewardResult.views.filter((view) =>
+    view.state === 'locked' || ownedCardIds.has(view.card.id) || showUnownedRewardDetails
+  );
 
   // 未所持カードの視聴者向け表示（Issue #395）
   // Unowned-card visibility for viewers (Issue #395):
   //  - show_unowned_cards=false (default): viewer sees only owned cards (legacy behavior)
   //  - show_unowned_cards=true: viewer also sees unowned active cards (sorted by rarity, after owned)
-  // 「未所持の詳細を隠す」表示制御は SortedCardGrid の props で行うため、ここではカード自体を含めるかだけを判定する。
-  // The "hide details" toggle is enforced in SortedCardGrid; here we only decide inclusion.
+  // 未所持カードの採否・詳細公開をサーバーで制限してからClient Componentsへ渡す。
+  // SortedCardGrid renders placeholders for already-sanitized unowned cards.
   // Issue #1748: クライアント側のマスクだけでは RSC ペイロードに name / image_url が
   // 含まれたままになるため、details 非公開時はサーバ側で未所持カードの詳細を落としてから
   // client component へ渡す。並び替え・パック絞り込みに必要な rarity / card_number /
@@ -108,7 +116,6 @@ export default async function StreamerCollectionPage({
   // Strip unowned-card details server-side so they never reach the browser via the
   // RSC payload when show_unowned_card_details=false (client-side masking alone leaks).
   const hideUnownedDetails = !streamer.show_unowned_card_details;
-  const ownedCardIds = new Set(ownedCards.map((card) => card.id));
   const unownedCards: StreamerCollectionCard[] = streamer.show_unowned_cards
     ? sortCollectedCards(
         activeCards.filter((card) => !ownedCardIds.has(card.id))
@@ -217,7 +224,7 @@ export default async function StreamerCollectionPage({
   return (
     <StreamerCollection
       streamer={streamer}
-      completionRewards={rewardResult.views}
+      completionRewards={completionRewards}
       cards={cards}
       stats={stats}
       progress={progress}
