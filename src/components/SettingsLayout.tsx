@@ -59,6 +59,22 @@ const TradeSettings = dynamic(() => import("@/components/TradeSettings"), {
   loading: () => <SettingsPanelSkeleton />,
 });
 
+/**
+ * 配信者設定「カードトレード」セクションを設定画面に表示するか。
+ *
+ * カードトレード (#715) はDB列(streamers.trade_enabled / cross_channel_trade_enabled)、
+ * 設定API(/api/streamer/settings)、トレードボードと成立処理のゲート判定まで
+ * 内部実装済みだが、一般公開の準備が整うまでは配信者向けのON/OFFトグルだけが
+ * 露出してしまう。そのため設定画面からこのセクション(サイドバー項目と
+ * ON/OFFトグル本体)を隠す。
+ *
+ * 内部実装は削除していない: TradeSettings コンポーネント、tradeSettings 翻訳、
+ * 設定API、DB列、ゲート判定はすべて維持される。単独で到達不能になるのは
+ * このセクションのUIだけで、再表示したくなったらこの定数を true に戻す
+ * (サイドバー項目とパネルが同時に復帰する)。
+ */
+const TRADE_SETTINGS_SECTION_VISIBLE = false;
+
 function SettingsPanelSkeleton() {
   return (
     <div className="animate-pulse rounded-2xl border border-white/5 bg-gray-900/40 p-6">
@@ -409,10 +425,18 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
     },
   ];
 
+  // 非表示フラグの対象セクションを描画対象から取り除く。sections 配列自体は
+  // 無改変なので、フラグを true に戻せばサイドバーとパネルの両方が元どおりになる。
+  // フィルタ後に AdvancedSettingsLayout へ渡すことで、初期選択セクションや
+  // サイドバーの並びも「表示されるセクション」だけを基準に決まる。
+  const visibleSections = sections.filter(
+    (section) => section.id !== "trade" || TRADE_SETTINGS_SECTION_VISIBLE,
+  );
+
   return (
     <div className="space-y-6">
       <PageHeader title={t("title")} description={t("description")} />
-      <AdvancedSettingsLayout sections={sections} initialSectionId={data.initialSectionId} />
+      <AdvancedSettingsLayout sections={visibleSections} initialSectionId={data.initialSectionId} />
     </div>
   );
 }

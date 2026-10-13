@@ -275,3 +275,12 @@ mode別:
 ### コレクション導線
 - `/collection/[streamerId]` に trade_enabled 時のみ「トレード」ボタンが表示される
 - trade_enabled OFF ではボタンが表示されない
+
+### 配信者設定画面 (非表示中)
+- `/dashboard/settings` の詳細モードに「カードトレード」セクション(ON/OFFトグル)は表示されない。
+  `trade_enabled=true` の配信者でも表示されず、この設定だけを理由に初期表示が詳細モードへ変わらない。
+- 非表示は `src/components/SettingsLayout.tsx` の `TRADE_SETTINGS_SECTION_VISIBLE` で制御する。
+  内部実装(DB列、`/api/streamer/settings`、トレードボードとゲート判定)は維持されており、
+  この定数を `true` に戻すと設定UIのみが復帰する。
+- 再表示した場合は、上記のトグルでON/OFFを切り替え、コレクション導線とトレードボードの
+  表示/非表示が trade_enabled に追従することを確認する。
