@@ -28,6 +28,9 @@ function createErrorStatus(code: TradeServiceErrorCode): number {
     // The offerer's own copy exists but its card was retired: a state
     // conflict, not a malformed request.
     case "TRADE_OFFERED_CARD_INACTIVE":
+    // #1790: the wanted card exists and is visible, but its streamer does not
+    // allow requesting it (usually a form opened before the setting changed).
+    case "TRADE_WANTED_CARD_NOT_WANTABLE":
       return 409;
     default:
       return 400;

@@ -149,6 +149,31 @@ export const cards = pgTable('cards', {
   skill_power: integer('skill_power').default(10),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
+  // NOTE: cards.trade_wantable（#1790, 20261014100000）は意図的にここへ定義しない。
+  // 下の cardTradeSettings を参照。
+})
+
+/**
+ * cards のトレード設定列だけを持つ狭い定義（#1790, 20261014100000_card_trade_wantable.sql）。
+ *
+ * trade_wantable = トレードの「求めるカード」に指定できるか（既定 true）。
+ *
+ * cards 本体に列を足さない理由: cards はガチャ・デモ・図鑑・カード管理
+ * （getStreamerData / GET /api/cards / gacha/demo 等）で無指定 `.select()`、
+ * カード作成で `.insert()`（values に無い列も `default` として列挙される）、
+ * 更新で無指定 `.returning()` されている。本体に列を足すと、planetscale-migrate と
+ * アプリデプロイが非同期なデプロイ窓（issue #788）でそれら全経路が 42703 になり、
+ * ガチャ実経路まで止まる。列を使うのはトレード（src/lib/trade.ts）とカード管理の
+ * 指定可否トグル（src/lib/card-trade-wantable.ts）だけなので、そこだけがこの定義を
+ * 参照し、各所で列欠落時のフォールバックを持つ。
+ *
+ * 同じ物理テーブルを2つの pgTable で表すのは tradeOffersWithoutQuantity と同じ手法
+ * （drizzle-kit による DDL 生成は使っておらず、DDL の正本は migration）。
+ */
+export const cardTradeSettings = pgTable('cards', {
+  id: uuid('id').primaryKey(),
+  streamer_id: uuid('streamer_id').notNull(),
+  trade_wantable: boolean('trade_wantable').notNull().default(true),
 })
 
 // -----------------------------------------------------------------------------

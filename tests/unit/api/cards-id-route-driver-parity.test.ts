@@ -19,11 +19,15 @@ import { removeBlobFile } from "@/lib/storage-db";
 import { deleteFromR2 } from "@/lib/r2-client";
 import { sha256Prefix } from "@/lib/crypto-utils";
 import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
+import { cards as cardsTable, cardTradeSettings } from "@/lib/db/schema";
+import { revalidateTag } from "next/cache";
 
 // #830: 画像削除経路で参照される R2 の公開URL・削除操作を差し替える
 const R2_PUBLIC_URL = "https://images.example.test";
 
 vi.mock("@/lib/session");
+// #1790: trade_wantable 保存後の GET /api/cards キャッシュ無効化を検証する
+vi.mock("next/cache", () => ({ revalidateTag: vi.fn() }));
 vi.mock("@/lib/rate-limit");
 vi.mock("@/lib/csrf");
 vi.mock("@/lib/storage-db");
@@ -311,6 +315,129 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(pgJson).toEqual({ ...UPDATED_ROW, recalculatedCards: null });
       expect(pg.updateCalls[0].values).toEqual({ name: "Renamed" });
       expect(pg.selectCalls[0].joins).toHaveLength(1);
+    });
+
+    // -------------------------------------------------------------------------
+    // #1790: 「求めるカードに指定できる」(cards.trade_wantable)。列は cards 本体の
+    // Drizzle 定義に無いため、本体 UPDATE の後に cardTradeSettings への別 UPDATE で書く。
+    // -------------------------------------------------------------------------
+    describe("tradeWantable (#1790)", () => {
+      it("本体の UPDATE の後に cardTradeSettings を更新し、保存後の値を応答に含める", async () => {
+        const pg = createDrizzleDbMock({
+          selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+          updates: [{ rows: [UPDATED_ROW] }, { rows: [{ trade_wantable: false }] }],
+        });
+        primePgDb(pg);
+        const res = await PUT(createPutRequest({ name: "Renamed", tradeWantable: false }), {
+          params: Promise.resolve({ id: CARD_ID }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ...UPDATED_ROW, trade_wantable: false, recalculatedCards: null });
+        expect(pg.updateCalls).toHaveLength(2);
+        expect(pg.updateCalls[0].table).toBe(cardsTable);
+        // 本体の UPDATE には trade_wantable を混ぜない（cards 本体の定義に無い列）
+        expect(pg.updateCalls[0].values).toEqual({ name: "Renamed" });
+        expect(pg.updateCalls[1].table).toBe(cardTradeSettings);
+        expect(pg.updateCalls[1].values).toEqual({ trade_wantable: false });
+        // 保存後は GET /api/cards のキャッシュ（unstable_cache）を即時失効させる
+        expect(vi.mocked(revalidateTag)).toHaveBeenCalledWith("cards-streamer-1", { expire: 0 });
+      });
+
+      it("tradeWantable だけの要求では本体の UPDATE を行わない", async () => {
+        const pg = createDrizzleDbMock({
+          selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+          updates: [{ rows: [{ trade_wantable: true }] }],
+        });
+        primePgDb(pg);
+        const res = await PUT(createPutRequest({ tradeWantable: true }), {
+          params: Promise.resolve({ id: CARD_ID }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ id: CARD_ID, trade_wantable: true, recalculatedCards: null });
+        expect(pg.updateCalls).toHaveLength(1);
+        expect(pg.updateCalls[0].table).toBe(cardTradeSettings);
+      });
+
+      it("省略時は trade_wantable を読み書きしない", async () => {
+        const pg = createDrizzleDbMock({
+          selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+          updates: [{ rows: [UPDATED_ROW] }],
+        });
+        primePgDb(pg);
+        const res = await PUT(createPutRequest({ name: "Renamed" }), {
+          params: Promise.resolve({ id: CARD_ID }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).not.toHaveProperty("trade_wantable");
+        expect(pg.updateCalls).toHaveLength(1);
+        expect(vi.mocked(revalidateTag)).not.toHaveBeenCalled();
+      });
+
+      it.each([["文字列", "false"], ["数値", 0], ["null", null]])(
+        "真偽値以外（%s）は400で拒否し、何も更新しない",
+        async (_label, value) => {
+          const pg = createDrizzleDbMock({
+            selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+            updates: [{ rows: [UPDATED_ROW] }],
+          });
+          primePgDb(pg);
+          const res = await PUT(createPutRequest({ name: "Renamed", tradeWantable: value }), {
+            params: Promise.resolve({ id: CARD_ID }),
+          });
+          expect(res.status).toBe(400);
+          expect(pg.updateCalls).toHaveLength(0);
+        },
+      );
+
+      it("このカードの配信者でなければ403で、指定可否も更新しない", async () => {
+        const pg = createDrizzleDbMock({
+          selects: [{ rows: [{ ...OWNERSHIP_ROW_PG, twitch_user_id: "someone-else" }] }],
+        });
+        primePgDb(pg);
+        const res = await PUT(createPutRequest({ tradeWantable: false }), {
+          params: Promise.resolve({ id: CARD_ID }),
+        });
+        expect(res.status).toBe(403);
+        expect(pg.updateCalls).toHaveLength(0);
+      });
+
+      it("本体の UPDATE が409で失敗したら指定可否は更新しない", async () => {
+        const pg = createDrizzleDbMock({
+          selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+          updates: [{
+            error: { code: "23505", message: 'duplicate key value violates unique constraint "cards_streamer_card_number_unique"' },
+          }],
+        });
+        primePgDb(pg);
+        const res = await PUT(createPutRequest({ cardNumber: 3, tradeWantable: false }), {
+          params: Promise.resolve({ id: CARD_ID }),
+        });
+        expect(res.status).toBe(409);
+        expect(pg.updateCalls.every((call) => call.table !== cardTradeSettings)).toBe(true);
+      });
+
+      it("デプロイ窓（列なし）では他フィールドの更新を続け、保存できなかったことを応答で示す", async () => {
+        const pg = createDrizzleDbMock({
+          selects: [{ rows: [OWNERSHIP_ROW_PG] }],
+          updates: [
+            { rows: [UPDATED_ROW] },
+            { error: { code: "42703", message: 'column "trade_wantable" of relation "cards" does not exist' } },
+          ],
+        });
+        primePgDb(pg);
+        const res = await PUT(createPutRequest({ name: "Renamed", tradeWantable: false }), {
+          params: Promise.resolve({ id: CARD_ID }),
+        });
+        expect(res.status).toBe(200);
+        // 列が無い = 全カード指定可。実際の値（true）を返す。
+        expect(await res.json()).toMatchObject({
+          name: "Renamed",
+          trade_wantable: true,
+          tradeWantableSkippedDeployWindow: true,
+        });
+        // 何も書いていないのでキャッシュは無効化しない
+        expect(vi.mocked(revalidateTag)).not.toHaveBeenCalled();
+      });
     });
 
     it("所有者不一致では403を返しUPDATEしない", async () => {

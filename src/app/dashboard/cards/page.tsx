@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import dynamic from "next/dynamic";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getStreamerData } from "@/lib/dashboard-data";
+import { listNonWantableCardIds } from "@/lib/card-trade-wantable";
 import { getUserPlan, PLAN_MAX_IMAGE_WIDTH, PLAN_AVAILABLE_WIDTHS, PLAN_MAX_UPLOAD_SIZE } from "@/lib/plan";
 import type { Card } from "@/types/database";
 
@@ -51,7 +52,13 @@ export default async function CardsPage() {
   const initialCards = streamerData.cards as Card[];
 
   // プランに応じた最大画像幅を取得
-  const plan = await getUserPlan(session.twitchUserId);
+  // Issue #1790: 「求めるカードに指定できない」カードの id も並行して読む。
+  // getStreamerData のカード行は cards 本体の無指定 select でこの列を含まない
+  // （src/lib/db/schema.ts の cardTradeSettings 参照）。
+  const [plan, nonWantableCardIds] = await Promise.all([
+    getUserPlan(session.twitchUserId),
+    listNonWantableCardIds(streamerData.streamer.id),
+  ]);
   const maxImageWidth = PLAN_MAX_IMAGE_WIDTH[plan];
   const availableWidths = PLAN_AVAILABLE_WIDTHS[plan];
   // Issue #269再設計: 新規カードパック名の登録(パック管理モーダルでの追加)
@@ -63,6 +70,7 @@ export default async function CardsPage() {
     <CardManager
       streamerId={streamerData.streamer.id}
       initialCards={initialCards}
+      initialNonWantableCardIds={[...nonWantableCardIds]}
       initialRarityWeights={streamerData.streamer.rarity_weights}
       initialCustomRarities={streamerData.streamer.custom_rarities ?? []}
       initialCardPackNames={streamerData.streamer.card_pack_names ?? []}

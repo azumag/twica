@@ -35,6 +35,7 @@ import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable, userCards as userCardsTable } from "@/lib/db/schema";
 import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
+import { cardsListCacheTag, withCardTradeWantable } from "@/lib/card-trade-wantable";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -707,8 +708,13 @@ async function fetchCardsFromDB(
   const cardsWithIssuedCounts = await attachIssuedCounts(
     normalizeDropRate(pgCards as Array<{ drop_rate: unknown } & CardWithIssuanceLimit>)
   );
+  // #1790: 「求めるカードに指定できる」(cards.trade_wantable) を合成する。
+  // 列は cards 本体の Drizzle 定義に無い（schema.ts の cardTradeSettings 参照）
+  // ため上の無指定 select には含まれず、別クエリで false の id だけを読む。
+  // CardManager の再読み込み（並び替え・フィルター変更）でトグルの状態を保つ。
+  const cardsWithTradeWantable = await withCardTradeWantable(streamerId, cardsWithIssuedCounts);
   logger.info(`[Perf] fetchCardsFromDB: ${Date.now() - start}ms (${pgCards.length} cards)`);
-  return { cards: cardsWithIssuedCounts, count: pgCount };
+  return { cards: cardsWithTradeWantable, count: pgCount };
 }
 
 /**
@@ -815,7 +821,7 @@ export async function GET(request: NextRequest) {
       [cacheKey],
       {
         revalidate: CARDS_CACHE_TTL,
-        tags: [`cards-${streamerId}`],
+        tags: [cardsListCacheTag(streamerId)],
       }
     );
 

@@ -20,6 +20,7 @@ export type TradeErrorMessageKey =
   | "errorTradeOfferLimit"
   | "errorTradeOfferedCardInactive"
   | "errorTradeWantedCardUnavailable"
+  | "errorTradeWantedCardNotWantable"
   | "errorTradeOfferUnavailable"
   | "errorTradeSameCard"
   | "errorTradeCardAlreadyListed"
@@ -55,6 +56,7 @@ export const TRADE_ERROR_MESSAGE_KEYS: Record<TradeApiErrorCode, TradeErrorMessa
   TRADE_BUSY: "errorTradeBusy",
   TRADE_SAME_CARD: "errorTradeSameCard",
   TRADE_WANTED_CARD_UNAVAILABLE: "errorTradeWantedCardUnavailable",
+  TRADE_WANTED_CARD_NOT_WANTABLE: "errorTradeWantedCardNotWantable",
   TRADE_OFFERED_CARD_INACTIVE: "errorTradeOfferedCardInactive",
   TRADE_OFFER_UNAVAILABLE: "errorTradeOfferUnavailable",
 };

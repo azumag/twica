@@ -58,13 +58,16 @@ const S = {
   INACTIVE_PARTNER: id(6), // seeded only by the inactive-only partner regression
   MIXED_PARTNER: id(7), // seeded only by the mixed-ownership partner regression
   QTY: id(8), // seeded only by the wanted-quantity block (#1789)
+  WANT: id(9), // seeded only by the wantable-restriction block (#1790)
 };
-const U = { O: id(11), V: id(12), QO: id(13), QV: id(14) };
+const U = { O: id(11), V: id(12), QO: id(13), QV: id(14), WO: id(15), WV: id(16) };
 const TW = {
   O: "trade-vis-offerer",
   V: "trade-vis-viewer",
   QO: "trade-vis-qty-offerer",
   QV: "trade-vis-qty-viewer",
+  WO: "trade-vis-want-offerer",
+  WV: "trade-vis-want-viewer",
 };
 const C = {
   PUB_A: id(21),
@@ -1264,6 +1267,232 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         expect(mine.offers.map((offer) => offer.id)).toContain(created.offer.id);
       } finally {
         await sql!`ALTER TABLE trade_offers RENAME COLUMN wanted_quantity_hidden TO wanted_quantity`;
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #1790 「求に指定できる」制限 (cards.trade_wantable). A self-contained world
+  // (ids 9xxx, its own channel and users) like the #1789 block. The tests are
+  // order-dependent among themselves: listing → switch off → hidden/refused →
+  // switch back → accepted → replay → deploy window.
+  // ---------------------------------------------------------------------------
+  describe("wantable restriction (#1790)", () => {
+    // COIN stays wantable, RARE is switched off after OFFER_RARE was listed,
+    // GIVE is what the offerer gives.
+    const WC = { COIN: id(9001), RARE: id(9002), GIVE: id(9003) };
+    const WUC = {
+      O_GIVE1: id(9101),
+      O_GIVE2: id(9102),
+      O_GIVE3: id(9103),
+      V_RARE1: id(9201),
+      V_RARE2: id(9202),
+      V_COIN1: id(9203),
+    };
+    const req = (n: number) => id(9900 + n);
+    const offerIds: Record<string, string> = {};
+
+    const setWantable = (cardId: string, value: boolean) =>
+      sql!`UPDATE cards SET trade_wantable = ${value} WHERE id = ${cardId}`;
+    const ownerOf = async (userCardIds: string[]) => {
+      const rows = await sql!<Array<{ id: string; user_id: string }>>`
+        SELECT id, user_id FROM user_cards WHERE id IN ${sql!(userCardIds)} ORDER BY id`;
+      return Object.fromEntries(rows.map((row) => [row.id, row.user_id]));
+    };
+    const boardIds = async (twitchUserId?: string) => {
+      const { listTradeOffers } = await import("@/lib/trade");
+      const page = await listTradeOffers({ streamerId: S.WANT, scope: "in_channel", page: 1, twitchUserId });
+      return page.offers.map((offer) => offer.id);
+    };
+    const mineTradeable = async () => {
+      const { listMyTradeOffers } = await import("@/lib/trade");
+      const page = await listMyTradeOffers(TW.WO, { status: "open" });
+      return Object.fromEntries(page.offers.map((offer) => [offer.id, offer.tradeable]));
+    };
+
+    beforeAll(async () => {
+      const s = sql!;
+      await s`INSERT INTO streamers (
+        id, twitch_user_id, twitch_username, twitch_display_name,
+        trade_enabled, cross_channel_trade_enabled, show_unowned_cards, show_unowned_card_details
+      ) VALUES (${S.WANT}, 'tv-want', 'tv-want', 'TV want', TRUE, FALSE, TRUE, TRUE)`;
+      await s`INSERT INTO users (id, twitch_user_id, twitch_username, twitch_display_name) VALUES
+        (${U.WO}, ${TW.WO}, ${TW.WO}, 'Want Offerer'),
+        (${U.WV}, ${TW.WV}, ${TW.WV}, 'Want Viewer')`;
+      for (const [cid, name] of [[WC.COIN, "Coin"], [WC.RARE, "Rare"], [WC.GIVE, "Give"]]) {
+        await s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
+          VALUES (${cid}, ${S.WANT}, ${name}, 'common', 0.1, TRUE)`;
+      }
+      const own = (ucid: string, uid: string, cid: string, minutesAgo: number) =>
+        s`INSERT INTO user_cards (id, user_id, card_id, obtained_at)
+          VALUES (${ucid}, ${uid}, ${cid}, now() - make_interval(secs => ${minutesAgo * 60}))`;
+      await own(WUC.O_GIVE1, U.WO, WC.GIVE, 60);
+      await own(WUC.O_GIVE2, U.WO, WC.GIVE, 59);
+      await own(WUC.O_GIVE3, U.WO, WC.GIVE, 58);
+      await own(WUC.V_RARE1, U.WV, WC.RARE, 50);
+      await own(WUC.V_RARE2, U.WV, WC.RARE, 49);
+      await own(WUC.V_COIN1, U.WV, WC.COIN, 48);
+    });
+
+    it("the migration defaults every card to wantable", async () => {
+      const rows = await sql!<Array<{ trade_wantable: boolean }>>`
+        SELECT trade_wantable FROM cards WHERE streamer_id = ${S.WANT}`;
+      expect(rows.map((row) => row.trade_wantable)).toEqual([true, true, true]);
+    });
+
+    it("rejects new listings that want a non-wantable card, but not listings that give one", async () => {
+      const { createTradeOffer, cancelTradeOffer, listWantableCards } = await import("@/lib/trade");
+      const created = await createTradeOffer({
+        twitchUserId: TW.WO,
+        offeredUserCardId: WUC.O_GIVE1,
+        wantedCardId: WC.RARE,
+        requestId: req(1),
+      });
+      if (created.kind !== "ok") throw new Error(`create failed: ${created.code}`);
+      offerIds.rare = created.offer.id;
+      const coin = await createTradeOffer({
+        twitchUserId: TW.WO,
+        offeredUserCardId: WUC.O_GIVE2,
+        wantedCardId: WC.COIN,
+        requestId: req(2),
+      });
+      if (coin.kind !== "ok") throw new Error(`create failed: ${coin.code}`);
+      offerIds.coin = coin.offer.id;
+
+      await setWantable(WC.RARE, false);
+
+      // Wanting RARE is refused (the server check is authoritative)...
+      await expect(createTradeOffer({
+        twitchUserId: TW.WO,
+        offeredUserCardId: WUC.O_GIVE3,
+        wantedCardId: WC.RARE,
+        requestId: req(3),
+      })).resolves.toEqual({ kind: "error", code: "TRADE_WANTED_CARD_NOT_WANTABLE" });
+      // ...but an earlier create of the same request still replays.
+      await expect(createTradeOffer({
+        twitchUserId: TW.WO,
+        offeredUserCardId: WUC.O_GIVE1,
+        wantedCardId: WC.RARE,
+        requestId: req(1),
+      })).resolves.toMatchObject({ kind: "ok", idempotentReplay: true, offer: { id: offerIds.rare } });
+
+      // Giving a RARE copy is not restricted.
+      const give = await createTradeOffer({
+        twitchUserId: TW.WV,
+        offeredUserCardId: WUC.V_RARE2,
+        wantedCardId: WC.GIVE,
+        requestId: req(4),
+      });
+      expect(give).toMatchObject({ kind: "ok", idempotentReplay: false });
+      if (give.kind !== "ok") throw new Error("unreachable");
+      await cancelTradeOffer({ twitchUserId: TW.WV, tradeOfferId: give.offer.id });
+
+      // The listing form never offers RARE as a choice, for anyone.
+      for (const viewer of [TW.WV, TW.WO, null]) {
+        const cards = await listWantableCards(viewer, S.WANT);
+        expect(cards.map((card) => card.cardId).sort()).toEqual([WC.COIN, WC.GIVE].sort());
+      }
+    });
+
+    it("hides the existing offer from the board for everyone, and marks it not tradeable on /mine", async () => {
+      for (const viewer of [TW.WV, TW.WO, undefined]) {
+        const ids = await boardIds(viewer);
+        expect(ids).not.toContain(offerIds.rare);
+        expect(ids).toContain(offerIds.coin);
+      }
+      expect(await mineTradeable()).toEqual({ [offerIds.rare]: false, [offerIds.coin]: true });
+      // Not cancelled: it is only hidden.
+      const [row] = await sql!<Array<{ status: string }>>`
+        SELECT status FROM trade_offers WHERE id = ${offerIds.rare}`;
+      expect(row.status).toBe("open");
+    });
+
+    it("refuses to accept it through the API precheck and directly through both RPC signatures", async () => {
+      const { acceptTradeOffer } = await import("@/lib/trade");
+      const copies = [WUC.O_GIVE1, WUC.V_RARE1, WUC.V_RARE2];
+      const before = await ownerOf(copies);
+
+      await expect(acceptTradeOffer({ twitchUserId: TW.WV, tradeOfferId: offerIds.rare, requestId: req(11) }))
+        .resolves.toEqual({ success: false, error: "TRADE_OFFER_UNAVAILABLE" });
+      // The RPC does not rely on the API layer (old app, direct call, race).
+      const [rpc4] = await sql!<Array<{ result: { success: boolean; error?: string } }>>`
+        SELECT public.accept_trade_offer(${TW.WV}, ${offerIds.rare}::uuid, ${req(12)}::uuid, 1::smallint) AS result`;
+      expect(rpc4.result).toEqual({ success: false, error: "WANTED_CARD_NOT_WANTABLE" });
+      // The pre-#1789 3-argument signature answers a code that app knows.
+      const [rpc3] = await sql!<Array<{ result: { success: boolean; error?: string } }>>`
+        SELECT public.accept_trade_offer(${TW.WV}, ${offerIds.rare}::uuid, ${req(13)}::uuid) AS result`;
+      expect(rpc3.result).toEqual({ success: false, error: "OFFER_NOT_OPEN" });
+
+      expect(await ownerOf(copies)).toEqual(before);
+      const [row] = await sql!<Array<{ status: string }>>`
+        SELECT status FROM trade_offers WHERE id = ${offerIds.rare}`;
+      expect(row.status).toBe("open");
+    });
+
+    it("comes back when the streamer switches the card back, and an accepted offer replays after switching off again", async () => {
+      const { acceptTradeOffer } = await import("@/lib/trade");
+      await setWantable(WC.RARE, true);
+
+      expect(await boardIds(TW.WV)).toContain(offerIds.rare);
+      expect((await mineTradeable())[offerIds.rare]).toBe(true);
+
+      const accepted = await acceptTradeOffer({ twitchUserId: TW.WV, tradeOfferId: offerIds.rare, requestId: req(21) });
+      expect(accepted).toMatchObject({
+        success: true,
+        idempotentReplay: false,
+        receivedUserCardId: WUC.O_GIVE1,
+        givenUserCardId: WUC.V_RARE1,
+      });
+      expect(await ownerOf([WUC.O_GIVE1, WUC.V_RARE1])).toEqual({
+        [WUC.O_GIVE1]: U.WV,
+        [WUC.V_RARE1]: U.WO,
+      });
+
+      // The idempotent replay is decided before every validation (RPC and API
+      // precheck), so switching the card off again does not turn a committed
+      // trade into a failure for a client retry.
+      await setWantable(WC.RARE, false);
+      await expect(acceptTradeOffer({ twitchUserId: TW.WV, tradeOfferId: offerIds.rare, requestId: req(21) }))
+        .resolves.toMatchObject({ success: true, idempotentReplay: true, givenUserCardId: WUC.V_RARE1 });
+      await setWantable(WC.RARE, true);
+    });
+
+    it("card management helpers read and write the flag (owner check is the route's job)", async () => {
+      const { listNonWantableCardIds, updateCardTradeWantable } = await import("@/lib/card-trade-wantable");
+      expect([...await listNonWantableCardIds(S.WANT)]).toEqual([]);
+      await expect(updateCardTradeWantable(WC.COIN, false)).resolves.toEqual({ trade_wantable: false });
+      expect([...await listNonWantableCardIds(S.WANT)]).toEqual([WC.COIN]);
+      await expect(updateCardTradeWantable(id(9999), false)).resolves.toBeNull();
+      await expect(updateCardTradeWantable(WC.COIN, true)).resolves.toEqual({ trade_wantable: true });
+    });
+
+    it("deploy window: every card is wantable while the column does not exist yet", async () => {
+      const { createTradeOffer, listWantableCards, listMyTradeOffers } = await import("@/lib/trade");
+      const { listNonWantableCardIds, updateCardTradeWantable } = await import("@/lib/card-trade-wantable");
+      // Simulate the database before 20261014100000 for the app code (rename
+      // instead of drop so the column and its values come back unchanged).
+      // accept_trade_offer is not called here: it is created by the same
+      // migration as the column, so the app never sees one without the other.
+      await setWantable(WC.COIN, false);
+      await sql!`ALTER TABLE cards RENAME COLUMN trade_wantable TO trade_wantable_hidden`;
+      try {
+        expect((await listWantableCards(TW.WV, S.WANT)).map((card) => card.cardId)).toContain(WC.COIN);
+        expect(await boardIds(TW.WV)).toContain(offerIds.coin);
+        const mine = await listMyTradeOffers(TW.WO, { status: "open" });
+        expect(mine.offers.find((offer) => offer.id === offerIds.coin)?.tradeable).toBe(true);
+        await expect(createTradeOffer({
+          twitchUserId: TW.WO,
+          offeredUserCardId: WUC.O_GIVE3,
+          wantedCardId: WC.COIN,
+          wantedQuantity: 2,
+          requestId: req(31),
+        })).resolves.toMatchObject({ kind: "ok", idempotentReplay: false });
+
+        expect([...await listNonWantableCardIds(S.WANT)]).toEqual([]);
+        await expect(updateCardTradeWantable(WC.COIN, true)).resolves.toBe("column_missing");
+      } finally {
+        await sql!`ALTER TABLE cards RENAME COLUMN trade_wantable_hidden TO trade_wantable`;
+        await setWantable(WC.COIN, true);
       }
     });
   });
