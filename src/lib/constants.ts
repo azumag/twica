@@ -442,6 +442,21 @@ export const VOTE_CAMPAIGN_CONFIG = {
 export const VOTE_CAMPAIGN_DISMISS_KEY = 'vote-campaign-dismissed'
 
 /**
+ * カードトレード機能の入口UIを表示するか (#715)。
+ *
+ * カードトレードはDB列(streamers.trade_enabled / cross_channel_trade_enabled)、
+ * 設定API(/api/streamer/settings)、トレードボードと成立処理のゲート判定まで内部実装済みだが、
+ * 一般公開の準備が整うまでユーザーが目にする入口を隠す。false の間は次の2箇所が非表示になる:
+ *   - 配信者設定 /dashboard/settings の「カードトレード」セクション(ON/OFFトグル)
+ *   - /collection/[streamerId] の「トレード」ボタン
+ *
+ * 内部実装は削除していない。設定API・DB列・ゲート判定・TradeSettings コンポーネント・翻訳は
+ * すべて維持され、この定数を true に戻すだけで入口が同時に復帰する(設定値の再保存は不要)。
+ * なお /trade/[streamerId] は直リンクでは従来どおり到達でき、掲示板と応諾フローの挙動は変えない。
+ */
+export const CARD_TRADE_UI_VISIBLE = false
+
+/**
  * 支援プラン設定
  * コード入力のバリデーション制限値
  */
