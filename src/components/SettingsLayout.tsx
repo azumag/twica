@@ -12,7 +12,7 @@ import {
 } from "@/components/SettingsViewMode";
 import CopyButton from "@/components/CopyButton";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
-import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
+import { CARD_TRADE_UI_VISIBLE, VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import { legacySoundToRules, normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 import { resolveChatAnnouncementSectionStatus } from "@/lib/chat-delivery-ui";
 import type { Card, Json } from "@/types/database";
@@ -58,22 +58,6 @@ const TradeSettings = dynamic(() => import("@/components/TradeSettings"), {
   ssr: false,
   loading: () => <SettingsPanelSkeleton />,
 });
-
-/**
- * 配信者設定「カードトレード」セクションを設定画面に表示するか。
- *
- * カードトレード (#715) はDB列(streamers.trade_enabled / cross_channel_trade_enabled)、
- * 設定API(/api/streamer/settings)、トレードボードと成立処理のゲート判定まで
- * 内部実装済みだが、一般公開の準備が整うまでは配信者向けのON/OFFトグルだけが
- * 露出してしまう。そのため設定画面からこのセクション(サイドバー項目と
- * ON/OFFトグル本体)を隠す。
- *
- * 内部実装は削除していない: TradeSettings コンポーネント、tradeSettings 翻訳、
- * 設定API、DB列、ゲート判定はすべて維持される。単独で到達不能になるのは
- * このセクションのUIだけで、再表示したくなったらこの定数を true に戻す
- * (サイドバー項目とパネルが同時に復帰する)。
- */
-const TRADE_SETTINGS_SECTION_VISIBLE = false;
 
 function SettingsPanelSkeleton() {
   return (
@@ -425,12 +409,12 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
     },
   ];
 
-  // 非表示フラグの対象セクションを描画対象から取り除く。sections 配列自体は
-  // 無改変なので、フラグを true に戻せばサイドバーとパネルの両方が元どおりになる。
-  // フィルタ後に AdvancedSettingsLayout へ渡すことで、初期選択セクションや
-  // サイドバーの並びも「表示されるセクション」だけを基準に決まる。
+  // CARD_TRADE_UI_VISIBLE=false の間はカードトレードセクションを描画対象から取り除く。
+  // sections 配列自体は無改変なので、定数を true に戻せばサイドバーとパネルの両方が
+  // 元どおりになる。フィルタ後に AdvancedSettingsLayout へ渡すことで、初期選択
+  // セクションやサイドバーの並びも「表示されるセクション」だけを基準に決まる。
   const visibleSections = sections.filter(
-    (section) => section.id !== "trade" || TRADE_SETTINGS_SECTION_VISIBLE,
+    (section) => section.id !== "trade" || CARD_TRADE_UI_VISIBLE,
   );
 
   return (
