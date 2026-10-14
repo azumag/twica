@@ -119,6 +119,21 @@ function redactStorageKey(text: string, key: string): string {
 }
 
 /**
+ * Diagnostic formatting must not change the storage-error fail-open result.
+ * 型判定・message getter・文字列化自体がthrowする値も、固定文言へfallbackする。
+ * 元の拒否値をfallbackとしてログへ渡さず、識別子や任意のcontextを追加しない。
+ */
+function formatStorageErrorForLog(error: unknown, key: string): string {
+  const fallback = "[storage error message unavailable]";
+  try {
+    const message = error instanceof Error ? error.message : String(error);
+    return typeof message === "string" ? redactStorageKey(message, key) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
  * Memory-based rate limit storage (for development and single-instance deployments)
  * メモリベースのレート制限ストレージ（開発環境と単一インスタンスデプロイ用）
  *
@@ -399,10 +414,7 @@ async function checkRateLimitInternal(
       storage: currentStorageKind,
       op: storageOp,
       durationMs: Date.now() - opStartedAt,
-      error: redactStorageKey(
-        error instanceof Error ? error.message : String(error),
-        key,
-      ),
+      error: formatStorageErrorForLog(error, key),
     });
     return {
       success: true,

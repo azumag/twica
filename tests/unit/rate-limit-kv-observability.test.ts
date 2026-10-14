@@ -247,4 +247,136 @@ describe("rate limit KV observability (#728)", () => {
       expect.objectContaining({ name: "authLogin", storage: "kv", op: "write", durationMs: 300 }),
     ]);
   });
+
+  const errorFormattingCases: Array<{
+    label: string;
+    makeError: () => unknown;
+    expectedError: string;
+  }> = [
+    {
+      label: "null-prototype object",
+      makeError: () => Object.create(null),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "throwing Symbol.toPrimitive",
+      makeError: () => ({
+        [Symbol.toPrimitive]() {
+          throw new TypeError("fixture conversion failed");
+        },
+      }),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "throwing instanceof getPrototypeOf",
+      makeError: () => new Proxy({}, {
+        getPrototypeOf() {
+          throw new TypeError("fixture prototype lookup failed");
+        },
+      }),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "throwing Error.message getter",
+      makeError: () => Object.defineProperty(new Error("fixture"), "message", {
+        get() {
+          throw new TypeError("fixture message lookup failed");
+        },
+      }),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "non-string Error.message",
+      makeError: () => Object.defineProperty(new Error("fixture"), "message", {
+        value: 42,
+      }),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "missing Error.message value",
+      makeError: () => Object.defineProperty(new Error("fixture"), "message", {
+        value: undefined,
+      }),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "null Error.message",
+      makeError: () => Object.defineProperty(new Error("fixture"), "message", {
+        value: null,
+      }),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "object Error.message",
+      makeError: () => Object.defineProperty(new Error("fixture"), "message", {
+        value: { context: "ip:203.0.113.11" },
+      }),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "array Error.message",
+      makeError: () => Object.defineProperty(new Error("fixture"), "message", {
+        value: ["ip:203.0.113.11"],
+      }),
+      expectedError: "[storage error message unavailable]",
+    },
+    {
+      label: "ordinary Error",
+      makeError: () => new Error("fixture failure for ratelimit:authLogin:ip:203.0.113.11"),
+      expectedError: "fixture failure for [ratelimit key redacted]",
+    },
+    {
+      label: "string rejection",
+      makeError: () => "fixture failure for ratelimit:authLogin:ip:203.0.113.11",
+      expectedError: "fixture failure for [ratelimit key redacted]",
+    },
+    {
+      label: "undefined rejection",
+      makeError: () => undefined,
+      expectedError: "undefined",
+    },
+  ];
+
+  it.each(errorFormattingCases.flatMap((fixture) =>
+    (["read", "initial-write", "increment-write"] as const).map((failure) => ({
+      ...fixture,
+      failure,
+    })),
+  ))(
+    "$failure の $label 拒否でも診断整形がfail-openを変更しない",
+    async ({ makeError, expectedError, failure }) => {
+      const rejection = makeError();
+      const reject = async () => { throw rejection; };
+      const kv = createKv({
+        get: failure === "read" ? reject : async () =>
+          failure === "increment-write"
+            ? { count: 1, resetTime: Date.now() + 60_000 }
+            : null,
+        put: failure === "read" ? async () => {} : reject,
+      });
+      mocks.getKvBinding.mockResolvedValue(kv.namespace);
+      const { checkRateLimit, rateLimits } = await import("@/lib/rate-limit");
+      const identifier = "ip:203.0.113.11";
+
+      // 通常呼び出しと明示fallback引数付きの両方がresolveして許可される。
+      for (const withFallback of [false, true]) {
+        const result = withFallback
+          ? await checkRateLimit(rateLimits.authLogin, identifier, 5, 60_000)
+          : await checkRateLimit(rateLimits.authLogin, identifier);
+        expect(result).toMatchObject({ success: true, limit: 5, remaining: 4 });
+        expect(result.reset).toBe(Date.now() + 60_000);
+      }
+
+      expect(failOpenLogs()).toHaveLength(2);
+      for (const payload of failOpenLogs()) {
+        expect(payload).toMatchObject({
+          name: "authLogin",
+          storage: "kv",
+          op: failure === "read" ? "read" : "write",
+          error: expectedError,
+        });
+        expect(JSON.stringify(payload)).not.toContain(identifier);
+      }
+    },
+  );
 });
