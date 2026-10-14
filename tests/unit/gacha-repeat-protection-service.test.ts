@@ -79,6 +79,20 @@ function consume<T>(values: T[] | undefined, index: number, fallback: T): T {
 }
 
 /**
+ * drizzle の desc()/asc() が返すSQLオブジェクトから、並び順キーの列名を取り出す。
+ * queryChunks 内のColumnだけが name を持つため、それ以外(SQL断片)は無視する。
+ */
+function orderKeyColumnNames(orderKeys: unknown[]): string[] {
+  return orderKeys.flatMap((key) => {
+    const chunks = (key as { queryChunks?: unknown } | null)?.queryChunks
+    if (!Array.isArray(chunks)) return []
+    return chunks
+      .map((chunk) => (chunk as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === 'string')
+  })
+}
+
+/**
  * Issue #1296 の読み取り経路だけを再現する最小Drizzle fixture。
  * select fieldsを見て、同じgacha_historyテーブルの「N連完了prefix」と
  * 「直前カード1件」を区別する。
@@ -86,6 +100,13 @@ function consume<T>(values: T[] | undefined, index: number, fallback: T): T {
 function installDbFixture(options: FixtureOptions = {}) {
   const tableReads: string[] = []
   const transactionCalls: unknown[][] = []
+  /**
+   * getLatestCardIdForStreamer が orderBy に渡した並び順キーの列名。
+   * Issue #1300: 既存covering indexのキー内で時刻とcard_idを同じ逆順に読む。
+   * SQL文字列だけでなくorderBy引数を固定し、実際のplanner選択はPG17 fixtureで
+   * 検証する。unit testで性能成功を代用しない。
+   */
+  const latestHistoryOrderByColumns: string[][] = []
   let latestCardCursor = 0
   let completedPrefixCursor = 0
   let transactionCursor = 0
@@ -103,7 +124,12 @@ function installDbFixture(options: FixtureOptions = {}) {
       }),
       where: chain,
       limit: chain,
-      orderBy: chain,
+      orderBy: vi.fn((...orderKeys: unknown[]) => {
+        if (tableName === 'gacha_history' && 'card_id' in fields) {
+          latestHistoryOrderByColumns.push(orderKeyColumnNames(orderKeys))
+        }
+        return builder
+      }),
       then: (
         onFulfilled: (value: unknown[]) => unknown,
         onRejected?: (reason: unknown) => unknown,
@@ -171,7 +197,7 @@ function installDbFixture(options: FixtureOptions = {}) {
     sql: sql as never,
   })
 
-  return { tableReads, transactionCalls }
+  return { tableReads, transactionCalls, latestHistoryOrderByColumns }
 }
 
 beforeEach(() => {
@@ -242,6 +268,24 @@ describe('GachaService repeat protection', () => {
     expect(fixture.transactionCalls).toHaveLength(1)
     expect(fixture.transactionCalls[0][3]).toBe('card-b')
     expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(1)
+  })
+
+  it('最新履歴取得は既存covering indexの redeemed_at と card_id を並び順キーにする', async () => {
+    // 同刻の最新履歴をcard_id順で安定させる。record idを戻さず、既存index内で
+    // 順序を供給できる形を固定する。redeemed_atのNULL除外やread障害fallbackは
+    // 既存testで維持し、性能はtests/fixtures/gacha-latest-history-plan.shで検証する。
+    const fixture = installDbFixture({ latestCardId: 'card-a' })
+    mockSecureRandomUnit(0)
+
+    const result = await new GachaService().executeGachaWithRepeatProtection({
+      streamerId: 'streamer-1',
+      userTwitchId: 'user-1',
+      userTwitchUsername: 'Viewer',
+      eventId: 'event-order-keys',
+    })
+
+    expect(result.success).toBe(true)
+    expect(fixture.latestHistoryOrderByColumns).toEqual([['redeemed_at', 'card_id']])
   })
 
   it('redeemed_atがNULLの履歴しかなくても、従来の独立抽選へ安全にフォールバックする', async () => {

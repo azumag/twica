@@ -982,8 +982,18 @@ export class GachaService {
 
   /**
    * Issue #1296: 配信者の直近ガチャ結果を1件だけ取得する。
-   * `(streamer_id, redeemed_at, card_id, ...)` の既存covering index (#672)を使える
-   * 並びで読み、同一時刻の決定性だけUUID主キーで補う。
+   * 既存covering index (#672) の `(streamer_id, redeemed_at, card_id, ...)` に
+   * 合わせ、redeemed_at DESC / card_id DESC で読む。streamer_id は等値条件なので
+   * backward scan がこの2キーを供給でき、redeemed_at単独indexは第2キーを
+   * 単独では供給できない。新しいindexやplanner設定は追加しない。
+   *
+   * Issue #1300: redeemed_at単独でも公開PG17 CIのgeneric planがglobal indexを
+   * 選び、stale-heavyで200,026行をFilterした。第2キーを既存index内のcard_idへ
+   * 揃える案の性能は、同じprepared-statement fixtureで検証する必要がある。
+   *
+   * 最大redeemed_atの履歴を読む契約は不変。同時刻のN連履歴は最後の挿入行を
+   * 特定できる契約ではなく、card_idの順で安定させる。card_idはNOT NULL。
+   * redeemed_atがNULLの履歴は引き続き除外する。
    *
    * この読み取りは反復体感を改善する補助情報であり、課金・付与の正本ではない。
    * 接続断や一時障害ではガチャ全体を失敗させずnullを返し、従来の独立抽選へ
@@ -999,7 +1009,7 @@ export class GachaService {
             eq(gachaHistory.streamer_id, streamerId),
             isNotNull(gachaHistory.redeemed_at),
           ))
-          .orderBy(desc(gachaHistory.redeemed_at), desc(gachaHistory.id))
+          .orderBy(desc(gachaHistory.redeemed_at), desc(gachaHistory.card_id))
           .limit(1)
       }, 'gacha:getLatestCardIdForStreamer', { idempotent: true })
       return rows[0]?.card_id ?? null

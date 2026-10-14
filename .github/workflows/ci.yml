@@ -92,11 +92,16 @@ jobs:
               - 'tests/fixtures/add-card-trading-concurrency.sh'
               - 'tests/fixtures/redemption-ranking-exclusions-postgres.sql'
               - 'tests/fixtures/pack-completion-rewards-postgres.sql'
+              - 'tests/fixtures/gacha-latest-history-plan.sh'
               # These suites execute real SQL through the application DB layer;
               # changes to their runtime, schema or test setup must re-run PG17.
               - 'src/lib/trade.ts'
               - 'src/lib/uuid-validation.ts'
               - 'src/lib/db/**'
+              # gacha-latest-history-plan.sh が getLatestCardIdForStreamer の
+              # 並び順キー(orderBy)に対応する実行計画を実PGで検証するため、
+              # クエリを変えるPRでは必ずPG17ジョブを回す。
+              - 'src/lib/services/gacha.ts'
               - 'tests/integration/trade-visibility-pg.test.ts'
               - 'tests/integration/pack-completion-rewards-pg.test.ts'
               - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
@@ -589,6 +594,16 @@ jobs:
         run: |
           psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
             -f tests/fixtures/redemption-ranking-exclusions-postgres.sql
+
+      - name: Verify gacha latest history query plan
+        # #1300: getLatestCardIdForStreamer の最新1件取得が、履歴件数・直近の新旧に
+        # 依存せず covering index を使うことを実DBで検証する。VACUUM が必要なため
+        # (投入直後のdirty visibility mapではplannerの見積もりが本番とずれる)、
+        # 投入→VACUUM→計測→後片付けをshell fixtureで行う。prepared statementで
+        # ウォームアップしてからEXPLAINし、アプリが実際に使うplanを見る。
+        env:
+          PGPASSWORD: postgres
+        run: bash tests/fixtures/gacha-latest-history-plan.sh
 
       - name: Setup Node.js for PostgreSQL integration tests
         uses: actions/setup-node@v4
