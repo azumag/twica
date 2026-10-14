@@ -2,6 +2,8 @@ import { getTableColumns } from 'drizzle-orm'
 import { describe, expect, it, vi } from 'vitest'
 import { streamers as streamersTable } from '@/lib/db/schema'
 import {
+  ALBUM_SETTINGS_COLUMNS,
+  isMissingAlbumSettingsColumnError,
   isMissingLiveDirectorySettingsColumnError,
   isMissingTradeSettingsColumnError,
   LIVE_DIRECTORY_SETTINGS_COLUMNS,
@@ -13,6 +15,7 @@ import {
 const DEPLOY_WINDOW_COLUMNS = [
   ...LIVE_DIRECTORY_SETTINGS_COLUMNS,
   ...TRADE_SETTINGS_COLUMNS,
+  ...ALBUM_SETTINGS_COLUMNS,
 ] as const
 
 function missingColumnError(column: string) {
@@ -72,6 +75,15 @@ describe('streamers デプロイ窓の列集合契約', () => {
 
     expect(isMissingTradeSettingsColumnError(error)).toBe(true)
     expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+    expect(isMissingAlbumSettingsColumnError(error)).toBe(false)
+  })
+
+  it.each(ALBUM_SETTINGS_COLUMNS)('%s は album 設定列としてのみ検知する', (column) => {
+    const error = missingColumnError(column)
+
+    expect(isMissingAlbumSettingsColumnError(error)).toBe(true)
+    expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+    expect(isMissingTradeSettingsColumnError(error)).toBe(false)
   })
 
   it('デプロイ窓の対象列集合を明示的に固定する', () => {
@@ -85,6 +97,10 @@ describe('streamers デプロイ窓の列集合契約', () => {
     expect(TRADE_SETTINGS_COLUMNS).toEqual([
       'trade_enabled',
       'cross_channel_trade_enabled',
+    ])
+    expect(ALBUM_SETTINGS_COLUMNS).toEqual([
+      'pack_album_grid_sizes',
+      'collection_default_view',
     ])
   })
 

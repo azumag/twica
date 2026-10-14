@@ -98,7 +98,13 @@ export async function withLiveDirectorySettingsColumnFallback<T>(
   try {
     return await attempt(false);
   } catch (error) {
-    if (!isMissingLiveDirectorySettingsColumnError(error) && !isMissingTradeSettingsColumnError(error)) throw error;
+    if (
+      !isMissingLiveDirectorySettingsColumnError(error) &&
+      !isMissingTradeSettingsColumnError(error) &&
+      !isMissingAlbumSettingsColumnError(error)
+    ) {
+      throw error;
+    }
     return attempt(true);
   }
 }
@@ -124,4 +130,27 @@ export const TRADE_SETTINGS_COLUMNS = [
  */
 export function isMissingTradeSettingsColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, TRADE_SETTINGS_COLUMNS);
+}
+
+/**
+ * デプロイ窓で欠落しうる streamers の新列(20261014120000 の migration で追加。
+ * #1765 フォローアップ)。publish_live_status / publish_stats (#738) や
+ * trade_enabled (#722) と同じ「アプリデプロイとmigration適用が独立した
+ * タイミングで完了する」リスクを持つため、同型のフォールバックを追加する。
+ *
+ * STREAMERS_SAFE_COLUMNS はこの2列を含まない（＝再試行側では undefined に
+ * なりうる）。消費側は欠落時に既定へ fail-closed（並び=3×3、初期表示=grid）で
+ * 倒すこと。
+ */
+export const ALBUM_SETTINGS_COLUMNS = [
+  "pack_album_grid_sizes",
+  "collection_default_view",
+] as const;
+
+/**
+ * streamers の pack_album_grid_sizes / collection_default_view 列の欠落
+ * (20261014120000 の migration 未適用の環境)を検知する。
+ */
+export function isMissingAlbumSettingsColumnError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, ALBUM_SETTINGS_COLUMNS);
 }

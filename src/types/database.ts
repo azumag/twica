@@ -94,6 +94,13 @@ export interface Database {
           // incoming raid 送信者に自動付与するガチャ回数（0=無効）
           // Number of gacha draws gifted to the raider on incoming raids. 0 disables gifts.
           raid_gacha_draw_count: number
+          // #1765 フォローアップ: コレクション(パック)ごとのアルバム並び N。
+          // キーは __all__ / __default__ / 実パック名、値は N（3..12）
+          // Per-collection album grid size map (scope key -> N).
+          pack_album_grid_sizes: Record<string, number> | null
+          // コレクションページの初期表示 ('grid' | 'album')
+          // Default view mode of the collection page.
+          collection_default_view: 'grid' | 'album'
           created_at: string
           updated_at: string
         }
@@ -126,6 +133,8 @@ export interface Database {
           publish_stats?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
+          pack_album_grid_sizes?: Record<string, number> | null
+          collection_default_view?: 'grid' | 'album'
           created_at?: string
           updated_at?: string
         }
@@ -158,6 +167,8 @@ export interface Database {
           publish_stats?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
+          pack_album_grid_sizes?: Record<string, number> | null
+          collection_default_view?: 'grid' | 'album'
           created_at?: string
           updated_at?: string
         }

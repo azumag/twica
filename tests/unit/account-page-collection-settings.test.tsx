@@ -48,6 +48,24 @@ vi.mock('@/components/CardVisibilitySettings', () => ({
     />
   ),
 }))
+vi.mock('@/components/AlbumDisplaySettings', () => ({
+  default: (props: {
+    streamerId: string
+    packNames: string[]
+    defaultPackName: string | null
+    currentAlbumGridSizes: Record<string, number>
+    currentAlbumDefaultView: string
+  }) => (
+    <div
+      data-testid="album-probe"
+      data-streamer-id={props.streamerId}
+      data-packs={props.packNames.join(',')}
+      data-default-pack={String(props.defaultPackName)}
+      data-grid-sizes={JSON.stringify(props.currentAlbumGridSizes)}
+      data-default-view={props.currentAlbumDefaultView}
+    />
+  ),
+}))
 vi.mock('@/components/TradeSettings', () => ({
   default: (props: {
     streamerId: string
@@ -69,6 +87,10 @@ const SETTINGS = {
   showUnownedCardDetails: false,
   tradeEnabled: true,
   crossChannelTradeEnabled: false,
+  packNames: ['weapons', 'armors'],
+  defaultPackName: '基本パック',
+  albumGridSizes: { __all__: 6, weapons: 9 },
+  albumDefaultView: 'album' as const,
 }
 
 describe('AccountSettingsPage collection sharing section', () => {
@@ -112,6 +134,14 @@ describe('AccountSettingsPage collection sharing section', () => {
     expect(trade).toHaveAttribute('data-streamer-id', 'streamer-1')
     expect(trade).toHaveAttribute('data-trade', 'true')
     expect(trade).toHaveAttribute('data-cross', 'false')
+
+    // #1765 フォローアップ: アルバムのパック別既定も同じ初期値を受け取る
+    const album = screen.getByTestId('album-probe')
+    expect(album).toHaveAttribute('data-streamer-id', 'streamer-1')
+    expect(album).toHaveAttribute('data-packs', 'weapons,armors')
+    expect(album).toHaveAttribute('data-default-pack', '基本パック')
+    expect(album).toHaveAttribute('data-grid-sizes', JSON.stringify({ __all__: 6, weapons: 9 }))
+    expect(album).toHaveAttribute('data-default-view', 'album')
   })
 
   it('canUseStreamerFeatures が false なら出さず、DBにも問い合わせない', async () => {
@@ -122,6 +152,7 @@ describe('AccountSettingsPage collection sharing section', () => {
     expect(screen.queryByTestId('collection-sharing-section')).toBeNull()
     expect(screen.queryByTestId('visibility-probe')).toBeNull()
     expect(screen.queryByTestId('trade-probe')).toBeNull()
+    expect(screen.queryByTestId('album-probe')).toBeNull()
     expect(mocks.getStreamerCollectionSettings).not.toHaveBeenCalled()
   })
 

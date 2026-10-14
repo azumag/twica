@@ -394,7 +394,19 @@
     },
     "viewCollection": "View Collection",
     "unownedCard": "???",
-    "unownedStatus": "Unowned card"
+    "unownedStatus": "Unowned card",
+    "album": {
+      "viewLabel": "View",
+      "gridView": "Cards",
+      "albumView": "Album",
+      "gridSizeLabel": "Grid",
+      "gridSizeOption": "{size}×{size}",
+      "pageIndicator": "{page} / {total}",
+      "prevPage": "Previous page",
+      "nextPage": "Next page",
+      "emptySlot": "Empty slot",
+      "cardPosition": "Slot {number}"
+    }
   },
   "collectionProgress": {
     "progress": "{owned}/{total} types",
@@ -596,6 +608,28 @@
     },
     "errors": {
       "saveFailed": "Failed to save settings"
+    }
+  },
+  "albumDisplaySettings": {
+    "title": "Album view",
+    "description": "Configure the default album grid size per card pack and the view mode the collection page opens with. Viewers can still change the grid size while browsing.",
+    "allPacks": "All packs",
+    "defaultPackFallback": "Default",
+    "viewLabel": "Default view",
+    "viewGrid": "Cards",
+    "viewAlbum": "Album",
+    "viewHelp": "How the collection page opens. Viewers can switch at any time.",
+    "gridSizeTitle": "Album grid",
+    "gridSizeHelp": "Pick N for an N×N grid: each page shows N×N image-only tiles. \"Default\" follows the \"All packs\" setting (3×3 when unset).",
+    "gridSizeLabel": "Grid",
+    "gridSizeInherit": "Default",
+    "gridSizeOption": "{size}×{size}",
+    "messages": {
+      "saving": "Saving...",
+      "saved": "Saved"
+    },
+    "errors": {
+      "saveFailed": "Failed to save"
     }
   },
   "tradeSettings": {

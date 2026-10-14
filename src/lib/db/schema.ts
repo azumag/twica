@@ -101,6 +101,17 @@ export const streamers = pgTable('streamers', {
   // 20260817100000 (#722): トレード機能の配信者オプトイン（両方デフォルトOFF）
   trade_enabled: boolean('trade_enabled').notNull().default(false),
   cross_channel_trade_enabled: boolean('cross_channel_trade_enabled').notNull().default(false),
+  // 20261014120000 (#1765 フォローアップ): アルバム表示の並び (N×N) を
+  // コレクション(パック)ごとに指定する JSONB マップ。
+  // キー: __all__（すべてのパック / 個別指定が無いパックの既定）,
+  //       __default__（未分類のデフォルトパック）, または実パック名。
+  // 値: 1ページの N（ALBUM_GRID_SIZE_MIN..MAX。CHECK 制約は DB 側で担保）
+  pack_album_grid_sizes: jsonb('pack_album_grid_sizes')
+    .$type<Record<string, number>>()
+    .default(sql`NULL`),
+  // 20261014120000 (#1765 フォローアップ): コレクションページの初期表示。
+  // 'grid'（従来のカード一覧、既定）| 'album'（アルバムで開く）
+  collection_default_view: text('collection_default_view').notNull().default('grid'),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
 })

@@ -9,6 +9,7 @@ import CollectionProgress from "./CollectionProgress";
 import CollectionPackFilter from "./CollectionPackFilter";
 import type { CollectionPackDisplay } from "./CollectionPackFilter";
 import type { Streamer, Card } from "@/types/database";
+import type { AlbumDefaultView, AlbumGridSizeMap } from "@/lib/collection-album";
 
 export interface StreamerCollectionCard extends Card {
   count: number;
@@ -51,6 +52,12 @@ interface StreamerCollectionProps {
   // #726: the channel allows card trading (streamers.trade_enabled). Only then
   // is the "Trade" entry point shown; the board itself re-checks the gate.
   tradeEnabled?: boolean;
+  // #1765 フォローアップ: 配信者がコレクション(パック)ごとに指定した
+  // アルバムの並び N（スコープキー → N）と、ページの初期表示モード。
+  // Streamer-configured per-pack album grid sizes + the collection page's
+  // default view mode.
+  albumGridSizes?: AlbumGridSizeMap;
+  albumDefaultView?: AlbumDefaultView;
 }
 
 /**
@@ -70,6 +77,8 @@ export default async function StreamerCollection({
   packs = [],
   completionRewards = [],
   tradeEnabled = false,
+  albumGridSizes,
+  albumDefaultView,
 }: StreamerCollectionProps) {
   const t = await getTranslations("collection");
   const tStreamer = await getTranslations("streamerCollection");
@@ -93,6 +102,21 @@ export default async function StreamerCollection({
     sortLabel: t("sort.label"),
     sortByNumber: t("sort.number"),
     sortByRarity: t("sort.rarity"),
+    // #1765: アルバム表示（画像のみ・N×N）の翻訳。
+    // {page}/{total}/{number}/{size} は ICU に食われないよう、既存の cardCount と
+    // 同じく置換用トークンを引数として渡して文字列を組み立てる。
+    album: {
+      viewLabel: t("album.viewLabel"),
+      gridView: t("album.gridView"),
+      albumView: t("album.albumView"),
+      gridSizeLabel: t("album.gridSizeLabel"),
+      gridSizeOption: t("album.gridSizeOption", { size: "{size}" }),
+      pageIndicator: t("album.pageIndicator", { page: "{page}", total: "{total}" }),
+      prevPage: t("album.prevPage"),
+      nextPage: t("album.nextPage"),
+      emptySlot: t("album.emptySlot"),
+      cardPosition: t("album.cardPosition", { number: "{number}" }),
+    },
   };
 
   return (
@@ -146,6 +170,8 @@ export default async function StreamerCollection({
             overallCompletionHistory={completionHistory}
             packs={packs}
             gridTranslations={gridTranslations}
+            albumGridSizes={albumGridSizes}
+            albumDefaultView={albumDefaultView}
           />
         ) : (
           <>
@@ -169,6 +195,8 @@ export default async function StreamerCollection({
                 streamerId={streamer.id}
                 hideUnownedDetails={hideUnownedDetails}
                 translations={gridTranslations}
+                albumGridSizes={albumGridSizes}
+                albumDefaultView={albumDefaultView}
               />
             )}
           </>

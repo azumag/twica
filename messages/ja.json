@@ -394,7 +394,19 @@
     },
     "viewCollection": "コレクションを見る",
     "unownedCard": "???",
-    "unownedStatus": "未所持カード"
+    "unownedStatus": "未所持カード",
+    "album": {
+      "viewLabel": "表示",
+      "gridView": "カード",
+      "albumView": "アルバム",
+      "gridSizeLabel": "並び",
+      "gridSizeOption": "{size}×{size}",
+      "pageIndicator": "{page} / {total}",
+      "prevPage": "前のページ",
+      "nextPage": "次のページ",
+      "emptySlot": "空きスロット",
+      "cardPosition": "{number}枠目"
+    }
   },
   "collectionProgress": {
     "progress": "{owned}/{total}種類",
@@ -596,6 +608,28 @@
     },
     "errors": {
       "saveFailed": "設定の保存に失敗しました"
+    }
+  },
+  "albumDisplaySettings": {
+    "title": "アルバム表示",
+    "description": "コレクションページの「アルバム」表示について、カードパックごとの既定の並びと、ページを開いたときの初期表示を設定できます。視聴者は表示中に並びを変更できます。",
+    "allPacks": "すべてのパック",
+    "defaultPackFallback": "デフォルト",
+    "viewLabel": "初期表示",
+    "viewGrid": "カード",
+    "viewAlbum": "アルバム",
+    "viewHelp": "コレクションページを開いたときの表示です。視聴者はその場で切り替えられます。",
+    "gridSizeTitle": "アルバムの並び",
+    "gridSizeHelp": "N×N の N を指定します。1ページに N×N 枚を画像だけで表示します。「既定」は「すべてのパック」の設定（未設定なら3×3）に従います。",
+    "gridSizeLabel": "並び",
+    "gridSizeInherit": "既定",
+    "gridSizeOption": "{size}×{size}",
+    "messages": {
+      "saving": "保存中...",
+      "saved": "保存しました"
+    },
+    "errors": {
+      "saveFailed": "保存に失敗しました"
     }
   },
   "tradeSettings": {

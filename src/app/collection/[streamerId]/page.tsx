@@ -21,6 +21,10 @@ import {
 import StreamerCollection from "@/components/StreamerCollection";
 import type { StreamerCollectionCard } from "@/components/StreamerCollection";
 import { aggregateCustomRarities } from "@/lib/rarity";
+import {
+  normalizeAlbumDefaultView,
+  sanitizeAlbumGridSizeMap,
+} from "@/lib/collection-album";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -243,6 +247,11 @@ export default async function StreamerCollectionPage({
       // the trade-columns deploy window the safe-column fallback omits it and
       // the button stays hidden (fail closed).
       tradeEnabled={(streamer as typeof streamer & { trade_enabled?: boolean }).trade_enabled === true}
+      // #1765 フォローアップ: 配信者がパックごとに指定したアルバムの並び N と、
+      // コレクションページの初期表示モード。デプロイ窓で列が未作成の間は
+      // undefined になるため、安全側（3×3 / カード表示）へ縮退させる。
+      albumGridSizes={sanitizeAlbumGridSizeMap(streamer.pack_album_grid_sizes)}
+      albumDefaultView={normalizeAlbumDefaultView(streamer.collection_default_view)}
       // Issue #557: パック絞り込みタブ。isComplete/hasStoredRecord は記録判定用の
       // サーバー内部値なのでUIへは渡さない。
       packs={packs.map(({ key, displayName, progress: packProgress, completionHistory: packCompletionHistory }) => ({
