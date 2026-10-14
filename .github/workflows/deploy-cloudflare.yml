@@ -136,6 +136,59 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+  stats-aggregator:
+    # Issue #741 Step 2 preparation. The cron Worker is deployable only after the
+    # environment-specific STATS_REFRESH_SECRET pair is provisioned (Worker side
+    # STATS_REFRESH_SECRET_PROD/_PREVIEW must equal the app side value).
+    # Keep this opt-in so merging code cannot start the hourly aggregation.
+    if: vars.STATS_AGGREGATOR_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment) || (github.ref == 'refs/heads/preview' && 'preview') || 'production' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck Stats Aggregator Worker
+        run: npm run stats-aggregator:typecheck
+
+      - name: Build and verify preview Stats Aggregator Worker bundle
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
+        run: |
+          npm run stats-aggregator:build:preview
+          npm run check:supabase-shutdown -- --require-stats-aggregator-preview
+
+      - name: Build and verify production Stats Aggregator Worker bundle
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        run: |
+          npm run stats-aggregator:build:production
+          npm run check:supabase-shutdown -- --require-stats-aggregator-production
+
+      - name: Deploy preview Stats Aggregator Worker
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
+        run: npm run stats-aggregator:deploy:preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy production Stats Aggregator Worker
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        run: npm run stats-aggregator:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
   legacy-app-deploy:
     if: vars.CLOUDFLARE_WORKERS_BUILDS_ENABLED != 'true'
     runs-on: ubuntu-latest

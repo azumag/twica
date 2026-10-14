@@ -26,7 +26,7 @@
     "overlay-realtime:build:preview": "cd workers/overlay-realtime && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js",
     "error-reporter:build:production": "cd workers/error-reporter && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js",
     "error-reporter:build:preview": "cd workers/error-reporter && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js",
-    "auxiliary-workers:build": "npm run overlay-realtime:build:production && npm run overlay-realtime:build:preview && npm run error-reporter:build:production && npm run error-reporter:build:preview && npm run chat-delivery:build:production && npm run chat-delivery:build:preview",
+    "auxiliary-workers:build": "npm run overlay-realtime:build:production && npm run overlay-realtime:build:preview && npm run error-reporter:build:production && npm run error-reporter:build:preview && npm run chat-delivery:build:production && npm run chat-delivery:build:preview && npm run stats-aggregator:build:production && npm run stats-aggregator:build:preview",
     "overlay-realtime:deploy": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/overlay-realtime/wrangler.toml",
     "overlay-realtime:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/overlay-realtime/wrangler.toml --env preview",
     "cloudflare:deploy:production": "bash scripts/cloudflare-workers-build-deploy.sh production deploy",
@@ -60,7 +60,9 @@
     "chat-delivery:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/chat-delivery/wrangler.toml --env preview",
     "stats-aggregator:typecheck": "tsc -p workers/stats-aggregator/tsconfig.json",
     "stats-aggregator:build:production": "cd workers/stats-aggregator && wrangler deploy --dry-run --config wrangler.toml --env=\"\" --outfile dist/production/index.js",
-    "stats-aggregator:build:preview": "cd workers/stats-aggregator && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js"
+    "stats-aggregator:build:preview": "cd workers/stats-aggregator && wrangler deploy --dry-run --config wrangler.toml --env preview --outfile dist/preview/index.js",
+    "stats-aggregator:deploy": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/stats-aggregator/wrangler.toml",
+    "stats-aggregator:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/stats-aggregator/wrangler.toml --env preview"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

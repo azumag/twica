@@ -35,6 +35,10 @@ const AUX_WORKER_ARTIFACT_BY_FLAG = Object.freeze({
     'workers/chat-delivery/dist/production/index.js',
   '--require-chat-delivery-preview':
     'workers/chat-delivery/dist/preview/index.js',
+  '--require-stats-aggregator-production':
+    'workers/stats-aggregator/dist/production/index.js',
+  '--require-stats-aggregator-preview':
+    'workers/stats-aggregator/dist/preview/index.js',
 })
 const REQUIRED_AUX_WORKER_ARTIFACTS = Object.freeze(
   Object.values(AUX_WORKER_ARTIFACT_BY_FLAG),
