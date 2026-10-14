@@ -100,7 +100,7 @@ describe('AlbumDisplaySettings', () => {
   it('初期表示をアルバムに切り替えると default view を保存する', async () => {
     mount()
 
-    fireEvent.click(screen.getByRole('button', { name: messages.albumDisplaySettings.viewAlbum }))
+    fireEvent.click(screen.getByRole('button', { name: messages.collection.album.albumView }))
 
     await waitFor(() =>
       expect(mockFetch).toHaveBeenCalledWith(
@@ -114,7 +114,7 @@ describe('AlbumDisplaySettings', () => {
       )
     )
     expect(
-      screen.getByRole('button', { name: messages.albumDisplaySettings.viewAlbum })
+      screen.getByRole('button', { name: messages.collection.album.albumView })
     ).toHaveAttribute('aria-pressed', 'true')
   })
 

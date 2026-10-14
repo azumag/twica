@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
@@ -92,6 +92,8 @@ export default function CardAlbumView({
   onGridSizeChange,
 }: CardAlbumViewProps) {
   const [page, setPage] = useState(0);
+  // 同じページに複数のアルバムが載っても id が衝突しないようにする。
+  const gridSizeSelectId = useId();
   const [internalGridSize, setInternalGridSize] = useState(
     () => normalizeAlbumGridSize(gridSize) ?? DEFAULT_ALBUM_GRID_SIZE
   );
@@ -138,13 +140,13 @@ export default function CardAlbumView({
       {/* 並び (N×N) の選択。配信者の既定値を初期値に、閲覧者がその場で変更できる。 */}
       <div className="mb-3 flex items-center justify-center gap-2">
         <label
-          htmlFor="card-album-grid-size"
+          htmlFor={gridSizeSelectId}
           className="text-sm text-gray-400"
         >
           {translations.gridSizeLabel}
         </label>
         <select
-          id="card-album-grid-size"
+          id={gridSizeSelectId}
           data-testid="card-album-grid-size"
           value={String(size)}
           onChange={(event) => selectGridSize(Number(event.target.value))}

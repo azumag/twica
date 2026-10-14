@@ -616,14 +616,10 @@
     "allPacks": "All packs",
     "defaultPackFallback": "Default",
     "viewLabel": "Default view",
-    "viewGrid": "Cards",
-    "viewAlbum": "Album",
     "viewHelp": "How the collection page opens. Viewers can switch at any time.",
     "gridSizeTitle": "Album grid",
     "gridSizeHelp": "Pick N for an N×N grid: each page shows N×N image-only tiles. \"Default\" follows the \"All packs\" setting (3×3 when unset).",
-    "gridSizeLabel": "Grid",
     "gridSizeInherit": "Default",
-    "gridSizeOption": "{size}×{size}",
     "messages": {
       "saving": "Saving...",
       "saved": "Saved"

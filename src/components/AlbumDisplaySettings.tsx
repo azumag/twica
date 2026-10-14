@@ -52,6 +52,9 @@ export default function AlbumDisplaySettings({
   currentAlbumDefaultView,
 }: AlbumDisplaySettingsProps) {
   const t = useTranslations("albumDisplaySettings");
+  // 視聴者側のアルバム表示と同じ文言（カード / アルバム・並び・N×N）を使う。
+  // 設定画面と閲覧画面でラベルが食い違わないよう、collection.album を再利用する。
+  const tAlbum = useTranslations("collection.album");
   const tMaintenance = useTranslations("maintenance");
   // #694 Stage 6b: ダッシュボード共有Context経由のmaintenance状態。
   const { mode: maintenanceMode } = useMaintenanceStatus();
@@ -158,7 +161,7 @@ export default function AlbumDisplaySettings({
 
   const disabled = saving || isMaintenanceBlocked;
   const optionLabel = (size: number) =>
-    t("gridSizeOption", { size: String(size) });
+    tAlbum("gridSizeOption", { size: String(size) });
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
@@ -178,8 +181,8 @@ export default function AlbumDisplaySettings({
           <span className="text-sm text-gray-300">{t("viewLabel")}</span>
           {(
             [
-              ["grid", t("viewGrid")],
-              ["album", t("viewAlbum")],
+              ["grid", tAlbum("gridView")],
+              ["album", tAlbum("albumView")],
             ] as const
           ).map(([mode, label]) => (
             <button
@@ -213,9 +216,9 @@ export default function AlbumDisplaySettings({
                     {scope.label}
                   </span>
                   <label className="ml-auto flex items-center gap-2 text-xs text-gray-400">
-                    <span>{t("gridSizeLabel")}</span>
+                    <span>{tAlbum("gridSizeLabel")}</span>
                     <select
-                      aria-label={`${scope.label} ${t("gridSizeLabel")}`}
+                      aria-label={`${scope.label} ${tAlbum("gridSizeLabel")}`}
                       value={
                         normalizeAlbumGridSize(current) === null
                           ? INHERIT_VALUE
