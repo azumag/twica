@@ -102,9 +102,9 @@ function installDbFixture(options: FixtureOptions = {}) {
   const transactionCalls: unknown[][] = []
   /**
    * getLatestCardIdForStreamer が orderBy に渡した並び順キーの列名。
-   * Issue #1300: `id` を第2キーに戻すとplannerが redeemed_at 単独indexへ寄り、
-   * 直近履歴が古い配信者で 200,003 行をFilterして落とす計画(実測15.4 ms/call)に
-   * 退行する。SQL文字列ではなくorderByの引数で固定する。
+   * Issue #1300: 既存covering indexのキー内で時刻とcard_idを同じ逆順に読む。
+   * SQL文字列だけでなくorderBy引数を固定し、実際のplanner選択はPG17 fixtureで
+   * 検証する。unit testで性能成功を代用しない。
    */
   const latestHistoryOrderByColumns: string[][] = []
   let latestCardCursor = 0
@@ -270,16 +270,10 @@ describe('GachaService repeat protection', () => {
     expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(1)
   })
 
-  it('最新履歴取得は redeemed_at を単独の並び順キーにして id を第2キーにしない', async () => {
-    // Issue #1300: `id DESC` を並べると planner が
-    // idx_gacha_history_redeemed_at_analysis(redeemed_at単独)を選び、streamer_idを
-    // ヒープ側Filterとして評価する。直近履歴が古い配信者(履歴20万件・自分より新しい
-    // 行が20万件)では200,003行をFilterして落とし、実測15.4 ms/call(同じ条件で
-    // redeemed_at単独なら0.009 ms/call)に退行する。`id` は uuid_generate_v4() の
-    // ランダムUUIDなので降順に並べても時間順の意味がなく、同値 redeemed_at
-    // (N連は1トランザクション内で now() が固定されるため全ドローが同刻)をどちらへ
-    // 倒すかは付加前後でどちらも任意である。
-    // 実行計画そのものは tests/fixtures/gacha-latest-history-plan.sh が実PGで検証する。
+  it('最新履歴取得は既存covering indexの redeemed_at と card_id を並び順キーにする', async () => {
+    // 同刻の最新履歴をcard_id順で安定させる。record idを戻さず、既存index内で
+    // 順序を供給できる形を固定する。redeemed_atのNULL除外やread障害fallbackは
+    // 既存testで維持し、性能はtests/fixtures/gacha-latest-history-plan.shで検証する。
     const fixture = installDbFixture({ latestCardId: 'card-a' })
     mockSecureRandomUnit(0)
 
@@ -291,7 +285,7 @@ describe('GachaService repeat protection', () => {
     })
 
     expect(result.success).toBe(true)
-    expect(fixture.latestHistoryOrderByColumns).toEqual([['redeemed_at']])
+    expect(fixture.latestHistoryOrderByColumns).toEqual([['redeemed_at', 'card_id']])
   })
 
   it('redeemed_atがNULLの履歴しかなくても、従来の独立抽選へ安全にフォールバックする', async () => {

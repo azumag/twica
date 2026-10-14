@@ -8,16 +8,11 @@ set -euo pipefail
 # visibility mapを見て決めるため、実PostgreSQL 17へpreview相当データ量を投入
 # して確かめる必要がある(analysis-dashboard-pagination-postgres.sql と同じ発想)。
 #
-# 背景: `ORDER BY redeemed_at DESC, id DESC` のままでは、plannerが
-# idx_gacha_history_redeemed_at_analysis(redeemed_at単独)を選び、streamer_idを
-# ヒープ側Filterとして評価する。そうすると「自分より新しい全配信者の履歴」を
-# 1行ずつFilterして落とすため、履歴が大きいほど線形に悪化する。このfixtureと同じ
-# 40万件・直近履歴が古い配信者で、アプリと同じprepared statementとして200回実行した
-# 実測(投入→VACUUM後):
-#   - `ORDER BY redeemed_at DESC, id DESC` → 15.4 ms/call
-#     (Incremental Sort + Rows Removed by Filter: 200,003)
-#   - `ORDER BY redeemed_at DESC`          → 0.009 ms/call
-#     (idx_gacha_history_streamer_redeemed_card_user の Index Only Scan Backward)
+# 背景: redeemed_at単独のqueryでも、公開PG17 CIはgeneric planでglobalな
+# idx_gacha_history_redeemed_at_analysisを選び、stale-heavyで200,026行をFilterした。
+# ORDER BY redeemed_at DESC, card_id DESCを既存covering indexのキーへ合わせる
+# 候補を検証する。時刻の最大値は変えず、同刻履歴はNOT NULLのcard_idで安定させる。
+# index/schemaやplanner設定を変更せず、性能成功はこの実DB fixtureの結果で判断する。
 #
 # なぜshell fixtureか:
 #   - 実行計画の測定にはVACUUMが必要。VACUUMはtransaction内で実行できないため、
@@ -26,7 +21,8 @@ set -euo pipefail
 #     回っている)と同じ条件を再現できない。ここでは投入→VACUUM→計測→後片付けを
 #     コミット済みデータで行う(add-card-trading-concurrency.sh と同じ方式)。
 #   - アプリはpostgres.jsのprepared statement(prepare: trueが既定、Hyperdriveも
-#     キャッシュする)で投げるため、planは「5回目以降のgeneric plan」が本体。
+#     キャッシュする)で投げる。autoでは初回5回のcustom plan costとgeneric planの
+#     見積もりcostを比較して選ぶため、必ずgenericになるわけではない。
 #     リテラル直打ちのEXPLAINはcustom planになり別物の計測になるため、
 #     PREPARE→EXECUTE(ウォームアップ)→EXPLAIN EXECUTEで実際に使われるplanを見る。
 #
@@ -135,6 +131,17 @@ INSERT INTO public.gacha_history (
   TIMESTAMPTZ '2026-02-01T00:00:00Z', 'ghp-stale-evt-latest'
 );
 
+-- 同じ最大redeemed_atに別cardを置く。record idは大きい方へしても、
+-- card_id DESCによってLATEST_CARDを選ぶ（同刻の挿入順を推定しない）。
+INSERT INTO public.gacha_history (
+  id, user_twitch_id, user_twitch_username, card_id, streamer_id, redeemed_at, event_id
+) VALUES (
+  '13000000-0000-4000-8000-0000000000ff',
+  'ghp-viewer-tied', 'ghp-viewer-tied',
+  '$BULK_CARD', '$STALE_STREAMER',
+  TIMESTAMPTZ '2026-02-01T00:00:00Z', 'ghp-stale-evt-tied'
+);
+
 -- stale heavy の最新10件は redeemed_at = NULL。PostgreSQLのDESCは既定で
 -- NULLS FIRSTなので、IS NOT NULLが無いとこのNULL行が「最新」として拾われる。
 -- カードを別物にして、フィルタが外れたら期待結果が崩れるようにする。
@@ -204,7 +211,7 @@ SQL
 LATEST_CARD_RESULT="$("${PSQL[@]}" -c \
   "SELECT card_id FROM public.gacha_history
    WHERE streamer_id = '$STALE_STREAMER' AND redeemed_at IS NOT NULL
-   ORDER BY redeemed_at DESC LIMIT 1;")"
+   ORDER BY redeemed_at DESC, card_id DESC LIMIT 1;")"
 if [[ "$LATEST_CARD_RESULT" != "$LATEST_CARD" ]]; then
   echo "NULL履歴が最新のとき、最新の非NULL履歴を返していない (got=$LATEST_CARD_RESULT expected=$LATEST_CARD)" >&2
   exit 1
@@ -214,7 +221,7 @@ ALL_NULL_ROWS="$("${PSQL[@]}" -c \
   "SELECT count(*) FROM (
      SELECT card_id FROM public.gacha_history
      WHERE streamer_id = '$ALL_NULL_STREAMER' AND redeemed_at IS NOT NULL
-     ORDER BY redeemed_at DESC LIMIT 1
+     ORDER BY redeemed_at DESC, card_id DESC LIMIT 1
    ) AS latest;")"
 if [[ "$ALL_NULL_ROWS" != "0" ]]; then
   echo "履歴が全部NULLの配信者で0件になっていない (rows=$ALL_NULL_ROWS)" >&2
@@ -225,7 +232,8 @@ fi
 # 3) 実行計画: 直近履歴クエリがcovering indexを使い、Sortも大量Filterもない
 #
 #    PREPARE→EXECUTE(6回のウォームアップ)→EXPLAIN EXECUTE で、アプリが実際に
-#    使う(prepared statementの)planを見る。リテラル直打ちのEXPLAINはcustom plan
+#    使う(prepared statementの)planを見る。generic選択の有無はEXPLAIN出力で確認する。
+#    リテラル直打ちのEXPLAINはcustom plan
 #    になり、streamer_idの選択率しだいでglobal indexを選ぶ別物の計測になる。
 # ---------------------------------------------------------------------------
 assert_latest_plan() {
@@ -236,7 +244,7 @@ assert_latest_plan() {
 PREPARE ghp_latest(uuid) AS
   SELECT card_id FROM gacha_history
   WHERE streamer_id = \$1 AND redeemed_at IS NOT NULL
-  ORDER BY redeemed_at DESC LIMIT 1;
+  ORDER BY redeemed_at DESC, card_id DESC LIMIT 1;
 EXECUTE ghp_latest('$streamer_id');
 EXECUTE ghp_latest('$streamer_id');
 EXECUTE ghp_latest('$streamer_id');
@@ -253,8 +261,8 @@ SQL
     exit 1
   fi
 
-  # Incremental Sort も "Sort" に一致する。第2キー(id)が戻るとpresorted prefixが
-  # 効かずSortが必要な計画になり、plannerがglobal indexへ寄る。
+  # Incremental Sortも"Sort"に一致する。covering indexが全順序を供給し、
+  # 追加Sortやglobal indexによる大量Filterへ退行していないことを確認する。
   if [[ "$plan" == *"Sort"* ]]; then
     echo "$label: ガチャ直近履歴クエリのプランにSortが残っている" >&2
     echo "$plan" >&2
