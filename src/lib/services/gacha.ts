@@ -982,8 +982,32 @@ export class GachaService {
 
   /**
    * Issue #1296: 配信者の直近ガチャ結果を1件だけ取得する。
-   * `(streamer_id, redeemed_at, card_id, ...)` の既存covering index (#672)を使える
-   * 並びで読み、同一時刻の決定性だけUUID主キーで補う。
+   * `(streamer_id, redeemed_at, card_id, ...)` の既存covering index (#672)が
+   * 並び順を満たす形で読み、履歴件数に依存しないプランにする。
+   *
+   * 順序キーは redeemed_at だけ(#1300)。第2キーの id は外す:
+   * - `id` は `uuid_generate_v4()` のランダムUUIDなので、降順に並べても「後から
+   *   挿入された行が先に来る」意味を持たない。同値の redeemed_at(N連は1トランザクション
+   *   内で now() が固定されるため全ドローが同刻になる)をどちらへ倒すかは、付加前後で
+   *   どちらも任意である。したがって id を並べる意味はない。
+   * - 一方で id DESC を付けると、presorted prefix を成立させるために planner が
+   *   `idx_gacha_history_redeemed_at_analysis`(redeemed_at 単独)を選び、streamer_id を
+   *   ヒープ側のFilterとして評価する計画になる。そうすると「自分より新しい全配信者の
+   *   履歴」を1行ずつFilterして落とすため、テーブルが大きいほど線形に悪化する。
+   *   PostgreSQL 17 / 実スキーマ・40万件(対象配信者の履歴20万件は最終引換が古く、
+   *   他配信者の新しい20万件が後ろに積まれている形状)で、アプリと同じ
+   *   prepared statement として200回実行した実測:
+   *     - `ORDER BY redeemed_at DESC, id DESC` → Incremental Sort + 全行Filter で
+   *       **15.4 ms/call**(Rows Removed by Filter: 200,003)
+   *     - `ORDER BY redeemed_at DESC` → `idx_gacha_history_streamer_redeemed_card_user`
+   *       の Index Only Scan Backward で **0.009 ms/call**
+   *   直近履歴が数件だけの配信者(プレビュー初期の配信者)でも、id DESC 側は
+   *   テーブル全行をFilterして落とすため、テーブルが大きいと同じ弊害が出る。
+   *   計測と実行計画は tests/fixtures/gacha-latest-history-plan.sh がCIで再現する。
+   *
+   * 注意(残留リスク): 大量投入の直後など visibility map が立っていない間は、
+   * planner の見積もりがズレて global index 側を選ぶことがある。autovacuumが
+   * 回ってVMが整うと covering index 側へ戻るため、恒常的な退行にはならない。
    *
    * この読み取りは反復体感を改善する補助情報であり、課金・付与の正本ではない。
    * 接続断や一時障害ではガチャ全体を失敗させずnullを返し、従来の独立抽選へ
@@ -999,7 +1023,7 @@ export class GachaService {
             eq(gachaHistory.streamer_id, streamerId),
             isNotNull(gachaHistory.redeemed_at),
           ))
-          .orderBy(desc(gachaHistory.redeemed_at), desc(gachaHistory.id))
+          .orderBy(desc(gachaHistory.redeemed_at))
           .limit(1)
       }, 'gacha:getLatestCardIdForStreamer', { idempotent: true })
       return rows[0]?.card_id ?? null
