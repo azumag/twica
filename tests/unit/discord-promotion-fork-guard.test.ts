@@ -26,14 +26,14 @@ function pullRequestTargetTypes(source: string): string[] {
 
 function missingSummaryBranches(source: string): {
   promotion: string;
-  directToMain: string;
+  nonPromotion: string;
 } {
   const match = source.match(
     /if is_promotion:\n([\s\S]*?)\n\s+else:\n([\s\S]*?)\n\s+prefix =/
   );
   return {
     promotion: match?.[1] ?? "",
-    directToMain: match?.[2] ?? "",
+    nonPromotion: match?.[2] ?? "",
   };
 }
 
@@ -41,6 +41,12 @@ describe("Discord promotion validation fork guard", () => {
   it("skips the validation job for fork-owned preview branches", () => {
     const condition = validationCondition(workflow);
 
+    // The validation job is the promotion-only gate: it must never run for
+    // preview-target PRs, even though the workflow now also triggers on merges
+    // into `preview`.
+    expect(condition).toContain(
+      "github.event.pull_request.base.ref == 'main'"
+    );
     expect(condition).toContain(
       "github.event.pull_request.head.repo.full_name == github.repository"
     );
@@ -57,6 +63,10 @@ describe("Discord promotion validation fork guard", () => {
   });
 
   it("keeps missing-summary warnings and failures limited to preview promotions", () => {
+    // The promotion classification must consider the trusted base ref as well as
+    // the head ref/repository, otherwise a preview merge could trigger the
+    // promotion-only warning and the post-delivery failure.
+    expect(workflow).toContain("base_ref == promotion_target_ref");
     expect(workflow).toContain(
       'os.environ.get("HEAD_REF") == promotion_source_ref'
     );
@@ -64,15 +74,15 @@ describe("Discord promotion validation fork guard", () => {
       'os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")'
     );
 
-    const { promotion, directToMain } = missingSummaryBranches(workflow);
+    const { promotion, nonPromotion } = missingSummaryBranches(workflow);
 
     expect(promotion).toContain("::warning::Promotion PR summary missing");
     expect(promotion).toContain("PROMOTION_SUMMARY_MISSING=true");
-    expect(directToMain).toContain(
-      "A direct-to-main merge has no promotion-summary contract."
+    expect(nonPromotion).toContain(
+      "Preview merges and direct-to-main merges have no"
     );
-    expect(directToMain).not.toContain("::warning::");
-    expect(directToMain).not.toContain("PROMOTION_SUMMARY_MISSING=true");
+    expect(nonPromotion).not.toContain("::warning::");
+    expect(nonPromotion).not.toContain("PROMOTION_SUMMARY_MISSING=true");
   });
 
   it("discards fork PR bodies before the shared release-summary parser sees them", () => {
