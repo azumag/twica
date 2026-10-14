@@ -59,8 +59,9 @@ mainへの昇格PRは、タイトルと本文の先頭を一般ユーザー向�
 - 本文の最初の見出しは完全一致の `## このリリースで変わること` とし、画面・操作・データへの影響を一般ユーザー向けに記載する。変更が内部テスト・運用だけの場合も、その事実とユーザー影響なしを明記する。
 - その後に `対象PRと固定SHA`、累積release-unit一覧、レビュー、CI、previewデプロイ、ブラウザー／実経路の確認、main昇格条件を記載する。
 - テンプレートは自動適用を前提にせず、Web UIまたは `gh pr create --template .github/PULL_REQUEST_TEMPLATE/release.md` などで明示指定し、見出し本文を必ず記入する。既定テンプレートが表示されても、空欄のまま昇格してはならない。
-- baseが`main`、headが`preview`のPRは、`opened`・`reopened`・`edited`・`synchronize`時のマージ前チェックでこの見出しの本文が空または欠落している場合に失敗させる。`closed`後の通知側検証はバックストップとして残す。その他のmainマージはサニタイズしたタイトルへフォールバックする場合でもActionsログへwarningを残す。
-- Discord通知へ渡す本文からHTMLコメント、内部機械マーカー、外部リンク記法を漏らさず、ユーザー向けの説明だけを送る。fork由来PRの本文は採用せず、サニタイズしたタイトルへフォールバックする。
+- baseが`main`、headが`preview`のPRは、`opened`・`reopened`・`edited`・`synchronize`時のマージ前チェックでこの見出しの本文が空または欠落している場合に失敗させる。`closed`後の通知側検証はバックストップとして残す。
+- `preview`へマージする機能PRと`main`への直接マージはこの見出しの契約外であり、通知本文は対象セクションがあればその本文、無ければサニタイズしたPRタイトルを使う。warningやjob failureとして扱うのは`preview → main`昇格PRの要約欠落だけとする。
+- Discord通知へ渡す本文からHTMLコメント、内部機械マーカー、外部リンク記法を漏らさず、ユーザー向けの説明だけを送る。fork由来PRの本文は採用せず、サニタイズしたタイトルへフォールバックする。`preview`へマージする機能PRは未リリースのpreview配備として、`→ preview`と表示してmainのリリース通知と区別する（preview通知の有効化はこのworkflowが既定ブランチ`main`に載ってから。`docs/discord-main-merge-notification.md`参照）。
 
 ## Preview昇格時の累積変更テスト
 

@@ -130,10 +130,17 @@ export function readStartTime(pid) {
   }
 }
 
-/** 記録したグループが今も「当時起動したもの」か（PID 再利用されていないか）を判定する。 */
-export function isOwnedGroup({ pgid, startTime }) {
+/**
+ * 記録したグループが今も「当時起動したもの」か（PID 再利用されていないか）を判定する。
+ * readStart は起動時刻の読み取り器で、既定は ps を使う readStartTime。実行環境によっては
+ * ps 自体を実行できない（サンドボックス化された環境や procps の無い最小コンテナでは
+ * setuid バイナリの exec やプロセス列挙が拒否される）。判定は「記録した起動時刻と現在の
+ * 起動時刻の照合」という文字列比較の契約なので、読み取り器を差し替え可能にして
+ * 照合ロジックを ps の可用性と独立に検証できるようにしている（本番経路 main は既定値のみ使う）。
+ */
+export function isOwnedGroup({ pgid, startTime }, readStart = readStartTime) {
   if (!Number.isInteger(pgid) || pgid <= 1 || !hasLiveMembers(pgid)) return false
-  const leaderStart = readStartTime(pgid)
+  const leaderStart = readStart(pgid)
   // リーダー不在でグループが生存 = 当時のワーカーの残留（POSIX はグループ存続中の PID 再利用を禁止）
   if (leaderStart === null) return true
   return leaderStart === startTime
@@ -165,12 +172,14 @@ export async function terminateGroup(pgid, { graceMs = TERM_GRACE_MS, log = cons
  * 記録したラッパーが今も同じプロセスとして生きているかを判定する。
  * wrapperStartTime を持たない旧記録は PID が生きていれば従来どおり「実行中」とみなし、
  * 誤って別プロセスを掃除するより残留を見逃す安全側へ倒す。
+ * readStart は起動時刻の読み取り器（既定は ps を使う readStartTime）。isOwnedGroup と
+ * 同じ理由で差し替え可能にし、PID 再利用の照合契約を ps の可用性と独立に検証できるようにする。
  */
-export function isWrapperActive({ wrapperPid, wrapperStartTime }) {
+export function isWrapperActive({ wrapperPid, wrapperStartTime }, readStart = readStartTime) {
   if (!Number.isInteger(wrapperPid) || wrapperPid <= 1 || !exists(wrapperPid)) return false
   if (typeof wrapperStartTime !== 'string' || wrapperStartTime === '') return true
 
-  const currentStartTime = readStartTime(wrapperPid)
+  const currentStartTime = readStart(wrapperPid)
   // ps が使えない/一時的に読めない環境では PID 存在確認だけを信頼して触らない。
   if (currentStartTime === null) return true
   return currentStartTime === wrapperStartTime
@@ -182,8 +191,15 @@ export function isWrapperActive({ wrapperPid, wrapperStartTime }) {
  * 書き込み元ラッパーが停止済みと確認できた場合だけ通常記録と同様に回収する。
  * 書き込み途中で JSON が壊れている tmp は、並行実行中の writer と区別できないため触らない。
  * 戻り値は終了処理した pgid の一覧。
+ * readStart は isWrapperActive / isOwnedGroup へ渡す起動時刻の読み取り器（既定は ps を使う
+ * readStartTime）。テストが ps を実行できない環境でも stale 判定の契約を検証できるようにする。
  */
-export async function cleanupStale({ stateDir, graceMs = TERM_GRACE_MS, log = console.error }) {
+export async function cleanupStale({
+  stateDir,
+  graceMs = TERM_GRACE_MS,
+  log = console.error,
+  readStart = readStartTime,
+}) {
   let names
   try {
     names = readdirSync(stateDir).filter(
@@ -207,8 +223,8 @@ export async function cleanupStale({ stateDir, graceMs = TERM_GRACE_MS, log = co
     }
     // 記録したラッパーが生きている = 並行実行中の test:agent。触らない。
     // wrapperStartTime が一致しない PID 再利用だけは「元ラッパー死亡」と判定できる。
-    if (isWrapperActive(record)) continue
-    if (isOwnedGroup(record)) {
+    if (isWrapperActive(record, readStart)) continue
+    if (isOwnedGroup(record, readStart)) {
       log(`[vitest-agent] terminating leftover Vitest process group ${record.pgid}`)
       await terminateGroup(record.pgid, { graceMs, log })
       cleaned.push(record.pgid)
