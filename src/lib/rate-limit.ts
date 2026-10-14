@@ -504,6 +504,10 @@ export const rateLimits = {
   // OBS overlay polling fallback. One browser source polling every few seconds
   // should fit comfortably while still limiting accidental tight loops.
   overlayEventsGet: createRatelimit("overlayEventsGet", 120, 60 * 1000),
+  // Issue #934: docich 同志カードコーナーの公開ランキング取得。コーナー開始時に
+  // 1回・ページ送りで最大4回（設計 docs/features/doushi-card-corner.md §7-1）が
+  // 通常運用の上限。監視再取得とオーバーレイの手動確認を含めて 60/分で十分な余裕。
+  overlayCardRankingGet: createRatelimit("overlayCardRankingGet", 60, 60 * 1000),
   debugSession: createRatelimit("debugSession", 10, 60 * 1000),
   // 投票キャンペーンは1ユーザー1回だが、DoS対策として制限（分あたり5回）
   voteCampaign: createRatelimit("voteCampaign", 5, 60 * 1000),
