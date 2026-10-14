@@ -625,7 +625,8 @@
       "saved": "保存しました"
     },
     "errors": {
-      "saveFailed": "保存に失敗しました"
+      "saveFailed": "保存に失敗しました",
+      "unavailable": "現在この設定は保存できません（反映待ち）。時間をおいて再度お試しください。"
     }
   },
   "tradeSettings": {

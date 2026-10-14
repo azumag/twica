@@ -86,14 +86,29 @@ export default function AlbumDisplaySettings({
           setIsError(true);
           return false;
         }
+        const data: unknown = await response.json().catch(() => null);
+        const echoed =
+          data && typeof data === "object"
+            ? (data as {
+                packAlbumGridSizes?: unknown;
+                collectionDefaultView?: unknown;
+                albumSettingsSkippedDeployWindow?: unknown;
+              })
+            : null;
+
+        // デプロイ窓（migration 未適用）では route が 200 を返しつつ両項目を
+        // UPDATE から剥がす。HTTP 200 を「保存できた」と扱うと、未保存の値を
+        // 保存済みとして見せてしまう（サイレント欠損）ため、失敗として返し
+        // 呼び出し側に楽観反映を戻させる。
+        if (echoed?.albumSettingsSkippedDeployWindow === true) {
+          setMessage(t("errors.unavailable"));
+          setIsError(true);
+          return false;
+        }
+
         // サーバ側で prune（カタログから消えたパックの既定を除去）された確定値を
         // 取り込み、表示と DB を一致させる。応答に含まれない場合は送信値を保持する。
-        const data: unknown = await response.json().catch(() => null);
-        if (data && typeof data === "object") {
-          const echoed = (data as {
-            packAlbumGridSizes?: unknown;
-            collectionDefaultView?: unknown;
-          });
+        if (echoed) {
           if (payload.packAlbumGridSizes !== undefined && "packAlbumGridSizes" in echoed) {
             setGridSizes(sanitizeAlbumGridSizeMap(echoed.packAlbumGridSizes));
           }

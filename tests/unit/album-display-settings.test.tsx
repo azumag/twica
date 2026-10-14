@@ -133,6 +133,36 @@ describe('AlbumDisplaySettings', () => {
     )
   })
 
+  it('デプロイ窓の skip 応答（200 + flag）を保存成功として扱わない', async () => {
+    // 公開routeはアルバム列が未デプロイの窓で、両項目を UPDATE から剥がし
+    // HTTP 200 + albumSettingsSkippedDeployWindow:true を返す（echo は省略）。
+    mockFetch.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            albumSettingsSkippedDeployWindow: true,
+          })
+        )
+    )
+    mount()
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'armors 並び' }), {
+      target: { value: '6' },
+    })
+
+    expect(
+      await screen.findByText(messages.albumDisplaySettings.errors.unavailable)
+    ).toBeInTheDocument()
+    // 未保存の値を保存済みとして残さない（楽観反映を戻す）
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'armors 並び' })).toHaveValue('')
+    )
+    expect(
+      screen.queryByText(messages.albumDisplaySettings.messages.saved)
+    ).not.toBeInTheDocument()
+  })
+
   it('maintenance 中は変更できない（書き込みを送らない）', () => {
     render(
       <NextIntlClientProvider locale="ja" messages={messages}>

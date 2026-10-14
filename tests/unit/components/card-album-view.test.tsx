@@ -364,6 +364,19 @@ describe('SortedCardGrid - アルバム表示とパック別既定 (#1765)', () 
     )
     expect(gridStyle()).toBe('repeat(9, minmax(0, 1fr))')
 
+    // A→B→A の往復でも、A で選び直した 4×4 ではなく A の既定（3×3）に戻る。
+    rerender(
+      <SortedCardGrid
+        cards={cards}
+        streamerId="streamer-1"
+        translations={gridTranslations}
+        albumDefaultView="album"
+        albumGridSizes={{ __all__: 3, weapons: 9, __default__: 6 }}
+        albumScopeKey="__all__"
+      />
+    )
+    expect(gridStyle()).toBe('repeat(3, minmax(0, 1fr))')
+
     // 個別指定の無いパックは __all__（3×3）へフォールバックする
     rerender(
       <SortedCardGrid

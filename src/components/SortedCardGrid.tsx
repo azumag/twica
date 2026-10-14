@@ -98,17 +98,17 @@ export default function SortedCardGrid({
   const scopeDefaultView = normalizeAlbumDefaultView(albumDefaultView);
   const scopeDefaultGridSize = resolveAlbumGridSize(albumGridSizes, scopeKey);
   // スコープが変わったら、そのスコープの既定（並び・表示）へ戻す。閲覧者が
-  // 同一スコープ内で選び直した値は保持する（effect ではなく render 時の導出に
-  // することで、スコープ切替直後の1フレームだけ古い値が出るのを避ける）。
-  const [viewChoice, setViewChoice] = useState<{ scope: string; mode: CollectionViewMode }>(
-    { scope: scopeKey, mode: scopeDefaultView }
-  );
-  const [sizeChoice, setSizeChoice] = useState<{ scope: string; size: number }>(
-    { scope: scopeKey, size: scopeDefaultGridSize }
-  );
-  const viewMode = viewChoice.scope === scopeKey ? viewChoice.mode : scopeDefaultView;
-  const albumGridSize =
-    sizeChoice.scope === scopeKey ? sizeChoice.size : scopeDefaultGridSize;
+  // 同一スコープ内で選び直した値は保持するが、別スコープへ移った時点で捨てる
+  // （A→B→A の往復でも A の既定に戻る）。effect ではなく render 中の state 調整で
+  // 同期させ、切替直後に古い値が1フレーム出るのを避ける。
+  const [viewMode, setViewMode] = useState<CollectionViewMode>(scopeDefaultView);
+  const [albumGridSize, setAlbumGridSize] = useState<number>(scopeDefaultGridSize);
+  const [activeScopeKey, setActiveScopeKey] = useState<string>(scopeKey);
+  if (activeScopeKey !== scopeKey) {
+    setActiveScopeKey(scopeKey);
+    setViewMode(scopeDefaultView);
+    setAlbumGridSize(scopeDefaultGridSize);
+  }
   const sortedCards = useMemo(
     () => sortCollectedCards(cards, sortMode),
     [cards, sortMode]
@@ -146,7 +146,7 @@ export default function SortedCardGrid({
             <button
               key={mode}
               type="button"
-              onClick={() => setViewChoice({ scope: scopeKey, mode })}
+              onClick={() => setViewMode(mode)}
               className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
                 viewMode === mode
                   ? "bg-purple-600 text-white"
@@ -167,7 +167,7 @@ export default function SortedCardGrid({
           streamerId={streamerId}
           translations={translations.album}
           gridSize={albumGridSize}
-          onGridSizeChange={(size) => setSizeChoice({ scope: scopeKey, size })}
+          onGridSizeChange={setAlbumGridSize}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

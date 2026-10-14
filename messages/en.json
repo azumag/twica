@@ -625,7 +625,8 @@
       "saved": "Saved"
     },
     "errors": {
-      "saveFailed": "Failed to save"
+      "saveFailed": "Failed to save",
+      "unavailable": "This setting can't be saved right now (deployment in progress). Please try again later."
     }
   },
   "tradeSettings": {
