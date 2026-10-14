@@ -78,6 +78,7 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     show_unowned_card_details: false,
     publish_live_status: false,
     publish_stats: false,
+    publish_card_ranking: false,
     raid_gacha_active_until: null,
     raid_gacha_draw_count: 0,
     trade_enabled: false,
@@ -342,6 +343,7 @@ describe('dashboard-data: Drizzle 読み取り', () => {
       expect(result?.streamer).toMatchObject({ id: 'streamer-1', twitch_username: 'streamer_one' })
       expect(result?.streamer).not.toHaveProperty('publish_live_status')
       expect(result?.streamer).not.toHaveProperty('publish_stats')
+      expect(result?.streamer).not.toHaveProperty('publish_card_ranking')
       const lastSelection = db.select.mock.calls.at(-1)?.[0]
       expect(lastSelection?.streamer).toEqual(STREAMERS_SAFE_COLUMNS)
     })
@@ -403,6 +405,7 @@ describe('dashboard-data: Drizzle 読み取り', () => {
 
       expect(result?.streamer).toMatchObject({ id: 'streamer-1' })
       expect(result?.streamer).not.toHaveProperty('publish_stats')
+      expect(result?.streamer).not.toHaveProperty('publish_card_ranking')
       // 1回目(全列)が失敗 → 2回目(安全な列集合)で取得成功
       expect(db.select.mock.calls[1]?.[0]).toEqual(STREAMERS_SAFE_COLUMNS)
     })

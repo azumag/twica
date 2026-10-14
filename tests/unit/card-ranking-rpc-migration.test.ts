@@ -157,3 +157,67 @@ describe("card ranking RPC migration (#934 / docs/features/doushi-card-corner.md
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #934 公開オプトイン（20261015050000）: 集計（get_card_ranking）と公開ゲート
+// （publish_card_ranking + get_published_card_ranking）を分離する。
+// ---------------------------------------------------------------------------
+const optInMigration = readFileSync(
+  join(
+    process.cwd(),
+    "db/planetscale/migrations/20261015050000_add_card_ranking_optin.sql",
+  ),
+  "utf8",
+);
+
+const optInCodeOnly = optInMigration
+  .split("\n")
+  .filter((line) => !line.trim().startsWith("--"))
+  .join("\n");
+
+describe("card ranking opt-in migration (#934)", () => {
+  it("adds the opt-in column with DEFAULT FALSE and documents it", () => {
+    expect(optInMigration).toMatch(
+      /ALTER TABLE streamers\s+ADD COLUMN IF NOT EXISTS publish_card_ranking BOOLEAN NOT NULL DEFAULT FALSE;/,
+    );
+    expect(optInMigration).toContain(
+      "COMMENT ON COLUMN streamers.publish_card_ranking IS",
+    );
+    // 既定OFF と UI 無しの方針が migration 本文に残っていること。
+    expect(optInMigration).toContain("既定OFF");
+    expect(optInMigration).toContain("ユーザー向けの設定画面は追加しない");
+  });
+
+  it("enables only the docich channel initially via a case-insensitive login match", () => {
+    expect(optInCodeOnly).toMatch(
+      /UPDATE streamers\s+SET publish_card_ranking = TRUE\s+WHERE lower\(twitch_username\) = 'dociai';/,
+    );
+  });
+
+  it("gates publication in the DB and fails closed with P0002", () => {
+    expect(optInCodeOnly).toContain(
+      "CREATE OR REPLACE FUNCTION public.get_published_card_ranking(",
+    );
+    expect(optInCodeOnly).toContain("s.publish_card_ranking");
+    expect(optInCodeOnly).toContain(
+      "RAISE EXCEPTION 'card_ranking: not published' USING ERRCODE = 'P0002';",
+    );
+    // 未 opt-in と未知の streamer を区別しない（探索防止）ため、id 必須の例外も同じ code。
+    expect(optInCodeOnly).toContain(
+      "RAISE EXCEPTION 'card_ranking: streamer id is required' USING ERRCODE = 'P0002';",
+    );
+    // ゲート迂回の遮断: 集計本体は wrapper からのみ到達させる。
+    expect(optInCodeOnly).toContain(
+      "REVOKE EXECUTE ON FUNCTION public.get_card_ranking(uuid, text, integer) FROM service_role;",
+    );
+  });
+
+  it("grants EXECUTE only to service_role on the wrapper", () => {
+    expect(optInCodeOnly).toContain(
+      "REVOKE ALL ON FUNCTION public.get_published_card_ranking(uuid, text, integer) FROM PUBLIC;",
+    );
+    expect(optInCodeOnly).toContain(
+      "GRANT EXECUTE ON FUNCTION public.get_published_card_ranking(uuid, text, integer) TO service_role;",
+    );
+  });
+});

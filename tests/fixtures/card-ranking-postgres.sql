@@ -19,6 +19,15 @@
 INSERT INTO public.streamers (id, twitch_user_id, twitch_username, twitch_display_name)
 VALUES ('50000000-0000-4000-8000-000000000001', 'cr-streamer-self', 'cr-streamer-self', 'CR Streamer');
 
+-- #934 公開オプトイン: 既定は FALSE（migration の UPDATE は CI では 0 行 no-op）。
+-- 集計対象の配信者だけを明示的に opt-in し、-0002 は未 opt-in のまま残す。
+UPDATE public.streamers
+   SET publish_card_ranking = TRUE
+ WHERE id = '50000000-0000-4000-8000-000000000001';
+
+INSERT INTO public.streamers (id, twitch_user_id, twitch_username, twitch_display_name)
+VALUES ('50000000-0000-4000-8000-000000000002', 'cr-streamer-other', 'cr-streamer-other', 'CR Other');
+
 INSERT INTO public.users (id, twitch_user_id, twitch_username, twitch_display_name) VALUES
   ('50000000-0000-4000-8000-000000000101', 'cr-viewer-a', 'viewerA', 'Viewer A'),
   ('50000000-0000-4000-8000-000000000102', 'cr-viewer-b', 'viewerB', 'Viewer B'),
@@ -265,3 +274,73 @@ BEGIN
     RAISE EXCEPTION '空の配信者に null が返った: %', v_empty;
   END IF;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- #934 公開オプトイン（20261015050000）
+--   公開 route が呼ぶのは wrapper だけで、opt-in していない配信者には
+--   SQLSTATE P0002 を返して fail-closed になることを実 DB で確認する。
+--   「未 opt-in」と「存在しない配信者」が同じ応答であることも固定する。
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_published JSONB;
+  v_direct JSONB;
+  v_code TEXT;
+BEGIN
+  -- opt-in 済み: 集計本体と同じ結果を透過で返す（generated_at は呼び出し時刻で
+  -- 変わるため比較から外す）。
+  v_published := public.get_published_card_ranking(
+    '50000000-0000-4000-8000-000000000001', 'all', 10) - 'generated_at';
+  v_direct := public.get_card_ranking(
+    '50000000-0000-4000-8000-000000000001', 'all', 10) - 'generated_at';
+  IF v_published <> v_direct THEN
+    RAISE EXCEPTION 'opt-in 済みで wrapper の結果が集計本体と一致しない: %', v_published;
+  END IF;
+
+  -- 未 opt-in（-0002 は publish_card_ranking = FALSE のまま）。
+  BEGIN
+    PERFORM public.get_published_card_ranking(
+      '50000000-0000-4000-8000-000000000002', 'all', 10);
+    RAISE EXCEPTION '未 opt-in の配信者にランキングが返った';
+  EXCEPTION
+    WHEN raise_exception THEN
+      IF SQLERRM = '未 opt-in の配信者にランキングが返った' THEN RAISE; END IF;
+      RAISE EXCEPTION '未 opt-in の例外メッセージが不正: %', SQLERRM;
+    WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_code = RETURNED_SQLSTATE;
+      IF v_code <> 'P0002' THEN
+        RAISE EXCEPTION '未 opt-in の SQLSTATE が P0002 でない: %', v_code;
+      END IF;
+  END;
+
+  -- 存在しない配信者も同じ P0002（opt-in 済みチャンネルの探索を許さない）。
+  BEGIN
+    PERFORM public.get_published_card_ranking(
+      '50000000-0000-4000-8000-0000000000ff', 'all', 10);
+    RAISE EXCEPTION '存在しない配信者にランキングが返った';
+  EXCEPTION
+    WHEN raise_exception THEN
+      IF SQLERRM = '存在しない配信者にランキングが返った' THEN RAISE; END IF;
+      RAISE EXCEPTION '存在しない配信者の例外メッセージが不正: %', SQLERRM;
+    WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_code = RETURNED_SQLSTATE;
+      IF v_code <> 'P0002' THEN
+        RAISE EXCEPTION '存在しない配信者の SQLSTATE が P0002 でない: %', v_code;
+      END IF;
+  END;
+
+  -- 集計本体はアプリ用ロールから EXECUTE できない（wrapper 経由のみ）。
+  IF has_function_privilege(
+       'service_role',
+       'public.get_card_ranking(uuid, text, integer)',
+       'EXECUTE') THEN
+    RAISE EXCEPTION 'get_card_ranking が service_role から直接 EXECUTE できる';
+  END IF;
+  IF NOT has_function_privilege(
+       'service_role',
+       'public.get_published_card_ranking(uuid, text, integer)',
+       'EXECUTE') THEN
+    RAISE EXCEPTION 'get_published_card_ranking が service_role から EXECUTE できない';
+  END IF;
+END $$;
+
