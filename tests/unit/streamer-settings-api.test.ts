@@ -2586,4 +2586,207 @@ describe('POST /api/streamer/settings', () => {
       })
     })
   })
+
+  // #1765 フォローアップ: アルバム表示（パック別の並び N×N と初期表示モード）。
+  // pack_rarity_weights (#578) と同じ検証・prune・デプロイ窓 skip の規約に従う。
+  describe('album display settings (#1765 follow-up)', () => {
+    const streamerRow = (overrides: Record<string, unknown> = {}) => ({
+      data: {
+        id: 'streamer123',
+        twitch_user_id: 'streamer123',
+        channel_point_collection_name: null,
+        card_pack_names: ['weapons', 'armor'],
+        pack_rarity_weights: null,
+        pack_album_grid_sizes: null,
+        ...overrides,
+      },
+      error: null,
+    })
+
+    it('saves a valid packAlbumGridSizes (reserved keys + catalog pack) and the default view', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packAlbumGridSizes: { __all__: 6, [DEFAULT_PACK_SENTINEL]: 3, weapons: 9 },
+          collectionDefaultView: 'album',
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.packAlbumGridSizes).toEqual({
+        __all__: 6,
+        [DEFAULT_PACK_SENTINEL]: 3,
+        weapons: 9,
+      })
+      expect(data.collectionDefaultView).toBe('album')
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pack_album_grid_sizes: { __all__: 6, [DEFAULT_PACK_SENTINEL]: 3, weapons: 9 },
+          collection_default_view: 'album',
+        })
+      )
+    })
+
+    it('accepts null as "clear all entries"', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', packAlbumGridSizes: null }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ pack_album_grid_sizes: null })
+      )
+    })
+
+    it('rejects a key that is not in the effective pack catalog (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packAlbumGridSizes: { unknown_pack: 6 },
+        }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('rejects an out-of-range grid size and an unknown default view (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const tooLarge = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', packAlbumGridSizes: { __all__: 99 } }),
+      }))
+      expect(tooLarge.status).toBe(400)
+
+      const badView = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', collectionDefaultView: 'gallery' }),
+      }))
+      expect(badView.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('prunes entries for a pack removed from the catalog, even though packAlbumGridSizes was not sent', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
+        streamerRow({
+          pack_album_grid_sizes: {
+            __all__: 6,
+            weapons: 9,
+            armor: 3,
+            [DEFAULT_PACK_SENTINEL]: 3,
+          },
+        })
+      )
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      // Removing 'armor' from the catalog — packAlbumGridSizes is NOT part of this request.
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pack_album_grid_sizes: {
+            __all__: 6,
+            weapons: 9,
+            [DEFAULT_PACK_SENTINEL]: 3,
+          },
+        })
+      )
+    })
+
+    it('falls back to a safe projection when the read hits the undeployed column', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          data: null,
+          error: {
+            code: '42703',
+            message: 'column "pack_album_grid_sizes" of relation "streamers" does not exist',
+          },
+        })
+        .mockResolvedValue(streamerRow({ pack_album_grid_sizes: undefined }))
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          collectionDefaultView: 'album',
+        }),
+      }))
+
+      // 読み取りは安全な射影へフォールバックし、初期表示の保存は継続する。
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.collectionDefaultView).toBe('album')
+    })
+
+    it('skips both columns and reports the flag when the UPDATE fails on them', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+      ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        eq: vi.fn().mockResolvedValue({
+          error: {
+            code: '42703',
+            message: 'column "pack_album_grid_sizes" of relation "streamers" does not exist',
+          },
+        }),
+      })
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packAlbumGridSizes: { __all__: 6 },
+          collectionDefaultView: 'album',
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.albumSettingsSkippedDeployWindow).toBe(true)
+      // 書き込めていないので、確定値はエコーバックしない（楽観反映を戻させる）。
+      expect(data.packAlbumGridSizes).toBeUndefined()
+      expect(data.collectionDefaultView).toBeUndefined()
+    })
+  })
 })

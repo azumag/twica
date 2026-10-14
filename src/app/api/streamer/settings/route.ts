@@ -49,6 +49,13 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgMissingNamedColumnError } from "@/lib/db/errors";
+import { isMissingAlbumSettingsColumnError } from "@/lib/db/streamers-safe-columns";
+import {
+  pruneAlbumGridSizeMap,
+  sanitizeAlbumGridSizeMap,
+  validateAlbumGridSizeMap,
+  type AlbumGridSizeMap,
+} from "@/lib/collection-album";
 import {
   streamers as streamersTable,
   streamerChatSenderSettings as streamerChatSenderSettingsTable,
@@ -261,6 +268,8 @@ interface StreamerForSettingsUpdate {
   channel_point_collection_name: string | null;
   card_pack_names: string[];
   pack_rarity_weights: Record<string, Record<string, number>> | null;
+  // #1765 フォローアップ: カタログ縮小時に残った並び既定を prune するためだけに読む。
+  pack_album_grid_sizes?: AlbumGridSizeMap | null;
 }
 
 /**
@@ -294,12 +303,34 @@ async function getStreamerForSettingsUpdatePg(
             channel_point_collection_name: streamersTable.channel_point_collection_name,
             card_pack_names: streamersTable.card_pack_names,
             pack_rarity_weights: streamersTable.pack_rarity_weights,
+            pack_album_grid_sizes: streamersTable.pack_album_grid_sizes,
           })
           .from(streamersTable)
           .where(ownerCondition)
           .limit(1);
       },
       "getStreamerForSettingsUpdate(full)",
+      { idempotent: true },
+    );
+
+  // #1765 フォローアップ: pack_album_grid_sizes 列のデプロイ窓用フォールバック。
+  // この列だけを落とした射影で再試行し、欠けた値は null(＝未設定)として扱う。
+  const selectWithoutAlbumGridSizes = () =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamersTable.id,
+            channel_point_collection_name: streamersTable.channel_point_collection_name,
+            card_pack_names: streamersTable.card_pack_names,
+            pack_rarity_weights: streamersTable.pack_rarity_weights,
+          })
+          .from(streamersTable)
+          .where(ownerCondition)
+          .limit(1);
+      },
+      "getStreamerForSettingsUpdate(no pack_album_grid_sizes)",
       { idempotent: true },
     );
 
@@ -360,7 +391,18 @@ async function getStreamerForSettingsUpdatePg(
     let row: StreamerForSettingsUpdate | null = null;
     let resolved = false;
 
-    if (isMissingPackRarityWeightsColumnError(currentError as GenericDbError)) {
+    if (currentError && isMissingAlbumSettingsColumnError(currentError as GenericDbError)) {
+      try {
+        const rows = await selectWithoutAlbumGridSizes();
+        row = rows[0] ? { ...rows[0], pack_album_grid_sizes: null } : null;
+        resolved = true;
+        currentError = null;
+      } catch (err) {
+        currentError = err;
+      }
+    }
+
+    if (currentError && isMissingPackRarityWeightsColumnError(currentError as GenericDbError)) {
       try {
         const rows = await selectWithoutPackRarityWeights();
         row = rows[0] ? { ...rows[0], pack_rarity_weights: null } : null;
@@ -508,6 +550,7 @@ interface ApplyStreamerSettingsUpdateResult {
   gachaSoundRulesWriteSkipped: boolean;
   liveDirectorySettingsWriteSkipped: boolean;
   tradeSettingsWriteSkipped: boolean;
+  albumSettingsWriteSkipped: boolean;
 }
 
 /**
@@ -611,6 +654,7 @@ async function applyStreamerSettingsUpdatePg(
   let gachaSoundRulesWriteSkipped = false;
   let liveDirectorySettingsWriteSkipped = false;
   let tradeSettingsWriteSkipped = false;
+  let albumSettingsWriteSkipped = false;
 
   const runUpdate = (data: Record<string, unknown>, context: string) =>
     withDbRetry(
@@ -708,6 +752,19 @@ async function applyStreamerSettingsUpdatePg(
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no trade settings)");
   }
 
+  if (
+    error
+    && isMissingAlbumSettingsColumnError(error as GenericDbError)
+    && ("pack_album_grid_sizes" in updateData || "collection_default_view" in updateData)
+  ) {
+    // #1765 フォローアップ: 同一 migration で2列が入るため「両方同時に欠落」しか
+    // あり得ない。2キーをまとめて剥がし、他の設定だけ保存する。
+    delete updateData.pack_album_grid_sizes;
+    delete updateData.collection_default_view;
+    albumSettingsWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no album settings)");
+  }
+
   return {
     error,
     rarityWeightsScopeWriteSkipped,
@@ -717,6 +774,7 @@ async function applyStreamerSettingsUpdatePg(
     gachaSoundRulesWriteSkipped,
     liveDirectorySettingsWriteSkipped,
     tradeSettingsWriteSkipped,
+    albumSettingsWriteSkipped,
   };
 }
 
@@ -830,6 +888,13 @@ export async function POST(request: NextRequest) {
       // カードトレード設定（オプション、Issue #725）
       tradeEnabled,
       crossChannelTradeEnabled,
+      // アルバム表示設定（オプション、#1765 フォローアップ）。
+      // packAlbumGridSizes: コレクション(パック)ごとの並び N（null で全クリア）。
+      // collectionDefaultView: コレクションページの初期表示 ('grid' | 'album')。
+      // Album display settings (optional, #1765 follow-up): per-pack grid
+      // sizes (null clears all) and the collection page's default view mode.
+      packAlbumGridSizes,
+      collectionDefaultView,
       // BOTアカウント連携解除（オプション）
       // Disconnect optional BOT account used for chat announcements
       disconnectBot,
@@ -854,6 +919,16 @@ export async function POST(request: NextRequest) {
       rarityWeightsScope !== undefined
       && rarityWeightsScope !== "global"
       && rarityWeightsScope !== "per_pack"
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    // collectionDefaultView: 'grid' | 'album' の2値のみ許可（#1765 フォローアップ）。
+    // 不明値は 400 にして、表示が黙って既定へ落ちるのを避ける。
+    if (
+      collectionDefaultView !== undefined
+      && collectionDefaultView !== "grid"
+      && collectionDefaultView !== "album"
     ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
@@ -998,6 +1073,15 @@ export async function POST(request: NextRequest) {
         ? (streamer.pack_rarity_weights as Record<string, Record<string, number>>)
         : null;
 
+    // #1765 フォローアップ: pack_album_grid_sizes も同じく object 前提の列。
+    // 配列/非objectは不正データとして無視し null（＝未設定）に倒す。
+    const currentPackAlbumGridSizes: AlbumGridSizeMap | null =
+      streamer.pack_album_grid_sizes
+      && typeof streamer.pack_album_grid_sizes === "object"
+      && !Array.isArray(streamer.pack_album_grid_sizes)
+        ? sanitizeAlbumGridSizeMap(streamer.pack_album_grid_sizes)
+        : null;
+
     // Issue #578(#576 フェーズ1): packRarityWeights のキーは、同一リクエストで
     // cardPackNames も送られていればその新カタログ、そうでなければ DB 上の
     // 現在の card_pack_names を実効カタログとして検証する。
@@ -1014,6 +1098,21 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
       }
       normalizedPackRarityWeights = validation.value;
+    }
+
+    // #1765 フォローアップ: packAlbumGridSizes のキーも pack_rarity_weights と
+    // 同じ実効カタログ（同一リクエストの cardPackNames があればそれ、無ければ
+    // DB の現在値）で検証する。null は「全クリア」として常に許可。
+    let normalizedPackAlbumGridSizes: AlbumGridSizeMap | null | undefined;
+    if (packAlbumGridSizes !== undefined) {
+      const validation = validateAlbumGridSizeMap(
+        packAlbumGridSizes,
+        effectivePackCatalogForRarityWeights
+      );
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedPackAlbumGridSizes = validation.value;
     }
 
     // Issue #269再設計: 「新しい登録」= card_pack_names一覧への新規追加のみを
@@ -1046,6 +1145,24 @@ export async function POST(request: NextRequest) {
       }
       // pruneBasis が null かつ packRarityWeightsToPersist が未指定の場合、
       // プルーニングすべき既存エントリが無いため何もしない(undefinedのまま)。
+    }
+
+    // #1765 フォローアップ: cardPackNames の縮小に追随して、消えたパックの
+    // 並び既定も落とす（__all__ / __default__ は常に保持）。pack_rarity_weights と
+    // 同じ規則・同じ理由（カタログから消えたパックの設定を持ち続けない）。
+    let packAlbumGridSizesToPersist: AlbumGridSizeMap | null | undefined =
+      normalizedPackAlbumGridSizes;
+
+    if (normalizedCardPackNames !== undefined) {
+      const albumPruneBasis = packAlbumGridSizesToPersist !== undefined
+        ? packAlbumGridSizesToPersist
+        : currentPackAlbumGridSizes;
+      if (albumPruneBasis !== null) {
+        packAlbumGridSizesToPersist = pruneAlbumGridSizeMap(
+          albumPruneBasis,
+          persistedCardPackNames
+        );
+      }
     }
 
     // Issue #393再設計: メイン報酬のパック紐付けは、null化・現在値の再送信は
@@ -1244,6 +1361,15 @@ export async function POST(request: NextRequest) {
       updateData.pack_rarity_weights = packRarityWeightsToPersist;
     }
 
+    // #1765 フォローアップ: アルバムの並び既定と初期表示。
+    // packAlbumGridSizes は packRarityWeights と同じく、確定後の永続値を返す。
+    if (packAlbumGridSizesToPersist !== undefined) {
+      updateData.pack_album_grid_sizes = packAlbumGridSizesToPersist;
+    }
+    if (collectionDefaultView !== undefined) {
+      updateData.collection_default_view = collectionDefaultView;
+    }
+
     // カスタムレアリティ名（ドロップ率の再計算は不要）
     if (customRarities !== undefined) {
       updateData.custom_rarities = normalizedCustomRarities;
@@ -1326,6 +1452,9 @@ export async function POST(request: NextRequest) {
     // 「両方同時に欠落」しかあり得ない。2キーをまとめて剥がす1段のみ追加する。
     let liveDirectorySettingsWriteSkipped = false;
     let tradeSettingsWriteSkipped = false;
+    // #1765 フォローアップ: pack_album_grid_sizes / collection_default_view も
+    // 同じ理由(デプロイ窓)で skip-and-flag パターンを踏襲する。
+    let albumSettingsWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
@@ -1340,6 +1469,7 @@ export async function POST(request: NextRequest) {
       gachaSoundRulesWriteSkipped = updateResult.gachaSoundRulesWriteSkipped;
       liveDirectorySettingsWriteSkipped = updateResult.liveDirectorySettingsWriteSkipped;
       tradeSettingsWriteSkipped = updateResult.tradeSettingsWriteSkipped;
+      albumSettingsWriteSkipped = updateResult.albumSettingsWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
@@ -1414,6 +1544,17 @@ export async function POST(request: NextRequest) {
       ...(gachaSoundRulesPremiumRequired ? { gachaSoundRulesPremiumRequired: true } : {}),
       ...(liveDirectorySettingsWriteSkipped ? { liveDirectorySettingsSkippedDeployWindow: true } : {}),
       ...(tradeSettingsWriteSkipped ? { tradeSettingsSkippedDeployWindow: true } : {}),
+      // #1765 フォローアップ: packAlbumGridSizes はサーバ側で prune（カタログから
+      // 消えたパックの既定を除去）されるシナリオがあるため、確定後の永続値を
+      // エコーバックしてクライアントを再同期させる。デプロイ窓 skip 時は
+      // 書き込めていないのでエコーせずフラグで通知する。
+      ...(packAlbumGridSizesToPersist !== undefined && !albumSettingsWriteSkipped
+        ? { packAlbumGridSizes: packAlbumGridSizesToPersist }
+        : {}),
+      ...(collectionDefaultView !== undefined && !albumSettingsWriteSkipped
+        ? { collectionDefaultView }
+        : {}),
+      ...(albumSettingsWriteSkipped ? { albumSettingsSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");

@@ -6,6 +6,11 @@ import { useTranslations } from "next-intl";
 import SortedCardGrid from "./SortedCardGrid";
 import CollectionProgress from "./CollectionProgress";
 import { cardMatchesPackKey } from "@/lib/collection-packs";
+import {
+  ALBUM_ALL_PACKS_KEY,
+  type AlbumDefaultView,
+  type AlbumGridSizeMap,
+} from "@/lib/collection-album";
 import type { StreamerCollectionCard } from "./StreamerCollection";
 
 // SortedCardGrid の translations 契約をそのまま再利用する（Server→Client の
@@ -39,6 +44,9 @@ interface CollectionPackFilterProps {
   overallCompletionHistory: { total_cards: number; completed_at: string }[];
   packs: CollectionPackDisplay[];
   gridTranslations: GridTranslations;
+  // #1765 フォローアップ: 配信者がパックごとに指定したアルバムの並びと初期表示。
+  albumGridSizes?: AlbumGridSizeMap;
+  albumDefaultView?: AlbumDefaultView;
 }
 
 /**
@@ -61,6 +69,8 @@ export default function CollectionPackFilter({
   overallCompletionHistory,
   packs,
   gridTranslations,
+  albumGridSizes,
+  albumDefaultView,
 }: CollectionPackFilterProps) {
   const t = useTranslations("streamerCollection");
   // null = 「すべて」。パックの key はサーバー側で導出済みの
@@ -152,6 +162,10 @@ export default function CollectionPackFilter({
           streamerId={streamerId}
           hideUnownedDetails={hideUnownedDetails}
           translations={gridTranslations}
+          // 「すべて」タブは __all__、パック選択時はそのパックの既定を使う。
+          albumScopeKey={selectedPack?.key ?? ALBUM_ALL_PACKS_KEY}
+          albumGridSizes={albumGridSizes}
+          albumDefaultView={albumDefaultView}
         />
       )}
     </>

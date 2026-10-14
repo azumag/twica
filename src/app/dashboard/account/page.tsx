@@ -9,6 +9,7 @@ import SupportPlanSection from "@/components/SupportPlanSection";
 import TwitchSubCheckSection from "@/components/TwitchSubCheckSection";
 import ChannelPointsAccessSection from "@/components/ChannelPointsAccessSection";
 import CardVisibilitySettings from "@/components/CardVisibilitySettings";
+import AlbumDisplaySettings from "@/components/AlbumDisplaySettings";
 import TradeSettings from "@/components/TradeSettings";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
@@ -114,6 +115,15 @@ export default async function AccountSettingsPage() {
               streamerId={collectionSettings.streamerId}
               currentShowUnowned={collectionSettings.showUnownedCards}
               currentShowUnownedDetails={collectionSettings.showUnownedCardDetails}
+            />
+            {/* #1765 フォローアップ: アルバム表示（並び N×N・初期表示）の
+                コレクション(パック)別既定。公開設定と同じ保存経路を使う。 */}
+            <AlbumDisplaySettings
+              streamerId={collectionSettings.streamerId}
+              packNames={collectionSettings.packNames}
+              defaultPackName={collectionSettings.defaultPackName}
+              currentAlbumGridSizes={collectionSettings.albumGridSizes}
+              currentAlbumDefaultView={collectionSettings.albumDefaultView}
             />
             <TradeSettings
               streamerId={collectionSettings.streamerId}

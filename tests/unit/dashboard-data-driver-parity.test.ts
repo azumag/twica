@@ -83,6 +83,9 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     raid_gacha_draw_count: 0,
     trade_enabled: false,
     cross_channel_trade_enabled: false,
+    // #1765 フォローアップ: アルバム表示のパック別既定と初期表示。
+    pack_album_grid_sizes: null,
+    collection_default_view: 'grid',
     created_at: '2025-12-01T00:00:00.000+00:00',
     updated_at: '2025-12-01T00:00:00.000+00:00',
     ...overrides,
@@ -733,11 +736,19 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
       showUnownedCardDetails: true,
       tradeEnabled: true,
       crossChannelTradeEnabled: true,
+      packNames: [],
+      defaultPackName: null,
+      albumGridSizes: {},
+      albumDefaultView: 'grid',
     })
     expect(db.select).toHaveBeenCalledTimes(1)
     expect(Object.keys(db.select.mock.calls[0][0] as object).sort()).toEqual([
+      'card_pack_names',
+      'collection_default_view',
       'cross_channel_trade_enabled',
+      'default_card_pack_name',
       'id',
+      'pack_album_grid_sizes',
       'show_unowned_card_details',
       'show_unowned_cards',
       'trade_enabled',
@@ -772,9 +783,15 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
       showUnownedCardDetails: true,
       tradeEnabled: false,
       crossChannelTradeEnabled: false,
+      packNames: [],
+      defaultPackName: null,
+      albumGridSizes: {},
+      albumDefaultView: 'grid',
     })
     expect(db.select).toHaveBeenCalledTimes(2)
     expect(Object.keys(db.select.mock.calls[1][0] as object).sort()).toEqual([
+      'card_pack_names',
+      'default_card_pack_name',
       'id',
       'show_unowned_card_details',
       'show_unowned_cards',

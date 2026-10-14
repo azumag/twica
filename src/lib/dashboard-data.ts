@@ -45,6 +45,12 @@ import { withDbRetry } from "@/lib/db/retry";
 // 無指定 select の単一経路に戻す。
 import { isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import {
+  normalizeAlbumDefaultView,
+  sanitizeAlbumGridSizeMap,
+  type AlbumDefaultView,
+  type AlbumGridSizeMap,
+} from "@/lib/collection-album";
+import {
   STREAMERS_SAFE_COLUMNS,
   withLiveDirectorySettingsColumnFallback,
 } from "@/lib/db/streamers-safe-columns";
@@ -2415,6 +2421,13 @@ export interface StreamerCollectionSettings {
   showUnownedCardDetails: boolean;
   tradeEnabled: boolean;
   crossChannelTradeEnabled: boolean;
+  // #1765 フォローアップ: パック別アルバム既定の設定UIが必要とする値。
+  // カタログ(card_pack_names)・デフォルトパック表示名・保存済みの並び既定
+  // マップ・初期表示モード。列未デプロイ時は安全側（空マップ / 'grid'）。
+  packNames: string[];
+  defaultPackName: string | null;
+  albumGridSizes: AlbumGridSizeMap;
+  albumDefaultView: AlbumDefaultView;
 }
 
 /**
@@ -2443,13 +2456,21 @@ export const getStreamerCollectionSettings = cache(
                   id: streamersTable.id,
                   show_unowned_cards: streamersTable.show_unowned_cards,
                   show_unowned_card_details: streamersTable.show_unowned_card_details,
+                  // STREAMERS_SAFE_COLUMNS にも含まれる既存列なので、
+                  // デプロイ窓の再試行側でもパック一覧は取得できる。
+                  card_pack_names: streamersTable.card_pack_names,
+                  default_card_pack_name: streamersTable.default_card_pack_name,
                 })
               : db.select({
                   id: streamersTable.id,
                   show_unowned_cards: streamersTable.show_unowned_cards,
                   show_unowned_card_details: streamersTable.show_unowned_card_details,
+                  card_pack_names: streamersTable.card_pack_names,
+                  default_card_pack_name: streamersTable.default_card_pack_name,
                   trade_enabled: streamersTable.trade_enabled,
                   cross_channel_trade_enabled: streamersTable.cross_channel_trade_enabled,
+                  pack_album_grid_sizes: streamersTable.pack_album_grid_sizes,
+                  collection_default_view: streamersTable.collection_default_view,
                 });
             return query
               .from(streamersTable)
@@ -2467,8 +2488,12 @@ export const getStreamerCollectionSettings = cache(
             id: string;
             show_unowned_cards: boolean | null;
             show_unowned_card_details: boolean | null;
+            card_pack_names?: string[] | null;
+            default_card_pack_name?: string | null;
             trade_enabled?: boolean | null;
             cross_channel_trade_enabled?: boolean | null;
+            pack_album_grid_sizes?: unknown;
+            collection_default_view?: string | null;
           }
         | undefined;
       if (!row) return null;
@@ -2478,6 +2503,11 @@ export const getStreamerCollectionSettings = cache(
         showUnownedCardDetails: row.show_unowned_card_details ?? false,
         tradeEnabled: row.trade_enabled ?? false,
         crossChannelTradeEnabled: row.cross_channel_trade_enabled ?? false,
+        // デプロイ窓（列未作成）や破損値は空配列 / 空マップ / 'grid' へ縮退する。
+        packNames: Array.isArray(row.card_pack_names) ? row.card_pack_names : [],
+        defaultPackName: row.default_card_pack_name ?? null,
+        albumGridSizes: sanitizeAlbumGridSizeMap(row.pack_album_grid_sizes),
+        albumDefaultView: normalizeAlbumDefaultView(row.collection_default_view),
       };
     } catch (error) {
       logger.error("Error in getStreamerCollectionSettings (pg)", { error });
