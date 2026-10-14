@@ -1,14 +1,24 @@
-name: Notify Discord on main merge
+name: Notify Discord on main or preview merge
 
 # Security contract: pull_request_target lets a merged PR notification read the
 # repository webhook secret from the trusted base context. Any checkout in this
 # workflow must stay pinned to github.sha (the trusted base commit); never checkout
 # or execute code from the PR head. Keep permissions at `contents: read`; do not
 # widen them without a reviewed workflow requirement.
+#
+# Scope: this workflow notifies for merges into `main` (release promotions and
+# direct main merges) and for merges into `preview` (feature PRs). Only the
+# canonical `preview -> main` promotion is governed by the release-summary
+# contract; the `validate-promotion-summary` job below stays scoped to
+# `main`-target PRs, while a preview merge is notified with the sanitized PR title
+# (or the release section if the body carries one). The file name is kept
+# unchanged only to avoid churn in the CI paths-filter and test references: the
+# required status check context is the job name `validate-promotion-summary`, so
+# that job name has to stay stable when repository rules are updated.
 on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review, closed]
-    branches: [main]
+    branches: [main, preview]
 
 permissions:
   contents: read
@@ -40,6 +50,11 @@ jobs:
       # do not interpolate them directly into the shell script.
       # GITHUB_REPOSITORY is a GitHub-provided default env and is the trusted base for fork checks.
       REPOSITORY_NAME: ${{ github.event.repository.name }}
+      # BASE_REF comes from the trusted pull_request_target base context, not from
+      # the PR head. It decides whether this is a production release notification
+      # (`main`) or a pre-release preview notification (`preview`), and it is also
+      # part of the promotion check, so the PR cannot influence it.
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_BODY: ${{ github.event.pull_request.body }}
       PR_URL: ${{ github.event.pull_request.html_url }}
@@ -75,6 +90,13 @@ jobs:
           # The promotion PR body is intentionally the notification source of truth:
           # this workflow does not reconstruct the summary from component diffs, so
           # summary-vs-diff accuracy remains a normal promotion-PR review responsibility.
+          #
+          # The same step also renders the notification for feature PRs merged into
+          # `preview`. Those PRs normally have no promotion summary, so they are
+          # notified with the sanitized PR title (the release section would still be
+          # used if a preview PR body happened to carry one), and the wording/target
+          # ref is chosen from the trusted base ref so a preview deploy is never
+          # announced as a release.
           content=$(python3 - <<'PY'
           import os
           import sys
@@ -83,16 +105,29 @@ jobs:
           import release_summary
 
           limit = 2000
-          # Only the canonical preview -> main path is a release promotion.
-          # The workflow itself is already scoped to PRs targeting main, so only
-          # the head ref and repository identity need to be checked here.
           promotion_source_ref = "preview"
+          promotion_target_ref = "main"
+          # BASE_REF comes from the trusted pull_request_target base context, so it
+          # cannot be influenced by the PR head. Only an explicit `main` match gets
+          # the production wording below; any other value (a future branch, or a
+          # missing env entry) stays in the preview wording so a misconfigured
+          # trigger can never announce an unreleased deploy as shipped.
+          base_ref = os.environ.get("BASE_REF", "")
           body = os.environ.get("PR_BODY", "")
-          # Only same-repository promotion text is trusted as notification input.
+          # Only same-repository text is trusted as notification input.
           # Fork PRs fall back to a sanitized title below.
           if os.environ.get("HEAD_REPOSITORY") != os.environ.get("GITHUB_REPOSITORY"):
               body = ""
           release_text = release_summary.extract_release_text(body)
+
+          # Only the canonical `preview -> main` promotion is governed by the
+          # release-summary contract. Both conditions must hold before this
+          # workflow is allowed to warn about (or fail on) a missing summary.
+          is_promotion = (
+              base_ref == promotion_target_ref
+              and os.environ.get("HEAD_REF") == promotion_source_ref
+              and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")
+          )
 
           def escape_discord_markdown(value):
               escaped = value
@@ -108,10 +143,6 @@ jobs:
               return f"`{value}`"
 
           if not release_summary.has_meaningful_text(release_text):
-              is_promotion = (
-                  os.environ.get("HEAD_REF") == promotion_source_ref
-                  and os.environ.get("HEAD_REPOSITORY") == os.environ.get("GITHUB_REPOSITORY")
-              )
               if is_promotion:
                   print(
                       "::warning::Promotion PR summary missing after sanitization; "
@@ -126,9 +157,10 @@ jobs:
                   with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
                       env.write("PROMOTION_SUMMARY_MISSING=true" + chr(10))
               else:
-                  # A direct-to-main merge has no promotion-summary contract.
-                  # Falling back to the sanitized PR title is the expected path,
-                  # so do not emit a misleading warning for this normal case.
+                  # Preview merges and direct-to-main merges have no
+                  # promotion-summary contract. Falling back to the sanitized PR
+                  # title is the expected path for both, so do not emit a
+                  # misleading warning or failure marker for these normal cases.
                   release_text = release_summary.strip_markdown_links(
                       os.environ.get("PR_TITLE", "").strip()
                   ).strip()
@@ -136,12 +168,24 @@ jobs:
           repository_name = escape_discord_markdown(os.environ["REPOSITORY_NAME"])
           head_ref = discord_inline_code(os.environ["HEAD_REF"])
           pr_author = escape_discord_markdown(os.environ["PR_AUTHOR"])
-          prefix = f"🚀 **{repository_name} が更新されました**\n\n"
-          suffix = (
-              f"\n\n{head_ref} → main\n"
-              f"by {pr_author}\n\n"
-              f"🔗 [リリース内容を見る]({os.environ['PR_URL']})"
-          )
+          # A preview merge is a pre-release deploy, so both the wording and the
+          # target ref have to be distinguishable at a glance from the production
+          # release notification in the same Discord channel (see the BASE_REF note
+          # above for why production wording requires an explicit `main` match).
+          if base_ref == promotion_target_ref:
+              prefix = f"🚀 **{repository_name} が更新されました**\n\n"
+              suffix = (
+                  f"\n\n{head_ref} → main\n"
+                  f"by {pr_author}\n\n"
+                  f"🔗 [リリース内容を見る]({os.environ['PR_URL']})"
+              )
+          else:
+              prefix = f"🧪 **{repository_name} (preview) が更新されました**\n\n"
+              suffix = (
+                  f"\n\n{head_ref} → preview\n"
+                  f"by {pr_author}\n\n"
+                  f"🔗 [更新内容を見る]({os.environ['PR_URL']})"
+              )
 
           # GitHub currently bounds repository/user/ref metadata far below Discord's
           # 2000 UTF-16-unit limit, but keep delivery fail-safe if those contracts or
@@ -149,6 +193,10 @@ jobs:
           # metadata before trimming the user-facing release text.
           marker = "\n\n…"
           if release_summary.utf16_length(prefix + marker + suffix) > limit:
+              # This branch is unreachable with GitHub's current metadata bounds and
+              # exists only as a delivery fail-safe. The wording makes no target-ref
+              # claim, so it is safe for preview merges as well (the rocket emoji is
+              # decorative and does not assert a production release).
               prefix = "🚀 **リポジトリが更新されました**\n\n"
               suffix = f"\n\n🔗 {os.environ['PR_URL']}"
 
