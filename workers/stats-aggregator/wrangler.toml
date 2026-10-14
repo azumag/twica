@@ -10,12 +10,14 @@
 # スナップショットは前回値が残るため、数時間の停滞は「computed_atが古い」
 # だけで壊れず、次回tickで回復する。そのため失敗時の60秒後リトライは持たない)。
 #
-# NOTE: 実deploy・secret設定はこのPRの範囲外
-# (workers/chat-delivery と同じ導入順序)。デプロイ前にオーナーが行うこと:
+# NOTE: このWorkerのdeploy配線 (`.github/workflows/deploy-cloudflare.yml` の
+# `stats-aggregator` job) は `vars.STATS_AGGREGATOR_DEPLOY_ENABLED == 'true'` で
+# gatingされたopt-in jobとして存在する。コードをマージしただけでは動かない。
+# デプロイ前にオーナーが行うこと:
 #   1. `wrangler secret put STATS_REFRESH_SECRET_PROD` に本番アプリの
 #      STATS_REFRESH_SECRET と同じ値を設定 (previewも同様に_PREVIEWへ)
-#   2. .github/workflows/deploy-cloudflare.yml へ chat-delivery と同型の
-#      opt-in deploy job を追加 (CHAT_DELIVERY_DEPLOY_ENABLED相当のflagで gating)
+#   2. preview/production の repository variable
+#      `STATS_AGGREGATOR_DEPLOY_ENABLED` を 'true' にして deploy job を有効化
 #   3. backfill_streamer_daily_stats() の手動実行 (migration内コメント参照)
 # 上記が揃う前にデプロイすると、backfill-pendingでsnapshotが生成されない
 # (読み取りAPIは「集計準備中」を返す) だけで事故にはならない。

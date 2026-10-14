@@ -4,9 +4,10 @@
  * ランキング用統計バッチの定期実行Worker。毎時1回、本体アプリの内部API
  * POST /api/internal/stats/refresh をHTTP経由で叩く「トリガー」に徹する。
  *
- * このファイルは定期呼び出しのコードのみを追加する。実際のCloudflare
- * Cronデプロイ・secret設定・.github/workflows/deploy-cloudflare.ymlへの
- * 登録は、このPRの範囲外 (workers/chat-delivery と同じ導入順序)。
+ * このファイルは定期呼び出しのコードのみを追加する。Cloudflare Cronへの実際の
+ * 配備は `.github/workflows/deploy-cloudflare.yml` の opt-in job
+ * (`vars.STATS_AGGREGATOR_DEPLOY_ENABLED == 'true'`) 経由のみで、secret設定と
+ * backfill はオーナー作業 (workers/chat-delivery と同じ導入順序)。
  *
  * 設計上の制約 (Issue #741 本文より、現行アーキテクチャへ再ベースライン済み):
  * - DB接続・Supabase依存を持たない (#711 の教訓)。集計ロジックは本体アプリ側の
