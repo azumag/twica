@@ -94,6 +94,9 @@ export const streamers = pgTable('streamers', {
   // 20260811000000: 配信掲載とランキング識別情報のオプトイン（両方OFF）
   publish_live_status: boolean('publish_live_status').notNull().default(false),
   publish_stats: boolean('publish_stats').notNull().default(false),
+  // 20261015050000 (#934): 同志カードの名前つき視聴者ランキング公開オプトイン
+  // （既定OFF・ユーザー向け設定UI無し。operator が明示的に有効化する）
+  publish_card_ranking: boolean('publish_card_ranking').notNull().default(false),
   // 00042: デフォルト無し・NULL 許容
   raid_gacha_active_until: timestamp('raid_gacha_active_until', { withTimezone: true, mode: 'string' }),
   // 00043

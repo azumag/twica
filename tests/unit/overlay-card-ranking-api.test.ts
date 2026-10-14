@@ -6,6 +6,8 @@
  *   - period / limit の入力検証（不正値は DB 接続前に 400）
  *   - 既存 /events と同じ公開レート制限
  *   - RPC の透過返却と no-store（docich が毎回フェッチする前提）
+ *   - opt-in していない streamer は 404（P0002）。未知の streamer と同じ応答にして
+ *     公開可否を探索できないようにする
  *   - fail-closed（RPC 未デプロイの 42883 と、payload 欠落は 503。docich 側は
  *     開始 skip する）
  * 集計値そのものの正しさは tests/fixtures/card-ranking-postgres.sql が実 DB で担保する。
@@ -79,7 +81,7 @@ describe("GET /api/overlay/[streamerId]/card-ranking", () => {
   });
 
   function bindingValues(): unknown[] {
-    // sql`select get_card_ranking(${streamerId}::uuid, ${period}, ${limit})`
+    // sql`select get_published_card_ranking(${streamerId}::uuid, ${period}, ${limit})`
     // の第2引数以降が実バインド値。
     const [, ...values] = sqlMock.mock.calls[0] as [unknown, ...unknown[]];
     return values;
@@ -154,7 +156,7 @@ describe("GET /api/overlay/[streamerId]/card-ranking", () => {
 
   it("RPC 未デプロイ（42883）は 503 fail-closed にする（docich は開始 skip）", async () => {
     sqlMock.mockRejectedValue(
-      Object.assign(new Error("function get_card_ranking(...) does not exist"), {
+      Object.assign(new Error("function get_published_card_ranking(...) does not exist"), {
         code: "42883",
       })
     );
@@ -163,6 +165,24 @@ describe("GET /api/overlay/[streamerId]/card-ranking", () => {
 
     expect(response.status).toBe(503);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("未 opt-in / 未知の streamer（P0002）は 404 にして公開可否を探れなくする", async () => {
+    // wrapper get_published_card_ranking は publish_card_ranking が FALSE の
+    // streamer と存在しない streamer の両方へ同じ SQLSTATE を返す。
+    sqlMock.mockRejectedValue(
+      Object.assign(new Error("card_ranking: not published"), {
+        code: "P0002",
+      })
+    );
+
+    const response = await GET(createRequest(), routeParams());
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      error: "Card ranking is not published",
+    });
   });
 
   it("その他の DB エラーは既存どおり 500 に落とす", async () => {

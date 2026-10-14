@@ -12,9 +12,13 @@ import type { ApiRateLimitResponse } from "@/types/api";
 import { isValidStreamerId } from "@/lib/overlay-realtime/contract";
 
 // Issue #934: docich 同志カードコーナー（設計 docs/features/doushi-card-corner.md §6）。
-// オーバーレイ向けに集計済みランキングだけを返す公開エンドポイントで、認証水準・
-// レート制限は既存 /api/overlay/{streamerId}/events と同じ「streamerId を知っている
-// だけ」に揃える。生の履歴行・内部 id（user_twitch_id / card_id）は返さない。
+// opt-in 済みの配信者に限り、集計済みランキングだけを返す。生の履歴行・内部 id
+// （user_twitch_id / card_id）は返さない。
+//
+// 公開の可否は streamers.publish_card_ranking のオプトインで決まり、判定は DB 側の
+// wrapper get_published_card_ranking が行う（route 側のフィルタには依存しない）。
+// 未 opt-in は SQLSTATE P0002 で返り、この route が 404 へ写像する。未知の streamer と
+// 同じ応答にして、どのチャンネルが opt-in 済みかを探れないようにする。
 
 const CARD_RANKING_PERIODS = new Set(["all", "7d", "30d"]);
 const DEFAULT_CARD_RANKING_PERIOD = "all";
@@ -22,6 +26,8 @@ const DEFAULT_CARD_RANKING_LIMIT = 10;
 // limit の上限は RPC（public.get_card_ranking）と同じ値にする。ここを外すと RPC が
 // 不正値で例外を投げて 500 になるため、入力境界で 400 に落とす。
 const MAX_CARD_RANKING_LIMIT = 50;
+// wrapper が未 opt-in / 未知の streamer に対して返す SQLSTATE（no_data_found）。
+const CARD_RANKING_NOT_PUBLISHED_SQLSTATE = "P0002";
 
 interface RouteParams {
   params: Promise<{ streamerId: string }>;
@@ -101,16 +107,24 @@ export async function GET(
     }
 
     const { data, error } = await executeDashboardRpcPg(
-      "get_card_ranking(pg)",
+      "get_published_card_ranking(pg)",
       async (sql) => {
         const rows = await sql<Array<{ result: unknown }>>`
-          select get_card_ranking(${streamerId}::uuid, ${period}, ${limit}) as result
+          select get_published_card_ranking(${streamerId}::uuid, ${period}, ${limit}) as result
         `;
         return rows[0]?.result;
       }
     );
 
     if (error) {
+      // P0002 (no_data_found) = 未 opt-in または未知の streamer。両者を同じ 404 に
+      // して、どのチャンネルが公開を許可しているかを探れないようにする。
+      if (error.code === CARD_RANKING_NOT_PUBLISHED_SQLSTATE) {
+        return NextResponse.json(
+          { error: "Card ranking is not published" },
+          { status: 404, headers: { "Cache-Control": "no-store" } }
+        );
+      }
       // 42883 (undefined_function) = RPC 未デプロイのデプロイ窓。取得不能は
       // fail-closed（503）にし、docich 側はコーナー開始を skip する。
       if (error.code === "42883") {

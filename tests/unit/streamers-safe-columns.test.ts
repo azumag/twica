@@ -4,6 +4,8 @@ import { streamers as streamersTable } from '@/lib/db/schema'
 import {
   ALBUM_SETTINGS_COLUMNS,
   isMissingAlbumSettingsColumnError,
+  CARD_RANKING_SETTINGS_COLUMNS,
+  isMissingCardRankingSettingsColumnError,
   isMissingLiveDirectorySettingsColumnError,
   isMissingTradeSettingsColumnError,
   LIVE_DIRECTORY_SETTINGS_COLUMNS,
@@ -16,6 +18,7 @@ const DEPLOY_WINDOW_COLUMNS = [
   ...LIVE_DIRECTORY_SETTINGS_COLUMNS,
   ...TRADE_SETTINGS_COLUMNS,
   ...ALBUM_SETTINGS_COLUMNS,
+  ...CARD_RANKING_SETTINGS_COLUMNS,
 ] as const
 
 function missingColumnError(column: string) {
@@ -67,6 +70,7 @@ describe('streamers デプロイ窓の列集合契約', () => {
 
       expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(true)
       expect(isMissingTradeSettingsColumnError(error)).toBe(false)
+      expect(isMissingCardRankingSettingsColumnError(error)).toBe(false)
     },
   )
 
@@ -84,7 +88,19 @@ describe('streamers デプロイ窓の列集合契約', () => {
     expect(isMissingAlbumSettingsColumnError(error)).toBe(true)
     expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
     expect(isMissingTradeSettingsColumnError(error)).toBe(false)
+    expect(isMissingCardRankingSettingsColumnError(error)).toBe(false)
   })
+
+  it.each(CARD_RANKING_SETTINGS_COLUMNS)(
+    '%s は card ranking 設定列としてのみ検知する',
+    (column) => {
+      const error = missingColumnError(column)
+
+      expect(isMissingCardRankingSettingsColumnError(error)).toBe(true)
+      expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+      expect(isMissingTradeSettingsColumnError(error)).toBe(false)
+    },
+  )
 
   it('デプロイ窓の対象列集合を明示的に固定する', () => {
     // 各列の検知経路自体は上の it.each で直接検証している。
@@ -102,6 +118,7 @@ describe('streamers デプロイ窓の列集合契約', () => {
       'pack_album_grid_sizes',
       'collection_default_view',
     ])
+    expect(CARD_RANKING_SETTINGS_COLUMNS).toEqual(['publish_card_ranking'])
   })
 
   it('安全な列集合にはデプロイ窓で欠落しうる実SQL列を含めない', () => {
