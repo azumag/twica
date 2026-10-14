@@ -52,6 +52,17 @@ const gridTranslations = {
   sortLabel: '並び替え',
   sortByNumber: '番号順',
   sortByRarity: 'レアリティ順',
+  // #1765: アルバム表示の翻訳（SortedCardGrid の必須キー）
+  album: {
+    viewLabel: '表示',
+    gridView: 'カード',
+    albumView: 'アルバム',
+    pageIndicator: '{page} / {total}',
+    prevPage: '前のページ',
+    nextPage: '次のページ',
+    emptySlot: '空きスロット',
+    cardPosition: '{number}枠目',
+  },
 }
 
 const cards: StreamerCollectionCard[] = [

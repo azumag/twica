@@ -89,6 +89,19 @@ export default async function StreamerCollection({
     sortLabel: t("sort.label"),
     sortByNumber: t("sort.number"),
     sortByRarity: t("sort.rarity"),
+    // #1765: アルバム表示（3×3固定・画像のみ）の翻訳。
+    // {page}/{total}/{number} は ICU に食われないよう、既存の cardCount と同じく
+    // 置換用トークンを引数として渡して文字列を組み立てる。
+    album: {
+      viewLabel: t("album.viewLabel"),
+      gridView: t("album.gridView"),
+      albumView: t("album.albumView"),
+      pageIndicator: t("album.pageIndicator", { page: "{page}", total: "{total}" }),
+      prevPage: t("album.prevPage"),
+      nextPage: t("album.nextPage"),
+      emptySlot: t("album.emptySlot"),
+      cardPosition: t("album.cardPosition", { number: "{number}" }),
+    },
   };
 
   return (

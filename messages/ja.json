@@ -389,6 +389,16 @@
       "number": "番号順",
       "rarity": "レアリティ順"
     },
+    "album": {
+      "viewLabel": "表示",
+      "gridView": "カード",
+      "albumView": "アルバム",
+      "pageIndicator": "{page} / {total}",
+      "prevPage": "前のページ",
+      "nextPage": "次のページ",
+      "emptySlot": "空きスロット",
+      "cardPosition": "{number}枠目"
+    },
     "viewCollection": "コレクションを見る",
     "unownedCard": "???",
     "unownedStatus": "未所持カード"
