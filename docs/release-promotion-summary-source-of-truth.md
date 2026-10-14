@@ -14,8 +14,9 @@
 
 ## 昇格 PR 以外
 
-`main` にマージされた PR でも通知 workflow 自体は動作するが、同一リポジトリの `preview → main` だけを canonical な昇格経路として扱う。
+`preview` にマージされた機能 PR や `main` に直接マージされた PR でも通知 workflow 自体は動作するが、同一リポジトリの `preview → main` だけを canonical な昇格経路として扱う。
 
+- `preview` へマージする機能 PR には、同じ workflow から未リリースの preview 配備として通知する。これは昇格要約の契約外であり、通知本文はサニタイズした PR タイトル（対象セクションがある場合だけその本文）を使う。この通知の有効化は、workflow が既定ブランチ `main` に載ってからになる（`docs/discord-main-merge-notification.md` 参照）。
 - 同一リポジトリからの direct-to-main PR は、対象セクションがあれば利用し、無ければ PR タイトルへフォールバックする。
 - fork 由来 PR は PR 本文を通知入力として信頼せず、PR タイトルへフォールバックする。
 
