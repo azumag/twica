@@ -26,6 +26,15 @@ import {
  */
 const posix = process.platform !== 'win32'
 
+// ps -o lstart= の表記に合わせた起動時刻の値。起動時刻の読み取りは ps 実行に依存し、
+// サンドボックス化された実行環境（/bin/ps が setuid のため exec が EPERM になる）や
+// procps の無い最小コンテナでは ps を実行できない。照合契約は「記録値と現在値の文字列比較」
+// なので、ps の可用性に依存せず検証できるよう読み取り器を注入して決定的な値を与える。
+const GROUP_START_TIME = 'Mon Sep 22 10:00:00 2026'
+const CURRENT_START_TIME = 'Mon Sep 22 10:00:01 2026'
+// 「記録を残した当時の別プロセス」を表す番兵値。どの実プロセスの起動時刻とも一致しない。
+const STALE_START_TIME = 'Thu Jan  1 00:00:00 1970'
+
 // 引数付きの常駐 node プロセスを独立したプロセスグループのリーダーとして起動する。
 // ignoreTerm=true のときは SIGTERM を無視し、段階的終了の SIGKILL 経路を検証する。
 // 子はハンドラ登録後に stdout へ ready を書くので、固定時間待ちに頼らず登録完了を待てる。
@@ -117,19 +126,36 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
 
   it('ラッパー PID が別プロセスへ再利用されても起動時刻不一致なら stale と判定する', async () => {
     const leftover = await startGroup()
+    // グループリーダーは記録と一致（= 当時のプロセスが生存）、ラッパー PID だけが記録と
+    // 一致しない（= PID 再利用）状況を作る。stale 判定がラッパーの起動時刻照合だけを
+    // 理由に起きることを保証する。
+    const readStart = (pid: number) => (pid === leftover ? GROUP_START_TIME : CURRENT_START_TIME)
     const reusedWrapperRecord = {
       wrapperPid: process.pid,
-      wrapperStartTime: 'Thu Jan  1 00:00:00 1970',
+      wrapperStartTime: STALE_START_TIME,
     }
     record(leftover, {
       ...reusedWrapperRecord,
-      startTime: readStartTime(leftover),
+      startTime: GROUP_START_TIME,
     })
 
-    expect(isWrapperActive(reusedWrapperRecord)).toBe(false)
-    expect(await cleanupStale({ stateDir, log: () => {} })).toEqual([leftover])
+    expect(isWrapperActive(reusedWrapperRecord, readStart)).toBe(false)
+    expect(await cleanupStale({ stateDir, log: () => {}, readStart })).toEqual([leftover])
     expect(await waitUntilDead(leftover)).toBe(true)
     expect(readdirSync(stateDir)).toEqual([])
+  })
+
+  it('起動時刻を読めない環境では、生存する PID を PID 再利用と誤判定して掃除しない', async () => {
+    const running = await startGroup()
+    const unreadable = () => null
+    const staleRecord = { wrapperPid: process.pid, wrapperStartTime: STALE_START_TIME }
+    record(running, { ...staleRecord, startTime: STALE_START_TIME })
+
+    expect(isWrapperActive(staleRecord, unreadable)).toBe(true)
+    expect(isOwnedGroup({ pgid: running, startTime: STALE_START_TIME }, unreadable)).toBe(true)
+    expect(await cleanupStale({ stateDir, log: () => {}, readStart: unreadable })).toEqual([])
+    expect(groupAlive(running)).toBe(true)
+    expect(readdirSync(stateDir)).toEqual([`${running}.json`])
   })
 
   it('rename 前に残った完全な tmp 記録は、書き込み元ラッパー死亡時だけ回収する', async () => {
@@ -169,10 +195,12 @@ describe.skipIf(!posix)('scripts/vitest-agent.mjs (#1677)', () => {
 
   it('リーダーの起動時刻が記録と異なる（PID 再利用）グループは終了せず、記録だけ捨てる', async () => {
     const reused = await startGroup()
-    record(reused, { wrapperPid: await deadPid(), startTime: 'Thu Jan  1 00:00:00 1970' })
+    record(reused, { wrapperPid: await deadPid(), startTime: STALE_START_TIME })
+    // 現在のリーダーの起動時刻は記録と異なる = 記録当時のプロセスは既に終了し PID が再利用された
+    const readStart = () => CURRENT_START_TIME
 
-    expect(isOwnedGroup({ pgid: reused, startTime: 'Thu Jan  1 00:00:00 1970' })).toBe(false)
-    expect(await cleanupStale({ stateDir, log: () => {} })).toEqual([])
+    expect(isOwnedGroup({ pgid: reused, startTime: STALE_START_TIME }, readStart)).toBe(false)
+    expect(await cleanupStale({ stateDir, log: () => {}, readStart })).toEqual([])
     expect(groupAlive(reused)).toBe(true)
     expect(readdirSync(stateDir)).toEqual([])
   })
