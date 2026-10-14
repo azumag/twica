@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -13,15 +14,47 @@ import { describe, expect, it } from "vitest";
 
 const PR_DRAFT_FILES = ["pr-body.md", "pr-preview.md"];
 
+// 作業ツリーの存在ではなく Git index の追跡状態を確認する。無視されたローカル
+// 下書きは許可し、git add -f で追跡された下書きは作業ツリーに無くても検出する。
+// -z の NUL 区切りでファイル名をそのまま扱い、root の完全一致だけを判定する。
+function readTrackedDraftFiles(
+  readIndex = () =>
+    execFileSync("git", ["ls-files", "-z", "--cached", "--", ...PR_DRAFT_FILES], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    })
+) {
+  return new Set(readIndex().split("\0"));
+}
+
+const trackedFiles = readTrackedDraftFiles();
+
 const gitignoreLines = readFileSync(join(process.cwd(), ".gitignore"), "utf8")
   .split("\n")
   .map((line) => line.trim());
 
+
+describe("PR draft tracked-path regression", () => {
+  it.each(PR_DRAFT_FILES)(
+    "allows ignored local %s when the tracked-path list is empty",
+    (filename) => {
+      // ローカルの下書きがあっても index が空なら許可する。作業ツリーは参照しない。
+      expect(readTrackedDraftFiles(() => "").has(filename)).toBe(false);
+    }
+  );
+
+  it.each(PR_DRAFT_FILES)(
+    "detects tracked %s even when it is absent from the worktree",
+    (filename) => {
+      // 作業ツリーに無い下書きでも index の NUL レコードから検出する。
+      expect(readTrackedDraftFiles(() => `${filename}\0`).has(filename)).toBe(true);
+    }
+  );
+});
+
 describe("repository PR draft scratch guard (#837)", () => {
   it.each(PR_DRAFT_FILES)("does not track %s in the repository", (filename) => {
-    // 追跡対象のファイルは checkout 後の作業ツリーに存在するため、ファイルの不在が
-    // 「tracked でない」ことを確認できる。.gitignore のみでは git add -f を防げない。
-    expect(existsSync(join(process.cwd(), filename))).toBe(false);
+    expect(trackedFiles.has(filename)).toBe(false);
   });
 
   it.each(PR_DRAFT_FILES)(
