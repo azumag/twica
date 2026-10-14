@@ -164,26 +164,26 @@ jobs:
         run: npm run stats-aggregator:typecheck
 
       - name: Build and verify preview Stats Aggregator Worker bundle
-        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || (github.event_name == 'push' && github.ref == 'refs/heads/preview') }}
         run: |
           npm run stats-aggregator:build:preview
           npm run check:supabase-shutdown -- --require-stats-aggregator-preview
 
       - name: Build and verify production Stats Aggregator Worker bundle
-        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: |
           npm run stats-aggregator:build:production
           npm run check:supabase-shutdown -- --require-stats-aggregator-production
 
       - name: Deploy preview Stats Aggregator Worker
-        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || github.ref == 'refs/heads/preview' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') || (github.event_name == 'push' && github.ref == 'refs/heads/preview') }}
         run: npm run stats-aggregator:deploy:preview
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy production Stats Aggregator Worker
-        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || github.ref == 'refs/heads/main' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: npm run stats-aggregator:deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -497,6 +497,7 @@ for (const artifactRoot of [
   'analysis/dist',
   'workers/error-reporter/dist',
   'workers/overlay-realtime/dist',
+  'workers/stats-aggregator/dist',
 ]) {
   for (const file of walk(artifactRoot)) {
     assertAbsent(file, generatedBundlePatterns)
