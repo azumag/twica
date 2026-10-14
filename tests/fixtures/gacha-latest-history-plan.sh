@@ -205,6 +205,15 @@ SQL
 "${PSQL[@]}" -c "VACUUM (ANALYZE) public.gacha_history;"
 "${PSQL[@]}" -c "VACUUM (ANALYZE) public.streamers;"
 
+# plannerの計画は統計情報とvisibility mapで変わる。断言が外れたときに原因を
+# 特定できるよう、現在の状態を必ず出しておく。
+echo "--- diagnostics ---"
+"${PSQL[@]}" -c \
+  "SELECT reltuples::bigint AS rows, relpages, relallvisible,
+          (SELECT n_distinct FROM pg_stats WHERE schemaname='public'
+             AND tablename='gacha_history' AND attname='streamer_id') AS streamer_n_distinct
+   FROM pg_class WHERE oid='public.gacha_history'::regclass;"
+
 # ---------------------------------------------------------------------------
 # 1) / 2) 結果の正しさ(NULL耐性)
 # ---------------------------------------------------------------------------
@@ -236,6 +245,8 @@ fi
 #    リテラル直打ちのEXPLAINはcustom plan
 #    になり、streamer_idの選択率しだいでglobal indexを選ぶ別物の計測になる。
 # ---------------------------------------------------------------------------
+PLAN_CHECK_FAILED=0
+
 assert_latest_plan() {
   local streamer_id="$1"
   local label="$2"
@@ -256,25 +267,28 @@ SQL
 )"
 
   if [[ "$plan" != *"idx_gacha_history_streamer_redeemed_card_user"* ]]; then
-    echo "$label: ガチャ直近履歴クエリがcovering indexを使っていない" >&2
+    echo "$label: NG covering index を使っていない" >&2
     echo "$plan" >&2
-    exit 1
+    PLAN_CHECK_FAILED=1
+    return 0
   fi
 
   # Incremental Sortも"Sort"に一致する。covering indexが全順序を供給し、
   # 追加Sortやglobal indexによる大量Filterへ退行していないことを確認する。
   if [[ "$plan" == *"Sort"* ]]; then
-    echo "$label: ガチャ直近履歴クエリのプランにSortが残っている" >&2
+    echo "$label: NG プランにSortが残っている" >&2
     echo "$plan" >&2
-    exit 1
+    PLAN_CHECK_FAILED=1
+    return 0
   fi
 
   # 4桁以上の行数をFilterして落とす計画(=redeemed_at単独indexを後方から辿って
   # streamer_idをヒープ側で落とす形)は、履歴が多い配信者で線形に悪化する。
   if [[ "$plan" =~ Rows\ Removed\ by\ Filter:\ [0-9]{4,} ]]; then
-    echo "$label: ガチャ直近履歴クエリが大量の行をFilterしている" >&2
+    echo "$label: NG 大量の行をFilterしている" >&2
     echo "$plan" >&2
-    exit 1
+    PLAN_CHECK_FAILED=1
+    return 0
   fi
 
   echo "$label plan: $(echo "$plan" | grep -E 'Index (Only )?Scan|Execution Time' | tr -s ' ' | tr '\n' ' ')"
@@ -283,5 +297,10 @@ SQL
 assert_latest_plan "$STALE_STREAMER" "stale heavy (直近が古い20万件)"
 assert_latest_plan "$ACTIVE_STREAMER" "active heavy (直近30日の20万件)"
 assert_latest_plan "$LIGHT_STREAMER" "light (履歴3件)"
+
+if [[ "$PLAN_CHECK_FAILED" != "0" ]]; then
+  echo "gacha latest history plan checks FAILED" >&2
+  exit 1
+fi
 
 echo "gacha latest history plan checks passed"
