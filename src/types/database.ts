@@ -94,6 +94,9 @@ export interface Database {
           // /liveランキングでチャネル識別情報を表示するオプトイン（デフォルトfalse）
           // Whether /live rankings identify the streamer channel (default false)
           publish_stats: boolean
+          // 同志カードの名前つき視聴者ランキング公開オプトイン（デフォルトfalse・UI無し）
+          // Whether the named viewer card ranking is published (default false, no UI)
+          publish_card_ranking: boolean
           // レイド限定ガチャを受け付ける期限（null/期限切れは不明状態としてブロック）
           // Until when raid-limited gacha rewards are accepted. Null/expired blocks them.
           raid_gacha_active_until: string | null
@@ -132,6 +135,7 @@ export interface Database {
           cross_channel_trade_enabled?: boolean
           publish_live_status?: boolean
           publish_stats?: boolean
+          publish_card_ranking?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
           created_at?: string
@@ -166,6 +170,7 @@ export interface Database {
           cross_channel_trade_enabled?: boolean
           publish_live_status?: boolean
           publish_stats?: boolean
+          publish_card_ranking?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
           created_at?: string
