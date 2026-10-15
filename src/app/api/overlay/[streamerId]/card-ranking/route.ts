@@ -23,8 +23,8 @@ import { isValidStreamerId } from "@/lib/overlay-realtime/contract";
 const CARD_RANKING_PERIODS = new Set(["all", "7d", "30d"]);
 const DEFAULT_CARD_RANKING_PERIOD = "all";
 const DEFAULT_CARD_RANKING_LIMIT = 10;
-// limit の上限は RPC（public.get_card_ranking）と同じ値にする。ここを外すと RPC が
-// 不正値で例外を投げて 500 になるため、入力境界で 400 に落とす。
+// 公開 route の limit は 1..50 に制限する（内部 RPC は 1..100 を許容）。
+// 範囲外は RPC へ渡さず、入力境界で 400 に落とす。
 const MAX_CARD_RANKING_LIMIT = 50;
 // wrapper が未 opt-in / 未知の streamer に対して返す SQLSTATE（no_data_found）。
 const CARD_RANKING_NOT_PUBLISHED_SQLSTATE = "P0002";

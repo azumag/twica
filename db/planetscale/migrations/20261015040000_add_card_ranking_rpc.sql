@@ -6,8 +6,8 @@
 --
 -- docich 側はこの JSON を表示するだけで、集計・正本・除外判定はすべて TwiCa 側に
 -- 置く。認証必須 API を service トークンで叩く案は docich に資格情報を増やすため
--- 採らず、既存 /api/overlay/{streamerId}/events と同じ「streamerId を知っているだけ」
--- の公開水準にする（設計 §6）。
+-- 採らず、後続の 20261015050000 migration の wrapper で配信者の公開 opt-in を
+-- 強制する。公開 route は wrapper だけを呼ぶ（設計 §6）。
 --
 -- 集計述語・除外判定・同率決定順は既存の正本に合わせる:
 --   - 対象述語 (reward_cost > 0 OR reward_id IS NOT NULL)

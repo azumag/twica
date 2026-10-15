@@ -343,4 +343,3 @@ BEGIN
     RAISE EXCEPTION 'get_published_card_ranking が service_role から EXECUTE できない';
   END IF;
 END $$;
-
