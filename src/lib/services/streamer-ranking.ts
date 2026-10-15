@@ -19,43 +19,27 @@
 import { getDb } from '@/lib/db/client'
 import { isPgFunctionNotFoundError, isPgMissingTableError } from '@/lib/db/errors'
 import { withDbRetry } from '@/lib/db/retry'
+import {
+  STREAMER_RANKING_SCHEMA_VERSION,
+  type RankingMetric,
+  type RankingPeriod,
+  type StreamerRankingResponse,
+  type StreamerRankingRow,
+} from '@/lib/streamer-ranking-contract'
 
-/** DB 関数が返す contract のバージョン。DB 側と不一致なら fail loud させる。 */
-export const STREAMER_RANKING_SCHEMA_VERSION = 1
+// contract 型は子C（src/components/StreamerRanking.tsx）と共有するため
+// src/lib/streamer-ranking-contract.ts へ分離した。既存の import 元
+// （このモジュール）からも従来どおり参照できるよう re-export する。
+export {
+  STREAMER_RANKING_SCHEMA_VERSION,
+  type RankingMetric,
+  type RankingPeriod,
+  type StreamerRankingRow,
+  type StreamerRankingSelf,
+  type StreamerRankingEntry,
+  type StreamerRankingResponse,
+} from '@/lib/streamer-ranking-contract'
 
-export type RankingMetric = 'draws' | 'card_count'
-export type RankingPeriod = 'daily' | 'weekly' | 'total' | 'current'
-
-/** 匿名化済みのランキング1行。他チャンネルの識別子は contract 上存在しない。 */
-export interface StreamerRankingRow {
-  rank: number
-  value: number
-  isSelf: boolean
-}
-
-export interface StreamerRankingSelf {
-  value: number
-  /** 母集団外（直近30日に排出なし）や insufficientData のときは null */
-  rank: number | null
-  /** 表示 rank からの百分位。rank が無いときは null */
-  percentile: number | null
-}
-
-export interface StreamerRankingEntry {
-  metric: RankingMetric
-  period: RankingPeriod
-  participantCount: number
-  insufficientData: boolean
-  self: StreamerRankingSelf | null
-  top: StreamerRankingRow[]
-  neighbors: StreamerRankingRow[]
-}
-
-export interface StreamerRankingResponse {
-  schemaVersion: typeof STREAMER_RANKING_SCHEMA_VERSION
-  computedAt: string | null
-  rankings: StreamerRankingEntry[]
-}
 
 export type StreamerRankingOutcome =
   | { available: true; response: StreamerRankingResponse }
