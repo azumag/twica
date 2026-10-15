@@ -313,6 +313,9 @@ export async function POST(request: NextRequest) {
   );
 
   const results: ReplayResultEntry[] = [];
+  // dispatchedの集計結果は予約行全体を1件として表すため、enqueueに失敗した行も含め
+  // 実予約件数をDB+KV共通のrequest上限で消費する。
+  let chatDispatchExtraRequestLimitRows = 0;
 
   if (dryRun) {
     const workItems = await peekChatNotificationOutboxWork(limit);
@@ -354,7 +357,7 @@ export async function POST(request: NextRequest) {
     try {
       const sweepResult = await awaitBeforeReplayDeadline(
         dispatchDueChatNotifications(
-          CHAT_DUE_WAKE_SWEEP_LIMIT,
+          Math.min(limit, CHAT_DUE_WAKE_SWEEP_LIMIT),
           CHAT_DUE_WAKE_RESERVATION_SECONDS,
         ),
         replayDeadlineAt,
@@ -362,6 +365,9 @@ export async function POST(request: NextRequest) {
       if (sweepResult.completed && !sweepResult.value.skippedDisabled) {
         chatDispatchHandoff = true;
         const { reserved, enqueued } = sweepResult.value;
+        // resultsには集計1件だけが追加されるため、残りの予約行をrequest budgetへ加算する。
+        // enqueue失敗時も予約は有効なので、reservedの件数をそのまま使う。
+        chatDispatchExtraRequestLimitRows = Math.max(0, reserved - 1);
         if (reserved > 0) {
           // 1エントリ=1sweepの集計。enqueue失敗分はpendingのまま残るため
           // 「failed」にはせず、運用が気づけるようerrorに件数だけ残す
@@ -620,7 +626,9 @@ export async function POST(request: NextRequest) {
   // non-dry-runではDB outboxとKVを合わせてrequest limit以内に収める。
   // DB側で上限を消費した場合やdeadline到達時はcursorを進めず、次tickで同じ
   // backlogを確実に再評価する。dry-runは両保存先の最古候補比較だけなので別枠。
-  const remainingKvLimit = dryRun ? limit : Math.max(0, limit - results.length);
+  const remainingKvLimit = dryRun
+    ? limit
+    : Math.max(0, limit - results.length - chatDispatchExtraRequestLimitRows);
   const parkedListResult = remainingKvLimit > 0 && Date.now() < replayDeadlineAt
     ? await awaitBeforeReplayDeadline(
         listParkedEventSubNotifications({
