@@ -64,6 +64,66 @@ describe('DuplicateDisplayTierSettings', () => {
     expect(screen.getByRole('spinbutton', { name: 'コモン 1段階目' })).toHaveValue(null)
   })
 
+  it.each(['constructor', 'toString', '__proto__'])(
+    '未設定の合法レアリティ名 %s を編集・保存し、確定値と機能OFFのエコーを反映する',
+    async (rarity) => {
+      mockFetch.mockImplementationOnce(async () =>
+        new Response(JSON.stringify({ success: true, duplicateDisplayTiers: { [rarity]: [4] } }))
+      ).mockImplementationOnce(async () =>
+        new Response(JSON.stringify({ success: true, duplicateDisplayTiers: null }))
+      )
+      mount({ rarities: [rarity] })
+
+      const first = screen.getByRole('spinbutton', { name: `${rarity} 1段階目` })
+      expect(first).toHaveValue(null)
+      fireEvent.change(first, { target: { value: '3' } })
+
+      await waitFor(() => expect(first).toHaveValue(4))
+      const saved = JSON.parse(mockFetch.mock.calls[0][1].body).duplicateDisplayTiers
+      expect(Object.prototype.hasOwnProperty.call(saved, rarity)).toBe(true)
+      expect(saved[rarity]).toEqual([3])
+      expect(screen.queryByText(messages.duplicateTierSettings.errors.saveFailed)).not.toBeInTheDocument()
+
+      fireEvent.change(first, { target: { value: '' } })
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2))
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).duplicateDisplayTiers).toBeNull()
+      await waitFor(() => expect(first).not.toBeDisabled())
+      expect(first).toHaveValue(null)
+      expect(screen.queryByText(messages.duplicateTierSettings.errors.saveFailed)).not.toBeInTheDocument()
+    }
+  )
+
+  it('設定済みの特殊名をすべて描画し、変更した値を own JSON エントリとして全件保存する', async () => {
+    const rarities = ['constructor', 'toString', '__proto__']
+    const configured = JSON.parse('{"constructor":[2,7],"toString":[2,7],"__proto__":[2,7]}')
+    mockFetch.mockImplementation(async (_url, init) =>
+      new Response(JSON.stringify({
+        success: true,
+        duplicateDisplayTiers: JSON.parse(init.body).duplicateDisplayTiers,
+      }))
+    )
+    mount({ rarities, currentDuplicateDisplayTiers: configured })
+
+    for (const rarity of rarities) {
+      expect(screen.getByRole('spinbutton', { name: `${rarity} 1段階目` })).toHaveValue(2)
+      expect(screen.getByRole('spinbutton', { name: `${rarity} 2段階目` })).toHaveValue(7)
+    }
+    for (const [index, rarity] of rarities.entries()) {
+      const first = screen.getByRole('spinbutton', { name: `${rarity} 1段階目` })
+      fireEvent.change(first, { target: { value: '4' } })
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(index + 1))
+      await waitFor(() => expect(first).not.toBeDisabled())
+
+      const saved = JSON.parse(mockFetch.mock.calls[index][1].body).duplicateDisplayTiers
+      expect(Object.getPrototypeOf(saved)).toBe(Object.prototype)
+      for (const [entryIndex, name] of rarities.entries()) {
+        expect(Object.prototype.hasOwnProperty.call(saved, name)).toBe(true)
+        expect(saved[name]).toEqual([entryIndex <= index ? 4 : 2, 7])
+      }
+      expect(first).toHaveValue(4)
+    }
+  })
+
   it('しきい値を入力するとマップ全体を保存する', async () => {
     mount()
 

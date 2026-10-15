@@ -17,6 +17,8 @@ import {
 // 保存側（API route）・設定UI・視聴者表示（コレクション / カード詳細）が同じ規則を
 // 使うため、「保存できたのに反映されない」が起きないことをここで固定する。
 
+const prototypeRarityNames = ["constructor", "toString", "__proto__"];
+
 describe("normalizeDuplicateTierThresholds", () => {
   it("厳密増加する 1..3 要素の整数配列をそのまま通す", () => {
     expect(normalizeDuplicateTierThresholds([2])).toEqual([2]);
@@ -73,6 +75,19 @@ describe("validateDuplicateDisplayTiers", () => {
   it("キーを trim + NFC 正規化して保存する", () => {
     const result = validateDuplicateDisplayTiers({ "  legendary  ": [2, 5] });
     expect(result).toEqual({ ok: true, value: { legendary: [2, 5] } });
+  });
+
+  it.each(prototypeRarityNames)("合法なキー %s を正規化後も own エントリとして保存する", (rarity) => {
+    const result = validateDuplicateDisplayTiers({ [`  ${rarity}  `]: [2, 5] });
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value === null) throw new Error("valid rarity was rejected");
+
+    expect(Object.getPrototypeOf(result.value)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(result.value, rarity)).toBe(true);
+    // JSON 保存・読出し後も同じ設定を保持し、通常のレアリティと同じ段階を返す。
+    const stored = JSON.parse(JSON.stringify(result.value));
+    expect(stored).toEqual({ [rarity]: [2, 5] });
+    expect(resolveDuplicateTier(sanitizeDuplicateDisplayTiers(stored), rarity, 5)).toBe(2);
   });
 
   it("trim で衝突するキーは黙ってマージせず拒否する", () => {
@@ -149,6 +164,17 @@ describe("sanitizeDuplicateDisplayTiers", () => {
     expect(sanitizeDuplicateDisplayTiers([])).toEqual({});
     expect(sanitizeDuplicateDisplayTiers("{}")).toEqual({});
   });
+
+  it.each(prototypeRarityNames)("JSON 由来の own キー %s を有効なしきい値と共に残す", (rarity) => {
+    // オブジェクトリテラルの __proto__ 特殊構文ではなく、DB の JSON と同じ入力を使う。
+    const stored = JSON.parse(`{"${rarity}":[2,5]}`);
+    const sanitized = sanitizeDuplicateDisplayTiers(stored);
+    expect(Object.getPrototypeOf(sanitized)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(sanitized, rarity)).toBe(true);
+    expect(JSON.parse(JSON.stringify(sanitized))).toEqual(stored);
+    expect(resolveDuplicateTier(sanitized, rarity, 2)).toBe(1);
+    expect(resolveDuplicateTier(sanitized, rarity, 5)).toBe(2);
+  });
 });
 
 describe("resolveDuplicateTier", () => {
@@ -178,6 +204,44 @@ describe("resolveDuplicateTier", () => {
     expect(resolveDuplicateTier(null, "common", 10)).toBe(NO_DUPLICATE_TIER);
     expect(resolveDuplicateTier(undefined, "common", 10)).toBe(NO_DUPLICATE_TIER);
   });
+
+  it.each(prototypeRarityNames)("未設定・機能 OFF の %s は例外を出さず段階 0", (rarity) => {
+    const unsetMaps = [
+      undefined,
+      null,
+      {},
+      sanitizeDuplicateDisplayTiers(undefined),
+      sanitizeDuplicateDisplayTiers(null),
+    ];
+    for (const unset of unsetMaps) {
+      expect(resolveDuplicateTier(unset, rarity, 10)).toBe(NO_DUPLICATE_TIER);
+    }
+  });
+
+  it.each(prototypeRarityNames)("継承された %s の配列を設定として扱わない", (rarity) => {
+    const inherited = Object.create({ [rarity]: [2, 5] });
+    expect(resolveDuplicateTier(inherited, rarity, 10)).toBe(NO_DUPLICATE_TIER);
+    expect(sanitizeDuplicateDisplayTiers(inherited)).toEqual({});
+  });
+
+  it.each([
+    { name: "undefined", thresholds: undefined },
+    { name: "null", thresholds: null },
+    { name: "文字列", thresholds: "25" },
+    { name: "オブジェクト", thresholds: {} },
+    { name: "下限未満", thresholds: [1] },
+    { name: "降順", thresholds: [5, 2] },
+    { name: "重複", thresholds: [2, 2] },
+    { name: "段階数超過", thresholds: [2, 3, 4, 5] },
+  ])(
+    "不正な own しきい値（$name）は例外を出さず段階 0",
+    ({ thresholds }) => {
+      for (const rarity of prototypeRarityNames) {
+        const corrupt = { [rarity]: thresholds } as unknown as Record<string, number[]>;
+        expect(resolveDuplicateTier(corrupt, rarity, 10)).toBe(NO_DUPLICATE_TIER);
+      }
+    }
+  );
 });
 
 describe("duplicateTierBadgeClass / duplicateTierFrameClass", () => {

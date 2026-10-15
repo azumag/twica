@@ -29,6 +29,11 @@ type EditingThresholds = string[];
 const emptySlots = (): EditingThresholds =>
   Array.from({ length: MAX_DUPLICATE_TIERS }, () => "");
 
+/** constructor / toString 等の継承値は、未設定レアリティのしきい値ではない。 */
+function getOwnThresholds<T>(map: Record<string, T>, rarity: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(map, rarity) ? map[rarity] : undefined;
+}
+
 /**
  * 保存済みのしきい値を入力欄の状態へ変換する。段階が設定されていない
  * レアリティは全て空欄になる。
@@ -43,6 +48,17 @@ function toEditingThresholds(thresholds: number[] | undefined): EditingThreshold
   return slots;
 }
 
+function toEditingMap(
+  tiers: DuplicateDisplayTiers,
+  rarities: string[]
+): Record<string, EditingThresholds> {
+  // fromEntries は __proto__ も own データプロパティにする。通常の {} への
+  // 代入で prototype を変えず、初期表示と保存後のエコーで同じ plain map を使う。
+  return Object.fromEntries(
+    rarities.map((rarity) => [rarity, toEditingThresholds(getOwnThresholds(tiers, rarity))])
+  );
+}
+
 /**
  * 入力欄の状態を送信用マップへ変換する（全レアリティ空 = null = 機能OFF）。
  * 数値でない欄は落とす（数値入力でも空文字や不正値が届きうるため）。
@@ -51,15 +67,16 @@ function toPayload(
   editing: Record<string, EditingThresholds>,
   rarities: string[]
 ): DuplicateDisplayTiers | null {
-  const payload: DuplicateDisplayTiers = {};
+  const entries: [string, number[]][] = [];
   for (const rarity of rarities) {
-    const parsed = (editing[rarity] ?? [])
+    const parsed = (getOwnThresholds(editing, rarity) ?? [])
       .filter((slot) => slot !== "")
       .map((slot) => Number(slot))
       .filter((value) => Number.isInteger(value));
-    if (parsed.length > 0) payload[rarity] = parsed;
+    if (parsed.length > 0) entries.push([rarity, parsed]);
   }
-  return Object.keys(payload).length > 0 ? payload : null;
+  // 送信値も plain object とし、合法名 __proto__ を JSON から落とさない。
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
 }
 
 /**
@@ -89,13 +106,9 @@ export default function DuplicateDisplayTierSettings({
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const isMaintenanceBlocked = maintenanceMode !== "off";
 
-  const [thresholds, setThresholds] = useState<Record<string, EditingThresholds>>(() => {
-    const initial: Record<string, EditingThresholds> = {};
-    for (const rarity of rarities) {
-      initial[rarity] = toEditingThresholds(currentDuplicateDisplayTiers[rarity]);
-    }
-    return initial;
-  });
+  const [thresholds, setThresholds] = useState<Record<string, EditingThresholds>>(() =>
+    toEditingMap(currentDuplicateDisplayTiers, rarities)
+  );
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
@@ -140,11 +153,7 @@ export default function DuplicateDisplayTierSettings({
         // 応答にキーが無い場合（保存対象が無かった等）は送信値を保持する。
         if (echoed && "duplicateDisplayTiers" in echoed) {
           const sanitized = sanitizeDuplicateDisplayTiers(echoed.duplicateDisplayTiers);
-          const next: Record<string, EditingThresholds> = {};
-          for (const rarity of rarities) {
-            next[rarity] = toEditingThresholds(sanitized[rarity]);
-          }
-          setThresholds(next);
+          setThresholds(toEditingMap(sanitized, rarities));
         }
         setIsError(false);
         setMessage(t("messages.saved"));
@@ -168,7 +177,7 @@ export default function DuplicateDisplayTierSettings({
       if (isMaintenanceBlocked || saving) return;
 
       const previous = thresholds;
-      const previousSlots = previous[rarity] ?? emptySlots();
+      const previousSlots = getOwnThresholds(previous, rarity) ?? emptySlots();
 
       // 空欄（＝その段階は使わない）を許可するため入力は文字列のまま保持する。
       // 空欄は必ず末尾へ寄せる: 例えば1・2段階目を空けたまま3段階目だけ入力
@@ -218,7 +227,7 @@ export default function DuplicateDisplayTierSettings({
 
       <div className="space-y-3">
         {rarities.map((rarity) => {
-          const slots = thresholds[rarity] ?? emptySlots();
+          const slots = getOwnThresholds(thresholds, rarity) ?? emptySlots();
           const rarityLabel = getRarityDisplayInfo(rarity).label;
           return (
             <div key={rarity} className="flex flex-wrap items-center gap-2">

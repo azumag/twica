@@ -138,7 +138,9 @@ export function validateDuplicateDisplayTiers(
   const entries = Object.entries(value as Record<string, unknown>);
   if (entries.length > MAX_DUPLICATE_TIER_ENTRIES) return { ok: false };
 
-  const normalized: DuplicateDisplayTiers = {};
+  // レアリティ名は __proto__ も合法。通常の {} への代入ではそのキーが
+  // setter として働き保存から消えるため、継承も setter もない辞書にする。
+  const normalized: DuplicateDisplayTiers = Object.create(null);
   for (const [rawKey, rawThresholds] of entries) {
     const key = rawKey.trim().normalize("NFC");
     if (key.length < 1 || key.length > MAX_RARITY_KEY_LENGTH) {
@@ -157,7 +159,9 @@ export function validateDuplicateDisplayTiers(
     normalized[key] = thresholds;
   }
 
-  return { ok: true, value: normalized };
+  // Next.js の Client Component に渡せる plain object に戻す。
+  // spread は __proto__ も setter を呼ばず own データプロパティとしてコピーする。
+  return { ok: true, value: { ...normalized } };
 }
 
 /**
@@ -170,14 +174,16 @@ export function validateDuplicateDisplayTiers(
  * validation so a corrupt row can never throw inside the viewer page.
  */
 export function sanitizeDuplicateDisplayTiers(value: unknown): DuplicateDisplayTiers {
+  // 保存時と同じく __proto__ を通常の own エントリとして保持する。
+  const sanitized: DuplicateDisplayTiers = Object.create(null);
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 
-  const sanitized: DuplicateDisplayTiers = {};
   for (const [key, rawThresholds] of Object.entries(value as Record<string, unknown>)) {
     const thresholds = normalizeDuplicateTierThresholds(rawThresholds);
     if (thresholds !== null) sanitized[key] = thresholds;
   }
-  return sanitized;
+  // 保存側と同じく、Client Component に渡す戻り値は plain object にする。
+  return { ...sanitized };
 }
 
 /**
@@ -197,8 +203,13 @@ export function resolveDuplicateTier(
   rarity: string,
   count: number
 ): number {
-  const thresholds = tiers?.[rarity];
-  if (!thresholds || !Number.isFinite(count)) return NO_DUPLICATE_TIER;
+  // constructor / toString 等の継承値は設定ではない。未正規化のマップを
+  // 受け取る場合も、own エントリの有効な配列だけを計算して例外や誤表示を防ぐ。
+  if (!tiers || !Object.prototype.hasOwnProperty.call(tiers, rarity) || !Number.isFinite(count)) {
+    return NO_DUPLICATE_TIER;
+  }
+  const thresholds = normalizeDuplicateTierThresholds(tiers[rarity]);
+  if (thresholds === null) return NO_DUPLICATE_TIER;
 
   let tier = NO_DUPLICATE_TIER;
   for (const threshold of thresholds) {
