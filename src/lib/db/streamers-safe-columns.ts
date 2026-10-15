@@ -85,9 +85,10 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
  * 対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に委ねる。
  *
  * 関数名は #738 で live directory 設定列用として導入した時の名前を維持しているが、現在は
- * #722 の trade_enabled / cross_channel_trade_enabled も同じ安全列集合へフォールバックする。
- * 対象列の定義は LIVE_DIRECTORY_SETTINGS_COLUMNS / TRADE_SETTINGS_COLUMNS に分け、検知条件だけを
- * 共有する。
+ * #722 の trade_enabled / cross_channel_trade_enabled と #934 の publish_card_ranking も
+ * 同じ安全列集合へフォールバックする。
+ * 対象列の定義は LIVE_DIRECTORY_SETTINGS_COLUMNS / TRADE_SETTINGS_COLUMNS /
+ * CARD_RANKING_SETTINGS_COLUMNS に分け、検知条件だけを共有する。
  *
  * 元々は cards テーブルの「本番未デプロイ8列」フォールバック
  * （旧 cards-safe-columns.ts の withCardsBattleColumnFallback）と同型の設計だったが、そちらは
@@ -103,7 +104,8 @@ export async function withLiveDirectorySettingsColumnFallback<T>(
     if (
       !isMissingLiveDirectorySettingsColumnError(error) &&
       !isMissingTradeSettingsColumnError(error) &&
-      !isMissingAlbumSettingsColumnError(error)
+      !isMissingAlbumSettingsColumnError(error) &&
+      !isMissingCardRankingSettingsColumnError(error)
     ) {
       throw error;
     }
@@ -155,4 +157,24 @@ export const ALBUM_SETTINGS_COLUMNS = [
  */
 export function isMissingAlbumSettingsColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, ALBUM_SETTINGS_COLUMNS);
+}
+
+/**
+ * デプロイ窓で欠落しうる streamers の新列(20261015050000 の migration で追加。
+ * Issue #934)。publish_live_status / publish_stats (#738) と同じ「アプリデプロイと
+ * migration適用が独立したタイミングで完了する」リスクを持つため、同型のフォールバックを
+ * 追加する。
+ *
+ * STREAMERS_SAFE_COLUMNS は #738 より前の列だけの固定リストであり、この列も元々
+ * 含まれていない。そのため再投影先(STREAMERS_SAFE_COLUMNS)は変更不要で、検知条件だけを
+ * この列にも広げればよい。
+ */
+export const CARD_RANKING_SETTINGS_COLUMNS = ["publish_card_ranking"] as const;
+
+/**
+ * streamers の publish_card_ranking 列の欠落
+ * (20261015050000 の migration 未適用の環境)を検知する。
+ */
+export function isMissingCardRankingSettingsColumnError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, CARD_RANKING_SETTINGS_COLUMNS);
 }
