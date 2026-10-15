@@ -3,6 +3,11 @@ import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import type { Streamer, Card } from "@/types/database";
 import { getRarityDisplayInfo } from "@/lib/rarity";
+import {
+  duplicateTierBadgeClass,
+  resolveDuplicateTier,
+  sanitizeDuplicateDisplayTiers,
+} from "@/lib/duplicate-display-tiers";
 import type { Rarity } from "@/types/database";
 
 /**
@@ -36,6 +41,15 @@ export default async function CardDetail({ card, streamer }: CardDetailProps) {
   const tCardManager = await getTranslations("cardManager");
 
   const rarityInfo = getRarityInfo(card.rarity);
+
+  // Issue #1782: 配信者がレアリティ別に設定した「被り枚数 → 表示段階」のしきい値を、
+  // このカードの所有枚数から解決する。デプロイ窓で列が未作成の間は undefined に
+  // なるため sanitize で空マップへ倒し、段階 0（バッジなし）に fail-closed する。
+  const duplicateTier = resolveDuplicateTier(
+    sanitizeDuplicateDisplayTiers(streamer.duplicate_display_tiers),
+    card.rarity,
+    card.count
+  );
 
   return (
     <div className="min-h-screen bg-gray-900 p-4 sm:p-6 lg:p-8">
@@ -92,6 +106,15 @@ export default async function CardDetail({ card, streamer }: CardDetailProps) {
               >
                 {rarityInfo.label}
               </span>
+              {/* Issue #1782: 被りカードの表示段階バッジ。コレクション一覧と同じ
+                  段階判定（同一ライブラリ）を使うため、一覧と詳細で食い違わない。 */}
+              {duplicateTier > 0 && (
+                <span
+                  className={`rounded-full px-3 py-1 text-sm font-medium ${duplicateTierBadgeClass(duplicateTier)}`}
+                >
+                  {tCollection("duplicateTier.badge", { tier: String(duplicateTier) })}
+                </span>
+              )}
             </div>
 
             {/* Description */}

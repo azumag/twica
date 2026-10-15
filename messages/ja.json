@@ -406,6 +406,9 @@
       "nextPage": "次のページ",
       "emptySlot": "空きスロット",
       "cardPosition": "{number}枠目"
+    },
+    "duplicateTier": {
+      "badge": "被り{tier}段階目"
     }
   },
   "collectionProgress": {
@@ -1863,5 +1866,21 @@
     "orphan": "削除済みパックの設定",
     "defaultPack": "デフォルト",
     "activateBlocked": "このカードはパック「{packName}」のコンプ報酬に設定されています。先に報酬設定を解除してください。"
+  },
+  "duplicateTierSettings": {
+    "title": "被りカードの表示段階",
+    "description": "同じカードを複数枚持っている視聴者に、所有枚数に応じて段階的なバッジと枠を表示します。レアリティごとに「何枚で1段階目・2段階目・3段階目になるか」を指定してください。空欄の段階は使いません。",
+    "thresholdLabel": "{tier}段階目",
+    "thresholdUnused": "未使用",
+    "thresholdHelp": "所有枚数は2枚以上を指定してください（1枚は「被り」ではないため）。しきい値は小さい順に入力してください。",
+    "messages": {
+      "saving": "保存中...",
+      "saved": "保存しました"
+    },
+    "errors": {
+      "saveFailed": "保存に失敗しました",
+      "unavailable": "現在この設定は保存できません（反映待ち）。時間をおいて再度お試しください。",
+      "invalid": "しきい値は2以上の整数で、小さい順に入力してください。"
+    }
   }
 }

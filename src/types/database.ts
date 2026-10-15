@@ -104,6 +104,11 @@ export interface Database {
           // コレクションページの初期表示 ('grid' | 'album')
           // Default view mode of the collection page.
           collection_default_view: 'grid' | 'album'
+          // #1782: 被りカードの表示段階のしきい値（レアリティ名 → 厳密増加する
+          // 所有枚数の配列）。NULL = 全レアリティで段階表示しない（既定）。
+          // Owned-copy thresholds driving the duplicate-card display tiers,
+          // keyed by rarity name. NULL disables the feature.
+          duplicate_display_tiers: Record<string, number[]> | null
           created_at: string
           updated_at: string
         }
@@ -139,6 +144,7 @@ export interface Database {
           raid_gacha_draw_count?: number
           pack_album_grid_sizes?: Record<string, number> | null
           collection_default_view?: 'grid' | 'album'
+          duplicate_display_tiers?: Record<string, number[]> | null
           created_at?: string
           updated_at?: string
         }
@@ -174,6 +180,7 @@ export interface Database {
           raid_gacha_draw_count?: number
           pack_album_grid_sizes?: Record<string, number> | null
           collection_default_view?: 'grid' | 'album'
+          duplicate_display_tiers?: Record<string, number[]> | null
           created_at?: string
           updated_at?: string
         }

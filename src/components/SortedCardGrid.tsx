@@ -25,6 +25,9 @@ const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 interface CardWithDetails extends Card {
   count: number;
   isOwned?: boolean;
+  // Issue #1782: 被りカードの表示段階（0 = 表示しない）。サーバー側で
+  // streamers.duplicate_display_tiers と所有枚数から解決して渡す。
+  duplicateTier?: number;
   collectionNumber?: number;
   isCompletionReward?: boolean;
 }
@@ -45,6 +48,9 @@ interface SortedCardGridProps {
     // Template for card count display, e.g., "x{count}"
     // カード枚数表示用テンプレート、例: "x{count}"
     cardCountTemplate: string;
+    // Issue #1782: 被りカードの表示段階バッジ。{tier} を段階番号で置換する。
+    // 未指定（呼び出し側が翻訳を渡せない場合）はバッジを出さない = fail-closed。
+    duplicateTierBadgeTemplate?: string;
     noImage: string;
     unownedCard: string;
     // Accessible status text for unowned cards.
@@ -225,6 +231,19 @@ export default function SortedCardGrid({
                 }
                 isOwned={isOwned}
                 unownedLabel={translations.unownedStatus}
+                // Issue #1782: 被りカードの表示段階。未所持カードは所有枚数 0 で
+                // 段階しきい値を満たさないためサーバー側で 0 を渡しているが、
+                // ここでも isOwned をガードして「未所持に段階バッジが出る」ことを
+                // 構造的に防ぐ。
+                duplicateTierLevel={isOwned ? (card.duplicateTier ?? 0) : 0}
+                duplicateTierLabel={
+                  isOwned && (card.duplicateTier ?? 0) > 0
+                    ? (translations.duplicateTierBadgeTemplate ?? "").replace(
+                        "{tier}",
+                        String(card.duplicateTier)
+                      )
+                    : undefined
+                }
                 isInactive={isOwned && (!card.is_active || !!card.isCompletionReward)}
                 inactiveLabel={card.isCompletionReward ? translations.completionRewardStatus ?? translations.inactiveStatus : translations.inactiveStatus}
                 descriptionComponent={

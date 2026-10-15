@@ -49,7 +49,11 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgMissingNamedColumnError } from "@/lib/db/errors";
-import { isMissingAlbumSettingsColumnError } from "@/lib/db/streamers-safe-columns";
+import {
+  isMissingAlbumSettingsColumnError,
+  isMissingDuplicateDisplayTiersColumnError,
+} from "@/lib/db/streamers-safe-columns";
+import { validateDuplicateDisplayTiers } from "@/lib/duplicate-display-tiers";
 import {
   pruneAlbumGridSizeMap,
   sanitizeAlbumGridSizeMap,
@@ -551,6 +555,7 @@ interface ApplyStreamerSettingsUpdateResult {
   liveDirectorySettingsWriteSkipped: boolean;
   tradeSettingsWriteSkipped: boolean;
   albumSettingsWriteSkipped: boolean;
+  duplicateDisplayTiersWriteSkipped: boolean;
 }
 
 /**
@@ -655,6 +660,9 @@ async function applyStreamerSettingsUpdatePg(
   let liveDirectorySettingsWriteSkipped = false;
   let tradeSettingsWriteSkipped = false;
   let albumSettingsWriteSkipped = false;
+  // Issue #1782: duplicate_display_tiers も同じ理由(デプロイ窓)で
+  // skip-and-flag パターンを踏襲する。1列のみの migration のため1段だけ。
+  let duplicateDisplayTiersWriteSkipped = false;
 
   const runUpdate = (data: Record<string, unknown>, context: string) =>
     withDbRetry(
@@ -765,6 +773,19 @@ async function applyStreamerSettingsUpdatePg(
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no album settings)");
   }
 
+  // Issue #1782: duplicate_display_tiers は本 migration で1列だけが増えるため、
+  // 「その1列が欠落」しかあり得ない。キーを剥がして他の設定だけ保存し、
+  // UIには skip フラグで通知する（pack_album_grid_sizes と同じ設計）。
+  if (
+    error
+    && isMissingDuplicateDisplayTiersColumnError(error as GenericDbError)
+    && "duplicate_display_tiers" in updateData
+  ) {
+    delete updateData.duplicate_display_tiers;
+    duplicateDisplayTiersWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no duplicate display tiers)");
+  }
+
   return {
     error,
     rarityWeightsScopeWriteSkipped,
@@ -775,6 +796,7 @@ async function applyStreamerSettingsUpdatePg(
     liveDirectorySettingsWriteSkipped,
     tradeSettingsWriteSkipped,
     albumSettingsWriteSkipped,
+    duplicateDisplayTiersWriteSkipped,
   };
 }
 
@@ -895,6 +917,9 @@ export async function POST(request: NextRequest) {
       // sizes (null clears all) and the collection page's default view mode.
       packAlbumGridSizes,
       collectionDefaultView,
+      // Issue #1782: 被りカードの表示段階しきい値（レアリティ → 昇順の所有枚数）。
+      // Duplicate-card display tier thresholds (rarity -> ascending owned counts).
+      duplicateDisplayTiers,
       // BOTアカウント連携解除（オプション）
       // Disconnect optional BOT account used for chat announcements
       disconnectBot,
@@ -931,6 +956,20 @@ export async function POST(request: NextRequest) {
       && collectionDefaultView !== "album"
     ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    // Issue #1782: duplicateDisplayTiers はレアリティ名 → 厳密増加する所有枚数の
+    // 配列。`null` は「全エントリをクリア（段階表示をすべて解除）」として許可する。
+    // しきい値が逆順・同値のまま保存すると「何枚で何段階か」が一意に定まらず
+    // 視聴者側の段階表示が崩れるため、ここで弾いて呼び出し側に 400 を返す
+    // （黙って並べ替えると「入力と違う段階が保存された」ことになる）。
+    let normalizedDuplicateDisplayTiers: Record<string, number[]> | null | undefined;
+    if (duplicateDisplayTiers !== undefined) {
+      const validation = validateDuplicateDisplayTiers(duplicateDisplayTiers);
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedDuplicateDisplayTiers = validation.value;
     }
 
     // customRarities はレアリティ名の一覧のみを保持し、ドロップ率には影響しない。
@@ -1370,6 +1409,14 @@ export async function POST(request: NextRequest) {
       updateData.collection_default_view = collectionDefaultView;
     }
 
+    // Issue #1782: 被りカードの表示段階しきい値。サーバ側で黙って加工する
+    // シナリオは無い（カタログ所属チェックをしないため。未知のレアリティ名は
+    // どのカードにも一致せず表示上は単に無効になる）ので、検証を通った値を
+    // そのまま保存する。デプロイ窓で列が未作成の場合は skip フラグで通知する。
+    if (normalizedDuplicateDisplayTiers !== undefined) {
+      updateData.duplicate_display_tiers = normalizedDuplicateDisplayTiers;
+    }
+
     // カスタムレアリティ名（ドロップ率の再計算は不要）
     if (customRarities !== undefined) {
       updateData.custom_rarities = normalizedCustomRarities;
@@ -1455,6 +1502,9 @@ export async function POST(request: NextRequest) {
     // #1765 フォローアップ: pack_album_grid_sizes / collection_default_view も
     // 同じ理由(デプロイ窓)で skip-and-flag パターンを踏襲する。
     let albumSettingsWriteSkipped = false;
+    // Issue #1782: duplicate_display_tiers も同じ理由(デプロイ窓)で
+    // skip-and-flag パターンを踏襲する。
+    let duplicateDisplayTiersWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
@@ -1470,6 +1520,7 @@ export async function POST(request: NextRequest) {
       liveDirectorySettingsWriteSkipped = updateResult.liveDirectorySettingsWriteSkipped;
       tradeSettingsWriteSkipped = updateResult.tradeSettingsWriteSkipped;
       albumSettingsWriteSkipped = updateResult.albumSettingsWriteSkipped;
+      duplicateDisplayTiersWriteSkipped = updateResult.duplicateDisplayTiersWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
@@ -1555,6 +1606,15 @@ export async function POST(request: NextRequest) {
         ? { collectionDefaultView }
         : {}),
       ...(albumSettingsWriteSkipped ? { albumSettingsSkippedDeployWindow: true } : {}),
+      // Issue #1782: duplicateDisplayTiers もサーバ側の却下・加工シナリオは無いが、
+      // デプロイ窓で書き込めなかった可能性をフラグで通知する。albumSettings と同じく
+      // 「保存できた」と偽って楽観反映させるサイレント欠損を防ぐため。
+      ...(normalizedDuplicateDisplayTiers !== undefined && !duplicateDisplayTiersWriteSkipped
+        ? { duplicateDisplayTiers: normalizedDuplicateDisplayTiers }
+        : {}),
+      ...(duplicateDisplayTiersWriteSkipped
+        ? { duplicateDisplayTiersSkippedDeployWindow: true }
+        : {}),
     });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");
