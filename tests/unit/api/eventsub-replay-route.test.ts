@@ -1093,9 +1093,9 @@ describe('POST /api/admin/eventsub-replay', () => {
       mocks.handleRedemption.mockResolvedValue({ notify: null, retryable: false })
 
       const { POST } = await import('@/app/api/admin/eventsub-replay/route')
-      const json = await (await POST(createReplayRequest({}))).json()
+      const json = await (await POST(createReplayRequest({ limit: 100 }))).json()
 
-      // 内部endpointと同じ上限・予約秒数でsweepする。
+      // 25件の内部sweep上限を維持しつつ、request limitが十分な場合の値を確認する。
       expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(25, 120)
       // 旧owner（claim→送信→ack）は一切動かない。
       expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
@@ -1109,6 +1109,54 @@ describe('POST /api/admin/eventsub-replay', () => {
         expect.objectContaining({ key: 'maintenance:eventsub:key-1', outcome: 'skipped' }),
       ])
       expect(json.counts).toEqual(expectedCounts({ dispatched: 1, skipped: 1, total: 2 }))
+    })
+
+    it('request limitが2件ならsweepを2件に制限し、2行を予約した場合はKV一覧を呼ばない', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 2,
+        enqueued: 2,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ limit: 2 }))).json()
+
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(2, 120)
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([
+        expect.objectContaining({ key: 'chat-outbox:dispatch-due', outcome: 'dispatched' }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ dispatched: 1, total: 1 }))
+    })
+
+    it('enqueue失敗分も予約行としてrequest limitを消費し、残り1件だけKV一覧を読む', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 2,
+        enqueued: 1,
+        skippedDisabled: false,
+      })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ limit: 3 }))).json()
+
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(3, 120)
+      expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledWith({
+        cursor: undefined,
+        limit: 1,
+      })
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          key: 'chat-outbox:dispatch-due',
+          outcome: 'dispatched',
+          error: 'enqueued 1 of 2 reserved rows; remainder stays pending',
+        }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ dispatched: 1, total: 1 }))
     })
 
     it('sweepが0件を予約したときはdispatchedエントリを出さない（Cronログのノイズ回避）', async () => {
@@ -1185,7 +1233,7 @@ describe('POST /api/admin/eventsub-replay', () => {
       const { POST } = await import('@/app/api/admin/eventsub-replay/route')
       const json = await (await POST(createReplayRequest({}))).json()
 
-      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(25, 120)
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(20, 120)
       expect(mocks.claimDueChatNotifications).toHaveBeenCalledWith(1, { maintain: true })
       expect(send).toHaveBeenCalledTimes(3)
       expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(1)
