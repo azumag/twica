@@ -142,6 +142,14 @@ export default async function StreamerCollectionPage({
       }))
     : [];
 
+  // 付与履歴は現在所持を意味しない。serviceが最新countで補正したカードを
+  // 正本とし、未所持報酬は両設定が明示公開の場合だけクライアントへ渡す。
+  const showUnownedRewardDetails = streamer.show_unowned_cards === true
+    && streamer.show_unowned_card_details === true;
+  const completionRewards = rewardResult.views.filter((view) =>
+    view.state === 'locked' || ownedCardIds.has(view.card?.id ?? '') || showUnownedRewardDetails
+  );
+
   // 所持カードを先頭に、未所持カードを後ろに連結
   // Owned cards first, unowned cards appended after — keeps "your collection" at the top.
   const cards: StreamerCollectionCard[] = [...ownedCards, ...unownedCards];
@@ -232,7 +240,7 @@ export default async function StreamerCollectionPage({
   return (
     <StreamerCollection
       streamer={streamer}
-      completionRewards={rewardResult.views}
+      completionRewards={completionRewards}
       cards={cards}
       stats={stats}
       progress={progress}
