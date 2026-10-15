@@ -271,6 +271,10 @@ export const ERROR_MESSAGES = {
   // aggregation migration is not deployed yet (deploy-window fallback,
   // mirrors PACK_RENAME_NOT_READY).
   STATS_REFRESH_NOT_READY: 'Stats aggregation is not available yet. Please try again shortly.',
+  // Issue #742: GET /api/streamer-ranking returns this when the read-function
+  // migration is not deployed yet (deploy-window fallback, mirrors
+  // STATS_REFRESH_NOT_READY). snapshot が空の通常ケースは 200 + computedAt:null。
+  STREAMER_RANKING_NOT_READY: 'Streamer ranking is not available yet. Please try again shortly.',
   CONTENT_TYPE_MISSING: 'Content-Type header is required',
   CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
   CARD_NAME_REQUIRED: 'Card name is required',
