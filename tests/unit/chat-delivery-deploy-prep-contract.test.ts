@@ -44,13 +44,15 @@ describe("chat-delivery deploy preparation (#1665)", () => {
     expect(guard).toContain("workers/chat-delivery/dist/preview/index.js");
   });
 
-  it("does not enable dispatch or add the app Queue producer binding yet", () => {
+  it("does not enable dispatch or add the production app Queue producer binding yet", () => {
     const rootWrangler = read("wrangler.toml");
     const workerWrangler = read("workers/chat-delivery/wrangler.toml");
 
-    // Queue resource creation failed under the current read-only Cloudflare
-    // connection, so merging this prep must not make twica depend on that resource.
-    expect(rootWrangler).not.toContain('binding = "CHAT_NOTIFICATION_QUEUE"');
+    // Step 3 (preview): the preview queue created on 2026-10-08 may now be
+    // bound to twica-preview, but production queue/binding and the dispatch flag
+    // stay absent until Step 3 unifies delivery owners and Step 5 provisions
+    // production resources.
+    expect(rootWrangler).not.toContain("[[queues.producers]]");
     expect(rootWrangler).not.toContain("CHAT_DELIVERY_DISPATCH_ENABLED");
     expect(workerWrangler).not.toContain("CHAT_DELIVERY_DISPATCH_ENABLED =");
   });
