@@ -128,3 +128,11 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 [[env.preview.services]]
 binding = "OVERLAY_REALTIME_SERVICE"
 service = "twica-overlay-realtime-preview"
+
+# Preview-only: prod queue still unprovisioned (Step 5), but the preview queue
+# created on 2026-10-08 (chat-notification-wakeup-preview) can safely be bound
+# to twica-preview. Dispatch stays disabled until Step 3 unifies the delivery
+# owners; this binding only makes enqueue available.
+[[env.preview.queues.producers]]
+binding = "CHAT_NOTIFICATION_QUEUE"
+queue = "chat-notification-wakeup-preview"
