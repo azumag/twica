@@ -16,6 +16,9 @@ export interface StreamerCollectionCard extends Card {
   isOwned: boolean;
   collectionNumber?: number;
   isCompletionReward?: boolean;
+  // Issue #1782: 被りカードの表示段階（0 = 表示しない）。
+  // Duplicate-card display tier resolved from the streamer's thresholds.
+  duplicateTier?: number;
 }
 
 interface StreamerCollectionProps {
@@ -98,6 +101,8 @@ export default async function StreamerCollection({
     unownedCard: t("unownedCard"),
     inactiveStatus: tCardManager("status.paused"),
     cardNumberTemplate: t("cardNumber"),
+    // Issue #1782: 被りカードの表示段階バッジ。{tier} は段階番号で置換する。
+    duplicateTierBadgeTemplate: t("duplicateTier.badge", { tier: "{tier}" }),
     unownedStatus: t("unownedStatus"),
     sortLabel: t("sort.label"),
     sortByNumber: t("sort.number"),

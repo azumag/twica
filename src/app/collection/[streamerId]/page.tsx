@@ -25,6 +25,10 @@ import {
   normalizeAlbumDefaultView,
   sanitizeAlbumGridSizeMap,
 } from "@/lib/collection-album";
+import {
+  resolveDuplicateTier,
+  sanitizeDuplicateDisplayTiers,
+} from "@/lib/duplicate-display-tiers";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -90,12 +94,19 @@ export default async function StreamerCollectionPage({
   const rewardCardIds = new Set(rewardResult.rewardCardIds);
   const activeCardIds = new Set(activeCards.map((card) => card.id));
   const collectionNumberMap = createCollectionNumberMap([...activeCards, ...userCards]);
+  // Issue #1782: 配信者がレアリティ別に設定した「被り枚数 → 表示段階」のしきい値。
+  // デプロイ窓で列が未作成の間は undefined になるため、sanitize で空マップ
+  // （＝全カード段階 0 = バッジなし）へ fail-closed に倒す。
+  const duplicateDisplayTiers = sanitizeDuplicateDisplayTiers(streamer.duplicate_display_tiers);
+
   const ownedCards: StreamerCollectionCard[] = sortCollectedCards(userCards).map((card) => ({
     ...card,
     count: card.count,
     isOwned: true,
     isCompletionReward: rewardCardIds.has(card.id),
     collectionNumber: collectionNumberMap.get(card.id),
+    // Issue #1782: 所有枚数とレアリティから表示段階を解決する（0 = バッジなし）。
+    duplicateTier: resolveDuplicateTier(duplicateDisplayTiers, card.rarity, card.count),
   }));
 
   // 未所持カードの視聴者向け表示（Issue #395）

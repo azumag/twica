@@ -51,6 +51,11 @@ import {
   type AlbumGridSizeMap,
 } from "@/lib/collection-album";
 import {
+  sanitizeDuplicateDisplayTiers,
+  type DuplicateDisplayTiers,
+} from "@/lib/duplicate-display-tiers";
+import { RARITIES } from "@/lib/constants";
+import {
   STREAMERS_SAFE_COLUMNS,
   withLiveDirectorySettingsColumnFallback,
 } from "@/lib/db/streamers-safe-columns";
@@ -2428,6 +2433,11 @@ export interface StreamerCollectionSettings {
   defaultPackName: string | null;
   albumGridSizes: AlbumGridSizeMap;
   albumDefaultView: AlbumDefaultView;
+  // Issue #1782: 被りカード表示段階の設定UIに必要な値。
+  // 既定 + カスタムレアリティの一覧（設定行を出す対象）と、保存済みのしきい値。
+  // 列未デプロイ時は安全側（空マップ = 段階表示なし）。
+  rarities: string[];
+  duplicateDisplayTiers: DuplicateDisplayTiers;
 }
 
 /**
@@ -2460,6 +2470,9 @@ export const getStreamerCollectionSettings = cache(
                   // デプロイ窓の再試行側でもパック一覧は取得できる。
                   card_pack_names: streamersTable.card_pack_names,
                   default_card_pack_name: streamersTable.default_card_pack_name,
+                  // STREAMERS_SAFE_COLUMNS にも含まれる既存列なので、デプロイ窓の
+                  // 再試行側でもレアリティ一覧は取得できる。
+                  custom_rarities: streamersTable.custom_rarities,
                 })
               : db.select({
                   id: streamersTable.id,
@@ -2467,10 +2480,15 @@ export const getStreamerCollectionSettings = cache(
                   show_unowned_card_details: streamersTable.show_unowned_card_details,
                   card_pack_names: streamersTable.card_pack_names,
                   default_card_pack_name: streamersTable.default_card_pack_name,
+                  // Issue #1782: 被りカード表示段階の設定行に既定 + カスタム
+                  // レアリティを出すために使う。既存列なのでフォールバック側の
+                  // 射影（STREAMERS_SAFE_COLUMNS に含まれる）でも取得できる。
+                  custom_rarities: streamersTable.custom_rarities,
                   trade_enabled: streamersTable.trade_enabled,
                   cross_channel_trade_enabled: streamersTable.cross_channel_trade_enabled,
                   pack_album_grid_sizes: streamersTable.pack_album_grid_sizes,
                   collection_default_view: streamersTable.collection_default_view,
+                  duplicate_display_tiers: streamersTable.duplicate_display_tiers,
                 });
             return query
               .from(streamersTable)
@@ -2494,6 +2512,8 @@ export const getStreamerCollectionSettings = cache(
             cross_channel_trade_enabled?: boolean | null;
             pack_album_grid_sizes?: unknown;
             collection_default_view?: string | null;
+            duplicate_display_tiers?: unknown;
+            custom_rarities?: string[] | null;
           }
         | undefined;
       if (!row) return null;
@@ -2508,6 +2528,19 @@ export const getStreamerCollectionSettings = cache(
         defaultPackName: row.default_card_pack_name ?? null,
         albumGridSizes: sanitizeAlbumGridSizeMap(row.pack_album_grid_sizes),
         albumDefaultView: normalizeAlbumDefaultView(row.collection_default_view),
+        // Issue #1782: 設定行は「既定レアリティ + 配信者が定義したカスタムレアリティ」。
+        // 既定だけを出すと、カスタムレアリティのカードは段階表示を設定できず
+        // 「機能が半分動かない」状態になるため、両方を対象にする。
+        // 重複（カスタム名が既定と一致することは validation 側で禁じているが、
+        // 過去データや手動編集では有り得る）は1行に畳む。
+        rarities: [
+          ...RARITIES.map((rarity) => rarity.value),
+          ...(Array.isArray(row.custom_rarities) ? row.custom_rarities : []),
+        ].filter(
+          (rarity, index, all) => all.indexOf(rarity) === index && typeof rarity === "string"
+        ),
+        // デプロイ窓（列未作成）や破損値は空マップ = 段階表示なしへ縮退する。
+        duplicateDisplayTiers: sanitizeDuplicateDisplayTiers(row.duplicate_display_tiers),
       };
     } catch (error) {
       logger.error("Error in getStreamerCollectionSettings (pg)", { error });

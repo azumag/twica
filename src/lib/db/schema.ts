@@ -115,6 +115,14 @@ export const streamers = pgTable('streamers', {
   // 20261014120000 (#1765 フォローアップ): コレクションページの初期表示。
   // 'grid'（従来のカード一覧、既定）| 'album'（アルバムで開く）
   collection_default_view: text('collection_default_view').notNull().default('grid'),
+  // 20261015120000 (#1782): 被りカードの「所有枚数に応じた表示段階」のしきい値。
+  // レアリティ名 → 厳密増加する所有枚数の配列（1..3 要素）。
+  //   例: {"legendary": [2, 5]} = 2枚で1段階・5枚で2段階。
+  // エントリが無いレアリティ／NULL（既定）は段階表示をしない（＝機能OFF）。
+  // CHECK 制約は DB 側、アプリ側の検証は src/lib/duplicate-display-tiers.ts。
+  duplicate_display_tiers: jsonb('duplicate_display_tiers')
+    .$type<Record<string, number[]>>()
+    .default(sql`NULL`),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
 })

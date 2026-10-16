@@ -406,6 +406,9 @@
       "nextPage": "Next page",
       "emptySlot": "Empty slot",
       "cardPosition": "Slot {number}"
+    },
+    "duplicateTier": {
+      "badge": "Duplicate tier {tier}"
     }
   },
   "collectionProgress": {
@@ -1863,5 +1866,21 @@
     "orphan": "Setting for a removed pack",
     "defaultPack": "Default",
     "activateBlocked": "This card is configured as the completion reward for “{packName}”. Remove the reward setting before enabling random draws."
+  },
+  "duplicateTierSettings": {
+    "title": "Duplicate card display tiers",
+    "description": "Show viewers a stepped badge and frame based on how many copies of the same card they own. Set, per rarity, the owned counts that unlock the 1st, 2nd and 3rd tier. Leave a tier blank to not use it.",
+    "thresholdLabel": "Tier {tier}",
+    "thresholdUnused": "Unused",
+    "thresholdHelp": "Thresholds must be 2 or more (owning a single copy is not a duplicate). Enter them in ascending order.",
+    "messages": {
+      "saving": "Saving...",
+      "saved": "Saved"
+    },
+    "errors": {
+      "saveFailed": "Failed to save",
+      "unavailable": "This setting cannot be saved right now (pending rollout). Please try again later.",
+      "invalid": "Thresholds must be integers of 2 or more, in ascending order."
+    }
   }
 }

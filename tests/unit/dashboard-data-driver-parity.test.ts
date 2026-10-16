@@ -87,6 +87,8 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     // #1765 フォローアップ: アルバム表示のパック別既定と初期表示。
     pack_album_grid_sizes: null,
     collection_default_view: 'grid',
+    // Issue #1782: 被りカードの表示段階しきい値（既定 = null = 段階表示なし）。
+    duplicate_display_tiers: null,
     created_at: '2025-12-01T00:00:00.000+00:00',
     updated_at: '2025-12-01T00:00:00.000+00:00',
     ...overrides,
@@ -743,13 +745,18 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
       defaultPackName: null,
       albumGridSizes: {},
       albumDefaultView: 'grid',
+      // Issue #1782: 既定レアリティ4種のみ（fixture の custom_rarities は空）。
+      rarities: ['common', 'rare', 'epic', 'legendary'],
+      duplicateDisplayTiers: {},
     })
     expect(db.select).toHaveBeenCalledTimes(1)
     expect(Object.keys(db.select.mock.calls[0][0] as object).sort()).toEqual([
       'card_pack_names',
       'collection_default_view',
       'cross_channel_trade_enabled',
+      'custom_rarities',
       'default_card_pack_name',
+      'duplicate_display_tiers',
       'id',
       'pack_album_grid_sizes',
       'show_unowned_card_details',
@@ -790,10 +797,14 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
       defaultPackName: null,
       albumGridSizes: {},
       albumDefaultView: 'grid',
+      // Issue #1782: 既定レアリティ4種のみ（fixture の custom_rarities は空）。
+      rarities: ['common', 'rare', 'epic', 'legendary'],
+      duplicateDisplayTiers: {},
     })
     expect(db.select).toHaveBeenCalledTimes(2)
     expect(Object.keys(db.select.mock.calls[1][0] as object).sort()).toEqual([
       'card_pack_names',
+      'custom_rarities',
       'default_card_pack_name',
       'id',
       'show_unowned_card_details',

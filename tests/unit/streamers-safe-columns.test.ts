@@ -6,6 +6,8 @@ import {
   isMissingAlbumSettingsColumnError,
   CARD_RANKING_SETTINGS_COLUMNS,
   isMissingCardRankingSettingsColumnError,
+  DUPLICATE_DISPLAY_TIER_COLUMNS,
+  isMissingDuplicateDisplayTiersColumnError,
   isMissingLiveDirectorySettingsColumnError,
   isMissingTradeSettingsColumnError,
   LIVE_DIRECTORY_SETTINGS_COLUMNS,
@@ -19,6 +21,8 @@ const DEPLOY_WINDOW_COLUMNS = [
   ...TRADE_SETTINGS_COLUMNS,
   ...ALBUM_SETTINGS_COLUMNS,
   ...CARD_RANKING_SETTINGS_COLUMNS,
+  // Issue #1782: 被りカードの表示段階しきい値。1列のみの migration のため1件。
+  ...DUPLICATE_DISPLAY_TIER_COLUMNS,
 ] as const
 
 function missingColumnError(column: string) {
@@ -102,6 +106,19 @@ describe('streamers デプロイ窓の列集合契約', () => {
     },
   )
 
+  it.each(DUPLICATE_DISPLAY_TIER_COLUMNS)(
+    '%s は duplicate display tier 設定列としてのみ検知する',
+    (column) => {
+      const error = missingColumnError(column)
+
+      expect(isMissingDuplicateDisplayTiersColumnError(error)).toBe(true)
+      expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+      expect(isMissingTradeSettingsColumnError(error)).toBe(false)
+      expect(isMissingAlbumSettingsColumnError(error)).toBe(false)
+      expect(isMissingCardRankingSettingsColumnError(error)).toBe(false)
+    },
+  )
+
   it('デプロイ窓の対象列集合を明示的に固定する', () => {
     // 各列の検知経路自体は上の it.each で直接検証している。
     // `cross_channel_trade_enabled` は `trade_enabled` を部分文字列として含むため、
@@ -119,6 +136,10 @@ describe('streamers デプロイ窓の列集合契約', () => {
       'collection_default_view',
     ])
     expect(CARD_RANKING_SETTINGS_COLUMNS).toEqual(['publish_card_ranking'])
+    // Issue #1782: 1列のみの migration なので1件。将来この migration に列を足す場合は
+    // ここも更新する（検知経路は it.each で直接カバーされるが、列集合そのものは
+    // 部分文字列を含みうるため明示的に固定する）。
+    expect(DUPLICATE_DISPLAY_TIER_COLUMNS).toEqual(['duplicate_display_tiers'])
   })
 
   it('安全な列集合にはデプロイ窓で欠落しうる実SQL列を含めない', () => {
