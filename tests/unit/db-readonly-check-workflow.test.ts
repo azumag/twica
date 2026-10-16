@@ -48,9 +48,10 @@ describe('db-readonly-check workflow contract (Issue #1665)', () => {
     const sqlBlocks = [...workflow.matchAll(/<<'SQL'\n([\s\S]*?)\n\s*SQL/g)].map((match) => match[1])
     expect(sqlBlocks.length).toBeGreaterThan(0)
     for (const block of sqlBlocks) {
+      // EXPLAIN の UPDATE は「実行しない計画表示」なので除外し、それ以外の書き込み文を禁じる。
       const withoutExplain = block.replace(/EXPLAIN\s+UPDATE[\s\S]*?;/gi, '')
       expect(withoutExplain).not.toMatch(
-        /\b(INSERT|DELETE|TRUNCATE|ALTER|DROP|CREATE|GRANT|REVOKE)\b/i,
+        /\b(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP|CREATE|GRANT|REVOKE)\b/i,
       )
     }
   })
