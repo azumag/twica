@@ -14,8 +14,11 @@
 #     PLANETSCALE_DATABASE_URL は repo 直下ではなく **Environment secret** なので、
 #     environment の宣言が無いと secret が解決せず DATABASE_URL が空になる
 #     （planetscale-migrate.yml と同じ理由）。
-#   - preview 以外の ref は job 条件と step 内の二重で拒否する
+#   - main / preview 以外の ref は job 条件と step 内の二重で拒否する
 #     （feature branch のコードへ preview の secret を渡さない）。
+#     main を許容するのは、既定ブランチへの着地だけで workflow_dispatch を成立させるため。
+#     Environment は preview 固定なので、許可 ref のどちらから実行しても読むのは preview の
+#     論理DBだけである（production の secret は provision されない）。
 #   - セッション全体を読み取り専用にする（PGOPTIONS の default_transaction_read_only=on）。
 #     誤って書き込み文が混ざっても DB 側で必ず失敗する。ワークフロー側の注意力に依存しない。
 #     さらに**集計の前に接続先での実効 transaction_read_only を確認**し、on でなければ集計せず
@@ -32,9 +35,11 @@
 #   （その後に新しく入る行は Step 4 の残件ではなく runtime 側の話）。
 #
 # 実行方法:
-#   workflow_dispatch は workflow が既定ブランチ（main）に存在する必要があり、
-#   `--ref preview` で実行するには preview ブランチにも存在する必要がある。
-#     gh workflow run db-readonly-check.yml --ref preview
+#   workflow_dispatch は workflow が既定ブランチ（main）に存在する必要がある。本ファイルは
+#   main 着地用のコピーで、ref ガードが main / preview を許容する。
+#     gh workflow run db-readonly-check.yml --ref main
+#   preview 側のコピー（PR #1829 の head a34f661e）はガードが preview のみで、本ファイルとは
+#   ガードの2行だけが異なる。片方を編集するときはもう片方との差分を意識すること。
 name: DB read-only check (preview)
 
 on:
@@ -47,8 +52,10 @@ concurrency:
 
 jobs:
   readonly-check:
-    # workflow_dispatch は任意 ref を選べるため、job 開始前に preview 以外を拒否する。
-    if: github.ref == 'refs/heads/preview'
+    # workflow_dispatch は任意 ref を選べるため、job 開始前に main / preview 以外を拒否する。
+    # main を許容するのは既定ブランチへの着地だけで dispatch を成立させるため。Environment は
+    # preview 固定なので、どちらの許可 ref から実行しても読むのは preview の論理DBだけである。
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -60,12 +67,12 @@ jobs:
       # 読み取り専用 + 暴走防止。default_transaction_read_only は psql ではなくサーバ側で効く。
       PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=60000 -c lock_timeout=5000"
     steps:
-      # job-level の if に加えた多重防御。将来 if が編集されても、preview 以外の
-      # コードから DB secret を使わせない。
+      # job-level の if に加えた多重防御。将来 if が編集されても、main / preview 以外の
+      # コードから DB secret を使わせない（feature branch を拒否する）。
       - name: Guard the target ref
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/preview" ]; then
-            echo "::error::the read-only check is only allowed from refs/heads/preview"
+          if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/preview" ]; then
+            echo "::error::the read-only check is only allowed from refs/heads/main or refs/heads/preview"
             exit 1
           fi
 
