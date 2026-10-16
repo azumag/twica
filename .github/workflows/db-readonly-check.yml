@@ -1,0 +1,155 @@
+# 読み取り専用の観測 workflow (Issue #1665 Step 4 の適用判断と受入確認用)
+#
+# 目的:
+#   PlanetScale の **preview** 論理DBに対して **SELECT のみ** を実行し、chat_notification_outbox の
+#   件数・migration 適用状況・実行計画を出力する。次の2回の dispatch を想定している:
+#     1. 変更前の観測（打ち切り版 20261017010000 の適用後に補正対象が何行あるか）
+#     2. apply 後の受入確認（補正 migration 20261018010000 適用後に残件が 0 であること）
+#   同じ道具を再実行して使い回せるようにしてあり、2 の出力がそのまま #1665 の Step 4 受入の証跡になる。
+#
+# 安全設計:
+#   - トリガは workflow_dispatch のみ。push / schedule / pull_request では動かない。
+#   - **対象 Environment を preview に固定**する。読み取り専用の観測は preview だけを対象とし、
+#     production の secret へ到達する経路を最初から作らない（input も持たない）。
+#     PLANETSCALE_DATABASE_URL は repo 直下ではなく **Environment secret** なので、
+#     environment の宣言が無いと secret が解決せず DATABASE_URL が空になる
+#     （planetscale-migrate.yml と同じ理由）。
+#   - preview 以外の ref は job 条件と step 内の二重で拒否する
+#     （feature branch のコードへ preview の secret を渡さない）。
+#   - セッション全体を読み取り専用にする（PGOPTIONS の default_transaction_read_only=on）。
+#     誤って書き込み文が混ざっても DB 側で必ず失敗する。ワークフロー側の注意力に依存しない。
+#     さらに**集計の前に接続先での実効 transaction_read_only を確認**し、on でなければ集計せず
+#     失敗させる（オプション指定は「そう設定したつもり」にすぎないため）。
+#   - 実行する SQL は本ファイルに固定で埋め込む。SQL を差し替える input は作らない。
+#   - checkout しない（repo のコードを一切実行しない）。
+#   - 公開ログを最小化する: 出力は件数・サイズ・実行計画・観測時刻・適用 version に絞り、
+#     DB 名（current_database）と適用者名（applied_by）は出力しない。行データや payload
+#     （視聴者情報を含みうる）も出力しない。接続文字列も echo しない。
+#
+# 件数の読み方（重要）:
+#   predicate に `lease_expires_at <= now()` が含まれるため、**件数は実行時点の値**である。
+#   記録するときは必ず実行時刻を添えること。apply 直後の読みが 0 なら Step 4 の受入は成立する
+#   （その後に新しく入る行は Step 4 の残件ではなく runtime 側の話）。
+#
+# 実行方法:
+#   workflow_dispatch は workflow が既定ブランチ（main）に存在する必要があり、
+#   `--ref preview` で実行するには preview ブランチにも存在する必要がある。
+#     gh workflow run db-readonly-check.yml --ref preview
+name: DB read-only check (preview)
+
+on:
+  workflow_dispatch: {}
+
+# 同じ ref への連続実行はキューで待たせる（観測のみなのでキャンセルしない）。
+concurrency:
+  group: db-readonly-check-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  readonly-check:
+    # workflow_dispatch は任意 ref を選べるため、job 開始前に preview 以外を拒否する。
+    if: github.ref == 'refs/heads/preview'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # preview 固定。Environment secret の解決に必要（input では選ばせない）。
+    environment: preview
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PLANETSCALE_DATABASE_URL }}
+      # 読み取り専用 + 暴走防止。default_transaction_read_only は psql ではなくサーバ側で効く。
+      PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=60000 -c lock_timeout=5000"
+    steps:
+      # job-level の if に加えた多重防御。将来 if が編集されても、preview 以外の
+      # コードから DB secret を使わせない。
+      - name: Guard the target ref
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/preview" ]; then
+            echo "::error::the read-only check is only allowed from refs/heads/preview"
+            exit 1
+          fi
+
+      # 読み取り結果の出所を記録する（secret は含まれない）。
+      - name: Record provenance
+        run: |
+          echo "ref=$GITHUB_REF"
+          echo "sha=$GITHUB_SHA"
+          echo "run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT"
+
+      # PGOPTIONS の指定は「そう設定したつもり」にすぎないため、接続先での**実効値**を確認する。
+      # ここで on を確認できた場合にだけ集計へ進む（読み取り専用の強制はサーバ側で効く）。
+      - name: Verify the session is read-only before aggregating
+        run: |
+          read_only=$(psql -X -qAt -v ON_ERROR_STOP=1 -d "$DATABASE_URL" -c "SHOW transaction_read_only")
+          echo "transaction_read_only=$read_only"
+          if [ "$read_only" != "on" ]; then
+            echo "::error::expected transaction_read_only=on (PGOPTIONS default_transaction_read_only) but got '$read_only'"
+            exit 1
+          fi
+
+      # 適用判断・受入確認に必要な件数。ロック時間の見積り式は
+      #   「(pending 行数 + processing 行数) の索引走査」 + 「補正対象行数 × 行更新コスト」
+      # なので、その入力になる件数をそのまま出力する。
+      # 出力は件数・観測時刻・適用 version に絞る（DB 名・適用者名は公開ログに出さない）。
+      - name: Count backfill targets (read-only)
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
+          \pset pager off
+          \echo ==== observation point (この実行時点の値) ====
+          SELECT now() AS observed_at, current_setting('transaction_read_only') AS transaction_read_only;
+
+          \echo ==== outbox size ====
+          SELECT
+            count(*)                                                                   AS total_rows,
+            count(*) FILTER (WHERE status = 'pending')                                 AS pending_rows,
+            count(*) FILTER (WHERE status = 'processing')                              AS processing_rows,
+            count(*) FILTER (WHERE status = 'processing' AND lease_expires_at <= now()) AS processing_lease_expired_rows,
+            count(*) FILTER (WHERE status = 'sent')                                    AS sent_rows,
+            count(*) FILTER (WHERE status = 'dead')                                    AS dead_rows,
+            pg_size_pretty(pg_total_relation_size('public.chat_notification_outbox'))   AS total_size
+          FROM public.chat_notification_outbox;
+
+          \echo ==== backfill targets (20261018010000 と同一の predicate。apply 後はこれが残件) ====
+          SELECT
+            now() AS observed_at,
+            count(*) FILTER (WHERE (status = 'pending' OR (status = 'processing' AND lease_expires_at <= now())) AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_total,
+            count(*) FILTER (WHERE status = 'pending'     AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_pending,
+            count(*) FILTER (WHERE status = 'processing' AND lease_expires_at <= now() AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_processing_lease_expired,
+            count(*) FILTER (WHERE (status = 'pending' OR (status = 'processing' AND lease_expires_at <= now())) AND delivery_cursor > 0 AND pending_kind <> 'initial') AS already_non_initial_with_partial_cursor
+          FROM public.chat_notification_outbox
+          WHERE status = 'pending' OR status = 'processing';
+
+          \echo ==== partial cursor rows by pending_kind (参考) ====
+          SELECT pending_kind, count(*) AS rows
+          FROM public.chat_notification_outbox
+          WHERE delivery_cursor > 0 AND delivery_cursor < expected_draw_count
+          GROUP BY pending_kind
+          ORDER BY pending_kind;
+
+          \echo ==== plan for the completion migration (EXPLAIN のみ。実行しない) ====
+          EXPLAIN
+          UPDATE public.chat_notification_outbox
+          SET pending_kind = 'continuation', updated_at = now()
+          WHERE (status = 'pending' OR (status = 'processing' AND lease_expires_at <= now()))
+            AND delivery_cursor > 0
+            AND delivery_cursor < expected_draw_count
+            AND pending_kind = 'initial';
+          SQL
+
+      # 台帳の状態。20261017010000 と 20261018010000 の適用有無を確認する。
+      # 履歴テーブルが無い環境でも他の出力を失わないよう、この step を分けている。
+      # 出力は version / name / 適用時刻に絞る（適用者名は公開ログに出さない）。
+      - name: Show migration ledger state (read-only)
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
+          \pset pager off
+          \echo ==== ledger (observed_at は実行時点) ====
+          SELECT now() AS observed_at;
+          SELECT coalesce(to_regclass('twica_meta.schema_migrations')::text, '(history table not found)') AS history_table;
+          SELECT version, name, applied_at
+          FROM twica_meta.schema_migrations
+          WHERE version IN ('20261017010000', '20261018010000')
+          ORDER BY version;
+          SELECT max(version) AS max_applied_version, count(*) AS applied_count
+          FROM twica_meta.schema_migrations;
+          SQL
