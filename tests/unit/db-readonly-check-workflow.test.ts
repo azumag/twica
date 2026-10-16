@@ -71,4 +71,23 @@ describe('db-readonly-check workflow contract (Issue #1665)', () => {
       "status = 'pending' OR (status = 'processing' AND lease_expires_at <= now())",
     )
   })
+
+  it('公開ログを最小化する（DB 名・適用者名を出さない。件数・観測時刻・適用 version は残す）', () => {
+    // コメントでの言及は許容し、実行される SQL（heredoc の中身）だけを対象にする。
+    const sql = [...workflow.matchAll(/<<'SQL'\n([\s\S]*?)\n\s*SQL/g)].map((match) => match[1]).join('\n')
+    expect(sql).not.toContain('current_database()')
+    expect(sql).not.toContain('applied_by')
+    expect(sql).toContain('now() AS observed_at')
+    expect(sql).toContain('max_applied_version')
+  })
+
+  it('集計の前に実効 transaction_read_only が on であることを確認する', () => {
+    // PGOPTIONS の指定は「そう設定したつもり」にすぎないため、接続先での実効値を確認してから集計する。
+    expect(workflow).toContain('SHOW transaction_read_only')
+    expect(workflow).toContain('expected transaction_read_only=on')
+    const verifyIndex = workflow.indexOf('Verify the session is read-only before aggregating')
+    const countIndex = workflow.indexOf('Count backfill targets (read-only)')
+    expect(verifyIndex).toBeGreaterThan(-1)
+    expect(countIndex).toBeGreaterThan(verifyIndex)
+  })
 })

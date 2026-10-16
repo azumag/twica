@@ -18,10 +18,13 @@
 #     （feature branch のコードへ preview の secret を渡さない）。
 #   - セッション全体を読み取り専用にする（PGOPTIONS の default_transaction_read_only=on）。
 #     誤って書き込み文が混ざっても DB 側で必ず失敗する。ワークフロー側の注意力に依存しない。
+#     さらに**集計の前に接続先での実効 transaction_read_only を確認**し、on でなければ集計せず
+#     失敗させる（オプション指定は「そう設定したつもり」にすぎないため）。
 #   - 実行する SQL は本ファイルに固定で埋め込む。SQL を差し替える input は作らない。
 #   - checkout しない（repo のコードを一切実行しない）。
-#   - 出力は件数・サイズ・実行計画・実行時刻のみ。行データや payload（視聴者情報を含みうる）は
-#     出力しない。接続文字列も echo しない。
+#   - 公開ログを最小化する: 出力は件数・サイズ・実行計画・観測時刻・適用 version に絞り、
+#     DB 名（current_database）と適用者名（applied_by）は出力しない。行データや payload
+#     （視聴者情報を含みうる）も出力しない。接続文字列も echo しない。
 #
 # 件数の読み方（重要）:
 #   predicate に `lease_expires_at <= now()` が含まれるため、**件数は実行時点の値**である。
@@ -73,15 +76,27 @@ jobs:
           echo "sha=$GITHUB_SHA"
           echo "run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT"
 
+      # PGOPTIONS の指定は「そう設定したつもり」にすぎないため、接続先での**実効値**を確認する。
+      # ここで on を確認できた場合にだけ集計へ進む（読み取り専用の強制はサーバ側で効く）。
+      - name: Verify the session is read-only before aggregating
+        run: |
+          read_only=$(psql -X -qAt -v ON_ERROR_STOP=1 -d "$DATABASE_URL" -c "SHOW transaction_read_only")
+          echo "transaction_read_only=$read_only"
+          if [ "$read_only" != "on" ]; then
+            echo "::error::expected transaction_read_only=on (PGOPTIONS default_transaction_read_only) but got '$read_only'"
+            exit 1
+          fi
+
       # 適用判断・受入確認に必要な件数。ロック時間の見積り式は
       #   「(pending 行数 + processing 行数) の索引走査」 + 「補正対象行数 × 行更新コスト」
       # なので、その入力になる件数をそのまま出力する。
+      # 出力は件数・観測時刻・適用 version に絞る（DB 名・適用者名は公開ログに出さない）。
       - name: Count backfill targets (read-only)
         run: |
           psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
           \pset pager off
           \echo ==== observation point (この実行時点の値) ====
-          SELECT now() AS observed_at, current_database() AS database;
+          SELECT now() AS observed_at, current_setting('transaction_read_only') AS transaction_read_only;
 
           \echo ==== outbox size ====
           SELECT
@@ -123,6 +138,7 @@ jobs:
 
       # 台帳の状態。20261017010000 と 20261018010000 の適用有無を確認する。
       # 履歴テーブルが無い環境でも他の出力を失わないよう、この step を分けている。
+      # 出力は version / name / 適用時刻に絞る（適用者名は公開ログに出さない）。
       - name: Show migration ledger state (read-only)
         run: |
           psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
@@ -130,7 +146,7 @@ jobs:
           \echo ==== ledger (observed_at は実行時点) ====
           SELECT now() AS observed_at;
           SELECT coalesce(to_regclass('twica_meta.schema_migrations')::text, '(history table not found)') AS history_table;
-          SELECT version, name, applied_at, applied_by
+          SELECT version, name, applied_at
           FROM twica_meta.schema_migrations
           WHERE version IN ('20261017010000', '20261018010000')
           ORDER BY version;
