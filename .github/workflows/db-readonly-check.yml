@@ -97,10 +97,10 @@ jobs:
           \echo ==== backfill targets (20261018010000 と同一の predicate。apply 後はこれが残件) ====
           SELECT
             now() AS observed_at,
-            count(*) FILTER (WHERE delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_total,
+            count(*) FILTER (WHERE (status = 'pending' OR (status = 'processing' AND lease_expires_at <= now())) AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_total,
             count(*) FILTER (WHERE status = 'pending'     AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_pending,
             count(*) FILTER (WHERE status = 'processing' AND lease_expires_at <= now() AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_processing_lease_expired,
-            count(*) FILTER (WHERE delivery_cursor > 0 AND pending_kind <> 'initial') AS already_non_initial_with_partial_cursor
+            count(*) FILTER (WHERE (status = 'pending' OR (status = 'processing' AND lease_expires_at <= now())) AND delivery_cursor > 0 AND pending_kind <> 'initial') AS already_non_initial_with_partial_cursor
           FROM public.chat_notification_outbox
           WHERE status = 'pending' OR status = 'processing';
 
