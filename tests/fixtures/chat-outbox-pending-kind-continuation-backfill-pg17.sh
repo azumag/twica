@@ -16,8 +16,12 @@
 #
 # 前提:
 #   - PostgreSQL 17（CI の planetscale-migration-postgres job と同じ major）
-#   - DATABASE_URL が「空の」データベースを指していること。twica のスキーマや migration 履歴が
-#     既にある DB を渡すと、前提が壊れるため先頭で fail する（使い捨てのDBを渡すこと）。
+#   - DATABASE_URL が「使い捨ての空」データベースを指していること。最初の DDL より前に、
+#     非 system schema に既存の relation / routine が無いことを fail-closed で確認する
+#     （判定は scripts/lib/throwaway-db-guard.js）。outbox と migration 履歴の不在だけでは
+#     不十分で、`public.users` だけがあるDBや `auth` 関数だけがあるDBも拒否する。
+#     これは bootstrap が `CREATE OR REPLACE FUNCTION auth.uid()/auth.jwt()/auth.role()` を
+#     スタブへ置き換え、独立 transaction で commit するため（後続 DDL が失敗しても戻らない）。
 #   - repo ルートで実行（git リポジトリ内であること）。runner が repo 内の migration を直接読む。
 #
 # 実行コマンド（例）:
@@ -27,7 +31,8 @@
 #
 # 注意: この fixture は渡された DB に twica のスキーマ・履歴・検証用行を作る。本番/preview の
 # DB には絶対に実行しないこと。実行中は migration ファイル 2 本を一時退避し、EXIT trap で必ず戻す
-# （どの migration が pending かを見せるための staging）。
+# （どの migration が pending かを見せるための staging）。退避中はその2本が存在しないため、
+# 実行中に unit test（tests/unit/*-migration.test.ts）を並行実行しないこと。
 set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
@@ -51,6 +56,48 @@ assert_eq() { # $1 label, $2 expected, $3 actual
   echo "  PASS  $1 = $3"
 }
 
+# --- 前提: 使い捨ての空DBか（最初の DDL・ファイル退避より前に fail-closed で確認） -----------------
+# この fixture は baseline を適用する。最初の DDL である bootstrap は
+# `CREATE OR REPLACE FUNCTION auth.uid()/auth.jwt()/auth.role()` を NULL/固定値スタブへ置き換え、
+# 独立した transaction で commit する。既存DBを誤って指定すると、後続の baseline が衝突で失敗しても
+# この置き換えは rollback されず、本物の認可関数が壊れたまま残る。
+# したがって「outbox と migration 履歴が無い」だけでは足りない（public.users だけがあるDBや
+# auth 関数だけがあるDBを通してしまう）。非 system schema に既存オブジェクトが無いことを確認する。
+guard_inventory=$("${PSQL[@]}" -Atc "
+SELECT json_build_object(
+  'schemas', (
+    SELECT coalesce(json_agg(n.nspname), '[]'::json) FROM pg_namespace n
+    WHERE n.nspname <> 'public'
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+      AND n.nspname NOT LIKE 'pg\_temp%' AND n.nspname NOT LIKE 'pg\_toast_temp%'
+  ),
+  'relations', (
+    SELECT coalesce(json_agg(n.nspname || '.' || c.relname), '[]'::json)
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+      AND n.nspname NOT LIKE 'pg\_temp%'
+  ),
+  'routines', (
+    SELECT coalesce(json_agg(n.nspname || '.' || p.proname), '[]'::json)
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      AND n.nspname NOT LIKE 'pg\_temp%'
+  )
+)") || fail "対象DBの状態を確認できませんでした（接続先を確認してください）"
+
+guard_message=$(node -e '
+const { assessThrowawayDatabase } = require("./scripts/lib/throwaway-db-guard.js");
+const result = assessThrowawayDatabase(JSON.parse(process.argv[1]));
+if (!result.ok) {
+  console.error("対象DBは使い捨ての空DBではありません（既存オブジェクトを壊す恐れがあるため中止します）:");
+  for (const reason of result.reasons) console.error("  - " + reason);
+  process.exit(1);
+}
+console.log("空DB確認 OK（非system schema に既存の relation / routine なし）");
+' "$guard_inventory" 2>&1) || { echo "$guard_message" >&2; fail "前提チェック: 使い捨ての空DBを指定してください"; }
+echo "  PASS  $guard_message"
+
 # --- migration ファイルの staging（EXIT で必ず戻す） -------------------------------------------
 STASH_DIR=$(mktemp -d)
 restore_migrations() {
@@ -64,10 +111,6 @@ for f in "$OLD_MIG" "$NEW_MIG"; do
   [ -f "$MIGRATIONS_DIR/$f" ] || fail "migration が見つかりません: $MIGRATIONS_DIR/$f"
   mv "$MIGRATIONS_DIR/$f" "$STASH_DIR/$f"
 done
-
-# --- 前提: 空のDBか ----------------------------------------------------------------------------
-existing=$("${PSQL[@]}" -Atc "select coalesce(to_regclass('public.chat_notification_outbox')::text, '') || '|' || coalesce(to_regclass('twica_meta.schema_migrations')::text, '')")
-assert_eq "前提: 空のDB（スキーマ・履歴なし）" "|" "$existing"
 
 residual() { # 補正対象（partial cursor かつ pending/lease失効 processing かつ initial）の残件数
   "${PSQL[@]}" -Atc "
