@@ -738,7 +738,8 @@ $$;
 -- ============================================================
 -- 8. place_trade_auction_bid(入札・入札変更)
 -- ============================================================
--- ロック順: オークション行 → (旧入札行) → 入札者の user_cards 行。
+-- ロック順: オークション行 → (旧入札行) → 入札者のコピーと出品コピーの user_cards 行(id 昇順)。
+-- 時刻はオークション行のロック直後と、user_cards 行のロック取得後の2回判定する。
 -- 可視性(入札カードが出品者に見える・出品カードが入札者に見える)は、既存の可視性規則
 -- (src/lib/trade.ts cardVisibleTo)を再利用するためアプリ層の事前チェックで行う
 -- (accept の precheckTradeAccept と同じ分担。規則を SQL に二重実装しない)。
@@ -868,11 +869,43 @@ BEGIN
   -- 置き換え前の自分の入札(v_previous_bid_id)が拘束しているコピーは、この入札で
   -- 再利用できるものとして扱う(書き込みは検証がすべて通ってからにするため、まだ
   -- withdrawn にしていない)。失敗時に JSONB を返しても旧入札は変わらない。
+  --
+  -- (1) のロック対象には出品コピー(offered_user_card_id)も含め、全体を id 昇順で取る
+  -- (PR #1850 独立レビュー必須 M1(a))。入札0件のオークションは締切の瞬間に出品コピーを
+  -- 解放する(trade_auction_holds_cards)。出品コピーをロックしないと、締切直前に始まった
+  -- この入札が締切後に commit するまでの間に、出品者が同じコピーを通常出品でき
+  -- (トリガーは「入札0件で締切済み = 拘束なし」と判定する)、open な通常出品と選択待ちの
+  -- オークションが同じコピーを二重に拘束してしまう。出品コピーの行をこの入札が持てば、
+  -- トリガー(同じ行を FOR UPDATE する)はこの commit を待ってから判定し、選択待ちの
+  -- 拘束を見て拒否する。逆に通常出品が先にロックを取って締切後に commit した場合は、
+  -- 下の再判定でこの入札が AUCTION_NOT_OPEN になる。
+  -- (tests/fixtures/trade-auction-concurrency.sh S7)
   PERFORM 1
   FROM public.user_cards
-  WHERE user_id = v_user_id AND card_id = p_bid_card_id
+  WHERE (user_id = v_user_id AND card_id = p_bid_card_id)
+     OR id = v_auction.offered_user_card_id
   ORDER BY id
   FOR UPDATE;
+
+  -- ロック待ちの間に締切を越えうるので、ロック取得後の clock_timestamp() で受付中かを
+  -- 再判定する(上の 3. はオークション行のロック直後の判定で、この行ロックの待ちを含まない)。
+  IF clock_timestamp() >= v_auction.ends_at THEN
+    RETURN jsonb_build_object('success', false, 'error', 'AUCTION_NOT_OPEN');
+  END IF;
+
+  -- 出品者がまだ出品コピーを所有し、そのコピーが通常出品に使われていないこと
+  -- (ロック後の行で確認する。レビュー任意5)。所有が変わっていれば、このオークションは
+  -- 成立できないので入札を受け付けない。通常出品との二重拘束はトリガーと上の再判定で
+  -- 起きないが、起きていれば入札で拘束を重ねないよう拒否する(防御)。
+  IF NOT EXISTS (
+    SELECT 1 FROM public.user_cards
+    WHERE id = v_auction.offered_user_card_id AND user_id = v_auction.seller_user_id
+  ) OR EXISTS (
+    SELECT 1 FROM public.trade_offers
+    WHERE offered_user_card_id = v_auction.offered_user_card_id AND status = 'open'
+  ) THEN
+    RETURN jsonb_build_object('success', false, 'error', 'AUCTION_NOT_OPEN');
+  END IF;
 
   SELECT array_agg(candidate.id ORDER BY candidate.obtained_at ASC, candidate.id ASC)
     INTO v_copy_ids
@@ -1154,6 +1187,17 @@ BEGIN
   ORDER BY id
   FOR UPDATE;
 
+  -- コピーの行ロックを待つ間に選択期限を越えうるので、全コピーのロック取得後に
+  -- clock_timestamp() で再判定する(PR #1850 独立レビュー必須 M1(b))。期限を越えた時点で
+  -- このオークションは流札になり、入札コピーは解放される。その間に同じコピーで別の
+  -- オークションへの入札が成功しうるので、ここで移転すると、出品者へ移ったコピーを
+  -- 別の有効入札が拘束したまま残る。ロックを持った後の判定なので、以後この判定は
+  -- 覆らない(期限前ならコピーは拘束中で、他の経路はロックを待つ)。
+  -- (tests/fixtures/trade-auction-concurrency.sh S8)
+  IF clock_timestamp() >= v_auction.selection_deadline THEN
+    RETURN jsonb_build_object('success', false, 'error', 'AUCTION_EXPIRED');
+  END IF;
+
   SELECT
     count(*) FILTER (WHERE id = ANY (v_item_ids) AND user_id = v_bid.bidder_user_id)
     + count(*) FILTER (WHERE id = v_auction.offered_user_card_id AND user_id = v_auction.seller_user_id)
@@ -1164,11 +1208,33 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error', 'AUCTION_BID_INVALID');
   END IF;
 
-  -- 防御: 対象コピーが通常出品に使われていないこと。トリガーにより拘束中のコピーは
-  -- 通常出品できないので到達しないが、使われていれば二重譲渡になるため移転しない。
-  SELECT count(*) INTO v_listed_count FROM public.trade_offers
-  WHERE offered_user_card_id = ANY (v_item_ids || v_auction.offered_user_card_id)
-    AND status = 'open';
+  -- 防御: 対象コピーが、このオークションとこの入札以外の拘束(open な通常出品・他の
+  -- オークションの出品・他の有効入札)に使われていないこと(レビュー任意1)。拘束の取得は
+  -- すべて同じ行ロックで直列化され、上の時刻再判定の後はこのオークションが拘束を持ち
+  -- 続けるので到達しないはずだが、使われていれば移転後に他人のコピーを拘束したまま
+  -- 残す(二重譲渡になりうる)ため、何も移さずに拒否する。
+  SELECT count(*) INTO v_listed_count
+  FROM unnest(v_item_ids || v_auction.offered_user_card_id) AS target(user_card_id)
+  WHERE EXISTS (
+      SELECT 1 FROM public.trade_offers o
+      WHERE o.offered_user_card_id = target.user_card_id AND o.status = 'open'
+    )
+    OR EXISTS (
+      SELECT 1 FROM public.trade_auctions other_auction
+      WHERE other_auction.offered_user_card_id = target.user_card_id
+        AND other_auction.id <> v_auction.id
+        AND other_auction.status = 'open'
+        AND public.trade_auction_holds_cards(other_auction.id)
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM public.trade_auction_bid_items other_item
+      JOIN public.trade_auction_bids other_bid ON other_bid.id = other_item.bid_id
+      WHERE other_item.user_card_id = target.user_card_id
+        AND other_bid.id <> v_bid.id
+        AND other_bid.status = 'active'
+        AND public.trade_auction_holds_cards(other_bid.auction_id)
+    );
   IF v_listed_count <> 0 THEN
     RETURN jsonb_build_object('success', false, 'error', 'AUCTION_BID_INVALID');
   END IF;

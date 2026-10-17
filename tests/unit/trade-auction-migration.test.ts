@@ -120,6 +120,38 @@ describe('trade auction migration (#1791)', () => {
     }
   })
 
+  /** `CREATE FUNCTION public.<name>(` から `$$;` までの実行コード */
+  function functionCode(name: string): string {
+    const start = migration.indexOf(`CREATE FUNCTION public.${name}(`)
+    expect(start).toBeGreaterThanOrEqual(0)
+    const bodyStart = migration.indexOf('AS $$', start)
+    return code(migration.slice(start, migration.indexOf('$$;', bodyStart)))
+  }
+
+  it('入札は出品コピーも同じ id 昇順のロックで取り、ロック取得後に締切と出品者の所有を再判定する(PR #1850 M1(a))', () => {
+    const body = functionCode('place_trade_auction_bid')
+    const lock = body.indexOf('OR id = v_auction.offered_user_card_id\n  ORDER BY id\n  FOR UPDATE;')
+    expect(lock).toBeGreaterThan(0)
+    const recheck = body.indexOf("IF clock_timestamp() >= v_auction.ends_at THEN\n    RETURN jsonb_build_object('success', false, 'error', 'AUCTION_NOT_OPEN');")
+    expect(recheck).toBeGreaterThan(lock)
+    const ownership = body.indexOf('WHERE id = v_auction.offered_user_card_id AND user_id = v_auction.seller_user_id')
+    expect(ownership).toBeGreaterThan(recheck)
+    // 候補選定(書き込み前)より前に再判定する
+    expect(body.indexOf('SELECT array_agg(candidate.id')).toBeGreaterThan(ownership)
+  })
+
+  it('成立は全コピーのロック取得後に選択期限を再判定し、他の拘束も防御的に確認する(PR #1850 M1(b))', () => {
+    const body = functionCode('settle_trade_auction')
+    const lock = body.indexOf('WHERE id = ANY (v_item_ids || v_auction.offered_user_card_id)\n  ORDER BY id\n  FOR UPDATE;')
+    expect(lock).toBeGreaterThan(0)
+    const recheck = body.indexOf("IF clock_timestamp() >= v_auction.selection_deadline THEN\n    RETURN jsonb_build_object('success', false, 'error', 'AUCTION_EXPIRED');", lock)
+    expect(recheck).toBeGreaterThan(lock)
+    expect(body.indexOf('UPDATE public.user_cards')).toBeGreaterThan(recheck)
+    // 自分自身(このオークション・この入札)以外の拘束を見る
+    expect(body).toContain('other_auction.id <> v_auction.id')
+    expect(body).toContain('other_bid.id <> v_bid.id')
+  })
+
   it('非加法的な文(DROP/RENAME/型変更/TRUNCATE)を含まない', () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const core = require('../../scripts/lib/db-migrate-core')

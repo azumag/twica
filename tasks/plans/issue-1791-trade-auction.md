@@ -275,6 +275,19 @@ CREATE INDEX ON public.trade_auction_bid_items (user_card_id);
 | エラーコード | 追加する | `TRADE_AUCTION_UNAVAILABLE`(503) / `TRADE_AUCTION_NOT_FOUND`(404) / `TRADE_AUCTION_NOT_OPEN` / `TRADE_AUCTION_STILL_BIDDING` / `TRADE_AUCTION_EXPIRED` / `TRADE_AUCTION_HAS_BIDS` / `TRADE_AUCTION_SELF_BID`(400) / `TRADE_AUCTION_BID_NOT_FOUND`(404) / `TRADE_AUCTION_BID_NOT_ACTIVE` / `TRADE_AUCTION_BID_LOCKED` / `TRADE_AUCTION_BID_LIMIT` / `TRADE_AUCTION_BID_INVALID` / `TRADE_BID_CARD_UNAVAILABLE`(400) / `TRADE_BID_CARD_NOT_WANTABLE` / `TRADE_NOT_ENOUGH_CARDS`（無印は 409）。ja/en 文言あり | ステータスは `src/lib/trade-api.ts` の `TRADE_AUCTION_ERROR_STATUS` に一元化 |
 | 既知の情報ビット | — | 入札カードが出品者に見えない場合も `TRADE_BID_CARD_UNAVAILABLE` を返す。入札者は「出品者がそのカードを持っていない（非公開チャンネル）」ことを1ビット知りうる。カード名は漏れない | 拒否しないと入札の中身が出品者への名前の漏えい経路になるため、こちらを優先した |
 
+### 12.1 独立レビュー（PR #1850）の必須指摘 M1 の反映（2026-10-18）
+
+期限の境界で拘束の排他が破れる問題を、ロック取得「後」の時刻の再判定で塞いだ。§4.4 の「時刻判定はオークション行のロック取得後」を、**時刻判定より後に取るすべての行ロックの後にも再判定する**、に強める。
+
+| 指摘 | 対応 |
+|---|---|
+| (a) 入札が出品コピーをロックしない。締切直前に始まった入札が締切後に commit するまでの間に、出品者が同じコピーを通常出品できる（入札0件で締切済みとして、トリガーが通してしまう） | `place_trade_auction_bid` のロック集合に `offered_user_card_id` を加え、入札者のコピーと合わせて id 昇順で取る。ロック後に `clock_timestamp() < ends_at` を再判定する。トリガーは同じ行を待ってから判定するので、選択待ちの拘束を見て拒否する |
+| (b) 成立が時刻判定の後、コピーのロック待ちの間に選択期限を越えうる。その間に、同じ入札コピーで別オークションへの入札が成功する | `settle_trade_auction` は、全コピーをロックした後に `selection_deadline` を再判定し、`AUCTION_EXPIRED` を返す |
+| 任意1 | 成立の防御を、通常出品だけでなく、他のオークション・他の有効入札による拘束（自分自身の拘束は除く）にも広げた |
+| 任意5 | 入札は、ロック後に出品者がまだ出品コピーを所有していること（と通常出品に使われていないこと）を確認する。満たさなければ `AUCTION_NOT_OPEN` |
+
+回帰テスト: `tests/fixtures/trade-auction-concurrency.sh` の S7（a）と S8（b）。修正前の migration で失敗し、修正後に通ることを実測した。並行テストの順序制御は、固定の sleep から `pg_stat_activity` のポーリングに変えた。固定 sleep では、接続1の起動が遅れると S4 が逆順になり、偽陽性で失敗することがあったため。
+
 テスト（§8 の PR-1 分）:
 - 実PG統合: `tests/integration/trade-auction-pg.test.ts`（CI 登録済み）。
 - 2接続の並行: `tests/fixtures/trade-auction-concurrency.sh`（CI 登録済み）。S4 は、settle の時刻判定を `now()` に置き換えると失敗することを確認済み（判定がロック取得後の `clock_timestamp()` であることの回帰ガード）。
