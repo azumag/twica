@@ -264,6 +264,7 @@
       "saving": "Saving...",
       "saved": "Saved",
       "saveFailed": "Failed to save",
+      "stylesNotSaved": "Rarity names were saved, but display styles are not available yet and could not be saved. Please try again later.",
       "confirmClose": "You have unsaved changes. Close anyway?",
       "errorEmpty": "Enter a rarity name",
       "errorTooLong": "Rarity name must be 40 characters or fewer",
