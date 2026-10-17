@@ -356,6 +356,61 @@
     "reviewedAt": "2026-10-04"
   },
   {
+    "path": "/api/trades/auctions",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "オークション出品の作成（#1791）。create_trade_auction DB関数がtrade_auctionsへ書き込み、出品コピーを拘束するためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
+    "path": "/api/trades/auctions/[id]/bids",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "オークションへの入札・入札変更（#1791）。place_trade_auction_bid DB関数がtrade_auction_bids/itemsへ書き込み、入札コピーを拘束するためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
+    "path": "/api/trades/auctions/[id]/bids/[bidId]/withdraw",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "オークション入札の取り下げ（#1791）。withdraw_trade_auction_bid DB関数が入札状態を書き換えるためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
+    "path": "/api/trades/auctions/[id]/cancel",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "入札0件のオークション出品の取消（#1791）。cancel_trade_auction DB関数がtrade_auctionsの状態を書き換えるためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
+    "path": "/api/trades/auctions/[id]/settle",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "オークションの成立（#1791）。settle_trade_auction DB関数がuser_cards所有権とオークション・入札の状態を書き換えるためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
     "path": "/api/tos/accept",
     "methods": [
       "POST"
