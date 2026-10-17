@@ -56,7 +56,5 @@ describe("chat-delivery deploy preparation (#1665)", () => {
     expect(rootWrangler).toContain("chat-notification-wakeup");
     expect(rootWrangler).not.toContain("CHAT_DELIVERY_DISPATCH_ENABLED");
     expect(workerWrangler).not.toContain("CHAT_DELIVERY_DISPATCH_ENABLED =");
-  });    expect(rootWrangler).not.toContain("CHAT_DELIVERY_DISPATCH_ENABLED");
-    expect(workerWrangler).not.toContain("CHAT_DELIVERY_DISPATCH_ENABLED =");
   });
 });
