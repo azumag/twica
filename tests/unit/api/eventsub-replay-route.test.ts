@@ -1297,6 +1297,64 @@ describe('POST /api/admin/eventsub-replay', () => {
       expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
       expect(json.results).toEqual([])
     })
+
+    // Issue #1665 Step 3 の追加必須(P2): 切り出したmaintenance待ちにも共通deadline
+    // （105秒 = EVENTSUB_REPLAY_BUDGET_MS）をかけ、時間切れなら sweep / 旧claim /
+    // KV replay を新規に開始しない。dispatchDueChatNotifications(...) は引数評価の
+    // 時点で開始されるため「deadline helperで包むだけ」では開始を防げず、明示gateが要る。
+    // Queue有効（handoff成立）／無効（skippedDisabled）の両方で固定する。
+    it.each(['handoff', 'disabled'] as const)(
+      'maintenanceが共通deadlineを超えたらPOSTは返り、%sでも新規workを開始しない',
+      async (mode) => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(0))
+        mocks.dispatchDueChatNotifications.mockResolvedValue(
+          mode === 'handoff'
+            ? { reserved: 2, enqueued: 2, skippedDisabled: false }
+            : { reserved: 0, enqueued: 0, skippedDisabled: true },
+        )
+        mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+        // KV replay が開始されたら検知できるよう、対象を返すようにしておく。
+        mocks.listParkedEventSubNotifications.mockResolvedValue({
+          entries: [{ key: 'maintenance:eventsub:deadline', record: makeRecord() }],
+          cursor: undefined,
+          listComplete: true,
+        })
+        const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+
+        let enteredMaintenance: (() => void) | undefined
+        const entered = new Promise<void>((resolve) => { enteredMaintenance = resolve })
+        let resolveMaintenance: (() => void) | undefined
+        mocks.maintainChatNotificationOutbox.mockImplementation(
+          () => new Promise<void>((resolve) => {
+            resolveMaintenance = resolve
+            enteredMaintenance?.()
+          }),
+        )
+
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const responsePromise = POST(createReplayRequest({}))
+        await entered
+        // 非協調的なDB待ちで共通deadlineを越える。
+        await vi.advanceTimersByTimeAsync(105_000)
+        const response = await responsePromise
+        const json = await response.json()
+
+        expect(response.status).toBe(200)
+        expect(json.counts).toEqual(expectedCounts({}))
+        expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+        expect(send).not.toHaveBeenCalled()
+
+        // 時間切れ後にmaintenanceが完了しても、このrequestで新規配送は始まらない。
+        resolveMaintenance?.()
+        await vi.advanceTimersByTimeAsync(1_000)
+        expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+      },
+    )
   })
 
   describe('CHANNEL_POINTS_REDEMPTION_ADD の処理', () => {
