@@ -1431,7 +1431,141 @@ describe('POST /api/admin/eventsub-replay', () => {
       } finally {
         process.off('unhandledRejection', onUnhandled)
       }
-    })  })
+    })
+
+    // 切り出し前は claim ループの try/catch の内側にあり、メンテナンス失敗でも
+    // 同じ tick の後続処理（回収sweep・旧claim・KVに退避された EventSub
+    // notification の replay）は継続していた。切り出し後もその契約を維持する。
+    it('maintenanceのDBエラーでrelay tick全体を500にせず、KV退避のdrainを継続する', async () => {
+      mocks.maintainChatNotificationOutbox.mockRejectedValue(
+        new Error('maintenance db unavailable'),
+      )
+      mocks.dispatchDueChatNotifications.mockResolvedValue({
+        reserved: 0, enqueued: 0, skippedDisabled: true,
+      })
+      mocks.claimDueChatNotifications.mockResolvedValue([])
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:survives', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+
+      expect(response.status).toBe(200)
+      // DB非依存の KV drain は同じ tick で走り続ける。
+      expect(mocks.listParkedEventSubNotifications).toHaveBeenCalled()
+    })
+
+    // レビュー指摘 P2: 二次報告（reportErrorSafely→reportError は errors への DB insert を
+    // await する）も共通deadlineの内側に置く。報告先が詰まっても POST は期限で有界に返り、
+    // 期限後に報告が完了しても dispatch/旧claim/KV replay を新規に開始しない。
+    it('maintenanceがrejectし二次報告が応答しなくても、POSTは期限で有界に返り後続workを開始しない', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      mocks.maintainChatNotificationOutbox.mockRejectedValue(
+        new Error('maintenance db unavailable'),
+      )
+      mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:report-hang', record: makeRecord() }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+
+      let enteredReport: (() => void) | undefined
+      const entered = new Promise<void>((resolve) => { enteredReport = resolve })
+      let resolveReport: (() => void) | undefined
+      mocks.reportError.mockImplementation(
+        () => new Promise<void>((resolve) => {
+          resolveReport = resolve
+          enteredReport?.()
+        }),
+      )
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const responsePromise = POST(createReplayRequest({}))
+      await entered
+      // 報告が応答しないまま共通deadline（105秒）を越える。
+      await vi.advanceTimersByTimeAsync(105_000)
+      const response = await responsePromise
+      const json = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(json.counts).toEqual(expectedCounts({}))
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+      expect(send).not.toHaveBeenCalled()
+
+      // 期限後に報告が完了しても、このrequestで新規workは始まらない。
+      resolveReport?.()
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+
+    it('二次報告が期限後に完了した場合も、後続のdispatch・旧claimを開始しない', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      mocks.maintainChatNotificationOutbox.mockRejectedValue(
+        new Error('maintenance db unavailable'),
+      )
+      mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+
+      // 期限内に報告を開始し、完了時に時計が期限を越えている経路。
+      // （時計操作はマイクロタスクへ遅延させる: helper が remainingMs を計算した後に
+      //   期限を越えることで、「期限後に完了」の実時間軸を再現する。）
+      mocks.reportError.mockImplementation(async () => {
+        await Promise.resolve()
+        vi.setSystemTime(new Date(106_000))
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(mocks.reportError).toHaveBeenCalledTimes(1)
+      expect(json.counts).toEqual(expectedCounts({}))
+      expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+
+    // 正常経路（maintenance成功）でも、完了時点で期限を越えていれば後続を開始しない。
+    // dispatchDueChatNotifications(...) は引数評価で開始されるため、sweep 側の時刻確認が要る。
+    it('maintenanceは完了したが期限を越えていた場合、sweep・旧claimを開始しない', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      mocks.maintainChatNotificationOutbox.mockImplementation(async () => {
+        // 期限内に開始し、完了時に時計が期限を越えている経路（時計操作は helper の
+        // remainingMs 計算後に走らせる）。
+        await Promise.resolve()
+        vi.setSystemTime(new Date(106_000))
+      })
+      mocks.dispatchDueChatNotifications.mockResolvedValue({
+        reserved: 1, enqueued: 1, skippedDisabled: false,
+      })
+      mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(mocks.maintainChatNotificationOutbox).toHaveBeenCalledTimes(1)
+      expect(json.counts).toEqual(expectedCounts({}))
+      expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
+  })
 
   describe('CHANNEL_POINTS_REDEMPTION_ADD の処理', () => {
     it('成功時はpostRedemptionNotifyを呼び、KVエントリを削除する', async () => {
