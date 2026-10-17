@@ -5,6 +5,7 @@ import {
   RARITY_GRADIENT_COLORS,
   RARITY_ORDER,
 } from "./constants";
+import type { RarityStyles } from "./rarity-styles";
 
 export type DefaultRarity = (typeof RARITIES)[number]["value"];
 
@@ -44,7 +45,9 @@ export function getRarityDisplayInfo(
   return { value: rarity, label: rarity, color: getRarityColorClass(rarity) };
 }
 
-export function getRarityColorClass(rarity: string): string {
+export function getRarityColorClass(rarity: string, styles?: RarityStyles): string {
+  const custom = styles?.[rarity]?.color;
+  if (custom) return custom;
   return RARITY_COLORS[rarity] ?? DEFAULT_RARITY_COLOR_CLASS;
 }
 
@@ -69,7 +72,9 @@ export function aggregateCustomRarities(
     .sort((a, b) => a.rarity.localeCompare(b.rarity));
 }
 
-export function getRarityGradientClass(rarity: string): string {
+export function getRarityGradientClass(rarity: string, styles?: RarityStyles): string {
+  const custom = styles?.[rarity]?.gradient;
+  if (custom) return custom;
   return RARITY_GRADIENT_COLORS[rarity] ?? DEFAULT_RARITY_GRADIENT_CLASS;
 }
 
@@ -103,6 +108,8 @@ export function compareByRarity(a: { rarity: string }, b: { rarity: string }): n
   return getRarityRank(a.rarity) - getRarityRank(b.rarity);
 }
 
-export function getRarityGlowClass(rarity: string): string {
+export function getRarityGlowClass(rarity: string, styles?: RarityStyles): string {
+  const custom = styles?.[rarity]?.glow;
+  if (custom) return custom;
   return RARITY_GLOW[rarity] ?? DEFAULT_RARITY_GLOW_CLASS;
 }

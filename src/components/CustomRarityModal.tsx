@@ -11,6 +11,7 @@ import {
 } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { isEnterKeySubmit } from "@/lib/keyboard-utils";
+import type { RarityStyle } from "@/lib/rarity-styles";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
@@ -24,7 +25,9 @@ interface CustomRarityModalProps {
   onClose: () => void;
   streamerId: string;
   customRarities: string[];
+  rarityStyles?: Record<string, RarityStyle>;
   onSaved: (next: string[]) => void;
+  onSavedStyles?: (next: Record<string, RarityStyle>) => void;
 }
 
 /**
@@ -42,7 +45,9 @@ export default function CustomRarityModal({
   onClose,
   streamerId,
   customRarities,
+  rarityStyles,
   onSaved,
+  onSavedStyles,
 }: CustomRarityModalProps) {
   const t = useTranslations("cardManager");
   const tRarity = useTranslations("rarity");
@@ -53,6 +58,7 @@ export default function CustomRarityModal({
   const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [list, setList] = useState<string[]>(customRarities);
+  const [styles, setStyles] = useState<Record<string, RarityStyle>>(rarityStyles ?? {});
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -62,10 +68,11 @@ export default function CustomRarityModal({
   useEffect(() => {
     if (isOpen) {
       setList(customRarities);
+      setStyles(rarityStyles ?? {});
       setInput("");
       setError(null);
     }
-  }, [isOpen, customRarities]);
+  }, [isOpen, customRarities, rarityStyles]);
 
   const hasChanges = useMemo(() => {
     if (list.length !== customRarities.length) return true;
@@ -132,7 +139,7 @@ export default function CustomRarityModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ streamerId, customRarities: list }),
+        body: JSON.stringify({ streamerId, customRarities: list, rarityStyles: styles }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -141,6 +148,7 @@ export default function CustomRarityModal({
         throw new Error(maintenanceError?.message || data.error || t("customRarity.saveFailed"));
       }
       onSaved(list);
+      onSavedStyles?.(styles);
       onClose();
     } catch (err) {
       logger.error("Failed to save custom rarities:", err);
@@ -257,15 +265,28 @@ export default function CustomRarityModal({
                   {list.map((value) => (
                     <li
                       key={value}
-                      className="flex items-center justify-between rounded-lg bg-gray-700 px-4 py-2"
+                      className="flex items-center justify-between gap-2 rounded-lg bg-gray-700 px-4 py-2"
                     >
                       <span className="text-white break-all">{value}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemove(value)}
-                        className="ml-2 text-gray-400 hover:text-red-400"
-                        aria-label={`Remove ${value}`}
-                      >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={styles[value]?.color?.startsWith("#") ? styles[value]!.color! : "#808080"}
+                          onChange={(e) =>
+                            setStyles((prev) => ({
+                              ...prev,
+                              [value]: { ...(prev[value] ?? {}), color: e.target.value },
+                            }))
+                          }
+                          className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-transparent"
+                          aria-label={`Color for ${value}`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemove(value)}
+                          className="ml-2 text-gray-400 hover:text-red-400"
+                          aria-label={`Remove ${value}`}
+                        >
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
                           className="h-5 w-5"
@@ -281,6 +302,7 @@ export default function CustomRarityModal({
                           />
                         </svg>
                       </button>
+                      </div>
                     </li>
                   ))}
                 </ul>

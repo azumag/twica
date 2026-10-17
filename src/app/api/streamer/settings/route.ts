@@ -40,6 +40,7 @@ import {
   type GachaSoundRule,
 } from "@/lib/gacha-sound-rules";
 import { getUserPlan } from "@/lib/plan";
+import { validateRarityStylesInput } from "@/lib/rarity-styles";
 // -----------------------------------------------------------------------------
 // 設定更新の全 DB 操作は PlanetScale の単一接続を使う。
 // getDb() は各 withDbRetry queryFn 内で取得し、リトライ時に接続状態を引き継がない。
@@ -556,6 +557,7 @@ interface ApplyStreamerSettingsUpdateResult {
   tradeSettingsWriteSkipped: boolean;
   albumSettingsWriteSkipped: boolean;
   duplicateDisplayTiersWriteSkipped: boolean;
+  rarityStylesWriteSkipped: boolean;
 }
 
 /**
@@ -663,6 +665,7 @@ async function applyStreamerSettingsUpdatePg(
   // Issue #1782: duplicate_display_tiers も同じ理由(デプロイ窓)で
   // skip-and-flag パターンを踏襲する。1列のみの migration のため1段だけ。
   let duplicateDisplayTiersWriteSkipped = false;
+  let rarityStylesWriteSkipped = false;
 
   const runUpdate = (data: Record<string, unknown>, context: string) =>
     withDbRetry(
@@ -786,6 +789,17 @@ async function applyStreamerSettingsUpdatePg(
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no duplicate display tiers)");
   }
 
+  // Issue #1783: rarity_styles も同じ deploy-window パターン。
+  if (
+    error
+    && isPgMissingNamedColumnError(error as GenericDbError, ["rarity_styles"])
+    && "rarity_styles" in updateData
+  ) {
+    delete updateData.rarity_styles;
+    rarityStylesWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no rarity_styles)");
+  }
+
   return {
     error,
     rarityWeightsScopeWriteSkipped,
@@ -797,6 +811,7 @@ async function applyStreamerSettingsUpdatePg(
     tradeSettingsWriteSkipped,
     albumSettingsWriteSkipped,
     duplicateDisplayTiersWriteSkipped,
+    rarityStylesWriteSkipped,
   };
 }
 
@@ -888,6 +903,9 @@ export async function POST(request: NextRequest) {
       // カスタムレアリティ名の一覧（オプション、ドロップ率設定とは独立）
       // Custom rarity name catalog (optional, decoupled from drop-rate settings)
       customRarities,
+      // Issue #1783: カスタムレアリティごとの表示スタイル（オプション）
+      // Custom rarity display styles (optional, Issue #1783)
+      rarityStyles,
       // 事前登録カードパック名の一覧（オプション、カード/報酬紐付けとは独立）
       // Pre-defined card pack name catalog (optional, decoupled from card/reward bindings)
       cardPackNames,
@@ -981,6 +999,23 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
       }
       normalizedCustomRarities = validation.value;
+    }
+
+    // Issue #1783: rarity_styles はカスタムレアリティごとの表示スタイル。
+    // キーは customRarities に含まれるレアリティ名に限定する（未登録のレアリティへの
+    // スタイル指定は 400）。customRarities が同一リクエストで送られていればその新一覧、
+    // 送られていなければ DB 上の現在値を許可キー集合とする。
+    let normalizedRarityStyles: Record<string, import("@/lib/rarity-styles").RarityStyle> | undefined;
+    if (rarityStyles !== undefined) {
+      const allowedKeys =
+        normalizedCustomRarities !== undefined
+          ? normalizedCustomRarities
+          : undefined;
+      const validation = validateRarityStylesInput(rarityStyles, allowedKeys);
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedRarityStyles = validation.value;
     }
 
     // cardPackNames は事前登録カードパック名の一覧のみを保持する（Issue #393再設計）。
@@ -1422,6 +1457,11 @@ export async function POST(request: NextRequest) {
       updateData.custom_rarities = normalizedCustomRarities;
     }
 
+    // Issue #1783: カスタムレアリティごとの表示スタイル。
+    if (rarityStyles !== undefined) {
+      updateData.rarity_styles = normalizedRarityStyles;
+    }
+
     // 事前登録カードパック名（Issue #393再設計）。ゲートで一部却下されていても
     // persistedCardPackNames(=保存してよい範囲)を無条件に保存する。
     if (normalizedCardPackNames !== undefined) {
@@ -1505,6 +1545,7 @@ export async function POST(request: NextRequest) {
     // Issue #1782: duplicate_display_tiers も同じ理由(デプロイ窓)で
     // skip-and-flag パターンを踏襲する。
     let duplicateDisplayTiersWriteSkipped = false;
+    let rarityStylesWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
@@ -1521,6 +1562,7 @@ export async function POST(request: NextRequest) {
       tradeSettingsWriteSkipped = updateResult.tradeSettingsWriteSkipped;
       albumSettingsWriteSkipped = updateResult.albumSettingsWriteSkipped;
       duplicateDisplayTiersWriteSkipped = updateResult.duplicateDisplayTiersWriteSkipped;
+      rarityStylesWriteSkipped = updateResult.rarityStylesWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
@@ -1614,6 +1656,12 @@ export async function POST(request: NextRequest) {
         : {}),
       ...(duplicateDisplayTiersWriteSkipped
         ? { duplicateDisplayTiersSkippedDeployWindow: true }
+        : {}),
+      ...(normalizedRarityStyles !== undefined && !rarityStylesWriteSkipped
+        ? { rarityStyles: normalizedRarityStyles }
+        : {}),
+      ...(rarityStylesWriteSkipped
+        ? { rarityStylesSkippedDeployWindow: true }
         : {}),
     });
   } catch (error) {
