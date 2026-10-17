@@ -17,8 +17,8 @@ import type { RarityStyles } from "@/lib/rarity-styles";
 //
 // ここで固定したい性質は3つ:
 //  1. 未設定時は従来（プリセット）と完全に同じ出力になる後方互換。
-//  2. プリセット Tailwind クラスと HEX の両形式を正しく描画できること
-//     （HEX は var() 参照クラス + インライン変数、クラスはそのまま）。
+//  2. 受理される HEX をクラス + CSS 変数の1組として描画できること
+//     （許可形式でない値はプリセットへ縮退）。
 //  3. 破損・手編集された JSONB 値でも例外を出さずプリセットへ縮退すること
 //     （DB の CHECK はトップレベルの object しか保証しない）。
 describe("getRarityStylePresentation", () => {

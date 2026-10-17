@@ -233,19 +233,20 @@ function sanitizeRarityStyle(style: unknown): RarityStyle {
  * レアリティ名→表示スタイルマップから、そのレアリティの描画スタイルを解決する。
  *
  * - カスタムスタイルが無いレアリティは従来（プリセット）と完全に同じ出力。
- * - 値は「プリセット Tailwind クラス」と「HEX」の2形式を許容する
- *   （保存側 rarity-styles.ts の許可形式と同じ）。クラスはそのまま、HEX は
- *   CSS 変数 + var() 参照クラスに変換して当てる。
+ * - 受理される色の値は HEX のみ（保存側 rarity-styles.ts と同一規則）。HEX は
+ *   CSS 変数 + var() 参照クラスへ変換して当てる。値が許可形式でなければ
+ *   sanitizeRarityStyle が捨て、プリセットの色になる。
  * - グラデーションの HEX ペアは from/to が両方揃ったときだけ採用する。片方だけ
  *   だと中間色が壊れるため、不正値ではなく未設定扱いにしてプリセットへ戻す。
  *
- * 既知の制約（クラス形式）: クラス形式の値は DB 由来なので Tailwind のソース走査に
- * 載らず、そのクラスがアプリ内のどこかで literal として使われていない限り CSS は
- * 生成されない（＝色が付かない）。許可されている全組み合わせ
- * （18色 × 11シェード × bg/from/to/shadow）を safelist すると生成CSSが
- * 実測 +303KB 増えるため、ここでは採用していない。フェーズ1の編集UIは
- * `<input type="color">` 経由で HEX しか出力しないため、実際に保存される値は
- * この制約の影響を受けない（HEX は常に正しく描画される）。
+ * 描画側の前提: gradientClass / glowClass は呼び出し側の要素に
+ * `bg-gradient-to-*` / `shadow-*`（幅）が付いていることが前提（オーバーレイの
+ * カード枠が該当）。単独では from-/to- はストップ変数を、shadow-[color:…] は
+ * 影色を設定するだけで、それ自体は何も描かない。
+ *
+ * 対象外: `effect` はこの描画層では読まない（エフェクトはエフェクトテンプレート
+ * 拡充の別 issue が定義するスタイル集合を再利用して扱う）。したがって
+ * 「受理される値は必ず描画できる」は *色* についての主張である。
  */
 export function getRarityStylePresentation(
   rarity: string,
@@ -268,35 +269,25 @@ export function getRarityStylePresentation(
   );
   let glowClass = readRarityPreset(RARITY_GLOW, rarity, DEFAULT_RARITY_GLOW_CLASS);
 
+  // sanitizeRarityStyle が通す色は HEX だけなので、ここでの分岐は「HEX か否か」
+  // ではなく「カスタム値があるか」だけを見ればよい。
   if (custom.color) {
-    if (custom.color.startsWith("#")) {
-      vars[RARITY_STYLE_CSS_VARS.color] = custom.color;
-      colorClass = RARITY_STYLE_VAR_CLASSES.color;
-    } else {
-      colorClass = custom.color;
-    }
+    vars[RARITY_STYLE_CSS_VARS.color] = custom.color;
+    colorClass = RARITY_STYLE_VAR_CLASSES.color;
   }
 
   if (custom.gradient) {
-    if (custom.gradient.startsWith("#")) {
-      const [from, to] = custom.gradient.split(",").map((part) => part.trim());
-      if (from && to) {
-        vars[RARITY_STYLE_CSS_VARS.gradientFrom] = from;
-        vars[RARITY_STYLE_CSS_VARS.gradientTo] = to;
-        gradientClass = RARITY_STYLE_VAR_CLASSES.gradient;
-      }
-    } else {
-      gradientClass = custom.gradient;
+    const [from, to] = custom.gradient.split(",").map((part) => part.trim());
+    if (from && to) {
+      vars[RARITY_STYLE_CSS_VARS.gradientFrom] = from;
+      vars[RARITY_STYLE_CSS_VARS.gradientTo] = to;
+      gradientClass = RARITY_STYLE_VAR_CLASSES.gradient;
     }
   }
 
   if (custom.glow) {
-    if (custom.glow.startsWith("#")) {
-      vars[RARITY_STYLE_CSS_VARS.glow] = custom.glow;
-      glowClass = RARITY_STYLE_VAR_CLASSES.glow;
-    } else {
-      glowClass = custom.glow;
-    }
+    vars[RARITY_STYLE_CSS_VARS.glow] = custom.glow;
+    glowClass = RARITY_STYLE_VAR_CLASSES.glow;
   }
 
   return { colorClass, gradientClass, glowClass, styleVars: vars as RarityStyleVars };
