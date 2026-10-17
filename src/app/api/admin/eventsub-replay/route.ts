@@ -385,13 +385,38 @@ export async function POST(request: NextRequest) {
         logger.error("[eventsub-replay] chat outbox maintenance failed; continuing this tick", {
           error: message,
         });
-        await reportErrorSafely(
-          new Error(`[eventsub-replay] chat outbox maintenance failed: ${message}`),
-          {
-            key: "chat-outbox:maintenance",
-            subscriptionType: "twica.transactional-chat-outbox.v1",
-          },
-        );
+        // 二次報告も共通deadlineで待つ（レビュー指摘 P2）。reportErrorSafely は例外を
+        // 握るが**待ち時間は制限しない**（reportError は errors への DB insert を await
+        // する）。報告先が詰まると POST が 105秒（呼出側 Cron は 120秒）を越えて
+        // 未完了になり得るため、期限で打ち切る。期限切れなら報告自体を開始せず、
+        // 報告の完了/打ち切り後は時刻を再評価して後続処理を gate する。
+        if (Date.now() >= replayDeadlineAt) {
+          chatRelayDeadlineExpired = true;
+          logger.warn(
+            "[eventsub-replay] chat outbox maintenance error report skipped: the replay deadline had already passed; starting no new work in this run",
+          );
+        } else {
+          const report = reportErrorSafely(
+            new Error(`[eventsub-replay] chat outbox maintenance failed: ${message}`),
+            {
+              key: "chat-outbox:maintenance",
+              subscriptionType: "twica.transactional-chat-outbox.v1",
+            },
+          );
+          // 常時catch: reportErrorSafely は throw しないが、helper の早期return経路で
+          // 未処理 rejection を作らないための保険。
+          void report.catch(() => {});
+          const reportResult = await awaitBeforeReplayDeadline(report, replayDeadlineAt);
+          if (!reportResult.completed) {
+            logger.warn(
+              "[eventsub-replay] chat outbox maintenance error report did not finish before the replay deadline; starting no new work in this run",
+            );
+          }
+          // 報告が期限後に完了した場合も、ここで時刻を再評価して後続を止める。
+          if (Date.now() >= replayDeadlineAt) {
+            chatRelayDeadlineExpired = true;
+          }
+        }
       }
     }
 
@@ -416,7 +441,9 @@ export async function POST(request: NextRequest) {
     // ため、awaitBeforeReplayDeadlineで包むだけでは「時間切れ時に開始しない」を
     // 保証できない。deadline超過を明示的に判定してから呼ぶ。
     let chatDispatchHandoff = false;
-    if (!chatRelayDeadlineExpired) {
+    // deadline超過（maintenance／二次報告の打ち切り）時は sweep を新規に開始しない。
+    // dispatchDueChatNotifications(...) は引数評価で開始されるため、時刻も明示的に確認する。
+    if (!chatRelayDeadlineExpired && Date.now() < replayDeadlineAt) {
       try {
         const sweepResult = await awaitBeforeReplayDeadline(
           dispatchDueChatNotifications(
