@@ -5,62 +5,91 @@ import {
   isAllowedEffectValue,
   isAllowedGlowValue,
   isAllowedGradientValue,
+  normalizeColorValue,
+  normalizeGlowValue,
+  normalizeGradientValue,
   validateRarityStylesInput,
 } from "@/lib/rarity-styles";
 
 // Issue #1783: カスタムレアリティの表示スタイル検証。
-// 色はインジェクション対策として HEX のみを許可し、任意 CSS/HTML（url()・式・
-// プロパティ注入）を通さないことを固定する。
+// 任意 CSS/HTML（url()・式・プロパティ注入）を通さないことを固定する。
 //
-// フェーズ1ではプリセットの Tailwind クラス（bg-red-500 等）も許可していたが、
-// Tailwind v4 はソース走査でしかクラスを生成しないため、DBに入ったクラス名は
-// 生成CSSに存在せず「受理したのに無色」になる。許可集合の全組み合わせを
-// safelist すると生成CSSが +303KB 増えるため、受理形式を HEX に限定した
-// （描画は rarity.ts の getRarityStylePresentation が CSS 変数経由で行う）。
+// 永続化する色は HEX に統一するが、フェーズ1 の API が受理していたプリセット
+// Tailwind クラス（bg-red-500 等）は**互換のため受理し、HEX へ正規化**する。
+// （Tailwind v4 はソース走査でしかクラスを生成しないため、クラス名のまま保存すると
+//  無色になる。safelist は +303KB なので採用しない。）正規化先は
+// src/lib/tailwind-palette.ts（Tailwind の theme.css から生成）を使う。
 describe("rarity-styles validation", () => {
-  describe("isAllowedColorValue", () => {
-    it("accepts HEX (#RGB / #RRGGBB)", () => {
+  describe("isAllowedColorValue / normalizeColorValue", () => {
+    it("accepts HEX (#RGB / #RRGGBB) and keeps it as-is", () => {
       expect(isAllowedColorValue("#fff")).toBe(true);
       expect(isAllowedColorValue("#FF00aa")).toBe(true);
+      expect(normalizeColorValue("#FF00aa")).toBe("#FF00aa");
     });
 
-    it("rejects Tailwind classes, arbitrary CSS and non-color text", () => {
-      // クラス形式は描画できない（Tailwind のソース走査に載らない）ため受理しない。
-      expect(isAllowedColorValue("bg-red-500")).toBe(false);
-      expect(isAllowedColorValue("bg-gray-950")).toBe(false);
+    it("normalizes legacy preset classes to HEX", () => {
+      // フェーズ1 の許可集合（18 色 × 11 シェード）を HEX へ変換して受理する。
+      expect(isAllowedColorValue("bg-red-500")).toBe(true);
+      expect(normalizeColorValue("bg-red-500")).toBe("#fb2c36");
+      expect(normalizeColorValue("bg-gray-950")).toBe("#030712");
+      expect(normalizeColorValue("bg-lime-500")).toBe("#7ccf00");
+    });
+
+    it("rejects unknown hues/shades, arbitrary CSS and non-color text", () => {
+      // slate はフェーズ1 の許可集合に無い。
+      expect(isAllowedColorValue("bg-slate-500")).toBe(false);
+      expect(isAllowedColorValue("bg-red-1000")).toBe(false);
       expect(isAllowedColorValue("#12345")).toBe(false);
       expect(isAllowedColorValue("#gggggg")).toBe(false);
       expect(isAllowedColorValue("red")).toBe(false);
       expect(isAllowedColorValue("url(https://example.com/x.png)")).toBe(false);
       expect(isAllowedColorValue("bg-red-500;background:url(x)")).toBe(false);
+      expect(normalizeColorValue("bg-slate-500")).toBeNull();
     });
   });
 
-  describe("isAllowedGradientValue", () => {
-    it("accepts HEX pairs", () => {
+  describe("isAllowedGradientValue / normalizeGradientValue", () => {
+    it("accepts HEX pairs and canonicalizes the separator", () => {
       expect(isAllowedGradientValue("#ff0000,#00ff00")).toBe(true);
       expect(isAllowedGradientValue("#ff0000, #00ff00")).toBe(true);
       expect(isAllowedGradientValue("#f00,#0f0")).toBe(true);
+      expect(normalizeGradientValue("#ff0000, #00ff00")).toBe("#ff0000,#00ff00");
     });
 
-    it("rejects gradient classes, partial gradients and non-pair HEX lists", () => {
-      expect(isAllowedGradientValue("from-red-500 to-blue-600")).toBe(false);
+    it("normalizes the legacy preset gradient form to a HEX pair", () => {
+      expect(isAllowedGradientValue("from-red-500 to-blue-600")).toBe(true);
+      expect(normalizeGradientValue("from-red-500 to-blue-600")).toBe("#fb2c36,#155dfc");
+    });
+
+    it("rejects partial gradients, unknown presets and non-pair HEX lists", () => {
       expect(isAllowedGradientValue("from-red-500")).toBe(false);
+      expect(isAllowedGradientValue("from-slate-500 to-blue-600")).toBe(false);
       expect(isAllowedGradientValue("#ff0000")).toBe(false);
       expect(isAllowedGradientValue("#ff0000,#00ff00,#0000ff")).toBe(false);
       expect(isAllowedGradientValue("red,blue")).toBe(false);
     });
   });
 
-  describe("isAllowedGlowValue", () => {
-    it("accepts HEX", () => {
+  describe("isAllowedGlowValue / normalizeGlowValue", () => {
+    it("accepts HEX (including 8-digit for opacity)", () => {
       expect(isAllowedGlowValue("#ff0000")).toBe(true);
       expect(isAllowedGlowValue("#f00")).toBe(true);
+      expect(isAllowedGlowValue("#ff000080")).toBe(true);
+      expect(normalizeGlowValue("#ff000080")).toBe("#ff000080");
     });
 
-    it("rejects shadow classes and free-form shadows", () => {
-      expect(isAllowedGlowValue("shadow-red-500/50")).toBe(false);
+    it("normalizes legacy shadow classes, mapping opacity to HEX8 alpha", () => {
+      expect(normalizeGlowValue("shadow-red-500")).toBe("#fb2c36");
+      expect(normalizeGlowValue("shadow-red-500/25")).toBe("#fb2c3640");
+      expect(normalizeGlowValue("shadow-red-500/50")).toBe("#fb2c3680");
+      expect(normalizeGlowValue("shadow-red-500/75")).toBe("#fb2c36bf");
+    });
+
+    it("rejects unknown opacity steps, unknown presets and free-form shadows", () => {
+      expect(isAllowedGlowValue("shadow-red-500/33")).toBe(false);
+      expect(isAllowedGlowValue("shadow-slate-500/50")).toBe(false);
       expect(isAllowedGlowValue("0 0 10px red")).toBe(false);
+      expect(isAllowedGlowValue("#ffff")).toBe(false);
     });
   });
 
@@ -90,6 +119,25 @@ describe("rarity-styles validation", () => {
       });
     });
 
+    it("normalizes legacy preset inputs to HEX on save (互換)", () => {
+      // フェーズ1 の API が受理していたクラス形式を、保存時に HEX へ正規化する。
+      // これにより「受理したのに描画できない値」が永続化されない。
+      expect(
+        validateRarityStylesInput({
+          mythic: {
+            color: "bg-red-500",
+            gradient: "from-red-500 to-blue-600",
+            glow: "shadow-purple-500/50",
+          },
+        }),
+      ).toEqual({
+        ok: true,
+        value: {
+          mythic: { color: "#fb2c36", gradient: "#fb2c36,#155dfc", glow: "#ad46ff80" },
+        },
+      });
+    });
+
     it("accepts an empty map (no overrides)", () => {
       expect(validateRarityStylesInput({})).toEqual({ ok: true, value: {} });
     });
@@ -113,16 +161,13 @@ describe("rarity-styles validation", () => {
     it("rejects empty styles, unknown properties and invalid values", () => {
       expect(validateRarityStylesInput({ mythic: {} })).toEqual({ ok: false });
       expect(validateRarityStylesInput({ mythic: { color: "red" } })).toEqual({ ok: false });
-      // クラス形式は描画できないため 400 で拒否する（受理したのに無色、を作らない）。
-      expect(validateRarityStylesInput({ mythic: { color: "bg-red-500" } })).toEqual({
+      // 未知の色名・シェードは拒否する（フェーズ1 の許可集合に無いもの）。
+      expect(validateRarityStylesInput({ mythic: { color: "bg-slate-500" } })).toEqual({
         ok: false,
       });
       expect(validateRarityStylesInput({ mythic: { gradient: "red" } })).toEqual({ ok: false });
-      expect(validateRarityStylesInput({ mythic: { gradient: "from-red-500 to-blue-600" } })).toEqual({
-        ok: false,
-      });
       expect(validateRarityStylesInput({ mythic: { glow: "red" } })).toEqual({ ok: false });
-      expect(validateRarityStylesInput({ mythic: { glow: "shadow-red-500/50" } })).toEqual({
+      expect(validateRarityStylesInput({ mythic: { glow: "shadow-red-500/33" } })).toEqual({
         ok: false,
       });
       expect(validateRarityStylesInput({ mythic: { effect: "a\u202Eb" } })).toEqual({ ok: false });

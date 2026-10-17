@@ -687,6 +687,45 @@ describe('POST /api/streamer/settings', () => {
       const response = await POST(buildRequest({ rarityStyles: {} }))
       expect(response.status).toBe(200)
     })
+
+    // Issue #1783 互換対応: フェーズ1 の API が受理していたプリセット Tailwind クラスを
+    // 400 で拒否せず、HEX へ正規化して保存する（描画できないクラス名を永続化しない）。
+    it('normalizes legacy preset classes to HEX instead of rejecting them', async () => {
+      const query = await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['super'],
+          rarityStyles: {
+            super: {
+              color: 'bg-red-500',
+              gradient: 'from-red-500 to-blue-600',
+              glow: 'shadow-purple-500/50',
+            },
+          },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rarity_styles: {
+            super: { color: '#fb2c36', gradient: '#fb2c36,#155dfc', glow: '#ad46ff80' },
+          },
+        })
+      )
+      const data = await response.json()
+      expect(data.rarityStyles).toEqual({
+        super: { color: '#fb2c36', gradient: '#fb2c36,#155dfc', glow: '#ad46ff80' },
+      })
+    })
+
+    it('still rejects preset classes outside the legacy allowlist', async () => {
+      await mockOk()
+      // slate はフェーズ1 の許可集合に無い（任意 CSS と同様に 400）。
+      const response = await POST(
+        buildRequest({ customRarities: ['super'], rarityStyles: { super: { color: 'bg-slate-500' } } })
+      )
+      expect(response.status).toBe(400)
+    })
   })
 
   it('should return 403 when CSRF token is invalid', async () => {
