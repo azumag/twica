@@ -82,6 +82,10 @@ type StreamerWithTradeSettings = Streamer & {
   // STREAMERS_SAFE_COLUMNSへ縮退した行だけundefinedになり得るためoptionalにする。
   trade_enabled?: boolean;
   cross_channel_trade_enabled?: boolean;
+  // Issue #1783: カスタムレアリティの表示スタイル。同じ理由（デプロイ窓の
+  // STREAMERS_SAFE_COLUMNS 縮退）で undefined になり得るため optional。
+  // 消費側は `?? {}` で「上書きなし = 既定表示」へ倒すこと。
+  rarity_styles?: Record<string, import("@/lib/rarity-styles").RarityStyle>;
 };
 
 interface CardWithDetails extends Card {

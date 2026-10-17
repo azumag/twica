@@ -11,6 +11,7 @@ import {
 } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { isEnterKeySubmit } from "@/lib/keyboard-utils";
+import type { RarityStyle } from "@/lib/rarity-styles";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
@@ -19,12 +20,31 @@ import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
 const DEFAULT_RARITY_VALUES = new Set<string>(RARITIES.map((r) => r.value));
 
+/**
+ * Issue #1783: スタイルマップをキー順に依存せず比較するための署名。
+ * 指定キーのうち実体のあるスタイルだけを、キー名とプロパティ名で整列して直列化する。
+ */
+function styleSignature(styles: Record<string, RarityStyle>, keys: string[]): string {
+  return JSON.stringify(
+    keys
+      .filter((key) => styles[key] && Object.keys(styles[key]).length > 0)
+      .slice()
+      .sort()
+      .map((key) => [
+        key,
+        Object.entries(styles[key]).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      ])
+  );
+}
+
 interface CustomRarityModalProps {
   isOpen: boolean;
   onClose: () => void;
   streamerId: string;
   customRarities: string[];
+  rarityStyles?: Record<string, RarityStyle>;
   onSaved: (next: string[]) => void;
+  onSavedStyles?: (next: Record<string, RarityStyle>) => void;
 }
 
 /**
@@ -42,7 +62,9 @@ export default function CustomRarityModal({
   onClose,
   streamerId,
   customRarities,
+  rarityStyles,
   onSaved,
+  onSavedStyles,
 }: CustomRarityModalProps) {
   const t = useTranslations("cardManager");
   const tRarity = useTranslations("rarity");
@@ -53,6 +75,7 @@ export default function CustomRarityModal({
   const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [list, setList] = useState<string[]>(customRarities);
+  const [styles, setStyles] = useState<Record<string, RarityStyle>>(rarityStyles ?? {});
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -62,15 +85,31 @@ export default function CustomRarityModal({
   useEffect(() => {
     if (isOpen) {
       setList(customRarities);
+      setStyles(rarityStyles ?? {});
       setInput("");
       setError(null);
     }
-  }, [isOpen, customRarities]);
+  }, [isOpen, customRarities, rarityStyles]);
+
+  // Issue #1783: スタイルは「リストに残っているレアリティ」の分だけを保存対象にする。
+  // レアリティを削除したときにスタイルが残ると、サーバー側の allowedKeys 検証で
+  // 400 になり保存できなくなるため、ここで落とす。
+  const stylesForList = useMemo(() => {
+    const next: Record<string, RarityStyle> = {};
+    for (const key of list) {
+      const style = styles[key];
+      if (style && Object.keys(style).length > 0) next[key] = style;
+    }
+    return next;
+  }, [list, styles]);
 
   const hasChanges = useMemo(() => {
     if (list.length !== customRarities.length) return true;
-    return list.some((v, i) => v !== customRarities[i]);
-  }, [list, customRarities]);
+    if (list.some((v, i) => v !== customRarities[i])) return true;
+    // Issue #1783: 色などのスタイルだけを変えた場合も保存対象にする
+    // （名前が変わっていないと保存ボタンが押せない、という取りこぼしを防ぐ）。
+    return styleSignature(stylesForList, list) !== styleSignature(rarityStyles ?? {}, list);
+  }, [list, customRarities, stylesForList, rarityStyles]);
 
   if (!isOpen) return null;
 
@@ -78,6 +117,8 @@ export default function CustomRarityModal({
     if (hasChanges && !confirm(t("customRarity.confirmClose"))) return;
     // 次回開いたときに保存済みの値から再開できるよう破棄
     setList(customRarities);
+    // Issue #1783: スタイルも保存済みの値へ戻す（未保存の色変更を持ち越さない）。
+    setStyles(rarityStyles ?? {});
     setInput("");
     setError(null);
     onClose();
@@ -116,6 +157,14 @@ export default function CustomRarityModal({
 
   const handleRemove = (value: string) => {
     setList(list.filter((v) => v !== value));
+    // Issue #1783: レアリティを外したらスタイルも一緒に落とす。残すとサーバー側の
+    // allowedKeys 検証で 400 になり、他の編集ごと保存できなくなる。
+    setStyles((prev) => {
+      if (!(value in prev)) return prev;
+      const next = { ...prev };
+      delete next[value];
+      return next;
+    });
   };
 
   const handleSave = async () => {
@@ -132,7 +181,7 @@ export default function CustomRarityModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ streamerId, customRarities: list }),
+        body: JSON.stringify({ streamerId, customRarities: list, rarityStyles: stylesForList }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -141,6 +190,7 @@ export default function CustomRarityModal({
         throw new Error(maintenanceError?.message || data.error || t("customRarity.saveFailed"));
       }
       onSaved(list);
+      onSavedStyles?.(stylesForList);
       onClose();
     } catch (err) {
       logger.error("Failed to save custom rarities:", err);
@@ -257,15 +307,51 @@ export default function CustomRarityModal({
                   {list.map((value) => (
                     <li
                       key={value}
-                      className="flex items-center justify-between rounded-lg bg-gray-700 px-4 py-2"
+                      className="flex items-center justify-between gap-2 rounded-lg bg-gray-700 px-4 py-2"
                     >
                       <span className="text-white break-all">{value}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemove(value)}
-                        className="ml-2 text-gray-400 hover:text-red-400"
-                        aria-label={`Remove ${value}`}
-                      >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={styles[value]?.color?.startsWith("#") ? styles[value]!.color! : "#808080"}
+                          onChange={(e) =>
+                            setStyles((prev) => ({
+                              ...prev,
+                              [value]: { ...(prev[value] ?? {}), color: e.target.value },
+                            }))
+                          }
+                          className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-transparent"
+                          aria-label={t("customRarity.colorLabel", { rarity: value })}
+                        />
+                        {/* Issue #1783: 既定表示（gray）へ戻す手段を用意する。
+                            未設定のスタイルは送らないので、キーごと落とす。 */}
+                        {styles[value]?.color !== undefined && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setStyles((prev) => {
+                                const next = { ...prev };
+                                const current = { ...(next[value] ?? {}) };
+                                delete current.color;
+                                if (Object.keys(current).length === 0) {
+                                  delete next[value];
+                                } else {
+                                  next[value] = current;
+                                }
+                                return next;
+                              })
+                            }
+                            className="rounded border border-gray-600 px-2 py-1 text-xs text-gray-300 hover:border-gray-400 hover:text-white transition"
+                          >
+                            {t("customRarity.clearColor")}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRemove(value)}
+                          className="ml-2 text-gray-400 hover:text-red-400"
+                          aria-label={`Remove ${value}`}
+                        >
                         <svg
                           xmlns="http://www.w3.org/2000/svg"
                           className="h-5 w-5"
@@ -281,6 +367,7 @@ export default function CustomRarityModal({
                           />
                         </svg>
                       </button>
+                      </div>
                     </li>
                   ))}
                 </ul>

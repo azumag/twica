@@ -84,6 +84,9 @@ export const streamers = pgTable('streamers', {
     .default(sql`NULL`),
   // 00049: DB 型は text[] ではなく JSONB の文字列配列（database.ts では string[]）
   custom_rarities: jsonb('custom_rarities').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  // Issue #1783: カスタムレアリティごとの表示スタイル（色/グラデーション/グロー/エフェクト）。
+  // キーはレアリティ名、値は RarityStyle オブジェクト。未設定時は空オブジェクト。
+  rarity_styles: jsonb('rarity_styles').$type<Record<string, import('@/lib/rarity-styles').RarityStyle>>().notNull().default(sql`'{}'::jsonb`),
   // 00062: 同上、JSONB の文字列配列
   card_pack_names: jsonb('card_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   // 00063: デフォルト（未分類）パックの表示名オーバーライド

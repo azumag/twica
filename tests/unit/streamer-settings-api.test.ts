@@ -607,6 +607,88 @@ describe('POST /api/streamer/settings', () => {
     })
   })
 
+  // Issue #1783: カスタムレアリティの表示スタイル。
+  // 色は HEX かプリセットの Tailwind クラスのみを許可し（任意 CSS を通さない）、
+  // キーはカスタムレアリティ名に限定する。
+  describe('custom rarity styles validation (Issue #1783)', () => {
+    const buildRequest = (body: Record<string, unknown>) =>
+      new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', ...body }),
+      })
+
+    const mockOk = async () => {
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const built = mockDbFixture.build()
+      installDbFixture(built)
+      return mockDbFixture.getQueryBuilder()
+    }
+
+    it('rejects a non-object value', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ rarityStyles: 'mythic' }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a style for a built-in rarity', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest({ rarityStyles: { legendary: { color: '#ff0000' } } })
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a key that is not in the same-request customRarities', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['super'],
+          rarityStyles: { other: { color: '#ff0000' } },
+        })
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects non-HEX / non-preset colors and empty styles', async () => {
+      await mockOk()
+      const arbitraryCss = await POST(
+        buildRequest({ rarityStyles: { super: { color: 'url(https://evil.example/x.png)' } } })
+      )
+      expect(arbitraryCss.status).toBe(400)
+
+      await mockOk()
+      const empty = await POST(buildRequest({ rarityStyles: { super: {} } }))
+      expect(empty.status).toBe(400)
+    })
+
+    it('persists normalized styles together with customRarities', async () => {
+      const query = await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: [' super '],
+          rarityStyles: { super: { color: '#ff0000' } },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          custom_rarities: ['super'],
+          rarity_styles: { super: { color: '#ff0000' } },
+        })
+      )
+      const data = await response.json()
+      expect(data.rarityStyles).toEqual({ super: { color: '#ff0000' } })
+    })
+
+    it('accepts an empty map as "no overrides"', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ rarityStyles: {} }))
+      expect(response.status).toBe(200)
+    })
+  })
+
   it('should return 403 when CSRF token is invalid', async () => {
     mockValidateCSRFToken.mockResolvedValue({ valid: false })
 

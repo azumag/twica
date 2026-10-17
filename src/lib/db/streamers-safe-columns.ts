@@ -106,7 +106,8 @@ export async function withLiveDirectorySettingsColumnFallback<T>(
       !isMissingTradeSettingsColumnError(error) &&
       !isMissingAlbumSettingsColumnError(error) &&
       !isMissingCardRankingSettingsColumnError(error) &&
-      !isMissingDuplicateDisplayTiersColumnError(error)
+      !isMissingDuplicateDisplayTiersColumnError(error) &&
+      !isMissingRarityStylesColumnError(error)
     ) {
       throw error;
     }
@@ -198,4 +199,28 @@ export const DUPLICATE_DISPLAY_TIER_COLUMNS = ["duplicate_display_tiers"] as con
  */
 export function isMissingDuplicateDisplayTiersColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, DUPLICATE_DISPLAY_TIER_COLUMNS);
+}
+
+/**
+ * デプロイ窓で欠落しうる streamers の新列(20261018020000 の migration で追加。
+ * Issue #1783)。上記各列と同じ「アプリデプロイとmigration適用が独立した
+ * タイミングで完了する」リスクを持つため、同型のフォールバックに追加する。
+ *
+ * getStreamerData は streamer: streamersTable の無指定 select（全列）を使うため、
+ * この列が無い環境では SELECT 自体が 42703 で失敗する。検知条件に加えないと
+ * フォールバックへ到達せず、ダッシュボードが null（= /dashboard へリダイレクト）
+ * になる。
+ *
+ * STREAMERS_SAFE_COLUMNS はこの列を含まない（＝再試行側では undefined に
+ * なりうる）。消費側は欠落時に「上書きなし = 既定表示」へ fail-closed に倒すこと
+ * （`?? {}`）。
+ */
+export const RARITY_STYLES_COLUMNS = ["rarity_styles"] as const;
+
+/**
+ * streamers の rarity_styles 列の欠落
+ * (20261018020000 の migration 未適用の環境)を検知する。
+ */
+export function isMissingRarityStylesColumnError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, RARITY_STYLES_COLUMNS);
 }

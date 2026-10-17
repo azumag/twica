@@ -73,6 +73,8 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     rarity_weights_scope: 'global',
     pack_rarity_weights: null,
     custom_rarities: [],
+    // Issue #1783: カスタムレアリティごとの表示スタイル（未設定 = 空オブジェクト）。
+    rarity_styles: {},
     card_pack_names: [],
     default_card_pack_name: null,
     show_unowned_cards: false,
