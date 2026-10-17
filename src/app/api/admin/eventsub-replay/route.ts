@@ -365,14 +365,32 @@ export async function POST(request: NextRequest) {
       // 常時catch: helper側の早期return経路やrace決着後に届くrejectionを未処理にしない
       // （元のPromiseのrejectionはrace側のハンドラがそのまま受け取る）。
       void maintenance.catch(() => {});
-      const maintenanceResult = await awaitBeforeReplayDeadline(
-        maintenance,
-        replayDeadlineAt,
-      );
-      chatRelayDeadlineExpired = !maintenanceResult.completed;
-      if (chatRelayDeadlineExpired) {
-        logger.warn(
-          "[eventsub-replay] chat outbox maintenance did not finish before the replay deadline; starting no new work in this run",
+      // メンテナンス失敗は reportErrorSafely へ集約する。切り出し前は claim ループの
+      // try/catch の内側にあり、失敗しても同じ tick の後続処理（回収sweep・旧claim・
+      // KVに退避された EventSub notification の replay）は継続していた。ここで素通しすると
+      // DBエラー1回で route 全体が500になり、DB非依存の KV drain まで最大20分遅れる。
+      try {
+        const maintenanceResult = await awaitBeforeReplayDeadline(
+          maintenance,
+          replayDeadlineAt,
+        );
+        chatRelayDeadlineExpired = !maintenanceResult.completed;
+        if (chatRelayDeadlineExpired) {
+          logger.warn(
+            "[eventsub-replay] chat outbox maintenance did not finish before the replay deadline; starting no new work in this run",
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("[eventsub-replay] chat outbox maintenance failed; continuing this tick", {
+          error: message,
+        });
+        await reportErrorSafely(
+          new Error(`[eventsub-replay] chat outbox maintenance failed: ${message}`),
+          {
+            key: "chat-outbox:maintenance",
+            subscriptionType: "twica.transactional-chat-outbox.v1",
+          },
         );
       }
     }
