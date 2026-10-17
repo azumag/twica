@@ -1534,6 +1534,32 @@ describe('POST /api/admin/eventsub-replay', () => {
       expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
       expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
     })
+
+    // 正常経路（maintenance成功）でも、完了時点で期限を越えていれば後続を開始しない。
+    // dispatchDueChatNotifications(...) は引数評価で開始されるため、sweep 側の時刻確認が要る。
+    it('maintenanceは完了したが期限を越えていた場合、sweep・旧claimを開始しない', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      mocks.maintainChatNotificationOutbox.mockImplementation(async () => {
+        // 期限内に開始し、完了時に時計が期限を越えている経路。
+        vi.setSystemTime(new Date(106_000))
+      })
+      mocks.dispatchDueChatNotifications.mockResolvedValue({
+        reserved: 1, enqueued: 1, skippedDisabled: false,
+      })
+      mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+      const json = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(mocks.maintainChatNotificationOutbox).toHaveBeenCalledTimes(1)
+      expect(json.counts).toEqual(expectedCounts({}))
+      expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+    })
   })
 
   describe('CHANNEL_POINTS_REDEMPTION_ADD の処理', () => {
