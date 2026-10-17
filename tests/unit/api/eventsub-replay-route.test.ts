@@ -1356,36 +1356,41 @@ describe('POST /api/admin/eventsub-replay', () => {
       },
     )
 
-    it('入口で既に期限切れならmaintenance自体を開始せず、後続workも開始しない', async () => {
-      vi.useFakeTimers()
-      vi.setSystemTime(new Date(0))
-      // deadline は POST 冒頭（Date.now() + 105秒）で確定する。その後の
-      // レート制限待ちで時計が進み、maintenance地点では期限を過ぎている状況を作る。
-      mocks.checkRateLimit.mockImplementationOnce(async () => {
-        vi.setSystemTime(new Date(200_000))
-        return { success: true, limit: 10, remaining: 9, reset: Date.now() + 60_000 }
-      })
-      mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
-      mocks.listParkedEventSubNotifications.mockResolvedValue({
-        entries: [{ key: 'maintenance:eventsub:expired', record: makeRecord() }],
-        cursor: undefined,
-        listComplete: true,
-      })
-      const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+    it.each([105_000, 105_001])(
+      '入口で既に期限切れ（%dms）ならmaintenance自体を開始せず、後続workも開始しない',
+      async (elapsedMs) => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(0))
+        // deadline は POST 冒頭（Date.now() + 105秒 = 105_000）で確定する。その後の
+        // レート制限待ちで時計が 105_000（ちょうど）/ 105_001（1ms 後）へ進み、
+        // maintenance地点では期限を過ぎている。境界の両側で、期限確認より先に
+        // operation を開始しないことを固定する。
+        mocks.checkRateLimit.mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(elapsedMs))
+          return { success: true, limit: 10, remaining: 9, reset: Date.now() + 60_000 }
+        })
+        mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+        mocks.listParkedEventSubNotifications.mockResolvedValue({
+          entries: [{ key: 'maintenance:eventsub:expired', record: makeRecord() }],
+          cursor: undefined,
+          listComplete: true,
+        })
+        const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
 
-      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
-      const response = await POST(createReplayRequest({}))
-      const json = await response.json()
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const response = await POST(createReplayRequest({}))
+        const json = await response.json()
 
-      expect(response.status).toBe(200)
-      // 残り時間0でhelperが早期returnする経路へ未解決Promiseを渡さない（開始前チェック）。
-      expect(mocks.maintainChatNotificationOutbox).not.toHaveBeenCalled()
-      expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
-      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
-      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
-      expect(send).not.toHaveBeenCalled()
-      expect(json.counts).toEqual(expectedCounts({}))
-    })
+        expect(response.status).toBe(200)
+        // 残り時間0でhelperが早期returnする経路へ未解決Promiseを渡さない（開始前チェック）。
+        expect(mocks.maintainChatNotificationOutbox).not.toHaveBeenCalled()
+        expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+        expect(send).not.toHaveBeenCalled()
+        expect(json.counts).toEqual(expectedCounts({}))
+      },
+    )
 
     it('時間切れ後にmaintenanceがrejectしても未処理rejectionにならず、新規workも開始しない', async () => {
       vi.useFakeTimers()
