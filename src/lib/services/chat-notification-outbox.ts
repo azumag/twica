@@ -201,8 +201,20 @@ export async function peekChatNotificationOutboxWork(
  * live EventSub claimごとに実行するとガチャ1回あたり余計なDB writeを増やすため、
  * 20分間隔のrelayへ集約する。sentは7日、調査・手動回収用deadは30日で削除し、
  * JSON payloadを無期限に残さない。
+ *
+ * Issue #1665 Step 3 レビュー指摘(P2): 専用Queue経路が配送ownerのあいだ、relayは
+ * 旧claimループ（claimDueChatNotifications）へ入らない。そのため「claim時にだけ
+ * メンテナンスする」構造のままだと、配送owner引継ぎ後に
+ * - 試行上限に達したままlease失効した processing 行が dead へ移行しない
+ * - sent(7日)/dead(30日) の保持期限によるpayload削除が止まる
+ * という退行になる。配送ownerの有無はメンテナンスの必要性と無関係なので、
+ * relay本体（non-dry-run）が **owner分岐に関係なく1回** 呼ぶ。relayはclaimへ
+ * `maintain: false` を渡して二重実行しない。
+ *
+ * 冪等: dead化は attempt_count が上限以上かつ lease が失効した行だけを対象にし、
+ * 削除も保持期限を過ぎた行だけを消すため、複数回実行しても結果は変わらない。
  */
-async function maintainChatNotificationOutbox(): Promise<void> {
+export async function maintainChatNotificationOutbox(): Promise<void> {
   const { sql } = await getDb()
   await sql`
     update chat_notification_outbox

@@ -28,9 +28,12 @@ import { getDb } from '@/lib/db/client'
 import { reserveChatChannelSendSlot } from '@/lib/services/chat-channel-gate'
 import { deliverChatNotificationSlice } from '@/lib/services/chat-notification-delivery'
 import {
+  CHAT_OUTBOX_DEAD_RETENTION_DAYS,
   CHAT_OUTBOX_MAX_ATTEMPTS,
+  CHAT_OUTBOX_SENT_RETENTION_DAYS,
   advanceChatNotificationDeliveryCursor,
   claimChatNotificationForBoundedDelivery,
+  maintainChatNotificationOutbox,
   releaseChatNotificationForContinuation,
 } from '@/lib/services/chat-notification-outbox'
 import { sendClaimedChatAnnouncement } from '@/lib/services/eventsub-redemption-delivery'
@@ -304,4 +307,121 @@ describe.skipIf(!sql)('chat outbox attempt accounting against PostgreSQL', () =>
       })
     },
   )
+
+  // Issue #1665 Step 3 レビュー指摘(P2): 専用Queue経路が配送ownerのあいだ、Cron relayは
+  // 旧claimループへ入らない。保持期限メンテナンスをclaim時にだけ実行する構造だと、
+  // ①5回目のclaim後に停止した processing 行が dead へ移行しない
+  // ②sent 7日 / dead 30日 の保持期限によるpayload削除が止まる
+  // という退行になる。ここでは maintenance の実SQL結果を固定する
+  // （relayがowner分岐に関係なく1回呼ぶことは unit test 側で固定している）。
+  describe('retention maintenance', () => {
+    async function ageAs(
+      batchId: string,
+      status: 'sent' | 'dead',
+      ageDays: number,
+    ) {
+      // seedRow は last_error に 'previous failure' を入れるため、保持期限の判定が
+      // last_error に依存しないことを含めて null に落としておく。
+      if (status === 'sent') {
+        await sql!`
+          update chat_notification_outbox
+          set status = 'sent', last_error = null,
+              sent_at = now() - (${ageDays}::integer * interval '1 day')
+          where batch_id = ${batchId}
+        `
+        return
+      }
+      await sql!`
+        update chat_notification_outbox
+        set status = 'dead', last_error = null,
+            dead_at = now() - (${ageDays}::integer * interval '1 day')
+        where batch_id = ${batchId}
+      `
+    }
+
+    async function retained(batchId: string): Promise<boolean> {
+      const rows = await sql!<{ batch_id: string }[]>`
+        select batch_id from chat_notification_outbox where batch_id = ${batchId}
+      `
+      return rows.length === 1
+    }
+
+    it('moves an expired max-attempt processing row to dead and spares other rows', async () => {
+      // 5回目のclaim後に停止した行（lease失効 + 試行上限）。bounded claim
+      // (attempt_count < 上限) からもwake予約 (同じ上限条件) からも除外されるため、
+      // メンテナンスでdead化しないと永久にprocessingのまま残る。
+      const exhausted = await seedRow({ status: 'processing', attempts: CHAT_OUTBOX_MAX_ATTEMPTS })
+      // 上限未満でlease失効した行は回収対象であり、dead化しない。
+      const recoverable = await seedRow({ status: 'processing', attempts: CHAT_OUTBOX_MAX_ATTEMPTS - 1 })
+      // lease有効中で上限到達した行は旧ownerの作業中とみなし触らない。
+      const activeLease = await seedRow({ status: 'processing', attempts: CHAT_OUTBOX_MAX_ATTEMPTS })
+      await sql!`update chat_notification_outbox set lease_expires_at = now() + interval '1 minute'
+        where batch_id = ${activeLease}`
+
+      // 前提: 対象行は「回収もwake予約もされない processing」の形で存在している。
+      expect(await stored(exhausted)).toMatchObject({ status: 'processing' })
+
+      await maintainChatNotificationOutbox()
+
+      expect(await stored(exhausted)).toMatchObject({
+        status: 'dead', attempt_count: CHAT_OUTBOX_MAX_ATTEMPTS, lease_id: null,
+        // seedRow が入れた last_error は coalesce で保持される（上書きしない）。
+        last_error: 'previous failure',
+      })
+      const [deadRow] = await sql!<{ dead_at: Date | null; lease_expires_at: Date | null }[]>`
+        select dead_at, lease_expires_at from chat_notification_outbox where batch_id = ${exhausted}
+      `
+      expect(deadRow.dead_at).not.toBeNull()
+      expect(deadRow.lease_expires_at).toBeNull()
+      expect(await stored(recoverable)).toMatchObject({ status: 'processing', attempt_count: CHAT_OUTBOX_MAX_ATTEMPTS - 1 })
+      expect(await stored(activeLease)).toMatchObject({ status: 'processing' })
+    })
+
+    it('records the dead reason when the stopped row has no previous error', async () => {
+      const exhausted = await seedRow({ status: 'processing', attempts: CHAT_OUTBOX_MAX_ATTEMPTS })
+      await sql!`update chat_notification_outbox set last_error = null where batch_id = ${exhausted}`
+
+      await maintainChatNotificationOutbox()
+
+      expect(await stored(exhausted)).toMatchObject({
+        status: 'dead',
+        last_error: 'delivery lease expired after max attempts',
+      })
+    })
+
+    it('deletes only payloads past their retention window', async () => {
+      const oldSent = await seedRow()
+      const freshSent = await seedRow()
+      const oldDead = await seedRow()
+      const freshDead = await seedRow()
+      await ageAs(oldSent, 'sent', CHAT_OUTBOX_SENT_RETENTION_DAYS + 1)
+      await ageAs(freshSent, 'sent', CHAT_OUTBOX_SENT_RETENTION_DAYS - 1)
+      await ageAs(oldDead, 'dead', CHAT_OUTBOX_DEAD_RETENTION_DAYS + 1)
+      await ageAs(freshDead, 'dead', CHAT_OUTBOX_DEAD_RETENTION_DAYS - 1)
+
+      // 前提: 4行とも削除前は存在している（削除の有無だけを検証する）。
+      expect(await retained(oldSent)).toBe(true)
+      expect(await retained(oldDead)).toBe(true)
+
+      await maintainChatNotificationOutbox()
+
+      expect(await retained(oldSent)).toBe(false)
+      expect(await retained(oldDead)).toBe(false)
+      expect(await retained(freshSent)).toBe(true)
+      expect(await retained(freshDead)).toBe(true)
+    })
+
+    it('is idempotent: a second run changes nothing', async () => {
+      const exhausted = await seedRow({ status: 'processing', attempts: CHAT_OUTBOX_MAX_ATTEMPTS })
+      const oldSent = await seedRow()
+      await ageAs(oldSent, 'sent', CHAT_OUTBOX_SENT_RETENTION_DAYS + 1)
+
+      await maintainChatNotificationOutbox()
+      const afterFirst = await stored(exhausted)
+      await maintainChatNotificationOutbox()
+
+      expect(await stored(exhausted)).toEqual(afterFirst)
+      expect(await retained(oldSent)).toBe(false)
+    })
+  })
 })
