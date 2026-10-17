@@ -74,13 +74,26 @@ const DEFAULT_RARITY_VALUES = new Set<string>(RARITIES.map((rarity) => rarity.va
 /**
  * レアリティ名として受理しないキー。
  *
- * `normalized["__proto__"] = {...}` は代入先がプレーンオブジェクトのため
- * Object.prototype のセッターが発火し、エントリが「受理されたのに保存されない」
- * 状態になる（グローバル汚染は起きないが、黙って消えるのは意図しない挙動）。
- * 実 API では allowedKeys（custom_rarities）で先に弾かれるが、関数単体の契約として
- * 明示的に拒否する。
+ * 対象は `__proto__` だけ。`normalized["__proto__"] = {...}` は代入先がプレーン
+ * オブジェクトのため Object.prototype のセッターが発火し、エントリが「受理された
+ * のに保存されない」状態になる（グローバル汚染は起きないが、黙って消えるのは
+ * 意図しない挙動）。オブジェクトマップとして安全に表現できないため明示的に拒否する。
+ *
+ * `constructor` / `prototype` は拒否しない（互換性）。この2つは Object.prototype の
+ * **データプロパティ**（`constructor`）または未定義（`prototype`）であり、代入は
+ * 通常の own プロパティを作るだけで JSON にもそのまま載る。一方カスタムレアリティ名
+ * としては validateCustomRaritiesInput が許可している（長さ・制御文字/Bidi・既定名
+ * 衝突・重複のみを見る）ため、ここで弾くと「名前は登録できるのに色を設定すると
+ * 編集全体が 400 になる」互換性破壊になる。読み出し側（rarity.ts の
+ * getRarityStylePresentation / readRarityPreset、paletteHex）は hasOwnProperty で
+ * 所有プロパティに限定して参照するため、これらを鍵にしても継承プロパティは拾わない。
  */
-const PROTOTYPE_POLLUTING_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const PROTOTYPE_SETTER_KEYS = new Set(["__proto__"]);
+
+/** レアリティ名として受理しないキー（`__proto__` のみ）。 */
+function isRejectedRarityKey(key: string): boolean {
+  return PROTOTYPE_SETTER_KEYS.has(key);
+}
 
 /**
  * バッジ色を「保存・描画できる色値」へ正規化する。受理できない場合は null。
@@ -202,7 +215,7 @@ export function validateRarityStylesInput(
       /[\u0000-\u001F\u007F-\u009F]/.test(key) ||
       /[\u202A-\u202E\u2066-\u2069]/.test(key) ||
       DEFAULT_RARITY_VALUES.has(key) ||
-      PROTOTYPE_POLLUTING_KEYS.has(key) ||
+      isRejectedRarityKey(key) ||
       seen.has(key)
     ) {
       return { ok: false };

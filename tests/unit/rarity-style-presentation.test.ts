@@ -239,7 +239,17 @@ describe("getRarityStylePresentation", () => {
       );
     });
 
-    it.each(["constructor", "toString", "valueOf", "hasOwnProperty"])(
+    it("constructor 名のレアリティに設定された色は、own プロパティとして描画に使われる", () => {
+      // 画面側は "constructor" をカスタムレアリティ名として許可する。JSON.parse で作られた
+      // own プロパティは継承プロパティより優先されるため、その色が正しく適用される。
+      const styles = JSON.parse('{"constructor": {"color": "#ff0000"}}') as RarityStyles;
+      const presentation = getRarityStylePresentation("constructor", styles);
+
+      expect(presentation.colorClass).toBe(RARITY_STYLE_VAR_CLASSES.color);
+      expect(presentation.styleVars).toEqual({ [RARITY_STYLE_CSS_VARS.color]: "#ff0000" });
+    });
+
+    it.each(["toString", "valueOf", "hasOwnProperty"])(
       "Object.prototype 由来の名前 %s でも継承プロパティを返さない",
       (rarity) => {
         // 通常のルックアップだと RARITY_COLORS["constructor"] は Object 関数を返し、

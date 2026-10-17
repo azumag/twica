@@ -189,16 +189,36 @@ describe("rarity-styles validation", () => {
       expect(validateRarityStylesInput({ mythic: [] })).toEqual({ ok: false });
     });
 
-    it("rejects prototype-polluting keys (プロトタイプ setter で黙って消えない)", () => {
+    it("rejects only __proto__ (プロトタイプ setter で黙って消えるキー)", () => {
       // JSON.parse で作った own プロパティ "__proto__" も明示的に拒否する。
       expect(
         validateRarityStylesInput(JSON.parse('{"__proto__":{"color":"#ff0000"}}')),
       ).toEqual({ ok: false });
-      expect(validateRarityStylesInput({ constructor: { color: "#ff0000" } })).toEqual({
-        ok: false,
+      // グローバル汚染が無いことも固定する。
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    });
+
+    it("accepts constructor / prototype as rarity names (画面側が許可している既存名)", () => {
+      // validateCustomRaritiesInput はこの2つをカスタムレアリティ名として許可する。
+      // 代入は通常の own プロパティを作るだけで、JSON にもそのまま載る。
+      // ここで拒否すると「名前は登録できるのに色を設定すると編集全体が 400 になる」。
+      expect(
+        validateRarityStylesInput({ constructor: { color: "#ff0000" } }),
+      ).toEqual({ ok: true, value: { constructor: { color: "#ff0000" } } });
+      expect(validateRarityStylesInput({ prototype: { color: "#00ff00" } })).toEqual({
+        ok: true,
+        value: { prototype: { color: "#00ff00" } },
       });
-      expect(validateRarityStylesInput({ prototype: { color: "#ff0000" } })).toEqual({
-        ok: false,
+
+      const result = validateRarityStylesInput({
+        constructor: { color: "#ff0000" },
+        prototype: { color: "#00ff00" },
+      });
+      expect(result.ok).toBe(true);
+      // JSON ラウンドトリップでも own プロパティとして残る。
+      expect(JSON.parse(JSON.stringify(result))).toEqual({
+        ok: true,
+        value: { constructor: { color: "#ff0000" }, prototype: { color: "#00ff00" } },
       });
     });
 
