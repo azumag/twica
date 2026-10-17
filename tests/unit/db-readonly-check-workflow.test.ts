@@ -30,9 +30,13 @@ describe('db-readonly-check workflow contract (Issue #1665)', () => {
     expect(workflow).not.toContain("github.ref == 'refs/heads/preview' && 'preview' || 'production'")
   })
 
-  it('preview 以外の ref を二重で拒否する', () => {
-    expect(workflow).toContain("if: github.ref == 'refs/heads/preview'")
-    expect(workflow).toContain('if [ "$GITHUB_REF" != "refs/heads/preview" ]; then')
+  it('main / preview 以外の ref を二重で拒否する（feature branch へ secret を渡さない）', () => {
+    // main を許容するのは、既定ブランチ着地だけで workflow_dispatch を成立させるため。
+    // Environment は preview 固定なので、どちらの許可 ref から実行しても preview の DB しか読まない。
+    expect(workflow).toContain("if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'")
+    expect(workflow).toContain(
+      'if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/preview" ]; then',
+    )
   })
 
   it('セッション全体を読み取り専用にする（書き込みは DB 側で失敗する）', () => {
