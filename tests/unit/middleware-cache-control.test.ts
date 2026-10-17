@@ -72,6 +72,13 @@ describe('middleware fail-closed Cache-Control (issue #906)', () => {
     expect(response.headers.get('Cache-Control')).toBeNull()
   })
 
+  it('キャッシュ許可パス（rarity-styles）にも no-store を付与しない', async () => {
+    // Issue #1783 フェーズ2: オーバーレイが読む公開JSON。ルート側の s-maxage=1 を
+    // middleware が private, no-store で潰さないことを固定する。
+    const response = await middleware(makeRequest('/api/streamer/123e4567-e89b-42d3-a456-426614174000/rarity-styles'))
+    expect(response.headers.get('Cache-Control')).toBeNull()
+  })
+
   it('キャッシュ許可パス（/api/overlay/ 配下の realtime-config）にも no-store を付与しない', async () => {
     const response = await middleware(makeRequest('/api/overlay/123e4567-e89b-42d3-a456-426614174000/realtime-config'))
     expect(response.headers.get('Cache-Control')).toBeNull()

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 import { duplicateTierBadgeClass, duplicateTierFrameClass } from "@/lib/duplicate-display-tiers";
+import type { RarityStyleVars } from "@/lib/rarity";
 
 /**
  * Props for the CollectionCard component
@@ -28,6 +29,9 @@ interface CollectionCardProps {
   rarityInfo: {
     label: string;
     color: string;
+    // カスタムレアリティ色を当てるインライン CSS 変数（Issue #1783）。
+    // 未設定（undefined）なら従来どおりクラスの色だけが使われる。
+    styleVars?: RarityStyleVars;
   };
   // Stable collection number for encyclopedia-style display
   // 図鑑表示用の固定カード番号
@@ -125,6 +129,7 @@ export default function CollectionCard({
           </div>
           <span
             className={`rounded-full px-2 py-0.5 text-white shrink-0 ml-2 text-xs ${rarityInfo.color}`}
+            style={rarityInfo.styleVars}
           >
             {rarityInfo.label}
           </span>

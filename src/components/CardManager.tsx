@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
-import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
+import { formatRarityLabel, getRarityDisplayInfo, getRarityStylePresentation } from "@/lib/rarity";
 // Issue #1783: カスタムレアリティの表示スタイル（型のみ）。
 import type { RarityStyle } from "@/lib/rarity-styles";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
@@ -1770,7 +1770,12 @@ export default function CardManager({
     }
   };
 
-  const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
+  // #1783: 配信者が設定したカスタムレアリティ色をカード一覧へ反映する。
+  // 未設定・レアリティ未登録なら getRarityStylePresentation が従来のプリセットを返す。
+  const getRarityInfo = (rarity: Rarity) => {
+    const style = getRarityStylePresentation(rarity, rarityStyles);
+    return { ...style, label: getRarityDisplayInfo(rarity).label };
+  };
 
   // storage-status API の message はロケール依存の日本語文言が直に来るため、
   // 機械判別用フラグから t() で解決した文言を表示に使う（#835: 英語ロケールでも
@@ -2709,7 +2714,8 @@ export default function CardManager({
                           <h3 className="font-semibold text-white truncate">{card.name}</h3>
                           {completionRewardIds.includes(card.id) && <button type="button" className="text-xs text-purple-300 underline" onClick={() => setShowCardPackModal(true)}>{tReward('rewardBadge')} · {tReward('settingsRemove')}</button>}
                           <span
-                            className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
+                            className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.colorClass}`}
+                            style={rarityInfo.styleVars}
                           >
                             {getRarityLabel(card.rarity)}
                           </span>

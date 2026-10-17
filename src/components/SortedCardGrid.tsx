@@ -6,7 +6,8 @@ import ExpandableDescription from "./ExpandableDescription";
 import CardAlbumView from "./CardAlbumView";
 import type { AlbumTranslations } from "./CardAlbumView";
 import type { Rarity, Card } from "@/types/database";
-import { getRarityDisplayInfo } from "@/lib/rarity";
+import { getRarityDisplayInfo, getRarityStylePresentation } from "@/lib/rarity";
+import type { RarityStyles } from "@/lib/rarity-styles";
 import { sortCollectedCards, type CollectionSortMode } from "@/lib/collection-utils";
 import {
   ALBUM_ALL_PACKS_KEY,
@@ -17,10 +18,16 @@ import {
 } from "@/lib/collection-album";
 
 /**
- * Get rarity information (label and color) for a given rarity value.
+ * レアリティの表示情報（ラベル + クラス + CSS変数）を返す。
  * カスタムレアリティも正しく表示するため共通ヘルパに集約。
+ *
+ * styles に配信者の rarity_styles を渡すと、カスタムレアリティの色を
+ * CSS 変数経由で適用する（Issue #1783）。未設定なら従来のプリセットのまま。
  */
-const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
+const getRarityInfo = (rarity: Rarity, styles?: RarityStyles | null) => ({
+  label: getRarityDisplayInfo(rarity).label,
+  ...getRarityStylePresentation(rarity, styles),
+});
 
 interface CardWithDetails extends Card {
   count: number;
@@ -74,6 +81,9 @@ interface SortedCardGridProps {
   // 現在のスコープキー（パック絞り込みの選択。未選択は __all__）。
   // スコープが変わると、そのスコープの既定の並び・表示へ切り替わる。
   albumScopeKey?: string;
+  // 配信者がカスタムレアリティごとに設定した表示スタイル（Issue #1783）。
+  // 未指定なら従来のプリセット色のまま（後方互換）。
+  rarityStyles?: RarityStyles | null;
 }
 
 /**
@@ -96,6 +106,7 @@ export default function SortedCardGrid({
   albumGridSizes,
   albumDefaultView,
   albumScopeKey,
+  rarityStyles,
 }: SortedCardGridProps) {
   const [sortMode, setSortMode] = useState<CollectionSortMode>("number");
   // #1765: 表示モード切替（カード / アルバム）。既定は配信者設定
@@ -179,7 +190,7 @@ export default function SortedCardGrid({
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {sortedCards.map((card, index) => {
             const isOwned = card.isOwned ?? true;
-            const rarityInfo = getRarityInfo(card.rarity);
+            const rarityInfo = getRarityInfo(card.rarity, rarityStyles);
             // First 4 cards get priority for LCP optimization
             // 最初の4枚のカードはLCP最適化のためpriority設定
             const isPriority = index < 4;
@@ -212,7 +223,8 @@ export default function SortedCardGrid({
                 imagePaddingColor={card.image_padding_color}
                 rarityInfo={{
                   label: rarityInfo.label,
-                  color: rarityInfo.color,
+                  color: rarityInfo.colorClass,
+                  styleVars: rarityInfo.styleVars,
                 }}
                 collectionNumberLabel={
                   card.collectionNumber

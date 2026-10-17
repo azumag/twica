@@ -161,7 +161,9 @@ export default async function StreamerCollection({
         </div>
 
         {/* Stats */}
-        <Stats stats={stats} />
+        {/* #1783: 配信者がカスタムレアリティごとに設定した表示スタイル。列が未デプロイの
+            環境では undefined になり、各所で従来色へフォールバックする。 */}
+        <Stats stats={stats} rarityStyles={streamer.rarity_styles} />
 
         {packs.length > 0 ? (
           // Issue #557: 名前付きパックがある場合はパック絞り込みUI。
@@ -175,6 +177,7 @@ export default async function StreamerCollection({
             overallCompletionHistory={completionHistory}
             packs={packs}
             gridTranslations={gridTranslations}
+            rarityStyles={streamer.rarity_styles}
             albumGridSizes={albumGridSizes}
             albumDefaultView={albumDefaultView}
           />
@@ -202,6 +205,7 @@ export default async function StreamerCollection({
                 translations={gridTranslations}
                 albumGridSizes={albumGridSizes}
                 albumDefaultView={albumDefaultView}
+                rarityStyles={streamer.rarity_styles}
               />
             )}
           </>
