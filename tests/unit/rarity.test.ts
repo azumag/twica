@@ -115,39 +115,19 @@ describe("rarity helpers", () => {
     });
   });
 
-  // Issue #1783: 配信者が設定した表示スタイルは、既定マップより優先される。
-  // 未設定（空マップ / 該当キー無し / プロパティ無し）は現行の既定表示を維持する。
+  // Issue #1783 フェーズ2: 保存済みスタイルを描画する経路は
+  // getRarityStylePresentation に一本化した。クラス専用のこれら3ヘルパは
+  // プリセット専用で、styles 引数を持たない（HEX が className に混入する
+  // footgun を残さないため）。
   describe("custom rarity style overrides (Issue #1783)", () => {
-    it("prefers the configured color / gradient / glow over the defaults", () => {
-      const styles = {
-        mythic: {
-          color: "#ff0000",
-          gradient: "from-red-500 to-blue-600",
-          glow: "shadow-purple-500/50",
-        },
-      };
-
-      expect(getRarityColorClass("mythic", styles)).toBe("#ff0000");
-      expect(getRarityGradientClass("mythic", styles)).toBe("from-red-500 to-blue-600");
-      expect(getRarityGlowClass("mythic", styles)).toBe("shadow-purple-500/50");
-    });
-
-    it("keeps the defaults when nothing is configured for the rarity", () => {
-      expect(getRarityColorClass("mythic", {})).toBe("bg-gray-500");
-      expect(getRarityColorClass("mythic", { other: { color: "#ff0000" } })).toBe("bg-gray-500");
-      expect(getRarityGradientClass("mythic", { mythic: {} })).toBe("from-gray-400 to-gray-600");
-      expect(getRarityGlowClass("mythic", { mythic: {} })).toBe("shadow-gray-500/50");
-      // styles 未指定（列未デプロイのデプロイ窓を含む）でも従来どおり動く。
+    it("returns the built-in presets and the shared fallback", () => {
       expect(getRarityColorClass("legendary")).toBe("bg-yellow-500");
-    });
-
-    it("does not override built-in rarities unless a style is configured for them", () => {
-      expect(getRarityColorClass("legendary", { mythic: { color: "#ff0000" } })).toBe(
-        "bg-yellow-500",
-      );
-      expect(getRarityColorClass("legendary", { legendary: { color: "#ff0000" } })).toBe(
-        "#ff0000",
-      );
+      expect(getRarityGradientClass("legendary")).toBe("from-yellow-400 to-orange-500");
+      expect(getRarityGlowClass("legendary")).toBe("shadow-yellow-500/50");
+      // カスタムレアリティは色定義が無いため共有フォールバックへ倒す。
+      expect(getRarityColorClass("mythic")).toBe("bg-gray-500");
+      expect(getRarityGradientClass("mythic")).toBe("from-gray-400 to-gray-600");
+      expect(getRarityGlowClass("mythic")).toBe("shadow-gray-500/50");
     });
   });
 });

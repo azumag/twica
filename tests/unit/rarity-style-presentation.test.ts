@@ -93,20 +93,23 @@ describe("getRarityStylePresentation", () => {
     });
   });
 
-  describe("プリセット Tailwind クラス形式", () => {
-    it("color / gradient / glow のクラスをそのまま採用し、CSS 変数は使わない", () => {
-      const styles: RarityStyles = {
+  describe("受理されない形式（クラス形式）の縮退", () => {
+    it("Tailwind クラス形式の値は採用せずプリセット色へ戻す", () => {
+      // 値の許可形式は HEX のみ（rarity-styles.ts）。クラス形式が DB に残っていても
+      // （フェーズ1期のデータ・手編集）、描画は既定色へ倒す。Tailwind はソース走査で
+      // しかクラスを生成しないため、DB由来のクラスは CSS に存在し得ない。
+      const styles = {
         mythic: {
           color: "bg-red-500",
           gradient: "from-red-500 to-blue-500",
           glow: "shadow-red-500/50",
         },
-      };
+      } as unknown as RarityStyles;
 
       expect(getRarityStylePresentation("mythic", styles)).toEqual({
-        colorClass: "bg-red-500",
-        gradientClass: "from-red-500 to-blue-500",
-        glowClass: "shadow-red-500/50",
+        colorClass: DEFAULT_RARITY_COLOR_CLASS,
+        gradientClass: DEFAULT_RARITY_GRADIENT_CLASS,
+        glowClass: DEFAULT_RARITY_GLOW_CLASS,
         styleVars: {},
       });
     });

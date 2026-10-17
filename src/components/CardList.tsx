@@ -3,7 +3,8 @@
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
-import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
+import { formatRarityLabel, getRarityDisplayInfo, getRarityStylePresentation } from "@/lib/rarity";
+import type { RarityStyles } from "@/lib/rarity-styles";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { getIssuanceInfo } from "@/lib/card-issuance";
 import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
@@ -45,13 +46,24 @@ interface CardListProps {
   // サムネイル画像クリック時のコールバック（拡大表示モーダルを開く）
   // 呼び出し元でフォーカス復元できるよう、元ボタンも引数で渡す
   onImageClick?: (card: Card, trigger: HTMLButtonElement) => void;
+  // 配信者がカスタムレアリティごとに設定した表示スタイル（Issue #1783）。
+  // ダッシュボードのカード一覧は既定がこのリスト表示のため、ここへ渡さないと
+  // サムネイル表示に切り替えたときだけ色が変わる非対称になる。
+  // 未指定なら従来のプリセット色のまま（後方互換）。
+  rarityStyles?: RarityStyles | null;
 }
 
 /**
- * Get rarity information (label and color) for a given rarity value
- * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
+ * レアリティの表示情報（ラベル + クラス + CSS変数）を返す。
+ * カスタムレアリティも正しく表示するため共通ヘルパに集約。
+ *
+ * styles に配信者の rarity_styles を渡すと、カスタムレアリティの色を
+ * CSS 変数経由で適用する（Issue #1783）。未設定なら従来のプリセットのまま。
  */
-const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
+const getRarityInfo = (rarity: Rarity, styles?: RarityStyles | null) => ({
+  label: getRarityDisplayInfo(rarity).label,
+  ...getRarityStylePresentation(rarity, styles),
+});
 
 /**
  * List view component for displaying cards in a tabular format
@@ -66,6 +78,7 @@ export default function CardList({
   onToggleActive,
   showActions = true,
   onImageClick,
+  rarityStyles,
 }: CardListProps) {
   const t = useTranslations("cardManager");
   const tCommon = useTranslations("common");
@@ -130,7 +143,7 @@ export default function CardList({
         </thead>
         <tbody className="divide-y divide-gray-700">
           {cards.map((card, index) => {
-            const rarityInfo = getRarityInfo(card.rarity);
+            const rarityInfo = getRarityInfo(card.rarity, rarityStyles);
             const isPaused = !card.is_active;
             // First 4 rows get priority for LCP optimization
             // 最初の4行はLCP最適化のためpriority設定
@@ -219,7 +232,8 @@ export default function CardList({
                 {/* レアリティバッジ */}
                 <td className="px-4 py-3">
                   <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.color}`}
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${rarityInfo.colorClass}`}
+                    style={rarityInfo.styleVars}
                   >
                     {formatRarityLabel(card.rarity, tRarity)}
                   </span>

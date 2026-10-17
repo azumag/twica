@@ -14,6 +14,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgMissingNamedColumnError } from "@/lib/db/errors";
+import { isCanonicalUuid } from "@/lib/uuid-validation";
 import { streamers as streamersTable } from "@/lib/db/schema";
 
 interface RouteParams {
@@ -68,9 +69,10 @@ async function getRarityStylesPg(streamerId: string): Promise<RarityStylesLookup
     return { kind: "ok", streamer: rows[0] ?? null };
   } catch (error) {
     if (isPgMissingNamedColumnError(error, ["rarity_styles"])) {
-      // 列が無い＝全レアリティが既定表示。行の有無は判定できないが、
-      // デプロイ窓中は空マップを返して通常描画を維持する（fail-open ではなく
-      // 「設定がまだ無い」と同じ状態に倒す）。
+      // 列が無い＝全レアリティが既定表示。行の有無までは判定できないため、
+      // デプロイ窓中は「配信者が存在するが設定がまだ無い」と同じ 200 + 空マップへ
+      // 倒す（未登録IDでも 404 にならない点だけ sound-settings と挙動が異なる。
+      // オーバーレイの描画を止めないことを優先し、窓が閉じれば到達しない分岐）。
       logger.info("Streamer Rarity Styles API: rarity_styles column not deployed yet", {
         streamerId,
       });
@@ -109,8 +111,20 @@ export async function GET(
       );
     }
 
-    const lookup = await getRarityStylesPg(streamerId);
+    // Issue #908 と同じ理由: 不正な UUID 文字列を PostgreSQL の uuid 列へ渡すと
+    // SQLSTATE 22P02 になり、公開エンドポイントでは誰でも投げられる。
+    // 有効だが未登録のIDと同じ 404 契約へ先に落とし、DBアクセス・ログを発生させない。
+    if (!isCanonicalUuid(streamerId)) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.STREAMER_NOT_FOUND },
+        {
+          status: 404,
+          headers: { "Cache-Control": PRIVATE_NO_STORE_CACHE_CONTROL },
+        }
+      );
+    }
 
+    const lookup = await getRarityStylesPg(streamerId);
     if (lookup.kind === "degraded") {
       return NextResponse.json(
         { rarityStyles: {} },
@@ -138,9 +152,17 @@ export async function GET(
         ? (value as RarityStyles)
         : {};
 
+    // sound-settings と同じ Cache-Tag を付ける。現時点で settings POST 側からの
+    // purge は未結線（s-maxage=1 で自然失効する）だが、将来 tag purge を入れる際に
+    // エンドポイントごとのスコープを揃えておく。
     return NextResponse.json(
       { rarityStyles },
-      { headers: { "Cache-Control": RARITY_STYLES_CACHE_CONTROL } }
+      {
+        headers: {
+          "Cache-Control": RARITY_STYLES_CACHE_CONTROL,
+          "Cache-Tag": `rarity-styles-${streamerId}`,
+        },
+      }
     );
   } catch (error) {
     const response = await handleApiError(error, "Streamer Rarity Styles API");

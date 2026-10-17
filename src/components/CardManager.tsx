@@ -2663,6 +2663,7 @@ export default function CardManager({
                   zoomTriggerRef.current = trigger;
                   setZoomedImage({ url: card.image_url, name: card.name });
                 }}
+                rarityStyles={rarityStyles}
               />
             ) : (
               /* Thumbnail grid view */

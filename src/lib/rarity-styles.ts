@@ -1,17 +1,25 @@
 // Issue #1783: カスタムレアリティの表示スタイル（文字色/バッジ色/グラデーション/
 // グロー/エフェクト）を配信者ごとに永続化するための型と検証ヘルパ。
 //
-// 色はインジェクション対策のため HEX (#RGB / #RRGGBB) またはプリセットの
-// Tailwind クラスのみを許可する。任意 CSS/HTML は通さない。
+// 色はインジェクション対策のため HEX (#RGB / #RRGGBB) のみを許可する。
+// 任意 CSS/HTML は通さない。
+//
+// なぜプリセットの Tailwind クラス（bg-red-500 等）を受理しないか (Issue #1783
+// フェーズ2のレビュー指摘): Tailwind v4 はソース走査(JIT)でしかクラスを生成しない
+// ため、DBに入ったクラス名は生成CSSに存在せず「受理したのに無色」になる。実測では
+// 許可集合（18色×11シェードの bg/from/to/shadow）のうち badge 45/198、
+// from 9/198、shadow 5/594 しか生成されていなかった。全組み合わせを safelist すると
+// 生成CSSが +303KB 増えるため、受理する形式を「必ず描画できる HEX」に限定する
+// （HEX は rarity.ts の getRarityStylePresentation が CSS 変数経由で描画する）。
 
 import { MAX_RARITY_KEY_LENGTH, MAX_CUSTOM_RARITIES, RARITIES } from "@/lib/constants";
 
 export interface RarityStyle {
-  /** バッジ/文字色。HEX (#RGB/#RRGGBB) または Tailwind プリセットクラス。 */
+  /** バッジ/文字色。HEX (#RGB/#RRGGBB)。 */
   color?: string;
-  /** グラデーション。Tailwind の `from-X to-Y` 形式または HEX ペア。 */
+  /** グラデーション。HEX ペア（`#RRGGBB,#RRGGBB`）。 */
   gradient?: string;
-  /** グロー。Tailwind の `shadow-X` 形式または HEX。 */
+  /** グロー。HEX (#RGB/#RRGGBB)。 */
   glow?: string;
   /** エフェクトテンプレート名。 */
   effect?: string;
@@ -21,29 +29,6 @@ export type RarityStyles = Record<string, RarityStyle>;
 
 // 許可する HEX 色形式。
 const HEX_COLOR_REGEX = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-
-// 許可するプリセット Tailwind クラス（色名 + シェード）。
-// 既存の RARITY_COLORS / RARITY_GRADIENT_COLORS / RARITY_GLOW の値を基準に、
-// 一般的な Tailwind 色名・シェードを許可する。
-const TAILWIND_COLOR_NAMES = [
-  "gray", "red", "orange", "amber", "yellow", "lime", "green", "emerald",
-  "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia",
-  "pink", "rose",
-];
-const TAILWIND_SHADES = ["50", "100", "200", "300", "400", "500", "600", "700", "800", "900", "950"];
-
-// プリセットのバッジ色クラス: bg-{color}-{shade}
-const PRESET_BADGE_COLOR_REGEX = new RegExp(
-  `^bg-(${TAILWIND_COLOR_NAMES.join("|")})-(${TAILWIND_SHADES.join("|")})$`
-);
-// プリセットのグラデーションクラス: from-{color}-{shade} to-{color}-{shade}
-const PRESET_GRADIENT_REGEX = new RegExp(
-  `^from-(${TAILWIND_COLOR_NAMES.join("|")})-(${TAILWIND_SHADES.join("|")}) to-(${TAILWIND_COLOR_NAMES.join("|")})-(${TAILWIND_SHADES.join("|")})$`
-);
-// プリセットのグロークラス: shadow-{color}-{shade}/50 (or /25, /75)
-const PRESET_GLOW_REGEX = new RegExp(
-  `^shadow-(${TAILWIND_COLOR_NAMES.join("|")})-(${TAILWIND_SHADES.join("|")})(\\/(25|50|75))?$`
-);
 
 const MAX_EFFECT_NAME_LENGTH = 40;
 
@@ -55,23 +40,17 @@ const MAX_EFFECT_NAME_LENGTH = 40;
 const DEFAULT_RARITY_VALUES = new Set<string>(RARITIES.map((rarity) => rarity.value));
 
 export function isAllowedColorValue(value: string): boolean {
-  if (HEX_COLOR_REGEX.test(value)) return true;
-  if (PRESET_BADGE_COLOR_REGEX.test(value)) return true;
-  return false;
+  return HEX_COLOR_REGEX.test(value);
 }
 
 export function isAllowedGradientValue(value: string): boolean {
-  if (PRESET_GRADIENT_REGEX.test(value)) return true;
-  // HEX ペア: "#RRGGBB,#RRGGBB" 形式
+  // HEX ペア: "#RRGGBB,#RRGGBB" 形式のみ（from/to の両方が必要）。
   const parts = value.split(",");
-  if (parts.length === 2 && parts.every((p) => HEX_COLOR_REGEX.test(p.trim()))) return true;
-  return false;
+  return parts.length === 2 && parts.every((p) => HEX_COLOR_REGEX.test(p.trim()));
 }
 
 export function isAllowedGlowValue(value: string): boolean {
-  if (PRESET_GLOW_REGEX.test(value)) return true;
-  if (HEX_COLOR_REGEX.test(value)) return true;
-  return false;
+  return HEX_COLOR_REGEX.test(value);
 }
 
 export function isAllowedEffectValue(value: string): boolean {

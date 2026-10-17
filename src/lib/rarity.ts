@@ -73,17 +73,14 @@ export function getRarityDisplayInfo(
 }
 
 /**
- * レアリティのバッジ色クラス（または保存された色値）を返す。
+ * ビルトインのプリセットのバッジ色クラスを返す（カスタムレアリティは共有フォールバック）。
  *
- * 注意（Issue #1783）: ここは `styles` の値をそのまま返す。値はフェーズ1の
- * rarity-styles.ts が「プリセット Tailwind クラス」と「HEX」の両形式を許可して
- * いるため、HEX を返すことがある。HEX を className に埋め込んでも色は付かないので、
- * カスタム色を実際に描画する経路では必ず getRarityStylePresentation（HEX を
- * CSS 変数 + var() 参照クラスへ変換する）を使うこと。
+ * Issue #1783 で `styles` 引数は廃止した。カスタム色は HEX で保存され、HEX は
+ * className として使えない（CSS 変数 + var() 参照クラスが必要）ため、ここで
+ * styles を受けると「HEX が className に混入する」footgun になる。カスタム色を
+ * 描画する経路は必ず getRarityStylePresentation を使うこと。
  */
-export function getRarityColorClass(rarity: string, styles?: RarityStyles): string {
-  const custom = styles?.[rarity]?.color;
-  if (custom) return custom;
+export function getRarityColorClass(rarity: string): string {
   return readRarityPreset(RARITY_COLORS, rarity, DEFAULT_RARITY_COLOR_CLASS);
 }
 
@@ -108,11 +105,8 @@ export function aggregateCustomRarities(
     .sort((a, b) => a.rarity.localeCompare(b.rarity));
 }
 
-export function getRarityGradientClass(rarity: string, styles?: RarityStyles): string {
-  const custom = styles?.[rarity]?.gradient;
-  // getRarityColorClass と同じ注意: HEX ペア（"#h,#h"）を返しうるため、実際に
-  // 描画する経路では getRarityStylePresentation を使うこと。
-  if (custom) return custom;
+/** ビルトインのプリセットのグラデーションクラスを返す（理由は getRarityColorClass 参照）。 */
+export function getRarityGradientClass(rarity: string): string {
   return readRarityPreset(RARITY_GRADIENT_COLORS, rarity, DEFAULT_RARITY_GRADIENT_CLASS);
 }
 
@@ -146,10 +140,8 @@ export function compareByRarity(a: { rarity: string }, b: { rarity: string }): n
   return getRarityRank(a.rarity) - getRarityRank(b.rarity);
 }
 
-export function getRarityGlowClass(rarity: string, styles?: RarityStyles): string {
-  const custom = styles?.[rarity]?.glow;
-  // 同上: HEX を返しうるため、描画経路では getRarityStylePresentation を使うこと。
-  if (custom) return custom;
+/** ビルトインのプリセットのグロークラスを返す（理由は getRarityColorClass 参照）。 */
+export function getRarityGlowClass(rarity: string): string {
   return readRarityPreset(RARITY_GLOW, rarity, DEFAULT_RARITY_GLOW_CLASS);
 }
 
@@ -246,6 +238,14 @@ function sanitizeRarityStyle(style: unknown): RarityStyle {
  *   CSS 変数 + var() 参照クラスに変換して当てる。
  * - グラデーションの HEX ペアは from/to が両方揃ったときだけ採用する。片方だけ
  *   だと中間色が壊れるため、不正値ではなく未設定扱いにしてプリセットへ戻す。
+ *
+ * 既知の制約（クラス形式）: クラス形式の値は DB 由来なので Tailwind のソース走査に
+ * 載らず、そのクラスがアプリ内のどこかで literal として使われていない限り CSS は
+ * 生成されない（＝色が付かない）。許可されている全組み合わせ
+ * （18色 × 11シェード × bg/from/to/shadow）を safelist すると生成CSSが
+ * 実測 +303KB 増えるため、ここでは採用していない。フェーズ1の編集UIは
+ * `<input type="color">` 経由で HEX しか出力しないため、実際に保存される値は
+ * この制約の影響を受けない（HEX は常に正しく描画される）。
  */
 export function getRarityStylePresentation(
   rarity: string,
