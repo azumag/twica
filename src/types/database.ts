@@ -68,6 +68,11 @@ export interface Database {
           // 配信者が定義したカスタムレアリティ名の一覧（rarity_weights とは独立）
           // List of streamer-defined custom rarity names (decoupled from rarity_weights)
           custom_rarities: string[]
+          // カスタムレアリティ名をキーにした表示スタイル（色/グラデーション/グロー/
+          // エフェクト）。実体と検証規則は src/lib/rarity-styles.ts が正本（Issue #1783）。
+          // Per-custom-rarity display styles keyed by rarity name. The shape and the
+          // validation rules live in src/lib/rarity-styles.ts (Issue #1783).
+          rarity_styles: Record<string, import('@/lib/rarity-styles').RarityStyle>
           // 配信者が事前登録したカードパック名の一覧（Issue #393再設計）
           // Pre-defined card pack names the streamer manages (Issue #393 redesign)
           card_pack_names: string[]
@@ -133,6 +138,7 @@ export interface Database {
           rarity_weights_scope?: 'global' | 'per_pack'
           pack_rarity_weights?: Record<string, Record<string, number>> | null
           custom_rarities?: string[]
+          rarity_styles?: Record<string, import('@/lib/rarity-styles').RarityStyle>
           card_pack_names?: string[]
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
@@ -169,6 +175,7 @@ export interface Database {
           rarity_weights_scope?: 'global' | 'per_pack'
           pack_rarity_weights?: Record<string, Record<string, number>> | null
           custom_rarities?: string[]
+          rarity_styles?: Record<string, import('@/lib/rarity-styles').RarityStyle>
           card_pack_names?: string[]
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean

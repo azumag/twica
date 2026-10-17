@@ -1,20 +1,24 @@
 import Image from "next/image";
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
-import type { Streamer, Card } from "@/types/database";
-import { getRarityDisplayInfo } from "@/lib/rarity";
+import type { Streamer, Card, Rarity } from "@/types/database";
+import { getRarityDisplayInfo, getRarityStylePresentation } from "@/lib/rarity";
+import type { RarityStyles } from "@/lib/rarity-styles";
 import {
   duplicateTierBadgeClass,
   resolveDuplicateTier,
   sanitizeDuplicateDisplayTiers,
 } from "@/lib/duplicate-display-tiers";
-import type { Rarity } from "@/types/database";
 
 /**
- * Get rarity information (label and color) for a given rarity value.
+ * レアリティの表示情報（ラベル + クラス + CSS変数）を返す。
  * カスタムレアリティも正しく表示するため共通ヘルパに集約。
+ *
+ * styles に配信者の rarity_styles を渡すと、カスタムレアリティの色を
+ * CSS 変数経由で適用する（Issue #1783）。未設定なら従来のプリセットのまま。
  */
-const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
+const getRarityInfo = (rarity: Rarity, styles?: RarityStyles | null) =>
+  getRarityStylePresentation(rarity, styles);
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -40,7 +44,10 @@ export default async function CardDetail({ card, streamer }: CardDetailProps) {
   const tCollection = await getTranslations("collection");
   const tCardManager = await getTranslations("cardManager");
 
-  const rarityInfo = getRarityInfo(card.rarity);
+  // #1783: 配信者の rarity_styles を当てる。列が未デプロイの環境では undefined に
+  // なり、従来のプリセット色へフォールバックする。
+  const rarityInfo = getRarityInfo(card.rarity, streamer.rarity_styles);
+  const rarityLabel = getRarityDisplayInfo(card.rarity).label;
 
   // Issue #1782: 配信者がレアリティ別に設定した「被り枚数 → 表示段階」のしきい値を、
   // このカードの所有枚数から解決する。デプロイ窓で列が未作成の間は undefined に
@@ -102,9 +109,10 @@ export default async function CardDetail({ card, streamer }: CardDetailProps) {
                 </span>
               )}
               <span
-                className={`rounded-full px-3 py-1 text-white text-sm shrink-0 ${rarityInfo.color}`}
+                className={`rounded-full px-3 py-1 text-white text-sm shrink-0 ${rarityInfo.colorClass}`}
+                style={rarityInfo.styleVars}
               >
-                {rarityInfo.label}
+                {rarityLabel}
               </span>
               {/* Issue #1782: 被りカードの表示段階バッジ。コレクション一覧と同じ
                   段階判定（同一ライブラリ）を使うため、一覧と詳細で食い違わない。 */}

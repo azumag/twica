@@ -9,22 +9,27 @@ import {
 } from "@/lib/rarity-styles";
 
 // Issue #1783: カスタムレアリティの表示スタイル検証。
-// 色はインジェクション対策として HEX またはプリセットの Tailwind クラスのみを許可し、
-// 任意 CSS/HTML（url()・式・プロパティ注入）を通さないことを固定する。
+// 色はインジェクション対策として HEX のみを許可し、任意 CSS/HTML（url()・式・
+// プロパティ注入）を通さないことを固定する。
+//
+// フェーズ1ではプリセットの Tailwind クラス（bg-red-500 等）も許可していたが、
+// Tailwind v4 はソース走査でしかクラスを生成しないため、DBに入ったクラス名は
+// 生成CSSに存在せず「受理したのに無色」になる。許可集合の全組み合わせを
+// safelist すると生成CSSが +303KB 増えるため、受理形式を HEX に限定した
+// （描画は rarity.ts の getRarityStylePresentation が CSS 変数経由で行う）。
 describe("rarity-styles validation", () => {
   describe("isAllowedColorValue", () => {
-    it("accepts HEX (#RGB / #RRGGBB) and preset badge classes", () => {
+    it("accepts HEX (#RGB / #RRGGBB)", () => {
       expect(isAllowedColorValue("#fff")).toBe(true);
       expect(isAllowedColorValue("#FF00aa")).toBe(true);
-      expect(isAllowedColorValue("bg-red-500")).toBe(true);
-      expect(isAllowedColorValue("bg-gray-950")).toBe(true);
     });
 
-    it("rejects arbitrary CSS, unknown shades, and non-color text", () => {
+    it("rejects Tailwind classes, arbitrary CSS and non-color text", () => {
+      // クラス形式は描画できない（Tailwind のソース走査に載らない）ため受理しない。
+      expect(isAllowedColorValue("bg-red-500")).toBe(false);
+      expect(isAllowedColorValue("bg-gray-950")).toBe(false);
       expect(isAllowedColorValue("#12345")).toBe(false);
       expect(isAllowedColorValue("#gggggg")).toBe(false);
-      expect(isAllowedColorValue("bg-red-1000")).toBe(false);
-      expect(isAllowedColorValue("bg-red-500/50")).toBe(false);
       expect(isAllowedColorValue("red")).toBe(false);
       expect(isAllowedColorValue("url(https://example.com/x.png)")).toBe(false);
       expect(isAllowedColorValue("bg-red-500;background:url(x)")).toBe(false);
@@ -32,29 +37,29 @@ describe("rarity-styles validation", () => {
   });
 
   describe("isAllowedGradientValue", () => {
-    it("accepts preset gradient classes and HEX pairs", () => {
-      expect(isAllowedGradientValue("from-red-500 to-blue-600")).toBe(true);
+    it("accepts HEX pairs", () => {
       expect(isAllowedGradientValue("#ff0000,#00ff00")).toBe(true);
       expect(isAllowedGradientValue("#ff0000, #00ff00")).toBe(true);
+      expect(isAllowedGradientValue("#f00,#0f0")).toBe(true);
     });
 
-    it("rejects partial gradients and non-pair HEX lists", () => {
+    it("rejects gradient classes, partial gradients and non-pair HEX lists", () => {
+      expect(isAllowedGradientValue("from-red-500 to-blue-600")).toBe(false);
       expect(isAllowedGradientValue("from-red-500")).toBe(false);
       expect(isAllowedGradientValue("#ff0000")).toBe(false);
       expect(isAllowedGradientValue("#ff0000,#00ff00,#0000ff")).toBe(false);
-      expect(isAllowedGradientValue("from-red-500 to-blue-600 to-lime-500")).toBe(false);
+      expect(isAllowedGradientValue("red,blue")).toBe(false);
     });
   });
 
   describe("isAllowedGlowValue", () => {
-    it("accepts preset shadow classes with optional opacity and HEX", () => {
-      expect(isAllowedGlowValue("shadow-red-500/50")).toBe(true);
-      expect(isAllowedGlowValue("shadow-red-500")).toBe(true);
+    it("accepts HEX", () => {
       expect(isAllowedGlowValue("#ff0000")).toBe(true);
+      expect(isAllowedGlowValue("#f00")).toBe(true);
     });
 
-    it("rejects unsupported opacity steps and free-form shadows", () => {
-      expect(isAllowedGlowValue("shadow-red-500/33")).toBe(false);
+    it("rejects shadow classes and free-form shadows", () => {
+      expect(isAllowedGlowValue("shadow-red-500/50")).toBe(false);
       expect(isAllowedGlowValue("0 0 10px red")).toBe(false);
     });
   });
@@ -72,15 +77,15 @@ describe("rarity-styles validation", () => {
   describe("validateRarityStylesInput", () => {
     it("normalizes keys and keeps only the allowed properties", () => {
       const result = validateRarityStylesInput({
-        " 超激レア ": { color: "#ff0000", gradient: "from-red-500 to-blue-600" },
-        mythic: { glow: "shadow-purple-500/50" },
+        " 超激レア ": { color: "#ff0000", gradient: "#ff0000,#00ff00" },
+        mythic: { glow: "#a855f7" },
       });
 
       expect(result).toEqual({
         ok: true,
         value: {
-          超激レア: { color: "#ff0000", gradient: "from-red-500 to-blue-600" },
-          mythic: { glow: "shadow-purple-500/50" },
+          超激レア: { color: "#ff0000", gradient: "#ff0000,#00ff00" },
+          mythic: { glow: "#a855f7" },
         },
       });
     });
@@ -108,8 +113,18 @@ describe("rarity-styles validation", () => {
     it("rejects empty styles, unknown properties and invalid values", () => {
       expect(validateRarityStylesInput({ mythic: {} })).toEqual({ ok: false });
       expect(validateRarityStylesInput({ mythic: { color: "red" } })).toEqual({ ok: false });
+      // クラス形式は描画できないため 400 で拒否する（受理したのに無色、を作らない）。
+      expect(validateRarityStylesInput({ mythic: { color: "bg-red-500" } })).toEqual({
+        ok: false,
+      });
       expect(validateRarityStylesInput({ mythic: { gradient: "red" } })).toEqual({ ok: false });
+      expect(validateRarityStylesInput({ mythic: { gradient: "from-red-500 to-blue-600" } })).toEqual({
+        ok: false,
+      });
       expect(validateRarityStylesInput({ mythic: { glow: "red" } })).toEqual({ ok: false });
+      expect(validateRarityStylesInput({ mythic: { glow: "shadow-red-500/50" } })).toEqual({
+        ok: false,
+      });
       expect(validateRarityStylesInput({ mythic: { effect: "a\u202Eb" } })).toEqual({ ok: false });
       // 未知プロパティだけのスタイルは「有効なプロパティ 0 件」として拒否する。
       expect(validateRarityStylesInput({ mythic: { fontSize: "900px" } })).toEqual({ ok: false });

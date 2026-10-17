@@ -5,13 +5,40 @@ import {
   RARITY_GRADIENT_COLORS,
   RARITY_ORDER,
 } from "./constants";
-import type { RarityStyles } from "./rarity-styles";
+import {
+  isAllowedColorValue,
+  isAllowedGlowValue,
+  isAllowedGradientValue,
+  type RarityStyle,
+  type RarityStyles,
+} from "./rarity-styles";
+// React 18 の型では CSSProperties にカスタムプロパティ用のインデックス署名が無い
+// ため（実行時はサポートされる）、styleVars は CSSProperties として扱う。
+// 型のみの import なのでサーバーコンポーネントから読んでも副作用はない。
+import type { CSSProperties } from "react";
 
 export type DefaultRarity = (typeof RARITIES)[number]["value"];
 
 export const DEFAULT_RARITY_COLOR_CLASS = "bg-gray-500";
 export const DEFAULT_RARITY_GRADIENT_CLASS = "from-gray-400 to-gray-600";
 export const DEFAULT_RARITY_GLOW_CLASS = "shadow-gray-500/50";
+
+/**
+ * ビルトインのプリセット表から1件読み出す。
+ *
+ * `RARITY_COLORS[rarity]` のような通常のルックアップは、レアリティ名が
+ * "constructor" / "toString" / "valueOf" 等のとき Object.prototype の継承プロパティ
+ * （関数）を返してしまう。カスタムレアリティ名は任意の文字列を許容する
+ * （validateCustomRaritiesInput が見るのは長さ・制御文字/Bidi・既定名との衝突だけ）
+ * ため、必ず所有プロパティに限定して参照し、無ければフォールバックする。
+ */
+function readRarityPreset(
+  map: Record<string, string>,
+  rarity: string,
+  fallback: string,
+): string {
+  return Object.prototype.hasOwnProperty.call(map, rarity) ? map[rarity] : fallback;
+}
 
 export function isDefaultRarity(rarity: string): rarity is DefaultRarity {
   return RARITIES.some((item) => item.value === rarity);
@@ -45,10 +72,16 @@ export function getRarityDisplayInfo(
   return { value: rarity, label: rarity, color: getRarityColorClass(rarity) };
 }
 
-export function getRarityColorClass(rarity: string, styles?: RarityStyles): string {
-  const custom = styles?.[rarity]?.color;
-  if (custom) return custom;
-  return RARITY_COLORS[rarity] ?? DEFAULT_RARITY_COLOR_CLASS;
+/**
+ * ビルトインのプリセットのバッジ色クラスを返す（カスタムレアリティは共有フォールバック）。
+ *
+ * Issue #1783 で `styles` 引数は廃止した。カスタム色は HEX で保存され、HEX は
+ * className として使えない（CSS 変数 + var() 参照クラスが必要）ため、ここで
+ * styles を受けると「HEX が className に混入する」footgun になる。カスタム色を
+ * 描画する経路は必ず getRarityStylePresentation を使うこと。
+ */
+export function getRarityColorClass(rarity: string): string {
+  return readRarityPreset(RARITY_COLORS, rarity, DEFAULT_RARITY_COLOR_CLASS);
 }
 
 /**
@@ -72,10 +105,9 @@ export function aggregateCustomRarities(
     .sort((a, b) => a.rarity.localeCompare(b.rarity));
 }
 
-export function getRarityGradientClass(rarity: string, styles?: RarityStyles): string {
-  const custom = styles?.[rarity]?.gradient;
-  if (custom) return custom;
-  return RARITY_GRADIENT_COLORS[rarity] ?? DEFAULT_RARITY_GRADIENT_CLASS;
+/** ビルトインのプリセットのグラデーションクラスを返す（理由は getRarityColorClass 参照）。 */
+export function getRarityGradientClass(rarity: string): string {
+  return readRarityPreset(RARITY_GRADIENT_COLORS, rarity, DEFAULT_RARITY_GRADIENT_CLASS);
 }
 
 /**
@@ -108,8 +140,155 @@ export function compareByRarity(a: { rarity: string }, b: { rarity: string }): n
   return getRarityRank(a.rarity) - getRarityRank(b.rarity);
 }
 
-export function getRarityGlowClass(rarity: string, styles?: RarityStyles): string {
-  const custom = styles?.[rarity]?.glow;
-  if (custom) return custom;
-  return RARITY_GLOW[rarity] ?? DEFAULT_RARITY_GLOW_CLASS;
+/** ビルトインのプリセットのグロークラスを返す（理由は getRarityColorClass 参照）。 */
+export function getRarityGlowClass(rarity: string): string {
+  return readRarityPreset(RARITY_GLOW, rarity, DEFAULT_RARITY_GLOW_CLASS);
+}
+
+/* -------------------------------------------------------------------------- */
+/* カスタムレアリティの表示スタイル                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 保存済みの色をインラインスタイルで当てるための CSS カスタムプロパティ名。
+ *
+ * なぜ CSS 変数経由にするか: Tailwind v4 はソース走査(JIT)でクラスを抽出するため、
+ * `bg-[#rrggbb]` のように実行時に組み立てたクラス文字列は CSS に生成されない。
+ * 一方 `bg-[color:var(--rarity-color)]` はソース上のリテラルとして走査対象になり、
+ * 値そのものはインラインスタイルで差し込める。これにより「DB に入っている HEX を
+ * そのまま描画する」ことをクラス生成に依存せず実現できる（Issue #1783）。
+ */
+export const RARITY_STYLE_CSS_VARS = {
+  color: "--rarity-color",
+  gradientFrom: "--rarity-gradient-from",
+  gradientTo: "--rarity-gradient-to",
+  glow: "--rarity-glow",
+} as const;
+
+/**
+ * var() を参照する Tailwind クラス。**必ずリテラルとして書くこと。**
+ *
+ * 落とし穴（実測で確認済み）: Tailwind の走査はソーステキストの literal しか見ない。
+ * `` `bg-[color:var(${RARITY_STYLE_CSS_VARS.color})]` `` のように変数展開で
+ * 組み立てると、ソース上には `${...}` を含む断片しか無いため **CSS が生成されず、
+ * 色が一切付かない**（ビルドは成功するので気付きにくい）。したがって
+ * RARITY_STYLE_CSS_VARS の値と重複するが、ここは展開せず literal で持つ。
+ * 同期は tests/unit/rarity-style-presentation.test.ts が両者の一致を検証する。
+ */
+export const RARITY_STYLE_VAR_CLASSES = {
+  color: "bg-[color:var(--rarity-color)]",
+  gradient:
+    "from-[color:var(--rarity-gradient-from)] to-[color:var(--rarity-gradient-to)]",
+  glow: "shadow-[color:var(--rarity-glow)]",
+} as const;
+
+/** style 属性へ展開する CSS カスタムプロパティの集合（未設定キーは含めない）。 */
+export type RarityStyleVars = CSSProperties;
+
+/**
+ * レアリティ1件分の表示スタイル（クラス + インライン変数）。
+ *
+ * 「クラスだけ差し替えて変数を当て忘れる」「変数だけ当ててクラスが既定のまま」を
+ * 構造的に防ぐため、必ず1組で返す。未設定レアリティでは従来のプリセットと
+ * 完全に同じ出力になる（後方互換）。
+ */
+export interface RarityStylePresentation {
+  /** バッジ等の背景色クラス。 */
+  colorClass: string;
+  /** グラデーションの from-/to- クラス。 */
+  gradientClass: string;
+  /** グロー（影色）クラス。 */
+  glowClass: string;
+  /** 対応するインライン CSS カスタムプロパティ（未設定時は空オブジェクト）。 */
+  styleVars: RarityStyleVars;
+}
+
+/**
+ * DB から読んだ1エントリを描画安全な形へ絞り込む。
+ *
+ * 保存時（POST /api/streamer/settings）にも rarity-styles.ts で同じ規則を検証して
+ * いるが、JSONB は手編集・過去データ・部分破損を起こし得るため、描画側でも
+ * 「不正値を弾く」のではなく「不正値を捨てる」。値は inline style の CSS カスタム
+ * プロパティ / className として出力されるので、許可形式以外は一切通さない。
+ * effect はこの描画層では未使用（オーバーレイのエフェクトは別 issue で扱う）ため
+ * 読み出さない。
+ */
+function sanitizeRarityStyle(style: unknown): RarityStyle {
+  if (!style || typeof style !== "object" || Array.isArray(style)) return {};
+  const source = style as Record<string, unknown>;
+  const safe: RarityStyle = {};
+  if (typeof source.color === "string" && isAllowedColorValue(source.color)) {
+    safe.color = source.color;
+  }
+  if (typeof source.gradient === "string" && isAllowedGradientValue(source.gradient)) {
+    safe.gradient = source.gradient;
+  }
+  if (typeof source.glow === "string" && isAllowedGlowValue(source.glow)) {
+    safe.glow = source.glow;
+  }
+  return safe;
+}
+
+/**
+ * レアリティ名→表示スタイルマップから、そのレアリティの描画スタイルを解決する。
+ *
+ * - カスタムスタイルが無いレアリティは従来（プリセット）と完全に同じ出力。
+ * - 受理される色の値は HEX のみ（保存側 rarity-styles.ts と同一規則）。HEX は
+ *   CSS 変数 + var() 参照クラスへ変換して当てる。値が許可形式でなければ
+ *   sanitizeRarityStyle が捨て、プリセットの色になる。
+ * - グラデーションの HEX ペアは from/to が両方揃ったときだけ採用する。片方だけ
+ *   だと中間色が壊れるため、不正値ではなく未設定扱いにしてプリセットへ戻す。
+ *
+ * 描画側の前提: gradientClass / glowClass は呼び出し側の要素に
+ * `bg-gradient-to-*` / `shadow-*`（幅）が付いていることが前提（オーバーレイの
+ * カード枠が該当）。単独では from-/to- はストップ変数を、shadow-[color:…] は
+ * 影色を設定するだけで、それ自体は何も描かない。
+ *
+ * 対象外: `effect` はこの描画層では読まない（エフェクトはエフェクトテンプレート
+ * 拡充の別 issue が定義するスタイル集合を再利用して扱う）。したがって
+ * 「受理される値は必ず描画できる」は *色* についての主張である。
+ */
+export function getRarityStylePresentation(
+  rarity: string,
+  styles?: RarityStyles | null,
+): RarityStylePresentation {
+  // 通常のオブジェクトルックアップだと "__proto__" が Object.prototype を返すため、
+  // 所有プロパティであることを明示してから読む。
+  const custom =
+    styles && typeof styles === "object" && !Array.isArray(styles)
+      && Object.prototype.hasOwnProperty.call(styles, rarity)
+      ? sanitizeRarityStyle(styles[rarity])
+      : {};
+
+  const vars: Record<string, string> = {};
+  let colorClass = readRarityPreset(RARITY_COLORS, rarity, DEFAULT_RARITY_COLOR_CLASS);
+  let gradientClass = readRarityPreset(
+    RARITY_GRADIENT_COLORS,
+    rarity,
+    DEFAULT_RARITY_GRADIENT_CLASS,
+  );
+  let glowClass = readRarityPreset(RARITY_GLOW, rarity, DEFAULT_RARITY_GLOW_CLASS);
+
+  // sanitizeRarityStyle が通す色は HEX だけなので、ここでの分岐は「HEX か否か」
+  // ではなく「カスタム値があるか」だけを見ればよい。
+  if (custom.color) {
+    vars[RARITY_STYLE_CSS_VARS.color] = custom.color;
+    colorClass = RARITY_STYLE_VAR_CLASSES.color;
+  }
+
+  if (custom.gradient) {
+    const [from, to] = custom.gradient.split(",").map((part) => part.trim());
+    if (from && to) {
+      vars[RARITY_STYLE_CSS_VARS.gradientFrom] = from;
+      vars[RARITY_STYLE_CSS_VARS.gradientTo] = to;
+      gradientClass = RARITY_STYLE_VAR_CLASSES.gradient;
+    }
+  }
+
+  if (custom.glow) {
+    vars[RARITY_STYLE_CSS_VARS.glow] = custom.glow;
+    glowClass = RARITY_STYLE_VAR_CLASSES.glow;
+  }
+
+  return { colorClass, gradientClass, glowClass, styleVars: vars as RarityStyleVars };
 }

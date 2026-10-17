@@ -44,6 +44,9 @@ interface CollectionPackFilterProps {
   overallCompletionHistory: { total_cards: number; completed_at: string }[];
   packs: CollectionPackDisplay[];
   gridTranslations: GridTranslations;
+  // パックの有無やタブ切替によって、配信者が設定したカスタムレアリティ色が
+  // 失われないよう SortedCardGrid へそのまま転送する（Issue #1783）。
+  rarityStyles?: ComponentProps<typeof SortedCardGrid>["rarityStyles"];
   // #1765 フォローアップ: 配信者がパックごとに指定したアルバムの並びと初期表示。
   albumGridSizes?: AlbumGridSizeMap;
   albumDefaultView?: AlbumDefaultView;
@@ -69,6 +72,7 @@ export default function CollectionPackFilter({
   overallCompletionHistory,
   packs,
   gridTranslations,
+  rarityStyles,
   albumGridSizes,
   albumDefaultView,
 }: CollectionPackFilterProps) {
@@ -162,6 +166,7 @@ export default function CollectionPackFilter({
           streamerId={streamerId}
           hideUnownedDetails={hideUnownedDetails}
           translations={gridTranslations}
+          rarityStyles={rarityStyles}
           // 「すべて」タブは __all__、パック選択時はそのパックの既定を使う。
           albumScopeKey={selectedPack?.key ?? ALBUM_ALL_PACKS_KEY}
           albumGridSizes={albumGridSizes}
