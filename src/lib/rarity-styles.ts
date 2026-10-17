@@ -4,7 +4,7 @@
 // 色はインジェクション対策のため HEX (#RGB / #RRGGBB) またはプリセットの
 // Tailwind クラスのみを許可する。任意 CSS/HTML は通さない。
 
-import { MAX_RARITY_KEY_LENGTH, MAX_CUSTOM_RARITIES } from "@/lib/constants";
+import { MAX_RARITY_KEY_LENGTH, MAX_CUSTOM_RARITIES, RARITIES } from "@/lib/constants";
 
 export interface RarityStyle {
   /** バッジ/文字色。HEX (#RGB/#RRGGBB) または Tailwind プリセットクラス。 */
@@ -46,6 +46,13 @@ const PRESET_GLOW_REGEX = new RegExp(
 );
 
 const MAX_EFFECT_NAME_LENGTH = 40;
+
+/**
+ * 既定レアリティ名（common / rare / ...）。#1783 のスタイル対象はカスタム
+ * レアリティのみで、既定レアリティはビルトインの表示を維持する。
+ * validateCustomRaritiesInput がカスタム名と既定名の衝突を禁じているのと同じ境界。
+ */
+const DEFAULT_RARITY_VALUES = new Set<string>(RARITIES.map((rarity) => rarity.value));
 
 export function isAllowedColorValue(value: string): boolean {
   if (HEX_COLOR_REGEX.test(value)) return true;
@@ -90,10 +97,12 @@ export type RarityStylesValidationResult = RarityStylesValidation | RarityStyles
  * rarity_styles 入力を検証する。
  *
  * - オブジェクトであること（配列は拒否）。
- * - キーはレアリティ名（1〜MAX_RARITY_KEY_LENGTH、制御文字/Bidi 禁止）。
+ * - キーはレアリティ名（1〜MAX_RARITY_KEY_LENGTH、制御文字/Bidi 禁止、既定レアリティ名は拒否）。
  * - 値は RarityStyle オブジェクト。未指定のプロパティは省略可。
  * - 各プロパティは許可形式のみ。
  * - キー数の上限は MAX_CUSTOM_RARITIES。
+ * - allowedKeys を渡した場合、キーはその集合に含まれるものだけを許可する
+ *   （＝「登録済みのカスタムレアリティ」への制限。渡さない場合は形式のみを検証する）。
  */
 export function validateRarityStylesInput(
   value: unknown,
@@ -118,6 +127,7 @@ export function validateRarityStylesInput(
       key.length > MAX_RARITY_KEY_LENGTH ||
       /[\u0000-\u001F\u007F-\u009F]/.test(key) ||
       /[\u202A-\u202E\u2066-\u2069]/.test(key) ||
+      DEFAULT_RARITY_VALUES.has(key) ||
       seen.has(key)
     ) {
       return { ok: false };

@@ -258,6 +258,8 @@
       "add": "Add",
       "empty": "No custom rarities yet",
       "deleteNote": "Removing a custom rarity does not change existing cards (it is only removed from the card-creation suggestions).",
+      "clearColor": "Reset to default",
+      "colorLabel": "Text color for {rarity}",
       "save": "Save",
       "saving": "Saving...",
       "saved": "Saved",

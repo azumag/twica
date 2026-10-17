@@ -1002,9 +1002,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Issue #1783: rarity_styles はカスタムレアリティごとの表示スタイル。
-    // キーは customRarities に含まれるレアリティ名に限定する（未登録のレアリティへの
-    // スタイル指定は 400）。customRarities が同一リクエストで送られていればその新一覧、
-    // 送られていなければ DB 上の現在値を許可キー集合とする。
+    // キーはカスタムレアリティ名のみ（既定レアリティ名は validateRarityStylesInput が
+    // 常に拒否する）。customRarities が同一リクエストで送られていればその新一覧を
+    // 許可キー集合として使い、送られていない場合はキーの形式のみを検証する
+    // （DB 読み取りを1往復増やしてまで登録済みかどうかは照合しない。UI は常に
+    // customRarities と同時送信するため、実経路では前者の厳しい検証が効く）。
     let normalizedRarityStyles: Record<string, import("@/lib/rarity-styles").RarityStyle> | undefined;
     if (rarityStyles !== undefined) {
       const allowedKeys =

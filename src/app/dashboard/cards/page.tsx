@@ -73,6 +73,9 @@ export default async function CardsPage() {
       initialNonWantableCardIds={[...nonWantableCardIds]}
       initialRarityWeights={streamerData.streamer.rarity_weights}
       initialCustomRarities={streamerData.streamer.custom_rarities ?? []}
+      // Issue #1783: カスタムレアリティの表示スタイル。列未デプロイのデプロイ窓では
+      // undefined になり得るため `?? {}`（= 全レアリティ既定表示）へ倒す。
+      initialRarityStyles={streamerData.streamer.rarity_styles ?? {}}
       initialCardPackNames={streamerData.streamer.card_pack_names ?? []}
       // Issue #554: 移行期データや縮退fixtureではundefinedになり得るため、
       // `?? null`で汎用ラベル表示へ安全にフォールバックする。

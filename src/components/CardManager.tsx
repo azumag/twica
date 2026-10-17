@@ -7,6 +7,8 @@ import type { Card, Rarity } from "@/types/database";
 import { RARITIES, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
+// Issue #1783: カスタムレアリティの表示スタイル（型のみ）。
+import type { RarityStyle } from "@/lib/rarity-styles";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
@@ -92,6 +94,12 @@ interface CardManagerProps {
   // 配信者が定義したカスタムレアリティ名（rarity_weights とは独立）
   // Streamer-defined custom rarity names (decoupled from rarity_weights)
   initialCustomRarities?: string[];
+  // Issue #1783: カスタムレアリティごとの表示スタイル（色/グラデーション/グロー/
+  // エフェクト）。キーはレアリティ名。undefined/null（列未デプロイのデプロイ窓を
+  // 含む）は空マップ = 全レアリティ既定表示として扱う。
+  // Issue #1783: per-custom-rarity display styles. undefined/null (including the
+  // deploy window where the column does not exist yet) means "no overrides".
+  initialRarityStyles?: Record<string, RarityStyle> | null;
   // 配信者が事前登録したカードパック名（Issue #393再設計）。カード作成/編集
   // フォームの collectionName は自由入力ではなく、このリストからのみ選択する。
   // Pre-defined card pack names (Issue #393 redesign). The collectionName
@@ -176,6 +184,7 @@ export default function CardManager({
   maxUploadSize,
   initialRarityWeights = null,
   initialCustomRarities = [],
+  initialRarityStyles = null,
   initialCardPackNames = [],
   initialDefaultPackName = null,
   initialRarityWeightsScope = "global",
@@ -211,6 +220,11 @@ export default function CardManager({
   });
   // カスタムレアリティ名（ドロップ率設定とは独立。専用モーダルで管理）
   const [customRarities, setCustomRarities] = useState<string[]>(initialCustomRarities);
+  // Issue #1783: カスタムレアリティの表示スタイル（専用モーダルで管理）。
+  // null/undefined（列未デプロイのデプロイ窓を含む）は空マップ = 既定表示。
+  const [rarityStyles, setRarityStyles] = useState<Record<string, RarityStyle>>(
+    initialRarityStyles ?? {}
+  );
   // 事前登録カードパック名（Issue #393再設計。専用モーダルで管理）
   const [cardPackNames, setCardPackNames] = useState<string[]>(initialCardPackNames);
   // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554。専用モーダルで管理）
@@ -3092,7 +3106,9 @@ export default function CardManager({
         onClose={() => setShowCustomRarityModal(false)}
         streamerId={streamerId}
         customRarities={customRarities}
+        rarityStyles={rarityStyles}
         onSaved={setCustomRarities}
+        onSavedStyles={setRarityStyles}
       />
 
       {/* Card Pack Modal (Issue #393再設計) */}
