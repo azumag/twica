@@ -1431,7 +1431,34 @@ describe('POST /api/admin/eventsub-replay', () => {
       } finally {
         process.off('unhandledRejection', onUnhandled)
       }
-    })  })
+    })
+
+    // 切り出し前は claim ループの try/catch の内側にあり、メンテナンス失敗でも
+    // 同じ tick の後続処理（回収sweep・旧claim・KVに退避された EventSub
+    // notification の replay）は継続していた。切り出し後もその契約を維持する。
+    it('maintenanceのDBエラーでrelay tick全体を500にせず、KV退避のdrainを継続する', async () => {
+      mocks.maintainChatNotificationOutbox.mockRejectedValue(
+        new Error('maintenance db unavailable'),
+      )
+      mocks.dispatchDueChatNotifications.mockResolvedValue({
+        reserved: 0, enqueued: 0, skippedDisabled: true,
+      })
+      mocks.claimDueChatNotifications.mockResolvedValue([])
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:survives', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+
+      expect(response.status).toBe(200)
+      // DB非依存の KV drain は同じ tick で走り続ける。
+      expect(mocks.listParkedEventSubNotifications).toHaveBeenCalled()
+    })
+  })
 
   describe('CHANNEL_POINTS_REDEMPTION_ADD の処理', () => {
     it('成功時はpostRedemptionNotifyを呼び、KVエントリを削除する', async () => {
