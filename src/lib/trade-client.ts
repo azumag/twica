@@ -24,6 +24,21 @@ export type TradeErrorMessageKey =
   | "errorTradeOfferUnavailable"
   | "errorTradeSameCard"
   | "errorTradeCardAlreadyListed"
+  | "errorTradeAuctionUnavailable"
+  | "errorTradeAuctionNotFound"
+  | "errorTradeAuctionNotOpen"
+  | "errorTradeAuctionStillBidding"
+  | "errorTradeAuctionExpired"
+  | "errorTradeAuctionHasBids"
+  | "errorTradeAuctionSelfBid"
+  | "errorTradeAuctionBidNotFound"
+  | "errorTradeAuctionBidNotActive"
+  | "errorTradeAuctionBidLocked"
+  | "errorTradeAuctionBidLimit"
+  | "errorTradeAuctionBidInvalid"
+  | "errorTradeBidCardUnavailable"
+  | "errorTradeBidCardNotWantable"
+  | "errorTradeNotEnoughCards"
   | "errorUnauthorized"
   | "errorRateLimited"
   | "errorGeneric"
@@ -59,6 +74,22 @@ export const TRADE_ERROR_MESSAGE_KEYS: Record<TradeApiErrorCode, TradeErrorMessa
   TRADE_WANTED_CARD_NOT_WANTABLE: "errorTradeWantedCardNotWantable",
   TRADE_OFFERED_CARD_INACTIVE: "errorTradeOfferedCardInactive",
   TRADE_OFFER_UNAVAILABLE: "errorTradeOfferUnavailable",
+  // Auctions (#1791). Copy exists now; the auction UI itself is PR-2.
+  TRADE_AUCTION_UNAVAILABLE: "errorTradeAuctionUnavailable",
+  TRADE_AUCTION_NOT_FOUND: "errorTradeAuctionNotFound",
+  TRADE_AUCTION_NOT_OPEN: "errorTradeAuctionNotOpen",
+  TRADE_AUCTION_STILL_BIDDING: "errorTradeAuctionStillBidding",
+  TRADE_AUCTION_EXPIRED: "errorTradeAuctionExpired",
+  TRADE_AUCTION_HAS_BIDS: "errorTradeAuctionHasBids",
+  TRADE_AUCTION_SELF_BID: "errorTradeAuctionSelfBid",
+  TRADE_AUCTION_BID_NOT_FOUND: "errorTradeAuctionBidNotFound",
+  TRADE_AUCTION_BID_NOT_ACTIVE: "errorTradeAuctionBidNotActive",
+  TRADE_AUCTION_BID_LOCKED: "errorTradeAuctionBidLocked",
+  TRADE_AUCTION_BID_LIMIT: "errorTradeAuctionBidLimit",
+  TRADE_AUCTION_BID_INVALID: "errorTradeAuctionBidInvalid",
+  TRADE_BID_CARD_UNAVAILABLE: "errorTradeBidCardUnavailable",
+  TRADE_BID_CARD_NOT_WANTABLE: "errorTradeBidCardNotWantable",
+  TRADE_NOT_ENOUGH_CARDS: "errorTradeNotEnoughCards",
 };
 
 function isKnownTradeErrorCode(code: unknown): code is TradeApiErrorCode {
