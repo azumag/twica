@@ -5,12 +5,16 @@ import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
 import { getTradeBoardStreamer, listWantableCards } from "@/lib/trade";
 import {
+  parseTradeBoardTab,
   parseTradeScope,
+  tradeAuctionBoardPath,
+  tradeAuctionCreatePath,
   tradeBoardPath,
   tradeCreatePath,
   tradeLoginHref,
   tradeViewerKey,
 } from "@/lib/trade-client";
+import TradeAuctionBoard from "@/components/TradeAuctionBoard";
 import TradeBoard from "@/components/TradeBoard";
 
 const CREATE_CLASS =
@@ -27,6 +31,10 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
  * limit. Every value handed to the client is already visibility-filtered:
  * filter options come from listWantableCards (SQL visibility rule), so names
  * of cards the viewer may not see never reach the browser.
+ *
+ * `?tab=auction` (#1791) swaps the offer list for <TradeAuctionBoard>
+ * (GET /api/trades/auctions, also fetched by the browser for the same
+ * rate-limit reason). No card filter is read for that tab.
  */
 export default async function TradeBoardPage({
   params,
@@ -37,6 +45,10 @@ export default async function TradeBoardPage({
 }) {
   const [{ streamerId }, query] = await Promise.all([params, searchParams]);
   const scope = parseTradeScope(query.scope);
+  // ?tab=auction (#1791): the auction list, with the same in-channel /
+  // cross-channel split (sub-tabs) as the offer lists.
+  const tab = parseTradeBoardTab(query.tab);
+  const isAuctionTab = tab === "auction";
   // getSession only verifies the cookie (no DB), so it is awaited first to
   // give the filter query its viewer.
   const session = await getSession();
@@ -47,8 +59,9 @@ export default async function TradeBoardPage({
   // SQL, and the result is discarded (never rendered) when the board or the
   // tab is disabled. The rejection is captured so an unused failed read can
   // neither become an unhandled rejection nor fail a disabled board.
+  // The auction tab has no card filter, so the catalogue is not read there.
   const filterCardsTask =
-    scope === "in_channel"
+    scope === "in_channel" && !isAuctionTab
       ? listWantableCards(session?.twitchUserId ?? null, streamerId).then(
           (cards) => ({ ok: true as const, cards }),
           (error: unknown) => ({ ok: false as const, error }),
@@ -64,8 +77,14 @@ export default async function TradeBoardPage({
   // Namespace of the browser-side page cache (see useTradeList): rows contain
   // viewer-specific fields, so another account must never reuse them.
   const viewerKey = await tradeViewerKey(session?.twitchUserId ?? null);
-  const boardPath = tradeBoardPath(streamer.id, scope);
-  const createPath = tradeCreatePath(streamer.id, scope);
+  const boardPath = isAuctionTab
+    ? tradeAuctionBoardPath(streamer.id, scope)
+    : tradeBoardPath(streamer.id, scope);
+  // An auction is always listed in this channel (it has no counterpart
+  // channel), so the auction CTA ignores the scope.
+  const createPath = isAuctionTab
+    ? tradeAuctionCreatePath(streamer.id)
+    : tradeCreatePath(streamer.id, scope);
   // Anonymous viewers are sent to login and come back to the listing flow.
   const createHref = isLoggedIn ? createPath : tradeLoginHref(createPath);
   const scopeEnabled = streamer.tradeEnabled && (scope === "in_channel" || streamer.crossChannelTradeEnabled);
@@ -85,6 +104,12 @@ export default async function TradeBoardPage({
   const tabClass = (active: boolean) =>
     `shrink-0 rounded-lg px-4 py-2 text-sm ${
       active ? "bg-purple-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+    }`;
+  const subTabClass = (active: boolean) =>
+    `shrink-0 rounded-full border px-3 py-1 text-sm ${
+      active
+        ? "border-purple-400 bg-purple-900/40 text-white"
+        : "border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700"
     }`;
 
   return (
@@ -116,22 +141,55 @@ export default async function TradeBoardPage({
         <p className="rounded-xl bg-gray-800 p-6 text-center text-gray-300">{t("tradeDisabledNotice")}</p>
       ) : (
         <>
+          {/* Horizontal scroll inside the nav (not the page) keeps the three
+              tabs usable at 375px. The auction tab is always linked: during
+              the migration deploy window it shows a "not available yet"
+              notice (design §4.6) instead of the server probing the schema
+              on every board render. */}
           <nav aria-label={t("tabsLabel")} className="mb-4 flex gap-2 overflow-x-auto">
             <Link
               href={tradeBoardPath(streamer.id, "in_channel")}
-              aria-current={scope === "in_channel" ? "page" : undefined}
-              className={tabClass(scope === "in_channel")}
+              aria-current={!isAuctionTab && scope === "in_channel" ? "page" : undefined}
+              className={tabClass(!isAuctionTab && scope === "in_channel")}
             >
               {t("tabInChannel")}
             </Link>
             <Link
               href={tradeBoardPath(streamer.id, "cross_channel")}
-              aria-current={scope === "cross_channel" ? "page" : undefined}
-              className={tabClass(scope === "cross_channel")}
+              aria-current={!isAuctionTab && scope === "cross_channel" ? "page" : undefined}
+              className={tabClass(!isAuctionTab && scope === "cross_channel")}
             >
               {t("tabCrossChannel")}
             </Link>
+            <Link
+              href={tradeAuctionBoardPath(streamer.id, "in_channel")}
+              aria-current={isAuctionTab ? "page" : undefined}
+              className={tabClass(isAuctionTab)}
+            >
+              {t("tabAuction")}
+            </Link>
           </nav>
+
+          {isAuctionTab && streamer.crossChannelTradeEnabled && (
+            // Second level of the auction tab: this channel's auctions, or
+            // other channels' auctions this channel's cards can bid on.
+            <nav aria-label={t("auctionScopeLabel")} className="mb-4 flex gap-2 overflow-x-auto">
+              <Link
+                href={tradeAuctionBoardPath(streamer.id, "in_channel")}
+                aria-current={scope === "in_channel" ? "page" : undefined}
+                className={subTabClass(scope === "in_channel")}
+              >
+                {t("auctionScopeInChannel")}
+              </Link>
+              <Link
+                href={tradeAuctionBoardPath(streamer.id, "cross_channel")}
+                aria-current={scope === "cross_channel" ? "page" : undefined}
+                className={subTabClass(scope === "cross_channel")}
+              >
+                {t("auctionScopeCrossChannel")}
+              </Link>
+            </nav>
+          )}
 
           {!scopeEnabled ? (
             <p className="rounded-xl bg-gray-800 p-6 text-center text-gray-300">{t("crossDisabledNotice")}</p>
@@ -140,7 +198,7 @@ export default async function TradeBoardPage({
               <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 {isLoggedIn ? (
                   <Link href={createHref} className={CREATE_CLASS}>
-                    {t("createOfferButton")} +
+                    {t(isAuctionTab ? "createAuctionButton" : "createOfferButton")} +
                   </Link>
                 ) : (
                   // Plain <a>: the login URL is an API route (no prefetch).
@@ -154,20 +212,33 @@ export default async function TradeBoardPage({
                   </Link>
                 )}
               </div>
-              <TradeBoard
-                // Remount per tab so page/filter state never leaks across scopes,
-                // and per viewer so state seeded for another account is dropped.
-                key={`${scope}:${viewerKey}`}
-                viewerKey={viewerKey}
-                streamerId={streamer.id}
-                scope={scope}
-                isLoggedIn={isLoggedIn}
-                revealsUnownedCards={streamer.revealsUnownedCards}
-                filterCards={filterCards}
-                loginHref={tradeLoginHref(boardPath)}
-                createHref={createHref}
-                justListed={query.listed === "1"}
-              />
+              {isAuctionTab ? (
+                <TradeAuctionBoard
+                  // Same remount rule as <TradeBoard> below.
+                  key={`auction:${scope}:${viewerKey}`}
+                  viewerKey={viewerKey}
+                  streamerId={streamer.id}
+                  scope={scope}
+                  isLoggedIn={isLoggedIn}
+                  createHref={createHref}
+                  justListed={query.listed === "1"}
+                />
+              ) : (
+                <TradeBoard
+                  // Remount per tab so page/filter state never leaks across scopes,
+                  // and per viewer so state seeded for another account is dropped.
+                  key={`${scope}:${viewerKey}`}
+                  viewerKey={viewerKey}
+                  streamerId={streamer.id}
+                  scope={scope}
+                  isLoggedIn={isLoggedIn}
+                  revealsUnownedCards={streamer.revealsUnownedCards}
+                  filterCards={filterCards}
+                  loginHref={tradeLoginHref(boardPath)}
+                  createHref={createHref}
+                  justListed={query.listed === "1"}
+                />
+              )}
             </>
           )}
         </>

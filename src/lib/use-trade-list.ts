@@ -36,11 +36,27 @@ import type { TradeOfferDto } from "@/lib/trade";
  * SWR's `error` next to `data`).
  */
 
-export type TradeListPage = { offers: TradeOfferDto[]; hasMore: boolean };
+/**
+ * One page of a trade list. `offers` holds the page's rows: trade offers by
+ * default, or auctions for the auction lists (#1791), which reuse this hook
+ * through `rowsKey` and the type parameter instead of a second copy of the
+ * cache. The field keeps its original name so the existing offer lists and
+ * their tests stay unchanged.
+ */
+export type TradeListPage<T = TradeOfferDto> = { offers: T[]; hasMore: boolean };
 
-export type TradeListView =
+export type TradeListView<T = TradeOfferDto> =
   | { status: "loading" }
-  | { status: "error" }
+  | {
+      status: "error";
+      /**
+       * The server answered 503 TRADE_AUCTION_UNAVAILABLE: the auction schema
+       * is not migrated yet (design §4.6 deploy window). The auction UI shows
+       * a "not available yet" notice instead of a load error; the offer
+       * endpoints never return this code.
+       */
+      unavailable?: boolean;
+    }
   | ({
       status: "ok";
       /**
@@ -48,7 +64,7 @@ export type TradeListView =
        * background refresh failed, so it may be out of date.
        */
       refreshFailed: boolean;
-    } & TradeListPage);
+    } & TradeListPage<T>);
 
 /**
  * How long a fetched page is reused without asking the server. Short on
@@ -60,7 +76,10 @@ export const TRADE_LIST_FRESH_MS = 30_000;
 /** Upper bound of the shared (board) cache; oldest entries are evicted. */
 const SHARED_CACHE_MAX_ENTRIES = 50;
 
-type CachedPage = { page: TradeListPage; fetchedAt: number };
+// The module cache stores pages of any row type: keys are URLs, and an offer
+// URL (/api/trades...) can never equal an auction URL (/api/trades/auctions...),
+// so a key is only ever read back by the list type that fetched it.
+type CachedPage = { page: TradeListPage<unknown>; fetchedAt: number };
 
 // Keys are `${viewerKey}${SHARED_KEY_SEPARATOR}${url}`: the viewer namespace
 // comes first so one viewer's entries can be enumerated by prefix and never
@@ -104,15 +123,15 @@ export function clearTradeListCache() {
 /** fetchedAt of a page that is still shown but must be refreshed. */
 const STALE = 0;
 
-type Entry =
+type Entry<T> =
   | {
       status: "ok";
-      page: TradeListPage;
+      page: TradeListPage<T>;
       fetchedAt: number;
       /** The last background refresh of this page failed (data is kept). */
       refreshFailed?: boolean;
     }
-  | { status: "error" };
+  | { status: "error"; unavailable?: boolean };
 
 function requestedPage(url: string): number {
   const query = url.includes("?") ? url.slice(url.indexOf("?") + 1) : "";
@@ -120,17 +139,29 @@ function requestedPage(url: string): number {
   return Number.isFinite(page) ? page : 1;
 }
 
-function markAllStale(entries: Record<string, Entry>): Record<string, Entry> {
-  const next: Record<string, Entry> = {};
+function markAllStale<T>(entries: Record<string, Entry<T>>): Record<string, Entry<T>> {
+  const next: Record<string, Entry<T>> = {};
   for (const [key, entry] of Object.entries(entries)) {
     next[key] = entry.status === "ok" ? { ...entry, fetchedAt: STALE } : entry;
   }
   return next;
 }
 
-export function useTradeList(
+/** A non-2xx list response; carries the API error code when there is one. */
+class TradeListFetchError extends Error {
+  constructor(readonly code: string | undefined) {
+    super(`trade list request failed${code ? `: ${code}` : ""}`);
+  }
+}
+
+export function useTradeList<T = TradeOfferDto>(
   url: string,
   options: {
+    /**
+     * JSON field of the response that holds the rows: "offers" for
+     * /api/trades(/mine) (default), "auctions" for /api/trades/auctions(/mine).
+     */
+    rowsKey?: "offers" | "auctions";
     /** Keep pages across remounts (module cache). Used by the board. */
     shared?: boolean;
     /**
@@ -140,7 +171,7 @@ export function useTradeList(
      */
     viewerKey?: string;
     /** Server-rendered page for `initial.url`, treated as just fetched. */
-    initial?: { url: string; page: TradeListPage } | null;
+    initial?: { url: string; page: TradeListPage<T> } | null;
     /**
      * A page > 1 came back empty (its rows were accepted / cancelled
      * meanwhile): show `previousPage` instead of an empty state. Must be
@@ -149,7 +180,7 @@ export function useTradeList(
     onEmptyPage: (previousPage: number) => void;
   },
 ): {
-  view: TradeListView;
+  view: TradeListView<T>;
   /** Error banner "retry": show loading again and refetch this page. */
   retry: () => void;
   /**
@@ -162,16 +193,16 @@ export function useTradeList(
    * (optionally edited, e.g. without a row that is known to be gone) and
    * refresh it in the background.
    */
-  invalidate: (edit?: (page: TradeListPage) => TradeListPage) => void;
+  invalidate: (edit?: (page: TradeListPage<T>) => TradeListPage<T>) => void;
 } {
-  const { shared = false, viewerKey = "", initial = null, onEmptyPage } = options;
+  const { shared = false, viewerKey = "", initial = null, onEmptyPage, rowsKey = "offers" } = options;
 
   // The single source of truth for what is shown AND how fresh it is, so a
   // page can never be considered fresh without data on screen. Seeded once
   // per mount; `initial` changing later (server re-render) is ignored and the
   // page follows this hook's freshness rules instead.
-  const [entries, setEntries] = useState<Record<string, Entry>>(() => {
-    const seeded: Record<string, Entry> = {};
+  const [entries, setEntries] = useState<Record<string, Entry<T>>>(() => {
+    const seeded: Record<string, Entry<T>> = {};
     if (shared && canUseSharedCache()) {
       // Only this viewer's entries (see the file header): a key from another
       // account in the same browser must never be shown.
@@ -180,7 +211,9 @@ export function useTradeList(
         if (!key.startsWith(prefix)) continue;
         seeded[key.slice(prefix.length)] = {
           status: "ok",
-          page: value.page,
+          // Safe: a cached URL is only read back by the list type that
+          // fetched it (see CachedPage).
+          page: value.page as TradeListPage<T>,
           fetchedAt: value.fetchedAt,
         };
       }
@@ -213,11 +246,17 @@ export function useTradeList(
       signal: controller.signal,
     })
       .then(async (res) => {
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data = (await res.json()) as { offers?: TradeOfferDto[]; hasMore?: boolean };
+        if (!res.ok) {
+          // Keep the API code: the auction lists tell the deploy window
+          // (503 TRADE_AUCTION_UNAVAILABLE) apart from a real failure.
+          const body = (await res.json().catch(() => null)) as { code?: unknown } | null;
+          throw new TradeListFetchError(typeof body?.code === "string" ? body.code : undefined);
+        }
+        const data = (await res.json()) as { hasMore?: boolean } & Record<string, unknown>;
         // A superseded query must not move the page or overwrite the result.
         if (controller.signal.aborted) return;
-        const offers = Array.isArray(data.offers) ? data.offers : [];
+        const rows = data[rowsKey];
+        const offers = (Array.isArray(rows) ? rows : []) as T[];
         const page = requestedPage(url);
         if (offers.length === 0 && page > 1) {
           // Rows vanished meanwhile, so every later page shifted: nothing
@@ -233,9 +272,11 @@ export function useTradeList(
         if (shared) rememberShared(viewerKey, url, { page: result, fetchedAt: now });
         setEntries((prev) => ({ ...prev, [url]: { status: "ok", page: result, fetchedAt: now } }));
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         // An aborted request belongs to a superseded query.
         if (controller.signal.aborted) return;
+        const unavailable =
+          error instanceof TradeListFetchError && error.code === "TRADE_AUCTION_UNAVAILABLE";
         // A failed background refresh keeps the data already on screen but
         // flags it, so the UI can say the data may be stale and offer a
         // retry (the entry keeps its fetchedAt, so this does not re-trigger
@@ -245,11 +286,11 @@ export function useTradeList(
           const current = prev[url];
           return current?.status === "ok"
             ? { ...prev, [url]: { ...current, refreshFailed: true } }
-            : { ...prev, [url]: { status: "error" } };
+            : { ...prev, [url]: { status: "error", unavailable } };
         });
       });
     return () => controller.abort();
-  }, [url, entryFetchedAt, revalidation, shared, viewerKey, onEmptyPage]);
+  }, [url, entryFetchedAt, revalidation, shared, viewerKey, onEmptyPage, rowsKey]);
 
   const retry = useCallback(() => {
     sharedCache.delete(sharedKey(viewerKey, url));
@@ -272,7 +313,7 @@ export function useTradeList(
   }, [url]);
 
   const invalidate = useCallback(
-    (edit?: (page: TradeListPage) => TradeListPage) => {
+    (edit?: (page: TradeListPage<T>) => TradeListPage<T>) => {
       clearTradeListCache();
       setEntries((prev) => {
         const current = prev[url];
@@ -290,10 +331,10 @@ export function useTradeList(
     [url],
   );
 
-  const view: TradeListView = !entry
+  const view: TradeListView<T> = !entry
     ? { status: "loading" }
     : entry.status === "error"
-      ? { status: "error" }
+      ? { status: "error", unavailable: entry.unavailable === true }
       : {
           status: "ok",
           offers: entry.page.offers,

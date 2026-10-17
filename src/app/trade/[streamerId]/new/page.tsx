@@ -157,6 +157,9 @@ export default async function TradeCreatePage({
         boardHref={boardHref}
         maxWantedQuantity={TRADE_MAX_WANTED_QUANTITY}
         initialOfferedCardId={typeof query.offered === "string" ? query.offered : null}
+        // ?kind=auction comes from the board's auction tab (#1791); the
+        // first step of the form still lets the viewer switch the kind.
+        initialKind={query.kind === "auction" ? "auction" : "offer"}
       />
     </div>
   );
