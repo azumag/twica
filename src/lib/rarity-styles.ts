@@ -1,14 +1,16 @@
 // Issue #1783: カスタムレアリティの表示スタイル（文字色/バッジ色/グラデーション/
 // グロー/エフェクト）を配信者ごとに永続化するための型と検証ヘルパ。
 //
-// 永続化・描画する色は **HEX**（#RGB / #RRGGBB / #RRGGBBAA）に統一する。
-// 任意 CSS/HTML は通さない（インジェクション対策）。
+// 永続化・描画する色は **HEX** に統一する（#RGB / #RRGGBB。グローの不透明度のみ
+// 8 桁 #RRGGBBAA）。任意 CSS/HTML は通さない（インジェクション対策）。
 //
 // 互換性（レビュー指摘への対応）: フェーズ1 の API はプリセットの Tailwind クラス
 // （bg-red-500 / "from-red-500 to-blue-600" / shadow-purple-500/50 等）も受理していた。
 // Tailwind v4 はソース走査(JIT)でしかクラスを生成しないため、DBに入ったクラス名は
-// 生成CSSに存在せず「200で保存できたのに無色」になる（実測: 許可集合のうち
-// bg 57/198・from 13/198・to 13/198・shadow 5/594 しか生成されない）。全組み合わせの
+// 生成CSSに存在せず「200で保存できたのに無色」になる（実測: tailwindcss@4.1.18 で
+// このリポジトリの src を走査した生成CSSに対し、class セレクタを境界一致
+// `/^<(class)>(?![\w-])/` で数えると、許可集合のうち bg 57/198・from 13/198・
+// to 13/198・shadow 5/594（198色 × /25|/50|/75）しか生成されない）。全組み合わせの
 // safelist は生成CSSが +303KB 増えるため採用せず、**従来形式を受理したうえで
 // 安全な HEX へ正規化**する。正規化先は Tailwind の theme.css から生成した対応表
 // （src/lib/tailwind-palette.ts）なので、同名クラスの実際の描画色とズレない。
@@ -19,7 +21,7 @@ import { MAX_RARITY_KEY_LENGTH, MAX_CUSTOM_RARITIES, RARITIES } from "@/lib/cons
 import { TAILWIND_PALETTE_HEX } from "@/lib/tailwind-palette";
 
 export interface RarityStyle {
-  /** バッジ/文字色。HEX（#RGB / #RRGGBB / #RRGGBBAA）。 */
+  /** バッジ/文字色。HEX（#RGB / #RRGGBB）。 */
   color?: string;
   /** グラデーション。HEX ペア（`#RRGGBB,#RRGGBB`）。 */
   gradient?: string;
@@ -31,9 +33,12 @@ export interface RarityStyle {
 
 export type RarityStyles = Record<string, RarityStyle>;
 
-// 許可する HEX 色形式。8 桁は legacy のグロー不透明度（shadow-…/25|50|75）を
-// 正規化した結果を保持するために必要（4 桁は受け付けない）。
-const HEX_COLOR_REGEX = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+// 許可する HEX 色形式（4 桁は受け付けない）。
+// 8 桁はグロー専用: legacy の不透明度（shadow-…/25|50|75）を正規化した結果を保持する。
+// バッジ色に 8 桁を許すと、編集 UI の <input type="color"> が表現できず
+// （React が format 警告を出しブラウザは黒で表示する）ため color/gradient では受けない。
+const HEX_COLOR_REGEX = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const HEX_COLOR_WITH_ALPHA_REGEX = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 
 // --- フェーズ1（legacy）のプリセット形式。互換のため受理し、HEX へ正規化する ---
 // bg-{hue}-{shade}
@@ -65,6 +70,17 @@ const MAX_EFFECT_NAME_LENGTH = 40;
  * validateCustomRaritiesInput がカスタム名と既定名の衝突を禁じているのと同じ境界。
  */
 const DEFAULT_RARITY_VALUES = new Set<string>(RARITIES.map((rarity) => rarity.value));
+
+/**
+ * レアリティ名として受理しないキー。
+ *
+ * `normalized["__proto__"] = {...}` は代入先がプレーンオブジェクトのため
+ * Object.prototype のセッターが発火し、エントリが「受理されたのに保存されない」
+ * 状態になる（グローバル汚染は起きないが、黙って消えるのは意図しない挙動）。
+ * 実 API では allowedKeys（custom_rarities）で先に弾かれるが、関数単体の契約として
+ * 明示的に拒否する。
+ */
+const PROTOTYPE_POLLUTING_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 /**
  * バッジ色を「保存・描画できる色値」へ正規化する。受理できない場合は null。
@@ -108,7 +124,7 @@ export function normalizeGradientValue(value: string): string | null {
  *   不透明度が無い `shadow-purple-500` は HEX のまま。
  */
 export function normalizeGlowValue(value: string): string | null {
-  if (HEX_COLOR_REGEX.test(value)) return value;
+  if (HEX_COLOR_WITH_ALPHA_REGEX.test(value)) return value;
   const preset = PRESET_GLOW_PATTERN.exec(value);
   if (!preset) return null;
   const base = paletteHex(preset[1], preset[2]);
@@ -186,6 +202,7 @@ export function validateRarityStylesInput(
       /[\u0000-\u001F\u007F-\u009F]/.test(key) ||
       /[\u202A-\u202E\u2066-\u2069]/.test(key) ||
       DEFAULT_RARITY_VALUES.has(key) ||
+      PROTOTYPE_POLLUTING_KEYS.has(key) ||
       seen.has(key)
     ) {
       return { ok: false };

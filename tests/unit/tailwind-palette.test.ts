@@ -36,9 +36,14 @@ describe("TAILWIND_PALETTE_HEX", () => {
     }
   });
 
-  it("Tailwind v4 の公式 sRGB 値と一致する（oklch→HEX 変換の妥当性）", () => {
-    // Tailwind v4 の既定パレットの sRGB 表現。v3 の既知 HEX とは一部異なる
-    // （v4 は oklch 基準でより鮮やか）ため、生成物が v3 値へ退行していないことも兼ねる。
+  it("Tailwind v4 の oklch を sRGB へ換算した既知値と一致する（変換の妥当性）", () => {
+    // Tailwind v4 は palette を oklch で定義しており sRGB HEX は公開していない。
+    // ここで固定するのは「theme.css の oklch を CSS Color 4 の式で sRGB へ換算した値」で、
+    // ブラウザ実装（Chrome/CEF）の実描画と 1/255 以内で一致することをレビューで実測済み。
+    // v3 の既知 HEX とは一部異なる（v4 は oklch 基準でより鮮やか）ため、
+    // 生成物が v3 値へ退行していないことも兼ねる。
+    // 注: パレットの一部は sRGB ガマット外で、値は per-channel clip に依存する
+    // （overlay のターゲットは CEF = Chrome なので clip 結果で問題ない）。
     expect(TAILWIND_PALETTE_HEX["red-500"]).toBe("#fb2c36");
     expect(TAILWIND_PALETTE_HEX["blue-500"]).toBe("#2b7fff");
     expect(TAILWIND_PALETTE_HEX["emerald-500"]).toBe("#00bc7d");

@@ -40,11 +40,18 @@ describe("rarity-styles validation", () => {
       expect(isAllowedColorValue("bg-slate-500")).toBe(false);
       expect(isAllowedColorValue("bg-red-1000")).toBe(false);
       expect(isAllowedColorValue("#12345")).toBe(false);
+      expect(isAllowedColorValue("#ffff")).toBe(false);
+      // 8 桁はグロー専用（<input type="color"> が表現できないため色には使わない）。
+      expect(isAllowedColorValue("#ff000080")).toBe(false);
       expect(isAllowedColorValue("#gggggg")).toBe(false);
       expect(isAllowedColorValue("red")).toBe(false);
       expect(isAllowedColorValue("url(https://example.com/x.png)")).toBe(false);
       expect(isAllowedColorValue("bg-red-500;background:url(x)")).toBe(false);
       expect(normalizeColorValue("bg-slate-500")).toBeNull();
+      // プロトタイプ鎖の名前を色名として引かない（paletteHex の hasOwnProperty 保護）。
+      expect(isAllowedColorValue("bg-constructor-500")).toBe(false);
+      expect(isAllowedColorValue("bg-toString-500")).toBe(false);
+      expect(isAllowedColorValue("bg-hasOwnProperty-500")).toBe(false);
     });
   });
 
@@ -158,7 +165,7 @@ describe("rarity-styles validation", () => {
       ).toEqual({ ok: true, value: { 超激レア: { color: "#ff0000" } } });
     });
 
-    it("rejects empty styles, unknown properties and invalid values", () => {
+    it("rejects empty styles, invalid values, and drops unknown properties", () => {
       expect(validateRarityStylesInput({ mythic: {} })).toEqual({ ok: false });
       expect(validateRarityStylesInput({ mythic: { color: "red" } })).toEqual({ ok: false });
       // 未知の色名・シェードは拒否する（フェーズ1 の許可集合に無いもの）。
@@ -173,8 +180,26 @@ describe("rarity-styles validation", () => {
       expect(validateRarityStylesInput({ mythic: { effect: "a\u202Eb" } })).toEqual({ ok: false });
       // 未知プロパティだけのスタイルは「有効なプロパティ 0 件」として拒否する。
       expect(validateRarityStylesInput({ mythic: { fontSize: "900px" } })).toEqual({ ok: false });
+      // 有効なプロパティが併存する場合、未知プロパティは黙って捨てる（従来からの挙動）。
+      expect(validateRarityStylesInput({ mythic: { color: "#ff0000", fontSize: "900px" } })).toEqual({
+        ok: true,
+        value: { mythic: { color: "#ff0000" } },
+      });
       expect(validateRarityStylesInput({ mythic: 5 })).toEqual({ ok: false });
       expect(validateRarityStylesInput({ mythic: [] })).toEqual({ ok: false });
+    });
+
+    it("rejects prototype-polluting keys (プロトタイプ setter で黙って消えない)", () => {
+      // JSON.parse で作った own プロパティ "__proto__" も明示的に拒否する。
+      expect(
+        validateRarityStylesInput(JSON.parse('{"__proto__":{"color":"#ff0000"}}')),
+      ).toEqual({ ok: false });
+      expect(validateRarityStylesInput({ constructor: { color: "#ff0000" } })).toEqual({
+        ok: false,
+      });
+      expect(validateRarityStylesInput({ prototype: { color: "#ff0000" } })).toEqual({
+        ok: false,
+      });
     });
 
     it("rejects invalid keys (空・長すぎ・制御文字・Bidi・既定レアリティ名・重複)", () => {
