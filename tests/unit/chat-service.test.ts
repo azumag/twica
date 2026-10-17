@@ -384,6 +384,49 @@ describe('TwitchChatService', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
+    it('bounded予算不足はlease喪失や一時障害と区別してdeferredにする', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      const beforeExternalSend = vi.fn().mockResolvedValue('budget-exhausted');
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message', { beforeExternalSend }))
+        .resolves.toEqual({ outcome: 'deferred', reason: 'budget' });
+
+      expect(beforeExternalSend).toHaveBeenCalledTimes(1);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('予算切れが直前の一時HTTP失敗を隠さず、有限retryへ戻す', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ message: 'temporary outage' }),
+      } as Response);
+      const beforeExternalSend = vi.fn()
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce('budget-exhausted');
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message', { beforeExternalSend }))
+        .resolves.toEqual({ outcome: 'retryable', reason: 'Twitch API 503: temporary outage' });
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(beforeExternalSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('ネットワーク例外後に予算が切れた場合も一時失敗として返す', async () => {
+      vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNRESET'));
+      const beforeExternalSend = vi.fn()
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce('budget-exhausted');
+
+      await expect(service.sendChatMessageDetailed('123456789', 'test message', { beforeExternalSend }))
+        .resolves.toEqual({ outcome: 'retryable', reason: 'ECONNRESET' });
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(beforeExternalSend).toHaveBeenCalledTimes(2);
+    });
+
     it.each([408, 429, 500, 522, 523, 524])('HTTP %iは最大3回後retryableに分類する', async (status) => {
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
       vi.mocked(global.fetch).mockResolvedValue({

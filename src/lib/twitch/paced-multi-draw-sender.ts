@@ -2,6 +2,7 @@ import type { GachaCard } from '@/lib/services/gacha'
 import {
   TwitchChatService,
   type ChatSendDegradation,
+  type ChatSendFenceResult,
   type ChatSendOutcome,
   type ChatSendTerminalCode,
 } from '@/lib/twitch/chat-service'
@@ -35,7 +36,7 @@ export interface PacedMultiDrawSendOptions {
   deliveryMode: unknown
   chunkSize: unknown
   startCursor: number
-  beforeExternalSend?: () => Promise<boolean>
+  beforeExternalSend?: () => Promise<ChatSendFenceResult>
   afterSegmentComplete: (nextCursor: number) => Promise<boolean>
   /**
    * individual時だけ使う1枚送信hook。productionでは通常の単発通知経路を渡し、
@@ -186,6 +187,10 @@ export async function sendPacedMultiDrawChatAnnouncement(
       }
       segmentsSentThisCall += 1
       continue
+    }
+
+    if (rawOutcome.outcome === 'deferred') {
+      return deferredOutcome()
     }
 
     if (rawOutcome.outcome === 'terminal') {

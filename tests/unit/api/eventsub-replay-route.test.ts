@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   deleteParkedEventSubNotification: vi.fn(),
   claimChatNotificationBatch: vi.fn(),
   claimDueChatNotifications: vi.fn(),
+  maintainChatNotificationOutbox: vi.fn(),
   advanceChatNotificationDeliveryCursor: vi.fn(),
   resolveChatNotificationDeliveryMode: vi.fn(),
   peekChatNotificationOutboxWork: vi.fn(),
@@ -34,6 +35,10 @@ const mocks = vi.hoisted(() => ({
   // getCloudflareContext呼び出しへ到達し、vi.useFakeTimers()下で解決しない
   // Promiseを待ち続けてテストがtimeoutする。
   enqueueChatNotificationWakeup: vi.fn(),
+  // Issue #1665 Step 3: 専用Queue経路が有効なあいだ、Cron relayはclaim→送信→
+  // ackの旧ownerループへ入らず、dispatchDueChatNotifications（起床通知enqueue）
+  // だけを行う。既定値(skippedDisabled=true=フラグ未設定)はbeforeEachで設定する。
+  dispatchDueChatNotifications: vi.fn(),
 }))
 
 vi.mock('@/lib/maintenance/eventsub-park', () => ({
@@ -44,6 +49,7 @@ vi.mock('@/lib/maintenance/eventsub-park', () => ({
 vi.mock('@/lib/services/chat-notification-outbox', () => ({
   claimChatNotificationBatch: mocks.claimChatNotificationBatch,
   claimDueChatNotifications: mocks.claimDueChatNotifications,
+  maintainChatNotificationOutbox: mocks.maintainChatNotificationOutbox,
   advanceChatNotificationDeliveryCursor: mocks.advanceChatNotificationDeliveryCursor,
   peekChatNotificationOutboxWork: mocks.peekChatNotificationOutboxWork,
   decodeChatNotificationPayload: mocks.decodeChatNotificationPayload,
@@ -59,6 +65,7 @@ vi.mock('@/lib/services/chat-notification-congestion', () => ({
 
 vi.mock('@/lib/services/chat-notification-dispatch', () => ({
   enqueueChatNotificationWakeup: mocks.enqueueChatNotificationWakeup,
+  dispatchDueChatNotifications: mocks.dispatchDueChatNotifications,
 }))
 
 vi.mock('@/lib/overlay-realtime/publisher', () => ({
@@ -178,13 +185,14 @@ function makeChatOutboxClaim(payloadOverrides: Record<string, unknown> = {}) {
   }
 }
 
-/** counts の完全一致比較用ヘルパー。新設カテゴリ(unknownType/invalidPayload)は省略時0。 */
+/** counts の完全一致比較用ヘルパー。新設カテゴリ(unknownType/invalidPayload/dispatched)は省略時0。 */
 function expectedCounts(overrides: Partial<{
   succeeded: number
   skipped: number
   failed: number
   unknownType: number
   invalidPayload: number
+  dispatched: number
   total: number
 }>) {
   return {
@@ -193,6 +201,7 @@ function expectedCounts(overrides: Partial<{
     failed: 0,
     unknownType: 0,
     invalidPayload: 0,
+    dispatched: 0,
     total: 0,
     ...overrides,
   }
@@ -212,6 +221,11 @@ describe('POST /api/admin/eventsub-replay', () => {
     mocks.deleteParkedEventSubNotification.mockResolvedValue(undefined)
     mocks.claimDueChatNotifications.mockReset()
     mocks.claimDueChatNotifications.mockResolvedValue([])
+    // Issue #1665 Step 3 レビュー指摘(P2): 保持期限メンテナンスは配送ownerの分岐から
+    // 分離され、relay（non-dry-run）が必ず1回呼ぶ。afterEachのrestoreAllMocksで
+    // 実装が消えるため、claimと同じくbeforeEachで再設定する。
+    mocks.maintainChatNotificationOutbox.mockReset()
+    mocks.maintainChatNotificationOutbox.mockResolvedValue(undefined)
     mocks.peekChatNotificationOutboxWork.mockResolvedValue([])
     mocks.decodeChatNotificationPayload.mockImplementation((claim) => {
       const payload = claim?.payload
@@ -236,6 +250,15 @@ describe('POST /api/admin/eventsub-replay', () => {
     // 一切進まなくなる）。
     mocks.enqueueChatNotificationWakeup.mockReset()
     mocks.enqueueChatNotificationWakeup.mockResolvedValue({ outcome: 'disabled' })
+    // Issue #1665 Step 3: 既定はフラグ未設定（sweepは何も予約せず
+    // skippedDisabled=true）。既存testはこの既定のまま旧claimループの
+    // 挙動を検証する。
+    mocks.dispatchDueChatNotifications.mockReset()
+    mocks.dispatchDueChatNotifications.mockResolvedValue({
+      reserved: 0,
+      enqueued: 0,
+      skippedDisabled: true,
+    })
   })
 
   afterEach(() => {
@@ -991,10 +1014,12 @@ describe('POST /api/admin/eventsub-replay', () => {
       mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent' })
       const second = await (await POST(createReplayRequest({ limit: 20 }))).json()
 
+      // 保持期限メンテナンスはrelay本体の分離実行へ移ったため、claim側では行わない
+      // （実行回数はmaintainChatNotificationOutbox側で検証する）。
       expect(mocks.claimDueChatNotifications).toHaveBeenNthCalledWith(
         21,
         1,
-        { maintain: true },
+        { maintain: false },
       )
       expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(twentyFirst)
       expect(second.counts).toEqual(expectedCounts({ succeeded: 1, total: 1 }))
@@ -1058,6 +1083,354 @@ describe('POST /api/admin/eventsub-replay', () => {
       ])
       expect(mocks.peekChatNotificationOutboxWork).toHaveBeenCalledWith(1)
       expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('専用Queue経路有効時の配送owner一本化（Issue #1665 Step 3）', () => {
+    it('sweepがdue行を予約・enqueueしたら、旧ownerのclaimループへ入らずdispatchedだけを記録する', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 3,
+        enqueued: 3,
+        skippedDisabled: false,
+      })
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-1', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      mocks.handleRedemption.mockResolvedValue({ notify: null, retryable: false })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ limit: 100 }))).json()
+
+      // 25件の内部sweep上限を維持しつつ、request limitが十分な場合の値を確認する。
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(25, 120)
+      // 旧owner（claim→送信→ack）は一切動かない。
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimChatNotificationBatch).not.toHaveBeenCalled()
+      // handoff後もKV backlogの処理は同じrequestで続行する。
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          key: 'chat-outbox:dispatch-due',
+          outcome: 'dispatched',
+        }),
+        expect.objectContaining({ key: 'maintenance:eventsub:key-1', outcome: 'skipped' }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ dispatched: 1, skipped: 1, total: 2 }))
+    })
+
+    it('request limitが2件ならsweepを2件に制限し、2行を予約した場合はKV一覧を呼ばない', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 2,
+        enqueued: 2,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ limit: 2 }))).json()
+
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(2, 120)
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([
+        expect.objectContaining({ key: 'chat-outbox:dispatch-due', outcome: 'dispatched' }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ dispatched: 1, total: 1 }))
+    })
+
+    it('enqueue失敗分も予約行としてrequest limitを消費し、残り1件だけKV一覧を読む', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 2,
+        enqueued: 1,
+        skippedDisabled: false,
+      })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ limit: 3 }))).json()
+
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(3, 120)
+      expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledWith({
+        cursor: undefined,
+        limit: 1,
+      })
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          key: 'chat-outbox:dispatch-due',
+          outcome: 'dispatched',
+          error: 'enqueued 1 of 2 reserved rows; remainder stays pending',
+        }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ dispatched: 1, total: 1 }))
+    })
+
+    it('sweepが0件を予約したときはdispatchedエントリを出さない（Cronログのノイズ回避）', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 0,
+        enqueued: 0,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([])
+      expect(json.counts).toEqual(expectedCounts({}))
+    })
+
+    it('enqueueが一部失敗しても旧ループへフォールバックせず、件数をerrorに残してpendingのまま残す', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 3,
+        enqueued: 1,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          outcome: 'dispatched',
+          error: 'enqueued 1 of 3 reserved rows; remainder stays pending',
+        }),
+      ])
+    })
+
+    it('sweep自体がthrowしても旧ownerへフォールバックせず、行はpendingのまま残す', async () => {
+      mocks.dispatchDueChatNotifications.mockRejectedValueOnce(
+        new Error('wake reservation storage unavailable'),
+      )
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+
+      expect(response.status).toBe(200)
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimChatNotificationBatch).not.toHaveBeenCalled()
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining('chat dispatch sweep failed'),
+        }),
+        expect.objectContaining({ key: 'chat-outbox:dispatch-due' }),
+      )
+    })
+
+    it('dispatch無効（既定）なら従来のclaimループがそのまま動く', async () => {
+      const cards = Array.from({ length: 3 }, (_, index) => ({
+        id: `card-${index + 1}`, name: `Card ${index + 1}`, description: null,
+        image_url: null, rarity: 'rare', drop_rate: 1,
+      }))
+      const claim = {
+        ...makeChatOutboxClaim({ card: cards[0], cards }),
+        deliveryMode: 'individual' as const,
+        deliveryChunkSize: 3,
+        deliveryCursor: 0,
+      }
+      mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+      const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+        .mockImplementation(async (_broadcaster, _message, options) => {
+          expect(await options?.beforeExternalSend?.()).toBe(true)
+          return { outcome: 'sent' }
+        })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(20, 120)
+      expect(mocks.claimDueChatNotifications).toHaveBeenCalledWith(1, { maintain: false })
+      expect(mocks.maintainChatNotificationOutbox).toHaveBeenCalledTimes(1)
+      expect(send).toHaveBeenCalledTimes(3)
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(1)
+      expect(json.results.some((entry: { outcome: string }) => entry.outcome === 'dispatched')).toBe(false)
+      expect(json.results[0].outcome).toBe('succeeded')
+    })
+
+    // Issue #1665 Step 3 レビュー指摘(P2)の回帰。Queue経路へ配送ownerを
+    // 引き継いだ後も、保持期限メンテナンス（試行上限到達行のdead化 + sent/deadの
+    // 保持期限削除）が止まらないことを固定する。旧claimループへは入らないまま
+    // （二重owner防止）、メンテナンスだけは owner 分岐に関係なく実行される。
+    it('Queue経路が配送ownerでも保持期限メンテナンスを1回実行し、旧claimとTwitch送信を行わない', async () => {
+      const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 2,
+        enqueued: 2,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.maintainChatNotificationOutbox).toHaveBeenCalledTimes(1)
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimChatNotificationBatch).not.toHaveBeenCalled()
+      expect(send).not.toHaveBeenCalled()
+      expect(json.results).toEqual([
+        expect.objectContaining({ key: 'chat-outbox:dispatch-due', outcome: 'dispatched' }),
+      ])
+    })
+
+    it('sweepがthrowして旧ownerへフォールバックしない場合でも保持期限メンテナンスは実行する', async () => {
+      mocks.dispatchDueChatNotifications.mockRejectedValueOnce(
+        new Error('wake reservation storage unavailable'),
+      )
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+
+      expect(response.status).toBe(200)
+      expect(mocks.maintainChatNotificationOutbox).toHaveBeenCalledTimes(1)
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+    })
+
+    it('dry-runでは保持期限メンテナンスも旧claimも実行しない', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ dryRun: true }))).json()
+
+      expect(mocks.maintainChatNotificationOutbox).not.toHaveBeenCalled()
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([])
+    })
+
+    // Issue #1665 Step 3 の追加必須(P2): 切り出したmaintenance待ちにも共通deadline
+    // （105秒 = EVENTSUB_REPLAY_BUDGET_MS）をかけ、時間切れなら sweep / 旧claim /
+    // KV replay を新規に開始しない。dispatchDueChatNotifications(...) は引数評価の
+    // 時点で開始されるため「deadline helperで包むだけ」では開始を防げず、明示gateが要る。
+    // Queue有効（handoff成立）／無効（skippedDisabled）の両方で固定する。
+    it.each(['handoff', 'disabled'] as const)(
+      'maintenanceが共通deadlineを超えたらPOSTは返り、%sでも新規workを開始しない',
+      async (mode) => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(0))
+        mocks.dispatchDueChatNotifications.mockResolvedValue(
+          mode === 'handoff'
+            ? { reserved: 2, enqueued: 2, skippedDisabled: false }
+            : { reserved: 0, enqueued: 0, skippedDisabled: true },
+        )
+        mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+        // KV replay が開始されたら検知できるよう、対象を返すようにしておく。
+        mocks.listParkedEventSubNotifications.mockResolvedValue({
+          entries: [{ key: 'maintenance:eventsub:deadline', record: makeRecord() }],
+          cursor: undefined,
+          listComplete: true,
+        })
+        const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+
+        let enteredMaintenance: (() => void) | undefined
+        const entered = new Promise<void>((resolve) => { enteredMaintenance = resolve })
+        let resolveMaintenance: (() => void) | undefined
+        mocks.maintainChatNotificationOutbox.mockImplementation(
+          () => new Promise<void>((resolve) => {
+            resolveMaintenance = resolve
+            enteredMaintenance?.()
+          }),
+        )
+
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const responsePromise = POST(createReplayRequest({}))
+        await entered
+        // 非協調的なDB待ちで共通deadlineを越える。
+        await vi.advanceTimersByTimeAsync(105_000)
+        const response = await responsePromise
+        const json = await response.json()
+
+        expect(response.status).toBe(200)
+        expect(json.counts).toEqual(expectedCounts({}))
+        expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+        expect(send).not.toHaveBeenCalled()
+
+        // 時間切れ後にmaintenanceが完了しても、このrequestで新規配送は始まらない。
+        resolveMaintenance?.()
+        await vi.advanceTimersByTimeAsync(1_000)
+        expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+      },
+    )
+
+    it.each([105_000, 105_001])(
+      '入口で既に期限切れ（%dms）ならmaintenance自体を開始せず、後続workも開始しない',
+      async (elapsedMs) => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(0))
+        // deadline は POST 冒頭（Date.now() + 105秒 = 105_000）で確定する。その後の
+        // レート制限待ちで時計が 105_000（ちょうど）/ 105_001（1ms 後）へ進み、
+        // maintenance地点では期限を過ぎている。境界の両側で、期限確認より先に
+        // operation を開始しないことを固定する。
+        mocks.checkRateLimit.mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(elapsedMs))
+          return { success: true, limit: 10, remaining: 9, reset: Date.now() + 60_000 }
+        })
+        mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+        mocks.listParkedEventSubNotifications.mockResolvedValue({
+          entries: [{ key: 'maintenance:eventsub:expired', record: makeRecord() }],
+          cursor: undefined,
+          listComplete: true,
+        })
+        const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const response = await POST(createReplayRequest({}))
+        const json = await response.json()
+
+        expect(response.status).toBe(200)
+        // 残り時間0でhelperが早期returnする経路へ未解決Promiseを渡さない（開始前チェック）。
+        expect(mocks.maintainChatNotificationOutbox).not.toHaveBeenCalled()
+        expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+        expect(send).not.toHaveBeenCalled()
+        expect(json.counts).toEqual(expectedCounts({}))
+      },
+    )
+
+    it('時間切れ後にmaintenanceがrejectしても未処理rejectionにならず、新規workも開始しない', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
+
+      let enteredMaintenance: (() => void) | undefined
+      const entered = new Promise<void>((resolve) => { enteredMaintenance = resolve })
+      let rejectMaintenance: ((error: Error) => void) | undefined
+      mocks.maintainChatNotificationOutbox.mockImplementation(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectMaintenance = reject
+          enteredMaintenance?.()
+        }),
+      )
+
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+        const responsePromise = POST(createReplayRequest({}))
+        await entered
+        await vi.advanceTimersByTimeAsync(105_000)
+        const response = await responsePromise
+
+        // 応答後にmaintenanceが失敗しても、未処理rejectionにせず（常時catch）、
+        // 新規workを開始しない。行は次tickのmaintenanceが回収する。
+        rejectMaintenance?.(new Error('late maintenance failure'))
+        await vi.advanceTimersByTimeAsync(1_000)
+        await Promise.resolve()
+
+        expect(response.status).toBe(200)
+        expect(unhandled).toEqual([])
+        expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
     })
   })
 

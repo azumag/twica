@@ -23,6 +23,12 @@ const CHAT_SEND_MAX_ATTEMPTS = 3
 // EventSub waitUntilの30秒内で、token refresh（最大13秒）とDB処理の後にも
 // chat送信を完了させる。各試行3秒 + retry待機合計750msで最大約9.75秒。
 const CHAT_SEND_REQUEST_TIMEOUT_MS = 3_000
+/**
+ * bounded chat sliceで新しいTwitch送信を始めるために残しておく最低予算。
+ * Helix fetch自体の3秒timeoutに、応答処理とcursor checkpoint用の1秒を足す。
+ * 各内部retry直前にも同じfenceを通るため、deadline間際に次のfetchを開始しない。
+ */
+export const CHAT_SEND_MIN_START_BUDGET_MS = CHAT_SEND_REQUEST_TIMEOUT_MS + 1_000
 // 250ms, 500ms。ジッターは付けない（並列度が低く herd 効果が小さいため）。
 const CHAT_SEND_RETRY_DELAYS_MS = [250, 500]
 /**
@@ -157,7 +163,12 @@ export type ChatSendOutcome = (
   | { outcome: 'terminal'; code: ChatSendTerminalCode; reason: string }
   | { outcome: 'retryable'; reason: string }
   | { outcome: 'aborted'; reason: string }
+  /** bounded配送で次のfetchを始める時間が残っていない正常なcontinuation。 */
+  | { outcome: 'deferred'; reason: 'budget' }
 ) & { degradation?: ChatSendDegradation }
+
+/** lease喪失と、外部送信を始めるだけの予算がない状態を区別する。 */
+export type ChatSendFenceResult = boolean | 'budget-exhausted'
 
 /**
  * terminal失敗を運用障害とユーザー操作待ちに分ける機械判定コード。
@@ -188,9 +199,10 @@ export type ChatSendTerminalCode =
 export interface ChatSendOptions {
   /**
    * 資格情報解決後かつ各Twitch fetch直前のfence。false/例外なら外部送信しない。
+   * bounded deliveryは予算不足をbudget-exhaustedで返し、continuationとして保存する。
    * transactional outboxはここでlease所有権を更新し、旧所有者の二重送信を防ぐ。
    */
-  beforeExternalSend?: () => Promise<boolean>
+  beforeExternalSend?: () => Promise<ChatSendFenceResult>
 }
 
 /**
@@ -464,8 +476,22 @@ export class TwitchChatService {
     for (let attempt = 1; attempt <= CHAT_SEND_MAX_ATTEMPTS; attempt++) {
       try {
         if (options.beforeExternalSend) {
+          let fenceResult: ChatSendFenceResult
           try {
-            if (!await options.beforeExternalSend()) {
+            fenceResult = await options.beforeExternalSend()
+            if (fenceResult === 'budget-exhausted') {
+              // 直前のHTTP試行が一時失敗している場合は、budget yieldへ置き換えない。
+              // その失敗はoutbox retryとして数え、有限のattempt上限を維持する。
+              // まだ外部試行がない場合だけ正常continuationとして扱う。
+              if (lastResponse !== null || lastException !== null) break
+              logger.info('Chat message deferred before external send - delivery budget exhausted', {
+                broadcasterTwitchUserId,
+                senderTwitchUserId,
+                attempt,
+              })
+              return withCredentialDegradation({ outcome: 'deferred', reason: 'budget' })
+            }
+            if (!fenceResult) {
               logger.warn('Chat message aborted before external send - delivery ownership lost', {
                 broadcasterTwitchUserId,
                 senderTwitchUserId,

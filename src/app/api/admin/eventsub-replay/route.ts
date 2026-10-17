@@ -11,6 +11,7 @@ import {
 } from "@/lib/maintenance/eventsub-park";
 import {
   claimDueChatNotifications,
+  maintainChatNotificationOutbox,
   decodeChatNotificationPayload,
   deadLetterChatNotification,
   markChatNotificationSent,
@@ -24,6 +25,7 @@ import {
   postRedemptionNotify,
 } from "@/lib/services/eventsub-redemption";
 import { sendClaimedChatAnnouncement } from "@/lib/services/eventsub-redemption-delivery";
+import { dispatchDueChatNotifications } from "@/lib/services/chat-notification-dispatch";
 
 /**
  * EventSubリプレイ機構 (Issue #787)
@@ -85,6 +87,13 @@ const CHAT_SEND_SETTLEMENT_RESERVE_MS = 15_000;
 // DB outboxが常に満杯でも、同じrequest内でmaintenance KVを処理する余地を残す。
 // 次tickは未claim行を期限順に続行するため、throughputより公平性とtimeout回避を優先。
 const CHAT_OUTBOX_RELAY_LIMIT = 5;
+// Issue #1665 Step 3: 専用Queue経路が有効なあいだ、このrelayは配送ownerに
+// ならず due 行の起床通知enqueue（回収sweep）だけを行う。上限・予約秒数は
+// 内部endpoint（src/app/api/internal/chat-outbox/route.ts の
+// DEFAULT_DISPATCH_DUE_LIMIT / DUE_WAKE_RESERVATION_SECONDS）と同値にそろえる。
+// enqueueはTwitch送信を含まないため、relayのbudget内で余裕を持って処理できる。
+const CHAT_DUE_WAKE_SWEEP_LIMIT = 25;
+const CHAT_DUE_WAKE_RESERVATION_SECONDS = 120;
 
 interface ReplayRequestBody {
   cursor?: string;
@@ -145,13 +154,16 @@ async function awaitBeforeReplayDeadline<T>(
  * - invalid-payload: payload.event が欠落/非object等、データ自体が壊れている
  *   （低-6: DB一時障害と違いリトライしても永久に解決しないため、
  *   このケースに限りKVエントリを削除してよい）
+ * - dispatched: Issue #1665 Step 3。専用Queue経路が有効なあいだ、このrelayは
+ *   配送ownerにならず due 行の起床通知enqueueだけを行った（1エントリ=1sweepの
+ *   集計。実配送はchat-delivery Worker経由のdeliverが担う）
  */
 interface ReplayResultEntry {
   key: string;
   messageId: string;
   subscriptionType: string;
   receivedAt: string;
-  outcome: "succeeded" | "skipped" | "failed" | "dry-run" | "unknown-type" | "invalid-payload";
+  outcome: "succeeded" | "skipped" | "failed" | "dry-run" | "unknown-type" | "invalid-payload" | "dispatched";
   error?: string;
 }
 
@@ -302,6 +314,12 @@ export async function POST(request: NextRequest) {
   );
 
   const results: ReplayResultEntry[] = [];
+  // dispatchedの集計結果は予約行全体を1件として表すため、enqueueに失敗した行も含め
+  // 実予約件数をDB+KV共通のrequest上限で消費する。
+  let chatDispatchExtraRequestLimitRows = 0;
+  // Issue #1665 Step 3: 保持期限メンテナンスを共通deadlineで打ち切った場合に true。
+  // このrequestでは sweep / 旧claim / KV replay を新規に開始しない（次tickが拾う）。
+  let chatRelayDeadlineExpired = false;
 
   if (dryRun) {
     const workItems = await peekChatNotificationOutboxWork(limit);
@@ -323,14 +341,130 @@ export async function POST(request: NextRequest) {
   // Cronの次回実行ごとに独立したchat batchをdrainでき、KV復旧を待つ必要がない。
   // dry-runはclaim/状態変更を一切しない。
   if (!dryRun) {
+    // Issue #1665 Step 3: 保持期限メンテナンスは配送ownerの分岐に関係なく
+    // non-dry-run で1回実行する（sent 7日 / dead 30日 の掃除、attempt上限到達行のdead化）。
+    // 下のclaimループは maintain: false を渡して二重実行を避ける。
+    //
+    // 予算規律: 旧実装ではこのメンテナンスが最初のclaim
+    // （awaitBeforeReplayDeadline(claimDueChatNotifications(...)) の内側）で走っていたため
+    // 共通deadline（replayDeadlineAt、105秒）がかかっていた。切り出し後も同じ契約を
+    // 守る: ここでも共通deadlineで待ち、時間切れ（completed=false）ならこのrequestでは
+    // sweep / 旧claim / KV replay を**新規に開始しない**。非協調的なDB待ちで呼び出し元
+    // Cronの120秒HTTP timeoutを超えてPOSTが未完了になる退行を防ぐ。
+    //
+    // 開始前の期限確認: 既に期限を過ぎている場合は maintenance 自体を開始しない。
+    // awaitBeforeReplayDeadline は残り時間が0以下だと operation にハンドラを付けずに
+    // 早期returnするため、そこで未解決のPromiseを渡すと遅延rejectionが未処理になり得る。
+    if (Date.now() >= replayDeadlineAt) {
+      chatRelayDeadlineExpired = true;
+      logger.warn(
+        "[eventsub-replay] chat outbox maintenance skipped: the replay deadline had already passed; starting no new work in this run",
+      );
+    } else {
+      const maintenance = maintainChatNotificationOutbox();
+      // 常時catch: helper側の早期return経路やrace決着後に届くrejectionを未処理にしない
+      // （元のPromiseのrejectionはrace側のハンドラがそのまま受け取る）。
+      void maintenance.catch(() => {});
+      const maintenanceResult = await awaitBeforeReplayDeadline(
+        maintenance,
+        replayDeadlineAt,
+      );
+      chatRelayDeadlineExpired = !maintenanceResult.completed;
+      if (chatRelayDeadlineExpired) {
+        logger.warn(
+          "[eventsub-replay] chat outbox maintenance did not finish before the replay deadline; starting no new work in this run",
+        );
+      }
+    }
+
+    // Issue #1665 Step 3: 専用Queue経路（chat-delivery Worker + 内部endpoint）
+    // が有効なあいだ、このCron relayは配送owner（claim→送信→ack）にならず、
+    // due行の起床通知enqueue（回収sweep）だけを行う。live EventSub経路
+    // （eventsub-redemption.ts の enqueueChatNotificationWakeup）と配送の
+    // 入口を統一し、旧経路（下のclaimループ）と新経路が同じoutbox行を別ownerと
+    // して掴み合う二重ownerを構造的に防ぐ。DBのowner-fenced claimは二重送信は
+    // 防いでも、lease競合・attempt消費・channel gateの間隔違反までは防げない
+    // ため、入口を一本化する。
+    //
+    // sweepがskippedDisabled（フラグ未設定=初期状態）を返した場合だけ、従来の
+    // claimループへフォールバックする。enqueue失敗（Queue未配備・send失敗）でも
+    // 旧ループには戻さない（Issue #1665設計:「Queue binding未設定・Queue障害を
+    // 成功扱いにせず…旧長時間ループへ自動フォールバックしない」。行はpendingの
+    // まま残り、chat-delivery Workerの1分周期sweepが回収する）。sweep自体が
+    // throwした場合も、reserveはフラグ有効時にしか走らないため新経路が有効
+    // だったと見なし、旧ownerへのフォールバックはしない（二重owner防止優先）。
+    //
+    // 開始のgate: dispatchDueChatNotifications(...) は引数評価の時点で実行が始まる
+    // ため、awaitBeforeReplayDeadlineで包むだけでは「時間切れ時に開始しない」を
+    // 保証できない。deadline超過を明示的に判定してから呼ぶ。
+    let chatDispatchHandoff = false;
+    if (!chatRelayDeadlineExpired) {
+      try {
+        const sweepResult = await awaitBeforeReplayDeadline(
+          dispatchDueChatNotifications(
+            Math.min(limit, CHAT_DUE_WAKE_SWEEP_LIMIT),
+            CHAT_DUE_WAKE_RESERVATION_SECONDS,
+          ),
+          replayDeadlineAt,
+        );
+        if (sweepResult.completed && !sweepResult.value.skippedDisabled) {
+          chatDispatchHandoff = true;
+          const { reserved, enqueued } = sweepResult.value;
+          // resultsには集計1件だけが追加されるため、残りの予約行をrequest budgetへ加算する。
+          // enqueue失敗時も予約は有効なので、reservedの件数をそのまま使う。
+          chatDispatchExtraRequestLimitRows = Math.max(0, reserved - 1);
+          if (reserved > 0) {
+            // 1エントリ=1sweepの集計。enqueue失敗分はpendingのまま残るため
+            // 「failed」にはせず、運用が気づけるようerrorに件数だけ残す
+            // （Queue障害そのものはdispatch側のreportErrorで捕捉される）。
+            results.push({
+              key: "chat-outbox:dispatch-due",
+              messageId: `dispatch-due:${reserved}`,
+              subscriptionType: "twica.transactional-chat-outbox.v1",
+              receivedAt: new Date().toISOString(),
+              outcome: "dispatched",
+              ...(enqueued < reserved
+                ? {
+                    error: `enqueued ${enqueued} of ${reserved} reserved rows; remainder stays pending`,
+                  }
+                : {}),
+            });
+          }
+          logger.info("[eventsub-replay] chat outbox handed off to dedicated queue dispatcher", {
+            reserved,
+            enqueued,
+          });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("[eventsub-replay] chat dispatch sweep failed; rows stay pending", {
+          error: message,
+        });
+        await reportErrorSafely(
+          new Error(`[eventsub-replay] chat dispatch sweep failed: ${message}`),
+          {
+            key: "chat-outbox:dispatch-due",
+            subscriptionType: "twica.transactional-chat-outbox.v1",
+          },
+        );
+        chatDispatchHandoff = true;
+      }
+    }
+
     // まとめてleaseして直列送信すると後半のleaseが送信前に失効するため、
-    // 1件claim→送信→ackを繰り返す。最初のclaimだけ保持期限メンテナンスも行う。
+    // 1件claim→送信→ackを繰り返す。保持期限メンテナンスは上の分離実行へ
+    // 移したため、claim側では実行しない（maintain:false）。
     const chatOutboxLimit = Math.min(limit, CHAT_OUTBOX_RELAY_LIMIT);
     for (let claimIndex = 0; claimIndex < chatOutboxLimit; claimIndex += 1) {
+      // deadline超過（maintenanceの打ち切り）時は新規workを開始しない。
+      if (chatRelayDeadlineExpired) break;
+      // 新経路が配送ownerのあいだは、この旧ownerループへ入らない
+      // （メンテナンスは上の分離実行で済んでいる）。
+      if (chatDispatchHandoff) break;
       if (Date.now() >= replayDeadlineAt) break;
       const claimResult = await awaitBeforeReplayDeadline(
         claimDueChatNotifications(1, {
-          maintain: claimIndex === 0,
+          maintain: false,
         }),
         replayDeadlineAt,
       );
@@ -542,8 +676,10 @@ export async function POST(request: NextRequest) {
   // non-dry-runではDB outboxとKVを合わせてrequest limit以内に収める。
   // DB側で上限を消費した場合やdeadline到達時はcursorを進めず、次tickで同じ
   // backlogを確実に再評価する。dry-runは両保存先の最古候補比較だけなので別枠。
-  const remainingKvLimit = dryRun ? limit : Math.max(0, limit - results.length);
-  const parkedListResult = remainingKvLimit > 0 && Date.now() < replayDeadlineAt
+  const remainingKvLimit = dryRun
+    ? limit
+    : Math.max(0, limit - results.length - chatDispatchExtraRequestLimitRows);
+  const parkedListResult = remainingKvLimit > 0 && !chatRelayDeadlineExpired && Date.now() < replayDeadlineAt
     ? await awaitBeforeReplayDeadline(
         listParkedEventSubNotifications({
           cursor: requestBody.cursor,
@@ -741,6 +877,7 @@ export async function POST(request: NextRequest) {
     failed: results.filter((r) => r.outcome === "failed").length,
     unknownType: results.filter((r) => r.outcome === "unknown-type").length,
     invalidPayload: results.filter((r) => r.outcome === "invalid-payload").length,
+    dispatched: results.filter((r) => r.outcome === "dispatched").length,
     total: results.length,
   };
 
