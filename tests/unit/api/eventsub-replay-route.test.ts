@@ -1567,6 +1567,287 @@ describe('POST /api/admin/eventsub-replay', () => {
     })
   })
 
+  describe('二次報告に共通の replay deadline（Issue #1846）', () => {
+    const reportTimings = ['unresolved', 'completed-late', 'expired-before-start', 'completed-in-time'] as const
+    type ReportTiming = typeof reportTimings[number]
+
+    // 各呼び出し元で既に80秒を消費させ、報告専用の105秒が新しく与えられないことを
+    // 検証する。lateはtimerを発火させずmicrotaskで時計を進め、Promise.raceが
+    // completed=trueを返す場合も、期限後の後続処理が始まらないことを確認する。
+    async function runTimedReport(timing: ReportTiming, prepare: (beforeReport: () => void) => void) {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(0))
+      let enteredReport: (() => void) | undefined
+      const entered = new Promise<void>((resolve) => { enteredReport = resolve })
+      let resolveReport: (() => void) | undefined
+      mocks.reportError.mockImplementation(async () => {
+        enteredReport?.()
+        if (timing === 'unresolved') {
+          await new Promise<void>((resolve) => { resolveReport = resolve })
+        } else if (timing === 'completed-late') {
+          await Promise.resolve()
+          vi.setSystemTime(new Date(106_000))
+        }
+      })
+      prepare(() => {
+        vi.setSystemTime(new Date(timing === 'expired-before-start' ? 105_000 : 80_000))
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      let settled = false
+      const responsePromise = POST(createReplayRequest({ cursor: 'incoming-cursor' }))
+      void responsePromise.then(() => { settled = true })
+      if (timing === 'unresolved') {
+        await entered
+        await vi.advanceTimersByTimeAsync(24_999)
+        expect(settled).toBe(false)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(settled).toBe(true)
+        expect(Date.now()).toBe(105_000)
+      }
+      const response = await responsePromise
+      expect(response.status).toBe(200)
+      expect(mocks.reportError).toHaveBeenCalledTimes(timing === 'expired-before-start' ? 0 : 1)
+      return {
+        json: await response.json(),
+        finishLateReport: async () => {
+          resolveReport?.()
+          if (timing === 'unresolved') await vi.advanceTimersByTimeAsync(1_000)
+        },
+      }
+    }
+
+    async function settleBeforeReport<T>(value: T, beforeReport: () => void): Promise<T> {
+      // sendClaimedChatAnnouncementを包むraceの残時間計算後に時刻を進める。
+      await Promise.resolve()
+      beforeReport()
+      return value
+    }
+
+    const claimReportCases: Array<{
+      name: string
+      outcome: 'succeeded' | 'failed' | 'invalid-payload'
+      error?: string
+      reportMessage: string
+      sent: number
+      acknowledged: number
+      deadLettered: number
+      retried: number
+      prepare: (beforeReport: () => void) => void
+    }> = [
+      {
+        name: 'invalid claim payload', outcome: 'invalid-payload',
+        error: 'transactional chat outbox payload v1 is invalid', reportMessage: 'payload v1 is invalid',
+        sent: 0, acknowledged: 0, deadLettered: 1, retried: 0,
+        prepare: (beforeReport) => {
+          mocks.decodeChatNotificationPayload.mockReturnValueOnce(null)
+          mocks.deadLetterChatNotification.mockImplementationOnce(() => settleBeforeReport(true, beforeReport))
+        },
+      },
+      {
+        name: 'sent ack lost lease', outcome: 'failed', error: 'sent, but outbox ack lost its lease',
+        reportMessage: 'chat sent but outbox ack lost its lease',
+        sent: 1, acknowledged: 1, deadLettered: 0, retried: 0,
+        prepare: (beforeReport) => {
+          mocks.markChatNotificationSent.mockImplementationOnce(() => settleBeforeReport(false, beforeReport))
+        },
+      },
+      {
+        name: 'sent with credential degradation', outcome: 'succeeded', reportMessage: 'chat sent using fallback sender',
+        sent: 1, acknowledged: 1, deadLettered: 0, retried: 0,
+        prepare: (beforeReport) => {
+          mocks.sendChatAnnouncement.mockResolvedValueOnce({
+            outcome: 'sent', degradation: { code: 'credential_unavailable', reason: 'BOT requires reauthorization' },
+          })
+          mocks.markChatNotificationSent.mockImplementationOnce(() => settleBeforeReport(true, beforeReport))
+        },
+      },
+      ...([true, false] as const).map((persisted) => ({
+        name: persisted ? 'terminal DLQ' : 'terminal DLQ lost lease', outcome: 'failed' as const,
+        error: 'DLQ: sender unavailable',
+        reportMessage: persisted ? 'chat notification moved to DLQ' : 'chat notification DLQ update lost its lease',
+        sent: 1, acknowledged: 0, deadLettered: 1, retried: 0,
+        prepare: (beforeReport: () => void) => {
+          mocks.sendChatAnnouncement.mockResolvedValueOnce({
+            outcome: 'terminal', code: 'credential_unavailable', reason: 'sender unavailable',
+          })
+          mocks.deadLetterChatNotification.mockImplementationOnce(() => settleBeforeReport(persisted, beforeReport))
+        },
+      })),
+      ...(['dead', 'lost-lease'] as const).map((state) => ({
+        name: `retry ${state}`, outcome: 'failed' as const, error: `${state}: Twitch API 503`,
+        reportMessage: state === 'dead' ? 'chat delivery exhausted retries' : 'chat retry update lost its lease',
+        sent: 1, acknowledged: 0, deadLettered: 0, retried: 1,
+        prepare: (beforeReport: () => void) => {
+          mocks.sendChatAnnouncement.mockResolvedValueOnce({ outcome: 'retryable', reason: 'Twitch API 503' })
+          mocks.retryChatNotification.mockImplementationOnce(() => settleBeforeReport(state, beforeReport))
+        },
+      })),
+      ...(['aborted', 'deferred'] as const).map((outcome) => ({
+        name: `delivery ${outcome}`, outcome: 'failed' as const, error: 'ownership or budget unavailable',
+        reportMessage: outcome === 'aborted' ? 'chat delivery aborted' : 'chat delivery unexpectedly deferred',
+        sent: 1, acknowledged: 0, deadLettered: 0, retried: 0,
+        prepare: (beforeReport: () => void) => {
+          mocks.sendChatAnnouncement.mockImplementationOnce(() => settleBeforeReport({
+            outcome, reason: 'ownership or budget unavailable',
+          }, beforeReport))
+        },
+      })),
+      {
+        name: 'relay catch', outcome: 'failed', error: 'pending: relay storage unavailable',
+        reportMessage: 'transactional chat relay failed',
+        sent: 1, acknowledged: 0, deadLettered: 0, retried: 1,
+        prepare: (beforeReport) => {
+          mocks.sendChatAnnouncement.mockRejectedValueOnce(new Error('relay storage unavailable'))
+          mocks.retryChatNotification.mockImplementationOnce(() => settleBeforeReport('pending', beforeReport))
+        },
+      },
+    ]
+
+    describe.each(claimReportCases)('$name', (testCase) => {
+      it.each(reportTimings)('%s: 件数・保存結果を保ち、期限後のclaim・send・KVを開始しない', async (timing) => {
+        const claim = makeChatOutboxClaim()
+        const nextClaim = { ...makeChatOutboxClaim(), id: 'next-claim', batchId: 'next-batch' }
+        mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([nextClaim]).mockResolvedValue([])
+        mocks.sendChatAnnouncement.mockReset().mockResolvedValue({ outcome: 'sent' })
+        mocks.handleRedemption.mockResolvedValue({ notify: null, retryable: false })
+        mocks.listParkedEventSubNotifications.mockResolvedValue({
+          entries: [{ key: 'maintenance:eventsub:after-report', record: makeRecord() }],
+          cursor: 'next-cursor', listComplete: true,
+        })
+
+        const { json, finishLateReport } = await runTimedReport(timing, testCase.prepare)
+        const completedInTime = timing === 'completed-in-time'
+        const assertWork = () => {
+          expect(mocks.claimDueChatNotifications).toHaveBeenCalledTimes(completedInTime ? 3 : 1)
+          expect(mocks.sendChatAnnouncement).toHaveBeenCalledTimes(testCase.sent + (completedInTime ? 1 : 0))
+          expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(testCase.acknowledged + (completedInTime ? 1 : 0))
+          expect(mocks.deadLetterChatNotification).toHaveBeenCalledTimes(testCase.deadLettered)
+          expect(mocks.retryChatNotification).toHaveBeenCalledTimes(testCase.retried)
+          expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledTimes(completedInTime ? 1 : 0)
+          expect(mocks.handleRedemption).toHaveBeenCalledTimes(completedInTime ? 1 : 0)
+          expect(mocks.handleRaidNotification).not.toHaveBeenCalled()
+          expect(mocks.postRedemptionNotify).not.toHaveBeenCalled()
+          expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledTimes(completedInTime ? 1 : 0)
+        }
+        expect(json.results[0]).toMatchObject({
+          key: `chat-outbox:${claim.id}`, outcome: testCase.outcome,
+          ...(testCase.error ? { error: testCase.error } : {}),
+        })
+        expect(json.counts).toEqual(expectedCounts({
+          succeeded: (testCase.outcome === 'succeeded' ? 1 : 0) + (completedInTime ? 1 : 0),
+          failed: testCase.outcome === 'failed' ? 1 : 0,
+          invalidPayload: testCase.outcome === 'invalid-payload' ? 1 : 0,
+          skipped: completedInTime ? 1 : 0,
+          total: completedInTime ? 3 : 1,
+        }))
+        expect(json.cursor).toBe(completedInTime ? 'next-cursor' : 'incoming-cursor')
+        expect(json.listComplete).toBe(completedInTime)
+        if (timing !== 'expired-before-start') {
+          expect(mocks.reportError).toHaveBeenCalledWith(
+            expect.objectContaining({ message: expect.stringContaining(testCase.reportMessage) }),
+            expect.objectContaining({ key: `chat-outbox:${claim.id}`, messageId: claim.batchId }),
+          )
+        }
+        assertWork()
+        await finishLateReport()
+        assertWork()
+      })
+    })
+
+    it.each(reportTimings)('dispatch catch %s: 旧ownerへ戻らず、期限後のKVを開始しない', async (timing) => {
+      mocks.handleRedemption.mockResolvedValue({ notify: null, retryable: false })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:after-dispatch-report', record: makeRecord() }],
+        cursor: 'next-cursor', listComplete: true,
+      })
+      const { json, finishLateReport } = await runTimedReport(timing, (beforeReport) => {
+        mocks.dispatchDueChatNotifications.mockImplementationOnce(async () => {
+          await settleBeforeReport(undefined, beforeReport)
+          throw new Error('dispatch storage unavailable')
+        })
+      })
+      const completedInTime = timing === 'completed-in-time'
+      const assertWork = () => {
+        expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledTimes(1)
+        expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+        expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+        expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledTimes(completedInTime ? 1 : 0)
+        expect(mocks.handleRedemption).toHaveBeenCalledTimes(completedInTime ? 1 : 0)
+        expect(mocks.postRedemptionNotify).not.toHaveBeenCalled()
+        expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledTimes(completedInTime ? 1 : 0)
+      }
+      expect(json.counts).toEqual(expectedCounts(completedInTime ? { skipped: 1, total: 1 } : {}))
+      expect(json.cursor).toBe(completedInTime ? 'next-cursor' : 'incoming-cursor')
+      expect(json.listComplete).toBe(completedInTime)
+      if (timing !== 'expired-before-start') {
+        expect(mocks.reportError).toHaveBeenCalledWith(
+          expect.objectContaining({ message: expect.stringContaining('chat dispatch sweep failed') }),
+          expect.objectContaining({ key: 'chat-outbox:dispatch-due' }),
+        )
+      }
+      assertWork()
+      await finishLateReport()
+      assertWork()
+    })
+
+    describe.each([
+      ['redemption', TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD],
+      ['raid', TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID],
+    ])('invalid KV %s', (_label, subscriptionType) => {
+      it.each(reportTimings)('%s: 期限後は不正entryを削除せず、次entryも処理しない', async (timing) => {
+        mocks.handleRedemption.mockResolvedValue({ notify: null, retryable: false })
+        mocks.handleRaidNotification.mockResolvedValue({ notify: null, retryable: false })
+        const { json, finishLateReport } = await runTimedReport(timing, (beforeReport) => {
+          mocks.listParkedEventSubNotifications.mockResolvedValue({
+            entries: [
+              {
+                key: 'maintenance:eventsub:invalid-before-report',
+                record: makeRecord({
+                  subscriptionType,
+                  // loop先頭の期限確認後、payload検証から報告開始までに期限へ到達する。
+                  payload: { get event() { beforeReport(); return undefined } },
+                }),
+              },
+              { key: 'maintenance:eventsub:after-invalid-report', record: makeRecord({ subscriptionType }) },
+            ],
+            cursor: 'next-cursor', listComplete: true,
+          })
+        })
+        const completedInTime = timing === 'completed-in-time'
+        const assertWork = () => {
+          expect(mocks.claimDueChatNotifications).toHaveBeenCalledTimes(1)
+          expect(mocks.sendChatAnnouncement).not.toHaveBeenCalled()
+          expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledTimes(1)
+          expect(mocks.handleRedemption).toHaveBeenCalledTimes(
+            completedInTime && subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_POINTS_REDEMPTION_ADD ? 1 : 0,
+          )
+          expect(mocks.handleRaidNotification).toHaveBeenCalledTimes(
+            completedInTime && subscriptionType === TWITCH_SUBSCRIPTION_TYPE.CHANNEL_RAID ? 1 : 0,
+          )
+          expect(mocks.postRedemptionNotify).not.toHaveBeenCalled()
+          expect(mocks.deleteParkedEventSubNotification).toHaveBeenCalledTimes(completedInTime ? 2 : 0)
+        }
+        expect(json.results[0]).toMatchObject({ key: 'maintenance:eventsub:invalid-before-report', outcome: 'invalid-payload' })
+        expect(json.counts).toEqual(expectedCounts({
+          invalidPayload: 1, skipped: completedInTime ? 1 : 0, total: completedInTime ? 2 : 1,
+        }))
+        // 取得済みKVページのcursor/listCompleteは既存の応答契約を維持する。
+        expect(json.cursor).toBe('next-cursor')
+        expect(json.listComplete).toBe(true)
+        if (timing !== 'expired-before-start') {
+          expect(mocks.reportError).toHaveBeenCalledWith(
+            expect.any(Error),
+            expect.objectContaining({ key: 'maintenance:eventsub:invalid-before-report', subscriptionType }),
+          )
+        }
+        assertWork()
+        await finishLateReport()
+        assertWork()
+      })
+    })
+  })
+
   describe('CHANNEL_POINTS_REDEMPTION_ADD の処理', () => {
     it('成功時はpostRedemptionNotifyを呼び、KVエントリを削除する', async () => {
       const record = makeRecord()
