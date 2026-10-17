@@ -104,6 +104,11 @@ jobs:
               # trade 公開判定 SQL の正しさを担保するのは実PGテストだけなので、
               # 実装の変更でも同ジョブを起動する（#1747）。
               - 'src/lib/trade.ts'
+              # db-readonly-check(production).yml の集計 SQL を実PG17で検証する。fixture 側の
+              # 変更でも実行ゲートが必要。production 用 workflow は main にのみ存在する。
+              - 'tests/fixtures/chat-outbox-readonly-counts-pg17.mjs'
+              - '.github/workflows/db-readonly-check.yml'
+              - '.github/workflows/db-readonly-check-production.yml'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
@@ -545,6 +550,18 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: node tests/fixtures/paced-multi-draw-chat-postgres.mjs
+
+      - name: Verify the read-only check counts match the completion UPDATE
+        # db-readonly-check-production.yml に埋め込まれた集計 SQL をその YAML から取り出し、
+        # 実 PostgreSQL 17 で実行する。有効 lease 中の processing 行を数えないこと・
+        # targets_total = 内訳和・targets_total が補正 UPDATE の実際の変更行数と一致することを
+        # 固定する（SQL 文字列テストでは検証できないため実DBで実行する）。
+        # production 用の workflow は main にのみ存在するので、この回帰も main 側で回す。
+        # 実行する SQL 自体は preview 用と同一である（両者の一致は
+        # tests/unit/db-readonly-check-production-workflow.test.ts が固定する）。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs .github/workflows/db-readonly-check-production.yml
 
       - name: Verify completion reward invariants
         env:
