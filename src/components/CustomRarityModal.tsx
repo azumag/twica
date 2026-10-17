@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   RARITIES,
@@ -79,16 +79,40 @@ export default function CustomRarityModal({
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Issue #1783: デプロイ窓の部分保存（名前だけ保存されスタイルは未保存）で親へ通知した
+  // payload。親がその値を採用した1回だけ、未保存の色の下書きを維持するために使う
+  // （#1822 の同名実装と同じ扱い。重複実装を増やさないため挙動を合わせている）。
+  const partialSaveSync = useRef<{
+    customRarities: string[];
+    rarityStyles: Record<string, RarityStyle>;
+  } | null>(null);
+  const previousIsOpen = useRef(false);
 
   // モーダルを開くたびに、保存済みの最新値から編集を開始する。
   // 閉じている間に親の customRarities が変わってもズレないようにする。
   useEffect(() => {
-    if (isOpen) {
-      setList(customRarities);
-      setStyles(rarityStyles ?? {});
-      setInput("");
-      setError(null);
+    const wasOpen = previousIsOpen.current;
+    previousIsOpen.current = isOpen;
+    if (!isOpen) {
+      partialSaveSync.current = null;
+      return;
     }
+    // 部分保存で通知した payload を親が採用する1回だけ、未保存の色を維持する。
+    // 閉じた後に応答が来ても、次回 open は必ず保存済みの値から初期化する。
+    const partialSave = partialSaveSync.current;
+    partialSaveSync.current = null;
+    if (
+      wasOpen &&
+      partialSave &&
+      partialSave.customRarities === customRarities &&
+      partialSave.rarityStyles === rarityStyles
+    ) {
+      return;
+    }
+    setList(customRarities);
+    setStyles(rarityStyles ?? {});
+    setInput("");
+    setError(null);
   }, [isOpen, customRarities, rarityStyles]);
 
   // Issue #1783: スタイルは「リストに残っているレアリティ」の分だけを保存対象にする。
@@ -116,6 +140,7 @@ export default function CustomRarityModal({
   const handleClose = () => {
     if (hasChanges && !confirm(t("customRarity.confirmClose"))) return;
     // 次回開いたときに保存済みの値から再開できるよう破棄
+    partialSaveSync.current = null;
     setList(customRarities);
     // Issue #1783: スタイルも保存済みの値へ戻す（未保存の色変更を持ち越さない）。
     setStyles(rarityStyles ?? {});
@@ -176,6 +201,7 @@ export default function CustomRarityModal({
     }
     setSaving(true);
     setError(null);
+    partialSaveSync.current = null;
     try {
       const response = await fetch("/api/streamer/settings", {
         method: "POST",
@@ -188,6 +214,18 @@ export default function CustomRarityModal({
         // maintenance mode による503拒否ならサーバーの案内文言を優先する。
         const maintenanceError = parseMaintenanceError(response, data);
         throw new Error(maintenanceError?.message || data.error || t("customRarity.saveFailed"));
+      }
+      // Issue #1783: デプロイ窓で rarity_styles 列がまだ無い環境では、サーバーは他の設定
+      // だけを保存して 200 + rarityStylesSkippedDeployWindow を返す。ここで成功扱いにして
+      // 閉じると「保存できたように見えて色が失われる」ため、名前の保存だけを反映し、
+      // スタイルは保存済みの値を維持して、未保存の下書きと警告を残す（#1822 と同じ扱い）。
+      if (data.rarityStylesSkippedDeployWindow === true) {
+        const persisted = { customRarities: list, rarityStyles: rarityStyles ?? {} };
+        partialSaveSync.current = persisted;
+        onSaved(persisted.customRarities);
+        onSavedStyles?.(persisted.rarityStyles);
+        setError(t("customRarity.stylesNotSaved"));
+        return;
       }
       onSaved(list);
       onSavedStyles?.(stylesForList);

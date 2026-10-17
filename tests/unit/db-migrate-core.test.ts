@@ -774,6 +774,29 @@ describe('loadMigrationFilesFromDirs (Issue #691 Chunk 1 C-1対応)', () => {
     expect(bootstrapDescriptor).toBeDefined()
     expect(bootstrapDescriptor?.sourceDir).toBe(planetscaleDir)
   })
+
+  // Issue #1783 の実障害からの回帰: 同一 version（= 同一ファイル名）を両ディレクトリに置くと、
+  // ランナーは provider 絞り込みの**前**に version 重複で停止する（preview の PlanetScale
+  // Migrations がこの理由で apply 前に exit 1 した）。実ディレクトリを同時に読む経路で
+  // 重複が無いことを固定する。provider ヘッダーを足しても解消しない種類の破壊なので、
+  // ディレクトリ集合そのものに対する不変条件として検証する。
+  it('実ディレクトリ: 両ディレクトリを同時に読んでも version が重複しない', () => {
+    const supabaseDir = join(__dirname, '../../supabase/migrations')
+    const planetscaleDir = join(__dirname, '../../db/planetscale/migrations')
+    const descriptors = loadMigrationFilesFromDirs([supabaseDir, planetscaleDir])
+
+    expect(findDuplicateVersions(descriptors)).toEqual([])
+
+    // version 重複の原因そのもの（同一ファイル名の二重配置）も直接確認する。
+    const supabaseFilenames = new Set(
+      loadMigrationFiles(supabaseDir).map((d: { filename: string }) => d.filename)
+    )
+    const overlap = loadMigrationFiles(planetscaleDir)
+      .map((d: { filename: string }) => d.filename)
+      .filter((filename: string) => supabaseFilenames.has(filename))
+
+    expect(overlap).toEqual([])
+  })
 })
 
 describe('findDuplicateVersions', () => {
