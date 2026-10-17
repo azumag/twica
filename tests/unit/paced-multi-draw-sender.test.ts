@@ -129,6 +129,78 @@ describe('sendPacedMultiDrawChatAnnouncement', () => {
     expect(afterSegmentComplete).toHaveBeenLastCalledWith(1)
   })
 
+  it('propagates a budget-deferred chat send without advancing the cursor', async () => {
+    const afterSegmentComplete = vi.fn().mockResolvedValue(true)
+    const sendChatMessageDetailed = vi.fn().mockResolvedValue({ outcome: 'deferred', reason: 'budget' })
+
+    await expect(sendPacedMultiDrawChatAnnouncement(
+      'broadcaster',
+      [card(1), card(2)],
+      'user',
+      {
+        deliveryMode: 'individual',
+        chunkSize: 3,
+        startCursor: 0,
+        afterSegmentComplete,
+        delay: vi.fn().mockResolvedValue(undefined),
+        chatService: { sendChatMessageDetailed, sendChatMessage: vi.fn() },
+      },
+    )).resolves.toEqual({ outcome: 'deferred', reason: 'budget' })
+
+    expect(sendChatMessageDetailed).toHaveBeenCalledTimes(1)
+    expect(afterSegmentComplete).not.toHaveBeenCalled()
+  })
+
+  it('finishes a 12-draw notice across restartable slices after the total work exceeds 30 seconds', async () => {
+    let now = Date.now()
+    const startedAt = now
+    let cursor = 0
+    let nextChannelSlotAt = now
+    const sendStartedAt: number[] = []
+    const sendChatMessageDetailed = vi.fn(async () => {
+      sendStartedAt.push(now)
+      now += 3_000 // 実送信待ちが各segmentで続き、合計処理はwaitUntil枠を超える
+      return { outcome: 'sent' as const }
+    })
+    const channelGate = vi.fn(async () => {
+      now = Math.max(now, nextChannelSlotAt)
+      nextChannelSlotAt = now + 1_600
+      return { outcome: 'reserved' as const }
+    })
+    const cards = Array.from({ length: 12 }, (_, index) => card(index + 1))
+
+    for (let slice = 0; slice < 3; slice += 1) {
+      const sliceStartedAt = now
+      const outcome = await sendPacedMultiDrawChatAnnouncement(
+        'broadcaster',
+        cards,
+        'user',
+        {
+          deliveryMode: 'individual',
+          chunkSize: 3,
+          startCursor: cursor,
+          deadlineAt: sliceStartedAt + 20_000,
+          maxSegments: 4,
+          beforeExternalSend: async () => true,
+          afterSegmentComplete: async (nextCursor) => {
+            cursor = nextCursor
+            return true
+          },
+          channelGate,
+          chatService: { sendChatMessageDetailed, sendChatMessage: vi.fn() },
+        },
+      )
+
+      expect(outcome.outcome).toBe(slice < 2 ? 'deferred' : 'sent')
+      expect(cursor).toBe((slice + 1) * 4)
+    }
+
+    expect(cursor).toBe(12)
+    expect(sendChatMessageDetailed).toHaveBeenCalledTimes(12)
+    expect(now - startedAt).toBeGreaterThan(30_000)
+    expect(sendStartedAt.slice(1).every((sentAt, index) => sentAt - sendStartedAt[index]! >= 1_600)).toBe(true)
+  })
+
   it('treats Twitch duplicate as completed and advances the cursor', async () => {
     const afterSegmentComplete = vi.fn().mockResolvedValue(true)
     const sendChatMessageDetailed = vi.fn()

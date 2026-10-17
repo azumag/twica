@@ -429,11 +429,16 @@ describe('bounded delivery claim/release/retry/wake reservation (Issue #1665)', 
     vi.clearAllMocks()
   })
 
-  it('continuationからの再claimはattempt_countを消費しない', async () => {
-    const sqlMock = createSqlMock([[CLAIM_ROW]])
+  it.each([0, 1] as const)('bounded claimが今回のattempt増分%sを返す', async (increment) => {
+    const sqlMock = createSqlMock([[{ ...CLAIM_ROW, claim_attempt_increment: increment }]])
     vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
 
-    await claimChatNotificationForBoundedDelivery('batch-1')
+    await expect(claimChatNotificationForBoundedDelivery('batch-1')).resolves.toMatchObject({
+      id: CLAIM_ROW.id,
+      leaseId: CLAIM_ROW.lease_id,
+      attemptCount: CLAIM_ROW.attempt_count,
+      claimAttemptIncrement: increment,
+    })
 
     const rendered = renderSqlCall(sqlMock, 0)
     expect(rendered.text).toContain("when status = 'pending' and pending_kind = 'continuation' then 0")
@@ -476,12 +481,47 @@ describe('bounded delivery claim/release/retry/wake reservation (Issue #1665)', 
 
     const rendered = renderSqlCall(sqlMock, 0)
     expect(rendered.text).toContain("status = 'pending'")
-    expect(rendered.text).toContain("pending_kind = 'continuation'")
+    expect(rendered.text).toContain('pending_kind = case')
     expect(rendered.text).toContain('lease_id = null')
     expect(rendered.text).toContain("status = 'processing'")
     expect(rendered.text).toContain('lease_id = $::uuid')
-    expect(rendered.values).toContain(nextAttemptAt.toISOString())
-    expect(rendered.values).toContain(CLAIM_ROW.lease_id)
+    expect(rendered.values).toEqual([0, 0, nextAttemptAt.toISOString(), CLAIM_ROW.id, CLAIM_ROW.lease_id])
+  })
+
+  it.each([
+    ['初回/retryの未送信claim', 1, { beforeSend: true }, 1],
+    ['continuationの未送信claim', 0, { beforeSend: true }, 0],
+    ['送信を開始したclaim', 1, { beforeSend: false }, 0],
+    ['optionsのない既存caller', 1, undefined, 0],
+    ['増分metadataのない既存caller', undefined, { beforeSend: true }, 0],
+  ] as const)('releaseは%sの今回増分だけを取り消す', async (_name, increment, options, refund) => {
+    const sqlMock = createSqlMock([[{ id: CLAIM_ROW.id }]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+    const claimed = {
+      id: CLAIM_ROW.id,
+      leaseId: CLAIM_ROW.lease_id,
+      ...(increment === undefined ? {} : { claimAttemptIncrement: increment }),
+    }
+    const nextAttemptAt = new Date('2026-09-22T00:00:01.000Z')
+
+    await expect(releaseChatNotificationForContinuation(claimed, nextAttemptAt, options)).resolves.toBe(true)
+
+    // SQLの永続counter/競合はPostgreSQL suiteが検証する。ここではcallerから
+    // 渡された増分がquery parameterへ届くことだけを固定する。
+    expect(renderSqlCall(sqlMock, 0).values).toEqual([
+      refund, refund, nextAttemptAt.toISOString(), CLAIM_ROW.id, CLAIM_ROW.lease_id,
+    ])
+  })
+
+  it('未送信releaseの所有権が失われたら成功と報告しない', async () => {
+    const sqlMock = createSqlMock([[]])
+    vi.mocked(getDb).mockResolvedValue({ db: {} as never, sql: sqlMock as never })
+
+    await expect(releaseChatNotificationForContinuation({
+      id: CLAIM_ROW.id,
+      leaseId: CLAIM_ROW.lease_id,
+      claimAttemptIncrement: 1,
+    }, new Date('2026-09-22T00:00:01.000Z'), { beforeSend: true })).resolves.toBe(false)
   })
 
   it('bounded delivery専用retryはpending_kindをretryに設定し、実障害の上限を維持する', async () => {

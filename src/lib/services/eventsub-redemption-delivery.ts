@@ -17,6 +17,7 @@ import {
   sendPacedMultiDrawChatAnnouncement,
   type ChatChannelGateResult,
 } from '@/lib/twitch/paced-multi-draw-sender'
+import type { ChatSendFenceResult } from '@/lib/twitch/chat-service'
 
 function hasCompleteIndividualCardCountSnapshot(
   cards: RedemptionNotifyData['gachaResult']['cards'],
@@ -60,7 +61,7 @@ export interface ChatDeliveryBudgetOptions {
 export async function sendClaimedChatAnnouncement(
   claim: ClaimedChatNotification,
   data: RedemptionNotifyData,
-  beforeExternalSend: () => Promise<boolean>,
+  beforeExternalSend: () => Promise<ChatSendFenceResult>,
   budget: ChatDeliveryBudgetOptions = {},
 ): Promise<ChatAnnouncementOutcome> {
   const drawnCards = data.gachaResult.cards?.length

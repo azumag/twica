@@ -24,6 +24,7 @@ import {
   postRedemptionNotify,
 } from "@/lib/services/eventsub-redemption";
 import { sendClaimedChatAnnouncement } from "@/lib/services/eventsub-redemption-delivery";
+import { dispatchDueChatNotifications } from "@/lib/services/chat-notification-dispatch";
 
 /**
  * EventSubリプレイ機構 (Issue #787)
@@ -85,6 +86,13 @@ const CHAT_SEND_SETTLEMENT_RESERVE_MS = 15_000;
 // DB outboxが常に満杯でも、同じrequest内でmaintenance KVを処理する余地を残す。
 // 次tickは未claim行を期限順に続行するため、throughputより公平性とtimeout回避を優先。
 const CHAT_OUTBOX_RELAY_LIMIT = 5;
+// Issue #1665 Step 3: 専用Queue経路が有効なあいだ、このrelayは配送ownerに
+// ならず due 行の起床通知enqueue（回収sweep）だけを行う。上限・予約秒数は
+// 内部endpoint（src/app/api/internal/chat-outbox/route.ts の
+// DEFAULT_DISPATCH_DUE_LIMIT / DUE_WAKE_RESERVATION_SECONDS）と同値にそろえる。
+// enqueueはTwitch送信を含まないため、relayのbudget内で余裕を持って処理できる。
+const CHAT_DUE_WAKE_SWEEP_LIMIT = 25;
+const CHAT_DUE_WAKE_RESERVATION_SECONDS = 120;
 
 interface ReplayRequestBody {
   cursor?: string;
@@ -145,13 +153,16 @@ async function awaitBeforeReplayDeadline<T>(
  * - invalid-payload: payload.event が欠落/非object等、データ自体が壊れている
  *   （低-6: DB一時障害と違いリトライしても永久に解決しないため、
  *   このケースに限りKVエントリを削除してよい）
+ * - dispatched: Issue #1665 Step 3。専用Queue経路が有効なあいだ、このrelayは
+ *   配送ownerにならず due 行の起床通知enqueueだけを行った（1エントリ=1sweepの
+ *   集計。実配送はchat-delivery Worker経由のdeliverが担う）
  */
 interface ReplayResultEntry {
   key: string;
   messageId: string;
   subscriptionType: string;
   receivedAt: string;
-  outcome: "succeeded" | "skipped" | "failed" | "dry-run" | "unknown-type" | "invalid-payload";
+  outcome: "succeeded" | "skipped" | "failed" | "dry-run" | "unknown-type" | "invalid-payload" | "dispatched";
   error?: string;
 }
 
@@ -302,6 +313,9 @@ export async function POST(request: NextRequest) {
   );
 
   const results: ReplayResultEntry[] = [];
+  // dispatchedの集計結果は予約行全体を1件として表すため、enqueueに失敗した行も含め
+  // 実予約件数をDB+KV共通のrequest上限で消費する。
+  let chatDispatchExtraRequestLimitRows = 0;
 
   if (dryRun) {
     const workItems = await peekChatNotificationOutboxWork(limit);
@@ -323,10 +337,80 @@ export async function POST(request: NextRequest) {
   // Cronの次回実行ごとに独立したchat batchをdrainでき、KV復旧を待つ必要がない。
   // dry-runはclaim/状態変更を一切しない。
   if (!dryRun) {
+    // Issue #1665 Step 3: 専用Queue経路（chat-delivery Worker + 内部endpoint）
+    // が有効なあいだ、このCron relayは配送owner（claim→送信→ack）にならず、
+    // due行の起床通知enqueue（回収sweep）だけを行う。live EventSub経路
+    // （eventsub-redemption.ts の enqueueChatNotificationWakeup）と配送の
+    // 入口を統一し、旧経路（下のclaimループ）と新経路が同じoutbox行を別ownerと
+    // して掴み合う二重ownerを構造的に防ぐ。DBのowner-fenced claimは二重送信は
+    // 防いでも、lease競合・attempt消費・channel gateの間隔違反までは防げない
+    // ため、入口を一本化する。
+    //
+    // sweepがskippedDisabled（フラグ未設定=初期状態）を返した場合だけ、従来の
+    // claimループへフォールバックする。enqueue失敗（Queue未配備・send失敗）でも
+    // 旧ループには戻さない（Issue #1665設計:「Queue binding未設定・Queue障害を
+    // 成功扱いにせず…旧長時間ループへ自動フォールバックしない」。行はpendingの
+    // まま残り、chat-delivery Workerの1分周期sweepが回収する）。sweep自体が
+    // throwした場合も、reserveはフラグ有効時にしか走らないため新経路が有効
+    // だったと見なし、旧ownerへのフォールバックはしない（二重owner防止優先）。
+    let chatDispatchHandoff = false;
+    try {
+      const sweepResult = await awaitBeforeReplayDeadline(
+        dispatchDueChatNotifications(
+          Math.min(limit, CHAT_DUE_WAKE_SWEEP_LIMIT),
+          CHAT_DUE_WAKE_RESERVATION_SECONDS,
+        ),
+        replayDeadlineAt,
+      );
+      if (sweepResult.completed && !sweepResult.value.skippedDisabled) {
+        chatDispatchHandoff = true;
+        const { reserved, enqueued } = sweepResult.value;
+        // resultsには集計1件だけが追加されるため、残りの予約行をrequest budgetへ加算する。
+        // enqueue失敗時も予約は有効なので、reservedの件数をそのまま使う。
+        chatDispatchExtraRequestLimitRows = Math.max(0, reserved - 1);
+        if (reserved > 0) {
+          // 1エントリ=1sweepの集計。enqueue失敗分はpendingのまま残るため
+          // 「failed」にはせず、運用が気づけるようerrorに件数だけ残す
+          // （Queue障害そのものはdispatch側のreportErrorで捕捉される）。
+          results.push({
+            key: "chat-outbox:dispatch-due",
+            messageId: `dispatch-due:${reserved}`,
+            subscriptionType: "twica.transactional-chat-outbox.v1",
+            receivedAt: new Date().toISOString(),
+            outcome: "dispatched",
+            ...(enqueued < reserved
+              ? {
+                  error: `enqueued ${enqueued} of ${reserved} reserved rows; remainder stays pending`,
+                }
+              : {}),
+          });
+        }
+        logger.info("[eventsub-replay] chat outbox handed off to dedicated queue dispatcher", {
+          reserved,
+          enqueued,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error("[eventsub-replay] chat dispatch sweep failed; rows stay pending", {
+        error: message,
+      });
+      await reportErrorSafely(
+        new Error(`[eventsub-replay] chat dispatch sweep failed: ${message}`),
+        {
+          key: "chat-outbox:dispatch-due",
+          subscriptionType: "twica.transactional-chat-outbox.v1",
+        },
+      );
+      chatDispatchHandoff = true;
+    }
+
     // まとめてleaseして直列送信すると後半のleaseが送信前に失効するため、
     // 1件claim→送信→ackを繰り返す。最初のclaimだけ保持期限メンテナンスも行う。
     const chatOutboxLimit = Math.min(limit, CHAT_OUTBOX_RELAY_LIMIT);
     for (let claimIndex = 0; claimIndex < chatOutboxLimit; claimIndex += 1) {
+      // 新経路が配送ownerのあいだは、この旧ownerループへ入らない。
+      if (chatDispatchHandoff) break;
       if (Date.now() >= replayDeadlineAt) break;
       const claimResult = await awaitBeforeReplayDeadline(
         claimDueChatNotifications(1, {
@@ -542,7 +626,9 @@ export async function POST(request: NextRequest) {
   // non-dry-runではDB outboxとKVを合わせてrequest limit以内に収める。
   // DB側で上限を消費した場合やdeadline到達時はcursorを進めず、次tickで同じ
   // backlogを確実に再評価する。dry-runは両保存先の最古候補比較だけなので別枠。
-  const remainingKvLimit = dryRun ? limit : Math.max(0, limit - results.length);
+  const remainingKvLimit = dryRun
+    ? limit
+    : Math.max(0, limit - results.length - chatDispatchExtraRequestLimitRows);
   const parkedListResult = remainingKvLimit > 0 && Date.now() < replayDeadlineAt
     ? await awaitBeforeReplayDeadline(
         listParkedEventSubNotifications({
@@ -741,6 +827,7 @@ export async function POST(request: NextRequest) {
     failed: results.filter((r) => r.outcome === "failed").length,
     unknownType: results.filter((r) => r.outcome === "unknown-type").length,
     invalidPayload: results.filter((r) => r.outcome === "invalid-payload").length,
+    dispatched: results.filter((r) => r.outcome === "dispatched").length,
     total: results.length,
   };
 

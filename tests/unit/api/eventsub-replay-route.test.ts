@@ -34,6 +34,10 @@ const mocks = vi.hoisted(() => ({
   // getCloudflareContext呼び出しへ到達し、vi.useFakeTimers()下で解決しない
   // Promiseを待ち続けてテストがtimeoutする。
   enqueueChatNotificationWakeup: vi.fn(),
+  // Issue #1665 Step 3: 専用Queue経路が有効なあいだ、Cron relayはclaim→送信→
+  // ackの旧ownerループへ入らず、dispatchDueChatNotifications（起床通知enqueue）
+  // だけを行う。既定値(skippedDisabled=true=フラグ未設定)はbeforeEachで設定する。
+  dispatchDueChatNotifications: vi.fn(),
 }))
 
 vi.mock('@/lib/maintenance/eventsub-park', () => ({
@@ -59,6 +63,7 @@ vi.mock('@/lib/services/chat-notification-congestion', () => ({
 
 vi.mock('@/lib/services/chat-notification-dispatch', () => ({
   enqueueChatNotificationWakeup: mocks.enqueueChatNotificationWakeup,
+  dispatchDueChatNotifications: mocks.dispatchDueChatNotifications,
 }))
 
 vi.mock('@/lib/overlay-realtime/publisher', () => ({
@@ -178,13 +183,14 @@ function makeChatOutboxClaim(payloadOverrides: Record<string, unknown> = {}) {
   }
 }
 
-/** counts の完全一致比較用ヘルパー。新設カテゴリ(unknownType/invalidPayload)は省略時0。 */
+/** counts の完全一致比較用ヘルパー。新設カテゴリ(unknownType/invalidPayload/dispatched)は省略時0。 */
 function expectedCounts(overrides: Partial<{
   succeeded: number
   skipped: number
   failed: number
   unknownType: number
   invalidPayload: number
+  dispatched: number
   total: number
 }>) {
   return {
@@ -193,6 +199,7 @@ function expectedCounts(overrides: Partial<{
     failed: 0,
     unknownType: 0,
     invalidPayload: 0,
+    dispatched: 0,
     total: 0,
     ...overrides,
   }
@@ -236,6 +243,15 @@ describe('POST /api/admin/eventsub-replay', () => {
     // 一切進まなくなる）。
     mocks.enqueueChatNotificationWakeup.mockReset()
     mocks.enqueueChatNotificationWakeup.mockResolvedValue({ outcome: 'disabled' })
+    // Issue #1665 Step 3: 既定はフラグ未設定（sweepは何も予約せず
+    // skippedDisabled=true）。既存testはこの既定のまま旧claimループの
+    // 挙動を検証する。
+    mocks.dispatchDueChatNotifications.mockReset()
+    mocks.dispatchDueChatNotifications.mockResolvedValue({
+      reserved: 0,
+      enqueued: 0,
+      skippedDisabled: true,
+    })
   })
 
   afterEach(() => {
@@ -1058,6 +1074,171 @@ describe('POST /api/admin/eventsub-replay', () => {
       ])
       expect(mocks.peekChatNotificationOutboxWork).toHaveBeenCalledWith(1)
       expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('専用Queue経路有効時の配送owner一本化（Issue #1665 Step 3）', () => {
+    it('sweepがdue行を予約・enqueueしたら、旧ownerのclaimループへ入らずdispatchedだけを記録する', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 3,
+        enqueued: 3,
+        skippedDisabled: false,
+      })
+      const record = makeRecord()
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [{ key: 'maintenance:eventsub:key-1', record }],
+        cursor: undefined,
+        listComplete: true,
+      })
+      mocks.handleRedemption.mockResolvedValue({ notify: null, retryable: false })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ limit: 100 }))).json()
+
+      // 25件の内部sweep上限を維持しつつ、request limitが十分な場合の値を確認する。
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(25, 120)
+      // 旧owner（claim→送信→ack）は一切動かない。
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimChatNotificationBatch).not.toHaveBeenCalled()
+      // handoff後もKV backlogの処理は同じrequestで続行する。
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          key: 'chat-outbox:dispatch-due',
+          outcome: 'dispatched',
+        }),
+        expect.objectContaining({ key: 'maintenance:eventsub:key-1', outcome: 'skipped' }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ dispatched: 1, skipped: 1, total: 2 }))
+    })
+
+    it('request limitが2件ならsweepを2件に制限し、2行を予約した場合はKV一覧を呼ばない', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 2,
+        enqueued: 2,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ limit: 2 }))).json()
+
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(2, 120)
+      expect(mocks.listParkedEventSubNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([
+        expect.objectContaining({ key: 'chat-outbox:dispatch-due', outcome: 'dispatched' }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ dispatched: 1, total: 1 }))
+    })
+
+    it('enqueue失敗分も予約行としてrequest limitを消費し、残り1件だけKV一覧を読む', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 2,
+        enqueued: 1,
+        skippedDisabled: false,
+      })
+      mocks.listParkedEventSubNotifications.mockResolvedValue({
+        entries: [],
+        cursor: undefined,
+        listComplete: true,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ limit: 3 }))).json()
+
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(3, 120)
+      expect(mocks.listParkedEventSubNotifications).toHaveBeenCalledWith({
+        cursor: undefined,
+        limit: 1,
+      })
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          key: 'chat-outbox:dispatch-due',
+          outcome: 'dispatched',
+          error: 'enqueued 1 of 2 reserved rows; remainder stays pending',
+        }),
+      ])
+      expect(json.counts).toEqual(expectedCounts({ dispatched: 1, total: 1 }))
+    })
+
+    it('sweepが0件を予約したときはdispatchedエントリを出さない（Cronログのノイズ回避）', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 0,
+        enqueued: 0,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([])
+      expect(json.counts).toEqual(expectedCounts({}))
+    })
+
+    it('enqueueが一部失敗しても旧ループへフォールバックせず、件数をerrorに残してpendingのまま残す', async () => {
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 3,
+        enqueued: 1,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([
+        expect.objectContaining({
+          outcome: 'dispatched',
+          error: 'enqueued 1 of 3 reserved rows; remainder stays pending',
+        }),
+      ])
+    })
+
+    it('sweep自体がthrowしても旧ownerへフォールバックせず、行はpendingのまま残す', async () => {
+      mocks.dispatchDueChatNotifications.mockRejectedValueOnce(
+        new Error('wake reservation storage unavailable'),
+      )
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+
+      expect(response.status).toBe(200)
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimChatNotificationBatch).not.toHaveBeenCalled()
+      expect(mocks.reportError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining('chat dispatch sweep failed'),
+        }),
+        expect.objectContaining({ key: 'chat-outbox:dispatch-due' }),
+      )
+    })
+
+    it('dispatch無効（既定）なら従来のclaimループがそのまま動く', async () => {
+      const cards = Array.from({ length: 3 }, (_, index) => ({
+        id: `card-${index + 1}`, name: `Card ${index + 1}`, description: null,
+        image_url: null, rarity: 'rare', drop_rate: 1,
+      }))
+      const claim = {
+        ...makeChatOutboxClaim({ card: cards[0], cards }),
+        deliveryMode: 'individual' as const,
+        deliveryChunkSize: 3,
+        deliveryCursor: 0,
+      }
+      mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
+      const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+        .mockImplementation(async (_broadcaster, _message, options) => {
+          expect(await options?.beforeExternalSend?.()).toBe(true)
+          return { outcome: 'sent' }
+        })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(20, 120)
+      expect(mocks.claimDueChatNotifications).toHaveBeenCalledWith(1, { maintain: true })
+      expect(send).toHaveBeenCalledTimes(3)
+      expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(1)
+      expect(json.results.some((entry: { outcome: string }) => entry.outcome === 'dispatched')).toBe(false)
+      expect(json.results[0].outcome).toBe('succeeded')
     })
   })
 
