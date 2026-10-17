@@ -202,7 +202,7 @@ export async function peekChatNotificationOutboxWork(
  * 20分間隔のrelayへ集約する。sentは7日、調査・手動回収用deadは30日で削除し、
  * JSON payloadを無期限に残さない。
  */
-async function maintainChatNotificationOutbox(): Promise<void> {
+export async function maintainChatNotificationOutbox(): Promise<void> {
   const { sql } = await getDb()
   await sql`
     update chat_notification_outbox

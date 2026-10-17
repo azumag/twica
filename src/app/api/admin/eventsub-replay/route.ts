@@ -11,6 +11,7 @@ import {
 } from "@/lib/maintenance/eventsub-park";
 import {
   claimDueChatNotifications,
+  maintainChatNotificationOutbox,
   decodeChatNotificationPayload,
   deadLetterChatNotification,
   markChatNotificationSent,
@@ -337,6 +338,10 @@ export async function POST(request: NextRequest) {
   // Cronの次回実行ごとに独立したchat batchをdrainでき、KV復旧を待つ必要がない。
   // dry-runはclaim/状態変更を一切しない。
   if (!dryRun) {
+    // Issue #1665 Step 3: 保持期限メンテナンスは配送ownerの分岐に関係なく
+    // non-dry-run で1回実行する（sent 7日 / dead 30日 の掃除、attempt上限到達行のdead化）。
+    // 下のclaimループは maintain: false を渡して二重実行を避ける。
+    await maintainChatNotificationOutbox()
     // Issue #1665 Step 3: 専用Queue経路（chat-delivery Worker + 内部endpoint）
     // が有効なあいだ、このCron relayは配送owner（claim→送信→ack）にならず、
     // due行の起床通知enqueue（回収sweep）だけを行う。live EventSub経路
@@ -414,7 +419,7 @@ export async function POST(request: NextRequest) {
       if (Date.now() >= replayDeadlineAt) break;
       const claimResult = await awaitBeforeReplayDeadline(
         claimDueChatNotifications(1, {
-          maintain: claimIndex === 0,
+          maintain: false,
         }),
         replayDeadlineAt,
       );

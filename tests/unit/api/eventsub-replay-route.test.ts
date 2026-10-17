@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   deleteParkedEventSubNotification: vi.fn(),
   claimChatNotificationBatch: vi.fn(),
   claimDueChatNotifications: vi.fn(),
+  maintainChatNotificationOutbox: vi.fn(),
   advanceChatNotificationDeliveryCursor: vi.fn(),
   resolveChatNotificationDeliveryMode: vi.fn(),
   peekChatNotificationOutboxWork: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock('@/lib/maintenance/eventsub-park', () => ({
 vi.mock('@/lib/services/chat-notification-outbox', () => ({
   claimChatNotificationBatch: mocks.claimChatNotificationBatch,
   claimDueChatNotifications: mocks.claimDueChatNotifications,
+  maintainChatNotificationOutbox: mocks.maintainChatNotificationOutbox,
   advanceChatNotificationDeliveryCursor: mocks.advanceChatNotificationDeliveryCursor,
   peekChatNotificationOutboxWork: mocks.peekChatNotificationOutboxWork,
   decodeChatNotificationPayload: mocks.decodeChatNotificationPayload,
@@ -219,6 +221,11 @@ describe('POST /api/admin/eventsub-replay', () => {
     mocks.deleteParkedEventSubNotification.mockResolvedValue(undefined)
     mocks.claimDueChatNotifications.mockReset()
     mocks.claimDueChatNotifications.mockResolvedValue([])
+    // Issue #1665 Step 3 レビュー指摘(P2): 保持期限メンテナンスは配送ownerの分岐から
+    // 分離され、relay（non-dry-run）が必ず1回呼ぶ。afterEachのrestoreAllMocksで
+    // 実装が消えるため、claimと同じくbeforeEachで再設定する。
+    mocks.maintainChatNotificationOutbox.mockReset()
+    mocks.maintainChatNotificationOutbox.mockResolvedValue(undefined)
     mocks.peekChatNotificationOutboxWork.mockResolvedValue([])
     mocks.decodeChatNotificationPayload.mockImplementation((claim) => {
       const payload = claim?.payload
@@ -1007,10 +1014,12 @@ describe('POST /api/admin/eventsub-replay', () => {
       mocks.sendChatAnnouncement.mockResolvedValue({ outcome: 'sent' })
       const second = await (await POST(createReplayRequest({ limit: 20 }))).json()
 
+      // 保持期限メンテナンスはrelay本体の分離実行へ移ったため、claim側では行わない
+      // （実行回数はmaintainChatNotificationOutbox側で検証する）。
       expect(mocks.claimDueChatNotifications).toHaveBeenNthCalledWith(
         21,
         1,
-        { maintain: true },
+        { maintain: false },
       )
       expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(twentyFirst)
       expect(second.counts).toEqual(expectedCounts({ succeeded: 1, total: 1 }))
@@ -1234,11 +1243,59 @@ describe('POST /api/admin/eventsub-replay', () => {
       const json = await (await POST(createReplayRequest({}))).json()
 
       expect(mocks.dispatchDueChatNotifications).toHaveBeenCalledWith(20, 120)
-      expect(mocks.claimDueChatNotifications).toHaveBeenCalledWith(1, { maintain: true })
+      expect(mocks.claimDueChatNotifications).toHaveBeenCalledWith(1, { maintain: false })
+      expect(mocks.maintainChatNotificationOutbox).toHaveBeenCalledTimes(1)
       expect(send).toHaveBeenCalledTimes(3)
       expect(mocks.markChatNotificationSent).toHaveBeenCalledTimes(1)
       expect(json.results.some((entry: { outcome: string }) => entry.outcome === 'dispatched')).toBe(false)
       expect(json.results[0].outcome).toBe('succeeded')
+    })
+
+    // Issue #1665 Step 3 レビュー指摘(P2)の回帰。Queue経路へ配送ownerを
+    // 引き継いだ後も、保持期限メンテナンス（試行上限到達行のdead化 + sent/deadの
+    // 保持期限削除）が止まらないことを固定する。旧claimループへは入らないまま
+    // （二重owner防止）、メンテナンスだけは owner 分岐に関係なく実行される。
+    it('Queue経路が配送ownerでも保持期限メンテナンスを1回実行し、旧claimとTwitch送信を行わない', async () => {
+      const send = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed')
+      mocks.dispatchDueChatNotifications.mockResolvedValueOnce({
+        reserved: 2,
+        enqueued: 2,
+        skippedDisabled: false,
+      })
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({}))).json()
+
+      expect(mocks.maintainChatNotificationOutbox).toHaveBeenCalledTimes(1)
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.claimChatNotificationBatch).not.toHaveBeenCalled()
+      expect(send).not.toHaveBeenCalled()
+      expect(json.results).toEqual([
+        expect.objectContaining({ key: 'chat-outbox:dispatch-due', outcome: 'dispatched' }),
+      ])
+    })
+
+    it('sweepがthrowして旧ownerへフォールバックしない場合でも保持期限メンテナンスは実行する', async () => {
+      mocks.dispatchDueChatNotifications.mockRejectedValueOnce(
+        new Error('wake reservation storage unavailable'),
+      )
+
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const response = await POST(createReplayRequest({}))
+
+      expect(response.status).toBe(200)
+      expect(mocks.maintainChatNotificationOutbox).toHaveBeenCalledTimes(1)
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+    })
+
+    it('dry-runでは保持期限メンテナンスも旧claimも実行しない', async () => {
+      const { POST } = await import('@/app/api/admin/eventsub-replay/route')
+      const json = await (await POST(createReplayRequest({ dryRun: true }))).json()
+
+      expect(mocks.maintainChatNotificationOutbox).not.toHaveBeenCalled()
+      expect(mocks.claimDueChatNotifications).not.toHaveBeenCalled()
+      expect(mocks.dispatchDueChatNotifications).not.toHaveBeenCalled()
+      expect(json.results).toEqual([])
     })
   })
 
