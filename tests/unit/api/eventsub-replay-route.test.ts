@@ -1519,7 +1519,10 @@ describe('POST /api/admin/eventsub-replay', () => {
       mocks.claimDueChatNotifications.mockResolvedValue([makeChatOutboxClaim()])
 
       // 期限内に報告を開始し、完了時に時計が期限を越えている経路。
+      // （時計操作はマイクロタスクへ遅延させる: helper が remainingMs を計算した後に
+      //   期限を越えることで、「期限後に完了」の実時間軸を再現する。）
       mocks.reportError.mockImplementation(async () => {
+        await Promise.resolve()
         vi.setSystemTime(new Date(106_000))
       })
 
@@ -1541,7 +1544,9 @@ describe('POST /api/admin/eventsub-replay', () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date(0))
       mocks.maintainChatNotificationOutbox.mockImplementation(async () => {
-        // 期限内に開始し、完了時に時計が期限を越えている経路。
+        // 期限内に開始し、完了時に時計が期限を越えている経路（時計操作は helper の
+        // remainingMs 計算後に走らせる）。
+        await Promise.resolve()
         vi.setSystemTime(new Date(106_000))
       })
       mocks.dispatchDueChatNotifications.mockResolvedValue({
