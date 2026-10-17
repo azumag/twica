@@ -312,6 +312,22 @@ export const ERROR_MESSAGES = {
   TRADE_WANTED_CARD_NOT_WANTABLE: 'The streamer does not allow requesting this card in trades',
   TRADE_OFFERED_CARD_INACTIVE: 'This card is no longer available for trading',
   TRADE_OFFER_UNAVAILABLE: 'This trade offer is not currently available',
+  // Trade auctions (Issue #1791)
+  TRADE_AUCTION_UNAVAILABLE: 'Trade auctions are not available yet',
+  TRADE_AUCTION_NOT_FOUND: 'Trade auction not found',
+  TRADE_AUCTION_NOT_OPEN: 'This auction is no longer accepting bids or changes',
+  TRADE_AUCTION_STILL_BIDDING: 'The auction has not ended yet',
+  TRADE_AUCTION_EXPIRED: 'The selection period of this auction has ended',
+  TRADE_AUCTION_HAS_BIDS: 'An auction with active bids cannot be cancelled',
+  TRADE_AUCTION_SELF_BID: 'You cannot bid on your own auction',
+  TRADE_AUCTION_BID_NOT_FOUND: 'Bid not found',
+  TRADE_AUCTION_BID_NOT_ACTIVE: 'This bid is no longer active',
+  TRADE_AUCTION_BID_LOCKED: 'This bid cannot be withdrawn while the seller is choosing a winner',
+  TRADE_AUCTION_BID_LIMIT: 'You have reached the maximum number of active bids',
+  TRADE_AUCTION_BID_INVALID: 'This bid can no longer be completed',
+  TRADE_BID_CARD_UNAVAILABLE: 'This card cannot be used for a bid',
+  TRADE_BID_CARD_NOT_WANTABLE: 'The streamer does not allow using this card in trades',
+  TRADE_NOT_ENOUGH_CARDS: 'You do not have enough free copies of this card',
   UNEXPECTED_ERROR: 'Unexpected error',
 
   // File upload errors
