@@ -6,9 +6,9 @@ import {
   RARITY_ORDER,
 } from "./constants";
 import {
-  isAllowedColorValue,
-  isAllowedGlowValue,
-  isAllowedGradientValue,
+  normalizeColorValue,
+  normalizeGlowValue,
+  normalizeGradientValue,
   type RarityStyle,
   type RarityStyles,
 } from "./rarity-styles";
@@ -210,6 +210,10 @@ export interface RarityStylePresentation {
  * いるが、JSONB は手編集・過去データ・部分破損を起こし得るため、描画側でも
  * 「不正値を弾く」のではなく「不正値を捨てる」。値は inline style の CSS カスタム
  * プロパティ / className として出力されるので、許可形式以外は一切通さない。
+ *
+ * 正規化も行う（normalize*Value）。フェーズ1 の間にプリセット Tailwind クラス形式
+ * （`bg-red-500` 等）で保存された行は、そのままでは CSS が生成されず無色になるため、
+ * 描画時に HEX へ変換して色を保つ（Issue #1783 互換対応）。
  * effect はこの描画層では未使用（オーバーレイのエフェクトは別 issue で扱う）ため
  * 読み出さない。
  */
@@ -217,14 +221,17 @@ function sanitizeRarityStyle(style: unknown): RarityStyle {
   if (!style || typeof style !== "object" || Array.isArray(style)) return {};
   const source = style as Record<string, unknown>;
   const safe: RarityStyle = {};
-  if (typeof source.color === "string" && isAllowedColorValue(source.color)) {
-    safe.color = source.color;
+  if (typeof source.color === "string") {
+    const color = normalizeColorValue(source.color);
+    if (color) safe.color = color;
   }
-  if (typeof source.gradient === "string" && isAllowedGradientValue(source.gradient)) {
-    safe.gradient = source.gradient;
+  if (typeof source.gradient === "string") {
+    const gradient = normalizeGradientValue(source.gradient);
+    if (gradient) safe.gradient = gradient;
   }
-  if (typeof source.glow === "string" && isAllowedGlowValue(source.glow)) {
-    safe.glow = source.glow;
+  if (typeof source.glow === "string") {
+    const glow = normalizeGlowValue(source.glow);
+    if (glow) safe.glow = glow;
   }
   return safe;
 }
@@ -233,9 +240,9 @@ function sanitizeRarityStyle(style: unknown): RarityStyle {
  * レアリティ名→表示スタイルマップから、そのレアリティの描画スタイルを解決する。
  *
  * - カスタムスタイルが無いレアリティは従来（プリセット）と完全に同じ出力。
- * - 受理される色の値は HEX のみ（保存側 rarity-styles.ts と同一規則）。HEX は
- *   CSS 変数 + var() 参照クラスへ変換して当てる。値が許可形式でなければ
- *   sanitizeRarityStyle が捨て、プリセットの色になる。
+ * - 受理される色の値は HEX（保存側 rarity-styles.ts と同一規則）。HEX は CSS 変数 +
+ *   var() 参照クラスへ変換して当てる。legacy のプリセット形式は sanitizeRarityStyle が
+ *   HEX へ正規化する。正規化できない値は捨て、プリセットの色になる。
  * - グラデーションの HEX ペアは from/to が両方揃ったときだけ採用する。片方だけ
  *   だと中間色が壊れるため、不正値ではなく未設定扱いにしてプリセットへ戻す。
  *

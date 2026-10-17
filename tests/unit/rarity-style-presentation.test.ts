@@ -93,25 +93,43 @@ describe("getRarityStylePresentation", () => {
     });
   });
 
-  describe("受理されない形式（クラス形式）の縮退", () => {
-    it("Tailwind クラス形式の値は採用せずプリセット色へ戻す", () => {
-      // 値の許可形式は HEX のみ（rarity-styles.ts）。クラス形式が DB に残っていても
-      // （フェーズ1期のデータ・手編集）、描画は既定色へ倒す。Tailwind はソース走査で
-      // しかクラスを生成しないため、DB由来のクラスは CSS に存在し得ない。
+  describe("legacy プリセット形式の正規化（互換）", () => {
+    it("フェーズ1 が保存した Tailwind クラス形式を HEX へ正規化して描画する", () => {
+      // フェーズ1 の API はクラス形式も受理していた。Tailwind はソース走査でしか
+      // クラスを生成しないため DB 由来のクラスは CSS に存在し得ず、そのままでは
+      // 無色になる。描画時に HEX へ正規化して色を保つ（Issue #1783 互換対応）。
       const styles = {
         mythic: {
           color: "bg-red-500",
-          gradient: "from-red-500 to-blue-500",
-          glow: "shadow-red-500/50",
+          gradient: "from-red-500 to-blue-600",
+          glow: "shadow-purple-500/50",
         },
       } as unknown as RarityStyles;
 
       expect(getRarityStylePresentation("mythic", styles)).toEqual({
-        colorClass: DEFAULT_RARITY_COLOR_CLASS,
-        gradientClass: DEFAULT_RARITY_GRADIENT_CLASS,
-        glowClass: DEFAULT_RARITY_GLOW_CLASS,
-        styleVars: {},
+        colorClass: RARITY_STYLE_VAR_CLASSES.color,
+        gradientClass: RARITY_STYLE_VAR_CLASSES.gradient,
+        glowClass: RARITY_STYLE_VAR_CLASSES.glow,
+        styleVars: {
+          [RARITY_STYLE_CSS_VARS.color]: "#fb2c36",
+          [RARITY_STYLE_CSS_VARS.gradientFrom]: "#fb2c36",
+          [RARITY_STYLE_CSS_VARS.gradientTo]: "#155dfc",
+          [RARITY_STYLE_CSS_VARS.glow]: "#ad46ff80",
+        },
       });
+    });
+
+    it("未知の色名・シェードは正規化せずプリセット色へ戻す", () => {
+      // フェーズ1 の許可集合は 18 色 × 11 シェードのみ。slate などは対象外。
+      const styles = {
+        mythic: { color: "bg-slate-500" },
+        other: { color: "bg-red-1000" },
+      } as unknown as RarityStyles;
+
+      expect(getRarityStylePresentation("mythic", styles).colorClass).toBe(
+        DEFAULT_RARITY_COLOR_CLASS,
+      );
+      expect(getRarityStylePresentation("other", styles).styleVars).toEqual({});
     });
   });
 
@@ -221,7 +239,17 @@ describe("getRarityStylePresentation", () => {
       );
     });
 
-    it.each(["constructor", "toString", "valueOf", "hasOwnProperty"])(
+    it("constructor 名のレアリティに設定された色は、own プロパティとして描画に使われる", () => {
+      // 画面側は "constructor" をカスタムレアリティ名として許可する。JSON.parse で作られた
+      // own プロパティは継承プロパティより優先されるため、その色が正しく適用される。
+      const styles = JSON.parse('{"constructor": {"color": "#ff0000"}}') as RarityStyles;
+      const presentation = getRarityStylePresentation("constructor", styles);
+
+      expect(presentation.colorClass).toBe(RARITY_STYLE_VAR_CLASSES.color);
+      expect(presentation.styleVars).toEqual({ [RARITY_STYLE_CSS_VARS.color]: "#ff0000" });
+    });
+
+    it.each(["toString", "valueOf", "hasOwnProperty"])(
       "Object.prototype 由来の名前 %s でも継承プロパティを返さない",
       (rarity) => {
         // 通常のルックアップだと RARITY_COLORS["constructor"] は Object 関数を返し、
