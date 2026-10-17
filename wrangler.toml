@@ -78,6 +78,14 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 binding = "OVERLAY_REALTIME_SERVICE"
 service = "twica-overlay-realtime"
 
+# Production queue producer binding (Issue #1665 Step 5, provisioned 2026-10-17).
+# Queue: chat-notification-wakeup (cf810bd69e1d42e99b419284bc13b0b5).
+# Dispatch is gated by the dispatch-flag secret; binding alone does
+# not enable delivery (fail-closed when the flag is off).
+[[queues.producers]]
+binding = "CHAT_NOTIFICATION_QUEUE"
+queue = "chat-notification-wakeup"
+
 # Public value that must survive dashboard-only configuration overwrites.
 [vars]
 NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
