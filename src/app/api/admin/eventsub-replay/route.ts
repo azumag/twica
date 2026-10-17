@@ -351,15 +351,30 @@ export async function POST(request: NextRequest) {
     // 守る: ここでも共通deadlineで待ち、時間切れ（completed=false）ならこのrequestでは
     // sweep / 旧claim / KV replay を**新規に開始しない**。非協調的なDB待ちで呼び出し元
     // Cronの120秒HTTP timeoutを超えてPOSTが未完了になる退行を防ぐ。
-    const maintenanceResult = await awaitBeforeReplayDeadline(
-      maintainChatNotificationOutbox(),
-      replayDeadlineAt,
-    );
-    chatRelayDeadlineExpired = !maintenanceResult.completed;
-    if (chatRelayDeadlineExpired) {
+    //
+    // 開始前の期限確認: 既に期限を過ぎている場合は maintenance 自体を開始しない。
+    // awaitBeforeReplayDeadline は残り時間が0以下だと operation にハンドラを付けずに
+    // 早期returnするため、そこで未解決のPromiseを渡すと遅延rejectionが未処理になり得る。
+    if (Date.now() >= replayDeadlineAt) {
+      chatRelayDeadlineExpired = true;
       logger.warn(
-        "[eventsub-replay] chat outbox maintenance did not finish before the replay deadline; starting no new work in this run",
+        "[eventsub-replay] chat outbox maintenance skipped: the replay deadline had already passed; starting no new work in this run",
       );
+    } else {
+      const maintenance = maintainChatNotificationOutbox();
+      // 常時catch: helper側の早期return経路やrace決着後に届くrejectionを未処理にしない
+      // （元のPromiseのrejectionはrace側のハンドラがそのまま受け取る）。
+      void maintenance.catch(() => {});
+      const maintenanceResult = await awaitBeforeReplayDeadline(
+        maintenance,
+        replayDeadlineAt,
+      );
+      chatRelayDeadlineExpired = !maintenanceResult.completed;
+      if (chatRelayDeadlineExpired) {
+        logger.warn(
+          "[eventsub-replay] chat outbox maintenance did not finish before the replay deadline; starting no new work in this run",
+        );
+      }
     }
 
     // Issue #1665 Step 3: 専用Queue経路（chat-delivery Worker + 内部endpoint）
