@@ -401,6 +401,34 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
         expect(pg.updateCalls).toHaveLength(0);
       });
 
+      // #954 回帰テスト: collection_name 欠落フォールバック時に cardPackNamesUnavailable
+      // フラグが正しく設定され、collection_name を送信してもデプロイ窓エラーで
+      // 止まらず、本体の UPDATE のみ実行されることを確認。
+      it("collection_name列デプロイ窓でも通常PUTが200を返す (#954)", async () => {
+        const missingCollectionNameErrorPg = {
+          code: "42703",
+          message: 'column "collection_name" of relation "cards" does not exist',
+        };
+        const pg = createDrizzleDbMock({
+          selects: [
+            { error: missingCollectionNameErrorPg },
+            { rows: [OWNERSHIP_ROW_PG] },
+          ],
+          updates: [{ rows: [UPDATED_ROW] }],
+        });
+        primePgDb(pg);
+        const res = await PUT(
+          createPutRequest({ name: "Renamed", collectionName: "new-collection" }),
+          { params: Promise.resolve({ id: CARD_ID }) }
+        );
+        expect(res.status).toBe(200);
+        expect(pg.selectCalls.length).toBeGreaterThanOrEqual(2);
+        expect(pg.updateCalls).toHaveLength(1);
+        expect(pg.updateCalls[0].table).toBe(cardsTable);
+        // collection_name はデプロイ窓のため updateData に含まれない
+        expect(pg.updateCalls[0].values).not.toHaveProperty("collection_name");
+      });
+
       it("本体の UPDATE が409で失敗したら指定可否は更新しない", async () => {
         const pg = createDrizzleDbMock({
           selects: [{ rows: [OWNERSHIP_ROW_PG] }],
