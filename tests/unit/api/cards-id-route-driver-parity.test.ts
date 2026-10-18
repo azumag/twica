@@ -494,7 +494,7 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(pg.updateCalls[1].values).not.toHaveProperty("image_padding_color");
     });
 
-    it("card_number列デプロイ窓では列を落としてUPDATEを再試行する", async () => {
+    it("card_number列が存在しない場合、UPDATEはフォールバックなく500を返す (#954)", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" of relation "cards" does not exist',
@@ -502,15 +502,14 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
 
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNERSHIP_ROW_PG] }],
-        updates: [{ error: missingColumnErrorPg }, { rows: [UPDATED_ROW] }],
+        updates: [{ error: missingColumnErrorPg }],
       });
       primePgDb(pg);
       const pgRes = await PUT(createPutRequest({ name: "Renamed", cardNumber: 3 }), {
         params: Promise.resolve({ id: CARD_ID }),
       });
-      expect(pgRes.status).toBe(200);
-      expect(pg.updateCalls).toHaveLength(2);
-      expect(pg.updateCalls[1].values).not.toHaveProperty("card_number");
+      expect(pgRes.status).toBe(500);
+      expect(pg.updateCalls).toHaveLength(1);
     });
 
     // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
