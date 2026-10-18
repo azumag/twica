@@ -55,11 +55,13 @@ export function isMissingCollectionNameColumn(error: unknown): boolean {
  * Separate function (not folded into `isMissingCollectionNameColumn`) because
  * that helper gates specifically on the substring "collection_name", which
  * `card_pack_names` does not contain — mirrors this codebase's existing
- * one-helper-per-column convention (see `isMissingCardNumberColumnError`).
+ * one-helper-per-column convention
+ * （例: settings 系の isMissingGachaSoundRulesColumnError 等。なお #954 で
+ * isMissingCardNumberColumnError は card_number 列の実在実測により撤去済み）。
  *
  * `card_pack_names`(パック事前登録一覧, #393再設計)列の未デプロイ検知。
  * `collection_name` 文言でゲートする既存関数とは別に用意する(列ごとに専用
- * 関数を持つ既存の慣習(`isMissingCardNumberColumnError`)に合わせる)。
+ * 関数を持つ既存の慣習に合わせる)。
  */
 export function isMissingCardPackNamesColumnError(error: unknown): boolean {
   if (!error) return false;

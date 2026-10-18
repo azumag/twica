@@ -238,12 +238,20 @@ async function fetchCardForUpdatePg(id: string): Promise<{
  * #834/#954: 以前は card_number → max_issuance_count → collection_name の
  * 3段階の「入力値から該当フィールドを削って再試行」デプロイ窓フォールバックと、
  * 末尾に image_padding_color 用の CARDS_COLUMNS_WITHOUT_PADDING_COLOR 明示列
- * RETURNING 再試行（#899）を持っていたが、いずれも撤去した。根拠は
- * src/app/api/cards/route.ts の insertCardPg コメントにまとめたとおり:
- * (1) PlanetScale 本番・preview の information_schema.columns 実測で 4列とも
- * 実在（Issue #954）、(2) Drizzle の UPDATE の SET 句は updateData の列のみを
- * 含むが無指定 RETURNING は schema.ts の全列を要求するため、列が真に欠落する
- * 環境ではいずれの再試行も同じ 42703 で失敗し救済になっていなかった。
+ * RETURNING 再試行（#899）を持っていたが、いずれも撤去した。
+ *
+ * 撤去の根拠（Issue #954、#834 (PR #953) と同じ手順）:
+ * PlanetScale 本番・preview の information_schema.columns 実測で 4列とも実在を
+ * 確認した（#834 実測対象外だった max_issuance_count / collection_name /
+ * image_padding_color を含む）。列が実在する環境では全フォールバックは到達しない
+ * 死に分岐である。
+ *
+ * 補足（INSERT との構造差）: UPDATE の SET 句は updateData の列のみを含むため、
+ * 「フィールド削除＋明示列 RETURNING」の再試行は INSERT 経路と異なり、列が真に
+ * 欠落する環境でも技術的には成功し得た。ただし本実測で列が実在することが確認
+ * できた以上、その再試行は発火しない死に分岐であり、撤去の根拠に影響しない
+ * （INSERT 側で効かなかった構造的理由の詳細は src/app/api/cards/route.ts の
+ * insertCardPg コメント参照）。
  * 無指定 `.returning()` の単一経路へ戻す。
  */
 async function updateCardPg(
