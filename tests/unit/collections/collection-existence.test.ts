@@ -279,14 +279,19 @@ describe("checkCollectionHasActiveCards: PlanetScale経路", () => {
     );
   });
 
-  it("pg 経路で列未デプロイエラー(42703)時は schema-not-ready を返す", async () => {
+  // #954: 以前は 42703（cards.collection_name 列欠落）を schema-not-ready として
+  // 返し、検証をスキップするデプロイ窓フォールバックだったが、本番・preview の
+  // information_schema.columns 実測で cards.collection_name の実在を確認したため
+  // 撤去した（Issue #954）。42703 は再試行・スキップせず throw する単一経路。
+  it("pg 経路で列未デプロイエラー(42703)時はフォールバックせず throw する（単一経路, #954）", async () => {
     const pg = createDrizzleDbMock({
       error: { code: "42703", message: "column cards.collection_name does not exist" },
     });
     vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
 
-    const result = await checkCollectionHasActiveCards("streamer-1", "weapons");
-    expect(result).toBe("schema-not-ready");
+    await expect(checkCollectionHasActiveCards("streamer-1", "weapons")).rejects.toMatchObject({
+      code: "42703",
+    });
   });
 
   it("pg 経路で想定外のエラーは throw する", async () => {

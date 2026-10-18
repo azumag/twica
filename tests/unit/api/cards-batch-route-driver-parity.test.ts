@@ -12,7 +12,6 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getDb } from "@/lib/db/client";
 import { sha256Prefix } from "@/lib/crypto-utils";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
 
 // #830: 画像URLの所有権判定は R2 の公開URLに依存するため、テストでは固定値を与える
 const R2_PUBLIC_URL = "https://images.example.test";
@@ -106,11 +105,8 @@ function createDrizzleDbMock(config: { selects?: PgResponse[]; inserts?: PgRespo
         if (response.error) return Promise.reject(response.error);
         const rows = response.rows ?? [];
         // returning(fields) が指定された場合は select(fields) と同じ「fields の
-        // キーだけを持つ行にマップする」フェイクを行う汎用モック。通常の一括作成は
-        // 無指定 .returning() で rows をそのまま返すが、image_padding_color 列
-        // 欠落時のフォールバック（下記テスト参照）は
-        // .returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR) を通るため、この分岐も
-        // 実際に使われる。
+        // キーだけを持つ行にマップする」フェイクを行う汎用モック。単一経路化後は
+        // 無指定 .returning() のため通常 rows がそのまま返る。
         const fields = call.returningFields;
         return Promise.resolve(
           fields ? rows.map((row) => Object.fromEntries(Object.keys(fields).map((key) => [key, row[key] ?? null]))) : rows
@@ -228,12 +224,15 @@ describe("POST /api/cards/batch: PlanetScale契約 (#663)", () => {
     expect(pg.insertCalls[0].values).toEqual(EXPECTED_INSERT_VALUES);
   });
 
-  // #834 自己レビュー指摘: batch route の cardsToInsert は image_padding_color を
-  // 一切含まない(BatchCardInputに無い)が、無指定 `.returning()` は VALUES の内容と
-  // 無関係に schema.ts の全列を要求するため、この列が未適用の環境では一括作成が
-  // 全滅しうる(cards/route.ts の insertCardPg と同じ構造の欠落)。
-  // CARDS_COLUMNS_WITHOUT_PADDING_COLOR への切替フォールバックを検証する。
-  it("本番未デプロイのimage_padding_color列: RETURNING失敗時に明示列リストで再試行し200を返す (#899)", async () => {
+  // #954: #834 撤去時に一時新設した image_padding_color 用の
+  // CARDS_COLUMNS_WITHOUT_PADDING_COLOR 切替フォールバック（#899）も撤去した。
+  // 根拠: PlanetScale 本番・preview の information_schema.columns 実測で
+  // image_padding_color の実在を確認したこと（Issue #954）、および Drizzle の
+  // INSERT が values() に無い列も `default` として全列列挙するため、列が真に
+  // 欠落する環境では明示列 RETURNING への切替以前に INSERT の列リスト自体が
+  // 失敗し、フォールバックは到達しても成功しなかったこと。
+  // 42703 は再試行せず 500 になる単一経路を回帰として固定する。
+  it("INSERT時の42703（image_padding_color欠落）は再試行せず500を返す（単一経路, #954）", async () => {
     const missingPaddingErrorPg = {
       code: "42703",
       message: 'column "image_padding_color" of relation "cards" does not exist',
@@ -241,19 +240,13 @@ describe("POST /api/cards/batch: PlanetScale契約 (#663)", () => {
 
     const pg = createDrizzleDbMock({
       selects: [{ rows: [STREAMER_ROW] }],
-      inserts: [
-        { error: missingPaddingErrorPg }, // attempt1: 無指定RETURNINGがimage_padding_colorで失敗
-        { rows: CREATED_ROWS }, // attempt2: CARDS_COLUMNS_WITHOUT_PADDING_COLORで再試行し成功
-      ],
+      inserts: [{ error: missingPaddingErrorPg }],
     });
     primePgDb(pg);
     const pgRes = await POST(createBatchRequest(REQUEST_BODY));
-    expect(pgRes.status).toBe(200);
-    const pgJson = await pgRes.json();
-
-    expect(pgJson).toMatchObject({ success: true, created: 2 });
-    expect(pg.insertCalls).toHaveLength(2);
-    expect(pg.insertCalls[1].returningFields).toEqual(CARDS_COLUMNS_WITHOUT_PADDING_COLOR);
+    expect(pgRes.status).toBe(500);
+    expect(pg.insertCalls).toHaveLength(1);
+    expect(pg.insertCalls[0].returningFields).toBeUndefined();
   });
 
   it("streamer所有権なしでは403を返しINSERTしない", async () => {

@@ -514,18 +514,17 @@ describe("GET /api/overlay/[streamerId]/events", () => {
     expect(call.limitValue).toBe(100);
   });
 
-  // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
-  // image_padding_color を明示 select に追加しただけでフォールバックが
-  // 無く、migration未適用のデプロイ窓ではこのポーリングエンドポイント
-  // (OBSのガチャ結果表示が依存するgap-recovery poll)が丸ごと失敗していた。
-  it("image_padding_color列デプロイ窓では列を落として再試行する (#899)", async () => {
+  // #954: 以前は image_padding_color 列欠落（42703）時に列を落として再試行する
+  // deploy-window フォールバック（#899 PR #903）があったが、本番・preview の
+  // information_schema.columns 実測で image_padding_color が実在することを確認した
+  // ため撤去した（Issue #954）。列を含む select は1回だけ実行される単一経路。
+  it("image_padding_color欠落(42703)時は再試行せず既存エラーenvelopeで返す（単一経路, #954）", async () => {
     const missingPaddingErrorPg = {
       code: "42703",
       message: 'column "image_padding_color" of relation "cards" does not exist',
     };
     const db = createDbMock([
-      { error: missingPaddingErrorPg }, // attempt1: 明示selectがimage_padding_colorで失敗
-      { rows: [DISPLAY_ROW] }, // attempt2: 列を落として再試行し成功
+      { error: missingPaddingErrorPg },
     ]);
     vi.mocked(getDb).mockResolvedValue({ db, sql: {} } as never);
 
@@ -533,21 +532,11 @@ describe("GET /api/overlay/[streamerId]/events", () => {
       createRequest({ since: SINCE }),
       routeParams()
     );
-    const body = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(db.calls).toHaveLength(2);
+    expect(response.status).toBe(500);
+    expect(db.calls).toHaveLength(1);
+    // 常に image_padding_color を含む単一経路（列を落とした再試行はしない）。
     expect(db.calls[0].fields).toHaveProperty("card_image_padding_color");
-    expect(db.calls[1].fields).not.toHaveProperty("card_image_padding_color");
-    expect(body.events[0].card).toEqual({
-      id: "card-1",
-      name: "Card",
-      description: null,
-      image_url: null,
-      // 列を落として再試行した結果なので、余白情報は「余白なし」扱いのnullになる
-      image_padding_color: null,
-      rarity: "rare",
-    });
   });
 
   it("恒久DBエラーを既存Database error envelopeで返す", async () => {
