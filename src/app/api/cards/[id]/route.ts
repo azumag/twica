@@ -22,7 +22,7 @@ import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
 import { CARD_ISSUANCE_MESSAGES, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
-import { isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
+import { isMissingCardPackNamesColumnError, isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
 // #663 (#570/#572 パイロット踏襲): PlanetScale 接続。PUT/DELETE とも読み取り
 // （所有権確認）と書き込み（UPDATE/DELETE）が混在するため、関数全体を
@@ -148,6 +148,32 @@ async function selectCardOwnershipWithoutCardPackNames(id: string): Promise<Card
   return row ? { ...row, card_pack_names: [] } : null;
 }
 
+async function selectCardOwnershipWithoutCollectionAndPackNames(id: string): Promise<CardOwnershipRowPg | null> {
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select({
+          streamer_id: cardsTable.streamer_id,
+          image_url: cardsTable.image_url,
+          rarity: cardsTable.rarity,
+          is_active: cardsTable.is_active,
+          intra_rarity_weight: cardsTable.intra_rarity_weight,
+          twitch_user_id: streamersTable.twitch_user_id,
+          rarity_weights: streamersTable.rarity_weights,
+        })
+        .from(cardsTable)
+        .innerJoin(streamersTable, eq(streamersTable.id, cardsTable.streamer_id))
+        .where(eq(cardsTable.id, id))
+        .limit(1);
+    },
+    "Cards API PUT: ownership check (retry without card_pack_names/collection_name)",
+    { idempotent: true }
+  );
+  const row = rows[0];
+  return row ? { ...row, collection_name: null, card_pack_names: [] } : null;
+}
+
 /**
  * PUT /api/cards/[id] のオーナーシップ確認 SELECT（cards INNER JOIN streamers、
  * card_pack_names デプロイ窓フォールバック付き）の pg 直結実装 (#663)。
@@ -200,6 +226,20 @@ async function fetchCardForUpdatePg(id: string): Promise<{
     currentError = null;
     try {
       row = await selectCardOwnershipWithoutCardPackNames(id);
+    } catch (error) {
+      currentError = error;
+    }
+  }
+
+  // collection_name は #834 実測対象外のため、デプロイ窓フォールバックを残す。
+  // migration 00061 で適用済みだが、確実性のため残置。#954 実測で撤去可否を判断する。
+  // collection_name 欠落時は card_pack_names も併せて除外して再試行するため、
+  // cardPackNamesUnavailable フラグを立てて呼び出し側(PUT)で collection_name 書き込みを抑制する。
+  if (currentError && isMissingCollectionNameColumn(currentError as CardsSchemaError)) {
+    cardPackNamesUnavailable = true;
+    currentError = null;
+    try {
+      row = await selectCardOwnershipWithoutCollectionAndPackNames(id);
     } catch (error) {
       currentError = error;
     }

@@ -516,6 +516,48 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(pg.updateCalls).toHaveLength(1);
     });
 
+    it("collection_name列デプロイ窓でtradeWantable+collectionNameのPUTが200を返す (cardPackNamesUnavailable flag回帰, #954)", async () => {
+      // 1st SELECT: collection_name 列欠落で失敗（42703）
+      const missingCollectionNameErrorPg = {
+        code: "42703",
+        message: 'column "cards"."collection_name" does not exist',
+      };
+      // 2nd SELECT: fallback 行（collection_name: null, card_pack_names: []）
+      const ownershipWithoutCollectionAndPackNames = {
+        ...OWNERSHIP_ROW_PG,
+        collection_name: null,
+        card_pack_names: [],
+      };
+
+      const pg = createDrizzleDbMock({
+        selects: [
+          { error: missingCollectionNameErrorPg },
+          { rows: [ownershipWithoutCollectionAndPackNames] },
+        ],
+        // collection_name 書き込みはスキップされるため、cardTradeSettings への UPDATE のみ1回
+        updates: [{ rows: [{ trade_wantable: false }] }],
+      });
+      primePgDb(pg);
+
+      const pgRes = await PUT(
+        createPutRequest({ tradeWantable: false, collectionName: "weapons" }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+
+      expect(pgRes.status).toBe(200);
+      const pgJson = await pgRes.json();
+      // collection_name 書き込みはスキップされ、フラグで通知される
+      expect(pgJson.collectionNameSkippedDeployWindow).toBe(true);
+      // tradeWantable 保存のみ実行される
+      expect(pgJson.trade_wantable).toBe(false);
+      // cardTradeSettings への UPDATE のみ1回（cards 本体の UPDATE は collection_name スキップにより発生しない）
+      expect(pg.updateCalls).toHaveLength(1);
+      expect(pg.updateCalls[0].table).toBe(cardTradeSettings);
+      expect(pg.updateCalls[0].values).toEqual({ trade_wantable: false });
+      // GET /api/cards キャッシュは tradeWantable 保存時に失効
+      expect(vi.mocked(revalidateTag)).toHaveBeenCalledWith("cards-streamer-1", { expire: 0 });
+    });
+
     it("card_number一意制約違反(23505)は409を返す", async () => {
       const conflictError = {
         code: "23505",
