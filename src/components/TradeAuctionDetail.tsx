@@ -419,10 +419,18 @@ export default function TradeAuctionDetail({
     card.freeCount + (myActiveBid && myActiveBid.bidCardId === card.cardId ? myActiveBid.quantity : 0);
   const selectedCard = bidCards.find((card) => card.cardId === bidCardId) ?? null;
   const selectedUsable = selectedCard ? Math.min(usableCount(selectedCard), maxBidQuantity) : 0;
+  // `bidCards` is a server prop refreshed after every write, and its free
+  // counts can shrink while this form stays open: another tab can lock the
+  // copies, or a refused bid reloads the detail. The stored `quantity` then
+  // falls outside the options, so the select, the summary, the POST body and
+  // the disabled state all derive the value the current limits allow instead
+  // of trusting the possibly stale state (otherwise the button looks enabled
+  // but `submitBid` returns without sending anything).
+  const effectiveQuantity = selectedCard ? Math.min(quantity, selectedUsable) : 0;
 
   const submitBid = () => {
-    if (!selectedCard || quantity < 1 || quantity > selectedUsable) return;
-    const selection = `${selectedCard.cardId}:${quantity}`;
+    if (!selectedCard || effectiveQuantity < 1) return;
+    const selection = `${selectedCard.cardId}:${effectiveQuantity}`;
     if (bidRequestRef.current?.selection !== selection) {
       bidRequestRef.current = { selection, id: crypto.randomUUID() };
     }
@@ -432,7 +440,7 @@ export default function TradeAuctionDetail({
       "bid",
       () => postTradeJson(`/api/trades/auctions/${auctionId}/bids`, {
         bidCardId: selectedCard.cardId,
-        quantity,
+        quantity: effectiveQuantity,
         requestId,
       }),
       t(changing ? "auctionBidChangeSuccess" : "auctionBidSuccess"),
@@ -480,11 +488,11 @@ export default function TradeAuctionDetail({
             }}
             disabled={busy !== null}
           />
-          {selectedCard && (
+          {effectiveQuantity > 0 && (
             <label className="mt-4 flex items-center gap-3 text-sm text-gray-200">
               {t("auctionBidQuantityLabel")}
               <select
-                value={quantity}
+                value={effectiveQuantity}
                 disabled={busy !== null}
                 onChange={(event) => {
                   setQuantity(Number(event.target.value));
@@ -501,8 +509,8 @@ export default function TradeAuctionDetail({
             </label>
           )}
           <p className="mt-3 text-sm text-gray-200">
-            {selectedCard
-              ? t("auctionBidSummary", { card: selectedCard.name, count: quantity })
+            {selectedCard && effectiveQuantity > 0
+              ? t("auctionBidSummary", { card: selectedCard.name, count: effectiveQuantity })
               : t("auctionBidPending")}
           </p>
           <p className="mt-1 text-xs text-gray-400">{t("auctionBidLockNotice")}</p>
@@ -510,7 +518,7 @@ export default function TradeAuctionDetail({
             <button
               type="button"
               className={PRIMARY_BUTTON}
-              disabled={!selectedCard || busy !== null || writeBlocked}
+              disabled={effectiveQuantity < 1 || busy !== null || writeBlocked}
               aria-busy={busy === "bid"}
               onClick={submitBid}
             >

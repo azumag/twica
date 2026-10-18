@@ -22,6 +22,21 @@ const BID_CARDS: TradeAuctionBidCard[] = [
 
 type Detail = { auction: TradeAuctionDto; bids: TradeAuctionBidDto[] | null };
 
+function detailElement(props: Partial<React.ComponentProps<typeof TradeAuctionDetail>> = {}) {
+  return (
+    <NextIntlClientProvider locale="ja" messages={jaMessages}>
+      <TradeAuctionDetail
+        auctionId="auction-1"
+        isLoggedIn
+        loginHref="/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade%2Fs-1%2Fauctions%2Fauction-1"
+        bidCards={BID_CARDS}
+        maxBidQuantity={10}
+        {...props}
+      />
+    </NextIntlClientProvider>
+  );
+}
+
 function renderDetail(props: Partial<React.ComponentProps<typeof TradeAuctionDetail>> = {}) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
@@ -227,6 +242,46 @@ describe("TradeAuctionDetail bidder", () => {
     fireEvent.click(within(bidForm()).getByRole("button", { name: ja.auctionBidSubmit }));
     expect(await screen.findByRole("alert")).toHaveTextContent(ja.errorTradeAuctionNotOpen);
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("derives the bid quantity from the reloaded candidates when they shrink (M1)", async () => {
+    const { writes, posts } = setupFetch({ auction: makeAuction(), bids: null });
+    writes.set("/api/trades/auctions/auction-1/bids", () =>
+      jsonResponse(200, { bid: makeBid({ quantity: 1 }), replacedBidId: null, idempotentReplay: false })
+    );
+    const view = renderDetail();
+    await screen.findByRole("region", { name: ja.auctionDetailTitle });
+    fireEvent.click(cardTile(bidForm(), "Coin"));
+    fireEvent.change(screen.getByRole("combobox", { name: ja.auctionBidQuantityLabel }), { target: { value: "3" } });
+    expect(screen.getByText(trJa("auctionBidSummary", { card: "Coin", count: 3 }))).toBeInTheDocument();
+
+    // The candidates shrink (another tab locked two copies): the stale "3" is
+    // clamped to what is usable now, in the select, the summary and the POST.
+    const shrunkenCards = [
+      { ...BID_CARDS[0], freeCount: 1 },
+      BID_CARDS[1],
+      BID_CARDS[2],
+    ];
+    view.rerender(detailElement({ bidCards: shrunkenCards }));
+    const select = screen.getByRole("combobox", { name: ja.auctionBidQuantityLabel });
+    expect(within(select).getAllByRole("option")).toHaveLength(1);
+    expect((select as HTMLSelectElement).value).toBe("1");
+    expect(screen.getByText(trJa("auctionBidSummary", { card: "Coin", count: 1 }))).toBeInTheDocument();
+    fireEvent.click(within(bidForm()).getByRole("button", { name: ja.auctionBidSubmit }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0].body).toMatchObject({ bidCardId: "card-coin", quantity: 1 });
+
+    // Nothing usable left: the form offers no quantity and the button is disabled.
+    const emptyCards = [
+      { ...BID_CARDS[0], freeCount: 0 },
+      BID_CARDS[1],
+      BID_CARDS[2],
+    ];
+    view.rerender(detailElement({ bidCards: emptyCards }));
+    expect(within(bidForm()).getByRole("button", { name: ja.auctionBidSubmit })).toBeDisabled();
+    // Clicking the disabled button sends nothing.
+    fireEvent.click(within(bidForm()).getByRole("button", { name: ja.auctionBidSubmit }));
+    expect(posts).toHaveLength(1);
   });
 
   it("changing a bid counts the current bid's copies as usable and labels the change", async () => {
