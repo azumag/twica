@@ -512,6 +512,41 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(pg.updateCalls).toHaveLength(1);
     });
 
+    it("collection_name列デプロイ窓で新規パック指定時は書き込みスキップして200を返す (cardPackNamesUnavailable flag回帰, #954)", async () => {
+      // 1st SELECT: collection_name 列欠落で失敗（42703）
+      const missingCollectionNameErrorPg = {
+        code: "42703",
+        message: 'column "cards"."collection_name" does not exist',
+      };
+      // 2nd SELECT: fallback 行（collection_name: null, card_pack_names: []）
+      const ownershipWithoutCollectionAndPackNames = {
+        ...OWNERSHIP_ROW_PG,
+        collection_name: null,
+        card_pack_names: [],
+      };
+
+      const pg = createDrizzleDbMock({
+        selects: [
+          { error: missingCollectionNameErrorPg },
+          { rows: [ownershipWithoutCollectionAndPackNames] },
+        ],
+        updates: [{ rows: [UPDATED_ROW] }],
+      });
+      primePgDb(pg);
+
+      const pgRes = await PUT(
+        createPutRequest({ name: "Renamed", collectionName: "NewPack" }),
+        { params: Promise.resolve({ id: CARD_ID }) }
+      );
+
+      expect(pgRes.status).toBe(200);
+      const pgJson = await pgRes.json();
+      // collection_name 書き込みはスキップされ、フラグで通知される
+      expect(pgJson.collectionNameSkippedDeployWindow).toBe(true);
+      // UPDATE 値に collection_name が含まれない
+      expect(pg.updateCalls[0].values).not.toHaveProperty("collection_name");
+    });
+
     // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
     // isMissingCardsBattleColumnError のみを見る末尾フォールバックが
     // image_padding_color 欠落エラーを拾えず、imagePaddingColor を一切
