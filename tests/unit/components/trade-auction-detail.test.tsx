@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createTranslator, NextIntlClientProvider } from "next-intl";
 import TradeAuctionDetail, { type TradeAuctionBidCard } from "@/components/TradeAuctionDetail";
 import type { TradeAuctionBidDto, TradeAuctionDto } from "@/lib/trade-auction";
@@ -284,6 +284,33 @@ describe("TradeAuctionDetail bidder", () => {
     expect(posts).toHaveLength(1);
   });
 
+  it("keeps the selected card while its usable copies drop to 0 before any POST (M1)", async () => {
+    const { posts } = setupFetch({ auction: makeAuction(), bids: null });
+    const view = renderDetail();
+    await screen.findByRole("region", { name: ja.auctionDetailTitle });
+    fireEvent.click(cardTile(bidForm(), "Coin"));
+    fireEvent.change(screen.getByRole("combobox", { name: ja.auctionBidQuantityLabel }), { target: { value: "3" } });
+    expect(screen.getByText(trJa("auctionBidSummary", { card: "Coin", count: 3 }))).toBeInTheDocument();
+
+    // The selected card is locked elsewhere while the form is open and before
+    // anything is sent: the selection is kept (aria-pressed), the form falls
+    // back to the pending copy, the quantity select disappears, and the
+    // submit is disabled — clicking it sends nothing.
+    const emptyCards = [
+      { ...BID_CARDS[0], freeCount: 0 },
+      BID_CARDS[1],
+      BID_CARDS[2],
+    ];
+    view.rerender(detailElement({ bidCards: emptyCards }));
+    expect(cardTile(bidForm(), "Coin")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(ja.auctionBidPending)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: ja.auctionBidQuantityLabel })).toBeNull();
+    const submit = within(bidForm()).getByRole("button", { name: ja.auctionBidSubmit });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(posts).toHaveLength(0);
+  });
+
   it("changing a bid counts the current bid's copies as usable and labels the change", async () => {
     setupFetch({
       auction: makeAuction({ bidCount: 1, myBid: makeBid({ quantity: 3 }) }),
@@ -445,6 +472,106 @@ describe("TradeAuctionDetail seller", () => {
     expect(posts[0].body).toMatchObject({ bidId: "bid-ok" });
     expect(posts[0].body.requestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(await screen.findByText(ja.auctionSellerBidWon)).toBeInTheDocument();
+  });
+
+  it("keeps the action buttons disabled until the refetched detail is on screen (O1)", async () => {
+    const initial = {
+      auction: own({ phase: "selecting", bidCount: 1 }),
+      bids: [makeBid({ id: "bid-ok" })],
+    };
+    const settled = {
+      auction: own({ phase: "completed", status: "completed", bidCount: 0 }),
+      bids: [makeBid({ id: "bid-ok", status: "won", state: "won" })],
+    };
+    // The refetch after the settle is held back, so the screen keeps showing
+    // the stale "selecting" row while the success notice is already up.
+    let releaseGet!: (response: Response) => void;
+    const gatedGet = new Promise<Response>((resolve) => {
+      releaseGet = resolve;
+    });
+    let gets = 0;
+    let posts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          posts += 1;
+          return jsonResponse(200, { success: true, auctionId: "auction-1", bidId: "bid-ok" });
+        }
+        gets += 1;
+        return gets === 1 ? jsonResponse(200, initial) : gatedGet;
+      }),
+    );
+    renderDetail();
+    fireEvent.click(await screen.findByRole("button", { name: ja.auctionSettleButton }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: ja.auctionSettleConfirmButton }));
+    // Success notice on stale rows: the settle button is still rendered for
+    // the old phase, but `busy` keeps it disabled, so a second confirm cannot
+    // race the reload (it would be answered TRADE_AUCTION_NOT_OPEN).
+    expect(await screen.findByText(ja.auctionSettleSuccess)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: ja.auctionSettleSubmitting })).toBeDisabled();
+    expect(posts).toBe(1);
+    releaseGet(jsonResponse(200, settled));
+    // Only after the fresh detail the completed state replaces the rows.
+    expect(await screen.findByText(ja.auctionSellerBidWon)).toBeInTheDocument();
+    expect(posts).toBe(1);
+  });
+
+  it("aborts an in-flight retry GET when the write refetches, so the stale answer cannot land last (O1)", async () => {
+    const stale = {
+      auction: own({ phase: "selecting", bidCount: 1 }),
+      bids: [makeBid({ id: "bid-ok" })],
+    };
+    const settled = {
+      auction: own({ phase: "completed", status: "completed", bidCount: 0 }),
+      bids: [makeBid({ id: "bid-ok", status: "won", state: "won" })],
+    };
+    // GETs: 1 mount → 2 the write's refetch (fails → stale rows stay with a
+    // refresh-failed notice) → 3 the retried GET, held back → 4 the second
+    // write's refetch (fresh). The settled answer must be the last one
+    // applied even though the retry is released afterwards.
+    let releaseRetry!: (response: Response) => void;
+    const gatedRetry = new Promise<Response>((resolve) => {
+      releaseRetry = resolve;
+    });
+    let gets = 0;
+    let posts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          posts += 1;
+          return jsonResponse(200, { success: true, auctionId: "auction-1", bidId: "bid-ok" });
+        }
+        gets += 1;
+        if (gets === 1) return jsonResponse(200, stale);
+        if (gets === 2) return jsonResponse(500, { code: "INTERNAL_ERROR" });
+        if (gets === 3) return gatedRetry;
+        return jsonResponse(200, settled);
+      }),
+    );
+    renderDetail();
+    fireEvent.click(await screen.findByRole("button", { name: ja.auctionSettleButton }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: ja.auctionSettleConfirmButton }));
+    // The write answered, its refetch failed: the stale rows are kept and the
+    // notice offers a retry.
+    expect(await screen.findByText(ja.refreshFailedNotice)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: ja.retryButton }));
+    // While the retry GET is in flight, the stale rows still offer a settle;
+    // this second write goes out (the mock answers success).
+    fireEvent.click(within(screen.getByRole("list")).getByRole("button", { name: ja.auctionSettleButton }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: ja.auctionSettleConfirmButton }));
+    expect(await screen.findByText(ja.auctionSellerBidWon)).toBeInTheDocument();
+    expect(posts).toBe(2);
+    // The retried GET is aborted by the second write's refetch. Releasing it
+    // must not overwrite the fresh rows with the stale selecting phase.
+    releaseRetry(jsonResponse(200, stale));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await Promise.resolve();
+    });
+    expect(screen.getByText(ja.auctionSellerBidWon)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: ja.auctionSettleButton })).toBeNull();
   });
 
   it("retrying a settle for the same bid reuses its requestId", async () => {

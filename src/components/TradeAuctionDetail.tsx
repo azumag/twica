@@ -113,19 +113,35 @@ export default function TradeAuctionDetail({
   const settleRequestIds = useRef(new Map<string, string>());
   // Bumped to reload the detail (after a write, or the retry button).
   const [reloadKey, setReloadKey] = useState(0);
+  // The effect-owned GET in flight, if any. A write aborts it right before
+  // its own refetch: the retry answer was computed before the write, so it
+  // must not land after the refetch and mark the stale rows fresh again.
+  const effectLoadRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch(`/api/trades/auctions/${auctionId}`, {
-      credentials: "include",
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (res) => {
+  /**
+   * One GET of the auction detail, shared by the mount/reload effect and the
+   * write flow. The write flow awaits it so that `busy` covers the refetch
+   * too (O1): between the write's answer and the fresh rows the screen still
+   * shows the old phase, and a second confirm on those stale rows would fire
+   * a request the server refuses — a second settle, for example, replaces
+   * the success notice with TRADE_AUCTION_NOT_OPEN.
+   *
+   * `signal` aborts an effect-owned load when the effect re-runs (unmount or
+   * reloadKey bump). The write flow passes none: its load is not tied to the
+   * effect, and React drops a late setState of an unmounted instance.
+   */
+  const loadDetail = useCallback(
+    async (signal?: AbortSignal): Promise<void> => {
+      try {
+        const res = await fetch(`/api/trades/auctions/${auctionId}`, {
+          credentials: "include",
+          cache: "no-store",
+          signal,
+        });
         const data = (await res.json().catch(() => null)) as
           | { auction?: TradeAuctionDto; bids?: TradeAuctionBidDto[] | null; code?: string }
           | null;
-        if (controller.signal.aborted) return;
+        if (signal?.aborted) return;
         if (res.ok && data?.auction) {
           setDetail({ status: "ok", auction: data.auction, bids: data.bids ?? null, refreshFailed: false });
           return;
@@ -139,14 +155,25 @@ export default function TradeAuctionDetail({
           return;
         }
         throw new Error(`status ${res.status}`);
-      })
-      .catch(() => {
-        if (controller.signal.aborted) return;
+      } catch {
+        if (signal?.aborted) return;
         // Keep data that is already on screen (flagged as possibly stale).
         setDetail((prev) => (prev.status === "ok" ? { ...prev, refreshFailed: true } : { status: "error" }));
-      });
-    return () => controller.abort();
-  }, [auctionId, reloadKey]);
+      }
+    },
+    [auctionId],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    effectLoadRef.current = controller;
+    void loadDetail(controller.signal);
+    return () => {
+      // The ref may already have been aborted and nulled by a write.
+      if (effectLoadRef.current === controller) effectLoadRef.current = null;
+      controller.abort();
+    };
+  }, [auctionId, reloadKey, loadDetail]);
 
   const reload = useCallback(() => setReloadKey((value) => value + 1), []);
 
@@ -159,6 +186,14 @@ export default function TradeAuctionDetail({
    * requestId is reused by the retry). Any answer from the server — success
    * or a refusal such as "deadline passed" — means the state on screen may
    * be stale, so the detail, the list cache and the server props refresh.
+   *
+   * `busy` is held until that refetched detail is on screen (O1): with the
+   * stale rows still displayed, every action button stays disabled, so a
+   * second confirm cannot race the reload and replace a just-shown success
+   * notice with a refusal such as TRADE_AUCTION_NOT_OPEN. The refetch is
+   * the last answer applied: an effect-owned retry GET still in flight is
+   * aborted first (its answer predates this write), so it cannot land after
+   * the refetch and mark the stale rows fresh again.
    */
   const runWrite = async (
     key: string,
@@ -174,7 +209,6 @@ export default function TradeAuctionDetail({
     setBusy(key);
     setNotice(null);
     const result = await request();
-    setBusy(null);
     if (result.ok) {
       onSuccess?.();
       setNotice({ text: successText, isError: false });
@@ -184,8 +218,14 @@ export default function TradeAuctionDetail({
     if (result.ok || !result.networkError) {
       clearTradeListCache();
       router.refresh();
-      reload();
+      // A retry GET may still be in flight; its answer was computed before
+      // this write, so abort it — landing after the refetch below would
+      // mark the stale rows fresh again and reopen the O1 window.
+      effectLoadRef.current?.abort();
+      effectLoadRef.current = null;
+      await loadDetail();
     }
+    setBusy(null);
   };
 
   const openConfirm = (value: Confirming, trigger: HTMLElement) => {
