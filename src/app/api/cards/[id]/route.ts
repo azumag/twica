@@ -19,10 +19,10 @@ import { logger } from "@/lib/logger.server";
 import { deleteOwnedStorageImage } from "@/lib/storage-cleanup";
 import { isAssignableImageUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
-import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
+import { CARD_ISSUANCE_MESSAGES, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
-import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
+import { isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
 // #663 (#570/#572 パイロット踏襲): PlanetScale 接続。PUT/DELETE とも読み取り
 // （所有権確認）と書き込み（UPDATE/DELETE）が混在するため、関数全体を
@@ -225,17 +225,6 @@ async function fetchCardForUpdatePg(id: string): Promise<{
     }
   }
 
-  // Issue #269 (self-review fix): collection_name 列がデプロイ窓で未検出の場合、
-  // それを落として再試行する。card_pack_names も併せて落とす(両方同時に
-  if (currentError && isMissingCollectionNameColumn(currentError as CardsSchemaError)) {
-    cardPackNamesUnavailable = true;
-    currentError = null;
-    try {
-      row = await selectCardOwnershipWithoutCollectionAndPackNames(id);
-    } catch (error) {
-      currentError = error;
-    }
-  }
 
   if (currentError || !row) {
     return { card: null, cardPackNamesUnavailable };
@@ -266,8 +255,7 @@ async function fetchCardForUpdatePg(id: string): Promise<{
  *
  * - `.update(...).eq("id", id).select().maybeSingle()` は
  *   `.update(...).set(...).where(eq(id, ...)).returning()` が等価。
- * - 各フォールバックは同じ判定ヘルパー(isMissingCardNumberColumnError 等)を
- *   そのまま再利用する。
+ * - ON CONFLICT の無い INSERT のため各試行は非冪等（withDbRetry にオプションを渡さない = リトライなし）。
  * - リクエストボディの明示的な最終値を書き込む UPDATE のため冪等（リトライ可）。
  * - unique_violation (23505) は呼び出し元(PUT)で isCardNumberConflictError
  *
@@ -312,18 +300,6 @@ async function updateCardPg(
 
   let { updatedCard, error } = await attemptUpdate();
 
-  if (error && isMissingCardNumberColumnError(error) && "card_number" in updateData) {
-    delete updateData.card_number;
-    ({ updatedCard, error } = await attemptUpdate());
-  }
-  if (error && isMissingCardIssuanceColumnError(error) && "max_issuance_count" in updateData) {
-    delete updateData.max_issuance_count;
-    ({ updatedCard, error } = await attemptUpdate());
-  }
-  if (error && isMissingCollectionNameColumn(error as CardsSchemaError) && "collection_name" in updateData) {
-    delete updateData.collection_name;
-    ({ updatedCard, error } = await attemptUpdate());
-  }
   // #899: image_padding_color 列が migration 未適用の環境では、この列を落として再試行する
   //（余白情報だけが更新されず、カード更新自体は継続する）
   if (error && isMissingCardPaddingColorError(error) && "image_padding_color" in updateData) {
