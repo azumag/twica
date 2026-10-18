@@ -10,6 +10,7 @@ import CollectionPackFilter from "./CollectionPackFilter";
 import type { CollectionPackDisplay } from "./CollectionPackFilter";
 import type { Streamer, Card } from "@/types/database";
 import type { AlbumDefaultView, AlbumGridSizeMap } from "@/lib/collection-album";
+import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
 
 export interface StreamerCollectionCard extends Card {
   count: number;
@@ -150,7 +151,11 @@ export default async function StreamerCollection({
               {t("cardTypes", { count: visibleCardTypes })}
             </p>
           </div>
-          {tradeEnabled && (
+          {/* #726: trade_enabled 時のみトレードボードへの導線を表示。
+              #715 の一般公開準備中は CARD_TRADE_UI_VISIBLE=false で入口ごと隠す
+              (main #1805 から取り込み。直リンク /trade/[streamerId] の掲示板・
+              応諾フローは維持)。 */}
+          {CARD_TRADE_UI_VISIBLE && tradeEnabled && (
             <Link
               href={`/trade/${streamer.id}`}
               className="shrink-0 rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-purple-700"

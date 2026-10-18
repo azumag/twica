@@ -97,6 +97,16 @@ describe('POST /api/support/activate', () => {
     expect(response.headers.get('Retry-After')).toBeTruthy()
   })
 
+  it('returns 503 and does not call the activation RPC when strict limiting is unavailable', async () => {
+    const { checkRateLimit } = await import('@/lib/rate-limit')
+    vi.mocked(checkRateLimit).mockResolvedValue({ success: false, unavailable: true })
+
+    const response = await POST(createRequest())
+    expect(response.status).toBe(503)
+    expect(response.headers.get('Retry-After')).toBe('30')
+    expect(getDb).not.toHaveBeenCalled()
+  })
+
   it('should return 400 when code is missing', async () => {
     const response = await POST(createRequest({ code: '' }))
     expect(response.status).toBe(400)

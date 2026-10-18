@@ -113,6 +113,7 @@ const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
 // 拡張子検証が不要な信頼できる画像CDNドメイン
 const TRUSTED_IMAGE_DOMAINS = [
   'static-cdn.jtvnw.net',     // Twitch emotes
+  // 旧 Vercel Blob 互換。保存済みURLの実データで 0 件確認ができるまで維持する (#1688)。
   'blob.vercel-storage.com',  // Vercel Blob storage
   'public.blob.vercel-storage.com', // Vercel Blob public storage
 ]

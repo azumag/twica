@@ -35,6 +35,7 @@ vi.mock('@/lib/rate-limit', () => ({
   checkRateLimit: vi.fn(),
   getRateLimitIdentifier: vi.fn(),
   getClientIp: vi.fn(() => '127.0.0.1'),
+  getTrustedClientIp: vi.fn(() => '127.0.0.1'),
   rateLimits: { authLogin: 'authLogin', authReauth: 'authReauth' },
 }))
 vi.mock('@/lib/twitch/auth', () => ({

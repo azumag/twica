@@ -92,6 +92,9 @@ jobs:
               # PG17 job を回さないと、その検証が黙って古くなる。
               - 'tests/fixtures/chat-outbox-readonly-counts-pg17.mjs'
               - '.github/workflows/db-readonly-check.yml'
+              # main から取り込んだ production 用 workflow (#1836) も同じ集計 SQL を
+              # 持つため、その変更でも PG17 job を回す。
+              - '.github/workflows/db-readonly-check-production.yml'
               - 'tests/fixtures/add-card-trading-postgres.sql'
               - 'tests/fixtures/add-card-trading-concurrency.sh'
               - 'tests/fixtures/trade-auction-concurrency.sh'
@@ -574,6 +577,16 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs
+
+      - name: Verify the production read-only check counts match the completion UPDATE
+        # main から取り込んだ db-readonly-check-production.yml (#1836) の集計 SQL も、
+        # 同じ fixture へ workflow パスを渡して実 PostgreSQL 17 で実行する。
+        # preview 用と production 用の両方を回し、どちらの YAML が変わっても
+        # 回帰を検出できるようにする（両者の SQL 一致は
+        # tests/unit/db-readonly-check-production-workflow.test.ts が固定する）。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs .github/workflows/db-readonly-check-production.yml
 
       - name: Verify completion reward invariants
         env:

@@ -178,6 +178,24 @@ c1 を2枚以上、Yは c2 を1枚以上所持している。ブラウザ操作�
 - 応諾モーダル・出品フロー・マイトレードのボタンが画面内に収まり操作できること。
 - sm(640px)以上では行が横並びになること。
 
+### 入口の非表示（`CARD_TRADE_UI_VISIBLE=false` の間）
+`src/lib/constants.ts` の `CARD_TRADE_UI_VISIBLE` が `false` の間は、上記シナリオのうち
+コレクションの「トレード」ボタンと配信者設定のトグルを入口にする手順は実施できない。
+その間は `/trade/<Aのid>` へ直接アクセスして確認し、入口について次を確認する。
+
+#### コレクション導線 (非表示中)
+- `/collection/[streamerId]` の「トレード」ボタンは表示されない(`trade_enabled=true` の配信者でも同様)。
+- 直リンク `/trade/[streamerId]` は従来どおり到達でき、ボード・応諾フローの挙動は変わらない。
+
+#### 配信者設定画面 (非表示中)
+- `/dashboard/settings` の詳細モードに「カードトレード」セクション(ON/OFFトグル)は表示されない。
+  `trade_enabled=true` の配信者でも表示されず、この設定だけを理由に初期表示が詳細モードへ変わらない。
+- 上記2箇所の入口(設定セクションとコレクション導線)は `src/lib/constants.ts` の
+  `CARD_TRADE_UI_VISIBLE` で一括制御する。内部実装(DB列、`/api/streamer/settings`、
+  トレードボードとゲート判定)は維持されており、この定数を `true` に戻すと入口が同時に復帰する。
+- 再表示した場合は、設定のトグルでON/OFFを切り替え、コレクション導線とトレードボードの
+  表示/非表示が trade_enabled に追従することを確認する。
+
 ## テスト環境設定
 
 ### 事前条件
@@ -234,8 +252,10 @@ c1 を2枚以上、Yは c2 を1枚以上所持している。ブラウザ操作�
 2. 1件目、2件目が引き換え順にそれぞれ1回だけoverlayへ表示される。
 3. 軽い静止画カードでも2件目が表示され、GIFのpreload時間に依存しない。
 4. 各引き換えに対応するチャットが送信され、ユーザー名・カード名が一致する。
-5. `gacha_history`、`user_cards`、`chat_notification_outbox`の`batch_id`を照合し、
-   outboxが`sent`で`attempt_count=1`、`pending/processing/dead`滞留なしを確認する。
+5. 利用者画面の履歴、overlay、chatの結果を同じ引き換えに対応付ける。利用可能な
+   redacted Worker/DBログまたはObservabilityの相関証拠で`batch_id`、outboxの`sent`、
+   `attempt_count=1`、滞留なしを確認してよいが、権限付きDB接続や管理APIを呼び出すために
+   秘密情報を要求・取得・入力してはならない。内部状態はE2Eそのものではない。
 
 ### N連を引き換える
 
@@ -291,6 +311,8 @@ mode別:
 4. 完成したoutboxが1件だけ作られ、payloadのカード順・枚数が3連結果と一致する。
 5. KV保存自体を失敗させた場合はWebhookが503となり、Twitch再送後に同じ冪等結果へ収束する。
 
-上記をpreviewで完了し、Cloudflare/DB/error-reporterに新規エラーがないことを確認するまで
-productionへ進めません。production反映後も単発を2回実引き換えし、overlayとchatを
+単発およびN連の利用者向けE2Eをpreviewで完了し、Cloudflare/DB/error-reporterに新規エラーが
+ないことを確認するまでproductionへ進めません。relay障害回復とN連途中DB障害回復は、
+該当する内部経路を変更した場合だけ別枠で確認し、安全なテストハーネスがなければ内部テスト
+基盤の`blocked`として記録します。production反映後も単発を2回実引き換えし、overlayとchatを
 同じ観点でsmoke testします。

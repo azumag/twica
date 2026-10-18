@@ -1,13 +1,13 @@
 # Cloudflare cf-first 運用と移行 parity
 
 対象: https://github.com/azumag/twica/issues/1727
-確認日: 2026-09-30 UTC。この文書はリポジトリ設定の棚卸しであり、稼働中の設定を確認した証跡ではない。
+確認日: 2026-10-07 UTC。この文書はリポジトリ設定の棚卸しであり、稼働中の設定を確認した証跡ではない。
 
 ## 方針と基準
 
 新規Cloudflare操作はcf-firstとする。既存構成の切替は以下のparity gateを満たしてから行う。OpenNext / Workers Buildsの切替、Vite化、resource作成、secret更新、runtime互換日の更新を一度に混ぜない。
 
-棚卸し基準は preview `867b13cddc54414f94c93c1d1a296a8d93234ba2`。当該時点の4つのTOML、package、Node指定、build/deployシェル、deploy workflow、Workers Builds文書はmainと同一。以後はリンク先の現行設定を優先し、変更時に本台帳も更新する。
+棚卸し基準は main `1d178483819546c2d27144c2b554608b16052fc6`（前回基準 preview `867b13cddc54414f94c93c1d1a296a8d93234ba2` からの差分を本改訂で反映）。当該時点の4つのTOML、package、Node指定、build/deployシェル、deploy workflow、Workers Builds文書はmainと同一。以後はリンク先の現行設定を優先し、変更時に本台帳も更新する。
 
 ## Worker・resource・binding 台帳
 
@@ -23,7 +23,7 @@
 | Overlay Worker | `twica-overlay-realtime` | `twica-overlay-realtime-preview` | `OVERLAY_ROOMS → OverlayRoom`、`OVERLAY_PRESENCE → OverlayPresence`。両方SQLite DO、v1/v2履歴。observability有効、rate-limit varsも両環境で同じ |
 | Error Reporter | `twica-error-reporter` | CI配備なし（live未確認） | productionのみCI配備。5分cronと20分cron、GitHub通知、park監視・drain・health |
 | Reporter KV/DB | 本体production KV/Hyperdriveと共用 | Hyperdrive `1e3f6c4569bf4202a41c42711c878b86` のみ | previewにKV/varsを継承しない縮退設定。root preview DBとはIDが異なる。勝手に統合しない |
-| Chat Delivery | `twica-chat-delivery`（設定案のみ） | `twica-chat-delivery-preview`（設定案のみ） | CI配備なし。Queue作成やconsumer有効化は #1665 の別工程 |
+| Chat Delivery | `twica-chat-delivery`（設定案のみ） | `twica-chat-delivery-preview`（設定案のみ） | deploy workflow に opt-in の `chat-delivery` job を追加済み（`vars.CHAT_DELIVERY_DEPLOY_ENABLED == 'true'` のときのみ実行、#1665 Step 2 準備）。flag既定OFFのため実配備はなし。Queue作成やconsumer有効化は #1665 の別工程 |
 | Chat Queue | `chat-notification-wakeup` | `chat-notification-wakeup-preview` | producer `CHAT_NOTIFICATION_QUEUE`、consumer batch=1/concurrency=5/retries=5、1分cron。現物の存在は未確認 |
 | CHAT_APP | `twica` | `twica-preview` | service bindingとCHAT_APP_BASE_URLを同じ環境に向ける |
 
@@ -32,11 +32,11 @@
 ## deploy・build・local dev の責任境界
 
 1. 本体は Workers Builds: main→twica、preview→twica-preview。GitHub Actions の legacy app deploy は `CLOUDFLARE_WORKERS_BUILDS_ENABLED=true` でskipする
-2. GitHub Actions は overlay両環境とreporter productionを配備する。chat-deliveryは含まない。DB migrationは独立workflowであり、deploy cancellationやWorker rollbackと結合しない
+2. GitHub Actions は overlay両環境とreporter productionを配備する。chat-deliveryは opt-in job（`CHAT_DELIVERY_DEPLOY_ENABLED`）のみで、既定では配備しない。DB migrationは独立workflowであり、deploy cancellationやWorker rollbackと結合しない
 3. Cloudflare Dashboardの非production branch build OFF / build cache ON、watch pathsが一次のコスト制御。シェルの `WORKERS_CI_BRANCH` は二次防御
 4. Workers CIでは不正branchのbuild/deploy/uploadをskip。CI外ではproductionの誤branch deployを拒否、previewの誤branch deployはversion uploadへ落とす。これらを `cf deploy` 直呼びへ置換しない
 5. local標準は `npm run dev:next` = Next webpack / localhost:3000。Worker実行は `workers:build` の後に `workers:dev`。未buildの古い `.open-next` を正常確認として扱わない
-6. 基準時点のNodeは20、OpenNext 1.20.2 / Wrangler 4.86.0。Workers Issues導入ではWranglerのNode >=22要件に合わせ、`.node-version`を22へ更新し、CI/deploy workflowは同ファイル参照へ統一する。OpenNextは維持。cf移行自体の互換性確認は別途必要
+6. 基準時点は Node 22（`.node-version`）、OpenNext 1.20.2 / Wrangler 4.134.0 / workers-types 5.20260917.1。CI/deploy workflow は `node-version-file: .node-version` で Node を統一する。`auxiliary-workers:build` は overlay・reporter に加え chat-delivery の production/preview 両 bundle を含む。OpenNextは維持。cf移行自体の互換性確認は別途必要
 7. OpenNext設定の `queue: "direct"` はadapterの設定で、chat notification Queueの配備状態を意味しない
 
 根拠: [運用文書](https://github.com/azumag/twica/blob/preview/docs/cloudflare-workers-builds.md)、[package scripts](https://github.com/azumag/twica/blob/preview/package.json)、[deploy guard](https://github.com/azumag/twica/blob/preview/scripts/cloudflare-workers-build-deploy.sh)、[workflow](https://github.com/azumag/twica/blob/preview/.github/workflows/deploy-cloudflare.yml)
@@ -72,7 +72,7 @@ cfはbeta。既存TOMLに対する未移行の `cf init/dev/build/deploy` など
 - KV preview_id / R2 preview_bucket_name は新configに同名fieldがないため、local-only挙動と遠隔previewアクセスを別の判断として記録
 - unknown modeがproductionへフォールバックしない安全なmode選択を提案・テストする。既存のdefault productionは移行差分として明示する
 - DOは既存OverlayRoom/OverlayPresenceのSQLite identityを維持。互換日やmigration履歴の整理を付随変更で行わない
-- reporter previewは縮退のまま、chatは未配備のまま。schema表現の完成と配備承認を混同しない
+- reporter previewは縮退のまま、chatは未配備のまま（opt-in job はあるが既定OFF）。schema表現の完成と配備承認を混同しない
 - `tests/unit/cloudflare-build-cost-guard.test.ts` と `tests/unit/dev-next-script-contract.test.ts` を維持し、mode/branch/target、非配備Worker、secret build漏出をcontract test化する
 - artifact検査は現在の `.open-next` / auxiliary dist出力を前提とする。cf Build Outputへ移行するなら `scripts/check-supabase-shutdown.js` の検査面も同時に更新してからdeploy pathを変える
 - 認証なしbuild/dry-run、typecheck、対象unit/integration、artifact scan後に、別承認でpreview実経路QAを行う。ガチャ/overlay/chatやuploadに影響する変更は `docs/QA.md` のゲートを満たす
@@ -81,6 +81,11 @@ cfはbeta。既存TOMLに対する未移行の `cf init/dev/build/deploy` など
 
 実施済み: GitHub issue/最新PR確認、main/preview比較、設定・package・workflow・guard・関連テストの静的読解、Cloudflare公式仕様照合。
 この文書は cfインストール、cf migrate実行、依存更新、build/test、Cloudflare live inventory、preview QA の完了証跡ではない。生成差分やruntime parityが合格したという主張はしない。
+
+2026-10-07 改訂: 基準を main `1d17848` へ更新し、前回基準以降の差分（Node 22 統一、
+Wrangler 4.134.0 / workers-types 5.20260917.1、chat-delivery の opt-in CI job と
+`auxiliary-workers:build` への包含、root `wrangler.toml` の `observability.issues`）
+を台帳へ反映。cf parity 表（Wrangler fallback 箇所）の変更はなし。runtime・設定ファイル自体は無変更。
 
 ## Workers Issues 導入の限定fallback（2026-10-02 JST）
 

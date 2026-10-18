@@ -1,5 +1,9 @@
 /**
- * db-readonly-check.yml の集計 SQL に対する回帰 (Issue #1665 Step 4)。
+ * db-readonly-check(-production).yml の集計 SQL に対する回帰 (Issue #1665 Step 4)。
+ *
+ * 対象 workflow は第1引数で切り替える（既定は preview 用）。production 用
+ * (.github/workflows/db-readonly-check-production.yml) も同じ SQL を持つため、
+ * main の CI では production 側を指定して実 PG17 で検証する。
  *
  * 背景（レビュー指摘 P2）:
  *   集計 SQL の `targets_total` が `status='pending' OR status='processing'` を前置フィルタに
@@ -46,7 +50,8 @@ function extractHeredoc(workflowText, stepName) {
   return body.map((line) => line.slice(indent)).join('\n')
 }
 
-const WORKFLOW_PATH = '.github/workflows/db-readonly-check.yml'
+// 検証対象の workflow。引数が無ければ preview 用（preview 側の CI と同じ既定）。
+const WORKFLOW_PATH = process.argv[2] || '.github/workflows/db-readonly-check.yml'
 const workflowText = readFileSync(WORKFLOW_PATH, 'utf8')
 const countsSql = extractHeredoc(workflowText, 'Count backfill targets (read-only)')
 assert.ok(
@@ -141,7 +146,7 @@ ROLLBACK;
   )
 
   console.log(
-    `OK  readonly-counts: targets_total=${total} pending=${pending} lease_expired=${expired} update_affected=${affected}`,
+    `OK  readonly-counts (${WORKFLOW_PATH}): targets_total=${total} pending=${pending} lease_expired=${expired} update_affected=${affected}`,
   )
 } finally {
   cleanup()

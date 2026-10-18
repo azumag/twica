@@ -12,6 +12,7 @@ import CardVisibilitySettings from "@/components/CardVisibilitySettings";
 import AlbumDisplaySettings from "@/components/AlbumDisplaySettings";
 import DuplicateDisplayTierSettings from "@/components/DuplicateDisplayTierSettings";
 import TradeSettings from "@/components/TradeSettings";
+import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -134,11 +135,20 @@ export default async function AccountSettingsPage() {
               rarities={collectionSettings.rarities}
               currentDuplicateDisplayTiers={collectionSettings.duplicateDisplayTiers}
             />
-            <TradeSettings
-              streamerId={collectionSettings.streamerId}
-              currentTradeEnabled={collectionSettings.tradeEnabled}
-              currentCrossChannelTradeEnabled={collectionSettings.crossChannelTradeEnabled}
-            />
+            {/* #715: カードトレードの入口UIは一般公開準備中のため
+                CARD_TRADE_UI_VISIBLE=false の間は描画しない。main #1803 は
+                /dashboard/settings のトレードセクションを同じ定数で隠したが、
+                preview ではトレード設定がこのページへ移動済みのため、移動先にも
+                同じゲートを掛けて「main では隠れているのに移動先では見える」
+                不整合を防ぐ。設定値・API・ゲート判定は維持し、定数を true に
+                戻すだけで復帰する。 */}
+            {CARD_TRADE_UI_VISIBLE && (
+              <TradeSettings
+                streamerId={collectionSettings.streamerId}
+                currentTradeEnabled={collectionSettings.tradeEnabled}
+                currentCrossChannelTradeEnabled={collectionSettings.crossChannelTradeEnabled}
+              />
+            )}
           </section>
         )}
       </div>
