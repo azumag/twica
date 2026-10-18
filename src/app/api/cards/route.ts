@@ -637,7 +637,7 @@ async function fetchCardsFromDBPg(
     );
   }
 
-  let orderExprs = primaryOrderExprs;
+  const orderExprs = primaryOrderExprs;
   let rows: unknown[];
   let rowsError: unknown = null;
 
