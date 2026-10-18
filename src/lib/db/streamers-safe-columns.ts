@@ -93,7 +93,9 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
  * 元々は cards テーブルの「本番未デプロイ8列」フォールバック
  * （旧 cards-safe-columns.ts の withCardsBattleColumnFallback）と同型の設計だったが、そちらは
  * 本番実測で対象8列とも実在することを確認したため #834 で撤去された（撤去後のファイルは
- * card-padding-color-errors.ts に改名・縮小）。
+ * card-padding-color-errors.ts に改名・縮小され、さらに #954 で image_padding_color
+ * フォールバックごと削除された）。本ヘルパー（streamers 側の列群）は #954 の実測
+ * 対象外のため温存する。
  */
 export async function withLiveDirectorySettingsColumnFallback<T>(
   attempt: (useSafeColumns: boolean) => Promise<T>

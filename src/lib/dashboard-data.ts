@@ -41,11 +41,11 @@ import { withDbRetry } from "@/lib/db/retry";
 // #834: cards テーブルの「本番未デプロイ8列」（card_number/hp/atk/def/spd/
 // skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバックは、
 // PlanetScale 本番の information_schema.columns への実測で8列とも実在することを
-// 確認したため撤去した（詳細は card-padding-color-errors.ts のコメント参照）。
-// 無指定 select の単一経路に戻す。
-// #954: 残っていた image_padding_color（#899）の列欠落再試行フォールバックも
-// 同じ実測手順（本番・preview の information_schema.columns）で4列とも実在を
-// 確認したため撤去した。card-padding-color-errors.ts 自体は削除済み。
+// 確認したため撤去した。無指定 select の単一経路に戻す。
+// #954: 残っていた image_padding_color（#899）の列欠落再試行フォールバック
+// （card-padding-color-errors.ts。#834 撤去時に一時新設）も、同じ実測手順
+// （本番・preview の information_schema.columns）で実在を確認したため、
+// ファイルごと撤去した。
 import {
   normalizeAlbumDefaultView,
   sanitizeAlbumGridSizeMap,
