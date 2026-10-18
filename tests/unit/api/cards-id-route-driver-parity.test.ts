@@ -18,7 +18,6 @@ import { getDb } from "@/lib/db/client";
 import { removeBlobFile } from "@/lib/storage-db";
 import { deleteFromR2 } from "@/lib/r2-client";
 import { sha256Prefix } from "@/lib/crypto-utils";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
 import { cards as cardsTable, cardTradeSettings } from "@/lib/db/schema";
 import { revalidateTag } from "next/cache";
 
@@ -133,9 +132,8 @@ function createDrizzleDbMock(
       const resolve = () => {
         if (response.error) return Promise.reject(response.error);
         const rows = response.rows ?? [];
-        // #899: .returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR) のような明示列指定時は
-        // fields のキーだけを持つ行にマップし、image_padding_color が実際に
-        // 応答から除外されることをテストで検証できるようにする。
+        // .returning(明示列) 指定時は fields のキーだけを持つ行にマップする
+        // （現在の単一経路では無指定 returning() のため通常 rows がそのまま返る）。
         const fields = call.returningFields;
         return Promise.resolve(
           fields ? rows.map((row) => Object.fromEntries(Object.keys(fields).map((key) => [key, row[key] ?? null]))) : rows
@@ -358,6 +356,39 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
         expect(pg.updateCalls[0].table).toBe(cardTradeSettings);
       });
 
+      // #954: cards.collection_name 列の欠落（42703）が所有権 SELECT で発生した場合の挙動。
+      // 旧実装（#269由来の読み取り fallback + cardPackNamesUnavailable flag）では
+      // tradeWantable-only の PUT が 200 + collectionNameSkippedDeployWindow で継続
+      // していたが、#1858 では fallback を実測根拠（PlanetScale 本番・preview の
+      // information_schema.columns で 4/4 列実在）に基づき撤去したため、列欠落は
+      // 起こり得ない環境を前提に fail-fast（403・書き込みなし）へ変更した。
+      // この設計変更を明示的に固定する（列が真に欠落する環境でのみ到達する経路）。
+      it("collection_name欠落(42703)時はtradeWantable限定PUTも403でfail-fastし、書き込みを行わない（単一経路, #954）", async () => {
+        const missingCollectionNameErrorPg = {
+          code: "42703",
+          message: "column cards.collection_name does not exist",
+        };
+
+        const pg = createDrizzleDbMock({
+          selects: [{ error: missingCollectionNameErrorPg }],
+          // 所有権不明で 403 になるため本テストでは消費されない。もし書き込みが
+          // 発生したら updateCalls 経由で検知できるよう成功レスポンスを置いておく。
+          updates: [{ rows: [{ trade_wantable: false }] }],
+        });
+        primePgDb(pg);
+        const res = await PUT(createPutRequest({ tradeWantable: false, collectionName: "weapons" }), {
+          params: Promise.resolve({ id: CARD_ID }),
+        });
+        // 旧実装（fallback + flag）では 200 + collectionNameSkippedDeployWindow
+        // だった。撤去後は再試行せず所有権不明として 403（fail-fast）。
+        expect(res.status).toBe(403);
+        // 所有権不明のため cardTradeSettings への書き込みも発生しない（部分書き込み防止）。
+        expect(pg.updateCalls).toHaveLength(0);
+        // SELECT も1回のみ。mock は同じエラーを繰り返すため、この assert が無いと
+        // 撤去した fallback（再試行）が復活しても 403・更新0 のまま本テストを通ってしまう。
+        expect(pg.selectCalls).toHaveLength(1);
+      });
+
       it("省略時は trade_wantable を読み書きしない", async () => {
         const pg = createDrizzleDbMock({
           selects: [{ rows: [OWNERSHIP_ROW_PG] }],
@@ -474,7 +505,13 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(pgJson).toEqual({ ...UPDATED_ROW, recalculatedCards: null });
     });
 
-    it("image_padding_color列デプロイ窓では列を落としてUPDATEを再試行する (#899)", async () => {
+    // #954: image_padding_color 列のデプロイ窓フォールバック（42703 検知時に
+    // updateData から当該フィールドを削って再試行、および
+    // CARDS_COLUMNS_WITHOUT_PADDING_COLOR 明示列 RETURNING への切替再試行）は、
+    // 本番・preview の information_schema.columns 実測で image_padding_color が
+    // 実在することを確認したため撤去した（Issue #954）。列欠落エラーは再試行せず
+    // そのまま伝播する単一経路になったことを回帰として固定する。
+    it("UPDATE時の42703（image_padding_color欠落）は再試行せずエラー応答になる（単一経路, #954）", async () => {
       const missingPaddingErrorPg = {
         code: "42703",
         message: 'column "image_padding_color" of relation "cards" does not exist',
@@ -482,19 +519,19 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
 
       const pg = createDrizzleDbMock({
         selects: [{ rows: [OWNERSHIP_ROW_PG] }],
-        updates: [{ error: missingPaddingErrorPg }, { rows: [UPDATED_ROW] }],
+        updates: [{ error: missingPaddingErrorPg }],
       });
       primePgDb(pg);
       const pgRes = await PUT(
         createPutRequest({ imagePaddingColor: "white" }),
         { params: Promise.resolve({ id: CARD_ID }) }
       );
-      expect(pgRes.status).toBe(200);
-      expect(pg.updateCalls).toHaveLength(2);
-      expect(pg.updateCalls[1].values).not.toHaveProperty("image_padding_color");
+      expect(pgRes.status).toBe(500);
+      expect(pg.updateCalls).toHaveLength(1);
+      expect(pg.updateCalls[0].returningFields).toBeUndefined();
     });
 
-    it("card_number列が存在しない場合、UPDATEはフォールバックなく500を返す (#954)", async () => {
+    it("UPDATE時の42703（card_number欠落）も再試行せずエラー応答になる（単一経路, #954）", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" of relation "cards" does not exist',
@@ -510,53 +547,6 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       });
       expect(pgRes.status).toBe(500);
       expect(pg.updateCalls).toHaveLength(1);
-    });
-
-    // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
-    // isMissingCardsBattleColumnError のみを見る末尾フォールバックが
-    // image_padding_color 欠落エラーを拾えず、imagePaddingColor を一切
-    // 指定しない（=updateDataに含まれない）UPDATEまでもがmigration未適用の
-    // デプロイ窓で全て失敗していた。#834 で「本番未デプロイ8列」フォールバック
-    // 自体は撤去されたが、image_padding_color 専用の末尾フォールバック
-    // （CARDS_COLUMNS_WITHOUT_PADDING_COLOR への切替）は引き続き必要なため残す。
-    it("本番未デプロイのimage_padding_color列: imagePaddingColorを指定しないUPDATEでもRETURNING失敗時に明示列リストで再試行し200を返す (#899)", async () => {
-      const missingPaddingErrorPg = {
-        code: "42703",
-        message: 'column "image_padding_color" of relation "cards" does not exist',
-      };
-      const UPDATED_ROW_SAFE = {
-        id: CARD_ID,
-        streamer_id: "streamer-1",
-        name: "Renamed",
-        description: null,
-        image_url: null,
-        rarity: "common",
-        rarity_order: null,
-        max_issuance_count: null,
-        collection_name: null,
-        drop_rate: 0.5,
-        intra_rarity_weight: 1,
-        is_active: true,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-02T00:00:00Z",
-      };
-
-      const pg = createDrizzleDbMock({
-        selects: [{ rows: [OWNERSHIP_ROW_PG] }],
-        updates: [
-          { error: missingPaddingErrorPg }, // attempt1: 無指定RETURNINGがimage_padding_colorで失敗
-          { rows: [UPDATED_ROW_SAFE] }, // attempt2: SAFE_COLUMNSで再試行し成功
-        ],
-      });
-      primePgDb(pg);
-      // imagePaddingColor はリクエストに含めない = updateData に含まれない
-      // ため、途中の「列を落として再試行」フォールバックはスキップされる。
-      const pgRes = await PUT(createPutRequest({ name: "Renamed" }), {
-        params: Promise.resolve({ id: CARD_ID }),
-      });
-      expect(pgRes.status).toBe(200);
-      expect(pg.updateCalls).toHaveLength(2);
-      expect(pg.updateCalls[1].returningFields).toEqual(CARDS_COLUMNS_WITHOUT_PADDING_COLOR);
     });
 
     it("card_number一意制約違反(23505)は409を返す", async () => {

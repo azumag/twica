@@ -1,5 +1,3 @@
-import { isPgMissingNamedColumnError } from "@/lib/db/errors";
-
 export const CARD_ISSUANCE_MESSAGES = {
   invalid: "発行可能枚数は1以上の整数、または空欄で入力してください",
   soldOut: "このカードは発行可能枚数に達しています",
@@ -43,18 +41,12 @@ export function parseCardIssuanceLimit(value: unknown): number | null | "invalid
   return value;
 }
 
-// cause チェーン対応 (2026-07 本番障害の恒久対応): pg 直結の
-// insert/returning catch から Drizzle にラップされたエラーがそのまま渡される。
-// isPgMissingNamedColumnError が各階層で SQLSTATE と列名を同時に確認する。
-//
-// 階層ごとに独立判定する理由 (Fable厳格レビュー指摘・中4、詳細は
-// card-number-errors.ts のコメント参照): 全階層のテキストを連結してから判定
-// すると、無関係な階層の文言（SQL 文そのもの等）に "max_issuance_count" が
-// 偶然含まれているだけで誤検知しうる。各階層の自分自身の情報だけで旧判定を
-// 適用し、どこか1階層でも満たせば true とする。
-export function isMissingCardIssuanceColumnError(error: unknown): boolean {
-  return isPgMissingNamedColumnError(error, ["max_issuance_count"]);
-}
+// #954: 旧来はここに isMissingCardIssuanceColumnError（cards.max_issuance_count
+// 列のデプロイ窓フォールバック判定、#108/#548 由来）も置いていたが、#834
+// (PR #953) と同じ手順で PlanetScale 本番・preview の information_schema.columns
+// 実測により max_issuance_count の実在を確認したため撤去した（Issue #954 参照）。
+// このファイルの残り（発行上限のパース・売り切れ判定）はデプロイ窓フォールバック
+// ではなく現役の機能ロジックなので温存する。
 
 // Issue #542: 配信者がCardManagerで「あと何枚発行できるか」を一目で把握できる
 // よう、上限付きカードの発行済み枚数から売り切れ/残りわずかを判定する。
