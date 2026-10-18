@@ -22,9 +22,9 @@ import { isAssignableImageUrl } from "@/lib/storage-utils";
 import { logger } from "@/lib/logger.server";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
-import { CARD_ISSUANCE_MESSAGES, parseCardIssuanceLimit } from "@/lib/card-issuance";
+import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
-import { isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
+import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
 // カードの読み取りと更新は PlanetScale の単一接続を使う。
 // 接続は各 xxxPg 関数の withDbRetry queryFn 内で取得する。
@@ -108,9 +108,9 @@ async function fetchStreamerForCardCreatePg(
 }
 
 /**
- * POST /api/cards のカード INSERT（card_number → max_issuance_count →
- * collection_name の3段階デプロイ窓フォールバック付き、さらに RETURNING 列の
- * image_padding_color フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
+ * POST /api/cards のカード INSERT（max_issuance_count →
+ * collection_name の2段階デプロイ窓フォールバック付き、さらに RETURNING 列の
+ * image_padding_color フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix, #954 card_number撤去)。
  *
  * - `.insert(...).select().maybeSingle()` は `.insert(...).values(...).returning()`
  *   が等価（RETURNING で挿入行を1回の往復で取得）。
@@ -119,11 +119,12 @@ async function fetchStreamerForCardCreatePg(
  *
  * #834: 「本番未デプロイ8列」（card_number/hp/atk/def/spd/skill_*）に対する
  * RETURNING フォールバックは、本番実測で8列とも実在することを確認したため撤去
- * した。image_padding_color（#899、本Issueとは独立した別デプロイ窓）だけは
- * 無指定 `.returning()` が失敗しうるため、CARDS_COLUMNS_WITHOUT_PADDING_COLOR
- * へ切り替えて最後にもう一度だけ再試行する（insertData に無い場合も RETURNING
- * は values() の内容と無関係に schema.ts の全列を要求するため、この最終
- * フォールバックが必要）。
+ * した。card_number は同実測で実在確認済み（#834）のため、そのフォールバックは不要。
+ * max_issuance_count / collection_name は #834 実測対象外のためフォールバックを残す。
+ * image_padding_color（#899、本Issueとは独立した別デプロイ窓）は無指定 `.returning()` が
+ * 失敗しうるため、CARDS_COLUMNS_WITHOUT_PADDING_COLOR へ切り替えて最後に一度だけ再試行
+ * する（insertData に無い場合も RETURNING は values() の内容と無関係に schema.ts の
+ * 全列を要求するため、この最終フォールバックが必要）。
  */
 async function insertCardPg(
   insertDataInitial: Record<string, unknown>
@@ -153,6 +154,19 @@ async function insertCardPg(
 
   let { card, error } = await attemptInsert();
 
+  // max_issuance_count は #834 実測対象外（#834 実測8列: card_number/hp/atk/def/spd/skill_*）ため、
+  // デプロイ窓フォールバックを残す。本番・preview 実測済み（#834 対象外だが migration 00067 適用済み）だが、
+  // 確実性のため残置。#954 実測で撤去可否を判断する。
+  if (error && isMissingCardIssuanceColumnError(error) && "max_issuance_count" in insertData) {
+    delete insertData.max_issuance_count;
+    ({ card, error } = await attemptInsert());
+  }
+  // collection_name は #834 実測対象外のため、デプロイ窓フォールバックを残す。
+  // migration 00061 で適用済みだが、確実性のため残置。#954 実測で撤去可否を判断する。
+  if (error && isMissingCollectionNameColumn(error as CardsSchemaError) && "collection_name" in insertData) {
+    delete insertData.collection_name;
+    ({ card, error } = await attemptInsert());
+  }
   // #899: image_padding_color 列が migration 未適用の環境では、この列を落として再試行する
   //（余白情報だけが保存されず、カード作成自体は継続する）
   if (error && isMissingCardPaddingColorError(error) && "image_padding_color" in insertData) {
