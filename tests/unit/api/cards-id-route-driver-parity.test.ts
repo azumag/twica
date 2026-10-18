@@ -384,6 +384,9 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
         expect(res.status).toBe(403);
         // 所有権不明のため cardTradeSettings への書き込みも発生しない（部分書き込み防止）。
         expect(pg.updateCalls).toHaveLength(0);
+        // SELECT も1回のみ。mock は同じエラーを繰り返すため、この assert が無いと
+        // 撤去した fallback（再試行）が復活しても 403・更新0 のまま本テストを通ってしまう。
+        expect(pg.selectCalls).toHaveLength(1);
       });
 
       it("省略時は trade_wantable を読み書きしない", async () => {
