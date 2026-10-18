@@ -202,13 +202,11 @@ export default function GachaHistoryTable({
       if (e instanceof DOMException && e.name === "AbortError") return;
       throw e;
     } finally {
-      // The loading flag is shared by successive detail requests. An aborted
-      // request may settle after its replacement has already set loading=true,
-      // so only the controller that still owns the ref may clear that state.
-      if (panelAbortRef.current === controller) {
-        panelAbortRef.current = null;
-        setPanelLoading(false);
-      }
+      // MUTATION (verification only, never merge): restored the pre-#1675
+      // behavior where every settling request cleared the shared loading
+      // flag unconditionally. This reintroduces the #1654 race so the
+      // regression test can prove it fails without the ownership guard.
+      setPanelLoading(false);
     }
   }, []);
 
