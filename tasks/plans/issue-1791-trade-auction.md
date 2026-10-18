@@ -205,6 +205,7 @@ CREATE INDEX ON public.trade_auction_bid_items (user_card_id);
   - 自分の出品: 出品中 / 選択待ち（成立操作）/ 成立 / 流札・取消
   - 自分の入札: 入札中 / 落札 / 落選・解放
 - 時刻はサーバーが返す ISO 時刻を、クライアントで相対表示する。期限の境界はサーバーで判定する。
+- PR-2 で確定した画面構成（タブの URL、詳細ページ、migration 窓の「準備中」表示など）は §13 を参照。
 
 ## 7. セキュリティ・整合性
 - 拘束の排他の正本は「`user_cards` 行の FOR UPDATE ＋ `trade_copy_locked`」で、全経路に一律で適用する。アプリ層の事前チェックは補助。
@@ -293,3 +294,22 @@ CREATE INDEX ON public.trade_auction_bid_items (user_card_id);
 - 2接続の並行: `tests/fixtures/trade-auction-concurrency.sh`（CI 登録済み）。S4 は、settle の時刻判定を `now()` に置き換えると失敗することを確認済み（判定がロック取得後の `clock_timestamp()` であることの回帰ガード）。
 - migration 窓: `tests/unit/trade-service.test.ts`（42P01/42883 での縮退）、`tests/unit/trade-auction-service.test.ts` / `tests/unit/trade-auction-api.test.ts`（503）。
 - accept の差分固定: `tests/unit/trade-auction-migration.test.ts`。
+
+## 13. PR-2（UI）実装時に確定・変更した点（2026-10-18）
+
+実装は `src/app/trade/[streamerId]/page.tsx`（タブ）、`src/app/trade/[streamerId]/auctions/[auctionId]/page.tsx`（詳細）、`src/components/TradeAuction*.tsx`・`MyTradeAuctions.tsx`・`TradeCardChoiceList.tsx`、`TradeCreateForm.tsx`（出品形式の選択）、`MyTrades.tsx`（タブ）、`src/lib/use-trade-list.ts`（型パラメータ化）、`src/lib/trade-client.ts`。API・DB・RPC は変更していない。
+
+| 項目 | 設計（§4.6・§6） | 実装 | 理由 |
+|---|---|---|---|
+| ボードのタブ | 「オークション」タブを追加 | `?tab=auction` を `?scope=cross` と直交させ、オークションタブの中に「このチャンネル / 他チャンネル」のサブタブを置く（クロス許可時のみ）。サブタブは `GET /api/trades/auctions` の `scope` にそのまま対応 | 既存の in_channel / cross の2タブ構造と API の scope を崩さずに、クロスチャンネルのオークションも辿れるようにするため。タブを4つ並べるより 375px で収まる |
+| migration 未適用の窓 | タブと導線を出さない | タブと出品形式の選択は常に出し、オークション API が 503 `TRADE_AUCTION_UNAVAILABLE` のとき、タブの中身（ボード・詳細・マイトレード）を「準備中」の表示にする。出品の送信が 503 なら既存のエラー文言（`errorTradeAuctionUnavailable`）を出す | タブを隠すにはボード描画ごとにサーバーでスキーマを確認する問い合わせが1本増える。窓はデプロイ時の短時間で、既存画面は別エンドポイントなので壊れない（指示の「または『準備中』」を採用） |
+| オークション詳細 | ページかモーダルか未定 | ページ `/trade/[streamerId]/auctions/[auctionId]`。`[streamerId]` は入札に使うカードのチャンネル（ボードのチャンネル） | 入札のカード候補（`trade_wantable`・可視性を SQL で適用済み）をサーバーで用意する必要があり、出品フロー（ページ）と同じ構成にした。オークション本体は API から取得（rate limit と入札内容の開示規則を API に一本化） |
+| 入札カード候補 | Step 2 の UI を再利用 | `listWantableCards`（wantable + 可視性）∩ 自分の所持コピー。拘束されていないコピー数（`freeCount`）を表示し、0枚・出品カードと同種は選べない。入札変更時は、変更前の入札と同じカードならその枚数も使える枚数に足す | 入札は自分のカードでしか出せないため未所持カードは出さない（名前も送らない）。RPC は変更前の入札のコピーを再利用するため |
+| カード選択 UI | Step 2 を再利用 | Step 2 のタイル一覧を `TradeCardChoiceList` に切り出し、出品フローと入札フォームの両方で使う | 同じ見た目・`aria-pressed`・無効理由の `title` を保つため。どのカードを出すかは各フローが決める |
+| 期限の初期値 | 未記載 | 初期選択なし（明示的に選ぶまで送信不可） | 期限はカードと全入札の拘束期間を決めるため |
+| 取消ボタン | 入札0件なら取消可 | `status='open'` かつ有効入札0件のとき表示（期限前・期限後とも）。入札がある間はボタンを出さず理由を表示 | 仕様どおり。期限後の入札0件は導出上の流札だが、取消で記録を整理できる（§12） |
+| 成立・取消・取り下げの場所 | 詳細で成立 | 3つとも詳細ページだけに置く。マイトレードの「選択待ち」には成立操作への目立つリンクを出す | 成立には入札一覧（出品者だけが詳細 API で受け取る）が必要。操作の入口を1か所にして二重送信の管理を単純にする |
+| 二重送信 | 既存パターン | 操作中は詳細の全操作ボタンを無効化。入札は「カード + 枚数」に束縛した requestId（出品フローと同じ）、成立は入札ごとの requestId（応諾と同じ）を、成功まで保持して再送で再利用。取り下げ・取消は状態冪等なので requestId なし（API どおり） | 通信断の後の再送を冪等リプレイにするため |
+| 書き込み後の更新 | 未記載 | 通信断以外の応答（成功・拒否とも）の後に、詳細を再取得し、一覧キャッシュを破棄し、`router.refresh()` で入札候補の空き枚数を更新する | 拒否（期限切れ等）は表示が古いことを意味するため。境界判定はサーバーに任せ、失敗はエラー文言で案内する |
+| 一覧キャッシュ | `use-trade-list` のパターン | `useTradeList` を型パラメータ化し、`rowsKey: "auctions"` と 503 の `unavailable` を追加して再利用（ボードは shared + viewerKey、マイトレードは mount 単位） | 2つ目のキャッシュ実装を作らない。オークションの行も viewer 固有（`isOwnAuction`・`myBid`）なので viewerKey の名前空間が必要 |
+| 時刻表示 | クライアントで相対表示 | 「残りX日Y時間 / X時間Y分 / X分 / まもなく締切」を30秒ごとに再計算。締切・選択期限の日時も併記 | 7日のオークションが作成直後に「残り6日」と切り捨てて見えないようにするため。表示だけで、境界はサーバーが判定する |

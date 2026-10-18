@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 
 /**
  * /trade/** server pages and layout (#726/#727): login gates, returnTo,
@@ -37,6 +37,9 @@ vi.mock("@/lib/trade", () => ({
   listCrossTradePartnerStreamers: mocks.listCrossTradePartnerStreamers,
   listMyTradeOffers: mocks.listMyTradeOffers,
 }));
+// The detail page passes TRADE_MAX_BID_QUANTITY (#1791); the real module
+// pulls in the DB layer, so the value is mirrored here.
+vi.mock("@/lib/trade-auction", () => ({ TRADE_MAX_BID_QUANTITY: 10 }));
 vi.mock("@/lib/logger", () => ({ logger: { warn: mocks.loggerWarn, info: vi.fn(), error: vi.fn() } }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect, notFound: mocks.notFound }));
 vi.mock("next-intl/server", () => ({
@@ -59,6 +62,16 @@ vi.mock("@/components/TradeBoard", () => ({
     <div data-testid="trade-board" data-props={JSON.stringify(props)} />
   ),
 }));
+vi.mock("@/components/TradeAuctionBoard", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="trade-auction-board" data-props={JSON.stringify(props)} />
+  ),
+}));
+vi.mock("@/components/TradeAuctionDetail", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="trade-auction-detail" data-props={JSON.stringify(props)} />
+  ),
+}));
 vi.mock("@/components/TradeCreateForm", () => ({
   default: (props: Record<string, unknown>) => (
     <div data-testid="trade-create-form" data-props={JSON.stringify(props)} />
@@ -74,6 +87,7 @@ import TradeLayout, { metadata } from "@/app/trade/layout";
 import TradeBoardPage from "@/app/trade/[streamerId]/page";
 import TradeCreatePage from "@/app/trade/[streamerId]/new/page";
 import MyTradesPage from "@/app/trade/mine/page";
+import TradeAuctionDetailPage from "@/app/trade/[streamerId]/auctions/[auctionId]/page";
 
 const STREAMER_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION = { twitchUserId: "viewer-1" };
@@ -305,6 +319,157 @@ describe("/trade/[streamerId]/new listing page", () => {
     render(await TradeCreatePage({ params, searchParams: Promise.resolve({ scope: "cross" }) }));
     expect(screen.getByText("crossDisabledNotice")).toBeInTheDocument();
     expect(screen.queryByTestId("trade-create-form")).toBeNull();
+  });
+});
+
+describe("/trade/[streamerId] auction tab (#1791)", () => {
+  it("links the auction tab from every board tab and keeps the offer board for the default tab", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeBoardPage({ params, searchParams: Promise.resolve({}) }));
+    expect(screen.getByRole("link", { name: "tabAuction" })).toHaveAttribute(
+      "href",
+      `/trade/${STREAMER_ID}?tab=auction`,
+    );
+    expect(screen.getByRole("link", { name: "tabInChannel" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByTestId("trade-board")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-auction-board")).toBeNull();
+  });
+
+  it("?tab=auction renders the auction board with an auction CTA and no card filter query", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeBoardPage({ params, searchParams: Promise.resolve({ tab: "auction", listed: "1" }) }));
+    expect(screen.queryByTestId("trade-board")).toBeNull();
+    const board = props("trade-auction-board");
+    expect(board).toMatchObject({
+      streamerId: STREAMER_ID,
+      scope: "in_channel",
+      isLoggedIn: true,
+      createHref: `/trade/${STREAMER_ID}/new?kind=auction`,
+      justListed: true,
+    });
+    expect(board.viewerKey).toMatch(/^u:[0-9a-f]{16}$/);
+    expect(mocks.listWantableCards).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "tabAuction" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "tabInChannel" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "createAuctionButton +" })).toHaveAttribute(
+      "href",
+      `/trade/${STREAMER_ID}/new?kind=auction`,
+    );
+  });
+
+  it("offers in-channel / cross-channel sub-tabs inside the auction tab when cross trade is on", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(
+      await TradeBoardPage({ params, searchParams: Promise.resolve({ tab: "auction", scope: "cross" }) }),
+    );
+    const sub = screen.getByRole("navigation", { name: "auctionScopeLabel" });
+    expect(within(sub).getByRole("link", { name: "auctionScopeCrossChannel" })).toHaveAttribute("aria-current", "page");
+    expect(within(sub).getByRole("link", { name: "auctionScopeInChannel" })).toHaveAttribute(
+      "href",
+      `/trade/${STREAMER_ID}?tab=auction`,
+    );
+    expect(props("trade-auction-board").scope).toBe("cross_channel");
+  });
+
+  it("hides the sub-tabs and shows the cross notice when cross trade is off", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer({ crossChannelTradeEnabled: false }));
+    render(
+      await TradeBoardPage({ params, searchParams: Promise.resolve({ tab: "auction", scope: "cross" }) }),
+    );
+    expect(screen.queryByRole("navigation", { name: "auctionScopeLabel" })).toBeNull();
+    expect(screen.getByText("crossDisabledNotice")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-auction-board")).toBeNull();
+  });
+
+  it("anonymous viewers get a login CTA returning to the auction listing flow", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    render(await TradeBoardPage({ params, searchParams: Promise.resolve({ tab: "auction" }) }));
+    expect(props("trade-auction-board").createHref).toBe(
+      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}/new?kind=auction`)}`,
+    );
+  });
+});
+
+describe("/trade/[streamerId]/new kind preselection (#1791)", () => {
+  it("?kind=auction preselects the auction kind; anything else is a regular offer", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "auction" }) }));
+    expect(props("trade-create-form").initialKind).toBe("auction");
+    cleanup();
+    render(await TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "other" }) }));
+    expect(props("trade-create-form").initialKind).toBe("offer");
+  });
+});
+
+describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
+  const AUCTION_ID = "22222222-2222-4222-8222-222222222222";
+  const detailParams = Promise.resolve({ streamerId: STREAMER_ID, auctionId: AUCTION_ID });
+
+  it("offers only owned, wantable cards as bid candidates with their free copy counts", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.listWantableCards.mockResolvedValue([
+      { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, isOwned: true },
+      { cardId: "c-locked", name: "Locked", rarity: "common", imageUrl: null, isOwned: true },
+      { cardId: "c-unowned", name: "Unowned", rarity: "epic", imageUrl: null, isOwned: false },
+    ]);
+    mocks.listTradeableOwnedCopies.mockResolvedValue([
+      { userCardId: "u1", cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, obtainedAt: null, isListed: false, ownedCount: 3 },
+      { userCardId: "u2", cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, obtainedAt: null, isListed: true, ownedCount: 3 },
+      { userCardId: "u3", cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, obtainedAt: null, isListed: false, ownedCount: 3 },
+      { userCardId: "u4", cardId: "c-locked", name: "Locked", rarity: "common", imageUrl: null, obtainedAt: null, isListed: true, ownedCount: 1 },
+      // Owned but not wantable (trade_wantable=false): not a candidate.
+      { userCardId: "u5", cardId: "c-not-wantable", name: "NW", rarity: "common", imageUrl: null, obtainedAt: null, isListed: false, ownedCount: 1 },
+    ]);
+    render(await TradeAuctionDetailPage({ params: detailParams, searchParams: Promise.resolve({}) }));
+    expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
+    expect(mocks.listTradeableOwnedCopies).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
+    const detail = props("trade-auction-detail");
+    expect(detail).toMatchObject({ auctionId: AUCTION_ID, isLoggedIn: true, maxBidQuantity: 10 });
+    expect(detail.bidCards).toEqual([
+      { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, freeCount: 2 },
+      { cardId: "c-locked", name: "Locked", rarity: "common", imageUrl: null, freeCount: 0 },
+    ]);
+  });
+
+  it("is readable anonymously without loading any card data, with a login link back to it", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    render(await TradeAuctionDetailPage({ params: detailParams, searchParams: Promise.resolve({ scope: "cross" }) }));
+    expect(mocks.listWantableCards).not.toHaveBeenCalled();
+    expect(mocks.listTradeableOwnedCopies).not.toHaveBeenCalled();
+    const detail = props("trade-auction-detail");
+    expect(detail.isLoggedIn).toBe(false);
+    expect(detail.bidCards).toEqual([]);
+    expect(detail.loginHref).toBe(
+      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}/auctions/${AUCTION_ID}?scope=cross`)}`,
+    );
+    // The back link returns to the auction sub-tab the viewer came from.
+    expect(screen.getByRole("link", { name: /auctionBackToBoard/ })).toHaveAttribute(
+      "href",
+      `/trade/${STREAMER_ID}?tab=auction&scope=cross`,
+    );
+  });
+
+  it("still renders for participants when the channel turned trading off (no candidates)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer({ tradeEnabled: false }));
+    render(await TradeAuctionDetailPage({ params: detailParams, searchParams: Promise.resolve({}) }));
+    expect(props("trade-auction-detail").bidCards).toEqual([]);
+    expect(mocks.listWantableCards).not.toHaveBeenCalled();
+  });
+
+  it("404s for a malformed auction id or an unknown channel", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(
+      TradeAuctionDetailPage({
+        params: Promise.resolve({ streamerId: STREAMER_ID, auctionId: "nope" }),
+        searchParams: Promise.resolve({}),
+      }),
+    ).rejects.toThrow("NOT_FOUND");
+    mocks.getTradeBoardStreamer.mockResolvedValue(null);
+    await expect(
+      TradeAuctionDetailPage({ params: detailParams, searchParams: Promise.resolve({}) }),
+    ).rejects.toThrow("NOT_FOUND");
   });
 });
 

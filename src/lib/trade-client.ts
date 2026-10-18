@@ -7,6 +7,7 @@
  */
 import type { TradeApiErrorCode } from "@/lib/trade-api";
 import type { TradeOfferDto } from "@/lib/trade";
+import type { TradeAuctionBidState, TradeAuctionPhase } from "@/lib/trade-auction";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 
 /** i18n keys (in the `trade` namespace) used for API error copy. */
@@ -298,4 +299,138 @@ export function formatTradeDateTime(value: string | null, locale: string): strin
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+// -----------------------------------------------------------------------------
+// Auctions (#1791 PR-2)
+// -----------------------------------------------------------------------------
+
+/**
+ * Board tab: `?tab=auction` selects the auction list. It is orthogonal to
+ * `?scope=cross`, so the auction tab has the same in-channel / cross-channel
+ * split as the offer tabs (GET /api/trades/auctions takes the same scope).
+ */
+export type TradeBoardTab = "offers" | "auction";
+
+export function parseTradeBoardTab(raw: string | string[] | undefined): TradeBoardTab {
+  return raw === "auction" ? "auction" : "offers";
+}
+
+/** Auction tab URL of a board (in-channel is the default, no scope query). */
+export function tradeAuctionBoardPath(streamerId: string, scope: "in_channel" | "cross_channel"): string {
+  return scope === "cross_channel"
+    ? `/trade/${streamerId}?tab=auction&scope=cross`
+    : `/trade/${streamerId}?tab=auction`;
+}
+
+/**
+ * Auction detail URL. `streamerId` is the board the viewer bids from: the
+ * bid card candidates are that channel's cards (in-channel: the auction's own
+ * channel; cross tab: the board's channel, matching how the cross tab lists
+ * auctions of other channels for this channel's cards, design §12).
+ * `scope` only decides which auction sub-tab the "back" link returns to.
+ */
+export function tradeAuctionDetailPath(
+  streamerId: string,
+  auctionId: string,
+  scope: "in_channel" | "cross_channel" = "in_channel",
+): string {
+  const path = `/trade/${streamerId}/auctions/${auctionId}`;
+  return scope === "cross_channel" ? `${path}?scope=cross` : path;
+}
+
+/** Listing flow URL with the auction kind preselected. */
+export function tradeAuctionCreatePath(streamerId: string): string {
+  return `/trade/${streamerId}/new?kind=auction`;
+}
+
+/**
+ * Durations offered by the listing flow (hours). Mirrors
+ * TRADE_AUCTION_DURATIONS_HOURS of the server module, which this client
+ * module must not import at runtime; the API rejects any other value with
+ * INVALID_REQUEST, so a drift cannot create an auction of an unknown length.
+ */
+export const TRADE_AUCTION_DURATION_OPTIONS = [24, 72, 168] as const;
+
+/** i18n key (trade namespace) of an auction's effective phase. */
+export function auctionPhaseLabelKey(phase: TradeAuctionPhase): string {
+  switch (phase) {
+    case "bidding":
+      return "auctionPhaseBidding";
+    case "selecting":
+      return "auctionPhaseSelecting";
+    case "completed":
+      return "auctionPhaseCompleted";
+    case "cancelled":
+      return "auctionPhaseCancelled";
+    default:
+      return "auctionPhaseExpired";
+  }
+}
+
+/**
+ * i18n key of the viewer's own bid as the bidder sees it (/trade/mine
+ * "my bids": 入札中 / 選択待ち / 落札 / 落選 / 解放). An `active` bid is
+ * "waiting for the seller" once the auction is selecting; `released` means
+ * the auction expired or was cancelled and the bid's copies are free again.
+ */
+export function auctionBidStateLabelKey(
+  state: TradeAuctionBidState,
+  phase: TradeAuctionPhase,
+): string {
+  switch (state) {
+    case "won":
+      return "auctionBidStateWon";
+    case "lost":
+      return "auctionBidStateLost";
+    case "released":
+    case "withdrawn":
+      return "auctionBidStateReleased";
+    default:
+      return phase === "selecting" ? "auctionBidStateSelecting" : "auctionBidStateActive";
+  }
+}
+
+/**
+ * Time left until `iso`, computed on the client from the ISO time the server
+ * returned (design §6). Display only: whether a deadline has passed is
+ * decided by the server (clock_timestamp() in SQL), so a skewed client clock
+ * can at worst show a stale countdown, never allow an operation the server
+ * refuses (the failure is then explained by the API error copy).
+ *
+ * Days are shown with hours (a fresh 7-day auction reads "6 days 23 hours",
+ * not a rounded-down "6 days"), hours with minutes, and the last minute as
+ * "ending soon". `passed` means the client clock is past the deadline while
+ * the data on screen still predates it (a refresh is pending).
+ */
+export type TradeAuctionTimeLeft =
+  | { kind: "daysHours"; days: number; hours: number }
+  | { kind: "hoursMinutes"; hours: number; minutes: number }
+  | { kind: "minutes"; minutes: number }
+  | { kind: "soon" }
+  | { kind: "passed" };
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+export function tradeAuctionTimeLeft(iso: string, nowMs: number): TradeAuctionTimeLeft {
+  const target = new Date(iso).getTime();
+  if (Number.isNaN(target)) return { kind: "passed" };
+  const diff = target - nowMs;
+  if (diff <= 0) return { kind: "passed" };
+  if (diff < MINUTE_MS) return { kind: "soon" };
+  if (diff < HOUR_MS) return { kind: "minutes", minutes: Math.floor(diff / MINUTE_MS) };
+  if (diff < DAY_MS) {
+    return {
+      kind: "hoursMinutes",
+      hours: Math.floor(diff / HOUR_MS),
+      minutes: Math.floor((diff % HOUR_MS) / MINUTE_MS),
+    };
+  }
+  return {
+    kind: "daysHours",
+    days: Math.floor(diff / DAY_MS),
+    hours: Math.floor((diff % DAY_MS) / HOUR_MS),
+  };
 }

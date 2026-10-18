@@ -1,15 +1,32 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { TradeableOwnedCopy, WantableCard } from "@/lib/trade";
-import { postTradeJson, tradeErrorMessageKey } from "@/lib/trade-client";
+import {
+  postTradeJson,
+  TRADE_AUCTION_DURATION_OPTIONS,
+  tradeAuctionBoardPath,
+  tradeErrorMessageKey,
+} from "@/lib/trade-client";
 import { clearTradeListCache } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
+import TradeCardChoiceList from "./TradeCardChoiceList";
 import TradeCardSummary from "./TradeCardSummary";
+
+/** Listing kind chosen first in the flow (#1791): a regular offer or an auction. */
+export type TradeCreateKind = "offer" | "auction";
+type AuctionDurationHours = (typeof TRADE_AUCTION_DURATION_OPTIONS)[number];
+
+/** i18n key of each duration option (24 hours / 3 days / 7 days). */
+const DURATION_LABEL_KEYS: Record<AuctionDurationHours, string> = {
+  24: "createAuctionDuration24h",
+  72: "createAuctionDuration3d",
+  168: "createAuctionDuration7d",
+};
 
 /** Partner channel choice for cross-channel listings. */
 export type TradeCreatePartner = {
@@ -47,6 +64,11 @@ interface TradeCreateFormProps {
    * (?offered=<cardId>). Ignored unless it is a listable card of this viewer.
    */
   initialOfferedCardId?: string | null;
+  /**
+   * Kind preselected by the entry point (?kind=auction from the board's
+   * auction tab). The viewer can still switch it in the first step.
+   */
+  initialKind?: TradeCreateKind;
 }
 
 /** One selectable card in Step 1 (copies grouped per card definition). */
@@ -105,6 +127,14 @@ function groupOwnedCopies(copies: TradeableOwnedCopy[]): OwnedCardGroup[] {
  * Partner selection navigates (?partner=) so that the server component loads
  * the partner's wantable cards with the visibility rule applied in SQL; no
  * new API endpoint is introduced for it.
+ *
+ * Auctions (#1791, design §6): the flow starts with the listing kind. For an
+ * auction, Step 1 is the same copy choice (the same lock rule applies:
+ * `isListed` covers offers, auctions and bids), Step 2 is the deadline
+ * (24 hours / 3 days / 7 days) instead of a wanted card, and the POST goes to
+ * /api/trades/auctions. An auction has no counterpart channel, so the cross
+ * partner picker belongs to the regular offer only; the kind switch keeps the
+ * Step 1 choice because it is state of this mounted form.
  */
 export default function TradeCreateForm({
   streamerId,
@@ -115,6 +145,7 @@ export default function TradeCreateForm({
   boardHref,
   maxWantedQuantity,
   initialOfferedCardId = null,
+  initialKind = "offer",
 }: TradeCreateFormProps) {
   const t = useTranslations("trade");
   const tMaintenance = useTranslations("maintenance");
@@ -127,6 +158,12 @@ export default function TradeCreateForm({
       ? initialOfferedCardId
       : null,
   );
+  const [kind, setKind] = useState<TradeCreateKind>(initialKind);
+  // No default deadline: the viewer picks one explicitly, because it decides
+  // how long the card (and every bid) stays locked.
+  const [durationHours, setDurationHours] = useState<AuctionDurationHours | null>(null);
+  const kindName = useId();
+  const durationName = useId();
   const [wantedCardId, setWantedCardId] = useState<string | null>(null);
   const [wantedQuantity, setWantedQuantity] = useState(1);
   const [submitting, setSubmitting] = useState(false);
@@ -150,7 +187,50 @@ export default function TradeCreateForm({
     return requestIdRef.current.id;
   };
 
+  const isAuction = kind === "auction";
+  const canSubmit = isAuction
+    ? Boolean(offeredUserCardId && durationHours !== null)
+    : Boolean(offeredUserCardId && wanted);
+
+  /**
+   * Auction listing (POST /api/trades/auctions). The requestId is bound to
+   * "auction:<copy>:<hours>" the same way as the offer selection, so a retry
+   * of the same choice replays a committed create and a different choice
+   * never replays the old auction.
+   */
+  const submitAuction = async () => {
+    if (!offeredUserCardId || durationHours === null || submitting) return;
+    if (writeBlocked) {
+      setErrorText(tMaintenance("writeDisabled"));
+      return;
+    }
+    setSubmitting(true);
+    setErrorText(null);
+    const requestId = requestIdFor(`auction:${offeredUserCardId}:${durationHours}`);
+    const result = await postTradeJson("/api/trades/auctions", {
+      offeredUserCardId,
+      durationHours,
+      requestId,
+    });
+    if (result.ok) {
+      // The listed copy is now locked: every cached list (offer boards'
+      // canAccept, auction lists) may be stale.
+      clearTradeListCache();
+      router.push(`${tradeAuctionBoardPath(streamerId, "in_channel")}&listed=1`);
+      return;
+    }
+    setErrorText(
+      result.maintenanceMessage
+        ?? t(result.networkError ? "errorNetwork" : tradeErrorMessageKey(result.code)),
+    );
+    setSubmitting(false);
+  };
+
   const submit = async () => {
+    if (isAuction) {
+      await submitAuction();
+      return;
+    }
     if (!offeredUserCardId || !wanted || submitting) return;
     if (writeBlocked) {
       setErrorText(tMaintenance("writeDisabled"));
@@ -202,11 +282,48 @@ export default function TradeCreateForm({
   const tileBase =
     "flex w-full items-center rounded-xl border p-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400";
 
+  const radioCardClass = (checked: boolean) =>
+    `flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm transition-colors focus-within:ring-2 focus-within:ring-purple-400 ${
+      checked ? "border-purple-400 bg-purple-900/40" : "border-gray-700 bg-gray-800 hover:bg-gray-700"
+    }`;
+
   return (
     <div className="flex flex-col gap-8">
+      {/* Native radios: one choice out of two with built-in arrow-key
+          navigation and labelling, no custom roving focus needed. */}
+      <fieldset>
+        <legend className="mb-3 text-lg font-semibold text-white">{t("createKindLabel")}</legend>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {(["offer", "auction"] as const).map((value) => (
+            <label key={value} className={radioCardClass(kind === value)}>
+              <input
+                type="radio"
+                name={kindName}
+                value={value}
+                checked={kind === value}
+                disabled={submitting}
+                onChange={() => {
+                  setKind(value);
+                  setErrorText(null);
+                }}
+                className="mt-1 accent-purple-500"
+              />
+              <span className="min-w-0">
+                <span className="block font-semibold text-white">
+                  {t(value === "auction" ? "createKindAuction" : "createKindOffer")}
+                </span>
+                <span className="mt-1 block text-gray-300">
+                  {t(value === "auction" ? "createKindAuctionHelp" : "createKindOfferHelp")}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
       <section aria-labelledby="trade-step1">
         <h2 id="trade-step1" className="mb-3 text-lg font-semibold text-white">
-          {t("createStep1Title")}
+          {t(isAuction ? "createAuctionStep1Title" : "createStep1Title")}
         </h2>
         {groups.length === 0 ? (
           <p className="rounded-xl bg-gray-800 p-4 text-gray-400">{t("createStep1Empty")}</p>
@@ -262,139 +379,159 @@ export default function TradeCreateForm({
         )}
       </section>
 
-      <section aria-labelledby="trade-step2">
-        <h2 id="trade-step2" className="mb-3 text-lg font-semibold text-white">
-          {t("createStep2Title")}
-        </h2>
-        {cross && (
-          <div className="mb-4">
-            <p className="mb-2 text-sm text-gray-300">{t("createStep2SelectStreamer")}</p>
-            {cross.partners.length === 0 ? (
-              <p className="rounded-xl bg-gray-800 p-4 text-sm text-gray-400">
-                {t("createStep2NoPartners")}
-              </p>
-            ) : (
-              <ul className="flex flex-wrap gap-2">
-                {cross.partners.map((partner) => {
-                  const selected = partner.id === cross.selectedPartnerId;
-                  return (
-                    <li key={partner.id}>
-                      <Link
-                        // Carry the Step 1 choice across this navigation
-                        // (the form remounts with the partner's catalogue).
-                        href={`/trade/${streamerId}/new?scope=cross&partner=${encodeURIComponent(partner.id)}${
-                          offeredCardId ? `&offered=${encodeURIComponent(offeredCardId)}` : ""
-                        }`}
-                        aria-current={selected ? "true" : undefined}
-                        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
-                          selected
-                            ? "border-purple-400 bg-purple-900/40 text-white"
-                            : "border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700"
-                        }`}
-                      >
-                        {partner.twitchProfileImageUrl && (
-                          // unoptimized: Twitch CDN avatar (same as Header).
-                          <Image
-                            src={partner.twitchProfileImageUrl}
-                            alt=""
-                            width={20}
-                            height={20}
-                            className="h-5 w-5 rounded-full"
-                            unoptimized
-                          />
-                        )}
-                        {partner.twitchDisplayName}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        )}
-        {!partnerMissing && (
-          <>
-            {!wantableRevealsUnowned && (
-              <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
-                {t("createStep2UnrevealedNotice")}
-              </p>
-            )}
-            {wantableCards.length === 0 ? (
-              <p className="rounded-xl bg-gray-800 p-4 text-gray-400">{t("createStep2Empty")}</p>
-            ) : (
-              <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {wantableCards.map((card) => {
-                  const sameAsOffered = card.cardId === offeredCardId;
-                  const selected = card.cardId === wantedCardId;
-                  return (
-                    <li key={card.cardId}>
-                      <button
-                        type="button"
-                        disabled={sameAsOffered || submitting}
-                        aria-pressed={selected}
-                        title={sameAsOffered ? t("createStep2SameCard") : undefined}
-                        onClick={() => {
-                          setWantedCardId(card.cardId);
-                          setErrorText(null);
-                        }}
-                        className={`${tileBase} ${
-                          selected
-                            ? "border-purple-400 bg-purple-900/40"
-                            : card.isOwned
-                              ? "border-gray-700 bg-gray-800 hover:bg-gray-700"
-                              // Unowned cards are highlighted: they are what
-                              // the collector is missing (§6.5).
-                              : "border-purple-700/60 bg-gray-800 hover:bg-gray-700"
-                        } disabled:cursor-not-allowed disabled:opacity-50`}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <TradeCardSummary card={card} />
-                        </div>
-                        {!card.isOwned && (
-                          <span className="ml-2 shrink-0 rounded bg-purple-700 px-1.5 py-0.5 text-xs text-white">
-                            {t("createStep2UnownedBadge")}
-                          </span>
-                        )}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {wantableCards.length > 0 && (
-              // A native <select> (1..max) instead of a free number input:
-              // no parsing/clamping of typed text, and every value offered
-              // is one the API accepts. Options include the unit in their
-              // text so assistive technology need not interpret the ×N badge.
-              <label className="mt-4 flex items-center gap-3 text-sm text-gray-200">
-                {t("createStep2QuantityLabel")}
-                <select
-                  value={wantedQuantity}
+      {isAuction ? (
+        <fieldset>
+          <legend className="mb-3 text-lg font-semibold text-white">{t("createAuctionStep2Title")}</legend>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {TRADE_AUCTION_DURATION_OPTIONS.map((hours) => (
+              <label key={hours} className={radioCardClass(durationHours === hours)}>
+                <input
+                  type="radio"
+                  name={durationName}
+                  value={hours}
+                  checked={durationHours === hours}
                   disabled={submitting}
-                  onChange={(event) => {
-                    setWantedQuantity(Number(event.target.value));
+                  onChange={() => {
+                    setDurationHours(hours);
                     setErrorText(null);
                   }}
-                  className="rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-                >
-                  {Array.from({ length: maxWantedQuantity }, (_, index) => index + 1).map((value) => (
-                    <option key={value} value={value}>
-                      {t("createStep2QuantityOption", { count: value })}
-                    </option>
-                  ))}
-                </select>
+                  className="mt-1 accent-purple-500"
+                />
+                <span className="font-semibold text-white">{t(DURATION_LABEL_KEYS[hours])}</span>
               </label>
-            )}
-          </>
-        )}
-      </section>
+            ))}
+          </div>
+          <p className="mt-3 text-sm text-gray-300">{t("createAuctionRulesNotice")}</p>
+        </fieldset>
+      ) : (
+        <section aria-labelledby="trade-step2">
+          <h2 id="trade-step2" className="mb-3 text-lg font-semibold text-white">
+            {t("createStep2Title")}
+          </h2>
+          {cross && (
+            <div className="mb-4">
+              <p className="mb-2 text-sm text-gray-300">{t("createStep2SelectStreamer")}</p>
+              {cross.partners.length === 0 ? (
+                <p className="rounded-xl bg-gray-800 p-4 text-sm text-gray-400">
+                  {t("createStep2NoPartners")}
+                </p>
+              ) : (
+                <ul className="flex flex-wrap gap-2">
+                  {cross.partners.map((partner) => {
+                    const selected = partner.id === cross.selectedPartnerId;
+                    return (
+                      <li key={partner.id}>
+                        <Link
+                          // Carry the Step 1 choice across this navigation
+                          // (the form remounts with the partner's catalogue).
+                          href={`/trade/${streamerId}/new?scope=cross&partner=${encodeURIComponent(partner.id)}${
+                            offeredCardId ? `&offered=${encodeURIComponent(offeredCardId)}` : ""
+                          }`}
+                          aria-current={selected ? "true" : undefined}
+                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
+                            selected
+                              ? "border-purple-400 bg-purple-900/40 text-white"
+                              : "border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700"
+                          }`}
+                        >
+                          {partner.twitchProfileImageUrl && (
+                            // unoptimized: Twitch CDN avatar (same as Header).
+                            <Image
+                              src={partner.twitchProfileImageUrl}
+                              alt=""
+                              width={20}
+                              height={20}
+                              className="h-5 w-5 rounded-full"
+                              unoptimized
+                            />
+                          )}
+                          {partner.twitchDisplayName}
+                        </Link>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+          {!partnerMissing && (
+            <>
+              {!wantableRevealsUnowned && (
+                <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
+                  {t("createStep2UnrevealedNotice")}
+                </p>
+              )}
+              {wantableCards.length === 0 ? (
+                <p className="rounded-xl bg-gray-800 p-4 text-gray-400">{t("createStep2Empty")}</p>
+              ) : (
+                <TradeCardChoiceList
+                  choices={wantableCards.map((card) => {
+                    const sameAsOffered = card.cardId === offeredCardId;
+                    return {
+                      cardId: card.cardId,
+                      card,
+                      disabled: sameAsOffered,
+                      title: sameAsOffered ? t("createStep2SameCard") : undefined,
+                      // Unowned cards are highlighted: they are what the
+                      // collector is missing (§6.5).
+                      highlighted: !card.isOwned,
+                      badge: !card.isOwned ? (
+                        <span className="ml-2 shrink-0 rounded bg-purple-700 px-1.5 py-0.5 text-xs text-white">
+                          {t("createStep2UnownedBadge")}
+                        </span>
+                      ) : undefined,
+                    };
+                  })}
+                  selectedCardId={wantedCardId}
+                  onSelect={(cardId) => {
+                    setWantedCardId(cardId);
+                    setErrorText(null);
+                  }}
+                  disabled={submitting}
+                />
+              )}
+              {wantableCards.length > 0 && (
+                // A native <select> (1..max) instead of a free number input:
+                // no parsing/clamping of typed text, and every value offered
+                // is one the API accepts. Options include the unit in their
+                // text so assistive technology need not interpret the ×N badge.
+                <label className="mt-4 flex items-center gap-3 text-sm text-gray-200">
+                  {t("createStep2QuantityLabel")}
+                  <select
+                    value={wantedQuantity}
+                    disabled={submitting}
+                    onChange={(event) => {
+                      setWantedQuantity(Number(event.target.value));
+                      setErrorText(null);
+                    }}
+                    className="rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+                  >
+                    {Array.from({ length: maxWantedQuantity }, (_, index) => index + 1).map((value) => (
+                      <option key={value} value={value}>
+                        {t("createStep2QuantityOption", { count: value })}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </>
+          )}
+        </section>
+      )}
 
       <section aria-labelledby="trade-step3" className="rounded-xl bg-gray-800 p-4">
         <h2 id="trade-step3" className="mb-3 text-lg font-semibold text-white">
           {t("createConfirmTitle")}
         </h2>
         <p className="text-sm text-gray-200">
-          {offered && wanted
+          {isAuction
+            ? offered && durationHours !== null
+              ? t("createAuctionConfirmSummary", {
+                  offeredCard: offered.name,
+                  duration: t(DURATION_LABEL_KEYS[durationHours]),
+                })
+              : t("createAuctionConfirmPending")
+            : offered && wanted
             ? wantedQuantity > 1
               ? t("createConfirmSummaryMultiple", {
                   offeredCard: offered.name,
@@ -420,11 +557,13 @@ export default function TradeCreateForm({
           <button
             type="button"
             onClick={submit}
-            disabled={!offeredUserCardId || !wanted || submitting}
+            disabled={!canSubmit || submitting}
             aria-busy={submitting}
             className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {submitting ? t("createSubmitting") : t("createSubmitButton")}
+            {submitting
+              ? t("createSubmitting")
+              : t(isAuction ? "createAuctionSubmitButton" : "createSubmitButton")}
           </button>
         </div>
       </section>

@@ -13,15 +13,24 @@ import {
 } from "@/lib/trade-client";
 import { useTradeList, type TradeListPage } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
+import MyTradeAuctions from "./MyTradeAuctions";
 import TradeCancelModal from "./TradeCancelModal";
 import TradeCardSummary from "./TradeCardSummary";
 import TradePager from "./TradePager";
 import TradeRefreshFailedNotice from "./TradeRefreshFailedNotice";
 
-const TABS: ReadonlyArray<{ status: TradeOfferStatus; labelKey: string; emptyKey: string }> = [
+/**
+ * "auction" (#1791) is a fourth tab whose panel is <MyTradeAuctions>, backed
+ * by its own endpoint, so it can fail (or be unavailable during the migration
+ * deploy window) without touching the offer tabs.
+ */
+type MyTradesTab = TradeOfferStatus | "auction";
+
+const TABS: ReadonlyArray<{ status: MyTradesTab; labelKey: string; emptyKey: string }> = [
   { status: "open", labelKey: "myTradesTabOpen", emptyKey: "myTradesEmptyOpen" },
   { status: "completed", labelKey: "myTradesTabCompleted", emptyKey: "myTradesEmptyCompleted" },
   { status: "cancelled", labelKey: "myTradesTabCancelled", emptyKey: "myTradesEmptyCancelled" },
+  { status: "auction", labelKey: "myTradesTabAuction", emptyKey: "" },
 ];
 
 /** GET /api/trades/mine URL of one tab page (also the client cache key). */
@@ -50,22 +59,27 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
   const locale = useLocale();
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const writeBlocked = maintenanceMode !== "off";
-  const [tab, setTab] = useState<TradeOfferStatus>("open");
+  const [tab, setTab] = useState<MyTradesTab>("open");
   const [page, setPage] = useState(1);
+  const isAuctionTab = tab === "auction";
+  // The offer list hook must run unconditionally; on the auction tab it keeps
+  // pointing at the open tab's first page (already cached / server-seeded),
+  // so selecting the auction tab costs no extra offer request.
+  const offerStatus: TradeOfferStatus = isAuctionTab ? "open" : tab;
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [confirmingCancel, setConfirmingCancel] = useState<TradeOfferDto | null>(null);
   const [notice, setNotice] = useState<{ text: string; isError: boolean } | null>(null);
   // Row button that opened the confirmation dialog (focus returns to it).
   const cancelTriggerRef = useRef<HTMLButtonElement | null>(null);
 
-  const { view: list, retry, refresh, invalidate } = useTradeList(myTradesUrl(tab, page), {
+  const { view: list, retry, refresh, invalidate } = useTradeList(myTradesUrl(offerStatus, isAuctionTab ? 1 : page), {
     initial: initialOpen ? { url: myTradesUrl("open", 1), page: initialOpen } : null,
     // e.g. the only row of the last page was just cancelled: step back
     // instead of showing the tab's empty state.
     onEmptyPage: setPage,
   });
 
-  const selectTab = (status: TradeOfferStatus) => {
+  const selectTab = (status: MyTradesTab) => {
     setTab(status);
     setPage(1);
     setNotice(null);
@@ -142,7 +156,10 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
   const activeTab = TABS.find((item) => item.status === tab) ?? TABS[0];
 
   let body: React.ReactNode;
-  if (list.status === "loading") {
+  if (isAuctionTab) {
+    // The auction panel renders its own list (<MyTradeAuctions>).
+    body = null;
+  } else if (list.status === "loading") {
     body = (
       <p className="py-8 text-center text-gray-400" role="status">
         {t("loading")}
@@ -322,11 +339,17 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
         </p>
       )}
       <div id="my-trades-panel" role="tabpanel" aria-labelledby={`my-trades-tab-${tab}`}>
-        {/* The list stays visible when a background refresh fails; say so. */}
-        {list.status === "ok" && list.refreshFailed && <TradeRefreshFailedNotice onRetry={refresh} />}
-        {body}
+        {isAuctionTab ? (
+          <MyTradeAuctions />
+        ) : (
+          <>
+            {/* The list stays visible when a background refresh fails; say so. */}
+            {list.status === "ok" && list.refreshFailed && <TradeRefreshFailedNotice onRetry={refresh} />}
+            {body}
+          </>
+        )}
       </div>
-      {list.status === "ok" && (
+      {!isAuctionTab && list.status === "ok" && (
         <TradePager page={page} hasMore={list.hasMore} onPageChange={setPage} />
       )}
       {confirmingCancel && (
