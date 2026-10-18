@@ -512,7 +512,7 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       expect(pg.updateCalls).toHaveLength(1);
     });
 
-    it("collection_name列デプロイ窓で新規パック指定時は書き込みスキップして200を返す (cardPackNamesUnavailable flag回帰, #954)", async () => {
+    it("collection_name列デプロイ窓でtradeWantable+collectionNameのPUTが200を返す (cardPackNamesUnavailable flag回帰, #954)", async () => {
       // 1st SELECT: collection_name 列欠落で失敗（42703）
       const missingCollectionNameErrorPg = {
         code: "42703",
@@ -530,12 +530,13 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
           { error: missingCollectionNameErrorPg },
           { rows: [ownershipWithoutCollectionAndPackNames] },
         ],
-        updates: [{ rows: [UPDATED_ROW] }],
+        // collection_name 書き込みはスキップされるため、cardTradeSettings への UPDATE のみ1回
+        updates: [{ rows: [{ trade_wantable: false }] }],
       });
       primePgDb(pg);
 
       const pgRes = await PUT(
-        createPutRequest({ name: "Renamed", collectionName: "NewPack" }),
+        createPutRequest({ tradeWantable: false, collectionName: "weapons" }),
         { params: Promise.resolve({ id: CARD_ID }) }
       );
 
@@ -543,8 +544,14 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
       const pgJson = await pgRes.json();
       // collection_name 書き込みはスキップされ、フラグで通知される
       expect(pgJson.collectionNameSkippedDeployWindow).toBe(true);
-      // UPDATE 値に collection_name が含まれない
-      expect(pg.updateCalls[0].values).not.toHaveProperty("collection_name");
+      // tradeWantable 保存のみ実行される
+      expect(pgJson.trade_wantable).toBe(false);
+      // cardTradeSettings への UPDATE のみ1回（cards 本体の UPDATE は collection_name スキップにより発生しない）
+      expect(pg.updateCalls).toHaveLength(1);
+      expect(pg.updateCalls[0].table).toBe(cardTradeSettings);
+      expect(pg.updateCalls[0].values).toEqual({ trade_wantable: false });
+      // GET /api/cards キャッシュは tradeWantable 保存時に失効
+      expect(vi.mocked(revalidateTag)).toHaveBeenCalledWith("cards-streamer-1", { expire: 0 });
     });
 
     // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
