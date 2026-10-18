@@ -356,6 +356,36 @@ describe("PUT/DELETE /api/cards/[id]: PlanetScale契約 (#663)", () => {
         expect(pg.updateCalls[0].table).toBe(cardTradeSettings);
       });
 
+      // #954: cards.collection_name 列の欠落（42703）が所有権 SELECT で発生した場合の挙動。
+      // 旧実装（#269由来の読み取り fallback + cardPackNamesUnavailable flag）では
+      // tradeWantable-only の PUT が 200 + collectionNameSkippedDeployWindow で継続
+      // していたが、#1858 では fallback を実測根拠（PlanetScale 本番・preview の
+      // information_schema.columns で 4/4 列実在）に基づき撤去したため、列欠落は
+      // 起こり得ない環境を前提に fail-fast（403・書き込みなし）へ変更した。
+      // この設計変更を明示的に固定する（列が真に欠落する環境でのみ到達する経路）。
+      it("collection_name欠落(42703)時はtradeWantable限定PUTも403でfail-fastし、書き込みを行わない（単一経路, #954）", async () => {
+        const missingCollectionNameErrorPg = {
+          code: "42703",
+          message: "column cards.collection_name does not exist",
+        };
+
+        const pg = createDrizzleDbMock({
+          selects: [{ error: missingCollectionNameErrorPg }],
+          // 所有権不明で 403 になるため本テストでは消費されない。もし書き込みが
+          // 発生したら updateCalls 経由で検知できるよう成功レスポンスを置いておく。
+          updates: [{ rows: [{ trade_wantable: false }] }],
+        });
+        primePgDb(pg);
+        const res = await PUT(createPutRequest({ tradeWantable: false, collectionName: "weapons" }), {
+          params: Promise.resolve({ id: CARD_ID }),
+        });
+        // 旧実装（fallback + flag）では 200 + collectionNameSkippedDeployWindow
+        // だった。撤去後は再試行せず所有権不明として 403（fail-fast）。
+        expect(res.status).toBe(403);
+        // 所有権不明のため cardTradeSettings への書き込みも発生しない（部分書き込み防止）。
+        expect(pg.updateCalls).toHaveLength(0);
+      });
+
       it("省略時は trade_wantable を読み書きしない", async () => {
         const pg = createDrizzleDbMock({
           selects: [{ rows: [OWNERSHIP_ROW_PG] }],
