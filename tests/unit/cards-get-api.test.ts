@@ -178,18 +178,14 @@ describe("GET /api/cards sort field mapping", () => {
     ]);
   });
 
-  it("missing card_number falls back to created_at", async () => {
+  it("card_numberソート列が存在しない場合、フォールバックなく500を返す (#954)", async () => {
     const mock = primeDb([
       { rows: [{ id: "streamer-1" }] },
       { rows: [{ count: 1 }] },
       { error: { code: "42703", message: 'column "card_number" does not exist' } },
-      { rows: [BASE_CARD] },
     ]);
     const response = await GET(request({ sortField: "card_number" }));
-    expect(response.status).toBe(200);
-    const rowCalls = mock.calls.filter((call) => call.orderBy);
-    expect(rowCalls).toHaveLength(2);
-    expect(rowCalls[1].orderBy).toEqual([sql`${cardsTable.created_at} DESC NULLS LAST`]);
+    expect(response.status).toBe(500);
   });
 
   it("invalid sortField falls back to created_at", async () => {

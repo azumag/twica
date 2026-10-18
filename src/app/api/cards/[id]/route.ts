@@ -227,7 +227,10 @@ async function fetchCardForUpdatePg(id: string): Promise<{
 
   // collection_name は #834 実測対象外のため、デプロイ窓フォールバックを残す。
   // migration 00061 で適用済みだが、確実性のため残置。#954 実測で撤去可否を判断する。
+  // collection_name 欠落時は card_pack_names も併せて除外して再試行するため、
+  // cardPackNamesUnavailable フラグを立てて呼び出し側(PUT)で collection_name 書き込みを抑制する。
   if (currentError && isMissingCollectionNameColumn(currentError as CardsSchemaError)) {
+    cardPackNamesUnavailable = true;
     currentError = null;
     try {
       row = await selectCardOwnershipWithoutCollectionAndPackNames(id);
