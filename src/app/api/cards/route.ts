@@ -21,7 +21,7 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { isAssignableImageUrl } from "@/lib/storage-utils";
 import { logger } from "@/lib/logger.server";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
 import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
 import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
@@ -108,24 +108,23 @@ async function fetchStreamerForCardCreatePg(
 }
 
 /**
- * POST /api/cards のカード INSERT（card_number → max_issuance_count →
- * collection_name の3段階デプロイ窓フォールバック付き、さらに RETURNING 列の
- * image_padding_color フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
+ * POST /api/cards のカード INSERT（max_issuance_count →
+ * collection_name の2段階デプロイ窓フォールバック付き、さらに RETURNING 列の
+ * image_padding_color フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix, #954 card_number撤去)。
  *
  * - `.insert(...).select().maybeSingle()` は `.insert(...).values(...).returning()`
  *   が等価（RETURNING で挿入行を1回の往復で取得）。
- * - 各フォールバックは同じ判定ヘルパー(isMissingCardNumberColumnError 等)を
- *   そのまま再利用する。ON CONFLICT の無い INSERT のため各試行は非冪等
- *   （withDbRetry にオプションを渡さない = リトライなし）。
+ * - ON CONFLICT の無い INSERT のため各試行は非冪等（withDbRetry にオプションを渡さない = リトライなし）。
  * - unique_violation (23505) は呼び出し元(POST)で isCardNumberConflictError
  *
  * #834: 「本番未デプロイ8列」（card_number/hp/atk/def/spd/skill_*）に対する
  * RETURNING フォールバックは、本番実測で8列とも実在することを確認したため撤去
- * した。image_padding_color（#899、本Issueとは独立した別デプロイ窓）だけは
- * 無指定 `.returning()` が失敗しうるため、CARDS_COLUMNS_WITHOUT_PADDING_COLOR
- * へ切り替えて最後にもう一度だけ再試行する（insertData に無い場合も RETURNING
- * は values() の内容と無関係に schema.ts の全列を要求するため、この最終
- * フォールバックが必要）。
+ * した。card_number は同実測で実在確認済み（#834）のため、そのフォールバックは不要。
+ * max_issuance_count / collection_name は #834 実測対象外のためフォールバックを残す。
+ * image_padding_color（#899、本Issueとは独立した別デプロイ窓）は無指定 `.returning()` が
+ * 失敗しうるため、CARDS_COLUMNS_WITHOUT_PADDING_COLOR へ切り替えて最後に一度だけ再試行
+ * する（insertData に無い場合も RETURNING は values() の内容と無関係に schema.ts の
+ * 全列を要求するため、この最終フォールバックが必要）。
  */
 async function insertCardPg(
   insertDataInitial: Record<string, unknown>
@@ -155,22 +154,15 @@ async function insertCardPg(
 
   let { card, error } = await attemptInsert();
 
-  // card_number は #393/#548 由来の独立したデプロイ窓フォールバック
-  // （card-number-errors.ts、本Issue #834 のスコープ外）で、insertData から
-  // 列を削るだけで RETURNING 自体は無指定のまま card_number を
-  // 要求し続ける。#834 撤去前は末尾の CARDS_SAFE_COLUMNS（card_number も除外）が
-  // これを最終的に救済していたが、card_number は本番・preview 実測済み（#834）
-  // のため通常はこの分岐へ到達しない。真に card_number が欠落する環境では
-  // このフォールバックは単独では完結しない点に注意（card-number-errors.ts 側の
-  // 対応が必要。本Issueでは意図的に手を加えない。要否の実測・整理は #954 参照）。
-  if (error && isMissingCardNumberColumnError(error)) {
-    delete insertData.card_number;
-    ({ card, error } = await attemptInsert());
-  }
-  if (error && isMissingCardIssuanceColumnError(error)) {
+  // max_issuance_count は #834 実測対象外（#834 実測8列: card_number/hp/atk/def/spd/skill_*）ため、
+  // デプロイ窓フォールバックを残す。本番・preview 実測済み（#834 対象外だが migration 00067 適用済み）だが、
+  // 確実性のため残置。#954 実測で撤去可否を判断する。
+  if (error && isMissingCardIssuanceColumnError(error) && "max_issuance_count" in insertData) {
     delete insertData.max_issuance_count;
     ({ card, error } = await attemptInsert());
   }
+  // collection_name は #834 実測対象外のため、デプロイ窓フォールバックを残す。
+  // migration 00061 で適用済みだが、確実性のため残置。#954 実測で撤去可否を判断する。
   if (error && isMissingCollectionNameColumn(error as CardsSchemaError) && "collection_name" in insertData) {
     delete insertData.collection_name;
     ({ card, error } = await attemptInsert());
@@ -654,24 +646,6 @@ async function fetchCardsFromDBPg(
   } catch (error) {
     rows = [];
     rowsError = error;
-  }
-
-  // card_number ソート列のこのフォールバックも insertCardPg 側と同じ理由で、
-  // card_number が真に欠落する環境では単独では完結しない（#834 のスコープ外。
-  // card-number-errors.ts 側の対応が必要。要否の実測・整理は #954 参照）。
-  // card_number は本番・preview 実測済み（#834）のため通常はここへ到達しない。
-  if (
-    rowsError &&
-    (sortField === "card_number" || sortField === "display_order") &&
-    isMissingCardNumberColumnError(rowsError)
-  ) {
-    orderExprs = [orderByNullsLast(cardsTable.created_at, ascending)];
-    try {
-      rows = await selectRows(orderExprs);
-      rowsError = null;
-    } catch (error) {
-      rowsError = error;
-    }
   }
 
   if (rowsError) {

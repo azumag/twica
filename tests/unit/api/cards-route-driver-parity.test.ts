@@ -281,7 +281,7 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       expect(pg.insertCalls).toHaveLength(0);
     });
 
-    it("card_number列デプロイ窓では列を落として再試行し200を返す", async () => {
+    it("card_number列が存在しない場合、INSERTはフォールバックなく500を返す (#954)", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" of relation "cards" does not exist',
@@ -289,13 +289,12 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
 
       const pg = createDrizzleDbMock({
         selects: [{ rows: [STREAMER_ROW] }],
-        inserts: [{ error: missingColumnErrorPg }, { rows: [CREATED_ROW] }],
+        inserts: [{ error: missingColumnErrorPg }],
       });
       primePgDb(pg);
       const pgRes = await POST(createPostRequest(REQUEST_BODY));
-      expect(pgRes.status).toBe(200);
-      expect(pg.insertCalls).toHaveLength(2);
-      expect(pg.insertCalls[1].values).not.toHaveProperty("card_number");
+      expect(pgRes.status).toBe(500);
+      expect(pg.insertCalls).toHaveLength(1);
     });
 
     it("card_number一意制約違反(23505)は409を返す", async () => {
@@ -418,7 +417,7 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       expect(pgRes.status).toBe(403);
     });
 
-    it("card_numberソート列デプロイ窓ではcreated_atへフォールバックする", async () => {
+    it("card_numberソート列が存在しない場合、フォールバックなく500を返す (#954)", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" does not exist',
@@ -429,16 +428,11 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
           { rows: [STREAMER_OWNERSHIP_ROW] },
           { rows: [{ count: 2 }] },
           { error: missingColumnErrorPg },
-          { rows: CARD_ROWS },
         ],
       });
       primePgDb(pg);
       const pgRes = await GET(createGetRequest({ streamerId: "streamer-1", sortField: "card_number" }));
-      expect(pgRes.status).toBe(200);
-      const pgJson = await pgRes.json();
-
-      expect(pgJson.cards).toHaveLength(2);
-      expect(pgJson.pagination.total).toBe(2);
+      expect(pgRes.status).toBe(500);
     });
 
   });
