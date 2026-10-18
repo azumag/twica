@@ -36,7 +36,8 @@ export type OverlayEffectStyle =
   | "bubbles"
   | "petals"
   | "snow"
-  | "coins";
+  | "coins"
+  | "aura";
 
 /**
  * 設定 UI（OverlayPreview）でレアリティごとに選べるスタイルの一覧（＝表示順）。
@@ -53,6 +54,7 @@ export const OVERLAY_EFFECT_STYLES: readonly OverlayEffectStyle[] = [
   "petals",
   "snow",
   "coins",
+  "aura",
 ];
 
 /**
@@ -560,6 +562,35 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
           boxShadow: `0 0 4px ${color}, inset 0 0 2px rgba(180,83,9,0.6)`,
           "--fx-fall": px(rand(240, 360)),
           "--fx-spin": deg(rand(720, 1440)),
+        },
+      };
+    },
+  },
+
+  // オーラ: 既存のカード内クリップ領域に、中心が透けた淡い光輪を3層だけ重ねる。
+  // 幅・高さ・ゆらぎを相対値にして、画像のみ／縦横／縮小表示でも同じ比率を保つ。
+  // 負の開始遅延で表示直後から光を見せ、外側のhaloや新しい描画レイヤーは作らない。
+  aura: {
+    animationClassName: "animate-overlay-effect-aura",
+    spawnLeftPercentRange: [2, 12],
+    spawnTopPercentRange: [2, 12],
+    durationSecRange: [3.4, 4.6],
+    delaySecRange: [-2.4, 0],
+    particleCount: 3,
+    buildParticle: (index) => {
+      const size = 76 + index * 10;
+      const inset = `${(100 - size) / 2}%`;
+      return {
+        content: "",
+        left: inset,
+        top: inset,
+        visualStyle: {
+          width: `${size}%`,
+          height: `${size}%`,
+          borderRadius: "50%",
+          backgroundImage:
+            "radial-gradient(ellipse at center, transparent 54%, rgba(216,180,254,0.20) 62%, rgba(165,243,252,0.30) 67%, rgba(216,180,254,0.12) 72%, transparent 80%)",
+          "--fx-sway": `${rand(1, 2).toFixed(2)}%`,
         },
       };
     },

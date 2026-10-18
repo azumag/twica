@@ -38,6 +38,20 @@
   --animate-overlay-effect-petals: overlay-effect-petals 3.8s linear infinite;
   --animate-overlay-effect-snow: overlay-effect-snow 4.6s linear infinite;
   --animate-overlay-effect-coins: overlay-effect-coins 2.4s ease-in infinite;
+  --animate-overlay-effect-aura: overlay-effect-aura 4s ease-in-out infinite;
+}
+
+@keyframes overlay-effect-aura {
+  /* 淡い光輪をカード内でゆっくり呼吸させる。距離は粒子サイズに対する割合。 */
+  0%,
+  100% {
+    transform: translateX(calc(var(--fx-sway) * -1)) scale(0.97);
+    opacity: 0.45;
+  }
+  50% {
+    transform: translateX(var(--fx-sway)) scale(1.03);
+    opacity: 0.75;
+  }
 }
 
 @keyframes overlay-effect-sparkle {
@@ -240,6 +254,12 @@
 @media (prefers-reduced-motion: reduce) {
   [class*="animate-overlay-effect-"] {
     animation: overlay-effect-reduced-fade 2s ease-in-out infinite !important;
+  }
+  /* 大きな光輪の拡縮・ゆらぎは止め、カード内の淡い光だけを残す。 */
+  .animate-overlay-effect-aura {
+    animation: none !important;
+    transform: none;
+    opacity: 0.55;
   }
 }
 
