@@ -151,6 +151,15 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
       success: true,
       tradeOfferId: OFFER_ID,
       idempotentReplay: false,
+      // #1789: the RPC reports how many copies moved and which copies were
+      // paid. The audit trail keeps them for the RMT review flow (#729) —
+      // losing these fields must fail this test, not pass silently.
+      wantedQuantity: 3,
+      givenUserCardIds: [
+        "33333333-3333-4333-8333-333333333331",
+        "33333333-3333-4333-8333-333333333332",
+        "33333333-3333-4333-8333-333333333333",
+      ],
     });
     const { POST } = await import("@/app/api/trades/[id]/accept/route");
 
@@ -167,6 +176,12 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
         accepterTwitchUserId: "viewer-1",
         rateLimitIdentifier: "user:viewer-1",
         idempotentReplay: false,
+        wantedQuantity: 3,
+        givenUserCardIds: [
+          "33333333-3333-4333-8333-333333333331",
+          "33333333-3333-4333-8333-333333333332",
+          "33333333-3333-4333-8333-333333333333",
+        ],
       }),
     );
   });

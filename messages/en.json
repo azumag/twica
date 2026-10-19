@@ -621,7 +621,7 @@
     "acceptButtonAllListed": "No tradeable copies (all listed)",
     "acceptButtonLoginRequired": "Log in to accept",
     "autoSelectNotice": "* If you own several copies, your oldest copy is used automatically.",
-    "autoSelectNoticeQuantity": "* If you own several copies, your oldest {count} are selected automatically.",
+    "autoSelectNoticeQuantity": "* If you own several copies, your oldest {count} copies are selected automatically.",
     "ownOfferBadge": "Your offer",
     "ownOfferManageLink": "Cancel it from My trades",
     "unrevealedNotice": "This channel does not reveal the names of cards you don't own, so only offers that include a card you own are shown.",

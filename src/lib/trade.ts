@@ -29,11 +29,6 @@ import {
 import { isCanonicalUuid } from "@/lib/uuid-validation";
 import { isValidTradeWantedQuantity } from "@/lib/trade-constants";
 
-// Re-exported for server-side callers; the UI imports the same values from
-// @/lib/trade-constants directly (client components must not import this
-// module at runtime).
-export { TRADE_MAX_WANTED_QUANTITY } from "@/lib/trade-constants";
-
 export const TRADE_PAGE_SIZE = 20;
 export const TRADE_MAX_OPEN_OFFERS = 10;
 

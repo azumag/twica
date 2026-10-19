@@ -179,6 +179,18 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     expect(screen.getByLabelText(ja.createStep2QuantityLabel)).toHaveValue("1");
   });
 
+  it("keeps the chosen quantity when the same wanted card is re-clicked (#1789)", () => {
+    renderForm();
+    const step2 = step(ja.createStep2Title);
+    fireEvent.click(within(step2).getByRole("button", { name: /Want Card Two/ }));
+    fireEvent.change(screen.getByLabelText(ja.createStep2QuantityLabel), { target: { value: "5" } });
+
+    // Re-clicking the already selected tile (e.g. a stray tap on mobile) must
+    // not silently drop the user's quantity back to ×1.
+    fireEvent.click(within(step2).getByRole("button", { name: /Want Card Two/ }));
+    expect(screen.getByLabelText(ja.createStep2QuantityLabel)).toHaveValue("5");
+  });
+
   it("POSTs the selected wantedQuantity and shows the ×N confirm summary (#1789)", async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
     renderForm();

@@ -316,9 +316,13 @@ export default function TradeCreateForm({
                         aria-pressed={selected}
                         title={sameAsOffered ? t("createStep2SameCard") : undefined}
                         onClick={() => {
+                          // A quantity chosen for another card is not carried
+                          // over. Re-clicking the already selected card keeps
+                          // the chosen quantity (silent resets lose user input).
+                          if (wantedCardId !== card.cardId) {
+                            setWantedQuantity(1);
+                          }
                           setWantedCardId(card.cardId);
-                          // A quantity chosen for another card is not carried over.
-                          setWantedQuantity(1);
                           setErrorText(null);
                         }}
                         className={`${tileBase} ${
