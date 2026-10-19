@@ -583,9 +583,14 @@ export class TwitchChatService {
             message: dropMessage,
           }
           lastException = null
-          // 一時不調の文面でも、明示的な拒否通知の契約を満たす場合だけ再試行する。
-          // 必須フィールドが不正なHTTP 200はTWITCH_REJECTEDの診断経路を維持する。
-          lastDropTransient = isExplicitDrop && TRANSIENT_DROP_MESSAGE_PATTERN.test(dropMessage)
+          // Issue #1742: Twitch側の一時不調を示す文面（"try again later"）は、
+          // is_sent/codeが欠けていても一時障害としてbounded retryへ載せる。
+          // Twitchがこの文面を返す場合はサーバ側の一時不調であり、is_sent/codeの
+          // 欠落はTwitch側の応答揺れ（契約逸脱）に過ぎないため、TWITCH_REJECTED
+          // の診断経路へ倒すと通知が永久欠落し自動Issueも量産される。
+          // 非一時的なdrop（AutoMod等）や文面を伴わないmalformed 200は従来どおり
+          // terminal (TWITCH_REJECTED) のまま維持する。
+          lastDropTransient = TRANSIENT_DROP_MESSAGE_PATTERN.test(dropMessage)
           if (lastDropTransient && attempt < CHAT_SEND_MAX_ATTEMPTS) {
             logger.warn('Twitch chat message transiently dropped - retrying', {
               broadcasterTwitchUserId,
