@@ -59,15 +59,15 @@ describe('db-readonly-check-trade-offer-ownership workflow contract (Issue #1851
 
   it('production 側は main 以外の ref を二重で拒否する（feature branch へ production の secret を渡さない）', () => {
     // workflow_dispatch は任意 ref を選べるため、job-level の条件だけでは足りない。
-    expect(workflow).toContain("if: github.ref == 'refs/heads/main'")
+    expect(workflow).toMatch(/^ {4}if: github\.ref == 'refs\/heads\/main'$/m)
     expect(workflow).toContain('if [ "$GITHUB_REF" != "refs/heads/main" ]; then')
     // preview を許可する条件式が混ざっていないこと（job 条件は main のみ）。
     expect(workflow).not.toContain("|| github.ref == 'refs/heads/preview'")
   })
 
   it('preview 側は main / preview のみを許可する（feature branch のコードから secret を使わせない）', () => {
-    expect(previewWorkflow).toContain(
-      "if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'",
+    expect(previewWorkflow).toMatch(
+      /^ {4}if: github\.ref == 'refs\/heads\/main' \|\| github\.ref == 'refs\/heads\/preview'$/m,
     )
     expect(previewWorkflow).toContain(
       'if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/preview" ]; then',
@@ -127,7 +127,7 @@ describe('db-readonly-check-trade-offer-ownership workflow contract (Issue #1851
 
     // 参照するテーブルは public.trade_offers と public.user_cards のみ。
     const tables = [...new Set([...sql.matchAll(/public\.([a-z_]+)/g)].map((m) => m[1]))]
-    expect(tables).toEqual(['trade_offers', 'user_cards'])
+    expect([...tables].sort()).toEqual(['trade_offers', 'user_cards'])
 
     // Issue #1851 本体の述語: open 出品 × 出品コピーの所有者が出品者で無い。
     expect(sql).toContain("status = 'open'")
@@ -136,7 +136,8 @@ describe('db-readonly-check-trade-offer-ownership workflow contract (Issue #1851
 
     // 出力列（AS 別名）は件数・観測時刻・実効読み取り専用・テーブル存在のみに固定する。
     // ユーザー識別子（offerer_user_id / user_id の値）や行データが出ないことを機械的に保証する。
-    const aliases = [...sql.matchAll(/\bAS ([a-z_]+)\b/g)].map((m) => m[1])
+    // 数字・大文字混じりの別名（例: AS leak_1）も拾えるように [a-zA-Z_][a-zA-Z0-9_]* を使う。
+    const aliases = [...sql.matchAll(/\bAS ([a-zA-Z_][a-zA-Z0-9_]*)\b/g)].map((m) => m[1])
     expect([...new Set(aliases)].sort()).toEqual([
       'observed_at',
       'open_offers',
@@ -146,6 +147,13 @@ describe('db-readonly-check-trade-offer-ownership workflow contract (Issue #1851
       'transaction_read_only',
       'user_cards_table',
     ])
+
+    // 出力式ごとの contains 固定（列名だけでなく式そのものを固定する）。
+    // count(*) を user_id 等に書き換えてもユーザー識別子が公開ログへ出る変更を検出する。
+    expect(sql).toContain('SELECT count(*) AS open_offers_owner_mismatch')
+    expect(sql).toContain("SELECT now() AS observed_at, current_setting('transaction_read_only') AS transaction_read_only")
+    expect(sql).toContain("to_regclass('public.trade_offers') AS trade_offers_table")
+    expect(sql).toContain("to_regclass('public.user_cards') AS user_cards_table")
   })
 
   it('公開ログを最小化する（DB 名・行データ・payload を出さない。件数と観測時刻は残す）', () => {
