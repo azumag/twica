@@ -528,6 +528,23 @@ export async function PUT(
       return handleDatabaseError(error, "Failed to update card");
     }
 
+    // 旧画像のクリーンアップ (#830: 所有権検証は deleteOwnedStorageImage が担当)
+    // UPDATE が実際に行を更新したあとに実行する。先に削除すると、card_number
+    // 重複(409)などで UPDATE が失敗したときにカードが旧URLを参照したまま実体
+    // だけが消える。updatedCard が null = 0行更新（並行削除など）も同様に
+    // 新しい image_url が永続化されていないため削除しない。
+    // 削除失敗はカード更新を妨げない（ログのみ）。
+    // #1801: trade_wantable の別 UPDATE が DB エラーで throw しても、ここで
+    // 旧画像のクリーンアップがスキップされストレージに残らないよう、
+    // trade_wantable の更新より前に実行する。
+    if (updatedCard && isImageChanging && oldImageUrl) {
+      try {
+        await deleteOwnedStorageImage(oldImageUrl, session.twitchUserId, "Cards API (update)");
+      } catch (storageError) {
+        logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
+      }
+    }
+
     // #1790: trade_wantable は cards 本体の Drizzle 定義に無い列のため
     // （src/lib/db/schema.ts の cardTradeSettings 参照）、本体の UPDATE の後に
     // 別の UPDATE で書く。所有者の認可は上の所有権確認（このカードの配信者
@@ -558,20 +575,6 @@ export async function PUT(
         // 外れうる（CardManager 側でも未変更なら送らないが、表示も正しく保つ）。
         // revalidateTag の使い方は pack-completion-rewards と同じ（即時失効）。
         revalidateTag(cardsListCacheTag(card.streamer_id), { expire: 0 });
-      }
-    }
-
-    // 旧画像のクリーンアップ (#830: 所有権検証は deleteOwnedStorageImage が担当)
-    // UPDATE が実際に行を更新したあとに実行する。先に削除すると、card_number
-    // 重複(409)などで UPDATE が失敗したときにカードが旧URLを参照したまま実体
-    // だけが消える。updatedCard が null = 0行更新（並行削除など）も同様に
-    // 新しい image_url が永続化されていないため削除しない。
-    // 削除失敗はカード更新を妨げない（ログのみ）。
-    if (updatedCard && isImageChanging && oldImageUrl) {
-      try {
-        await deleteOwnedStorageImage(oldImageUrl, session.twitchUserId, "Cards API (update)");
-      } catch (storageError) {
-        logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
       }
     }
 
