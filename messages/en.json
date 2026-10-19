@@ -746,7 +746,7 @@
     "errorTradeNotEnoughCards": "You do not have enough free copies for this bid (listed or bid copies cannot be used).",
     "errorUnauthorized": "Login required. Please reload the page and log in again.",
     "errorRateLimited": "Too many requests. Please try again shortly.",
-    "errorTradeQuantityMismatch": "The offer was listed for 1 copy instead of the {requested} copies you chose. Please cancel it in My Trades.",
+    "errorTradeQuantityMismatch": "The offer was listed for {stored, plural, one {# copy} other {# copies}} instead of the {requested, plural, one {# copy} other {# copies}} you chose. Please cancel it in My Trades.",
     "errorGeneric": "Something went wrong. Please try again later.",
     "errorNetwork": "Network error. Check your connection and try again.",
     "deletedCardLabel": "Deleted card",

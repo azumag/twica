@@ -747,7 +747,7 @@
     "errorUnauthorized": "ログインが必要です。ページを再読み込みしてログインし直してください",
     "errorRateLimited": "操作が多すぎます。しばらくしてから再試行してください",
     "errorGeneric": "エラーが発生しました。時間をおいて再試行してください",
-    "errorTradeQuantityMismatch": "指定した枚数（{requested}枚）ではなく1枚の出品として登録されました。マイトレードで取り消してください",
+    "errorTradeQuantityMismatch": "指定した枚数（{requested}枚）ではなく{stored}枚の出品として登録されました。マイトレードで取り消してください",
     "errorNetwork": "通信に失敗しました。接続を確認して再試行してください",
     "deletedCardLabel": "削除済みカード",
     "createPageTitle": "{channelName} に出品",

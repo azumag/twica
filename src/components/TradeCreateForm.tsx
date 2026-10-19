@@ -262,9 +262,9 @@ export default function TradeCreateForm({
       // navigate away: tell the viewer to cancel it in My Trades. Only the
       // lister can lose out and the offer is cancellable, hence a message
       // instead of an automatic cancel call (no new write path).
-      const storedQuantity = result.data?.tradeOffer?.wantedQuantity ?? 1;
+      const storedQuantity = Number(result.data?.tradeOffer?.wantedQuantity ?? 1);
       if (storedQuantity !== wantedQuantity) {
-        setErrorText(t("errorTradeQuantityMismatch", { requested: wantedQuantity }));
+        setErrorText(t("errorTradeQuantityMismatch", { requested: wantedQuantity, stored: storedQuantity }));
         setSubmitting(false);
         return;
       }

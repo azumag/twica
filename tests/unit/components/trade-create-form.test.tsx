@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { NextIntlClientProvider, createTranslator } from "next-intl";
 import TradeCreateForm from "@/components/TradeCreateForm";
 import type { TradeableOwnedCopy, WantableCard } from "@/lib/trade";
 import jaMessages from "../../../messages/ja.json";
 import enMessages from "../../../messages/en.json";
 
 const ja = jaMessages.trade;
+const trEn = createTranslator({ locale: "en", messages: enMessages, namespace: "trade" });
 const push = vi.fn();
 
 vi.mock("next/navigation", () => ({
@@ -367,7 +368,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
         submit();
 
         const alert = await screen.findByRole("alert");
-        expect(alert).toHaveTextContent(ja.errorTradeQuantityMismatch.replace("{requested}", "3"));
+        expect(alert).toHaveTextContent(ja.errorTradeQuantityMismatch.replace("{requested}", "3").replace("{stored}", "1"));
         expect(alert).toHaveTextContent("マイトレード");
         expect(push).not.toHaveBeenCalled();
         // An offer exists now, so the cached board / my-trades pages are stale.
@@ -386,7 +387,11 @@ describe("TradeCreateForm (#727 §6.5)", () => {
 
         fireEvent.click(screen.getByRole("button", { name: en.createSubmitButton }));
 
-        expect(await screen.findByRole("alert")).toHaveTextContent(en.errorTradeQuantityMismatch.replace("{requested}", "2"));
+        // The English wording renders the stored/requested counts through ICU
+        // plurals, so a count of 1 must come out as "1 copy" (never "1 copies").
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          trEn("errorTradeQuantityMismatch", { requested: 2, stored: 1 }),
+        );
         expect(push).not.toHaveBeenCalled();
       });
 
