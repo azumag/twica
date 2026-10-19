@@ -112,6 +112,10 @@ jobs:
               - 'tests/fixtures/chat-outbox-readonly-counts-pg17.mjs'
               - '.github/workflows/db-readonly-check.yml'
               - '.github/workflows/db-readonly-check-production.yml'
+              # chat-outbox-watch.yml（Issue #1837 の滞留watchdog）の観測 SQL と
+              # アラート判定を同じく実PG17で検証する。判定 block の変更でも実行する。
+              - 'tests/fixtures/chat-outbox-watch-pg17.mjs'
+              - '.github/workflows/chat-outbox-watch.yml'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
@@ -565,6 +569,17 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs .github/workflows/db-readonly-check-production.yml
+
+      - name: Verify the chat outbox watch aggregation and alert decision
+        # chat-outbox-watch.yml（Issue #1837 の滞留watchdog）に埋め込まれた観測 SQL と
+        # アラート判定 python block をその YAML から取り出し、実 PostgreSQL 17 で実行する。
+        # due 滞留・wake 予約の内訳・attempt 枯渇・lease 失効・gate 参考値の集計が
+        # seeded 行の実状態と一致し、アラート判定が healthy / 停滞各シナリオで
+        # 期待どおりに決まることを固定する（SQL・閾値の文字列検査だけでは検証できない）。
+        # この workflow も production 専用で main にのみ存在するため、回帰も main 側で回す。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-watch-pg17.mjs .github/workflows/chat-outbox-watch.yml
 
       - name: Verify completion reward invariants
         env:
