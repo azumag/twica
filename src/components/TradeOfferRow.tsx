@@ -94,9 +94,14 @@ export default function TradeOfferRow({
     action = (
       <div className="flex flex-col items-stretch gap-1 sm:items-end">
         {button}
-        {/* Always visible: the payment copy is chosen automatically and the
-            trade cannot be undone, so this is announced before the dialog. */}
-        <p className="text-xs text-gray-400">{t("autoSelectNotice")}</p>
+        {/* Always visible: the payment copies are chosen automatically and the
+            trade cannot be undone, so this is announced before the dialog.
+            #1789: for ×N offers the plural copy explains how many copies. */}
+        <p className="text-xs text-gray-400">
+          {offer.wantedCard.quantity > 1
+            ? t("autoSelectNoticeQuantity", { count: offer.wantedCard.quantity })
+            : t("autoSelectNotice")}
+        </p>
       </div>
     );
   }

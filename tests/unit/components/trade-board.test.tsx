@@ -11,6 +11,11 @@ import enMessages from "../../../messages/en.json";
 
 const ja = jaMessages.trade;
 
+/** next-intl renders {count} placeholders — used to keep copy keys testable. */
+function withCount(template: string, count: number) {
+  return template.replace("{count}", String(count));
+}
+
 function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
   return {
     id: "offer-1",
@@ -18,8 +23,8 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     offeredStreamerId: "s-1",
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
-    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
-    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null, quantity: 1 },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, quantity: 1 },
     isCrossChannel: false,
     status: "open",
     createdAt: "2026-10-01T00:00:00.000Z",
@@ -118,6 +123,23 @@ describe("TradeOfferRow accept states (§11.3)", () => {
 
   it("always shows the auto-select notice next to the accept action", () => {
     renderRow(makeOffer({ canAccept: "not_owned" }));
+    expect(screen.getByText(ja.autoSelectNotice)).toBeInTheDocument();
+  });
+
+  it("a ×3 wanted card shows the ×N badge and the plural auto-select notice (#1789)", () => {
+    renderRow(makeOffer({
+      wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, quantity: 3 },
+    }));
+    // The badge sits next to the want card …
+    expect(screen.getByText(withCount(ja.cardQuantityBadge, 3))).toBeInTheDocument();
+    // … and the notice explains how many copies are paid automatically.
+    expect(screen.getByText(withCount(ja.autoSelectNoticeQuantity, 3))).toBeInTheDocument();
+    expect(screen.queryByText(ja.autoSelectNotice)).toBeNull();
+  });
+
+  it("a quantity-1 wanted card shows no badge and keeps the singular auto-select notice", () => {
+    renderRow(makeOffer());
+    expect(screen.queryByText(withCount(ja.cardQuantityBadge, 1))).toBeNull();
     expect(screen.getByText(ja.autoSelectNotice)).toBeInTheDocument();
   });
 
@@ -363,12 +385,12 @@ describe("TradeBoard", () => {
           init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
         }),
     );
-    fetchMock.mockImplementation(async () => listResponse([makeOffer({ id: "new", offeredCard: { name: "Filtered Card", rarity: "rare", imageUrl: null } })]));
+    fetchMock.mockImplementation(async () => listResponse([makeOffer({ id: "new", offeredCard: { name: "Filtered Card", rarity: "rare", imageUrl: null, quantity: 1 } })]));
     renderBoard();
     fireEvent.change(screen.getByLabelText(ja.filterOfferedCard), { target: { value: "card-a" } });
     expect(await screen.findByText("Filtered Card")).toBeInTheDocument();
     // The first request was aborted; even if its body arrives late it is not shown.
-    resolveFirst(listResponse([makeOffer({ offeredCard: { name: "Stale Card", rarity: "rare", imageUrl: null } })]));
+    resolveFirst(listResponse([makeOffer({ offeredCard: { name: "Stale Card", rarity: "rare", imageUrl: null, quantity: 1 } })]));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByText("Stale Card")).toBeNull();
     expect(screen.getByText("Filtered Card")).toBeInTheDocument();
@@ -439,7 +461,7 @@ describe("TradeBoard", () => {
         const page = new URL(url, "https://x.test").searchParams.get("page");
         return page === "1"
           ? listResponse([makeOffer()], true)
-          : listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+          : listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null, quantity: 1 } })]);
       });
       renderBoard();
       await screen.findByText("Offered Dragon");
@@ -456,7 +478,7 @@ describe("TradeBoard", () => {
     it("reuses pages across remounts (scope tab switch) for the same streamer and scope", async () => {
       fetchMock.mockImplementation(async (url: string) => {
         const scope = new URL(url, "https://x.test").searchParams.get("scope");
-        return listResponse([makeOffer({ offeredCard: { name: `${scope} card`, rarity: "rare", imageUrl: null } })]);
+        return listResponse([makeOffer({ offeredCard: { name: `${scope} card`, rarity: "rare", imageUrl: null, quantity: 1 } })]);
       });
       const first = renderBoard();
       await screen.findByText("in_channel card");
@@ -494,7 +516,7 @@ describe("TradeBoard", () => {
           listCalls += 1;
           const query = new URL(url, "https://x.test").searchParams;
           if (query.get("page") === "2") {
-            return listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+            return listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null, quantity: 1 } })]);
           }
           // Hold the post-accept refresh of page 1.
           if (listCalls > 2) await refreshGate;

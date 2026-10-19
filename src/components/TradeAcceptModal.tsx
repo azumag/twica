@@ -141,8 +141,14 @@ export default function TradeAcceptModal({
               <TradeCardSummary card={receive} label={t("confirmModalReceiveLabel")} />
             </div>
           </div>
-          <p id={warningId} className="mt-4 rounded-lg border border-yellow-600/60 bg-yellow-900/30 p-3 text-sm text-yellow-100">
-            {t("confirmModalWarning")}
+          <p
+            id={warningId}
+            className="mt-4 rounded-lg border border-yellow-600/60 bg-yellow-900/30 p-3 text-sm text-yellow-100"
+          >
+            {/* #1789: ×N offers pay the oldest N copies, the wording says so. */}
+            {give.quantity > 1
+              ? t("confirmModalWarningQuantity", { count: give.quantity })
+              : t("confirmModalWarning")}
           </p>
           {errorText && (
             <p role="alert" className="mt-3 rounded-lg bg-red-900/40 p-3 text-sm text-red-200">

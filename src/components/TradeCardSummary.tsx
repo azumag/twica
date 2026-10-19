@@ -10,6 +10,11 @@ export type TradeCardDisplay = {
   name: string;
   rarity: string;
   imageUrl: string | null;
+  /**
+   * Copies requested (≥1, #1789). Rendered as a "×N" badge only when > 1;
+   * rows listed before #1789 normalize to 1 and show no badge.
+   */
+  quantity?: number;
 };
 
 /** Channel shown next to a card on the cross-channel tab (§6.3). */
@@ -52,6 +57,9 @@ export default function TradeCardSummary({
   // A snapshot can be empty for legacy/broken rows; never render a blank name.
   const name = card.name || t("deletedCardLabel");
 
+  const quantity = card.quantity;
+  const copiesRequested = quantity != null && quantity > 1;
+
   return (
     <div className="flex min-w-0 items-center gap-3">
       <div
@@ -78,6 +86,13 @@ export default function TradeCardSummary({
         {label && <p className="text-xs font-semibold text-gray-400">{label}</p>}
         <p className="break-words font-semibold text-white">{name}</p>
         <div className="mt-1 flex flex-wrap items-center gap-1">
+          {/* Copies requested. The badge is placed before the rarity chip so
+              "Card B ×3" reads left→right (§6.3 board copy). */}
+          {copiesRequested && (
+            <span className="rounded bg-purple-600 px-1.5 py-0.5 font-semibold text-xs text-white">
+              {t("cardQuantityBadge", { count: quantity })}
+            </span>
+          )}
           {card.rarity && (
             <span
               className={`rounded px-1.5 py-0.5 text-xs text-white ${getRarityColorClass(card.rarity)}`}

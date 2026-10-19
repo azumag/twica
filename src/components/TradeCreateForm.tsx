@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { TradeableOwnedCopy, WantableCard } from "@/lib/trade";
+import { TRADE_WANTED_QUANTITY_OPTIONS } from "@/lib/trade-constants";
 import { postTradeJson, tradeErrorMessageKey } from "@/lib/trade-client";
 import { clearTradeListCache } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
@@ -121,6 +122,10 @@ export default function TradeCreateForm({
       : null,
   );
   const [wantedCardId, setWantedCardId] = useState<string | null>(null);
+  // Copies of the wanted card to ask for (#1789, 1..10). Reset to 1 whenever
+  // the wanted card changes so a quantity chosen for card X is not carried
+  // over to card Y.
+  const [wantedQuantity, setWantedQuantity] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   // requestId is bound to the exact selection (offered copy + wanted card).
@@ -150,10 +155,14 @@ export default function TradeCreateForm({
     }
     setSubmitting(true);
     setErrorText(null);
-    const requestId = requestIdFor(`${offeredUserCardId}:${wanted.cardId}`);
+    // requestId is bound to the exact selection including the quantity
+    // (#1789): replaying an old key would return the old offer, so changing
+    // any of the three fields starts a new idempotency key.
+    const requestId = requestIdFor(`${offeredUserCardId}:${wanted.cardId}:${wantedQuantity}`);
     const result = await postTradeJson("/api/trades", {
       offeredUserCardId,
       wantedCardId: wanted.cardId,
+      wantedQuantity,
       requestId,
     });
     if (result.ok) {
@@ -308,6 +317,8 @@ export default function TradeCreateForm({
                         title={sameAsOffered ? t("createStep2SameCard") : undefined}
                         onClick={() => {
                           setWantedCardId(card.cardId);
+                          // A quantity chosen for another card is not carried over.
+                          setWantedQuantity(1);
                           setErrorText(null);
                         }}
                         className={`${tileBase} ${
@@ -334,6 +345,32 @@ export default function TradeCreateForm({
                 })}
               </ul>
             )}
+            {/* #1789: copies requested of the selected card. Shown only once a
+                wanted card exists — the value does not change the card set,
+                only how many copies an acceptor must pay. */}
+            {wanted && (
+              <div className="mt-3 flex items-center gap-3">
+                <label htmlFor="trade-wanted-quantity" className="text-sm font-semibold text-white">
+                  {t("createStep2QuantityLabel")}
+                </label>
+                <select
+                  id="trade-wanted-quantity"
+                  value={wantedQuantity}
+                  onChange={(event) => {
+                    setWantedQuantity(Number(event.target.value));
+                    setErrorText(null);
+                  }}
+                  disabled={submitting}
+                  className="rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-purple-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {TRADE_WANTED_QUANTITY_OPTIONS.map((count) => (
+                    <option key={count} value={count}>
+                      {t("cardQuantityBadge", { count })}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </>
         )}
       </section>
@@ -344,7 +381,13 @@ export default function TradeCreateForm({
         </h2>
         <p className="text-sm text-gray-200">
           {offered && wanted
-            ? t("createConfirmSummary", { offeredCard: offered.name, wantedCard: wanted.name })
+            ? wantedQuantity > 1
+              ? t("createConfirmQuantitySummary", {
+                  offeredCard: offered.name,
+                  wantedCard: wanted.name,
+                  count: wantedQuantity,
+                })
+              : t("createConfirmSummary", { offeredCard: offered.name, wantedCard: wanted.name })
             : t("createConfirmPending")}
         </p>
         <p className="mt-2 text-xs text-gray-400">{t("createLimitNotice")}</p>

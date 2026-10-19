@@ -92,6 +92,16 @@ export async function POST(request: NextRequest) {
       typeof body.offeredUserCardId === "string" ? body.offeredUserCardId : "";
     const wantedCardId = typeof body.wantedCardId === "string" ? body.wantedCardId : "";
     const requestId = typeof body.requestId === "string" ? body.requestId : "";
+    // #1789: absent → 1 (older clients / default), present → must be a number
+    // and land within the business range (the range itself is validated by the
+    // service so replays of pre-#1789 payloads are not 400'd on shape alone).
+    let wantedQuantity = 1;
+    if (body.wantedQuantity !== undefined && body.wantedQuantity !== null) {
+      if (typeof body.wantedQuantity !== "number") {
+        return tradeErrorResponse("INVALID_REQUEST", 400);
+      }
+      wantedQuantity = body.wantedQuantity;
+    }
 
     if (
       !isCanonicalUuid(offeredUserCardId)
@@ -105,6 +115,7 @@ export async function POST(request: NextRequest) {
       twitchUserId: auth.session.twitchUserId,
       offeredUserCardId,
       wantedCardId,
+      wantedQuantity,
       requestId,
     });
     if (result.kind === "error") {
@@ -119,6 +130,7 @@ export async function POST(request: NextRequest) {
         offeredStreamerId: result.offer.offered_streamer_id,
         wantedCardId: result.offer.wanted_card_id,
         wantedStreamerId: result.offer.wanted_streamer_id,
+        wantedQuantity: result.offer.wanted_quantity,
         offeredCard: result.offer.offered_card_snapshot,
         wantedCard: result.offer.wanted_card_snapshot,
         isCrossChannel: Boolean(result.offer.is_cross_channel),

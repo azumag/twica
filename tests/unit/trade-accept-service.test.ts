@@ -21,8 +21,11 @@ function rpcSuccess(overrides: Record<string, unknown> = {}) {
     tradeOfferId: TRADE_ID,
     receivedUserCardId: RECEIVED_CARD_ID,
     givenUserCardId: GIVEN_CARD_ID,
-    offeredCardSnapshot: { name: "Offered", rarity: "rare", imageUrl: null },
-    wantedCardSnapshot: { name: "Wanted", rarity: "common", imageUrl: null },
+    // #1789: the RPC also reports the requested quantity and every copy paid.
+    wantedQuantity: 1,
+    givenUserCardIds: [GIVEN_CARD_ID],
+    offeredCardSnapshot: { name: "Offered", rarity: "rare", imageUrl: null, quantity: 1 },
+    wantedCardSnapshot: { name: "Wanted", rarity: "common", imageUrl: null, quantity: 1 },
     completedAt: "2026-10-04T00:00:00.000Z",
     idempotentReplay: false,
     ...overrides,
@@ -117,12 +120,32 @@ describe("acceptTradeOffer (#724)", () => {
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
 
+  it("returns a ×N success payload unchanged (#1789)", async () => {
+    const result = rpcSuccess({
+      wantedQuantity: 3,
+      givenUserCardIds: [GIVEN_CARD_ID, RECEIVED_CARD_ID],
+    });
+    const sqlMock = vi.fn().mockResolvedValue([{ result }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(result);
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["missing success fields", { success: true }],
     ["mismatched trade offer", rpcSuccess({ tradeOfferId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" })],
     ["invalid received card id", rpcSuccess({ receivedUserCardId: "not-a-uuid" })],
     ["invalid completion timestamp", rpcSuccess({ completedAt: "not-a-date" })],
     ["invalid replay flag", rpcSuccess({ idempotentReplay: "false" })],
+    // #1789: a success payload must report exactly which copies it paid.
+    ["missing givenUserCardIds", rpcSuccess({ givenUserCardIds: undefined })],
+    ["empty givenUserCardIds", rpcSuccess({ givenUserCardIds: [] })],
+    ["non-uuid inside givenUserCardIds", rpcSuccess({ givenUserCardIds: ["not-a-uuid"] })],
+    ["givenUserCardIds disagrees with the scalar", rpcSuccess({ givenUserCardIds: [RECEIVED_CARD_ID] })],
+    ["wantedQuantity out of range", rpcSuccess({ wantedQuantity: 11 })],
+    ["fractional wantedQuantity", rpcSuccess({ wantedQuantity: 2.5 })],
     ["unknown failure code", { success: false, error: "FUTURE_UNKNOWN_ERROR" }],
   ])("fails closed on %s RPC payload", async (_description, result) => {
     const sqlMock = vi.fn().mockResolvedValue([{ result }]);

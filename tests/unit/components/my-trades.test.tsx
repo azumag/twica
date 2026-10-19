@@ -7,6 +7,11 @@ import jaMessages from "../../../messages/ja.json";
 
 const ja = jaMessages.trade;
 
+/** next-intl renders {count} placeholders — used to keep copy keys testable. */
+function withCount(template: string, count: number) {
+  return template.replace("{count}", String(count));
+}
+
 function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
   return {
     id: "offer-1",
@@ -15,8 +20,8 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     offeredStreamerId: "s-1",
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
-    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
-    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null, quantity: 1 },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, quantity: 1 },
     isCrossChannel: false,
     status: "open",
     createdAt: "2026-10-01T00:00:00.000Z",
@@ -102,6 +107,20 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(within(footer as HTMLElement).getByRole("button", { name: ja.cancelOfferButton })).toBeEnabled();
   });
 
+  it("shows the ×N badge on the wanted card for a ×3 offer and none for quantity 1 (#1789)", async () => {
+    byStatus.open = [
+      makeOffer({
+        wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, quantity: 3 },
+      }),
+      makeOffer({ id: "offer-2", wantedCardId: "card-wanted-2" }),
+    ];
+    renderMine();
+    expect(await screen.findAllByText("Wanted Slime")).toHaveLength(2);
+    // Only the ×3 wanted card is badged; the ×1 rows show no badge at all.
+    expect(screen.getAllByText(withCount(ja.cardQuantityBadge, 3))).toHaveLength(1);
+    expect(screen.queryByText(withCount(ja.cardQuantityBadge, 1))).toBeNull();
+  });
+
   it("cancels an open offer after the confirmation dialog and refetches", async () => {
     renderMine();
     fireEvent.click(await screen.findByRole("button", { name: ja.cancelOfferButton }));
@@ -166,8 +185,8 @@ describe("MyTrades (#727 §6.6)", () => {
         completedAt: "2026-10-03T00:00:00.000Z",
         offerer: { twitchUsername: "carol", twitchDisplayName: "Carol", twitchProfileImageUrl: null },
         acceptedBy: { twitchUsername: "me", twitchDisplayName: "Me", twitchProfileImageUrl: null },
-        offeredCard: { name: "Carol Card", rarity: "rare", imageUrl: null },
-        wantedCard: { name: "My Old Card", rarity: "common", imageUrl: null },
+        offeredCard: { name: "Carol Card", rarity: "rare", imageUrl: null, quantity: 1 },
+        wantedCard: { name: "My Old Card", rarity: "common", imageUrl: null, quantity: 1 },
         isOwnOffer: false,
         mineRole: "acceptor",
       }),
@@ -201,7 +220,7 @@ describe("MyTrades (#727 §6.6)", () => {
     byStatus.completed = [makeOffer({
       id: "completed-offer",
       status: "completed",
-      offeredCard: { name: "Completed Dragon", rarity: "epic", imageUrl: null },
+      offeredCard: { name: "Completed Dragon", rarity: "epic", imageUrl: null, quantity: 1 },
       acceptedBy: { twitchUsername: "bob", twitchDisplayName: "Bob", twitchProfileImageUrl: null },
     })];
     renderMine();
@@ -236,7 +255,7 @@ describe("MyTrades (#727 §6.6)", () => {
       makeOffer({
         status: "completed",
         offeredCardId: null,
-        offeredCard: { name: "Retired Hero", rarity: "legendary", imageUrl: null },
+        offeredCard: { name: "Retired Hero", rarity: "legendary", imageUrl: null, quantity: 1 },
         acceptedBy: null,
       }),
     ];
@@ -335,7 +354,7 @@ describe("MyTrades (#727 §6.6)", () => {
 
   describe("client cache (tab switching without reloading)", () => {
     it("renders the server-rendered open tab immediately and revalidates it once in the background", async () => {
-      renderMine({ initialOpen: { offers: [makeOffer({ offeredCard: { name: "SSR Dragon", rarity: "epic", imageUrl: null } })], hasMore: false } });
+      renderMine({ initialOpen: { offers: [makeOffer({ offeredCard: { name: "SSR Dragon", rarity: "epic", imageUrl: null, quantity: 1 } })], hasMore: false } });
       // Synchronously present: no loading state before the client round trip.
       expect(screen.getByText("SSR Dragon")).toBeInTheDocument();
       expect(screen.queryByText(ja.loading)).toBeNull();
@@ -372,7 +391,7 @@ describe("MyTrades (#727 §6.6)", () => {
 
       // Past the freshness window: shown from cache at once, then replaced.
       now.mockReturnValue(1_000_000 + 31_000);
-      byStatus.open = [makeOffer({ id: "offer-new", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null } })];
+      byStatus.open = [makeOffer({ id: "offer-new", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null, quantity: 1 } })];
       fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabOpen }));
       expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
       expect(screen.queryByText(ja.loading)).toBeNull();

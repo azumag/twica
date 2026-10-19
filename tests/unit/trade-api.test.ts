@@ -202,6 +202,8 @@ describe("POST /api/trades (#723, #715 PR-C)", () => {
     ["array body", "[]"],
     ["bad offeredUserCardId", { ...VALID_CREATE_BODY, offeredUserCardId: "bad" }],
     ["missing requestId", { ...VALID_CREATE_BODY, requestId: undefined }],
+    // #1789: present but non-numeric wantedQuantity is a shape error.
+    ["non-numeric wantedQuantity", { ...VALID_CREATE_BODY, wantedQuantity: "three" }],
   ])("answers 400 INVALID_REQUEST for %s", async (_label, body) => {
     mocks.getSession.mockResolvedValue(SESSION);
     const { POST } = await import("@/app/api/trades/route");
@@ -218,6 +220,8 @@ describe("POST /api/trades (#723, #715 PR-C)", () => {
     ["TRADE_SAME_CARD", 400],
     ["TRADE_WANTED_CARD_UNAVAILABLE", 400],
     ["TRADE_OFFERED_CARD_INACTIVE", 409],
+    // #1789: out-of-range quantities are a request error.
+    ["TRADE_WANTED_QUANTITY_INVALID", 400],
   ])("maps service error %s to HTTP %d with the same code", async (code, status) => {
     mocks.getSession.mockResolvedValue(SESSION);
     mocks.createTradeOffer.mockResolvedValue({ kind: "error", code });
@@ -267,7 +271,47 @@ describe("POST /api/trades (#723, #715 PR-C)", () => {
     });
     expect(mocks.createTradeOffer).toHaveBeenCalledWith({
       twitchUserId: "viewer-1",
+      // #1789: an absent wantedQuantity defaults to 1 (older clients).
       ...VALID_CREATE_BODY,
+      wantedQuantity: 1,
+    });
+  });
+
+  it("forwards a requested wantedQuantity to the service (#1789)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.createTradeOffer.mockResolvedValue({
+      kind: "ok",
+      idempotentReplay: false,
+      offer: {
+        id: OFFER_ID,
+        offered_user_card_id: USER_CARD_ID,
+        offered_card_id: "66666666-6666-4666-8666-666666666666",
+        offered_streamer_id: STREAMER_ID,
+        wanted_card_id: WANTED_CARD_ID,
+        wanted_streamer_id: STREAMER_ID,
+        wanted_quantity: 3,
+        offered_card_snapshot: { name: "A", quantity: 1 },
+        wanted_card_snapshot: { name: "B", quantity: 3 },
+        is_cross_channel: false,
+        status: "open",
+        created_at: "2026-10-04T00:00:00.000Z",
+      },
+    });
+
+    const { POST } = await import("@/app/api/trades/route");
+    const response = await POST(
+      postJson("/api/trades", { ...VALID_CREATE_BODY, wantedQuantity: 3 }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      idempotentReplay: false,
+      tradeOffer: { id: OFFER_ID, wantedQuantity: 3 },
+    });
+    expect(mocks.createTradeOffer).toHaveBeenCalledWith({
+      twitchUserId: "viewer-1",
+      ...VALID_CREATE_BODY,
+      wantedQuantity: 3,
     });
   });
 });

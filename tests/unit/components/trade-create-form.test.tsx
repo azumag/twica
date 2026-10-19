@@ -6,6 +6,11 @@ import type { TradeableOwnedCopy, WantableCard } from "@/lib/trade";
 import jaMessages from "../../../messages/ja.json";
 
 const ja = jaMessages.trade;
+
+/** Fills next-intl placeholders the way the provider would render them. */
+function fill(template: string, values: Record<string, string | number>) {
+  return template.replace(/\{(\w+)\}/g, (_match, key: string) => String(values[key]));
+}
 const push = vi.fn();
 
 vi.mock("next/navigation", () => ({
@@ -142,7 +147,54 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     const body = JSON.parse(init.body as string);
     expect(body.offeredUserCardId).toBe("uc-dup-mid");
     expect(body.wantedCardId).toBe("card-want-2");
+    // #1789: the requested copies ride along with every create attempt.
+    expect(body.wantedQuantity).toBe(1);
     expect(body.requestId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("shows the 欲しい枚数 select only after a wanted card is picked, defaulting to ×1 (#1789)", () => {
+    renderForm();
+    expect(screen.queryByLabelText(ja.createStep2QuantityLabel)).toBeNull();
+
+    fireEvent.click(within(step(ja.createStep2Title)).getByRole("button", { name: /Want Card Two/ }));
+    const select = screen.getByLabelText(ja.createStep2QuantityLabel);
+    expect(select).toHaveValue("1");
+    // Options are 1..10, rendered with the ×N badge copy.
+    const options = within(select).getAllByRole("option");
+    expect(options).toHaveLength(10);
+    options.forEach((option, index) => {
+      expect(option).toHaveTextContent(fill(ja.cardQuantityBadge, { count: index + 1 }));
+    });
+  });
+
+  it("resets the quantity to ×1 when another wanted card is chosen (#1789)", () => {
+    renderForm();
+    const step2 = step(ja.createStep2Title);
+    fireEvent.click(within(step2).getByRole("button", { name: /Want Card Two/ }));
+    fireEvent.change(screen.getByLabelText(ja.createStep2QuantityLabel), { target: { value: "5" } });
+    expect(screen.getByLabelText(ja.createStep2QuantityLabel)).toHaveValue("5");
+
+    fireEvent.click(within(step2).getByRole("button", { name: /Want Card(?! Two)/ }));
+    // A quantity chosen for card X is not carried over to card Y.
+    expect(screen.getByLabelText(ja.createStep2QuantityLabel)).toHaveValue("1");
+  });
+
+  it("POSTs the selected wantedQuantity and shows the ×N confirm summary (#1789)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
+    renderForm();
+    fireEvent.click(tile(step(ja.createStep1Title), "Dup Card"));
+    fireEvent.click(within(step(ja.createStep2Title)).getByRole("button", { name: /Want Card Two/ }));
+    fireEvent.change(screen.getByLabelText(ja.createStep2QuantityLabel), { target: { value: "3" } });
+    expect(screen.getByText(fill(ja.createConfirmQuantitySummary, {
+      offeredCard: "Dup Card",
+      wantedCard: "Want Card Two",
+      count: 3,
+    }))).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?listed=1"));
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.wantedQuantity).toBe(3);
   });
 
   it("reuses the requestId when retrying the same selection and regenerates it when the selection changes", async () => {

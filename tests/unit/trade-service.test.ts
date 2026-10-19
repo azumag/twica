@@ -240,10 +240,13 @@ describe("trade service (#723)", () => {
     primeDb(pg);
 
     const { createTradeOffer } = await import("@/lib/trade");
+    // #1789: wantedQuantity 0 is invalid, yet the replay must still win —
+    // the quantity validation runs only after the requestId replay branch.
     const result = await createTradeOffer({
       twitchUserId: "viewer-1",
       offeredUserCardId: OFFER.offered_user_card_id,
       wantedCardId: OFFER.wanted_card_id!,
+      wantedQuantity: 0,
       requestId: OFFER.request_id!,
     });
 
@@ -268,6 +271,7 @@ describe("trade service (#723)", () => {
       twitchUserId: "viewer-1",
       offeredUserCardId: OFFER.offered_user_card_id,
       wantedCardId: OFFER.wanted_card_id!,
+      wantedQuantity: 1,
       requestId: OFFER.request_id!,
     });
 
@@ -283,15 +287,20 @@ describe("trade service (#723)", () => {
       offered_streamer_id: OFFER.offered_streamer_id,
       wanted_card_id: OFFER.wanted_card_id,
       wanted_streamer_id: OFFER.wanted_streamer_id,
+      // #1789: the requested quantity is persisted next to the wanted card
+      // and mirrored into the wanted snapshot (the offered side is always 1).
+      wanted_quantity: 1,
       offered_card_snapshot: {
         name: "Offer",
         rarity: "rare",
         imageUrl: "https://example.test/a.png",
+        quantity: 1,
       },
       wanted_card_snapshot: {
         name: "Want",
         rarity: "epic",
         imageUrl: "https://example.test/b.png",
+        quantity: 1,
       },
       request_id: OFFER.request_id,
     });
@@ -306,6 +315,7 @@ describe("trade service (#723)", () => {
       twitchUserId: "viewer-1",
       offeredUserCardId: OFFER.offered_user_card_id,
       wantedCardId: OFFER.wanted_card_id!,
+      wantedQuantity: 1,
       requestId: OFFER.request_id!,
     });
 
@@ -363,6 +373,7 @@ describe("trade service (#723)", () => {
       twitchUserId: "viewer-1",
       offeredUserCardId: OFFER.offered_user_card_id,
       wantedCardId: OFFER.wanted_card_id!,
+      wantedQuantity: 1,
       requestId: OFFER.request_id!,
     })).resolves.toEqual({ kind: "error", code });
     expect(roundTrips()).toBe(1);
@@ -386,6 +397,7 @@ describe("trade service (#723)", () => {
       twitchUserId: "viewer-1",
       offeredUserCardId: OFFER.offered_user_card_id,
       wantedCardId: OFFER.wanted_card_id!,
+      wantedQuantity: 1,
       requestId: OFFER.request_id!,
     });
 
@@ -400,6 +412,53 @@ describe("trade service (#723)", () => {
       OFFER.offerer_user_id,
       OFFER.request_id,
     ]);
+  });
+
+  it.each([0, 11, 2.5])("rejects wantedQuantity=%s with TRADE_WANTED_QUANTITY_INVALID without INSERT (1 round trip)", async (wantedQuantity) => {
+    // #1789: only integer 1..TRADE_MAX_WANTED_QUANTITY is accepted. The check
+    // runs after the replay branch, so a fully valid check row is enough.
+    const pg = createDbMock({ selects: [{ rows: [checkRow()] }] });
+    primeDb(pg);
+
+    const { createTradeOffer } = await import("@/lib/trade");
+    await expect(createTradeOffer({
+      twitchUserId: "viewer-1",
+      offeredUserCardId: OFFER.offered_user_card_id,
+      wantedCardId: OFFER.wanted_card_id!,
+      wantedQuantity,
+      requestId: OFFER.request_id!,
+    })).resolves.toEqual({ kind: "error", code: "TRADE_WANTED_QUANTITY_INVALID" });
+    expect(roundTrips()).toBe(1);
+    expect(pg.insertCalls).toHaveLength(0);
+  });
+
+  it.each([1, 10])("accepts wantedQuantity=%s at the range boundary and stores it in the INSERT values (#1789)", async (wantedQuantity) => {
+    const pg = createDbMock({
+      selects: [{ rows: [checkRow()] }],
+      inserts: [{ rows: [OFFER] }],
+    });
+    primeDb(pg);
+
+    const { createTradeOffer } = await import("@/lib/trade");
+    await expect(createTradeOffer({
+      twitchUserId: "viewer-1",
+      offeredUserCardId: OFFER.offered_user_card_id,
+      wantedCardId: OFFER.wanted_card_id!,
+      wantedQuantity,
+      requestId: OFFER.request_id!,
+    })).resolves.toEqual({
+      kind: "ok",
+      offer: OFFER,
+      idempotentReplay: false,
+    });
+    // Round-trip budget unchanged: 1 check statement + 1 INSERT.
+    expect(roundTrips()).toBe(2);
+    expect(pg.insertCalls).toHaveLength(1);
+    expect(pg.insertCalls[0].values).toMatchObject({
+      wanted_quantity: wantedQuantity,
+      offered_card_snapshot: { name: "Offer", rarity: "rare", imageUrl: "https://example.test/a.png", quantity: 1 },
+      wanted_card_snapshot: { name: "Want", rarity: "epic", imageUrl: "https://example.test/b.png", quantity: wantedQuantity },
+    });
   });
 
   it("maps canAccept from the per-row SQL state for other people's offers only", async () => {
@@ -647,6 +706,13 @@ describe("listTradeOffers visibility (#715 PR-C)", () => {
     // Same exclusion rule as the accept RPC: only the viewer's own open
     // offers make a copy count as listed (Refs #1749 item 3).
     expect(state.sql).toContain("active_listing.offerer_user_id = ");
+    // #1789: the free-copy probe became a COUNT comparison against the
+    // offer's wanted_quantity column (×N requires N unlisted copies), keeping
+    // not_owned (no copy at all) as a separate NOT EXISTS branch in front.
+    expect(state.sql).toContain("count(*)");
+    expect(state.sql).toMatch(/FROM "user_cards" AS accept_free[\s\S]*THEN 'all_listed'/);
+    expect(state.sql).toContain("< \"trade_offers\".\"wanted_quantity\"");
+    expect(state.sql).toContain("THEN 'not_owned'");
     expect(state.params).toEqual(["viewer-2", "viewer-2", "viewer-2"]);
   });
 });
@@ -660,6 +726,7 @@ describe("createTradeOffer visibility / is_active (#715 PR-C)", () => {
     twitchUserId: "viewer-1",
     offeredUserCardId: OFFER.offered_user_card_id,
     wantedCardId: OFFER.wanted_card_id!,
+    wantedQuantity: 1,
     requestId: OFFER.request_id!,
   };
 

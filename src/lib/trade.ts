@@ -27,6 +27,12 @@ import {
   withLiveDirectorySettingsColumnFallback,
 } from "@/lib/db/streamers-safe-columns";
 import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { isValidTradeWantedQuantity } from "@/lib/trade-constants";
+
+// Re-exported for server-side callers; the UI imports the same values from
+// @/lib/trade-constants directly (client components must not import this
+// module at runtime).
+export { TRADE_MAX_WANTED_QUANTITY } from "@/lib/trade-constants";
 
 export const TRADE_PAGE_SIZE = 20;
 export const TRADE_MAX_OPEN_OFFERS = 10;
@@ -44,6 +50,9 @@ export type TradeServiceErrorCode =
   | "TRADE_OFFER_LIMIT"
   | "TRADE_SAME_CARD"
   | "TRADE_WANTED_CARD_UNAVAILABLE"
+  // #1789: wantedQuantity was not an integer within 1..MAX
+  // (TRADE_MAX_WANTED_QUANTITY). The API layer maps it to 400.
+  | "TRADE_WANTED_QUANTITY_INVALID"
   // The copy the offerer wants to give belongs to a card definition that is
   // no longer active (including pack completion reward cards, which are kept
   // inactive by design). Inactive cards cannot enter the trade market.
@@ -180,6 +189,12 @@ type TradeCardSnapshot = {
   name: string;
   rarity: string;
   imageUrl: string | null;
+  /**
+   * Copies requested (≥1, snapshot of trade_offers.wanted_quantity at
+   * listing time, #1789). Always 1 for the offered side and for rows created
+   * before the column existed.
+   */
+  quantity: number;
 };
 
 type TradeStreamerSummary = {
@@ -244,17 +259,18 @@ function cardSnapshot(card: {
   name: string;
   rarity: string;
   image_url: string | null;
-}): TradeCardSnapshot {
+}, quantity = 1): TradeCardSnapshot {
   return {
     name: card.name,
     rarity: card.rarity,
     imageUrl: card.image_url,
+    quantity,
   };
 }
 
 function normalizeSnapshot(value: unknown): TradeCardSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { name: "", rarity: "", imageUrl: null };
+    return { name: "", rarity: "", imageUrl: null, quantity: 1 };
   }
   const record = value as Record<string, unknown>;
   return {
@@ -266,6 +282,11 @@ function normalizeSnapshot(value: unknown): TradeCardSnapshot {
         : typeof record.image_url === "string"
           ? record.image_url
           : null,
+    // Rows listed before #1789 have no quantity key; the DB CHECK guarantees
+    // the column is ≥1, so anything unreadable falls back to 1.
+    quantity: isValidTradeWantedQuantity(record.quantity)
+      ? record.quantity
+      : 1,
   };
 }
 
@@ -339,6 +360,13 @@ export async function createTradeOffer(input: {
   twitchUserId: string;
   offeredUserCardId: string;
   wantedCardId: string;
+  /**
+   * Copies of the wanted card the offerer asks for (#1789, 1..10). Validated
+   * defensively here even though the route already shape-checks: the only
+   * writer below would otherwise trust the DB CHECK to reject garbage with a
+   * 500 instead of a business error.
+   */
+  wantedQuantity: number;
   requestId: string;
 }): Promise<
   | { kind: "ok"; offer: TradeOfferRow; idempotentReplay: boolean }
@@ -450,6 +478,13 @@ export async function createTradeOffer(input: {
     return { kind: "error", code: "TRADE_CARD_NOT_OWNED" };
   }
 
+  // #1789: quantity validation runs after the replay branch, so a retried
+  // create whose stored payload was valid replays the original offer even if
+  // the client now sends a malformed quantity.
+  if (!isValidTradeWantedQuantity(input.wantedQuantity)) {
+    return { kind: "error", code: "TRADE_WANTED_QUANTITY_INVALID" };
+  }
+
   // Inactive card definitions (retired cards and pack completion reward cards)
   // are excluded from trading entirely. `is_active` is nullable in the schema
   // (DEFAULT true without NOT NULL), so only an explicit TRUE is accepted.
@@ -498,6 +533,9 @@ export async function createTradeOffer(input: {
     offered_streamer_id: check.offeredStreamerId,
     wanted_card_id: check.wantedCardId,
     wanted_streamer_id: check.wantedStreamerId,
+    // #1789: copies requested next to the wanted card, both for the
+    // accept-time gate (the column) and the ×N display / history (snapshot).
+    wanted_quantity: input.wantedQuantity,
     offered_card_snapshot: cardSnapshot({
       name: check.offeredName ?? "",
       rarity: check.offeredRarity ?? "",
@@ -507,7 +545,7 @@ export async function createTradeOffer(input: {
       name: check.wantedName ?? "",
       rarity: check.wantedRarity ?? "",
       image_url: check.wantedImageUrl,
-    }),
+    }, input.wantedQuantity),
     request_id: input.requestId,
   } satisfies typeof tradeOffersTable.$inferInsert;
 
@@ -667,13 +705,16 @@ function toUserSummary(row: JoinedUser): TradeUserSummary | null {
  * `offerer_user_id = acceptor`): a copy listed in one of the viewer's own
  * open offers cannot be used to pay.
  *   not_owned  — the viewer owns no copy of the wanted card
- *   all_listed — every owned copy is listed in one of the viewer's own open offers
- *   yes        — at least one unlisted copy exists
+ *   all_listed — fewer unlisted copies than the offer asks for (#1789:
+ *                the ×N requirement means "all free copies" became a
+ *                count comparison instead of a mere existence probe)
+ *   yes        — at least the wanted_quantity of unlisted copies exist
  * The inner aliases are literal; the only outer references are the qualified
- * trade_offers.wanted_card_id and the viewer id.
+ * trade_offers.wanted_card_id / wanted_quantity and the viewer id.
  */
 function acceptStateFor(viewerUserId: SQL) {
   const wantedCardId = qualifiedColumn(tradeOffersTable.wanted_card_id);
+  const wantedQuantity = qualifiedColumn(tradeOffersTable.wanted_quantity);
   return sql<TradeCanAccept>`CASE
     WHEN NOT EXISTS (
       SELECT 1
@@ -681,8 +722,8 @@ function acceptStateFor(viewerUserId: SQL) {
       WHERE accept_owned.user_id = ${viewerUserId}
         AND accept_owned.card_id = ${wantedCardId}
     ) THEN 'not_owned'
-    WHEN NOT EXISTS (
-      SELECT 1
+    WHEN (
+      SELECT count(*)
       FROM ${userCardsTable} AS accept_free
       WHERE accept_free.user_id = ${viewerUserId}
         AND accept_free.card_id = ${wantedCardId}
@@ -693,7 +734,7 @@ function acceptStateFor(viewerUserId: SQL) {
             AND active_listing.status = 'open'
             AND active_listing.offerer_user_id = ${viewerUserId}
         )
-    ) THEN 'all_listed'
+    ) < ${wantedQuantity} THEN 'all_listed'
     ELSE 'yes'
   END`;
 }
@@ -1029,8 +1070,13 @@ export type TradeAcceptRpcResult = {
   success: boolean;
   error?: TradeAcceptRpcError;
   tradeOfferId?: string;
+  /** Copies requested (≥1, mirrors trade_offers.wanted_quantity, #1789). */
+  wantedQuantity?: number;
   receivedUserCardId?: string;
+  /** Oldest of the copies the acceptor paid (backward-compatible scalar). */
   givenUserCardId?: string;
+  /** All copies the acceptor paid, oldest first (#1789). */
+  givenUserCardIds?: string[];
   offeredCardSnapshot?: unknown;
   wantedCardSnapshot?: unknown;
   completedAt?: string;
@@ -1053,13 +1099,23 @@ function isValidTradeAcceptRpcResult(
     );
   }
 
+  // #1789: the RPC always reports what it paid. givenUserCardIds must be an
+  // array of canonical uuids and agree with the oldest scalar kept for
+  // backward compatibility (legacy rows replayed through the rewritten RPC
+  // get the scalar rebuilt into a one-element array).
+  const givenIds = result.givenUserCardIds;
   return (
     result.error === undefined
     && result.tradeOfferId === expectedTradeOfferId
+    && isValidTradeWantedQuantity(result.wantedQuantity)
     && typeof result.receivedUserCardId === "string"
     && isCanonicalUuid(result.receivedUserCardId)
     && typeof result.givenUserCardId === "string"
     && isCanonicalUuid(result.givenUserCardId)
+    && Array.isArray(givenIds)
+    && givenIds.every((id) => typeof id === "string" && isCanonicalUuid(id))
+    && (givenIds as string[]).length >= 1
+    && (givenIds as string[])[0] === result.givenUserCardId
     && Object.prototype.hasOwnProperty.call(result, "offeredCardSnapshot")
     && Object.prototype.hasOwnProperty.call(result, "wantedCardSnapshot")
     && typeof result.completedAt === "string"

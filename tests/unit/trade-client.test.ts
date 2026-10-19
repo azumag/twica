@@ -35,6 +35,7 @@ const ALL_CODES: Record<TradeApiErrorCode, true> = {
   TRADE_BUSY: true,
   TRADE_SAME_CARD: true,
   TRADE_WANTED_CARD_UNAVAILABLE: true,
+  TRADE_WANTED_QUANTITY_INVALID: true,
   TRADE_OFFERED_CARD_INACTIVE: true,
   TRADE_OFFER_UNAVAILABLE: true,
 };
@@ -64,6 +65,9 @@ describe("trade error code → i18n key", () => {
     expect(tradeErrorMessageKey("TRADE_BUSY")).toBe("errorTradeBusy");
     expect(tradeErrorMessageKey("TRADE_OFFER_LIMIT")).toBe("errorTradeOfferLimit");
     expect(tradeErrorMessageKey("TRADE_DISABLED")).toBe("errorTradeDisabled");
+    expect(tradeErrorMessageKey("TRADE_WANTED_QUANTITY_INVALID")).toBe(
+      "errorTradeWantedQuantityInvalid",
+    );
     expect(tradeErrorMessageKey("RATE_LIMIT_EXCEEDED")).toBe("errorRateLimited");
   });
 

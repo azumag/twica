@@ -441,4 +441,196 @@ BEGIN
 END
 $$;
 
+-- 12. (#1789) 欲しいカード枚数指定 ×2 の正常成立: 応諾者の最古の2枚が一括移転し、
+-- 3枚目以降は動かない。事前に u1 へ CardB のコピーを3枚(obtained_atをずらす)、
+-- u2 へ CardA のコピーを1枚用意する。u1 は scenario 3 で CardB(d2, obtained_at
+-- は成立時のnow())を持つが、d7/d8(2020-03/04)より新しいため選定されない。
+INSERT INTO public.user_cards (id, user_id, card_id, obtained_at)
+VALUES
+  (
+    '30000000-0000-4000-8000-0000000000d7',
+    '30000000-0000-4000-8000-0000000000a1',
+    '30000000-0000-4000-8000-0000000000c2',
+    '2020-03-01 00:00:00+00'
+  ),
+  (
+    '30000000-0000-4000-8000-0000000000d8',
+    '30000000-0000-4000-8000-0000000000a1',
+    '30000000-0000-4000-8000-0000000000c2',
+    '2020-04-01 00:00:00+00'
+  ),
+  (
+    '30000000-0000-4000-8000-0000000000d9',
+    '30000000-0000-4000-8000-0000000000a1',
+    '30000000-0000-4000-8000-0000000000c2',
+    '2020-05-01 00:00:00+00'
+  ),
+  (
+    '30000000-0000-4000-8000-0000000000da',
+    '30000000-0000-4000-8000-0000000000a2',
+    '30000000-0000-4000-8000-0000000000c1',
+    '2019-12-01 00:00:00+00'
+  );
+
+INSERT INTO public.trade_offers (
+  id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+  wanted_card_id, wanted_streamer_id, wanted_quantity,
+  offered_card_snapshot, wanted_card_snapshot
+) VALUES (
+  '30000000-0000-4000-8000-0000000000e6',
+  '30000000-0000-4000-8000-0000000000a2',
+  '30000000-0000-4000-8000-0000000000da',
+  '30000000-0000-4000-8000-0000000000c1',
+  '30000000-0000-4000-8000-000000000001',
+  '30000000-0000-4000-8000-0000000000c2',
+  '30000000-0000-4000-8000-000000000001',
+  2,
+  '{"name": "Card A", "rarity": "common", "imageUrl": null}'::jsonb,
+  '{"name": "Card B", "rarity": "rare", "imageUrl": null, "quantity": 2}'::jsonb
+);
+
+DO $$
+DECLARE
+  v_result jsonb;
+  v_owner uuid;
+  v_offer public.trade_offers%ROWTYPE;
+BEGIN
+  v_result := public.accept_trade_offer(
+    'trade-offerer', -- u1 = acceptor(u2の出品に対する応諾)
+    '30000000-0000-4000-8000-0000000000e6'::uuid,
+    '30000000-0000-4000-8000-0000000000f8'::uuid
+  );
+  IF (v_result ->> 'success')::boolean IS DISTINCT FROM true THEN
+    RAISE EXCEPTION '×2 accept did not succeed: %', v_result;
+  END IF;
+  IF v_result -> 'givenUserCardIds' <> '["30000000-0000-4000-8000-0000000000d7","30000000-0000-4000-8000-0000000000d8"]'::jsonb THEN
+    RAISE EXCEPTION '×2 accept did not pay the two oldest copies: %', v_result;
+  END IF;
+  IF v_result ->> 'givenUserCardId' <> '30000000-0000-4000-8000-0000000000d7' THEN
+    RAISE EXCEPTION 'scalar givenUserCardId must stay the oldest copy: %', v_result;
+  END IF;
+  IF (v_result ->> 'wantedQuantity')::int IS DISTINCT FROM 2 THEN
+    RAISE EXCEPTION '×2 accept did not report wantedQuantity: %', v_result;
+  END IF;
+
+  -- 選定された2枚はu2へ移転し、3枚目(d9)とd2(scenario 3由来・より新しい)は残る。
+  SELECT user_id INTO v_owner FROM user_cards WHERE id = '30000000-0000-4000-8000-0000000000d7';
+  IF v_owner <> '30000000-0000-4000-8000-0000000000a2' THEN
+    RAISE EXCEPTION 'first paid CardB copy did not move: %', v_owner;
+  END IF;
+  SELECT user_id INTO v_owner FROM user_cards WHERE id = '30000000-0000-4000-8000-0000000000d8';
+  IF v_owner <> '30000000-0000-4000-8000-0000000000a2' THEN
+    RAISE EXCEPTION 'second paid CardB copy did not move: %', v_owner;
+  END IF;
+  SELECT user_id INTO v_owner FROM user_cards WHERE id = '30000000-0000-4000-8000-0000000000d9';
+  IF v_owner <> '30000000-0000-4000-8000-0000000000a1' THEN
+    RAISE EXCEPTION 'newer CardB copy unexpectedly moved: %', v_owner;
+  END IF;
+
+  SELECT * INTO v_offer FROM public.trade_offers
+    WHERE id = '30000000-0000-4000-8000-0000000000e6';
+  IF v_offer.status <> 'completed'
+     OR v_offer.accepted_user_card_id <> '30000000-0000-4000-8000-0000000000d7'
+     OR v_offer.accepted_user_card_ids <> '{30000000-0000-4000-8000-0000000000d7,30000000-0000-4000-8000-0000000000d8}'::uuid[]
+     OR v_offer.wanted_quantity <> 2 THEN
+    RAISE EXCEPTION '×2 trade_offers row was not finalized correctly: %', row_to_json(v_offer);
+  END IF;
+
+  -- 冪等リプレイ: 同一request_idの再呼び出しでも配列つきの成功応答が返る。
+  v_result := public.accept_trade_offer(
+    'trade-offerer',
+    '30000000-0000-4000-8000-0000000000e6'::uuid,
+    '30000000-0000-4000-8000-0000000000f8'::uuid
+  );
+  IF (v_result -> 'givenUserCardIds') IS DISTINCT FROM
+     '["30000000-0000-4000-8000-0000000000d7","30000000-0000-4000-8000-0000000000d8"]'::jsonb THEN
+    RAISE EXCEPTION '×2 replay did not report the given copies: %', v_result;
+  END IF;
+END
+$$;
+
+-- 13. (#1789) 不足時失敗: ×3のオファーに対し応諾者の支払い用コピーが2枚しか
+-- 無ければ CARD_NOT_OWNED で拒否され、部分的な移転(2枚だけ渡る)は決して起きない。
+-- オファーはopenのまま残る(成立もcancelledもしない)。
+INSERT INTO public.user_cards (id, user_id, card_id, obtained_at)
+VALUES
+  (
+    '30000000-0000-4000-8000-0000000000db',
+    '30000000-0000-4000-8000-0000000000a2',
+    '30000000-0000-4000-8000-0000000000c1',
+    '2019-11-01 00:00:00+00'
+  );
+
+INSERT INTO public.trade_offers (
+  id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+  wanted_card_id, wanted_streamer_id, wanted_quantity,
+  offered_card_snapshot, wanted_card_snapshot
+) VALUES (
+  '30000000-0000-4000-8000-0000000000e7',
+  '30000000-0000-4000-8000-0000000000a2',
+  '30000000-0000-4000-8000-0000000000db',
+  '30000000-0000-4000-8000-0000000000c1',
+  '30000000-0000-4000-8000-000000000001',
+  '30000000-0000-4000-8000-0000000000c2',
+  '30000000-0000-4000-8000-000000000001',
+  3,
+  '{"name": "Card A", "rarity": "common", "imageUrl": null}'::jsonb,
+  '{"name": "Card B", "rarity": "rare", "imageUrl": null, "quantity": 3}'::jsonb
+);
+
+DO $$
+DECLARE
+  v_result jsonb;
+  v_status text;
+  v_owner uuid;
+BEGIN
+  v_result := public.accept_trade_offer(
+    'trade-offerer',
+    '30000000-0000-4000-8000-0000000000e7'::uuid,
+    '30000000-0000-4000-8000-0000000000f9'::uuid
+  );
+  IF v_result <> '{"success": false, "error": "CARD_NOT_OWNED"}'::jsonb THEN
+    RAISE EXCEPTION '×3 accept with only 2 copies must fail as CARD_NOT_OWNED: %', v_result;
+  END IF;
+
+  SELECT status INTO v_status FROM public.trade_offers
+    WHERE id = '30000000-0000-4000-8000-0000000000e7';
+  IF v_status <> 'open' THEN
+    RAISE EXCEPTION '×3 offer must stay open after the shortage failure: %', v_status;
+  END IF;
+
+  -- 部分成立していないこと: 応諾者(u1)の未成立なCardBコピーは手放していない。
+  SELECT user_id INTO v_owner FROM user_cards WHERE id = '30000000-0000-4000-8000-0000000000d2';
+  IF v_owner <> '30000000-0000-4000-8000-0000000000a1' THEN
+    RAISE EXCEPTION 'shortage accept unexpectedly moved the offered copy: %', v_owner;
+  END IF;
+  SELECT user_id INTO v_owner FROM user_cards WHERE id = '30000000-0000-4000-8000-0000000000d9';
+  IF v_owner <> '30000000-0000-4000-8000-0000000000a1' THEN
+    RAISE EXCEPTION 'shortage accept unexpectedly moved a payment copy: %', v_owner;
+  END IF;
+
+  -- CHECK制約: 枚数は1..10(11枚はINSERT自体がCHECK違反で弾かれる)。
+  BEGIN
+    INSERT INTO public.trade_offers (
+      offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+      wanted_card_id, wanted_streamer_id, wanted_quantity,
+      offered_card_snapshot, wanted_card_snapshot
+    ) VALUES (
+      '30000000-0000-4000-8000-0000000000a2',
+      '30000000-0000-4000-8000-0000000000db',
+      '30000000-0000-4000-8000-0000000000c1',
+      '30000000-0000-4000-8000-000000000001',
+      '30000000-0000-4000-8000-0000000000c2',
+      '30000000-0000-4000-8000-000000000001',
+      11,
+      '{"name": "Card A", "rarity": "common", "imageUrl": null}'::jsonb,
+      '{"name": "Card B", "rarity": "rare", "imageUrl": null}'::jsonb
+    );
+    RAISE EXCEPTION 'trade_offers.wanted_quantity=11 was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL; -- 期待どおり trade_offers_wanted_quantity_range に弾かれた。
+  END;
+END
+$$;
+
 RESET ROLE;

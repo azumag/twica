@@ -7,6 +7,11 @@ import jaMessages from "../../../messages/ja.json";
 
 const ja = jaMessages.trade;
 
+/** next-intl renders {count} placeholders — used to keep copy keys testable. */
+function withCount(template: string, count: number) {
+  return template.replace("{count}", String(count));
+}
+
 function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
   return {
     id: "offer-1",
@@ -14,8 +19,8 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     offeredStreamerId: "s-1",
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
-    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
-    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null, quantity: 1 },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, quantity: 1 },
     isCrossChannel: false,
     status: "open",
     createdAt: "2026-10-01T00:00:00.000Z",
@@ -71,6 +76,17 @@ describe("TradeAcceptModal (#726 §6.4)", () => {
     expect(dialog).toHaveAccessibleDescription(ja.confirmModalWarning);
     expect(screen.getByText(ja.confirmModalGiveLabel)).toBeInTheDocument();
     expect(screen.getByText(ja.confirmModalReceiveLabel)).toBeInTheDocument();
+  });
+
+  it("a ×3 offer uses the ×N warning copy saying how many copies are paid (#1789)", () => {
+    renderModal({
+      offer: makeOffer({
+        wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, quantity: 3 },
+      }),
+    });
+    const dialog = screen.getByRole("dialog", { name: ja.confirmModalTitle });
+    expect(dialog).toHaveAccessibleDescription(withCount(ja.confirmModalWarningQuantity, 3));
+    expect(screen.queryByText(ja.confirmModalWarning)).toBeNull();
   });
 
   it("locks background scrolling while open and restores it on unmount", () => {

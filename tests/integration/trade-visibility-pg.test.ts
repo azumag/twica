@@ -509,6 +509,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.V,
         offeredUserCardId: UC.V_PRIV_B,
         wantedCardId: C.PRIV_A,
+        wantedQuantity: 1,
         requestId: req(1),
       })).resolves.toEqual({ kind: "error", code: "TRADE_WANTED_CARD_UNAVAILABLE" });
       // details=false hides names even when show_unowned_cards=true
@@ -516,6 +517,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.V,
         offeredUserCardId: UC.V_PRIV_B,
         wantedCardId: C.HALF_B,
+        wantedQuantity: 1,
         requestId: req(2),
       })).resolves.toEqual({ kind: "error", code: "TRADE_WANTED_CARD_UNAVAILABLE" });
       // inactive wanted card
@@ -523,6 +525,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.V,
         offeredUserCardId: UC.V_PUB_B,
         wantedCardId: C.PUB_INACTIVE,
+        wantedQuantity: 1,
         requestId: req(3),
       })).resolves.toEqual({ kind: "error", code: "TRADE_WANTED_CARD_UNAVAILABLE" });
     });
@@ -533,6 +536,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: "trade-vis-unknown",
         offeredUserCardId: UC.V_PUB_B,
         wantedCardId: C.PUB_A,
+        wantedQuantity: 1,
         requestId: req(10),
       })).resolves.toEqual({ kind: "error", code: "TRADE_CARD_NOT_OWNED" });
       // V's copy offered by O.
@@ -540,6 +544,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.O,
         offeredUserCardId: UC.V_PUB_B,
         wantedCardId: C.PUB_A,
+        wantedQuantity: 1,
         requestId: req(11),
       })).resolves.toEqual({ kind: "error", code: "TRADE_CARD_NOT_OWNED" });
       // Same card on both sides is rejected before the wanted-card checks.
@@ -547,6 +552,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.O,
         offeredUserCardId: UC.O_PUB_A2,
         wantedCardId: C.PUB_A,
+        wantedQuantity: 1,
         requestId: req(12),
       })).resolves.toEqual({ kind: "error", code: "TRADE_SAME_CARD" });
       // O_PUB_A2 is already the offered copy of PUB_WANT_INACTIVE.
@@ -554,6 +560,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.O,
         offeredUserCardId: UC.O_PUB_A2,
         wantedCardId: C.PUB_B,
+        wantedQuantity: 1,
         requestId: req(13),
       })).resolves.toEqual({ kind: "error", code: "TRADE_CARD_ALREADY_LISTED" });
 
@@ -566,6 +573,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
           twitchUserId: TW.O,
           offeredUserCardId: spare,
           wantedCardId: C.PUB_A,
+          wantedQuantity: 1,
           requestId: req(14),
         })).resolves.toEqual({ kind: "error", code: "TRADE_OFFER_LIMIT" });
       } finally {
@@ -579,6 +587,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.V,
         offeredUserCardId: UC.V_PRIV_B,
         wantedCardId: C.PRIV_C,
+        wantedQuantity: 1,
         requestId: req(20),
       });
       expect(created.kind).toBe("ok");
@@ -603,6 +612,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.O,
         offeredUserCardId: UC.O_PUB_INACTIVE,
         wantedCardId: C.PUB_B,
+        wantedQuantity: 1,
         requestId: req(4),
       })).resolves.toEqual({ kind: "error", code: "TRADE_OFFERED_CARD_INACTIVE" });
     });
@@ -613,6 +623,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.V,
         offeredUserCardId: UC.V_PRIV_B,
         wantedCardId: C.PRIV_C,
+        wantedQuantity: 1,
         requestId: req(5),
       });
       expect(owned.kind).toBe("ok");
@@ -621,6 +632,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         twitchUserId: TW.V,
         offeredUserCardId: UC.V_NOCROSS_A,
         wantedCardId: C.PUB_B,
+        wantedQuantity: 1,
         requestId: req(6),
       });
       // NOCROSS has cross disabled → gate error, not visibility error.
@@ -635,6 +647,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
           twitchUserId: TW.V,
           offeredUserCardId: UC.V_PRIV_B,
           wantedCardId: C.PRIV_C,
+          wantedQuantity: 1,
           requestId: req(5),
         });
         expect(replay.kind).toBe("ok");
@@ -650,6 +663,49 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
           await sql!`DELETE FROM trade_offers WHERE id = ${owned.offer.id}`;
         }
       }
+    });
+
+    // #1789: wantedQuantity — 1..10 integer, stored on the row and in the
+    // wanted snapshot; invalid values fail BEFORE touching any mutable state
+    // except the idempotent replay branch (which pre-reads nothing mutable).
+    describe("wantedQuantity (#1789)", () => {
+      it("rejects 0, 11 and non-integers with TRADE_WANTED_QUANTITY_INVALID", async () => {
+        const { createTradeOffer } = await import("@/lib/trade");
+        for (const wantedQuantity of [0, 11, 2.5, Number.NaN]) {
+          await expect(createTradeOffer({
+            twitchUserId: TW.V,
+            offeredUserCardId: UC.V_PRIV_C,
+            wantedCardId: C.PRIV_B,
+            wantedQuantity,
+            requestId: req(90),
+          })).resolves.toEqual({ kind: "error", code: "TRADE_WANTED_QUANTITY_INVALID" });
+        }
+        // Nothing was inserted: the requestId belongs to no offer.
+        const [row] = await sql!`
+          SELECT id FROM trade_offers WHERE request_id = ${req(90)}`;
+        expect(row).toBeUndefined();
+      });
+
+      it("persists wanted_quantity and the snapshot quantity for a ×2 listing", async () => {
+        const { createTradeOffer } = await import("@/lib/trade");
+        const created = await createTradeOffer({
+          twitchUserId: TW.V,
+          offeredUserCardId: UC.V_PRIV_C,
+          wantedCardId: C.PRIV_B,
+          wantedQuantity: 2,
+          requestId: req(91),
+        });
+        expect(created.kind).toBe("ok");
+        if (created.kind !== "ok") return;
+        try {
+          const [row] = await sql!`
+            SELECT wanted_quantity, wanted_card_snapshot FROM trade_offers WHERE id = ${created.offer.id}`;
+          expect(row.wanted_quantity).toBe(2);
+          expect(row.wanted_card_snapshot).toMatchObject({ quantity: 2 });
+        } finally {
+          await sql!`DELETE FROM trade_offers WHERE id = ${created.offer.id}`;
+        }
+      });
     });
   });
 
@@ -764,6 +820,228 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         tradeOfferId: id(9999),
         requestId: req(6),
       })).resolves.toEqual({ success: false, error: "TRADE_OFFER_NOT_FOUND" });
+    });
+
+    // -----------------------------------------------------------------------------
+    // #1789: wanted_quantity — the RPC must pay the OLDEST wanted_quantity
+    // copies in one transfer, never partially, and never reuse a copy listed
+    // in the acceptor's own open offers. Every fixture here is dedicated
+    // (own cards + copies + offers, deleted in finally) so the order-dependent
+    // shared world of the other suites is untouched.
+    // -----------------------------------------------------------------------------
+    describe("wanted_quantity (#1789)", () => {
+      const setupWorld = async (label: string) => {
+        const s = sql!;
+        const giveCard = id(8610);
+        const wantedCard = id(8611);
+        // Offerer give copies (two, so two offers can be opened at once).
+        const giveCopies = [id(8621), id(8622)];
+        // Acceptor copies of the wanted card. Inserted old→new so obtained_at
+        // order (the RPC's payment selection order) is the insert order.
+        const payCopies = [id(8631), id(8632), id(8633)];
+        const selfListedCopy = id(8639);
+        await s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
+          VALUES (${giveCard}, ${S.PUB}, ${`${label} Give`}, 'common', 0.1, TRUE),
+                 (${wantedCard}, ${S.PUB}, ${`${label} Wanted`}, 'rare', 0.1, TRUE)`;
+        for (const copy of giveCopies) {
+          await s`INSERT INTO user_cards (id, user_id, card_id)
+            VALUES (${copy}, ${U.O}, ${giveCard})`;
+        }
+        for (const [i, copy] of payCopies.entries()) {
+          await s`INSERT INTO user_cards (id, user_id, card_id, obtained_at)
+            VALUES (${copy}, ${U.V}, ${wantedCard}, now() - make_interval(mins => ${200 - i * 10}))`;
+        }
+        await s`INSERT INTO user_cards (id, user_id, card_id)
+          VALUES (${selfListedCopy}, ${U.V}, ${wantedCard})`;
+        return { s, giveCard, wantedCard, giveCopies, payCopies, selfListedCopy };
+      };
+
+      const insertOffer = async (
+        oid: string,
+        offererUid: string,
+        offeredCopy: string,
+        offeredCard: string,
+        wantedCard: string,
+        wantedQuantity: number,
+      ) => sql!`
+        INSERT INTO trade_offers (
+          id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+          wanted_card_id, wanted_streamer_id, wanted_quantity,
+          offered_card_snapshot, wanted_card_snapshot
+        ) VALUES (
+          ${oid}, ${offererUid}, ${offeredCopy}, ${offeredCard}, ${S.PUB},
+          ${wantedCard}, ${S.PUB}, ${wantedQuantity},
+          ${JSON.stringify({ name: "Qty Give", rarity: "common", imageUrl: null })}::jsonb,
+          ${JSON.stringify({ name: "Qty Wanted", rarity: "rare", imageUrl: null, quantity: wantedQuantity })}::jsonb
+        )`;
+
+      const cleanupWorld = async (cardIds: string[]) => {
+        const s = sql!;
+        await s`DELETE FROM trade_offers WHERE offered_card_id IN ${s(cardIds)} OR wanted_card_id IN ${s(cardIds)}`;
+        await s`DELETE FROM user_cards WHERE card_id IN ${s(cardIds)}`;
+        await s`DELETE FROM cards WHERE id IN ${s(cardIds)}`;
+      };
+      const ownedBy = async (copies: string[]) =>
+        (await sql!`SELECT id, user_id FROM user_cards WHERE id IN ${sql!(copies)}`)
+          .reduce((map, row) => map.set(row.id, row.user_id), new Map());
+
+      it("transfers the oldest wanted_quantity copies in one trade and records them", async () => {
+        const { acceptTradeOffer, listMyTradeOffers } = await import("@/lib/trade");
+        const world = await setupWorld("Transfer");
+        const { s, giveCard, wantedCard, giveCopies, payCopies } = world;
+        const offer = id(8641);
+        try {
+          await insertOffer(offer, U.O, giveCopies[0], giveCard, wantedCard, 2);
+          const result = await acceptTradeOffer({
+            twitchUserId: TW.V,
+            tradeOfferId: offer,
+            requestId: req(30),
+          });
+          expect(result).toMatchObject({
+            success: true,
+            idempotentReplay: false,
+            wantedQuantity: 2,
+            receivedUserCardId: giveCopies[0],
+            givenUserCardId: payCopies[0],
+            givenUserCardIds: payCopies.slice(0, 2),
+          });
+          // Neither partial transfer nor over-transfer: exactly the two
+          // oldest copies moved, the third stayed; the scalar and array agree.
+          const owners = await ownedBy([...payCopies, giveCopies[0]]);
+          expect(owners.get(payCopies[0])).toBe(U.O);
+          expect(owners.get(payCopies[1])).toBe(U.O);
+          expect(owners.get(payCopies[2])).toBe(U.V);
+          expect(owners.get(giveCopies[0])).toBe(U.V);
+
+          const [row] = await s`
+            SELECT status, accepted_user_card_id, accepted_user_card_ids, wanted_quantity
+            FROM trade_offers WHERE id = ${offer}`;
+          expect(row).toMatchObject({
+            status: "completed",
+            accepted_user_card_id: payCopies[0],
+            accepted_user_card_ids: payCopies.slice(0, 2),
+            wanted_quantity: 2,
+          });
+
+          // /mine history renders the ×N wanted side from the snapshot.
+          const mine = await listMyTradeOffers(TW.V, { status: "completed" });
+          const mineRow = mine.offers.find((offerRow) => offerRow.id === offer);
+          expect(mineRow).toMatchObject({
+            mineRole: "acceptor",
+            wantedCard: { name: "Qty Wanted", quantity: 2 },
+          });
+        } finally {
+          await cleanupWorld([giveCard, wantedCard]);
+        }
+      });
+
+      it("fails whole-only on a shortage and surfaces the ×N state on the board", async () => {
+        const { acceptTradeOffer, listTradeOffers } = await import("@/lib/trade");
+        const world = await setupWorld("Shortage");
+        const { s, giveCard, wantedCard, giveCopies, payCopies, selfListedCopy } = world;
+        // The acceptor self-lists two copies of the wanted card
+        // (selfListedCopy and payCopies[2]): the RPC must exclude every copy
+        // sitting in the acceptor's own open offers from payment candidates
+        // and the board must compare the FREE copy count against ×N (not
+        // against the owned total).
+        const listing = id(8642);
+        await insertOffer(listing, U.V, selfListedCopy, wantedCard, giveCard, 1);
+        const listing2 = id(8647);
+        await insertOffer(listing2, U.V, payCopies[2], wantedCard, giveCard, 1);
+        const offerX3 = id(8643);
+        await insertOffer(offerX3, U.O, giveCopies[0], giveCard, wantedCard, 3);
+        const offerX2 = id(8644);
+        await insertOffer(offerX2, U.O, giveCopies[1], giveCard, wantedCard, 2);
+        try {
+          // Both rows are visible with the per-row ×N gate: ×3 cannot be
+          // accepted (free copies 2 < 3), ×2 can (free copies 2 ≥ 2).
+          const board = await listTradeOffers({
+            streamerId: S.PUB,
+            scope: "in_channel",
+            page: 1,
+            twitchUserId: TW.V,
+          });
+          const stateOf = (offerId: string) =>
+            board.offers.find((row) => row.id === offerId)?.canAccept;
+          expect(stateOf(offerX3)).toBe("all_listed");
+          expect(stateOf(offerX2)).toBe("yes");
+
+          // Whole-only failure: ×3 with 2 free copies pays nothing at all.
+          await expect(acceptTradeOffer({
+            twitchUserId: TW.V,
+            tradeOfferId: offerX3,
+            requestId: req(31),
+          })).resolves.toEqual({ success: false, error: "CARD_NOT_OWNED" });
+          const failed = await s`
+            SELECT status FROM trade_offers WHERE id = ${offerX3}`;
+          expect(failed[0].status).toBe("open");
+          let owners = await ownedBy([...payCopies]);
+          expect(owners.get(payCopies[0])).toBe(U.V);
+          expect(owners.get(payCopies[1])).toBe(U.V);
+
+          // The ×2 offer CAN be accepted, and the self-listed copy
+          // (selfListedCopy, obtained_at latest) is never used for payment.
+          await expect(acceptTradeOffer({
+            twitchUserId: TW.V,
+            tradeOfferId: offerX2,
+            requestId: req(32),
+          })).resolves.toMatchObject({
+            success: true,
+            givenUserCardIds: [payCopies[0], payCopies[1]],
+          });
+          owners = await ownedBy([...payCopies, selfListedCopy, giveCopies[1]]);
+          expect(owners.get(payCopies[0])).toBe(U.O);
+          expect(owners.get(payCopies[1])).toBe(U.O);
+          expect(owners.get(payCopies[2])).toBe(U.V); // third copy is not needed
+          expect(owners.get(selfListedCopy)).toBe(U.V); // never used for payment
+          expect(owners.get(giveCopies[1])).toBe(U.V); // the ×2 give side moved to V
+        } finally {
+          await cleanupWorld([giveCard, wantedCard]);
+        }
+      });
+
+      it("never double-spends the wanted copies across simultaneous ×N accepts", async () => {
+        const { acceptTradeOffer } = await import("@/lib/trade");
+        const world = await setupWorld("Concurrent");
+        const { s, giveCard, wantedCard, giveCopies, payCopies, selfListedCopy } = world;
+        // Exactly 2 free copies for 2 offers each asking ×2: the other two
+        // owned copies are already self-listed in V's open offers, so the
+        // RPC excludes them from payment candidates. Only one accept may
+        // consume the free copies. Both offers are live before either fires.
+        const offer1 = id(8645);
+        const offer2 = id(8646);
+        await insertOffer(id(8647), U.V, payCopies[2], wantedCard, giveCard, 1);
+        await insertOffer(id(8648), U.V, selfListedCopy, wantedCard, giveCard, 1);
+        await insertOffer(offer1, U.O, giveCopies[0], giveCard, wantedCard, 2);
+        await insertOffer(offer2, U.O, giveCopies[1], giveCard, wantedCard, 2);
+        try {
+          const results = await Promise.all([
+            acceptTradeOffer({ twitchUserId: TW.V, tradeOfferId: offer1, requestId: req(33) }),
+            acceptTradeOffer({ twitchUserId: TW.V, tradeOfferId: offer2, requestId: req(34) }),
+          ]);
+          const successes = results.filter((result) => result.success === true);
+          expect(successes).toHaveLength(1);
+          expect(results.filter((result) => !result.success).map((result) => result.error))
+            .toEqual(["CARD_NOT_OWNED"]);
+          expect(successes[0]).toMatchObject({
+            givenUserCardIds: payCopies.slice(0, 2),
+            wantedQuantity: 2,
+          });
+
+          // The winner's copies moved exactly once, the loser is still open
+          // with its given copies untouched by the loser's attempt.
+          const owners = await ownedBy(payCopies);
+          expect(owners.get(payCopies[0])).toBe(U.O);
+          expect(owners.get(payCopies[1])).toBe(U.O);
+          const rows = await s`SELECT id, status FROM trade_offers WHERE id IN (${offer1}, ${offer2})`;
+          const statuses = rows.reduce((map, row) => map.set(row.id, row.status), new Map());
+          const completedId = statuses.get(offer1) === "completed" ? offer1 : offer2;
+          expect(statuses.get(completedId)).toBe("completed");
+          expect(statuses.get(completedId === offer1 ? offer2 : offer1)).toBe("open");
+        } finally {
+          await cleanupWorld([giveCard, wantedCard]);
+        }
+      });
     });
   });
 

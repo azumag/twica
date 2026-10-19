@@ -301,6 +301,8 @@ export const ERROR_MESSAGES = {
   TRADE_BUSY: 'Trade processing is busy. Please try again',
   TRADE_SAME_CARD: 'Offered and wanted cards must be different',
   TRADE_WANTED_CARD_UNAVAILABLE: 'The requested card is not available for trading',
+  // Issue #1789: wanted quantity must be an integer within 1..10
+  TRADE_WANTED_QUANTITY_INVALID: 'The requested quantity must be between 1 and 10',
   TRADE_OFFERED_CARD_INACTIVE: 'This card is no longer available for trading',
   TRADE_OFFER_UNAVAILABLE: 'This trade offer is not currently available',
   UNEXPECTED_ERROR: 'Unexpected error',

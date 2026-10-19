@@ -640,6 +640,8 @@ export const tradeOffers = pgTable('trade_offers', {
   offered_streamer_id: uuid('offered_streamer_id').notNull(),
   wanted_card_id: uuid('wanted_card_id'),
   wanted_streamer_id: uuid('wanted_streamer_id').notNull(),
+  // #1789: 欲しいコピー枚数(1..10, CHECK制約はDB側で担保)。既存行は既定1。
+  wanted_quantity: integer('wanted_quantity').notNull().default(1),
   offered_card_snapshot: jsonb('offered_card_snapshot').$type<Json>().notNull(),
   wanted_card_snapshot: jsonb('wanted_card_snapshot').$type<Json>().notNull(),
   // GENERATED ALWAYS AS (offered_streamer_id <> wanted_streamer_id) STORED。insert / update 不可
@@ -651,6 +653,11 @@ export const tradeOffers = pgTable('trade_offers', {
   accepted_by_user_id: uuid('accepted_by_user_id'),
   // FK なし（所有権移転後も成立時点の記録として残す）
   accepted_user_card_id: uuid('accepted_user_card_id'),
+  // #1789: N枚成立時に応諾者が支払った全コピー（accepted_user_card_id は最古1枚の後方互換用）。
+  accepted_user_card_ids: uuid('accepted_user_card_ids')
+    .array()
+    .notNull()
+    .default(sql`'{}'::uuid[]`),
   completed_at: timestamp('completed_at', { withTimezone: true, mode: 'string' }),
   // 冪等性キー: 作成用（request_id）と応諾用（accepted_request_id）を分離
   request_id: uuid('request_id'),

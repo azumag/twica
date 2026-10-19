@@ -99,6 +99,10 @@ export async function POST(
       tradeOfferId: id,
       offererTwitchUserId,
       accepterTwitchUserId: session.twitchUserId,
+      // #1789: how many copies moved (the RPC reports it, the audit trail
+      // makes multi-copy trades traceable for the RMT review flow, #729).
+      wantedQuantity: result.wantedQuantity,
+      givenUserCardIds: result.givenUserCardIds,
       // Reuse the identifier that actually keyed this authenticated request's
       // rate-limit bucket. Avoid separately retaining the raw client IP.
       rateLimitIdentifier: identifier,
