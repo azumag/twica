@@ -31,11 +31,6 @@
 --   - 3引数版(旧アプリ互換ラッパー)も差し替え、新コードを旧アプリが既知の
 --     OFFER_NOT_OPEN へ読み替える(QUANTITY_MISMATCH と同じ扱い)。
 
--- #1801: ALTER TABLE が長いトランザクションの後ろで待ち続け、後続のガチャクエリまで
--- 止まらないよう、ロック待ちに上限を設ける（リポジトリ初の前例。migration 全体で
--- 同方針を検討中。失敗時は migration を再実行する）。
-SET LOCAL lock_timeout = '5s';
-
 ALTER TABLE public.cards
   ADD COLUMN trade_wantable boolean NOT NULL DEFAULT true;
 
