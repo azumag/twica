@@ -1358,7 +1358,9 @@ export type TradeAcceptRpcError =
   // back). Nothing was transferred.
   | "WANTED_CARD_NOT_WANTABLE";
 
-const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
+// テストが旧アプリ（ロールバック時）の既知コード集合との差分を固定できるよう公開する
+// （#1801。実行コードはこの Set を参照しない追加の経路を作らないこと）。
+export const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
   "TRADE_OFFER_NOT_FOUND",
   "OFFER_NOT_OPEN",
   "SELF_ACCEPT_FORBIDDEN",
