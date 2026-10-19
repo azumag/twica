@@ -30,6 +30,50 @@ describe('db-readonly-check-cards-columns workflow contract (Issue #954)', () =>
     })
   }
 
+  /**
+   * 指定 name の step ブロック（`- name: <name>` の行から段落区切りの空行まで）を
+   * 共通インデントを除去して返す。存在しなければ null。guard の「exit 1 を含む
+   * ブロック全体」固定（#1881）のために取り出す。
+   */
+  function stepBlock(text: string, name: string): string | null {
+    const at = text.indexOf(`- name: ${name}\n`)
+    if (at === -1) return null
+    // indexOf は行頭のインデントの途中を指すため、ブロック先頭を行頭へ揃えてから
+    // 共通インデントを測る（1行目だけインデントが欠けると dedent が機能しない）。
+    const start = text.lastIndexOf('\n', at) + 1
+    const rest = text.slice(start)
+    const end = rest.indexOf('\n\n')
+    const block = rest.slice(0, end === -1 ? rest.length : end)
+    const lines = block.split('\n')
+    const indents = lines.filter((line) => line.trim()).map((line) => line.match(/^\s*/)?.[0].length ?? 0)
+    const indent = Math.min(...indents)
+    return lines.map((line) => line.slice(indent)).join('\n')
+  }
+
+  /**
+   * guard step の期待値（exit 1 を含むブロック全体）。`::error::` 警告だけを残して
+   * exit 1 を消す「警告を出して通す no-op 化」（#1879 mutation M6/M6b）や拒否条件の
+   * 弱体化を検出するため、ヘッダー行だけではなく step 全体を固定する（#1881）。
+   */
+  const expectedGuardSteps = {
+    production: [
+      '- name: Guard the target ref',
+      '  run: |',
+      '    if [ "$GITHUB_REF" != "refs/heads/main" ]; then',
+      '      echo "::error::the production read-only check is only allowed from refs/heads/main"',
+      '      exit 1',
+      '    fi',
+    ].join('\n'),
+    preview: [
+      '- name: Guard the target ref',
+      '  run: |',
+      '    if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/preview" ]; then',
+      '      echo "::error::the read-only check is only allowed from refs/heads/main or refs/heads/preview"',
+      '      exit 1',
+      '    fi',
+    ].join('\n'),
+  }
+
   it('workflow_dispatch 以外では動かない（push / schedule / pull_request を持たない）', () => {
     for (const text of [workflow, previewWorkflow]) {
       expect(text).toContain('on:\n  workflow_dispatch: {}')
@@ -54,19 +98,21 @@ describe('db-readonly-check-cards-columns workflow contract (Issue #954)', () =>
 
   it('production 側は main 以外の ref を二重で拒否する（feature branch へ production の secret を渡さない）', () => {
     // workflow_dispatch は任意 ref を選べるため、job-level の条件だけでは足りない。
-    expect(workflow).toContain("if: github.ref == 'refs/heads/main'")
-    expect(workflow).toContain('if [ "$GITHUB_REF" != "refs/heads/main" ]; then')
+    // if: 行は部分一致だと他ブランチの追加を止められないため、行全体で固定する（#1879 M5 / #1881）。
+    expect(workflow).toMatch(/^ {4}if: github\.ref == 'refs\/heads\/main'$/m)
+    // step 内 guard は exit 1 を含むブロック全体で固定する（#1879 M6 / #1881）。
+    expect(stepBlock(workflow, 'Guard the target ref')).toEqual(expectedGuardSteps.production)
     // preview を許可する条件式が混ざっていないこと（job 条件は main のみ）。
     expect(workflow).not.toContain("|| github.ref == 'refs/heads/preview'")
   })
 
   it('preview 側は main / preview のみを許可する（feature branch のコードから secret を使わせない）', () => {
-    expect(previewWorkflow).toContain(
-      "if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'",
+    // if: 行は部分一致だと他ブランチの追加を止められないため、行全体で固定する（#1879 M9 / #1881）。
+    expect(previewWorkflow).toMatch(
+      /^ {4}if: github\.ref == 'refs\/heads\/main' \|\| github\.ref == 'refs\/heads\/preview'$/m,
     )
-    expect(previewWorkflow).toContain(
-      'if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/preview" ]; then',
-    )
+    // step 内 guard は exit 1 を含むブロック全体で固定する（#1879 M6b / #1881）。
+    expect(stepBlock(previewWorkflow, 'Guard the target ref')).toEqual(expectedGuardSteps.preview)
   })
 
   it('セッション全体を読み取り専用にする（書き込みは DB 側で失敗する）', () => {
