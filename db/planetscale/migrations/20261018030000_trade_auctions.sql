@@ -71,10 +71,10 @@ CREATE TABLE public.trade_auctions (
   -- 出品者が勝者を選べる期限(ends_at + 72時間)。作成時に保存する。後から規則を
   -- 変えても、既存オークションの約束(いつ解放されるか)が変わらないようにするため。
   selection_deadline timestamptz NOT NULL,
-  -- 'expired' は将来の後処理で流札を確定保存するための値。正しさはこれに依存させず、
-  -- 'open' のまま時刻を過ぎた行も trade_auction_holds_cards() で流札として扱う。
+  -- 流札は 'open' のまま時刻を過ぎた行を trade_auction_holds_cards() で導出する
+  -- (stored 'expired' は書き込み経路が無いため許可しない)。
   status text NOT NULL DEFAULT 'open'
-    CHECK (status IN ('open', 'completed', 'cancelled', 'expired')),
+    CHECK (status IN ('open', 'completed', 'cancelled')),
   -- 成立した入札。trade_auction_bids と循環参照になるため FK は張らない
   -- (settle_trade_auction だけが同じトランザクションで設定する)。
   winning_bid_id uuid,
@@ -100,7 +100,8 @@ CREATE UNIQUE INDEX idx_trade_auctions_seller_request
 CREATE INDEX idx_trade_auctions_open_user_card
   ON public.trade_auctions (offered_user_card_id) WHERE status = 'open';
 -- FK 列(親の削除時のカスケード・SET NULL の走査用。trade_offers と同じ方針)
-CREATE INDEX idx_trade_auctions_seller_user_id ON public.trade_auctions (seller_user_id);
+-- seller_user_id は idx_trade_auctions_seller_request (seller_user_id, request_id)
+-- の先頭列でカバーされるため、単独インデックスは作らない。
 CREATE INDEX idx_trade_auctions_offered_card_id ON public.trade_auctions (offered_card_id);
 CREATE INDEX idx_trade_auctions_offered_streamer_id ON public.trade_auctions (offered_streamer_id);
 

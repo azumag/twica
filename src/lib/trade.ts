@@ -992,10 +992,12 @@ function acceptStateFor(viewerUserId: SQL, withoutQuantity: boolean, withoutAuct
   // active bid) with the same trade_copy_locked() the accept RPC now uses to
   // pick the payment copies, so "all_listed" also covers copies held by the
   // viewer's auction listings and bids. The former predicate only looked at
-  // the viewer's own open offers; an open offer of a copy the viewer owns is
-  // always the viewer's own (a copy is never left listed by a previous owner:
-  // accept and settle move only unlisted copies), so the regular-offer part
-  // is unchanged in practice. Deploy window: copyLockedExpr falls back to
+  // the viewer's own open offers. A lingering open offer left by a previous
+  // owner would still lock the copy through trade_copy_locked() (which keys on
+  // the user_card, not the seller), so the free count stays correct even then;
+  // such rows are a data-hygiene problem (the new owner cannot cancel them)
+  // rather than an accept-correctness problem. accept and settle move only
+  // unlisted copies in the normal path. Deploy window: copyLockedExpr falls back to
   // "listed in an open offer".
   const counts = sql`(
     SELECT

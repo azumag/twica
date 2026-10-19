@@ -70,7 +70,8 @@ export const TRADE_MAX_BID_QUANTITY = 10;
  *   bidding   — open and clock_timestamp() < ends_at
  *   selecting — open, ends_at passed, before selection_deadline, ≥1 active bid
  *   expired   — open but neither of the above (no bids at the deadline, or
- *               the selection window passed), or stored 'expired'
+ *               the selection window passed). 'expired' is derived only; there
+ *               is no stored 'expired' status.
  *   completed / cancelled — stored status
  */
 export type TradeAuctionPhase = "bidding" | "selecting" | "expired" | "completed" | "cancelled";
@@ -845,13 +846,30 @@ export async function placeTradeAuctionBid(input: {
 
 /**
  * Withdraw a bid. The RPC resolves the auction from the bid itself (lock order
- * auction → bid) and checks the bidder, so no auction id is needed; the route
- * only uses the one in its path for the URL shape.
+ * auction → bid) and checks the bidder. Callers may pass the auction id taken
+ * from the route path so it can be verified against the bid before acting.
  */
 export async function withdrawTradeAuctionBid(input: {
   twitchUserId: string;
   bidId: string;
+  auctionId?: string;
 }): Promise<TradeAuctionResult<{ bidId: string; alreadyWithdrawn: boolean }>> {
+  // The path's [id] is not otherwise consulted by the RPC (it resolves the
+  // auction from the bid). Verify it against the bid's actual auction before
+  // acting, so a mismatched URL cannot be recorded as that auction's audit
+  // entry. A missing bid, or a bid that does not belong to [id], is reported
+  // as "not found" rather than forwarded to the RPC.
+  if (input.auctionId) {
+    const { db } = await getDb();
+    const rows = await db
+      .select({ auctionId: bidsTable.auction_id })
+      .from(bidsTable)
+      .where(eq(bidsTable.id, input.bidId))
+      .limit(1);
+    if (rows.length === 0 || rows[0].auctionId !== input.auctionId) {
+      return { kind: "error", code: "TRADE_AUCTION_BID_NOT_FOUND" };
+    }
+  }
   const { sql: query } = await getDb();
   const outcome = await runAuctionRpc("withdraw_trade_auction_bid", () => query<Array<{ result: unknown }>>`
     SELECT public.withdraw_trade_auction_bid(${input.twitchUserId}, ${input.bidId}::uuid) AS result

@@ -286,7 +286,7 @@ describe("POST withdraw / cancel / settle", () => {
     const ok = await POST(post(`/api/trades/auctions/${AUCTION_ID}/bids/${BID_ID}/withdraw`), params({ id: AUCTION_ID, bidId: BID_ID }));
     expect(ok.status).toBe(200);
     await expect(ok.json()).resolves.toEqual({ success: true, bidId: BID_ID, alreadyWithdrawn: false });
-    expect(mocks.withdrawTradeAuctionBid).toHaveBeenCalledWith({ twitchUserId: "viewer-1", bidId: BID_ID });
+    expect(mocks.withdrawTradeAuctionBid).toHaveBeenCalledWith({ twitchUserId: "viewer-1", bidId: BID_ID, auctionId: AUCTION_ID });
 
     mocks.withdrawTradeAuctionBid.mockResolvedValueOnce({ kind: "error", code: "TRADE_AUCTION_BID_LOCKED" });
     const locked = await POST(post(`/api/trades/auctions/${AUCTION_ID}/bids/${BID_ID}/withdraw`), params({ id: AUCTION_ID, bidId: BID_ID }));

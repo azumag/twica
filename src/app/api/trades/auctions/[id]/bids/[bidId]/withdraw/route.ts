@@ -35,6 +35,7 @@ export async function POST(
     const result = await withdrawTradeAuctionBid({
       twitchUserId: auth.session.twitchUserId,
       bidId,
+      auctionId: id,
     });
     if (result.kind === "error") return tradeAuctionErrorResponse(result.code);
 
