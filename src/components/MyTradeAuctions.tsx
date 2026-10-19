@@ -88,7 +88,12 @@ export default function MyTradeAuctions() {
           // channel for a bidder (that is where a bid change picks cards).
           const detailStreamerId =
             role === "bidding" && myBid ? myBid.bidStreamerId : auction.offeredStreamerId;
-          const detailHref = tradeAuctionDetailPath(detailStreamerId, auction.id);
+          // Cross-channel bids (design §12) were opened on a different channel's
+          // board, so the detail's "back" link must carry scope=cross too;
+          // otherwise it lands on the in-channel tab that does not list them.
+          const detailScope =
+            role === "bidding" && myBid?.isCrossChannel ? "cross_channel" : "in_channel";
+          const detailHref = tradeAuctionDetailPath(detailStreamerId, auction.id, detailScope);
           const needsSelection = role === "selling" && auction.phase === "selecting";
           const dateText =
             auction.phase === "completed"

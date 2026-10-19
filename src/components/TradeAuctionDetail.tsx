@@ -46,6 +46,7 @@ interface TradeAuctionDetailProps {
 type DetailState =
   | { status: "loading" }
   | { status: "error" }
+  | { status: "rateLimited" }
   | { status: "notFound" }
   | { status: "unavailable" }
   | {
@@ -109,6 +110,7 @@ export default function TradeAuctionDetail({
   const [bidCardId, setBidCardId] = useState<string | null>(null);
   const [quantity, setQuantity] = useState(1);
   const confirmTriggerRef = useRef<HTMLElement | null>(null);
+  const noticeRef = useRef<HTMLParagraphElement | null>(null);
   const bidRequestRef = useRef<{ selection: string; id: string } | null>(null);
   const settleRequestIds = useRef(new Map<string, string>());
   // Bumped to reload the detail (after a write, or the retry button).
@@ -148,6 +150,12 @@ export default function TradeAuctionDetail({
         }
         if (res.status === 404) {
           setDetail({ status: "notFound" });
+          return;
+        }
+        if (res.status === 429 || data?.code === "RATE_LIMIT_EXCEEDED") {
+          // Rate limit (tradeRead) has its own copy; do not collapse it into
+          // the generic load error (O5).
+          setDetail({ status: "rateLimited" });
           return;
         }
         if (data?.code === "TRADE_AUCTION_UNAVAILABLE") {
@@ -242,7 +250,14 @@ export default function TradeAuctionDetail({
     const trigger = confirmTriggerRef.current;
     confirmTriggerRef.current = null;
     requestAnimationFrame(() => {
-      if (trigger?.isConnected) trigger.focus();
+      // When the write removed the button that opened the confirmation (settle,
+      // cancel, withdraw), the trigger is detached and focusing it is a no-op,
+      // leaving focus on <body>. Fall back to the result message (O4).
+      if (trigger?.isConnected) {
+        trigger.focus();
+      } else {
+        noticeRef.current?.focus();
+      }
     });
   };
 
@@ -307,6 +322,16 @@ export default function TradeAuctionDetail({
     return (
       <div role="alert" className="flex flex-col items-center gap-3 rounded-xl bg-red-900/40 p-4 text-sm text-red-200 sm:flex-row sm:justify-between">
         <span>{t("auctionDetailLoadError")}</span>
+        <button type="button" onClick={reload} className="rounded-lg bg-gray-700 px-4 py-2 text-white hover:bg-gray-600">
+          {t("retryButton")}
+        </button>
+      </div>
+    );
+  }
+  if (detail.status === "rateLimited") {
+    return (
+      <div role="alert" className="flex flex-col items-center gap-3 rounded-xl bg-red-900/40 p-4 text-sm text-red-200 sm:flex-row sm:justify-between">
+        <span>{t("errorRateLimited")}</span>
         <button type="button" onClick={reload} className="rounded-lg bg-gray-700 px-4 py-2 text-white hover:bg-gray-600">
           {t("retryButton")}
         </button>
@@ -701,6 +726,8 @@ export default function TradeAuctionDetail({
       {header}
       {notice && (
         <p
+          ref={noticeRef}
+          tabIndex={-1}
           role={notice.isError ? "alert" : "status"}
           className={`rounded-lg p-3 text-sm ${
             notice.isError ? "bg-red-900/40 text-red-200" : "bg-emerald-500/10 text-emerald-100"

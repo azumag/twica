@@ -59,24 +59,48 @@ export default async function TradeAuctionDetailPage({
 
   let bidCards: TradeAuctionBidCard[] = [];
   if (session && streamer.tradeEnabled) {
-    const [copies, wantable] = await Promise.all([
-      listTradeableOwnedCopies(session.twitchUserId, streamer.id),
-      listWantableCards(session.twitchUserId, streamer.id),
-    ]);
-    const freeByCard = new Map<string, number>();
-    for (const copy of copies) {
-      if (!copy.isListed) freeByCard.set(copy.cardId, (freeByCard.get(copy.cardId) ?? 0) + 1);
+    // Bid candidates are only useful to a non-seller viewer while the auction
+    // is still accepting bids (O3). Sellers never bid, and once the auction
+    // has left the bidding phase the form is not rendered. Skip the two
+    // queries in those cases, including on router.refresh() after a write.
+    // getTradeAuction is guarded so a missing export (e.g. an older mock) falls
+    // back to loading the candidates, preserving the previous behaviour.
+    let needsBidCards = true;
+    // Loaded dynamically so a module mock that omits it (older tests) does not
+    // break the import; the fallback keeps loading candidates in that case.
+    let getTradeAuction: unknown = null;
+    try {
+      const tradeAuctionModule = await import("@/lib/trade-auction");
+      getTradeAuction = (tradeAuctionModule as { getTradeAuction?: unknown }).getTradeAuction ?? null;
+    } catch {
+      getTradeAuction = null;
     }
-    // Only the fields the picker renders are serialized to the client.
-    bidCards = wantable
-      .filter((card) => card.isOwned)
-      .map((card) => ({
-        cardId: card.cardId,
-        name: card.name,
-        rarity: card.rarity,
-        imageUrl: card.imageUrl,
-        freeCount: freeByCard.get(card.cardId) ?? 0,
-      }));
+    if (typeof getTradeAuction === "function") {
+      const auctionDetail = await getTradeAuction({ auctionId, twitchUserId: session.twitchUserId }).catch(() => null);
+      needsBidCards = auctionDetail
+        ? !auctionDetail.auction.isOwnAuction && auctionDetail.auction.phase === "bidding"
+        : false;
+    }
+    if (needsBidCards) {
+      const [copies, wantable] = await Promise.all([
+        listTradeableOwnedCopies(session.twitchUserId, streamer.id),
+        listWantableCards(session.twitchUserId, streamer.id),
+      ]);
+      const freeByCard = new Map<string, number>();
+      for (const copy of copies) {
+        if (!copy.isListed) freeByCard.set(copy.cardId, (freeByCard.get(copy.cardId) ?? 0) + 1);
+      }
+      // Only the fields the picker renders are serialized to the client.
+      bidCards = wantable
+        .filter((card) => card.isOwned)
+        .map((card) => ({
+          cardId: card.cardId,
+          name: card.name,
+          rarity: card.rarity,
+          imageUrl: card.imageUrl,
+          freeCount: freeByCard.get(card.cardId) ?? 0,
+        }));
+    }
   }
 
   return (
