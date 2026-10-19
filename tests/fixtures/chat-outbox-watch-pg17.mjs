@@ -39,8 +39,8 @@
  * と python3 だけを使う。使い捨ての DB（migration 適用済み）に対して実行する。
  */
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -114,6 +114,149 @@ function assertDelta(metrics, baseline, key, expected, label) {
     expected,
     `${label}: ${key} の増分は ${expected} を期待（baseline=${baseline[key]} 実際=${metrics[key]}）`,
   )
+}
+
+/**
+ * queue 観測 step の python block を urllib スタブ付きで実行するハーネス。
+ *
+ * 実 API（Cloudflare Queues）の応答形を与えて、queue_json の組み立てと縮退
+ * （403・通信断・queue 不在）をネットワーク無しで固定する。実 API は Queue
+ * オブジェクトの名前を **queue_name** で返す（name ではない）ため、この解析は
+ * 実測でしか気づけない退行になりやすい（実際に本番で queue が見つからない
+ * 事故が起きた）。ここで payload 形を固定して再発を防ぐ。
+ */
+const QUEUE_STUB_HARNESS = String.raw`
+import json
+import os
+import sys
+import time
+import types
+
+mode = os.environ["STUB_MODE"]
+now_ms = int(time.time() * 1000)
+
+list_payloads = {
+    "found": {
+        "success": True,
+        "result": [
+            {"queue_id": "stub-queue-id-1", "queue_name": "other-queue"},
+            {"queue_id": "stub-queue-id-2", "queue_name": os.environ["WATCH_QUEUE_NAME"]},
+        ],
+    },
+    "name-fallback": {
+        "success": True,
+        "result": [{"queue_id": "stub-queue-id-1", "name": os.environ["WATCH_QUEUE_NAME"]}],
+    },
+    "missing": {
+        "success": True,
+        "result": [{"queue_id": "stub-queue-id-1", "queue_name": "other-queue"}],
+    },
+}
+metrics_payload = {
+    "success": True,
+    "result": {
+        "backlog_count": 7,
+        "backlog_bytes": 1234,
+        "oldest_message_timestamp_ms": now_ms - 402000,
+    },
+}
+
+fake_error = types.ModuleType("urllib.error")
+
+
+class URLError(Exception):
+    pass
+
+
+class HTTPError(URLError):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+fake_error.URLError = URLError
+fake_error.HTTPError = HTTPError
+
+fake_request = types.ModuleType("urllib.request")
+
+
+class Request:
+    def __init__(self, url, headers=None, **kwargs):
+        self.full_url = url
+
+
+class Response:
+    def __init__(self, payload):
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def urlopen(request, timeout=None):
+    url = request.full_url
+    if "?" in url:
+        if mode == "forbidden":
+            raise HTTPError(403)
+        if mode == "network":
+            raise URLError("stub network failure")
+        return Response(list_payloads[mode])
+    return Response(metrics_payload)
+
+
+fake_request.Request = Request
+fake_request.urlopen = urlopen
+
+import urllib
+
+sys.modules["urllib.request"] = fake_request
+sys.modules["urllib.error"] = fake_error
+urllib.request = fake_request
+urllib.error = fake_error
+
+source = open(os.environ["QUEUE_BLOCK_PATH"], encoding="utf-8").read()
+try:
+    exec(compile(source, "queue-block", "exec"), {"__name__": "__main__"})
+except SystemExit as exc:
+    sys.exit(0 if exc.code in (0, None) else 1)
+`
+
+/** queue 観測 python block を STUB_MODE で実行し、outputs と標準出力を返す。 */
+function runQueueBlockWithStub(queuePython, mode) {
+  const workDir = mkdtempSync(join(tmpdir(), 'chat-outbox-watch-queue-'))
+  const blockPath = join(workDir, 'queue_block.py')
+  const harnessPath = join(workDir, 'harness.py')
+  const outputFile = join(workDir, 'github-output')
+  writeFileSync(blockPath, queuePython)
+  writeFileSync(harnessPath, QUEUE_STUB_HARNESS)
+  const result = spawnSync('python3', [harnessPath], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      STUB_MODE: mode,
+      QUEUE_BLOCK_PATH: blockPath,
+      GITHUB_OUTPUT: outputFile,
+      CLOUDFLARE_ACCOUNT_ID: 'stub-account',
+      CLOUDFLARE_API_TOKEN: 'stub-token',
+      WATCH_QUEUE_NAME: 'chat-notification-wakeup',
+    },
+  })
+  const outputs = {}
+  try {
+    const raw = readFileSync(outputFile, 'utf8')
+    for (const match of raw.matchAll(/(\w+)<<WATCH_OUTPUT_EOF\n([\s\S]*?)\nWATCH_OUTPUT_EOF/g)) {
+      outputs[match[1]] = match[2]
+    }
+  } catch {
+    // 縮退時は GITHUB_OUTPUT が作られない（出力なしが期待値）。
+  }
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '', outputs }
 }
 
 const PREFIX = 'watch-'
@@ -327,6 +470,58 @@ VALUES ('${PREFIX}far', now() + interval '3600 seconds'),
       oldest_backlog_age_seconds: 0,
     })
     assert.equal(emptyQueueDecision.outputs.alert, 'false', 'G: backlog 0 ではアラートしない')
+    scenarios += 1
+  }
+
+  // ---- H: queue 観測 step の API 応答解析（urllib スタブ実行） ----
+  // ---- 実 API は Queue オブジェクトの名前を queue_name で返す。 ----
+  {
+    const queuePython = extractHeredoc(
+      workflowText,
+      'Observe the wakeup queue backlog (best effort)',
+      'PY',
+    )
+
+    // H1: 実 API 形（queue_name）で queue を見つけ、metrics から queue_json を組む。
+    const found = runQueueBlockWithStub(queuePython, 'found')
+    assert.equal(found.status, 0, `H1: 正常終了（stderr: ${found.stderr}）`)
+    assert.ok(found.outputs.queue_json, 'H1: queue_json が出力される')
+    const foundMetrics = JSON.parse(found.outputs.queue_json)
+    assert.equal(foundMetrics.backlog_count, 7, 'H1: backlog_count')
+    assert.equal(foundMetrics.backlog_bytes, 1234, 'H1: backlog_bytes')
+    assert.ok(
+      foundMetrics.oldest_backlog_age_seconds >= 390 && foundMetrics.oldest_backlog_age_seconds <= 412,
+      `H1: 最古滞留 age は約 402 秒（実際 ${foundMetrics.oldest_backlog_age_seconds}）`,
+    )
+    assert.ok(found.stdout.includes('backlog_count=7'), 'H1: 公開ログに件数が出力される')
+    assert.ok(!found.stdout.includes('stub-queue-id'), 'H1: 公開ログに queue ID を出さない')
+
+    // H2: 旧来の name フィールドでも見つけられる（別名の許容）。
+    const fallback = runQueueBlockWithStub(queuePython, 'name-fallback')
+    assert.equal(fallback.status, 0, `H2: 正常終了（stderr: ${fallback.stderr}）`)
+    assert.ok(fallback.outputs.queue_json, 'H2: name フィールドでも queue_json が出力される')
+
+    // H3: queue 不在は警告のみで縮退する（出力なし・終了コード 0）。
+    const missing = runQueueBlockWithStub(queuePython, 'missing')
+    assert.equal(missing.status, 0, 'H3: 終了コード 0（watch を止めない）')
+    assert.ok(!missing.outputs.queue_json, 'H3: queue_json は出力されない')
+    assert.ok(
+      missing.stdout.includes('was not found') && missing.stdout.includes('::warning::'),
+      'H3: 警告に queue 不在が明示される',
+    )
+
+    // H4: token 権限不足（403）も警告のみで縮退する。
+    const forbidden = runQueueBlockWithStub(queuePython, 'forbidden')
+    assert.equal(forbidden.status, 0, 'H4: 終了コード 0（watch を止めない）')
+    assert.ok(!forbidden.outputs.queue_json, 'H4: queue_json は出力されない')
+    assert.ok(forbidden.stdout.includes('HTTP 403'), 'H4: 警告に HTTP 403 が明示される')
+
+    // H5: 通信断も警告のみで縮退する。
+    const network = runQueueBlockWithStub(queuePython, 'network')
+    assert.equal(network.status, 0, 'H5: 終了コード 0（watch を止めない）')
+    assert.ok(!network.outputs.queue_json, 'H5: queue_json は出力されない')
+    assert.ok(network.stdout.includes('queue metrics request failed'), 'H5: 警告に通信失敗が明示される')
+
     scenarios += 1
   }
 
