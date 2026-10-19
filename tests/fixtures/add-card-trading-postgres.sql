@@ -633,4 +633,108 @@ BEGIN
 END
 $$;
 
+-- 14. (#1789 レビュー) pre-migration 完了行のリプレイ後方互換:
+-- migration 20261019120000 適用前に成立した行は accepted_user_card_id(スカラー)だけを持ち、
+-- accepted_user_card_ids は追加列の既定値 '{}' のままである。rewritten RPC のリプレイ分支は
+-- この行を「スカラーから1要素配列へ再構成」して返す。検証器(isValidTradeAcceptRpcResult)は
+-- 空配列を拒否する(fail-closed)ため、この分岐が壊れると #1789 より前に成立した全トレードの
+-- 冪等リプレイが恒久的に「invalid response」で失敗する。この分岐は新規成立では通らないため、
+-- 現行経路で1:1オファー(wanted_quantity は INSERT 省略= DB 既定1)を成立させた後、
+-- 配列列だけを pre-migration 相当へ巻き戻して再送し、リプレイ契約を検証する。
+INSERT INTO public.trade_offers (
+  id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+  wanted_card_id, wanted_streamer_id,
+  offered_card_snapshot, wanted_card_snapshot
+) VALUES (
+  '30000000-0000-4000-8000-0000000000e8',
+  '30000000-0000-4000-8000-0000000000a2',
+  '30000000-0000-4000-8000-0000000000d1',
+  '30000000-0000-4000-8000-0000000000c1',
+  '30000000-0000-4000-8000-000000000001',
+  '30000000-0000-4000-8000-0000000000c2',
+  '30000000-0000-4000-8000-000000000001',
+  '{"name": "Card A", "rarity": "common", "imageUrl": null}'::jsonb,
+  '{"name": "Card B", "rarity": "rare", "imageUrl": null}'::jsonb
+);
+
+DO $$
+DECLARE
+  v_result jsonb;
+  v_owner uuid;
+  v_offer public.trade_offers%ROWTYPE;
+BEGIN
+  -- 現行経路で1:1成立。u1 の CardB は d2(scenario 3 由来・成立時の now())と
+  -- d9(2020-05)の2枚で、最古の d9 が選定される。d1 は scenario 3 で u2 が
+  -- 受け取った CardA コピーで、e7(scenario 13 の出品 db)とは重複しない。
+  v_result := public.accept_trade_offer(
+    'trade-offerer',
+    '30000000-0000-4000-8000-0000000000e8'::uuid,
+    '30000000-0000-4000-8000-0000000000fa'::uuid
+  );
+  IF (v_result ->> 'success')::boolean IS DISTINCT FROM true THEN
+    RAISE EXCEPTION '×1 accept did not succeed: %', v_result;
+  END IF;
+  IF (v_result ->> 'wantedQuantity')::int <> 1 THEN
+    RAISE EXCEPTION '×1 accept did not report wantedQuantity=1: %', v_result;
+  END IF;
+  IF v_result ->> 'givenUserCardId' <> '30000000-0000-4000-8000-0000000000d9' THEN
+    RAISE EXCEPTION '×1 accept did not select the oldest CardB copy: %', v_result;
+  END IF;
+  IF v_result -> 'givenUserCardIds' <> to_jsonb(ARRAY['30000000-0000-4000-8000-0000000000d9']::uuid[]) THEN
+    RAISE EXCEPTION '×1 accept did not record the paid copy in givenUserCardIds: %', v_result;
+  END IF;
+
+  -- N=1 の成立でも配列側に全支払いコピー(=1枚)が記録されること。
+  SELECT * INTO v_offer FROM public.trade_offers
+    WHERE id = '30000000-0000-4000-8000-0000000000e8';
+  IF v_offer.status <> 'completed'
+     OR v_offer.wanted_quantity <> 1
+     OR v_offer.accepted_user_card_ids <> ARRAY['30000000-0000-4000-8000-0000000000d9']::uuid[] THEN
+    RAISE EXCEPTION '×1 completion did not persist wanted_quantity/accepted_user_card_ids: %', row_to_json(v_offer);
+  END IF;
+
+  -- 配列列だけを pre-migration 相当へ巻き戻す(migration 適用済みDB上の
+  -- 旧完了行の状態と同一: スカラーは書かれ、配列は既定 '{}')。
+  UPDATE public.trade_offers
+    SET accepted_user_card_ids = '{}'::uuid[]
+    WHERE id = '30000000-0000-4000-8000-0000000000e8';
+
+  -- 同一(u1, request_id)での再送はリプレイとして成功し、スカラーから
+  -- 1要素配列を再構成して返すこと。
+  v_result := public.accept_trade_offer(
+    'trade-offerer',
+    '30000000-0000-4000-8000-0000000000e8'::uuid,
+    '30000000-0000-4000-8000-0000000000fa'::uuid
+  );
+  IF (v_result ->> 'success')::boolean IS DISTINCT FROM true
+     OR (v_result ->> 'idempotentReplay')::boolean IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'replay of a pre-migration completed row did not succeed: %', v_result;
+  END IF;
+  IF (v_result ->> 'wantedQuantity')::int <> 1 THEN
+    RAISE EXCEPTION 'pre-migration replay did not report wantedQuantity=1: %', v_result;
+  END IF;
+  IF v_result ->> 'givenUserCardId' <> '30000000-0000-4000-8000-0000000000d9' THEN
+    RAISE EXCEPTION 'pre-migration replay lost the legacy scalar: %', v_result;
+  END IF;
+  IF v_result -> 'givenUserCardIds' <> to_jsonb(ARRAY['30000000-0000-4000-8000-0000000000d9']::uuid[]) THEN
+    RAISE EXCEPTION 'pre-migration replay did not rebuild the 1-element array from the scalar: %', v_result;
+  END IF;
+  IF v_result ->> 'receivedUserCardId' <> '30000000-0000-4000-8000-0000000000d1' THEN
+    RAISE EXCEPTION 'pre-migration replay lost the offered copy id: %', v_result;
+  END IF;
+
+  -- リプレイは所有権を再度変えないこと。
+  SELECT user_id INTO v_owner FROM user_cards
+    WHERE id = '30000000-0000-4000-8000-0000000000d9';
+  IF v_owner <> '30000000-0000-4000-8000-0000000000a2' THEN
+    RAISE EXCEPTION 'pre-migration replay mutated the paid copy ownership: %', v_owner;
+  END IF;
+  SELECT user_id INTO v_owner FROM user_cards
+    WHERE id = '30000000-0000-4000-8000-0000000000d1';
+  IF v_owner <> '30000000-0000-4000-8000-0000000000a1' THEN
+    RAISE EXCEPTION 'pre-migration replay mutated the offered copy ownership: %', v_owner;
+  END IF;
+END
+$$;
+
 RESET ROLE;

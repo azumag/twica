@@ -112,8 +112,12 @@ BEGIN
 
   -- 2. 冪等リプレイ判定(すべての検証より前に行う)。#1789 で givenUserCardIds /
   -- wantedQuantity をレスポンスへ追加したため、成立済み行についてもここで
-  -- 再構成して返す(旧1:1行は accepted_user_card_ids = '{}' なので空配列を返す
-  -- — リプレイは検証器(isValidTradeAcceptRpcResult)が空配列を許容する)。
+  -- 再構成して返す。旧1:1行(pre-migrationの完了行)は accepted_user_card_ids が
+  -- '{}' だが accepted_user_card_id スカラーは非NULLのため、スカラーから1要素配列を
+  -- 再構築して返す。検証器(isValidTradeAcceptRpcResult)は空配列を「無効な応答」と
+  -- して拒否する(fail-closed。空配列を返すと旧行のリプレイが恒久的に壊れる)。
+  -- '[]' を返す分支はスカラーがNULLの防御的な到達不能ケースのみに残す
+  -- (成立UPDATEは必ずスカラーを書くため通常運用では起こらない)。
   -- この行内の値照合だけで完結するため accepted_request_id にUNIQUE制約は付けない。
   IF v_offer.status = 'completed'
      AND v_offer.accepted_by_user_id = v_user_id
