@@ -222,6 +222,9 @@ describe('chat-outbox-watch workflow contract (Issue #1837)', () => {
     // realtime backlog metrics API（backlog_count / oldest_message_timestamp_ms）。
     expect(queueStep).toContain('/queues')
     expect(queueStep).toContain('/metrics')
+    // Cloudflare Queues API は Queue の名前を queue_name で返す（name ではない）。
+    // name のみで照合すると本番で queue が見つからず観測が黙って縮退する。
+    expect(queueStep).toContain('entry.get("queue_name")')
     // HTTP エラー（403 = token の Queue 読み取り権限不足を含む）・通信断は
     // warning と exit 0 で縮退し、DB 側の検知を継続する。
     expect(queueStep).toContain('except urllib.error.HTTPError as error')

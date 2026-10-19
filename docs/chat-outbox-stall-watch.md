@@ -29,10 +29,11 @@ Cloudflare 側ではなく GitHub 側に置くことで、Cloudflare 全体が�
   読み取り専用にし、実効値を確認してから集計する
   （db-readonly-check-production.yml と同じ手順・同じ Environment secret）。
 - Cloudflare Queues: realtime backlog metrics API
-  （`GET /accounts/{account_id}/queues/{queue_id}/metrics`）から
-  `backlog_count` / `oldest_message_timestamp_ms` を読む。production の
-  `CLOUDFLARE_API_TOKEN` に Queue 読み取り権限が無い場合は警告だけ出し、DB 側の
-  検知を継続する（後述）。
+  （`GET /accounts/{account_id}/queues` で `queue_name` から `queue_id` を引き、
+  `GET /accounts/{account_id}/queues/{queue_id}/metrics` で
+  `backlog_count` / `oldest_message_timestamp_ms` を読む）。production の
+  `CLOUDFLARE_API_TOKEN` に Queue 読み取り権限が無い場合（HTTP 403）や queue が
+  見つからない場合は警告だけ出し、DB 側の検知を継続する（後述）。
 
 ### アラート条件（閾値は 3 条件とも 300 秒）
 

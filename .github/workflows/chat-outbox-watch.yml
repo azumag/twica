@@ -310,10 +310,24 @@ jobs:
 
           try:
               queues = call(f"{base}?per_page=100").get("result") or []
-              target = next((entry for entry in queues if entry.get("name") == queue_name), None)
+              # Cloudflare Queues API の Queue オブジェクトは queue_name で名前を返す
+              # （queue_id / queue_name / created_on / ...。2026-10 の実 API 応答と
+              # OpenAPI 仕様で確認）。name は別名としてのみ許容する。
+              target = next(
+                  (
+                      entry for entry in queues
+                      if (entry.get("queue_name") or entry.get("name")) == queue_name
+                  ),
+                  None,
+              )
               if target is None:
-                  # queue 未作成は監視側の設定欠落。DB 側の検知は継続する。
-                  print(f"::warning::queue {queue_name} was not found; queue observation skipped")
+                  # queue 未作成・account 違い・名前変更は監視側の設定欠落。
+                  # 件数だけ残して切り分け可能にする（queue 名は wrangler.toml に
+                  # ある公開情報、ID は出さない）。DB 側の検知は継続する。
+                  print(
+                      f"::warning::queue {queue_name} was not found in {len(queues)} queues; "
+                      "queue observation skipped"
+                  )
                   sys.exit(0)
               metrics = call(f"{base}/{target['queue_id']}/metrics").get("result") or {}
           except urllib.error.HTTPError as error:
