@@ -44,11 +44,11 @@ describe('CardManager trade wantable toggle (Issue #1790)', () => {
     const editButtons = screen.getAllByRole('button', { name: '編集' })
 
     fireEvent.click(editButtons[0])
-    expect(screen.getByRole('checkbox', { name: LABEL })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: jaMessages.cardManager.form.tradeWantable })).toBeChecked()
     fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
 
     fireEvent.click(screen.getAllByRole('button', { name: '編集' })[1])
-    expect(screen.getByRole('checkbox', { name: LABEL })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: jaMessages.cardManager.form.tradeWantable })).not.toBeChecked()
   })
 
   it('does not send tradeWantable when the toggle was not changed (stale cached value must not be written back)', async () => {
@@ -95,13 +95,13 @@ describe('CardManager trade wantable toggle (Issue #1790)', () => {
     renderCardManager([card])
 
     fireEvent.click(screen.getByRole('button', { name: '編集' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: LABEL }))
+    fireEvent.click(screen.getByRole('checkbox', { name: jaMessages.cardManager.form.tradeWantable }))
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
     expect(await screen.findByText(jaMessages.cardManager.form.tradeWantableDeployWindow)).toBeInTheDocument()
     // 保存されなかった（実際の値は指定可）ので、次に開くと指定可のまま
     fireEvent.click(screen.getByRole('button', { name: '編集' }))
-    expect(screen.getByRole('checkbox', { name: LABEL })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: jaMessages.cardManager.form.tradeWantable })).toBeChecked()
   })
 
   it('sends tradeWantable on save and keeps the saved value for the next edit', async () => {
@@ -116,7 +116,7 @@ describe('CardManager trade wantable toggle (Issue #1790)', () => {
     renderCardManager([card])
 
     fireEvent.click(screen.getByRole('button', { name: '編集' }))
-    const checkbox = screen.getByRole('checkbox', { name: LABEL })
+    const checkbox = screen.getByRole('checkbox', { name: jaMessages.cardManager.form.tradeWantable })
     fireEvent.click(checkbox)
     expect(checkbox).not.toBeChecked()
     // jsdom の暗黙送信は制約検証（画像 URL 等）に左右されるため、他の
@@ -133,6 +133,72 @@ describe('CardManager trade wantable toggle (Issue #1790)', () => {
     // 保存後はフォームが閉じる。再度開くと保存後の値（指定不可）が出る。
     await waitFor(() => expect(screen.queryByRole('checkbox', { name: LABEL })).not.toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '編集' }))
-    expect(screen.getByRole('checkbox', { name: LABEL })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: jaMessages.cardManager.form.tradeWantable })).not.toBeChecked()
+  })
+})
+
+describe('CardManager reloadCards keeps trade wantable state in sync (Issue #1801)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    fetchMock = vi.fn(() => new Promise(() => {}))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  it('updates the non-wantable set from GET trade_wantable and keeps cards absent from the response', async () => {
+    const card1 = baseCard({ id: 'card-1', name: 'Coin' })
+    const card2 = baseCard({ id: 'card-2', name: 'Rare Item' })
+    fetchMock.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.startsWith('/api/cards?')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cards: [
+                { ...card1, trade_wantable: false },
+                { ...card2 }, // trade_wantable omitted -> retain previous
+              ],
+              total: 2,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+        )
+      }
+      return new Promise(() => {})
+    })
+
+    renderCardManager([card1, card2], { initialNonWantableCardIds: [] })
+
+    const sortSelect = Array.from(document.querySelectorAll('select')).find((s) =>
+      Array.from((s as HTMLSelectElement).options).some((o) => o.value === 'rarity')
+    ) as HTMLSelectElement
+    expect(sortSelect).toBeTruthy()
+    fireEvent.change(sortSelect, { target: { value: 'rarity' } })
+
+    await waitFor(() => {
+      const putCalls = fetchMock.mock.calls.filter(([url]) =>
+        typeof url === 'string' && url.startsWith('/api/cards?')
+      )
+      expect(putCalls.length).toBeGreaterThan(0)
+    })
+
+    // card-1 becomes non-wantable after reload
+    await waitFor(() => {
+      const editButtons = screen.getAllByRole('button', { name: '編集' })
+      expect(editButtons.length).toBeGreaterThan(0)
+    })
+
+    // open edit for card-1 -> unchecked
+    fireEvent.click(screen.getAllByRole('button', { name: '編集' })[0])
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: jaMessages.cardManager.form.tradeWantable })).not.toBeChecked()
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }))
+
+    // card-2 retains (not in set -> checked)
+    fireEvent.click(screen.getAllByRole('button', { name: '編集' })[1])
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: jaMessages.cardManager.form.tradeWantable })).toBeChecked()
+    })
   })
 })
