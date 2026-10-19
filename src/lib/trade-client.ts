@@ -75,7 +75,7 @@ export const TRADE_ERROR_MESSAGE_KEYS: Record<TradeApiErrorCode, TradeErrorMessa
   TRADE_WANTED_CARD_NOT_WANTABLE: "errorTradeWantedCardNotWantable",
   TRADE_OFFERED_CARD_INACTIVE: "errorTradeOfferedCardInactive",
   TRADE_OFFER_UNAVAILABLE: "errorTradeOfferUnavailable",
-  // Auctions (#1791). Copy exists now; the auction UI itself is PR-2.
+  // Auctions (#1791).
   TRADE_AUCTION_UNAVAILABLE: "errorTradeAuctionUnavailable",
   TRADE_AUCTION_NOT_FOUND: "errorTradeAuctionNotFound",
   TRADE_AUCTION_NOT_OPEN: "errorTradeAuctionNotOpen",

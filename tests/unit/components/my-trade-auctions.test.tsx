@@ -126,7 +126,7 @@ describe("MyTrades auction tab (#1791)", () => {
     expect(within(active).getByText("Coin")).toBeInTheDocument();
     expect(within(active).getByRole("link", { name: ja.myAuctionsDetailLink })).toHaveAttribute(
       "href",
-      "/trade/s-9/auctions/a-active",
+      "/trade/s-9/auctions/a-active?scope=cross",
     );
     expect(within(screen.getByText("Won Card").closest("li")!).getByText(ja.auctionBidStateWon)).toBeInTheDocument();
     expect(

@@ -58,6 +58,11 @@ export default async function TradeAuctionDetailPage({
   if (!streamer) notFound();
 
   let bidCards: TradeAuctionBidCard[] = [];
+  // O3: bid candidates are only useful to a non-seller while the auction is
+  // still in bidding. Determining that requires the auction row, which this
+  // page deliberately does not read (it is fetched by <TradeAuctionDetail>).
+  // Skipping those cases would need an extra read here, trading one query for
+  // two; left as-is pending a client-side fetch path.
   if (session && streamer.tradeEnabled) {
     const [copies, wantable] = await Promise.all([
       listTradeableOwnedCopies(session.twitchUserId, streamer.id),
