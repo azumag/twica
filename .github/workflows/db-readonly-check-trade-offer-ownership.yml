@@ -1,0 +1,143 @@
+# 読み取り専用の観測 workflow (Issue #1851 item 1 の実測用 **preview** 版)
+#
+# 目的:
+#   PlanetScale の **preview** 論理DBに対して **SELECT のみ** を実行し、open な
+#   trade_offers 行のうち「出品コピーの現在の所有者が出品者ではない」行の件数を出力する。
+#
+#   背景（Issue #1851 / PR #1850 レビューの任意指摘 2）:
+#   オークション導入（20261018030000、preview には適用済み）により trade_copy_locked() は
+#   user_cards 行をキーにした拘束判定を行う。「出品と支払い（accept による
+#   user_cards.user_id の書き換え）の競合で、出品者がもう所有していないコピーを指す
+#   open な出品」が残っていると、新しい所有者がそのコピーを accept の支払いに使えなく
+#   なる。production は昇格前に実測して後処理の要否を決める（本体は姉妹ファイル
+#   db-readonly-check-trade-offer-ownership-production.yml）。preview 側は同じ SQL で
+#   「オークション適用済み環境での実態」を参照値として残す（#954 が production / preview
+#   双方の実測を行ったのと同じ理由。昇格後の本番に近い状態が見える）。
+#
+# 安全設計（db-readonly-check-trade-quantity.yml と同じ構え）:
+#   - トリガは workflow_dispatch のみ。push / schedule / pull_request では動かない。
+#   - **対象 Environment を preview に固定**する。読み取り専用の観測は preview だけを対象とし、
+#     production の secret へ到達する経路を最初から作らない（input も持たない）。
+#     production の実測は姉妹ファイル db-readonly-check-trade-offer-ownership-production.yml
+#     が担う。PLANETSCALE_DATABASE_URL は repo 直下ではなく **Environment secret** なので、
+#     environment の宣言が無いと secret が解決せず DATABASE_URL が空になる
+#     （planetscale-migrate.yml と同じ理由）。
+#   - main / preview 以外の ref は job 条件と step 内の二重で拒否する
+#     （feature branch のコードへ preview の secret を渡さない）。
+#     main を許容するのは、既定ブランチへの着地だけで workflow_dispatch を成立させるため。
+#     Environment は preview 固定なので、許可 ref のどちらから実行しても読むのは preview の
+#     論理DBだけである（production の secret は provision されない）。
+#   - セッション全体を読み取り専用にする（PGOPTIONS の default_transaction_read_only=on）。
+#     誤って書き込み文が混ざっても DB 側で必ず失敗する。ワークフロー側の注意力に依存しない。
+#     さらに**集計の前に接続先での実効 transaction_read_only を確認**し、on でなければ集計せず
+#     失敗させる（オプション指定は「そう設定したつもり」にすぎないため）。
+#   - 実行する SQL は本ファイルに固定で埋め込む。SQL を差し替える input は作らない。
+#   - checkout しない（repo のコードを一切実行しない）。
+#   - 公開ログを最小化する: 出力は件数・観測時刻・テーブル存在に絞り、行データや
+#     ユーザー識別子（offerer_user_id / user_id の値など）は一切出さない。
+#     DB 名（current_database）は出力しない。接続文字列も echo しない。
+#
+# 件数の読み方（重要）:
+#   open 出品は常に変動するため、**件数は実行時点の値**である。記録するときは必ず
+#   observed_at と run URL を添えること（#1665 の db-readonly-check.yml と同じ規約）。
+#
+# 実行方法:
+#   workflow_dispatch は workflow が既定ブランチ（main）に存在する必要がある。本ファイルは
+#   main 着地用のコピーで、ref ガードが main / preview を許容する。
+#     gh workflow run db-readonly-check-trade-offer-ownership.yml --ref main
+#   production 側のコピー（db-readonly-check-trade-offer-ownership-production.yml）はガードが
+#   main のみで、本ファイルとはガードの数行だけが異なる。SQL は完全に一致させ、一致は
+#   tests/unit/db-readonly-check-trade-offer-ownership-workflow.test.ts が機械的に固定する。
+#   実測結果は観測時刻と run URL とセットで Issue #1851 に記録する。
+name: "DB read-only check: trade offer copy ownership (preview)"
+
+on:
+  workflow_dispatch: {}
+
+# 同じ ref への連続実行はキューで待たせる（観測のみなのでキャンセルしない）。
+concurrency:
+  group: db-readonly-check-trade-offer-ownership-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  readonly-check:
+    # workflow_dispatch は任意 ref を選べるため、job 開始前に main / preview 以外を拒否する。
+    # main を許容するのは既定ブランチへの着地だけで dispatch を成立させるため。Environment は
+    # preview 固定なので、どちらの許可 ref から実行しても読むのは preview の論理DBだけである。
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # preview 固定。Environment secret の解決に必要（input では選ばせない）。
+    environment: preview
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PLANETSCALE_DATABASE_URL }}
+      # 読み取り専用 + 暴走防止。default_transaction_read_only は psql ではなくサーバ側で効く。
+      PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=60000 -c lock_timeout=5000"
+    steps:
+      # job-level の if に加えた多重防御。将来 if が編集されても、main / preview 以外の
+      # コードから DB secret を使わせない（feature branch を拒否する）。
+      - name: Guard the target ref
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/preview" ]; then
+            echo "::error::the read-only check is only allowed from refs/heads/main or refs/heads/preview"
+            exit 1
+          fi
+
+      # 読み取り結果の出所を記録する（secret は含まれない）。
+      - name: Record provenance
+        run: |
+          echo "ref=$GITHUB_REF"
+          echo "sha=$GITHUB_SHA"
+          echo "run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT"
+
+      # PGOPTIONS の指定は「そう設定したつもり」にすぎないため、接続先での**実効値**を確認する。
+      # ここで on を確認できた場合にだけ観測へ進む（読み取り専用の強制はサーバ側で効く）。
+      - name: Verify the session is read-only before aggregating
+        run: |
+          read_only=$(psql -X -qAt -v ON_ERROR_STOP=1 -d "$DATABASE_URL" -c "SHOW transaction_read_only")
+          echo "transaction_read_only=$read_only"
+          if [ "$read_only" != "on" ]; then
+            echo "::error::expected transaction_read_only=on (PGOPTIONS default_transaction_read_only) but got '$read_only'"
+            exit 1
+          fi
+
+      # Issue #1851 item 1 の本体。open 出品のうち、出品コピーの現在の所有者が出品者では
+      # ない行を数える。出品コピー行そのものが無い行（FK 無し・カードストーン交換等で
+      # 削除されうる設計）は別枠で数える: trade_copy_locked() は行の無いコピーを拘束せず、
+      # accept は OFFER_INVALID で拒否するため、Issue #1851 の「新しい所有者が支払いに
+      # 使えない」問題は起きない。以降の解釈（0 件の意味）に必要な参考値として出す。
+      # 出力は件数のみ。行データ・ユーザー識別子は出さない。
+      # この SQL は production 用 (db-readonly-check-trade-offer-ownership-production.yml) と
+      # **同一**に保つ。片方だけ直すと、環境ごとの実測根拠が乖離するため、一致は契約テスト
+      # （tests/unit/db-readonly-check-trade-offer-ownership-workflow.test.ts）が固定する。
+      - name: Count open offers no longer owned by the offerer (read-only)
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
+          \pset pager off
+          \echo ==== observation point (この実行時点の値) ====
+          SELECT now() AS observed_at, current_setting('transaction_read_only') AS transaction_read_only;
+
+          \echo ==== 対象テーブルの存在（無い場合は以降の集計が失敗する＝観測不能として扱う） ====
+          SELECT to_regclass('public.trade_offers') AS trade_offers_table,
+                 to_regclass('public.user_cards') AS user_cards_table;
+
+          \echo ==== open 出品の総数（分母の参考値） ====
+          SELECT count(*) AS open_offers
+          FROM public.trade_offers
+          WHERE status = 'open';
+
+          \echo ==== Issue #1851 本体: open 出品のうち出品コピーの現在の所有者が出品者で無いもの ====
+          SELECT count(*) AS open_offers_owner_mismatch
+          FROM public.trade_offers o
+          JOIN public.user_cards uc ON uc.id = o.offered_user_card_id
+          WHERE o.status = 'open'
+            AND uc.user_id <> o.offerer_user_id;
+
+          \echo ==== 補足: open 出品のうち出品コピー行が存在しないもの（本 issue の対象外。解釈用の参考値） ====
+          SELECT count(*) AS open_offers_missing_copy
+          FROM public.trade_offers o
+          WHERE o.status = 'open'
+            AND NOT EXISTS (SELECT 1 FROM public.user_cards uc WHERE uc.id = o.offered_user_card_id);
+          SQL
