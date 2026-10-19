@@ -192,7 +192,8 @@ export const cards = pgTable('cards', {
  * 指定可否トグル（src/lib/card-trade-wantable.ts）だけなので、そこだけがこの定義を
  * 参照し、各所で列欠落時のフォールバックを持つ。
  *
- * 同じ物理テーブルを2つの pgTable で表すのは tradeOffersWithoutQuantity と同じ手法
+ * デプロイ窓では列を参照する経路だけがフォールバックを持つ点は、撤去済みの
+ * tradeOffersWithoutQuantity（#1792）と同じ手法
  * （drizzle-kit による DDL 生成は使っておらず、DDL の正本は migration）。
  */
 export const cardTradeSettings = pgTable('cards', {
@@ -717,18 +718,6 @@ export const tradeOffers = pgTable('trade_offers', {
   // #1789: 応諾者が渡す wanted_card_id のコピー枚数（1〜10。CHECK は DB 側で担保）
   wanted_quantity: smallint('wanted_quantity').notNull().default(1),
 })
-
-/**
- * 20261011120000 適用前の trade_offers（wanted_quantity 列なし）。
- *
- * デプロイ窓（planetscale-migrate とアプリデプロイが非同期、issue #788）専用。
- * Drizzle の INSERT は values に無い列も `default` として列挙し、無指定の
- * `.select()` / `.returning()` も schema の全列を要求するため、列が未作成の DB では
- * tradeOffers を使う文がすべて 42703 で失敗する。src/lib/trade.ts はその場合だけ
- * この定義で再試行する。migration 適用後は到達しない死に分岐になるので、本番・preview
- * 双方の適用を確認したら tradeOffers に一本化して削除してよい。
- */
-export const tradeOffersWithoutQuantity = pgTable('trade_offers', tradeOfferBaseColumns())
 
 // -----------------------------------------------------------------------------
 // trade_auctions / trade_auction_bids / trade_auction_bid_items（オークション形式の出品）
