@@ -554,28 +554,41 @@ jobs:
           window_seconds = int(os.environ["ALERT_SUPPRESS_WINDOW_SECONDS"])
           api_base = os.environ["GITHUB_API_URL"]
           repository = os.environ["GITHUB_REPOSITORY"]
-          url = f"{api_base}/repos/{repository}/commits/{os.environ['GITHUB_SHA']}/status"
-          request = urllib.request.Request(
-              url,
+          # commit status は commit 紐づきのため、main の HEAD が merge で変わると
+          # 直前の anchor を見失う。直近の複数 commit を遡って、context が
+          # chat-outbox-watch/alert / chat-outbox-watch/recovered の status を
+          # 持つ最新のものを探す（main A -> B -> C の SHA 遷移をまたいでも
+          # anchor を引き継ぐ）。GITHUB_TOKEN の read 権限で到達可能。
+          commits_request = urllib.request.Request(
+              f"{api_base}/repos/{repository}/commits?sha=main&per_page=10",
               headers={
                   "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
                   "Accept": "application/vnd.github+json",
               },
           )
-          with urllib.request.urlopen(request, timeout=20) as response:
-              combined = json.load(response)
-          # status は新しい順に並る。alert anchor（chat-outbox-watch/alert）の
-          # 最新 1 件が抑制の起点になる。ただし復旧マーカー
-          # （chat-outbox-watch/recovered）が anchor より新しい場合は、復旧を
-          # 経ているため抑制しない（再発を黙らせない）。
+          with urllib.request.urlopen(commits_request, timeout=20) as response:
+              commits = json.load(response) or []
           alert_at = None
           recovered_at = None
-          for entry in combined.get("statuses") or []:
-              context = entry.get("context")
-              if context == "chat-outbox-watch/alert" and alert_at is None:
-                  alert_at = datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00"))
-              elif context == "chat-outbox-watch/recovered" and recovered_at is None:
-                  recovered_at = datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00"))
+          for commit in commits:
+              status_request = urllib.request.Request(
+                  f"{api_base}/repos/{repository}/commits/{commit['sha']}/status",
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                  },
+              )
+              with urllib.request.urlopen(status_request, timeout=20) as response:
+                  combined = json.load(response)
+              for entry in combined.get("statuses") or []:
+                  context = entry.get("context")
+                  created = datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00"))
+                  if context == "chat-outbox-watch/alert" and (alert_at is None or created > alert_at):
+                      alert_at = created
+                  elif context == "chat-outbox-watch/recovered" and (recovered_at is None or created > recovered_at):
+                      recovered_at = created
+          # alert anchor が無ければ抑制しない。復旧マーカーが anchor より新しい
+          # 場合も抑制しない（再発を黙らせない）。
           if alert_at is None:
               print("false")
           elif recovered_at is not None and recovered_at > alert_at:
