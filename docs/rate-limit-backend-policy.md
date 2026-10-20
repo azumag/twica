@@ -11,7 +11,10 @@ backend の自動置換は行わない。有効化・配備は別途承認が必
 | `activateCode` (5回/時/ユーザー) | 支援コード総当り防止 | Durable Object (strict)。同上 | fail-closed (同上) |
 | その他全バケット (`global`, `tradeRead`/`tradeWrite`, `gacha*`, `cards*`, `eventsub*` 等) | 濫用抑止・DDoS 緩和 | KV (`RATE_LIMIT_KV` 自動初期化) + memory。`src/lib/rate-limit.ts` の soft 経路 | fail-open (既存契約を維持) |
 
-分類の機械的固定: `tests/unit/rate-limit-bucket-policy.test.ts`。
+分類の機械的固定: `tests/unit/rate-limit-bucket-policy.test.ts` (main)。
+**preview ブランチには #1759 の strict 実装自体が入っていない**ため、preview では
+`activateCode` / `authLogin` も soft 経路 (KV/memory, fail-open) で動く。本表は
+production の正本 (main) の分類であり、preview の現行挙動ではない。
 strict バケットの追加・削除はセキュリティレビューを要する。
 strict を外すことは総当り防御の穴に直結し、soft を strict に変えることは
 binding 障害時の 503 停止範囲を広げる。どちらも本ドキュメント更新つきの別変更で行う。
@@ -37,6 +40,10 @@ KV へフォールバックしない (静かに非原子的 fail-open へ戻る�
 
 ## Preview 実測の状態
 
+- 前提: preview ブランチは main から 34 コミット遅れており (main が preview より
+  34 ahead / preview が main より 85 ahead、2026-10-20 時点)、#1759 の strict 実装は
+  main のみ。したがって以下の preview 実測はすべて **soft (KV/memory) 経路**の
+  観測であり、strict (DO) 経路の検証ではない。
 - 2026-10-07 read-only 確認: `twica-preview` Worker は存在し、最新デプロイは
   2026-10-04T15:21:41Z。`wrangler.toml` に `STRICT_RATE_LIMITER` binding は無く
   (preview_id 付きで bind 済みなのは `RATE_LIMIT_KV` のみ)、strict 経路は
