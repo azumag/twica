@@ -35,6 +35,10 @@ const AUX_WORKER_ARTIFACT_BY_FLAG = Object.freeze({
     'workers/chat-delivery/dist/production/index.js',
   '--require-chat-delivery-preview':
     'workers/chat-delivery/dist/preview/index.js',
+  '--require-rate-limit-production':
+    'workers/rate-limit/dist/production/index.js',
+  '--require-rate-limit-preview':
+    'workers/rate-limit/dist/preview/index.js',
 })
 const REQUIRED_AUX_WORKER_ARTIFACTS = Object.freeze(
   Object.values(AUX_WORKER_ARTIFACT_BY_FLAG),
@@ -493,6 +497,7 @@ for (const artifactRoot of [
   'analysis/dist',
   'workers/error-reporter/dist',
   'workers/overlay-realtime/dist',
+  'workers/rate-limit/dist',
 ]) {
   for (const file of walk(artifactRoot)) {
     assertAbsent(file, generatedBundlePatterns)
@@ -579,6 +584,7 @@ for (const configFile of [
   'wrangler.toml',
   'workers/error-reporter/wrangler.toml',
   'workers/overlay-realtime/wrangler.toml',
+  'workers/rate-limit/wrangler.toml',
   '.env.local.example',
 ]) {
   assertAbsent(configFile, runtimePatterns)
