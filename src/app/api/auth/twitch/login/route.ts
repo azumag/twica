@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { getTwitchAuthUrl } from '@/lib/twitch/auth'
 import { ADDITIONAL_SCOPES } from '@/lib/twitch/scopes'
 import { cookies } from 'next/headers'
-import { checkRateLimit, rateLimits, getClientIp } from '@/lib/rate-limit'
+import { checkRateLimit, rateLimits, getClientIp, getTrustedClientIp } from '@/lib/rate-limit'
 import { handleAuthError } from '@/lib/auth-error-handler'
 import { setRequestContext, clearUserContext } from '@/lib/sentry/user-context'
 import { ERROR_MESSAGES, STATE_COOKIE_OPTIONS, COOKIE_NAMES } from '@/lib/constants'
@@ -77,9 +77,27 @@ export async function GET(request: Request) {
   clearUserContext()
 
   try {
-    const ip = getClientIp(request);
-    const identifier = `ip:${ip}`;
-    const rateLimitResult = await checkRateLimit(rateLimits.authLogin, identifier, 5, 60 * 1000);
+    // Strict login limits must not trust caller-controlled X-Forwarded-For or
+    // X-Real-IP values. If Cloudflare's single-address header is absent, the
+    // strict backend reports unavailable instead of sharing an "unknown" bucket.
+    const ip = getTrustedClientIp(request);
+    const identifier = `ip:${ip ?? 'unknown'}`;
+    // The old soft backend keeps its previous local/dev identifier only while
+    // the optional strict binding is absent; it is never sent to a configured DO.
+    const rateLimitResult = await checkRateLimit(
+      rateLimits.authLogin,
+      identifier,
+      5,
+      60 * 1000,
+      `ip:${getClientIp(request)}`,
+    );
+
+    if (rateLimitResult.unavailable) {
+      return NextResponse.json(
+        { error: 'Login is temporarily unavailable' },
+        { status: 503, headers: { 'Retry-After': '30' } },
+      );
+    }
 
     if (!rateLimitResult.success) {
       return NextResponse.json(
