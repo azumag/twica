@@ -20,10 +20,25 @@ due 行の起床通知 enqueue（`dispatchDueChatNotifications`）だけを行�
 
 ## 仕組み
 
-`.github/workflows/chat-outbox-watch.yml` が **5 分周期**（GitHub Actions
-schedule。混雑時は遅延しうる）で production を観測する。監視対象である
+`.github/workflows/chat-outbox-watch.yml` が production を観測する。トリガは
+**main への push** と **schedule（`*/5 * * * *`）**、および手動
+`workflow_dispatch` で、観測内容はどのトリガでも同一。監視対象である
 Cloudflare 側ではなく GitHub 側に置くことで、Cloudflare 全体が停止しても通知を
-発火できる。観測はすべて **読み取り専用**:
+発火できる。
+
+- **push（main）**: マージのたびに 1 回観測する。GitHub の schedule は新規登録
+  直後の発火まで時間がかかり、またこのリポジトリでは高頻度 cron が実効的に
+  数十分〜数時間間隔へ抑制されることを実測している（過去の `*/15` workflow は
+  約 40〜90 分間隔）。頻繁にマージされる運用では push が実効的な定期監視になる。
+- **schedule**: 静かな時間帯を補完する。GitHub 側の抑制で実効間隔は延びうるが、
+  閾値判定は行の実時刻で行うため誤報・誤陰性は生じない（検知 latency だけが
+  延びる）。
+- **初回**: workflow を default branch へ追加・更新した直後は、GitHub 側の
+  schedule 登録に時間がかかることがある。初回は
+  `gh workflow run chat-outbox-watch.yml --ref main -f heartbeat=true` で
+  手動確認できる。
+
+観測はすべて **読み取り専用**:
 
 - production DB: `PGOPTIONS=-c default_transaction_read_only=on` でセッション全体を
   読み取り専用にし、実効値を確認してから集計する
