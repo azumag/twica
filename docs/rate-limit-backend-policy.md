@@ -49,6 +49,57 @@ KV へフォールバックしない (静かに非原子的 fail-open へ戻る�
   DO 有効化後の cross-isolate 直列化・レイテンシ・binding 障害時の挙動。
   preview への負荷生成は本 PR の範囲外とし、再現試験は別途承認の上で行う。
 
+## Durable Object Worker の配備 (#1888)
+
+strict バケット用の DO は、アプリ本体とは別の Worker `twica-rate-limit`
+(`workers/rate-limit/wrangler.toml`) として定義する。アプリ本体の entrypoint は
+OpenNext の生成物 `.open-next/worker.js` で任意の class を export できないため、
+class を同一スクリプトに置けない。アプリ側は Durable Object namespace を
+`script_name` 付き binding で参照する。
+
+- class: `StrictRateLimitDurableObject`
+- migration: `tag = "v1"` / `new_sqlite_classes` (SQLite-backed DO)
+- Worker 名: production `twica-rate-limit` / preview `twica-rate-limit-preview`
+
+配備順序を逆にするとアプリ側 deploy が存在しない Worker を指して失敗するため、
+必ず次の順で行う。
+
+1. owner 承認後、`npm run rate-limit:deploy:preview` → `npm run rate-limit:deploy`
+   で DO Worker を配備する (新規 Cloudflare リソースの作成を伴う)。
+2. 配備を確認できたら、アプリ側 `wrangler.toml` に次の binding を追加する。
+   この変更は別 PR とし、DO Worker の配備前に merge しない。main の
+   `[env.preview]` は main からの preview upload 用で、稼働中の `twica-preview`
+   は preview ブランチから配備されるため、preview 側の binding は preview
+   ブランチにも別途追加する。
+
+   ```toml
+   # 本番 (top-level)
+   [[durable_objects.bindings]]
+   name = "STRICT_RATE_LIMITER"
+   class_name = "StrictRateLimitDurableObject"
+   script_name = "twica-rate-limit"
+
+   # [env.preview]
+   [[env.preview.durable_objects.bindings]]
+   name = "STRICT_RATE_LIMITER"
+   class_name = "StrictRateLimitDurableObject"
+   script_name = "twica-rate-limit-preview"
+   ```
+
+3. binding 追加後、preview の Worker ログで `strict` 経路が選ばれること、
+   並列バーストで 429、DO 障害時・`ip:unknown` 時に 503 になることを実測する。
+4. preview の実測が揃ってから production の有効化を別途判断する。
+
+`npm run rate-limit:build:production` / `rate-limit:build:preview` は wrangler の
+dry-run bundle で、Cloudflare へは何も作成しない (CI の `auxiliary-workers:build`
+に含まれる)。deploy 用 script は存在するが、workflow から自動実行しない。
+
+### preview ブランチについて
+
+preview ブランチは #1759 (strict 経路の実装) を含んでおらず、行番号・設定とも
+main と独立している。`twica-preview` を strict 化するには #1759 相当の取り込みが
+先に必要で、これは main/preview 双方に固有コミットがあるため別判断とする。
+
 ## 有効化ゲート (DO binding 配備は含まない)
 
 1. `STRICT_RATE_LIMITER` の binding/migration 配備は別途承認 (本 PR は wrangler 設定・

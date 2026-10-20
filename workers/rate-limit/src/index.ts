@@ -20,6 +20,20 @@ interface CheckRequest {
   windowMs: number;
 }
 
+/**
+ * Durable Objects require a module worker entrypoint, so this Worker keeps a
+ * default export even though the class is the only real surface. The app never
+ * fetches this Worker directly (no route is assigned); the binding reaches the
+ * class through a Durable Object namespace, and every other request is a 404.
+ */
+const worker = {
+  async fetch(): Promise<Response> {
+    return new Response("Not found", { status: 404 });
+  },
+};
+
+export default worker;
+
 /** One object represents one strict limiter + one user/IP key. */
 export class StrictRateLimitDurableObject {
   constructor(private readonly state: DurableObjectStateLike) {}
