@@ -42,7 +42,10 @@ describe('chat-outbox-watch workflow contract (Issue #1837)', () => {
     throw new Error('Evaluate alert conditions step の python block が取り出せません')
   }
 
-  it('5 分周期の schedule と workflow_dispatch（heartbeat 入力のみ）で起動する', () => {
+  it('main への push・5 分周期の schedule・workflow_dispatch（heartbeat 入力のみ）で起動する', () => {
+    // schedule の登録遅延・GitHub 側の抑制を補完するため、main への push でも
+    // 観測する（読み取り専用・観測内容は全トリガで同一）。
+    expect(workflow).toContain('push:\n    branches: [main]')
     expect(workflow).toContain('schedule:')
     expect(workflow).toContain('- cron: "*/5 * * * *"')
     expect(workflow).toContain('workflow_dispatch:')
@@ -56,6 +59,8 @@ describe('chat-outbox-watch workflow contract (Issue #1837)', () => {
     expect(inputKeys).toEqual(['heartbeat'])
     expect(dispatchInputs).toContain('type: boolean')
     expect(dispatchInputs).toContain('default: false')
+    // push トリガを main に限定する（feature branch へ production の secret を渡さない）。
+    expect(workflow).toContain('push:\n    branches: [main]')
   })
 
   it('environment を production に固定する（input や条件式で切り替えられない）', () => {

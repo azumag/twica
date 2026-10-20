@@ -60,7 +60,8 @@
 #   （docs/chat-outbox-stall-watch.md 参照）。
 #
 # 通知の頻度制御:
-#   schedule は 5 分周期だが、停滞が継続する間の毎周期送信はスパムになるため、
+#   run は schedule（5 分周期・GitHub 側で抑制されうる）と main への push で
+#   起きる。停滞が継続する間の毎 run 送信はスパムになるため、
 #   「最後に Discord 送信に成功した時刻」を main の HEAD コミットに対する
 #   commit status（context: chat-outbox-watch/alert）として記録し、抑制窓
 #   （55 分）以内の run では Discord 送信だけをスキップする。run 自体は
@@ -81,10 +82,17 @@
 name: Chat outbox watch (production)
 
 on:
+  # main へのマージ時にも 1 回観測する。GitHub の schedule は新規登録直後に
+  # 発火まで時間がかかるうえ、このリポジトリでは高頻度 cron が実効的に
+  # 数十分〜数時間間隔へ抑制されることを実測している（過去の */15 workflow は
+  # 約 40〜90 分間隔）。頻繁に main へマージされる運用では、push でも観測する
+  # ことで「実際に動いている監視」にする（読み取り専用・1 run 10 秒程度）。
+  # 静かな時間帯は schedule が補完する。どちらも観測内容は完全に同一。
+  push:
+    branches: [main]
   schedule:
-    # 5 分ごと。GitHub の scheduled run は混雑時に遅延することがある。遅延は
-    # 検知の latency を伸ばすだけで、閾値判定は行の実時刻で行うため誤報・
-    # 誤陰性は生じない。
+    # 5 分ごと（GitHub 側の抑制で実効間隔は延びうる）。遅延は検知の latency を
+    # 伸ばすだけで、閾値判定は行の実時刻で行うため誤報・誤陰性は生じない。
     - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
