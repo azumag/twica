@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getUserPlan } from "@/lib/plan";
@@ -30,9 +31,26 @@ export const metadata: Metadata = {
  *     session) and the public footer.
  * Pages that require login (/trade/mine, the listing flow) redirect
  * themselves with a returnTo, like /collection/[streamerId].
+ *
+ * Every /trade/** page also carries a small "how it works" link to the public
+ * usage guide (/guide/trade). The guide is deliberately linked from here only,
+ * not from /guide or the footer: in production the trade entry points are
+ * still hidden, so a general-purpose page must not advertise the feature.
+ * It sits in the layout (not in each page) so the board, the listing flow,
+ * the auction detail and My trades all get it without repeating the markup.
  */
 export default async function TradeLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();
+  const tGuide = await getTranslations("tradeGuidePage");
+  // Right-aligned and capped at the same max-w-4xl the trade pages use, so the
+  // link lines up with their content column instead of the viewport edge.
+  const guideLink = (
+    <div className="mx-auto mb-3 flex max-w-4xl justify-end">
+      <Link href="/guide/trade" className="text-sm text-purple-300 transition-colors hover:text-purple-200">
+        {tGuide("entryLink")}
+      </Link>
+    </div>
+  );
 
   if (!session) {
     return (
@@ -44,7 +62,10 @@ export default async function TradeLayout({ children }: { children: React.ReactN
             </Link>
           </div>
         </header>
-        <main className="container mx-auto px-4 py-6">{children}</main>
+        <main className="container mx-auto px-4 py-6">
+          {guideLink}
+          {children}
+        </main>
         <PublicFooter />
       </div>
     );
@@ -67,7 +88,10 @@ export default async function TradeLayout({ children }: { children: React.ReactN
           <div className="mb-6">
             <DashboardNav isStreamer={isStreamer} isSupporter={plan !== "basic"} />
           </div>
-          <main>{children}</main>
+          <main>
+            {guideLink}
+            {children}
+          </main>
         </div>
       </div>
     </MaintenanceStatusProvider>
