@@ -480,7 +480,25 @@ async function createErrorIssue(
   const first = group.errors[0]
 
   // タイトル: 環境 + エラー種別 + メッセージ先頭（最大80文字）
-  const title = `[${first.environment}] ${first.error_type} ${first.message.split('\n')[0]}`.slice(0, 80)
+  // メッセージ先頭行は外部入力由来の文字列を含み得て Issue は公開されるため、
+  // inlineCode でコードスパン化し、@メンション（通知スパム）・リンク/画像・見出し等の
+  // Markdown として解釈されないようにする。
+  // 80文字で単純に slice すると閉じバッククォートが切れてコードスパンが壊れる
+  // （=無害化が外れる）ため、先頭行の側を縮めて「無害化後に80文字へ収まる」最長の
+  // ものを採用する。先頭行は generateSignature と同じ 200 文字で打ち切り、巨大入力で
+  // 走査コストが膨らまないようにする。
+  const titlePrefix = `[${first.environment}] ${first.error_type} `
+  const messageHead = first.message.split('\n')[0].slice(0, 200)
+  let title = titlePrefix + inlineCode('')
+  for (let n = messageHead.length; n > 0; n--) {
+    const candidate = titlePrefix + inlineCode(messageHead.slice(0, n))
+    if (candidate.length <= 80) {
+      title = candidate
+      break
+    }
+  }
+  // environment / error_type が極端に長い場合の最終防衛（通常は到達しない）
+  title = title.slice(0, 80)
 
   const body = `## Auto-generated Error Report
 
@@ -491,19 +509,13 @@ async function createErrorIssue(
 **Last Seen**: ${group.lastSeen}
 
 ### Message
-\`\`\`
-${first.message.slice(0, 2000)}
-\`\`\`
+${fenceCodeBlock(first.message.slice(0, 2000))}
 
 ### Stack Trace
-\`\`\`
-${first.stack_trace?.slice(0, 3000) || 'N/A'}
-\`\`\`
+${fenceCodeBlock(first.stack_trace?.slice(0, 3000) || 'N/A')}
 
 ### Context
-\`\`\`json
-${JSON.stringify(first.context, null, 2).slice(0, 2000)}
-\`\`\`
+${fenceCodeBlock(JSON.stringify(first.context, null, 2).slice(0, 2000), 'json')}
 
 ---
 Signature: ${group.signature}
@@ -640,15 +652,18 @@ export async function processErrors(env: Env): Promise<void> {
 // error 処理との違い: 問い合わせは1件ずつ一意なのでグループ化・再発コメント不要。
 // =============================================================================
 
-/** PlanetScale support_inquiriesテーブルのレコード型（Issue化に必要な列のみ）。 */
+/**
+ * PlanetScale support_inquiriesテーブルのレコード型（Issue化に必要な列のみ）。
+ *
+ * 件名・本文・投稿者の表示名/Twitch ID は意図的に含めない。リポジトリは public で
+ * Issue は誰でも閲覧・検索できるため、自由入力の個人情報を Issue へ転記してはならない
+ * （転記が必要な情報が無い以上、Worker 側でも SELECT しない = データ最小化）。
+ * 問い合わせの内容確認と返信は analysis ダッシュボードの問い合わせ画面で行う。
+ */
 interface InquiryRecord {
   id: string
-  twitch_user_id: string
-  twitch_display_name: string
   // 'bug' | 'feature' | 'other'
   category: string
-  subject: string
-  body: string
   created_at: string
 }
 
@@ -672,15 +687,21 @@ function inquiryCategoryLabel(category: string): string {
 }
 
 /**
- * 本文を安全にコードフェンスで囲む。
- * 本文中のバッククォート連の最大長 + 1 のフェンスを使うことで、本文から
- * フェンスを脱出して偽の `Inquiry-ID:` 行などを混入させる余地をなくす。
+ * 任意文字列を安全にコードフェンスで囲む。
+ * 内容中のバッククォート連の最大長 + 1（最低3）のフェンスを使うことで、内容から
+ * フェンスを脱出して偽の見出し・`Signature:` / `Inquiry-ID:` 行・@メンションなどを
+ * Issue 本文へ混入させる余地をなくす（CommonMark の fenced code block 仕様:
+ * 閉じフェンスは開きフェンス以上の長さのバッククォート連でのみ成立する）。
+ *
+ * errors.message / stack_trace / context はアプリ内で発生した例外や外部入力の断片
+ * （不正な JSON 文字列など）を含み得て、Issue は公開されるため、エラー Issue 本文でも
+ * 固定の ``` ではなくこの関数で囲む。info（言語指定）は開きフェンスにのみ付ける。
  */
-function fenceInquiryBody(body: string): string {
-  const runs = body.match(/`+/g)
+function fenceCodeBlock(content: string, info = ''): string {
+  const runs = content.match(/`+/g)
   const longest = runs ? Math.max(...runs.map(r => r.length)) : 0
   const fence = '`'.repeat(Math.max(3, longest + 1))
-  return `${fence}\n${body}\n${fence}`
+  return `${fence}${info}\n${content}\n${fence}`
 }
 
 /**
@@ -688,8 +709,9 @@ function fenceInquiryBody(body: string): string {
  * 改行を空白へ畳んで1行に収め、markdown 描画（@メンションによる他ユーザーへの
  * 通知スパム・画像/リンク・整形崩し）や偽の見出し行の注入を無効化する。
  * 値に含まれるバッククォート連より1つ長いデリミタを使い、必要なら CommonMark に
- * 従いスペースパディングしてエスケープする。件名・表示名など fenced ブロック外に
- * 展開する自由入力フィールドに使う（本文は fenceInquiryBody で保護済み）。
+ * 従いスペースパディングしてエスケープする。Issue タイトルや fenced ブロック外に
+ * 展開する自由入力フィールド（エラーメッセージ先頭行・カテゴリ等）に使う
+ * （複数行の本文は fenceCodeBlock で保護する）。
  */
 function inlineCode(value: string): string {
   const collapsed = value.replace(/\s+/g, ' ').trim()
@@ -706,12 +728,12 @@ function inlineCode(value: string): string {
  * PostgREST の `select=${INQUIRY_SELECT_COLUMNS}&github_issue_created=eq.false&
  * order=created_at.asc&limit=${MAX_INQUIRIES_PER_RUN}` フィルタ意味論を SQL で
  * 忠実に再現する（#711 比較コメント§3）。列名は識別子でありプレースホルダ
- * バインドの対象外のため、InquiryRecord に対応する列（body 以外の余計な列は
- * 引かない）をそのまま SQL に書き下す。LIMIT は値なので通常どおりバインドする。
+ * バインドの対象外のため、InquiryRecord に対応する列（件名・本文・投稿者情報などの
+ * 個人情報列は Issue に載せないので引かない）をそのまま SQL に書き下す。LIMIT は値なので通常どおりバインドする。
  */
 async function fetchPendingInquiries(sql: postgres.Sql): Promise<InquiryRecord[]> {
   return sql<InquiryRecord[]>`
-    SELECT id, twitch_user_id, twitch_display_name, category, subject, body, created_at
+    SELECT id, category, created_at
     FROM support_inquiries
     WHERE github_issue_created = false
     ORDER BY created_at ASC
@@ -721,29 +743,36 @@ async function fetchPendingInquiries(sql: postgres.Sql): Promise<InquiryRecord[]
 
 /**
  * 問い合わせから GitHub Issue のペイロードを組み立てる。
- * リポジトリは private のためメンテナが対応に必要な投稿者情報も含める。
+ *
+ * 【重要】このリポジトリは public であり、Issue は誰でも閲覧・検索できる。そのため
+ * 問い合わせの件名・本文・投稿者の表示名/Twitch ID（いずれも自由入力または個人を
+ * 特定し得る情報）は Issue に転記しない。Issue は「問い合わせが来た」という通知と
+ * 管理画面への誘導だけを担い、内容の確認と返信は analysis ダッシュボードの
+ * 問い合わせ画面（Inquiry-ID で特定可能・管理者のみ）で行う。
+ * （以前の実装は「リポジトリは private」という誤った前提で本文等を転記していた。）
+ *
+ * タイトルは自由入力を含まない固定文言 + カテゴリの表示名 + Inquiry-ID 先頭8桁。
  * 末尾の `Inquiry-ID:` 行は重複検索のマーカーなのでフォーマットを変更しないこと。
  */
 function buildInquiryIssue(inquiry: InquiryRecord): { title: string; body: string; labels: string[] } {
   const label = inquiryCategoryLabel(inquiry.category)
-  // タイトル: 一覧で判別しやすい接頭辞 + 件名。改行を除去し120字上限に丸める。
-  const singleLineSubject = inquiry.subject.replace(/\s+/g, ' ').trim()
-  const title = `[問い合わせ/${label}] ${singleLineSubject}`.slice(0, 120)
+  // タイトルには自由入力（件名）を入れない。カテゴリは DB の CHECK 制約で既知の値に
+  // 限られるが、Worker 自身はこの不変条件に依存せず、未知の値は生のまま
+  // タイトルへ出さず固定の「未分類」にする（本文側では inlineCode で無害化して併記）。
+  const titleLabel = INQUIRY_CATEGORY_LABELS[inquiry.category] ?? '未分類'
+  const title = `[問い合わせ/${titleLabel}] 新規問い合わせを受け付けました (${inquiry.id.slice(0, 8)})`
 
-  // fenced ブロック外に出す自由入力フィールドは inlineCode で無害化する
-  // （投稿者による @メンション通知スパム・リンク/画像・偽の見出し行注入を防ぐ）。
+  // fenced ブロック外に出す値は inlineCode で無害化する（カテゴリは未知値のとき自由
+  // 文字列になり得るため、@メンション通知スパム・リンク/画像・偽の見出し行注入を防ぐ）。
   const body = `## 新規問い合わせ
 
 **カテゴリ**: ${inlineCode(label)} (${inlineCode(inquiry.category)})
-**投稿者**: ${inlineCode(inquiry.twitch_display_name)} (${inlineCode(inquiry.twitch_user_id)})
-**件名**: ${inlineCode(inquiry.subject)}
-**投稿日時**: ${inquiry.created_at}
+**受付日時**: ${inquiry.created_at}
 
-### 本文
-${fenceInquiryBody(inquiry.body)}
+問い合わせの件名・本文・投稿者情報は、このリポジトリが公開されているため Issue には記載していません。
+内容の確認と返信は **analysis ダッシュボードの問い合わせ管理画面**（管理者のみ）で、下記 Inquiry-ID の問い合わせを開いて行ってください。
 
 ---
-返信はダッシュボードの問い合わせ管理画面から行ってください。
 Inquiry-ID: ${inquiry.id}
 *Auto-generated by twica-error-reporter — https://github.com/azumag/twica/issues/633*`
 
