@@ -7,6 +7,7 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { Rarity } from '../types/database'
 import {
   adminApi,
+  adminAuthHeaders,
   TimeRange,
   GachaSummary,
   GachaTableRow,
@@ -257,7 +258,8 @@ export function Gacha() {
       streamerId: selectedStreamerId || undefined,
     })
     try {
-      const response = await fetch(url)
+      // /__admin は管理APIトークンのヘッダが無いと403（CSRF/リバインディング対策）
+      const response = await fetch(url, { headers: adminAuthHeaders() })
       if (!response.ok) {
         throw new Error(`Export failed (status ${response.status})`)
       }

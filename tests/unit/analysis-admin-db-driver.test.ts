@@ -1089,10 +1089,35 @@ async function captureAdminApiHandler(
 ): Promise<(req: unknown, res: unknown) => Promise<void>> {
   const { localAdminApiPlugin } = await importLocalAdminApi()
   const plugin = localAdminApiPlugin(env) as any
-  const server: any = { middlewares: { use: vi.fn() } }
+  // Host 検証は「実際の待受ポート」を使う。テストでは設定値(5173)を待受ポートとみなす。
+  const server: any = {
+    middlewares: { use: vi.fn() },
+    config: { server: { port: 5173 } },
+  }
   plugin.configureServer(server)
   expect(server.middlewares.use).toHaveBeenCalledWith('/__admin', expect.any(Function))
-  return server.middlewares.use.mock.calls[0][1]
+  const rawHandler: (req: unknown, res: unknown) => Promise<void> =
+    server.middlewares.use.mock.calls[0][1]
+
+  // CSRF/リバインディング対策(Host・Content-Type・X-Admin-Token)は専用テスト
+  // (tests/unit/analysis-admin-request-guard.test.ts)で検証する。このファイルの
+  // テストはDB経路・ディスパッチの検証が目的なので、正規のブラウザが送るヘッダを
+  // 既定で付けて対策を通過させる（req.headers で個別に上書き可能）。
+  const meta = (await plugin.transformIndexHtml('<html></html>', { server }))[0]
+  const token = meta.attrs.content as string
+  return (req: any, res: unknown) =>
+    rawHandler(
+      {
+        ...req,
+        headers: {
+          host: 'localhost:5173',
+          'x-admin-token': token,
+          ...(req.method && req.method !== 'GET' ? { 'content-type': 'application/json' } : {}),
+          ...req.headers,
+        },
+      },
+      res
+    )
 }
 
 // __setAnalysisSqlFactoryForTests()でsql factoryを差し替えているため、以下の
