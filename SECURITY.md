@@ -87,6 +87,41 @@ fixed. Keep the Browser Source "Page permissions" at "No access to OBS" for
 least privilege; this limits access to OBS APIs but does not patch Chromium or
 enable its sandbox. twica's overlay does not use `window.obsstudio`.
 
+
+#### Next.js / next-intl / transitive production dependencies (2026-10-21) - RESOLVED
+
+**Status:** Resolved (manifest and lockfile updated to patched versions)
+**Audit method:** `npm audit --package-lock-only --omit=dev --json` (2026-10-21)
+**Result:** Critical 1 / High 5 / Moderate 1 (7 packages, multiple advisories per dependency)
+
+**Updated dependencies:**
+
+| Package | Previous | Updated | Advisory |
+|---|---:|---:|---|
+| next | 16.2.12 | 16.4.2 | GHSA-p293-qw3h-jr36, GHSA-2xp9-vwfh-vxw4, GHSA-vcvr-r3jv-pc5j, GHSA-4jqv-mc3x-m676, GHSA-39w2-rjm5-chcv, GHSA-f87g-xv8r-7p7x, GHSA-mcj8-r9mp-w47p, GHSA-cjq9-62q9-8jv4 |
+| next-intl | 4.7.0 | 4.14.9 | GHSA-8f24-v5vv-gm5j, GHSA-4c35-wcg5-mm9h |
+| sharp | 0.34.5 | 0.35.5 | GHSA-f88m-g3jw-g9cj, GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w |
+| postcss | 8.4.31 | 8.5.23 | GHSA-qx2v-qp2m-jg93, GHSA-6g55-p6wh-862q, GHSA-fxqj-rqcc-2cmp, GHSA-r28c-9q8g-f849 |
+| nanoid | 3.3.11 | 3.3.20 | GHSA-28wg-ghj8-5hjv, GHSA-2v37-7h3g-55p8, GHSA-xwg4-73v4-xw9w |
+| source-map-js | 1.2.1 | 1.2.2 | GHSA-68fv-2mgg-jv7q |
+| picomatch | 4.0.3 | 4.0.7 | GHSA-3v7f-55p6-f55p, GHSA-c2c7-rcm5-vvqj |
+
+**Applicability assessment (production deps only):**
+
+- Next.js Image Optimization SSRF (GHSA-cjq9-62q9-8jv4): remotePatterns allows any HTTPS host, but the majority of `<Image>` usages set `unoptimized`. The optimizer path is only reached for the few images without `unoptimized`. API-level validation (jpg/png extension) remains in place. remotePatterns minimization is deferred to a follow-up to avoid breaking external card image loading.
+- Next.js AVIF RCE (GHSA-2xp9-vwfh-vxw4): sharp/libheif AVIF optimization path. Not confirmed reachable in OpenNext production deployment; sharp updated regardless.
+- Next.js Windows RCE (GHSA-p293-qw3h-jr36): Windows-host condition; not applicable to Cloudflare Workers.
+- Next.js ImageResponse (GHSA-vcvr-r3jv-pc5j): no `next/og` / `ImageResponse` usage found in src/.
+- next-intl open redirect / prototype pollution (GHSA-8f24-v5vv-gm5j, GHSA-4c35-wcg5-mm9h): target middleware/precompile settings and attacker-controlled catalog keys not found in current configuration.
+- Remaining transitive dev/test dependencies are tracked separately.
+
+**Verification:**
+- `npm audit --omit=dev`: 0 vulnerabilities
+- `npm run typecheck`: pass
+- `npm run test:unit`: 5671 passed
+- `npm run build`: pass
+- `npm run workers:build`: pass (OpenNext bundle generated)
+
 ### Security Best Practices
 
 #### Session Management
@@ -168,4 +203,4 @@ To automatically audit dependencies as part of CI/CD, consider adding to your wo
 
 ## Last Updated
 
-2026-09-22
+2026-10-21
