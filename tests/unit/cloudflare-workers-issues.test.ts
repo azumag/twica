@@ -29,11 +29,17 @@ describe("Workers Issues deployment contract", () => {
   it("pins build/CI Node.js to a fully-specified 22.x patch at or above the security-fixed release", () => {
     // 2026-10-21 の Node.js security release では 22.23.4 が修正版（Refs #1914）。
     // `.node-version` をメジャー（"22"）だけにすると、actions/setup-node は runner の
-    // ツールキャッシュにある旧パッチ（22.23.3）を選び、Workers Builds も既定のパッチ版を
-    // 使うため、修正版が適用されない。そこでパッチまで完全固定（major.minor.patch）を要求する。
+    // ツールキャッシュにある旧パッチ（22.23.3）を選び、Workers Builds もビルド時点で自身が把握する
+    // 22 系の最新（公開直後の修正版より古いことがある。2026-10-21 は 22.23.3）に解決するため、
+    // 修正版が適用されない。そこでパッチまで完全固定（major.minor.patch）を要求する。
     // 下限（22.23.4 以上）を設けるのは、将来の巻き戻しや誤った downgrade で
     // 脆弱な版へ戻ることを防ぐため。比較は文字列ではなく数値で行う（22.23.10 > 22.23.4）。
-    const version = readFileSync(join(root, ".node-version"), "utf8").trim();
+    // trim 前の生の内容を検査する：Workers Builds は完全指定の版を trim せずインストーラへ渡すため、
+    // 末尾改行付きの `22.23.4\n` ではインストールに失敗した（2026-10-21 build f2aaabd8 のログ。
+    // Refs #1914）。actions/setup-node は値を trim するので CI だけでは検出できず、ここで固定する。
+    const raw = readFileSync(join(root, ".node-version"), "utf8");
+    expect(raw).toBe(raw.trim());
+    const version = raw;
     expect(version).toMatch(/^22\.\d+\.\d+$/);
     const parse = (v: string) => v.split(".").map(Number);
     const atLeast = (actual: string, minimum: string) => {
