@@ -862,8 +862,9 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
 
 /**
- * Host ヘッダから hostname 部だけを取り出す。パースできない場合は `null` を返す
- * (呼び出し側は「ヘッダ未送信」と区別できないため、不正な Host は拒否に倒す)。
+ * Host ヘッダから hostname 部だけを取り出す。パースできない場合は `null` を返す。
+ * 呼び出し側(isAllowedAdminHost)は「ヘッダ未送信」と「不正な Host」を区別し、
+ * 後者を拒否に倒す。
  *
  * - `localhost:5173` → `localhost`
  * - `[::1]:5173`     → `::1` (IPv6 はブラケット記法なので単純な `:` split では壊れる)
@@ -900,7 +901,7 @@ function parseHostHeader(host: string | undefined): string | null {
 }
 
 /** Host が loopback を指すか。未送信は後方互換のため許可する。 */
-export function isAllowedAdminHost(host: string | undefined): boolean {
+function isAllowedAdminHost(host: string | undefined): boolean {
   // ヘッダ未送信 (HTTP/1.0 やサーバー間の直接呼び出し) は後方互換のため許可する。
   // 一方、送信されていてパースできない不正な Host は拒否する。両者を区別しないと
   // `[::1].evil.example` のような不正形が「未送信」と同じ扱いで通ってしまう。
@@ -917,7 +918,7 @@ export function isAllowedAdminHost(host: string | undefined): boolean {
  * `new URL('null')` は例外になり、その後の分岐で許可に倒れる実装だと
  * 攻撃者が Origin を偽装できてしまうため、先に判定する。
  */
-export function isAllowedAdminOrigin(origin: string | undefined): boolean {
+function isAllowedAdminOrigin(origin: string | undefined): boolean {
   if (!origin) return true
   const trimmed = origin.trim()
   if (!trimmed || trimmed.toLowerCase() === 'null') return false
@@ -933,7 +934,7 @@ export function isAllowedAdminOrigin(origin: string | undefined): boolean {
 const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 /** 状態を変更しうるメソッドか。 */
-export function isStateChangingMethod(method: string | undefined): boolean {
+function isStateChangingMethod(method: string | undefined): boolean {
   return STATE_CHANGING_METHODS.has((method || '').toUpperCase())
 }
 
@@ -947,7 +948,7 @@ export function isStateChangingMethod(method: string | undefined): boolean {
  * これだけでフォーム経由の書き込みを遮断できる。
  * パラメータ (`; charset=utf-8`) は許容する。
  */
-export function isJsonContentType(contentType: string | undefined): boolean {
+function isJsonContentType(contentType: string | undefined): boolean {
   if (!contentType) return false
   const media = contentType.split(';')[0].trim().toLowerCase()
   return media === 'application/json'
@@ -985,7 +986,7 @@ function readHeader(
  * ヘッダ偽装で回避されうるが、送信元オリジンを問わず一致を要求できる。
  * どちらか一方が緩んでも単独では突破できない状態を保つ。
  */
-export function evaluateAdminWriteGuard(
+function evaluateAdminWriteGuard(
   headers: Record<string, string | string[] | undefined>,
   expectedToken: string | undefined
 ): { status: number; error: string } | null {
