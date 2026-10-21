@@ -58,6 +58,14 @@ jobs:
               - 'eslint*.config.*'
               - 'vitest.config.*'
               - 'wrangler.toml'
+              # Node の指定だけを変える PR で test / workers:build / lint を実際に起動する。
+              # setup-node が読むのは .github/ci-node-version なので、このファイルの変更は
+              # 「新しい Node で検証する」ことを意味する。.node-version は Workers Builds
+              # 専用で CI の Node を変えないが、値（契約テストで "22" に固定）と本 filter の
+              # 対応を守るため、変更時も test を回す
+              # （経緯は docs/cloudflare-workers-builds.md。Refs #1917）。
+              - '.github/ci-node-version'
+              - '.node-version'
               # tests/unit/cloudflare-proxy-migration.test.ts が本文を直接assertする。
               - 'docs/cloudflare-proxy-migration.md'
             tests:
@@ -124,11 +132,20 @@ jobs:
               - 'tsconfig*.json'
               - 'package.json'
               - 'package-lock.json'
+              # app と重複するが意図的: postgres_fixtures は PG17 / integration job を
+              # 独立にゲートする。CI の Node を変えるのは .github/ci-node-version だけだが、
+              # Node 関連の変更では保守的に実PG検証も回す（.node-version は Workers Builds
+              # 専用で CI の Node を変えない点に注意）。
               - '.node-version'
               - '.github/ci-node-version'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
+              # analysis job も setup-node で .github/ci-node-version を使うため、
+              # Node の固定版を変えたときは analysis の typecheck / build も新 Node で回す。
+              # .node-version は CI の Node を変えず、analysis job は契約テストも
+              # 実行しないため含めない。
+              - '.github/ci-node-version'
             i18n:
               - 'src/**'
               - 'eslint.i18n.config.mjs'
