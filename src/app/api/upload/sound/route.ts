@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { handleApiError, handleBlobError } from '@/lib/error-handler';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from '@/lib/rate-limit';
-import { ERROR_MESSAGES, SOUND_UPLOAD_CONFIG } from '@/lib/constants';
+import { ERROR_MESSAGES, SOUND_UPLOAD_CONFIG, STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
 import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client';
+import { recordBlobFile } from '@/lib/storage-db';
+import { getStorageUsage } from '@/lib/storage-usage';
 import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
 
@@ -154,6 +156,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     fileName = `sound_${userPrefix}_${uniqueSuffix}.${ext}`;
 
+    // 容量予約: 音声も累積使用量の対象にする (#1896)
+    const preUploadUsage = await getStorageUsage(userPrefix, session!.twitchUserId);
+    if (preUploadUsage.globalUsage + buffer!.length > preUploadUsage.globalLimitBytes) {
+      return NextResponse.json(
+        { error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' },
+        { status: 507 }
+      );
+    }
+    if (preUploadUsage.userUsage + buffer!.length > preUploadUsage.userLimitBytes) {
+      return NextResponse.json(
+        { error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
+        { status: 507 }
+      );
+    }
+
     // R2効果音バケットにアップロード（リトライ付き）
     const uploadResult = await uploadSoundToR2WithRetry(fileName, buffer, actualType);
 
@@ -162,6 +179,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         new Error(uploadResult.error),
         "Sound Upload API: Failed to upload to R2",
         { userId: session!.twitchUserId, fileName, fileSize: buffer.length }
+      );
+    }
+
+    try {
+      await recordBlobFile(uploadResult.url, userPrefix, buffer!.length, 'r2');
+    } catch (dbError) {
+      logger.error('Failed to record sound blob file in DB (compensation required):', dbError);
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.INVALID_REQUEST, code: 'STORAGE_LEDGER_FAILED' },
+        { status: 500 }
       );
     }
 

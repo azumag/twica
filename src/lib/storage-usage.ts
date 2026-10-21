@@ -67,14 +67,13 @@ export async function getStorageUsage(userPrefix?: string, twitchUserId?: string
       planOverLimit: dbUsage.userUsage > effectiveLimit,
     };
   } catch (error) {
-    // If we can't check usage, assume limits are not reached to not block uploads
-    // 使用量を確認できない場合は、アップロードをブロックしないように制限に達していないと仮定
-    logger.error('[StorageUsage] Failed to get storage usage:', error);
+    // 容量が取得不能な場合は無制限保存へ進めない (#1896)
+    logger.error('[StorageUsage] Failed to get storage usage, blocking upload:', error);
     return {
       userUsage: 0,
       globalUsage: 0,
-      userLimitReached: false,
-      globalLimitReached: false,
+      userLimitReached: true,
+      globalLimitReached: true,
       userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
       globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
       planOverLimit: false,

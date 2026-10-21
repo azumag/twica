@@ -99,14 +99,13 @@ async function getStorageUsageFromDBPg(userPrefix: string): Promise<StorageUsage
       globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
     };
   } catch (error) {
-    // 使用量を確認できない場合は、アップロードをブロックしないように制限に達していないと仮定
-    // ただし、エラーログは出力する
-    logger.error('[StorageDB] Failed to get storage usage, returning defaults:', error);
+    // 容量が取得不能な場合は無制限保存へ進めない (#1896)
+    logger.error('[StorageDB] Failed to get storage usage, blocking upload:', error);
     return {
       userUsage: 0,
       globalUsage: 0,
-      userLimitReached: false,
-      globalLimitReached: false,
+      userLimitReached: true,
+      globalLimitReached: true,
       userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
       globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
     };

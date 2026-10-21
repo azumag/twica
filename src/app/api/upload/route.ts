@@ -180,6 +180,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // Format: {userPrefix}_{uniqueSuffix}.{ext}
     fileName = `${userPrefixForFile}_${uniqueSuffix}.${ext}`;
 
+    // 容量予約: 追加バイト数を含めて上限を事前判定する (#1896)
+    // 既存の check は現在使用量のみだったため、上限直前の追加で突破できた。
+    const preUploadUsage = await getStorageUsage(userPrefixForFile, session!.twitchUserId);
+    if (preUploadUsage.globalUsage + buffer!.length > preUploadUsage.globalLimitBytes) {
+      return NextResponse.json(
+        { error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' },
+        { status: 507 }
+      );
+    }
+    if (preUploadUsage.userUsage + buffer!.length > preUploadUsage.userLimitBytes) {
+      return NextResponse.json(
+        { error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
+        { status: 507 }
+      );
+    }
+
     // R2にアップロード（Vercel Blobの代わり）
     // uploadToR2WithRetry自体がR2固有エラーコード込みでリトライする単一のリトライループ
     // なので、ここで別のリトライラッパーに包まない（二重リトライで待ち時間が肥大化する
@@ -196,11 +212,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // DBにファイル情報を記録（使用量追跡用）
     try {
-      await recordBlobFile(uploadResult.url, userPrefixForFile, buffer.length, 'r2');
+      await recordBlobFile(uploadResult.url, userPrefixForFile, buffer!.length, 'r2');
     } catch (dbError) {
-      // DB記録に失敗しても、アップロードは成功しているので警告ログのみ
-      // 次回の初期化スクリプト実行時に同期される
-      logger.warn('Failed to record blob file in DB:', dbError);
+      logger.error('Failed to record blob file in DB (compensation required):', dbError);
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.INVALID_REQUEST, code: 'STORAGE_LEDGER_FAILED' },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({ url: uploadResult.url });
