@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
+
 import { getDb } from "@/lib/db/client";
 
 vi.mock("@/lib/db/client", () => ({
@@ -368,5 +371,106 @@ describe("trade service (#723)", () => {
 
     expect(result).toEqual({ kind: "error", code: "TRADE_OFFER_NOT_OPEN" });
     expect(pg.updateCalls[0].set).toEqual({ status: "cancelled" });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Card visibility (security): a card hidden from the viewer must behave like a
+  // non-existent card, both when creating an offer and on the public board.
+  //
+  // Regression: createTradeOffer used to look the wanted card up by id +
+  // is_active only, so any signed-in user could read the name/rarity/image of a
+  // card whose streamer hides unowned cards (the snapshot is echoed back by
+  // POST /api/trades), and listTradeOffers returned snapshots of such cards.
+  //
+  // These are mock-based like the rest of this file: they pin the SQL the
+  // service sends. (The correlated-EXISTS resolution itself was verified on a
+  // real PostgreSQL; see the PR description.)
+  // ---------------------------------------------------------------------------
+  const render = (where: unknown) => new PgDialect().sqlToQuery(where as SQL);
+
+  it("create: the wanted-card lookup is restricted by cardVisibleTo for the offerer", async () => {
+    const pg = createDbMock({
+      selects: [
+        { rows: [{ id: OFFER.offerer_user_id, twitch_user_id: "viewer-1" }] },
+        { rows: [] },
+        {
+          rows: [{
+            userCardId: OFFER.offered_user_card_id,
+            cardId: OFFER.offered_card_id,
+            streamerId: OFFER.offered_streamer_id,
+            name: "Offer",
+            rarity: "rare",
+            imageUrl: null,
+          }],
+        },
+        { rows: [] }, // hidden card: the visibility condition yields no row
+      ],
+    });
+    primeDb(pg);
+
+    const { createTradeOffer } = await import("@/lib/trade");
+    const result = await createTradeOffer({
+      twitchUserId: "viewer-1",
+      offeredUserCardId: OFFER.offered_user_card_id,
+      wantedCardId: OFFER.wanted_card_id!,
+      requestId: OFFER.request_id!,
+    });
+
+    // Same error as a card that does not exist (no existence oracle) and no INSERT.
+    expect(result).toEqual({ kind: "error", code: "TRADE_WANTED_CARD_UNAVAILABLE" });
+    expect(pg.insertCalls).toHaveLength(0);
+
+    const where = render(pg.selectCalls[3].where);
+    expect(where.sql).toContain('visible_card.id = "cards"."id"');
+    expect(where.sql).toContain("visible_card.is_active = TRUE");
+    expect(where.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
+    expect(where.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
+    // The ownership branch is bound to the OFFERER (users.id), not to anyone else.
+    expect(where.sql).toContain("visible_owned.user_id = $");
+    expect(where.params).toContain(OFFER.offerer_user_id);
+  });
+
+  it("list: offers whose offered/wanted card is hidden from the viewer are excluded in SQL", async () => {
+    const pg = createDbMock({
+      selects: [
+        { rows: [{ id: OFFER.offerer_user_id, twitch_user_id: "viewer-1" }] },
+        { rows: [] },
+      ],
+    });
+    primeDb(pg);
+
+    const { listTradeOffers } = await import("@/lib/trade");
+    await listTradeOffers({
+      streamerId: OFFER.offered_streamer_id,
+      scope: "in_channel",
+      page: 1,
+      twitchUserId: "viewer-1",
+    });
+
+    const where = render(pg.selectCalls[1].where);
+    expect(where.sql).toContain('visible_card.id = "trade_offers"."offered_card_id"');
+    expect(where.sql).toContain('visible_card.id = "trade_offers"."wanted_card_id"');
+    expect(where.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
+    expect(where.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
+    expect(where.sql).toContain("visible_owned.user_id = $");
+    expect(where.params).toContain(OFFER.offerer_user_id);
+  });
+
+  it("list: an anonymous viewer owns nothing, so there is no ownership branch", async () => {
+    const pg = createDbMock({ selects: [{ rows: [] }] });
+    primeDb(pg);
+
+    const { listTradeOffers } = await import("@/lib/trade");
+    await listTradeOffers({
+      streamerId: OFFER.offered_streamer_id,
+      scope: "in_channel",
+      page: 1,
+    });
+
+    const where = render(pg.selectCalls[0].where);
+    expect(where.sql).toContain('visible_card.id = "trade_offers"."offered_card_id"');
+    expect(where.sql).toContain('visible_card.id = "trade_offers"."wanted_card_id"');
+    expect(where.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
+    expect(where.sql).not.toContain("visible_owned");
   });
 });
