@@ -93,9 +93,9 @@ describe('getStorageUsage', () => {
     const { getStorageUsage } = await import('@/lib/storage-usage')
     const result = await getStorageUsage('testprefix', 'twitch-user-123')
 
-    // エラー時はアップロードをブロックしない
-    expect(result.userLimitReached).toBe(false)
-    expect(result.globalLimitReached).toBe(false)
+    // エラー時は容量が確認できないのでアップロードをブロックする (#1896)
+    expect(result.userLimitReached).toBe(true)
+    expect(result.globalLimitReached).toBe(true)
     expect(result.userUsage).toBe(0)
   })
 
@@ -115,9 +115,9 @@ describe('getStorageUsage', () => {
     const { getStorageUsage } = await import('@/lib/storage-usage')
     const result = await getStorageUsage('testprefix', 'twitch-user-123')
 
-    // Promise.allの失敗はcatchで捕捉され、安全なデフォルトを返す
-    expect(result.userLimitReached).toBe(false)
-    expect(result.globalLimitReached).toBe(false)
+    // Promise.allの失敗はcatchで捕捉され、容量確認不能としてブロックする (#1896)
+    expect(result.userLimitReached).toBe(true)
+    expect(result.globalLimitReached).toBe(true)
   })
 
   it('should add planBytes to effective limit for supporter plan', async () => {

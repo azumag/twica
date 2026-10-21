@@ -346,8 +346,8 @@ describe('storage-db: PlanetScale 経路 (#572)', () => {
       expect(result).toEqual({
         userUsage: 0,
         globalUsage: 0,
-        userLimitReached: false,
-        globalLimitReached: false,
+        userLimitReached: true,
+        globalLimitReached: true,
         userLimitBytes: result.userLimitBytes,
         globalLimitBytes: result.globalLimitBytes,
       })
