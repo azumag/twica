@@ -162,3 +162,147 @@ describe('adminApi: RequestOptionsによるsignal透過(#701 UI state/UX)', () =
     anySpy.mockRestore()
   })
 })
+
+/**
+ * twica#1894: 状態変更リクエストのCSRFトークン付与。
+ *
+ * サーバー(N)は POST/PUT/PATCH/DELETE に `x-twica-admin-csrf` を要求するため、
+ * クライアントが確実に添えること、読み取り系では余計な取得をしないことを固定する。
+ *
+ * トークンはモジュールスコープでキャッシュされるため、各テストは
+ * vi.resetModules() + 動的 import で新しいモジュール状態から始める。
+ */
+describe('adminApi: 状態変更リクエストのCSRFトークン (#1894)', () => {
+  const CSRF_HEADER = 'x-twica-admin-csrf'
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.resetModules()
+  })
+
+  async function importFreshAdminApi() {
+    const mod = await import('../../analysis/src/lib/adminApi')
+    return mod
+  }
+
+  /** トークン取得GETと本リクエストを呼び分けるfetchモック */
+  function stubFetchWithToken(token = 'test-token') {
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/csrf-token')) {
+        return fakeFetchResponse({ ok: true, json: { token } })
+      }
+      void init
+      return fakeFetchResponse({ ok: true, json: { ok: true } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE'] as const)(
+    '%s はCSRFトークンをヘッダに添える',
+    async (method) => {
+      const { adminApi: freshApi } = await importFreshAdminApi()
+      const fetchMock = stubFetchWithToken()
+
+      // 各メソッドを使う実在のAPIを呼ぶ(生のmethodを渡す口が無いため)
+      if (method === 'POST') await freshApi.createSupportCode({ code_hash: 'h', plan_type: 'support', memo: null })
+      if (method === 'PATCH') await freshApi.updateSupportCodeStatus('id1', 'active')
+      if (method === 'DELETE') await freshApi.deleteAnnouncement('a1')
+      if (method === 'PUT') {
+        // PUTを使うエンドポイントは現状無いため、POSTで代表させる
+        await freshApi.createAnnouncement({ title: 't', body: 'b', severity: 'info', is_published: true } as never)
+      }
+
+      const requestCall = fetchMock.mock.calls.find(
+        ([input]) => !String(input).endsWith('/csrf-token')
+      )
+      expect(requestCall).toBeDefined()
+      const headers = (requestCall![1] as RequestInit).headers as Record<string, string>
+      expect(headers[CSRF_HEADER]).toBe('test-token')
+    }
+  )
+
+  it('読み取り系(GET)はトークンを取得しない', async () => {
+    const { adminApi: freshApi } = await importFreshAdminApi()
+    const fetchMock = stubFetchWithToken()
+
+    await freshApi.getOverview()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [input, init] = fetchMock.mock.calls[0]
+    expect(String(input)).toBe('/__admin/overview')
+    const headers = (init as RequestInit).headers as Record<string, string>
+    expect(headers[CSRF_HEADER]).toBeUndefined()
+  })
+
+  it('トークンはページ内でキャッシュされ、毎回の取得をしない', async () => {
+    const { adminApi: freshApi } = await importFreshAdminApi()
+    const fetchMock = stubFetchWithToken()
+
+    await freshApi.createAnnouncement({ title: 't', body: 'b', severity: 'info', is_published: true } as never)
+    await freshApi.deleteAnnouncement('a1')
+
+    const tokenCalls = fetchMock.mock.calls.filter(([input]) =>
+      String(input).endsWith('/csrf-token')
+    )
+    expect(tokenCalls).toHaveLength(1)
+  })
+
+  it('トークン取得失敗はcode:csrf_tokenのAdminApiRequestErrorに正規化される', async () => {
+    const { adminApi: freshApi, AdminApiRequestError: FreshError } =
+      await importFreshAdminApi()
+    const fetchMock = vi.fn(async (input: unknown) => {
+      if (String(input).endsWith('/csrf-token')) {
+        return fakeFetchResponse({ ok: false, status: 500, json: {} })
+      }
+      return fakeFetchResponse({ ok: true, json: {} })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(freshApi.deleteAnnouncement('a1')).rejects.toMatchObject({
+      code: 'csrf_token',
+      status: 0,
+    })
+    await expect(freshApi.deleteAnnouncement('a1')).rejects.toBeInstanceOf(
+      FreshError
+    )
+    // トークンが取れない以上、本体リクエストは送らない
+    const writeCalls = fetchMock.mock.calls.filter(
+      ([input]) => !String(input).endsWith('/csrf-token')
+    )
+    expect(writeCalls).toHaveLength(0)
+  })
+
+  it('トークン取得失敗後は次回呼び出しで再取得する(失敗をキャッシュしない)', async () => {
+    const { adminApi: freshApi } = await importFreshAdminApi()
+    let tokenAttempts = 0
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      void init
+      if (String(input).endsWith('/csrf-token')) {
+        tokenAttempts += 1
+        if (tokenAttempts === 1) {
+          return fakeFetchResponse({ ok: false, status: 500, json: {} })
+        }
+        return fakeFetchResponse({ ok: true, json: { token: 'recovered' } })
+      }
+      return fakeFetchResponse({ ok: true, json: { ok: true } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(freshApi.deleteAnnouncement('a1')).rejects.toMatchObject({
+      code: 'csrf_token',
+    })
+    await freshApi.deleteAnnouncement('a1')
+
+    expect(tokenAttempts).toBe(2)
+    const writeCall = fetchMock.mock.calls.find(
+      ([input]) => !String(input).endsWith('/csrf-token')
+    )
+    expect(writeCall).toBeDefined()
+    const writeInit = writeCall?.[1] as RequestInit | undefined
+    expect(
+      (writeInit?.headers as Record<string, string>)[CSRF_HEADER]
+    ).toBe('recovered')
+  })
+})
