@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server'
 import { and, eq } from 'drizzle-orm'
 import { POST } from '@/app/api/gacha/demo/route'
 import { getDb } from '@/lib/db/client'
-import { cards as cardsTable } from '@/lib/db/schema'
+import { cards as cardsTable, streamers as streamersTable } from '@/lib/db/schema'
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -51,6 +51,8 @@ function createDrizzleDbMock(selects: PgResponse[]) {
         : Promise.resolve(response.rows ?? [])
       const builder: any = {
         from: vi.fn(() => builder),
+        // 公開設定（streamers.show_unowned_*）の JOIN 条件を伴う無認証経路で使われる
+        innerJoin: vi.fn(() => builder),
         where: vi.fn((condition: unknown) => {
           whereConditions.push(condition)
           return builder
@@ -134,11 +136,17 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
     const response = await POST(request({ cardId: 'card-1', streamerId: 'streamer-1' }))
 
     expect(response.status).toBe(200)
+    // 無認証（broadcast なし）経路では、上記の絞り込みに加えて配信者の公開設定
+    // （show_unowned_cards / show_unowned_card_details が両方 true）が AND で付く。
     expect(pg.whereConditions[0]).toEqual(
       and(
-        eq(cardsTable.id, 'card-1'),
-        eq(cardsTable.streamer_id, 'streamer-1'),
-        eq(cardsTable.is_active, true)
+        and(
+          eq(cardsTable.id, 'card-1'),
+          eq(cardsTable.streamer_id, 'streamer-1'),
+          eq(cardsTable.is_active, true)
+        ),
+        eq(streamersTable.show_unowned_cards, true),
+        eq(streamersTable.show_unowned_card_details, true)
       )
     )
   })
