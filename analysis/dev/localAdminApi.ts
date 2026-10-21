@@ -843,9 +843,186 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   })
 }
 
+// --- 管理APIのCSRF/Origin保護 (twica#1894, CWE-352) -------------------------
+//
+// 背景: `/__admin` は Vite dev server の middleware として動き、ブラウザからは
+// 同一オリジンの `/__admin` に対して `fetch()` される。loopback 判定だけでは
+// 「悪意あるページを開いたブラウザが 127.0.0.1 の dev server へ書き込む」
+// 経路を止められない。`analysis/vite.config.ts` は `host: true` で外部
+// インターフェースにも bind するため、Host/Origin の検証も必要になる。
+//
+// 多層防御として次の5つをすべて要求する。いずれも handleRoute() より前に評価し、
+// DB(adminApiPg) へクエリを1本も発行せずに拒否を確定させる。
+//   1. loopback 判定    … 既存挙動を維持 (非loopbackは403)
+//   2. Host 検証        … DNS rebinding 対策。loopback 名以外は403
+//   3. Origin 検証      … クロスオリジン書き込み対策。loopback 以外/"null" は403
+//   4. Content-Type     … POST/PUT/PATCH/DELETE は application/json のみ
+//   5. 起動ごとトークン … 下記 ADMIN_CSRF_HEADER
+
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
+
+/**
+ * Host ヘッダから hostname 部だけを取り出す。パースできない場合は `null` を返す。
+ * 呼び出し側(isAllowedAdminHost)は「ヘッダ未送信」と「不正な Host」を区別し、
+ * 後者を拒否に倒す。
+ *
+ * - `localhost:5173` → `localhost`
+ * - `[::1]:5173`     → `::1` (IPv6 はブラケット記法なので単純な `:` split では壊れる)
+ *
+ * IPv6 ブラケット記法は **`]` の直後が文字列末尾か `:` でなければ不正**とする。
+ * ここを検証しないと `[::1].evil.example` のように `]` 以降へ任意の攻撃者
+ * ドメインを連結でき、hostname が `::1` と解釈されて DNS rebinding 対策が破れる
+ * (`evil.example` は正しく拒否されるのに `[::1].evil.example` だけが通る、
+ * という形でブラケット側の抜けは見つけにくい)。
+ */
+function parseHostHeader(host: string | undefined): string | null {
+  if (!host) return null
+  const trimmed = host.trim()
+  if (!trimmed) return null
+
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']')
+    if (end === -1) return null
+    const after = trimmed.slice(end + 1)
+    // 許可するのは `[::1]` または `[::1]:5173` の形のみ。`[::1]:5173:80` のような
+    // 余分な `:` は不正として弾く。
+    if (after !== '' && !/^:\d+$/.test(after)) return null
+    const hostname = trimmed.slice(1, end)
+    return hostname ? hostname.toLowerCase() : null
+  }
+
+  const hostname = trimmed.split(':')[0]
+  if (!hostname) return null
+  // 非ブラケット側も `localhost:5173:80` のような余分な `:` を弾く。
+  // ポートは任意の数値1つだけを許可する。
+  const port = trimmed.slice(hostname.length)
+  if (port !== '' && !/^:\d+$/.test(port)) return null
+  return hostname.toLowerCase()
+}
+
+/** Host が loopback を指すか。未送信は後方互換のため許可する。 */
+function isAllowedAdminHost(host: string | undefined): boolean {
+  // ヘッダ未送信 (HTTP/1.0 やサーバー間の直接呼び出し) は後方互換のため許可する。
+  // 一方、送信されていてパースできない不正な Host は拒否する。両者を区別しないと
+  // `[::1].evil.example` のような不正形が「未送信」と同じ扱いで通ってしまう。
+  if (!host || !host.trim()) return true
+  const hostname = parseHostHeader(host)
+  if (hostname === null) return false
+  return LOOPBACK_HOSTNAMES.has(hostname)
+}
+
+/**
+ * Origin が loopback を指すか。未送信は後方互換のため許可する。
+ *
+ * `"null"` (sandbox iframe / data: URL 起源) は **明示的に拒否**する。
+ * `new URL('null')` は例外になり、その後の分岐で許可に倒れる実装だと
+ * 攻撃者が Origin を偽装できてしまうため、先に判定する。
+ */
+function isAllowedAdminOrigin(origin: string | undefined): boolean {
+  if (!origin) return true
+  const trimmed = origin.trim()
+  if (!trimmed || trimmed.toLowerCase() === 'null') return false
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    return LOOPBACK_HOSTNAMES.has(url.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+/** 状態を変更しうるメソッドか。 */
+function isStateChangingMethod(method: string | undefined): boolean {
+  return STATE_CHANGING_METHODS.has((method || '').toUpperCase())
+}
+
+/**
+ * Content-Type が JSON か。
+ *
+ * `text/plain` / `application/x-www-form-urlencoded` / `multipart/form-data` は
+ * HTML フォームから **プリフライトなしで**送信できる「単純リクエスト」であり、
+ * 古典的 CSRF の主要な経路になる。JSON を要求すると `Content-Type:
+ * application/json` が非単純ヘッダとなり CORS プリフライトが必須になるため、
+ * これだけでフォーム経由の書き込みを遮断できる。
+ * パラメータ (`; charset=utf-8`) は許容する。
+ */
+function isJsonContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false
+  const media = contentType.split(';')[0].trim().toLowerCase()
+  return media === 'application/json'
+}
+
+// 起動ごとに1つだけ払い出す管理用トークン。
+// カスタムヘッダは非単純ヘッダなので、これも CORS プリフライトを強制する。
+// トークンは URL ではなくヘッダで渡す(URL に含めると history・Referer・
+// アクセスログへ漏えいするため。issue の受入条件)。
+const ADMIN_CSRF_HEADER = 'x-twica-admin-csrf'
+
+function createAdminCsrfToken(): string {
+  // 可能なら CSPRNG を使う。無い環境でも起動ごとに推測困難な値にはなる。
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+/** Node の IncomingHttpHeaders は同名ヘッダを配列で持つことがあるため正規化する。 */
+function readHeader(
+  headers: Record<string, string | string[] | undefined>,
+  name: string
+): string | undefined {
+  const value = headers[name]
+  const raw = Array.isArray(value) ? value[0] : value
+  return typeof raw === 'string' ? raw : undefined
+}
+
+/**
+ * 状態変更リクエストの事前検証。拒否時は `{ status, error }`、許可時は `null`。
+ *
+ * Origin とトークンの両方を検証するのは冗長に見えるが多層防御のため:
+ * Origin はブラウザが必ず付ける一方でプロキシ設定により欠落しうる。トークンは
+ * ヘッダ偽装で回避されうるが、送信元オリジンを問わず一致を要求できる。
+ * どちらか一方が緩んでも単独では突破できない状態を保つ。
+ */
+function evaluateAdminWriteGuard(
+  headers: Record<string, string | string[] | undefined>,
+  expectedToken: string | undefined
+): { status: number; error: string } | null {
+  const origin = readHeader(headers, 'origin')
+  const trimmedOrigin = (origin || '').trim()
+
+  // Origin 未送信は許可する(サーバー間の直接呼び出し・既存テストの後方互換)。
+  // ブラウザは同一オリジンの POST にも Origin を付けるため、欠落=非ブラウザと
+  // みなしてよい。
+  if (trimmedOrigin && !isAllowedAdminOrigin(trimmedOrigin)) {
+    return { status: 403, error: 'Admin API origin is not allowed' }
+  }
+
+  // トークン未初期化の経路では許可側に倒さず拒否する(fail-closed)。
+  if (!expectedToken) {
+    return { status: 403, error: 'Admin API CSRF token is not initialized' }
+  }
+
+  const provided = readHeader(headers, ADMIN_CSRF_HEADER)
+  if (!provided || provided.trim() !== expectedToken) {
+    return { status: 403, error: 'Admin API CSRF token is missing or invalid' }
+  }
+
+  return null
+}
+
 export function localAdminApiPlugin(env: Env): Plugin {
-  return {
+  // プラグイン生成時に1回だけ生成する = Vite dev server の起動ごとに1つ。
+  const csrfToken = createAdminCsrfToken()
+
+  const plugin: Plugin & { __csrfTokenForTests: string } = {
     name: 'twica-local-admin-api',
+    // テスト専用フック。トークンは URL にもレスポンスにも出さない設計のため、
+    // 単体テストから正規の値を得る唯一の経路として plugin インスタンスに載せる
+    // (adminApiPg.ts の __setAnalysisSqlFactoryForTests と同じ考え方)。
+    __csrfTokenForTests: csrfToken,
     configureServer(server) {
       server.middlewares.use('/__admin', async (req, res) => {
         if (!isLoopback(req.socket.remoteAddress)) {
@@ -855,9 +1032,51 @@ export function localAdminApiPlugin(env: Env): Plugin {
           return
         }
 
+        const headers = (req.headers || {}) as Record<
+          string,
+          string | string[] | undefined
+        >
+
+        // DNS rebinding 対策: `evil.com` を 127.0.0.1 へ解決させても、
+        // ブラウザが送る Host は `evil.com` のままなのでここで落ちる。
+        if (!isAllowedAdminHost(readHeader(headers, 'host'))) {
+          sendJson(res, 403, { error: 'Admin API host is not allowed' })
+          return
+        }
+
+        if (isStateChangingMethod(req.method)) {
+          if (!isJsonContentType(readHeader(headers, 'content-type'))) {
+            sendJson(res, 415, {
+              error: 'Admin API state-changing requests require application/json',
+            })
+            return
+          }
+
+          const guard = evaluateAdminWriteGuard(headers, csrfToken)
+          if (guard) {
+            sendJson(res, guard.status, { error: guard.error })
+            return
+          }
+        } else if (!isAllowedAdminOrigin(readHeader(headers, 'origin'))) {
+          // 読み取り系はトークンを要求しないが、クロスオリジンからの
+          // レスポンス読み取りは Origin 検証で防ぐ。
+          sendJson(res, 403, { error: 'Admin API origin is not allowed' })
+          return
+        }
+
         const url = new URL(req.url || '/', 'http://localhost')
 
         try {
+          // CSRFトークンの払い出し。上のOrigin/Host検証を通過した同一オリジンの
+          // ブラウザだけが読める。クロスオリジンからは CORS によりレスポンス
+          // ボディを読めないため、攻撃者がトークンを取得することはできない
+          // (Viteのdev serverは既定でCORSヘッダを付けない)。
+          // トークンはここでヘッダではなくボディで返し、URLには決して載せない。
+          if (req.method === 'GET' && url.pathname === '/csrf-token') {
+            sendJson(res, 200, { token: csrfToken })
+            return
+          }
+
           // CSVを返すエクスポート用ルートはJSON専用のhandleRoute()+sendJson()の
           // 汎用ディスパッチに乗せられないため、ここで先取りして個別処理する。
           // connectのミドルウェアマウント('/__admin')によりreq.url/url.pathnameからは
@@ -887,4 +1106,6 @@ export function localAdminApiPlugin(env: Env): Plugin {
       })
     },
   }
+
+  return plugin
 }

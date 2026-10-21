@@ -295,13 +295,75 @@ function buildQueryString(params: Record<string, string | number | undefined>): 
 // UIが再試行できる十分な余裕を持たせた値にする。
 const DEFAULT_TIMEOUT_MS = 60_000
 
+// twica#1894 (CWE-352): 状態変更リクエストには管理APIが起動ごとに払い出す
+// CSRFトークンをヘッダで添える。カスタムヘッダは CORS の非単純ヘッダなので、
+// クロスオリジンからの送信にはプリフライトが必須になり、古典的CSRFを遮断できる。
+//
+// トークンは専用エンドポイントから取得し、URLのクエリには載せない
+// (URLに含めると history・Referer・アクセスログへ漏えいするため)。
+const ADMIN_CSRF_HEADER = 'x-twica-admin-csrf'
+
+// トークンは起動ごとに1つなので、ページのライフタイム中有効。並行する複数の
+// ミューテーションが同時に取得しても fetch は1回で済むよう Promise を保持する。
+let csrfTokenPromise: Promise<string> | null = null
+
+async function ensureAdminCsrfToken(): Promise<string> {
+  if (!csrfTokenPromise) {
+    csrfTokenPromise = fetch('/__admin/csrf-token')
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`CSRF token request failed: ${response.status}`)
+        }
+        const payload = (await response.json()) as { token?: unknown }
+        if (typeof payload.token !== 'string' || !payload.token) {
+          throw new Error('CSRF token response did not contain a token')
+        }
+        return payload.token
+      })
+      .catch((error) => {
+        // 失敗をキャッシュすると、dev server 再起動後もページをリロードする
+        // までミューテーションが全滅する。次回呼び出しで再取得させる。
+        csrfTokenPromise = null
+        throw error
+      })
+  }
+  return csrfTokenPromise
+}
+
+/** 状態変更メソッドか(サーバー側 isStateChangingMethod と同じ判定)。 */
+function isStateChangingRequest(init?: RequestInit): boolean {
+  const method = (init?.method || 'GET').toUpperCase()
+  return (
+    method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
+  )
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // 読み取り系はトークン不要。状態変更時のみ取得して添える。
+  // fetch失敗時は AdminApiRequestError ではなく素の Error になるため、
+  // 呼び出し元が原因を判別できるようここで包む。
+  let csrfHeader: Record<string, string> = {}
+  if (isStateChangingRequest(init)) {
+    try {
+      csrfHeader = { [ADMIN_CSRF_HEADER]: await ensureAdminCsrfToken() }
+    } catch (error) {
+      throw new AdminApiRequestError(
+        error instanceof Error
+          ? error.message
+          : 'CSRFトークンの取得に失敗しました',
+        0,
+        'csrf_token'
+      )
+    }
+  }
+
   let response: Response
   try {
     response = await fetch(`/__admin${path}`, {
       ...init,
       headers: {
         'content-type': 'application/json',
+        ...csrfHeader,
         ...(init?.headers || {}),
       },
       // 呼び出し元が独自のsignal(例: コンポーネントunmount時のキャンセル)を渡した場合、

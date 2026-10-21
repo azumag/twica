@@ -1189,3 +1189,275 @@ describe('localAdminApiPlugin: Postgres専用HTTP/CSV経路', () => {
     expect(body).toContain("'@legendary")
   })
 })
+
+// twica#1894 (CWE-352): 管理APIのCSRF / Origin / Host / Content-Type 保護。
+//
+// 悪意あるページを開いたブラウザが、loopback で動く Vite dev server の
+// `/__admin` へ書き込む経路を塞ぐ。すべての拒否は handleRoute() より前に
+// 確定し、DB(adminApiPg) へクエリを1本も発行しないことを calls で確認する。
+describe('localAdminApiPlugin: CSRF/Origin/Host/Content-Type保護 (#1894)', () => {
+  const LOOPBACK_HEADERS = {
+    host: 'localhost:5173',
+    origin: 'http://localhost:5173',
+    'content-type': 'application/json',
+  }
+
+  /**
+   * loopbackアクセスを模したリクエスト。
+   * `headers` に undefined を明示的に渡すとそのヘッダを削除できる
+   * (「未送信」= サーバー間の直接呼び出しを再現する)。
+   */
+  function makeReq(
+    overrides: {
+      method?: string
+      url?: string
+      remoteAddress?: string
+      headers?: Record<string, string | undefined>
+    } = {}
+  ): any {
+    const merged: Record<string, string> = { ...LOOPBACK_HEADERS }
+    for (const [key, value] of Object.entries(overrides.headers || {})) {
+      if (value === undefined) delete merged[key]
+      else merged[key] = value
+    }
+    return {
+      method: 'GET',
+      url: '/overview',
+      socket: { remoteAddress: overrides.remoteAddress ?? '127.0.0.1' },
+      headers: merged,
+      ...(overrides.method ? { method: overrides.method } : {}),
+      ...(overrides.url ? { url: overrides.url } : {}),
+    }
+  }
+
+  function makeRes(): any {
+    return { setHeader: vi.fn(), end: vi.fn() }
+  }
+
+  function bodyOf(res: any): any {
+    return JSON.parse(res.end.mock.calls[0][0])
+  }
+
+  /**
+   * readBody() は `for await (const chunk of req)` でボディを読むため、
+   * ストリームとして async iterator を持つ必要がある。実リクエスト1本を
+   * 再現するために、ボディを1チャンクで流す最小の非同期イテラブルを載せる。
+   */
+  function makeReqWithBody(
+    overrides: Parameters<typeof makeReq>[0],
+    rawBody: string
+  ): any {
+    const req = makeReq({ method: 'POST', ...overrides })
+    req[Symbol.asyncIterator] = async function* () {
+      yield Buffer.from(rawBody, 'utf8')
+    }
+    return req
+  }
+
+  /** テスト用にDB呼び出しを0件に固定し、callsでDB到達を検証できるようにする */
+  async function setupNoDb() {
+    const { tag, calls } = fakeSqlTag({ ok: true })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    return calls
+  }
+
+  it.each([
+    ['クロスオリジン', 'https://evil.example'],
+    ['nullオリジン', 'null'],
+    ['file:オリジン', 'file://'],
+    ['URLとして不正なOrigin', 'not-a-url'],
+    ['http以外のスキーム', 'ftp://localhost'],
+  ])('%sの状態変更(POST)は403でDBへ到達させない', async (_case, origin) => {
+    const calls = await setupNoDb()
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+    const res = makeRes()
+    await handler(
+      makeReq({
+        method: 'POST',
+        url: '/announcements',
+        headers: { origin, 'x-twica-admin-csrf': 'any' },
+      }),
+      res
+    )
+
+    expect(res.statusCode).toBe(403)
+    expect(bodyOf(res).error).toBe('Admin API origin is not allowed')
+    expect(calls).toHaveLength(0)
+  })
+
+  it.each([
+    ['text/plain', 'text/plain'],
+    ['form urlencoded', 'application/x-www-form-urlencoded'],
+    ['multipart', 'multipart/form-data; boundary=x'],
+    ['Content-Type欠落', undefined],
+  ])('%sの状態変更は415で拒否しDBへ到達させない', async (_case, contentType) => {
+    const calls = await setupNoDb()
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+    const res = makeRes()
+    await handler(
+      makeReq({
+        method: 'POST',
+        url: '/announcements',
+        headers: { 'content-type': contentType },
+      }),
+      res
+    )
+
+    expect(res.statusCode).toBe(415)
+    expect(bodyOf(res).error).toMatch(/application\/json/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it.each([undefined, 'wrong-token', ''])(
+    'トークン欠落/不一致(%s)のJSON書き込みは403で拒否する',
+    async (token) => {
+      const calls = await setupNoDb()
+      const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+      const res = makeRes()
+      await handler(
+        makeReq({
+          method: 'POST',
+          url: '/announcements',
+          headers: { 'x-twica-admin-csrf': token },
+        }),
+        res
+      )
+
+      expect(res.statusCode).toBe(403)
+      expect(bodyOf(res).error).toMatch(/CSRF/)
+      expect(calls).toHaveLength(0)
+    }
+  )
+
+  it.each([
+    ['DNS rebinding (外部Host)', 'evil.example'],
+    ['外部Host+ポート', 'evil.example:5173'],
+    ['Hostにユーザー情報を埋めた不正形', 'localhost@evil.example'],
+    // IPv6ブラケット記法の `]` 以降に攻撃者ドメインを連結する形。ここを検証しないと
+    // hostname が `::1` と解釈されて loopback 扱いになり、DNS rebinding 対策が破れる。
+    ['ブラケット閉じ後の攻撃者ドメイン', '[::1].evil.example'],
+    ['ブラケット閉じ直後の攻撃者ドメイン', '[::1]evil.example'],
+    ['ブラケット後の余分なポート', '[::1]:5173:80'],
+    ['非ブラケットの余分なポート', 'localhost:5173:80'],
+    ['ブラケット閉じ欠落', '[::1'],
+    ['空ブラケット', '[]'],
+  ])('%sのHostは403で拒否する', async (_case, host) => {
+    const calls = await setupNoDb()
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+    const res = makeRes()
+    await handler(makeReq({ headers: { host } }), res)
+
+    expect(res.statusCode).toBe(403)
+    expect(bodyOf(res).error).toBe('Admin API host is not allowed')
+    expect(calls).toHaveLength(0)
+  })
+
+  it.each([
+    ['localhost', 'localhost:5173'],
+    ['127.0.0.1', '127.0.0.1:5173'],
+    ['IPv6 loopback', '[::1]:5173'],
+  ])('loopback(%s)のHostのGETは通す', async (_case, host) => {
+    const { tag } = fakeSqlTag({ stats: { totalUsers: 1 } })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+    const res = makeRes()
+    await handler(makeReq({ headers: { host } }), res)
+
+    expect(res.statusCode).toBe(200)
+    expect(bodyOf(res)).toEqual({ stats: { totalUsers: 1 } })
+  })
+
+  // 受入条件: 「Origin/Host未送信の直接呼び出し(テスト/サーバー側)は許容する」
+  it('Origin/Host未送信のGETは後方互換で許可する', async () => {
+    const { tag } = fakeSqlTag({ stats: { totalUsers: 1 } })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+    const res = makeRes()
+    await handler(
+      makeReq({ headers: { origin: undefined, host: undefined } }),
+      res
+    )
+
+    expect(res.statusCode).toBe(200)
+  })
+
+  // 受入条件: 「非loopback拒否を維持」
+  it('非loopbackのremoteAddressはOrigin/Hostが正規でも403のまま', async () => {
+    const calls = await setupNoDb()
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+
+    const res = makeRes()
+    await handler(
+      makeReq({ remoteAddress: '192.0.2.1', headers: {} }),
+      res
+    )
+
+    expect(res.statusCode).toBe(403)
+    expect(bodyOf(res).error).toMatch(/loopback/)
+    expect(calls).toHaveLength(0)
+  })
+
+  // 受入条件: 「正規UI操作を維持」。adminApi.ts は常に application/json を
+  // 送るため、トークンさえ一致すれば書き込みがDBまで到達することを確認する。
+  it('正規トークン+JSONのloopback書き込みはDBまで到達する', async () => {
+    const calls = await setupNoDb()
+    const { localAdminApiPlugin } = await importLocalAdminApi()
+    const plugin = localAdminApiPlugin(PG_ONLY_ENV) as any
+    const server: any = { middlewares: { use: vi.fn() } }
+    plugin.configureServer(server)
+    const handler = server.middlewares.use.mock.calls[0][1]
+
+    const validBody = JSON.stringify({
+      title: 'タイトル',
+      body: '本文',
+      severity: 'info',
+      is_published: true,
+    })
+
+    const res = makeRes()
+    await handler(
+      makeReqWithBody(
+        {
+          method: 'POST',
+          url: '/announcements',
+          headers: { 'x-twica-admin-csrf': plugin.__csrfTokenForTests },
+        },
+        validBody
+      ),
+      res
+    )
+
+    // ルート自体はfakeの戻り値で200になり、DBへクエリが1本発行される
+    expect(res.statusCode).toBe(200)
+    expect(calls.length).toBeGreaterThan(0)
+  })
+
+  it('トークンは起動ごとに異なり、URLやレスポンスに含めない', async () => {
+    const { localAdminApiPlugin } = await importLocalAdminApi()
+    const first = localAdminApiPlugin(PG_ONLY_ENV) as any
+    const second = localAdminApiPlugin(PG_ONLY_ENV) as any
+
+    expect(first.__csrfTokenForTests).toBeTruthy()
+    expect(first.__csrfTokenForTests).not.toBe(second.__csrfTokenForTests)
+
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+    const calls = await setupNoDb()
+    const res = makeRes()
+    // トークン無しで拒否されたレスポンスにトークン値が漏れないこと
+    await handler(makeReq({ method: 'POST', url: '/announcements' }), res)
+    expect(res.statusCode).toBe(403)
+    expect(res.end.mock.calls[0][0]).not.toContain(
+      first.__csrfTokenForTests
+    )
+    expect(calls).toHaveLength(0)
+  })
+})
