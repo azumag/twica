@@ -125,6 +125,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.node-version'
+              - '.github/ci-node-version'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
@@ -214,7 +215,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version-file: .github/ci-node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -281,7 +282,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version-file: .github/ci-node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -329,7 +330,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version-file: .github/ci-node-version
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -384,7 +385,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version-file: .github/ci-node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -412,7 +413,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version-file: .github/ci-node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -446,7 +447,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version-file: .github/ci-node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -666,7 +667,7 @@ jobs:
       - name: Setup Node.js for PostgreSQL integration tests
         uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version-file: .github/ci-node-version
           cache: 'npm'
 
       - name: Install integration test dependencies
