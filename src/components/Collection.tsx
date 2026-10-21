@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import type { Streamer, Card } from "@/types/database";
+import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -48,13 +49,20 @@ export default async function Collection({ cardsByStreamer }: CollectionProps) {
         <h2 className="text-2xl font-semibold text-white">{t("title")}</h2>
         {/* #727: permanent entry point to /trade/mine. Trade completion has no
             notifications in the MVP, so users must be able to reach their
-            listings without going back through a streamer's board. */}
-        <Link
-          href="/trade/mine"
-          className="rounded-lg bg-gray-800 px-4 py-2 text-sm text-purple-300 transition-colors hover:bg-gray-700 hover:text-purple-200"
-        >
-          {tTrade("myTradesLink")}
-        </Link>
+            listings without going back through a streamer's board.
+            #715: while the trade feature is not public yet
+            (CARD_TRADE_UI_VISIBLE=false, taken from main #1803/#1805), this
+            entry is hidden together with the streamer-collection "Trade" button
+            and the trade settings, so no trade entry point shows on its own.
+            /trade/mine itself stays reachable by direct link. */}
+        {CARD_TRADE_UI_VISIBLE && (
+          <Link
+            href="/trade/mine"
+            className="rounded-lg bg-gray-800 px-4 py-2 text-sm text-purple-300 transition-colors hover:bg-gray-700 hover:text-purple-200"
+          >
+            {tTrade("myTradesLink")}
+          </Link>
+        )}
       </div>
 
       {/* Streamer List with Summary - 配信者一覧とサマリ */}

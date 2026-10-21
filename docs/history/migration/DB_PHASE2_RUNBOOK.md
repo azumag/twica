@@ -1130,3 +1130,25 @@ Supabase 側に対して非破壊的な読み取りのみのため、Supabase �
         `data`層・`invariants`層双方で自動的に`severity:"info"`へ降格される
         （5.1節手順6参照。新しい既知ドリフトが発生した場合はこのファイルへ
         エントリを追加すること）。
+
+## 9. 移行ツール群の撤去記録（#837）
+
+- 撤去日: 2026-10-07。Supabase → PlanetScale 切替は完了し、後片付けの
+  #709 / #710 も close 済みのため、切替期間中の一時ツール群を撤去した。
+- 撤去範囲: `scripts/db-cutover/`（本体 17 本 + `snapshot.mjs` は
+  `scripts/lib/read-only-snapshot.mjs` へ移設）、`scripts/db-phase2/`、
+  対応テスト 6 件（`tests/unit/db-cutover*`、`tests/unit/db-cutover/`、
+  `tests/unit/db-phase2/`）、`docs/db-cutover-invariant-source-target.md`、
+  `package.json` の operator script 4 件
+  （`db:phase2:export` / `db:phase2:normalize` /
+  `db:cutover:init-identity` / `db:cutover:verify`）。
+- 巻き込まないもの: `scripts/verify-db-schema.js`（現行運用の正本）、
+  `scripts/compare-analysis-dashboard-vs-sql.mjs`（移設 helper を参照）、
+  `db/planetscale/` の baseline SQL、`db/planetscale/.local-backups/`（#699
+  の運用判断で一時保管）。
+- 復元手順: 撤去直前の commit `1d178483819546c2d27144c2b554608b16052fc6`
+  から以下で復元できる（例: `git show 1d178483:scripts/db-cutover/verify.mjs`）。
+  復元対象パスは `scripts/db-cutover/`、`scripts/db-phase2/`、
+  `tests/unit/db-cutover*/`、`tests/unit/db-phase2/`、
+  `docs/db-cutover-invariant-source-target.md`、
+  `package.json` の上記 4 script。

@@ -136,6 +136,12 @@ export async function POST(request: NextRequest) {
   // レート制限チェック（1時間5回、認証後にユーザーID単位で制限）
   const identifier = await getRateLimitIdentifier(request, session.twitchUserId)
   const rateLimit = await checkRateLimit(rateLimits.activateCode, identifier)
+  if (rateLimit.unavailable) {
+    return NextResponse.json(
+      { error: 'Support-code activation is temporarily unavailable' },
+      { status: 503, headers: { 'Retry-After': '30' } },
+    )
+  }
   if (!rateLimit.success) {
     return NextResponse.json(
       { error: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED } as ApiRateLimitResponse,

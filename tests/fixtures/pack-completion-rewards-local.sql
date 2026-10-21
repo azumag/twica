@@ -1,5 +1,20 @@
 -- Empty disposable local cluster only; setup for pack-completion-rewards-pg.test.ts.
-CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;
+-- ジョブ内の他ステップと postgres サービスコンテナを共有するため、anon/authenticated/
+-- service_role は bootstrap migration で既に作成済みの可能性がある。CREATE ROLE は
+-- IF NOT EXISTS を持たないため、pg_roles を確認してから作成する冪等な形にする。
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    CREATE ROLE service_role;
+  END IF;
+END
+$$;
 CREATE TABLE streamers(id uuid PRIMARY KEY, card_pack_names jsonb DEFAULT '[]', channel_point_collection_name text, pack_rarity_weights jsonb);
 CREATE TABLE cards(id uuid PRIMARY KEY, streamer_id uuid REFERENCES streamers(id), is_active boolean, collection_name text);
 CREATE TABLE users(id uuid PRIMARY KEY, twitch_user_id text UNIQUE);
