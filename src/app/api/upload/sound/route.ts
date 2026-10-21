@@ -7,7 +7,7 @@ import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } f
 import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client';
-import { recordBlobFile } from '@/lib/storage-db';
+import { recordBlobFile, removeBlobFile } from '@/lib/storage-db';
 import { getStorageUsage } from '@/lib/storage-usage';
 import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
@@ -157,14 +157,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     fileName = `sound_${userPrefix}_${uniqueSuffix}.${ext}`;
 
     // 容量予約: 音声も累積使用量の対象にする (#1896)
+    // - 取得失敗時の fail-closed フォールバックは「usage=0 / flags=true」で返るため、
+    //   フラグを先に見ないとバイト比較を素通しして無制限保存に進む
+    //   （完了条件: 容量が取得不能な場合に無制限保存へ進めない）
+    // - 正常時は追加バイト数を含めて判定する（現在使用量だけの判定だと
+    //   上限直前の追加アップロードで突破できる）
     const preUploadUsage = await getStorageUsage(userPrefix, session!.twitchUserId);
-    if (preUploadUsage.globalUsage + buffer!.length > preUploadUsage.globalLimitBytes) {
+    if (preUploadUsage.globalLimitReached ||
+        preUploadUsage.globalUsage + buffer!.length > preUploadUsage.globalLimitBytes) {
       return NextResponse.json(
         { error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' },
         { status: 507 }
       );
     }
-    if (preUploadUsage.userUsage + buffer!.length > preUploadUsage.userLimitBytes) {
+    if (preUploadUsage.userLimitReached ||
+        preUploadUsage.userUsage + buffer!.length > preUploadUsage.userLimitBytes) {
       return NextResponse.json(
         { error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
         { status: 507 }
@@ -185,9 +192,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     try {
       await recordBlobFile(uploadResult.url, userPrefix, buffer!.length, 'r2');
     } catch (dbError) {
-      logger.error('Failed to record sound blob file in DB (compensation required):', dbError);
+      // 台帳確定失敗: このまま返すと「R2保存済み・未計上・未参照」の孤児オブジェクトが
+      // 残り、クライアントのリトライのたびに未計上容量が増殖する (#1896)。
+      // 保存直後のオブジェクトを best-effort で削除して台帳と R2 の整合を取り、
+      // 削除にも失敗した場合はログを残して follow-up の回収対象にする。
+      try {
+        await deleteSoundFromR2(fileName);
+      } catch (cleanupError) {
+        logger.error(`[Sound Upload] Failed to cleanup R2 object after ledger failure: ${fileName}`, cleanupError);
+      }
+      logger.error(`[Sound Upload] Failed to record sound blob file in DB: ${fileName}`, dbError);
       return NextResponse.json(
-        { error: ERROR_MESSAGES.INVALID_REQUEST, code: 'STORAGE_LEDGER_FAILED' },
+        { error: ERROR_MESSAGES.INTERNAL_ERROR, code: 'STORAGE_LEDGER_FAILED' },
         { status: 500 }
       );
     }
@@ -272,6 +288,21 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
 
     // R2から削除
     await deleteSoundFromR2(fileName);
+
+    // 台帳からも削除して使用量を減算する (#1896)。
+    // 音声は #1896 から recordBlobFile で台帳記録対象のため、R2 削除のみだと
+    // 使用量が残り続けて正当なアップロードが上限誤ブロックされる。
+    // - 台帳未記録の旧オブジェクト（記録導入前の音声）は removeBlobFile が
+    //   null を返すため減算スキップ
+    // - 減算失敗は過大計上（安全側）だが誤ブロックの原因になるため、
+    //   ログで追跡し再照合の対象にする
+    // - R2 削除成功後に減算する順序は、R2 削除失敗時に台帳を触らず
+    //   「オブジェクト残存＆計上済み」の一貫した状態を保つため
+    try {
+      await removeBlobFile(url);
+    } catch (ledgerError) {
+      logger.error(`[Sound Delete] Failed to remove blob file from ledger: ${url}`, ledgerError);
+    }
 
     logger.info(`[Sound Delete] Successfully deleted: ${fileName}`);
     return NextResponse.json({ success: true });
