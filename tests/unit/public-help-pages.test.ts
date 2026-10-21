@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -25,6 +25,17 @@ function listedSubstepKeys(source: string, stepPath: string): string[] {
   const match = source.match(new RegExp(`"${escaped}":\\s*\\[([^\\]]*)\\]`));
   if (!match) throw new Error(`stepSubsteps entry not found: ${stepPath}`);
   return quotedStrings(match[1]);
+}
+
+/**
+ * ページ側の配列（`const <name> = [ { <prop>: "x", ... }, ... ] as const`）から、各要素の
+ * `<prop>` の値を並び順どおりに抜き出す。図解ページは「キー + アイコン」のオブジェクト配列で
+ * 表示順と文言キーを持つ。
+ */
+function listedProps(source: string, arrayName: string, prop: string): string[] {
+  const match = source.match(new RegExp(`const ${arrayName}\\b[^=]*=\\s*\\[([\\s\\S]*?)\\]\\s*as const`));
+  if (!match) throw new Error(`${arrayName} not found`);
+  return [...match[1].matchAll(new RegExp(`\\b${prop}: "([^"]+)"`, "g"))].map((m) => m[1]);
 }
 
 function quotedStrings(body: string): string[] {
@@ -332,8 +343,10 @@ describe("streamer enablement documentation", () => {
 
 /**
  * カードトレードの使い方ガイド（/guide/trade）。
- * ページ側の配列とメッセージの1対1対応、画面上のボタン名との一致、導線（トレード画面側からだけ
- * リンクする）を固定する。数値・ルールの根拠は PR 本文の対応表を参照。
+ * ページ側の配列とメッセージの1対1対応、画面上のボタン名との一致、実画面と図解の見た目の一致、
+ * 導線（トレード画面側からだけリンクする）を固定する。数値・ルールの根拠は PR 本文の対応表を参照。
+ * 描画結果（全文言が画面に出ること・図解の figcaption・数値が定数と一致すること）は
+ * tests/unit/trade-guide-page.test.tsx と tests/unit/trade-guide-components.test.tsx が担う。
  */
 describe("trade guide page", () => {
   const locales = [
@@ -342,87 +355,108 @@ describe("trade guide page", () => {
   ] as const;
   const source = readSource("src/app/guide/trade/page.tsx");
 
-  // セクションごとのステップ配列（ページ側の const 名）と、メッセージ側のスコープ。
-  const stepScopes = [
-    ["overviewSteps", "overview"],
-    ["offerSteps", "offer"],
-    ["auctionSteps", "auction"],
-    ["streamerSteps", "streamer"],
+  // ページ側の配列（const 名）→ メッセージ側のパスと、そのパス直下のメタキー（配列の対象外）。
+  // 配列の `key:` の並びがメッセージのキー順と一致することを確かめる（番号・表示順は配列順）。
+  const keyedArrays = [
+    ["overviewTiles", ["overview"], ["title", "where"]],
+    ["offerFlowSteps", ["offer", "flow"], ["title"]],
+    ["offerPoints", ["offer", "points"], ["title"]],
+    ["sellerSteps", ["auction", "roles", "seller"], ["title"]],
+    ["bidderSteps", ["auction", "roles", "bidder"], ["title"]],
+    ["auctionRules", ["auction", "rules"], ["title"]],
+    ["phaseChips", ["auction", "status"], ["title"]],
+    ["faqItems", ["faq"], ["title"]],
   ] as const;
-  // ステップ以外のメタ情報キー（配列の対象外）。
-  const metaKeys = new Set(["title", "lead", "requirement"]);
+
+  function at(root: Record<string, unknown>, path: readonly string[]) {
+    return path.reduce<Record<string, unknown>>((node, key) => node[key] as Record<string, unknown>, root);
+  }
 
   it("adds a localized public route that renders without login", () => {
     expect(source).toContain('getTranslations("tradeGuidePage")');
     expect(source).toContain("getSession()");
     // 公開ページなので認証必須の分岐（redirect）を持たない
     expect(source).not.toContain("redirect(");
+    // 図解中心のページだが Server Component のまま（<details> 以外の操作を持たない）
+    expect(source).not.toContain('"use client"');
     expect(jaMessages.tradeGuidePage.title).toBe("カードトレードの使い方");
     expect(enMessages.tradeGuidePage.title).toBe("How to Use Card Trading");
   });
 
-  it("keeps the step arrays in sync with the message catalogs (order included)", () => {
-    for (const [arrayName, scope] of stepScopes) {
-      const stepKeys = Object.keys(jaMessages.tradeGuidePage[scope]).filter((key) => !metaKeys.has(key));
+  it("keeps the page arrays in sync with the message catalogs (order included)", () => {
+    for (const [arrayName, path, meta] of keyedArrays) {
+      const catalogKeys = Object.keys(at(jaMessages.tradeGuidePage, path)).filter((key) => !(meta as readonly string[]).includes(key));
       // 番号は配列順（index + 1）から導出されるため、順序も一致させる
-      expect(listedKeys(source, arrayName), arrayName).toEqual(stepKeys);
+      expect(listedProps(source, arrayName, "key"), arrayName).toEqual(catalogKeys);
     }
-    // FAQ の表示順は配列順。メタ情報は title のみ
-    expect(listedKeys(source, "faqItems")).toEqual(
-      Object.keys(jaMessages.tradeGuidePage.faq).filter((key) => key !== "title")
-    );
-    // 目次はセクションの id と、メッセージのセクション（title を持つもの）に1対1で対応する
-    expect(listedKeys(source, "sectionIds")).toEqual(
-      ["overview", "offer", "auction", "streamer", "faq"]
-    );
-    for (const id of listedKeys(source, "sectionIds")) {
-      expect(source, id).toContain(`id="${id}"`);
-    }
-  });
-
-  it("has every listed step, substep, point and FAQ entry in both locales", () => {
-    const substepScopes = [...source.matchAll(/^ {2}"([a-zA-Z]+\.[a-zA-Z]+)": \[/gm)].map((m) => m[1]);
-    expect(substepScopes.length).toBeGreaterThan(0);
-
+    // 配列の要素は ja/en 両方に存在する
     for (const { name, messages } of locales) {
-      const page = messages.tradeGuidePage;
-      for (const [arrayName, scope] of stepScopes) {
-        for (const step of listedKeys(source, arrayName)) {
-          expect(page[scope][step].title, `${name}.${scope}.${step}.title`).toBeTruthy();
-          expect(page[scope][step].description, `${name}.${scope}.${step}.description`).toBeTruthy();
+      for (const [arrayName, path] of keyedArrays) {
+        const node = at(messages.tradeGuidePage, path);
+        for (const key of listedProps(source, arrayName, "key")) {
+          expect(node[key], `${name}.${path.join(".")}.${key}`).toBeTruthy();
         }
       }
-      // サブ手順・補足項目は stepSubsteps / stepPoints の列挙どおりに、両ロケールで実在する
-      for (const stepPath of substepScopes) {
-        const [scope, step] = stepPath.split(".");
-        const keys = listedSubstepKeys(source, stepPath);
-        expect(keys.length, stepPath).toBeGreaterThan(0);
-        for (const key of keys) {
-          expect(page[scope][step][key], `${name}.${stepPath}.${key}`).toBeTruthy();
+    }
+    // 目次はセクションの id と、メッセージのセクション（title を持つもの）に1対1で対応する
+    expect(listedProps(source, "sections", "id")).toEqual(["overview", "offer", "auction", "streamer", "faq"]);
+    for (const id of listedProps(source, "sections", "id")) {
+      expect(source, id).toContain(`id="${id}"`);
+      expect(jaMessages.tradeGuidePage[id].title, id).toBeTruthy();
+    }
+  });
+
+  it("has one row per visibility question (<key>, <key>Public, <key>Hidden) in both locales", () => {
+    for (const { name, messages } of locales) {
+      const visibility = messages.tradeGuidePage.streamer.visibility;
+      for (const key of listedProps(source, "visibilityRows", "key")) {
+        for (const suffix of ["", "Public", "Hidden"]) {
+          expect(visibility[`${key}${suffix}`], `${name}.${key}${suffix}`).toBeTruthy();
         }
-        // 列挙漏れ（メッセージにあるのにページが描画しない文言）も検出する
-        const prefix = keys[0].startsWith("substep") ? "substep" : "point";
-        expect(
-          Object.keys(page[scope][step]).filter((key) => key.startsWith(prefix)),
-          `${name}.${stepPath}`
-        ).toEqual(keys);
-      }
-      for (const item of listedKeys(source, "faqItems")) {
-        expect(page.faq[item].question, `${name}.faq.${item}.question`).toBeTruthy();
-        expect(page.faq[item].answer, `${name}.faq.${item}.answer`).toBeTruthy();
       }
     }
   });
 
-  it("actually renders every section", () => {
-    // 配列が存在するだけでは表示されない。描画へ渡している箇所が消えると
-    // 見出しだけの空セクションになっても他のアサートは通ってしまう。
-    for (const [arrayName, scope] of stepScopes) {
-      expect(source).toContain(`<StepList scope="${scope}" steps={${arrayName}} t={t} />`);
+  it("keeps the ja/en tradeGuidePage structure identical and puts no fixed limit in the copy", () => {
+    const collect = (value: unknown, prefix = ""): string[] =>
+      typeof value === "object" && value !== null
+        ? Object.entries(value).flatMap(([key, child]) => [prefix + key, ...collect(child, `${prefix}${key}.`)])
+        : [];
+    expect(collect(jaMessages.tradeGuidePage).sort()).toEqual(collect(enMessages.tradeGuidePage).sort());
+
+    // 上限（10）・選択期限（72）・最長期限（168）はメッセージに直書きしない。
+    // コード定数からプレースホルダーで差し込む（定数を変えてもガイドが古くならない）。
+    for (const { name, messages } of locales) {
+      const copy = JSON.stringify(messages.tradeGuidePage);
+      expect(copy, name).not.toMatch(/(?<![\d.])(10|72|168)(?![\d])/);
     }
-    expect(source).toContain("{faqItems.map(");
-    expect(source).toContain("{sectionIds.map(");
-    expect(source).toContain("<PublicFooter />");
+  });
+
+  it("passes the limits from the code constants, not from literals in the page", () => {
+    for (const constant of [
+      "TRADE_MAX_OPEN_OFFERS",
+      "TRADE_MAX_WANTED_QUANTITY",
+      "TRADE_AUCTION_DURATIONS_HOURS",
+      "TRADE_AUCTION_SELECTION_HOURS",
+      "TRADE_MAX_ACTIVE_BIDS",
+      "TRADE_MAX_BID_QUANTITY",
+    ]) {
+      expect(source, constant).toContain(constant);
+    }
+    // 値そのものは、ここで実コードの定義と突き合わせる（定数が変わったらガイドの確認を促す）。
+    const tradeSource = readSource("src/lib/trade.ts");
+    const auctionSource = readSource("src/lib/trade-auction.ts");
+    expect(tradeSource).toMatch(/export const TRADE_MAX_OPEN_OFFERS = 10;/);
+    expect(tradeSource).toMatch(/export const TRADE_MAX_WANTED_QUANTITY = 10;/);
+    expect(auctionSource).toMatch(/TRADE_AUCTION_DURATIONS_HOURS = \[24, 72, 168\] as const;/);
+    expect(auctionSource).toMatch(/TRADE_AUCTION_SELECTION_HOURS = 72;/);
+    expect(auctionSource).toMatch(/TRADE_MAX_ACTIVE_BIDS = 10;/);
+    expect(auctionSource).toMatch(/TRADE_MAX_BID_QUANTITY = 10;/);
+    // 期限のラベルは出品フォームと同じ messages（24時間 / 3日 / 7日）を時間数で引く
+    expect(source).toContain('24: "createAuctionDuration24h"');
+    expect(source).toContain('72: "createAuctionDuration3d"');
+    expect(source).toContain('168: "createAuctionDuration7d"');
+    expect(readSource("src/components/TradeCreateForm.tsx")).toContain('24: "createAuctionDuration24h"');
   });
 
   it("quotes the labels the trade UI actually renders (so the guide and screens use the same words)", () => {
@@ -439,7 +473,6 @@ describe("trade guide page", () => {
         "trade.tabAuction": trade.tabAuction,
         "trade.myTradesLink": trade.myTradesLink,
         "trade.createOfferButton": trade.createOfferButton,
-        "trade.loginToCreate": trade.loginToCreate,
         "trade.acceptButton": trade.acceptButton,
         "trade.confirmModalSubmitButton": trade.confirmModalSubmitButton,
         "trade.cancelOfferButton": trade.cancelOfferButton,
@@ -455,15 +488,8 @@ describe("trade guide page", () => {
         "trade.createStep2NoPartners": trade.createStep2NoPartners.split(/[。.]/)[0],
         "trade.createStep1ListedBadge": trade.createStep1ListedBadge,
         "trade.createAuctionButton": trade.createAuctionButton,
-        "trade.createKindLabel": trade.createKindLabel,
-        "trade.createKindAuction": trade.createKindAuction,
-        "trade.createAuctionStep1Title": trade.createAuctionStep1Title,
-        "trade.createAuctionStep2Title": trade.createAuctionStep2Title,
-        "trade.createAuctionDuration24h": trade.createAuctionDuration24h,
-        "trade.createAuctionDuration3d": trade.createAuctionDuration3d,
-        "trade.createAuctionDuration7d": trade.createAuctionDuration7d,
-        "trade.createAuctionSubmitButton": trade.createAuctionSubmitButton,
         "trade.auctionRowDetailLink": trade.auctionRowDetailLink,
+        "trade.auctionBidFormTitle": trade.auctionBidFormTitle,
         "trade.auctionScopeCrossChannel": trade.auctionScopeCrossChannel,
         "trade.auctionBidChangeTitle": trade.auctionBidChangeTitle,
         "trade.auctionWithdrawButton": trade.auctionWithdrawButton,
@@ -476,16 +502,8 @@ describe("trade guide page", () => {
         "trade.myAuctionsRoleSelling": trade.myAuctionsRoleSelling,
         "trade.myAuctionsSettleLink": trade.myAuctionsSettleLink,
         "trade.myTradesUnavailableBadge": trade.myTradesUnavailableBadge,
-        "tradeSettings.title": messages.tradeSettings.title,
         "tradeSettings.form.tradeEnabled": messages.tradeSettings.form.tradeEnabled,
         "tradeSettings.form.crossChannelEnabled": messages.tradeSettings.form.crossChannelEnabled,
-        "accountPage.collectionSharing.title": messages.accountPage.collectionSharing.title,
-        "header.userSettings": messages.header.userSettings,
-        "navigation.cardManagement": messages.navigation.cardManagement,
-        "navigation.collection": messages.navigation.collection,
-        "cardManager.editCard": messages.cardManager.editCard,
-        "cardManager.form.tradeWantable": messages.cardManager.form.tradeWantable,
-        "cardVisibilitySettings.title": messages.cardVisibilitySettings.title,
         "cardVisibilitySettings.form.showUnowned": messages.cardVisibilitySettings.form.showUnowned,
         "cardVisibilitySettings.form.showDetails": messages.cardVisibilitySettings.form.showDetails,
         // 取引が失敗したときに画面へ出る文言（FAQ の見出しとして引用している）
@@ -493,7 +511,6 @@ describe("trade guide page", () => {
         "trade.errorTradeOfferedCardInactive": trade.errorTradeOfferedCardInactive,
         "trade.errorTradeAlreadyCompletedOrInvalid": trade.errorTradeAlreadyCompletedOrInvalid,
         "trade.errorTradeAuctionExpired": trade.errorTradeAuctionExpired,
-        "trade.errorTradeAuctionBidLocked": trade.errorTradeAuctionBidLocked,
         "trade.errorTradeCardAlreadyListed": trade.errorTradeCardAlreadyListed,
         "trade.errorTradeWantedCardNotWantable": trade.errorTradeWantedCardNotWantable,
       };
@@ -506,43 +523,72 @@ describe("trade guide page", () => {
     }
   });
 
-  it("states the limits with the same numbers the code enforces", () => {
-    // 数値は推測で書かない。コード側の定数と、ガイドの文言を突き合わせる
-    // （定数を変えたのに文言が古いまま残る、を検出する）。
-    // 各数値の根拠（ファイル:行）は PR の対応表を参照。
-    const tradeSource = readSource("src/lib/trade.ts");
-    const auctionSource = readSource("src/lib/trade-auction.ts");
-    expect(tradeSource).toMatch(/export const TRADE_MAX_OPEN_OFFERS = 10;/);
-    expect(tradeSource).toMatch(/export const TRADE_MAX_WANTED_QUANTITY = 10;/);
-    expect(auctionSource).toMatch(/TRADE_AUCTION_DURATIONS_HOURS = \[24, 72, 168\] as const;/);
-    expect(auctionSource).toMatch(/TRADE_AUCTION_SELECTION_HOURS = 72;/);
-    expect(auctionSource).toMatch(/TRADE_MAX_ACTIVE_BIDS = 10;/);
-    expect(auctionSource).toMatch(/TRADE_MAX_BID_QUANTITY = 10;/);
+  it("draws its mock-ups with the classes of the real screens (drift guard)", () => {
+    // 図解の見た目は実コンポーネントのコピー（実コンポーネントはクライアント状態を持つので
+    // 公開ページでは使えない）。実画面のクラスが変わったらここで気づけるよう、コピー元の
+    // 文字列が実ファイルにまだ存在することを固定する。
+    const status = readSource("src/components/TradeAuctionStatus.tsx");
+    const chips = readSource("src/components/trade-guide/PhaseChips.tsx");
+    for (const phase of ["bidding", "selecting", "completed", "expired", "cancelled"] as const) {
+      const cls = chips.match(new RegExp(`${phase}: "([^"]+)"`))?.[1];
+      expect(cls, phase).toBeTruthy();
+      expect(status, `TradeAuctionStatus ${phase}`).toContain(`${phase}: "${cls}"`);
+    }
+    // 「成立できない入札」バッジ
+    expect(readSource("src/components/TradeAuctionRow.tsx")).toContain("rounded bg-yellow-700 px-2 py-0.5 text-yellow-50");
+    expect(chips).toContain('unsettleable: "bg-yellow-700 text-yellow-50"');
 
-    const { ja, en } = {
-      ja: jaMessages.tradeGuidePage,
-      en: enMessages.tradeGuidePage,
-    };
-    // 出品数の上限（通常出品とオークション合計）
-    expect(ja.offer.limit.description).toContain("最大10件");
-    expect(en.offer.limit.description).toContain("up to 10 listings");
-    // 欲しい枚数 1〜10 / 入札 1〜10枚
-    expect(ja.offer.quantity.description).toContain("1〜10枚");
-    expect(en.offer.quantity.description).toContain("1 to 10");
-    expect(ja.auction.bid.point1).toContain("1〜10枚");
-    expect(en.auction.bid.point1).toContain("1 to 10");
-    // 期限 24時間/3日/7日、選択期限72時間
-    expect(ja.auction.create.substep3).toContain("24時間");
-    expect(ja.auction.create.substep3).toContain("3日");
-    expect(ja.auction.create.substep3).toContain("7日");
-    expect(en.auction.create.substep3).toContain("24 hours");
-    expect(en.auction.create.substep3).toContain("3 days");
-    expect(en.auction.create.substep3).toContain("7 days");
-    expect(ja.auction.select.description).toContain("72時間");
-    expect(en.auction.select.description).toContain("72 hours");
-    // 有効な入札の上限
-    expect(ja.auction.limits.point2).toContain("最大10件");
-    expect(en.auction.limits.point2).toContain("up to 10 active bids");
+    // トレード設定パネルのトグル・ステータスピル
+    const settings = readSource("src/components/TradeSettings.tsx");
+    const mock = readSource("src/components/trade-guide/TradeSettingsMock.tsx");
+    for (const cls of [
+      "h-6 w-11 rounded-full",
+      "after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border",
+      "peer-checked:bg-purple-600",
+      "peer-checked:after:translate-x-full",
+      "bg-green-500/20 text-green-400",
+      "bg-gray-500/20 text-gray-400",
+      "rounded-xl bg-gray-800 p-6",
+    ]) {
+      expect(settings, `TradeSettings: ${cls}`).toContain(cls);
+    }
+    expect(mock).toContain("bg-purple-600 after:translate-x-full");
+    expect(mock).toContain("after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border");
+
+    // ボードのタブ・「トレード」ボタン
+    const board = readSource("src/app/trade/[streamerId]/page.tsx");
+    const tabs = readSource("src/components/trade-guide/BoardTabsMock.tsx");
+    expect(board).toContain("shrink-0 rounded-lg px-4 py-2 text-sm");
+    expect(board).toContain('"bg-purple-600 text-white" : "bg-gray-800 text-gray-300');
+    expect(tabs).toContain("rounded-lg px-4 py-2 text-sm");
+    expect(tabs).toContain('"bg-purple-600 text-white" : "bg-gray-800 text-gray-300"');
+    expect(readSource("src/components/StreamerCollection.tsx")).toContain(
+      "rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white",
+    );
+    expect(tabs).toContain("rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white");
+
+    // 「求めるカード」チェックボックス（accent-purple-500 の h-4 w-4）と数量バッジ
+    expect(readSource("src/components/CardManager.tsx")).toContain('className="mt-0.5 h-4 w-4 rounded accent-purple-500"');
+    expect(readSource("src/components/TradeCardSummary.tsx")).toContain(
+      "rounded bg-purple-600 px-1.5 py-0.5 text-xs font-semibold text-white",
+    );
+    expect(readSource("src/components/trade-guide/CardTile.tsx")).toContain(
+      "rounded bg-purple-600 px-1.5 py-0.5 text-xs font-semibold text-white",
+    );
+  });
+
+  it("builds the diagrams from presentational components that hold no copy, data or state", () => {
+    const dir = "src/components/trade-guide";
+    const files = readdirSync(join(process.cwd(), dir)).filter((file) => /\.(tsx|ts)$/.test(file));
+    expect(files.length).toBeGreaterThan(10);
+    for (const file of files) {
+      const text = readSource(`${dir}/${file}`);
+      expect(text, file).not.toContain('"use client"');
+      expect(text, file).not.toMatch(/useState|useEffect|fetch\(|getTranslations\(|useTranslations/);
+      // 日本語の文言は messages 側にだけ置く（コメントは対象外）
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      expect(code, file).not.toMatch(/[぀-ヿ一-鿿]/);
+    }
   });
 
   it("is linked only from the trade screens, not from /guide or the public footer", () => {
