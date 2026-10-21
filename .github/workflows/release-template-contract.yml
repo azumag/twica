@@ -53,7 +53,10 @@ jobs:
         run: python3 .github/scripts/test_release_summary.py
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Node 20 はサポート終了で 2026-10 のセキュリティ修正が出ないため、CI 用の
+          # .github/ci-node-version（Workers Builds とは別に修正版へ完全固定）を参照する。
+          # 理由は docs/cloudflare-workers-builds.md。Refs #1914 #1919
+          node-version-file: .github/ci-node-version
           cache: npm
       - run: npm ci
       - name: Verify release PR template contract
