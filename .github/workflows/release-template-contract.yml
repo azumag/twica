@@ -53,7 +53,9 @@ jobs:
         run: python3 .github/scripts/test_release_summary.py
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Node 20 はサポート終了で 2026-10 のセキュリティ修正が出ないため、ビルド/CIと同じ
+          # .node-version（修正版に完全固定）へ統一する。Refs #1914
+          node-version-file: .node-version
           cache: npm
       - run: npm ci
       - name: Verify release PR template contract
