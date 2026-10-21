@@ -27,7 +27,7 @@ export type SideTone = keyof typeof SIDE_TONE;
 
 type CardTileProps = {
   tone: SideTone;
-  /** Text label under the tile ("the card you give" / "the card you ask for"). */
+  /** Short text label under the tile ("You give" / "You get"). Kept to a few characters (no wrapping). */
   label: string;
   /** Optional second line (how many copies). */
   sublabel?: string;
@@ -90,12 +90,15 @@ export default function CardTile({ tone, label, sublabel, badge, stacked = false
       {/* The label is optional: the cross-channel diagram names its tiles in the
           captions next to them instead (a pill would not fit under a 56px tile). */}
       {label && (
-        <p className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold sm:text-sm ${t.chip}`}>
+        // whitespace-nowrap: the label must never wrap mid-word. Japanese has no spaces, so
+        // without it a narrow flex item breaks a word like "カード" into "カー" / "ド" on a
+        // phone. The page keeps labels short enough for two tiles + the arrow to fit 360px.
+        <p className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold sm:text-sm ${t.chip}`}>
           <GuideIcon name={tone === "give" ? "arrowRight" : "cards"} className="h-3.5 w-3.5" />
           {label}
         </p>
       )}
-      {sublabel && <p className="text-xs text-gray-300">{sublabel}</p>}
+      {sublabel && <p className="text-xs text-gray-300 sm:text-sm">{sublabel}</p>}
     </div>
   );
 }

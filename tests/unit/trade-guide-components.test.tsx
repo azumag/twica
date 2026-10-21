@@ -4,16 +4,18 @@ import { cleanup, render } from "@testing-library/react";
 import AuctionTimeline from "@/components/trade-guide/AuctionTimeline";
 import Breadcrumb from "@/components/trade-guide/Breadcrumb";
 import BoardTabsMock from "@/components/trade-guide/BoardTabsMock";
+import Callout from "@/components/trade-guide/Callout";
 import CardTile from "@/components/trade-guide/CardTile";
 import CrossChannelFigure from "@/components/trade-guide/CrossChannelFigure";
+import DetailsBox from "@/components/trade-guide/DetailsBox";
 import ExchangeFigure from "@/components/trade-guide/ExchangeFigure";
 import FaqAccordion from "@/components/trade-guide/FaqAccordion";
 import FlowSteps from "@/components/trade-guide/FlowSteps";
 import GuideIcon, { GUIDE_ICON_NAMES } from "@/components/trade-guide/GuideIcon";
-import IconTile from "@/components/trade-guide/IconTile";
 import ModeCard from "@/components/trade-guide/ModeCard";
 import PhaseChips, { PHASE_CHIP_CLASS } from "@/components/trade-guide/PhaseChips";
 import RuleList from "@/components/trade-guide/RuleList";
+import TermList from "@/components/trade-guide/TermList";
 import TradeSettingsMock from "@/components/trade-guide/TradeSettingsMock";
 import VisibilityTable from "@/components/trade-guide/VisibilityTable";
 import WantableCheckMock from "@/components/trade-guide/WantableCheckMock";
@@ -43,25 +45,36 @@ describe("GuideIcon", () => {
 });
 
 describe("ExchangeFigure", () => {
+  const props = {
+    giveLabel: "You give",
+    giveCard: "Slime",
+    giveBadge: "×2",
+    wantLabel: "You get",
+    wantCard: "Dragon",
+    wantBadge: "×1",
+    arrowLabel: "Trade",
+    caption: "You give two Slimes and get one Dragon.",
+  };
+
   it("is a figure whose caption states the swap in words, with both sides labelled", () => {
-    const { container } = render(
-      <ExchangeFigure
-        giveLabel="You give"
-        giveCount="Always 1"
-        wantLabel="You want"
-        wantCount="1 to 10"
-        wantBadge="×3"
-        arrowLabel="Swap"
-        caption="You give one card and get three."
-      />,
-    );
+    const { container } = render(<ExchangeFigure {...props} />);
     const figure = container.querySelector("figure")!;
-    expect(figure.querySelector("figcaption")!.textContent).toBe("You give one card and get three.");
-    for (const text of ["You give", "Always 1", "You want", "1 to 10", "×3", "Swap"]) {
+    expect(figure.querySelector("figcaption")!.textContent).toBe("You give two Slimes and get one Dragon.");
+    for (const text of ["You give", "Slime", "×2", "You get", "Dragon", "×1", "Trade"]) {
       expect(figure.textContent).toContain(text);
     }
     // The double arrow is announced as text, not left to an unlabeled graphic.
-    expect(figure.querySelector(".sr-only")!.textContent).toBe("Swap");
+    expect(figure.querySelector(".sr-only")!.textContent).toBe("Trade");
+  });
+
+  it("keeps each side label on one line (a narrow phone must not break a word in two)", () => {
+    // Regression: on a 390px screen "あなたが譲るカード" wrapped as "カー" / "ド".
+    const { container } = render(<ExchangeFigure {...props} wantStacked />);
+    const labels = [...container.querySelectorAll("figure p")].filter((p) =>
+      ["You give", "You get"].includes(p.textContent ?? ""),
+    );
+    expect(labels).toHaveLength(2);
+    for (const label of labels) expect(label.className).toContain("whitespace-nowrap");
   });
 });
 
@@ -109,20 +122,22 @@ describe("FlowSteps", () => {
 describe("AuctionTimeline", () => {
   const props = {
     biddingChip: "Taking bids",
-    biddingTitle: "Bids come in",
-    biddingDescription: "Pick a duration.",
+    biddingTitle: "List Dragon for 3 days",
     durationLabels: ["24 hours", "3 days", "7 days"],
+    selectedDuration: 1,
+    bidsLabel: "Bids that came in",
+    bids: [
+      { key: "slime", label: "Slime ×3" },
+      { key: "golem", label: "Golem ×1" },
+    ],
     deadlineLabel: "Deadline",
     selectingChip: "Awaiting selection",
-    selectingTitle: "Seller picks",
-    selectingDescription: "One bid is chosen.",
-    maxHoursLabel: "Up to 72 hours",
-    outcomeLabel: "Two endings",
+    selectingTitle: "The seller picks Golem ×1",
+    maxHoursLabel: "Within 72 hours",
     completedChip: "Completed",
-    completedDescription: "Cards swap.",
+    completedDescription: "Dragon and Golem are traded.",
     expiredChip: "No deal",
-    expiredDescription: "Cards are released.",
-    noBidsNote: "No bids: ends at the deadline.",
+    expiredDescription: "Nothing is traded.",
     caption: "Bids, deadline, selection, then completed or no deal.",
   };
 
@@ -132,13 +147,21 @@ describe("AuctionTimeline", () => {
     // bidding, deadline, selecting, outcomes: arrows live inside the items, not between them
     expect([...list.children].map((el) => el.tagName)).toEqual(["LI", "LI", "LI", "LI"]);
     expect(container.querySelector("figcaption")!.textContent).toBe(props.caption);
-    expect(container.textContent).toContain(props.noBidsNote);
+    expect(container.textContent).toContain("The seller picks Golem ×1");
   });
 
-  it("shows the three durations in order and uses the real status chip classes", () => {
+  it("shows the durations in order with the example's one lit, and the example bids", () => {
     const { container } = render(<AuctionTimeline {...props} />);
-    const durations = [...container.querySelectorAll("figure > ol > li:first-child ul li")].map((li) => li.textContent);
-    expect(durations).toEqual(props.durationLabels);
+    const durations = [...container.querySelectorAll("figure > ol > li:first-child > ul:first-of-type li")];
+    expect(durations.map((li) => li.textContent)).toEqual(props.durationLabels);
+    expect(durations[1].className).toContain("bg-emerald-500");
+    expect(durations[0].className).not.toContain("bg-emerald-500");
+    const bids = [...container.querySelectorAll("figure > ol > li:first-child > ul:last-of-type li")];
+    expect(bids.map((li) => li.textContent)).toEqual(["Slime ×3", "Golem ×1"]);
+  });
+
+  it("uses the real status chip classes", () => {
+    const { container } = render(<AuctionTimeline {...props} />);
     const chips = [...container.querySelectorAll("span.rounded.px-2")];
     const byText = (text: string) => chips.find((chip) => chip.textContent === text)!;
     expect(byText("Taking bids").className).toContain(PHASE_CHIP_CLASS.bidding);
@@ -170,22 +193,50 @@ describe("CrossChannelFigure", () => {
   });
 });
 
-describe("IconTile / ModeCard / RuleList / PhaseChips", () => {
-  it("renders a tile with the requested heading level", () => {
-    const { container } = render(<IconTile as="h3" icon="lock" title="Locked" description="Cannot reuse." />);
-    expect(container.querySelector("h3")!.textContent).toBe("Locked");
-    cleanup();
-    const { container: other } = render(<IconTile icon="lock" title="Locked" description="Cannot reuse." />);
-    expect(other.querySelector("h4")).not.toBeNull();
-  });
-
-  it("makes the whole mode card one link to its section, with the chips as a list", () => {
+describe("ModeCard / DetailsBox / TermList / Callout / RuleList / PhaseChips", () => {
+  it("makes the whole mode card one link to its section, with the letter badge hidden from assistive tech", () => {
     const { container } = render(
-      <ModeCard href="#offer" icon="swap" tone="offer" title="Regular" tagline="Swap now" chips={["A", "B"]} />,
+      <ModeCard href="#accept" icon="search" tone="accept" badge="A" title="Accept" description="Trade on the spot." />,
     );
     const link = container.querySelector("a")!;
-    expect(link.getAttribute("href")).toBe("#offer");
-    expect([...link.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["A", "B"]);
+    expect(link.getAttribute("href")).toBe("#accept");
+    expect(link.textContent).toContain("Accept");
+    expect(link.textContent).toContain("Trade on the spot.");
+    // The letter only ties the card to its section heading; the title carries the meaning.
+    expect(link.querySelector('span[aria-hidden="true"]')!.textContent).toBe("A");
+  });
+
+  it("collapses its content in a native <details> (closed by default)", () => {
+    const { container } = render(
+      <DetailsBox summary="Details">
+        <p>Hidden rule</p>
+      </DetailsBox>,
+    );
+    const details = container.querySelector("details")!;
+    expect(details.hasAttribute("open")).toBe(false);
+    expect(details.querySelector("summary")!.textContent).toBe("Details");
+    expect(details.textContent).toContain("Hidden rule");
+  });
+
+  it("lists the words as a description list, term and meaning paired", () => {
+    const { container } = render(
+      <TermList
+        label="Words"
+        items={[
+          { key: "a", term: "List", description: "Put a card up." },
+          { key: "b", term: "Bid", description: "Offer a card." },
+        ]}
+      />,
+    );
+    expect(container.querySelector("dl")!.getAttribute("aria-label")).toBe("Words");
+    expect([...container.querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual(["List", "Bid"]);
+    expect([...container.querySelectorAll("dd")].map((dd) => dd.textContent)).toEqual(["Put a card up.", "Offer a card."]);
+  });
+
+  it("shows a callout as icon + text", () => {
+    const { container } = render(<Callout icon="warning">Pick within the time limit.</Callout>);
+    expect(container.textContent).toBe("Pick within the time limit.");
+    expect(container.querySelector("svg")).not.toBeNull();
   });
 
   it("lists rules one per item and marks prohibitions differently from facts", () => {
@@ -319,12 +370,14 @@ describe("VisibilityTable", () => {
 });
 
 describe("FaqAccordion", () => {
-  it("renders one closed native <details> per entry, with the answer inside", () => {
+  it("renders one closed native <details> per entry: the message in the summary, why and what to do inside", () => {
     const { container } = render(
       <FaqAccordion
+        reasonLabel="Why"
+        actionLabel="Fix"
         items={[
-          { key: "a", icon: "toggle", question: "Why A?", answer: "Because A." },
-          { key: "b", icon: "ban", question: "Why B?", answer: "Because B." },
+          { key: "a", icon: "toggle", question: "Why A?", reason: "Because A.", action: "Do A." },
+          { key: "b", icon: "ban", question: "Why B?", reason: "Because B.", action: "Do B." },
         ]}
       />,
     );
@@ -332,6 +385,7 @@ describe("FaqAccordion", () => {
     expect(details).toHaveLength(2);
     expect(details.every((entry) => !entry.hasAttribute("open"))).toBe(true);
     expect(details[0].querySelector("summary")!.textContent).toBe("Why A?");
-    expect(details[0].querySelector("p")!.textContent).toBe("Because A.");
+    expect([...details[0].querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual(["Why", "Fix"]);
+    expect([...details[0].querySelectorAll("dd")].map((dd) => dd.textContent)).toEqual(["Because A.", "Do A."]);
   });
 });
