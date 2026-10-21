@@ -222,6 +222,15 @@ export async function POST(request: NextRequest) {
   }
   const { messageId, timestamp, messageType, signature } = headerCheck;
 
+  // 署名はリクエストの「生ボディ文字列」に対する HMAC なので、まず text() で受ける。
+  // JSON.parse はここでは行わない: Twitch 公式の EventSub 検証手順は「署名を検証して
+  // から処理する」ことを求めており、署名検証前にパースすると、署名の無い第三者が
+  // 不正な JSON を送るだけでパース例外を起こせる。以前はその例外を handleApiError に
+  // 渡していたため、未認証リクエストが errors テーブル（→ error-reporter 経由で
+  // 公開 GitHub Issue）へ記録される経路になっていた。
+  // https://dev.twitch.tv/docs/eventsub/handling-webhook-events/#verifying-the-event-message
+  const body = await request.text();
+
   // Issue #1895: 本文をサイズ上限付きでストリーム読取する。Content-Length の
   // 宣言に頼らず実際の読取バイト数で上限を強制し、超過時は413。
   const body = await readBodyWithLimit(request, MAX_EVENTSUB_BODY_BYTES);
@@ -245,6 +254,24 @@ export async function POST(request: NextRequest) {
   try {
     data = JSON.parse(body);
   } catch {
+    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+  }
+
+  // 署名とタイムスタンプを通過した（=秘密鍵を知る Twitch が送った）ボディだけをパースする。
+  // 署名が正しいのに JSON が壊れている場合は送信側の異常であり、アプリのバグではないため
+  // 400 を返すだけにして handleApiError（errors テーブル記録）には渡さない。
+  // 受信ボディの断片はログ・DB に残さない（長さのみ記録）。
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    logger.warn('[EventSub] Signed request body is not valid JSON', { messageId, bodyLength: body.length });
+    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+  }
+  // JSON としては正しいがオブジェクトでない値（null / 配列 / 数値など）も、以降の
+  // data.subscription 参照で TypeError になり 500 になるため同じく 400 で弾く。
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    logger.warn('[EventSub] Signed request body is not a JSON object', { messageId, bodyLength: body.length });
     return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
   }
 
