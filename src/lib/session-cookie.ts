@@ -111,7 +111,10 @@ export function parseSession(raw: string): SessionPayload {
 export async function signSession(payload: string): Promise<string> {
   const secret = process.env.SESSION_COOKIE_SECRET
   if (!secret) {
-    // production/preview では fail-closed: 鍵未設定時の署名省略は認証バイパスになる。
+    // production では fail-closed: 鍵未設定時の署名省略は認証バイパスになる。
+    // NOTE: コードは NODE_ENV === 'production' のみを判定する。OpenNext runtime で
+    // NODE_ENV が 'production' になる前提 (preview Worker も同様)。preview が
+    // 別の NODE_ENV で動く場合は unsigned のままになる点に注意。
     if (process.env.NODE_ENV === 'production') {
       throw new Error('SESSION_COOKIE_SECRET is required in production')
     }
@@ -137,7 +140,8 @@ export async function verifySession(
   const secret = process.env.SESSION_COOKIE_SECRET
 
   if (!secret) {
-    // production/preview では fail-closed: 鍵未設定時は全 Cookie を拒否する。
+    // production では fail-closed: 鍵未設定時は全 Cookie を拒否する。
+    // NOTE: コードは NODE_ENV === 'production' のみを判定する (上記 signSession 参照)。
     if (process.env.NODE_ENV === 'production') {
       logger.warn('[Session] SESSION_COOKIE_SECRET not set - rejecting session cookie in production.')
       throw new Error('SESSION_COOKIE_SECRET is required in production')

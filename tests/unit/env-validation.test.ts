@@ -29,6 +29,7 @@ describe('requiredEnvVars', () => {
     expect(names).toContain('TWITCH_CLIENT_SECRET')
     expect(names).toContain('TWITCH_EVENTSUB_SECRET')
     expect(names).toContain('CSRF_TOKEN_SALT')
+    expect(names).toContain('SESSION_COOKIE_SECRET')
   })
 
   it('contains only the current runtime requirements', async () => {
