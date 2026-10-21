@@ -12,8 +12,13 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), localAdminApiPlugin(env)],
     server: {
       port: 5173,
-      // Allow connections from any host for local development
-      host: true,
+      // ループバックのみで待ち受ける。以前の `host: true` は 0.0.0.0（LAN全体）に公開しており、
+      // 同一ネットワークの他端末から本番DBへ直結した /__admin に到達できた。
+      // 管理APIの接続元検証(isLoopback)に頼らず、そもそもネットワークに晒さない。
+      host: '127.0.0.1',
+      // 他オリジンの Web ページが dev サーバーの応答（index.html に埋め込む管理APIトークン
+      // を含む）を読めないよう CORS ヘッダを付けない。このSPAは同一オリジンでしか使わない。
+      cors: false,
     },
   }
 })

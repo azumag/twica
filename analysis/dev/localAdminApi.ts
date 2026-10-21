@@ -1,4 +1,6 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import type { Plugin } from 'vite'
 import {
   createAnnouncementPg,
@@ -51,6 +53,110 @@ function isLoopback(remoteAddress: string | undefined): boolean {
     remoteAddress === '::1' ||
     remoteAddress === '::ffff:127.0.0.1'
   )
+}
+
+// ---------------------------------------------------------------------------
+// /__admin の CSRF / DNS リバインディング対策
+//
+// /__admin は DASHBOARD_DATABASE_URL で本番DBへ直結し、閲覧だけでなく書き込み
+// （お知らせ・サポートコード・問い合わせ返信）も行える。ここまでの防御は
+// 「接続元がループバックであること」だけだったが、これは次の攻撃を防げない:
+//   - CSRF: 開発者のブラウザで悪意あるWebページを開くと、そのページの JS/フォームが
+//     http://localhost:5173/__admin/... へリクエストを送れる。接続元はブラウザ自身
+//     （=ループバック）なので isLoopback を通過してしまう。
+//   - DNS リバインディング: 攻撃者のドメインの名前解決を 127.0.0.1 に切り替えると、
+//     ブラウザは「攻撃者のオリジン」として localhost のサービスへ同一オリジンで
+//     リクエストでき、レスポンスも読める。やはり接続元はループバック。
+// 業界標準の対策（OWASP CSRF Prevention Cheat Sheet / Vite の CVE-2025-24010 対応と
+// 同じ考え方）に沿って、次を全て満たすリクエストだけを通す:
+//   1. Host ヘッダが localhost / 127.0.0.1 / [::1] + 実際の待受ポート
+//      → リバインディングでは Host が攻撃者のドメインになるため弾ける。
+//   2. Origin ヘッダがある場合は同一オリジン（Origin: null も拒否）
+//      → クロスサイトからの POST 等は Origin が付くため弾ける。
+//   3. 状態変更メソッドは Content-Type: application/json
+//      → <form> 送信や text/plain の単純リクエスト（プリフライト無し）を弾く。
+//   4. 起動ごとにランダム生成したトークンをカスタムヘッダ X-Admin-Token で要求
+//      → カスタムヘッダ付きのクロスオリジンリクエストはプリフライトが強制され、
+//      このサーバーは CORS を許可しないので送信自体されない。トークンは dev サーバーが
+//      返す index.html の meta にだけ埋め込む（同一オリジンの自ページだけが読める。
+//      vite.config.ts で cors:false にして他オリジンから HTML を読めなくしている）。
+//      GET（個人情報を含む閲覧）にも要求する: リバインディングでの読み取りも防ぐため。
+// ---------------------------------------------------------------------------
+
+/** 管理APIトークンを運ぶカスタムヘッダ名（Node は小文字化して保持する）。 */
+export const ADMIN_TOKEN_HEADER = 'x-admin-token'
+
+/** dev サーバーが index.html に埋め込む meta 名。クライアント(adminApi.ts)と対。 */
+export const ADMIN_TOKEN_META_NAME = 'twica-admin-token'
+
+/** 起動ごとの使い捨てトークン。256bit の暗号論的乱数（推測不能・永続化しない）。 */
+export function generateAdminToken(): string {
+  return randomBytes(32).toString('hex')
+}
+
+export type AdminGuardResult = { ok: true } | { ok: false; reason: string }
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+function singleHeader(value: string | string[] | undefined): string | undefined {
+  // 同名ヘッダの重複（配列）は曖昧さを残さないよう「無し」として扱い拒否側へ倒す
+  return typeof value === 'string' ? value : undefined
+}
+
+function tokensEqual(expected: string, actual: string | undefined): boolean {
+  if (!actual) return false
+  const a = Buffer.from(expected)
+  const b = Buffer.from(actual)
+  // 長さが違うと timingSafeEqual は例外を投げるため先に弾く（長さは秘密ではない）
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+/**
+ * /__admin へのリクエストを検証する（上のコメントの 1〜4）。
+ * port は dev サーバーが実際に待ち受けているポート（5173 が使用中なら自動で変わる）。
+ * 取得できない場合は fail closed（Host を検証できないので全拒否）。
+ */
+export function checkAdminRequestGuard(
+  req: IncomingMessage,
+  options: { token: string; port: number | undefined }
+): AdminGuardResult {
+  const { token, port } = options
+  if (port === undefined) {
+    return { ok: false, reason: 'Admin API port is unknown' }
+  }
+
+  const host = singleHeader(req.headers.host)?.toLowerCase()
+  const allowedHosts = [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]
+  if (!host || !allowedHosts.includes(host)) {
+    return { ok: false, reason: 'Invalid Host header' }
+  }
+
+  // Origin はクロスサイトのリクエスト・全ての POST 等で付く。同一オリジンの GET では
+  // 付かないことがあるため「ある場合のみ」検証する。上で Host を検証済みなので、
+  // 同一オリジンの Origin は http://<Host> と完全一致する。
+  if (req.headers.origin !== undefined) {
+    const origin = singleHeader(req.headers.origin)?.toLowerCase()
+    if (origin !== `http://${host}`) {
+      return { ok: false, reason: 'Cross-origin request rejected' }
+    }
+  }
+
+  const method = (req.method || 'GET').toUpperCase()
+  if (!SAFE_METHODS.has(method)) {
+    const contentType = singleHeader(req.headers['content-type'])
+      ?.split(';')[0]
+      .trim()
+      .toLowerCase()
+    if (contentType !== 'application/json') {
+      return { ok: false, reason: 'Content-Type must be application/json' }
+    }
+  }
+
+  if (!tokensEqual(token, singleHeader(req.headers[ADMIN_TOKEN_HEADER]))) {
+    return { ok: false, reason: 'Missing or invalid admin token' }
+  }
+
+  return { ok: true }
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -844,14 +950,50 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
 }
 
 export function localAdminApiPlugin(env: Env): Plugin {
+  // 起動（プラグイン生成）ごとに新しいトークン。ディスクや環境変数には残さない。
+  const adminToken = generateAdminToken()
+
   return {
     name: 'twica-local-admin-api',
+    // トークンは dev サーバー（ctx.server がある時）が返す index.html にだけ埋め込む。
+    // `vite build` の成果物（dist）にはトークンを含めない。
+    transformIndexHtml(_html, ctx) {
+      if (!ctx.server) return undefined
+      return [
+        {
+          tag: 'meta',
+          attrs: { name: ADMIN_TOKEN_META_NAME, content: adminToken },
+          injectTo: 'head',
+        },
+      ]
+    },
     configureServer(server) {
+      // Host 検証用の「実際の待受ポート」。5173 が使用中だと Vite は別ポートで起動するため
+      // 設定値ではなく listen 結果を優先する（リクエスト時に評価するので起動順に依存しない）。
+      const resolvePort = (): number | undefined => {
+        const address = server.httpServer?.address()
+        if (address && typeof address === 'object') {
+          return (address as AddressInfo).port
+        }
+        return server.config?.server?.port
+      }
+
       server.middlewares.use('/__admin', async (req, res) => {
         if (!isLoopback(req.socket.remoteAddress)) {
           sendJson(res, 403, {
             error: 'Admin API is only available from loopback addresses',
           })
+          return
+        }
+
+        // CSRF / DNS リバインディング対策（上の checkAdminRequestGuard のコメント参照）。
+        // 本体処理・リクエストボディの読み取りより前に必ず実行する。
+        const guard = checkAdminRequestGuard(req, {
+          token: adminToken,
+          port: resolvePort(),
+        })
+        if (!guard.ok) {
+          sendJson(res, 403, { error: `Forbidden: ${guard.reason}` })
           return
         }
 
