@@ -21,6 +21,17 @@ GitHub Actions はアプリ本体を二重デプロイせず、PlanetScale migra
   現在 `22.23.4`）を `node-version-file` で参照する。Node.js のセキュリティリリース時はこのファイルを
   上げ、CI ログの setup-node の `node: vX` で実際の版を確認する。`.node-version` と
   `.github/ci-node-version` の一本化は Issue #1919 で追跡する。
+- Node の固定版だけを変える PR / push でも必要な検証が走るよう、path filter を次のように対応させる
+  （Issue #1917）。この対応関係は `tests/unit/cloudflare-workers-issues.test.ts` が固定しており、
+  外すと unit test が落ちる。
+  - `.github/ci-node-version`: `ci.yml` の `app` / `analysis` / `postgres_fixtures` filter と
+    `planetscale-migrate.yml` の `on.push.paths`。setup-node と migration runner が読むファイルなので、
+    変更時は新しい Node で test / workers:build / analysis build / 実PG検証 / migration runner を回す。
+  - `.node-version`: `ci.yml` の `app` / `postgres_fixtures` filter のみ。CI の Node は
+    変えない（Workers Builds 専用）が、値の契約テスト（test job）と filter の対応を守るため変更時も
+    CI を回す。analysis job は契約テストを実行しないため含めない。migration runner も読まないため
+    `on.push.paths` には含めない（含めると無関係な push で本番 Environment の実DBへ接続し、
+    pending migration を意図せず適用してしまう）。
 - これはビルド/CI/migration runner の Node であり、本番 Worker は workerd で動くため
   `compatibility_date` とは無関係。Workers Builds の環境変数 `NODE_VERSION` は公式に `.node-version`
   との優先順位の記載がないため設定せず、`.node-version` を正とする。

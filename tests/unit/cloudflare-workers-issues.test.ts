@@ -12,6 +12,60 @@ function section(name: string): string {
   return config.slice(start + header.length).split(/^\[/m)[0];
 }
 
+const indentOf = (line: string) => line.length - line.trimStart().length;
+const isCommentOrBlank = (line: string) => line.trim() === "" || line.trimStart().startsWith("#");
+
+// workflow の「キー行より深いインデントが続く範囲」を切り出す。YAML パーサを
+// 新規依存に加えず、対象ブロックの要素だけを確認するための最小限の読み取り。
+function blockBelow(lines: string[], keyLineIndex: number): string[] {
+  const keyIndent = indentOf(lines[keyLineIndex]);
+  const body: string[] = [];
+  for (const line of lines.slice(keyLineIndex + 1)) {
+    if (isCommentOrBlank(line)) continue;
+    if (indentOf(line) <= keyIndent) break;
+    body.push(line);
+  }
+  return body;
+}
+
+// 「- 'value'」形式のシーケンス項目から値だけを取り出す。並び順には依存しない。
+function sequenceValues(block: string[]): string[] {
+  return block.flatMap((line) => {
+    const match = line.trim().match(/^-\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*(?:#.*)?$/);
+    return match ? [match[1] ?? match[2] ?? match[3]] : [];
+  });
+}
+
+// dorny/paths-filter の `filters:` ブロックから、指定グループの path 一覧を読む。
+function filterGroup(workflow: string, group: string): string[] {
+  const lines = workflow.split("\n");
+  const filtersLine = lines.findIndex((line) => /^\s*filters:\s*\|\s*$/.test(line));
+  expect(filtersLine, "paths-filter の filters 定義が無い").toBeGreaterThanOrEqual(0);
+  const block = blockBelow(lines, filtersLine);
+  const groupLine = block.findIndex((line) => line.trim() === `${group}:`);
+  expect(groupLine, `${group} filter が無い`).toBeGreaterThanOrEqual(0);
+  const groupIndent = indentOf(block[groupLine]);
+  const entries: string[] = [];
+  for (const line of block.slice(groupLine + 1)) {
+    if (indentOf(line) <= groupIndent) break;
+    entries.push(line);
+  }
+  return sequenceValues(entries);
+}
+
+// planetscale-migrate.yml の `on.push.paths` を読む。
+function pushPaths(workflow: string): string[] {
+  const lines = workflow.split("\n");
+  const pushLine = lines.findIndex((line) => /^ {2}push:\s*$/.test(line));
+  expect(pushLine, "on.push が無い").toBeGreaterThanOrEqual(0);
+  const pushIndent = indentOf(lines[pushLine]);
+  const pathsLine = lines.findIndex(
+    (line, index) => index > pushLine && indentOf(line) === pushIndent + 2 && line.trim() === "paths:",
+  );
+  expect(pathsLine, "on.push.paths が無い").toBeGreaterThanOrEqual(0);
+  return sequenceValues(blockBelow(lines, pathsLine));
+}
+
 describe("Workers Issues deployment contract", () => {
   it("preserves error monitoring across both regular deployment targets", () => {
     for (const scope of ["observability.issues", "env.preview.observability.issues"]) {
@@ -72,6 +126,47 @@ describe("Workers Issues deployment contract", () => {
       );
       expect(text, `${workflow} must not hardcode node-version`).not.toMatch(/^\s*node-version:/m);
     }
+  });
+  it("runs CI and the migration runner when only the Node pin changes", () => {
+    // #1917: セキュリティリリースで Node の固定版だけを上げる PR でも、新しい Node で
+    // test / workers:build / migration runner を実際に動かす必要がある。
+    // setup-node が読み runner も使うのは `.github/ci-node-version` なので、これが
+    // app / analysis / postgres_fixtures と on.push.paths の要素であることを固定する。
+    // `.node-version` は Workers Builds 専用で CI の Node を変えないが、値と filter の
+    // 対応を守るため app 側には含める。一方 migration runner は読まないので push paths
+    // には含めない（含めると無関係な push で本番DBへ接続する）。
+    // 対象が「要素」として存在することだけを確認し、並び順や他の filter との重複には
+    // 依存しない。
+    const ciPin = ".github/ci-node-version";
+    const workersBuildsPin = ".node-version";
+    const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
+    const migrate = readFileSync(join(root, ".github/workflows/planetscale-migrate.yml"), "utf8");
+
+    // test / supabase-shutdown-build（workers:build）/ lint は
+    // `needs.changes.outputs.app` でゲートされる。app filter から外れると、Node だけを
+    // 上げる PR で新しい Node が一度も実行されない。
+    expect(filterGroup(ci, "app")).toEqual(
+      expect.arrayContaining([ciPin, workersBuildsPin]),
+    );
+
+    // analysis job も setup-node で同じ pin を読むため、analysis build も新 Node で回す。
+    // こちらは契約テストを実行しないので `.node-version` は含めない。
+    const analysis = filterGroup(ci, "analysis");
+    expect(analysis).toContain(ciPin);
+    expect(analysis).not.toContain(workersBuildsPin);
+
+    // postgres_fixtures は PG17 / integration job を独立にゲートする。既存の対応が
+    // 将来の整理で落ちると、Node を上げても実PG検証だけが skip される。
+    expect(filterGroup(ci, "postgres_fixtures")).toEqual(
+      expect.arrayContaining([ciPin, workersBuildsPin]),
+    );
+
+    // migration runner は push の paths に無いと、次の migration まで新しい Node で
+    // 実行されない。
+    expect(pushPaths(migrate)).toContain(ciPin);
+    // `.node-version` は runner が読まない。含めると本番 Environment の実DBへ無関係な
+    // 接続と pending migration の適用を招くため、意図的に含めていないことを固定する。
+    expect(pushPaths(migrate)).not.toContain(workersBuildsPin);
   });
   it("does not enable separately billed tracing or change the runtime date", () => {
     expect(config).not.toMatch(/^\[(?:env\.preview\.)?observability\.traces\]/m);
