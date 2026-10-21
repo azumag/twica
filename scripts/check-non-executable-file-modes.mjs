@@ -29,6 +29,7 @@ const ROOT_NON_EXECUTABLE_FILES = new Set([
   ".gitattributes",
   ".gitignore",
   ".node-version",
+  ".github/ci-node-version",
   "AGENTS.md",
   "CLAUDE.md",
   "LICENSE",
