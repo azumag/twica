@@ -65,8 +65,11 @@ export interface Env {
  * ため、フィールド追加には寛容な最小構造にする。
  */
 export interface ChatDeliverySliceOutcomeLike {
-  kind: string;
+  kind?: string;
   nextAttemptAt?: string;
+  reserved?: number;
+  enqueued?: number;
+  skippedDisabled?: boolean;
 }
 
 /**
@@ -126,8 +129,8 @@ async function callInternalChatOutbox(
       });
       return { status: response.status, outcome: null };
     }
-    const json = await response.json().catch(() => null) as { outcome?: ChatDeliverySliceOutcomeLike } | null;
-    return { status: response.status, outcome: json?.outcome ?? null };
+    const json = await response.json().catch(() => null) as { outcome?: ChatDeliverySliceOutcomeLike; result?: ChatDeliverySliceOutcomeLike } | null;
+    return { status: response.status, outcome: json?.outcome ?? json?.result ?? null };
   } catch (error) {
     console.warn("[chat-delivery] internal endpoint call threw", {
       action: body.action,
@@ -205,6 +208,19 @@ export async function runChatDeliveryDueSweep(env: Env): Promise<void> {
   const result = await callInternalChatOutbox(env, { action: "dispatch-due" });
   if (!result) {
     console.warn("[chat-delivery] dispatch-due call failed");
+    return;
+  }
+  console.info("[chat-delivery] dispatch-due sweep result", {
+    status: result.status,
+    reserved: result.outcome?.reserved,
+    enqueued: result.outcome?.enqueued,
+    skippedDisabled: result.outcome?.skippedDisabled,
+  });
+  if (result.outcome && (result.outcome.reserved ?? 0) > 0 && result.outcome.enqueued === 0 && !result.outcome.skippedDisabled) {
+    console.warn("[chat-delivery] dispatch-due produced zero enqueued despite reserved rows", {
+      reserved: result.outcome.reserved,
+      enqueued: result.outcome.enqueued,
+    });
   }
 }
 

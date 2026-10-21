@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -75,5 +76,24 @@ describe('card trade wantable migration (#1790)', () => {
         `GRANT EXECUTE ON FUNCTION public.accept_trade_offer${signature} TO service_role;`,
       )
     }
+  })
+
+  it('適用済み: 内容を凍結する（1文字でも変えると次回 apply / verify が必ず失敗する）', () => {
+    // db-migrate はファイル内容全体の SHA-256 を twica_meta.schema_migrations へ記録し、
+    // 適用済み version の checksum が変わっていると status / plan / apply / verify の
+    // いずれも checksum 不一致で即エラー終了する（scripts/lib/db-migrate-core.js の
+    // computeChecksum / scripts/db-migrate.js の hasBlockingErrors）。
+    // この migration は PR #1800 の merge 時に preview へ適用済み
+    // （PlanetScale Migrations run 38446119017, 2026-10-13T18:22:34Z。
+    // 履歴 checksum 0193b02a9d59… と一致する）。CI の PlanetScale migration ジョブは
+    // 履歴の無い一時 DB へ適用するため checksum 不一致を検出できず、適用済みファイル
+    // への編集は merge 後にしか表面化しない。PR #1869 がロック待ち上限
+    //（SET LOCAL lock_timeout）をこの適用済みファイルへ追記し、実際に preview の
+    // planetscale-migrate.yml を失敗させた（run 39193633861。取り消し済み）。
+    // 以後の編集を merge 前に CI で止めるため、#1828 と同じ方式で checksum を固定する。
+    // migration のロック待ち上限は docs/db-schema-migration-reference.md の方針に従い、
+    // 「新規の」migration で設定する。
+    const checksum = createHash('sha256').update(migration, 'utf8').digest('hex')
+    expect(checksum).toBe('0193b02a9d596cc697ad74c9c72507158ca54fa56c4a7bb369f22d29111d7e1d')
   })
 })

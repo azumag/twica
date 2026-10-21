@@ -1457,6 +1457,68 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       await setWantable(WC.RARE, true);
     });
 
+    it("rollback window: the DB lets a rolled-back app list the offer, and acceptance still fails closed (#1801)", async () => {
+      // レビュー任意指摘: ロールバック後の旧アプリの挙動（応諾は 500 で拒否側に
+      // 倒れる、新規出品は止まらない）はこれまでコメント（20261014100000 の
+      // #1790 ブロック注記）でのみ説明されていた。ロールバック中は、trade_wantable
+      // を知らない「旧アプリのサーバコード」（createTradeOffer の wantable 検証も
+      // PUT /api/cards/[id] の書き込みも無い）が、この migration 適用済みの新しい
+      // DB に対して動く。ここでその DB 側の前提を固定する:
+      //   - migration は trade_offers への制約・トリガーを追加しない（wantable の
+      //     出品強制はアプリ層だけ）ため、旧アプリの出品 INSERT は DB エラーに
+      //     ならない = 新規出品は止まらない。実害は小さい: 再デプロイ後のボードでは
+      //     非表示になる（下の (2)）。
+      //   - それでも応諾だけは fail-closed。#1789 時点のアプリは4引数 RPC で
+      //     WANTED_CARD_NOT_WANTABLE を受け取り、結果検証（既知コード以外は throw）
+      //     が例外にして 500 を返す。その機構は trade-accept-service.test.ts の
+      //     ロールバックピン（旧アプリの既知集合にこのコードが無いこと）と
+      //     「fails closed on unknown failure code」で固定する。pre-#1789 アプリは
+      //     3引数ラッパーが OFFER_NOT_OPEN へ読み替えるため 500 にはならない。
+      const rollbackOfferId = id(9301);
+      await setWantable(WC.RARE, false);
+      try {
+        // (1) 新規出品は止まらない: ロールバック中の旧アプリが作る行と同等の
+        // INSERT が成功する（auctions の拘束トリガーも、拘束されていないコピーに
+        // は介入しない）。旧アプリは wanted_quantity を送らないので既定の 1。
+        await sql!`
+          INSERT INTO trade_offers (
+            id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+            wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot, request_id
+          ) VALUES (
+            ${rollbackOfferId}, ${U.WO}, ${WUC.O_GIVE3}, ${WC.GIVE}, ${S.WANT},
+            ${WC.RARE}, ${S.WANT}, '{}'::jsonb, '{}'::jsonb, ${req(40)}
+          )`;
+        const [listed] = await sql!<Array<{ status: string }>>`
+          SELECT status FROM trade_offers WHERE id = ${rollbackOfferId}`;
+        expect(listed.status).toBe("open");
+
+        // (2) 再デプロイ後（= 現行アプリ）のボードでは、出品者にも見えない。
+        for (const viewer of [TW.WV, TW.WO, undefined]) {
+          expect(await boardIds(viewer)).not.toContain(rollbackOfferId);
+        }
+
+        // (3) 応諾はどちらのシグネチャでも拒否され、何も移転しない。
+        //    成功していたら動いていたコピー（渡す O_GIVE3 と支払い候補 V_RARE2）で検証。
+        const copies = [WUC.O_GIVE3, WUC.V_RARE2];
+        const before = await ownerOf(copies);
+        const [rpc4] = await sql!<Array<{ result: { success: boolean; error?: string } }>>`
+          SELECT public.accept_trade_offer(${TW.WV}, ${rollbackOfferId}::uuid, ${req(41)}::uuid, 1::smallint) AS result`;
+        expect(rpc4.result).toEqual({ success: false, error: "WANTED_CARD_NOT_WANTABLE" });
+        const [rpc3] = await sql!<Array<{ result: { success: boolean; error?: string } }>>`
+          SELECT public.accept_trade_offer(${TW.WV}, ${rollbackOfferId}::uuid, ${req(42)}::uuid) AS result`;
+        expect(rpc3.result).toEqual({ success: false, error: "OFFER_NOT_OPEN" });
+        expect(await ownerOf(copies)).toEqual(before);
+        const [stillOpen] = await sql!<Array<{ status: string }>>`
+          SELECT status FROM trade_offers WHERE id = ${rollbackOfferId}`;
+        expect(stillOpen.status).toBe("open");
+      } finally {
+        // 後続テストのため状態を戻す: O_GIVE3 は deploy window テストで再出品に
+        // 使われ、helpers テストは全カード指定可を期待する。
+        await sql!`UPDATE trade_offers SET status = 'cancelled' WHERE id = ${rollbackOfferId}`;
+        await setWantable(WC.RARE, true);
+      }
+    });
+
     it("card management helpers read and write the flag (owner check is the route's job)", async () => {
       const { listNonWantableCardIds, updateCardTradeWantable } = await import("@/lib/card-trade-wantable");
       expect([...await listNonWantableCardIds(S.WANT)]).toEqual([]);

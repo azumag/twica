@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { NextIntlClientProvider, createTranslator } from "next-intl";
 import TradeCreateForm from "@/components/TradeCreateForm";
 import type { TradeableOwnedCopy, WantableCard } from "@/lib/trade";
 import jaMessages from "../../../messages/ja.json";
 import enMessages from "../../../messages/en.json";
 
 const ja = jaMessages.trade;
+const trEn = createTranslator({ locale: "en", messages: enMessages, namespace: "trade" });
 const push = vi.fn();
 
 vi.mock("next/navigation", () => ({
@@ -367,7 +368,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
         submit();
 
         const alert = await screen.findByRole("alert");
-        expect(alert).toHaveTextContent(ja.errorTradeQuantityMismatch.replace("{requested}", "3"));
+        expect(alert).toHaveTextContent(ja.errorTradeQuantityMismatch.replace("{requested}", "3").replace("{stored}", "1"));
         expect(alert).toHaveTextContent("マイトレード");
         expect(push).not.toHaveBeenCalled();
         // An offer exists now, so the cached board / my-trades pages are stale.
@@ -386,7 +387,11 @@ describe("TradeCreateForm (#727 §6.5)", () => {
 
         fireEvent.click(screen.getByRole("button", { name: en.createSubmitButton }));
 
-        expect(await screen.findByRole("alert")).toHaveTextContent(en.errorTradeQuantityMismatch.replace("{requested}", "2"));
+        // The English wording renders the stored/requested counts through ICU
+        // plurals, so a count of 1 must come out as "1 copy" (never "1 copies").
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          trEn("errorTradeQuantityMismatch", { requested: 2, stored: 1 }),
+        );
         expect(push).not.toHaveBeenCalled();
       });
 
@@ -467,5 +472,127 @@ describe("TradeCreateForm (#727 §6.5)", () => {
       resolveFetch(jsonResponse(503, { code: "TRADE_BUSY" }));
       await vi.waitFor(() => expect(quantitySelect()).toBeEnabled());
     });
+  });
+});
+
+describe("TradeCreateForm auction kind (#1791)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    push.mockReset();
+    clearTradeListCache.mockReset();
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const kindRadio = (name: string) => screen.getByRole("radio", { name: new RegExp(name) });
+  const durationRadio = (name: string) => screen.getByRole("radio", { name });
+  const auctionSubmit = () => screen.getByRole("button", { name: ja.createAuctionSubmitButton });
+
+  it("starts with the regular offer kind and switches Step 2 to the deadline for an auction", () => {
+    renderForm();
+    expect(kindRadio(ja.createKindOffer)).toBeChecked();
+    expect(screen.getByRole("region", { name: ja.createStep2Title })).toBeInTheDocument();
+
+    fireEvent.click(kindRadio(ja.createKindAuction));
+    expect(kindRadio(ja.createKindAuction)).toBeChecked();
+    // The wanted-card step is replaced by the deadline choice.
+    expect(screen.queryByRole("region", { name: ja.createStep2Title })).toBeNull();
+    const deadline = screen.getByRole("group", { name: ja.createAuctionStep2Title });
+    expect(within(deadline).getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual(["24", "72", "168"]);
+    // Step 1 is the same copy choice with an auction title.
+    expect(screen.getByRole("region", { name: ja.createAuctionStep1Title })).toBeInTheDocument();
+  });
+
+  it("preselects the auction kind from initialKind", () => {
+    renderForm({ initialKind: "auction" });
+    expect(kindRadio(ja.createKindAuction)).toBeChecked();
+    expect(auctionSubmit()).toBeDisabled();
+  });
+
+  it("requires both a card and an explicit deadline, then POSTs the auction and opens the auction tab", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { auction: { id: "a-1" }, idempotentReplay: false }));
+    renderForm({ initialKind: "auction" });
+    expect(screen.getByText(ja.createAuctionConfirmPending)).toBeInTheDocument();
+    fireEvent.click(tile(step(ja.createAuctionStep1Title), "Dup Card"));
+    expect(auctionSubmit()).toBeDisabled();
+    fireEvent.click(durationRadio(ja.createAuctionDuration3d));
+    expect(
+      screen.getByText(`Dup Card を期限 ${ja.createAuctionDuration3d} のオークションに出品します`),
+    ).toBeInTheDocument();
+    fireEvent.click(auctionSubmit());
+
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?tab=auction&listed=1"));
+    expect(clearTradeListCache).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/trades/auctions");
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({ offeredUserCardId: "uc-dup-mid", durationHours: 72 });
+    expect(body.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(body).not.toHaveProperty("wantedCardId");
+  });
+
+  it("reuses the requestId for the same card + deadline and issues a new one when the deadline changes", async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(503, { code: "TRADE_BUSY" }));
+    renderForm({ initialKind: "auction" });
+    fireEvent.click(tile(step(ja.createAuctionStep1Title), "Single Card"));
+    fireEvent.click(durationRadio(ja.createAuctionDuration24h));
+    fireEvent.click(auctionSubmit());
+    await screen.findByText(ja.errorTradeBusy);
+    fireEvent.click(auctionSubmit());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(auctionSubmit()).toBeEnabled());
+    fireEvent.click(durationRadio(ja.createAuctionDuration7d));
+    fireEvent.click(auctionSubmit());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const ids = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string).requestId);
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[2]).not.toBe(ids[0]);
+    expect(JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string).durationHours).toBe(168);
+  });
+
+  it("shows the API copy on failure, e.g. the shared open limit or the deploy window", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(409, { code: "TRADE_OFFER_LIMIT" }))
+      .mockResolvedValueOnce(jsonResponse(503, { code: "TRADE_AUCTION_UNAVAILABLE" }));
+    renderForm({ initialKind: "auction" });
+    fireEvent.click(tile(step(ja.createAuctionStep1Title), "Single Card"));
+    fireEvent.click(durationRadio(ja.createAuctionDuration24h));
+    fireEvent.click(auctionSubmit());
+    expect(await screen.findByRole("alert")).toHaveTextContent(ja.errorTradeOfferLimit);
+    fireEvent.click(auctionSubmit());
+    await vi.waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(ja.errorTradeAuctionUnavailable));
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("disables the submit button while the auction request is in flight", async () => {
+    let resolveFetch!: (response: Response) => void;
+    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+    renderForm({ initialKind: "auction" });
+    fireEvent.click(tile(step(ja.createAuctionStep1Title), "Single Card"));
+    fireEvent.click(durationRadio(ja.createAuctionDuration24h));
+    fireEvent.click(auctionSubmit());
+    const busy = screen.getByRole("button", { name: ja.createSubmitting });
+    expect(busy).toBeDisabled();
+    fireEvent.click(busy);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    resolveFetch(jsonResponse(503, { code: "TRADE_BUSY" }));
+    await vi.waitFor(() => expect(auctionSubmit()).toBeEnabled());
+  });
+
+  it("cross scope: the auction kind hides the partner picker (an auction has no counterpart channel)", () => {
+    renderForm({
+      initialKind: "auction",
+      cross: { partners: [{ id: "p-1", twitchDisplayName: "Partner", twitchProfileImageUrl: null }], selectedPartnerId: null },
+      wantableCards: [],
+    });
+    expect(screen.queryByText(ja.createStep2SelectStreamer)).toBeNull();
+    expect(screen.queryByRole("link", { name: /Partner/ })).toBeNull();
   });
 });

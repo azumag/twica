@@ -607,6 +607,162 @@ describe('POST /api/streamer/settings', () => {
     })
   })
 
+  // Issue #1783: カスタムレアリティの表示スタイル。
+  // 色は HEX かプリセットの Tailwind クラスのみを許可し（任意 CSS を通さない）、
+  // キーはカスタムレアリティ名に限定する。
+  describe('custom rarity styles validation (Issue #1783)', () => {
+    const buildRequest = (body: Record<string, unknown>) =>
+      new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', ...body }),
+      })
+
+    const mockOk = async () => {
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const built = mockDbFixture.build()
+      installDbFixture(built)
+      return mockDbFixture.getQueryBuilder()
+    }
+
+    it('rejects a non-object value', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ rarityStyles: 'mythic' }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a style for a built-in rarity', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest({ rarityStyles: { legendary: { color: '#ff0000' } } })
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a key that is not in the same-request customRarities', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['super'],
+          rarityStyles: { other: { color: '#ff0000' } },
+        })
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects non-HEX / non-preset colors and empty styles', async () => {
+      await mockOk()
+      const arbitraryCss = await POST(
+        buildRequest({ rarityStyles: { super: { color: 'url(https://evil.example/x.png)' } } })
+      )
+      expect(arbitraryCss.status).toBe(400)
+
+      await mockOk()
+      const empty = await POST(buildRequest({ rarityStyles: { super: {} } }))
+      expect(empty.status).toBe(400)
+    })
+
+    it('persists normalized styles together with customRarities', async () => {
+      const query = await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: [' super '],
+          rarityStyles: { super: { color: '#ff0000' } },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          custom_rarities: ['super'],
+          rarity_styles: { super: { color: '#ff0000' } },
+        })
+      )
+      const data = await response.json()
+      expect(data.rarityStyles).toEqual({ super: { color: '#ff0000' } })
+    })
+
+    it('accepts an empty map as "no overrides"', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ rarityStyles: {} }))
+      expect(response.status).toBe(200)
+    })
+
+    // Issue #1783 互換対応: フェーズ1 の API が受理していたプリセット Tailwind クラスを
+    // 400 で拒否せず、HEX へ正規化して保存する（描画できないクラス名を永続化しない）。
+    it('normalizes legacy preset classes to HEX instead of rejecting them', async () => {
+      const query = await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['super'],
+          rarityStyles: {
+            super: {
+              color: 'bg-red-500',
+              gradient: 'from-red-500 to-blue-600',
+              glow: 'shadow-purple-500/50',
+            },
+          },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rarity_styles: {
+            super: { color: '#fb2c36', gradient: '#fb2c36,#155dfc', glow: '#ad46ff80' },
+          },
+        })
+      )
+      const data = await response.json()
+      expect(data.rarityStyles).toEqual({
+        super: { color: '#fb2c36', gradient: '#fb2c36,#155dfc', glow: '#ad46ff80' },
+      })
+    })
+
+    it('accepts constructor / prototype as rarity names (互換: 画面側が許可する既存名)', async () => {
+      // validateCustomRaritiesInput は "constructor" / "prototype" を許可するため、
+      // それらに色を設定しただけで編集全体が 400 にならないことを固定する。
+      const query = await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['constructor', 'prototype'],
+          rarityStyles: {
+            constructor: { color: '#ff0000' },
+            prototype: { glow: '#00ff0080' },
+          },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rarity_styles: {
+            constructor: { color: '#ff0000' },
+            prototype: { glow: '#00ff0080' },
+          },
+        })
+      )
+    })
+
+    it('still rejects __proto__ as a rarity name (object map で安全に表現できない)', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['__proto__'],
+          rarityStyles: JSON.parse('{"__proto__":{"color":"#ff0000"}}'),
+        })
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('still rejects preset classes outside the legacy allowlist', async () => {
+      await mockOk()
+      // slate はフェーズ1 の許可集合に無い（任意 CSS と同様に 400）。
+      const response = await POST(
+        buildRequest({ customRarities: ['super'], rarityStyles: { super: { color: 'bg-slate-500' } } })
+      )
+      expect(response.status).toBe(400)
+    })
+  })
+
   it('should return 403 when CSRF token is invalid', async () => {
     mockValidateCSRFToken.mockResolvedValue({ valid: false })
 

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -6,6 +7,31 @@ import { describe, expect, it } from "vitest";
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 function read(path: string) {
   return readFileSync(join(root, path), "utf8");
+}
+
+function readStatsDeployJob() {
+  const workflow = read(".github/workflows/deploy-cloudflare.yml");
+  const start = workflow.indexOf("\n  stats-aggregator:");
+  if (start < 0) throw new Error("stats-aggregator deploy job is missing");
+  const tail = workflow.slice(start + 1);
+  const nextJob = tail.slice(1).search(/\n  [a-z][\w-]*:/);
+  return nextJob < 0 ? tail : tail.slice(0, nextJob + 1);
+}
+
+// Only interpret the bounded deployment predicate grammar. Keeping the event
+// discriminator explicit prevents a manual target from also selecting its ref.
+function selectsDeployTarget(
+  condition: string,
+  event: string,
+  ref: string,
+  input: string,
+) {
+  const match = condition.match(
+    /^\(github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.environment == '(preview|production)'\) \|\| \(github\.event_name == 'push' && github\.ref == '(refs\/heads\/(?:preview|main))'\)$/,
+  );
+  if (!match) throw new Error(`Unexpected deploy predicate: ${condition}`);
+  return (event === "workflow_dispatch" && input === match[1])
+    || (event === "push" && ref === match[2]);
 }
 
 /**
@@ -40,8 +66,7 @@ describe("stats-aggregator deploy preparation (#741)", () => {
   });
 
   it("keeps real deployment behind an explicit repository variable", () => {
-    const workflow = read(".github/workflows/deploy-cloudflare.yml");
-    const job = workflow.slice(workflow.indexOf("\n  stats-aggregator:"));
+    const job = readStatsDeployJob();
     // deploy job は chat-delivery と同じ detect/build/deploy 構成を保つ。
     expect(job).toContain("if: vars.STATS_AGGREGATOR_DEPLOY_ENABLED == 'true'");
     expect(job).toContain("npm run stats-aggregator:typecheck");
@@ -84,5 +109,55 @@ describe("stats-aggregator deploy preparation (#741)", () => {
     }
     expect(workerWrangler).not.toMatch(/hyperdrive|PLANETSCALE|DATABASE_URL|SUPABASE/i);
     expect(workerWrangler).toContain('crons = ["5 * * * *"]');
+  });
+
+  it.each([
+    { event: "push", ref: "refs/heads/main", input: "", expected: "production" },
+    { event: "push", ref: "refs/heads/preview", input: "", expected: "preview" },
+    { event: "workflow_dispatch", ref: "refs/heads/main", input: "preview", expected: "preview" },
+    { event: "workflow_dispatch", ref: "refs/heads/main", input: "production", expected: "production" },
+    { event: "workflow_dispatch", ref: "refs/heads/preview", input: "preview", expected: "preview" },
+    { event: "workflow_dispatch", ref: "refs/heads/preview", input: "production", expected: "production" },
+    { event: "workflow_dispatch", ref: "refs/heads/feature", input: "preview", expected: "preview" },
+    { event: "workflow_dispatch", ref: "refs/heads/feature", input: "production", expected: "production" },
+  ])("selects only $expected for $event $ref ($input)", ({ event, ref, input, expected }) => {
+    const job = readStatsDeployJob();
+    const conditions = [...job.matchAll(/^        if: \$\{\{ (.*?) \}\}$/gm)]
+      .map((match) => match[1]);
+    // Build and deploy must select the same, single environment.
+    expect(conditions).toHaveLength(4);
+    expect(conditions.map((condition) => selectsDeployTarget(condition, event, ref, input)))
+      .toEqual([
+        expected === "preview",
+        expected === "production",
+        expected === "preview",
+        expected === "production",
+      ]);
+  });
+
+  it("scans stats bundles with the complete generated-bundle rules", () => {
+    const guard = read("scripts/check-supabase-shutdown.js");
+    const generatedScan = guard.match(
+      /for \(const artifactRoot of \[([\s\S]*?)\n\]\) \{\n  for \(const file of walk\(artifactRoot\)\) \{\n    assertAbsent\(file, generatedBundlePatterns\)\n  \}\n\}/,
+    );
+    expect(generatedScan).not.toBeNull();
+    expect(generatedScan?.[1]).toContain("'workers/stats-aggregator/dist'");
+
+    // Require only exported pure helpers; importing the guard does not run its
+    // CLI, create bundle files, or access a deployed Worker.
+    const { findGeneratedBundleDependencies } = createRequire(import.meta.url)(
+      "../../scripts/check-supabase-shutdown.js",
+    ) as { findGeneratedBundleDependencies: (source: string) => string[] };
+
+    expect(findGeneratedBundleDependencies("export default {};")).toEqual([]);
+    expect(findGeneratedBundleDependencies("// @supabase/realtime-js phx_join\nexport default {};"))
+      .toEqual([]);
+    for (const source of [
+      "const moduleId = '@supabase/realtime-js';",
+      "const eventName = 'phx_join';",
+      "const eventName = 'postgres_changes';",
+    ]) {
+      expect(findGeneratedBundleDependencies(source)).not.toEqual([]);
+    }
   });
 });

@@ -21,10 +21,10 @@ import { sha256Prefix } from "@/lib/crypto-utils";
 import { isAssignableImageUrl } from "@/lib/storage-utils";
 import { logger } from "@/lib/logger.server";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
-import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
+import { CARD_ISSUANCE_MESSAGES, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
-import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
+import { isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
 // カードの読み取りと更新は PlanetScale の単一接続を使う。
 // 接続は各 xxxPg 関数の withDbRetry queryFn 内で取得する。
@@ -34,7 +34,6 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable, userCards as userCardsTable } from "@/lib/db/schema";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import { cardsListCacheTag, withCardTradeWantable } from "@/lib/card-trade-wantable";
 import type { ApiRateLimitResponse } from "@/types/api";
 
@@ -108,91 +107,52 @@ async function fetchStreamerForCardCreatePg(
 }
 
 /**
- * POST /api/cards のカード INSERT（card_number → max_issuance_count →
- * collection_name の3段階デプロイ窓フォールバック付き、さらに RETURNING 列の
- * image_padding_color フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
+ * POST /api/cards のカード INSERT の pg 直結実装 (#663 self-review fix)。
  *
  * - `.insert(...).select().maybeSingle()` は `.insert(...).values(...).returning()`
  *   が等価（RETURNING で挿入行を1回の往復で取得）。
- * - 各フォールバックは同じ判定ヘルパー(isMissingCardNumberColumnError 等)を
- *   そのまま再利用する。ON CONFLICT の無い INSERT のため各試行は非冪等
+ * - ON CONFLICT の無い INSERT のため非冪等
  *   （withDbRetry にオプションを渡さない = リトライなし）。
  * - unique_violation (23505) は呼び出し元(POST)で isCardNumberConflictError
  *
- * #834: 「本番未デプロイ8列」（card_number/hp/atk/def/spd/skill_*）に対する
- * RETURNING フォールバックは、本番実測で8列とも実在することを確認したため撤去
- * した。image_padding_color（#899、本Issueとは独立した別デプロイ窓）だけは
- * 無指定 `.returning()` が失敗しうるため、CARDS_COLUMNS_WITHOUT_PADDING_COLOR
- * へ切り替えて最後にもう一度だけ再試行する（insertData に無い場合も RETURNING
- * は values() の内容と無関係に schema.ts の全列を要求するため、この最終
- * フォールバックが必要）。
+ * #834/#954: 以前は card_number → max_issuance_count → collection_name の
+ * 3段階の「入力値から該当フィールドを削って再試行」デプロイ窓フォールバックと、
+ * 末尾に image_padding_color 用の CARDS_COLUMNS_WITHOUT_PADDING_COLOR 明示列
+ * RETURNING 再試行（#899）を持っていたが、いずれも撤去した。
+ *
+ * 撤去の根拠（Issue #954、#834 (PR #953) と同じ手順）:
+ * 1. PlanetScale 本番・preview の information_schema.columns 実測で 4列
+ *    （card_number / max_issuance_count / collection_name / image_padding_color）
+ *    とも実在を確認した。列が実在する環境では全フォールバックは到達しない
+ *    死に分岐である。
+ * 2. そもそも構造的に効かなかった: Drizzle の INSERT は values() に含めない列も
+ *    `default` として schema.ts の全列を列挙するため、insertData から
+ *    該当フィールドを削除して再試行しても列リストからは消えず、列が真に欠落する
+ *    環境では同じ 42703 で失敗していた。無指定 RETURNING の明示列リスト再試行も
+ *    INSERT の列リストで失敗するため到達しても成功しなかった。
+ *    （この構造は実際の toSQL() で確認済み。Issue #954 コメント参照）
+ * したがって無指定 `.returning()` の単一経路へ戻す。
+ * image_padding_color を送らないリクエストでも無指定 RETURNING で問題なく
+ * 動作する（列が存在する限り RETURNING は常にその列の値を返す）。
  */
 async function insertCardPg(
   insertDataInitial: Record<string, unknown>
 ): Promise<{ card: Record<string, unknown> | null; error: unknown }> {
   const insertData = { ...insertDataInitial };
 
-  async function attemptInsert(
-    useColumnsWithoutPaddingColor = false
-  ): Promise<{ card: Record<string, unknown> | null; error: unknown }> {
-    try {
-      const rows = await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          const query = db.insert(cardsTable).values(insertData as typeof cardsTable.$inferInsert);
-          return useColumnsWithoutPaddingColor
-            ? query.returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
-            : query.returning();
-        },
-        "Cards API POST: insert card"
-        // ON CONFLICT の無い INSERT は再実行で二重作成になりうるため非冪等（既定 = リトライなし）
-      );
-      return { card: rows[0] ?? null, error: null };
-    } catch (error) {
-      return { card: null, error };
-    }
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db.insert(cardsTable).values(insertData as typeof cardsTable.$inferInsert).returning();
+      },
+      "Cards API POST: insert card"
+      // ON CONFLICT の無い INSERT は再実行で二重作成になりうるため非冪等（既定 = リトライなし）
+    );
+    return { card: rows[0] ?? null, error: null };
+  } catch (error) {
+    return { card: null, error };
   }
-
-  let { card, error } = await attemptInsert();
-
-  // card_number は #393/#548 由来の独立したデプロイ窓フォールバック
-  // （card-number-errors.ts、本Issue #834 のスコープ外）で、insertData から
-  // 列を削るだけで RETURNING 自体は無指定のまま card_number を
-  // 要求し続ける。#834 撤去前は末尾の CARDS_SAFE_COLUMNS（card_number も除外）が
-  // これを最終的に救済していたが、card_number は本番・preview 実測済み（#834）
-  // のため通常はこの分岐へ到達しない。真に card_number が欠落する環境では
-  // このフォールバックは単独では完結しない点に注意（card-number-errors.ts 側の
-  // 対応が必要。本Issueでは意図的に手を加えない。要否の実測・整理は #954 参照）。
-  if (error && isMissingCardNumberColumnError(error)) {
-    delete insertData.card_number;
-    ({ card, error } = await attemptInsert());
-  }
-  if (error && isMissingCardIssuanceColumnError(error)) {
-    delete insertData.max_issuance_count;
-    ({ card, error } = await attemptInsert());
-  }
-  if (error && isMissingCollectionNameColumn(error as CardsSchemaError) && "collection_name" in insertData) {
-    delete insertData.collection_name;
-    ({ card, error } = await attemptInsert());
-  }
-  // #899: image_padding_color 列が migration 未適用の環境では、この列を落として再試行する
-  //（余白情報だけが保存されず、カード作成自体は継続する）
-  if (error && isMissingCardPaddingColorError(error) && "image_padding_color" in insertData) {
-    delete insertData.image_padding_color;
-    ({ card, error } = await attemptInsert());
-  }
-  // 上記までの入力値フォールバックを尽くしてもなお、無指定 RETURNING が
-  // image_padding_color 列の欠落で失敗している場合、明示列リストで最後にもう
-  // 一度だけ試す。image_padding_color が insertData に無い場合（未指定
-  // リクエスト）は直前のフォールバックの `"image_padding_color" in insertData`
-  // 条件を満たさずスキップされるため、この分岐が無いと migration 未適用の
-  // 環境では imagePaddingColor を送らないカード作成まで含めて全滅していた
-  // （#899 Fable厳格レビュー指摘・PR #903）。
-  if (error && isMissingCardPaddingColorError(error)) {
-    ({ card, error } = await attemptInsert(true));
-  }
-
-  return { card, error };
 }
 
 export async function POST(request: NextRequest) {
@@ -583,17 +543,19 @@ function resolveSortColumn(sortField: SortField): AnyColumn {
  *
  * card_number/display_order ソート時の列未デプロイフォールバックは、COUNT側
  * クエリはソート列を使わないため対象外（元々失敗しない）。行取得クエリのみ
- * created_at 降順へのフォールバックを行う。
+ * created_at 降順へのフォールバックを行っていた。
  *
  * #834: 「本番未デプロイ8列」（card_number/hp/atk/...）に対する SELECT 列
  * リストのフォールバックは、本番実測で8列とも実在することを確認したため撤去
- * した（card-padding-color-errors.ts 参照）。
+ * した。
  *
- * image_padding_color（#899）のフォールバックはこの読み取り経路には意図的に
- * 適用していない。書き込み側（insertCardPg 等）とは異なり、この無指定
- * `db.select()` が image_padding_color 欠落で失敗した場合の救済が無いため、
- * その列のデプロイ窓が実際に開けばここは失敗する（現状は書き込み側のみ保護
- * された非対称な状態）。要否の整理は #954 で追跡する。
+ * #954: 行取得クエリの card_number/display_order ソート列フォールバック
+ * （42703 検知時に created_at 降順へ切り替えて再試行）も撤去した。根拠は
+ * insertCardPg と同じで、(1) PlanetScale 本番・preview の information_schema
+ * 実測で card_number が実在すること（#834 で実測済み、#954 で再確認）、
+ * (2) この無指定 `db.select()` 自体が schema.ts の全列を列挙するため、
+ * card_number が真に欠落する環境ではソート列を変えても同じ 42703 で失敗し、
+ * フォールバックとして完結していなかった、の2点。無指定 select の単一経路。
  */
 async function fetchCardsFromDBPg(
   streamerId: string,
@@ -628,55 +590,20 @@ async function fetchCardsFromDBPg(
     primaryOrderExprs.push(orderByNullsLast(cardsTable.created_at, true));
   }
 
-  async function selectRows(orderExprs: ReturnType<typeof orderByNullsLast>[]) {
-    return withDbRetry(
-      async () => {
-        const { db } = await getDb();
-        return db
-          .select()
-          .from(cardsTable)
-          .where(whereCondition)
-          .orderBy(...orderExprs)
-          .limit(limit)
-          .offset(offset);
-      },
-      "fetchCardsFromDB(pg): rows",
-      { idempotent: true }
-    );
-  }
-
-  let orderExprs = primaryOrderExprs;
-  let rows: unknown[];
-  let rowsError: unknown = null;
-
-  try {
-    rows = await selectRows(orderExprs);
-  } catch (error) {
-    rows = [];
-    rowsError = error;
-  }
-
-  // card_number ソート列のこのフォールバックも insertCardPg 側と同じ理由で、
-  // card_number が真に欠落する環境では単独では完結しない（#834 のスコープ外。
-  // card-number-errors.ts 側の対応が必要。要否の実測・整理は #954 参照）。
-  // card_number は本番・preview 実測済み（#834）のため通常はここへ到達しない。
-  if (
-    rowsError &&
-    (sortField === "card_number" || sortField === "display_order") &&
-    isMissingCardNumberColumnError(rowsError)
-  ) {
-    orderExprs = [orderByNullsLast(cardsTable.created_at, ascending)];
-    try {
-      rows = await selectRows(orderExprs);
-      rowsError = null;
-    } catch (error) {
-      rowsError = error;
-    }
-  }
-
-  if (rowsError) {
-    throw rowsError;
-  }
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select()
+        .from(cardsTable)
+        .where(whereCondition)
+        .orderBy(...primaryOrderExprs)
+        .limit(limit)
+        .offset(offset);
+    },
+    "fetchCardsFromDB(pg): rows",
+    { idempotent: true }
+  );
 
   return { cards: rows, count: total };
 }

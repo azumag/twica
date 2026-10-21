@@ -16,7 +16,6 @@ import {
   gachaHistory as gachaHistoryTable,
   cards as cardsTable,
 } from "@/lib/db/schema";
-import { isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import {
   buildPollingRealtimeEvents,
   isValidOverlayHistoryId,
@@ -56,18 +55,20 @@ interface OverlayHistoryRow {
  * Read the authoritative PlanetScale history in stable `(redeemed_at, id)`
  * order. The ID tie-breaker is required because all rows in a multi-draw can
  * share one timestamp; advancing by time alone would skip a split page.
+ *
+ * #954: 以前は image_padding_color を明示 select に追加すると当該列が migration
+ * 未適用の環境でこのポーリングエンドポイントが丸ごと失敗するため、「まず新列
+ * 込みで試す→42703 検知時に列を落として再試行する」deploy-window フォールバック
+ * （#899 PR #903）を持っていたが、#834 (PR #953) と同じ手順で PlanetScale 本番・
+ * preview の information_schema.columns 実測により image_padding_color の実在を
+ * 確認したため撤去した（Issue #954）。常に列を含む単一経路。
  */
 async function getOverlayHistoryRows(
   streamerId: string,
   since: string,
   afterId: string | null
 ): Promise<OverlayHistoryRow[]> {
-  // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color を明示 select
-  // に追加すると、当該列が migration 未適用の環境ではこのポーリングエンドポイント
-  // (OBS のガチャ結果表示が依存する gap-recovery poll)が丸ごと失敗していた。
-  // gacha.ts の loadPgCards と同じ「まず新列込みで試す→列欠落エラーなら列を
-  // 落として再試行する」パターンで deploy-window の安全性を揃える。
-  const loadRows = async (includePaddingColor: boolean) => {
+  const loadRows = async () => {
     const { db } = await getDb();
     const rows = await db
       .select({
@@ -80,9 +81,7 @@ async function getOverlayHistoryRows(
         card_name: cardsTable.name,
         card_description: cardsTable.description,
         card_image_url: cardsTable.image_url,
-        ...(includePaddingColor
-          ? { card_image_padding_color: cardsTable.image_padding_color }
-          : {}),
+        card_image_padding_color: cardsTable.image_padding_color,
         card_rarity: cardsTable.rarity,
       })
       .from(gachaHistoryTable)
@@ -124,10 +123,7 @@ async function getOverlayHistoryRows(
               name: row.card_name as string,
               description: row.card_description,
               image_url: row.card_image_url,
-              image_padding_color:
-                "card_image_padding_color" in row
-                  ? row.card_image_padding_color
-                  : null,
+              image_padding_color: row.card_image_padding_color,
               rarity: row.card_rarity as Rarity,
             },
     }));
@@ -136,20 +132,9 @@ async function getOverlayHistoryRows(
   // This endpoint polls every three seconds. One retry covers brief database
   // failures without allowing a large request backlog during an outage.
   const retryOptions = { idempotent: true, maxRetries: 1 } as const;
-  try {
-    // getDb belongs inside the retry callback so connection acquisition and
-    // the idempotent SELECT share the same bounded retry policy.
-    return await withDbRetry(() => loadRows(true), "overlayEvents", retryOptions);
-  } catch (error) {
-    if (!isMissingCardPaddingColorError(error)) {
-      throw error;
-    }
-    return withDbRetry(
-      () => loadRows(false),
-      "overlayEvents:padding-fallback",
-      retryOptions
-    );
-  }
+  // getDb belongs inside the retry callback so connection acquisition and
+  // the idempotent SELECT share the same bounded retry policy.
+  return withDbRetry(loadRows, "overlayEvents", retryOptions);
 }
 
 /**

@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProp
 import { flushSync } from "react-dom";
 import { useParams } from "next/navigation";
 import Image from "next/image";
-import type { Card, Rarity } from "@/types/database";
+import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import {
   isValidOverlayHistoryId,
@@ -24,7 +24,12 @@ import {
   DEFAULT_RARITY_EFFECT_MAP,
   OVERLAY_EFFECT_PARTICLE_CONFIG,
 } from "@/lib/overlay-effect";
-import { getRarityGlowClass, getRarityGradientClass, getRarityDisplayInfo } from "@/lib/rarity";
+import {
+  getRarityStylePresentation,
+  getRarityDisplayInfo,
+  type RarityStyleVars,
+} from "@/lib/rarity";
+import type { RarityStyles } from "@/lib/rarity-styles";
 import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
 import {
   normalizeGachaSoundRules,
@@ -56,12 +61,6 @@ if (typeof window !== 'undefined' && typeof window.queueMicrotask !== 'function'
     });
   };
 }
-
-/**
- * Get rarity information (label and color) for a given rarity value
- * 指定されたレアリティ値のレアリティ情報（ラベルと色）を取得
- */
-const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
 
 interface GachaResult {
   card: Card;
@@ -274,6 +273,9 @@ export default function OverlayPage() {
     soundEnabled: boolean;
     soundRules: GachaSoundRule[];
   }>({ soundUrl: null, soundEnabled: true, soundRules: [] });
+  // #1783: 配信者がカスタムレアリティごとに設定した表示スタイル。
+  // 取得前・取得失敗は空マップのままなので、従来のプリセット色で描画される。
+  const [rarityStyles, setRarityStyles] = useState<RarityStyles>({});
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fallbackVisibilityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -654,6 +656,32 @@ export default function OverlayPage() {
       if (reloadTimeoutRef.current) {
         clearTimeout(reloadTimeoutRef.current);
       }
+    };
+  }, [streamerId]);
+
+  // #1783: カスタムレアリティの表示スタイルを取得する。
+  // sound-settings と同じ「認証不要のパブリックエンドポイント」規約に乗せる。
+  // 取得に失敗しても空マップのまま(=従来のプリセット色)なので、オーバーレイの
+  // カード描画自体は止めない。
+  useEffect(() => {
+    let cancelled = false;
+    const fetchRarityStyles = async () => {
+      try {
+        const response = await fetch(`/api/streamer/${streamerId}/rarity-styles`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const styles = data?.rarityStyles;
+        if (!cancelled && styles && typeof styles === "object" && !Array.isArray(styles)) {
+          setRarityStyles(styles as RarityStyles);
+        }
+      } catch {
+        // オーバーレイは OBS のブラウザソースで動くため、取得失敗は無視して
+        // 従来表示にフォールバックする（ここで例外にするとカードが出ない）。
+      }
+    };
+    void fetchRarityStyles();
+    return () => {
+      cancelled = true;
     };
   }, [streamerId]);
 
@@ -2184,9 +2212,17 @@ export default function OverlayPage() {
     );
   }
 
-  const rarityColor = getRarityGradientClass(result.card.rarity);
-  const rarityGlow = getRarityGlowClass(result.card.rarity);
-  const rarityInfo = getRarityInfo(result.card.rarity);
+  // #1783: カスタムレアリティが設定されていればその色を、未設定なら従来の
+  // プリセットを返す。クラスと CSS 変数を1組で受け取り、両方を必ず当てる。
+  const rarityStyle = getRarityStylePresentation(result.card.rarity, rarityStyles);
+  const rarityColor = rarityStyle.gradientClass;
+  const rarityGlow = rarityStyle.glowClass;
+  // グラデーション/グロー/バッジで同じ変数を使うため、祖先要素へ一括で展開する。
+  const rarityStyleVars: RarityStyleVars = rarityStyle.styleVars;
+  const rarityInfo = {
+    label: getRarityDisplayInfo(result.card.rarity).label,
+    color: rarityStyle.colorClass,
+  };
 
   // 画像のみ表示モードかどうかを判定
   // imageOnlyが有効、またはautoPortraitが有効で縦長画像の場合
@@ -2263,6 +2299,10 @@ export default function OverlayPage() {
         className={`transform transition-all duration-500 ${
           showCard ? "scale-100 opacity-100" : "scale-50 opacity-0"
         }`}
+        // #1783: カスタムレアリティ色は CSS 変数でこの要素に展開する。
+        // グラデーション枠・グロー・バッジはすべてこの子孫なので、1か所に当てれば
+        // 全部に効く（未設定なら style は空オブジェクトで従来色のまま）。
+        style={rarityStyleVars}
       >
         {shouldShowImageOnly ? (
           // 画像のみ表示モード（imageOnlyまたはautoPortraitでポートレイト画像の場合）

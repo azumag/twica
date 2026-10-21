@@ -88,8 +88,13 @@ jobs:
               - 'tests/fixtures/analysis-dashboard-pagination-postgres.sql'
               - 'tests/fixtures/transactional-chat-outbox-postgres.sql'
               - 'tests/fixtures/transactional-chat-outbox-concurrency.sh'
+              # db-readonly-check.yml の集計 SQL を実PG17で検証する。fixture 側の変更でも
+              # PG17 job を回さないと、その検証が黙って古くなる。
+              - 'tests/fixtures/chat-outbox-readonly-counts-pg17.mjs'
+              - '.github/workflows/db-readonly-check.yml'
               - 'tests/fixtures/add-card-trading-postgres.sql'
               - 'tests/fixtures/add-card-trading-concurrency.sh'
+              - 'tests/fixtures/trade-auction-concurrency.sh'
               - 'tests/fixtures/redemption-ranking-exclusions-postgres.sql'
               - 'tests/fixtures/stats-ranking-ties-postgres.sql'
               - 'tests/fixtures/pack-completion-rewards-postgres.sql'
@@ -99,6 +104,7 @@ jobs:
               # These suites execute real SQL through the application DB layer;
               # changes to their runtime, schema or test setup must re-run PG17.
               - 'src/lib/trade.ts'
+              - 'src/lib/trade-auction.ts'
               - 'src/lib/uuid-validation.ts'
               - 'src/lib/db/**'
               # gacha-latest-history-plan.sh が getLatestCardIdForStreamer の
@@ -106,6 +112,7 @@ jobs:
               # クエリを変えるPRでは必ずPG17ジョブを回す。
               - 'src/lib/services/gacha.ts'
               - 'tests/integration/trade-visibility-pg.test.ts'
+              - 'tests/integration/trade-auction-pg.test.ts'
               - 'tests/integration/pack-completion-rewards-pg.test.ts'
               - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
               - 'src/lib/services/chat-notification-outbox.ts'
@@ -560,6 +567,15 @@ jobs:
           PGPASSWORD: postgres
         run: node tests/fixtures/paced-multi-draw-chat-postgres.mjs
 
+      - name: Verify the read-only check counts match the completion UPDATE
+        # db-readonly-check.yml に埋め込まれた集計 SQL をその YAML から取り出して実 PostgreSQL 17 で
+        # 実行する。有効 lease 中の processing 行を数えないこと・targets_total = 内訳和・
+        # targets_total が補正 UPDATE の実際の変更行数と一致することを固定する
+        # （SQL 文字列テストでは検証できないため実DBで実行する）。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs
+
       - name: Verify completion reward invariants
         env:
           PGPASSWORD: postgres
@@ -586,6 +602,15 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: bash tests/fixtures/add-card-trading-concurrency.sh
+
+      - name: Verify trade auction concurrent lock and deadline fencing
+        # #1791: 入札 × 通常出品(トリガー)・入札 × 応諾の支払い・入札変更 × 成立・
+        # 入札/成立 × 期限境界を、実際の2接続のロック待ちで検証する(単一
+        # トランザクションでは「ロック待ちの間に進む時刻」と接続間の行ロック競合を
+        # 再現できない)。各シナリオは tests/fixtures/trade-auction-concurrency.sh 冒頭参照。
+        env:
+          PGPASSWORD: postgres
+        run: bash tests/fixtures/trade-auction-concurrency.sh
 
       - name: Verify redemption ranking exclusions
         # #1034/#1032 Auto Review必須指摘: SQL文字列の正規表現テストだけでは、
@@ -651,6 +676,13 @@ jobs:
         env:
           TRADE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: npx vitest run tests/integration/trade-visibility-pg.test.ts
+
+      - name: Verify trade auctions against PostgreSQL
+        # #1791: オークションの RPC・拘束判定・trade_offers トリガー・accept の
+        # 支払い除外を、アプリの service 関数経由で実 DB に対して検証する。
+        env:
+          TRADE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/trade-auction-pg.test.ts
 
       - name: Verify chat outbox attempt accounting against PostgreSQL
         env:

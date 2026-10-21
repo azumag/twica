@@ -7,6 +7,7 @@ import { checkRateLimit, getRateLimitIdentifier, rateLimits } from "@/lib/rate-l
 import { validateContentType } from "@/lib/request-validation";
 import { getSession, type Session } from "@/lib/session";
 import type { TradeAcceptPrecheckError, TradeServiceErrorCode } from "@/lib/trade";
+import type { TradeAuctionErrorCode, TradeAuctionServiceErrorCode } from "@/lib/trade-auction";
 
 // -----------------------------------------------------------------------------
 // Shared HTTP contract for /api/trades/** (#726/#727)
@@ -47,7 +48,48 @@ export type TradeRequestErrorCode =
 export type TradeApiErrorCode =
   | TradeRequestErrorCode
   | TradeServiceErrorCode
-  | TradeAcceptApiErrorCode;
+  | TradeAcceptApiErrorCode
+  | TradeAuctionErrorCode;
+
+/**
+ * HTTP status per auction service code (#1791). One table shared by every
+ * /api/trades/auctions/** route so a code keeps the same status everywhere:
+ *   400 malformed / self / same-card requests, 401 unknown user,
+ *   403 channel settings, 404 hidden or missing rows, 409 state conflicts,
+ *   503 transient (deadlock retry exhausted) or the migration deploy window
+ *   (TRADE_AUCTION_UNAVAILABLE: the UI hides the auction entry points).
+ * Existing codes keep the statuses of the regular offer routes.
+ */
+export const TRADE_AUCTION_ERROR_STATUS: Record<TradeAuctionServiceErrorCode, number> = {
+  UNAUTHORIZED: 401,
+  INVALID_REQUEST: 400,
+  TRADE_BUSY: 503,
+  TRADE_DISABLED: 403,
+  TRADE_CARD_NOT_OWNED: 400,
+  TRADE_CARD_ALREADY_LISTED: 409,
+  TRADE_OFFER_LIMIT: 409,
+  TRADE_OFFERED_CARD_INACTIVE: 409,
+  TRADE_SAME_CARD: 400,
+  TRADE_AUCTION_UNAVAILABLE: 503,
+  TRADE_AUCTION_NOT_FOUND: 404,
+  TRADE_AUCTION_NOT_OPEN: 409,
+  TRADE_AUCTION_STILL_BIDDING: 409,
+  TRADE_AUCTION_EXPIRED: 409,
+  TRADE_AUCTION_HAS_BIDS: 409,
+  TRADE_AUCTION_SELF_BID: 400,
+  TRADE_AUCTION_BID_NOT_FOUND: 404,
+  TRADE_AUCTION_BID_NOT_ACTIVE: 409,
+  TRADE_AUCTION_BID_LOCKED: 409,
+  TRADE_AUCTION_BID_LIMIT: 409,
+  TRADE_AUCTION_BID_INVALID: 409,
+  TRADE_BID_CARD_UNAVAILABLE: 400,
+  TRADE_BID_CARD_NOT_WANTABLE: 409,
+  TRADE_NOT_ENOUGH_CARDS: 409,
+};
+
+export function tradeAuctionErrorResponse(code: TradeAuctionServiceErrorCode) {
+  return tradeErrorResponse(code, TRADE_AUCTION_ERROR_STATUS[code]);
+}
 
 /**
  * Message per code. CSRF keeps the historical "Forbidden" text so existing
@@ -75,6 +117,21 @@ const TRADE_API_ERROR_MESSAGES: Record<TradeApiErrorCode, string> = {
   TRADE_WANTED_CARD_NOT_WANTABLE: ERROR_MESSAGES.TRADE_WANTED_CARD_NOT_WANTABLE,
   TRADE_OFFERED_CARD_INACTIVE: ERROR_MESSAGES.TRADE_OFFERED_CARD_INACTIVE,
   TRADE_OFFER_UNAVAILABLE: ERROR_MESSAGES.TRADE_OFFER_UNAVAILABLE,
+  TRADE_AUCTION_UNAVAILABLE: ERROR_MESSAGES.TRADE_AUCTION_UNAVAILABLE,
+  TRADE_AUCTION_NOT_FOUND: ERROR_MESSAGES.TRADE_AUCTION_NOT_FOUND,
+  TRADE_AUCTION_NOT_OPEN: ERROR_MESSAGES.TRADE_AUCTION_NOT_OPEN,
+  TRADE_AUCTION_STILL_BIDDING: ERROR_MESSAGES.TRADE_AUCTION_STILL_BIDDING,
+  TRADE_AUCTION_EXPIRED: ERROR_MESSAGES.TRADE_AUCTION_EXPIRED,
+  TRADE_AUCTION_HAS_BIDS: ERROR_MESSAGES.TRADE_AUCTION_HAS_BIDS,
+  TRADE_AUCTION_SELF_BID: ERROR_MESSAGES.TRADE_AUCTION_SELF_BID,
+  TRADE_AUCTION_BID_NOT_FOUND: ERROR_MESSAGES.TRADE_AUCTION_BID_NOT_FOUND,
+  TRADE_AUCTION_BID_NOT_ACTIVE: ERROR_MESSAGES.TRADE_AUCTION_BID_NOT_ACTIVE,
+  TRADE_AUCTION_BID_LOCKED: ERROR_MESSAGES.TRADE_AUCTION_BID_LOCKED,
+  TRADE_AUCTION_BID_LIMIT: ERROR_MESSAGES.TRADE_AUCTION_BID_LIMIT,
+  TRADE_AUCTION_BID_INVALID: ERROR_MESSAGES.TRADE_AUCTION_BID_INVALID,
+  TRADE_BID_CARD_UNAVAILABLE: ERROR_MESSAGES.TRADE_BID_CARD_UNAVAILABLE,
+  TRADE_BID_CARD_NOT_WANTABLE: ERROR_MESSAGES.TRADE_BID_CARD_NOT_WANTABLE,
+  TRADE_NOT_ENOUGH_CARDS: ERROR_MESSAGES.TRADE_NOT_ENOUGH_CARDS,
 };
 
 export function tradeErrorResponse(

@@ -68,6 +68,11 @@ export interface Database {
           // 配信者が定義したカスタムレアリティ名の一覧（rarity_weights とは独立）
           // List of streamer-defined custom rarity names (decoupled from rarity_weights)
           custom_rarities: string[]
+          // カスタムレアリティ名をキーにした表示スタイル（色/グラデーション/グロー/
+          // エフェクト）。実体と検証規則は src/lib/rarity-styles.ts が正本（Issue #1783）。
+          // Per-custom-rarity display styles keyed by rarity name. The shape and the
+          // validation rules live in src/lib/rarity-styles.ts (Issue #1783).
+          rarity_styles: Record<string, import('@/lib/rarity-styles').RarityStyle>
           // 配信者が事前登録したカードパック名の一覧（Issue #393再設計）
           // Pre-defined card pack names the streamer manages (Issue #393 redesign)
           card_pack_names: string[]
@@ -104,6 +109,11 @@ export interface Database {
           // コレクションページの初期表示 ('grid' | 'album')
           // Default view mode of the collection page.
           collection_default_view: 'grid' | 'album'
+          // #1782: 被りカードの表示段階のしきい値（レアリティ名 → 厳密増加する
+          // 所有枚数の配列）。NULL = 全レアリティで段階表示しない（既定）。
+          // Owned-copy thresholds driving the duplicate-card display tiers,
+          // keyed by rarity name. NULL disables the feature.
+          duplicate_display_tiers: Record<string, number[]> | null
           created_at: string
           updated_at: string
         }
@@ -128,6 +138,7 @@ export interface Database {
           rarity_weights_scope?: 'global' | 'per_pack'
           pack_rarity_weights?: Record<string, Record<string, number>> | null
           custom_rarities?: string[]
+          rarity_styles?: Record<string, import('@/lib/rarity-styles').RarityStyle>
           card_pack_names?: string[]
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
@@ -139,6 +150,7 @@ export interface Database {
           raid_gacha_draw_count?: number
           pack_album_grid_sizes?: Record<string, number> | null
           collection_default_view?: 'grid' | 'album'
+          duplicate_display_tiers?: Record<string, number[]> | null
           created_at?: string
           updated_at?: string
         }
@@ -163,6 +175,7 @@ export interface Database {
           rarity_weights_scope?: 'global' | 'per_pack'
           pack_rarity_weights?: Record<string, Record<string, number>> | null
           custom_rarities?: string[]
+          rarity_styles?: Record<string, import('@/lib/rarity-styles').RarityStyle>
           card_pack_names?: string[]
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
@@ -174,6 +187,7 @@ export interface Database {
           raid_gacha_draw_count?: number
           pack_album_grid_sizes?: Record<string, number> | null
           collection_default_view?: 'grid' | 'album'
+          duplicate_display_tiers?: Record<string, number[]> | null
           created_at?: string
           updated_at?: string
         }

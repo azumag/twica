@@ -18,7 +18,12 @@ const eslint = new ESLint({ overrideConfigFile: configPath })
 async function sinkMessages(code: string, filePath = 'src/__xss_probe__.tsx') {
   const [result] = await eslint.lintText(code, { filePath })
   return result.messages.filter(
-    (m) => m.ruleId === 'no-restricted-syntax' || m.ruleId === 'react/no-danger',
+    (m) =>
+      m.ruleId === 'no-restricted-syntax' ||
+      m.ruleId === 'react/no-danger' ||
+      m.ruleId === 'no-eval' ||
+      m.ruleId === 'no-implied-eval' ||
+      m.ruleId === 'no-new-func',
   )
 }
 
@@ -69,12 +74,31 @@ describe('eslint.config.mjs（XSS シンク禁止）', () => {
   })
 
   it.each([
+    ['eval', 'eval(s)', 'no-eval'],
+    ['window.eval', 'window.eval(s)', 'no-eval'],
+    ['new Function', 'new Function(s)', 'no-new-func'],
+    ['setTimeout 文字列', "setTimeout('alert(s)', 100)", 'no-implied-eval'],
+    ['setInterval 文字列', "setInterval('alert(s)')", 'no-implied-eval'],
+  ])('eval 系の %s を検出する', async (_label, code, ruleId) => {
+    const messages = await sinkMessages(PRELUDE + code)
+    expect(messages).toHaveLength(1)
+    expect(messages.map((m) => m.ruleId)).toEqual([ruleId])
+  })
+
+  it('workers/ 配下の eval も検出する', async () => {
+    expect(await sinkMessages(PRELUDE + 'eval(s)', 'workers/overlay-realtime/src/probe.ts'))
+      .toHaveLength(1)
+  })
+
+  it.each([
     ['textContent 代入', 'el.textContent = s'],
     ["textContent 代入（ブラケット）", "el['textContent'] = s"],
     ['WritableStream#write', 'void new WritableStream().getWriter().write(s)'],
     ['write メソッドを持つ任意オブジェクト', "declare const logger: { write(v: string): void }; logger['write'](s)"],
     ['innerHTML の読み取り', 'console.log(el.innerHTML)'],
     ['iframe の src 属性', "export const C = () => <iframe src=\"/overlay/demo\" />"],
+    ['setTimeout 関数', 'setTimeout(() => s, 100)'],
+    ['setInterval 関数', 'setInterval(() => s)'],
   ])('%s は許可する', async (_label, code) => {
     expect(await sinkMessages(PRELUDE + code)).toEqual([])
   })

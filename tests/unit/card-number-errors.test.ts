@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
+import { isCardNumberConflictError } from "@/lib/card-number-errors";
 
 /**
  * Drizzle が postgres.js のエラーを1段ラップした DrizzleQueryError を模倣する
  * （`{ query, params, cause }`。SQLSTATE・実メッセージは cause 側にのみ存在する）。
  * insertCardPg (src/app/api/cards/route.ts) はこの形のエラーをそのまま
- * isMissingCardNumberColumnError / isCardNumberConflictError に渡す。
+ * isCardNumberConflictError に渡す。
+ *
+ * #954: このファイルにあった isMissingCardNumberColumnError（cards.card_number
+ * 列のデプロイ窓フォールバック判定）のテストは、判定関数の撤去（本番・preview
+ * の information_schema.columns 実測で card_number が実在することを確認）に合わせて
+ * 削除した。isCardNumberConflictError は unique 制約違反 (23505) の現役
+ * エラーハンドリングであり、デプロイ窓フォールバックではないため残す。
  */
 function wrapped(cause: unknown) {
   return { query: "insert into cards (...) returning *", params: [], cause };
@@ -28,43 +34,13 @@ describe("card-number-errors", () => {
   });
 });
 
-describe("isMissingCardNumberColumnError", () => {
-  it("detects PostgreSQL 42703 errors for cards.card_number", () => {
-    expect(isMissingCardNumberColumnError({
-      code: "42703",
-      message: 'column "card_number" of relation "cards" does not exist',
-    })).toBe(true);
-  });
-
-  it("ignores unrelated missing-column errors", () => {
-    expect(isMissingCardNumberColumnError({
-      code: "42703",
-      message: 'column "other_column" of relation "cards" does not exist',
-    })).toBe(false);
-  });
-});
-
 // 2026-07 本番障害の回帰テスト: pg 直結の insertCardPg (cards/route.ts) は
-// db.insert(...).returning() の catch を isMissingCardNumberColumnError /
-// isCardNumberConflictError にそのまま渡す。Drizzle は postgres.js のエラーを
-// `{ query, params, cause }` で1段ラップするため、トップレベルの
-// code/message/details だけを見ていると pg 経路でこのフォールバックが
+// db.insert(...).returning() の catch を isCardNumberConflictError にそのまま渡す。
+// Drizzle は postgres.js のエラーを `{ query, params, cause }` で1段ラップするため、
+// トップレベルの code/message/details だけを見ていると pg 経路でこの判定が
 // 機能しない（src/lib/db/errors.ts の getErrorChain が対応する、同種バグと
 // 同じ原因）。
 describe("Drizzle にラップされたエラー（cause チェーン）", () => {
-  it("isMissingCardNumberColumnError: ラップされた 42703 (does not exist 文言) を検知する", () => {
-    const cause = { code: "42703", message: 'column "card_number" of relation "cards" does not exist' };
-    expect(isMissingCardNumberColumnError(wrapped(cause))).toBe(true);
-  });
-
-  it("isMissingCardNumberColumnError: ラップされた別列の42703は検知しない", () => {
-    const cause = {
-      code: "42703",
-      message: 'column "other_column" of relation "cards" does not exist',
-    };
-    expect(isMissingCardNumberColumnError(wrapped(cause))).toBe(false);
-  });
-
   it("isCardNumberConflictError: ラップされた 23505 (unique constraint) を検知する", () => {
     const cause = {
       code: "23505",
@@ -73,14 +49,8 @@ describe("Drizzle にラップされたエラー（cause チェーン）", () =>
     expect(isCardNumberConflictError(wrapped(cause))).toBe(true);
   });
 
-  it("多重ラップ（cause.cause）でも検知できる", () => {
-    const cause = { code: "42703", message: 'column "card_number" of relation "cards" does not exist' };
-    expect(isMissingCardNumberColumnError(wrapped(wrapped(cause)))).toBe(true);
-  });
-
   it("該当しないラップされたエラーは false のまま", () => {
     const cause = { code: "42501", message: "permission denied for table cards" };
-    expect(isMissingCardNumberColumnError(wrapped(cause))).toBe(false);
     expect(isCardNumberConflictError(wrapped(cause))).toBe(false);
   });
 
@@ -89,16 +59,6 @@ describe("Drizzle にラップされたエラー（cause チェーン）", () =>
   // された SQL 文そのもの。INSERT 対象列に "card_number" を含む）に判定対象の
   // 語が偶然含まれているだけで、cause が全く無関係のエラーでも誤検知して
   // しまう。各階層は自分自身の code/message だけで独立に判定されるべき。
-  it("ラッパーのINSERT文にcard_numberが含まれても、causeが無関係なエラーならfalse", () => {
-    const wrapperWithColumnInSql = {
-      message: 'Failed query: insert into "cards" ("id", "card_number", "name") values (...)',
-      query: 'insert into "cards" ("id", "card_number", "name") values (...)',
-      params: [],
-      cause: { code: "CONNECTION_CLOSED", message: "connection closed" },
-    };
-    expect(isMissingCardNumberColumnError(wrapperWithColumnInSql)).toBe(false);
-  });
-
   it("ラッパーのINSERT文にcard_numberが含まれても、causeが別の一意制約違反ならfalse", () => {
     const wrapperWithColumnInSql = {
       message: 'Failed query: insert into "cards" ("id", "card_number", "name") values (...)',

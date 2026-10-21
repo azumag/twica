@@ -66,6 +66,23 @@ vi.mock('@/components/AlbumDisplaySettings', () => ({
     />
   ),
 }))
+// Issue #1782: 被りカードの表示段階設定も同じ「構造だけを検証する」方針に合わせて
+// probe に差し替える。モックしないと実コンポーネントが useTranslations を呼び、
+// NextIntlClientProvider が無いこのテストではレンダリングに失敗する。
+vi.mock('@/components/DuplicateDisplayTierSettings', () => ({
+  default: (props: {
+    streamerId: string
+    rarities: string[]
+    currentDuplicateDisplayTiers: Record<string, number[]>
+  }) => (
+    <div
+      data-testid="duplicate-tier-probe"
+      data-streamer-id={props.streamerId}
+      data-rarities={props.rarities.join(',')}
+      data-tiers={JSON.stringify(props.currentDuplicateDisplayTiers)}
+    />
+  ),
+}))
 vi.mock('@/components/TradeSettings', () => ({
   default: (props: {
     streamerId: string
@@ -91,6 +108,10 @@ const SETTINGS = {
   defaultPackName: '基本パック',
   albumGridSizes: { __all__: 6, weapons: 9 },
   albumDefaultView: 'album' as const,
+  // Issue #1782: 被りカード表示段階。既定レアリティ + カスタムレアリティの行と、
+  // 保存済みのしきい値。
+  rarities: ['common', 'rare', 'epic', 'legendary'],
+  duplicateDisplayTiers: { legendary: [2, 5] },
 }
 
 describe('AccountSettingsPage collection sharing section', () => {
@@ -142,6 +163,15 @@ describe('AccountSettingsPage collection sharing section', () => {
     expect(album).toHaveAttribute('data-default-pack', '基本パック')
     expect(album).toHaveAttribute('data-grid-sizes', JSON.stringify({ __all__: 6, weapons: 9 }))
     expect(album).toHaveAttribute('data-default-view', 'album')
+
+    // Issue #1782: 被りカードの表示段階設定も同じ初期値をそのまま受け取る
+    const duplicateTiers = screen.getByTestId('duplicate-tier-probe')
+    expect(duplicateTiers).toHaveAttribute('data-streamer-id', 'streamer-1')
+    expect(duplicateTiers).toHaveAttribute('data-rarities', 'common,rare,epic,legendary')
+    expect(duplicateTiers).toHaveAttribute(
+      'data-tiers',
+      JSON.stringify({ legendary: [2, 5] })
+    )
   })
 
   it('canUseStreamerFeatures が false なら出さず、DBにも問い合わせない', async () => {
@@ -153,6 +183,7 @@ describe('AccountSettingsPage collection sharing section', () => {
     expect(screen.queryByTestId('visibility-probe')).toBeNull()
     expect(screen.queryByTestId('trade-probe')).toBeNull()
     expect(screen.queryByTestId('album-probe')).toBeNull()
+    expect(screen.queryByTestId('duplicate-tier-probe')).toBeNull()
     expect(mocks.getStreamerCollectionSettings).not.toHaveBeenCalled()
   })
 

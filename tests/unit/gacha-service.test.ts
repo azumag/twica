@@ -122,12 +122,6 @@ function dbError(message: string, code: string) {
   return Object.assign(new Error(message), { code })
 }
 
-function omitIssuanceLimit<T extends { max_issuance_count?: unknown }>(card: T) {
-  const { max_issuance_count: omitted, ...withoutIssuanceLimit } = card
-  void omitted
-  return withoutIssuanceLimit
-}
-
 const testCards = [
   {
     id: 'card-1',
@@ -350,12 +344,15 @@ describe('GachaService.executeGachaWithoutRepeatProtection: PlanetScale read/wri
     expect(fixture.transactionCalls).toHaveLength(0)
   })
 
-  it('max_issuance_count列欠落時は列なしDrizzle readへフォールバックする', async () => {
+  // #954: 以前は max_issuance_count 列欠落（42703）時に列を外した再読み取りへ
+  // フォールバックしていたが、本番・preview の information_schema.columns 実測で
+  // max_issuance_count が実在することを確認したため撤去した（Issue #954）。
+  // 42703 は再試行せず Database error になる単一経路を回帰として固定する。
+  it('max_issuance_count列欠落(42703)時はフォールバックせずDatabase errorになる（単一経路, #954）', async () => {
     const fixture = installDbFixture({
       tables: {
         cards: [
           { error: dbError('column max_issuance_count does not exist', '42703') },
-          { value: testCards.map(omitIssuanceLimit) },
         ],
       },
     })
@@ -367,21 +364,19 @@ describe('GachaService.executeGachaWithoutRepeatProtection: PlanetScale read/wri
       eventId: 'event-column-fallback',
     })
 
-    expect(result.success).toBe(true)
-    expect(fixture.select).toHaveBeenCalledTimes(2)
-    expect(Object.keys(fixture.select.mock.calls[1][0])).not.toContain('max_issuance_count')
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.error).toContain('Database error')
+    expect(fixture.select).toHaveBeenCalledTimes(1)
+    expect(fixture.transactionCalls).toHaveLength(0)
   })
 
-  it('DrizzleQueryErrorのcauseにある列欠落もフォールバック対象にする', async () => {
+  it('DrizzleQueryErrorのcauseにある列欠落も同じ単一経路でDatabase errorになる（#954）', async () => {
     const wrapped = Object.assign(new Error('Failed query'), {
       cause: dbError('column max_issuance_count does not exist', '42703'),
     })
     const fixture = installDbFixture({
       tables: {
-        cards: [
-          { error: wrapped },
-          { value: testCards.map(omitIssuanceLimit) },
-        ],
+        cards: [{ error: wrapped }],
       },
     })
 
@@ -392,8 +387,9 @@ describe('GachaService.executeGachaWithoutRepeatProtection: PlanetScale read/wri
       eventId: 'event-wrapped-column',
     })
 
-    expect(result.success).toBe(true)
-    expect(fixture.select).toHaveBeenCalledTimes(2)
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.error).toContain('Database error')
+    expect(fixture.select).toHaveBeenCalledTimes(1)
   })
 
   it('発行上限到達カードを候補から除外する', async () => {
@@ -586,7 +582,7 @@ describe('GachaService.executeGachaWithoutRepeatProtection: PlanetScale read/wri
   })
 
   it.each([DEFAULT_PACK_SENTINEL, 'weapons'])(
-    'collection列未デプロイ時は全カード抽選へ落とさず拒否する: %s',
+    'collection列未デプロイ(42703)時はフォールバックせず拒否する（単一経路, #954）: %s',
     async (collectionName) => {
       const fixture = installDbFixture({
         tables: {
@@ -603,10 +599,12 @@ describe('GachaService.executeGachaWithoutRepeatProtection: PlanetScale read/wri
         collectionName,
       })
 
-      expect(result).toEqual({
-        success: false,
-        error: 'Card collections are not deployed yet',
-      })
+      // #954: 以前は 'Card collections are not deployed yet' を返す
+      // デプロイ窓フォールバックがあったが、cards.collection_name の本番実在を
+      // 実測で確認したため撤去した（Issue #954）。列未デプロイ環境では 42703 が
+      // そのまま Database error になる（誤って全カード抽選に落ちるより fail-fast）。
+      expect(result.success).toBe(false)
+      if (!result.success) expect(result.error).toContain('Database error')
       expect(fixture.transactionCalls).toHaveLength(0)
     },
   )

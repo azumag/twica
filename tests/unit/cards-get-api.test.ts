@@ -178,18 +178,23 @@ describe("GET /api/cards sort field mapping", () => {
     ]);
   });
 
-  it("missing card_number falls back to created_at", async () => {
+  // #954: 以前は card_number ソートの SELECT が 42703 で失敗したとき
+  // created_at へ切り替えて再試行するデプロイ窓フォールバックがあったが、
+  // card_number の本番・preview 実在を information_schema.columns 実測で確認した
+  // ため撤去した（Issue #954。無指定 select は全列を列挙するため、ソート列を
+  // 変えても列欠落環境では同じ 42703 になる、構造的に完結しないフォールバック
+  // だった）。
+  it("card_number sort 42703 does not retry and fails with 500 (single path, #954)", async () => {
     const mock = primeDb([
       { rows: [{ id: "streamer-1" }] },
       { rows: [{ count: 1 }] },
       { error: { code: "42703", message: 'column "card_number" does not exist' } },
-      { rows: [BASE_CARD] },
     ]);
     const response = await GET(request({ sortField: "card_number" }));
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(500);
     const rowCalls = mock.calls.filter((call) => call.orderBy);
-    expect(rowCalls).toHaveLength(2);
-    expect(rowCalls[1].orderBy).toEqual([sql`${cardsTable.created_at} DESC NULLS LAST`]);
+    // 行取得 select は1回だけ（created_at への切替再試行なし）。
+    expect(rowCalls).toHaveLength(1);
   });
 
   it("invalid sortField falls back to created_at", async () => {

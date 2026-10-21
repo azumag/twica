@@ -84,6 +84,9 @@ export const streamers = pgTable('streamers', {
     .default(sql`NULL`),
   // 00049: DB 型は text[] ではなく JSONB の文字列配列（database.ts では string[]）
   custom_rarities: jsonb('custom_rarities').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  // Issue #1783: カスタムレアリティごとの表示スタイル（色/グラデーション/グロー/エフェクト）。
+  // キーはレアリティ名、値は RarityStyle オブジェクト。未設定時は空オブジェクト。
+  rarity_styles: jsonb('rarity_styles').$type<Record<string, import('@/lib/rarity-styles').RarityStyle>>().notNull().default(sql`'{}'::jsonb`),
   // 00062: 同上、JSONB の文字列配列
   card_pack_names: jsonb('card_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   // 00063: デフォルト（未分類）パックの表示名オーバーライド
@@ -115,6 +118,14 @@ export const streamers = pgTable('streamers', {
   // 20261014120000 (#1765 フォローアップ): コレクションページの初期表示。
   // 'grid'（従来のカード一覧、既定）| 'album'（アルバムで開く）
   collection_default_view: text('collection_default_view').notNull().default('grid'),
+  // 20261015120000 (#1782): 被りカードの「所有枚数に応じた表示段階」のしきい値。
+  // レアリティ名 → 厳密増加する所有枚数の配列（1..3 要素）。
+  //   例: {"legendary": [2, 5]} = 2枚で1段階・5枚で2段階。
+  // エントリが無いレアリティ／NULL（既定）は段階表示をしない（＝機能OFF）。
+  // CHECK 制約は DB 側、アプリ側の検証は src/lib/duplicate-display-tiers.ts。
+  duplicate_display_tiers: jsonb('duplicate_display_tiers')
+    .$type<Record<string, number[]>>()
+    .default(sql`NULL`),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
 })
@@ -718,6 +729,59 @@ export const tradeOffers = pgTable('trade_offers', {
  * 双方の適用を確認したら tradeOffers に一本化して削除してよい。
  */
 export const tradeOffersWithoutQuantity = pgTable('trade_offers', tradeOfferBaseColumns())
+
+// -----------------------------------------------------------------------------
+// trade_auctions / trade_auction_bids / trade_auction_bid_items（オークション形式の出品）
+// 根拠: 20261018030000_trade_auctions.sql（Issue #1791）
+// 書き込みはすべて同 migration の RPC（create/place/withdraw/cancel/settle）が行う。
+// アプリはこれらの定義を一覧・詳細の読み取りにだけ使う（src/lib/trade-auction.ts）。
+// migration 未適用の窓では参照すると 42P01 になるため、オークション API は 503 を返し、
+// 既存トレードの拘束判定は src/lib/trade.ts で「オークション拘束なし」へ縮退する。
+// -----------------------------------------------------------------------------
+export const tradeAuctions = pgTable('trade_auctions', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  seller_user_id: uuid('seller_user_id').notNull(),
+  // 意図的に FK なし（trade_offers.offered_user_card_id と同じ理由）
+  offered_user_card_id: uuid('offered_user_card_id').notNull(),
+  // ON DELETE SET NULL のため NULL 許容
+  offered_card_id: uuid('offered_card_id'),
+  offered_streamer_id: uuid('offered_streamer_id').notNull(),
+  offered_card_snapshot: jsonb('offered_card_snapshot').$type<Json>().notNull(),
+  ends_at: timestamp('ends_at', { withTimezone: true, mode: 'string' }).notNull(),
+  selection_deadline: timestamp('selection_deadline', { withTimezone: true, mode: 'string' }).notNull(),
+  // 'open' | 'completed' | 'cancelled' | 'expired'（CHECK 制約は DB 側で担保）
+  status: text('status').notNull().default('open'),
+  winning_bid_id: uuid('winning_bid_id'),
+  request_id: uuid('request_id').notNull(),
+  settle_request_id: uuid('settle_request_id'),
+  completed_at: timestamp('completed_at', { withTimezone: true, mode: 'string' }),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+export const tradeAuctionBids = pgTable('trade_auction_bids', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  auction_id: uuid('auction_id').notNull(),
+  bidder_user_id: uuid('bidder_user_id').notNull(),
+  // ON DELETE SET NULL のため NULL 許容（表示はスナップショット）
+  bid_card_id: uuid('bid_card_id'),
+  bid_streamer_id: uuid('bid_streamer_id').notNull(),
+  // 1〜10（CHECK は DB 側で担保）
+  quantity: smallint('quantity').notNull(),
+  bid_card_snapshot: jsonb('bid_card_snapshot').$type<Json>().notNull(),
+  is_cross_channel: boolean('is_cross_channel').notNull(),
+  // 'active' | 'withdrawn' | 'won' | 'lost'（CHECK 制約は DB 側で担保）
+  status: text('status').notNull().default('active'),
+  request_id: uuid('request_id').notNull(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+export const tradeAuctionBidItems = pgTable('trade_auction_bid_items', {
+  bid_id: uuid('bid_id').notNull(),
+  // 意図的に FK なし
+  user_card_id: uuid('user_card_id').notNull(),
+})
 
 // =============================================================================
 // database.ts（src/types/database.ts）と migrations（DDL）の食い違い一覧

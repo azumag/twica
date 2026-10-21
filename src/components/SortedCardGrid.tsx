@@ -6,7 +6,8 @@ import ExpandableDescription from "./ExpandableDescription";
 import CardAlbumView from "./CardAlbumView";
 import type { AlbumTranslations } from "./CardAlbumView";
 import type { Rarity, Card } from "@/types/database";
-import { getRarityDisplayInfo } from "@/lib/rarity";
+import { getRarityDisplayInfo, getRarityStylePresentation } from "@/lib/rarity";
+import type { RarityStyles } from "@/lib/rarity-styles";
 import { sortCollectedCards, type CollectionSortMode } from "@/lib/collection-utils";
 import {
   ALBUM_ALL_PACKS_KEY,
@@ -17,14 +18,23 @@ import {
 } from "@/lib/collection-album";
 
 /**
- * Get rarity information (label and color) for a given rarity value.
+ * レアリティの表示情報（ラベル + クラス + CSS変数）を返す。
  * カスタムレアリティも正しく表示するため共通ヘルパに集約。
+ *
+ * styles に配信者の rarity_styles を渡すと、カスタムレアリティの色を
+ * CSS 変数経由で適用する（Issue #1783）。未設定なら従来のプリセットのまま。
  */
-const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
+const getRarityInfo = (rarity: Rarity, styles?: RarityStyles | null) => ({
+  label: getRarityDisplayInfo(rarity).label,
+  ...getRarityStylePresentation(rarity, styles),
+});
 
 interface CardWithDetails extends Card {
   count: number;
   isOwned?: boolean;
+  // Issue #1782: 被りカードの表示段階（0 = 表示しない）。サーバー側で
+  // streamers.duplicate_display_tiers と所有枚数から解決して渡す。
+  duplicateTier?: number;
   collectionNumber?: number;
   isCompletionReward?: boolean;
 }
@@ -45,6 +55,9 @@ interface SortedCardGridProps {
     // Template for card count display, e.g., "x{count}"
     // カード枚数表示用テンプレート、例: "x{count}"
     cardCountTemplate: string;
+    // Issue #1782: 被りカードの表示段階バッジ。{tier} を段階番号で置換する。
+    // 未指定（呼び出し側が翻訳を渡せない場合）はバッジを出さない = fail-closed。
+    duplicateTierBadgeTemplate?: string;
     noImage: string;
     unownedCard: string;
     // Accessible status text for unowned cards.
@@ -68,6 +81,9 @@ interface SortedCardGridProps {
   // 現在のスコープキー（パック絞り込みの選択。未選択は __all__）。
   // スコープが変わると、そのスコープの既定の並び・表示へ切り替わる。
   albumScopeKey?: string;
+  // 配信者がカスタムレアリティごとに設定した表示スタイル（Issue #1783）。
+  // 未指定なら従来のプリセット色のまま（後方互換）。
+  rarityStyles?: RarityStyles | null;
 }
 
 /**
@@ -90,6 +106,7 @@ export default function SortedCardGrid({
   albumGridSizes,
   albumDefaultView,
   albumScopeKey,
+  rarityStyles,
 }: SortedCardGridProps) {
   const [sortMode, setSortMode] = useState<CollectionSortMode>("number");
   // #1765: 表示モード切替（カード / アルバム）。既定は配信者設定
@@ -173,7 +190,7 @@ export default function SortedCardGrid({
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {sortedCards.map((card, index) => {
             const isOwned = card.isOwned ?? true;
-            const rarityInfo = getRarityInfo(card.rarity);
+            const rarityInfo = getRarityInfo(card.rarity, rarityStyles);
             // First 4 cards get priority for LCP optimization
             // 最初の4枚のカードはLCP最適化のためpriority設定
             const isPriority = index < 4;
@@ -206,7 +223,8 @@ export default function SortedCardGrid({
                 imagePaddingColor={card.image_padding_color}
                 rarityInfo={{
                   label: rarityInfo.label,
-                  color: rarityInfo.color,
+                  color: rarityInfo.colorClass,
+                  styleVars: rarityInfo.styleVars,
                 }}
                 collectionNumberLabel={
                   card.collectionNumber
@@ -225,6 +243,19 @@ export default function SortedCardGrid({
                 }
                 isOwned={isOwned}
                 unownedLabel={translations.unownedStatus}
+                // Issue #1782: 被りカードの表示段階。未所持カードは所有枚数 0 で
+                // 段階しきい値を満たさないためサーバー側で 0 を渡しているが、
+                // ここでも isOwned をガードして「未所持に段階バッジが出る」ことを
+                // 構造的に防ぐ。
+                duplicateTierLevel={isOwned ? (card.duplicateTier ?? 0) : 0}
+                duplicateTierLabel={
+                  isOwned && (card.duplicateTier ?? 0) > 0
+                    ? (translations.duplicateTierBadgeTemplate ?? "").replace(
+                        "{tier}",
+                        String(card.duplicateTier)
+                      )
+                    : undefined
+                }
                 isInactive={isOwned && (!card.is_active || !!card.isCompletionReward)}
                 inactiveLabel={card.isCompletionReward ? translations.completionRewardStatus ?? translations.inactiveStatus : translations.inactiveStatus}
                 descriptionComponent={

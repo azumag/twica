@@ -329,9 +329,12 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(completed).toHaveAttribute("aria-selected", "true");
     expect(completed).toHaveFocus();
     expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", completed.id);
-    fireEvent.keyDown(completed, { key: "End" });
+    fireEvent.keyDown(completed, { key: "ArrowRight" });
     expect(screen.getByRole("tab", { name: ja.myTradesTabCancelled })).toHaveAttribute("aria-selected", "true");
     await screen.findByText(ja.myTradesEmptyCancelled);
+    // The auction tab (#1791) is the last tab.
+    fireEvent.keyDown(screen.getByRole("tab", { name: ja.myTradesTabCancelled }), { key: "End" });
+    expect(screen.getByRole("tab", { name: ja.myTradesTabAuction })).toHaveAttribute("aria-selected", "true");
   });
 
   it("steps back a page when a later page became empty", async () => {

@@ -10,6 +10,7 @@ import TwitchSubCheckSection from "@/components/TwitchSubCheckSection";
 import ChannelPointsAccessSection from "@/components/ChannelPointsAccessSection";
 import CardVisibilitySettings from "@/components/CardVisibilitySettings";
 import AlbumDisplaySettings from "@/components/AlbumDisplaySettings";
+import DuplicateDisplayTierSettings from "@/components/DuplicateDisplayTierSettings";
 import TradeSettings from "@/components/TradeSettings";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
@@ -124,6 +125,14 @@ export default async function AccountSettingsPage() {
               defaultPackName={collectionSettings.defaultPackName}
               currentAlbumGridSizes={collectionSettings.albumGridSizes}
               currentAlbumDefaultView={collectionSettings.albumDefaultView}
+            />
+            {/* Issue #1782: 被りカードの所有枚数に応じた表示段階。コレクションの
+                見た目に関する設定なので公開設定と同じセクションに置き、保存経路も
+                共通にする（設定経路を増やさない）。 */}
+            <DuplicateDisplayTierSettings
+              streamerId={collectionSettings.streamerId}
+              rarities={collectionSettings.rarities}
+              currentDuplicateDisplayTiers={collectionSettings.duplicateDisplayTiers}
             />
             <TradeSettings
               streamerId={collectionSettings.streamerId}

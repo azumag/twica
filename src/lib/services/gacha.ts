@@ -22,9 +22,7 @@ import {
   streamers,
   userCards,
 } from '@/lib/db/schema'
-import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError } from '@/lib/card-issuance'
-import { isMissingCardPaddingColorError } from '@/lib/db/card-padding-color-errors'
-import { isMissingCollectionNameColumn } from '@/lib/collections/collection-existence'
+import { CARD_ISSUANCE_MESSAGES } from '@/lib/card-issuance'
 import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from '@/lib/rarity-weight-calculator'
 
@@ -136,15 +134,21 @@ interface GachaReadDriverError {
   message: string
   /**
    * 元エラー(cause チェーン全体)への参照 (Fable厳格レビュー指摘・高1)。
-   * isMissingCardIssuanceColumnError / isMissingCollectionNameColumn 等の
-   * getErrorChain ベースの判定関数は、渡されたエラー自身の `.cause` を辿って
-   * 実際の SQLSTATE・メッセージ（Drizzle にラップされた場合は cause 側にしか
-   * 無い）を見つける。以前の normalizePgReadError はトップレベルの code/message
-   * だけをコピーして cause を捨てていたため、これらの判定関数に正規化後の
-   * エラーを渡すと常に false になり、本番未デプロイ列の欠落時に #685 の
-   * デプロイ窓フォールバックが発動しない事故が起こりうる
-   * （getActiveCardsForStreamer と同型のバグ）。cause を保持することで
+   * getErrorChain ベースの判定関数（isRaidOptionsSchemaError 等、
+   * isPgMissingNamedColumnError / getErrorChain に委譲するヘルパー）は、
+   * 渡されたエラー自身の `.cause` を辿って実際の SQLSTATE・メッセージ
+   * （Drizzle にラップされた場合は cause 側にしか無い）を見つける。
+   * 以前の normalizePgReadError はトップレベルの code/message だけをコピーして
+   * cause を捨てていたため、正規化後のエラーを渡すと常に false になり、
+   * 本番未デプロイ列の欠落時にデプロイ窓フォールバックが発動しない事故が
+   * 起こりうる（getActiveCardsForStreamer と同型のバグ）。cause を保持することで
    * getErrorChain(normalizedError) が元のチェーン全体を辿れるようにする。
+   *
+   * #954: cards の max_issuance_count / image_padding_color / collection_name
+   * 用の判定関数（isMissingCardIssuanceColumnError /
+   * isMissingCardPaddingColorError / cards 側の isMissingCollectionNameColumn
+   * 利用）は、列実在の実測に基づき撤去した。cause 保持の契約自体は
+   * raid options 等の残存判定のために維持する。
    */
   cause?: unknown
 }
@@ -155,7 +159,7 @@ interface GachaReadDriverError {
  * 最初に見つかった文字列 code を採用する（Drizzle にラップされたエラーは
  * トップレベルに code を持たないため、トップレベルのみを見ると常に undefined
  * になってしまう）。cause は元エラーそのものを保持し、呼び出し側の
- * getErrorChain ベースの判定関数（isMissingCardIssuanceColumnError 等）が
+ * getErrorChain ベースの判定関数（isRaidOptionsSchemaError 等）が
  * 実際の SQLSTATE・メッセージへ到達できるようにする（GachaReadDriverError の
  * doc コメント参照）。
  */
@@ -406,46 +410,39 @@ export class GachaService {
 
       // Get active cards for this streamer (optionally scoped to a pack).
       // collection_name は抽選後に下流で使われないため SELECT しない。これにより
-      // パック未指定のガチャ(=大多数)はクエリが従来と完全に同一になり、列未デプロイの
-      // デプロイ窓でも一切巻き込まれない。パック指定時のみ WHERE で列を参照する。
+      // パック未指定のガチャ(=大多数)はクエリが従来と完全に同一になり、列構成の
+      // 変更に巻き込まれない。パック指定時のみ WHERE で列を参照する。
       // collection_name is not consumed downstream, so it is not selected. With no
-      // pack requested the query is byte-identical to the legacy one (zero
-      // deploy-window risk); the column is only referenced in the WHERE clause
-      // when a specific pack is requested.
+      // pack requested the query is byte-identical to the legacy one; the column is
+      // only referenced in the WHERE clause when a specific pack is requested.
       // max_issuance_count is selected here (Issue #108) so per-card issuance caps
-      // can be enforced below; it falls back to a column-less select via
-      // isMissingCardIssuanceColumnError if the migration has not landed yet.
-      //
-      // Issue #108 + #393 combined: the pack filter (collectionName) must be
-      // applied on BOTH the primary and the issuance-column-missing fallback
-      // query below, or the fallback would silently ignore the requested pack
-      // and draw from ALL of the streamer's cards during that deploy window.
+      // can be enforced below.
       //
       // Issue #579 (#576 フェーズ2): intra_rarity_weight (migration 00026) は
       // パック内レアリティ自動配分の計算にのみ必要なので、パック指定時だけ取得する。
       // #718/#803: 抽選プールの読み取りから課金トランザクションまでを同じ
       // PlanetScale 接続先に揃え、異なる provider を参照する split-brain を防ぐ。
       // この読み取りは冪等なので、接続断に限ってリトライを許可する。
+      //
+      // #954: 以前は max_issuance_count（#108/#548）と image_padding_color（#899）
+      // の各列が migration 未適用の環境でも抽選が継続するよう、列を外した
+      // 再試行（loadPgCards(false) / loadPgCards(true, false)）へフォールバック
+      // していたが、#834 (PR #953) と同じ手順で PlanetScale 本番・preview の
+      // information_schema.columns 実測により両列とも実在を確認したため撤去した
+      // （Issue #954）。常に全列込みの単一経路。
       let cards: Array<{
         id: string
         name: string
         description: string | null
         image_url: string | null
+        image_padding_color: string | null
         rarity: string
         drop_rate: number
         max_issuance_count: number | null
         intra_rarity_weight?: number | null
-      }> | null
-      let cardsError: GachaReadDriverError | null
-
-      // Drizzle側はSupabase SDKの文字列リテラル型推論制約を受けないため、primaryと
-      // max_issuance_count未デプロイ時fallbackで同じpredicate/列定義を共有する。
-      // includeIssuanceLimit=false のときだけ当該列をSQLから外し、呼出側contractは
-      // nullを補って維持する。これにより片側だけpack条件を直し忘れる事故を防ぐ。
-      // image_padding_color も同様に includePaddingColor で分岐する（#899 列未デプロイ時
-      // にガチャ抽選全体が失敗しないための deploy-window フォールバック）。
-      const loadPgCards = async (includeIssuanceLimit: boolean, includePaddingColor = true) => {
-                            const { db } = await getDb()
+      }>
+      const loadPgCards = async () => {
+        const { db } = await getDb()
         const predicates = [
           eq(cardsTable.streamer_id, streamerId),
           eq(cardsTable.is_active, true),
@@ -460,19 +457,16 @@ export class GachaService {
           name: cardsTable.name,
           description: cardsTable.description,
           image_url: cardsTable.image_url,
-          ...(includePaddingColor ? { image_padding_color: cardsTable.image_padding_color } : {}),
+          image_padding_color: cardsTable.image_padding_color,
           rarity: cardsTable.rarity,
           drop_rate: cardsTable.drop_rate,
-          ...(includeIssuanceLimit ? { max_issuance_count: cardsTable.max_issuance_count } : {}),
+          max_issuance_count: cardsTable.max_issuance_count,
           ...(collectionName ? { intra_rarity_weight: cardsTable.intra_rarity_weight } : {}),
         }).from(cardsTable).where(and(...predicates))
 
         return rows.map(row => ({
           ...row,
-          max_issuance_count:
-            includeIssuanceLimit && 'max_issuance_count' in row
-              ? row.max_issuance_count ?? null
-              : null,
+          max_issuance_count: row.max_issuance_count ?? null,
         }))
       }
 
@@ -483,56 +477,16 @@ export class GachaService {
       // このメソッド内の後続ラベルも同じ理由で `executeGacha` プレフィックスを維持する。
       try {
         cards = await withDbRetry(
-          () => loadPgCards(true),
+          loadPgCards,
           'gacha:executeGacha:cards',
           { idempotent: true }
         )
-        cardsError = null
       } catch (error) {
-        cards = null
-        cardsError = normalizePgReadError(error)
-      }
-
-      if (cardsError && isMissingCardIssuanceColumnError(cardsError)) {
-        try {
-          cards = await withDbRetry(
-            () => loadPgCards(false),
-            'gacha:executeGacha:cards:fallback',
-            { idempotent: true }
-          )
-          cardsError = null
-        } catch (error) {
-          cards = null
-          cardsError = normalizePgReadError(error)
-        }
-      }
-
-      // #899: image_padding_color 列が migration 未適用の環境では、当該列だけを
-      // 落として再試行する（余白情報が欠落するだけで、ガチャ抽選自体は継続）。
-      if (cardsError && isMissingCardPaddingColorError(cardsError)) {
-        try {
-          cards = await withDbRetry(
-            () => loadPgCards(true, false),
-            'gacha:executeGacha:cards:padding-fallback',
-            { idempotent: true }
-          )
-          cardsError = null
-        } catch (error) {
-          cards = null
-          cardsError = normalizePgReadError(error)
-        }
-      }
-
-      if (cardsError) {
-        // Deploy-window safety: a pack was requested but the collection_name
-        // column is not migrated yet. Refuse rather than silently drawing from
-        // ALL cards (which would be the wrong pool). Only reachable when a pack
-        // is requested, since otherwise the query never references the column.
-        // 列未デプロイ時、指定パックを誤って全カード抽選に落とさず拒否する。
-        if (collectionName && isMissingCollectionNameColumn(cardsError)) {
-          return err('Card collections are not deployed yet')
-        }
-        return err(`Database error: ${cardsError.message}`)
+        // #954: 列欠落を原因とする再試行経路は撤去済み（上記コメント参照）。
+        // パック指定時に cards.collection_name 列が欠落する環境では 42703 が
+        // ここへ到達するが、#834 と同じ方針でフォールバックせずエラーとして
+        // 報告する（誤って全カードを抽選プールにするより fail-fast が安全）。
+        return err(`Database error: ${normalizePgReadError(error).message}`)
       }
 
       if (!cards || cards.length === 0) {

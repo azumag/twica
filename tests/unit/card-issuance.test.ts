@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { getIssuanceInfo, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from '@/lib/card-issuance'
+import { getIssuanceInfo, parseCardIssuanceLimit } from '@/lib/card-issuance'
+
+// #954: このファイルにあった isMissingCardIssuanceColumnError（cards.max_issuance_count
+// 列のデプロイ窓フォールバック判定）のテストは、判定関数の撤去（本番・preview の
+// information_schema.columns 実測で max_issuance_count が実在することを確認）に
+// 合わせて削除した。
 
 describe('parseCardIssuanceLimit', () => {
   it('treats empty values as unlimited', () => {
@@ -33,49 +38,6 @@ describe('parseCardIssuanceLimit', () => {
 
   it('accepts the product cap itself (1,000,000)', () => {
     expect(parseCardIssuanceLimit(1_000_000)).toBe(1_000_000)
-  })
-})
-
-describe('isMissingCardIssuanceColumnError', () => {
-  it('detects PostgreSQL 42703 for max_issuance_count', () => {
-    expect(isMissingCardIssuanceColumnError({
-      code: '42703',
-      message: 'column "max_issuance_count" of relation "cards" does not exist',
-    })).toBe(true)
-  })
-
-  it('ignores unrelated missing-column errors', () => {
-    expect(isMissingCardIssuanceColumnError({
-      code: '42703',
-      message: 'column "card_number" of relation "cards" does not exist',
-    })).toBe(false)
-  })
-
-  // 2026-07 本番障害の回帰テスト: card-number-errors.ts と同じ pg 経路の
-  // Drizzle ラップ問題（詳細は card-number-errors.test.ts / errors.ts 参照）。
-  it('detects the error even when wrapped by Drizzle ({ query, params, cause })', () => {
-    const wrapped = {
-      query: 'insert into cards (...) returning *',
-      params: [],
-      cause: {
-        code: '42703',
-        message: 'column "max_issuance_count" of relation "cards" does not exist',
-      },
-    }
-    expect(isMissingCardIssuanceColumnError(wrapped)).toBe(true)
-  })
-
-  // 2026-07 Fable厳格レビュー指摘(中4)の回帰テスト（詳細は
-  // card-number-errors.test.ts の同種テスト参照）: ラッパー層の SQL 文に
-  // "max_issuance_count" が含まれていても、cause が無関係なエラーなら false。
-  it('ラッパーのINSERT文にmax_issuance_countが含まれても、causeが無関係なエラーならfalse', () => {
-    const wrapped = {
-      message: 'Failed query: insert into "cards" ("id", "max_issuance_count", "name") values (...)',
-      query: 'insert into "cards" ("id", "max_issuance_count", "name") values (...)',
-      params: [],
-      cause: { code: 'CONNECTION_CLOSED', message: 'connection closed' },
-    }
-    expect(isMissingCardIssuanceColumnError(wrapped)).toBe(false)
   })
 })
 

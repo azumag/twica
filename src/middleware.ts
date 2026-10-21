@@ -86,6 +86,9 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
 const CACHEABLE_PUBLIC_PATHS = [
   /^\/api\/maintenance-status$/,
   /^\/api\/streamer\/[^/]+\/sound-settings$/,
+  // Issue #1783 フェーズ2: オーバーレイが読むカスタムレアリティ表示スタイル。
+  // sound-settings と同じくセッション非依存の JSON で、ルート側も s-maxage=1 を明示する。
+  /^\/api\/streamer\/[^/]+\/rarity-styles$/,
   /^\/api\/overlay\/[^/]+\/realtime-config$/,
 ]
 

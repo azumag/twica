@@ -32,6 +32,16 @@ function matchesAnyErrorLayer(
  * `collection_name`（`channel_point_collection_name` も部分一致）を伴う
  * SQLSTATE 42703 だけを列未配備として扱う。列名で絞ることで raid option の
  * `draw_count` / `is_raid_limited` 欠落を誤認しない。
+ *
+ * #954: 以前は cards.collection_name（Issue #393 由来）のデプロイ窓フォールバック
+ * として cards routes / checkCollectionHasActiveCardsPg からも使われていたが、
+ * #834 (PR #953) と同じ手順で PlanetScale 本番・preview の information_schema
+ * 実測により cards.collection_name の実在を確認したため、cards 側の利用は撤去した
+ * （Issue #954）。このヘルパー自体は streamers.channel_point_collection_name
+ * （streamer settings の SELECT/UPDATE、別 migration 由来の別列）のデプロイ窓
+ * フォールバック判定に現役で使われているため温存する（同名部分一致の判定が
+ * channel_point_collection_name をも網羅する設計）。この列は #954 の実測対象外
+ * であり、撤去する場合は別 issue で同様の実測を行うこと。
  */
 export function isMissingCollectionNameColumn(error: unknown): boolean {
   if (!error) return false;
@@ -45,11 +55,13 @@ export function isMissingCollectionNameColumn(error: unknown): boolean {
  * Separate function (not folded into `isMissingCollectionNameColumn`) because
  * that helper gates specifically on the substring "collection_name", which
  * `card_pack_names` does not contain — mirrors this codebase's existing
- * one-helper-per-column convention (see `isMissingCardNumberColumnError`).
+ * one-helper-per-column convention
+ * （例: settings 系の isMissingGachaSoundRulesColumnError 等。なお #954 で
+ * isMissingCardNumberColumnError は card_number 列の実在実測により撤去済み）。
  *
  * `card_pack_names`(パック事前登録一覧, #393再設計)列の未デプロイ検知。
  * `collection_name` 文言でゲートする既存関数とは別に用意する(列ごとに専用
- * 関数を持つ既存の慣習(`isMissingCardNumberColumnError`)に合わせる)。
+ * 関数を持つ既存の慣習に合わせる)。
  */
 export function isMissingCardPackNamesColumnError(error: unknown): boolean {
   if (!error) return false;
@@ -134,8 +146,7 @@ export function isMissingPackRarityWeightsColumnError(error: unknown): boolean {
 
 export type CollectionExistenceResult =
   | "exists" // at least one active card belongs to this pack
-  | "absent" // no active card belongs to this pack → would cause empty draws
-  | "schema-not-ready"; // collection_name column not deployed yet (deploy window)
+  | "absent"; // no active card belongs to this pack → would cause empty draws
 
 /**
  * checkCollectionHasActiveCards の pg 直結実装 (#663)
@@ -145,11 +156,14 @@ export type CollectionExistenceResult =
  *   （`sql`count(*)`.mapWith(Number)` 相当）で件数のみ取得する形に置き換える。
  * - DEFAULT_PACK_SENTINEL の場合は isNull(collection_name)、それ以外は
  *   eq(collection_name, collectionName)（postgrest 経路と同じ分岐）。
- * - isMissingCollectionNameColumn は message テキスト（"does not exist" /
- *   "schema cache"）ベースの汎用判定のため、pg（postgres.js）が throw する
- *   PostgresError（code: '42703', message に "does not exist" を含む）も
- *   そのまま判定できる。pg 専用の判定関数は不要（既存ヘルパーをそのまま再利用）。
  * - 想定外のエラーは throw して呼び出し元で 500 にする（既存と同じ）。
+ *
+ * #954: 以前は cards.collection_name 列の欠落（42703）を `schema-not-ready`
+ * として呼び出し元へ返し、検証をスキップするデプロイ窓フォールバックを持って
+ * いたが、#834 (PR #953) と同じ手順で PlanetScale 本番・preview の
+ * information_schema.columns 実測により cards.collection_name の実在を確認した
+ * ため撤去した（Issue #954）。列が実在する環境では 42703 は発生せず、
+ * フォールバックは死に分岐だった。エラーは素通しされる単一経路。
  */
 async function checkCollectionHasActiveCardsPg(
   streamerId: string,
@@ -160,34 +174,27 @@ async function checkCollectionHasActiveCardsPg(
       ? isNull(cardsTable.collection_name)
       : eq(cardsTable.collection_name, collectionName);
 
-  try {
-    const rows = await withDbRetry(
-      async () => {
-        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
-        const { db } = await getDb();
-        return db
-          .select({ count: count() })
-          .from(cardsTable)
-          .where(
-            and(
-              eq(cardsTable.streamer_id, streamerId),
-              eq(cardsTable.is_active, true),
-              collectionCondition
-            )
-          );
-      },
-      "checkCollectionHasActiveCards",
-      // 読み取り専用クエリのため冪等（リトライ可）
-      { idempotent: true },
-    );
+  // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select({ count: count() })
+        .from(cardsTable)
+        .where(
+          and(
+            eq(cardsTable.streamer_id, streamerId),
+            eq(cardsTable.is_active, true),
+            collectionCondition
+          )
+        );
+    },
+    "checkCollectionHasActiveCards",
+    // 読み取り専用クエリのため冪等（リトライ可）
+    { idempotent: true },
+  );
 
-    return (rows[0]?.count ?? 0) > 0 ? "exists" : "absent";
-  } catch (error) {
-    if (isMissingCollectionNameColumn(error as { message?: string; code?: string } | null | undefined)) {
-      return "schema-not-ready";
-    }
-    throw error;
-  }
+  return (rows[0]?.count ?? 0) > 0 ? "exists" : "absent";
 }
 
 /**
@@ -195,11 +202,10 @@ async function checkCollectionHasActiveCardsPg(
  *
  * Gacha only draws from `is_active = true` cards, so a pack made of only inactive
  * cards must be rejected at save time — otherwise live redemptions fail with
- * "No cards available". When the column is not yet deployed we return
- * `schema-not-ready` so callers can skip validation during the deploy window.
+ * "No cards available".
  *
  * ガチャは is_active=true のみを抽選するため、非アクティブのみのパックは保存時に
- * 弾く(本番引換で空抽選になるのを防ぐ)。列未デプロイ時は schema-not-ready を返す。
+ * 弾く(本番引換で空抽選になるのを防ぐ)。
  */
 export async function checkCollectionHasActiveCards(
   streamerId: string,

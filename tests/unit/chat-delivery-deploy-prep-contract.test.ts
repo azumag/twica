@@ -44,15 +44,16 @@ describe("chat-delivery deploy preparation (#1665)", () => {
     expect(guard).toContain("workers/chat-delivery/dist/preview/index.js");
   });
 
-  it("does not enable dispatch or add the production app Queue producer binding yet", () => {
+  it("provisions the production app Queue producer binding in Step 5 (flag stays off by default)", () => {
     const rootWrangler = read("wrangler.toml");
     const workerWrangler = read("workers/chat-delivery/wrangler.toml");
 
-    // Step 3 (preview): the preview queue created on 2026-10-08 may now be
-    // bound to twica-preview, but production queue/binding and the dispatch flag
-    // stay absent until Step 3 unifies delivery owners and Step 5 provisions
-    // production resources.
-    expect(rootWrangler).not.toContain("[[queues.producers]]");
+    // Step 5 (production): the production queue (chat-notification-wakeup) is
+    // now provisioned and bound to the production app. Dispatch itself remains
+    // gated by the CHAT_DELIVERY_DISPATCH_ENABLED secret (off until flag
+    // activation), so the binding alone does not enable delivery.
+    expect(rootWrangler).toContain("[[queues.producers]]");
+    expect(rootWrangler).toContain("chat-notification-wakeup");
     expect(rootWrangler).not.toContain("CHAT_DELIVERY_DISPATCH_ENABLED");
     expect(workerWrangler).not.toContain("CHAT_DELIVERY_DISPATCH_ENABLED =");
   });

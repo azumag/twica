@@ -41,15 +41,22 @@ import { withDbRetry } from "@/lib/db/retry";
 // #834: cards テーブルの「本番未デプロイ8列」（card_number/hp/atk/def/spd/
 // skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバックは、
 // PlanetScale 本番の information_schema.columns への実測で8列とも実在することを
-// 確認したため撤去した（詳細は card-padding-color-errors.ts のコメント参照）。
-// 無指定 select の単一経路に戻す。
-import { isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
+// 確認したため撤去した。無指定 select の単一経路に戻す。
+// #954: 残っていた image_padding_color（#899）の列欠落再試行フォールバック
+// （card-padding-color-errors.ts。#834 撤去時に一時新設）も、同じ実測手順
+// （本番・preview の information_schema.columns）で実在を確認したため、
+// ファイルごと撤去した。
 import {
   normalizeAlbumDefaultView,
   sanitizeAlbumGridSizeMap,
   type AlbumDefaultView,
   type AlbumGridSizeMap,
 } from "@/lib/collection-album";
+import {
+  sanitizeDuplicateDisplayTiers,
+  type DuplicateDisplayTiers,
+} from "@/lib/duplicate-display-tiers";
+import { RARITIES } from "@/lib/constants";
 import {
   STREAMERS_SAFE_COLUMNS,
   withLiveDirectorySettingsColumnFallback,
@@ -77,6 +84,10 @@ type StreamerWithTradeSettings = Streamer & {
   // STREAMERS_SAFE_COLUMNSへ縮退した行だけundefinedになり得るためoptionalにする。
   trade_enabled?: boolean;
   cross_channel_trade_enabled?: boolean;
+  // Issue #1783: カスタムレアリティの表示スタイル。同じ理由（デプロイ窓の
+  // STREAMERS_SAFE_COLUMNS 縮退）で undefined になり得るため optional。
+  // 消費側は `?? {}` で「上書きなし = 既定表示」へ倒すこと。
+  rarity_styles?: Record<string, import("@/lib/rarity-styles").RarityStyle>;
 };
 
 interface CardWithDetails extends Card {
@@ -1601,43 +1612,34 @@ async function fetchGachaDropStatsFromHistory(
         "dashboard:gachaDropStats:history",
         { idempotent: true },
       ),
-      // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color が
-      // migration 未適用の環境では、この明示 select が丸ごと失敗し
-      // Promise.all 全体が catch(1556行目) に落ちて排出統計全体が0件表示に
-      // なっていた(gacha.ts の loadPgCards と同じ deploy-window フォールバック
-      // をここにも揃える)。
-      (async () => {
-        const loadCards = async (includePaddingColor: boolean) => {
+      // #899/#954: image_padding_color は明示 select に含めて取得する。
+      // 以前は当該列が migration 未適用の環境で Promise.all 全体が落ちるのを
+      // 避けるため「42703 検知時に列を落として再試行する」deploy-window
+      // フォールバック（#899 PR #903）を置いていたが、#834 (PR #953) と同じ
+      // 手順で PlanetScale 本番・preview の information_schema.columns 実測により
+      // image_padding_color の実在を確認したため撤去した（Issue #954）。
+      // 列を落とした再試行は無意味ではないものの列実在が確認できた以上
+      // 死に分岐であり、単一経路のほうが読み取り契約が明確になる。
+      withDbRetry(
+        async () => {
           const { db } = await getDb();
-          const rows = await db
+          return db
             .select({
               id: cardsTable.id,
               name: cardsTable.name,
               rarity: cardsTable.rarity,
               image_url: cardsTable.image_url,
-              ...(includePaddingColor ? { image_padding_color: cardsTable.image_padding_color } : {}),
+              image_padding_color: cardsTable.image_padding_color,
               drop_rate: cardsTable.drop_rate,
               created_at: cardsTable.created_at,
             })
             .from(cardsTable)
             .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
             .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at));
-          return rows.map((row) => ({
-            ...row,
-            image_padding_color: ("image_padding_color" in row ? row.image_padding_color : null) ?? null,
-          }));
-        };
-        try {
-          return await withDbRetry(() => loadCards(true), "dashboard:gachaDropStats:cards", { idempotent: true });
-        } catch (error) {
-          if (!isMissingCardPaddingColorError(error)) throw error;
-          return withDbRetry(
-            () => loadCards(false),
-            "dashboard:gachaDropStats:cards:padding-fallback",
-            { idempotent: true },
-          );
-        }
-      })(),
+        },
+        "dashboard:gachaDropStats:cards",
+        { idempotent: true },
+      ),
       // カード別の排出数はSQL側でGROUP BYして正確に取る（#833: 以前はhistoryの
       // LIMIT 10000サンプルから数えていたため、期間内の総排出数が10000件を超える
       // 配信者では全カードのactualRateが黙って過小表示されていた）。
@@ -1984,39 +1986,28 @@ async function fetchCardOwnerStatsFromUserCards(
   let ownerCountRows: Array<{ card_id: string; count: number | string }>;
   try {
     [cards, ownerRows, ownerCountRows] = await Promise.all([
-      // Fable厳格レビュー指摘(#899 PR #903)対応: 上のgachaDropStatsと同じ
-      // deploy-window フォールバック(image_padding_color 列欠落時は列を
-      // 落として再試行)。
-      (async () => {
-        const loadCards = async (includePaddingColor: boolean) => {
+      // #899/#954: gachaDropStats と同じく、image_padding_color の列欠落時
+      // 再試行フォールバック（#899 PR #903）は information_schema 実測により
+      // 列が本番・preview とも実在することを確認したため撤去した
+      // （Issue #954）。常に列を含む単一経路。
+      withDbRetry(
+        async () => {
           const { db } = await getDb();
-          const rows = await db
+          return db
             .select({
               id: cardsTable.id,
               name: cardsTable.name,
               rarity: cardsTable.rarity,
               image_url: cardsTable.image_url,
-              ...(includePaddingColor ? { image_padding_color: cardsTable.image_padding_color } : {}),
+              image_padding_color: cardsTable.image_padding_color,
             })
             .from(cardsTable)
             .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
             .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at));
-          return rows.map((row) => ({
-            ...row,
-            image_padding_color: ("image_padding_color" in row ? row.image_padding_color : null) ?? null,
-          }));
-        };
-        try {
-          return await withDbRetry(() => loadCards(true), "dashboard:cardOwnerStats:cards", { idempotent: true });
-        } catch (error) {
-          if (!isMissingCardPaddingColorError(error)) throw error;
-          return withDbRetry(
-            () => loadCards(false),
-            "dashboard:cardOwnerStats:cards:padding-fallback",
-            { idempotent: true },
-          );
-        }
-      })(),
+        },
+        "dashboard:cardOwnerStats:cards",
+        { idempotent: true },
+      ),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -2428,6 +2419,11 @@ export interface StreamerCollectionSettings {
   defaultPackName: string | null;
   albumGridSizes: AlbumGridSizeMap;
   albumDefaultView: AlbumDefaultView;
+  // Issue #1782: 被りカード表示段階の設定UIに必要な値。
+  // 既定 + カスタムレアリティの一覧（設定行を出す対象）と、保存済みのしきい値。
+  // 列未デプロイ時は安全側（空マップ = 段階表示なし）。
+  rarities: string[];
+  duplicateDisplayTiers: DuplicateDisplayTiers;
 }
 
 /**
@@ -2460,6 +2456,9 @@ export const getStreamerCollectionSettings = cache(
                   // デプロイ窓の再試行側でもパック一覧は取得できる。
                   card_pack_names: streamersTable.card_pack_names,
                   default_card_pack_name: streamersTable.default_card_pack_name,
+                  // STREAMERS_SAFE_COLUMNS にも含まれる既存列なので、デプロイ窓の
+                  // 再試行側でもレアリティ一覧は取得できる。
+                  custom_rarities: streamersTable.custom_rarities,
                 })
               : db.select({
                   id: streamersTable.id,
@@ -2467,10 +2466,15 @@ export const getStreamerCollectionSettings = cache(
                   show_unowned_card_details: streamersTable.show_unowned_card_details,
                   card_pack_names: streamersTable.card_pack_names,
                   default_card_pack_name: streamersTable.default_card_pack_name,
+                  // Issue #1782: 被りカード表示段階の設定行に既定 + カスタム
+                  // レアリティを出すために使う。既存列なのでフォールバック側の
+                  // 射影（STREAMERS_SAFE_COLUMNS に含まれる）でも取得できる。
+                  custom_rarities: streamersTable.custom_rarities,
                   trade_enabled: streamersTable.trade_enabled,
                   cross_channel_trade_enabled: streamersTable.cross_channel_trade_enabled,
                   pack_album_grid_sizes: streamersTable.pack_album_grid_sizes,
                   collection_default_view: streamersTable.collection_default_view,
+                  duplicate_display_tiers: streamersTable.duplicate_display_tiers,
                 });
             return query
               .from(streamersTable)
@@ -2494,6 +2498,8 @@ export const getStreamerCollectionSettings = cache(
             cross_channel_trade_enabled?: boolean | null;
             pack_album_grid_sizes?: unknown;
             collection_default_view?: string | null;
+            duplicate_display_tiers?: unknown;
+            custom_rarities?: string[] | null;
           }
         | undefined;
       if (!row) return null;
@@ -2508,6 +2514,19 @@ export const getStreamerCollectionSettings = cache(
         defaultPackName: row.default_card_pack_name ?? null,
         albumGridSizes: sanitizeAlbumGridSizeMap(row.pack_album_grid_sizes),
         albumDefaultView: normalizeAlbumDefaultView(row.collection_default_view),
+        // Issue #1782: 設定行は「既定レアリティ + 配信者が定義したカスタムレアリティ」。
+        // 既定だけを出すと、カスタムレアリティのカードは段階表示を設定できず
+        // 「機能が半分動かない」状態になるため、両方を対象にする。
+        // 重複（カスタム名が既定と一致することは validation 側で禁じているが、
+        // 過去データや手動編集では有り得る）は1行に畳む。
+        rarities: [
+          ...RARITIES.map((rarity) => rarity.value),
+          ...(Array.isArray(row.custom_rarities) ? row.custom_rarities : []),
+        ].filter(
+          (rarity, index, all) => all.indexOf(rarity) === index && typeof rarity === "string"
+        ),
+        // デプロイ窓（列未作成）や破損値は空マップ = 段階表示なしへ縮退する。
+        duplicateDisplayTiers: sanitizeDuplicateDisplayTiers(row.duplicate_display_tiers),
       };
     } catch (error) {
       logger.error("Error in getStreamerCollectionSettings (pg)", { error });

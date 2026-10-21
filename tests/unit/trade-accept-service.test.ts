@@ -238,6 +238,43 @@ describe("acceptTradeOffer (#724)", () => {
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
 
+  it("rollback: a pre-#1790 app does not know WANTED_CARD_NOT_WANTABLE and fails closed with 500 (#1801)", async () => {
+    // アプリを #1790 の前へロールバックしたときの挙動を固定する（レビュー任意指摘:
+    // コメントだけで説明されていた点のテスト化）。
+    //
+    // 旧アプリ（#1789 時点）の結果検証は現行と同じ「既知コードだけを受け付ける」
+    // ロジック（isValidTradeAcceptRpcResult）で、その既知集合は 20261011120000 時点
+    // の下記 7 コード。RPC は指定不可の求めるカードを
+    // { success: false, error: "WANTED_CARD_NOT_WANTABLE" } として、どの行ロック・
+    // 書き込みよりも前に返す（実 PostgreSQL で trade-visibility-pg.test.ts が固定）。
+    // 旧アプリはこのコードを知らないため、この describe の
+    // 「fails closed on unknown failure code」と同じ経路で throw し、API は
+    // 500 INTERNAL_ERROR を返す = 何も移転しない fail-closed。
+    // （旧アプリには trade_wantable を false にする経路がなく、この分岐に達するのは
+    // ロールバック時だけ。さらに前の pre-#1789 アプリは3引数版ラッパーが
+    // OFFER_NOT_OPEN へ読み替えるため、こちらは 500 にならない。）
+    const pre1790AppKnownErrors = new Set([
+      "TRADE_OFFER_NOT_FOUND",
+      "OFFER_NOT_OPEN",
+      "SELF_ACCEPT_FORBIDDEN",
+      "OFFER_INVALID",
+      "TRADE_DISABLED",
+      "CARD_NOT_OWNED",
+      "QUANTITY_MISMATCH",
+    ]);
+    // ロールバック先のアプリはこのコードを結果検証で拒否する（= 500 fail-closed）。
+    expect(pre1790AppKnownErrors.has("WANTED_CARD_NOT_WANTABLE")).toBe(false);
+    // 現行アプリはこのコードを既知として受け入れ、API 層が 409
+    // TRADE_OFFER_UNAVAILABLE へ写像する（上の passes-through テストと
+    // trade-accept-api.test.ts で固定）。既知集合の差分が #1790 の1追加だけである
+    // ことも固定する: accept 系の新しい RPC コードを足すとき、このテストが
+    // ロールバック契約の再検討を強制する。
+    const { TRADE_ACCEPT_RPC_ERRORS } = await import("@/lib/trade");
+    expect([...TRADE_ACCEPT_RPC_ERRORS].sort()).toEqual(
+      [...pre1790AppKnownErrors, "WANTED_CARD_NOT_WANTABLE"].sort(),
+    );
+  });
+
   it("deploy window: the precheck retries with every card wantable when cards.trade_wantable is missing (#1790)", async () => {
     const missing = { code: "42703", message: "column wantable_card.trade_wantable does not exist" };
     const sqlMock = vi.fn().mockResolvedValue([{ result: rpcSuccess() }]);

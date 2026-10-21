@@ -52,8 +52,9 @@ export type TradeScope = "in_channel" | "cross_channel";
  *   yes        — the viewer can pay wanted_quantity unlisted copies
  *   not_owned  — the viewer owns no copy of the wanted card
  *   not_enough — the viewer owns some copies, but fewer than wanted_quantity
- *   all_listed — enough copies are owned, but too many of them are listed in
- *                the viewer's own open offers
+ *   all_listed — enough copies are owned, but too many of them are locked
+ *                (listed in an open offer, an auction listing or an active
+ *                bid; #1791, see trade_copy_locked)
  */
 export type TradeCanAccept = "yes" | "not_owned" | "not_enough" | "all_listed";
 export type TradeOfferStatus = "open" | "completed" | "cancelled";
@@ -117,7 +118,7 @@ export type TradeServiceErrorCode =
  * `wanted_card.id` etc. are rendered correctly; an unaliased table must
  * appear only once (every other occurrence of it is aliased).
  */
-function qualifiedColumn(column: AnyColumn) {
+export function qualifiedColumn(column: AnyColumn) {
   return sql`${sql.identifier(getTableName(column.table))}.${sql.identifier(column.name)}`;
 }
 
@@ -150,7 +151,7 @@ function qualifiedColumn(column: AnyColumn) {
  * users.id of `twitchUserId` as a scalar subquery (NULL when unknown). The
  * literal alias keeps it independent of any outer `users` reference.
  */
-function viewerUserIdOf(twitchUserId: string): SQL {
+export function viewerUserIdOf(twitchUserId: string): SQL {
   return sql`(
     SELECT viewer.id
     FROM ${usersTable} AS viewer
@@ -223,7 +224,7 @@ function offerRowFields(
 
 const TRADE_WANTABLE_COLUMNS = ["trade_wantable"] as const;
 
-async function withTradeWantableColumnFallback<T>(
+export async function withTradeWantableColumnFallback<T>(
   attempt: (withoutWantable: boolean) => Promise<T>,
 ): Promise<T> {
   try {
@@ -240,7 +241,7 @@ async function withTradeWantableColumnFallback<T>(
  * cardIsActive; every caller also requires cardIsActive, so a deleted card is
  * excluded either way. `withoutWantable` (deploy window) renders TRUE.
  */
-function cardIsWantable(cardIdExpr: AnyColumn, withoutWantable: boolean) {
+export function cardIsWantable(cardIdExpr: AnyColumn, withoutWantable: boolean) {
   if (withoutWantable) return sql<boolean>`TRUE`;
   return sql<boolean>`EXISTS (
     SELECT 1
@@ -251,7 +252,7 @@ function cardIsWantable(cardIdExpr: AnyColumn, withoutWantable: boolean) {
 }
 
 /** `cardIdExpr` points at an active card definition (NULL id → false). */
-function cardIsActive(cardIdExpr: AnyColumn) {
+export function cardIsActive(cardIdExpr: AnyColumn) {
   return sql<boolean>`EXISTS (
     SELECT 1
     FROM ${cardsTable} AS active_card
@@ -260,13 +261,127 @@ function cardIsActive(cardIdExpr: AnyColumn) {
   )`;
 }
 
+// -----------------------------------------------------------------------------
+// Copy locks and the deploy window of the auction schema (#1791)
+//
+// A copy (user_cards row) is "locked" while it is used by an open regular
+// offer, an auction listing, or an active bid; a locked copy cannot be listed,
+// bid, or used to pay for an accept. The authoritative rule is the SQL
+// function public.trade_copy_locked() of 20261018030000_trade_auctions.sql,
+// which every RPC and the trade_offers BEFORE INSERT trigger evaluate under a
+// FOR UPDATE lock of the copy. The app-side reads below call the SAME function
+// so that the listing form, canAccept and the create precheck can never
+// disagree with the database about which copies are free.
+//
+// Deploy window: the new app can run before the migration (planetscale-migrate
+// and the app deploy are independent, issue #788). Then the function/tables do
+// not exist (42883 / 42P01) and these reads are retried with the pre-auction
+// rule "locked = listed in an open offer". That is exact, not an
+// approximation: without the tables no auction or bid can exist. The
+// detection is narrow (SQLSTATE AND an auction object name in the same error
+// layer, like isPgMissingNamedColumnError), so an unrelated missing relation
+// or function still surfaces as a 500. Becomes a dead branch once
+// 20261018030000 is applied everywhere.
+// -----------------------------------------------------------------------------
+
+/** Object names introduced by 20261018030000 (substring match). */
+const TRADE_AUCTION_SCHEMA_OBJECTS = [
+  "trade_auction", // trade_auctions, trade_auction_bids, *_trade_auction_* RPCs, ...
+  "trade_copy_locked",
+  "trade_copy_auction_locked",
+] as const;
+
+/**
+ * 42P01 (missing table) or 42883 (missing function) about one of the auction
+ * objects. Code and name must be on the SAME layer of the cause chain: the
+ * top-level DrizzleQueryError message contains the whole SQL text, so it would
+ * mention the names for any error.
+ */
+export function isTradeAuctionSchemaMissingError(error: unknown): boolean {
+  return getErrorChain(error).some((layer) => {
+    if (!layer || typeof layer !== "object") return false;
+    const candidate = layer as { code?: unknown; message?: unknown };
+    if (candidate.code !== "42P01" && candidate.code !== "42883") return false;
+    const message = typeof candidate.message === "string" ? candidate.message : "";
+    return TRADE_AUCTION_SCHEMA_OBJECTS.some((name) => message.includes(name));
+  });
+}
+
+async function withTradeAuctionSchemaFallback<T>(
+  attempt: (withoutAuctions: boolean) => Promise<T>,
+): Promise<T> {
+  try {
+    return await attempt(false);
+  } catch (error) {
+    if (!isTradeAuctionSchemaMissingError(error)) throw error;
+    return attempt(true);
+  }
+}
+
+/**
+ * `userCardIdExpr` (an SQL expression producing user_cards.id) is locked.
+ * `withoutAuctions` (deploy window) renders the pre-auction rule, which is the
+ * partial unique index predicate of idx_trade_offers_open_user_card
+ * (regardless of the offerer).
+ */
+function copyLockedExpr(userCardIdExpr: SQL, withoutAuctions: boolean) {
+  if (withoutAuctions) {
+    return sql<boolean>`EXISTS (
+      SELECT 1
+      FROM ${tradeOffersTable} AS open_listing
+      WHERE open_listing.offered_user_card_id = ${userCardIdExpr}
+        AND open_listing.status = 'open'
+    )`;
+  }
+  return sql<boolean>`public.trade_copy_locked(${userCardIdExpr})`;
+}
+
+/**
+ * Number of open listings of `sellerUserIdExpr` counted against
+ * TRADE_MAX_OPEN_OFFERS: open regular offers plus auctions that still hold
+ * their card (bidding / selecting). Regular and auction listings share the
+ * limit (#1791 spec). Same counting as create_trade_auction. count(*) is
+ * bigint → string in postgres.js, hence mapWith(Number).
+ */
+function openListingCountExpr(sellerUserIdExpr: SQL, withoutAuctions: boolean) {
+  const offers = sql`(
+    SELECT count(*)
+    FROM ${tradeOffersTable} AS open_offer
+    WHERE open_offer.offerer_user_id = ${sellerUserIdExpr}
+      AND open_offer.status = 'open'
+  )`;
+  if (withoutAuctions) return sql<number>`${offers}`.mapWith(Number);
+  return sql<number>`(${offers} + (
+    SELECT count(*)
+    FROM public.trade_auctions AS open_auction
+    WHERE open_auction.seller_user_id = ${sellerUserIdExpr}
+      AND open_auction.status = 'open'
+      AND public.trade_auction_holds_cards(open_auction.id)
+  ))`.mapWith(Number);
+}
+
+/**
+ * The trade_offers BEFORE INSERT trigger of 20261018030000 rejected the
+ * INSERT (RAISE ... USING ERRCODE 'P0001', MESSAGE = `message`).
+ */
+function isTradeOfferTriggerError(
+  error: unknown,
+  message: "TRADE_CARD_LOCKED" | "TRADE_CARD_NOT_OWNED",
+): boolean {
+  return getErrorChain(error).some((layer) => {
+    if (!layer || typeof layer !== "object") return false;
+    const candidate = layer as { code?: unknown; message?: unknown };
+    return candidate.code === "P0001" && candidate.message === message;
+  });
+}
+
 /**
  * `cardIdExpr` is visible to `viewerUserId` according to the rule documented
  * above. Includes the is_active condition. `viewerUserId` is an SQL
  * expression producing users.id (viewerUserIdOf() or an outer column); null
  * means anonymous.
  */
-function cardVisibleTo(cardIdExpr: AnyColumn, viewerUserId: SQL | null) {
+export function cardVisibleTo(cardIdExpr: AnyColumn, viewerUserId: SQL | null) {
   // Anonymous viewers have no ownership branch at all instead of comparing
   // against NULL, so the intent is explicit in the generated SQL.
   const ownedByViewer = viewerUserId
@@ -294,20 +409,20 @@ function cardVisibleTo(cardIdExpr: AnyColumn, viewerUserId: SQL | null) {
   )`;
 }
 
-type TradeCardSnapshot = {
+export type TradeCardSnapshot = {
   name: string;
   rarity: string;
   imageUrl: string | null;
 };
 
-type TradeStreamerSummary = {
+export type TradeStreamerSummary = {
   id: string;
   twitchUsername: string;
   twitchDisplayName: string;
   twitchProfileImageUrl: string | null;
 };
 
-type TradeUserSummary = {
+export type TradeUserSummary = {
   twitchUsername: string;
   twitchDisplayName: string;
   twitchProfileImageUrl: string | null;
@@ -373,7 +488,7 @@ function cardSnapshot(card: {
   };
 }
 
-function normalizeSnapshot(value: unknown): TradeCardSnapshot {
+export function normalizeSnapshot(value: unknown): TradeCardSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { name: "", rarity: "", imageUrl: null };
   }
@@ -485,8 +600,19 @@ export async function createTradeOffer(input: {
   // `withoutQuantity` is the shape the check ran with; the INSERT below uses
   // the same shape. The trade_wantable fallback (#1790) only affects this
   // read (the INSERT does not touch cards) and is allowed for any quantity.
+  //
+  // #1791: "already listed" now means "locked" (open offer, auction listing or
+  // active bid; see copyLockedExpr) and the open-listing limit counts auction
+  // listings too. Both read the auction schema, so the whole check also runs
+  // inside withTradeAuctionSchemaFallback (outermost). Any combination of the
+  // three deploy windows converges in at most eight attempts, only during the
+  // windows.
   const wantedQuantity = input.wantedQuantity ?? 1;
-  const runChecks = async (withoutQuantity: boolean, withoutWantable: boolean) => ({
+  const runChecks = async (
+    withoutQuantity: boolean,
+    withoutWantable: boolean,
+    withoutAuctions: boolean,
+  ) => ({
     withoutQuantity,
     rows: await withDbRetry(
       async () => {
@@ -516,21 +642,16 @@ export async function createTradeOffer(input: {
             offeredCrossEnabled: createOfferedGate.cross_channel_trade_enabled,
             wantedTradeEnabled: createWantedGate.trade_enabled,
             wantedCrossEnabled: createWantedGate.cross_channel_trade_enabled,
-            // Same predicate as the partial unique index
-            // idx_trade_offers_open_user_card (regardless of the offerer).
-            offeredCopyListed: sql<boolean>`EXISTS (
-              SELECT 1
-              FROM ${tradeOffersTable} AS open_listing
-              WHERE open_listing.offered_user_card_id = ${input.offeredUserCardId}
-                AND open_listing.status = 'open'
-            )`,
-            // count(*) is bigint → string in postgres.js.
-            openOfferCount: sql<number>`(
-              SELECT count(*)
-              FROM ${tradeOffersTable} AS open_offer
-              WHERE open_offer.offerer_user_id = ${qualifiedColumn(usersTable.id)}
-                AND open_offer.status = 'open'
-            )`.mapWith(Number),
+            // #1791: locked by an open offer (the partial unique index
+            // predicate of idx_trade_offers_open_user_card), an auction
+            // listing or an active bid. Advisory only: the trade_offers
+            // trigger re-checks it under a row lock (TRADE_CARD_LOCKED below).
+            offeredCopyListed: copyLockedExpr(
+              sql`${input.offeredUserCardId}::uuid`,
+              withoutAuctions,
+            ),
+            // Open regular offers + auction listings (shared limit, #1791).
+            openOfferCount: openListingCountExpr(qualifiedColumn(usersTable.id), withoutAuctions),
           })
           .from(usersTable)
           .leftJoin(
@@ -570,10 +691,14 @@ export async function createTradeOffer(input: {
       { idempotent: true },
     ),
   });
-  const { rows: checkRows, withoutQuantity } = await withTradeWantableColumnFallback(
-    (withoutWantable) => wantedQuantity === 1
-      ? withTradeQuantityColumnFallback((withoutQuantity) => runChecks(withoutQuantity, withoutWantable))
-      : runChecks(false, withoutWantable),
+  const { rows: checkRows, withoutQuantity } = await withTradeAuctionSchemaFallback(
+    (withoutAuctions) => withTradeWantableColumnFallback(
+      (withoutWantable) => wantedQuantity === 1
+        ? withTradeQuantityColumnFallback(
+          (withoutQuantity) => runChecks(withoutQuantity, withoutWantable, withoutAuctions),
+        )
+        : runChecks(false, withoutWantable, withoutAuctions),
+    ),
   );
   const check = checkRows[0];
   if (!check) {
@@ -695,6 +820,19 @@ export async function createTradeOffer(input: {
     if (!offer) throw new Error("Trade offer INSERT returned no row");
     return { kind: "ok", offer, idempotentReplay: false };
   } catch (error) {
+    // #1791: the trade_offers BEFORE INSERT trigger serializes on the copy's
+    // user_cards row and rejects a copy that an auction listing / active bid
+    // took between the check above and this INSERT (TRADE_CARD_LOCKED), or
+    // that a concurrent auction settlement moved to another user
+    // (TRADE_CARD_NOT_OWNED). Both are the same answers as the precheck.
+    // withDbRetry does not retry P0001, so the INSERT ran exactly once. The
+    // existing 23505 handling below is unchanged.
+    if (isTradeOfferTriggerError(error, "TRADE_CARD_LOCKED")) {
+      return { kind: "error", code: "TRADE_CARD_ALREADY_LISTED" };
+    }
+    if (isTradeOfferTriggerError(error, "TRADE_CARD_NOT_OWNED")) {
+      return { kind: "error", code: "TRADE_CARD_NOT_OWNED" };
+    }
     if (!isPgUniqueViolationError(error)) throw error;
 
     // Rare conflict path: kept as separate follow-up reads (not part of the
@@ -715,11 +853,7 @@ export async function createTradeOffer(input: {
   }
 }
 
-function tradeEnabledGate(
-  streamerColumn:
-    | typeof tradeOffersTable.offered_streamer_id
-    | typeof tradeOffersTable.wanted_streamer_id,
-) {
+export function tradeEnabledGate(streamerColumn: AnyColumn) {
   return sql<boolean>`EXISTS (
     SELECT 1
     FROM ${streamersTable} AS trade_gate
@@ -728,11 +862,7 @@ function tradeEnabledGate(
   )`;
 }
 
-function crossEnabledGate(
-  streamerColumn:
-    | typeof tradeOffersTable.offered_streamer_id
-    | typeof tradeOffersTable.wanted_streamer_id,
-) {
+export function crossEnabledGate(streamerColumn: AnyColumn) {
   return sql<boolean>`EXISTS (
     SELECT 1
     FROM ${streamersTable} AS cross_gate
@@ -853,22 +983,27 @@ function toUserSummary(row: JoinedUser): TradeUserSummary | null {
  * id, which a correlated sub-select may use from the enclosing query. The
  * inner aliases are literal; the result is identical to the previous form.
  */
-function acceptStateFor(viewerUserId: SQL, withoutQuantity: boolean) {
+function acceptStateFor(viewerUserId: SQL, withoutQuantity: boolean, withoutAuctions: boolean) {
   const wantedCardId = qualifiedColumn(tradeOffersTable.wanted_card_id);
   const wantedQuantity = withoutQuantity
     ? sql`1`
     : qualifiedColumn(tradeOffersTable.wanted_quantity);
+  // #1791: `free` excludes every locked copy (open offer, auction listing or
+  // active bid) with the same trade_copy_locked() the accept RPC now uses to
+  // pick the payment copies, so "all_listed" also covers copies held by the
+  // viewer's auction listings and bids. The former predicate only looked at
+  // the viewer's own open offers. A lingering open offer left by a previous
+  // owner would still lock the copy through trade_copy_locked() (which keys on
+  // the user_card, not the seller), so the free count stays correct even then;
+  // such rows are a data-hygiene problem (the new owner cannot cancel them)
+  // rather than an accept-correctness problem. accept and settle move only
+  // unlisted copies in the normal path. Deploy window: copyLockedExpr falls back to
+  // "listed in an open offer".
   const counts = sql`(
     SELECT
       count(*) AS owned,
       count(*) FILTER (
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM ${tradeOffersTable} AS active_listing
-          WHERE active_listing.offered_user_card_id = accept_owned.id
-            AND active_listing.status = 'open'
-            AND active_listing.offerer_user_id = ${viewerUserId}
-        )
+        WHERE NOT ${copyLockedExpr(sql`accept_owned.id`, withoutAuctions)}
       ) AS free
     FROM ${userCardsTable} AS accept_owned
     WHERE accept_owned.user_id = ${viewerUserId}
@@ -1045,7 +1180,10 @@ export async function listTradeOffers(input: {
   // the card back brings the offer back. The condition is added inside the
   // fallback closure because its SQL depends on the deploy-window shape.
   const offset = (input.page - 1) * TRADE_PAGE_SIZE;
-  const rows: OfferListRow[] = await withTradeWantableColumnFallback((withoutWantable) =>
+  // #1791: canAccept reads the copy locks (acceptStateFor), hence the
+  // outermost auction-schema fallback (only reachable for a logged-in viewer).
+  const rows: OfferListRow[] = await withTradeAuctionSchemaFallback((withoutAuctions) =>
+    withTradeWantableColumnFallback((withoutWantable) =>
     withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
     async () => {
       const { db } = await getDb();
@@ -1053,7 +1191,7 @@ export async function listTradeOffers(input: {
         .select({
           ...offerListFields(viewerUserId, withoutQuantity),
           acceptState: viewerUserId
-            ? acceptStateFor(viewerUserId, withoutQuantity)
+            ? acceptStateFor(viewerUserId, withoutQuantity, withoutAuctions)
             : sql<TradeCanAccept | null>`NULL`,
         })
         .from(tradeOffersTable)
@@ -1068,7 +1206,7 @@ export async function listTradeOffers(input: {
     },
     "trade:list-open",
     { idempotent: true },
-  )));
+  ))));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
@@ -1222,7 +1360,9 @@ export type TradeAcceptRpcError =
   // back). Nothing was transferred.
   | "WANTED_CARD_NOT_WANTABLE";
 
-const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
+// テストが旧アプリ（ロールバック時）の既知コード集合との差分を固定できるよう公開する
+// （#1801。実行コードはこの Set を参照しない追加の経路を作らないこと）。
+export const TRADE_ACCEPT_RPC_ERRORS = new Set<TradeAcceptRpcError>([
   "TRADE_OFFER_NOT_FOUND",
   "OFFER_NOT_OPEN",
   "SELF_ACCEPT_FORBIDDEN",
@@ -1336,7 +1476,7 @@ async function callAcceptTradeOfferRpc(input: {
   return result;
 }
 
-function waitForTradeRetry(ms: number): Promise<void> {
+export function waitForTradeRetry(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -1620,7 +1760,11 @@ export type TradeableOwnedCopy = {
   rarity: string;
   imageUrl: string | null;
   obtainedAt: string | null;
-  /** This exact copy is already in an open offer (cannot be listed again). */
+  /**
+   * This exact copy is locked (#1791): listed in an open offer, an auction
+   * listing or an active bid, so it cannot be listed or bid again. The field
+   * name predates auctions and is kept for the listing UI.
+   */
   isListed: boolean;
   /** Number of copies of the same card the viewer owns (listed included). */
   ownedCount: number;
@@ -1640,7 +1784,8 @@ export async function listTradeableOwnedCopies(
   // rows, the previous early return).
   const ownerUserId = viewerUserIdOf(twitchUserId);
 
-  const rows = await withDbRetry(
+  // #1791: isListed reads the copy locks, hence the auction-schema fallback.
+  const rows = await withTradeAuctionSchemaFallback((withoutAuctions) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -1651,15 +1796,9 @@ export async function listTradeableOwnedCopies(
           rarity: cardsTable.rarity,
           imageUrl: cardsTable.image_url,
           obtainedAt: userCardsTable.obtained_at,
-          // Same predicate as the create-time ALREADY_LISTED check (the
-          // partial UNIQUE index is on offered_user_card_id regardless of
-          // the offerer).
-          isListed: sql<boolean>`EXISTS (
-            SELECT 1
-            FROM ${tradeOffersTable} AS copy_listing
-            WHERE copy_listing.offered_user_card_id = ${qualifiedColumn(userCardsTable.id)}
-              AND copy_listing.status = 'open'
-          )`,
+          // Same predicate as the create-time ALREADY_LISTED check
+          // (trade_copy_locked; see copyLockedExpr).
+          isListed: copyLockedExpr(qualifiedColumn(userCardsTable.id), withoutAuctions),
           // Window count runs after WHERE, i.e. over this viewer's copies of
           // this channel's active cards. count(*) is bigint → string in
           // postgres.js, hence mapWith(Number).
@@ -1685,7 +1824,7 @@ export async function listTradeableOwnedCopies(
     },
     "trade:tradeable-owned-copies",
     { idempotent: true },
-  );
+  ));
 
   return rows.map((row) => ({
     userCardId: row.userCardId,

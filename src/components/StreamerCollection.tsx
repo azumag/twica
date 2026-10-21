@@ -16,6 +16,9 @@ export interface StreamerCollectionCard extends Card {
   isOwned: boolean;
   collectionNumber?: number;
   isCompletionReward?: boolean;
+  // Issue #1782: 被りカードの表示段階（0 = 表示しない）。
+  // Duplicate-card display tier resolved from the streamer's thresholds.
+  duplicateTier?: number;
 }
 
 interface StreamerCollectionProps {
@@ -98,6 +101,8 @@ export default async function StreamerCollection({
     unownedCard: t("unownedCard"),
     inactiveStatus: tCardManager("status.paused"),
     cardNumberTemplate: t("cardNumber"),
+    // Issue #1782: 被りカードの表示段階バッジ。{tier} は段階番号で置換する。
+    duplicateTierBadgeTemplate: t("duplicateTier.badge", { tier: "{tier}" }),
     unownedStatus: t("unownedStatus"),
     sortLabel: t("sort.label"),
     sortByNumber: t("sort.number"),
@@ -156,7 +161,9 @@ export default async function StreamerCollection({
         </div>
 
         {/* Stats */}
-        <Stats stats={stats} />
+        {/* #1783: 配信者がカスタムレアリティごとに設定した表示スタイル。列が未デプロイの
+            環境では undefined になり、各所で従来色へフォールバックする。 */}
+        <Stats stats={stats} rarityStyles={streamer.rarity_styles} />
 
         {packs.length > 0 ? (
           // Issue #557: 名前付きパックがある場合はパック絞り込みUI。
@@ -170,6 +177,7 @@ export default async function StreamerCollection({
             overallCompletionHistory={completionHistory}
             packs={packs}
             gridTranslations={gridTranslations}
+            rarityStyles={streamer.rarity_styles}
             albumGridSizes={albumGridSizes}
             albumDefaultView={albumDefaultView}
           />
@@ -197,6 +205,7 @@ export default async function StreamerCollection({
                 translations={gridTranslations}
                 albumGridSizes={albumGridSizes}
                 albumDefaultView={albumDefaultView}
+                rarityStyles={streamer.rarity_styles}
               />
             )}
           </>

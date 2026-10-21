@@ -336,9 +336,13 @@ describe("trade service (#723)", () => {
     expect(render(joins[3].on).sql).toContain('visible_owned.user_id = "users"."id"');
 
     const fields = call.fields as Record<string, unknown>;
-    expect(render(fields.offeredCopyListed).sql).toContain("open_listing.status = 'open'");
+    // #1791: "listed" is the DB's copy-lock rule (open offer, auction
+    // listing or active bid) and the limit counts auction listings too.
+    expect(render(fields.offeredCopyListed).sql).toContain("public.trade_copy_locked(");
     expect(render(fields.offeredCopyListed).params).toEqual([OFFER.offered_user_card_id]);
     expect(render(fields.openOfferCount).sql).toContain('open_offer.offerer_user_id = "users"."id"');
+    expect(render(fields.openOfferCount).sql).toContain('open_auction.seller_user_id = "users"."id"');
+    expect(render(fields.openOfferCount).sql).toContain("public.trade_auction_holds_cards(open_auction.id)");
   });
 
   it.each([
@@ -652,17 +656,14 @@ describe("listTradeOffers visibility (#715 PR-C)", () => {
     expect(state.sql).not.toContain("accept_free");
     expect(state.sql.match(/FROM "user_cards" AS accept_owned/g)).toHaveLength(1);
     expect(state.sql).toContain("count(*) FILTER");
-    // A bare "id" would bind to active_listing.id (trade_offers.id).
-    expect(state.sql).toContain("active_listing.offered_user_card_id = accept_owned.id");
-    expect(state.sql).toContain("active_listing.status = 'open'");
-    // Same exclusion rule as the accept RPC: only the viewer's own open
-    // offers make a copy count as listed (Refs #1749 item 3).
-    expect(state.sql).toContain("active_listing.offerer_user_id = ");
-    // The viewer id is bound once per place that filters on it: the FILTERed
-    // active_listing.offerer_user_id and accept_owned.user_id. Before #1792
-    // the owned count was a separate scalar subquery used by two CASE
-    // branches, so it was bound (and evaluated) more often.
-    expect(state.params).toEqual(["viewer-2", "viewer-2"]);
+    // #1791: same exclusion rule as the accept RPC, which now picks payment
+    // copies with NOT trade_copy_locked(id) (open offer, auction listing or
+    // active bid). Refs #1749 item 3 for the original "own open offers" rule.
+    expect(state.sql).toContain("NOT public.trade_copy_locked(accept_owned.id)");
+    // The viewer id is bound once: accept_owned.user_id. Before #1792 the
+    // owned count was a separate scalar subquery used by two CASE branches,
+    // so it was bound (and evaluated) more often.
+    expect(state.params).toEqual(["viewer-2"]);
     // The CASE reads the single pair of counts by name instead of repeating
     // a count(*) subquery per branch.
     expect(state.sql.match(/count\(\*\)/g)).toHaveLength(2);
@@ -1101,8 +1102,9 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
       expect(where.sql).toContain('"cards"."is_active" = $');
       expect(where.params).toEqual(["viewer-2", STREAMER_ID, true]);
       const fields = call.fields as Record<string, unknown>;
+      // #1791: the DB copy-lock rule on the outer row (qualified id).
       expect(render(fields.isListed).sql).toContain(
-        'copy_listing.offered_user_card_id = "user_cards"."id"',
+        'public.trade_copy_locked("user_cards"."id")',
       );
       expect(render(fields.ownedCount).sql).toContain("OVER (PARTITION BY");
     });
@@ -1763,6 +1765,193 @@ describe("trade wantable restriction (#1790)", () => {
       await expect(listWantableCards(null, STREAMER_ID)).resolves.toHaveLength(1);
       expect(pg.selectCalls).toHaveLength(2);
       expect(render(pg.selectCalls[1].where).sql).not.toContain("trade_wantable");
+    });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #1791: copy locks shared with auctions, and the deploy window of
+// 20261018030000_trade_auctions.sql. The lock rule itself (trade_copy_locked,
+// trigger, accept) is proven on real PostgreSQL by
+// tests/integration/trade-auction-pg.test.ts.
+// -----------------------------------------------------------------------------
+describe("trade copy locks / auction deploy window (#1791)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** What PostgreSQL raises while 20261018030000 is not applied yet. */
+  const MISSING_LOCK_FUNCTION = {
+    code: "42883",
+    message: "function public.trade_copy_locked(uuid) does not exist",
+  };
+  const MISSING_AUCTION_TABLE = {
+    code: "42P01",
+    message: 'relation "public.trade_auctions" does not exist',
+  };
+  /** Drizzle wraps the driver error; the SQL text mentions every name. */
+  function drizzleWrapped(cause: Record<string, unknown>) {
+    return Object.assign(
+      new Error('Failed query: select public.trade_copy_locked($1) ... from "public"."trade_auctions"'),
+      { cause },
+    );
+  }
+  const createInput = {
+    twitchUserId: "viewer-1",
+    offeredUserCardId: OFFER.offered_user_card_id,
+    wantedCardId: OFFER.wanted_card_id!,
+    requestId: OFFER.request_id!,
+  };
+
+  describe("isTradeAuctionSchemaMissingError", () => {
+    it.each([
+      ["missing lock function (42883)", MISSING_LOCK_FUNCTION, true],
+      ["missing auction table (42P01)", MISSING_AUCTION_TABLE, true],
+      ["missing RPC", { code: "42883", message: "function public.place_trade_auction_bid(text, uuid, uuid, smallint, uuid) does not exist" }, true],
+      ["another missing table", { code: "42P01", message: 'relation "public.something_else" does not exist' }, false],
+      ["another missing function", { code: "42883", message: "function public.accept_trade_offer(text, uuid, uuid, smallint) does not exist" }, false],
+      ["auction name with another SQLSTATE", { code: "42703", message: "column trade_auctions.foo does not exist" }, false],
+    ])("%s → %s", async (_label, cause, expected) => {
+      const { isTradeAuctionSchemaMissingError } = await import("@/lib/trade");
+      expect(isTradeAuctionSchemaMissingError(drizzleWrapped(cause))).toBe(expected);
+      expect(isTradeAuctionSchemaMissingError(cause)).toBe(expected);
+    });
+
+    it("does not match when the code and the name are on different layers", async () => {
+      const { isTradeAuctionSchemaMissingError } = await import("@/lib/trade");
+      // The top-level SQL text names the auction objects, but the real cause
+      // is an unrelated missing table.
+      expect(isTradeAuctionSchemaMissingError(drizzleWrapped({
+        code: "42P01",
+        message: 'relation "public.unrelated" does not exist',
+      }))).toBe(false);
+    });
+  });
+
+  describe("createTradeOffer", () => {
+    it("deploy window: retries the check with the pre-auction lock rule and the offers-only limit", async () => {
+      const pg = createDbMock({
+        selects: [{ error: drizzleWrapped(MISSING_LOCK_FUNCTION) }, { rows: [checkRow()] }],
+        inserts: [{ rows: [OFFER] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toMatchObject({ kind: "ok" });
+      expect(pg.selectCalls).toHaveLength(2);
+      const first = pg.selectCalls[0].fields as Record<string, unknown>;
+      const second = pg.selectCalls[1].fields as Record<string, unknown>;
+      expect(render(first.offeredCopyListed).sql).toContain("trade_copy_locked");
+      expect(render(second.offeredCopyListed).sql).not.toContain("trade_copy_locked");
+      expect(render(second.offeredCopyListed).sql).toContain("open_listing.status = 'open'");
+      expect(render(second.openOfferCount).sql).not.toContain("trade_auctions");
+    });
+
+    it("deploy window: a missing table converges the same way", async () => {
+      const pg = createDbMock({
+        selects: [{ error: drizzleWrapped(MISSING_AUCTION_TABLE) }, { rows: [checkRow()] }],
+        inserts: [{ rows: [OFFER] }],
+      });
+      primeDb(pg);
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toMatchObject({ kind: "ok" });
+      expect(pg.selectCalls).toHaveLength(2);
+    });
+
+    it("rethrows an unrelated missing relation without retrying", async () => {
+      const unrelated = drizzleWrapped({ code: "42P01", message: 'relation "public.unrelated" does not exist' });
+      const pg = createDbMock({ selects: [{ error: unrelated }] });
+      primeDb(pg);
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).rejects.toBe(unrelated);
+      expect(pg.selectCalls).toHaveLength(1);
+    });
+
+    it("rejects a copy locked by an auction/bid (precheck) without INSERT", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow({ offeredCopyListed: true })] }] });
+      primeDb(pg);
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput))
+        .resolves.toEqual({ kind: "error", code: "TRADE_CARD_ALREADY_LISTED" });
+      expect(pg.insertCalls).toHaveLength(0);
+    });
+
+    it("counts auction listings against the shared limit", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow({ openOfferCount: 10 })] }] });
+      primeDb(pg);
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput))
+        .resolves.toEqual({ kind: "error", code: "TRADE_OFFER_LIMIT" });
+    });
+
+    it("maps the trigger's TRADE_CARD_LOCKED (P0001) to TRADE_CARD_ALREADY_LISTED without follow-up reads", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [checkRow()] }],
+        inserts: [{ error: drizzleWrapped({ code: "P0001", message: "TRADE_CARD_LOCKED" }) }],
+      });
+      primeDb(pg);
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput))
+        .resolves.toEqual({ kind: "error", code: "TRADE_CARD_ALREADY_LISTED" });
+      // No 23505 recovery lookups.
+      expect(pg.selectCalls).toHaveLength(1);
+    });
+
+    it("maps the trigger's TRADE_CARD_NOT_OWNED (P0001) to TRADE_CARD_NOT_OWNED", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [checkRow()] }],
+        inserts: [{ error: { code: "P0001", message: "TRADE_CARD_NOT_OWNED" } }],
+      });
+      primeDb(pg);
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput))
+        .resolves.toEqual({ kind: "error", code: "TRADE_CARD_NOT_OWNED" });
+    });
+
+    it("rethrows other P0001 errors", async () => {
+      const other = { code: "P0001", message: "SOMETHING_ELSE" };
+      const pg = createDbMock({ selects: [{ rows: [checkRow()] }], inserts: [{ error: other }] });
+      primeDb(pg);
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).rejects.toBe(other);
+    });
+
+    it("keeps the existing 23505 replay recovery", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [checkRow()] }, { rows: [OFFER] }],
+        inserts: [{ error: { code: "23505", constraint_name: "idx_trade_offers_offerer_request" } }],
+      });
+      primeDb(pg);
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput))
+        .resolves.toEqual({ kind: "ok", offer: OFFER, idempotentReplay: true });
+    });
+  });
+
+  describe("listTradeOffers / listTradeableOwnedCopies", () => {
+    it("listTradeOffers: deploy window retries canAccept with the pre-auction rule", async () => {
+      const pg = createDbMock({
+        selects: [{ error: drizzleWrapped(MISSING_LOCK_FUNCTION) }, { rows: [] }],
+      });
+      primeDb(pg);
+      const { listTradeOffers } = await import("@/lib/trade");
+      await listTradeOffers({ streamerId: STREAMER_ID, scope: "in_channel", page: 1, twitchUserId: "viewer-2" });
+      expect(pg.selectCalls).toHaveLength(2);
+      const state = render((pg.selectCalls[1].fields as Record<string, unknown>).acceptState);
+      expect(state.sql).not.toContain("trade_copy_locked");
+      expect(state.sql).toContain("open_listing.offered_user_card_id = accept_owned.id");
+    });
+
+    it("listTradeableOwnedCopies: deploy window retries isListed with the pre-auction rule", async () => {
+      const pg = createDbMock({
+        selects: [{ error: drizzleWrapped(MISSING_AUCTION_TABLE) }, { rows: [] }],
+      });
+      primeDb(pg);
+      const { listTradeableOwnedCopies } = await import("@/lib/trade");
+      await expect(listTradeableOwnedCopies("viewer-2", STREAMER_ID)).resolves.toEqual([]);
+      expect(pg.selectCalls).toHaveLength(2);
+      expect(render((pg.selectCalls[1].fields as Record<string, unknown>).isListed).sql)
+        .toContain('open_listing.offered_user_card_id = "user_cards"."id"');
     });
   });
 });
