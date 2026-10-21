@@ -862,27 +862,51 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
 
 /**
- * Host ヘッダから hostname 部だけを取り出す。
+ * Host ヘッダから hostname 部だけを取り出す。パースできない場合は `null` を返す
+ * (呼び出し側は「ヘッダ未送信」と区別できないため、不正な Host は拒否に倒す)。
+ *
  * - `localhost:5173` → `localhost`
  * - `[::1]:5173`     → `::1` (IPv6 はブラケット記法なので単純な `:` split では壊れる)
- * ヘッダ未送信 (HTTP/1.0 やテストの直接呼び出し) は `null` を返し、呼び出し側で許可する。
+ *
+ * IPv6 ブラケット記法は **`]` の直後が文字列末尾か `:` でなければ不正**とする。
+ * ここを検証しないと `[::1].evil.example` のように `]` 以降へ任意の攻撃者
+ * ドメインを連結でき、hostname が `::1` と解釈されて DNS rebinding 対策が破れる
+ * (`evil.example` は正しく拒否されるのに `[::1].evil.example` だけが通る、
+ * という形でブラケット側の抜けは見つけにくい)。
  */
 function parseHostHeader(host: string | undefined): string | null {
   if (!host) return null
   const trimmed = host.trim()
   if (!trimmed) return null
+
   if (trimmed.startsWith('[')) {
     const end = trimmed.indexOf(']')
-    if (end === -1) return trimmed.toLowerCase()
-    return trimmed.slice(1, end).toLowerCase()
+    if (end === -1) return null
+    const after = trimmed.slice(end + 1)
+    // 許可するのは `[::1]` または `[::1]:5173` の形のみ。`[::1]:5173:80` のような
+    // 余分な `:` は不正として弾く。
+    if (after !== '' && !/^:\d+$/.test(after)) return null
+    const hostname = trimmed.slice(1, end)
+    return hostname ? hostname.toLowerCase() : null
   }
-  return trimmed.split(':')[0].toLowerCase()
+
+  const hostname = trimmed.split(':')[0]
+  if (!hostname) return null
+  // 非ブラケット側も `localhost:5173:80` のような余分な `:` を弾く。
+  // ポートは任意の数値1つだけを許可する。
+  const port = trimmed.slice(hostname.length)
+  if (port !== '' && !/^:\d+$/.test(port)) return null
+  return hostname.toLowerCase()
 }
 
 /** Host が loopback を指すか。未送信は後方互換のため許可する。 */
 export function isAllowedAdminHost(host: string | undefined): boolean {
+  // ヘッダ未送信 (HTTP/1.0 やサーバー間の直接呼び出し) は後方互換のため許可する。
+  // 一方、送信されていてパースできない不正な Host は拒否する。両者を区別しないと
+  // `[::1].evil.example` のような不正形が「未送信」と同じ扱いで通ってしまう。
+  if (!host || !host.trim()) return true
   const hostname = parseHostHeader(host)
-  if (hostname === null) return true
+  if (hostname === null) return false
   return LOOPBACK_HOSTNAMES.has(hostname)
 }
 

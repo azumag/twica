@@ -1337,6 +1337,14 @@ describe('localAdminApiPlugin: CSRF/Origin/Host/Content-Type保護 (#1894)', () 
     ['DNS rebinding (外部Host)', 'evil.example'],
     ['外部Host+ポート', 'evil.example:5173'],
     ['Hostにユーザー情報を埋めた不正形', 'localhost@evil.example'],
+    // IPv6ブラケット記法の `]` 以降に攻撃者ドメインを連結する形。ここを検証しないと
+    // hostname が `::1` と解釈されて loopback 扱いになり、DNS rebinding 対策が破れる。
+    ['ブラケット閉じ後の攻撃者ドメイン', '[::1].evil.example'],
+    ['ブラケット閉じ直後の攻撃者ドメイン', '[::1]evil.example'],
+    ['ブラケット後の余分なポート', '[::1]:5173:80'],
+    ['非ブラケットの余分なポート', 'localhost:5173:80'],
+    ['ブラケット閉じ欠落', '[::1'],
+    ['空ブラケット', '[]'],
   ])('%sのHostは403で拒否する', async (_case, host) => {
     const calls = await setupNoDb()
     const handler = await captureAdminApiHandler(PG_ONLY_ENV)

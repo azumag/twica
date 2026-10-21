@@ -199,26 +199,34 @@ describe('adminApi: 状態変更リクエストのCSRFトークン (#1894)', () 
     return fetchMock
   }
 
-  it.each(['POST', 'PUT', 'PATCH', 'DELETE'] as const)(
+  // 実在する状態変更エンドポイントをメソッド別に列挙する。
+  // PUT を使うエンドポイントは現状存在しないためケースに含めない
+  // (以前は PUT 行で POST を呼んでおり、テスト名と実態が食い違っていた)。
+  // request() は method 文字列でトークン要否を判定するため、PUT を追加した際は
+  // このテーブルに実エンドポイントとともに足すこと。
+  it.each([
+    ['POST', (api: Awaited<ReturnType<typeof importFreshAdminApi>>['adminApi']) =>
+      api.createSupportCode({ code_hash: 'h', plan_type: 'support', memo: null })],
+    ['PATCH', (api: Awaited<ReturnType<typeof importFreshAdminApi>>['adminApi']) =>
+      api.updateSupportCodeStatus('id1', 'active')],
+    ['DELETE', (api: Awaited<ReturnType<typeof importFreshAdminApi>>['adminApi']) =>
+      api.deleteAnnouncement('a1')],
+  ] as const)(
     '%s はCSRFトークンをヘッダに添える',
-    async (method) => {
+    async (method, call) => {
       const { adminApi: freshApi } = await importFreshAdminApi()
       const fetchMock = stubFetchWithToken()
 
-      // 各メソッドを使う実在のAPIを呼ぶ(生のmethodを渡す口が無いため)
-      if (method === 'POST') await freshApi.createSupportCode({ code_hash: 'h', plan_type: 'support', memo: null })
-      if (method === 'PATCH') await freshApi.updateSupportCodeStatus('id1', 'active')
-      if (method === 'DELETE') await freshApi.deleteAnnouncement('a1')
-      if (method === 'PUT') {
-        // PUTを使うエンドポイントは現状無いため、POSTで代表させる
-        await freshApi.createAnnouncement({ title: 't', body: 'b', severity: 'info', is_published: true } as never)
-      }
+      await call(freshApi)
 
       const requestCall = fetchMock.mock.calls.find(
         ([input]) => !String(input).endsWith('/csrf-token')
       )
       expect(requestCall).toBeDefined()
-      const headers = (requestCall![1] as RequestInit).headers as Record<string, string>
+      const init = requestCall![1] as RequestInit
+      // 呼んだメソッドが実際にそのメソッドであること(取り違え防止)
+      expect((init.method || 'GET').toUpperCase()).toBe(method)
+      const headers = init.headers as Record<string, string>
       expect(headers[CSRF_HEADER]).toBe('test-token')
     }
   )
