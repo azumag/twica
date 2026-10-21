@@ -101,19 +101,23 @@ enable its sandbox. twica's overlay does not use `window.obsstudio`.
 | next | 16.2.12 | 16.4.2 | GHSA-p293-qw3h-jr36, GHSA-2xp9-vwfh-vxw4, GHSA-vcvr-r3jv-pc5j, GHSA-4jqv-mc3x-m676, GHSA-39w2-rjm5-chcv, GHSA-f87g-xv8r-7p7x, GHSA-mcj8-r9mp-w47p, GHSA-cjq9-62q9-8jv4 |
 | next-intl | 4.7.0 | 4.14.9 | GHSA-8f24-v5vv-gm5j, GHSA-4c35-wcg5-mm9h |
 | sharp | 0.34.5 | 0.35.5 | GHSA-f88m-g3jw-g9cj, GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w |
-| postcss | 8.4.31 | 8.5.23 | GHSA-qx2v-qp2m-jg93, GHSA-6g55-p6wh-862q, GHSA-fxqj-rqcc-2cmp, GHSA-r28c-9q8g-f849 |
+| postcss | 8.5.6 (top-level) / 8.4.31 (next/node_modules) | 8.5.23 | GHSA-qx2v-qp2m-jg93, GHSA-6g55-p6wh-862q, GHSA-fxqj-rqcc-2cmp, GHSA-r28c-9q8g-f849 |
+
+Note: the previous "8.4.31 -> 8.5.23" shorthand was inaccurate. The top-level postcss moved 8.5.6 -> 8.5.23, and the bundled `next/node_modules/postcss@8.4.31` was removed entirely (so 8.4.31 no longer resolves).
 | nanoid | 3.3.11 | 3.3.20 | GHSA-28wg-ghj8-5hjv, GHSA-2v37-7h3g-55p8, GHSA-xwg4-73v4-xw9w |
 | source-map-js | 1.2.1 | 1.2.2 | GHSA-68fv-2mgg-jv7q |
 | picomatch | 4.0.3 | 4.0.7 | GHSA-3v7f-55p6-f55p, GHSA-c2c7-rcm5-vvqj |
 
 **Applicability assessment (production deps only):**
 
-- Next.js Image Optimization SSRF (GHSA-cjq9-62q9-8jv4): remotePatterns allows any HTTPS host, but the majority of `<Image>` usages set `unoptimized`. The optimizer path is only reached for the few images without `unoptimized`. API-level validation (jpg/png extension) remains in place. remotePatterns minimization is deferred to a follow-up to avoid breaking external card image loading.
-- Next.js AVIF RCE (GHSA-2xp9-vwfh-vxw4): sharp/libheif AVIF optimization path. Not confirmed reachable in OpenNext production deployment; sharp updated regardless.
-- Next.js Windows RCE (GHSA-p293-qw3h-jr36): Windows-host condition; not applicable to Cloudflare Workers.
-- Next.js ImageResponse (GHSA-vcvr-r3jv-pc5j): no `next/og` / `ImageResponse` usage found in src/.
-- next-intl open redirect / prototype pollution (GHSA-8f24-v5vv-gm5j, GHSA-4c35-wcg5-mm9h): target middleware/precompile settings and attacker-controlled catalog keys not found in current configuration.
-- Remaining transitive dev/test dependencies are tracked separately.
+| Advisory / Package | 依存経路 | 実行環境 | 呼び出し | 攻撃者制御入力 |
+|---|---|---|---|---|
+| Next.js Image Optimization SSRF (GHSA-cjq9-62q9-8jv4) | next (Image Optimization) | OpenNext / Cloudflare Workers | `<Image>` のうち `unoptimized` 未設定の少数経路のみ。remotePatterns は任意 HTTPS | 任意 HTTPS host を許可するが、主要画像は unoptimized。API レベルの jpg/png 検証は維持。remotePatterns 最小化は follow-up #1909 |
+| Next.js AVIF RCE (GHSA-2xp9-vwfh-vxw4) | next → sharp/libheif (AVIF 最適化) | OpenNext 本番配備での到達は未確認 | AVIF 最適化経路 | sharp 更新済み (到達性未確認) |
+| Next.js Windows RCE (GHSA-p293-qw3h-jr36) | next | Windows ホスト条件 | 該当なし | Cloudflare Workers には非該当 |
+| Next.js ImageResponse (GHSA-vcvr-r3jv-pc5j) | next/og / ImageResponse | src/ | `next/og` / `ImageResponse` の使用なし | 該当なし |
+| next-intl (GHSA-8f24-v5vv-gm5j, GHSA-4c35-wcg5-mm9h) | next-intl middleware/precompile | 現行構成 | 該当 middleware/precompile 設定・攻撃者制御カタログは未発見 | 該当なし |
+| Remaining transitive dev/test dependencies | dev/test graph (105 件) | CI/test 環境 | — | #1899 で追跡 
 
 **Verification:**
 - `npm audit --omit=dev`: 0 vulnerabilities
@@ -121,6 +125,8 @@ enable its sandbox. twica's overlay does not use `window.obsstudio`.
 - `npm run test:unit`: 5671 passed
 - `npm run build`: pass
 - `npm run workers:build`: pass (OpenNext bundle generated)
+
+**Change scope (lockfile):** 157 changed entries (production graph 78, dev/test graph 105), 22 added, 5 removed. Includes an unannounced major bump in the production graph: `intl-messageformat 10.7.18 -> 11.2.15` (transitive via next-intl 4.7.0 -> 4.14.9). Full diff recording and Preview i18n verification are tracked in follow-up issue #1909.
 
 ### Security Best Practices
 
