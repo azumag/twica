@@ -33,6 +33,7 @@ process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'test-client-id'
 process.env.TWITCH_EVENTSUB_SECRET = 'test-eventsub-secret'
 process.env.CSRF_SIGNING_KEY = 'test-csrf-signing-key'
 process.env.CSRF_TOKEN_SALT = 'test-csrf-token-salt-at-least-32-characters-long'
+process.env.SESSION_COOKIE_SECRET = 'test-session-cookie-secret-at-least-32-chars-long'
 process.env.BLOB_READ_WRITE_TOKEN = 'test-blob-read-write-token'
 process.env.CSRF_ALLOW_ALL_LOCAL = 'false'
 

@@ -111,6 +111,10 @@ export function parseSession(raw: string): SessionPayload {
 export async function signSession(payload: string): Promise<string> {
   const secret = process.env.SESSION_COOKIE_SECRET
   if (!secret) {
+    // production/preview では fail-closed: 鍵未設定時の署名省略は認証バイパスになる。
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('SESSION_COOKIE_SECRET is required in production')
+    }
     logger.warn('[Session] SESSION_COOKIE_SECRET not set - session cookie is unsigned. Set this env var to enable tamper protection.')
     return payload
   }
@@ -133,6 +137,11 @@ export async function verifySession(
   const secret = process.env.SESSION_COOKIE_SECRET
 
   if (!secret) {
+    // production/preview では fail-closed: 鍵未設定時は全 Cookie を拒否する。
+    if (process.env.NODE_ENV === 'production') {
+      logger.warn('[Session] SESSION_COOKIE_SECRET not set - rejecting session cookie in production.')
+      throw new Error('SESSION_COOKIE_SECRET is required in production')
+    }
     if (split) {
       logger.warn('[Session] SESSION_COOKIE_SECRET not set - rejecting signed session cookie without verification.')
       throw new Error('Session cookie cannot be verified without SESSION_COOKIE_SECRET')
