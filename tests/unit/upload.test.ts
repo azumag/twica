@@ -6,7 +6,9 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { getFileTypeFromBuffer } from '@/lib/file-utils'
 import { validateCSRFToken } from '@/lib/csrf'
-import { uploadToR2WithRetry } from '@/lib/r2-client'
+import { uploadToR2WithRetry, deleteFromR2 } from '@/lib/r2-client'
+import { recordBlobFile } from '@/lib/storage-db'
+import { getStorageUsage } from '@/lib/storage-usage'
 
 // Mock dependencies
 vi.mock('next/headers')
@@ -23,6 +25,7 @@ vi.mock('@/lib/csrf')
 // R2クライアントをモックしてアップロード機能をテスト
 vi.mock('@/lib/r2-client', () => ({
   uploadToR2WithRetry: vi.fn(),
+  deleteFromR2: vi.fn(),
 }))
 // Mock storage-db to avoid unmocked supabase/admin dependency
 // ストレージDBをモックしてsupabase/adminの未モック依存を回避
@@ -46,6 +49,9 @@ const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockUploadToR2WithRetry = vi.mocked(uploadToR2WithRetry)
+const mockDeleteFromR2 = vi.mocked(deleteFromR2)
+const mockRecordBlobFile = vi.mocked(recordBlobFile)
+const mockGetStorageUsage = vi.mocked(getStorageUsage)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 
 describe('POST /api/upload', () => {
@@ -490,6 +496,137 @@ describe('POST /api/upload', () => {
       expect(response.status).toBe(500)
       const body = await response.json()
       expect(body.error).toBe('Internal server error')
+    })
+  })
+
+  describe('容量制限・台帳整合 (#1896)', () => {
+    // clearAllMocks 後に上限チェックを通過する正常値を確実に張り直す
+    // （clearAllMocks は実装を消さないため、前テストの mockRejectedValue 漏洩も防ぐ）
+    beforeEach(() => {
+      mockGetStorageUsage.mockResolvedValue({
+        userUsage: 0,
+        globalUsage: 0,
+        userLimitReached: false,
+        globalLimitReached: false,
+        userLimitBytes: 100 * 1024 * 1024,
+        globalLimitBytes: 1000 * 1024 * 1024,
+        planOverLimit: false,
+      })
+      mockRecordBlobFile.mockResolvedValue(undefined)
+      mockDeleteFromR2.mockResolvedValue(undefined)
+    })
+
+    const mockStreamerSession = () => {
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+        version: 1,
+      })
+    }
+
+    const makeUploadRequest = () => {
+      const formData = new FormData()
+      formData.append(
+        'file',
+        new File([createMinimalJpegBuffer()], 'test.jpg', { type: 'image/jpeg' })
+      )
+      return new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+    }
+
+    it('全体上限: 追加バイト数を含めて超過する場合は507を返しR2に保存しない', async () => {
+      mockStreamerSession()
+      mockGetStorageUsage.mockResolvedValue({
+        userUsage: 0,
+        globalUsage: 1000 * 1024 * 1024 - 10,
+        userLimitReached: false,
+        globalLimitReached: false,
+        userLimitBytes: 100 * 1024 * 1024,
+        globalLimitBytes: 1000 * 1024 * 1024,
+        planOverLimit: false,
+      })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(507)
+      const body = await response.json()
+      expect(body.code).toBe('GLOBAL_LIMIT_REACHED')
+      expect(mockUploadToR2WithRetry).not.toHaveBeenCalled()
+    })
+
+    it('ユーザー上限: 追加バイト数を含めて超過する場合は507を返す（現在使用量のみの判定だと見逃されるケース）', async () => {
+      mockStreamerSession()
+      mockGetStorageUsage.mockResolvedValue({
+        userUsage: 100 * 1024 * 1024 - 10,
+        globalUsage: 0,
+        userLimitReached: false, // 現在使用量だけの判定では未達
+        globalLimitReached: false,
+        userLimitBytes: 100 * 1024 * 1024,
+        globalLimitBytes: 1000 * 1024 * 1024,
+        planOverLimit: false,
+      })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(507)
+      const body = await response.json()
+      expect(body.code).toBe('USER_LIMIT_REACHED')
+      expect(mockUploadToR2WithRetry).not.toHaveBeenCalled()
+    })
+
+    it('使用量取得失敗のフォールバック（flags=true）は507で拒否し無制限保存に進まない', async () => {
+      mockStreamerSession()
+      // getStorageUsage が取得失敗時に返す fail-closed フォールバック形状 (#1896)
+      mockGetStorageUsage.mockResolvedValue({
+        userUsage: 0,
+        globalUsage: 0,
+        userLimitReached: true,
+        globalLimitReached: true,
+        userLimitBytes: 100 * 1024 * 1024,
+        globalLimitBytes: 1000 * 1024 * 1024,
+        planOverLimit: false,
+      })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(507)
+      expect(mockUploadToR2WithRetry).not.toHaveBeenCalled()
+    })
+
+    it('台帳記録失敗時は500を返し、保存直後のR2オブジェクトを削除して孤児を残さない', async () => {
+      mockStreamerSession()
+      mockUploadToR2WithRetry.mockResolvedValue({ url: 'https://r2.example.com/test.jpg' })
+      mockRecordBlobFile.mockRejectedValue(new Error('db down'))
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(500)
+      const body = await response.json()
+      expect(body.code).toBe('STORAGE_LEDGER_FAILED')
+      // 補償: 台帳未記録のオブジェクトがR2に残らないよう、保存直後のファイル名で削除
+      expect(mockDeleteFromR2).toHaveBeenCalledTimes(1)
+      expect(mockDeleteFromR2).toHaveBeenCalledWith(mockUploadToR2WithRetry.mock.calls[0][0])
+    })
+
+    it('台帳記録成功時はファイルURL・ユーザー・サイズ・ストレージ種別を記録する', async () => {
+      mockStreamerSession()
+      mockUploadToR2WithRetry.mockResolvedValue({ url: 'https://r2.example.com/test.jpg' })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(200)
+      expect(mockRecordBlobFile).toHaveBeenCalledWith(
+        'https://r2.example.com/test.jpg',
+        expect.any(String),
+        expect.any(Number),
+        'r2'
+      )
     })
   })
 })

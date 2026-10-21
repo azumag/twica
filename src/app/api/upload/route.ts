@@ -7,7 +7,7 @@ import { ERROR_MESSAGES, UPLOAD_CONFIG, STORAGE_LIMIT_MESSAGES } from '@/lib/con
 import { getFileTypeFromBuffer, getFileExtension, isValidExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
-import { uploadToR2WithRetry } from '@/lib/r2-client';
+import { uploadToR2WithRetry, deleteFromR2 } from '@/lib/r2-client';
 import { recordBlobFile } from '@/lib/storage-db';
 import { getStorageUsage } from '@/lib/storage-usage';
 import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
@@ -182,14 +182,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // 容量予約: 追加バイト数を含めて上限を事前判定する (#1896)
     // 既存の check は現在使用量のみだったため、上限直前の追加で突破できた。
+    // 1 回目の取得 (L119) との間で DB が障害になった場合に備え、ここでも
+    // fail-closed フォールバックのフラグを見て無制限保存に進めないようにする。
     const preUploadUsage = await getStorageUsage(userPrefixForFile, session!.twitchUserId);
-    if (preUploadUsage.globalUsage + buffer!.length > preUploadUsage.globalLimitBytes) {
+    if (preUploadUsage.globalLimitReached ||
+        preUploadUsage.globalUsage + buffer!.length > preUploadUsage.globalLimitBytes) {
       return NextResponse.json(
         { error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' },
         { status: 507 }
       );
     }
-    if (preUploadUsage.userUsage + buffer!.length > preUploadUsage.userLimitBytes) {
+    if (preUploadUsage.userLimitReached ||
+        preUploadUsage.userUsage + buffer!.length > preUploadUsage.userLimitBytes) {
       return NextResponse.json(
         { error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
         { status: 507 }
@@ -214,9 +218,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     try {
       await recordBlobFile(uploadResult.url, userPrefixForFile, buffer!.length, 'r2');
     } catch (dbError) {
-      logger.error('Failed to record blob file in DB (compensation required):', dbError);
+      // 台帳確定失敗: このまま返すと「R2保存済み・未計上・未参照」の孤児オブジェクトが
+      // 残り、クライアントのリトライのたびに未計上容量が増殖する (#1896)。
+      // 保存直後のオブジェクトを best-effort で削除して台帳と R2 の整合を取り、
+      // 削除にも失敗した場合はログを残して follow-up の回収対象にする。
+      try {
+        await deleteFromR2(fileName!);
+      } catch (cleanupError) {
+        logger.error(`Failed to cleanup R2 object after ledger failure: ${fileName}`, cleanupError);
+      }
+      logger.error(`Failed to record blob file in DB: ${fileName}`, dbError);
       return NextResponse.json(
-        { error: ERROR_MESSAGES.INVALID_REQUEST, code: 'STORAGE_LEDGER_FAILED' },
+        { error: ERROR_MESSAGES.INTERNAL_ERROR, code: 'STORAGE_LEDGER_FAILED' },
         { status: 500 }
       );
     }
