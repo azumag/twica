@@ -843,6 +843,56 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
   })
 }
 
+
+// 管理APIのCSRF/Origin保護ヘルパー (twica#1894)
+// ブラウザ経由のクロスオリジン書き込みを防ぐため、Origin/Host/Content-Typeを検証する。
+// ヘッダが未送信 (サーバー側直接呼び出し・テスト) の場合は後方互換のため許可する。
+
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
+
+function parseHostHeader(host: string | undefined): string | null {
+  if (!host) return null
+  const trimmed = host.trim()
+  if (!trimmed) return null
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']')
+    if (end === -1) return trimmed.toLowerCase()
+    return trimmed.slice(1, end).toLowerCase()
+  }
+  return trimmed.split(':')[0].toLowerCase()
+}
+
+export function isAllowedAdminHost(host: string | undefined): boolean {
+  const hostname = parseHostHeader(host)
+  if (hostname === null) return true
+  return LOOPBACK_HOSTNAMES.has(hostname)
+}
+
+export function isAllowedAdminOrigin(origin: string | undefined): boolean {
+  if (!origin) return true
+  const trimmed = origin.trim()
+  if (!trimmed || trimmed.toLowerCase() === 'null') return false
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    return LOOPBACK_HOSTNAMES.has(url.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+export function isStateChangingMethod(method: string | undefined): boolean {
+  return STATE_CHANGING_METHODS.has((method || '').toUpperCase())
+}
+
+export function isJsonContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false
+  const media = contentType.split(';')[0].trim().toLowerCase()
+  return media === 'application/json'
+}
+
 export function localAdminApiPlugin(env: Env): Plugin {
   return {
     name: 'twica-local-admin-api',
@@ -853,6 +903,36 @@ export function localAdminApiPlugin(env: Env): Plugin {
             error: 'Admin API is only available from loopback addresses',
           })
           return
+        }
+
+        const headers = (req.headers || {}) as Record<string, string | string[] | undefined>
+        const hostHeader = Array.isArray(headers.host) ? headers.host[0] : headers.host
+        const originHeader = Array.isArray(headers.origin) ? headers.origin[0] : headers.origin
+        const contentTypeHeader = Array.isArray(headers['content-type'])
+          ? headers['content-type'][0]
+          : headers['content-type']
+
+        if (!isAllowedAdminHost(hostHeader)) {
+          sendJson(res, 403, {
+            error: 'Admin API host is not allowed',
+          })
+          return
+        }
+
+        if (!isAllowedAdminOrigin(originHeader)) {
+          sendJson(res, 403, {
+            error: 'Admin API origin is not allowed',
+          })
+          return
+        }
+
+        if (isStateChangingMethod(req.method)) {
+          if (!isJsonContentType(contentTypeHeader)) {
+            sendJson(res, 415, {
+              error: 'Admin API state-changing requests require application/json',
+            })
+            return
+          }
         }
 
         const url = new URL(req.url || '/', 'http://localhost')

@@ -1189,3 +1189,189 @@ describe('localAdminApiPlugin: Postgres専用HTTP/CSV経路', () => {
     expect(body).toContain("'@legendary")
   })
 })
+
+
+// twica#1894: ローカル管理APIのCSRF/Origin保護の回帰テスト。
+describe('localAdminApi: CSRF/Origin protection helpers (twica#1894)', () => {
+  it('isAllowedAdminHost: loopback hostnameを許可する', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isAllowedAdminHost('localhost')).toBe(true)
+    expect(m.isAllowedAdminHost('localhost:5173')).toBe(true)
+    expect(m.isAllowedAdminHost('127.0.0.1')).toBe(true)
+    expect(m.isAllowedAdminHost('127.0.0.1:5173')).toBe(true)
+    expect(m.isAllowedAdminHost('[::1]')).toBe(true)
+    expect(m.isAllowedAdminHost('[::1]:5173')).toBe(true)
+  })
+
+  it('isAllowedAdminHost: 外部hostnameを拒否する', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isAllowedAdminHost('evil.example.com')).toBe(false)
+    expect(m.isAllowedAdminHost('evil.example.com:80')).toBe(false)
+    expect(m.isAllowedAdminHost('192.168.1.1')).toBe(false)
+  })
+
+  it('isAllowedAdminHost: 未送信 (undefined/空) は後方互換で許可', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isAllowedAdminHost(undefined)).toBe(true)
+    expect(m.isAllowedAdminHost('')).toBe(true)
+    expect(m.isAllowedAdminHost('   ')).toBe(true)
+  })
+
+  it('isAllowedAdminOrigin: loopback originを許可する', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isAllowedAdminOrigin('http://localhost:5173')).toBe(true)
+    expect(m.isAllowedAdminOrigin('http://127.0.0.1:5173')).toBe(true)
+    expect(m.isAllowedAdminOrigin('https://localhost')).toBe(true)
+  })
+
+  it('isAllowedAdminOrigin: 外部originを拒否する', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isAllowedAdminOrigin('https://evil.example.com')).toBe(false)
+    expect(m.isAllowedAdminOrigin('http://attacker.test')).toBe(false)
+  })
+
+  it('isAllowedAdminOrigin: null originを拒否する', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isAllowedAdminOrigin('null')).toBe(false)
+    expect(m.isAllowedAdminOrigin('NULL')).toBe(false)
+    expect(m.isAllowedAdminOrigin('  null  ')).toBe(false)
+  })
+
+  it('isAllowedAdminOrigin: 不正な値を拒否する', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isAllowedAdminOrigin('not-a-url')).toBe(false)
+    expect(m.isAllowedAdminOrigin('javascript:alert(1)')).toBe(false)
+    expect(m.isAllowedAdminOrigin('ftp://localhost')).toBe(false)
+  })
+
+  it('isAllowedAdminOrigin: 未送信 (undefined/空) は後方互換で許可', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isAllowedAdminOrigin(undefined)).toBe(true)
+    expect(m.isAllowedAdminOrigin('')).toBe(true)
+    // 空白のみの Origin は trim 後に空 → 不正扱いで拒否（CSRF fail-closed）
+    expect(m.isAllowedAdminOrigin('   ')).toBe(false)
+  })
+
+  it('isStateChangingMethod: 状態変更メソッドを正しく判定', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isStateChangingMethod('POST')).toBe(true)
+    expect(m.isStateChangingMethod('PUT')).toBe(true)
+    expect(m.isStateChangingMethod('PATCH')).toBe(true)
+    expect(m.isStateChangingMethod('DELETE')).toBe(true)
+    expect(m.isStateChangingMethod('post')).toBe(true)
+    expect(m.isStateChangingMethod('GET')).toBe(false)
+    expect(m.isStateChangingMethod('HEAD')).toBe(false)
+    expect(m.isStateChangingMethod(undefined)).toBe(false)
+  })
+
+  it('isJsonContentType: application/json のみ許可', async () => {
+    const m = await importLocalAdminApi()
+    expect(m.isJsonContentType('application/json')).toBe(true)
+    expect(m.isJsonContentType('application/json; charset=utf-8')).toBe(true)
+    expect(m.isJsonContentType('text/plain')).toBe(false)
+    expect(m.isJsonContentType('application/x-www-form-urlencoded')).toBe(false)
+    expect(m.isJsonContentType(undefined)).toBe(false)
+    expect(m.isJsonContentType('')).toBe(false)
+  })
+})
+
+describe('localAdminApiPlugin: CSRF/Origin protection (twica#1894)', () => {
+  it('外部OriginのPOSTを403で拒否しDBへ到達させない', async () => {
+    const { tag, calls } = fakeSqlTag({ stats: { totalUsers: 1 } })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+    const req: any = {
+      method: 'POST',
+      url: '/support-codes',
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: 'localhost:5173', origin: 'https://evil.example.com', 'content-type': 'application/json' },
+    }
+    const res: any = { setHeader: vi.fn(), end: vi.fn(), statusCode: 200 }
+
+    await handler(req, res)
+
+    expect(res.statusCode).toBe(403)
+    expect(JSON.parse(res.end.mock.calls[0][0])).toEqual({ error: 'Admin API origin is not allowed' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('null OriginのPOSTを403で拒否しDBへ到達させない', async () => {
+    const { tag, calls } = fakeSqlTag({ stats: { totalUsers: 1 } })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+    const req: any = {
+      method: 'POST',
+      url: '/support-codes',
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: 'localhost:5173', origin: 'null', 'content-type': 'application/json' },
+    }
+    const res: any = { setHeader: vi.fn(), end: vi.fn(), statusCode: 200 }
+
+    await handler(req, res)
+
+    expect(res.statusCode).toBe(403)
+    expect(JSON.parse(res.end.mock.calls[0][0])).toEqual({ error: 'Admin API origin is not allowed' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('外部HostのPOSTを403で拒否しDBへ到達させない', async () => {
+    const { tag, calls } = fakeSqlTag({ stats: { totalUsers: 1 } })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+    const req: any = {
+      method: 'POST',
+      url: '/support-codes',
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: 'evil.example.com', origin: 'http://localhost:5173', 'content-type': 'application/json' },
+    }
+    const res: any = { setHeader: vi.fn(), end: vi.fn(), statusCode: 200 }
+
+    await handler(req, res)
+
+    expect(res.statusCode).toBe(403)
+    expect(JSON.parse(res.end.mock.calls[0][0])).toEqual({ error: 'Admin API host is not allowed' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('text/plainのPOSTを415で拒否しDBへ到達させない', async () => {
+    const { tag, calls } = fakeSqlTag({ stats: { totalUsers: 1 } })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+    const req: any = {
+      method: 'POST',
+      url: '/support-codes',
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: 'localhost:5173', origin: 'http://localhost:5173', 'content-type': 'text/plain' },
+    }
+    const res: any = { setHeader: vi.fn(), end: vi.fn(), statusCode: 200 }
+
+    await handler(req, res)
+
+    expect(res.statusCode).toBe(415)
+    expect(JSON.parse(res.end.mock.calls[0][0])).toEqual({ error: 'Admin API state-changing requests require application/json' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('Content-Type欠落のPOSTを415で拒否しDBへ到達させない', async () => {
+    const { tag, calls } = fakeSqlTag({ stats: { totalUsers: 1 } })
+    const adminApiPg = await importAdminApiPg()
+    adminApiPg.__setAnalysisSqlFactoryForTests(() => tag as never)
+    const handler = await captureAdminApiHandler(PG_ONLY_ENV)
+    const req: any = {
+      method: 'POST',
+      url: '/support-codes',
+      socket: { remoteAddress: '127.0.0.1' },
+      headers: { host: 'localhost:5173', origin: 'http://localhost:5173' },
+    }
+    const res: any = { setHeader: vi.fn(), end: vi.fn(), statusCode: 200 }
+
+    await handler(req, res)
+
+    expect(res.statusCode).toBe(415)
+    expect(calls).toHaveLength(0)
+  })
+})
