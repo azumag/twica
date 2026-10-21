@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -26,12 +26,37 @@ describe("Workers Issues deployment contract", () => {
     expect(pkg.devDependencies["@cloudflare/workers-types"]).toBe("5.20260917.1");
     expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe("5.20260917.1");
   });
-  it("uses the required Node major for both CI and the deployment toolchain", () => {
-    expect(readFileSync(join(root, ".node-version"), "utf8").trim()).toBe("22");
-    for (const workflow of ["ci.yml", "deploy-cloudflare.yml"]) {
-      const text = readFileSync(join(root, ".github/workflows", workflow), "utf8");
-      expect(text).toContain("node-version-file: .node-version");
-      expect(text).not.toMatch(/node-version:\s*["']?20/);
+  it("pins build/CI Node.js to a fully-specified 22.x patch at or above the security-fixed release", () => {
+    // 2026-10-21 の Node.js security release では 22.23.4 が修正版（Refs #1914）。
+    // `.node-version` をメジャー（"22"）だけにすると、actions/setup-node は runner の
+    // ツールキャッシュにある旧パッチ（22.23.3）を選び、Workers Builds も既定のパッチ版を
+    // 使うため、修正版が適用されない。そこでパッチまで完全固定（major.minor.patch）を要求する。
+    // 下限（22.23.4 以上）を設けるのは、将来の巻き戻しや誤った downgrade で
+    // 脆弱な版へ戻ることを防ぐため。比較は文字列ではなく数値で行う（22.23.10 > 22.23.4）。
+    const version = readFileSync(join(root, ".node-version"), "utf8").trim();
+    expect(version).toMatch(/^22\.\d+\.\d+$/);
+    const parse = (v: string) => v.split(".").map(Number);
+    const atLeast = (actual: string, minimum: string) => {
+      const a = parse(actual);
+      const m = parse(minimum);
+      for (let i = 0; i < m.length; i++) {
+        if (a[i] !== m[i]) return a[i] > m[i];
+      }
+      return true;
+    };
+    expect(atLeast(version, "22.23.4")).toBe(true);
+
+    // actions/setup-node を使う workflow は例外なく `.node-version` を参照し、
+    // node-version の直書き（EOL の Node 20 など）を持たないこと。
+    // 新しい workflow が追加されても漏れないよう、ファイル一覧は動的に取得する。
+    const workflowDir = join(root, ".github/workflows");
+    const workflows = readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f));
+    expect(workflows.length).toBeGreaterThan(0);
+    for (const workflow of workflows) {
+      const text = readFileSync(join(workflowDir, workflow), "utf8");
+      if (!text.includes("actions/setup-node")) continue;
+      expect(text, `${workflow} must use node-version-file`).toContain("node-version-file: .node-version");
+      expect(text, `${workflow} must not hardcode node-version`).not.toMatch(/^\s*node-version:/m);
     }
   });
   it("does not enable separately billed tracing or change the runtime date", () => {

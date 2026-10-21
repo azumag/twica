@@ -11,6 +11,13 @@ GitHub Actions はアプリ本体を二重デプロイせず、PlanetScale migra
 | preview | `twica-preview` | `preview` | `npm run workers:build` | `npm run cloudflare:deploy:preview` |
 
 - Root directory は repository root、Node.js は `.node-version` の値を使う。
+- `.node-version` はメジャーではなくパッチまで完全固定する（例: `22.23.4`）。メジャーだけだと
+  Actions はキャッシュ済みの旧パッチ、Workers Builds は既定のパッチを使い、セキュリティ修正版が選ばれない。
+  Node.js のセキュリティリリース時は 22 系の修正版へ上げ、CI ログ（setup-node の `node: vX`）と
+  Workers Builds のビルドログで実際の版を確認する。
+- これはビルド/CI/migration runner の Node であり、本番 Worker は workerd で動くため
+  `compatibility_date` とは無関係。Workers Builds の環境変数 `NODE_VERSION` は `.node-version` より
+  優先されうるので設定しない。
 - Workers Builds に設定するのは公開ビルド値だけです。例:
   `NEXT_PUBLIC_APP_URL`、`NEXT_PUBLIC_TWITCH_CLIENT_ID`、
   `NEXT_PUBLIC_CF_IMAGES_ENABLED`。
