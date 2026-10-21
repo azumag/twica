@@ -358,15 +358,24 @@ describe("trade guide page", () => {
   // ページ側の配列（const 名）→ メッセージ側のパスと、そのパス直下のメタキー（配列の対象外）。
   // 配列の `key:` の並びがメッセージのキー順と一致することを確かめる（番号・表示順は配列順）。
   const keyedArrays = [
-    ["overviewTiles", ["overview"], ["title", "where"]],
-    ["offerFlowSteps", ["offer", "flow"], ["title"]],
-    ["offerPoints", ["offer", "points"], ["title"]],
-    ["sellerSteps", ["auction", "roles", "seller"], ["title"]],
-    ["bidderSteps", ["auction", "roles", "bidder"], ["title"]],
-    ["auctionRules", ["auction", "rules"], ["title"]],
-    ["phaseChips", ["auction", "status"], ["title"]],
-    ["faqItems", ["faq"], ["title"]],
+    ["chooseCards", ["choose"], ["title"]],
+    ["termKeys", ["start", "terms"], []],
+    ["acceptSteps", ["accept", "steps"], ["title"]],
+    ["offerSteps", ["offer", "steps"], ["title"]],
+    [
+      "offerRules",
+      ["offer", "rules"],
+      ["summary", "crossTitle", "inChannelCaption", "crossCaption", "streamerA", "streamerB", "sideA", "sideB", "condition"],
+    ],
+    ["sellerSteps", ["auction", "seller"], ["title", "note"]],
+    ["bidderSteps", ["auction", "bidder"], ["title"]],
+    ["auctionRules", ["auction", "rules"], ["summary", "statusTitle", "status"]],
+    ["phaseChips", ["auction", "rules", "status"], []],
+    ["faqItems", ["faq"], ["title", "reasonLabel", "actionLabel"]],
   ] as const;
+
+  // 本文のセクション（h2）。視聴者向けが先、配信者向けが最後（ページの並びはページテストが固定する）。
+  const sectionIds = ["choose", "start", "accept", "offer", "auction", "faq", "streamer"] as const;
 
   function at(root: Record<string, unknown>, path: readonly string[]) {
     return path.reduce<Record<string, unknown>>((node, key) => node[key] as Record<string, unknown>, root);
@@ -398,11 +407,11 @@ describe("trade guide page", () => {
         }
       }
     }
-    // 目次はセクションの id と、メッセージのセクション（title を持つもの）に1対1で対応する
-    expect(listedProps(source, "sections", "id")).toEqual(["overview", "offer", "auction", "streamer", "faq"]);
-    for (const id of listedProps(source, "sections", "id")) {
+    // セクションの id は、メッセージのセクション（title を持つもの）に1対1で対応する
+    for (const id of sectionIds) {
       expect(source, id).toContain(`id="${id}"`);
       expect(jaMessages.tradeGuidePage[id].title, id).toBeTruthy();
+      expect(enMessages.tradeGuidePage[id].title, id).toBeTruthy();
     }
   });
 
@@ -466,6 +475,8 @@ describe("trade guide page", () => {
     for (const { name, messages } of locales) {
       const everything = JSON.stringify(messages.tradeGuidePage);
       const trade = messages.trade;
+      // 長い案内文・件数つきの文言は、ガイドが引用する冒頭の部分だけを比較する
+      const head = (text: string, pattern: RegExp) => text.split(pattern)[0];
       const labels: Record<string, string> = {
         "trade.collectionTradeButton": trade.collectionTradeButton,
         "trade.tabInChannel": trade.tabInChannel,
@@ -473,46 +484,45 @@ describe("trade guide page", () => {
         "trade.tabAuction": trade.tabAuction,
         "trade.myTradesLink": trade.myTradesLink,
         "trade.createOfferButton": trade.createOfferButton,
+        "trade.createSubmitButton": trade.createSubmitButton,
         "trade.acceptButton": trade.acceptButton,
+        "trade.acceptButtonNotOwned": trade.acceptButtonNotOwned,
+        "trade.acceptButtonNotEnough": trade.acceptButtonNotEnough,
         "trade.confirmModalSubmitButton": trade.confirmModalSubmitButton,
         "trade.cancelOfferButton": trade.cancelOfferButton,
-        "trade.cancelOfferModalConfirmButton": trade.cancelOfferModalConfirmButton,
         "trade.myTradesTabOpen": trade.myTradesTabOpen,
-        "trade.myTradesTabCancelled": trade.myTradesTabCancelled,
+        "trade.myTradesTabAuction": trade.myTradesTabAuction,
         "trade.createStep1Title": trade.createStep1Title,
         "trade.createStep2Title": trade.createStep2Title,
         "trade.createConfirmTitle": trade.createConfirmTitle,
         "trade.createStep2QuantityLabel": trade.createStep2QuantityLabel,
         "trade.createStep2SelectStreamer": trade.createStep2SelectStreamer,
-        // 長い案内文なので、ガイドが引用する冒頭の一文だけを比較する
-        "trade.createStep2NoPartners": trade.createStep2NoPartners.split(/[。.]/)[0],
-        "trade.createStep1ListedBadge": trade.createStep1ListedBadge,
+        "trade.createStep2NoPartners": head(trade.createStep2NoPartners, /[。.]/),
         "trade.createAuctionButton": trade.createAuctionButton,
         "trade.auctionRowDetailLink": trade.auctionRowDetailLink,
         "trade.auctionBidFormTitle": trade.auctionBidFormTitle,
         "trade.auctionScopeCrossChannel": trade.auctionScopeCrossChannel,
         "trade.auctionBidChangeTitle": trade.auctionBidChangeTitle,
         "trade.auctionWithdrawButton": trade.auctionWithdrawButton,
-        "trade.auctionPhaseBidding": trade.auctionPhaseBidding,
-        "trade.auctionPhaseSelecting": trade.auctionPhaseSelecting,
         "trade.auctionBidUnsettleableBadge": trade.auctionBidUnsettleableBadge,
         "trade.auctionSettleButton": trade.auctionSettleButton,
         "trade.auctionSettleConfirmButton": trade.auctionSettleConfirmButton,
-        "trade.auctionCancelButton": trade.auctionCancelButton,
-        "trade.myAuctionsRoleSelling": trade.myAuctionsRoleSelling,
         "trade.myAuctionsSettleLink": trade.myAuctionsSettleLink,
         "trade.myTradesUnavailableBadge": trade.myTradesUnavailableBadge,
         "tradeSettings.form.tradeEnabled": messages.tradeSettings.form.tradeEnabled,
         "tradeSettings.form.crossChannelEnabled": messages.tradeSettings.form.crossChannelEnabled,
+        "cardManager.form.tradeWantable": messages.cardManager.form.tradeWantable,
         "cardVisibilitySettings.form.showUnowned": messages.cardVisibilitySettings.form.showUnowned,
         "cardVisibilitySettings.form.showDetails": messages.cardVisibilitySettings.form.showDetails,
-        // 取引が失敗したときに画面へ出る文言（FAQ の見出しとして引用している）
+        // 取引が失敗したときに画面へ出る文言（「うまくいかないとき」の見出しとして引用している）
         "trade.errorTradeDisabled": trade.errorTradeDisabled,
         "trade.errorTradeOfferedCardInactive": trade.errorTradeOfferedCardInactive,
         "trade.errorTradeAlreadyCompletedOrInvalid": trade.errorTradeAlreadyCompletedOrInvalid,
-        "trade.errorTradeAuctionExpired": trade.errorTradeAuctionExpired,
+        "trade.errorTradeOfferLimit": head(trade.errorTradeOfferLimit, /\s?[（(]/),
+        "trade.errorTradeAuctionBidLimit": head(trade.errorTradeAuctionBidLimit, /\s?[（(]/),
         "trade.errorTradeCardAlreadyListed": trade.errorTradeCardAlreadyListed,
         "trade.errorTradeWantedCardNotWantable": trade.errorTradeWantedCardNotWantable,
+        "trade.errorTradeAuctionExpired": trade.errorTradeAuctionExpired,
       };
       for (const [path, label] of Object.entries(labels)) {
         // エラー文言は文末の句点だけ落として引用しているため正規化して比較する。
@@ -589,6 +599,110 @@ describe("trade guide page", () => {
       const code = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
       expect(code, file).not.toMatch(/[぀-ヿ一-鿿]/);
     }
+  });
+
+  /**
+   * 用語の統一。ガイドの読みにくさの大きな原因は「同じものを別の言葉で呼ぶ」ことだったので、
+   * 統一で使わないと決めた語が視聴者向けの文言に出てこないことを固定する。
+   *   - 視聴者向け = 配信者向けセクション（streamer.*）以外のすべての文言
+   *   - 画面に実在する文言の引用（trade 名前空間のエラー文など）は、画面どおりでなければ
+   *     探せないので許可する。引用部分を取り除いてから検査する。
+   *   - 配信者向けでは、画面のチェック名どおり「求めるカード」を使い、意味を一度だけ補足する。
+   */
+  describe("terminology", () => {
+    const leavesOf = (value: unknown, prefix = ""): [string, string][] =>
+      typeof value === "string"
+        ? [[prefix, value]]
+        : Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+            leavesOf(child, prefix ? `${prefix}.${key}` : key),
+          );
+
+    // 画面の実文言（trade 名前空間）。長いものから順に取り除く（短い文言が長い文言の一部のことがある）。
+    function withoutScreenQuotes(text: string, trade: Record<string, string>) {
+      const quotes = Object.values(trade)
+        .map((value) => value.replace(/[。.]$/, ""))
+        .filter((value) => value.length >= 4)
+        .sort((a, b) => b.length - a.length);
+      return quotes.reduce((rest, quote) => rest.split(quote).join(""), text);
+    }
+
+    // 視聴者向けで使わない語（理由は左）。
+    const bannedJa: [string, RegExp][] = [
+      ["画面では「欲しいカード」。「求めるカード」は配信者向け設定の引用だけ", /求めるカード/],
+      ["「流札」ではなく「だれとも交換されずに終了」（チップの実文言だけ）", /流札/],
+      ["持ち主が変わらないので「戻る」とは書かない（また使える）", /戻(る|り|す|っ|せ)/],
+      ["「移動」「解放」「拘束」ではなく「また使える」「使えない」", /移動|解放|拘束/],
+      ["「渡す」「もらう」に統一", /譲る|譲っ|受け取|引き渡|手渡/],
+      ["「応じる」に統一", /応諾|承諾|受諾/],
+      ["「入札」に統一", /落札|オファー/],
+      ["ログインの説明は画面が案内するので書かない", /ログイン/],
+    ];
+    const bannedEn: [string, RegExp][] = [
+      ["the card you want, not \"requested\" (the streamer part may quote the checkbox)", /\brequest/i],
+      ["\"no deal\" is the one word for an auction that ends without a trade", /\bexpire/i],
+      ["cards are \"free to use again\", not \"returned\" / \"released\" (ownership never changes)", /\breturn|\breleas|\block(ed)?\b/i],
+      ["\"give\" / \"get\", not \"hand over\"", /hand(s|ed|ing)? over|\breceive/i],
+      ["\"trade\", not \"swap\" / \"exchange\"", /\bswap|\bexchang/i],
+      ["login is explained by the screen", /log ?in|sign ?in/i],
+    ];
+
+    it.each([
+      ["ja", jaMessages, bannedJa],
+      ["en", enMessages, bannedEn],
+    ] as const)("keeps the %s viewer copy to the agreed words", (name, messages, banned) => {
+      const viewerLeaves = leavesOf(messages.tradeGuidePage).filter(([path]) => !path.startsWith("streamer."));
+      expect(viewerLeaves.length).toBeGreaterThan(40);
+      for (const [path, text] of viewerLeaves) {
+        const rest = withoutScreenQuotes(text, messages.trade);
+        for (const [why, pattern] of banned) {
+          expect(rest, `${name}: ${path} (${why})`).not.toMatch(pattern);
+        }
+      }
+    });
+
+    it("uses the screen's word for the streamer-side checkbox and explains it exactly once", () => {
+      const ja = leavesOf(jaMessages.tradeGuidePage).filter(([path]) => path.startsWith("streamer."));
+      const en = leavesOf(enMessages.tradeGuidePage).filter(([path]) => path.startsWith("streamer."));
+      // 画面のチェック名は「求めるカード」/ "requested"
+      expect(jaMessages.cardManager.form.tradeWantable).toContain("求めるカード");
+      expect(enMessages.cardManager.form.tradeWantable).toContain("requested");
+      // ja: 補足は streamer.wantable.description の一度だけ
+      const jaGloss = ja.filter(([, text]) => text.includes("視聴者が欲しいカードとして指定すること"));
+      expect(jaGloss.map(([path]) => path)).toEqual(["streamer.wantable.description"]);
+      expect(jaMessages.tradeGuidePage.streamer.wantable.description).toContain(jaMessages.cardManager.form.tradeWantable);
+      // en: 同様に「requested = a viewer picks it as a card they want」を一度だけ
+      const enGloss = en.filter(([, text]) => /means a viewer picks the card as a card they want/.test(text));
+      expect(enGloss.map(([path]) => path)).toEqual(["streamer.wantable.description"]);
+      expect(enMessages.tradeGuidePage.streamer.wantable.description).toContain(enMessages.cardManager.form.tradeWantable);
+    });
+
+    it("glosses \"cross-channel\" where the tab is first introduced and uses the tab's own name after that", () => {
+      for (const [name, messages, gloss] of [
+        ["ja", jaMessages, "ほかのチャンネルのカードとの交換"],
+        ["en", enMessages, "trades with cards of other channels"],
+      ] as const) {
+        const find = messages.tradeGuidePage.accept.steps.find.description as string;
+        expect(find, name).toContain(messages.trade.tabCrossChannel);
+        expect(find, name).toContain(gloss);
+      }
+    });
+
+    it("says what happens to a card in a listing or bid the same way everywhere (it can be used again)", () => {
+      for (const [name, messages, phrase] of [
+        ["ja", jaMessages, "また使え"],
+        ["en", enMessages, "free to use again"],
+      ] as const) {
+        const page = messages.tradeGuidePage;
+        for (const text of [
+          page.offer.rules.locked,
+          page.auction.seller.note,
+          page.auction.bidder.wait.description,
+          page.auction.timeline.completed,
+        ]) {
+          expect(text, name).toContain(phrase);
+        }
+      }
+    });
   });
 
   it("is linked only from the trade screens, not from /guide or the public footer", () => {
