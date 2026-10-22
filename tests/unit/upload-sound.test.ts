@@ -6,8 +6,8 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client'
-import { recordBlobFile, removeBlobFile } from '@/lib/storage-db'
-import { getStorageUsage } from '@/lib/storage-usage'
+import { recordBlobFile, releaseStorageReservation, removeBlobFile } from '@/lib/storage-db'
+import { reserveStorageCapacity } from '@/lib/storage-usage'
 import { sha256Prefix } from '@/lib/crypto-utils'
 
 // Mock dependencies
@@ -28,18 +28,16 @@ vi.mock('@/lib/r2-client', () => ({
 }))
 // ストレージ台帳をモック（#1896: 音声も台帳記録・削除減算の対象）
 vi.mock('@/lib/storage-db', () => ({
-  recordBlobFile: vi.fn().mockResolvedValue(undefined),
+  recordBlobFile: vi.fn().mockResolvedValue('committed'),
+  releaseStorageReservation: vi.fn().mockResolvedValue(true),
   removeBlobFile: vi.fn().mockResolvedValue(null),
 }))
-// Mock storage-usage to provide storage limit info
+// Mock storage-usage to provide the atomic reservation result (#1907)
 vi.mock('@/lib/storage-usage', () => ({
-  getStorageUsage: vi.fn().mockResolvedValue({
-    userUsage: 0,
-    globalUsage: 0,
-    userLimitReached: false,
-    globalLimitReached: false,
-    userLimitBytes: 100 * 1024 * 1024,
-    globalLimitBytes: 1000 * 1024 * 1024,
+  reserveStorageCapacity: vi.fn().mockResolvedValue({
+    ok: true,
+    reservationId: 'reservation-1',
+    degraded: false,
   }),
 }))
 
@@ -51,8 +49,9 @@ const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 const mockUploadSound = vi.mocked(uploadSoundToR2WithRetry)
 const mockDeleteSound = vi.mocked(deleteSoundFromR2)
 const mockRecordBlobFile = vi.mocked(recordBlobFile)
+const mockReleaseStorageReservation = vi.mocked(releaseStorageReservation)
 const mockRemoveBlobFile = vi.mocked(removeBlobFile)
-const mockGetStorageUsage = vi.mocked(getStorageUsage)
+const mockReserveStorageCapacity = vi.mocked(reserveStorageCapacity)
 
 function createMinimalWavBuffer(): ArrayBuffer {
   // getSoundFileTypeFromBuffer は buffer[0..3] == "RIFF" と buffer[8..11] == "WAVE"
@@ -74,16 +73,6 @@ function createMinimalWavBuffer(): ArrayBuffer {
   ])
   return header.buffer
 }
-
-const defaultUsage = () => ({
-  userUsage: 0,
-  globalUsage: 0,
-  userLimitReached: false,
-  globalLimitReached: false,
-  userLimitBytes: 100 * 1024 * 1024,
-  globalLimitBytes: 1000 * 1024 * 1024,
-  planOverLimit: false,
-})
 
 describe('POST /api/upload/sound', () => {
   beforeEach(() => {
@@ -108,11 +97,16 @@ describe('POST /api/upload/sound', () => {
       expiresAt: Date.now() + 3600000,
       version: 1,
     })
-    mockGetStorageUsage.mockResolvedValue(defaultUsage())
+    mockReserveStorageCapacity.mockResolvedValue({
+      ok: true,
+      reservationId: 'reservation-1',
+    degraded: false,
+    })
+    mockReleaseStorageReservation.mockResolvedValue(true)
     mockRemoveBlobFile.mockResolvedValue(null)
     // clearAllMocks は実装を消さないため、前テストの mockRejectedValue 漏洩を防ぐ
     mockUploadSound.mockResolvedValue({ url: 'https://r2.example.com/sound.wav' })
-    mockRecordBlobFile.mockResolvedValue(undefined)
+    mockRecordBlobFile.mockResolvedValue('committed')
     mockDeleteSound.mockResolvedValue(undefined)
   })
 
@@ -139,20 +133,19 @@ describe('POST /api/upload/sound', () => {
     expect(mockUploadSound.mock.calls[0][0]).toMatch(
       /^sound_[a-f0-9]{8}_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.wav$/
     )
-    // #1896: 音声も使用量台帳に記録される
+    // #1896 / #1907: 音声も予約ID付きで使用量台帳に記録される
     expect(mockRecordBlobFile).toHaveBeenCalledWith(
+      'reservation-1',
       'https://r2.example.com/sound.wav',
       expect.any(String),
       expect.any(Number),
       'r2'
     )
+    expect(mockReleaseStorageReservation).not.toHaveBeenCalled()
   })
 
-  it('全体上限: 追加バイト数を含めて超過する場合は507を返しR2に保存しない', async () => {
-    mockGetStorageUsage.mockResolvedValue({
-      ...defaultUsage(),
-      globalUsage: 1000 * 1024 * 1024 - 10,
-    })
+  it('全体上限: 予約が global_limit を返したら507を返しR2に保存しない', async () => {
+    mockReserveStorageCapacity.mockResolvedValue({ ok: false, reason: 'global_limit' })
 
     const response = await POST(makeUploadRequest())
 
@@ -163,11 +156,8 @@ describe('POST /api/upload/sound', () => {
     expect(mockRecordBlobFile).not.toHaveBeenCalled()
   })
 
-  it('ユーザー上限: 追加バイト数を含めて超過する場合は507を返す（現在使用量のみの判定だと見逃されるケース）', async () => {
-    mockGetStorageUsage.mockResolvedValue({
-      ...defaultUsage(),
-      userUsage: 100 * 1024 * 1024 - 10,
-    })
+  it('ユーザー上限: 予約が user_limit を返したら507を返す（追加バイト数込みの原子的判定）', async () => {
+    mockReserveStorageCapacity.mockResolvedValue({ ok: false, reason: 'user_limit' })
 
     const response = await POST(makeUploadRequest())
 
@@ -177,14 +167,8 @@ describe('POST /api/upload/sound', () => {
     expect(mockUploadSound).not.toHaveBeenCalled()
   })
 
-  it('使用量取得失敗のフォールバック（flags=true）は507で拒否し無制限保存に進まない', async () => {
-    // getStorageUsage が取得失敗時に返す fail-closed フォールバック形状 (#1896)。
-    // usage=0 + 既定上限のバイト比較は素通しするため、フラグで拒否されることが本質
-    mockGetStorageUsage.mockResolvedValue({
-      ...defaultUsage(),
-      userLimitReached: true,
-      globalLimitReached: true,
-    })
+  it('容量が取得不能な場合（fail-closed）も予約失敗として507で拒否する', async () => {
+    mockReserveStorageCapacity.mockResolvedValue({ ok: false, reason: 'global_limit' })
 
     const response = await POST(makeUploadRequest())
 
@@ -192,7 +176,29 @@ describe('POST /api/upload/sound', () => {
     expect(mockUploadSound).not.toHaveBeenCalled()
   })
 
-  it('台帳記録失敗時は500を返し、保存直後のR2オブジェクトを削除して孤児を残さない', async () => {
+  it('音声507は画像向け文言ではなく効果音向け文言を返す (#1907)', async () => {
+    mockReserveStorageCapacity.mockResolvedValue({ ok: false, reason: 'user_limit' })
+
+    const response = await POST(makeUploadRequest())
+    const body = await response.json()
+
+    expect(response.status).toBe(507)
+    expect(body.error).toContain('効果音')
+    expect(body.error).not.toContain('画像')
+  })
+
+  it('保存の直前に、ユーザー・追加バイト数を渡して原子的に予約する', async () => {
+    const response = await POST(makeUploadRequest())
+
+    expect(response.status).toBe(200)
+    expect(mockReserveStorageCapacity).toHaveBeenCalledWith(
+      expect.stringMatching(/^[a-f0-9]{8}$/),
+      'test-user-id',
+      expect.any(Number),
+    )
+  })
+
+  it('台帳記録失敗時は500を返し、R2オブジェクトと予約を補償する', async () => {
     mockUploadSound.mockResolvedValue({ url: 'https://r2.example.com/sound.wav' })
     mockRecordBlobFile.mockRejectedValue(new Error('db down'))
 
@@ -204,9 +210,10 @@ describe('POST /api/upload/sound', () => {
     // 補償: 台帳未記録のオブジェクトがR2に残らないよう、保存直後のファイル名で削除
     expect(mockDeleteSound).toHaveBeenCalledTimes(1)
     expect(mockDeleteSound).toHaveBeenCalledWith(mockUploadSound.mock.calls[0][0])
+    expect(mockReleaseStorageReservation).toHaveBeenCalledWith('reservation-1')
   })
 
-  it('台帳記録失敗時にR2削除（補償）も失敗した場合も500を返す', async () => {
+  it('台帳記録失敗時にR2削除（補償）も失敗した場合も500を返し、予約は解放する', async () => {
     mockUploadSound.mockResolvedValue({ url: 'https://r2.example.com/sound.wav' })
     mockRecordBlobFile.mockRejectedValue(new Error('db down'))
     mockDeleteSound.mockRejectedValue(new Error('r2 down'))
@@ -215,9 +222,40 @@ describe('POST /api/upload/sound', () => {
 
     expect(response.status).toBe(500)
     expect(mockDeleteSound).toHaveBeenCalledTimes(1)
+    expect(mockReleaseStorageReservation).toHaveBeenCalledWith('reservation-1')
   })
 
-  it('R2アップロード失敗時（storage error）は台帳に記録せず503を返す', async () => {
+  it('予約RPC未適用（degraded）でも旧経路でアップロードを継続する', async () => {
+    mockReserveStorageCapacity.mockResolvedValue({
+      ok: true,
+      reservationId: null,
+      degraded: true,
+    })
+
+    const response = await POST(makeUploadRequest())
+
+    expect(response.status).toBe(200)
+    expect(mockRecordBlobFile).toHaveBeenCalledWith(
+      null,
+      'https://r2.example.com/sound.wav',
+      expect.any(String),
+      expect.any(Number),
+      'r2',
+    )
+    expect(mockReleaseStorageReservation).not.toHaveBeenCalled()
+  })
+
+  it('台帳が確定済み（already_committed）ならR2も予約も解放しない', async () => {
+    mockRecordBlobFile.mockResolvedValue('already_committed')
+
+    const response = await POST(makeUploadRequest())
+
+    expect(response.status).toBe(200)
+    expect(mockDeleteSound).not.toHaveBeenCalled()
+    expect(mockReleaseStorageReservation).not.toHaveBeenCalled()
+  })
+
+  it('R2アップロード失敗時（storage error）は台帳に記録せず503を返し、予約を解放する', async () => {
     // 'service unavailable' は handleBlobError で 503 に分類される
     mockUploadSound.mockRejectedValue(new Error('service unavailable'))
 
@@ -225,9 +263,10 @@ describe('POST /api/upload/sound', () => {
 
     expect(response.status).toBe(503)
     expect(mockRecordBlobFile).not.toHaveBeenCalled()
+    expect(mockReleaseStorageReservation).toHaveBeenCalledWith('reservation-1')
   })
 
-  it('R2アップロードがエラー結果を返した場合も台帳に記録しない', async () => {
+  it('R2アップロードがエラー結果を返した場合も台帳に記録せず、予約を解放する', async () => {
     // { error } を返す経路（リトライ後も失敗）: 'quota' は 507 に分類される
     mockUploadSound.mockResolvedValue({ error: 'R2 quota exceeded' })
 
@@ -235,6 +274,7 @@ describe('POST /api/upload/sound', () => {
 
     expect(response.status).toBe(507)
     expect(mockRecordBlobFile).not.toHaveBeenCalled()
+    expect(mockReleaseStorageReservation).toHaveBeenCalledWith('reservation-1')
   })
 })
 
@@ -264,7 +304,7 @@ describe('DELETE /api/upload/sound', () => {
     mockRemoveBlobFile.mockResolvedValue(null)
     // POST describe で設定された reject 実装の漏洩を防ぐ
     mockDeleteSound.mockResolvedValue(undefined)
-    mockRecordBlobFile.mockResolvedValue(undefined)
+    mockRecordBlobFile.mockResolvedValue('committed')
   })
 
   const makeDeleteRequest = async () => {

@@ -387,6 +387,18 @@ export const blobFiles = pgTable('blob_files', {
 })
 
 // -----------------------------------------------------------------------------
+// storage_reservations（保存前の容量予約。Issue #1907）
+// 根拠: 20261023000000_storage_reservation_and_reconcile.sql
+// -----------------------------------------------------------------------------
+export const storageReservations = pgTable('storage_reservations', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  user_prefix: varchar('user_prefix', { length: 8 }).notNull(),
+  file_size: bigint('file_size', { mode: 'number' }).notNull(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  expires_at: timestamp('expires_at', { withTimezone: true, mode: 'string' }).notNull(),
+})
+
+// -----------------------------------------------------------------------------
 // streamer_additional_gacha_rewards（追加のガチャ用チャネルポイント報酬）
 // 根拠: 00008 初版, 00041 draw_count / is_raid_limited 追加, 00061 collection_name 追加
 // -----------------------------------------------------------------------------

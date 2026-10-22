@@ -22,6 +22,10 @@
  * Tail Workers (有料プラン必須) の無料代替として実装。
  * Cloudflare Workers Free プランの Cron Triggers を使用。
  *
+ * Issue #1907: 日次のストレージ保守（台帳再照合・未使用効果音回収）トリガーも
+ * 同じ Worker に集約している。DB には触れず、アプリ本体の internal route を
+ * 共有シークレット付きで叩くだけ（この Worker の既存方針と同じ）。
+ *
  * See: https://github.com/azumag/twica/issues/239 (errors)
  *      https://github.com/azumag/twica/issues/633 (inquiries)
  *      https://github.com/azumag/twica/issues/711 (Phase2 DB移行, C項)
@@ -32,7 +36,7 @@ import postgres from 'postgres'
 /** GitHub API 呼び出し時の User-Agent（GitHub は User-Agent 必須） */
 const USER_AGENT = 'twica-error-reporter'
 
-interface Env {
+export interface Env {
   /**
    * #711 C: errors/support_inquiries への直接クエリ用 Hyperdrive バインディング。
    * ルート wrangler.toml（メインアプリ）の [[hyperdrive]] binding = "HYPERDRIVE_PLANETSCALE"
@@ -119,6 +123,17 @@ interface Env {
   EVENTSUB_HEALTH_SECRET_PROD?: string
   /** preview アプリの `EVENTSUB_HEALTH_SECRET` と同じ値。上記コメント参照。 */
   EVENTSUB_HEALTH_SECRET_PREVIEW?: string
+
+  /**
+   * Issue #1907: ストレージ台帳の再照合・未使用効果音回収ジョブ。
+   * `src/app/api/internal/storage-maintenance/route.ts` が検証する
+   * `STORAGE_MAINTENANCE_SECRET` と同じ値を、このワーカー用にも
+   * `wrangler secret put STORAGE_MAINTENANCE_SECRET_PROD`（preview は _PREVIEW）
+   * で設定する。未設定の場合は該当ターゲットのジョブだけを安全にスキップする。
+   */
+  STORAGE_MAINTENANCE_SECRET_PROD?: string
+  /** preview アプリの `STORAGE_MAINTENANCE_SECRET` と同じ値。 */
+  STORAGE_MAINTENANCE_SECRET_PREVIEW?: string
 }
 
 /**
@@ -1634,13 +1649,128 @@ export async function processEventSubParkAutoDrain(env: Env): Promise<void> {
 }
 
 // =============================================================================
+// ストレージ台帳の再照合・未使用効果音回収 (Issue #1907)
+// =============================================================================
+
+/**
+ * 毎日 04:17 UTC に実行する。統計集計（毎時5分）・EventSub（5/20分毎）とは
+ * 独立したトリガーで、R2 list と全ユーザー分の集計を伴うため日次にしている。
+ * src/index.ts の定数と wrangler.toml の crons を必ず一致させること。
+ */
+export const STORAGE_MAINTENANCE_CRON = '17 4 * * *'
+
+const STORAGE_MAINTENANCE_PATH = '/api/internal/storage-maintenance'
+const STORAGE_MAINTENANCE_TIMEOUT_MS = 120_000
+
+export interface StorageMaintenanceTarget {
+  /** ログに出す環境名。 */
+  name: string
+  baseUrl: string | undefined
+  secret: string | undefined
+}
+
+/**
+ * 1ターゲットに対するストレージ保守ジョブ。
+ *
+ * reconcile（台帳再照合）→ collect-unused-sounds（未使用効果音回収）の順に
+ * 実行する。各アクションは独立して try/catch し、片方の失敗で他方を止めない。
+ * baseUrl/secret が未設定なら warn して no-op（設定前は動かさない）。
+ * HTTP失敗・ネットワーク失敗も console.error に残し、例外は投げない
+ * （prod 失敗時に preview の処理を止めない既存の運用に合わせる）。
+ *
+ * @param target 対象環境
+ * @param fetchImpl テスト用の fetch 差し替え
+ */
+export async function callStorageMaintenanceForTarget(
+  target: StorageMaintenanceTarget,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const { name, secret } = target
+  const baseUrl = target.baseUrl ? stripTrailingSlash(target.baseUrl) : undefined
+
+  if (!baseUrl) {
+    console.warn(`[Storage Maintenance] Missing base URL for ${name}, skipping`)
+    return
+  }
+  if (!secret) {
+    console.warn(
+      `[Storage Maintenance] Missing secret for ${name}, skipping (set STORAGE_MAINTENANCE_SECRET_PROD/PREVIEW via wrangler secret put)`,
+    )
+    return
+  }
+
+  const actions: Array<Record<string, unknown>> = [
+    { action: 'reconcile' },
+    {
+      action: 'collect-unused-sounds',
+      // アップロード→設定保存の途中にあるオブジェクトを誤削除しない猶予。
+      // 既定値と同じ 24h を明示し、API 側の既定変更に暗黙追随しない。
+      minAgeSeconds: 24 * 60 * 60,
+      maxDeletions: 200,
+    },
+  ]
+
+  for (const body of actions) {
+    const action = String(body.action)
+    try {
+      const res = await fetchImpl(`${baseUrl}${STORAGE_MAINTENANCE_PATH}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-storage-maintenance-secret': secret,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(STORAGE_MAINTENANCE_TIMEOUT_MS),
+      })
+      const text = await res.text()
+      if (!res.ok) {
+        console.error(
+          `[Storage Maintenance] ${name} ${action} returned ${res.status}: ${text.slice(0, 500)}`,
+        )
+        continue
+      }
+      console.log(`[Storage Maintenance] ${name} ${action}: ${text.slice(0, 500)}`)
+    } catch (err) {
+      console.error(`[Storage Maintenance] ${name} ${action} failed:`, err)
+    }
+  }
+}
+
+/**
+ * Cron Triggerハンドラ。prod/preview両ターゲットを独立に処理する。
+ * 各ターゲット関数は例外を投げない設計だが、防御的に try/catch も残す。
+ */
+export async function runScheduledStorageMaintenance(
+  env: Env,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  console.log('[Storage Maintenance] Started')
+
+  const targets: StorageMaintenanceTarget[] = [
+    { name: 'production', baseUrl: env.APP_BASE_URL_PROD, secret: env.STORAGE_MAINTENANCE_SECRET_PROD },
+    { name: 'preview', baseUrl: env.APP_BASE_URL_PREVIEW, secret: env.STORAGE_MAINTENANCE_SECRET_PREVIEW },
+  ]
+
+  for (const target of targets) {
+    try {
+      await callStorageMaintenanceForTarget(target, fetchImpl)
+    } catch (err) {
+      console.error(`[Storage Maintenance] ${target.name} failed:`, err)
+    }
+  }
+
+  console.log('[Storage Maintenance] Completed')
+}
+
+// =============================================================================
 // Cron Trigger エントリポイント
 // =============================================================================
 
 export default {
   /**
    * Cron Trigger ハンドラ。wrangler.toml の `[triggers] crons` に登録された
-   * 2つのトリガーを `event.cron` で判別し、完全に独立した処理へ分岐する:
+   * 3つのトリガーを `event.cron` で判別し、完全に独立した処理へ分岐する:
+   *   - STORAGE_MAINTENANCE_CRON（日次）: 台帳再照合＋未使用効果音回収のみ
    *   - EVENTSUB_AUTO_DRAIN_CRON（20分毎）: EventSub 退避 backlog 自動ドレインのみ
    *   - それ以外（既定の5分毎トリガー、テスト等で cron 未設定の場合を含む）:
    *     EventSub サブスクリプション健全性監視（processEventSubSubscriptionHealth）
@@ -1655,6 +1785,18 @@ export default {
     env: Env,
     _ctx: ExecutionContext
   ): Promise<void> {
+    // #1907: ストレージ保守は HYPERDRIVE/GITHUB_TOKEN 等の既存 binding に
+    // 依存しない（アプリ本体の internal route を HTTP で叩くだけ）。既存3処理の
+    // 環境変数バリデーションより前で独立して実行する。
+    if (event.cron === STORAGE_MAINTENANCE_CRON) {
+      try {
+        await runScheduledStorageMaintenance(env)
+      } catch (err) {
+        console.error('[Storage Maintenance] Cron job failed:', err)
+      }
+      return
+    }
+
     if (event.cron === EVENTSUB_AUTO_DRAIN_CRON) {
       // 自動ドレインは HYPERDRIVE_PLANETSCALE/GITHUB_TOKEN 等、既存3処理専用の
       // binding/secrets に依存しないため、下の環境変数バリデーションより前で
