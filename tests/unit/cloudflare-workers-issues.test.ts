@@ -72,13 +72,19 @@ describe("Workers Issues deployment contract", () => {
       expect(section(scope)).toMatch(/^enabled\s*=\s*true\s*$/m);
     }
   });
+  // wrangler 4.150.0 is the pin chosen to satisfy @opennextjs/cloudflare@1.20.12's
+  // `wrangler ^4.148.0` peer (required for Next.js 16.4) while staying
+  // >= 4.134.0 (Workers Issues). See scripts/smoke-opennext-worker.sh for the
+  // runtime check that guards the Next.js / OpenNext pairing.
+  // wrangler 4.148+ declares peerOptional @cloudflare/workers-types
+  // ^5.20261006.1, so the types package must move together with it.
   it("pins a CLI and compatible types that understand the Issues configuration", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
-    expect(pkg.devDependencies.wrangler).toBe("4.134.0");
-    expect(lock.packages["node_modules/wrangler"].version).toBe("4.134.0");
-    expect(pkg.devDependencies["@cloudflare/workers-types"]).toBe("5.20260917.1");
-    expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe("5.20260917.1");
+    expect(pkg.devDependencies.wrangler).toBe("4.150.0");
+    expect(lock.packages["node_modules/wrangler"].version).toBe("4.150.0");
+    expect(pkg.devDependencies["@cloudflare/workers-types"]).toBe("5.20261006.1");
+    expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe("5.20261006.1");
   });
   it("pins CI Node.js to a fixed 22.x patch and keeps Workers Builds on the 22 major", () => {
     // 2026-10-21 の Node.js security release では 22.23.4 が修正版（Refs #1914）。

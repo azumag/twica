@@ -81,9 +81,9 @@
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.972.0",
-    "@cloudflare/workers-types": "5.20260917.1",
+    "@cloudflare/workers-types": "5.20261006.1",
     "@formatjs/icu-messageformat-parser": "^2.11.4",
-    "@opennextjs/cloudflare": "1.20.2",
+    "@opennextjs/cloudflare": "1.20.12",
     "@swc/helpers": "^0.5.23",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
@@ -99,6 +99,6 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^3.2.4",
-    "wrangler": "4.134.0"
+    "wrangler": "4.150.0"
   }
 }
