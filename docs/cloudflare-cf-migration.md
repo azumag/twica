@@ -37,7 +37,7 @@
 3. Cloudflare Dashboardの非production branch build OFF / build cache ON、watch pathsが一次のコスト制御。シェルの `WORKERS_CI_BRANCH` は二次防御
 4. Workers CIでは不正branchのbuild/deploy/uploadをskip。CI外ではproductionの誤branch deployを拒否、previewの誤branch deployはversion uploadへ落とす。これらを `cf deploy` 直呼びへ置換しない
 5. local標準は `npm run dev:next` = Next webpack / localhost:3000。Worker実行は `workers:build` の後に `workers:dev`。未buildの古い `.open-next` を正常確認として扱わない
-6. 基準時点のNodeは20、OpenNext 1.20.2 / Wrangler 4.86.0。Workers Issues導入ではWranglerのNode >=22要件に合わせ、`.node-version`を22へ更新し、CI/deploy workflowは同ファイル参照へ統一する。OpenNextは維持。cf移行自体の互換性確認は別途必要
+6. 基準時点のNodeは20、OpenNext 1.20.2 / Wrangler 4.86.0。Workers Issues導入ではWranglerのNode >=22要件に合わせ、`.node-version`を22へ更新し、CI/deploy workflowは同ファイル参照へ統一する。OpenNextは維持。cf移行自体の互換性確認は別途必要。2026-10-23追記: #1914 で22.23.4へ完全固定する際にWorkers Buildsが完全指定をインストールできずCI用`.github/ci-node-version`へ分離していたが、対応を確認したため#1919 で`.node-version`（現在`22.23.4`）単一へ一本化した
 7. `auxiliary-workers:build` は既存の overlay・reporter・chat-delivery・stats-aggregator を保持し、rate-limit の production/preview dry-run bundle を追加する。固定 Wrangler 4.134.0 を用いる既存設定の移植であり、live resource・app binding・配備 workflow は変更しない
 8. OpenNext設定の `queue: "direct"` はadapterの設定で、chat notification Queueの配備状態を意味しない
 

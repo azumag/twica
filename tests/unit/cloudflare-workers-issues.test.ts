@@ -112,24 +112,22 @@ describe("Workers Issues deployment contract", () => {
       pkg.devDependencies.wrangler === "4.150.0" ? "5.20261006.1" : "5.20261019.1";
     expect(compareVersions(pinnedTypes, minTypes) >= 0).toBe(true);
   });
-  it("pins CI Node.js to a fixed 22.x patch and keeps Workers Builds on the 22 major", () => {
+  it("pins Node.js to a fully specified 22.x patch in the unified .node-version", () => {
     // 2026-10-21 の Node.js security release では 22.23.4 が修正版（Refs #1914）。
-    // CI（GitHub Actions）は `.github/ci-node-version` で修正版へ完全固定する。メジャー（"22"）だけだと
-    // actions/setup-node は runner のツールキャッシュにある旧パッチ（22.23.3）を選び、修正版が
-    // 適用されないため。このファイルは setup-node が版として読むので、コメントは入れられない。
+    // メジャー（"22"）だけだと actions/setup-node は runner のツールキャッシュにある
+    // 旧パッチ（22.23.3）を選び、修正版が適用されないため、常に semver 完全指定とする。
+    // このファイルは setup-node と Workers Builds が版として読むので、コメントは入れられない。
     //
-    // 一方 Cloudflare Workers Builds は、完全指定の `.node-version`（22.23.4）では
-    // `Installing nodejs 22.23.4` の直後に "Failed: error occurred while installing tools or
-    // dependencies" となり全ビルドが失敗した（2026-10-21 実測。build f2aaabd8 / 2a8c9d68 / 6a27ed21。
-    // 末尾改行の有無は無関係だった）。`.node-version` = `22` なら Workers Builds が自身の把握する
-    // 22 系最新（同日時点は 22.23.3）に解決して成功する。
-    // そこで CI 用ピンと Workers Builds 用 `.node-version` を暫定的に別ファイルへ分けている。
-    // Workers Builds が 22.23.4 に対応した時点で一本化する（Refs #1914, #1919）。
+    // 2026-10-21 時点では Cloudflare Workers Builds が完全指定（22.23.4）のインストールに
+    // 失敗したため、CI 用ピン（.github/ci-node-version）と Workers Builds 用 .node-version
+    // （メジャーのみ）を暫定的に別ファイルへ分けていた。2026-10-23 の preview build b3f09460 で
+    // `Installing nodejs 22.23.4` が成功することを確認したため、単一の .node-version へ
+    // 一本化した（Refs #1919）。
     //
-    // CI 側の下限（22.23.4 以上）を設けるのは、将来の巻き戻しや誤った downgrade で
+    // 下限（22.23.4 以上）を設けるのは、将来の巻き戻しや誤った downgrade で
     // 脆弱な版へ戻ることを防ぐため。比較は文字列ではなく数値で行う（22.23.10 > 22.23.4）。
-    const ciVersion = readFileSync(join(root, ".github/ci-node-version"), "utf8").trim();
-    expect(ciVersion).toMatch(/^22\.\d+\.\d+$/);
+    const nodeVersion = readFileSync(join(root, ".node-version"), "utf8").trim();
+    expect(nodeVersion).toMatch(/^22\.\d+\.\d+$/);
     const parse = (v: string) => v.split(".").map(Number);
     const atLeast = (actual: string, minimum: string) => {
       const a = parse(actual);
@@ -139,12 +137,9 @@ describe("Workers Issues deployment contract", () => {
       }
       return true;
     };
-    expect(atLeast(ciVersion, "22.23.4")).toBe(true);
+    expect(atLeast(nodeVersion, "22.23.4")).toBe(true);
 
-    // Workers Builds 用。完全指定にするとインストールに失敗するため、暫定でメジャーのみ（#1919 で一本化）。
-    expect(readFileSync(join(root, ".node-version"), "utf8").trim()).toBe("22");
-
-    // actions/setup-node を使う workflow は例外なく `.github/ci-node-version` を参照し、
+    // actions/setup-node を使う workflow は例外なく `.node-version` を参照し、
     // node-version の直書き（EOL の Node 20 など）を持たないこと。
     // 新しい workflow が追加されても漏れないよう、ファイル一覧は動的に取得する。
     const workflowDir = join(root, ".github/workflows");
@@ -154,51 +149,39 @@ describe("Workers Issues deployment contract", () => {
       const text = readFileSync(join(workflowDir, workflow), "utf8");
       if (!text.includes("actions/setup-node")) continue;
       expect(text, `${workflow} must use node-version-file`).toContain(
-        "node-version-file: .github/ci-node-version",
+        "node-version-file: .node-version",
       );
       expect(text, `${workflow} must not hardcode node-version`).not.toMatch(/^\s*node-version:/m);
     }
   });
   it("runs CI and the migration runner when only the Node pin changes", () => {
-    // #1917: セキュリティリリースで Node の固定版だけを上げる PR でも、新しい Node で
-    // test / workers:build / migration runner を実際に動かす必要がある。
-    // setup-node が読み runner も使うのは `.github/ci-node-version` なので、これが
-    // app / analysis / postgres_fixtures と on.push.paths の要素であることを固定する。
-    // `.node-version` は Workers Builds 専用で CI の Node を変えないが、値と filter の
-    // 対応を守るため app 側には含める。一方 migration runner は読まないので push paths
-    // には含めない（含めると無関係な push で本番DBへ接続する）。
+    // #1917: セキュリティリリースで Node の固定版だけを上げる PR / push でも、
+    // 新しい Node で test / workers:build / analysis build / 実PG検証 / migration runner
+    // を実際に動かす必要がある。#1919 の一本化で setup-node が読むのは .node-version
+    // だけになったため、ci.yml の app / analysis / postgres_fixtures filter と
+    // planetscale-migrate.yml の on.push.paths がすべてこれを含むことを固定する。
     // 対象が「要素」として存在することだけを確認し、並び順や他の filter との重複には
     // 依存しない。
-    const ciPin = ".github/ci-node-version";
-    const workersBuildsPin = ".node-version";
+    const nodePin = ".node-version";
     const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
     const migrate = readFileSync(join(root, ".github/workflows/planetscale-migrate.yml"), "utf8");
 
     // test / supabase-shutdown-build（workers:build）/ lint は
     // `needs.changes.outputs.app` でゲートされる。app filter から外れると、Node だけを
     // 上げる PR で新しい Node が一度も実行されない。
-    expect(filterGroup(ci, "app")).toEqual(
-      expect.arrayContaining([ciPin, workersBuildsPin]),
-    );
+    expect(filterGroup(ci, "app")).toContain(nodePin);
 
-    // analysis job も setup-node で同じ pin を読むため、analysis build も新 Node で回す。
-    // こちらは契約テストを実行しないので `.node-version` は含めない。
-    const analysis = filterGroup(ci, "analysis");
-    expect(analysis).toContain(ciPin);
-    expect(analysis).not.toContain(workersBuildsPin);
+    // analysis job も setup-node で同じ pin を読むため、analysis の typecheck / build も
+    // 新 Node で回す。
+    expect(filterGroup(ci, "analysis")).toContain(nodePin);
 
-    // postgres_fixtures は PG17 / integration job を独立にゲートする。既存の対応が
-    // 将来の整理で落ちると、Node を上げても実PG検証だけが skip される。
-    expect(filterGroup(ci, "postgres_fixtures")).toEqual(
-      expect.arrayContaining([ciPin, workersBuildsPin]),
-    );
+    // postgres_fixtures は PG17 / integration job を独立にゲートする。Node を上げる PR で
+    // 実PG検証だけが skip されないよう含める。
+    expect(filterGroup(ci, "postgres_fixtures")).toContain(nodePin);
 
-    // migration runner は push の paths に無いと、次の migration まで新しい Node で
-    // 実行されない。
-    expect(pushPaths(migrate)).toContain(ciPin);
-    // `.node-version` は runner が読まない。含めると本番 Environment の実DBへ無関係な
-    // 接続と pending migration の適用を招くため、意図的に含めていないことを固定する。
-    expect(pushPaths(migrate)).not.toContain(workersBuildsPin);
+    // migration runner も setup-node で .node-version を読む。push の paths に無いと、
+    // 次の migration まで新しい Node で実行されない。
+    expect(pushPaths(migrate)).toContain(nodePin);
   });
   it("does not enable separately billed tracing or change the runtime date", () => {
     expect(config).not.toMatch(/^\[(?:env\.preview\.)?observability\.traces\]/m);
