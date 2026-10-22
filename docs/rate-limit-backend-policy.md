@@ -13,9 +13,13 @@ backend の自動置換は行わない。有効化・配備は別途承認が必
 
 分類の機械的固定: `tests/unit/rate-limit-bucket-policy.test.ts`。
 preview には main の #1759 相当の strict 実装と #1889 の専用 Worker 定義を
-最小 port した。ただし app 側の `STRICT_RATE_LIMITER` binding は追加していない。
-binding が無い間は `activateCode` / `authLogin` も従来の soft fallback で動くため、
-コードの取り込みだけを実環境の strict 有効化・実測完了とは扱わない。
+最小 port し、app 側の `STRICT_RATE_LIMITER` binding も preview env に追加した
+(#1888)。binding は `twica-rate-limit-preview` の配備後に解決できるため、
+Worker 配備前に binding PR を merge しない (deploy が binding 解決エラーで
+失敗する)。配備後に preview で strict 経路が有効化される。有効化後も、
+並列バースト 429 / 障害時 503 / レイテンシ・課金の限定受入 (#1888) を実測する
+まで実環境の strict 有効化・実測完了とは扱わない。production (top-level) は
+未追加で、有効化は別承認。
 strict バケットの追加・削除はセキュリティレビューを要する。
 strict を外すことは総当り防御の穴に直結し、soft を strict に変えることは
 binding 障害時の 503 停止範囲を広げる。どちらも本ドキュメント更新つきの別変更で行う。

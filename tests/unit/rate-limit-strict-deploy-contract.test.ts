@@ -81,4 +81,23 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
     expect(docs).toContain('script_name = "twica-rate-limit-preview"');
     expect(docs).toMatch(/配備順序を逆にすると/);
   });
+
+  it("wires only the preview app binding to the dedicated DO Worker namespace", () => {
+    const config = read("wrangler.toml");
+
+    // binding 形式は DO namespace (idFromName / get を持つ) でなければならない。
+    // HTTP services 形式 ([[services]]) は fetch しか持たないため、誤って
+    // services として配線すると runtime で idFromName が TypeError → catch →
+    // 503 fail-closed になり、authLogin / activateCode が恒常的に失敗する
+    // (#1888 で services 版の未コミット差分が実際にこの欠陥を含んでいた)。
+    expect(config).toContain("[[env.preview.durable_objects.bindings]]");
+    expect(config).toContain('name = "STRICT_RATE_LIMITER"');
+    expect(config).toContain('class_name = "StrictRateLimitDurableObject"');
+    expect(config).toContain('script_name = "twica-rate-limit-preview"');
+    expect(config).not.toContain('service = "twica-rate-limit');
+    // production (top-level env) の有効化は policy doc の有効化ゲート 4 どおり
+    // 別承認のため、binding は preview env にのみ置く。`[["durable_objects..."]]
+    // の top-level 宣言は preview env 宣言と前置きが異なるので部分一致で区別できる。
+    expect(config).not.toContain("[[durable_objects.bindings]]");
+  });
 });
