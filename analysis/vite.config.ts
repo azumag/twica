@@ -1,7 +1,11 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { localAdminApiPlugin } from './dev/localAdminApi'
-import { ALLOW_EXTERNAL_KEY, resolveDevServerBinding } from './dev/devServerBinding'
+import {
+  ALLOW_EXTERNAL_KEY,
+  resolveDevServerBinding,
+  toServerOptions,
+} from './dev/devServerBinding'
 
 // ブラウザはローカルの /__admin API だけを呼び、DB資格情報は受け取らない。
 // DB接続はViteのNode側プラグインからpostgres.jsで行うため、クライアントバンドルへ
@@ -21,16 +25,13 @@ export default defineConfig(({ mode }) => {
     // 監査可能性のため、公開モードで起動した事実を必ず可視化する。
     console.warn(
       `[analysis] ${ALLOW_EXTERNAL_KEY}=1: dev server を全インターフェースへ公開します。` +
-        '信頼できるネットワーク以外では使用しないでください。',
+        '信頼できるネットワーク以外では使用しないでください。' +
+        'なお /__admin は非loopbackの送信元を拒否するため、管理APIは利用できません。',
     )
   }
 
   return {
     plugins: [react(), localAdminApiPlugin(env)],
-    server: {
-      port: 5173,
-      host: binding.host,
-      ...(binding.allowedHosts ? { allowedHosts: binding.allowedHosts } : {}),
-    },
+    server: toServerOptions(binding),
   }
 })

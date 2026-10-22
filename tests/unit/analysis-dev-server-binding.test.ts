@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   ALLOW_EXTERNAL_KEY,
+  ALLOW_EXTERNAL_VALUE,
+  DEV_SERVER_PORT,
   resolveDevServerBinding,
+  toServerOptions,
 } from '../../analysis/dev/devServerBinding'
 
 // Issue #1899: analysis の Vite dev server は管理API(/__admin)をホストし、
@@ -15,7 +18,6 @@ describe('analysis dev server の bind 解決 (#1899)', () => {
     const binding = resolveDevServerBinding({})
     expect(binding.host).toBe('127.0.0.1')
     expect(binding.external).toBe(false)
-    expect(binding.allowedHosts).toBeUndefined()
     expect(binding.warning).toBeNull()
   })
 
@@ -32,8 +34,6 @@ describe('analysis dev server の bind 解決 (#1899)', () => {
     const binding = resolveDevServerBinding({ [ALLOW_EXTERNAL_KEY]: '1' })
     expect(binding.host).toBe('0.0.0.0')
     expect(binding.external).toBe(true)
-    // 外部公開時は Host ヘッダが loopback 以外になるため Vite 側の検査も許可する。
-    expect(binding.allowedHosts).toBe(true)
     expect(binding.warning).toBeNull()
   })
 
@@ -43,7 +43,6 @@ describe('analysis dev server の bind 解決 (#1899)', () => {
       const binding = resolveDevServerBinding({ [ALLOW_EXTERNAL_KEY]: raw })
       expect(binding.host, `raw=${raw}`).toBe('127.0.0.1')
       expect(binding.external, `raw=${raw}`).toBe(false)
-      expect(binding.allowedHosts, `raw=${raw}`).toBeUndefined()
       // 「設定したのに効いていない」と誤解されると危険な回避策を招くため警告する。
       expect(binding.warning, `raw=${raw}`).not.toBeNull()
       expect(binding.warning).toContain(raw)
@@ -60,5 +59,38 @@ describe('analysis dev server の bind 解決 (#1899)', () => {
     // Vite は envPrefix(VITE_) 付きの変数を import.meta.env へ露出する。
     // サーバー bind の意思決定に VITE_ を付けると誤用を招くため固定する。
     expect(ALLOW_EXTERNAL_KEY.startsWith('VITE_')).toBe(false)
+    expect(ALLOW_EXTERNAL_VALUE).toBe('1')
+  })
+})
+
+describe('toServerOptions は実際の Vite server 設定へ結線される (#1899)', () => {
+  // このテスト群は「resolve した結果が Vite に渡る形になっているか」を固定する。
+  // 純関数だけを検証していると、vite.config.ts 側を host: true に戻しても
+  // 気づけないため、戻り値を server オプションへ写す層も対象にする。
+
+  it('既定では 127.0.0.1 へ bind する', () => {
+    const options = toServerOptions(resolveDevServerBinding({}))
+    expect(options.host).toBe('127.0.0.1')
+    expect(options.port).toBe(DEV_SERVER_PORT)
+  })
+
+  it('オプトイン時のみ 0.0.0.0 へ bind する', () => {
+    const options = toServerOptions(
+      resolveDevServerBinding({ [ALLOW_EXTERNAL_KEY]: '1' }),
+    )
+    expect(options.host).toBe('0.0.0.0')
+  })
+
+  it('allowedHosts を一切設定しない（DNS rebinding 対策のため）', () => {
+    // Vite は IP リテラルと localhost を常に許可し、未知のホスト名だけを
+    // allowedHosts で判定する。allowedHosts: true を渡すと Host 検証が
+    // 丸ごと無効化され、攻撃者ドメインを LAN IP へ再解決する DNS rebinding が
+    // 成立する。外部公開時も IP 直指定で足りるため常に未設定とする。
+    for (const env of [{}, { [ALLOW_EXTERNAL_KEY]: '1' }]) {
+      const options = toServerOptions(resolveDevServerBinding(env))
+      expect(options).not.toHaveProperty('allowedHosts')
+      // true だけでなく、いかなる allowlist も暗黙に足さない。
+      expect(Object.keys(options).sort()).toEqual(['host', 'port'])
+    }
   })
 })

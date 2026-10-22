@@ -1,5 +1,24 @@
 @import "tailwindcss";
 
+/* Tailwind v3 -> v4 の移行互換（見た目の退行防止）
+ *
+ * v4 は border/divide の既定色を gray-200 から currentColor へ変更した。
+ * この dashboard には色指定のない border / border-b / border-t / divide-y が
+ * 多数あり、そのままでは枠線が text 色（gray-900 相当）へ濃くなる。
+ * Tailwind 公式のアップグレードガイドが示す互換指定で v3 の既定色へ戻す。
+ * 個別に border-<color> を書く方式は約40箇所の変更になり、以後の追加漏れも
+ * 招くため採用しない。明示的に色を指定した要素は従来どおり上書きされる。
+ */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
+
 /* Base styles for the dashboard */
 body {
   @apply bg-gray-100 text-gray-900;

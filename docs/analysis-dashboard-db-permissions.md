@@ -27,7 +27,14 @@ DB 権限と同じ強さの境界として扱います（#1899）。
   `import.meta.env` へ露出するためです。サーバーの bind 判断をクライアント可視の命名に
   しないでください。
 - 外部公開時も `/__admin` は loopback 以外の送信元・Host・Origin を拒否します
-  （`analysis/dev/localAdminApi.ts`）。公開した事実は起動時に警告として必ず出力されます。
+  （`analysis/dev/localAdminApi.ts`）。つまり**外部公開しても管理 API は使えず**、
+  画面のレイアウト確認など読み取り専用の確認に限られます。データ操作が必要な場合は
+  管理 PC 上で loopback のまま操作してください。
+- `server.allowedHosts` は外部公開時も設定しません。Vite は IP リテラルと `localhost`
+  を常に許可し、未知のホスト名だけを拒否します。`allowedHosts: true` を渡すと Host
+  検証が無効化され、攻撃者ドメインを LAN IP へ再解決する DNS rebinding が成立します。
+  LAN から使う場合は `http://<管理PCのIP>:5173/` のように IP 直指定してください。
+- 公開した事実は起動時に警告として必ず出力されます。
 - 信頼できないネットワーク（公衆無線など）では `1` を設定しないでください。
 
 ## 必要な権限

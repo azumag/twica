@@ -1,5 +1,5 @@
 /**
- * analysis 開発サーバーの bind 先を決める純関数。
+ * analysis 開発サーバーの bind 先を決める純関数群。
  *
  * この dev server は管理ダッシュボードの `/__admin` API をホストしており、
  * Node 側プロセスが `DASHBOARD_DATABASE_URL` で DB へ接続する。既定で
@@ -27,13 +27,12 @@ export const ALLOW_EXTERNAL_VALUE = '1'
  * 値に `1` だけを許す理由:
  * `true`/`yes`/`on` のような揺れを許すと、「設定したつもりがない値」で
  * 公開に倒れる余地が増える。判定を1つの値に固定して fail-closed にする。
+ * 先頭/末尾の空白だけは trim して許容する（シェルの `= 1` 等の事故を拾う）。
  */
 
 export interface DevServerBinding {
   /** Vite の `server.host` に渡す値。 */
   host: string
-  /** Vite の `server.allowedHosts` に渡す値。loopback 運用では未設定。 */
-  allowedHosts?: true
   /** 外部公開で起動するか。呼び出し側の警告出力の判断に使う。 */
   external: boolean
   /**
@@ -57,7 +56,7 @@ export function resolveDevServerBinding(
   const raw = env[ALLOW_EXTERNAL_KEY]?.trim()
 
   if (raw === ALLOW_EXTERNAL_VALUE) {
-    return { host: '0.0.0.0', allowedHosts: true, external: true, warning: null }
+    return { host: '0.0.0.0', external: true, warning: null }
   }
 
   if (raw) {
@@ -71,4 +70,27 @@ export function resolveDevServerBinding(
   }
 
   return { host: '127.0.0.1', external: false, warning: null }
+}
+
+/** Vite の `server` オプションのうち、本モジュールが決定する部分。 */
+export interface DevServerOptions {
+  port: number
+  host: string
+}
+
+/** 開発サーバーの待受ポート。 */
+export const DEV_SERVER_PORT = 5173
+
+/**
+ * bind 解決結果から Vite の `server` オプションを組み立てる。
+ *
+ * `server.allowedHosts` は **設定しない**。Vite は IP リテラルと
+ * `localhost` を常に許可し、それ以外のホスト名だけを `allowedHosts` で判定する
+ * （`isHostAllowedInternal`）。したがって未設定のままでも LAN の IP 直指定では
+ * 到達でき、`allowedHosts: true` を指定した場合にだけ Host 検証が丸ごと
+ * 無効化されて DNS rebinding（攻撃者ドメインを管理 PC の LAN IP へ再解決）が
+ * 成立する。外部公開の用途は IP 直指定で足りるため、ここでは設定しない。
+ */
+export function toServerOptions(binding: DevServerBinding): DevServerOptions {
+  return { port: DEV_SERVER_PORT, host: binding.host }
 }

@@ -70,7 +70,6 @@
     "stats-aggregator:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/stats-aggregator/wrangler.toml --env preview"
   },
   "dependencies": {
-    "@testing-library/dom": "^10.4.2",
     "drizzle-orm": "^0.45.2",
     "heic-to": "1.5.2",
     "next": "16.4.2",
@@ -87,6 +86,7 @@
     "@opennextjs/cloudflare": "1.20.12",
     "@swc/helpers": "^0.5.23",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -103,6 +103,8 @@
     "wrangler": "4.150.0"
   },
   "overrides": {
-    "glob": "10.5.0"
+    "@node-minify/core": {
+      "glob": "10.5.0"
+    }
   }
 }

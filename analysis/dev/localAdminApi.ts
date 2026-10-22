@@ -848,8 +848,10 @@ async function handleRoute(ctx: RouteContext): Promise<unknown> {
 // 背景: `/__admin` は Vite dev server の middleware として動き、ブラウザからは
 // 同一オリジンの `/__admin` に対して `fetch()` される。loopback 判定だけでは
 // 「悪意あるページを開いたブラウザが 127.0.0.1 の dev server へ書き込む」
-// 経路を止められない。`analysis/vite.config.ts` は `host: true` で外部
-// インターフェースにも bind するため、Host/Origin の検証も必要になる。
+// 経路を止められない。`analysis/vite.config.ts` は既定で loopback にのみ
+// bind するが、`TWICA_ANALYSIS_DEV_ALLOW_EXTERNAL=1` を指定した場合は
+// 全インターフェースへ公開されうる（twica#1899）。そのため Host/Origin の
+// 検証は bind 先の設定に依存させず、常に必要になる。
 //
 // 多層防御として次の5つをすべて要求する。いずれも handleRoute() より前に評価し、
 // DB(adminApiPg) へクエリを1本も発行せずに拒否を確定させる。
