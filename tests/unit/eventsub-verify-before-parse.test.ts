@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/twitch/eventsub/route'
 import { handleApiError } from '@/lib/error-handler'
@@ -92,6 +92,7 @@ vi.mock('@/lib/error-handler', () => ({
 
 const SECRET = 'eventsub-test-secret'
 const EVENTSUB_URL = 'http://localhost:3000/api/twitch/eventsub'
+const ORIGINAL_EVENTSUB_SECRET = process.env.TWITCH_EVENTSUB_SECRET
 
 async function signEventSubBody(
   messageId: string,
@@ -157,9 +158,60 @@ async function createSignedRequest(
 }
 
 /**
+ * テスト用: 与えた chunk を pull ごとに1個ずつ供給し、pull 回数と cancel の
+ * 呼び出しを追跡する ReadableStream。全 chunk を供給し終えたら close する。
+ * 本文サイズ上限（413）系のテストで「実際の読取バイト数で強制され、全量を
+ * 読み切る前に cancel されたこと」を機械的に検証するために使う。
+ */
+function createTrackedStream(chunks: Uint8Array[]) {
+  let pulled = 0
+  let cancelled = false
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled >= chunks.length) {
+        controller.close()
+        return
+      }
+      controller.enqueue(chunks[pulled])
+      pulled += 1
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  return {
+    stream,
+    getPulled: () => pulled,
+    isCancelled: () => cancelled,
+    totalChunks: chunks.length,
+  }
+}
+
+/** 同一サイズの zero 埋め chunk を count 個作る（413系テスト用。chunk 内容は検証されない）。 */
+function repeatedZeroChunks(count: number, size: number): Uint8Array[] {
+  return Array.from({ length: count }, () => new Uint8Array(size))
+}
+
+function createStreamRequest(
+  stream: ReadableStream<Uint8Array>,
+  overrides: HeaderOverrides = {}
+): NextRequest {
+  process.env.TWITCH_EVENTSUB_SECRET = SECRET
+  return new NextRequest(EVENTSUB_URL, {
+    method: 'POST',
+    headers: buildEventSubHeaders(overrides),
+    body: stream,
+    // Node/undici は stream body に duplex: 'half' を要求するが、Next の
+    // RequestInit 型定義にこのフィールドが無く signal の型も非互換のため、
+    // NextRequest の init 引数型へアサーションで渡す。
+    duplex: 'half',
+  } as ConstructorParameters<typeof NextRequest>[1])
+}
+
+/**
  * 「不正入力が恒久エラー経路・業務処理へ到達しない」ことの共通アサーション。
  * 4xx（400系）であることと、handleApiError / reportError / 業務処理（ガチャ・
- * 通知・KV退避・重複排除記録）のいずれも呼ばれていないことを検証する。
+ * 通知・KV退避・重複排除・遅延通知）のいずれも呼ばれていないことを検証する。
  */
 function expectRejectedWithoutSideEffects(response: Response): void {
   expect(response.status).toBeGreaterThanOrEqual(400)
@@ -169,6 +221,8 @@ function expectRejectedWithoutSideEffects(response: Response): void {
   expect(mocks.handleRedemption).not.toHaveBeenCalled()
   expect(mocks.handleRaidNotification).not.toHaveBeenCalled()
   expect(mocks.postRedemptionNotify).not.toHaveBeenCalled()
+  expect(mocks.runInBackground).not.toHaveBeenCalled()
+  expect(mocks.isDuplicateEventSubMessage).not.toHaveBeenCalled()
   expect(mocks.parkEventSubNotification).not.toHaveBeenCalled()
   expect(mocks.markEventSubMessageSeen).not.toHaveBeenCalled()
 }
@@ -202,6 +256,12 @@ describe('EventSub 未署名・不正入力の防御（issue #1895）', () => {
     mocks.parkEventSubNotification.mockResolvedValue(true)
   })
 
+  afterEach(() => {
+    // tests/setup.ts が設定した元の値へ戻す（eventsub-redemption-limit.test.ts の
+    // ORIGINAL_SECRET 復元パターンと同じ運用）。
+    process.env.TWITCH_EVENTSUB_SECRET = ORIGINAL_EVENTSUB_SECRET
+  })
+
   describe('本文読取前のヘッダー・形式・時刻検査', () => {
     it('未署名（署名ヘッダー欠落）+ 不正JSON本文は400で応答し、恒久エラー経路へ流れない', async () => {
       const request = createEventSubRequest('this is not json', {
@@ -213,15 +273,26 @@ describe('EventSub 未署名・不正入力の防御（issue #1895）', () => {
       // 旧実装では JSON.parse が先に走り handleApiError → 500 になっていた入力。
       expect(response.status).toBe(400)
       await expect(response.json()).resolves.toEqual({ error: 'Invalid request' })
+      expect(request.bodyUsed).toBe(false)
       expectRejectedWithoutSideEffects(response)
     })
 
+    // 【本文未読の検証方法について】Node/undici は ReadableStream を body に持つ
+    // Request を構築した時点で、変換用の内部 wrapping stream が元 stream から
+    // 1 chunk を先行 pull（pre-buffer）する。そのため route が本文を1バイトも
+    // 読まなくても tracked stream の pulled は 1 となり、「pulled === 0」では
+    // 「route が本文を読んでいない」ことを主張できない。そこで以降の事前検査系
+    // テストでは fetch 仕様の request.bodyUsed を使う。bodyUsed は body stream が
+    // disturb された時点で true になり、route は readBodyWithLimit 内の
+    // request.body.getReader() で初めて disturb するため、事前検査で拒否された
+    // 要求では false のままになる。旧実装の request.text() は必ず true にする
+    // ため、この固定は「本文読取前に拒否する」回帰も機械的に検出できる。
     it.each([
       'twitch-eventsub-message-id',
       'twitch-eventsub-message-timestamp',
       'twitch-eventsub-message-type',
       'twitch-eventsub-message-signature',
-    ])('必須ヘッダー %s の欠落は400（本文を読む前の事前検査）', async (headerName) => {
+    ])('必須ヘッダー %s の欠落は本文を読まずに400（bodyUsed による機械的固定）', async (headerName) => {
       const request = createEventSubRequest('{"subscription":{"type":"x"}}', {
         omit: [headerName],
       })
@@ -229,6 +300,8 @@ describe('EventSub 未署名・不正入力の防御（issue #1895）', () => {
       const response = await POST(request)
 
       expect(response.status).toBe(400)
+      // 本文 stream が未 disturb であることの直接証明（受入条件: 本文読取前の検査）。
+      expect(request.bodyUsed).toBe(false)
       expectRejectedWithoutSideEffects(response)
     })
 
@@ -238,6 +311,7 @@ describe('EventSub 未署名・不正入力の防御（issue #1895）', () => {
       const response = await POST(request)
 
       expect(response.status).toBe(400)
+      expect(request.bodyUsed).toBe(false)
       expectRejectedWithoutSideEffects(response)
     })
 
@@ -248,13 +322,14 @@ describe('EventSub 未署名・不正入力の防御（issue #1895）', () => {
       `sha256=${'A'.repeat(64)}`,
       `sha256=${'g'.repeat(64)}`,
       `md5=${'a'.repeat(64)}`,
-    ])('形式不正な署名値（%s）は403（本文読取前の形式検査）', async (signature) => {
+    ])('形式不正な署名値（%s）は本文を1バイトも読まずに403（本文読取前の形式検査）', async (signature) => {
       const request = createEventSubRequest('not json', { signature })
 
       const response = await POST(request)
 
       expect(response.status).toBe(403)
       await expect(response.json()).resolves.toEqual({ error: 'Invalid signature' })
+      expect(request.bodyUsed).toBe(false)
       expectRejectedWithoutSideEffects(response)
     })
 
@@ -270,7 +345,7 @@ describe('EventSub 未署名・不正入力の防御（issue #1895）', () => {
       expectRejectedWithoutSideEffects(response)
     })
 
-    it('期限外タイムスタンプ（正しい署名）は403で再送防御により処理へ進まない', async () => {
+    it('期限外タイムスタンプ（正しい署名）は本文を1バイトも読まずに403で再送防御により処理へ進まない', async () => {
       const oldTimestamp = new Date(Date.now() - 11 * 60 * 1000).toISOString()
       const body = JSON.stringify(redemptionNotificationPayload)
       const messageId = 'eventsub-stale-1895'
@@ -285,84 +360,42 @@ describe('EventSub 未署名・不正入力の防御（issue #1895）', () => {
       const response = await POST(request)
 
       expect(response.status).toBe(403)
+      // 時刻窓検査が本文読取より前であることの直接証明。
+      expect(request.bodyUsed).toBe(false)
       expectRejectedWithoutSideEffects(response)
     })
   })
 
   describe('本文サイズ上限（Content-Length 非依存の stream 強制）', () => {
-    // 16KiB 単位で chunk を供給し続ける追跡付き ReadableStream。
-    // pull 回数と cancel の呼び出しを記録し、「上限超過時点で読取が中断された
-    // こと（全量を読み切っていないこと）」を検証できるようにする。
-    const CHUNK_SIZE = 16 * 1024
-
-    function createTrackedOversizedStream(maxChunks = 40) {
-      let pulled = 0
-      let cancelled = false
-      const stream = new ReadableStream<Uint8Array>({
-        pull(controller) {
-          pulled += 1
-          if (pulled > maxChunks) {
-            controller.close()
-            return
-          }
-          controller.enqueue(new Uint8Array(CHUNK_SIZE))
-        },
-        cancel() {
-          cancelled = true
-        },
-      })
-      return {
-        stream,
-        getPulled: () => pulled,
-        isCancelled: () => cancelled,
-        maxChunks,
-      }
-    }
-
     it('Content-Length 宣言なしの上限超過 stream は413で中断される', async () => {
-      const tracked = createTrackedOversizedStream()
-
-      const request = new NextRequest(EVENTSUB_URL, {
-        method: 'POST',
-        headers: buildEventSubHeaders(),
-        body: tracked.stream,
-        // Node/undici は stream body に duplex: 'half' を要求するが、Next の
-        // RequestInit 型定義にこのフィールドが無いためアサーションで渡す
-        // （型の signal 非互換も同時に回避される）。
-        duplex: 'half',
-      } as ConstructorParameters<typeof NextRequest>[1])
-      process.env.TWITCH_EVENTSUB_SECRET = SECRET
+      // 16KiB × 40 chunk = 全量 640KiB の stream。64KiB 上限に対し、ごく一部を
+      // 読んだ時点で cancel されることを検証する。
+      const tracked = createTrackedStream(repeatedZeroChunks(40, 16 * 1024))
+      const request = createStreamRequest(tracked.stream)
 
       const response = await POST(request)
 
       expect(response.status).toBe(413)
       await expect(response.json()).resolves.toEqual({ error: 'Payload too large' })
-      // 実際の読取バイト数で強制されているため、ごく一部を読んだ時点で中断される
-      // （64KiB 上限に対し全量 640KiB の stream を読み切っていないことの証明）。
+      // 実際の読取バイト数で強制されているため、読み切る前に中断される。
       expect(tracked.isCancelled()).toBe(true)
-      expect(tracked.getPulled()).toBeLessThan(tracked.maxChunks)
+      expect(tracked.getPulled()).toBeLessThan(tracked.totalChunks)
       expectRejectedWithoutSideEffects(response)
     })
 
     it('Content-Length を過小宣言した上限超過 stream も413で中断される', async () => {
-      const tracked = createTrackedOversizedStream()
-
       // 実際には 640KiB 流すが、Content-Length は 10 バイトと偽装する。
       // 上限強制が Content-Length に依存していないことの回帰ピン。
-      const request = new NextRequest(EVENTSUB_URL, {
-        method: 'POST',
-        headers: buildEventSubHeaders({ extra: { 'content-length': '10' } }),
-        body: tracked.stream,
-        // duplex については上記テストと同じ理由でアサーションを使用。
-        duplex: 'half',
-      } as ConstructorParameters<typeof NextRequest>[1])
-      process.env.TWITCH_EVENTSUB_SECRET = SECRET
+      const tracked = createTrackedStream(repeatedZeroChunks(40, 16 * 1024))
+      const request = createStreamRequest(tracked.stream, {
+        extra: { 'content-length': '10' },
+      })
 
       const response = await POST(request)
 
       expect(response.status).toBe(413)
       expect(tracked.isCancelled()).toBe(true)
-      expect(tracked.getPulled()).toBeLessThan(tracked.maxChunks)
+      expect(tracked.getPulled()).toBeLessThan(tracked.totalChunks)
       expectRejectedWithoutSideEffects(response)
     })
 

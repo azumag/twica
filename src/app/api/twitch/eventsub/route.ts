@@ -115,7 +115,8 @@ async function readBodyWithLimit(
   const reader = request.body?.getReader();
   if (!reader) {
     // ボディが存在しないリクエスト: 旧 request.text() の挙動（空文字）に合わせる。
-    // 空本文に対する署名は HMAC 検証で必ず失敗するため、後段で確実に拒否される。
+    // 空本文は JSON 解析で必ず失敗するため（secret保持者が空本文に正しい署名を
+    // 与えた場合も含む）、後段で400として確実に拒否される。
     return "";
   }
 
@@ -292,7 +293,7 @@ export async function POST(request: NextRequest) {
     // #694 Stage 4: maintenance mode（'off'以外）中は notification をDBへ書き込まず
     // KVへ退避し、Twitchには通常どおり2xxを返す。
     //
-    // - 挿入位置: 署名検証（POSTハンドラ冒頭）より後、かつ実際にDB書き込みを行う
+    // - 挿入位置: 署名検証より後、かつ実際にDB書き込みを行う
     //   handleRedemption/handleRaidNotificationより前。署名検証前に退避すると
     //   偽payloadがKVに混入するため必ず検証後でなければならない。なお、この
     //   route には「重複チェック」という独立した事前ステップは存在せず
