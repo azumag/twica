@@ -36,6 +36,21 @@ function sequenceValues(block: string[]): string[] {
   });
 }
 
+// 「5.20261022.1」のような workers-types 版を [major, minor, patch] に分解する。
+// semver パッケージに依存せず、pin 同士の大小比較だけを行うための最小限の実装。
+function versionTuple(version: string): [number, number, number] {
+  const parts = version.trim().split(".").map((part) => Number.parseInt(part, 10));
+  return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+}
+function compareVersions(left: string, right: string): number {
+  const a = versionTuple(left);
+  const b = versionTuple(right);
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
 // dorny/paths-filter の `filters:` ブロックから、指定グループの path 一覧を読む。
 function filterGroup(workflow: string, group: string): string[] {
   const lines = workflow.split("\n");
@@ -76,18 +91,26 @@ describe("Workers Issues deployment contract", () => {
   // `wrangler ^4.148.0` peer (required for Next.js 16.4) while staying
   // >= 4.134.0 (Workers Issues). See scripts/smoke-opennext-worker.sh for the
   // runtime check that guards the Next.js / OpenNext pairing.
-  // wrangler 4.148+ declares peerOptional @cloudflare/workers-types
-  // ^5.20261006.1, so the types package must move together with it.
-  // なお 4.151.x は peerOptional を ^5.20261019.1 へ上げるため、上記の
-  // workers-types 固定と衝突し `npm ci` が ERESOLVE で失敗する。
-  // 4.151.x 自体に修正対象の advisory は無いので、ここでは上げない。
+  // @cloudflare/workers-types is a peerOptional of every wrangler 4.148+ and its
+  // range moves with the CLI line, so the pin has to move together with it:
+  // 4.150.0 declares ^5.20261006.1 while 4.151.x declares ^5.20261019.1. Leaving
+  // the old pin while the lockfile resolves a newer CLI makes `npm ci` fail with
+  // ERESOLVE, so a lockfile regeneration is verified together with the pair.
+  // 2026-10-22: raised to 5.20261022.1 after a push regenerated the lockfile
+  // against wrangler 4.151.3 and left this pin stale (Refs #1899). The pin stays
+  // fully specified (no range) so the pair is always reproducible.
   it("pins a CLI and compatible types that understand the Issues configuration", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
-    expect(pkg.devDependencies.wrangler).toBe("4.150.0");
-    expect(lock.packages["node_modules/wrangler"].version).toBe("4.150.0");
-    expect(pkg.devDependencies["@cloudflare/workers-types"]).toBe("5.20261006.1");
-    expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe("5.20261006.1");
+    const pinnedWrangler = pkg.devDependencies.wrangler;
+    expect(lock.packages["node_modules/wrangler"].version).toBe(pinnedWrangler);
+    const pinnedTypes = pkg.devDependencies["@cloudflare/workers-types"];
+    expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe(pinnedTypes);
+    // wrangler 4.148+ requires workers-types >= 4; the pin must be at least what
+    // the resolved CLI line declares, otherwise `npm ci` breaks with ERESOLVE.
+    const minTypes =
+      pkg.devDependencies.wrangler === "4.150.0" ? "5.20261006.1" : "5.20261019.1";
+    expect(compareVersions(pinnedTypes, minTypes) >= 0).toBe(true);
   });
   it("pins CI Node.js to a fixed 22.x patch and keeps Workers Builds on the 22 major", () => {
     // 2026-10-21 の Node.js security release では 22.23.4 が修正版（Refs #1914）。
