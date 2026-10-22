@@ -487,7 +487,13 @@ describe("ChannelPointSettings additional-reward editing", () => {
           resolvePut = resolve;
         });
       }
-      return (baseMock as ReturnType<typeof vi.fn>)(input, init);
+      // Vitest 4 では vi.fn() の型が Procedure | Constructable になるため、
+      // そのまま呼ぶと「呼び出せない」と型検査で落ちる。fetch のシグネチャへ
+      // 明示的に絞ってから呼ぶ。
+      return (baseMock as unknown as (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => Promise<Response>)(input, init);
     });
     vi.stubGlobal("fetch", gatingMock);
     vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));

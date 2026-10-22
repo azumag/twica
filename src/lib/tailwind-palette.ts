@@ -1,7 +1,7 @@
 // Tailwind v4 の既定パレット（sRGB HEX）。**このファイルは自動生成です。手で編集しないこと。**
 //
 // 生成: node scripts/generate-tailwind-palette.mjs
-// 入力: node_modules/tailwindcss/theme.css（tailwindcss@4.1.18）
+// 入力: node_modules/tailwindcss/theme.css（tailwindcss@4.3.3）
 // 用途: Issue #1783 でフェーズ1 が受理していたプリセット Tailwind クラス
 //       （bg-{hue}-{shade} / from-… to-… / shadow-…[/25|50|75]）を、
 //       保存・描画できる HEX へ正規化するための対応表。
