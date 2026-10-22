@@ -1,0 +1,44 @@
+# Strict rate-limit Durable Object (#1888)
+#
+# この Worker は strict バケット (authLogin / activateCode) の直列化カウンタだけを
+# 提供する。アプリ本体 (twica / twica-preview) は `STRICT_RATE_LIMITER` binding を
+# `script_name` 経由でこの Worker へ向ける。binding と class を同一スクリプトに
+# 置かないのは、アプリ本体の entrypoint が OpenNext の生成物
+# (`.open-next/worker.js`) であり、任意の class を export できないため。
+#
+# 配備順序 (逆にするとアプリ側の binding が存在しない Worker を指して deploy が
+# 失敗する):
+#   1. この Worker を deploy して migration を適用する
+#   2. アプリ側 wrangler.toml に `STRICT_RATE_LIMITER` binding を追加する
+#
+# 新規 Cloudflare リソースの作成を伴うため、deploy は owner 承認後に実行する
+# (Issue #1888)。CI では `rate-limit:build:*` の dry-run だけを行う。
+name = "twica-rate-limit"
+main = "src/index.ts"
+# 直近の完了した UTC 日付を使う。未来日は Cloudflare API に拒否される。
+compatibility_date = "2026-10-18"
+
+[observability]
+enabled = true
+
+[[durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StrictRateLimitDurableObject"]
+
+[env.preview]
+name = "twica-rate-limit-preview"
+
+[env.preview.observability]
+enabled = true
+
+[[env.preview.durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+
+[[env.preview.migrations]]
+tag = "v1"
+new_sqlite_classes = ["StrictRateLimitDurableObject"]
