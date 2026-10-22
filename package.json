@@ -70,6 +70,7 @@
     "stats-aggregator:deploy:preview": "OPEN_NEXT_DEPLOY=true wrangler deploy --config workers/stats-aggregator/wrangler.toml --env preview"
   },
   "dependencies": {
+    "@testing-library/dom": "^10.4.2",
     "drizzle-orm": "^0.45.2",
     "heic-to": "1.5.2",
     "next": "16.4.2",
@@ -92,13 +93,16 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "@vitest/ui": "^3.2.4",
+    "@vitest/ui": "4.1.12",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
-    "happy-dom": "^20.3.3",
+    "happy-dom": "^21.0.4",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^3.2.4",
+    "vitest": "4.1.12",
     "wrangler": "4.150.0"
+  },
+  "overrides": {
+    "glob": "10.5.0"
   }
 }

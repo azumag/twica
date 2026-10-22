@@ -472,6 +472,13 @@ describe("MyTrades (#727 §6.6)", () => {
       expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
 
       const baseImpl = fetchMock.getMockImplementation()!;
+      // Vitest 4 では vi.fn() の型が Procedure | Constructable になるため、
+      // 取得した実装をそのまま呼ぶと「呼び出せない」と型検査で落ちる。
+      // fetch のシグネチャへ明示的に絞ってから呼ぶ。
+      const callBase = baseImpl as unknown as (
+        url: string,
+        init?: RequestInit,
+      ) => Promise<Response>;
       fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
         if (url === "/api/trades/offer-1/cancel") {
           byStatus.cancelled = [makeOffer({ status: "cancelled" })];
@@ -479,7 +486,7 @@ describe("MyTrades (#727 §6.6)", () => {
         // Hold the background refresh of the open tab so the optimistic
         // removal is observable on its own.
         if (url.startsWith("/api/trades/mine?status=open")) await refreshGate;
-        return baseImpl(url, init);
+        return callBase(url, init);
       });
       fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferButton }));
       fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferModalConfirmButton }));

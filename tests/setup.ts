@@ -45,6 +45,18 @@ Object.defineProperty(global.navigator, 'clipboard', {
   writable: true,
 })
 
+// happy-dom 21 では window.alert / confirm / prompt が未定義のため、
+// vi.spyOn(window, 'alert') 等が失敗する。テスト互換のためスタブを用意する。
+for (const name of ['alert', 'confirm', 'prompt'] as const) {
+  if (typeof (window as any)[name] !== 'function') {
+    Object.defineProperty(window, name, {
+      value: vi.fn(),
+      writable: true,
+      configurable: true,
+    })
+  }
+}
+
 // PlanetScale直結経路（postgres.js + Drizzle）のグローバル境界。
 // DBアクセスを行う単体テストは、対象クエリの戻り値と呼び出し形状を明示した
 // getDb fixture を必ず設定する。暗黙の空DBを返すと、必要な認可・所有権検証が

@@ -78,6 +78,9 @@ describe("Workers Issues deployment contract", () => {
   // runtime check that guards the Next.js / OpenNext pairing.
   // wrangler 4.148+ declares peerOptional @cloudflare/workers-types
   // ^5.20261006.1, so the types package must move together with it.
+  // なお 4.151.x は peerOptional を ^5.20261019.1 へ上げるため、上記の
+  // workers-types 固定と衝突し `npm ci` が ERESOLVE で失敗する。
+  // 4.151.x 自体に修正対象の advisory は無いので、ここでは上げない。
   it("pins a CLI and compatible types that understand the Issues configuration", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
