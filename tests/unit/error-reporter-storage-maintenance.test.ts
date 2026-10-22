@@ -63,11 +63,13 @@ describe('error-reporter storage maintenance trigger (#1907)', () => {
     expect(url).toBe('https://app.example.test/api/internal/storage-maintenance');
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['x-storage-maintenance-secret']).toBe('s3cret');
-    expect(JSON.parse(String(init.body))).toEqual({ action: 'reconcile' });
-    expect(JSON.parse(String((fetchImpl.mock.calls[1][1] as RequestInit).body))).toEqual({
+    expect(JSON.parse(String(init.body))).toEqual({
       action: 'collect-unused-sounds',
       minAgeSeconds: 86_400,
       maxDeletions: 200,
+    });
+    expect(JSON.parse(String((fetchImpl.mock.calls[1][1] as RequestInit).body))).toEqual({
+      action: 'reconcile',
     });
   });
 

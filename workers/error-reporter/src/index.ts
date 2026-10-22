@@ -1700,7 +1700,6 @@ export async function callStorageMaintenanceForTarget(
   }
 
   const actions: Array<Record<string, unknown>> = [
-    { action: 'reconcile' },
     {
       action: 'collect-unused-sounds',
       // アップロード→設定保存の途中にあるオブジェクトを誤削除しない猶予。
@@ -1708,6 +1707,9 @@ export async function callStorageMaintenanceForTarget(
       minAgeSeconds: 24 * 60 * 60,
       maxDeletions: 200,
     },
+    // 回収後の台帳を再照合する。removeBlobFile の RPC 失敗は同関数内で
+    // ログのみになるため、同日中に差分を補正できるよう collect の後に置く。
+    { action: 'reconcile' },
   ]
 
   for (const body of actions) {

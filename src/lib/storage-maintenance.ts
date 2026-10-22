@@ -25,7 +25,7 @@
 
 import 'server-only';
 
-import { like } from 'drizzle-orm';
+import { and, eq, like } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
 import { withDbRetry } from '@/lib/db/retry';
 import { blobFiles as blobFilesTable, streamers as streamersTable } from '@/lib/db/schema';
@@ -193,8 +193,12 @@ async function collectSoundLedgerUrls(): Promise<Map<string, string>> {
         .select({ url: blobFilesTable.url })
         .from(blobFilesTable)
         // 画像キーは `{prefix}_{uuid}.ext`、効果音は `sound_...`。URL の
-        // パス部分に `/sound_` を含む行だけを対象にする（全件ロードを避ける）。
-        .where(like(blobFilesTable.url, '%/sound_%'));
+        // パス部分に `/sound_` を含む R2 行だけを対象にする（全件ロードを避け、
+        // 旧 Vercel Blob の台帳行を R2 回収で消さない）。
+        .where(and(
+          eq(blobFilesTable.storage_type, 'r2'),
+          like(blobFilesTable.url, '%/sound_%'),
+        ));
     },
     'storageMaintenance(soundLedgerUrls)',
     { idempotent: true },
