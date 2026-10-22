@@ -59,12 +59,9 @@ jobs:
               - 'vitest.config.*'
               - 'wrangler.toml'
               # Node の指定だけを変える PR で test / workers:build / lint を実際に起動する。
-              # setup-node が読むのは .github/ci-node-version なので、このファイルの変更は
-              # 「新しい Node で検証する」ことを意味する。.node-version は Workers Builds
-              # 専用で CI の Node を変えないが、値（契約テストで "22" に固定）と本 filter の
-              # 対応を守るため、変更時も test を回す
-              # （経緯は docs/cloudflare-workers-builds.md。Refs #1917）。
-              - '.github/ci-node-version'
+              # setup-node も Workers Builds も単一の .node-version（修正版へ完全固定）を
+              # 読むため、このファイルの変更は「新しい Node で検証する」ことを意味する
+              # （経緯は docs/cloudflare-workers-builds.md。Refs #1914 #1917）。
               - '.node-version'
               # tests/unit/cloudflare-proxy-migration.test.ts が本文を直接assertする。
               - 'docs/cloudflare-proxy-migration.md'
@@ -140,19 +137,15 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               # app と重複するが意図的: postgres_fixtures は PG17 / integration job を
-              # 独立にゲートする。CI の Node を変えるのは .github/ci-node-version だけだが、
-              # Node 関連の変更では保守的に実PG検証も回す（.node-version は Workers Builds
-              # 専用で CI の Node を変えない点に注意）。
+              # 独立にゲートする。Node の固定版を変えるときは保守的に実PG検証も回す
+              # （.node-version は CI / Workers Builds / migration runner の共通 pin）。
               - '.node-version'
-              - '.github/ci-node-version'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
-              # analysis job も setup-node で .github/ci-node-version を使うため、
-              # Node の固定版を変えたときは analysis の typecheck / build も新 Node で回す。
-              # .node-version は CI の Node を変えず、analysis job は契約テストも
-              # 実行しないため含めない。
-              - '.github/ci-node-version'
+              # analysis job も setup-node で .node-version を使うため、Node の固定版を
+              # 変えたときは analysis の typecheck / build も新 Node で回す。
+              - '.node-version'
             i18n:
               - 'src/**'
               - 'eslint.i18n.config.mjs'
@@ -239,7 +232,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -306,7 +299,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -362,7 +355,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -417,7 +410,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -445,7 +438,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -479,7 +472,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -699,7 +692,7 @@ jobs:
       - name: Setup Node.js for PostgreSQL integration tests
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install integration test dependencies

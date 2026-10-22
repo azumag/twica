@@ -114,12 +114,12 @@ on:
       # 次のDDL適用時まで見逃さないよう、manifestとlockfileも実DBで検証する。
       - 'package.json'
       - 'package-lock.json'
-      # runner は setup-node で .github/ci-node-version を読む。Node の固定版だけを
-      # 変える push でも、次の migration まで待たずに新しい Node で runner を起動し、
-      # 実DBへの適用可否を検証する（Refs #1917）。.node-version（Workers Builds 専用）は
-      # runner が読まないため含めない。含めると無関係な push で本番 Environment の実DBへ
-      # 接続し、pending migration を意図せず適用してしまう。
-      - '.github/ci-node-version'
+      # runner は setup-node で .node-version（CI と共通の完全固定版）を読む。Node の
+      # 固定版だけを変える push でも、次の migration まで待たずに新しい Node で runner を
+      # 起動し、実DBへの適用可否を検証する（Refs #1914 #1917）。apply は pending
+      # migration が無ければ no-op（verify のみ）のため、Node 変更時の起動が実DBへ
+      # 無関係な変更を適用することはない。
+      - '.node-version'
 
   # 手動再実行ではGitHub UIでmainまたはpreviewのrefを選ぶ。Environmentを別inputで
   # 選ばせると「previewコード + production secret」のような危険な組合せを作れるため、
@@ -156,10 +156,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          # Node 20 はサポート終了で 2026-10 のセキュリティ修正が出ないため、CI 用の
-          # .github/ci-node-version（Workers Builds とは別に修正版へ完全固定）を参照する。
-          # 理由は docs/cloudflare-workers-builds.md。Refs #1914 #1919
-          node-version-file: .github/ci-node-version
+          # Node 20 はサポート終了で 2026-10 のセキュリティ修正（CVE-2026-106069 など）
+          # が出ないため、修正版へ完全固定した .node-version を参照する。
+          # 理由は docs/cloudflare-workers-builds.md。Refs #1914
+          node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies
