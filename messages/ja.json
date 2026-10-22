@@ -520,6 +520,8 @@
       "saveFailed": "設定の保存に失敗しました",
       "deleteFailed": "削除に失敗しました",
       "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。",
+      "storageUserLimitReached": "効果音のアップロード上限に達しました。不要な効果音を削除してから再度お試しください。",
+      "storageGlobalLimitReached": "効果音のアップロード上限に達しました。",
       "deployWindow": "効果音ルール機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。"
     },
     "confirmDelete": "この効果音を削除しますか？",

@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { handleApiError, handleBlobError } from '@/lib/error-handler';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from '@/lib/rate-limit';
-import { ERROR_MESSAGES, SOUND_UPLOAD_CONFIG, STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
+import { ERROR_MESSAGES, SOUND_UPLOAD_CONFIG, SOUND_STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
 import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client';
-import { recordBlobFile, removeBlobFile } from '@/lib/storage-db';
-import { getStorageUsage } from '@/lib/storage-usage';
+import { recordBlobFile, releaseStorageReservation, removeBlobFile } from '@/lib/storage-db';
+import { reserveStorageCapacity } from '@/lib/storage-usage';
 import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
 
@@ -119,6 +119,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   let buffer: Buffer | null = null;
   let fileName: string | null = null;
+  let reservationId: string | null = null;
+  let reservationCommitted = false;
 
   try {
     const formData = await request.formData();
@@ -156,27 +158,24 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     fileName = `sound_${userPrefix}_${uniqueSuffix}.${ext}`;
 
-    // 容量予約: 音声も累積使用量の対象にする (#1896)
-    // - 取得失敗時の fail-closed フォールバックは「usage=0 / flags=true」で返るため、
-    //   フラグを先に見ないとバイト比較を素通しして無制限保存に進む
-    //   （完了条件: 容量が取得不能な場合に無制限保存へ進めない）
-    // - 正常時は追加バイト数を含めて判定する（現在使用量だけの判定だと
-    //   上限直前の追加アップロードで突破できる）
-    const preUploadUsage = await getStorageUsage(userPrefix, session!.twitchUserId);
-    if (preUploadUsage.globalLimitReached ||
-        preUploadUsage.globalUsage + buffer!.length > preUploadUsage.globalLimitBytes) {
+    // 容量を原子的に予約する (#1907)。音声も画像と同じ台帳・予約を共有する。
+    // 取得失敗時の fail-closed（usage=0 + flags=true）は reserveStorageCapacity が
+    // フラグを先に見て 507 を返すため、無制限保存へ進まない（#1896 完了条件4）。
+    const reservation = await reserveStorageCapacity(
+      userPrefix,
+      session!.twitchUserId,
+      buffer!.length,
+    );
+    if (!reservation.ok) {
       return NextResponse.json(
-        { error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' },
+        reservation.reason === 'global_limit'
+          ? { error: SOUND_STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' }
+          : { error: SOUND_STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
         { status: 507 }
       );
     }
-    if (preUploadUsage.userLimitReached ||
-        preUploadUsage.userUsage + buffer!.length > preUploadUsage.userLimitBytes) {
-      return NextResponse.json(
-        { error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
-        { status: 507 }
-      );
-    }
+    const activeReservationId = reservation.reservationId;
+    reservationId = activeReservationId;
 
     // R2効果音バケットにアップロード（リトライ付き）
     const uploadResult = await uploadSoundToR2WithRetry(fileName, buffer, actualType);
@@ -189,8 +188,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // 予約を確定する (#1907)。失敗は例外/結果で検知し、R2 と予約を補償する。
     try {
-      await recordBlobFile(uploadResult.url, userPrefix, buffer!.length, 'r2');
+      const commitOutcome = await recordBlobFile(
+        activeReservationId,
+        uploadResult.url,
+        userPrefix,
+        buffer!.length,
+        'r2',
+      );
+      if (commitOutcome === 'reservation_not_found') {
+        throw new Error('storage reservation not found when committing sound blob file');
+      }
     } catch (dbError) {
       // 台帳確定失敗: このまま返すと「R2保存済み・未計上・未参照」の孤児オブジェクトが
       // 残り、クライアントのリトライのたびに未計上容量が増殖する (#1896)。
@@ -208,6 +217,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
+    reservationCommitted = true;
     logger.info(`[Sound Upload] Successfully uploaded: ${fileName}, size: ${buffer.length} bytes`);
     return NextResponse.json({ url: uploadResult.url });
   } catch (error) {
@@ -230,6 +240,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     return handleApiError(error, "Sound Upload API");
+  } finally {
+    // R2 保存失敗・台帳確定失敗のいずれでも、確定していない予約は必ず解放する。
+    if (reservationId && !reservationCommitted) {
+      try {
+        await releaseStorageReservation(reservationId);
+      } catch (releaseError) {
+        logger.error(`[Sound Upload] Failed to release storage reservation: ${reservationId}`, releaseError);
+      }
+    }
   }
 }
 

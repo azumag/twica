@@ -123,8 +123,15 @@ jobs:
               - 'tests/integration/trade-auction-pg.test.ts'
               - 'tests/integration/pack-completion-rewards-pg.test.ts'
               - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
+              - 'tests/integration/storage-reservation-pg.test.ts'
               - 'src/lib/services/chat-notification-outbox.ts'
               - 'src/lib/services/chat-notification-delivery.ts'
+              # 容量予約のSQL契約（reserve/commit/release/reconcile）を変えるPRでは
+              # 実PG17で並列予約・再照合を検証する。
+              - 'src/lib/storage-db.ts'
+              - 'src/lib/storage-usage.ts'
+              - 'src/lib/storage-maintenance.ts'
+              - 'db/planetscale/migrations/*storage*'
               - 'tests/fixtures/pack-completion-rewards-pg-seed.sql'
               - 'tests/setup.ts'
               - 'tests/stubs/**'
@@ -714,6 +721,13 @@ jobs:
         env:
           CHAT_OUTBOX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: npx vitest run tests/integration/chat-outbox-attempt-accounting-pg.test.ts
+
+      - name: Verify storage reservation ledger against PostgreSQL
+        # #1907: 同一ユーザー/並列ユーザーの予約が上限を突破しないこと、
+        # commit/release の原子性、blob_files からの再照合を実DBで確認する。
+        env:
+          STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/storage-reservation-pg.test.ts
 
       - name: Seed completion reward PostgreSQL integration tests
         # Use the migrated schema, not the local fixture that creates tables/roles.

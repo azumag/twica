@@ -520,6 +520,8 @@
       "saveFailed": "Failed to save settings",
       "deleteFailed": "Failed to delete",
       "rateLimit": "Too many requests. Please wait and try again.",
+      "storageUserLimitReached": "The sound effect upload limit has been reached. Delete unused sound effects and try again.",
+      "storageGlobalLimitReached": "The sound effect upload limit has been reached.",
       "deployWindow": "The sound rules feature is not ready yet, so your changes could not be saved. Please try again shortly."
     },
     "confirmDelete": "Delete this sound effect?",
