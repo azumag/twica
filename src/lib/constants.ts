@@ -380,6 +380,10 @@ export const ERROR_MESSAGES = {
   // EventSub errors
   INVALID_SIGNATURE: 'Invalid signature',
   UNKNOWN_MESSAGE_TYPE: 'Unknown message type',
+  // Issue #1895: EventSub webhook の本文サイズ上限超過（413）用。
+  // 上限超過は未署名入力でも起こり得る恒久エラーではないため、errors テーブル
+  // INSERT → 自動 Issue の経路に流さず、この 4xx 応答で完結させる。
+  PAYLOAD_TOO_LARGE: 'Payload too large',
 
   // Twitch API errors
 
