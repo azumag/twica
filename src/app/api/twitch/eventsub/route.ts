@@ -229,8 +229,6 @@ export async function POST(request: NextRequest) {
   // 渡していたため、未認証リクエストが errors テーブル（→ error-reporter 経由で
   // 公開 GitHub Issue）へ記録される経路になっていた。
   // https://dev.twitch.tv/docs/eventsub/handling-webhook-events/#verifying-the-event-message
-  const body = await request.text();
-
   // Issue #1895: 本文をサイズ上限付きでストリーム読取する。Content-Length の
   // 宣言に頼らず実際の読取バイト数で上限を強制し、超過時は413。
   const body = await readBodyWithLimit(request, MAX_EVENTSUB_BODY_BYTES);
@@ -250,13 +248,6 @@ export async function POST(request: NextRequest) {
   // ではなく入力の構文不正（Twitch は必ず妥当な JSON を送るため、署名検証済みの
   // リクエストでここへ到達するのは通常あり得ない）であり、従来の handleApiError
   // （errorsテーブルINSERT → 自動Issue化）に流さず応答のみの400とする。
-  let data;
-  try {
-    data = JSON.parse(body);
-  } catch {
-    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
-  }
-
   // 署名とタイムスタンプを通過した（=秘密鍵を知る Twitch が送った）ボディだけをパースする。
   // 署名が正しいのに JSON が壊れている場合は送信側の異常であり、アプリのバグではないため
   // 400 を返すだけにして handleApiError（errors テーブル記録）には渡さない。
