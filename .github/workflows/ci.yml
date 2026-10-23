@@ -58,6 +58,11 @@ jobs:
               - 'eslint*.config.*'
               - 'vitest.config.*'
               - 'wrangler.toml'
+              # Node の指定だけを変える PR で test / workers:build / lint を実際に起動する。
+              # setup-node も Workers Builds も単一の .node-version（修正版へ完全固定）を
+              # 読むため、このファイルの変更は「新しい Node で検証する」ことを意味する
+              # （経緯は docs/cloudflare-workers-builds.md。Refs #1914 #1917）。
+              - '.node-version'
               # tests/unit/cloudflare-proxy-migration.test.ts が本文を直接assertする。
               - 'docs/cloudflare-proxy-migration.md'
             tests:
@@ -122,8 +127,15 @@ jobs:
               - '.github/workflows/db-readonly-check-production.yml'
               - 'tests/integration/pack-completion-rewards-pg.test.ts'
               - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
+              - 'tests/integration/storage-reservation-pg.test.ts'
               - 'src/lib/services/chat-notification-outbox.ts'
               - 'src/lib/services/chat-notification-delivery.ts'
+              # 容量予約のSQL契約（reserve/commit/release/reconcile）を変えるPRでは
+              # 実PG17で並列予約・再照合を検証する。
+              - 'src/lib/storage-db.ts'
+              - 'src/lib/storage-usage.ts'
+              - 'src/lib/storage-maintenance.ts'
+              - 'db/planetscale/migrations/*storage*'
               - 'tests/fixtures/pack-completion-rewards-pg-seed.sql'
               - 'tests/setup.ts'
               - 'tests/stubs/**'
@@ -131,10 +143,16 @@ jobs:
               - 'tsconfig*.json'
               - 'package.json'
               - 'package-lock.json'
+              # app と重複するが意図的: postgres_fixtures は PG17 / integration job を
+              # 独立にゲートする。Node の固定版を変えるときは保守的に実PG検証も回す
+              # （.node-version は CI / Workers Builds / migration runner の共通 pin）。
               - '.node-version'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
+              # analysis job も setup-node で .node-version を使うため、Node の固定版を
+              # 変えたときは analysis の typecheck / build も新 Node で回す。
+              - '.node-version'
             i18n:
               - 'src/**'
               - 'eslint.i18n.config.mjs'
@@ -306,6 +324,14 @@ jobs:
           TWITCH_CLIENT_SECRET: dummy_client_secret
           TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
           CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
+
+      - name: Smoke-test the built Worker at runtime
+        # 2026-10-21 の preview 全ルート 500 障害の再発防止。Next.js と
+        # @opennextjs/cloudflare の組み合わせが未対応でも `workers:build` は成功し、
+        # Worker 起動後の初期化 (`Unexpected loadManifest(...)`) で初めて落ちる。
+        # peer 範囲 (`next >=16.2.11` など) は未検証の将来版も許容するため
+        # `npm ls` では検出できない。生成物を workerd で実際に起動して確認する。
+        run: bash scripts/smoke-opennext-worker.sh
 
       - name: Typecheck Chat Delivery Worker
         run: npm run chat-delivery:typecheck
@@ -718,6 +744,13 @@ jobs:
         env:
           CHAT_OUTBOX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: npx vitest run tests/integration/chat-outbox-attempt-accounting-pg.test.ts
+
+      - name: Verify storage reservation ledger against PostgreSQL
+        # #1907: 同一ユーザー/並列ユーザーの予約が上限を突破しないこと、
+        # commit/release の原子性、blob_files からの再照合を実DBで確認する。
+        env:
+          STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/storage-reservation-pg.test.ts
 
       - name: Seed completion reward PostgreSQL integration tests
         # Use the migrated schema, not the local fixture that creates tables/roles.

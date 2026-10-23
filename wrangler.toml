@@ -103,6 +103,10 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 
 [env.preview]
 
+# Secrets (set via `wrangler secret put ... --env preview`):
+#   SESSION_COOKIE_SECRET  — required; missing → startup/runtime failure (fail-closed)
+# Production: `wrangler secret put SESSION_COOKIE_SECRET`
+
 [env.preview.observability]
 enabled = true
 

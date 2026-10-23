@@ -380,6 +380,10 @@ export const ERROR_MESSAGES = {
   // EventSub errors
   INVALID_SIGNATURE: 'Invalid signature',
   UNKNOWN_MESSAGE_TYPE: 'Unknown message type',
+  // Issue #1895: EventSub webhook の本文サイズ上限超過（413）用。
+  // 上限超過は未署名入力でも起こり得る恒久エラーではないため、errors テーブル
+  // INSERT → 自動 Issue の経路に流さず、この 4xx 応答で完結させる。
+  PAYLOAD_TOO_LARGE: 'Payload too large',
 
   // Twitch API errors
 
@@ -509,4 +513,20 @@ export const STORAGE_LIMIT_MESSAGES = {
   USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。',
   // GLOBAL_LIMIT_REACHED も同じく外部・未知クライアント向けの互換文言として維持する。
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
+} as const
+
+/**
+ * 効果音アップロードの 507 用フォールバック文言 (#1907)。
+ *
+ * 画像と効果音は同じストレージ容量を共有するが、利用者が次に取るべき行動
+ * （画像を消す / 効果音を消す）が異なる。従来は STORAGE_LIMIT_MESSAGES の
+ * 「画像のアップロード上限…」をそのまま返していたため、公式UIの i18n だけでなく
+ * 外部・未知クライアント向けの互換文言も効果音向けに分離する。
+ * 公式UIは code (USER_LIMIT_REACHED / GLOBAL_LIMIT_REACHED) から
+ * messages/*.json の gachaSoundSettings.errors.* を解決する。
+ */
+export const SOUND_STORAGE_LIMIT_MESSAGES = {
+  USER_LIMIT_REACHED:
+    '効果音のアップロード上限に達しました。不要な効果音を削除してから再度お試しください。',
+  GLOBAL_LIMIT_REACHED: '効果音のアップロード上限に達しました。',
 } as const

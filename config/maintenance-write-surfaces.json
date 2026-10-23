@@ -523,6 +523,17 @@
     "reviewedAt": "2026-10-07"
   },
   {
+    "path": "/api/internal/storage-maintenance",
+    "methods": [
+      "POST"
+    ],
+    "category": "upload",
+    "maintenanceBehavior": "block",
+    "reason": "Issue #1907 の台帳再照合・未使用効果音回収ジョブ。blob_files/storage_usage の更新とR2削除を伴う内部書き込み境界で、共有シークレット必須。メンテ中は他の書き込みAPIと同様にブロックし、解除後に実行する（ジョブは冪等で次回実行で追いつく）。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-23"
+  },
+  {
     "path": "/api/streamer/pack-completion-rewards",
     "methods": [
       "PUT",

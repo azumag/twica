@@ -143,6 +143,22 @@ describe("/trade layout", () => {
     expect(screen.getByTestId("dashboard-nav")).toBeInTheDocument();
     expect(screen.getByTestId("maintenance-provider")).toHaveTextContent("board content");
   });
+
+  // The usage guide (/guide/trade) is linked from the trade screens only; the
+  // layout is the single place, so both the anonymous and the logged-in shell
+  // must carry it, in front of the page content.
+  it("links the usage guide from both the anonymous and the logged-in shell", async () => {
+    for (const session of [null, SESSION]) {
+      cleanup();
+      mocks.getSession.mockResolvedValue(session);
+      render(await TradeLayout({ children: <p>board content</p> }));
+      const link = screen.getByRole("link", { name: "entryLink" });
+      expect(link).toHaveAttribute("href", "/guide/trade");
+      // The link comes before the page content in document order.
+      const content = screen.getByText("board content");
+      expect(link.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
 });
 
 describe("/trade/[streamerId] board page", () => {

@@ -7,9 +7,9 @@ import { ERROR_MESSAGES, UPLOAD_CONFIG, STORAGE_LIMIT_MESSAGES } from '@/lib/con
 import { getFileTypeFromBuffer, getFileExtension, isValidExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
-import { uploadToR2WithRetry } from '@/lib/r2-client';
-import { recordBlobFile } from '@/lib/storage-db';
-import { getStorageUsage } from '@/lib/storage-usage';
+import { uploadToR2WithRetry, deleteFromR2 } from '@/lib/r2-client';
+import { recordBlobFile, releaseStorageReservation } from '@/lib/storage-db';
+import { getStorageUsage, reserveStorageCapacity } from '@/lib/storage-usage';
 import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
 import { getUserPlan, PLAN_MAX_UPLOAD_SIZE } from '@/lib/plan';
 import type { Session } from '@/lib/session';
@@ -111,35 +111,30 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return rateLimitError;
   }
 
-  // Check storage limits before processing file
-  // ファイル処理前にストレージ制限をチェック（ボーナス容量も加味）
-  // Web Crypto APIを使用してユーザープレフィックスを生成
+  // 早期チェック: 既に上限到達しているユーザーは multipart body を読む前に拒否する
+  // （帯域・メモリの無駄を避ける）。追加バイト数を含む最終判定は保存直前の
+  // reserveStorageCapacity が原子的に行う (#1907)。ここで取得した usage を予約側へ
+  // 渡すことで、以前の「1リクエストで getStorageUsage を2回呼ぶ」重複を解消する。
   const userPrefix = await sha256Prefix(session!.twitchUserId);
+  const initialUsage = await getStorageUsage(userPrefix, session!.twitchUserId);
 
-  const storageUsage = await getStorageUsage(userPrefix, session!.twitchUserId);
-
-  if (storageUsage.globalLimitReached) {
+  if (initialUsage.globalLimitReached) {
     return NextResponse.json(
-      {
-        error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED,
-        code: 'GLOBAL_LIMIT_REACHED'
-      },
+      { error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' },
       { status: 507 } // Insufficient Storage
     );
   }
-
-  if (storageUsage.userLimitReached) {
+  if (initialUsage.userLimitReached) {
     return NextResponse.json(
-      {
-        error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED,
-        code: 'USER_LIMIT_REACHED'
-      },
+      { error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
       { status: 507 } // Insufficient Storage
     );
   }
 
   let buffer: Buffer | null = null
   let fileName: string | null = null
+  let reservationId: string | null = null
+  let reservationCommitted = false
 
   try {
     const formData = await request.formData();
@@ -168,17 +163,35 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // User prefix for tracking uploads per user (must match storage-db.ts)
-    // ユーザー別アップロード追跡用プレフィックス（storage-db.tsと一致させる、公開値でよい）
-    // Web Crypto APIを使用（Cloudflare Workers互換）
-    const userPrefixForFile = await sha256Prefix(session!.twitchUserId);
+    // ファイル名と台帳のプレフィックスは、早期チェックで生成した userPrefix を
+    // そのまま使う（同じリクエスト内で sha256Prefix を再計算しない）。
     // suffixはtwitchUserId+Date.now()由来のsha256Prefix(8hex)だと、公開情報である
     // twitchUserIdとミリ秒単位のDate.now()から総当りで再現できた (#832)。
     // crypto.randomUUID()（128bit・推測不能）に変更する。
     const uniqueSuffix = randomUUID();
 
     // Format: {userPrefix}_{uniqueSuffix}.{ext}
-    fileName = `${userPrefixForFile}_${uniqueSuffix}.${ext}`;
+    fileName = `${userPrefix}_${uniqueSuffix}.${ext}`;
+
+    // 容量を原子的に予約する (#1907)。上限判定は DB が
+    // 「確定済み使用量 + 有効な予約」で行うため、同一ユーザー・並列ユーザーの
+    // どちらでも R2 保存前に上限を超えない。予約に失敗した場合は R2 へ進まない。
+    const reservation = await reserveStorageCapacity(
+      userPrefix,
+      session!.twitchUserId,
+      buffer!.length,
+      initialUsage,
+    );
+    if (!reservation.ok) {
+      return NextResponse.json(
+        reservation.reason === 'global_limit'
+          ? { error: STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' }
+          : { error: STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
+        { status: 507 } // Insufficient Storage
+      );
+    }
+    const activeReservationId = reservation.reservationId;
+    reservationId = activeReservationId;
 
     // R2にアップロード（Vercel Blobの代わり）
     // uploadToR2WithRetry自体がR2固有エラーコード込みでリトライする単一のリトライループ
@@ -194,15 +207,38 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       )
     }
 
-    // DBにファイル情報を記録（使用量追跡用）
+    // 予約を確定し、blob_files と使用量カウンタを同一 RPC で更新する (#1907)。
+    // 旧実装は INSERT とカウンタ更新が別文で、カウンタ更新の失敗を握りつぶしていた。
+    // ここで失敗した場合は例外/結果で検知し、R2 オブジェクトと予約を補償する。
     try {
-      await recordBlobFile(uploadResult.url, userPrefixForFile, buffer.length, 'r2');
+      const commitOutcome = await recordBlobFile(
+        activeReservationId,
+        uploadResult.url,
+        userPrefix,
+        buffer!.length,
+        'r2',
+      );
+      if (commitOutcome === 'reservation_not_found') {
+        throw new Error('storage reservation not found when committing blob file');
+      }
     } catch (dbError) {
-      // DB記録に失敗しても、アップロードは成功しているので警告ログのみ
-      // 次回の初期化スクリプト実行時に同期される
-      logger.warn('Failed to record blob file in DB:', dbError);
+      // 台帳確定失敗: このまま返すと「R2保存済み・未計上・未参照」の孤児オブジェクトが
+      // 残り、クライアントのリトライのたびに未計上容量が増殖する (#1896)。
+      // 保存直後のオブジェクトを best-effort で削除して台帳と R2 の整合を取り、
+      // 削除にも失敗した場合はログを残して follow-up の回収対象にする。
+      try {
+        await deleteFromR2(fileName!);
+      } catch (cleanupError) {
+        logger.error(`Failed to cleanup R2 object after ledger failure: ${fileName}`, cleanupError);
+      }
+      logger.error(`Failed to record blob file in DB: ${fileName}`, dbError);
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.INTERNAL_ERROR, code: 'STORAGE_LEDGER_FAILED' },
+        { status: 500 }
+      );
     }
 
+    reservationCommitted = true;
     return NextResponse.json({ url: uploadResult.url });
   } catch (error) {
     // R2またはDB操作でのエラーをハンドリング
@@ -224,5 +260,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     return handleApiError(error, "Upload API");
+  } finally {
+    // R2 保存失敗・検証エラー・台帳確定失敗のいずれでも、確定していない予約は
+    // 必ず解放する。解放自体の失敗は容量を TTL まで占有するだけ（安全側）なので
+    // ログに残し、レスポンスは元のエラーを優先する。
+    if (reservationId && !reservationCommitted) {
+      try {
+        await releaseStorageReservation(reservationId);
+      } catch (releaseError) {
+        logger.error(`Failed to release storage reservation: ${reservationId}`, releaseError);
+      }
+    }
   }
 }

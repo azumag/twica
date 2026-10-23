@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { TWITCH_SUBSCRIPTION_TYPE, ERROR_MESSAGES } from "@/lib/constants";
-import { handleApiError } from "@/lib/error-handler";
+// Issue #1895: 未署名・期限外・サイズ超過の入力はすべて4xxとして安価に応答する
+// ため、本routeではサーバー障害用の handleApiError（errorsテーブルINSERT →
+// Error Reporter による自動Issue/コメント化）を呼ばない。署名検証後の処理で
+// 例外が発生した場合も Next.js 素の500になり、恒久記録・自動Issueには繋がらない。
 import { checkRateLimit, rateLimits, getClientIp } from "@/lib/rate-limit";
 import { logger } from "@/lib/logger.server";
 import { reportError } from "@/lib/sentry/error-handler";
@@ -16,6 +19,137 @@ import { handleRedemption, handleRaidNotification, postRedemptionNotify, runInBa
 const MESSAGE_TYPE_VERIFICATION = "webhook_callback_verification";
 const MESSAGE_TYPE_NOTIFICATION = "notification";
 const MESSAGE_TYPE_REVOCATION = "revocation";
+
+// Issue #1895: EventSub webhook の本文サイズ上限（64KiB）。
+// 実際の EventSub payload（challenge、channel points redemption、raid、
+// revocation 等）はいずれも数KiB未満のため、正当な Twitch 配送に対しては
+// 十分な余裕があり、一方で匿名リクエストによる無制限の本文バッファリング・
+// JSON解析（CWE-400/CWE-770）を頭打ちにできるサイズとして選んだ。
+// この上限は Content-Length ヘッダーの宣言とは無関係に、実際に読み取った
+// バイト数で強制される（readBodyWithLimit 参照）。
+const MAX_EVENTSUB_BODY_BYTES = 64 * 1024;
+
+// Issue #1895: Twitch が送る署名ヘッダーの形式（"sha256=" + 64桁の小文字hex）。
+// 本文を読む前にこの形式検査だけで明らかに不正な値を安価に弾く。形式を満たす
+// 値は引き続き HMAC 検証（verifyTwitchSignature）で厳密に照合されるため、
+// これは緩い事前フィルタであって検証の緩和ではない（Twitch は小文字hexを
+// 送るため、大文字hex等は旧コードの HMAC 比較と同じく拒否される）。
+const EVENTSUB_SIGNATURE_PATTERN = /^sha256=[0-9a-f]{64}$/;
+
+// checkEventSubHeaders の検査通過時に返す、必須ヘッダー値のまとめ。
+interface EventSubRequiredHeaders {
+  messageId: string;
+  timestamp: string;
+  messageType: string;
+  signature: string;
+}
+
+/**
+ * Issue #1895: 本文を読み取る前に、EventSub の必須ヘッダー・署名形式・時刻窓を
+ * 安価に検査する（ヘッダー読み取りのみで、本文のI/O・JSON解析は一切発生しない）。
+ *
+ * 応答方針（すべて4xx。いずれも handleApiError 等の恒久エラー経路には流さない）:
+ * 1. 必須ヘッダー4種（message-id / message-timestamp / message-type /
+ *    message-signature）の存在: 欠落時は 400（INVALID_REQUEST）。どのヘッダーが
+ *    欠けているかを応答で区別しない（攻撃者に列挆のヒントを与えない）。
+ *    Twitch は4種すべてを必ず送るため、正当な配送がこの検査に掛かることはない。
+ *    ※欠落時の旧挙動は「HMAC不一致による403」だったが、ヘッダー構造として不正
+ *    なリクエストは署名の問題とは別の失敗であり、400系の中でも400が適切。
+ * 2. 署名の形式: 不正形式は 403（INVALID_SIGNATURE）。旧コードでも形式を満たさ
+ *    ない値は HMAC 比較で必ず失敗し403になったため、応答上の挙動は同一。
+ * 3. タイムスタンプの形式・時刻窓（10分）: 不正・期限外は 403
+ *    （INVALID_SIGNATURE）。旧コードでは署名検証後に同じ判定・同じ応答が存在
+ *    した（Issue #836）ものを、本文読取前に移動しただけであり、拒否される
+ *    入力の集合は変わらない（Twitch公式仕様の再送防御。詳細は下記#836コメント）。
+ *
+ * @returns 検査通過時は必須ヘッダー値。不正時は呼び出し側がそのまま返すべき
+ *          4xxレスポンス（NextResponse）。
+ */
+function checkEventSubHeaders(
+  request: NextRequest
+): EventSubRequiredHeaders | NextResponse {
+  const messageId = request.headers.get("twitch-eventsub-message-id") || "";
+  const timestamp = request.headers.get("twitch-eventsub-message-timestamp") || "";
+  const messageType = request.headers.get("twitch-eventsub-message-type") || "";
+  const signature = request.headers.get("twitch-eventsub-message-signature") || "";
+
+  if (!messageId || !timestamp || !messageType || !signature) {
+    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+  }
+
+  if (!EVENTSUB_SIGNATURE_PATTERN.test(signature)) {
+    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
+  }
+
+  // Issue #836: Twitch 公式仕様の再送防御（10分窓のタイムスタンプ検証）。
+  // 古い（または不正な）タイムスタンプの再送を拒否する。Date.parse が NaN を
+  // 返すケースは Math.abs(NaN) > 10min が false になるため明示的に弾くこと。
+  // 注意: 10分を超えた遅延再送（停電復旧後等）は 403 になるが、これは Twitch 公式
+  // ガイドの推奨どおりであり、受信側の障害を原因とする再送は KV 退避 + 2xx の
+  // 既存経路で処理される（本ルートは revoke 判定材料になる 5xx を返さない設計）。
+  const timestampMs = Date.parse(timestamp);
+  if (Number.isNaN(timestampMs) || Math.abs(Date.now() - timestampMs) > 10 * 60 * 1000) {
+    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
+  }
+
+  return { messageId, timestamp, messageType, signature };
+}
+
+/**
+ * Issue #1895: 本文をストリームで読み取り、バイト数上限を超えたら残りの読取を
+ * 中断する。Content-Length は偽装（chunked転送・直接stream・虚偽宣言）され得る
+ * ため一切信用せず、実際に読み取ったバイト数のみで判定する。
+ *
+ * - 上限ちょうどの本文は許可する（`>` 比較）。超過した時点でその場で
+ *   reader.cancel() を呼んでボディ読取を中断し、null を返す（呼び出し側は413）。
+ * - 読取中の例外（クライアント切断等）は旧 request.text() と同じく上位へ伝播
+ *   させ Next.js 素の500にする（handleApiError を通さないため、恒久エラー記録・
+ *   自動Issueは発生しない）。
+ *
+ * @returns 本文の UTF-8 デコード文字列。上限超過時は null。
+ */
+async function readBodyWithLimit(
+  request: NextRequest,
+  limitBytes: number
+): Promise<string | null> {
+  const reader = request.body?.getReader();
+  if (!reader) {
+    // ボディが存在しないリクエスト: 旧 request.text() の挙動（空文字）に合わせる。
+    // 空本文に対する署名は HMAC 検証で必ず失敗するため、後段で確実に拒否される。
+    return "";
+  }
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (totalBytes + value.byteLength > limitBytes) {
+        // 残りを読み切る前に中断する（メモリ/CPU増幅の防止）。
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+      totalBytes += value.byteLength;
+    }
+  } catch (e) {
+    // 念のためボディを閉じておく（二重cancel・cancel失敗は無害）。
+    await reader.cancel().catch(() => {});
+    throw e;
+  }
+
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  // 不正な UTF-8 バイト列は U+FFFD へ置換され、verifyTwitchSignature での
+  // 再encode が元の署名対象バイト列と一致しなくなるため署名検証が失敗する。
+  // 正当な Twitch 配信は UTF-8 であり、decode → encode の往復はバイト完全一致する。
+  return new TextDecoder().decode(merged);
+}
 
 /**
  * Verify Twitch EventSub signature using HMAC-SHA256 (Web Crypto API)
@@ -79,34 +213,39 @@ async function verifyTwitchSignature(
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.text();
-  let data;
-  try {
-    data = JSON.parse(body);
-  } catch (e) {
-    return handleApiError(e, "EventSub JSON parsing");
+  // Issue #1895: 本文を読む前に、必須ヘッダー・署名形式・時刻窓を検査する。
+  // 未署名・形式不正・期限外のリクエストはここで4xxとなり、本文の読取・JSON解析・
+  // それ以降の処理（DB・通知・恒久エラー記録）へ一切到達できない。
+  const headerCheck = checkEventSubHeaders(request);
+  if (headerCheck instanceof NextResponse) {
+    return headerCheck;
   }
+  const { messageId, timestamp, messageType, signature } = headerCheck;
 
-  const messageId = request.headers.get("twitch-eventsub-message-id") || "";
-  const timestamp = request.headers.get("twitch-eventsub-message-timestamp") || "";
-  const messageType = request.headers.get("twitch-eventsub-message-type") || "";
-  const signature = request.headers.get("twitch-eventsub-message-signature") || "";
+  // Issue #1895: 本文をサイズ上限付きでストリーム読取する。Content-Length の
+  // 宣言に頼らず実際の読取バイト数で上限を強制し、超過時は413。
+  const body = await readBodyWithLimit(request, MAX_EVENTSUB_BODY_BYTES);
+  if (body === null) {
+    return NextResponse.json({ error: ERROR_MESSAGES.PAYLOAD_TOO_LARGE }, { status: 413 });
+  }
 
   // Verify signature asynchronously (Web Crypto API is async)
   // 署名を非同期で検証（Web Crypto APIは非同期）
+  // Issue #1895: 生本文に対する HMAC 検証を JSON 解析より先に実行することで、
+  // 署名を持たない入力が解析結果に依存する処理へ進めないようにしている。
   if (!await verifyTwitchSignature(messageId, timestamp, body, signature)) {
     return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
   }
 
-  // Issue #836: Twitch 公式仕様の再送防御（10分窓のタイムスタンプ検証）。
-  // 古い（または不正な）タイムスタンプの再送を拒否する。Date.parse が NaN を
-  // 返すケースは Math.abs(NaN) > 10min が false になるため明示的に弾くこと。
-  // 注意: 10分を超えた遅延再送（停電復旧後等）は 403 になるが、これは Twitch 公式
-  // ガイドの推奨どおりであり、受信側の障害を原因とする再送は KV 退避 + 2xx の
-  // 既存経路で処理される（本ルートは revoke 判定材料になる 5xx を返さない設計）。
-  const timestampMs = Date.parse(timestamp);
-  if (Number.isNaN(timestampMs) || Math.abs(Date.now() - timestampMs) > 10 * 60 * 1000) {
-    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_SIGNATURE }, { status: 403 });
+  // Issue #1895: HMAC 検証成功後にのみ JSON を解析する。解析失敗はサーバー障害
+  // ではなく入力の構文不正（Twitch は必ず妥当な JSON を送るため、署名検証済みの
+  // リクエストでここへ到達するのは通常あり得ない）であり、従来の handleApiError
+  // （errorsテーブルINSERT → 自動Issue化）に流さず応答のみの400とする。
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
   }
 
   if (messageType !== MESSAGE_TYPE_NOTIFICATION) {

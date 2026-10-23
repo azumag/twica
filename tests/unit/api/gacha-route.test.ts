@@ -43,7 +43,10 @@ const sampleCard = {
 };
 
 describe("POST /api/gacha", () => {
-  let executeGachaMock: ReturnType<typeof vi.fn>;
+  // Vitest 4 では vi.fn() の型が Procedure | Constructable になり、
+  // そのままメソッドへ代入すると型が合わない。代入先のシグネチャに合わせて
+  // 型を明示する（モック実装自体は変えない）。
+  let executeGachaMock: ReturnType<typeof vi.fn<GachaService["executeGachaWithRepeatProtection"]>>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -74,9 +77,11 @@ describe("POST /api/gacha", () => {
       success: true,
       data: { card: sampleCard, userTwitchUsername: "user1" },
     });
-    MockGachaService.mockImplementation(() => ({
-      executeGachaWithRepeatProtection: executeGachaMock,
-    }) as unknown as GachaService);
+    // Vitest 4 は `new` されるモックにコンストラクタ互換の実装を要求する。
+    // `this` へ代入する形にすると `(this: T) => void` を満たし、型キャストも不要になる。
+    MockGachaService.mockImplementation(function (this: GachaService) {
+      this.executeGachaWithRepeatProtection = executeGachaMock;
+    });
   });
 
   // Issue #661: execute_gacha_transaction RPC (migration 00076) now rejects

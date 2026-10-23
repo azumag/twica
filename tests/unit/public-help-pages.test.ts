@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -25,6 +25,17 @@ function listedSubstepKeys(source: string, stepPath: string): string[] {
   const match = source.match(new RegExp(`"${escaped}":\\s*\\[([^\\]]*)\\]`));
   if (!match) throw new Error(`stepSubsteps entry not found: ${stepPath}`);
   return quotedStrings(match[1]);
+}
+
+/**
+ * ページ側の配列（`const <name> = [ { <prop>: "x", ... }, ... ] as const`）から、各要素の
+ * `<prop>` の値を並び順どおりに抜き出す。図解ページは「キー + アイコン」のオブジェクト配列で
+ * 表示順と文言キーを持つ。
+ */
+function listedProps(source: string, arrayName: string, prop: string): string[] {
+  const match = source.match(new RegExp(`const ${arrayName}\\b[^=]*=\\s*\\[([\\s\\S]*?)\\]\\s*as const`));
+  if (!match) throw new Error(`${arrayName} not found`);
+  return [...match[1].matchAll(new RegExp(`\\b${prop}: "([^"]+)"`, "g"))].map((m) => m[1]);
 }
 
 function quotedStrings(body: string): string[] {
@@ -54,6 +65,7 @@ describe("FAQ page", () => {
       "src/app/page.tsx",
       "src/app/guide/page.tsx",
       "src/app/usages/page.tsx",
+      "src/app/guide/trade/page.tsx",
       "src/app/about/page.tsx",
       "src/app/privacy/page.tsx",
       "src/app/tos/page.tsx",
@@ -317,7 +329,7 @@ describe("streamer enablement documentation", () => {
           ])
         : [];
 
-    for (const scope of ["guidePage", "faqPage", "usagesPage", "channelPointsAccess"] as const) {
+    for (const scope of ["guidePage", "faqPage", "usagesPage", "tradeGuidePage", "channelPointsAccess"] as const) {
       expect(collectKeys(jaMessages[scope]).sort(), scope).toEqual(collectKeys(enMessages[scope]).sort());
     }
     expect(collectKeys(jaMessages.topPage.streamerInfo).sort()).toEqual(
@@ -326,5 +338,385 @@ describe("streamer enablement documentation", () => {
     expect(collectKeys(jaMessages.dashboard.overview).sort()).toEqual(
       collectKeys(enMessages.dashboard.overview).sort()
     );
+  });
+});
+
+/**
+ * カードトレードの使い方ガイド（/guide/trade）。
+ * ページ側の配列とメッセージの1対1対応、画面上のボタン名との一致、実画面と図解の見た目の一致、
+ * 導線（トレード画面側からだけリンクする）を固定する。数値・ルールの根拠は PR 本文の対応表を参照。
+ * 描画結果（全文言が画面に出ること・図解の figcaption・数値が定数と一致すること）は
+ * tests/unit/trade-guide-page.test.tsx と tests/unit/trade-guide-components.test.tsx が担う。
+ */
+describe("trade guide page", () => {
+  const locales = [
+    { name: "ja", messages: jaMessages },
+    { name: "en", messages: enMessages },
+  ] as const;
+  const source = readSource("src/app/guide/trade/page.tsx");
+
+  // ページ側の配列（const 名）→ メッセージ側のパスと、そのパス直下のメタキー（配列の対象外）。
+  // 配列の `key:` の並びがメッセージのキー順と一致することを確かめる（番号・表示順は配列順）。
+  const keyedArrays = [
+    ["chooseCards", ["choose"], ["title"]],
+    ["termKeys", ["start", "terms"], []],
+    ["acceptSteps", ["accept", "steps"], ["title"]],
+    ["offerSteps", ["offer", "steps"], ["title"]],
+    [
+      "offerRules",
+      ["offer", "rules"],
+      ["summary", "crossTitle", "inChannelCaption", "crossCaption", "streamerA", "streamerB", "sideA", "sideB", "condition"],
+    ],
+    ["sellerSteps", ["auction", "seller"], ["title", "note"]],
+    ["bidderSteps", ["auction", "bidder"], ["title"]],
+    ["auctionRules", ["auction", "rules"], ["summary", "statusTitle", "status"]],
+    ["phaseChips", ["auction", "rules", "status"], []],
+    ["faqItems", ["faq"], ["title", "reasonLabel", "actionLabel"]],
+  ] as const;
+
+  // 本文のセクション（h2）。視聴者向けが先、配信者向けが最後（ページの並びはページテストが固定する）。
+  const sectionIds = ["choose", "start", "accept", "offer", "auction", "faq", "streamer"] as const;
+
+  function at(root: Record<string, unknown>, path: readonly string[]) {
+    return path.reduce<Record<string, unknown>>((node, key) => node[key] as Record<string, unknown>, root);
+  }
+
+  it("adds a localized public route that renders without login", () => {
+    expect(source).toContain('getTranslations("tradeGuidePage")');
+    expect(source).toContain("getSession()");
+    // 公開ページなので認証必須の分岐（redirect）を持たない
+    expect(source).not.toContain("redirect(");
+    // 図解中心のページだが Server Component のまま（<details> 以外の操作を持たない）
+    expect(source).not.toContain('"use client"');
+    expect(jaMessages.tradeGuidePage.title).toBe("カードトレードの使い方");
+    expect(enMessages.tradeGuidePage.title).toBe("How to Use Card Trading");
+  });
+
+  it("keeps the page arrays in sync with the message catalogs (order included)", () => {
+    for (const [arrayName, path, meta] of keyedArrays) {
+      const catalogKeys = Object.keys(at(jaMessages.tradeGuidePage, path)).filter((key) => !(meta as readonly string[]).includes(key));
+      // 番号は配列順（index + 1）から導出されるため、順序も一致させる
+      expect(listedProps(source, arrayName, "key"), arrayName).toEqual(catalogKeys);
+    }
+    // 配列の要素は ja/en 両方に存在する
+    for (const { name, messages } of locales) {
+      for (const [arrayName, path] of keyedArrays) {
+        const node = at(messages.tradeGuidePage, path);
+        for (const key of listedProps(source, arrayName, "key")) {
+          expect(node[key], `${name}.${path.join(".")}.${key}`).toBeTruthy();
+        }
+      }
+    }
+    // セクションの id は、メッセージのセクション（title を持つもの）に1対1で対応する
+    for (const id of sectionIds) {
+      expect(source, id).toContain(`id="${id}"`);
+      expect(jaMessages.tradeGuidePage[id].title, id).toBeTruthy();
+      expect(enMessages.tradeGuidePage[id].title, id).toBeTruthy();
+    }
+  });
+
+  it("has one row per visibility question (<key>, <key>Public, <key>Hidden) in both locales", () => {
+    for (const { name, messages } of locales) {
+      const visibility = messages.tradeGuidePage.streamer.visibility;
+      for (const key of listedProps(source, "visibilityRows", "key")) {
+        for (const suffix of ["", "Public", "Hidden"]) {
+          expect(visibility[`${key}${suffix}`], `${name}.${key}${suffix}`).toBeTruthy();
+        }
+      }
+    }
+  });
+
+  it("keeps the ja/en tradeGuidePage structure identical and puts no fixed limit in the copy", () => {
+    const collect = (value: unknown, prefix = ""): string[] =>
+      typeof value === "object" && value !== null
+        ? Object.entries(value).flatMap(([key, child]) => [prefix + key, ...collect(child, `${prefix}${key}.`)])
+        : [];
+    expect(collect(jaMessages.tradeGuidePage).sort()).toEqual(collect(enMessages.tradeGuidePage).sort());
+
+    // 上限（10）・選択期限（72）・最長期限（168）はメッセージに直書きしない。
+    // コード定数からプレースホルダーで差し込む（定数を変えてもガイドが古くならない）。
+    for (const { name, messages } of locales) {
+      const copy = JSON.stringify(messages.tradeGuidePage);
+      expect(copy, name).not.toMatch(/(?<![\d.])(10|72|168)(?![\d])/);
+    }
+  });
+
+  it("passes the limits from the code constants, not from literals in the page", () => {
+    for (const constant of [
+      "TRADE_MAX_OPEN_OFFERS",
+      "TRADE_MAX_WANTED_QUANTITY",
+      "TRADE_AUCTION_DURATIONS_HOURS",
+      "TRADE_AUCTION_SELECTION_HOURS",
+      "TRADE_MAX_ACTIVE_BIDS",
+      "TRADE_MAX_BID_QUANTITY",
+    ]) {
+      expect(source, constant).toContain(constant);
+    }
+    // 値そのものは、ここで実コードの定義と突き合わせる（定数が変わったらガイドの確認を促す）。
+    const tradeSource = readSource("src/lib/trade.ts");
+    const auctionSource = readSource("src/lib/trade-auction.ts");
+    expect(tradeSource).toMatch(/export const TRADE_MAX_OPEN_OFFERS = 10;/);
+    expect(tradeSource).toMatch(/export const TRADE_MAX_WANTED_QUANTITY = 10;/);
+    expect(auctionSource).toMatch(/TRADE_AUCTION_DURATIONS_HOURS = \[24, 72, 168\] as const;/);
+    expect(auctionSource).toMatch(/TRADE_AUCTION_SELECTION_HOURS = 72;/);
+    expect(auctionSource).toMatch(/TRADE_MAX_ACTIVE_BIDS = 10;/);
+    expect(auctionSource).toMatch(/TRADE_MAX_BID_QUANTITY = 10;/);
+    // 期限のラベルは出品フォームと同じ messages（24時間 / 3日 / 7日）を時間数で引く
+    expect(source).toContain('24: "createAuctionDuration24h"');
+    expect(source).toContain('72: "createAuctionDuration3d"');
+    expect(source).toContain('168: "createAuctionDuration7d"');
+    expect(readSource("src/components/TradeCreateForm.tsx")).toContain('24: "createAuctionDuration24h"');
+  });
+
+  it("quotes the labels the trade UI actually renders (so the guide and screens use the same words)", () => {
+    // ガイドが画面上のボタン名・見出しとズレると、読んだ人が画面で探せない。
+    // 引用するラベルは messages の実値と文字列一致させる（ロケール別に取得するので、
+    // ja/en の文面が入れ替わっても通らない）。
+    for (const { name, messages } of locales) {
+      const everything = JSON.stringify(messages.tradeGuidePage);
+      const trade = messages.trade;
+      // 長い案内文・件数つきの文言は、ガイドが引用する冒頭の部分だけを比較する
+      const head = (text: string, pattern: RegExp) => text.split(pattern)[0];
+      const labels: Record<string, string> = {
+        "trade.collectionTradeButton": trade.collectionTradeButton,
+        "trade.tabInChannel": trade.tabInChannel,
+        "trade.tabCrossChannel": trade.tabCrossChannel,
+        "trade.tabAuction": trade.tabAuction,
+        "trade.myTradesLink": trade.myTradesLink,
+        "trade.createOfferButton": trade.createOfferButton,
+        "trade.createSubmitButton": trade.createSubmitButton,
+        "trade.acceptButton": trade.acceptButton,
+        "trade.acceptButtonNotOwned": trade.acceptButtonNotOwned,
+        "trade.acceptButtonNotEnough": trade.acceptButtonNotEnough,
+        "trade.confirmModalSubmitButton": trade.confirmModalSubmitButton,
+        "trade.cancelOfferButton": trade.cancelOfferButton,
+        "trade.myTradesTabOpen": trade.myTradesTabOpen,
+        "trade.myTradesTabAuction": trade.myTradesTabAuction,
+        "trade.createStep1Title": trade.createStep1Title,
+        "trade.createStep2Title": trade.createStep2Title,
+        "trade.createConfirmTitle": trade.createConfirmTitle,
+        "trade.createStep2QuantityLabel": trade.createStep2QuantityLabel,
+        "trade.createStep2SelectStreamer": trade.createStep2SelectStreamer,
+        "trade.createStep2NoPartners": head(trade.createStep2NoPartners, /[。.]/),
+        "trade.createAuctionButton": trade.createAuctionButton,
+        "trade.auctionRowDetailLink": trade.auctionRowDetailLink,
+        "trade.auctionBidFormTitle": trade.auctionBidFormTitle,
+        "trade.auctionScopeCrossChannel": trade.auctionScopeCrossChannel,
+        "trade.auctionBidChangeTitle": trade.auctionBidChangeTitle,
+        "trade.auctionWithdrawButton": trade.auctionWithdrawButton,
+        "trade.auctionBidUnsettleableBadge": trade.auctionBidUnsettleableBadge,
+        "trade.auctionSettleButton": trade.auctionSettleButton,
+        "trade.auctionSettleConfirmButton": trade.auctionSettleConfirmButton,
+        "trade.myAuctionsSettleLink": trade.myAuctionsSettleLink,
+        "trade.myTradesUnavailableBadge": trade.myTradesUnavailableBadge,
+        "tradeSettings.form.tradeEnabled": messages.tradeSettings.form.tradeEnabled,
+        "tradeSettings.form.crossChannelEnabled": messages.tradeSettings.form.crossChannelEnabled,
+        "cardManager.form.tradeWantable": messages.cardManager.form.tradeWantable,
+        "cardVisibilitySettings.form.showUnowned": messages.cardVisibilitySettings.form.showUnowned,
+        "cardVisibilitySettings.form.showDetails": messages.cardVisibilitySettings.form.showDetails,
+        // 取引が失敗したときに画面へ出る文言（「うまくいかないとき」の見出しとして引用している）
+        "trade.errorTradeDisabled": trade.errorTradeDisabled,
+        "trade.errorTradeOfferedCardInactive": trade.errorTradeOfferedCardInactive,
+        "trade.errorTradeAlreadyCompletedOrInvalid": trade.errorTradeAlreadyCompletedOrInvalid,
+        "trade.errorTradeOfferLimit": head(trade.errorTradeOfferLimit, /\s?[（(]/),
+        "trade.errorTradeAuctionBidLimit": head(trade.errorTradeAuctionBidLimit, /\s?[（(]/),
+        "trade.errorTradeCardAlreadyListed": trade.errorTradeCardAlreadyListed,
+        "trade.errorTradeWantedCardNotWantable": trade.errorTradeWantedCardNotWantable,
+        "trade.errorTradeAuctionExpired": trade.errorTradeAuctionExpired,
+      };
+      for (const [path, label] of Object.entries(labels)) {
+        // エラー文言は文末の句点だけ落として引用しているため正規化して比較する。
+        // JSON.stringify は " を \" にエスケープするため、比較側も同じ形に揃える。
+        const escaped = JSON.stringify(label.replace(/[。.]$/, "")).slice(1, -1);
+        expect(everything, `${name}: ${path} = ${label}`).toContain(escaped);
+      }
+    }
+  });
+
+  it("draws its mock-ups with the classes of the real screens (drift guard)", () => {
+    // 図解の見た目は実コンポーネントのコピー（実コンポーネントはクライアント状態を持つので
+    // 公開ページでは使えない）。実画面のクラスが変わったらここで気づけるよう、コピー元の
+    // 文字列が実ファイルにまだ存在することを固定する。
+    const status = readSource("src/components/TradeAuctionStatus.tsx");
+    const chips = readSource("src/components/trade-guide/PhaseChips.tsx");
+    for (const phase of ["bidding", "selecting", "completed", "expired", "cancelled"] as const) {
+      const cls = chips.match(new RegExp(`${phase}: "([^"]+)"`))?.[1];
+      expect(cls, phase).toBeTruthy();
+      expect(status, `TradeAuctionStatus ${phase}`).toContain(`${phase}: "${cls}"`);
+    }
+    // 「成立できない入札」バッジ
+    expect(readSource("src/components/TradeAuctionRow.tsx")).toContain("rounded bg-yellow-700 px-2 py-0.5 text-yellow-50");
+    expect(chips).toContain('unsettleable: "bg-yellow-700 text-yellow-50"');
+
+    // トレード設定パネルのトグル・ステータスピル
+    const settings = readSource("src/components/TradeSettings.tsx");
+    const mock = readSource("src/components/trade-guide/TradeSettingsMock.tsx");
+    for (const cls of [
+      "h-6 w-11 rounded-full",
+      "after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border",
+      "peer-checked:bg-purple-600",
+      "peer-checked:after:translate-x-full",
+      "bg-green-500/20 text-green-400",
+      "bg-gray-500/20 text-gray-400",
+      "rounded-xl bg-gray-800 p-6",
+    ]) {
+      expect(settings, `TradeSettings: ${cls}`).toContain(cls);
+    }
+    expect(mock).toContain("bg-purple-600 after:translate-x-full");
+    expect(mock).toContain("after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border");
+
+    // ボードのタブ・「トレード」ボタン
+    const board = readSource("src/app/trade/[streamerId]/page.tsx");
+    const tabs = readSource("src/components/trade-guide/BoardTabsMock.tsx");
+    expect(board).toContain("shrink-0 rounded-lg px-4 py-2 text-sm");
+    expect(board).toContain('"bg-purple-600 text-white" : "bg-gray-800 text-gray-300');
+    expect(tabs).toContain("rounded-lg px-4 py-2 text-sm");
+    expect(tabs).toContain('"bg-purple-600 text-white" : "bg-gray-800 text-gray-300"');
+    expect(readSource("src/components/StreamerCollection.tsx")).toContain(
+      "rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white",
+    );
+    expect(tabs).toContain("rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white");
+
+    // 「求めるカード」チェックボックス（accent-purple-500 の h-4 w-4）と数量バッジ
+    expect(readSource("src/components/CardManager.tsx")).toContain('className="mt-0.5 h-4 w-4 rounded accent-purple-500"');
+    expect(readSource("src/components/TradeCardSummary.tsx")).toContain(
+      "rounded bg-purple-600 px-1.5 py-0.5 text-xs font-semibold text-white",
+    );
+    expect(readSource("src/components/trade-guide/CardTile.tsx")).toContain(
+      "rounded bg-purple-600 px-1.5 py-0.5 text-xs font-semibold text-white",
+    );
+  });
+
+  it("builds the diagrams from presentational components that hold no copy, data or state", () => {
+    const dir = "src/components/trade-guide";
+    const files = readdirSync(join(process.cwd(), dir)).filter((file) => /\.(tsx|ts)$/.test(file));
+    expect(files.length).toBeGreaterThan(10);
+    for (const file of files) {
+      const text = readSource(`${dir}/${file}`);
+      expect(text, file).not.toContain('"use client"');
+      expect(text, file).not.toMatch(/useState|useEffect|fetch\(|getTranslations\(|useTranslations/);
+      // 日本語の文言は messages 側にだけ置く（コメントは対象外）
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      expect(code, file).not.toMatch(/[぀-ヿ一-鿿]/);
+    }
+  });
+
+  /**
+   * 用語の統一。ガイドの読みにくさの大きな原因は「同じものを別の言葉で呼ぶ」ことだったので、
+   * 統一で使わないと決めた語が視聴者向けの文言に出てこないことを固定する。
+   *   - 視聴者向け = 配信者向けセクション（streamer.*）以外のすべての文言
+   *   - 画面に実在する文言の引用（trade 名前空間のエラー文など）は、画面どおりでなければ
+   *     探せないので許可する。引用部分を取り除いてから検査する。
+   *   - 配信者向けでは、画面のチェック名どおり「求めるカード」を使い、意味を一度だけ補足する。
+   */
+  describe("terminology", () => {
+    const leavesOf = (value: unknown, prefix = ""): [string, string][] =>
+      typeof value === "string"
+        ? [[prefix, value]]
+        : Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+            leavesOf(child, prefix ? `${prefix}.${key}` : key),
+          );
+
+    // 画面の実文言（trade 名前空間）。長いものから順に取り除く（短い文言が長い文言の一部のことがある）。
+    function withoutScreenQuotes(text: string, trade: Record<string, string>) {
+      const quotes = Object.values(trade)
+        .map((value) => value.replace(/[。.]$/, ""))
+        .filter((value) => value.length >= 4)
+        .sort((a, b) => b.length - a.length);
+      return quotes.reduce((rest, quote) => rest.split(quote).join(""), text);
+    }
+
+    // 視聴者向けで使わない語（理由は左）。
+    const bannedJa: [string, RegExp][] = [
+      ["画面では「欲しいカード」。「求めるカード」は配信者向け設定の引用だけ", /求めるカード/],
+      ["「流札」ではなく「だれとも交換されずに終了」（チップの実文言だけ）", /流札/],
+      ["持ち主が変わらないので「戻る」とは書かない（また使える）", /戻(る|り|す|っ|せ)/],
+      ["「移動」「解放」「拘束」ではなく「また使える」「使えない」", /移動|解放|拘束/],
+      ["「渡す」「もらう」に統一", /譲る|譲っ|受け取|引き渡|手渡/],
+      ["「応じる」に統一", /応諾|承諾|受諾/],
+      ["「入札」に統一", /落札|オファー/],
+      ["ログインの説明は画面が案内するので書かない", /ログイン/],
+    ];
+    const bannedEn: [string, RegExp][] = [
+      ["the card you want, not \"requested\" (the streamer part may quote the checkbox)", /\brequest/i],
+      ["\"no deal\" is the one word for an auction that ends without a trade", /\bexpire/i],
+      ["cards are \"free to use again\", not \"returned\" / \"released\" (ownership never changes)", /\breturn|\breleas|\block(ed)?\b/i],
+      ["\"give\" / \"get\", not \"hand over\"", /hand(s|ed|ing)? over|\breceive/i],
+      ["\"trade\", not \"swap\" / \"exchange\"", /\bswap|\bexchang/i],
+      ["login is explained by the screen", /log ?in|sign ?in/i],
+    ];
+
+    it.each([
+      ["ja", jaMessages, bannedJa],
+      ["en", enMessages, bannedEn],
+    ] as const)("keeps the %s viewer copy to the agreed words", (name, messages, banned) => {
+      const viewerLeaves = leavesOf(messages.tradeGuidePage).filter(([path]) => !path.startsWith("streamer."));
+      expect(viewerLeaves.length).toBeGreaterThan(40);
+      for (const [path, text] of viewerLeaves) {
+        const rest = withoutScreenQuotes(text, messages.trade);
+        for (const [why, pattern] of banned) {
+          expect(rest, `${name}: ${path} (${why})`).not.toMatch(pattern);
+        }
+      }
+    });
+
+    it("uses the screen's word for the streamer-side checkbox and explains it exactly once", () => {
+      const ja = leavesOf(jaMessages.tradeGuidePage).filter(([path]) => path.startsWith("streamer."));
+      const en = leavesOf(enMessages.tradeGuidePage).filter(([path]) => path.startsWith("streamer."));
+      // 画面のチェック名は「求めるカード」/ "requested"
+      expect(jaMessages.cardManager.form.tradeWantable).toContain("求めるカード");
+      expect(enMessages.cardManager.form.tradeWantable).toContain("requested");
+      // ja: 補足は streamer.wantable.description の一度だけ
+      const jaGloss = ja.filter(([, text]) => text.includes("視聴者が欲しいカードとして指定すること"));
+      expect(jaGloss.map(([path]) => path)).toEqual(["streamer.wantable.description"]);
+      expect(jaMessages.tradeGuidePage.streamer.wantable.description).toContain(jaMessages.cardManager.form.tradeWantable);
+      // en: 同様に「requested = a viewer picks it as a card they want」を一度だけ
+      const enGloss = en.filter(([, text]) => /means a viewer picks the card as a card they want/.test(text));
+      expect(enGloss.map(([path]) => path)).toEqual(["streamer.wantable.description"]);
+      expect(enMessages.tradeGuidePage.streamer.wantable.description).toContain(enMessages.cardManager.form.tradeWantable);
+    });
+
+    it("glosses \"cross-channel\" where the tab is first introduced and uses the tab's own name after that", () => {
+      for (const [name, messages, gloss] of [
+        ["ja", jaMessages, "ほかのチャンネルのカードとの交換"],
+        ["en", enMessages, "trades with cards of other channels"],
+      ] as const) {
+        const find = messages.tradeGuidePage.accept.steps.find.description as string;
+        expect(find, name).toContain(messages.trade.tabCrossChannel);
+        expect(find, name).toContain(gloss);
+      }
+    });
+
+    it("says what happens to a card in a listing or bid the same way everywhere (it can be used again)", () => {
+      for (const [name, messages, phrase] of [
+        ["ja", jaMessages, "また使え"],
+        ["en", enMessages, "free to use again"],
+      ] as const) {
+        const page = messages.tradeGuidePage;
+        for (const text of [
+          page.offer.rules.locked,
+          page.auction.seller.note,
+          page.auction.bidder.wait.description,
+          page.auction.timeline.completed,
+        ]) {
+          expect(text, name).toContain(phrase);
+        }
+      }
+    });
+  });
+
+  it("is linked only from the trade screens, not from /guide or the public footer", () => {
+    // 本番ではトレード入口がまだ非表示のため、一般向けの導線には出さない
+    expect(readSource("src/app/guide/page.tsx")).not.toContain("/guide/trade");
+    expect(readSource("src/app/usages/page.tsx")).not.toContain("/guide/trade");
+    expect(readSource("src/components/PublicFooter.tsx")).not.toContain("/guide/trade");
+    expect(readSource("src/app/page.tsx")).not.toContain("/guide/trade");
+
+    const layout = readSource("src/app/trade/layout.tsx");
+    expect(layout).toContain('href="/guide/trade"');
+    expect(layout).toContain('getTranslations("tradeGuidePage")');
+    for (const { name, messages } of locales) {
+      expect(messages.tradeGuidePage.entryLink, name).toBeTruthy();
+    }
   });
 });

@@ -33,6 +33,7 @@ process.env.NEXT_PUBLIC_TWITCH_CLIENT_ID = 'test-client-id'
 process.env.TWITCH_EVENTSUB_SECRET = 'test-eventsub-secret'
 process.env.CSRF_SIGNING_KEY = 'test-csrf-signing-key'
 process.env.CSRF_TOKEN_SALT = 'test-csrf-token-salt-at-least-32-characters-long'
+process.env.SESSION_COOKIE_SECRET = 'test-session-cookie-secret-at-least-32-chars-long'
 process.env.BLOB_READ_WRITE_TOKEN = 'test-blob-read-write-token'
 process.env.CSRF_ALLOW_ALL_LOCAL = 'false'
 
@@ -43,6 +44,18 @@ Object.defineProperty(global.navigator, 'clipboard', {
   },
   writable: true,
 })
+
+// happy-dom 21 では window.alert / confirm / prompt が未定義のため、
+// vi.spyOn(window, 'alert') 等が失敗する。テスト互換のためスタブを用意する。
+for (const name of ['alert', 'confirm', 'prompt'] as const) {
+  if (typeof (window as any)[name] !== 'function') {
+    Object.defineProperty(window, name, {
+      value: vi.fn(),
+      writable: true,
+      configurable: true,
+    })
+  }
+}
 
 // PlanetScale直結経路（postgres.js + Drizzle）のグローバル境界。
 // DBアクセスを行う単体テストは、対象クエリの戻り値と呼び出し形状を明示した

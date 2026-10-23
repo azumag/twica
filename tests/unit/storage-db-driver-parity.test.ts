@@ -14,6 +14,9 @@ import {
   hasStorageBonusByTwitchUserId,
   getStorageUsageFromDB,
   getAllStorageUsage,
+  reserveStorageUsage,
+  releaseStorageReservation,
+  reconcileStorageUsage,
 } from '@/lib/storage-db'
 import { getDb } from '@/lib/db/client'
 import {
@@ -37,10 +40,12 @@ function createDrizzleDbMock(config: {
   inserts?: Array<{ error?: unknown }>
   deletes?: Array<{ error?: unknown }>
   sqlError?: unknown
+  sqlResults?: unknown[][]
 } = {}) {
   let selectIndex = 0
   let insertIndex = 0
   let deleteIndex = 0
+  let sqlIndex = 0
   const selectCalls: Array<{ joins: Array<{ table: unknown; on: unknown }>; where?: unknown; orderBy?: unknown }> = []
   const insertCalls: Array<{ table: unknown; values?: Record<string, unknown> }> = []
   const deleteCalls: Array<{ table: unknown; where?: unknown }> = []
@@ -120,9 +125,13 @@ function createDrizzleDbMock(config: {
   // postgres.js の sql タグ相当（sql`...` = sql(strings, ...values) 呼び出し。
   // 実引数は vi.fn の mock.calls に自動記録される。呼び出しシグネチャはジェネリクスで
   // 与え、実装側では未使用引数を持たない（eslint no-unused-vars 回避）
-  const sqlTag = vi.fn<(...args: unknown[]) => Promise<unknown[]>>(() =>
-    config.sqlError ? Promise.reject(config.sqlError) : Promise.resolve([])
-  )
+  const sqlTag = vi.fn<(...args: unknown[]) => Promise<unknown[]>>(() => {
+    if (config.sqlError) return Promise.reject(config.sqlError)
+    const results = config.sqlResults ?? []
+    const result = results[Math.min(sqlIndex, Math.max(results.length - 1, 0))]
+    sqlIndex += 1
+    return Promise.resolve(result ?? [])
+  })
 
   return { db, sqlTag, selectCalls, insertCalls, deleteCalls }
 }
@@ -136,49 +145,196 @@ describe('storage-db: PlanetScale 経路 (#572)', () => {
     vi.clearAllMocks()
   })
 
-  describe('recordBlobFile', () => {
-    const ARGS = ['https://cdn.example/f.png', 'prefix12', 1234, 'r2'] as const
+  describe('recordBlobFile (#1907: 予約の確定)', () => {
+    const RESERVATION_ID = '11111111-2222-3333-4444-555555555555'
+    const ARGS = [
+      RESERVATION_ID,
+      'https://cdn.example/f.png',
+      'prefix12',
+      1234,
+      'r2',
+    ] as const
 
-    it('blob_files へ正しい values を INSERT し、RPCを名前付き引数で呼ぶ', async () => {
-      const pg = createDrizzleDbMock()
+    it('commit_storage_reservation を予約ID・URL・所有者・サイズ付きで呼び、結果を返す', async () => {
+      const pg = createDrizzleDbMock({ sqlResults: [[{ outcome: 'committed' }]] })
       primePgDb(pg)
-      await expect(recordBlobFile(...ARGS)).resolves.toBeUndefined()
+
+      await expect(recordBlobFile(...ARGS)).resolves.toBe('committed')
+
+      // 旧実装の INSERT / update_storage_usage を直接呼ばず、単一 RPC に集約する。
+      expect(pg.insertCalls).toHaveLength(0)
+      expect(pg.sqlTag).toHaveBeenCalledTimes(1)
+      const [strings, ...values] = pg.sqlTag.mock.calls[0] as [TemplateStringsArray, ...unknown[]]
+      const normalized = strings
+        .join('$')
+        .replace(/\s+/g, ' ')
+        .replace(/\(\s+/g, '(')
+        .replace(/\s+\)/g, ')')
+        .trim()
+      expect(normalized).toBe(
+        'select commit_storage_reservation(p_reservation_id => $::uuid, p_url => $, p_storage_type => $, p_user_prefix => $, p_size => $) as outcome'
+      )
+      expect(values).toEqual([RESERVATION_ID, 'https://cdn.example/f.png', 'r2', 'prefix12', 1234])
+    })
+
+    it('再送（already_committed）も成功結果として返す', async () => {
+      const pg = createDrizzleDbMock({ sqlResults: [[{ outcome: 'already_committed' }]] })
+      primePgDb(pg)
+
+      await expect(recordBlobFile(...ARGS)).resolves.toBe('already_committed')
+    })
+
+    it('予約が見つからない場合は reservation_not_found を返す（呼び出し元が補償する）', async () => {
+      const pg = createDrizzleDbMock({ sqlResults: [[{ outcome: 'reservation_not_found' }]] })
+      primePgDb(pg)
+
+      await expect(recordBlobFile(...ARGS)).resolves.toBe('reservation_not_found')
+    })
+
+    it('RPC 失敗: 握りつぶさず Error を throw する（旧実装の回帰防止）', async () => {
+      const pg = createDrizzleDbMock({ sqlError: { code: '42883', message: 'function does not exist' } })
+      primePgDb(pg)
+
+      await expect(recordBlobFile(...ARGS)).rejects.toThrow(/^Failed to record blob file: /)
+    })
+
+    it('予約IDが null の場合は legacy 経路で INSERT と update_storage_usage を実行する', async () => {
+      const pg = createDrizzleDbMock({ sqlResults: [[{ outcome: 'committed' }]] })
+      primePgDb(pg)
+
+      await expect(
+        recordBlobFile(null, 'https://cdn.example/legacy.png', 'prefix12', 1234, 'r2')
+      ).resolves.toBe('committed')
 
       expect(pg.insertCalls).toHaveLength(1)
-      expect(pg.insertCalls[0].table).toBe(blobFilesTable)
       expect(pg.insertCalls[0].values).toEqual({
-        url: 'https://cdn.example/f.png',
+        url: 'https://cdn.example/legacy.png',
         user_prefix: 'prefix12',
         file_size: 1234,
         storage_type: 'r2',
       })
-      // RPC: sql タグで select update_storage_usage(p_xxx => 値) の名前付き引数呼び出し
-      expect(pg.sqlTag).toHaveBeenCalledTimes(1)
       const [strings, ...values] = pg.sqlTag.mock.calls[0] as [TemplateStringsArray, ...unknown[]]
-      expect(strings.join('$')).toBe(
+      expect(strings.join('$').replace(/\s+/g, ' ').trim()).toBe(
         'select update_storage_usage(p_user_prefix => $, p_size_delta => $, p_count_delta => $)'
       )
       expect(values).toEqual(['prefix12', 1234, 1])
     })
 
-    it('INSERT 失敗: 両経路と同じ形の Error を throw し、RPC は呼ばれない', async () => {
+    it('legacy 経路の update_storage_usage 失敗は throw する（旧実装の握りつぶしを再導入しない）', async () => {
       const pg = createDrizzleDbMock({
-        inserts: [{ error: { code: '23505', message: 'duplicate key value' } }],
+        sqlError: { code: '42883', message: 'function update_storage_usage does not exist' },
       })
       primePgDb(pg)
 
+      await expect(
+        recordBlobFile(null, 'https://cdn.example/legacy.png', 'prefix12', 1234, 'r2')
+      ).rejects.toThrow(/^Failed to record blob file: /)
+    })
+
+    it('契約外の outcome は Error にする', async () => {
+      const pg = createDrizzleDbMock({ sqlResults: [[{ outcome: 'unexpected' }]] })
+      primePgDb(pg)
+
       await expect(recordBlobFile(...ARGS)).rejects.toThrow(/^Failed to record blob file: /)
+    })
+  })
+
+  describe('reserveStorageUsage / releaseStorageReservation (#1907)', () => {
+    it('予約成功: reservation_id と outcome を返す', async () => {
+      const pg = createDrizzleDbMock({
+        sqlResults: [[{ reservation_id: 'reservation-1', outcome: 'reserved' }]],
+      })
+      primePgDb(pg)
+
+      await expect(
+        reserveStorageUsage('prefix12', 1234, 100 * 1024 * 1024, 1000 * 1024 * 1024)
+      ).resolves.toEqual({ reservationId: 'reservation-1', outcome: 'reserved', degraded: false })
+
+      const [strings, ...values] = pg.sqlTag.mock.calls[0] as [TemplateStringsArray, ...unknown[]]
+      expect(strings.join('$')).toContain('reserve_storage_usage')
+      expect(strings.join('$')).toContain('p_user_prefix => $')
+      expect(values).toEqual(['prefix12', 1234, 100 * 1024 * 1024, 1000 * 1024 * 1024])
+    })
+
+    it.each(['user_limit', 'global_limit'] as const)(
+      '上限到達（%s）は reservationId=null で返す',
+      async (outcome) => {
+        const pg = createDrizzleDbMock({ sqlResults: [[{ reservation_id: null, outcome }]] })
+        primePgDb(pg)
+
+        await expect(
+          reserveStorageUsage('prefix12', 1234, 100, 1000)
+        ).resolves.toEqual({ reservationId: null, outcome, degraded: false })
+      }
+    )
+
+    it('予約 RPC 未適用（42883）は旧経路へ縮退する（deploy-window fallback）', async () => {
+      const pg = createDrizzleDbMock({
+        sqlError: { code: '42883', message: 'function reserve_storage_usage(...) does not exist' },
+      })
+      primePgDb(pg)
+
+      await expect(
+        reserveStorageUsage('prefix12', 1234, 100, 1000)
+      ).resolves.toEqual({ reservationId: null, outcome: 'reserved', degraded: true })
+    })
+
+    it('不正なサイズ・プレフィックスは RPC を呼ばず throw する', async () => {
+      const pg = createDrizzleDbMock()
+      primePgDb(pg)
+
+      await expect(reserveStorageUsage('prefix12', 0, 100, 1000)).rejects.toThrow()
+      await expect(reserveStorageUsage('short', 1, 100, 1000)).rejects.toThrow()
       expect(pg.sqlTag).not.toHaveBeenCalled()
     })
 
-    it('RPC 失敗: ログのみで throw しない（次回の計算で補正される。既存と同じ）', async () => {
-      const pg = createDrizzleDbMock({ sqlError: { code: '42883', message: 'function does not exist' } })
+    it('予約解放は released を真偽値で返し、RPC 失敗は throw する', async () => {
+      const ok = createDrizzleDbMock({ sqlResults: [[{ released: true }]] })
+      primePgDb(ok)
+      await expect(releaseStorageReservation('reservation-1')).resolves.toBe(true)
+
+      const missing = createDrizzleDbMock({ sqlResults: [[{ released: false }]] })
+      primePgDb(missing)
+      await expect(releaseStorageReservation('reservation-1')).resolves.toBe(false)
+
+      const failed = createDrizzleDbMock({ sqlError: { code: '08006' } })
+      primePgDb(failed)
+      await expect(releaseStorageReservation('reservation-1')).rejects.toBeDefined()
+    })
+  })
+
+  describe('reconcileStorageUsage (#1907)', () => {
+    it('bigint 文字列を数値に正規化して差分を返す', async () => {
+      const pg = createDrizzleDbMock({
+        sqlResults: [[
+          {
+            user_prefix: 'prefix12',
+            previous_bytes: '100',
+            actual_bytes: '1234',
+            previous_count: '1',
+            actual_count: '2',
+          },
+        ]],
+      })
       primePgDb(pg)
 
-      await expect(recordBlobFile(...ARGS)).resolves.toBeUndefined()
-      expect(pg.insertCalls).toHaveLength(1)
+      await expect(reconcileStorageUsage()).resolves.toEqual([
+        {
+          userPrefix: 'prefix12',
+          previousBytes: 100,
+          actualBytes: 1234,
+          previousCount: 1,
+          actualCount: 2,
+        },
+      ])
     })
 
+    it('RPC 失敗は throw する（ジョブが成功扱いで終わらない）', async () => {
+      const pg = createDrizzleDbMock({ sqlError: { code: '42883' } })
+      primePgDb(pg)
+
+      await expect(reconcileStorageUsage()).rejects.toBeDefined()
+    })
   })
 
   describe('removeBlobFile', () => {
@@ -346,8 +502,8 @@ describe('storage-db: PlanetScale 経路 (#572)', () => {
       expect(result).toEqual({
         userUsage: 0,
         globalUsage: 0,
-        userLimitReached: false,
-        globalLimitReached: false,
+        userLimitReached: true,
+        globalLimitReached: true,
         userLimitBytes: result.userLimitBytes,
         globalLimitBytes: result.globalLimitBytes,
       })

@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSession, canUseStreamerFeatures } from '@/lib/session';
 import { handleApiError, handleBlobError } from '@/lib/error-handler';
 import { checkRateLimit, rateLimits, getRateLimitIdentifier, retryAfterSeconds } from '@/lib/rate-limit';
-import { ERROR_MESSAGES, SOUND_UPLOAD_CONFIG } from '@/lib/constants';
+import { ERROR_MESSAGES, SOUND_UPLOAD_CONFIG, SOUND_STORAGE_LIMIT_MESSAGES } from '@/lib/constants';
 import { getSoundFileTypeFromBuffer, getFileExtension, isValidSoundExtension } from '@/lib/file-utils';
 import { logger } from '@/lib/logger.server';
 import { validateCSRFToken } from '@/lib/csrf';
 import { uploadSoundToR2WithRetry, deleteSoundFromR2 } from '@/lib/r2-client';
+import { recordBlobFile, releaseStorageReservation, removeBlobFile } from '@/lib/storage-db';
+import { reserveStorageCapacity } from '@/lib/storage-usage';
 import { sha256Prefix, randomUUID } from '@/lib/crypto-utils';
 import type { Session } from '@/lib/session';
 
@@ -117,6 +119,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   let buffer: Buffer | null = null;
   let fileName: string | null = null;
+  let reservationId: string | null = null;
+  let reservationCommitted = false;
 
   try {
     const formData = await request.formData();
@@ -154,6 +158,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     fileName = `sound_${userPrefix}_${uniqueSuffix}.${ext}`;
 
+    // 容量を原子的に予約する (#1907)。音声も画像と同じ台帳・予約を共有する。
+    // 取得失敗時の fail-closed（usage=0 + flags=true）は reserveStorageCapacity が
+    // フラグを先に見て 507 を返すため、無制限保存へ進まない（#1896 完了条件4）。
+    const reservation = await reserveStorageCapacity(
+      userPrefix,
+      session!.twitchUserId,
+      buffer!.length,
+    );
+    if (!reservation.ok) {
+      return NextResponse.json(
+        reservation.reason === 'global_limit'
+          ? { error: SOUND_STORAGE_LIMIT_MESSAGES.GLOBAL_LIMIT_REACHED, code: 'GLOBAL_LIMIT_REACHED' }
+          : { error: SOUND_STORAGE_LIMIT_MESSAGES.USER_LIMIT_REACHED, code: 'USER_LIMIT_REACHED' },
+        { status: 507 }
+      );
+    }
+    const activeReservationId = reservation.reservationId;
+    reservationId = activeReservationId;
+
     // R2効果音バケットにアップロード（リトライ付き）
     const uploadResult = await uploadSoundToR2WithRetry(fileName, buffer, actualType);
 
@@ -165,6 +188,36 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // 予約を確定する (#1907)。失敗は例外/結果で検知し、R2 と予約を補償する。
+    try {
+      const commitOutcome = await recordBlobFile(
+        activeReservationId,
+        uploadResult.url,
+        userPrefix,
+        buffer!.length,
+        'r2',
+      );
+      if (commitOutcome === 'reservation_not_found') {
+        throw new Error('storage reservation not found when committing sound blob file');
+      }
+    } catch (dbError) {
+      // 台帳確定失敗: このまま返すと「R2保存済み・未計上・未参照」の孤児オブジェクトが
+      // 残り、クライアントのリトライのたびに未計上容量が増殖する (#1896)。
+      // 保存直後のオブジェクトを best-effort で削除して台帳と R2 の整合を取り、
+      // 削除にも失敗した場合はログを残して follow-up の回収対象にする。
+      try {
+        await deleteSoundFromR2(fileName);
+      } catch (cleanupError) {
+        logger.error(`[Sound Upload] Failed to cleanup R2 object after ledger failure: ${fileName}`, cleanupError);
+      }
+      logger.error(`[Sound Upload] Failed to record sound blob file in DB: ${fileName}`, dbError);
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.INTERNAL_ERROR, code: 'STORAGE_LEDGER_FAILED' },
+        { status: 500 }
+      );
+    }
+
+    reservationCommitted = true;
     logger.info(`[Sound Upload] Successfully uploaded: ${fileName}, size: ${buffer.length} bytes`);
     return NextResponse.json({ url: uploadResult.url });
   } catch (error) {
@@ -187,6 +240,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     return handleApiError(error, "Sound Upload API");
+  } finally {
+    // R2 保存失敗・台帳確定失敗のいずれでも、確定していない予約は必ず解放する。
+    if (reservationId && !reservationCommitted) {
+      try {
+        await releaseStorageReservation(reservationId);
+      } catch (releaseError) {
+        logger.error(`[Sound Upload] Failed to release storage reservation: ${reservationId}`, releaseError);
+      }
+    }
   }
 }
 
@@ -245,6 +307,21 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
 
     // R2から削除
     await deleteSoundFromR2(fileName);
+
+    // 台帳からも削除して使用量を減算する (#1896)。
+    // 音声は #1896 から recordBlobFile で台帳記録対象のため、R2 削除のみだと
+    // 使用量が残り続けて正当なアップロードが上限誤ブロックされる。
+    // - 台帳未記録の旧オブジェクト（記録導入前の音声）は removeBlobFile が
+    //   null を返すため減算スキップ
+    // - 減算失敗は過大計上（安全側）だが誤ブロックの原因になるため、
+    //   ログで追跡し再照合の対象にする
+    // - R2 削除成功後に減算する順序は、R2 削除失敗時に台帳を触らず
+    //   「オブジェクト残存＆計上済み」の一貫した状態を保つため
+    try {
+      await removeBlobFile(url);
+    } catch (ledgerError) {
+      logger.error(`[Sound Delete] Failed to remove blob file from ledger: ${url}`, ledgerError);
+    }
 
     logger.info(`[Sound Delete] Successfully deleted: ${fileName}`);
     return NextResponse.json({ success: true });
