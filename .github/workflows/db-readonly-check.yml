@@ -94,14 +94,69 @@ jobs:
             exit 1
           fi
 
-      # 【一時変更・#1909 QA】 通常の outbox 観測 SQL を、Preview 実経路確認に必要な
-      # streamers/trade の読み取り専用観測へ差し替えたもの。確認後、元の SQL へ即時 revert する。
-      # 安全設計（workflow_dispatch のみ / preview ref ガード / read-only セッション /
-      # 固定 SQL / checkout なし / 公開性の高い列のみ出力）は元ファイルから変更しない。
-      - name: TEMPORARY QA observation for #1909 (read-only)
+      # 適用判断・受入確認に必要な件数。ロック時間の見積り式は
+      #   「(pending 行数 + processing 行数) の索引走査」 + 「補正対象行数 × 行更新コスト」
+      # なので、その入力になる件数をそのまま出力する。
+      # 出力は件数・観測時刻・適用 version に絞る（DB 名・適用者名は公開ログに出さない）。
+      - name: Count backfill targets (read-only)
         run: |
-          psql -X -qAt -v ON_ERROR_STOP=1 -d "$DATABASE_URL" \
-            -c "SELECT 'streamers_total=' || count(*) FROM streamers;" \
-            -c "SELECT 'streamer|' || id || '|' || coalesce(twitch_username,'') || '|' || coalesce(twitch_profile_image_url,'') || '|active=' || coalesce(is_active::text,'null') || '|trade=' || coalesce(trade_enabled::text,'null') FROM streamers ORDER BY id LIMIT 5;" \
-            -c "SELECT 'cards_with_image_url=' || count(*) FROM cards WHERE image_url IS NOT NULL;" \
-            -c "SELECT 'card_image_url|' || image_url FROM cards WHERE image_url IS NOT NULL ORDER BY id LIMIT 1;"
+          psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
+          \pset pager off
+          \echo ==== observation point (この実行時点の値) ====
+          SELECT now() AS observed_at, current_setting('transaction_read_only') AS transaction_read_only;
+
+          \echo ==== outbox size ====
+          SELECT
+            count(*)                                                                   AS total_rows,
+            count(*) FILTER (WHERE status = 'pending')                                 AS pending_rows,
+            count(*) FILTER (WHERE status = 'processing')                              AS processing_rows,
+            count(*) FILTER (WHERE status = 'processing' AND lease_expires_at <= now()) AS processing_lease_expired_rows,
+            count(*) FILTER (WHERE status = 'sent')                                    AS sent_rows,
+            count(*) FILTER (WHERE status = 'dead')                                    AS dead_rows,
+            pg_size_pretty(pg_total_relation_size('public.chat_notification_outbox'))   AS total_size
+          FROM public.chat_notification_outbox;
+
+          \echo ==== backfill targets (20261018010000 と同一の predicate。apply 後はこれが残件) ====
+          SELECT
+            now() AS observed_at,
+            count(*) FILTER (WHERE (status = 'pending' OR (status = 'processing' AND lease_expires_at <= now())) AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_total,
+            count(*) FILTER (WHERE status = 'pending'     AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_pending,
+            count(*) FILTER (WHERE status = 'processing' AND lease_expires_at <= now() AND delivery_cursor > 0 AND delivery_cursor < expected_draw_count AND pending_kind = 'initial') AS targets_processing_lease_expired,
+            count(*) FILTER (WHERE (status = 'pending' OR (status = 'processing' AND lease_expires_at <= now())) AND delivery_cursor > 0 AND pending_kind <> 'initial') AS already_non_initial_with_partial_cursor
+          FROM public.chat_notification_outbox
+          WHERE status = 'pending' OR status = 'processing';
+
+          \echo ==== partial cursor rows by pending_kind (参考) ====
+          SELECT pending_kind, count(*) AS rows
+          FROM public.chat_notification_outbox
+          WHERE delivery_cursor > 0 AND delivery_cursor < expected_draw_count
+          GROUP BY pending_kind
+          ORDER BY pending_kind;
+
+          \echo ==== plan for the completion migration (EXPLAIN のみ。実行しない) ====
+          EXPLAIN
+          UPDATE public.chat_notification_outbox
+          SET pending_kind = 'continuation', updated_at = now()
+          WHERE (status = 'pending' OR (status = 'processing' AND lease_expires_at <= now()))
+            AND delivery_cursor > 0
+            AND delivery_cursor < expected_draw_count
+            AND pending_kind = 'initial';
+          SQL
+
+      # 台帳の状態。20261017010000 と 20261018010000 の適用有無を確認する。
+      # 履歴テーブルが無い環境でも他の出力を失わないよう、この step を分けている。
+      # 出力は version / name / 適用時刻に絞る（適用者名は公開ログに出さない）。
+      - name: Show migration ledger state (read-only)
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
+          \pset pager off
+          \echo ==== ledger (observed_at は実行時点) ====
+          SELECT now() AS observed_at;
+          SELECT coalesce(to_regclass('twica_meta.schema_migrations')::text, '(history table not found)') AS history_table;
+          SELECT version, name, applied_at
+          FROM twica_meta.schema_migrations
+          WHERE version IN ('20261017010000', '20261018010000')
+          ORDER BY version;
+          SELECT max(version) AS max_applied_version, count(*) AS applied_count
+          FROM twica_meta.schema_migrations;
+          SQL
