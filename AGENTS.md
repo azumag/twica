@@ -77,3 +77,16 @@
 - 既存Wranglerプロジェクトでは `cf migrate` のレビュー前に `cf init/dev/build/deploy` などbuildを伴うコマンドを実行しない（追加の対象は下記運用文書を参照）。自動設定が既存TOMLのentrypointやbindingを引き継がないため。
 - 本体のOpenNext / Workers Builds、preview/prod、secret、補助Workerの配備有無を維持する。移行のparityと明示fallbackは [Cloudflare cf-first運用](docs/cloudflare-cf-migration.md) を参照する。
 - Wranglerを無条件に追加・更新しない。利用時はfallback理由と対象を明示する。設定移行にruntime互換日更新、DB変更、secret更新、resource作成、配備を混ぜない。
+
+## 秘密情報と投稿前スキャン
+
+ストリームキー、OAuth token、APIキー、秘密鍵、push targetなどの機密情報は、このリポジトリのどのファイル、ログ、Issueにも書かない。テストや進捗表示を理由に資格情報を探索・抽出しない。
+
+### 投稿前スキャンと合成値の使用（2026-10-23）
+
+2026-10-23、レビューコメントの「実測」表へ実行環境の資格情報の実値を貼った事案を受け、以下を必須とする。
+
+- GitHub へのコメント投稿は、エージェント共通の投稿前スキャン `agent-guards/gh-comment`（ワークスペース直下、リポジトリ外）を経由する。ラッパーを経由しない直接投稿は禁止する。Issue / PR 本文も、投稿前に `agent-guards/secret_scan.py` で走査する。
+- 実測・検証・レビューの入力例には合成値のみを使う。実物の資格情報・トークン・コマンド出力の実値を、表・フィクスチャ・ログへ貼らない。
+- 秘密情報を含みうるコマンド出力やログはそのまま貼らず、要約して書く。
+- スキャンは最後の網であり、上記の規律の代替ではない。
