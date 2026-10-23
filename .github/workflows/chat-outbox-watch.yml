@@ -500,34 +500,34 @@ jobs:
             else
               echo "no stall detected; nothing to notify"
               python3 - <<'PY'
-              import json
-              import os
-              import urllib.request
+          import json
+          import os
+          import urllib.request
 
-              try:
-                  api_base = os.environ["GITHUB_API_URL"]
-                  repository = os.environ["GITHUB_REPOSITORY"]
-                  request = urllib.request.Request(
-                      f"{api_base}/repos/{repository}/statuses/{os.environ['GITHUB_SHA']}",
-                      data=json.dumps(
-                          {
-                              "state": "success",
-                              "context": "chat-outbox-watch/recovered",
-                              "description": "chat outbox recovered (no stall)",
-                              "target_url": os.environ.get("WATCH_RUN_URL", ""),
-                          }
-                      ).encode("utf-8"),
-                      headers={
-                          "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-                          "Content-Type": "application/json",
-                      },
-                      method="POST",
-                  )
-                  with urllib.request.urlopen(request, timeout=20):
-                      pass
-              except Exception as error:  # noqa: BLE001
-                  print(f"::warning::recovery marker recording failed ({error})")
-              PY
+          try:
+              api_base = os.environ["GITHUB_API_URL"]
+              repository = os.environ["GITHUB_REPOSITORY"]
+              request = urllib.request.Request(
+                  f"{api_base}/repos/{repository}/statuses/{os.environ['GITHUB_SHA']}",
+                  data=json.dumps(
+                      {
+                          "state": "success",
+                          "context": "chat-outbox-watch/recovered",
+                          "description": "chat outbox recovered (no stall)",
+                          "target_url": os.environ.get("WATCH_RUN_URL", ""),
+                      }
+                  ).encode("utf-8"),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(request, timeout=20):
+                  pass
+          except Exception as error:  # noqa: BLE001
+              print(f"::warning::recovery marker recording failed ({error})")
+          PY
             fi
             exit 0
           fi
