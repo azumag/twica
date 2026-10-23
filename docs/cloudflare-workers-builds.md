@@ -13,14 +13,11 @@ GitHub Actions はアプリ本体を二重デプロイせず、PlanetScale migra
 - Root directory は repository root、Node.js は `.node-version` の値を使う。
 - Workers Builds は `.node-version`（メジャー `22`）を使い、ビルド時点で自身が把握する 22 系の最新に
   解決する。公開直後の修正版より古いことがある（2026-10-21 は 22.23.3）。
-- 完全指定の `22.23.4` は 2026-10-21 時点で Workers Builds がインストールできず
-  （`Installing nodejs 22.23.4` の直後に失敗）全ビルドが失敗したため、Workers Builds の対応が確認できる
-  まで `.node-version` は完全指定にしない（Issue #1919）。確認は
-  `npx cf@1.0.0-beta.10 builds logs get <build-uuid>` の `Installing nodejs` 行で行う。
-- GitHub Actions は Workers Builds が読まない専用ファイル `.github/ci-node-version`（修正版へ完全固定。
-  現在 `22.23.4`）を `node-version-file` で参照する。Node.js のセキュリティリリース時はこのファイルを
-  上げ、CI ログの setup-node の `node: vX` で実際の版を確認する。`.node-version` と
-  `.github/ci-node-version` の一本化は Issue #1919 で追跡する。
+- 2026-10-23 の preview build b3f09460 で Workers Builds が `22.23.4` をインストールできることが
+  確認された（Issue #1919 完了）。`.node-version` は完全指定 `22.23.4` で統一する。
+- GitHub Actions と Workers Builds は同じ `.node-version`（現在 `22.23.4`）を `node-version-file` で参照する。
+  Node.js のセキュリティリリース時はこのファイルを上げ、CI ログの setup-node の `node: vX` と
+  Workers Builds の `Installing nodejs` 行で実際の版を確認する。
 - これはビルド/CI/migration runner の Node であり、本番 Worker は workerd で動くため
   `compatibility_date` とは無関係。Workers Builds の環境変数 `NODE_VERSION` は公式に `.node-version`
   との優先順位の記載がないため設定せず、`.node-version` を正とする。

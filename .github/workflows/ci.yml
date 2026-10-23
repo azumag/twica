@@ -58,6 +58,11 @@ jobs:
               - 'eslint*.config.*'
               - 'vitest.config.*'
               - 'wrangler.toml'
+              # Node の指定だけを変える PR で test / workers:build / lint を実際に起動する。
+              # setup-node も Workers Builds も単一の .node-version（修正版へ完全固定）を
+              # 読むため、このファイルの変更は「新しい Node で検証する」ことを意味する
+              # （経緯は docs/cloudflare-workers-builds.md。Refs #1914 #1917）。
+              - '.node-version'
               # tests/unit/cloudflare-proxy-migration.test.ts が本文を直接assertする。
               - 'docs/cloudflare-proxy-migration.md'
             tests:
@@ -116,9 +121,14 @@ jobs:
               # アラート判定を同じく実PG17で検証する。判定 block の変更でも実行する。
               - 'tests/fixtures/chat-outbox-watch-pg17.mjs'
               - '.github/workflows/chat-outbox-watch.yml'
+              # Node の固定版を変えるときは PG17 も回す（保守的に）。
+              - '.node-version'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
+              # analysis job も setup-node で .node-version を使うため、Node の固定版を
+              # 変えたときは analysis の typecheck / build も新 Node で回す。
+              - '.node-version'
             i18n:
               - 'src/**'
               - 'eslint.i18n.config.mjs'
@@ -205,7 +215,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -272,7 +282,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -320,7 +330,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -375,7 +385,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -403,7 +413,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -437,7 +447,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -633,7 +643,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
