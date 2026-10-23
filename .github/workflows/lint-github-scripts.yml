@@ -37,9 +37,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           # Node 20 はサポート終了で 2026-10 のセキュリティ修正が出ないため、CI 用の
-          # .github/ci-node-version（Workers Builds とは別に修正版へ完全固定）を参照する。
+          # .node-version（Workers Builds とは別に修正版へ完全固定）を参照する。
           # 理由は docs/cloudflare-workers-builds.md。Refs #1914 #1919
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
