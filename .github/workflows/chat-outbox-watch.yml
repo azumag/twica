@@ -507,6 +507,35 @@ jobs:
                 "$DISCORD_WEBHOOK_URL"
             else
               echo "no stall detected; nothing to notify"
+              python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          try:
+              api_base = os.environ["GITHUB_API_URL"]
+              repository = os.environ["GITHUB_REPOSITORY"]
+              request = urllib.request.Request(
+                  f"{api_base}/repos/{repository}/statuses/{os.environ['GITHUB_SHA']}",
+                  data=json.dumps(
+                      {
+                          "state": "success",
+                          "context": "chat-outbox-watch/recovered",
+                          "description": "chat outbox recovered (no stall)",
+                          "target_url": os.environ.get("WATCH_RUN_URL", ""),
+                      }
+                  ).encode("utf-8"),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(request, timeout=20):
+                  pass
+          except Exception as error:  # noqa: BLE001
+              print(f"::warning::recovery marker recording failed ({error})")
+          PY
             fi
             exit 0
           fi
@@ -533,27 +562,48 @@ jobs:
           window_seconds = int(os.environ["ALERT_SUPPRESS_WINDOW_SECONDS"])
           api_base = os.environ["GITHUB_API_URL"]
           repository = os.environ["GITHUB_REPOSITORY"]
-          url = f"{api_base}/repos/{repository}/commits/{os.environ['GITHUB_SHA']}/status"
-          request = urllib.request.Request(
-              url,
+          # commit status は commit 紐づきのため、main の HEAD が merge で変わると
+          # 直前の anchor を見失う。直近の複数 commit を遡って、context が
+          # chat-outbox-watch/alert / chat-outbox-watch/recovered の status を
+          # 持つ最新のものを探す（main A -> B -> C の SHA 遷移をまたいでも
+          # anchor を引き継ぐ）。GITHUB_TOKEN の read 権限で到達可能。
+          commits_request = urllib.request.Request(
+              f"{api_base}/repos/{repository}/commits?sha=main&per_page=10",
               headers={
                   "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
                   "Accept": "application/vnd.github+json",
               },
           )
-          with urllib.request.urlopen(request, timeout=20) as response:
-              combined = json.load(response)
-          # status は新しい順に並る。context が一致する最新 1 件（＝最後の実際の
-          # 送信）だけが anchor になる。無関係な failure run は status を作らない。
-          for entry in combined.get("statuses") or []:
-              if entry.get("context") != "chat-outbox-watch/alert":
-                  continue
-              sent_at = datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00"))
-              age_seconds = (datetime.now(timezone.utc) - sent_at).total_seconds()
-              print("true" if age_seconds < window_seconds else "false")
-              break
-          else:
+          with urllib.request.urlopen(commits_request, timeout=20) as response:
+              commits = json.load(response) or []
+          alert_at = None
+          recovered_at = None
+          for commit in commits:
+              status_request = urllib.request.Request(
+                  f"{api_base}/repos/{repository}/commits/{commit['sha']}/status",
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                  },
+              )
+              with urllib.request.urlopen(status_request, timeout=20) as response:
+                  combined = json.load(response)
+              for entry in combined.get("statuses") or []:
+                  context = entry.get("context")
+                  created = datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00"))
+                  if context == "chat-outbox-watch/alert" and (alert_at is None or created > alert_at):
+                      alert_at = created
+                  elif context == "chat-outbox-watch/recovered" and (recovered_at is None or created > recovered_at):
+                      recovered_at = created
+          # alert anchor が無ければ抑制しない。復旧マーカーが anchor より新しい
+          # 場合も抑制しない（再発を黙らせない）。
+          if alert_at is None:
               print("false")
+          elif recovered_at is not None and recovered_at > alert_at:
+              print("false")
+          else:
+              age_seconds = (datetime.now(timezone.utc) - alert_at).total_seconds()
+              print("true" if age_seconds < window_seconds else "false")
           PY
           )"; then
             echo "::warning::抑制判定に失敗したため、送信を続行する"
