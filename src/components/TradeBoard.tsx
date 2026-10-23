@@ -178,7 +178,11 @@ export default function TradeBoard({
     );
   } else if (list.offers.length === 0) {
     // Three distinct empty states: a filter matched nothing; the channel hides
-    // unowned cards (so "no offers" only means "none with your cards"); or the
+    // unowned cards (so "no offers" only means "none you can see": the server
+    // lists an offer only when BOTH its offered and wanted cards are visible to
+    // the viewer, i.e. revealed by their streamer or owned by the viewer, see
+    // bothSidesVisible in src/lib/trade.ts; the viewer's own offers are always
+    // listed); or the
     // board is genuinely empty (invite the first listing, §6.8).
     body = (
       <div className="rounded-xl bg-gray-800 p-8 text-center">

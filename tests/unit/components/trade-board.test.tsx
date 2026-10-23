@@ -252,7 +252,7 @@ describe("TradeBoard", () => {
     expect(screen.queryByText(ja.unrevealedNotice)).toBeNull();
   });
 
-  it("explains the owned-cards-only listing and uses a distinct empty state when unowned cards are hidden", async () => {
+  it("explains the visible-offers-only listing and uses a distinct empty state when unowned cards are hidden", async () => {
     fetchMock.mockImplementation(async () => listResponse([]));
     renderBoard({ revealsUnownedCards: false });
     expect(screen.getByText(ja.unrevealedNotice)).toBeInTheDocument();
