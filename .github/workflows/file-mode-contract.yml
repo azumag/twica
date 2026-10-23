@@ -18,9 +18,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Node 20 はサポート終了で 2026-10 のセキュリティ修正（CVE-2026-106069 など）
-          # が出ないため、修正版へ完全固定した .node-version を参照する。
-          # 理由は docs/cloudflare-workers-builds.md。Refs #1914
+          # Node 20 はサポート終了で 2026-10 のセキュリティ修正が出ないため、CI 用の
+          # .node-version（Workers Builds とは別に修正版へ完全固定）を参照する。
+          # 理由は docs/cloudflare-workers-builds.md。Refs #1914 #1919
           node-version-file: .node-version
 
       - name: Check tracked file modes

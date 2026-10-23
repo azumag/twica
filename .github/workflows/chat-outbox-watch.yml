@@ -1,0 +1,660 @@
+# Chat outbox 滞留 watch (production) — Issue #1837
+#
+# 目的:
+#   Issue #1665 で Cron relay の配送 owner を外した（CHAT_DELIVERY_DISPATCH_ENABLED
+#   ON 時）ため、配送は Queue consumer → 内部 deliver 経路に一本化された。
+#   新経路のどこかが静かに止まっても、DB 上の pending 行が滞留する以外に
+#   「利用者が気づける」変化が無い。本 workflow は production DB と Queue を
+#   **読み取り専用で** 5 分ごとに観測し、滞留が閾値を超えたら Discord へ
+#   通知する、監視対象の外側に置いた watchdog である。
+#
+# なぜ GitHub Actions か（監視対象の Cloudflare に置かない理由）:
+#   検知すべき故障の多くは「chat-delivery Worker / 本体アプリ / Queue 経路が
+#   止まる」こと自体である。Cloudflare 側の cron handler に観測を置くと、
+#   その停止と同時に観測も止まる（静かな停止の定義そのもの）。本 workflow は
+#   GitHub 側で独立に走り、Cloudflare 全体が停止しても通知を発火できる。
+#   これは db-readonly-check-production.yml と同じ「production DB は外から
+#   読み取り専用で観測する」設計の定期実行版である。
+#
+# 安全設計（db-readonly-check-production.yml と同じ方針）:
+#   - 対象 Environment は production 固定。PLANETSCALE_DATABASE_URL は Environment
+#     secret なので宣言が無いと解決しない。input で環境を切り替えられない。
+#   - ref は main のみを job 条件と step 内の二重で許可する。production の
+#     secret を使う経路を既定ブランチへ限定する（schedule は常に main で走るが、
+#     workflow_dispatch は任意 ref を選べるため片方だけでは足りない）。
+#   - セッション全体を読み取り専用にする（PGOPTIONS default_transaction_read_only=on）。
+#     さらに集計の前に接続先での実効 transaction_read_only を確認する。
+#   - checkout しない（repo のコードを一切実行しない）。SQL / 閾値を差し替える
+#     input を作らない（heartbeat は通知文面の選択だけを行い、SQL・閾値・
+#     Environment には影響しない）。
+#   - 公開ログを最小化する: 出力は件数・経過秒・時刻のみ。batch_id（視聴者に
+#     紐づきうる）・last_error（外部 API 応答を含む）・DB 名・queue ID・token は
+#     出力しない。Discord 通知にも同じく数値のみを載せる。例外として、psql 自身の
+#     接続エラー診断（接続先ホスト名・ユーザ名）は stderr に現れうる。これは
+#     db-readonly-check-production.yml と同じ挙動で、いずれも secret ではない
+#     （パスワード・接続文字列は env 隔離と GitHub の自動マスクで出力されない）。
+#
+# アラート条件（閾値はどれも STALL_ALERT_THRESHOLD_SECONDS = 300 秒に揃える）:
+#   1. due_pending_stall: status='pending' かつ next_attempt_at <= now() の行が
+#      300 秒を超えて滞留。consumer 停止・enqueue 失敗・secret 未設定・sweep 停止
+#      のすべてがこの形で現れる（Issue #1837 の受入条件 1・2 相当。
+#      「reserved > 0 なのに enqueued = 0 が続く」状態は、wake 予約だけが更新され
+#      due のまま残る行として外から観測できる）。
+#   2. processing_lease_stall: claim 後の行 (status='processing') の lease が
+#      300 秒を超えて失効したまま。consumer が claim 直後に応答なく停止した場合、
+#      行は pending に戻らずこの形で取り残される（条件 1 の盲点）。
+#   3. queue_backlog_stall: chat-notification-wakeup Queue の最古滞留メッセージが
+#      300 秒を超える。consumer が全滅してメッセージだけ積もる状態。Cloudflare 側
+#      の realtime backlog metrics API（backlog_count / oldest_message_timestamp_ms）
+#      を使う。token に Queue 読み取り権限が無い場合は警告だけ出し、DB 側の
+#      条件 1・2 で検知を続ける（fail-open ではなく観測項目の縮退として明示）。
+#
+# 閾値 300 秒の根拠（CHAT_DELIVERY_DISPATCH_ENABLED が ON の前提）:
+#   sweep は 1 分周期（chat-delivery Worker の scheduled handler）で wake 予約は
+#   120 秒、claim の lease は 60 秒。健康な経路では due 行は数秒〜2 分で消費される。
+#   300 秒はそのどの余裕を超える値であり、かつ利用者の体感（カード通知が
+#   5 分出ない）として許容できない水準。**flag を OFF に戻した（旧 20 分周期
+#   relay が配送 owner に戻る）運用では、due 行が 20 分待つのが正常になるため
+#   本 watch は頻繁に誤報する。flag を OFF にする運用判断を行う場合は
+#   本 workflow の無効化か閾値の引き上げをセットで行うこと**
+#   （docs/chat-outbox-stall-watch.md 参照）。
+#
+# 通知の頻度制御:
+#   run は schedule（5 分周期・GitHub 側で抑制されうる）と main への push で
+#   起きる。停滞が継続する間の毎 run 送信はスパムになるため、
+#   「最後に Discord 送信に成功した時刻」を main の HEAD コミットに対する
+#   commit status（context: chat-outbox-watch/alert）として記録し、抑制窓
+#   （55 分）以内の run では Discord 送信だけをスキップする。run 自体は
+#   failure のまま残す（Actions の赤 run・failure email という第 2 の可視経路は
+#   毎周期継続する）。anchor は「実際に送信した run」だけが作るため、観測不能
+#   エラーなど無関係な failure が直前にあっても本物の初回アラートは黙らない。
+#   停滞継続中は約 55 分ごとに anchor が空いて再送する。main への新しい push で
+#   SHA が変わると anchor は引き継がれず、停滞継続中でも 1 回余分に通知しうる
+#   （新コードでの再確認として許容）。正常 run（success）を1つでも挟めば
+#   次の滞留は即時通知される。
+#
+# 手動実行（workflow_dispatch）:
+#   heartbeat=true を指定すると、アラート条件を満たさない場合に限り
+#   現在の観測値を載せた「生存確認」メッセージを送る（webhook の疎通確認用）。
+#   アラート条件を満たしている場合は heartbeat 指定に関係なく通常の
+#   アラート経路が優先される。SQL・閾値・Environment は変更できない。
+
+name: Chat outbox watch (production)
+
+on:
+  # main へのマージ時にも 1 回観測する。GitHub の schedule は新規登録直後に
+  # 発火まで時間がかかるうえ、このリポジトリでは高頻度 cron が実効的に
+  # 数十分〜数時間間隔へ抑制されることを実測している（過去の */15 workflow は
+  # 約 40〜90 分間隔）。頻繁に main へマージされる運用では、push でも観測する
+  # ことで「実際に動いている監視」にする（読み取り専用・1 run 10 秒程度）。
+  # 静かな時間帯は schedule が補完する。どちらも観測内容は完全に同一。
+  push:
+    branches: [main]
+  schedule:
+    # 5 分ごと（GitHub 側の抑制で実効間隔は延びうる）。遅延は検知の latency を
+    # 伸ばすだけで、閾値判定は行の実時刻で行うため誤報・誤陰性は生じない。
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      heartbeat:
+        description: "アラート未検知時に生存確認メッセージを Discord へ送る"
+        required: false
+        type: boolean
+        default: false
+
+# 同一 watch の連続実行はキャンセルせず直列に並べる。送信中のアラートを
+# 打ち切らないため（観測のみなので中断不要の設計は db-readonly-check 系と同じ）。
+concurrency:
+  group: chat-outbox-watch
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    name: Watch production chat outbox
+    # workflow_dispatch は任意 ref を選べるため、job 開始前に main 以外を拒否する。
+    # production の Environment secret を使う経路を既定ブランチに限定する。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # アラート送信の anchor（最終送信時刻）を main HEAD の commit status として
+      # 記録・参照するために使う。それ以外に GITHUB_TOKEN を使わない。
+      statuses: write
+    # production 固定。PLANETSCALE_DATABASE_URL / CLOUDFLARE_API_TOKEN /
+    # CLOUDFLARE_ACCOUNT_ID はいずれも production Environment secret。
+    environment: production
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: ${{ secrets.PLANETSCALE_DATABASE_URL }}
+      # 読み取り専用 + 暴走防止。default_transaction_read_only はサーバ側で効く。
+      PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=60000 -c lock_timeout=5000"
+      # 滞留アラートの閾値（秒）。根拠は冒頭コメント参照。
+      STALL_ALERT_THRESHOLD_SECONDS: "300"
+      # Discord 重複送信の抑制窓（秒）。最終送信（commit status の anchor）から
+      # この間隔が経過するまで送信を省略し、停滞継続中は約 55 分ごとに再送する。
+      ALERT_SUPPRESS_WINDOW_SECONDS: "3300"
+      # production の chat-notification-wakeup Queue（root wrangler.toml の
+      # [[queues.producers]] と同じ名前）。
+      WATCH_QUEUE_NAME: chat-notification-wakeup
+
+    steps:
+      # job-level の if に加えた多重防御。将来 if が編集されても、main 以外の
+      # コード実行コンテキストから production の DB secret を使わせない。
+      - name: Guard the target ref
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::the chat outbox watch only runs from refs/heads/main"
+            exit 1
+          fi
+
+      # 読み取り結果の出所を記録する（secret は含まれない）。
+      - name: Record provenance
+        run: |
+          echo "ref=$GITHUB_REF"
+          echo "sha=$GITHUB_SHA"
+          echo "run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT event=$GITHUB_EVENT_NAME"
+
+      # PGOPTIONS の指定は「そう設定したつもり」にすぎないため、接続先での
+      # 実効値を確認する。on でなければ観測へ進まない（db-readonly-check
+      # production と同じ手順）。
+      - name: Verify the session is read-only before observing
+        run: |
+          read_only=$(psql -X -qAt -v ON_ERROR_STOP=1 -d "$DATABASE_URL" -c "SHOW transaction_read_only")
+          echo "transaction_read_only=$read_only"
+          if [ "$read_only" != "on" ]; then
+            echo "::error::expected transaction_read_only=on (PGOPTIONS default_transaction_read_only) but got '$read_only'"
+            exit 1
+          fi
+
+      # 滞留メトリクスの観測（読み取り専用）。出力は件数・経過秒・時刻のみで、
+      # 行データ（batch_id / payload / last_error）は一切出さない。
+      #
+      # 内訳の読み方:
+      #   - due_pending_reserved_rows（wake 予約が新鮮）が多い: sweep は予約を
+      #     続けているのに消化されていない = dispatch/consumer 側の停止。
+      #     （「reserved > 0 のまま enqueued = 0 が続く」の外から見た形）
+      #   - due_pending_reservation_expired_rows（wake 予約が期限切れ）: sweep
+      #     自体が 2 分以上この行を拾えていない = chat-delivery Worker の
+      #     scheduled handler と relay sweep の両方が止まっている。
+      #   - due_pending_attempt_exhausted_rows: 試行上限に達した pending 行。
+      #     sweep の対象外のため flag ON では誰も起こせず永久滞留する。
+      #     手動での確認・dead 化判断が必要。
+      #   - pending_far_future_rows / gate_far_future_rows: 30 分を超えて未来に
+      #     予約された行・gate。channel gate の詰まり（同一チャンネルへの大量
+      #     積みなど）で due に到達できない行があると増える。アラート条件からは
+      #     外し、滞留原因の切分けのための参考値として常時出力する。
+      #
+      # attempt_count >= 5 は CHAT_OUTBOX_MAX_ATTEMPTS
+      # （src/lib/services/chat-notification-outbox.ts）と同じ値。上限を変えた
+      # 場合はここも揃えること。
+      - name: Observe outbox stagnation metrics (read-only)
+        id: metrics
+        run: |
+          metrics_json="$(psql -X -qAt -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
+          SELECT jsonb_build_object(
+            'observed_at', now(),
+            'due_pending_rows',
+              count(*) FILTER (WHERE status = 'pending' AND next_attempt_at <= now()),
+            'due_pending_reserved_rows',
+              count(*) FILTER (
+                WHERE status = 'pending' AND next_attempt_at <= now() AND wake_reserved_until > now()
+              ),
+            'due_pending_reservation_expired_rows',
+              count(*) FILTER (
+                WHERE status = 'pending' AND next_attempt_at <= now()
+                  AND (wake_reserved_until IS NULL OR wake_reserved_until <= now())
+              ),
+            'due_pending_attempt_exhausted_rows',
+              count(*) FILTER (
+                WHERE status = 'pending' AND next_attempt_at <= now() AND attempt_count >= 5
+              ),
+            'oldest_due_next_attempt_age_seconds',
+              COALESCE(
+                extract(epoch FROM (now() - min(next_attempt_at)
+                  FILTER (WHERE status = 'pending' AND next_attempt_at <= now())))::bigint,
+                0
+              ),
+            'oldest_due_created_age_seconds',
+              COALESCE(
+                extract(epoch FROM (now() - min(created_at)
+                  FILTER (WHERE status = 'pending' AND next_attempt_at <= now())))::bigint,
+                0
+              ),
+            'processing_lease_expired_rows',
+              count(*) FILTER (WHERE status = 'processing' AND lease_expires_at <= now()),
+            'oldest_processing_lease_expired_age_seconds',
+              COALESCE(
+                extract(epoch FROM (now() - min(lease_expires_at)
+                  FILTER (WHERE status = 'processing' AND lease_expires_at <= now())))::bigint,
+                0
+              ),
+            'pending_far_future_rows',
+              count(*) FILTER (
+                WHERE status = 'pending' AND next_attempt_at > now() + interval '1800 seconds'
+              ),
+            'pending_max_horizon_seconds',
+              GREATEST(
+                COALESCE(
+                  extract(epoch FROM (max(next_attempt_at)
+                    FILTER (WHERE status = 'pending') - now()))::bigint,
+                  0
+                ),
+                0
+              ),
+            'gate_far_future_rows',
+              (SELECT count(*)
+                 FROM public.chat_channel_send_gate
+                WHERE next_send_at > now() + interval '1800 seconds'),
+            'gate_max_horizon_seconds',
+              GREATEST(
+                COALESCE(
+                  (SELECT extract(epoch FROM (max(next_send_at) - now()))::bigint
+                     FROM public.chat_channel_send_gate),
+                  0
+                ),
+                0
+              )
+            ) AS metrics
+          FROM public.chat_notification_outbox;
+          SQL
+          )"
+          # heredoc 区切り文字列が値に混入すると出力が黙って途切れるため禁止する
+          # （psql -qAt の出力は単一行だが、将来の変更に備えて fail-closed にする）。
+          case "$metrics_json" in
+            *WATCH_OUTPUT_EOF*)
+              echo "::error::metrics json contains the output delimiter"
+              exit 1
+              ;;
+          esac
+          echo "metrics=$metrics_json"
+          {
+            echo 'metrics_json<<WATCH_OUTPUT_EOF'
+            printf '%s\n' "$metrics_json"
+            echo 'WATCH_OUTPUT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # chat-notification-wakeup Queue の realtime backlog 観測（受入条件 3）。
+      # Cloudflare Queues の metrics API は backlog_count / backlog_bytes /
+      # oldest_message_timestamp_ms を返す（2026-04 の realtime backlog 対応）。
+      #
+      # 本 step は「観測の縮退」を失敗扱いにしない: token に Queue 読み取り権限が
+      # 無い（HTTP 403）・queue が未作成・ネットワーク断は warning と空出力で
+      # 完了し、DB 側の条件 1・2 で検知を続ける。ただしコードバグ（構文エラー等）
+      # は step 全体を失敗させたいので、例外捕捉は HTTP/通信エラーに限定する。
+      # queue ID は公開ログへ出さない（名前と件数のみ）。
+      - name: Observe the wakeup queue backlog (best effort)
+        id: queue
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not configured; queue observation skipped"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          account = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          queue_name = os.environ["WATCH_QUEUE_NAME"]
+          base = f"https://api.cloudflare.com/client/v4/accounts/{account}/queues"
+
+          def call(url):
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)
+
+          try:
+              queues = call(f"{base}?per_page=100").get("result") or []
+              # Cloudflare Queues API の Queue オブジェクトは queue_name で名前を返す
+              # （queue_id / queue_name / created_on / ...。2026-10 の実 API 応答と
+              # OpenAPI 仕様で確認）。name は別名としてのみ許容する。
+              target = next(
+                  (
+                      entry for entry in queues
+                      if (entry.get("queue_name") or entry.get("name")) == queue_name
+                  ),
+                  None,
+              )
+              if target is None:
+                  # queue 未作成・account 違い・名前変更は監視側の設定欠落。
+                  # 件数だけ残して切り分け可能にする（queue 名は wrangler.toml に
+                  # ある公開情報、ID は出さない）。DB 側の検知は継続する。
+                  print(
+                      f"::warning::queue {queue_name} was not found in {len(queues)} queues; "
+                      "queue observation skipped"
+                  )
+                  sys.exit(0)
+              metrics = call(f"{base}/{target['queue_id']}/metrics").get("result") or {}
+          except urllib.error.HTTPError as error:
+              # 403 は token の Queue 読み取り権限不足の典型。警告だけ残す
+              # （修正手順は docs/chat-outbox-stall-watch.md）。
+              print(f"::warning::queue metrics unavailable (HTTP {error.code}); DB-side watch continues")
+              sys.exit(0)
+          except (urllib.error.URLError, TimeoutError) as error:
+              print(f"::warning::queue metrics request failed ({error}); DB-side watch continues")
+              sys.exit(0)
+
+          oldest_ms = metrics.get("oldest_message_timestamp_ms")
+          if isinstance(oldest_ms, (int, float)) and oldest_ms > 0:
+              oldest_age = max(0, round((time.time() * 1000 - oldest_ms) / 1000))
+          else:
+              oldest_age = 0
+          payload = {
+              "backlog_count": int(metrics.get("backlog_count") or 0),
+              "backlog_bytes": int(metrics.get("backlog_bytes") or 0),
+              "oldest_backlog_age_seconds": oldest_age,
+          }
+          # 公開ログに出すのは名前と件数のみ（queue ID は出さない）。
+          print(
+              f"queue={queue_name} backlog_count={payload['backlog_count']} "
+              f"backlog_bytes={payload['backlog_bytes']} "
+              f"oldest_backlog_age_seconds={payload['oldest_backlog_age_seconds']}"
+          )
+          gh_output = os.environ.get("GITHUB_OUTPUT")
+          if gh_output:
+              payload_json = json.dumps(payload)
+              # heredoc 区切り文字列が値に混入すると出力が黙って途切れるため禁止する。
+              assert "WATCH_OUTPUT_EOF" not in payload_json
+              with open(gh_output, "a", encoding="utf-8") as handle:
+                  handle.write(
+                      "queue_json<<WATCH_OUTPUT_EOF\n"
+                      + payload_json
+                      + "\nWATCH_OUTPUT_EOF\n"
+                  )
+          PY
+
+      # アラート条件の判定。判定ロジックはこの python block に集約し、
+      # tests/fixtures/chat-outbox-watch-pg17.mjs が本 workflow から SQL と
+      # この block を取り出して実 DB で検証する（テスト側に判定を写さない）。
+      - name: Evaluate alert conditions
+        id: evaluate
+        env:
+          WATCH_METRICS_JSON: ${{ steps.metrics.outputs.metrics_json }}
+          WATCH_QUEUE_METRICS_JSON: ${{ steps.queue.outputs.queue_json }}
+          WATCH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          metrics = json.loads(os.environ["WATCH_METRICS_JSON"])
+          queue_raw = (os.environ.get("WATCH_QUEUE_METRICS_JSON") or "").strip()
+          queue = json.loads(queue_raw) if queue_raw else None
+          threshold = int(os.environ["STALL_ALERT_THRESHOLD_SECONDS"])
+          run_url = os.environ.get("WATCH_RUN_URL", "")
+
+          # 条件 1: due pending 行の滞留（consumer 停止・enqueue 失敗・sweep 停止の
+          # すべてがこの形で現れる）。created 経過は参考として添える。
+          reasons = []
+          if metrics["due_pending_rows"] > 0 and metrics["oldest_due_next_attempt_age_seconds"] > threshold:
+              reasons.append("due_pending_stall")
+          # 条件 2: claim 後の行が lease 失効のまま放置されている。
+          if (
+              metrics["processing_lease_expired_rows"] > 0
+              and metrics["oldest_processing_lease_expired_age_seconds"] > threshold
+          ):
+              reasons.append("processing_lease_stall")
+          # 条件 3: Queue の最古滞留メッセージが閾値を超えている
+          # （token 不備などで queue 観測が無い場合は判定しない）。
+          if (
+              queue is not None
+              and queue.get("backlog_count", 0) > 0
+              and queue.get("oldest_backlog_age_seconds", 0) > threshold
+          ):
+              reasons.append("queue_backlog_stall")
+
+          alert = bool(reasons)
+
+          # 通知本文は固定テンプレート + 数値のみで組み立てる。DB 行データ
+          # （batch_id / last_error 等の自由文字列）は絶対に埋め込まない。
+          queue_summary = (
+              "queue 観測なし"
+              if queue is None
+              else (
+                  f"queue backlog: {queue['backlog_count']} 件 "
+                  f"(最古 {queue['oldest_backlog_age_seconds']} 秒)"
+              )
+          )
+          common_lines = [
+              f"observed_at: {metrics['observed_at']}",
+              (
+                  f"due pending: {metrics['due_pending_rows']} 行 "
+                  f"(最古 next_attempt 経過 {metrics['oldest_due_next_attempt_age_seconds']} 秒 / "
+                  f"created 経過 {metrics['oldest_due_created_age_seconds']} 秒; "
+                  f"wake予約 新鮮 {metrics['due_pending_reserved_rows']} / "
+                  f"期限切れ {metrics['due_pending_reservation_expired_rows']} / "
+                  f"attempt枯渇 {metrics['due_pending_attempt_exhausted_rows']})"
+              ),
+              (
+                  f"processing lease失効: {metrics['processing_lease_expired_rows']} 行 "
+                  f"(最古 {metrics['oldest_processing_lease_expired_age_seconds']} 秒)"
+              ),
+              queue_summary,
+              (
+                  f"pending far-future(>30分): {metrics['pending_far_future_rows']} 行 "
+                  f"(最大先送り {metrics['pending_max_horizon_seconds']} 秒) / "
+                  f"gate far-future(>30分): {metrics['gate_far_future_rows']} "
+                  f"(最大先送り {metrics['gate_max_horizon_seconds']} 秒)"
+              ),
+              f"閾値: {threshold} 秒 / run: {run_url}",
+          ]
+
+          alert_message = "\n".join(
+              [
+                  "⚠️ [twica production] chat outbox 滞留検知 (chat-outbox-watch)",
+                  f"検知理由: {', '.join(reasons)}",
+              ]
+              + common_lines
+              + ["対応手順: docs/chat-outbox-stall-watch.md"]
+          )
+          heartbeat_message = "\n".join(
+              [
+                  "✅ [twica production] chat outbox watch 生存確認 (手動実行・アラート条件未充足)",
+              ]
+              + common_lines
+          )
+
+          # 判定結果を run log にも出す（件数のみで安全）。
+          print(f"alert={alert} reasons={json.dumps(reasons)}")
+          gh_output = os.environ.get("GITHUB_OUTPUT")
+          if gh_output:
+              with open(gh_output, "a", encoding="utf-8") as handle:
+                  for key, value in (
+                      ("alert", "true" if alert else "false"),
+                      ("reasons", json.dumps(reasons)),
+                      ("alert_message", alert_message),
+                      ("heartbeat_message", heartbeat_message),
+                  ):
+                      # heredoc 区切り文字列が値に混入すると出力が黙って途切れる。
+                      # 通知本文は固定テンプレート + 数値のため起こらないが、
+                      # 将来の文面変更で壊れないよう fail-closed に禁止する。
+                      assert "WATCH_OUTPUT_EOF" not in value, key
+                      handle.write(f"{key}<<WATCH_OUTPUT_EOF\n{value}\nWATCH_OUTPUT_EOF\n")
+          PY
+
+      # Discord 通知と run の結論。alert 時は Discord 送信の成否にかかわらず
+      # run を failure にする（抑制で送信を省いた場合も同じ）。
+      - name: Notify Discord and conclude the run
+        env:
+          ALERT: ${{ steps.evaluate.outputs.alert }}
+          ALERT_MESSAGE: ${{ steps.evaluate.outputs.alert_message }}
+          HEARTBEAT: ${{ github.event_name == 'workflow_dispatch' && inputs.heartbeat == true && 'true' || 'false' }}
+          HEARTBEAT_MESSAGE: ${{ steps.evaluate.outputs.heartbeat_message }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          # anchor status の target_url に載せる run URL。
+          WATCH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$ALERT" != "true" ]; then
+            if [ "$HEARTBEAT" = "true" ]; then
+              echo "heartbeat dispatch: sending the current observation to Discord"
+              curl -fsS --retry 3 --retry-all-errors --max-time 20 -o /dev/null \
+                -H 'content-type: application/json' \
+                -d "$(python3 -c 'import json, os; print(json.dumps({"content": os.environ["HEARTBEAT_MESSAGE"]}))')" \
+                "$DISCORD_WEBHOOK_URL"
+            else
+              echo "no stall detected; nothing to notify"
+              python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          try:
+              api_base = os.environ["GITHUB_API_URL"]
+              repository = os.environ["GITHUB_REPOSITORY"]
+              request = urllib.request.Request(
+                  f"{api_base}/repos/{repository}/statuses/{os.environ['GITHUB_SHA']}",
+                  data=json.dumps(
+                      {
+                          "state": "success",
+                          "context": "chat-outbox-watch/recovered",
+                          "description": "chat outbox recovered (no stall)",
+                          "target_url": os.environ.get("WATCH_RUN_URL", ""),
+                      }
+                  ).encode("utf-8"),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(request, timeout=20):
+                  pass
+          except Exception as error:  # noqa: BLE001
+              print(f"::warning::recovery marker recording failed ({error})")
+          PY
+            fi
+            exit 0
+          fi
+
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::error::DISCORD_WEBHOOK_URL is not configured; cannot deliver the alert"
+            exit 1
+          fi
+
+          # 抑制判定: 「最後に Discord 送信に成功した時刻」を main HEAD の
+          # commit status（context: chat-outbox-watch/alert）として読み、抑制窓
+          # 以内なら送信だけスキップする。run は failure のまま残す。
+          # anchor は実際に送信した run だけが作るため、観測不能エラーなど
+          # 無関係な failure が直前にあっても本物の初回アラートは黙らない。
+          # 判定自体が失敗した（GitHub API の一時障害など）場合は抑制せず送信する。
+          # 抑制は頻度制御であって安全機構ではないため、失敗は送信側へ倒す。
+          suppressed="false"
+          if ! suppressed="$(python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from datetime import datetime, timezone
+
+          window_seconds = int(os.environ["ALERT_SUPPRESS_WINDOW_SECONDS"])
+          api_base = os.environ["GITHUB_API_URL"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          # commit status は commit 紐づきのため、main の HEAD が merge で変わると
+          # 直前の anchor を見失う。直近の複数 commit を遡って、context が
+          # chat-outbox-watch/alert / chat-outbox-watch/recovered の status を
+          # 持つ最新のものを探す（main A -> B -> C の SHA 遷移をまたいでも
+          # anchor を引き継ぐ）。GITHUB_TOKEN の read 権限で到達可能。
+          commits_request = urllib.request.Request(
+              f"{api_base}/repos/{repository}/commits?sha=main&per_page=10",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+              },
+          )
+          with urllib.request.urlopen(commits_request, timeout=20) as response:
+              commits = json.load(response) or []
+          alert_at = None
+          recovered_at = None
+          for commit in commits:
+              status_request = urllib.request.Request(
+                  f"{api_base}/repos/{repository}/commits/{commit['sha']}/status",
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                  },
+              )
+              with urllib.request.urlopen(status_request, timeout=20) as response:
+                  combined = json.load(response)
+              for entry in combined.get("statuses") or []:
+                  context = entry.get("context")
+                  created = datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00"))
+                  if context == "chat-outbox-watch/alert" and (alert_at is None or created > alert_at):
+                      alert_at = created
+                  elif context == "chat-outbox-watch/recovered" and (recovered_at is None or created > recovered_at):
+                      recovered_at = created
+          # alert anchor が無ければ抑制しない。復旧マーカーが anchor より新しい
+          # 場合も抑制しない（再発を黙らせない）。
+          if alert_at is None:
+              print("false")
+          elif recovered_at is not None and recovered_at > alert_at:
+              print("false")
+          else:
+              age_seconds = (datetime.now(timezone.utc) - alert_at).total_seconds()
+              print("true" if age_seconds < window_seconds else "false")
+          PY
+          )"; then
+            echo "::warning::抑制判定に失敗したため、送信を続行する"
+            suppressed="false"
+          fi
+
+          if [ "$suppressed" = "true" ]; then
+            echo "::warning::最終送信から抑制窓内のため Discord 送信をスキップ（run は failure として記録）"
+            exit 1
+          fi
+
+          echo "sending the stall alert to Discord"
+          curl -fsS --retry 3 --retry-all-errors --max-time 20 -o /dev/null \
+            -H 'content-type: application/json' \
+            -d "$(python3 -c 'import json, os; print(json.dumps({"content": os.environ["ALERT_MESSAGE"]}))')" \
+            "$DISCORD_WEBHOOK_URL"
+
+          # 送信の anchor を記録する（次 run 以降の抑制判定に使う）。記録に失敗
+          # しても送信自体は完了しているため warning だけ残す（次 run で余分に
+          # 再送されうるのみ）。
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          api_base = os.environ["GITHUB_API_URL"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          request = urllib.request.Request(
+              f"{api_base}/repos/{repository}/statuses/{os.environ['GITHUB_SHA']}",
+              data=json.dumps(
+                  {
+                      "state": "failure",
+                      "context": "chat-outbox-watch/alert",
+                      "description": "chat outbox stall alert sent",
+                      "target_url": os.environ["WATCH_RUN_URL"],
+                  }
+              ).encode("utf-8"),
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Content-Type": "application/json",
+                  "Accept": "application/vnd.github+json",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  response.read()
+          except (urllib.error.URLError, TimeoutError) as error:
+              print(f"::warning::failed to record the alert anchor status ({error}); next run may re-send sooner")
+          PY
+          # 送信後も run を failure にする。以降の 5 分周期 run は anchor が抑制窓を
+          # 空けるまで送信を省略し、空けば継続滞留の生存確認として再送する。
+          exit 1

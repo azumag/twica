@@ -118,6 +118,14 @@ jobs:
               - 'src/lib/services/gacha.ts'
               - 'tests/integration/trade-visibility-pg.test.ts'
               - 'tests/integration/trade-auction-pg.test.ts'
+              # chat-outbox-watch.yml（Issue #1837 の滞留watchdog）の観測 SQL と
+              # アラート判定を同じく実PG17で検証する。判定 block の変更でも実行する。
+              - 'tests/fixtures/chat-outbox-watch-pg17.mjs'
+              - '.github/workflows/chat-outbox-watch.yml'
+              # main から取り込んだ production 用 workflow (#1836) も同じ集計 SQL を
+              # 持つため、その変更でも PG17 job を回す。
+              - '.github/workflows/db-readonly-check-production.yml'
+              - 'tests/fixtures/pack-completion-rewards-local.sql'
               - 'tests/integration/pack-completion-rewards-pg.test.ts'
               - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
               - 'tests/integration/storage-reservation-pg.test.ts'
@@ -601,6 +609,29 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs
+
+      - name: Verify the production read-only check counts match the completion UPDATE
+        # db-readonly-check-production.yml に埋め込まれた集計 SQL をその YAML から取り出し、
+        # 実 PostgreSQL 17 で実行する。有効 lease 中の processing 行を数えないこと・
+        # targets_total = 内訳和・targets_total が補正 UPDATE の実際の変更行数と一致することを
+        # 固定する（SQL 文字列テストでは検証できないため実DBで実行する）。
+        # production 用の workflow は main にのみ存在するので、この回帰も main 側で回す。
+        # 実行する SQL 自体は preview 用と同一である（両者の一致は
+        # tests/unit/db-readonly-check-production-workflow.test.ts が固定する）。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs .github/workflows/db-readonly-check-production.yml
+
+      - name: Verify the chat outbox watch aggregation and alert decision
+        # chat-outbox-watch.yml（Issue #1837 の滞留watchdog）に埋め込まれた観測 SQL と
+        # アラート判定 python block をその YAML から取り出し、実 PostgreSQL 17 で実行する。
+        # due 滞留・wake 予約の内訳・attempt 枯渇・lease 失効・gate 参考値の集計が
+        # seeded 行の実状態と一致し、アラート判定が healthy / 停滞各シナリオで
+        # 期待どおりに決まることを固定する（SQL・閾値の文字列検査だけでは検証できない）。
+        # この workflow も production 専用で main にのみ存在するため、回帰も main 側で回す。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-watch-pg17.mjs .github/workflows/chat-outbox-watch.yml
 
       - name: Verify completion reward invariants
         env:

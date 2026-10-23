@@ -575,6 +575,24 @@ function uniqueConstraintName(error: unknown): string | null {
   return null;
 }
 
+// -----------------------------------------------------------------------------
+// Card visibility (security)
+//
+// `show_unowned_card_details = false` makes the collection page render unowned
+// cards as placeholders, i.e. the card NAME / image is secret for non-owners.
+// The trade API must not become a side channel that reveals them: creating an
+// offer snapshots the wanted card's name/rarity/image into trade_offers and
+// echoes it back, and the public board returns those snapshots. So a card is
+// treated as non-existent for a viewer unless it is active AND
+//   (its streamer shows unowned cards with details) OR (the viewer owns a copy).
+// Each card is evaluated against ITS OWN streamer's settings, which keeps
+// cross-channel offers safe. The rule mirrors cardVisibleTo on `preview`.
+//
+// The check is done in SQL (a JOIN/WHERE condition) rather than by filtering
+// rows after the fact, so hidden cards never reach the Worker and cannot leak
+// through counts / hasMore / pagination either.
+// -----------------------------------------------------------------------------
+
 export async function createTradeOffer(input: {
   twitchUserId: string;
   offeredUserCardId: string;

@@ -11,23 +11,14 @@ GitHub Actions はアプリ本体を二重デプロイせず、PlanetScale migra
 | preview | `twica-preview` | `preview` | `npm run workers:build` | `npm run cloudflare:deploy:preview` |
 
 - Root directory は repository root、Node.js は `.node-version` の値を使う。
+- Root directory は repository root、Node.js は `.node-version` の値を使う。
 - `.node-version` は 22 系の修正版へ完全固定する（現在 `22.23.4`。2026-10-21 の
-  セキュリティリリース。Refs #1914）。GitHub Actions（setup-node）も Workers Builds も
-  migration runner も同じ 1 ファイルを読み、Node 指定の正本はこれ 1 つに一本化する。
+  セキュリティリリース。Refs #1914）。2026-10-23 の preview build b3f09460 で Workers Builds が
+  `22.23.4` をインストールできることを確認し（Issue #1919 完了）、暫定分離していた CI 用ファイルは
+  廃止して 1 ファイルへ一本化した。GitHub Actions（setup-node）も Workers Builds も
+  migration runner も同じ 1 ファイルを `node-version-file` で参照する。
   Node.js のセキュリティリリース時はこのファイルを上げ、CI ログの setup-node の
-  `node: vX` と Workers Builds ログの `Installing nodejs` 行で実際の版を確認する。
-- 2026-10-21 時点では完全指定 `22.23.4` のインストールに Workers Builds が失敗したため
-  （`Installing nodejs 22.23.4` の直後に失敗。build `f2aaabd8` / `2a8c9d68` / `6a27ed21`）、
-  暫定的に `.node-version` = `22`（Workers Builds 用）と `.github/ci-node-version` =
-  `22.23.4`（CI 用）へ分離していた。#1914 の完了条件（Workers Builds でも修正版を使う）を
-  満たすため完全指定へ一本化した。一本化後の初回ビルドで `Installing nodejs 22.23.4` が
-  再び失敗する場合は、`.node-version` を `22` へ戻し CI 用ファイルを復活させる
-  fallback を取り、契約テスト・本ドキュメント・path filter をその時の状態へ合わせる。
-  ビルドログの確認は `npx cf@1.0.0-beta.10 builds logs get <build-uuid>` の
-  `Installing nodejs` 行で行う（オーナー権限が必要）。
-- Workers Builds の環境変数 `NODE_VERSION` は公式に `.node-version` との優先順位の記載が
-  ないため設定しない。設定の有無は Dashboard の Settings > Build > Build variables で
-  確認する（オーナー作業。Refs #1914 の完了条件）。`.node-version` を正とする。
+  `node: vX` と Workers Builds の `Installing nodejs` 行で実際の版を確認する。
 - Node の固定版だけを変える PR / push でも必要な検証が走るよう、path filter を次のように対応させる
   （Issue #1917）。この対応関係は `tests/unit/cloudflare-workers-issues.test.ts` が固定しており、
   外すと unit test が落ちる。
@@ -37,7 +28,8 @@ GitHub Actions はアプリ本体を二重デプロイせず、PlanetScale migra
     migration runner を回す。migration runner の apply は pending migration が無ければ
     no-op（verify のみ）のため、Node 変更だけの push が実DBへ無関係な変更を適用することはない。
 - これはビルド/CI/migration runner の Node であり、本番 Worker は workerd で動くため
-  `compatibility_date` とは無関係。
+  `compatibility_date` とは無関係。Workers Builds の環境変数 `NODE_VERSION` は公式に
+  `.node-version` との優先順位の記載がないため設定せず、`.node-version` を正とする。
 - Workers Builds に設定するのは公開ビルド値だけです。例:
   `NEXT_PUBLIC_APP_URL`、`NEXT_PUBLIC_TWITCH_CLIENT_ID`、
   `NEXT_PUBLIC_CF_IMAGES_ENABLED`。

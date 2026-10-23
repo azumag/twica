@@ -43,6 +43,10 @@ const AUX_WORKER_ARTIFACT_BY_FLAG = Object.freeze({
     'workers/stats-aggregator/dist/production/index.js',
   '--require-stats-aggregator-preview':
     'workers/stats-aggregator/dist/preview/index.js',
+  '--require-rate-limit-production':
+    'workers/rate-limit/dist/production/index.js',
+  '--require-rate-limit-preview':
+    'workers/rate-limit/dist/preview/index.js',
 })
 const REQUIRED_AUX_WORKER_ARTIFACTS = Object.freeze(
   Object.values(AUX_WORKER_ARTIFACT_BY_FLAG),
@@ -503,6 +507,7 @@ for (const artifactRoot of [
   'workers/overlay-realtime/dist',
   'workers/rate-limit/dist',
   'workers/stats-aggregator/dist',
+  'workers/rate-limit/dist',
 ]) {
   for (const file of walk(artifactRoot)) {
     assertAbsent(file, generatedBundlePatterns)
