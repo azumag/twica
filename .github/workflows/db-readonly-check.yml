@@ -100,62 +100,8 @@ jobs:
       # 固定 SQL / checkout なし / 公開性の高い列のみ出力）は元ファイルから変更しない。
       - name: TEMPORARY QA observation for #1909 (read-only)
         run: |
-          psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
-          \pset pager off
-          \echo ==== observation point ====
-          SELECT now() AS observed_at, current_setting('transaction_read_only') AS transaction_read_only;
-
-          \echo ==== QA streamer row (公開URLのUUID と Twitch 公開情報のみ) ====
-          SELECT id, twitch_username, twitch_display_name, twitch_profile_image_url,
-                 is_active, trade_enabled, cross_channel_trade_enabled
-          FROM streamers WHERE twitch_user_id = '1369311583';
-
-          \echo ==== trade data counts for the QA streamer (件数のみ) ====
-          SELECT
-            (SELECT count(*) FROM trade_offers WHERE offered_streamer_id = s.id OR wanted_streamer_id = s.id) AS offers_total,
-            (SELECT count(*) FROM trade_offers WHERE status = 'open' AND (offered_streamer_id = s.id OR wanted_streamer_id = s.id)) AS offers_open,
-            (SELECT count(*) FROM trade_auctions WHERE offered_streamer_id = s.id) AS auctions_total,
-            (SELECT count(*) FROM trade_auctions WHERE status = 'open' AND offered_streamer_id = s.id) AS auctions_open
-          FROM streamers s WHERE s.twitch_user_id = '1369311583';
-
-          \echo ==== streamers having open offers or auctions (id のみ・最大3件) ====
-          SELECT DISTINCT s.id
-          FROM streamers s
-          WHERE EXISTS (
-            SELECT 1 FROM trade_offers o
-            WHERE o.status = 'open' AND (o.offered_streamer_id = s.id OR o.wanted_streamer_id = s.id)
-          ) OR EXISTS (
-            SELECT 1 FROM trade_auctions a WHERE a.status = 'open' AND a.offered_streamer_id = s.id
-          )
-          LIMIT 3;
-
-          \echo ==== global trade counts (件数のみ) ====
-          SELECT
-            (SELECT count(*) FROM trade_offers) AS offers_total,
-            (SELECT count(*) FROM trade_offers WHERE status = 'open') AS offers_open,
-            (SELECT count(*) FROM trade_auctions) AS auctions_total,
-            (SELECT count(*) FROM trade_auctions WHERE status = 'open') AS auctions_open;
-
-          \echo ==== one public card image URL (overlay で公開表示される URL の例) ====
-          SELECT c.image_url
-          FROM cards c JOIN streamers s ON s.id = c.streamer_id
-          WHERE s.twitch_user_id = '1369311583' AND c.image_url IS NOT NULL
-          LIMIT 1;
-
-      # 台帳の状態。20261017010000 と 20261018010000 の適用有無を確認する。
-      # 履歴テーブルが無い環境でも他の出力を失わないよう、この step を分けている。
-      # 出力は version / name / 適用時刻に絞る（適用者名は公開ログに出さない）。
-      - name: Show migration ledger state (read-only)
-        run: |
-          psql -X -v ON_ERROR_STOP=1 -d "$DATABASE_URL" <<'SQL'
-          \pset pager off
-          \echo ==== ledger (observed_at は実行時点) ====
-          SELECT now() AS observed_at;
-          SELECT coalesce(to_regclass('twica_meta.schema_migrations')::text, '(history table not found)') AS history_table;
-          SELECT version, name, applied_at
-          FROM twica_meta.schema_migrations
-          WHERE version IN ('20261017010000', '20261018010000')
-          ORDER BY version;
-          SELECT max(version) AS max_applied_version, count(*) AS applied_count
-          FROM twica_meta.schema_migrations;
-          SQL
+          psql -X -qAt -v ON_ERROR_STOP=1 -d "$DATABASE_URL" \
+            -c "SELECT 'streamers_total=' || count(*) FROM streamers;" \
+            -c "SELECT 'streamer|' || id || '|' || coalesce(twitch_username,'') || '|' || coalesce(twitch_profile_image_url,'') || '|active=' || coalesce(is_active::text,'null') || '|trade=' || coalesce(trade_enabled::text,'null') FROM streamers ORDER BY id LIMIT 5;" \
+            -c "SELECT 'cards_with_image_url=' || count(*) FROM cards WHERE image_url IS NOT NULL;" \
+            -c "SELECT 'card_image_url|' || image_url FROM cards WHERE image_url IS NOT NULL ORDER BY id LIMIT 1;"
