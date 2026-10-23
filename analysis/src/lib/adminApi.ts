@@ -295,6 +295,23 @@ function buildQueryString(params: Record<string, string | number | undefined>): 
 // UIが再試行できる十分な余裕を持たせた値にする。
 const DEFAULT_TIMEOUT_MS = 60_000
 
+// /__admin は CSRF / DNS リバインディング対策として、dev サーバーが index.html の meta に
+// 埋め込む起動ごとのトークンをカスタムヘッダ(X-Admin-Token)で要求する
+// （analysis/dev/localAdminApi.ts の checkAdminRequestGuard 参照）。
+// カスタムヘッダ付きのクロスオリジンリクエストはプリフライトが強制され、別オリジンの
+// ページからは送れない。meta名・ヘッダ名は localAdminApi.ts の定数と一致させること。
+const ADMIN_TOKEN_META_NAME = 'twica-admin-token'
+const ADMIN_TOKEN_HEADER = 'x-admin-token'
+
+/** /__admin へ送る認証ヘッダ。トークンが無い場合（本番ビルド等）は空。 */
+export function adminAuthHeaders(): Record<string, string> {
+  if (typeof document === 'undefined') return {}
+  const token = document
+    .querySelector(`meta[name="${ADMIN_TOKEN_META_NAME}"]`)
+    ?.getAttribute('content')
+  return token ? { [ADMIN_TOKEN_HEADER]: token } : {}
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
@@ -302,6 +319,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: {
         'content-type': 'application/json',
+        ...adminAuthHeaders(),
         ...(init?.headers || {}),
       },
       // 呼び出し元が独自のsignal(例: コンポーネントunmount時のキャンセル)を渡した場合、
