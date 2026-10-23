@@ -32,6 +32,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), localAdminApiPlugin(env)],
-    server: toServerOptions(binding),
+    // 他オリジンの Web ページが dev サーバーの応答（index.html に埋め込む管理APIトークン
+    // を含む）を読めないよう CORS ヘッダを付けない。このSPAは同一オリジンでしか使わない。
+    // bind 先の既定は loopback（明示オプトイン時のみ外部公開）で、
+    // dev/devServerBinding.ts が決定する。
+    server: { ...toServerOptions(binding), cors: false },
   }
 })

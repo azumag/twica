@@ -125,6 +125,7 @@ jobs:
               # main から取り込んだ production 用 workflow (#1836) も同じ集計 SQL を
               # 持つため、その変更でも PG17 job を回す。
               - '.github/workflows/db-readonly-check-production.yml'
+              - 'tests/fixtures/pack-completion-rewards-local.sql'
               - 'tests/integration/pack-completion-rewards-pg.test.ts'
               - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
               - 'tests/integration/storage-reservation-pg.test.ts'

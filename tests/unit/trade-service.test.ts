@@ -1954,4 +1954,37 @@ describe("trade copy locks / auction deploy window (#1791)", () => {
         .toContain('open_listing.offered_user_card_id = "user_cards"."id"');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Card visibility (security): a card hidden from the viewer must behave like a
+  // non-existent card, both when creating an offer and on the public board.
+  //
+  // Regression: createTradeOffer used to look the wanted card up by id +
+  // is_active only, so any signed-in user could read the name/rarity/image of a
+  // card whose streamer hides unowned cards (the snapshot is echoed back by
+  // POST /api/trades), and listTradeOffers returned snapshots of such cards.
+  //
+  // These are mock-based like the rest of this file: they pin the SQL the
+  // service sends. (The correlated-EXISTS resolution itself was verified on a
+  // real PostgreSQL; see the PR description.)
+  // ---------------------------------------------------------------------------
+  const render = (where: unknown) => new PgDialect().sqlToQuery(where as SQL);
+
+  it("list: an anonymous viewer owns nothing, so there is no ownership branch", async () => {
+    const pg = createDbMock({ selects: [{ rows: [] }] });
+    primeDb(pg);
+
+    const { listTradeOffers } = await import("@/lib/trade");
+    await listTradeOffers({
+      streamerId: OFFER.offered_streamer_id,
+      scope: "in_channel",
+      page: 1,
+    });
+
+    const where = render(pg.selectCalls[0].where);
+    expect(where.sql).toContain('visible_card.id = "trade_offers"."offered_card_id"');
+    expect(where.sql).toContain('visible_card.id = "trade_offers"."wanted_card_id"');
+    expect(where.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
+    expect(where.sql).not.toContain("visible_owned");
+  });
 });
