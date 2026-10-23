@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -26,24 +26,26 @@ describe("Workers Issues deployment contract", () => {
     expect(pkg.devDependencies["@cloudflare/workers-types"]).toBe("5.20260917.1");
     expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe("5.20260917.1");
   });
-  it("pins CI Node.js to a fixed 22.x patch and keeps Workers Builds on the 22 major", () => {
-    // 2026-10-21 の Node.js security release では 22.23.4 が修正版（Refs #1914）。
-    // CI（GitHub Actions）は `.github/ci-node-version` で修正版へ完全固定する。メジャー（"22"）だけだと
-    // actions/setup-node は runner のツールキャッシュにある旧パッチ（22.23.3）を選び、修正版が
-    // 適用されないため。このファイルは setup-node が版として読むので、コメントは入れられない。
+  it("pins build/CI Node.js to one fully-specified 22.x patch >= 22.23.4", () => {
+    // 2026-10-21 の Node.js security release では 22.23.4 が修正版（CVE-2026-106069 の
+    // TLS hostname bypass など High 複数を含む。Refs #1914）。ビルド・CI・migration
+    // runner の Node 指定は `.node-version` 1 ファイルに正本化している（#1919 で
+    // 追跡していた CI 用ピンとの一本化）。
     //
-    // 一方 Cloudflare Workers Builds は、完全指定の `.node-version`（22.23.4）では
-    // `Installing nodejs 22.23.4` の直後に "Failed: error occurred while installing tools or
-    // dependencies" となり全ビルドが失敗した（2026-10-21 実測。build f2aaabd8 / 2a8c9d68 / 6a27ed21。
-    // 末尾改行の有無は無関係だった）。`.node-version` = `22` なら Workers Builds が自身の把握する
-    // 22 系最新（同日時点は 22.23.3）に解決して成功する。
-    // そこで CI 用ピンと Workers Builds 用 `.node-version` を暫定的に別ファイルへ分けている。
-    // Workers Builds が 22.23.4 に対応した時点で一本化する（Refs #1914, #1919）。
+    // 完全指定（major.minor.patch）でなければならない理由:
+    // - メジャー（"22"）だけだと actions/setup-node は runner のツールキャッシュにある
+    //   旧パッチ（22.23.3）を選び、Cloudflare Workers Builds も自身の把握する 22 系最新
+    //   （2026-10-21 時点は 22.23.3）に解決する。いずれも修正版未満のため脆弱性が残る。
+    // - 2026-10-21 は完全指定 22.23.4 で Workers Builds のインストールが失敗したため
+    //   （build f2aaabd8 / 2a8c9d68 / 6a27ed21）、一時的に CI 用ピンを
+    //   `.github/ci-node-version` へ分離していた。#1914 の完了条件は Workers Builds でも
+    //   修正版を使うことなので、分離を解消して単一ピンへ戻した。このファイル自体が
+    //   setup-node / Workers Builds に版として読まれるため、コメント行は入れられない。
     //
-    // CI 側の下限（22.23.4 以上）を設けるのは、将来の巻き戻しや誤った downgrade で
-    // 脆弱な版へ戻ることを防ぐため。比較は文字列ではなく数値で行う（22.23.10 > 22.23.4）。
-    const ciVersion = readFileSync(join(root, ".github/ci-node-version"), "utf8").trim();
-    expect(ciVersion).toMatch(/^22\.\d+\.\d+$/);
+    // 下限（22.23.4 以上）を設けるのは、将来の巻き戻しや誤った downgrade で脆弱な版へ
+    // 戻ることを防ぐため。比較は文字列ではなく数値で行う（22.23.10 > 22.23.4）。
+    const nodeVersion = readFileSync(join(root, ".node-version"), "utf8").trim();
+    expect(nodeVersion).toMatch(/^22\.\d+\.\d+$/);
     const parse = (v: string) => v.split(".").map(Number);
     const atLeast = (actual: string, minimum: string) => {
       const a = parse(actual);
@@ -53,12 +55,15 @@ describe("Workers Issues deployment contract", () => {
       }
       return true;
     };
-    expect(atLeast(ciVersion, "22.23.4")).toBe(true);
+    expect(atLeast(nodeVersion, "22.23.4")).toBe(true);
 
-    // Workers Builds 用。完全指定にするとインストールに失敗するため、暫定でメジャーのみ（#1919 で一本化）。
-    expect(readFileSync(join(root, ".node-version"), "utf8").trim()).toBe("22");
+    // 一時的な CI 用ピン（`.github/ci-node-version`）は廃止済み。残ったまま act して
+    // いないと「どちらが正本か」が再び不明になるため、存在しないことを固定する。
+    // Workers Builds が再び完全指定に対応できなくなった場合は、このテスト・docs・
+    // workflow filter を同時に戻す形で分離を再導入する（手順は docs/cloudflare-workers-builds.md）。
+    expect(existsSync(join(root, ".github/ci-node-version"))).toBe(false);
 
-    // actions/setup-node を使う workflow は例外なく `.github/ci-node-version` を参照し、
+    // actions/setup-node を使う workflow は例外なく `.node-version` を参照し、
     // node-version の直書き（EOL の Node 20 など）を持たないこと。
     // 新しい workflow が追加されても漏れないよう、ファイル一覧は動的に取得する。
     const workflowDir = join(root, ".github/workflows");
@@ -68,7 +73,7 @@ describe("Workers Issues deployment contract", () => {
       const text = readFileSync(join(workflowDir, workflow), "utf8");
       if (!text.includes("actions/setup-node")) continue;
       expect(text, `${workflow} must use node-version-file`).toContain(
-        "node-version-file: .github/ci-node-version",
+        "node-version-file: .node-version",
       );
       expect(text, `${workflow} must not hardcode node-version`).not.toMatch(/^\s*node-version:/m);
     }

@@ -11,19 +11,22 @@ GitHub Actions はアプリ本体を二重デプロイせず、PlanetScale migra
 | preview | `twica-preview` | `preview` | `npm run workers:build` | `npm run cloudflare:deploy:preview` |
 
 - Root directory は repository root、Node.js は `.node-version` の値を使う。
-- Workers Builds は `.node-version`（メジャー `22`）を使い、ビルド時点で自身が把握する 22 系の最新に
-  解決する。公開直後の修正版より古いことがある（2026-10-21 は 22.23.3）。
-- 完全指定の `22.23.4` は 2026-10-21 時点で Workers Builds がインストールできず
-  （`Installing nodejs 22.23.4` の直後に失敗）全ビルドが失敗したため、Workers Builds の対応が確認できる
-  まで `.node-version` は完全指定にしない（Issue #1919）。確認は
-  `npx cf@1.0.0-beta.10 builds logs get <build-uuid>` の `Installing nodejs` 行で行う。
-- GitHub Actions は Workers Builds が読まない専用ファイル `.github/ci-node-version`（修正版へ完全固定。
-  現在 `22.23.4`）を `node-version-file` で参照する。Node.js のセキュリティリリース時はこのファイルを
-  上げ、CI ログの setup-node の `node: vX` で実際の版を確認する。`.node-version` と
-  `.github/ci-node-version` の一本化は Issue #1919 で追跡する。
+- `.node-version` は 22 系の修正版へ完全固定する（現在 `22.23.4`。2026-10-21 の
+  セキュリティリリース。Refs #1914）。GitHub Actions（setup-node）も Workers Builds も
+  migration runner も同じ 1 ファイルを読み、Node 指定の正本はこれ 1 つに一本化する
+  （Issue #1919）。Node.js のセキュリティリリース時はこのファイルを上げ、CI ログの
+  setup-node の `node: vX` と Workers Builds ログの `Installing nodejs` 行で実際の版を確認する。
+- 2026-10-21 時点では完全指定 `22.23.4` のインストールに Workers Builds が失敗したため
+  （`Installing nodejs 22.23.4` の直後に失敗。build `f2aaabd8` / `2a8c9d68` / `6a27ed21`）、
+  暫定的に `.node-version` = `22`（Workers Builds 用）と `.github/ci-node-version` =
+  `22.23.4`（CI 用）へ分離していた。2026-10-23 の preview build `b3f09460` で
+  `Installing nodejs 22.23.4` の成功を確認したため、完全指定へ一本化した。
+  ビルドログの確認は `npx cf@1.0.0-beta.10 builds logs get <build-uuid>` の
+  `Installing nodejs` 行で行う（オーナー権限が必要）。
+- Workers Builds の環境変数 `NODE_VERSION` は公式に `.node-version` との優先順位の記載が
+  ないため設定せず、`.node-version` を正とする。
 - これはビルド/CI/migration runner の Node であり、本番 Worker は workerd で動くため
-  `compatibility_date` とは無関係。Workers Builds の環境変数 `NODE_VERSION` は公式に `.node-version`
-  との優先順位の記載がないため設定せず、`.node-version` を正とする。
+  `compatibility_date` とは無関係。
 - Workers Builds に設定するのは公開ビルド値だけです。例:
   `NEXT_PUBLIC_APP_URL`、`NEXT_PUBLIC_TWITCH_CLIENT_ID`、
   `NEXT_PUBLIC_CF_IMAGES_ENABLED`。
