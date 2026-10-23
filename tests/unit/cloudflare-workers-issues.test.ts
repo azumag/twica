@@ -192,6 +192,47 @@ describe("Workers Issues deployment contract", () => {
     // no-op（verify のみ）のため、Node 変更時の起動が実DBへ無関係な変更を適用することはない。
     expect(pushPaths(migrate)).toContain(nodePin);
   });
+
+  // #1922 item 4: 文字列ベースの解析が取りこぼすパターンを否定テストで固定する。
+  // AST ベースへの全面書き換えの代替として、少なくとも以下の形式が workflow に
+  // 混入しないことを固定する（取りこぼしパターンの回帰防止）。
+  it("does not use flow-style or implicit node-version in setup-node workflows", () => {
+    const workflowDir = join(root, ".github/workflows");
+    const workflows = readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f));
+    for (const workflow of workflows) {
+      const text = readFileSync(join(workflowDir, workflow), "utf8");
+      if (!text.includes("actions/setup-node")) continue;
+      // flow 形式: with: { node-version: 20 } は行頭アンカーの検出をすり抜ける。
+      expect(text, `${workflow} must not use flow-style node-version`).not.toMatch(
+        /with:\s*\{[^}]*node-version/m,
+      );
+      // bare な node-version キー（既存テストの否定版）。
+      expect(text, `${workflow} must not hardcode node-version key`).not.toMatch(
+        /^\s*node-version:/m,
+      );
+    }
+  });
+
+  it("preserves negation entries in dorny paths-filter groups", () => {
+    const workflow = [
+      "on:",
+      "  push:",
+      "    paths:",
+      "      - .node-version",
+      "jobs:",
+      "  changes:",
+      "    steps:",
+      "      - uses: dorny/paths-filter@v4",
+      "        with:",
+      "          filters: |",
+      "            app:",
+      "              - .node-version",
+      "              - '!docs/**'",
+    ].join("\n");
+    expect(filterGroup(workflow, "app")).toContain(".node-version");
+    expect(filterGroup(workflow, "app")).toContain("!docs/**");
+  });
+
   it("does not enable separately billed tracing or change the runtime date", () => {
     expect(config).not.toMatch(/^\[(?:env\.preview\.)?observability\.traces\]/m);
     expect(config).toMatch(/^compatibility_date\s*=\s*"2024-09-23"$/m);
