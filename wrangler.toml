@@ -148,3 +148,20 @@ service = "twica-overlay-realtime-preview"
 [[env.preview.queues.producers]]
 binding = "CHAT_NOTIFICATION_QUEUE"
 queue = "chat-notification-wakeup-preview"
+
+# #1888: preview の authLogin / activateCode を Durable Object の直列化カウンタ
+# (strict 経路) に接続する binding。script_name は workers/rate-limit/wrangler.toml
+# の [env.preview] (twica-rate-limit-preview) を指す。HTTP services 形式
+# ([[services]]) ではなく DO namespace 形式であること。namespace API
+# (idFromName/get) は service binding が持たず、誤配線すると runtime で
+# TypeError → catch → 503 fail-closed になり authLogin/activateCode が恒常
+# 失敗する。
+# この binding は twica-rate-limit-preview の作成・migration 適用後に初めて
+# 解決できる。配備順序を逆にすると preview の deploy が binding 解決エラーで
+# 失敗するため、Worker 配備前に merge しない (policy doc の手順 2)。
+# production (top-level) への追加は別承認 (policy doc の有効化ゲート 4) のため
+# ここでは行わない。
+[[env.preview.durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+script_name = "twica-rate-limit-preview"
