@@ -81,6 +81,44 @@ function pushPaths(workflow: string): string[] {
   return sequenceValues(blockBelow(lines, pathsLine));
 }
 
+// actions/setup-node を使う各 step のブロック（`- ` で始まる step から次の step/親ブロックまで）
+// を切り出す。file-level の toContain では複数 step のうち 1 つだけ
+// node-version-file を欠くケースを見逃すため、step 単位で検査するために使う。
+function setupNodeSteps(text: string): string[] {
+  const lines = text.split("\n");
+  const steps: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes("actions/setup-node")) continue;
+    // step の開始行（`- ` で始まる行）まで遡る
+    let start = i;
+    let stepIndent: number | null = null;
+    while (start >= 0) {
+      const m = lines[start].match(/^(\s*)-\s/);
+      if (m) {
+        stepIndent = m[1].length;
+        break;
+      }
+      start -= 1;
+    }
+    if (stepIndent === null) continue;
+    // step の終端: 同インデントの次の `- `、またはより浅いインデント、または EOF
+    let end = i + 1;
+    while (end < lines.length) {
+      const line = lines[end];
+      if (line.trim() === "" || line.trimStart().startsWith("#")) {
+        end += 1;
+        continue;
+      }
+      const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
+      if (indent < stepIndent) break;
+      if (indent === stepIndent && /^\s*-\s/.test(line)) break;
+      end += 1;
+    }
+    steps.push(lines.slice(start, end).join("\n"));
+  }
+  return steps;
+}
+
 describe("Workers Issues deployment contract", () => {
   it("preserves error monitoring across both regular deployment targets", () => {
     for (const scope of ["observability.issues", "env.preview.observability.issues"]) {
@@ -158,10 +196,18 @@ describe("Workers Issues deployment contract", () => {
     for (const workflow of workflows) {
       const text = readFileSync(join(workflowDir, workflow), "utf8");
       if (!text.includes("actions/setup-node")) continue;
-      expect(text, `${workflow} must use node-version-file`).toContain(
-        "node-version-file: .node-version",
-      );
-      expect(text, `${workflow} must not hardcode node-version`).not.toMatch(/^\s*node-version:/m);
+      // step 単位で検査する（file-level の toContain では複数 step のうち 1 つだけ
+      // node-version-file を欠くケースを見逃す）。
+      const steps = setupNodeSteps(text);
+      expect(steps.length, `${workflow} should have at least one setup-node step`).toBeGreaterThan(0);
+      for (const step of steps) {
+        expect(step, `${workflow} setup-node step must use node-version-file`).toContain(
+          "node-version-file: .node-version",
+        );
+        expect(step, `${workflow} setup-node step must not hardcode node-version`).not.toMatch(
+          /^\s*node-version:/m,
+        );
+      }
     }
   });
   it("runs CI and the migration runner when only the Node pin changes", () => {
@@ -199,10 +245,14 @@ describe("Workers Issues deployment contract", () => {
   it("does not use flow-style or implicit node-version in setup-node workflows", () => {
     const workflowDir = join(root, ".github/workflows");
     const workflows = readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f));
+    expect(workflows.length).toBeGreaterThan(0);
     for (const workflow of workflows) {
       const text = readFileSync(join(workflowDir, workflow), "utf8");
       if (!text.includes("actions/setup-node")) continue;
       // flow 形式: with: { node-version: 20 } は行頭アンカーの検出をすり抜ける。
+      // なお flow 形式の with: { node-version-file: .node-version } もこの regex に
+      // 掛かる（node-version-file が node-version を含むため）。これは意図的:
+      // 文字列パーサは flow 形式を読めないため、block 形式へ寄せる方針。
       expect(text, `${workflow} must not use flow-style node-version`).not.toMatch(
         /with:\s*\{[^}]*node-version/m,
       );
