@@ -27,6 +27,11 @@ const KNOWN_APPLIED_NON_ADDITIVE = new Set([
   '00067_add_card_issuance_limits.sql',
   '00069_add_issued_card_counts_rpc.sql',
   '00070_add_gacha_history_reward_id.sql',
+  // Issue #933: contract migration dropping the legacy live-directory ranking RPC
+  // `get_live_directory_rankings()` (20260811120000_add_live_directory_rankings.sql).
+  // Non-additive by design (DROP FUNCTION); applied manually with --allow-non-additive
+  // after the read-only observation workflow confirms zero production calls.
+  '20261024120000_drop_legacy_live_directory_rankings_rpc.sql',
 ])
 
 const MIGRATION_DIRS = [
