@@ -393,7 +393,22 @@
     "sort": {
       "label": "Sort",
       "number": "Number",
-      "rarity": "Rarity"
+      "rarity": "Rarity",
+      "recent": "Recently obtained",
+      "name": "Streamer name",
+      "completion": "Completion"
+    },
+    "hide": {
+      "hideButton": "Hide",
+      "showButton": "Show",
+      "hideAria": "Hide {name}'s collection from the list",
+      "showAria": "Show {name}'s collection in the list again",
+      "error": "Could not update. Please try again in a moment."
+    },
+    "hidden": {
+      "summary": "Hidden collections ({count})",
+      "description": "These collections are hidden from the list. Your cards are kept, and you can bring them back anytime with \"Show\".",
+      "allHidden": "All of your collections are hidden."
     },
     "viewCollection": "View Collection",
     "unownedCard": "???",

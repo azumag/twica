@@ -479,6 +479,29 @@ export const announcementReads = pgTable('announcement_reads', {
 })
 
 // -----------------------------------------------------------------------------
+// user_collection_hidden_streamers（マイコレクション一覧で非表示にした配信者）
+// 根拠: db/planetscale/migrations/20261028120000_add_user_collection_hidden_streamers.sql
+//       （Issue #1953。supabase/migrations ではなく PlanetScale 専用 migration）
+// 一覧の見せ方だけの設定で、カード所持・直リンク・統計には影響しない。
+// announcement_reads と同じく twitch_user_id キー（users への FK なし）。
+// streamer_id のみ streamers(id) への FK（ON DELETE CASCADE）だが、スキーマ方針
+// （FK は定義しない）に従いここでは型付けのみ。
+// -----------------------------------------------------------------------------
+export const userCollectionHiddenStreamers = pgTable(
+  'user_collection_hidden_streamers',
+  {
+    twitch_user_id: text('twitch_user_id').notNull(),
+    streamer_id: uuid('streamer_id').notNull(),
+    hidden_at: timestamp('hidden_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  },
+  (table) => [
+    // PRIMARY KEY (twitch_user_id, streamer_id)。INSERT ... ON CONFLICT DO NOTHING の
+    // conflict target（冪等な非表示）に使う。
+    primaryKey({ columns: [table.twitch_user_id, table.streamer_id] }),
+  ]
+)
+
+// -----------------------------------------------------------------------------
 // support_codes（支援プラン共有コードマスタ。コードは SHA-256 ハッシュで保存）
 // 根拠: 00017 初版
 // -----------------------------------------------------------------------------

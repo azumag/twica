@@ -178,6 +178,17 @@
     "reviewedAt": "2026-07-18"
   },
   {
+    "path": "/api/collection/hidden-streamers",
+    "methods": [
+      "POST"
+    ],
+    "category": "collection",
+    "maintenanceBehavior": "block",
+    "reason": "マイコレクション一覧の配信者の非表示/再表示設定(#1953)をDBへ書き込む。カード所持には影響しない表示設定だが、DB書き込みのためallowlist未登録の一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-28"
+  },
+  {
     "path": "/api/gacha",
     "methods": [
       "POST"
