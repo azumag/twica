@@ -562,6 +562,9 @@ export const rateLimits = {
   voteCampaign: createRatelimit("voteCampaign", 5, 60 * 1000),
   // お知らせ既読はupsertで冪等だが、DoS対策として制限（分あたり20回）
   announcementRead: createRatelimit("announcementRead", 20, 60 * 1000),
+  // マイコレクションの配信者非表示/再表示は INSERT/DELETE で冪等だが、連打による
+  // DB書き込みを抑えるため制限（分あたり30回。複数配信者をまとめて整理する操作を許容）
+  collectionHiddenStreamers: createRatelimit("collectionHiddenStreamers", 30, 60 * 1000),
   // 支援コードアクティベーション（1時間5回、Issue仕様に基づく総当り攻撃対策）
   activateCode: createRatelimit("activateCode", 5, 3600 * 1000, true),
   // プランダウングレード（1時間10回、activateとは独立したレート制限）

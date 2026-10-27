@@ -35,7 +35,12 @@ import {
   sql,
 } from "drizzle-orm";
 import { getDb, type DbHandle } from "@/lib/db/client";
-import { isPgFunctionNotFoundError, isPgMissingColumnError, isPgUniqueViolationError } from "@/lib/db/errors";
+import {
+  isPgFunctionNotFoundError,
+  isPgMissingColumnError,
+  isPgMissingTableError,
+  isPgUniqueViolationError,
+} from "@/lib/db/errors";
 
 import { withDbRetry } from "@/lib/db/retry";
 // #834: cards テーブルの「本番未デプロイ8列」（card_number/hp/atk/def/spd/
@@ -71,6 +76,7 @@ import {
   streamers as streamersTable,
   twitchBotAccounts as twitchBotAccountsTable,
   userCards as userCardsTable,
+  userCollectionHiddenStreamers as userCollectionHiddenStreamersTable,
   users as usersTable,
 } from "@/lib/db/schema";
 // Issue #557: デプロイ窓 (00064 未適用) の collection_name 列欠落検知に再利用。
@@ -2269,6 +2275,113 @@ export async function getActiveCardCountsForStreamers(
   streamerIds: string[]
 ): Promise<Map<string, ActiveCardCountForStreamer>> {
   return getActiveCardCountsForStreamersPg(streamerIds);
+}
+
+/**
+ * 配信者ごとの「最後にカードを獲得した日時」を取得する (#1953)。
+ *
+ * マイコレクション一覧の「最近カードを獲得した順」の並び替え用。
+ * get_user_card_counts RPC は所持枚数の集計で obtained_at を返さず、契約を変えると
+ * 他の呼び出し元(配信者別コレクション等)へ波及するため、RPC には触れず
+ * user_cards → cards の JOIN を max(obtained_at) で配信者別に集約する別クエリにした。
+ *
+ * - 返す値は UTC の ISO 8601 文字列(`...Z`)。postgres.js の既定のテキスト表現
+ *   (`2026-10-28 12:00:00+00`)は Date.parse の解釈が実装依存になりうるため、
+ *   to_char で曖昧さの無い形式へ固定する。
+ * - 失敗時は reportError して空の Map を返す。並び替えの補助情報が取れないだけで
+ *   一覧自体は表示できるため、ページを壊さない(日時不明の配信者は最後尾へ並ぶ。
+ *   sortStreamerCollections 参照)。
+ * - 読み取り専用のクエリなので withDbRetry は idempotent: true。
+ */
+export async function getLastObtainedAtByStreamer(
+  twitchUserId: string
+): Promise<Map<string, string | null>> {
+  const startedAt = perfStart();
+  const result = new Map<string, string | null>();
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({
+            streamer_id: cardsTable.streamer_id,
+            last_obtained_at: sql<string | null>`to_char(max(${userCardsTable.obtained_at}) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+          })
+          .from(userCardsTable)
+          .innerJoin(usersTable, eq(usersTable.id, userCardsTable.user_id))
+          .innerJoin(cardsTable, eq(cardsTable.id, userCardsTable.card_id))
+          .where(eq(usersTable.twitch_user_id, twitchUserId))
+          .groupBy(cardsTable.streamer_id);
+      },
+      "getLastObtainedAtByStreamer",
+      { idempotent: true },
+    );
+    for (const row of rows) {
+      result.set(row.streamer_id, row.last_obtained_at);
+    }
+    logPerf("dashboard-data", "getLastObtainedAtByStreamer", startedAt, {
+      streamerCount: rows.length,
+    });
+  } catch (error) {
+    reportError(
+      new Error(
+        `last obtained at by streamer query failed: ${error instanceof Error ? error.message : String(error)}`
+      )
+    );
+    logPerf("dashboard-data", "getLastObtainedAtByStreamer", startedAt, { failed: true });
+    return new Map();
+  }
+  return result;
+}
+
+/**
+ * マイコレクション一覧で視聴者が非表示にした配信者IDの集合を取得する (#1953)。
+ *
+ * - 非表示の切替直後に router.refresh() で反映される必要があるため、getUserCards
+ *   のような unstable_cache(30秒)は使わない。user_collection_hidden_streamers は
+ *   PK(twitch_user_id, streamer_id) の先頭一致で引ける小さなテーブルで、
+ *   キャッシュしなくても負荷は問題にならない。
+ * - 失敗時は reportError して空の集合を返す(= 全件表示)。非表示設定が読めない
+ *   ときに、利用者のカードが一覧から消えるより全部出る方が安全な縮退のため。
+ * - migration 未適用の窓(42P01: テーブルが無い)はアプリと migration の適用が非同期な
+ *   ことによる想定内の状態なので、エラー報告せず「非表示なし」として扱う
+ *   (docs/db-driver-migration.md)。
+ */
+export async function getHiddenCollectionStreamerIds(
+  twitchUserId: string
+): Promise<Set<string>> {
+  const startedAt = perfStart();
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { db } = await getDb();
+        return db
+          .select({ streamer_id: userCollectionHiddenStreamersTable.streamer_id })
+          .from(userCollectionHiddenStreamersTable)
+          .where(eq(userCollectionHiddenStreamersTable.twitch_user_id, twitchUserId));
+      },
+      "getHiddenCollectionStreamerIds",
+      { idempotent: true },
+    );
+    logPerf("dashboard-data", "getHiddenCollectionStreamerIds", startedAt, {
+      hiddenCount: rows.length,
+    });
+    return new Set(rows.map((row) => row.streamer_id));
+  } catch (error) {
+    if (isPgMissingTableError(error)) {
+      logger.warn("user_collection_hidden_streamers is not migrated yet; showing all collections");
+    } else {
+      reportError(
+        new Error(
+          `hidden collection streamers query failed: ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
+    }
+    logPerf("dashboard-data", "getHiddenCollectionStreamerIds", startedAt, { failed: true });
+    return new Set();
+  }
 }
 
 /**

@@ -393,7 +393,22 @@
     "sort": {
       "label": "並び替え",
       "number": "番号順",
-      "rarity": "レアリティ順"
+      "rarity": "レアリティ順",
+      "recent": "最近獲得した順",
+      "name": "配信者名順",
+      "completion": "コンプ率順"
+    },
+    "hide": {
+      "hideButton": "非表示",
+      "showButton": "再表示",
+      "hideAria": "{name}のコレクションを一覧から非表示にする",
+      "showAria": "{name}のコレクションを一覧に再表示する",
+      "error": "更新できませんでした。時間をおいてもう一度お試しください。"
+    },
+    "hidden": {
+      "summary": "非表示のコレクション（{count}）",
+      "description": "一覧から隠しているコレクションです。カードは失われず、「再表示」でいつでも戻せます。",
+      "allHidden": "すべてのコレクションを非表示にしています。"
     },
     "viewCollection": "コレクションを見る",
     "unownedCard": "???",
