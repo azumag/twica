@@ -1221,6 +1221,157 @@ describe('GachaService.executeGachaForEventSub', () => {
     }
   })
 
+  it('視聴者が削除したdrawは墓石で完了済みと数え、同じeventのカードを再発行しない', async () => {
+    // 1枚目の履歴行は削除され、墓石だけが残っている。再開位置が墓石を数えないと
+    // 'event-deleted' を再実行して新しいカードを発行してしまう（3連で4枚）。
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 3,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{ value: [{ event_id: 'event-deleted:2' }] }],
+        gacha_history_event_tombstones: [{ value: [{ event_id: 'event-deleted' }] }],
+        cards: [{ value: testCards }],
+      },
+      transactions: [
+        {
+          value: {
+            is_duplicate: false,
+            history_id: 'third',
+            cards: persistedThreeDrawCards,
+          },
+        },
+      ],
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 300 },
+      },
+      eventId: 'event-deleted',
+    })
+
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual(['event-deleted:3'])
+    if (result.success) {
+      expect(result.data.cards).toEqual(persistedThreeDrawCards)
+    }
+  })
+
+  it('全drawが履歴か墓石にあれば完全な重複として何も発行しない', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 2,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{ value: [{ event_id: 'event-all-deleted:2' }] }],
+        gacha_history_event_tombstones: [{ value: [{ event_id: 'event-all-deleted' }] }],
+        cards: [{ value: testCards }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 200 },
+      },
+      eventId: 'event-all-deleted',
+    })
+
+    expect(result).toEqual({ success: false, error: 'Duplicate event' })
+    expect(fixture.transactionCalls).toEqual([])
+  })
+
+  it('墓石テーブルが未作成(42P01)のmigration窓では履歴だけで再開位置を決める', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 3,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{ value: [{ event_id: 'event-window' }] }],
+        gacha_history_event_tombstones: [{
+          error: dbError('relation "gacha_history_event_tombstones" does not exist', '42P01'),
+        }],
+        cards: [{ value: testCards }],
+      },
+      transactions: [
+        { value: { is_duplicate: false, history_id: 'second' } },
+        {
+          value: {
+            is_duplicate: false,
+            history_id: 'third',
+            cards: persistedThreeDrawCards,
+          },
+        },
+      ],
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 300 },
+      },
+      eventId: 'event-window',
+    })
+
+    expect(result.success).toBe(true)
+    expect(fixture.transactionCalls.map((call) => call[0])).toEqual([
+      'event-window:2', 'event-window:3',
+    ])
+  })
+
+  it('墓石readが42P01以外で失敗したらカード発行前に停止する', async () => {
+    const fixture = installDbFixture({
+      tables: {
+        streamers: [{ value: [baseStreamer] }],
+        streamer_additional_gacha_rewards: [{
+          value: [{
+            id: 'additional-1',
+            draw_count: 2,
+            is_raid_limited: false,
+            collection_name: null,
+          }],
+        }],
+        gacha_history: [{ value: [] }],
+        gacha_history_event_tombstones: [{ error: dbError('permission denied', '42501') }],
+        cards: [{ value: testCards }],
+      },
+    })
+
+    const result = await new GachaService().executeGachaForEventSub({
+      event: {
+        ...baseEvent,
+        reward: { id: 'additional-reward', cost: 200 },
+      },
+      eventId: 'event-tombstone-error',
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('permission denied')
+    }
+    expect(fixture.transactionCalls).toEqual([])
+  })
+
   it('履歴readエラーならカード発行前に停止する', async () => {
     const fixture = installDbFixture({
       tables: {
