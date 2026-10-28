@@ -48,13 +48,33 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_OVERLAY_VERSION: resolveOverlayVersion(),
   },
   images: {
+    // Minimized allowlist (follow-up to #1898 / issue #1909).
+    // Previously `hostname: "**"` allowed any HTTPS host for next/image, which
+    // kept the SSRF surface open for the image-optimization endpoint even though
+    // every actual <Image> usage sets `unoptimized`. Enumerate only the host
+    // families that can legitimately serve card/profile images:
+    //   - R2 public URLs (custom domain via R2_PUBLIC_URL / R2_SOUND_PUBLIC_URL
+    //     when available at build time, plus the default r2.dev / r2.cloudflarestorage.com families)
+    //   - Twitch CDN (streamer profile images)
+    //   - The app's own Cloudflare zone (transformable same-zone images)
+    // Arbitrary hosts are no longer allowed; API-level jpg/png validation remains.
     remotePatterns: [
-      // Allow any HTTPS host for external card images
-      // Validation is done at API level (jpg/png extension only)
-      {
-        protocol: "https",
-        hostname: "**",
-      },
+      ...(["R2_PUBLIC_URL", "R2_SOUND_PUBLIC_URL", "NEXT_PUBLIC_APP_URL"]
+        .map((name) => process.env[name])
+        .filter((v): v is string => Boolean(v))
+        .map((v) => {
+          try {
+            return new URL(v).hostname;
+          } catch {
+            return null;
+          }
+        })
+        .filter((h): h is string => Boolean(h))
+        .map((hostname) => ({ protocol: "https" as const, hostname }))),
+      { protocol: "https", hostname: "*.r2.dev" },
+      { protocol: "https", hostname: "*.r2.cloudflarestorage.com" },
+      { protocol: "https", hostname: "*.jtvnw.net" },
+      { protocol: "https", hostname: "*.bluemoon.works" },
     ],
   },
 };

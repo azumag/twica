@@ -46,15 +46,12 @@
     "db:migrate:plan": "node scripts/db-migrate.js plan --provider=planetscale",
     "db:migrate:apply": "node scripts/db-migrate.js apply --provider=planetscale",
     "db:migrate:verify": "node scripts/db-migrate.js verify --provider=planetscale",
-    "db:phase2:export": "node scripts/db-phase2/export-public-schema.mjs",
-    "db:phase2:normalize": "node scripts/db-phase2/normalize-schema.mjs",
-    "db:cutover:init-identity": "node scripts/db-cutover/init-identity.mjs",
-    "db:cutover:verify": "node scripts/db-cutover/verify.mjs",
     "check:analysis-browser-supabase": "node scripts/check-analysis-browser-supabase.js",
     "check:supabase-shutdown": "node scripts/check-supabase-shutdown.js",
     "check:maintenance-surfaces": "node scripts/check-maintenance-surfaces.js",
     "probe:maintenance": "node scripts/probe-maintenance-write-surfaces.js",
     "replay:maintenance-eventsub": "node scripts/replay-maintenance-eventsub.js",
+    "storage:maintenance": "node scripts/storage-maintenance.mjs",
     "check:analysis-dashboard-vs-sql": "node scripts/compare-analysis-dashboard-vs-sql.mjs",
     "error-reporter:deploy": "cd workers/error-reporter && OPEN_NEXT_DEPLOY=true npx wrangler deploy",
     "error-reporter:tail": "cd workers/error-reporter && npx wrangler tail",
@@ -81,24 +78,30 @@
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.972.0",
-    "@cloudflare/workers-types": "5.20260917.1",
+    "@cloudflare/workers-types": "5.20261022.1",
     "@formatjs/icu-messageformat-parser": "^2.11.4",
-    "@opennextjs/cloudflare": "1.20.2",
+    "@opennextjs/cloudflare": "1.20.12",
     "@swc/helpers": "^0.5.23",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
-    "@types/node": "^20",
+    "@types/node": "^22",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "@vitest/ui": "^3.2.4",
+    "@vitest/ui": "4.1.12",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
-    "happy-dom": "^20.3.3",
+    "happy-dom": "^21.0.4",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^3.2.4",
-    "wrangler": "4.134.0"
+    "vitest": "4.1.12",
+    "wrangler": "4.151.3"
+  },
+  "overrides": {
+    "@node-minify/core": {
+      "glob": "10.5.0"
+    }
   }
 }

@@ -393,7 +393,22 @@
     "sort": {
       "label": "並び替え",
       "number": "番号順",
-      "rarity": "レアリティ順"
+      "rarity": "レアリティ順",
+      "recent": "最近獲得した順",
+      "name": "配信者名順",
+      "completion": "コンプ率順"
+    },
+    "hide": {
+      "hideButton": "非表示",
+      "showButton": "再表示",
+      "hideAria": "{name}のコレクションを一覧から非表示にする",
+      "showAria": "{name}のコレクションを一覧に再表示する",
+      "error": "更新できませんでした。時間をおいてもう一度お試しください。"
+    },
+    "hidden": {
+      "summary": "非表示のコレクション（{count}）",
+      "description": "一覧から隠しているコレクションです。カードは失われず、「再表示」でいつでも戻せます。",
+      "allHidden": "すべてのコレクションを非表示にしています。"
     },
     "viewCollection": "コレクションを見る",
     "unownedCard": "???",
@@ -520,6 +535,8 @@
       "saveFailed": "設定の保存に失敗しました",
       "deleteFailed": "削除に失敗しました",
       "rateLimit": "リクエストが多すぎます。しばらく待ってから再試行してください。",
+      "storageUserLimitReached": "効果音のアップロード上限に達しました。不要な効果音を削除してから再度お試しください。",
+      "storageGlobalLimitReached": "効果音のアップロード上限に達しました。",
       "deployWindow": "効果音ルール機能が準備中のため、変更は保存できませんでした。しばらくしてから再度お試しください。"
     },
     "confirmDelete": "この効果音を削除しますか？",
@@ -691,9 +708,9 @@
     "autoSelectNotice": "{count, plural, =1 {※複数所持時は最も古い1枚が自動選択されます} other {※所持カードのうち最も古い#枚が自動選択されます}}",
     "ownOfferBadge": "自分の出品",
     "ownOfferManageLink": "キャンセルはマイトレードから",
-    "unrevealedNotice": "このチャンネルは未所持カードの名前を公開していないため、あなたが持っているカードを含む出品のみ表示しています",
+    "unrevealedNotice": "このチャンネルは持っていないカードの名前を公開していないため、出品に含まれる非公開のカードをすべてお持ちの出品だけを表示しています（自分の出品は常に表示されます）",
     "emptyStateMessage": "まだ出品がありません。最初の出品をしてみましょう",
-    "emptyStateUnrevealed": "あなたが持っているカードを含む出品はまだありません",
+    "emptyStateUnrevealed": "表示できる出品はまだありません",
     "emptyStateFiltered": "条件に一致する出品はありません",
     "emptyStateCta": "出品する",
     "loading": "読み込み中...",

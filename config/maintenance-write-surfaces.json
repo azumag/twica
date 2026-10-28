@@ -178,6 +178,17 @@
     "reviewedAt": "2026-07-18"
   },
   {
+    "path": "/api/collection/hidden-streamers",
+    "methods": [
+      "POST"
+    ],
+    "category": "collection",
+    "maintenanceBehavior": "block",
+    "reason": "マイコレクション一覧の配信者の非表示/再表示設定(#1953)をDBへ書き込む。カード所持には影響しない表示設定だが、DB書き込みのためallowlist未登録の一律ブロックに従う。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-28"
+  },
+  {
     "path": "/api/gacha",
     "methods": [
       "POST"
@@ -521,6 +532,17 @@
     "reason": "stats-aggregator cron Workerが呼ぶランキング統計バッチの内部実行境界（Issue #741）。refresh_streamer_ranking()は日次ロールアップのupsertとスナップショットのDELETE→INSERTを伴うDB書き込みのため、他の書き込みAPIと同様にメンテ中はブロックし、状態を失わず延期する（前回snapshotが残るため数時間の停滞は壊れない）。",
     "owner": "azumag",
     "reviewedAt": "2026-10-07"
+  },
+  {
+    "path": "/api/internal/storage-maintenance",
+    "methods": [
+      "POST"
+    ],
+    "category": "upload",
+    "maintenanceBehavior": "block",
+    "reason": "Issue #1907 の台帳再照合・未使用効果音回収ジョブ。blob_files/storage_usage の更新とR2削除を伴う内部書き込み境界で、共有シークレット必須。メンテ中は他の書き込みAPIと同様にブロックし、解除後に実行する（ジョブは冪等で次回実行で追いつく）。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-23"
   },
   {
     "path": "/api/streamer/pack-completion-rewards",

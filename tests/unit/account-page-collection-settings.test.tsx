@@ -25,6 +25,19 @@ vi.mock('@/lib/dashboard-data', () => ({
   getStreamerCollectionSettings: mocks.getStreamerCollectionSettings,
 }))
 vi.mock('next/navigation', () => ({ redirect: mocks.redirect }))
+// #715: カードトレード設定は CARD_TRADE_UI_VISIBLE で入口ごと隠す（main #1803 の取り込み）。
+// 既存の受け渡し検証は「表示中」の前提で行い、非表示時は別テストで固定するため、
+// モジュール定数を hoisted な可変オブジェクト経由の getter に差し替える。
+const flags = vi.hoisted(() => ({ tradeUiVisible: true }))
+vi.mock('@/lib/constants', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/constants')>()
+  return {
+    ...actual,
+    get CARD_TRADE_UI_VISIBLE() {
+      return flags.tradeUiVisible
+    },
+  }
+})
 // キー文字列をそのまま返し、i18nメッセージ内容ではなく構造だけを検証する。
 vi.mock('next-intl/server', () => ({
   getTranslations: async () => (key: string) => key,
@@ -117,6 +130,7 @@ const SETTINGS = {
 describe('AccountSettingsPage collection sharing section', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    flags.tradeUiVisible = true
     mocks.getSession.mockResolvedValue({ twitchUserId: 'twitch-user-1' })
     mocks.canUseStreamerFeatures.mockReturnValue(true)
     mocks.getUserPlan.mockResolvedValue('basic')
@@ -207,5 +221,17 @@ describe('AccountSettingsPage collection sharing section', () => {
 
     expect(screen.getByTestId('trade-probe')).toHaveAttribute('data-trade', 'false')
     expect(screen.getByTestId('trade-probe')).toHaveAttribute('data-cross', 'false')
+  })
+
+  it('CARD_TRADE_UI_VISIBLE=false ならトレード設定だけを出さず、他の公開設定は残す (#715)', async () => {
+    flags.tradeUiVisible = false
+
+    render(await AccountSettingsPage())
+
+    expect(screen.queryByTestId('trade-probe')).toBeNull()
+    // 入口を消しただけでセクション自体は壊れていないことを同時に確認する
+    expect(screen.getByTestId('collection-sharing-section')).toBeInTheDocument()
+    expect(screen.getByTestId('visibility-probe')).toBeInTheDocument()
+    expect(screen.getByTestId('album-probe')).toBeInTheDocument()
   })
 })

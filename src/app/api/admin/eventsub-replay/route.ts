@@ -584,7 +584,7 @@ export async function POST(request: NextRequest) {
             // 1回永続化する。sentをDLQへ戻すと同じ本文を再送してしまう。
             await reportErrorWithinDeadline(
               new Error(
-                `[eventsub-replay] chat sent using fallback sender: ${outcome.degradation.reason}`,
+                `[eventsub-replay] chat sent using fallback sender: ${outcome.degradation.code}`,
               ),
               {
                 key: baseResult.key,

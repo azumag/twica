@@ -25,13 +25,8 @@ export default defineConfig({
     teardownTimeout: 10000, // 10秒でクリーンアップをタイムアウト
     // フォークプールを使用（スレッドプールよりも安全にプロセスを管理）
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        // 並列実行数を制限してリソース消費を抑制
-        maxForks: 4,
-        minForks: 1,
-      },
-    },
+    // Vitest 4 では poolOptions が廃止され、トップレベルに移動。
+    maxWorkers: 4,
     // サブエージェント実行時のさらなる安全対策
     isolate: true, // 各テストファイルを完全に分離
     fileParallelism: false, // ファイル並列実行を無効化（より安全）

@@ -6,7 +6,7 @@
  * (他のanalysis/dev/*.tsと同じく)rootのvitestから直接importしてテストできる。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { adminApi, AdminApiRequestError } from '../../analysis/src/lib/adminApi'
+import { adminApi, adminAuthHeaders, AdminApiRequestError } from '../../analysis/src/lib/adminApi'
 
 function fakeFetchResponse(init: { ok: boolean; status?: number; json?: unknown }) {
   return {
@@ -164,153 +164,64 @@ describe('adminApi: RequestOptionsによるsignal透過(#701 UI state/UX)', () =
 })
 
 /**
- * twica#1894: 状態変更リクエストのCSRFトークン付与。
- *
- * サーバー(N)は POST/PUT/PATCH/DELETE に `x-twica-admin-csrf` を要求するため、
- * クライアントが確実に添えること、読み取り系では余計な取得をしないことを固定する。
- *
- * トークンはモジュールスコープでキャッシュされるため、各テストは
- * vi.resetModules() + 動的 import で新しいモジュール状態から始める。
+ * twica#1901 相当: /__admin は dev サーバーが index.html の meta に埋め込む
+ * 起動ごとのトークンを `x-admin-token` ヘッダで要求する（#1892 の同期で
+ * preview も main #1901 の方式に揃えた）。トークンが無い環境（本番ビルド等）では
+ * ヘッダを付けない。
  */
-describe('adminApi: 状態変更リクエストのCSRFトークン (#1894)', () => {
-  const CSRF_HEADER = 'x-twica-admin-csrf'
+describe("adminApi: /__admin の認証ヘッダ (#1901)", () => {
+  const TOKEN_HEADER = "x-admin-token"
+  const META_NAME = "twica-admin-token"
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    vi.resetModules()
   })
 
-  async function importFreshAdminApi() {
-    const mod = await import('../../analysis/src/lib/adminApi')
-    return mod
-  }
-
-  /** トークン取得GETと本リクエストを呼び分けるfetchモック */
-  function stubFetchWithToken(token = 'test-token') {
-    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
-      const url = String(input)
-      if (url.endsWith('/csrf-token')) {
-        return fakeFetchResponse({ ok: true, json: { token } })
-      }
-      void init
-      return fakeFetchResponse({ ok: true, json: { ok: true } })
+  function stubMetaToken(token: string | null) {
+    vi.stubGlobal("document", {
+      querySelector: (selector: string) =>
+        selector === `meta[name="${META_NAME}"]` && token !== null
+          ? { getAttribute: () => token }
+          : null,
     })
-    vi.stubGlobal('fetch', fetchMock)
-    return fetchMock
   }
 
-  // 実在する状態変更エンドポイントをメソッド別に列挙する。
-  // PUT を使うエンドポイントは現状存在しないためケースに含めない
-  // (以前は PUT 行で POST を呼んでおり、テスト名と実態が食い違っていた)。
-  // request() は method 文字列でトークン要否を判定するため、PUT を追加した際は
-  // このテーブルに実エンドポイントとともに足すこと。
-  it.each([
-    ['POST', (api: Awaited<ReturnType<typeof importFreshAdminApi>>['adminApi']) =>
-      api.createSupportCode({ code_hash: 'h', plan_type: 'support', memo: null })],
-    ['PATCH', (api: Awaited<ReturnType<typeof importFreshAdminApi>>['adminApi']) =>
-      api.updateSupportCodeStatus('id1', 'active')],
-    ['DELETE', (api: Awaited<ReturnType<typeof importFreshAdminApi>>['adminApi']) =>
-      api.deleteAnnouncement('a1')],
-  ] as const)(
-    '%s はCSRFトークンをヘッダに添える',
-    async (method, call) => {
-      const { adminApi: freshApi } = await importFreshAdminApi()
-      const fetchMock = stubFetchWithToken()
+  it("meta のトークンを x-admin-token として書き込みリクエストに添える", async () => {
+    stubMetaToken("test-token")
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) => fakeFetchResponse({ ok: true, json: { ok: true } }))
+    vi.stubGlobal("fetch", fetchMock)
 
-      await call(freshApi)
+    await adminApi.deleteAnnouncement("a1")
 
-      const requestCall = fetchMock.mock.calls.find(
-        ([input]) => !String(input).endsWith('/csrf-token')
-      )
-      expect(requestCall).toBeDefined()
-      const init = requestCall![1] as RequestInit
-      // 呼んだメソッドが実際にそのメソッドであること(取り違え防止)
-      expect((init.method || 'GET').toUpperCase()).toBe(method)
-      const headers = init.headers as Record<string, string>
-      expect(headers[CSRF_HEADER]).toBe('test-token')
-    }
-  )
+    const [, init] = fetchMock.mock.calls[0]
+    expect((init as RequestInit).headers).toMatchObject({ [TOKEN_HEADER]: "test-token" })
+  })
 
-  it('読み取り系(GET)はトークンを取得しない', async () => {
-    const { adminApi: freshApi } = await importFreshAdminApi()
-    const fetchMock = stubFetchWithToken()
+  it("読み取りリクエストにも同じヘッダを添える", async () => {
+    stubMetaToken("test-token")
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) => fakeFetchResponse({ ok: true, json: { stats: {} } }))
+    vi.stubGlobal("fetch", fetchMock)
 
-    await freshApi.getOverview()
+    await adminApi.getOverview()
 
-    expect(fetchMock).toHaveBeenCalledTimes(1)
     const [input, init] = fetchMock.mock.calls[0]
-    expect(String(input)).toBe('/__admin/overview')
-    const headers = (init as RequestInit).headers as Record<string, string>
-    expect(headers[CSRF_HEADER]).toBeUndefined()
+    expect(String(input)).toBe("/__admin/overview")
+    expect((init as RequestInit).headers).toMatchObject({ [TOKEN_HEADER]: "test-token" })
   })
 
-  it('トークンはページ内でキャッシュされ、毎回の取得をしない', async () => {
-    const { adminApi: freshApi } = await importFreshAdminApi()
-    const fetchMock = stubFetchWithToken()
+  it("meta が無い場合は認証ヘッダを付けない", async () => {
+    stubMetaToken(null)
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) => fakeFetchResponse({ ok: true, json: { stats: {} } }))
+    vi.stubGlobal("fetch", fetchMock)
 
-    await freshApi.createAnnouncement({ title: 't', body: 'b', severity: 'info', is_published: true } as never)
-    await freshApi.deleteAnnouncement('a1')
+    await adminApi.getOverview()
 
-    const tokenCalls = fetchMock.mock.calls.filter(([input]) =>
-      String(input).endsWith('/csrf-token')
-    )
-    expect(tokenCalls).toHaveLength(1)
+    const [, init] = fetchMock.mock.calls[0]
+    expect((init as RequestInit).headers).not.toHaveProperty(TOKEN_HEADER)
   })
 
-  it('トークン取得失敗はcode:csrf_tokenのAdminApiRequestErrorに正規化される', async () => {
-    const { adminApi: freshApi, AdminApiRequestError: FreshError } =
-      await importFreshAdminApi()
-    const fetchMock = vi.fn(async (input: unknown) => {
-      if (String(input).endsWith('/csrf-token')) {
-        return fakeFetchResponse({ ok: false, status: 500, json: {} })
-      }
-      return fakeFetchResponse({ ok: true, json: {} })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(freshApi.deleteAnnouncement('a1')).rejects.toMatchObject({
-      code: 'csrf_token',
-      status: 0,
-    })
-    await expect(freshApi.deleteAnnouncement('a1')).rejects.toBeInstanceOf(
-      FreshError
-    )
-    // トークンが取れない以上、本体リクエストは送らない
-    const writeCalls = fetchMock.mock.calls.filter(
-      ([input]) => !String(input).endsWith('/csrf-token')
-    )
-    expect(writeCalls).toHaveLength(0)
-  })
-
-  it('トークン取得失敗後は次回呼び出しで再取得する(失敗をキャッシュしない)', async () => {
-    const { adminApi: freshApi } = await importFreshAdminApi()
-    let tokenAttempts = 0
-    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
-      void init
-      if (String(input).endsWith('/csrf-token')) {
-        tokenAttempts += 1
-        if (tokenAttempts === 1) {
-          return fakeFetchResponse({ ok: false, status: 500, json: {} })
-        }
-        return fakeFetchResponse({ ok: true, json: { token: 'recovered' } })
-      }
-      return fakeFetchResponse({ ok: true, json: { ok: true } })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(freshApi.deleteAnnouncement('a1')).rejects.toMatchObject({
-      code: 'csrf_token',
-    })
-    await freshApi.deleteAnnouncement('a1')
-
-    expect(tokenAttempts).toBe(2)
-    const writeCall = fetchMock.mock.calls.find(
-      ([input]) => !String(input).endsWith('/csrf-token')
-    )
-    expect(writeCall).toBeDefined()
-    const writeInit = writeCall?.[1] as RequestInit | undefined
-    expect(
-      (writeInit?.headers as Record<string, string>)[CSRF_HEADER]
-    ).toBe('recovered')
+  it("document が無い（サーバー評価）場合は空のヘッダを返す", () => {
+    vi.stubGlobal("document", undefined)
+    expect(adminAuthHeaders()).toEqual({})
   })
 })

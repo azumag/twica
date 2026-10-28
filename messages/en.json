@@ -393,7 +393,22 @@
     "sort": {
       "label": "Sort",
       "number": "Number",
-      "rarity": "Rarity"
+      "rarity": "Rarity",
+      "recent": "Recently obtained",
+      "name": "Streamer name",
+      "completion": "Completion"
+    },
+    "hide": {
+      "hideButton": "Hide",
+      "showButton": "Show",
+      "hideAria": "Hide {name}'s collection from the list",
+      "showAria": "Show {name}'s collection in the list again",
+      "error": "Could not update. Please try again in a moment."
+    },
+    "hidden": {
+      "summary": "Hidden collections ({count})",
+      "description": "These collections are hidden from the list. Your cards are kept, and you can bring them back anytime with \"Show\".",
+      "allHidden": "All of your collections are hidden."
     },
     "viewCollection": "View Collection",
     "unownedCard": "???",
@@ -520,6 +535,8 @@
       "saveFailed": "Failed to save settings",
       "deleteFailed": "Failed to delete",
       "rateLimit": "Too many requests. Please wait and try again.",
+      "storageUserLimitReached": "The sound effect upload limit has been reached. Delete unused sound effects and try again.",
+      "storageGlobalLimitReached": "The sound effect upload limit has been reached.",
       "deployWindow": "The sound rules feature is not ready yet, so your changes could not be saved. Please try again shortly."
     },
     "confirmDelete": "Delete this sound effect?",
@@ -691,9 +708,9 @@
     "autoSelectNotice": "{count, plural, one {* If you own several copies, your oldest copy is used automatically.} other {* Your # oldest copies are used automatically.}}",
     "ownOfferBadge": "Your offer",
     "ownOfferManageLink": "Cancel it from My trades",
-    "unrevealedNotice": "This channel does not reveal the names of cards you don't own, so only offers that include a card you own are shown.",
+    "unrevealedNotice": "This channel doesn't reveal cards you don't own, so an offer is shown only if you own every unrevealed card in it (your own offers are always shown).",
     "emptyStateMessage": "No offers yet. Be the first to create one!",
-    "emptyStateUnrevealed": "There are no offers that include a card you own yet.",
+    "emptyStateUnrevealed": "There are no offers you can see yet.",
     "emptyStateFiltered": "No offers match the filter.",
     "emptyStateCta": "Create offer",
     "loading": "Loading...",

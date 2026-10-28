@@ -12,7 +12,7 @@ import {
 } from "@/components/SettingsViewMode";
 import CopyButton from "@/components/CopyButton";
 import VoteCampaignButton from "@/components/VoteCampaignButton";
-import { VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
+import { CARD_TRADE_UI_VISIBLE, VOTE_CAMPAIGN_CONFIG } from "@/lib/constants";
 import { legacySoundToRules, normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 import { resolveChatAnnouncementSectionStatus } from "@/lib/chat-delivery-ui";
 import type { Card, Json } from "@/types/database";
@@ -363,10 +363,22 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
     },
   ];
 
+  // CARD_TRADE_UI_VISIBLE=false の間はカードトレードセクションを描画対象から取り除く。
+  // sections 配列自体は無改変なので、定数を true に戻せばサイドバーとパネルの両方が
+  // 元どおりになる。フィルタ後に AdvancedSettingsLayout へ渡すことで、初期選択
+  // セクションやサイドバーの並びも「表示されるセクション」だけを基準に決まる。
+  // main/preview 同期時の注記: preview ではトレード設定が /dashboard/account へ移動済みで、
+  // この sections に "trade" は現在存在しない（移動先は account page 側で同じ定数により
+  // ゲートしている）。main #1803 の分岐は、将来ここへトレード設定が戻った場合も
+  // 非表示が自動的に効くよう残している。
+  const visibleSections = sections.filter(
+    (section) => section.id !== "trade" || CARD_TRADE_UI_VISIBLE,
+  );
+
   return (
     <div className="space-y-6">
       <PageHeader title={t("title")} description={t("description")} />
-      <AdvancedSettingsLayout sections={sections} initialSectionId={data.initialSectionId} />
+      <AdvancedSettingsLayout sections={visibleSections} initialSectionId={data.initialSectionId} />
     </div>
   );
 }

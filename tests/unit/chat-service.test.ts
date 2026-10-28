@@ -485,11 +485,8 @@ describe('TwitchChatService', () => {
       expect(global.fetch).toHaveBeenCalledTimes(2);
     });
 
-    // Issue #1742: 一時不調文面（"try again later"）を含む200応答は、
-    // is_sent/codeが欠けていてもTwitch側の一時不調としてbounded retryへ載せる。
-    // Twitchがこの文面を返す場合はサーバ側の一時不調であり、is_sent/codeの
-    // 欠落はTwitch側の応答揺れ（契約逸脱）に過ぎないため、TWITCH_REJECTEDへ
-    // 倒すと通知が永久欠落し自動Issueも量産される。
+    // 一時不調文面だけでは、is_sent=falseと有効なcodeが揃った拒否通知とは限らない。
+    // 契約が崩れた200応答は再送せず、詳細APIとlegacy経路の報告境界を維持する。
     it.each([
       ['missing is_sent', { drop_reason: { code: 'msg_rejected' } }],
       ['null is_sent', { is_sent: null, drop_reason: { code: 'msg_rejected' } }],
@@ -500,7 +497,7 @@ describe('TwitchChatService', () => {
       ['empty code', { is_sent: false, drop_reason: { code: '' } }],
       ['whitespace code', { is_sent: false, drop_reason: { code: '  ' } }],
       ['numeric code', { is_sent: false, drop_reason: { code: 42 } }],
-    ])('一時不調文面を含むHTTP 200はis_sent/codeの欠落に関わらずretryableに分類する', async (_label, sentResult) => {
+    ])('一時不調文面でもHTTP 200の%sは再送せずTWITCH_REJECTEDに分類する', async (_label, sentResult) => {
       const message = 'Your message could not be sent, please try again later.';
       vi.mocked(getTwitchAccessToken).mockResolvedValue('test-token');
       vi.mocked(global.fetch).mockResolvedValue({
@@ -512,15 +509,16 @@ describe('TwitchChatService', () => {
       } as Response);
 
       await expect(service.sendChatMessageDetailed('123456789', 'test message')).resolves.toEqual({
-        outcome: 'retryable',
+        outcome: 'terminal',
+        code: CHAT_SEND_TERMINAL_CODES.TWITCH_REJECTED,
         reason: `Twitch API 200: ${message}`,
       });
-      expect(global.fetch).toHaveBeenCalledTimes(3);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
       expect(reportApiError).not.toHaveBeenCalled();
 
       vi.mocked(global.fetch).mockClear();
       await expect(service.sendChatMessage('123456789', 'test message')).resolves.toBe(false);
-      expect(global.fetch).toHaveBeenCalledTimes(3);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
       expect(reportApiError).toHaveBeenCalledTimes(1);
     });
 
@@ -1042,7 +1040,7 @@ describe('TwitchChatService', () => {
       expect(reportError).toHaveBeenCalledTimes(1);
       expect(reportError).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: expect.stringContaining('configured BOT credential requires reauthorization'),
+          message: expect.stringContaining('credential_unavailable'),
         }),
         expect.objectContaining({
           context: 'chat-service:sendChatMessage:degraded-success',

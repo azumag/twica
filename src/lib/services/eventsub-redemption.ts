@@ -546,7 +546,7 @@ export async function postRedemptionNotify(
             degradation: outcome.degradation,
           });
           await reportNotificationError(
-            new Error(`Chat delivery used fallback sender: ${outcome.degradation.reason}`),
+            new Error(`Chat delivery used fallback sender: ${outcome.degradation.code}`),
             {
               context: 'eventsub:postRedemptionNotify:chatDegradation',
               streamerId: data.streamer.id,

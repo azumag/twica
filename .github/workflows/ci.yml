@@ -59,12 +59,9 @@ jobs:
               - 'vitest.config.*'
               - 'wrangler.toml'
               # Node の指定だけを変える PR で test / workers:build / lint を実際に起動する。
-              # setup-node が読むのは .github/ci-node-version なので、このファイルの変更は
-              # 「新しい Node で検証する」ことを意味する。.node-version は Workers Builds
-              # 専用で CI の Node を変えないが、値（契約テストで "22" に固定）と本 filter の
-              # 対応を守るため、変更時も test を回す
-              # （経緯は docs/cloudflare-workers-builds.md。Refs #1917）。
-              - '.github/ci-node-version'
+              # setup-node も Workers Builds も単一の .node-version（修正版へ完全固定）を
+              # 読むため、このファイルの変更は「新しい Node で検証する」ことを意味する
+              # （経緯は docs/cloudflare-workers-builds.md。Refs #1914 #1917）。
               - '.node-version'
               # tests/unit/cloudflare-proxy-migration.test.ts が本文を直接assertする。
               - 'docs/cloudflare-proxy-migration.md'
@@ -121,10 +118,25 @@ jobs:
               - 'src/lib/services/gacha.ts'
               - 'tests/integration/trade-visibility-pg.test.ts'
               - 'tests/integration/trade-auction-pg.test.ts'
+              # chat-outbox-watch.yml（Issue #1837 の滞留watchdog）の観測 SQL と
+              # アラート判定を同じく実PG17で検証する。判定 block の変更でも実行する。
+              - 'tests/fixtures/chat-outbox-watch-pg17.mjs'
+              - '.github/workflows/chat-outbox-watch.yml'
+              # main から取り込んだ production 用 workflow (#1836) も同じ集計 SQL を
+              # 持つため、その変更でも PG17 job を回す。
+              - '.github/workflows/db-readonly-check-production.yml'
+              - 'tests/fixtures/pack-completion-rewards-local.sql'
               - 'tests/integration/pack-completion-rewards-pg.test.ts'
               - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
+              - 'tests/integration/storage-reservation-pg.test.ts'
               - 'src/lib/services/chat-notification-outbox.ts'
               - 'src/lib/services/chat-notification-delivery.ts'
+              # 容量予約のSQL契約（reserve/commit/release/reconcile）を変えるPRでは
+              # 実PG17で並列予約・再照合を検証する。
+              - 'src/lib/storage-db.ts'
+              - 'src/lib/storage-usage.ts'
+              - 'src/lib/storage-maintenance.ts'
+              - 'db/planetscale/migrations/*storage*'
               - 'tests/fixtures/pack-completion-rewards-pg-seed.sql'
               - 'tests/setup.ts'
               - 'tests/stubs/**'
@@ -133,19 +145,15 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               # app と重複するが意図的: postgres_fixtures は PG17 / integration job を
-              # 独立にゲートする。CI の Node を変えるのは .github/ci-node-version だけだが、
-              # Node 関連の変更では保守的に実PG検証も回す（.node-version は Workers Builds
-              # 専用で CI の Node を変えない点に注意）。
+              # 独立にゲートする。Node の固定版を変えるときは保守的に実PG検証も回す
+              # （.node-version は CI / Workers Builds / migration runner の共通 pin）。
               - '.node-version'
-              - '.github/ci-node-version'
             analysis:
               - 'analysis/**'
               - 'scripts/check-analysis-browser-supabase.js'
-              # analysis job も setup-node で .github/ci-node-version を使うため、
-              # Node の固定版を変えたときは analysis の typecheck / build も新 Node で回す。
-              # .node-version は CI の Node を変えず、analysis job は契約テストも
-              # 実行しないため含めない。
-              - '.github/ci-node-version'
+              # analysis job も setup-node で .node-version を使うため、Node の固定版を
+              # 変えたときは analysis の typecheck / build も新 Node で回す。
+              - '.node-version'
             i18n:
               - 'src/**'
               - 'eslint.i18n.config.mjs'
@@ -232,7 +240,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -299,7 +307,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -317,6 +325,14 @@ jobs:
           TWITCH_CLIENT_SECRET: dummy_client_secret
           TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
           CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
+
+      - name: Smoke-test the built Worker at runtime
+        # 2026-10-21 の preview 全ルート 500 障害の再発防止。Next.js と
+        # @opennextjs/cloudflare の組み合わせが未対応でも `workers:build` は成功し、
+        # Worker 起動後の初期化 (`Unexpected loadManifest(...)`) で初めて落ちる。
+        # peer 範囲 (`next >=16.2.11` など) は未検証の将来版も許容するため
+        # `npm ls` では検出できない。生成物を workerd で実際に起動して確認する。
+        run: bash scripts/smoke-opennext-worker.sh
 
       - name: Typecheck Chat Delivery Worker
         run: npm run chat-delivery:typecheck
@@ -347,7 +363,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
           cache-dependency-path: |
             package-lock.json
@@ -402,7 +418,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -430,7 +446,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -464,7 +480,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install dependencies
@@ -594,6 +610,29 @@ jobs:
           PGPASSWORD: postgres
         run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs
 
+      - name: Verify the production read-only check counts match the completion UPDATE
+        # db-readonly-check-production.yml に埋め込まれた集計 SQL をその YAML から取り出し、
+        # 実 PostgreSQL 17 で実行する。有効 lease 中の processing 行を数えないこと・
+        # targets_total = 内訳和・targets_total が補正 UPDATE の実際の変更行数と一致することを
+        # 固定する（SQL 文字列テストでは検証できないため実DBで実行する）。
+        # production 用の workflow は main にのみ存在するので、この回帰も main 側で回す。
+        # 実行する SQL 自体は preview 用と同一である（両者の一致は
+        # tests/unit/db-readonly-check-production-workflow.test.ts が固定する）。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs .github/workflows/db-readonly-check-production.yml
+
+      - name: Verify the chat outbox watch aggregation and alert decision
+        # chat-outbox-watch.yml（Issue #1837 の滞留watchdog）に埋め込まれた観測 SQL と
+        # アラート判定 python block をその YAML から取り出し、実 PostgreSQL 17 で実行する。
+        # due 滞留・wake 予約の内訳・attempt 枯渇・lease 失効・gate 参考値の集計が
+        # seeded 行の実状態と一致し、アラート判定が healthy / 停滞各シナリオで
+        # 期待どおりに決まることを固定する（SQL・閾値の文字列検査だけでは検証できない）。
+        # この workflow も production 専用で main にのみ存在するため、回帰も main 側で回す。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-watch-pg17.mjs .github/workflows/chat-outbox-watch.yml
+
       - name: Verify completion reward invariants
         env:
           PGPASSWORD: postgres
@@ -684,7 +723,7 @@ jobs:
       - name: Setup Node.js for PostgreSQL integration tests
         uses: actions/setup-node@v4
         with:
-          node-version-file: .github/ci-node-version
+          node-version-file: .node-version
           cache: 'npm'
 
       - name: Install integration test dependencies
@@ -706,6 +745,13 @@ jobs:
         env:
           CHAT_OUTBOX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: npx vitest run tests/integration/chat-outbox-attempt-accounting-pg.test.ts
+
+      - name: Verify storage reservation ledger against PostgreSQL
+        # #1907: 同一ユーザー/並列ユーザーの予約が上限を突破しないこと、
+        # commit/release の原子性、blob_files からの再照合を実DBで確認する。
+        env:
+          STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/storage-reservation-pg.test.ts
 
       - name: Seed completion reward PostgreSQL integration tests
         # Use the migrated schema, not the local fixture that creates tables/roles.

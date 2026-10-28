@@ -387,6 +387,18 @@ export const blobFiles = pgTable('blob_files', {
 })
 
 // -----------------------------------------------------------------------------
+// storage_reservations（保存前の容量予約。Issue #1907）
+// 根拠: 20261023000000_storage_reservation_and_reconcile.sql
+// -----------------------------------------------------------------------------
+export const storageReservations = pgTable('storage_reservations', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  user_prefix: varchar('user_prefix', { length: 8 }).notNull(),
+  file_size: bigint('file_size', { mode: 'number' }).notNull(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  expires_at: timestamp('expires_at', { withTimezone: true, mode: 'string' }).notNull(),
+})
+
+// -----------------------------------------------------------------------------
 // streamer_additional_gacha_rewards（追加のガチャ用チャネルポイント報酬）
 // 根拠: 00008 初版, 00041 draw_count / is_raid_limited 追加, 00061 collection_name 追加
 // -----------------------------------------------------------------------------
@@ -465,6 +477,29 @@ export const announcementReads = pgTable('announcement_reads', {
   twitch_user_id: text('twitch_user_id').notNull(),
   read_at: timestamp('read_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
 })
+
+// -----------------------------------------------------------------------------
+// user_collection_hidden_streamers（マイコレクション一覧で非表示にした配信者）
+// 根拠: db/planetscale/migrations/20261028120000_add_user_collection_hidden_streamers.sql
+//       （Issue #1953。supabase/migrations ではなく PlanetScale 専用 migration）
+// 一覧の見せ方だけの設定で、カード所持・直リンク・統計には影響しない。
+// announcement_reads と同じく twitch_user_id キー（users への FK なし）。
+// streamer_id のみ streamers(id) への FK（ON DELETE CASCADE）だが、スキーマ方針
+// （FK は定義しない）に従いここでは型付けのみ。
+// -----------------------------------------------------------------------------
+export const userCollectionHiddenStreamers = pgTable(
+  'user_collection_hidden_streamers',
+  {
+    twitch_user_id: text('twitch_user_id').notNull(),
+    streamer_id: uuid('streamer_id').notNull(),
+    hidden_at: timestamp('hidden_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  },
+  (table) => [
+    // PRIMARY KEY (twitch_user_id, streamer_id)。INSERT ... ON CONFLICT DO NOTHING の
+    // conflict target（冪等な非表示）に使う。
+    primaryKey({ columns: [table.twitch_user_id, table.streamer_id] }),
+  ]
+)
 
 // -----------------------------------------------------------------------------
 // support_codes（支援プラン共有コードマスタ。コードは SHA-256 ハッシュで保存）

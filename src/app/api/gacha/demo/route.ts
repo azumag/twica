@@ -10,13 +10,87 @@ import type { ApiRateLimitResponse } from "@/types/api";
 import { eq, and } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
-import { cards as cardsTable } from "@/lib/db/schema";
+import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
 import {
   createOverlayDemoEvent,
   storeOverlayDemoEvent,
 } from "@/lib/overlay/demo-event-store";
 import { publishOverlayDemoRealtimeEvent } from "@/lib/overlay-realtime/publisher";
 import { runInBackground } from "@/lib/background-task";
+
+/**
+ * オーバーレイのデモ表示に実際に使うカードのフィールド。
+ *
+ * overlay/[streamerId]/page.tsx は card.{id,name,description,image_url,
+ * image_padding_color,rarity} しか参照せず、createOverlayDemoEvent（KV/DO へ流す
+ * イベント）も同じ6項目だけを使う。このエンドポイントは無認証で呼べるため、
+ * drop_rate / max_issuance_count / ステータス値などの表示に不要な列（=配信者の
+ * 内部設計情報）は SELECT もレスポンスもしない（最小限の列だけ返す）。
+ */
+type OverlayDemoCard = Pick<
+  Card,
+  "id" | "name" | "description" | "image_url" | "image_padding_color" | "rarity"
+>;
+
+/** db.select() に渡す列。`select()` の全列取得にしないための明示リスト。 */
+const OVERLAY_CARD_COLUMNS = {
+  id: cardsTable.id,
+  name: cardsTable.name,
+  description: cardsTable.description,
+  image_url: cardsTable.image_url,
+  image_padding_color: cardsTable.image_padding_color,
+  rarity: cardsTable.rarity,
+};
+
+/** 任意の Card（組み込みデモカード含む）からオーバーレイ表示用の列だけを取り出す。 */
+function toOverlayDemoCard(card: OverlayDemoCard): OverlayDemoCard {
+  return {
+    id: card.id,
+    name: card.name,
+    description: card.description,
+    image_url: card.image_url,
+    image_padding_color: card.image_padding_color ?? null,
+    rarity: card.rarity,
+  };
+}
+
+/**
+ * 実カード取得のアクセスモード。
+ *
+ * - "owner": broadcast 分岐（セッションと所有権を検証済みのログイン中の配信者本人）。
+ *   自分のカードなので公開設定に関係なく実カードを使える。
+ * - "public": 無認証を含むそれ以外。コレクションページと同じ公開設定に従い、配信者が
+ *   `show_unowned_cards` と `show_unowned_card_details` の「両方」をオンにしている
+ *   場合だけ実カードを返す。どちらかがオフなら、未所持カードの存在・名前・画像を
+ *   見せない設定のため取得結果は空になり、呼び出し側が組み込みデモカードへ縮退する。
+ *   （これが無いと、OBS 用に URL を知られた/推測された配信者の非公開カードを、
+ *   誰でもこの無認証 API から取得できてしまう。）
+ *   公開設定は streamers との JOIN 条件で判定し、1クエリで原子的に絞り込む
+ *   （別クエリで先に確認する方式は確認後の設定変更との競合を生み、往復も増える）。
+ */
+type CardAccess = "owner" | "public";
+
+/** 条件に合うオーバーレイ表示用カードを取得する（access に応じて公開設定で絞る）。 */
+function selectOverlayCards(
+  db: Awaited<ReturnType<typeof getDb>>["db"],
+  condition: ReturnType<typeof and>,
+  access: CardAccess,
+) {
+  if (access === "owner") {
+    return db.select(OVERLAY_CARD_COLUMNS).from(cardsTable).where(condition);
+  }
+  return db
+    .select(OVERLAY_CARD_COLUMNS)
+    .from(cardsTable)
+    .innerJoin(streamersTable, eq(streamersTable.id, cardsTable.streamer_id))
+    .where(
+      and(
+        condition,
+        eq(streamersTable.show_unowned_cards, true),
+        eq(streamersTable.show_unowned_card_details, true),
+      ),
+    );
+}
 
 /**
  * Fetch one card from the authoritative PlanetScale database.
@@ -31,8 +105,15 @@ import { runInBackground } from "@/lib/background-task";
  * 絞り込みでヒットしない場合は null を返し、呼び出し側が streamerId の
  * ランダムカード → 組み込みデモカードへフォールバックする既存の縮退chainに
  * 委ねる。
+ *
+ * 加えて access="public" では配信者の未所持カード公開設定（CardAccess 参照）を
+ * 満たさない場合も null を返す。
  */
-async function fetchCardByIdPg(cardId: string, streamerId: string): Promise<Card | null> {
+async function fetchCardByIdPg(
+  cardId: string,
+  streamerId: string,
+  access: CardAccess,
+): Promise<OverlayDemoCard | null> {
   const condition = and(
     eq(cardsTable.id, cardId),
     eq(cardsTable.streamer_id, streamerId),
@@ -43,12 +124,12 @@ async function fetchCardByIdPg(cardId: string, streamerId: string): Promise<Card
     const rows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        return db.select().from(cardsTable).where(condition).limit(1);
+        return selectOverlayCards(db, condition, access).limit(1);
       },
       "gacha/demo(fetch card by id)",
       { idempotent: true },
     );
-    return (rows[0] as unknown as Card) ?? null;
+    return (rows[0] as unknown as OverlayDemoCard) ?? null;
   } catch (error) {
     // #834 でこの分岐の列欠落フォールバック（本番未デプロイ8列）は撤去済み。
     // 撤去後は列欠落を含むあらゆる失敗がここに到達し、呼び出し元の縮退chain
@@ -60,20 +141,24 @@ async function fetchCardByIdPg(cardId: string, streamerId: string): Promise<Card
 }
 
 /** Fetch active streamer cards from the authoritative PlanetScale database. */
-async function fetchActiveCardsForStreamerPg(streamerId: string): Promise<Card[]> {
+async function fetchActiveCardsForStreamerPg(
+  streamerId: string,
+  access: CardAccess,
+): Promise<OverlayDemoCard[]> {
   try {
     const rows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        return db
-          .select()
-          .from(cardsTable)
-          .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)));
+        return selectOverlayCards(
+          db,
+          and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)),
+          access,
+        );
       },
       "gacha/demo(fetch streamer cards)",
       { idempotent: true },
     );
-    return rows as unknown as Card[];
+    return rows as unknown as OverlayDemoCard[];
   } catch (error) {
     // fetchCardByIdPg と同じ理由でログを残す（#834 で列欠落フォールバックを撤去済み）。
     logger.error("gacha/demo: fetchActiveCardsForStreamerPg failed", { error });
@@ -251,7 +336,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const respondWithCard = async (card: Card, targetStreamerId: string | null) => {
+    // broadcast 分岐は上で CSRF・セッション・所有権を検証済みの配信者本人だけが到達する。
+    // それ以外（無認証含む）は公開設定に従う（CardAccess 参照）。
+    const access: CardAccess = broadcast && streamerId ? "owner" : "public";
+
+    const respondWithCard = async (card: OverlayDemoCard, targetStreamerId: string | null) => {
       if (broadcast && targetStreamerId) {
         const demoEvent = createOverlayDemoEvent(card);
 
@@ -307,18 +396,20 @@ export async function POST(request: NextRequest) {
         // preserving the production response-lifetime boundary.
         await runInBackground("overlay demo delivery", deliveryTask);
       }
-      return NextResponse.json({ card, userTwitchUsername: "DemoUser" });
+      // レスポンスの card は常に表示用6項目だけに絞る（取得側で絞り損ねても、
+      // 組み込みデモカードも含め、余計な列が無認証レスポンスに混ざらないようにする最終防衛）。
+      return NextResponse.json({ card: toOverlayDemoCard(card), userTwitchUsername: "DemoUser" });
     };
 
     // #735: streamerId が無いと、他streamerの任意のactiveカードを id だけで
     // 無認証取得できる横断オラクルになるため streamerId を必須にする。
     if (cardId && cardId !== "random" && streamerId) {
-      const card = await fetchCardByIdPg(cardId, streamerId);
+      const card = await fetchCardByIdPg(cardId, streamerId, access);
       if (card) return respondWithCard(card, streamerId);
     }
 
     if (streamerId) {
-      const cards = await fetchActiveCardsForStreamerPg(streamerId);
+      const cards = await fetchActiveCardsForStreamerPg(streamerId, access);
       if (cards.length > 0) {
         const randomCard = cards[Math.floor(Math.random() * cards.length)];
         return respondWithCard(randomCard, streamerId);
@@ -326,13 +417,7 @@ export async function POST(request: NextRequest) {
     }
 
     const randomCard = DEMO_CARDS[Math.floor(Math.random() * DEMO_CARDS.length)];
-    const card: Card = {
-      ...randomCard,
-      id: crypto.randomUUID(),
-      streamer_id: 'demo',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+    const card: OverlayDemoCard = { ...randomCard, id: crypto.randomUUID() };
     return respondWithCard(card, streamerId);
   } catch (error) {
     logger.error("Demo gacha error:", { error });

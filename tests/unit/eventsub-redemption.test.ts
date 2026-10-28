@@ -14,9 +14,9 @@ vi.mock('@opennextjs/cloudflare', () => ({
 }))
 
 vi.mock('@/lib/services/gacha', () => ({
-  GachaService: vi.fn().mockImplementation(() => ({
+  GachaService: vi.fn().mockImplementation(function() { return ({
     executeGachaForEventSub: mocks.executeGachaForEventSub,
-  })),
+  }) }),
 }))
 
 vi.mock('@/lib/sentry/error-handler', () => ({

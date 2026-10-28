@@ -473,6 +473,24 @@ export const VOTE_CAMPAIGN_CONFIG = {
 export const VOTE_CAMPAIGN_DISMISS_KEY = 'vote-campaign-dismissed'
 
 /**
+ * カードトレード機能の入口UIを表示するか (#715)。
+ *
+ * カードトレードはDB列(streamers.trade_enabled / cross_channel_trade_enabled)、
+ * 設定API(/api/streamer/settings)、トレードボードと成立処理のゲート判定まで内部実装済みだが、
+ * 一般公開の準備が整うまでユーザーが目にする入口を隠す。false の間は次の入口が非表示になる:
+ *   - 配信者設定 /dashboard/settings の「カードトレード」セクション(ON/OFFトグル。
+ *     SettingsLayout の trade セクションフィルタ)
+ *   - /dashboard/account の「トレード設定」(preview ではトレード設定の移動先。TradeSettings)
+ *   - /collection/[streamerId] の「トレード」ボタン
+ *   - /dashboard/collection の「マイトレード」リンク
+ *
+ * 内部実装は削除していない。設定API・DB列・ゲート判定・TradeSettings コンポーネント・翻訳は
+ * すべて維持され、この定数を true に戻すだけで入口が同時に復帰する(設定値の再保存は不要)。
+ * なお /trade/[streamerId] は直リンクでは従来どおり到達でき、掲示板と応諾フローの挙動は変えない。
+ */
+export const CARD_TRADE_UI_VISIBLE = false
+
+/**
  * 支援プラン設定
  * コード入力のバリデーション制限値
  */
@@ -495,4 +513,20 @@ export const STORAGE_LIMIT_MESSAGES = {
   USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。',
   // GLOBAL_LIMIT_REACHED も同じく外部・未知クライアント向けの互換文言として維持する。
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
+} as const
+
+/**
+ * 効果音アップロードの 507 用フォールバック文言 (#1907)。
+ *
+ * 画像と効果音は同じストレージ容量を共有するが、利用者が次に取るべき行動
+ * （画像を消す / 効果音を消す）が異なる。従来は STORAGE_LIMIT_MESSAGES の
+ * 「画像のアップロード上限…」をそのまま返していたため、公式UIの i18n だけでなく
+ * 外部・未知クライアント向けの互換文言も効果音向けに分離する。
+ * 公式UIは code (USER_LIMIT_REACHED / GLOBAL_LIMIT_REACHED) から
+ * messages/*.json の gachaSoundSettings.errors.* を解決する。
+ */
+export const SOUND_STORAGE_LIMIT_MESSAGES = {
+  USER_LIMIT_REACHED:
+    '効果音のアップロード上限に達しました。不要な効果音を削除してから再度お試しください。',
+  GLOBAL_LIMIT_REACHED: '効果音のアップロード上限に達しました。',
 } as const

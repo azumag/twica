@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -36,6 +36,21 @@ function sequenceValues(block: string[]): string[] {
   });
 }
 
+// 「5.20261022.1」のような workers-types 版を [major, minor, patch] に分解する。
+// semver パッケージに依存せず、pin 同士の大小比較だけを行うための最小限の実装。
+function versionTuple(version: string): [number, number, number] {
+  const parts = version.trim().split(".").map((part) => Number.parseInt(part, 10));
+  return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+}
+function compareVersions(left: string, right: string): number {
+  const a = versionTuple(left);
+  const b = versionTuple(right);
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
 // dorny/paths-filter の `filters:` ブロックから、指定グループの path 一覧を読む。
 function filterGroup(workflow: string, group: string): string[] {
   const lines = workflow.split("\n");
@@ -66,38 +81,95 @@ function pushPaths(workflow: string): string[] {
   return sequenceValues(blockBelow(lines, pathsLine));
 }
 
+// actions/setup-node を使う各 step のブロック（`- ` で始まる step から次の step/親ブロックまで）
+// を切り出す。file-level の toContain では複数 step のうち 1 つだけ
+// node-version-file を欠くケースを見逃すため、step 単位で検査するために使う。
+function setupNodeSteps(text: string): string[] {
+  const lines = text.split("\n");
+  const steps: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes("actions/setup-node")) continue;
+    // step の開始行（`- ` で始まる行）まで遡る
+    let start = i;
+    let stepIndent: number | null = null;
+    while (start >= 0) {
+      const m = lines[start].match(/^(\s*)-\s/);
+      if (m) {
+        stepIndent = m[1].length;
+        break;
+      }
+      start -= 1;
+    }
+    if (stepIndent === null) continue;
+    // step の終端: 同インデントの次の `- `、またはより浅いインデント、または EOF
+    let end = i + 1;
+    while (end < lines.length) {
+      const line = lines[end];
+      if (line.trim() === "" || line.trimStart().startsWith("#")) {
+        end += 1;
+        continue;
+      }
+      const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
+      if (indent < stepIndent) break;
+      if (indent === stepIndent && /^\s*-\s/.test(line)) break;
+      end += 1;
+    }
+    steps.push(lines.slice(start, end).join("\n"));
+  }
+  return steps;
+}
+
 describe("Workers Issues deployment contract", () => {
   it("preserves error monitoring across both regular deployment targets", () => {
     for (const scope of ["observability.issues", "env.preview.observability.issues"]) {
       expect(section(scope)).toMatch(/^enabled\s*=\s*true\s*$/m);
     }
   });
+  // wrangler 4.150.0 is the pin chosen to satisfy @opennextjs/cloudflare@1.20.12's
+  // `wrangler ^4.148.0` peer (required for Next.js 16.4) while staying
+  // >= 4.134.0 (Workers Issues). See scripts/smoke-opennext-worker.sh for the
+  // runtime check that guards the Next.js / OpenNext pairing.
+  // @cloudflare/workers-types is a peerOptional of every wrangler 4.148+ and its
+  // range moves with the CLI line, so the pin has to move together with it:
+  // 4.150.0 declares ^5.20261006.1 while 4.151.x declares ^5.20261019.1. Leaving
+  // the old pin while the lockfile resolves a newer CLI makes `npm ci` fail with
+  // ERESOLVE, so a lockfile regeneration is verified together with the pair.
+  // 2026-10-22: raised to 5.20261022.1 after a push regenerated the lockfile
+  // against wrangler 4.151.3 and left this pin stale (Refs #1899). The pin stays
+  // fully specified (no range) so the pair is always reproducible.
   it("pins a CLI and compatible types that understand the Issues configuration", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
-    expect(pkg.devDependencies.wrangler).toBe("4.134.0");
-    expect(lock.packages["node_modules/wrangler"].version).toBe("4.134.0");
-    expect(pkg.devDependencies["@cloudflare/workers-types"]).toBe("5.20260917.1");
-    expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe("5.20260917.1");
+    const pinnedWrangler = pkg.devDependencies.wrangler;
+    expect(lock.packages["node_modules/wrangler"].version).toBe(pinnedWrangler);
+    const pinnedTypes = pkg.devDependencies["@cloudflare/workers-types"];
+    expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe(pinnedTypes);
+    // wrangler 4.148+ requires workers-types >= 4; the pin must be at least what
+    // the resolved CLI line declares, otherwise `npm ci` breaks with ERESOLVE.
+    const minTypes =
+      pkg.devDependencies.wrangler === "4.150.0" ? "5.20261006.1" : "5.20261019.1";
+    expect(compareVersions(pinnedTypes, minTypes) >= 0).toBe(true);
   });
-  it("pins CI Node.js to a fixed 22.x patch and keeps Workers Builds on the 22 major", () => {
-    // 2026-10-21 の Node.js security release では 22.23.4 が修正版（Refs #1914）。
-    // CI（GitHub Actions）は `.github/ci-node-version` で修正版へ完全固定する。メジャー（"22"）だけだと
-    // actions/setup-node は runner のツールキャッシュにある旧パッチ（22.23.3）を選び、修正版が
-    // 適用されないため。このファイルは setup-node が版として読むので、コメントは入れられない。
+  it("pins build/CI Node.js to one fully-specified 22.x patch >= 22.23.4", () => {
+    // 2026-10-21 の Node.js security release では 22.23.4 が修正版（CVE-2026-106069 の
+    // TLS hostname bypass など High 複数を含む。Refs #1914）。ビルド・CI・migration
+    // runner の Node 指定は `.node-version` 1 ファイルに正本化している（#1919 で
+    // 追跡していた CI 用ピンとの一本化）。
     //
-    // 一方 Cloudflare Workers Builds は、完全指定の `.node-version`（22.23.4）では
-    // `Installing nodejs 22.23.4` の直後に "Failed: error occurred while installing tools or
-    // dependencies" となり全ビルドが失敗した（2026-10-21 実測。build f2aaabd8 / 2a8c9d68 / 6a27ed21。
-    // 末尾改行の有無は無関係だった）。`.node-version` = `22` なら Workers Builds が自身の把握する
-    // 22 系最新（同日時点は 22.23.3）に解決して成功する。
-    // そこで CI 用ピンと Workers Builds 用 `.node-version` を暫定的に別ファイルへ分けている。
-    // Workers Builds が 22.23.4 に対応した時点で一本化する（Refs #1914, #1919）。
+    // 完全指定（major.minor.patch）でなければならない理由:
+    // - メジャー（"22"）だけだと actions/setup-node は runner のツールキャッシュにある
+    //   旧パッチ（22.23.3）を選び、Cloudflare Workers Builds も自身の把握する 22 系最新
+    //   （2026-10-21 時点は 22.23.3）に解決する。いずれも修正版未満のため脆弱性が残る。
+    // - 2026-10-21 は完全指定 22.23.4 で Workers Builds のインストールが失敗したため
+    //   （build f2aaabd8 / 2a8c9d68 / 6a27ed21）、一時的に CI 用ピンを
+    //   `.github/ci-node-version` へ分離していた。#1914 の完了条件は Workers Builds でも
+    //   修正版を使うことなので、分離を解消して単一ピンへ戻した。このファイル自体が
+    //   setup-node / Workers Builds に版として読まれるため、コメント行は入れられない。
     //
-    // CI 側の下限（22.23.4 以上）を設けるのは、将来の巻き戻しや誤った downgrade で
-    // 脆弱な版へ戻ることを防ぐため。比較は文字列ではなく数値で行う（22.23.10 > 22.23.4）。
-    const ciVersion = readFileSync(join(root, ".github/ci-node-version"), "utf8").trim();
-    expect(ciVersion).toMatch(/^22\.\d+\.\d+$/);
+    // 下限（22.23.4 以上）を設けるのは、将来の巻き戻しや誤った downgrade で脆弱な版へ
+    // 戻ることを防ぐため。比較は文字列ではなく数値で行う（22.23.10 > 22.23.4）。
+    const nodeVersion = readFileSync(join(root, ".node-version"), "utf8").trim();
+    expect(nodeVersion).toMatch(/^22\.\d+\.\d+$/);
     const parse = (v: string) => v.split(".").map(Number);
     const atLeast = (actual: string, minimum: string) => {
       const a = parse(actual);
@@ -107,12 +179,15 @@ describe("Workers Issues deployment contract", () => {
       }
       return true;
     };
-    expect(atLeast(ciVersion, "22.23.4")).toBe(true);
+    expect(atLeast(nodeVersion, "22.23.4")).toBe(true);
 
-    // Workers Builds 用。完全指定にするとインストールに失敗するため、暫定でメジャーのみ（#1919 で一本化）。
-    expect(readFileSync(join(root, ".node-version"), "utf8").trim()).toBe("22");
+    // 一時的な CI 用ピン（`.github/ci-node-version`）は廃止済み。残ったまま act して
+    // いないと「どちらが正本か」が再び不明になるため、存在しないことを固定する。
+    // Workers Builds が再び完全指定に対応できなくなった場合は、このテスト・docs・
+    // workflow filter を同時に戻す形で分離を再導入する（手順は docs/cloudflare-workers-builds.md）。
+    expect(existsSync(join(root, ".github/ci-node-version"))).toBe(false);
 
-    // actions/setup-node を使う workflow は例外なく `.github/ci-node-version` を参照し、
+    // actions/setup-node を使う workflow は例外なく `.node-version` を参照し、
     // node-version の直書き（EOL の Node 20 など）を持たないこと。
     // 新しい workflow が追加されても漏れないよう、ファイル一覧は動的に取得する。
     const workflowDir = join(root, ".github/workflows");
@@ -121,53 +196,93 @@ describe("Workers Issues deployment contract", () => {
     for (const workflow of workflows) {
       const text = readFileSync(join(workflowDir, workflow), "utf8");
       if (!text.includes("actions/setup-node")) continue;
-      expect(text, `${workflow} must use node-version-file`).toContain(
-        "node-version-file: .github/ci-node-version",
-      );
-      expect(text, `${workflow} must not hardcode node-version`).not.toMatch(/^\s*node-version:/m);
+      // step 単位で検査する（file-level の toContain では複数 step のうち 1 つだけ
+      // node-version-file を欠くケースを見逃す）。
+      const steps = setupNodeSteps(text);
+      expect(steps.length, `${workflow} should have at least one setup-node step`).toBeGreaterThan(0);
+      for (const step of steps) {
+        expect(step, `${workflow} setup-node step must use node-version-file`).toContain(
+          "node-version-file: .node-version",
+        );
+        expect(step, `${workflow} setup-node step must not hardcode node-version`).not.toMatch(
+          /^\s*node-version:/m,
+        );
+      }
     }
   });
   it("runs CI and the migration runner when only the Node pin changes", () => {
     // #1917: セキュリティリリースで Node の固定版だけを上げる PR でも、新しい Node で
-    // test / workers:build / migration runner を実際に動かす必要がある。
-    // setup-node が読み runner も使うのは `.github/ci-node-version` なので、これが
+    // test / workers:build / analysis build / 実PG検証 / migration runner を実際に
+    // 動かす必要がある。setup-node が読む唯一のピンは `.node-version` なので、これが
     // app / analysis / postgres_fixtures と on.push.paths の要素であることを固定する。
-    // `.node-version` は Workers Builds 専用で CI の Node を変えないが、値と filter の
-    // 対応を守るため app 側には含める。一方 migration runner は読まないので push paths
-    // には含めない（含めると無関係な push で本番DBへ接続する）。
     // 対象が「要素」として存在することだけを確認し、並び順や他の filter との重複には
     // 依存しない。
-    const ciPin = ".github/ci-node-version";
-    const workersBuildsPin = ".node-version";
+    const nodePin = ".node-version";
     const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
     const migrate = readFileSync(join(root, ".github/workflows/planetscale-migrate.yml"), "utf8");
 
     // test / supabase-shutdown-build（workers:build）/ lint は
     // `needs.changes.outputs.app` でゲートされる。app filter から外れると、Node だけを
     // 上げる PR で新しい Node が一度も実行されない。
-    expect(filterGroup(ci, "app")).toEqual(
-      expect.arrayContaining([ciPin, workersBuildsPin]),
-    );
+    expect(filterGroup(ci, "app")).toContain(nodePin);
 
-    // analysis job も setup-node で同じ pin を読むため、analysis build も新 Node で回す。
-    // こちらは契約テストを実行しないので `.node-version` は含めない。
-    const analysis = filterGroup(ci, "analysis");
-    expect(analysis).toContain(ciPin);
-    expect(analysis).not.toContain(workersBuildsPin);
+    // analysis job も setup-node で同じピンを読むため、analysis build も新 Node で回す。
+    expect(filterGroup(ci, "analysis")).toContain(nodePin);
 
     // postgres_fixtures は PG17 / integration job を独立にゲートする。既存の対応が
     // 将来の整理で落ちると、Node を上げても実PG検証だけが skip される。
-    expect(filterGroup(ci, "postgres_fixtures")).toEqual(
-      expect.arrayContaining([ciPin, workersBuildsPin]),
-    );
+    expect(filterGroup(ci, "postgres_fixtures")).toContain(nodePin);
 
-    // migration runner は push の paths に無いと、次の migration まで新しい Node で
-    // 実行されない。
-    expect(pushPaths(migrate)).toContain(ciPin);
-    // `.node-version` は runner が読まない。含めると本番 Environment の実DBへ無関係な
-    // 接続と pending migration の適用を招くため、意図的に含めていないことを固定する。
-    expect(pushPaths(migrate)).not.toContain(workersBuildsPin);
+    // migration runner も setup-node で同じピンを読む。push の paths に無いと、次の
+    // migration まで新しい Node で実行されない。apply は pending migration が無ければ
+    // no-op（verify のみ）のため、Node 変更時の起動が実DBへ無関係な変更を適用することはない。
+    expect(pushPaths(migrate)).toContain(nodePin);
   });
+
+  // #1922 item 4: 文字列ベースの解析が取りこぼすパターンを否定テストで固定する。
+  // AST ベースへの全面書き換えの代替として、少なくとも以下の形式が workflow に
+  // 混入しないことを固定する（取りこぼしパターンの回帰防止）。
+  it("does not use flow-style or implicit node-version in setup-node workflows", () => {
+    const workflowDir = join(root, ".github/workflows");
+    const workflows = readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f));
+    expect(workflows.length).toBeGreaterThan(0);
+    for (const workflow of workflows) {
+      const text = readFileSync(join(workflowDir, workflow), "utf8");
+      if (!text.includes("actions/setup-node")) continue;
+      // flow 形式: with: { node-version: 20 } は行頭アンカーの検出をすり抜ける。
+      // なお flow 形式の with: { node-version-file: .node-version } もこの regex に
+      // 掛かる（node-version-file が node-version を含むため）。これは意図的:
+      // 文字列パーサは flow 形式を読めないため、block 形式へ寄せる方針。
+      expect(text, `${workflow} must not use flow-style node-version`).not.toMatch(
+        /with:\s*\{[^}]*node-version/m,
+      );
+      // bare な node-version キー（既存テストの否定版）。
+      expect(text, `${workflow} must not hardcode node-version key`).not.toMatch(
+        /^\s*node-version:/m,
+      );
+    }
+  });
+
+  it("preserves negation entries in dorny paths-filter groups", () => {
+    const workflow = [
+      "on:",
+      "  push:",
+      "    paths:",
+      "      - .node-version",
+      "jobs:",
+      "  changes:",
+      "    steps:",
+      "      - uses: dorny/paths-filter@v4",
+      "        with:",
+      "          filters: |",
+      "            app:",
+      "              - .node-version",
+      "              - '!docs/**'",
+    ].join("\n");
+    expect(filterGroup(workflow, "app")).toContain(".node-version");
+    expect(filterGroup(workflow, "app")).toContain("!docs/**");
+  });
+
   it("does not enable separately billed tracing or change the runtime date", () => {
     expect(config).not.toMatch(/^\[(?:env\.preview\.)?observability\.traces\]/m);
     expect(config).toMatch(/^compatibility_date\s*=\s*"2024-09-23"$/m);

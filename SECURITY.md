@@ -128,6 +128,35 @@ Note: the previous "8.4.31 -> 8.5.23" shorthand was inaccurate. The top-level po
 
 **Change scope (lockfile):** 157 changed entries (production graph 78, dev/test graph 105), 22 added, 5 removed. Includes an unannounced major bump in the production graph: `intl-messageformat 10.7.18 -> 11.2.15` (transitive via next-intl 4.7.0 -> 4.14.9). Full diff recording and Preview i18n verification are tracked in follow-up issue #1909.
 
+#### remotePatterns minimization (issue #1909) - RESOLVED
+
+**Status:** Resolved (allowlist minimized in `next.config.ts`)
+
+`images.remotePatterns` previously used `hostname: "**"`, allowing any HTTPS host for the
+next/image optimization endpoint (SSRF surface, GHSA-cjq9-62q9-8jv4 applicability).
+It now enumerates only the host families that can legitimately serve card/profile images:
+
+- R2 public URLs (`R2_PUBLIC_URL` / `R2_SOUND_PUBLIC_URL` / `NEXT_PUBLIC_APP_URL` when available at build time)
+- `*.r2.dev`, `*.r2.cloudflarestorage.com` (R2 default public hosts)
+- `*.jtvnw.net` (Twitch CDN, streamer profile images)
+- `*.bluemoon.works` (app's own Cloudflare zone, transformable images)
+
+Arbitrary hosts are no longer allowed. API-level jpg/png validation remains in place.
+All actual `<Image>` usages already set `unoptimized`, so no image regression is expected;
+Preview image display must be confirmed after deploy.
+
+#### Lockfile full diff (issue #1909)
+
+Full entry-level diff for PR #1908 is recorded in `docs/security/lockfile-diff-1898.md`
+(157 changed / 22 added / 5 removed). Top-level production dependency changes are
+summarized in the table above; dev/test graph overlap with issue #1899 is resolved by PR #1928.
+
+#### intl-messageformat major bump verification (issue #1909)
+
+`intl-messageformat 10.7.18 -> 11.2.15` (transitive via next-intl 4.7.0 -> 4.14.9) is a
+major bump on the i18n path (plural/select syntax). Preview verification of the i18n real
+path is tracked as an external wait item (owner-only browser check).
+
 ### Security Best Practices
 
 #### Session Management

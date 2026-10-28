@@ -51,7 +51,7 @@
  *   基礎集計クエリとRPC呼び出しを別々のトランザクションで発行すると、本ゲートの想定運用
  *   （docs/QA.md「実チャネルポイント引き換えを複数回行う」直後に実行する）では、比較中に
  *   起きる書き込みや`weekGacha`の移動窓境界の出入りだけでRPCのバグが無くても不一致が
- *   出る（誤検知でIssueを起票しうる）。全クエリを`scripts/db-cutover/snapshot.mjs`の
+ *   出る（誤検知でIssueを起票しうる）。全クエリを`scripts/lib/read-only-snapshot.mjs`の
  *   `withReadOnlySnapshot`（`BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`、
  *   常にROLLBACK）に包み、単一スナップショット上で発行することでこれを防ぐ。
  *
@@ -65,7 +65,7 @@
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
 import postgres from 'postgres'
-import { withReadOnlySnapshot } from './db-cutover/snapshot.mjs'
+import { withReadOnlySnapshot } from './lib/read-only-snapshot.mjs'
 
 const require = createRequire(import.meta.url)
 const core = require('./lib/db-migrate-core.js')
@@ -146,9 +146,8 @@ async function fetchBasicAggregates(tx) {
  * `fetchBasicAggregates` と同じ`tx`（`withReadOnlySnapshot`のcallback引数）で呼ぶこと。
  *
  * 4本のRPCは`Promise.all`で並行発行せず逐次`await`する（#1081 PR 2回目レビュー
- * 【任意】指摘: `max: 1`の単一接続・単一トランザクションでは`scripts/db-cutover/
- * layer-invariants.mjs`が明記するとおり並行発行しても直列実行されるだけで見た目上の
- * 並行化に意味が無い。逆に1文が失敗すると後続が`current transaction is aborted`に
+ * 【任意】指摘: `max: 1`の単一接続・単一トランザクションでは並行発行しても
+ * 直列実行されるだけで見た目上の並行化に意味が無い。逆に1文が失敗すると後続が`current transaction is aborted`に
  * なり、`permission denied for function`等の本来の原因が読み取りにくくなる副作用がある）。
  */
 async function fetchRpcAggregates(tx) {
@@ -351,7 +350,7 @@ async function main() {
   try {
     // 全期間のgacha_historyを走査する get_analysis_gacha_summary(NULL, NULL) は
     // ダッシュボードUIの既定（直近7日）より重いクエリになりうるため、想定外に長時間
-    // ブロックしないよう安全弁を固定する（scripts/db-cutover/snapshot.mjsの
+    // ブロックしないよう安全弁を固定する（scripts/lib/read-only-snapshot.mjsの
     // withRollbackOnlyTransactionと同じ理由・同じ方式）。production規模では既定値の
     // 30秒を超えうるため、DASHBOARD_COMPARE_STATEMENT_TIMEOUTで上書きできるようにする
     // （#1081 PR 2回目レビュー【任意】指摘）。不正な形式は接続前にfail fastする。
@@ -367,7 +366,7 @@ async function main() {
       // 単一接続（max: 1）の単一トランザクション内では並行発行しても直列実行される
       // だけで意味が無く、1文の失敗が後続を`current transaction is aborted`にして
       // 本来のエラー原因を読み取りにくくする副作用があるため逐次awaitする
-      // （#1081 PR 2回目レビュー【任意】指摘、scripts/db-cutover/layer-invariants.mjs
+      // （#1081 PR 2回目レビュー【任意】指摘、scripts/lib/read-only-snapshot.mjs
       // と同じ方針）。
       const basic = await fetchBasicAggregates(tx)
       const rpc = await fetchRpcAggregates(tx)
