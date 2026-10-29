@@ -259,6 +259,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # production 専用 job なので、他の deploy job と同じく production Environment に
+    # 結び付ける。Environment がないと、Cloudflare の資格情報をリポジトリレベルの
+    # secret に置き続ける必要があり、Environment のデプロイ元ブランチ制限
+    # （main のみ）が workflow_dispatch で任意の ref を選んだ実行に効かない。
+    environment: production
 
     steps:
       - name: Checkout
