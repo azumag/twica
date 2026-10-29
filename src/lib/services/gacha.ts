@@ -13,11 +13,13 @@ import {
   getSqlState,
   isPgFunctionNotFoundError,
   isPgMissingNamedColumnError,
+  isPgMissingTableError,
 } from '@/lib/db/errors'
 import { and, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm'
 import {
   cards as cardsTable,
   gachaHistory,
+  gachaHistoryEventTombstones,
   streamerAdditionalGachaRewards,
   streamers,
   userCards,
@@ -1056,8 +1058,8 @@ export class GachaService {
 
   /**
    * Issue #512: N連ドロー(executeGachaDraws)の [eventId, eventId:2, ...] のうち、
-   * 先頭から連続して何件が既に gacha_history に存在する(=完了済みである)かを
-   * 数える。EventSub再送(redelivery)がバッチ途中までしか完了していない
+   * 先頭から連続して何件が既に gacha_history または削除済み履歴の墓石に存在する
+   * (=完了済みである)かを数える。EventSub再送(redelivery)がバッチ途中までしか完了していない
    * ドローのリトライを兼ねるケースで、どこから再開すべきかを判定するために使う。
    *
    * event_id は migration 00001 で TEXT UNIQUE(グローバルに一意)なので、
@@ -1093,14 +1095,45 @@ export class GachaService {
       return err(`Database error: ${error.message}`)
     }
 
-    const completedEventIds = new Set(
-      (data ?? []).map((row) => (row as { event_id: string | null }).event_id)
-    )
+    // 視聴者が削除した履歴行は墓石として残り、RPC もそれを duplicate と判定する。
+    // ここで墓石を数えないと、削除された draw から再開して duplicate で打ち切られ、
+    // 後続 draw が付与されないまま batch が終わる（20261027000000 migration 参照）。
+    const tombstoneResult = await this.findTombstonedEventIds(candidateEventIds)
+    if (!tombstoneResult.success) {
+      return err(tombstoneResult.error)
+    }
+
+    const completedEventIds = new Set([
+      ...(data ?? []).map((row) => (row as { event_id: string | null }).event_id),
+      ...tombstoneResult.data,
+    ])
     let prefixCount = 0
     while (prefixCount < drawCount && completedEventIds.has(candidateEventIds[prefixCount])) {
       prefixCount += 1
     }
     return ok(prefixCount)
+  }
+
+  /**
+   * 削除済み履歴の墓石（gacha_history_event_tombstones）にある event_id を返す。
+   * アプリと migration の適用は非同期なので、テーブルが未作成（42P01）の窓では
+   * 墓石なしとして扱い、従来の履歴だけの判定に戻す。
+   */
+  private async findTombstonedEventIds(eventIds: string[]): Promise<Result<string[]>> {
+    try {
+      const rows = await withDbRetry(async () => {
+        const { db } = await getDb()
+        return db.select({ event_id: gachaHistoryEventTombstones.event_id })
+          .from(gachaHistoryEventTombstones)
+          .where(inArray(gachaHistoryEventTombstones.event_id, eventIds))
+      }, 'gacha:executeGachaDraws:tombstonedEvents', { idempotent: true })
+      return ok(rows.map((row) => row.event_id))
+    } catch (queryError) {
+      if (isPgMissingTableError(queryError)) {
+        return ok([])
+      }
+      return err(`Database error: ${normalizePgReadError(queryError).message}`)
+    }
   }
 
   private async executeGachaDraws(

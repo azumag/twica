@@ -267,6 +267,21 @@ export const gachaHistory = pgTable('gacha_history', {
 })
 
 // -----------------------------------------------------------------------------
+// gacha_history_event_tombstones（削除された履歴の冪等性キー）
+// 根拠: 20261027000000 gacha history event tombstones
+// 視聴者が履歴を削除しても、再送・replay で同じ event のカードを再発行しないため、
+// 削除時に trigger が event_id を残す。migration 未適用の窓では参照すると 42P01 になる。
+// -----------------------------------------------------------------------------
+export const gachaHistoryEventTombstones = pgTable('gacha_history_event_tombstones', {
+  event_id: text('event_id').primaryKey(),
+  streamer_id: uuid('streamer_id').notNull(),
+  user_twitch_id: text('user_twitch_id').notNull(),
+  card_id: uuid('card_id').notNull(),
+  redeemed_at: timestamp('redeemed_at', { withTimezone: true, mode: 'string' }),
+  deleted_at: timestamp('deleted_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+// -----------------------------------------------------------------------------
 // streamer_chat_multi_delivery_settings（Issue #1549: N連チャット配送方式）
 // 根拠: 20260912013000 paced multi draw chat
 // -----------------------------------------------------------------------------

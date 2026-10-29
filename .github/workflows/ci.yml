@@ -129,6 +129,10 @@ jobs:
               - 'tests/integration/pack-completion-rewards-pg.test.ts'
               - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
               - 'tests/integration/storage-reservation-pg.test.ts'
+              # 履歴削除後も event_id の冪等性を保つ墓石（trigger・RPC・再開位置）を
+              # 実PG17で検証する。
+              - 'tests/integration/gacha-history-tombstone-pg.test.ts'
+              - 'db/planetscale/migrations/*gacha_history_event_tombstones*'
               - 'src/lib/services/chat-notification-outbox.ts'
               - 'src/lib/services/chat-notification-delivery.ts'
               # 容量予約のSQL契約（reserve/commit/release/reconcile）を変えるPRでは
@@ -752,6 +756,14 @@ jobs:
         env:
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: npx vitest run tests/integration/storage-reservation-pg.test.ts
+
+      - name: Verify gacha history tombstones against PostgreSQL
+        # 視聴者が履歴を削除しても、再送・replay で同じ交換のカードを再発行しない
+        # こと（N連の途中削除・完了後削除・単発・カード削除のCASCADE）を、
+        # アプリの GachaService と RPC 経由で実DBに対して確認する。
+        env:
+          GACHA_TOMBSTONE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/gacha-history-tombstone-pg.test.ts
 
       - name: Seed completion reward PostgreSQL integration tests
         # Use the migrated schema, not the local fixture that creates tables/roles.
