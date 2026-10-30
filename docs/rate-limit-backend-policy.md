@@ -12,11 +12,13 @@ backend の自動置換は行わない。有効化・配備は別途承認が必
 | その他全バケット (`global`, `tradeRead`/`tradeWrite`, `gacha*`, `cards*`, `eventsub*` 等) | 濫用抑止・DDoS 緩和 | KV (`RATE_LIMIT_KV` 自動初期化) + memory。`src/lib/rate-limit.ts` の soft 経路 | fail-open (既存契約を維持) |
 
 分類の機械的固定: `tests/unit/rate-limit-bucket-policy.test.ts`。
-preview にも main の #1759 / #1889 の strict 実装 (helper・strict 分岐・2 route の 503 応答・
-`workers/rate-limit`) を main→preview 同期で取り込んでいる。ただし preview の app 側
-`wrangler.toml` には `STRICT_RATE_LIMITER` binding を追加していないため、binding が無い間は
-`activateCode` / `authLogin` も従来の soft 経路 (KV/memory, fail-open) で動く。コードが入ったことを
-strict の実環境有効化・実測完了とは扱わない。
+preview には main の #1759 / #1889 の strict 実装 (helper・strict 分岐・2 route の 503 応答・
+`workers/rate-limit`) を main→preview 同期で取り込んでいる。app 側 `STRICT_RATE_LIMITER` binding は
+#1888 で preview env に追加した。binding は `twica-rate-limit-preview` の配備後に解決できるため、
+Worker 配備前に binding PR を merge しない (deploy が binding 解決エラーで失敗する)。配備後に preview で
+strict 経路が有効化される。コードと binding が入ったことを strict の実環境有効化・実測完了とは扱わない。
+並列バースト 429 / 障害時 503 / レイテンシ・課金の限定受入 (#1888) を実測するまで完了扱いしない。
+production (top-level) は未追加で、有効化は別承認。
 strict バケットの追加・削除はセキュリティレビューを要する。
 strict を外すことは総当り防御の穴に直結し、soft を strict に変えることは
 binding 障害時の 503 停止範囲を広げる。どちらも本ドキュメント更新つきの別変更で行う。
