@@ -101,13 +101,19 @@ function isOptionalNullableString(value: unknown): boolean {
 }
 
 /**
- * 永続payload v1のdecoder。claimのbatch/versionとpayloadを相互検証し、deploy間で
+ * 永続payload v1/v2のdecoder。claimのbatch/versionとpayloadを相互検証し、deploy間で
  * shapeが変わっても未知versionを誤配送せずDLQへ送れるようにする。
+ *
+ * Issue #1548: v2はv1と同じpayload shape（streamerスナップショットに
+ * chat_announcement_multi_show_cards を残す）だが、配送側は v1 のみ flag を
+ * 尊重する旧セマンティクスで再生し、v2 は placeholder 駆動で解釈する
+ * （eventsub-redemption.ts の legacyMultiShowCardsGate 参照）。
  */
 export function decodeChatNotificationPayload(
   claim: Pick<ClaimedChatNotification, 'batchId' | 'payloadVersion' | 'payload'>,
 ): RedemptionNotifyData | null {
-  if (claim.payloadVersion !== 1 || typeof claim.payload !== 'object' || claim.payload === null) {
+  if ((claim.payloadVersion !== 1 && claim.payloadVersion !== 2)
+    || typeof claim.payload !== 'object' || claim.payload === null) {
     return null
   }
   const candidate = claim.payload as Partial<RedemptionNotifyData>

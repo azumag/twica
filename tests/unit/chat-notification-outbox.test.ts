@@ -147,7 +147,7 @@ describe('transactional chat outbox claim/ack', () => {
     expect(rendered.text).toContain('select id, batch_id, created_at')
   })
 
-  it('payload v1をbatch一致時だけdecodeし、未知versionとbatch不一致を拒否する', () => {
+  it('payload v1/v2をbatch一致時だけdecodeし、未知versionとbatch不一致を拒否する', () => {
     const payload = {
       batchId: 'batch-1',
       broadcasterTwitchUserId: 'broadcaster-1',
@@ -188,15 +188,33 @@ describe('transactional chat outbox claim/ack', () => {
       payloadVersion: 1,
       payload,
     })).toEqual(payload)
+    // Issue #1548: v2はv1と同じpayload shapeのまま受理する。配送側だけが
+    // payloadVersionで新旧セマンティクス（flag尊重/placeholder駆動）を分岐する。
     expect(decodeChatNotificationPayload({
       batchId: 'batch-1',
       payloadVersion: 2,
+      payload,
+    })).toEqual(payload)
+    // v1/v2以外の未知versionは従来どおり拒否してDLQへ送る。
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 3,
       payload,
     })).toBeNull()
     expect(decodeChatNotificationPayload({
       batchId: 'different-batch',
       payloadVersion: 1,
       payload,
+    })).toBeNull()
+    // v2でもstreamerスナップショットの形状は変えない（flag boolean必須を維持）。
+    // 列はPR-DでUI/追跡Issueとともに削除するまで、新旧どちらのpayloadにも残る。
+    expect(decodeChatNotificationPayload({
+      batchId: 'batch-1',
+      payloadVersion: 2,
+      payload: {
+        ...payload,
+        streamer: { ...payload.streamer, chat_announcement_multi_show_cards: undefined },
+      },
     })).toBeNull()
     expect(decodeChatNotificationPayload({
       batchId: 'batch-1',
