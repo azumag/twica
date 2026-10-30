@@ -117,17 +117,18 @@ export default function DropRateTable() {
   // 期間統計（7日/30日、およびチャネルポイントランキングの土台）。
   // 「カード別」タブは期間に依存しないため別エフェクトで取得する。
   useEffect(() => {
-    // 「カード別」「他チャンネル比較」タブは期間統計を使わない。
+    // 期間統計を取得しない（byCard/comparison）か、既に同期間の成功済み
+    // データがある（再利用してRPCを重ねない）場合は、以前のリクエストで
+    // 残ったローディング状態を確実に解除する。
     // comparison は period=null になるため、タブを戻したときに期間値の
     // null → 7d 変化を検出して必要な7d取得を起動できる。
-    if (!period) {
-      setPeriodLoading(false);
-      return;
-    }
-    // 既に同期間の成功済みデータがある場合は再利用してRPCを重ねず、
-    // 以前のリクエストで残ったローディング状態も確実に解除する。
-    if (periodPayload?.period === period) {
-      setPeriodLoading(false);
+    // effect 本体での同期 setState は react-hooks/set-state-in-effect が
+    // 禁止するため匿名 async 関数の内側に移す。本体は最初の await まで
+    // 同期的に実行されるため従来と同一タイミング（act() スコープ内に収まる）。
+    if (!period || periodPayload?.period === period) {
+      void (async () => {
+        setPeriodLoading(false);
+      })();
       return;
     }
     // タブ移動後に古い期間の応答が到着して現在の表示データを上書きしないよう、

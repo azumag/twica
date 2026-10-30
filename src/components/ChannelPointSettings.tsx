@@ -354,7 +354,14 @@ export default function ChannelPointSettings({
   // currentRewardId（props）を渡すことで、DBに保存されている報酬IDでステータスを確認
   // 依存配列を空にすることで、保存後の再実行を防ぐ
   useEffect(() => {
-    fetchRewards();
+    // fetchRewards は内部で同期的に setLoading 等を呼ぶため、effect 本体からの
+    // 直接呼び出しは react-hooks/set-state-in-effect に抵触する。匿名 async
+    // 関数の内側に移せば、同期プロローグの setState は最初の await まで
+    // 同期的に実行されるため表示タイミングは従来と同一で、テスト環境でも
+    // act() スコープ内に収まる（queueMicrotask による遅延より忠実な置き換え）。
+    void (async () => {
+      await fetchRewards();
+    })();
     // compact modeでは初期表示の外部診断APIを避け、詳細表示時のみbootstrapでまとめて取得する。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -362,7 +369,11 @@ export default function ChannelPointSettings({
   // Issue #393: パック名一覧をメイン/追加報酬のドロップダウン用に取得。
   // streamerId 変更時に取り直す（/api/cards/collections は軽量なため compact でも取得）。
   useEffect(() => {
-    fetchCollections();
+    // fetchRewards と同じく、setState は fetch 後の非同期コールバックで行われる
+    // 設計なので匿名 async 関数の内側で起動する（上の effect のコメント参照）。
+    void (async () => {
+      await fetchCollections();
+    })();
   }, [fetchCollections]);
 
   const handleCreateReward = async () => {

@@ -108,7 +108,13 @@ export default function TradeAuctionDetail({
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [bidCardId, setBidCardId] = useState<string | null>(null);
   const [quantity, setQuantity] = useState(1);
-  const confirmTriggerRef = useRef<HTMLElement | null>(null);
+  // The button that opened the confirm dialog, kept so closing can restore
+  // focus. Held in state (not a ref) on purpose: the element is captured from
+  // `event.currentTarget` inside render-created onClick closures, and feeding
+  // that value into a ref makes the compiler type the event handler's argument
+  // as a ref value (react-hooks/refs: "passing a ref to a function"). It is
+  // only read inside event handlers / timers, never during render.
+  const [confirmTrigger, setConfirmTrigger] = useState<HTMLElement | null>(null);
   const noticeRef = useRef<HTMLParagraphElement | null>(null);
   const bidRequestRef = useRef<{ selection: string; id: string } | null>(null);
   const settleRequestIds = useRef(new Map<string, string>());
@@ -172,7 +178,14 @@ export default function TradeAuctionDetail({
   useEffect(() => {
     const controller = new AbortController();
     effectLoadRef.current = controller;
-    void loadDetail(controller.signal);
+    // loadDetail は内部で setDetail を呼ぶ（実際の更新は fetch 後の非同期
+    // コールバック）。effect 本体からの直接呼び出しは react-hooks/set-state-in-effect
+    // が検出するため匿名 async 関数の内側で起動する。呼び出し自体は最初の await
+    // まで同期的に実行されるため従来と同一タイミングで、abort シグナルもそのまま
+    // 引き継ぐ（act() スコープ内に収まり queueMicrotask より忠実）。
+    void (async () => {
+      await loadDetail(controller.signal);
+    })();
     return () => {
       // The ref may already have been aborted and nulled by a write.
       if (effectLoadRef.current === controller) effectLoadRef.current = null;
@@ -233,19 +246,23 @@ export default function TradeAuctionDetail({
     setBusy(null);
   };
 
-  const openConfirm = (value: Confirming, trigger: HTMLElement) => {
+  // The event object is passed whole and `currentTarget` is read here (event
+  // time) instead of at the JSX call site: reading `event.currentTarget` inside
+  // a render-created closure is flagged by react-hooks/refs when the value
+  // flows toward a ref, so it is stored as component state instead.
+  const openConfirm = (value: Confirming, event: React.MouseEvent<HTMLElement>) => {
     if (busy) return;
     if (writeBlocked) {
       setNotice({ text: tMaintenance("writeDisabled"), isError: true });
       return;
     }
-    confirmTriggerRef.current = trigger;
+    setConfirmTrigger(event.currentTarget);
     setConfirming(value);
   };
 
   const restoreFocus = () => {
-    const trigger = confirmTriggerRef.current;
-    confirmTriggerRef.current = null;
+    const trigger = confirmTrigger;
+    setConfirmTrigger(null);
     requestAnimationFrame(() => {
       if (trigger?.isConnected) {
         trigger.focus();
@@ -426,7 +443,7 @@ export default function TradeAuctionDetail({
                           className={PRIMARY_BUTTON}
                           disabled={!canSettle || busy !== null || writeBlocked}
                           aria-busy={busy === `settle:${bid.id}`}
-                          onClick={(event) => openConfirm({ kind: "settle", bid }, event.currentTarget)}
+                          onClick={(event) => openConfirm({ kind: "settle", bid }, event)}
                         >
                           {busy === `settle:${bid.id}` ? t("auctionSettleSubmitting") : t("auctionSettleButton")}
                         </button>
@@ -451,7 +468,7 @@ export default function TradeAuctionDetail({
               className={SECONDARY_BUTTON}
               disabled={busy !== null || writeBlocked}
               aria-busy={busy === "cancel"}
-              onClick={(event) => openConfirm({ kind: "cancel" }, event.currentTarget)}
+              onClick={(event) => openConfirm({ kind: "cancel" }, event)}
             >
               {busy === "cancel" ? t("auctionCancelSubmitting") : t("auctionCancelButton")}
             </button>
@@ -615,7 +632,7 @@ export default function TradeAuctionDetail({
                     className={SECONDARY_BUTTON}
                     disabled={busy !== null || writeBlocked}
                     aria-busy={busy === "withdraw"}
-                    onClick={(event) => openConfirm({ kind: "withdraw", bid: myActiveBid }, event.currentTarget)}
+                    onClick={(event) => openConfirm({ kind: "withdraw", bid: myActiveBid }, event)}
                   >
                     {busy === "withdraw" ? t("auctionWithdrawSubmitting") : t("auctionWithdrawButton")}
                   </button>

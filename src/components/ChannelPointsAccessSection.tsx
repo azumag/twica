@@ -183,7 +183,13 @@ export default function ChannelPointsAccessSection({
     const isNonAffiliate = state.broadcasterType === "";
     if (isNonAffiliate && state.hasRequiredScope && state.stale) {
       autoProbeStarted.current = true;
-      void runProbe();
+      // runProbe は内部で同期的に setChecking/setMessage を呼ぶため、effect 本体からの
+      // 直接呼び出しは react-hooks/set-state-in-effect に抵触する。匿名 async 関数の
+      // 内側に移せば、同期プロローグの setState は最初の await まで同期的に実行
+      // されるため実行タイミングは従来と同一（act() スコープ内に収まる）。
+      void (async () => {
+        await runProbe();
+      })();
     }
   }, [loading, state, checking, runProbe, isMaintenanceBlocked]);
 

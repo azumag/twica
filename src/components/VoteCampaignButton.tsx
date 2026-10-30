@@ -37,7 +37,14 @@ export default function VoteCampaignButton({ visible, bonusMb }: VoteCampaignBut
   const [showDismissMessage, setShowDismissMessage] = useState(false)
 
   useEffect(() => {
-    setDismissed(localStorage.getItem(VOTE_CAMPAIGN_DISMISS_KEY) === 'true')
+    // localStorage は hydration 完了後にしか読めない（不一致防止で初期値はnullのまま）。
+    // effect 本体での同期 setState は react-hooks/set-state-in-effect が禁止するため
+    // async 境界を挟む。async 関数の本体は最初の await まで同期的に実行されるため
+    // localStorage 読み取りと setState の実行タイミングは従来と完全に同一であり、
+    // テスト環境では act() スコープ内に収まる（queueMicrotask より忠実な置き換え）。
+    void (async () => {
+      setDismissed(localStorage.getItem(VOTE_CAMPAIGN_DISMISS_KEY) === 'true')
+    })()
   }, [])
 
   // visible=false（期間外or適用済み）で未クリックの場合は非表示

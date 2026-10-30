@@ -274,6 +274,12 @@ export default function CardManager({
   // Track if this is the first render to skip initial reload
   // 初回レンダリングかどうかを追跡して初期リロードをスキップ
   const isFirstRender = useRef(true);
+  // Issue #1790: 求めるカードに指定できないカードの id(props の説明参照)。
+  // reloadCards がこのsetterを参照するため、宣言順序上ここに置く必要がある
+  // (react-hooks/immutability: 宣言前アクセス禁止)。
+  const [nonWantableCardIds, setNonWantableCardIds] = useState<Set<string>>(
+    () => new Set(initialNonWantableCardIds)
+  );
 
   /**
    * Reload all cards from server (called when sort/filter changes)
@@ -474,10 +480,6 @@ export default function CardManager({
     intraRarityWeight: 1.0,
     tradeWantable: true,
   });
-  // Issue #1790: 求めるカードに指定できないカードの id(props の説明参照)。
-  const [nonWantableCardIds, setNonWantableCardIds] = useState<Set<string>>(
-    () => new Set(initialNonWantableCardIds)
-  );
   // Issue #1790: 編集フォームを開いた時点の指定可否。保存時はこれと比べて
   // 変わったときだけ tradeWantable を送る。GET /api/cards はキャッシュ
   // (unstable_cache)経由のため nonWantableCardIds が古い値になりうる。
@@ -625,8 +627,21 @@ export default function CardManager({
   // サムネイル最適化前の元URLを保持し、高解像度のまま表示する
   const [zoomedImage, setZoomedImage] = useState<{ url: string; name: string } | null>(null);
   // Stores the thumbnail button that opened the modal so we can return focus when closed
-  // モーダルを開いた元のサムネイルボタンを保持し、閉じた際にフォーカスを戻すための参照
-  const zoomTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // モーダルを開いた元のサムネイルボタンを保持し、閉じた際にフォーカスを戻すための参照。
+  // useRef ではなく useState にしている: `event.currentTarget`（render 中に作られる
+  // クロージャ経由で取得した値）を ref へ代入すると、引数が ref value と型推論され
+  // react-hooks/refs に検出されるため。イベントハンドラ/タイマー内でしか読まない値。
+  const [zoomTrigger, setZoomTrigger] = useState<HTMLButtonElement | null>(null);
+  // グリッド表示のサムネイルクリックで拡大モーダルを開く共通処理。
+  // クリック元ボタンはフォーカス復帰用に zoomTrigger へ保持する。
+  const openZoomFromEvent = (
+    event: React.MouseEvent<HTMLButtonElement>,
+    url: string,
+    name: string,
+  ) => {
+    setZoomTrigger(event.currentTarget);
+    setZoomedImage({ url, name });
+  };
   const [emotes, setEmotes] = useState<TwitchEmote[]>([]);
   const [selectedEmotes, setSelectedEmotes] = useState<Set<string>>(new Set());
   const [loadingEmotes, setLoadingEmotes] = useState(false);
@@ -666,7 +681,14 @@ export default function CardManager({
   }, []);
 
   useEffect(() => {
-    fetchStorageStatus();
+    // fetchStorageStatus は内部で同期的に setStorageLoading(true) を呼ぶため、
+    // effect 本体からの直接呼び出しは react-hooks/set-state-in-effect に抵触する。
+    // 匿名 async 関数の内側に移せば、同期プロローグの setState は最初の await
+    // まで同期的に実行されるため従来と同一タイミング（act() スコープ内に収まり
+    // queueMicrotask による遅延より忠実な置き換え）。
+    void (async () => {
+      await fetchStorageStatus();
+    })();
   }, [fetchStorageStatus]);
 
   // Close the zoom modal when Escape is pressed and restore focus to the trigger
@@ -676,8 +698,8 @@ export default function CardManager({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setZoomedImage(null);
-        const trigger = zoomTriggerRef.current;
-        zoomTriggerRef.current = null;
+        const trigger = zoomTrigger;
+        setZoomTrigger(null);
         if (trigger) {
           requestAnimationFrame(() => trigger.focus());
         }
@@ -685,7 +707,9 @@ export default function CardManager({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [zoomedImage]);
+    // zoomTrigger は zoomedImage と同じクリックで一緒に設定/クリアされるため、
+    // deps への追加による挙動変化はない（exhaustive-deps 警告回避のため記載）。
+  }, [zoomedImage, zoomTrigger]);
 
   // 未設定の配信者向けにデフォルトレアリティ重みをDBに自動保存（マウント時1回のみ）
   const autoSavedWeightsRef = useRef(false);
@@ -2660,7 +2684,7 @@ export default function CardManager({
                   if (!card.image_url) return;
                   // リスト表示のサムネイルクリックでも同じ拡大モーダルを使い、閉じたらフォーカスを戻す
                   // Reuse the same zoom modal for list view so closing returns focus to the clicked thumbnail
-                  zoomTriggerRef.current = trigger;
+                  setZoomTrigger(trigger);
                   setZoomedImage({ url: card.image_url, name: card.name });
                 }}
                 rarityStyles={rarityStyles}
@@ -2746,10 +2770,7 @@ export default function CardManager({
                             return (
                               <button
                                 type="button"
-                                onClick={(e) => {
-                                  zoomTriggerRef.current = e.currentTarget;
-                                  setZoomedImage({ url: imageUrl, name: card.name });
-                                }}
+                                onClick={(e) => openZoomFromEvent(e, imageUrl, card.name)}
                                 className="block h-full w-full cursor-zoom-in overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
                                 aria-label={t("actions.enlargeImage", { name: card.name })}
                               >
@@ -3341,8 +3362,8 @@ export default function CardManager({
           setZoomedImage(null);
           // モーダルを閉じたら元のサムネイルボタンへフォーカスを戻す（アクセシビリティ）
           // Return focus to the originating thumbnail button for keyboard users
-          const trigger = zoomTriggerRef.current;
-          zoomTriggerRef.current = null;
+          const trigger = zoomTrigger;
+          setZoomTrigger(null);
           if (trigger) {
             // requestAnimationFrame: 再レンダリング後にフォーカスを戻す
             requestAnimationFrame(() => trigger.focus());

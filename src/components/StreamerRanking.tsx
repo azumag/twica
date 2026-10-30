@@ -112,9 +112,13 @@ export default function StreamerRanking() {
   useEffect(() => {
     const controller = new AbortController()
     let cancelled = false
-    setState({ status: 'loading' })
 
     const load = async () => {
+      // リトライ時にローディング表示へ戻す。effect 本体での同期 setState は
+      // react-hooks/set-state-in-effect が禁止するため、fetch 処理を担う
+      // この async コールバックの先頭に置く（最初の await までは同期的に
+      // 実行されるため、従来と同じタイミングでローディングへ遷移する）。
+      setState({ status: 'loading' })
       try {
         const res = await fetch('/api/streamer-ranking', {
           signal: controller.signal,

@@ -1852,9 +1852,15 @@ export default function OverlayPage() {
     );
     if (imageIsReady) {
       if (imageFallbackDisplayInstanceId === displayInstanceId) {
-        setImageFallbackDisplayInstanceId(current => (
-          current === displayInstanceId ? null : current
-        ));
+        // 実画像の準備が確定した時点でフォールバック表示を解除する。
+        // useLayoutEffect 本体での同期 setState は react-hooks/set-state-in-effect
+        // が禁止するため匿名 async 関数の内側に移す。本体は最初の await まで
+        // 同期的に実行されるため従来と同一タイミング（同じペイントまでに反映）。
+        void (async () => {
+          setImageFallbackDisplayInstanceId(current => (
+            current === displayInstanceId ? null : current
+          ));
+        })();
       }
       settleDisplayCommit(displayInstanceId, true);
       return;

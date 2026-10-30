@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import Image from "next/image";
 import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
@@ -21,6 +21,32 @@ interface BatchDropRateManualContentProps {
 }
 
 type TabType = "individual" | "rarity";
+
+// アクティブカードから編集用のローカルドロップレートを組み立てる。
+// useState の遅延初期化と activeCards 変更時のリセット（render 中の条件付き
+// 更新）で共有するため、コンポーネント外に置く純粋関数にする。
+function buildInitialRates(activeCards: Card[]): Map<string, number> {
+  const initialRates = new Map<string, number>();
+  activeCards.forEach((card) => {
+    initialRates.set(card.id, card.drop_rate);
+  });
+  return initialRates;
+}
+
+// アクティブカードからレアリティ倍率の初期値を組み立てる（buildInitialRatesと同じ用途）。
+function buildInitialMultipliers(activeCards: Card[]): Map<Rarity, number> {
+  const initialMultipliers = new Map<Rarity, number>();
+  RARITIES.forEach((r) => {
+    const rarityCards = activeCards.filter((c) => c.rarity === r.value);
+    if (rarityCards.length > 0) {
+      const avgRate = rarityCards.reduce((sum, c) => sum + c.drop_rate, 0) / rarityCards.length;
+      initialMultipliers.set(r.value, avgRate);
+    } else {
+      initialMultipliers.set(r.value, 1.0);
+    }
+  });
+  return initialMultipliers;
+}
 
 /**
  * BatchDropRateManualContent - 手動モード用の確率一括調整コンテンツ
@@ -47,35 +73,31 @@ export default function BatchDropRateManualContent({
   const isMaintenanceBlocked = maintenanceMode !== "off";
 
   const [activeTab, setActiveTab] = useState<TabType>("rarity");
-  const [localDropRates, setLocalDropRates] = useState<Map<string, number>>(new Map());
-  const [rarityMultipliers, setRarityMultipliers] = useState<Map<Rarity, number>>(new Map());
-  const [initialRarityMultipliers, setInitialRarityMultipliers] = useState<Map<Rarity, number>>(new Map());
+  // アクティブカードからローカルドロップレートとレアリティ倍率を初期化。
+  // マウント時は useState の遅延初期化で、activeCards の変化時は下の
+  // render 中の条件付き更新でリセットする（effect 内の同期 setState を避ける
+  // ため。React の「prev値をstateに保存して条件付き更新」パターン）。
+  const activeCards = useMemo(() => cards.filter(card => card.is_active), [cards]);
+  const [localDropRates, setLocalDropRates] = useState<Map<string, number>>(
+    () => buildInitialRates(activeCards)
+  );
+  const [rarityMultipliers, setRarityMultipliers] = useState<Map<Rarity, number>>(
+    () => buildInitialMultipliers(activeCards)
+  );
+  const [initialRarityMultipliers, setInitialRarityMultipliers] = useState<Map<Rarity, number>>(
+    () => new Map(rarityMultipliers)
+  );
   const [saving, setSaving] = useState(false);
 
-  const activeCards = useMemo(() => cards.filter(card => card.is_active), [cards]);
-
-  // アクティブカードからローカルドロップレートとレアリティ倍率を初期化
-  useEffect(() => {
-    const initialRates = new Map<string, number>();
-    activeCards.forEach(card => {
-      initialRates.set(card.id, card.drop_rate);
-    });
-    setLocalDropRates(initialRates);
-
-    const initialMultipliers = new Map<Rarity, number>();
-    RARITIES.forEach(r => {
-      const rarityCards = activeCards.filter(c => c.rarity === r.value);
-      if (rarityCards.length > 0) {
-        const avgRate = rarityCards.reduce((sum, c) => sum + c.drop_rate, 0) / rarityCards.length;
-        initialMultipliers.set(r.value, avgRate);
-      } else {
-        initialMultipliers.set(r.value, 1.0);
-      }
-    });
+  const [prevActiveCards, setPrevActiveCards] = useState(activeCards);
+  if (prevActiveCards !== activeCards) {
+    setPrevActiveCards(activeCards);
+    const initialMultipliers = buildInitialMultipliers(activeCards);
+    setLocalDropRates(buildInitialRates(activeCards));
     setRarityMultipliers(initialMultipliers);
     setInitialRarityMultipliers(new Map(initialMultipliers));
     setActiveTab("rarity");
-  }, [activeCards]);
+  }
 
   // レアリティごとのカード統計を計算
   const rarityStats = useMemo(() => {
