@@ -94,7 +94,12 @@ export default async function StreamerCollection({
   // Pass template strings instead of functions (Server -> Client serialization)
   // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
   const tReward = await getTranslations("packCompletionReward");
-  const tTrade = await getTranslations("trade");
+  // Issue #1806: トレード導線は CARD_TRADE_UI_VISIBLE=false の間描画されないため、
+  // 非表示中は「描画しないUI」の翻訳名前空間を実行時に要求しない。
+  // （将来 messages から trade を外してもコレクション画面が落ちないようにする）
+  const tTrade = CARD_TRADE_UI_VISIBLE
+    ? await getTranslations("trade")
+    : null;
   const gridTranslations = {
     completionRewardStatus: tReward("rewardBadge"),
     cardCountTemplate: t("cardCount", { count: "{count}" }),
@@ -161,7 +166,7 @@ export default async function StreamerCollection({
               href={`/trade/${streamer.id}`}
               className="shrink-0 rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-purple-700"
             >
-              {tTrade("collectionTradeButton")}
+              {tTrade?.("collectionTradeButton")}
             </Link>
           )}
         </div>
