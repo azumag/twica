@@ -78,6 +78,16 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 binding = "OVERLAY_REALTIME_SERVICE"
 service = "twica-overlay-realtime"
 
+# Strict rate-limit Durable Object (Issue #1888). The class lives in the
+# dedicated `twica-rate-limit` Worker (workers/rate-limit) because the app
+# entrypoint is OpenNext-generated and cannot export a DO class; script_name
+# reaches it cross-Worker. Deploy order: `twica-rate-limit` must exist before
+# this binding is deployed or the app deploy fails.
+[[durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+script_name = "twica-rate-limit"
+
 # Production queue producer binding (Issue #1665 Step 5, provisioned 2026-10-17).
 # Queue: chat-notification-wakeup (cf810bd69e1d42e99b419284bc13b0b5).
 # Dispatch is gated by the dispatch-flag secret; binding alone does
@@ -136,3 +146,11 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 [[env.preview.services]]
 binding = "OVERLAY_REALTIME_SERVICE"
 service = "twica-overlay-realtime-preview"
+
+# Preview strict rate-limit DO (Issue #1888). env.preview replaces binding
+# arrays, so this must be redeclared even though the production block above
+# exists. Requires `twica-rate-limit-preview` to be deployed first.
+[[env.preview.durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+script_name = "twica-rate-limit-preview"
