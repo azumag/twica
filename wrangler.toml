@@ -148,3 +148,12 @@ service = "twica-overlay-realtime-preview"
 [[env.preview.queues.producers]]
 binding = "CHAT_NOTIFICATION_QUEUE"
 queue = "chat-notification-wakeup-preview"
+
+# Strict rate-limit Durable Object (Issue #1888). The class lives in the
+# dedicated `twica-rate-limit-preview` Worker (workers/rate-limit) because the
+# app entrypoint is OpenNext-generated and cannot export a DO class. Deploy
+# order: `twica-rate-limit-preview` must exist before this binding deploys.
+[[env.preview.durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+script_name = "twica-rate-limit-preview"
