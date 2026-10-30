@@ -276,9 +276,11 @@ describe('sendChatAnnouncement: duplicate分類の写し替え (#842/#843)', () 
       chat_announcement_multi_show_cards: false,
     }
 
+    // Issue #1548: flag=false による抑止は payload_version=1 行の再生だけに残る
+    // v1 契約。legacyMultiShowCardsGate: true で旧セマンティクスを明示する。
     await sendChatAnnouncement(
       '130871908', multiStreamer, card, 'Viewer', 'viewer-1', [card, beta], undefined,
-      { ...snapshot, newCardNames: ['Alpha'] },
+      { ...snapshot, newCardNames: ['Alpha'] }, undefined, true,
     )
 
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=')
@@ -605,5 +607,184 @@ describe('sendChatAnnouncement: {packName} はカード自身のパックを優�
     )
 
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=基本セット')
+  })
+})
+
+/**
+ * Issue #1548: payload_version による新旧セマンティクス分離。
+ *
+ * v1（legacyMultiShowCardsGate=true）はエンキュー時点の
+ * chat_announcement_multi_show_cards を尊重する旧挙動を再生し、
+ * v2（gate未指定/false）は flag を読まない placeholder 駆動で解決する。
+ * 配送側（eventsub-redemption-delivery.ts）が claim.payloadVersion < 2 を
+ * gate値へ写すため、ここでは sendChatAnnouncement 単位で両契約を固定する。
+ */
+describe('sendChatAnnouncement: Issue #1548 v1 flag再生 / v2 placeholder駆動', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const baseStreamer = {
+    id: 'streamer-1',
+    chat_announcement_enabled: true,
+    chat_announcement_template: '{user} got {card}',
+    chat_announcement_multi_template: null,
+    chat_announcement_multi_show_cards: true,
+  }
+  const alpha = {
+    id: 'card-1',
+    name: 'Alpha',
+    description: null,
+    image_url: null,
+    rarity: 'common',
+    drop_rate: 1,
+  }
+  const beta = { ...alpha, id: 'card-2', name: 'Beta' }
+  const snapshot = {
+    cardCount: 1,
+    uniqueCount: 1,
+    allCount: 10,
+    newCardNames: ['Alpha'],
+    newCardNamesResolved: true,
+  }
+
+  // --- v1 契約（legacyMultiShowCardsGate: true）: 旧挙動をそのまま再生する ---
+
+  it('v1: flag=false の {cards} は旧挙動どおり空文字になる', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const streamer = {
+      ...baseStreamer,
+      chat_announcement_multi_template: '@{user} {cards} でした',
+      chat_announcement_multi_show_cards: false,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, alpha, 'Viewer', 'viewer-1', [alpha, beta],
+      undefined, snapshot, undefined, true,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', '@Viewer でした')
+  })
+
+  it('v1: flag=true で multi-draw placeholder を持たないテンプレートは暗黙の（全N枚）を追記する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const streamer = {
+      ...baseStreamer,
+      chat_announcement_multi_template: '@{user} ゲット',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, alpha, 'Viewer', 'viewer-1', [alpha, beta],
+      undefined, snapshot, undefined, true,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', '@Viewer ゲット（全2枚: Alpha、Beta）')
+  })
+
+  it('v1: flag=false で multi-draw placeholder を持たないテンプレートは暗黙追記しない', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const streamer = {
+      ...baseStreamer,
+      chat_announcement_multi_template: '@{user} ゲット',
+      chat_announcement_multi_show_cards: false,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, alpha, 'Viewer', 'viewer-1', [alpha, beta],
+      undefined, snapshot, undefined, true,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', '@Viewer ゲット')
+  })
+
+  // --- v2 契約（gate 未指定/false）: placeholder 駆動で flag を読まない ---
+
+  it.each([
+    ['gate未指定（デフォルト）', undefined],
+    ['gate=false', false],
+  ] as const)('v2（%s）: flag=false でも {cards} は常に解決される', async (_label, gate) => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const streamer = {
+      ...baseStreamer,
+      chat_announcement_multi_template: '@{user} {cards} でした',
+      chat_announcement_multi_show_cards: false,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, alpha, 'Viewer', 'viewer-1', [alpha, beta],
+      undefined, snapshot, undefined, gate,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', '@Viewer Alpha、Beta でした')
+  })
+
+  it('v2: flag=true でも multi-draw placeholder を持たないテンプレートへ暗黙追記しない', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    // bake migration（PR-A）が「（全{draws}枚: {cards}）」をテンプレートへ
+    // 焼き込むため、エンジン側の暗黙追記は v2 では発火してはならない。
+    const streamer = {
+      ...baseStreamer,
+      chat_announcement_multi_template: '@{user} ゲット',
+      chat_announcement_multi_show_cards: true,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, alpha, 'Viewer', 'viewer-1', [alpha, beta],
+      undefined, snapshot, undefined,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', '@Viewer ゲット')
+  })
+
+  it('v2: multi_template=null（DEFAULT使用）なら flag=false でも初出接尾辞を付ける', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    // 「DEFAULT使用時は初出接尾辞」は列DEFAULT=trueの旧既定と同じ実効出力を
+    // 恒久化したルール。v2 では flag に関係なく multi_template=null で発火する。
+    const streamer = {
+      ...baseStreamer,
+      chat_announcement_multi_template: null,
+      chat_announcement_multi_show_cards: false,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, alpha, 'Viewer', 'viewer-1', [alpha, beta],
+      undefined, snapshot, undefined,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith(
+      '130871908',
+      '@Viewer が2連ガチャで コモンx2 を獲得しました！Alpha、Beta 初出: Alpha',
+    )
+  })
+
+  it('v2: flag=false の {newCardsOrNone} も snapshot があれば解決される', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const streamer = {
+      ...baseStreamer,
+      chat_announcement_multi_template: 'new={newCardsOrNone}',
+      chat_announcement_multi_show_cards: false,
+    }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, alpha, 'Viewer', 'viewer-1', [alpha, beta],
+      undefined, snapshot, undefined,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=Alpha')
   })
 })

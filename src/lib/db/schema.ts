@@ -302,6 +302,10 @@ export const streamerChatMultiDeliverySettings = pgTable('streamer_chat_multi_de
 export const chatNotificationOutbox = pgTable('chat_notification_outbox', {
   id: uuid('id').primaryKey().default(sql`extensions.uuid_generate_v4()`),
   batch_id: text('batch_id').notNull(),
+  // Issue #1548: 1=flagスナップショットを尊重する旧セマンティクス、
+  // 2=placeholder駆動（chat_announcement_multi_show_cardsを読まない）の
+  // 新セマンティクス。書き込み側は必ずversionを明示するためDEFAULT=1は据え置き
+  // （20261031120000でCHECKを{1,2}へ緩和し、RPCが2を書き込む）。
   payload_version: smallint('payload_version').notNull().default(1),
   payload: jsonb('payload').$type<Json>().notNull(),
   expected_draw_count: integer('expected_draw_count').notNull(),

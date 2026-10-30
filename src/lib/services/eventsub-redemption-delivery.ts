@@ -67,6 +67,11 @@ export async function sendClaimedChatAnnouncement(
   const drawnCards = data.gachaResult.cards?.length
     ? data.gachaResult.cards
     : [data.gachaResult.card]
+  // Issue #1548: payload_version=1 の行はエンキュー時点の
+  // chat_announcement_multi_show_cards とテンプレートのスナップショットを持つ
+  // ため、flag を尊重する旧セマンティクスで再生する。v2 以降はエンジン側が
+  // placeholder 駆動のみを行い、flag スナップショットを解釈しない。
+  const legacyMultiShowCardsGate = claim.payloadVersion < 2
   let mode = normalizeMultiDrawChatDeliveryMode(claim.deliveryMode)
   if (drawnCards.length > 1 && mode !== 'summary') {
     // Persist any congestion fallback before sending. Retry must keep that decision even
@@ -117,6 +122,7 @@ export async function sendClaimedChatAnnouncement(
                   data.gachaResult.collectionName,
                   buildIndividualChatSnapshot(drawnCards, drawIndex, multiSnapshot),
                   beforeExternalSend,
+                  legacyMultiShowCardsGate,
                 ),
             }
           : {}),
@@ -158,5 +164,6 @@ export async function sendClaimedChatAnnouncement(
     data.gachaResult.collectionName,
     data.chatSnapshot,
     beforeExternalSend,
+    legacyMultiShowCardsGate,
   )
 }
