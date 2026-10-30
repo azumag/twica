@@ -105,7 +105,6 @@ export default async function SettingsPage({
         needsAttention: chatDeliveryCapability.needsAttention,
         template: streamerData.streamer.chat_announcement_template ?? null,
         multiTemplate: streamerData.streamer.chat_announcement_multi_template ?? null,
-        multiShowCards: streamerData.streamer.chat_announcement_multi_show_cards ?? true,
       }}
       liveDirectory={{
         publishLiveStatus: streamerData.streamer.publish_live_status ?? false,

@@ -21,7 +21,6 @@ interface ChatAnnouncementSettingsProps {
   // Custom template (null for default)
   currentTemplate: string | null;
   currentMultiTemplate: string | null;
-  currentMultiShowCards: boolean;
   botAccount?: {
     username: string | null;
     displayName: string | null;
@@ -114,7 +113,6 @@ export default function ChatAnnouncementSettings({
   currentEnabled,
   currentTemplate,
   currentMultiTemplate,
-  currentMultiShowCards,
   botAccount,
 }: ChatAnnouncementSettingsProps) {
   const t = useTranslations("chatAnnouncementSettings");
@@ -130,7 +128,6 @@ export default function ChatAnnouncementSettings({
   const [enabled, setEnabled] = useState(currentEnabled);
   const [template, setTemplate] = useState(currentTemplate || "");
   const [multiTemplate, setMultiTemplate] = useState(currentMultiTemplate || "");
-  const [multiShowCards, setMultiShowCards] = useState(currentMultiShowCards);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
@@ -150,19 +147,6 @@ export default function ChatAnnouncementSettings({
   const activeTemplate = template || DEFAULT_CHAT_TEMPLATE;
   const activeMultiTemplate = multiTemplate || DEFAULT_MULTI_DRAW_CHAT_TEMPLATE;
   const canSendChat = hasScope || botConnected;
-
-  // {newCards}/{newCardsOrNone}/{newCardCount} は multiShowCards（カード名一覧表示）が有効なときのみ値が入り、
-  // 無効時は本文生成ロジック側で空文字に置換される（#487仕様、本PRでは変更しない）。
-  // 誤設定に気づきにくいため、テンプレートがこれらを使っているのに表示設定がOFFの場合は警告する。
-  // {newCards}/{newCardsOrNone}/{newCardCount} only get content when multiShowCards (card-name list display) is
-  // enabled; otherwise the message-building logic replaces them with an empty string (existing
-  // #487 behavior, unchanged by this PR). Since that's easy to misconfigure without noticing,
-  // warn when the template references them while the display toggle is off.
-  const usesNewCardPlaceholders = useMemo(
-    () => /\{newCards\}|\{newCardsOrNone\}|\{newCardCount\}/.test(activeMultiTemplate),
-    [activeMultiTemplate]
-  );
-  const showNewCardPlaceholderWarning = usesNewCardPlaceholders && !multiShowCards;
 
   const demoMessage = useMemo(() => {
     return buildChatPreviewMessage(activeTemplate, {
@@ -185,10 +169,13 @@ export default function ChatAnnouncementSettings({
   }, [activeTemplate, streamerId]);
 
   const multiDemoMessage = useMemo(() => {
+    // Issue #1548: N連通知は placeholder 駆動。テンプレートに書いた項目だけが
+    // 表示されるため、デモでは全項目にサンプル値を入れる（書かなければそもそも
+    // 出力されないので、フラグ相当の条件分岐は持たない）。
     return buildChatPreviewMessage(activeMultiTemplate, {
       user: "SampleUser",
       card: "レジェンダリーカード",
-      cards: multiShowCards ? "（レジェンダリーカード、レアカード、コモンカード）" : "",
+      cards: "（レジェンダリーカード、レアカード、コモンカード）",
       draws: "3",
       rarityCounts: "レジェンダリーx1、レアx1、コモンx1",
       rarity: "レジェンダリー",
@@ -197,12 +184,12 @@ export default function ChatAnnouncementSettings({
       all: "10",
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
-      newCards: multiShowCards ? "レジェンダリーカード、レアカード" : "",
-      newCardsOrNone: multiShowCards ? "レジェンダリーカード、レアカード" : "",
-      newCardCount: multiShowCards ? "2" : "",
+      newCards: "レジェンダリーカード、レアカード",
+      newCardsOrNone: "レジェンダリーカード、レアカード",
+      newCardCount: "2",
       packName: "サンプルパック",
     });
-  }, [activeMultiTemplate, multiShowCards, streamerId]);
+  }, [activeMultiTemplate, streamerId]);
 
   const demoMessageCharacterCount = useMemo(
     () => countCharacters(demoMessage),
@@ -233,11 +220,13 @@ export default function ChatAnnouncementSettings({
   }, [activeTemplate, streamerId]);
 
   const multiTemplateEstimatedMaxMessageCharacterCount = useMemo(() => {
+    // Issue #1548: placeholder 駆動化に伴い、カード名系はテンプレートに書かれた
+    // ものが常に実値へ置き換わる前提で最大見積もりを取る（書かれなければ
+    // buildChatPreviewMessage 上も空のままなので、警告精度は変わらない）。
     const multiDrawPlaceholders = {
       user: "U".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.user),
       card: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.card),
-      // `multiShowCards` がOFFなら、N連カード名系は実通知でも必ず空文字になる。
-      cards: multiShowCards ? "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.cards) : "",
+      cards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.cards),
       draws: String(MAX_MULTI_DRAW_COUNT),
       rarityCounts: "レジェンダリーx15",
       rarity: "レ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.rarity),
@@ -246,14 +235,14 @@ export default function ChatAnnouncementSettings({
       all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
       detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
       url: `https://twica.live/collection/${streamerId}`,
-      newCards: multiShowCards ? "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCards) : "",
-      newCardsOrNone: multiShowCards ? "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardsOrNone) : "",
-      newCardCount: multiShowCards ? "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardCount) : "",
+      newCards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCards),
+      newCardsOrNone: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardsOrNone),
+      newCardCount: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCardCount),
       packName: "パ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packName),
     };
 
     return countCharacters(buildChatPreviewMessage(activeMultiTemplate, multiDrawPlaceholders));
-  }, [activeMultiTemplate, multiShowCards, streamerId]);
+  }, [activeMultiTemplate, streamerId]);
 
   const singleTemplateMayExceedChatLimit =
     singleTemplateEstimatedMaxMessageCharacterCount > TWITCH_CHAT_MESSAGE_MAX_CHARACTERS;
@@ -262,34 +251,33 @@ export default function ChatAnnouncementSettings({
 
   // コンポーネントマウント時にスコープをチェック
   // Check scope on component mount
+  // checkingScope の初期値は true のため、effect 本文で同期 setState する必要は
+  // ない。すべての setState は fetch 応答後（非同期）に行うことで
+  // react-hooks/set-state-in-effect の規約（effect 本文での同期 setState 禁止）
+  // を満たす。
   useEffect(() => {
-    checkScope();
-  }, []);
+    const checkScope = async () => {
+      try {
+        const response = await fetch("/api/auth/check-scope?scope=user:write:chat", {
+          credentials: "include",
+        });
 
-  /**
-   * user:write:chatスコープが付与されているかチェック
-   * Check if user:write:chat scope is granted
-   */
-  const checkScope = async () => {
-    setCheckingScope(true);
-    try {
-      const response = await fetch("/api/auth/check-scope?scope=user:write:chat", {
-        credentials: "include",
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setHasScope(data.hasScope);
-      } else {
+        if (response.ok) {
+          const data = await response.json();
+          setHasScope(data.hasScope);
+        } else {
+          setHasScope(false);
+        }
+      } catch (error) {
+        logger.error("Scope check error:", error);
         setHasScope(false);
+      } finally {
+        setCheckingScope(false);
       }
-    } catch (error) {
-      logger.error("Scope check error:", error);
-      setHasScope(false);
-    } finally {
-      setCheckingScope(false);
-    }
-  };
+    };
+
+    void checkScope();
+  }, []);
 
   /**
    * 追加スコープを取得するために再認証を開始
@@ -401,8 +389,7 @@ export default function ChatAnnouncementSettings({
   const saveSettings = useCallback(async (
     newEnabled: boolean,
     newTemplate: string,
-    newMultiTemplate: string,
-    newMultiShowCards: boolean
+    newMultiTemplate: string
   ) => {
     setSaving(true);
     setMessage("");
@@ -420,7 +407,6 @@ export default function ChatAnnouncementSettings({
           chatAnnouncementEnabled: newEnabled,
           chatAnnouncementTemplate: newTemplate || null,
           chatAnnouncementMultiTemplate: newMultiTemplate || null,
-          chatAnnouncementMultiShowCards: newMultiShowCards,
         }),
       });
 
@@ -453,7 +439,7 @@ export default function ChatAnnouncementSettings({
     const newEnabled = !enabled;
     setEnabled(newEnabled);
 
-    const success = await saveSettings(newEnabled, template, multiTemplate, multiShowCards);
+    const success = await saveSettings(newEnabled, template, multiTemplate);
     if (!success) {
       // 失敗した場合は元に戻す
       // Revert on failure
@@ -464,15 +450,15 @@ export default function ChatAnnouncementSettings({
       // ローカルstateを戻してサーバー表示を更新しない。
       router.refresh();
     }
-  }, [enabled, multiShowCards, multiTemplate, router, saveSettings, template]);
+  }, [enabled, multiTemplate, router, saveSettings, template]);
 
   /**
    * テンプレートを保存
    * Save template
    */
   const handleSaveTemplate = useCallback(async () => {
-    await saveSettings(enabled, template, multiTemplate, multiShowCards);
-  }, [enabled, multiShowCards, multiTemplate, saveSettings, template]);
+    await saveSettings(enabled, template, multiTemplate);
+  }, [enabled, multiTemplate, saveSettings, template]);
 
   /**
    * デモ用のサンプルメッセージを生成
@@ -649,25 +635,6 @@ export default function ChatAnnouncementSettings({
           <p className="mt-1 text-xs text-gray-500">
             {t("form.multiPlaceholderHelp")}
           </p>
-          <label className="mt-3 flex items-center gap-2 text-sm text-gray-300">
-            <input
-              type="checkbox"
-              checked={multiShowCards}
-              onChange={(e) => setMultiShowCards(e.target.checked)}
-              disabled={!canSendChat}
-              className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-purple-600 focus:ring-purple-500 disabled:opacity-50"
-            />
-            {t("form.multiShowCards")}
-          </label>
-          {/* #504/#840: multiShowCards無効時に初入手系placeholderが空文字化される仕様は */}
-          {/* 誤設定に見えやすいため、テンプレートがこれらを使っている場合のみ警告を表示する */}
-          {/* #504/#840: warn when the template uses new-card placeholders while multiShowCards */}
-          {/* is off, since the resulting empty-string substitution otherwise looks like a bug */}
-          {showNewCardPlaceholderWarning && (
-            <div className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
-              {t("messages.newCardPlaceholderWarning")}
-            </div>
-          )}
           {multiTemplateMayExceedChatLimit && (
             <div data-testid="multi-template-length-warning" className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-300">
               {t("messages.lengthWarning", {

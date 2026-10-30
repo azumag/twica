@@ -89,7 +89,6 @@ export interface SettingsLayoutData {
     needsAttention: boolean;
     template: string | null;
     multiTemplate: string | null;
-    multiShowCards: boolean;
   };
   liveDirectory: {
     publishLiveStatus: boolean;
@@ -334,7 +333,6 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           currentEnabled={data.chatAnnouncement.enabled}
           currentTemplate={data.chatAnnouncement.template}
           currentMultiTemplate={data.chatAnnouncement.multiTemplate}
-          currentMultiShowCards={data.chatAnnouncement.multiShowCards}
           botAccount={data.botAccount}
         />
       ),

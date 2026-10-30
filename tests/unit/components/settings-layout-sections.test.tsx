@@ -28,7 +28,6 @@ function makeData(): SettingsLayoutData {
       needsAttention: false,
       template: null,
       multiTemplate: null,
-      multiShowCards: true,
     },
     liveDirectory: { publishLiveStatus: false, publishStats: false },
     initialModeHint: 'advanced',

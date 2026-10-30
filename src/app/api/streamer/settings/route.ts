@@ -883,7 +883,9 @@ export async function POST(request: NextRequest) {
       chatAnnouncementEnabled,
       chatAnnouncementTemplate,
       chatAnnouncementMultiTemplate,
-      chatAnnouncementMultiShowCards,
+      // Issue #1548: chatAnnouncementMultiShowCards は廃止（N連カード名一覧は
+      // テンプレートの placeholder 駆動へ一本化）。body で送られても読まず無視する
+      // — 400 にしないのは、キャッシュ済み旧UIからの暫定リクエストを壊さないため。
       // レアリティ別自動確率設定（オプション）
       rarityWeights,
       // レアリティ重みのスコープ（オプション、Issue #578）: 'global'(全パック共通)
@@ -1068,12 +1070,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
-      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
-    }
-    if (
-      chatAnnouncementMultiShowCards !== undefined
-      && typeof chatAnnouncementMultiShowCards !== "boolean"
-    ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -1417,9 +1413,9 @@ export async function POST(request: NextRequest) {
     if (chatAnnouncementMultiTemplate !== undefined) {
       updateData.chat_announcement_multi_template = chatAnnouncementMultiTemplate;
     }
-    if (chatAnnouncementMultiShowCards !== undefined) {
-      updateData.chat_announcement_multi_show_cards = chatAnnouncementMultiShowCards;
-    }
+    // Issue #1548: chat_announcement_multi_show_cards 列は v1 outbox 行の再生と
+    // 旧スナップショット互換のために残すが、UI/API からは更新しない
+    // （列削除は追跡 Issue で行う）。
 
     // rarityWeights: レアリティ別目標確率（nullで自動モード無効）
     if (rarityWeights !== undefined) {

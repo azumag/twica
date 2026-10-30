@@ -37,7 +37,6 @@ function renderLayout() {
           needsAttention: false,
           template: null,
           multiTemplate: null,
-          multiShowCards: true,
         }}
         liveDirectory={{ publishLiveStatus: false, publishStats: false }}
         // preview 側ではトレード設定・公開設定は /dashboard/account へ移動済みのため、
