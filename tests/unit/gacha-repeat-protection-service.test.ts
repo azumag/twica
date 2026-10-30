@@ -68,6 +68,12 @@ interface FixtureOptions {
   latestCardId?: string | null
   latestCardIds?: Array<string | null>
   latestHistoryError?: unknown
+  /**
+   * Issue #1300: 直近履歴readの解決をテスト側が制御するゲート。
+   * 設定時は即時resolveせずこのPromiseを返すため、履歴readが未解決の間に
+   * 後続の独立read(カードプール等)が発火するかを決定的に観測できる。
+   */
+  latestHistoryGate?: Promise<Array<{ card_id: string }>>
   completedPrefixes?: Array<Array<{ event_id: string }>>
   additionalDrawCount?: number
   transactions?: Array<{ result?: TransactionResult; error?: unknown }>
@@ -140,7 +146,9 @@ function installDbFixture(options: FixtureOptions = {}) {
           completedPrefixCursor += 1
           promise = Promise.resolve(prefix)
         } else if (tableName === 'gacha_history' && 'card_id' in fields) {
-          if (options.latestHistoryError) {
+          if (options.latestHistoryGate) {
+            promise = options.latestHistoryGate
+          } else if (options.latestHistoryError) {
             promise = Promise.reject(options.latestHistoryError)
           } else {
             const latestCardId = options.latestCardIds
@@ -445,5 +453,82 @@ describe('GachaService repeat protection', () => {
     }
     // prefix初回 + 最新カード初回 + duplicate後prefix再読込 + 最新カード再同期。
     expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(4)
+  })
+
+  it('直近履歴readが未解決の間にカードプールreadへ進む(単発read並列化)', async () => {
+    // Issue #1300: 履歴readをゲートで保留にし、selectCardFromPoolが値を要求するまで
+    // 独立したcards readが先行発火することを固定する。直列だとcardsは
+    // ゲート解放後にしか読めないため、このassertionは並列化の検出にも効く。
+    let releaseHistory!: (rows: Array<{ card_id: string }>) => void
+    const gate = new Promise<Array<{ card_id: string }>>((resolve) => {
+      releaseHistory = resolve
+    })
+    const fixture = installDbFixture({ latestHistoryGate: gate })
+    mockSecureRandomUnit(0)
+
+    const pending = new GachaService().executeGachaWithRepeatProtection({
+      streamerId: 'streamer-1',
+      userTwitchId: 'user-1',
+      userTwitchUsername: 'Viewer',
+      eventId: 'event-overlap-single',
+    })
+
+    // 履歴readは発火済み(orderBy記録済み)だが未解決の間にcardsが読まれる。
+    await vi.waitFor(() => {
+      expect(fixture.latestHistoryOrderByColumns).toHaveLength(1)
+      expect(fixture.tableReads).toContain('cards')
+    })
+
+    releaseHistory([{ card_id: 'card-a' }])
+    const result = await pending
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.card.id).toBe('card-b')
+    }
+    expect(fixture.transactionCalls[0][3]).toBe('card-b')
+  })
+
+  it('N連でも直近履歴readが未解決の間にprefix確認と初回カードreadへ進む', async () => {
+    // Issue #1300: executeGachaDraws でも履歴Promiseを先頭drawへそのまま渡し、
+    // prefix確認readと1枚目のcards readが履歴readと重なることを固定する。
+    let releaseHistory!: (rows: Array<{ card_id: string }>) => void
+    const gate = new Promise<Array<{ card_id: string }>>((resolve) => {
+      releaseHistory = resolve
+    })
+    const fixture = installDbFixture({
+      latestHistoryGate: gate,
+      additionalDrawCount: 2,
+    })
+    mockSecureRandomUnit(0)
+
+    const pending = new GachaService().executeGachaForEventSub({
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'user-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'multi-reward', cost: 200 },
+      },
+      eventId: 'event-overlap-multi',
+    })
+
+    // 履歴read発火済み・未解決の間にprefix確認とcards readが発火する。
+    await vi.waitFor(() => {
+      expect(fixture.latestHistoryOrderByColumns).toHaveLength(1)
+      expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(2)
+      expect(fixture.tableReads).toContain('cards')
+    })
+
+    releaseHistory([{ card_id: 'card-a' }])
+    const result = await pending
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.cards?.map((card) => card.id)).toEqual(['card-b', 'card-a'])
+    }
+    expect(fixture.transactionCalls.map((call) => call[3])).toEqual(['card-b', 'card-a'])
+    // N連prefix確認 + 直前カード取得。ドロー毎の追加履歴readは発生しない。
+    expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(2)
   })
 })

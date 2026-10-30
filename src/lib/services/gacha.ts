@@ -281,6 +281,12 @@ export interface ExecuteGachaParams {
    * Issue #1296: 呼び出し元が直前カードを取得済みなら渡す。undefined は
    * 従来の独立抽選を意味し、低レベルAPIと既存テストの後方互換を保つ。
    *
+   * Issue #1300: Promise<string | null> も受け付ける。
+   * executeGachaWithRepeatProtection が直近履歴readをawaitせずPromiseのまま
+   * 渡し、カードプールread等の独立したreadとDB往復を重ねるために使う。
+   * 低レベル側は消費点(selectCardFromPool)の直前で Promise.resolve して
+   * 1回だけ解決し、それより前の早期returnでは解決を待たない。
+   *
    * 反復抑制つき公開エントリポイント(executeGachaWithRepeatProtection)は、この項目を
    * Omit して型で渡させない。ただし Omit による Excess Property Check は
    * オブジェクトリテラル直書きにしか効かないため、ExecuteGachaParams 型の変数や
@@ -288,7 +294,7 @@ export interface ExecuteGachaParams {
    * executeGachaWithRepeatProtection 側で計算した previousCardId を spread の後ろに
    * 置くこと(同メソッドのコメント参照)。並べ替えないこと。
    */
-  previousCardId?: string | null
+  previousCardId?: string | null | Promise<string | null>
 }
 
 /**
@@ -407,7 +413,10 @@ export class GachaService {
         weightsConfig,
         rewardId,
         chatOutbox,
-        previousCardId,
+        // Issue #1300: 値または起動済みの未解決Promiseが届く(型注釈参照)。
+        // 消費点はこの先のselectCardFromPoolのみなので、ここでは展開せず
+        // previousCardIdInput として保持し、早期return経路では解決を待たない。
+        previousCardId: previousCardIdInput,
       } = params
 
       // Get active cards for this streamer (optionally scoped to a pack).
@@ -561,6 +570,13 @@ export class GachaService {
       // 続く場合に、1回のガチャで無制限に RPC を叩き続けてDB/RPCへ負荷を
       // かけ続けることを防ぐため。プールが尽きた場合、または再試行上限に
       // 達した場合のみ soldOut を返す。
+      //
+      // Issue #1300: previousCardIdInput は「取得済みの値」または「並列起動
+      // 済みの未解決Promise」のどちらでもありうる。消費点はこの先の
+      // selectCardFromPool のみなので、ここに来た時点(=早期returnを全て
+      // 通過済み)で Promise.resolve により値/Promiseの両方を一様に解決する。
+      // 履歴readが未完了ならここでのみ待ち、既に解決済みなら待ち時間はゼロ。
+      const previousCardId = await Promise.resolve(previousCardIdInput)
       const MAX_LIMIT_REACHED_RETRIES = 5
       let pool = availableCards
 
@@ -673,11 +689,18 @@ export class GachaService {
   async executeGachaWithRepeatProtection(
     params: Omit<ExecuteGachaParams, 'previousCardId'>
   ): Promise<Result<GachaResult>> {
-    const previousCardId = await this.getLatestCardIdForStreamer(params.streamerId)
+    // Issue #1300: 直近履歴readはUX改善用の独立readで、値が必要になるのは
+    // 低レベル側のカード選択時(selectCardFromPool)のみ。ここでawaitせず
+    // Promiseのまま渡し、カードプールread等とのDB往復を重ねる。
+    // withDbRetryはqueryFnを同期起動するため、await前にクエリは既に発火済み。
+    // getLatestCardIdForStreamerは全エラーをnullへ畳み込みrejectしないため、
+    // 低レベル側が早期returnしてこのPromiseがawaitされなくてもunhandled
+    // rejectionにはならない。
+    const previousCardId = this.getLatestCardIdForStreamer(params.streamerId)
     // 展開順が防御線。previousCardId を必ず spread の後ろに置くことで、呼び出し元が
     // Omit をすり抜けた(any 経由、または ExecuteGachaParams 型の変数を経由して
-    // Excess Property Check が効かない)形で previousCardId を偽装しても、上で取得した
-    // 実値が必ず後勝ちで上書きされる。`{ previousCardId, ...params }` へ並べ替えると
+    // Excess Property Check が効かない)形で previousCardId を偽装しても、上で起動した
+    // 履歴readが必ず後勝ちで上書きされる。`{ previousCardId, ...params }` へ並べ替えると
     // 偽装が採用され反復抑制が無効化されるため、並べ替えないこと(#1301)。
     return this.executeGachaWithoutRepeatProtection({ ...params, previousCardId })
   }
@@ -1163,6 +1186,12 @@ export class GachaService {
     // 「1枚目のis_duplicate=バッチ全体が重複」が常に正しくこの問題が起きない
     // ため、追加クエリも不要(ホットパスである単発ガチャに毎回1クエリ増える
     // 無駄を避ける)。
+    // Issue #1300: 直近履歴readは #1296 のバッチ冒頭1回取得を維持しつつ、
+    // prefix再開チェック(別の独立read)と重ねるため await せず先に起動する。
+    // getLatestCardIdForStreamer は全エラーを null へ畳み込み reject しない
+    // ため、下の早期return(Duplicate event 等)でこのPromiseがawaitされ
+    // なくても unhandled rejection にはならない。
+    const latestCardIdRead = this.getLatestCardIdForStreamer(streamerId)
     let resumeFromIndex = 0
     if (eventId && drawCount > 1) {
       const prefixResult = await this.countCompletedDrawPrefix(eventId, drawCount)
@@ -1183,7 +1212,11 @@ export class GachaService {
     let requiresPersistedBatch = resumeFromIndex > 0
     // Issue #1296: バッチ冒頭で1回だけDB履歴を読み、以降はこのリクエストで
     // 確定した直前カードを引き継ぐ。15連でも履歴クエリを15回へ増やさない。
-    let previousCardId = await this.getLatestCardIdForStreamer(streamerId)
+    // Issue #1300: ここでもawaitせずPromiseのまま先頭drawへ渡す。低レベル側は
+    // 消費点(selectCardFromPool)でのみ解決するため、初回drawのカードプールread
+    // とも履歴readの往復が重なる。2枚目以降は成功drawの確定カード(実値)を
+    // 引き継ぐため、Promiseが渡るのは先頭drawのみ。
+    let previousCardId: string | null | Promise<string | null> = latestCardIdRead
 
     for (let index = resumeFromIndex; index < drawCount; index += 1) {
       const drawEventId = buildDrawEventId(eventId, index)
