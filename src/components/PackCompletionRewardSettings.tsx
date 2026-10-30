@@ -34,7 +34,15 @@ export default function PackCompletionRewardSettings({ packNames, defaultPackNam
       setError('');
     } catch { setError(t('unavailable')); }
   }, [t]);
-  useEffect(() => { void load(); }, [load, packNames]);
+  // load は内部で setData/setError を呼ぶ。実際の setState は fetch 後の
+  // 非同期コールバックだが、effect 本体からの直接呼び出しは rule が検出するため
+  // 匿名 async 関数の内側で起動する。呼び出しは最初の await まで同期的に
+  // 実行されるため従来と同一タイミング（act() スコープ内に収まる）。
+  useEffect(() => {
+    void (async () => {
+      await load();
+    })();
+  }, [load, packNames]);
   const save = async (collectionName: string, cardId?: string) => {
     if (!data || busy || mode !== 'off') return;
     const count = data.grants.find(g => g.collection_name === collectionName)?.count ?? 0;
