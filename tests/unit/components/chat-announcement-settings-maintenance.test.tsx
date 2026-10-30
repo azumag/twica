@@ -27,7 +27,6 @@ function renderSettings(status: MaintenanceStatusResponse) {
             currentEnabled={false}
             currentTemplate={null}
             currentMultiTemplate={null}
-            currentMultiShowCards
             botAccount={null}
           />
         </ChatReauthorizationProvider>

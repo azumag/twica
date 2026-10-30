@@ -279,6 +279,8 @@ describe('POST /api/streamer/settings', () => {
         chatAnnouncementEnabled: true,
         chatAnnouncementTemplate: '@{user} got {card}',
         chatAnnouncementMultiTemplate: '@{user}: {draws}連 {rarityCounts} {cards}',
+        // Issue #1548: 廃止済みフラグ。旧UIのキャッシュ済みクライアントが送っても
+        // 400 にせず無視されることを固定する（DB列自体は v1 outbox 互換で残存）。
         chatAnnouncementMultiShowCards: false,
       }),
     })
@@ -290,8 +292,11 @@ describe('POST /api/streamer/settings', () => {
       chat_announcement_enabled: true,
       chat_announcement_template: '@{user} got {card}',
       chat_announcement_multi_template: '@{user}: {draws}連 {rarityCounts} {cards}',
-      chat_announcement_multi_show_cards: false,
     }))
+    // 廃止フラグはどの update 呼び出しにも載らない（保存経路が残っていないことの固定）
+    for (const call of query.update.mock.calls) {
+      expect(call[0]).not.toHaveProperty('chat_announcement_multi_show_cards')
+    }
   })
 
   describe('trade settings (Issue #725)', () => {
