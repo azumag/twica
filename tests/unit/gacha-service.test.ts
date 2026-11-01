@@ -1076,9 +1076,11 @@ describe('GachaService.executeGachaForEventSub', () => {
             collection_name: null,
           }],
         }],
-        // 初回prefixは0。接続再試行がduplicateを返した後の再読込では、
+        // 読み順は直近カード取得→初回prefix→接続再試行後のprefix再読込。
+        // 最初の2readは空。接続再試行がduplicateを返した後の再読込では、
         // 応答を失ったdraw1がcommit済みとして見える。
         gacha_history: [
+          { value: [] },
           { value: [] },
           { value: [{ event_id: 'event-response-lost-first' }] },
         ],
@@ -1130,7 +1132,10 @@ describe('GachaService.executeGachaForEventSub', () => {
             collection_name: null,
           }],
         }],
+        // 読み順は直近カード取得→初回prefix→接続再試行後のprefix再読込。
+        // 最初の2readは空。再読込時はcommit済みのdraw1・draw2が見える。
         gacha_history: [
+          { value: [] },
           { value: [] },
           {
             value: [
