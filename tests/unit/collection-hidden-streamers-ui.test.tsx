@@ -10,7 +10,7 @@ import type { Streamer } from "@/types/database";
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
-  postTradeJson: vi.fn(),
+  postJsonWithCsrfRetry: vi.fn(),
 }));
 
 vi.mock("next-intl/server", () => ({
@@ -25,8 +25,8 @@ vi.mock("next-intl", () => ({
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: mocks.refresh }),
 }));
-vi.mock("@/lib/trade-client", () => ({
-  postTradeJson: mocks.postTradeJson,
+vi.mock("@/lib/collection-client", () => ({
+  postJsonWithCsrfRetry: mocks.postJsonWithCsrfRetry,
 }));
 
 function entry(id: string, name: string) {
@@ -138,17 +138,17 @@ describe("Collection: 並び替えと非表示セクション (#1953)", () => {
 describe("CollectionHideButton (#1953)", () => {
   beforeEach(() => {
     mocks.refresh.mockReset();
-    mocks.postTradeJson.mockReset();
+    mocks.postJsonWithCsrfRetry.mockReset();
   });
 
   it("非表示ボタン: hidden=true でAPIを呼び、成功したら router.refresh() する", async () => {
-    mocks.postTradeJson.mockResolvedValue({ ok: true, data: { success: true } });
+    mocks.postJsonWithCsrfRetry.mockResolvedValue({ ok: true });
     render(<CollectionHideButton streamerId="s-1" streamerName="Alpha" hide />);
 
     fireEvent.click(screen.getByRole("button"));
 
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(1));
-    expect(mocks.postTradeJson).toHaveBeenCalledWith("/api/collection/hidden-streamers", {
+    expect(mocks.postJsonWithCsrfRetry).toHaveBeenCalledWith("/api/collection/hidden-streamers", {
       streamerId: "s-1",
       hidden: true,
     });
@@ -156,13 +156,13 @@ describe("CollectionHideButton (#1953)", () => {
   });
 
   it("再表示ボタン: hidden=false でAPIを呼ぶ", async () => {
-    mocks.postTradeJson.mockResolvedValue({ ok: true, data: { success: true } });
+    mocks.postJsonWithCsrfRetry.mockResolvedValue({ ok: true });
     render(<CollectionHideButton streamerId="s-1" streamerName="Alpha" hide={false} />);
 
     fireEvent.click(screen.getByRole("button"));
 
-    await waitFor(() => expect(mocks.postTradeJson).toHaveBeenCalled());
-    expect(mocks.postTradeJson).toHaveBeenCalledWith("/api/collection/hidden-streamers", {
+    await waitFor(() => expect(mocks.postJsonWithCsrfRetry).toHaveBeenCalled());
+    expect(mocks.postJsonWithCsrfRetry).toHaveBeenCalledWith("/api/collection/hidden-streamers", {
       streamerId: "s-1",
       hidden: false,
     });
@@ -170,21 +170,21 @@ describe("CollectionHideButton (#1953)", () => {
 
   it("送信中は disabled で二重送信できない", async () => {
     let resolvePost: (v: unknown) => void = () => {};
-    mocks.postTradeJson.mockReturnValue(new Promise((r) => (resolvePost = r)));
+    mocks.postJsonWithCsrfRetry.mockReturnValue(new Promise((r) => (resolvePost = r)));
     render(<CollectionHideButton streamerId="s-1" streamerName="Alpha" hide />);
 
     const button = screen.getByRole("button");
     fireEvent.click(button);
     await waitFor(() => expect(button).toBeDisabled());
     fireEvent.click(button);
-    expect(mocks.postTradeJson).toHaveBeenCalledTimes(1);
+    expect(mocks.postJsonWithCsrfRetry).toHaveBeenCalledTimes(1);
 
     resolvePost({ ok: true, data: {} });
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalled());
   });
 
   it("失敗したらエラー表示を出し、refresh せず、再試行できる(disabled解除)", async () => {
-    mocks.postTradeJson.mockResolvedValue({ ok: false, networkError: true });
+    mocks.postJsonWithCsrfRetry.mockResolvedValue({ ok: false });
     render(<CollectionHideButton streamerId="s-1" streamerName="Alpha" hide />);
 
     const button = screen.getByRole("button");

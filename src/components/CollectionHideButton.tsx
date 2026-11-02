@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { postTradeJson } from "@/lib/trade-client";
+import { postJsonWithCsrfRetry } from "@/lib/collection-client";
 
 interface CollectionHideButtonProps {
   streamerId: string;
@@ -21,11 +21,10 @@ interface CollectionHideButtonProps {
  *
  * - サーバーコンポーネントの一覧(Collection)から、クリック操作が必要なこの部品だけを
  *   client component に切り出している（一覧全体を client 化しない）。
- * - 書き込みは postTradeJson を再利用する。このヘルパーは名前こそトレード由来だが、
+ * - 書き込みは postJsonWithCsrfRetry（src/lib/collection-client.ts）を使う。
  *   CSRF cookie が未発行（HttpOnly + 遅延発行、src/lib/csrf.ts）のときの
  *   403 CSRF_TOKEN_INVALID → GET /api/session → 1回だけ再送、という本リポジトリ共通の
- *   復旧手順と、メンテナンス応答の解釈を実装済みで、トレード固有の処理は含まない。
- *   同じ手順をここで再実装して食い違わせないために使う。
+ *   復旧手順を実装している（preview の postTradeJson と同じ手順）。
  * - 確認ダイアログは出さない。非表示はカード所持に影響せず、「非表示のコレクション」
  *   から 1 クリックで元に戻せる可逆な操作のため、確認で操作を重くしない。
  * - 成功後は router.refresh() でサーバー側の一覧（並び・件数・折りたたみ）を再取得する。
@@ -47,7 +46,7 @@ export default function CollectionHideButton({
     setSubmitting(true);
     setError(false);
     try {
-      const result = await postTradeJson("/api/collection/hidden-streamers", {
+      const result = await postJsonWithCsrfRetry("/api/collection/hidden-streamers", {
         streamerId,
         hidden: hide,
       });
