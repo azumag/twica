@@ -123,8 +123,8 @@ export function computePackProgress(
 
 /**
  * Issue #948: resolve which pack key a gacha card should be looked up under
- * for the `{packName}` chat announcement placeholder — the card's OWN pack
- * takes priority over the pack the draw was scoped to.
+ * for the `{packName}` chat announcement placeholder — always the card's OWN
+ * pack.
  *
  * Issue #974: the `undefined -> drawScopeCollectionName` fallback for
  * pre-#948 outbox payloads (rows built before the migration that added
