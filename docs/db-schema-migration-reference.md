@@ -35,7 +35,13 @@
 
 `allow_non_additive` は workflow_dispatch のときだけ有効で、push では常にガードが効きます。DATABASE_URL を手元へ持ち出して `--allow-non-additive` を実行する手順は使いません。
 
-本番への適用を人の承認で止められるよう、GitHub Environment `production` には required reviewers を設定します。承認はジョブ開始前に求められるため、承認者は plan ではなく手順 1 の一覧を見て判断します。また required reviewers を付けると、main への push による additive な自動適用も毎回承認待ちになります。
+この input を使える経路は、次の設定を前提に限定しています。
+
+- 手動実行には repository への write 権限が必要です。
+- GitHub Environment `production` / `preview` の deployment branches を、それぞれ `main` / `main`・`preview` に限定しています。ほかの branch の workflow からは、どちらの DB の接続文字列も読めません。
+- main は ruleset で保護しています（PR 必須、force push・削除の禁止）。
+
+GitHub Environment `production` に required reviewers を付けて dispatch ごとに承認を挟む方法は使いません。`chat-outbox-watch.yml` が 5 分間隔の schedule で `production` を参照しているため、監視 run が毎回承認待ちで止まります。このため、本番での実行前の確認は、実行者が手順 1・2 を必ず行うことで担保します。
 
 本番リリースでは、contract migration を含むリリースが main に merge されると、まず push run がガードで失敗し、その間は同じリリースの additive な migration も適用されません（アプリは deploy-window fallback で縮退します）。新しいアプリのデプロイ完了を確認してから dispatch すると、非加法的な migration と additive な migration がファイル名順にまとめて適用されます。
 
