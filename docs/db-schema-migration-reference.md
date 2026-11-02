@@ -22,6 +22,23 @@
 
 なお `20261014100000` はこの方針の前に書かれた migration で、lock_timeout 無しのまま確定します。trade 機能の migration は 2026-10-19 時点で main（本番）には未リリースのため本番適用は将来のリリース時に起きますが、同一ファイルの checksum は全環境で一致しなければならないため、本番向けだけの追記もできません。preview は 2026-10-13 に同じ内容で適用されており、以後の migration は上の方針でガードします。
 
+## 非加法的(contract)なmigrationの適用
+
+`DROP FUNCTION` / `DROP COLUMN` / `RENAME` / 型変更 / `TRUNCATE` などの非加法的な文を含む migration は、push による `planetscale-migrate.yml` の自動適用では適用されません。`scripts/db-migrate.js` は pending にこれらが 1 件でもあると apply 全体を止めるため、同じ branch に後から merge された additive な migration も、contract migration を適用するまで止まり続けます（preview run 41100644424 は #1965 の `DROP FUNCTION` で停止しました）。
+
+適用手順:
+
+1. ブロックされた push run のログ（`非加法的(non-additive)なmigrationが検出されました:` の一覧）で、許可することになる migration を確認します。`allow_non_additive` は対象の 1 件だけでなく、pending にある非加法的 migration をすべてまとめて許可します。一覧に意図しないものがあれば、dispatch しません。
+2. 一覧の各 migration について、削除・変更対象を読むコードが対象環境で動いているアプリ・Worker に残っていないことを確認します。`src` などの grep に加え、PlanetScale Insights で対象の呼び出しが 0 件であることを見ます。
+3. GitHub の Actions → PlanetScale Migrations → Run workflow で、対象 branch（preview または main）を選び、`allow_non_additive` にチェックを付けて実行します。
+4. 適用後に run のログで、apply 前に出力された plan と `[applied]` の行が手順 1 の一覧と同じ集合（と同じ branch の additive な pending）であることと、最後の verify が OK であることを記録として確認します。plan は同じ step 内で apply の直前に出るため、事前の確認には使えません。
+
+`allow_non_additive` は workflow_dispatch のときだけ有効で、push では常にガードが効きます。DATABASE_URL を手元へ持ち出して `--allow-non-additive` を実行する手順は使いません。
+
+本番への適用を人の承認で止められるよう、GitHub Environment `production` には required reviewers を設定します。承認はジョブ開始前に求められるため、承認者は plan ではなく手順 1 の一覧を見て判断します。また required reviewers を付けると、main への push による additive な自動適用も毎回承認待ちになります。
+
+本番リリースでは、contract migration を含むリリースが main に merge されると、まず push run がガードで失敗し、その間は同じリリースの additive な migration も適用されません（アプリは deploy-window fallback で縮退します）。新しいアプリのデプロイ完了を確認してから dispatch すると、非加法的な migration と additive な migration がファイル名順にまとめて適用されます。
+
 ## Live Directory 設定列
 
 `streamers.publish_live_status` と `streamers.publish_stats` は `supabase/migrations/20260811000000_add_live_directory_settings.sql` で追加されました。
