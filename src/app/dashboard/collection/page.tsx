@@ -7,7 +7,6 @@ import {
 } from "@/lib/dashboard-data";
 import {
   countOwnedActiveCardTypes,
-  parseStreamerCollectionSort,
   sortCollectedCards,
   sortStreamerCollections,
   type StreamerCollectionSortMode,
@@ -49,13 +48,9 @@ interface StreamerCollectionEntry {
  * 並び替え・非表示の切替はブラウザ内で即時に行う（サーバー往復と米国 colo → DB(ソウル) の
  * 往復で 2 秒超かかった実測による。Refs #1953）。そのため全モードの並びをここで確定させ、
  * ID 配列だけを渡す（比較ロジックを client に複製しない）。
- * Next.js 16 では searchParams は Promise（await が必要）。
+ * `?sort=` の解釈は client 側（CollectionStreamerList が URL から読む）で行う。
  */
-export default async function CollectionPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ sort?: string | string[] }>;
-}) {
+export default async function CollectionPage() {
   const session = await getSession();
 
   // Session check is handled by layout, but we need session for data fetch
@@ -64,14 +59,11 @@ export default async function CollectionPage({
     return null;
   }
 
-  // 不正な ?sort= は既定（recent）へフォールバックする
-  const sortMode = parseStreamerCollectionSort((await searchParams).sort);
-
   // Fetch user's card collection
   // ユーザーのカードコレクションを取得
   // 非表示設定と最終獲得日時はカード取得と互いに依存しないので並列に取得する。
   // どちらも失敗時は内部で縮退（非表示なし / 日時不明）するため、ここで reject されない。
-  // 最終獲得日時は、client 側で recent に切り替えても即時に並べられるよう sortMode に関わらず常に取得する。
+  // 最終獲得日時は、client 側で recent に切り替えても即時に並べられるよう ?sort= に関わらず常に取得する。
   const [userCards, hiddenStreamerIds, lastObtainedAtByStreamer] = await Promise.all([
     getUserCards(session.twitchUserId),
     getHiddenCollectionStreamerIds(session.twitchUserId),
@@ -146,7 +138,6 @@ export default async function CollectionPage({
       cardsByStreamer={cardsByStreamer}
       orders={orders}
       hiddenStreamerIds={[...hiddenStreamerIds]}
-      sortMode={sortMode}
     />
   );
 }

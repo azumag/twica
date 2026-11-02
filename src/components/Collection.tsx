@@ -4,7 +4,6 @@ import { getTranslations } from "next-intl/server";
 import type { Streamer, Card } from "@/types/database";
 import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
 import {
-  DEFAULT_STREAMER_COLLECTION_SORT,
   type StreamerCollectionSortMode,
 } from "@/lib/collection-utils";
 import CollectionStreamerList from "@/components/CollectionStreamerList";
@@ -48,8 +47,6 @@ interface CollectionProps {
   orders?: Record<StreamerCollectionSortMode, string[]>;
   /** 視聴者が非表示にした配信者ID（#1953。初期値。以降の増減は client 側で楽観的に反映する）。 */
   hiddenStreamerIds?: string[];
-  /** 初期の並び替えモード（URL の ?sort= をサーバーで解釈したもの）。 */
-  sortMode?: StreamerCollectionSortMode;
 }
 
 /** orders 未指定（カード0枚の呼び出しなど）のときの空の並び。 */
@@ -74,7 +71,6 @@ export default async function Collection({
   cardsByStreamer,
   orders = EMPTY_ORDERS,
   hiddenStreamerIds = [],
-  sortMode = DEFAULT_STREAMER_COLLECTION_SORT,
 }: CollectionProps) {
   const t = await getTranslations("collection");
   const tStats = await getTranslations("stats");
@@ -239,7 +235,6 @@ export default async function Collection({
         <CollectionStreamerList
           items={entries.map(renderStreamerItem)}
           orders={orders}
-          initialSort={sortMode}
           initialHiddenIds={hiddenStreamerIds}
         />
       )}
