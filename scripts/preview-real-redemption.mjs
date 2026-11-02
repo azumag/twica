@@ -10,7 +10,7 @@
 
 import { spawn } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { constants as osConstants, homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,7 +38,7 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i]?.replace(/^--/, '')
     const value = rest[i + 1]
-    if (!(key in DEFAULTS) || value === undefined) throw new Error(`unknown or incomplete option: ${rest[i]}`)
+    if (!Object.hasOwn(DEFAULTS, key) || value === undefined) throw new Error(`unknown or incomplete option: ${rest[i]}`)
     opts[key] = key === 'count' ? Number(value) : value
   }
   if (!/^[a-z0-9_]{3,25}$/.test(opts.channel)) throw new Error(`invalid channel login: ${opts.channel}`)
@@ -291,16 +291,39 @@ function splitJsonObjects(buffer) {
 }
 
 const tailChildren = new Set()
-// 異常終了しても wrangler tail を孤児にしない。
-process.on('exit', () => {
-  for (const child of tailChildren) child.kill('SIGKILL')
-})
+let tailCleanupRegistered = false
+
+// wrangler tail は npx → wrangler.js → cli の多段で起動し、SIGKILL は子へ転送されない。
+// 独立したプロセスグループで起動し（detached）、グループごと signal を送って孤児にしない。
+function killTail(child, signal) {
+  try {
+    process.kill(-child.pid, signal)
+  } catch {
+    // 既に終了している
+  }
+}
+
+// 異常終了しても wrangler tail を孤児にしない。tail は別グループのため端末の Ctrl+C が
+// 直接は届かないので、ハーネスが受けた signal でも exit（→ グループ kill）させる。
+// テストで import しただけでは登録しないよう、最初の tail 起動時に登録する。
+function registerTailCleanup() {
+  if (tailCleanupRegistered) return
+  tailCleanupRegistered = true
+  process.on('exit', () => {
+    for (const child of tailChildren) killTail(child, 'SIGKILL')
+  })
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => process.exit(128 + osConstants.signals[signal]))
+  }
+}
 
 function startTail(worker) {
   // リポジトリの devDependency の wrangler を使う。
+  registerTailCleanup()
   const child = spawn('npx', ['wrangler', 'tail', worker, '--format', 'json'], {
     cwd: REPO_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   })
   tailChildren.add(child)
   child.on('exit', () => tailChildren.delete(child))
@@ -309,6 +332,8 @@ function startTail(worker) {
   child.on('error', () => { tail.failed = true })
   child.on('exit', () => { tail.failed = true })
   let buffer = ''
+  // chunk 境界でマルチバイト文字（日本語ログ）が壊れないよう、decoder に任せる。
+  child.stdout.setEncoding('utf8')
   child.stdout.on('data', (chunk) => {
     const { objects, rest } = splitJsonObjects(buffer + chunk)
     buffer = rest
@@ -328,9 +353,9 @@ function startTail(worker) {
 }
 
 async function stopTails(tails) {
-  for (const tail of tails) tail.child.kill('SIGINT')
+  for (const tail of tails) killTail(tail.child, 'SIGINT')
   await sleep(1_000)
-  for (const tail of tails) if (tail.child.exitCode === null) tail.child.kill('SIGKILL')
+  for (const tail of tails) killTail(tail.child, 'SIGKILL')
 }
 
 function tailAlive(tail) {
@@ -529,6 +554,10 @@ async function run(opts, out) {
       result.logs = logs
       writeFileSync(join(out, 'worker-logs.json'), JSON.stringify(tails.map(({ worker, events }) => ({ worker, events })), null, 2))
       result.ok = result.ok && logs.ok
+    } else {
+      // QA の実経路ゲートは Worker ログの確認を含むため、省略したことを結果に残す。
+      result.logs = 'skipped'
+      console.log('Worker ログ未確認（--logs off）: QA の実経路ゲートの証拠としては不足')
     }
   } catch (error) {
     result.ok = false
