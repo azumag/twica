@@ -69,7 +69,8 @@
 # `--allow-non-additive` 無しでは apply/plan をブロックする（issue #800 で実装済み）。
 # 非加法的な変更を含むmigrationは、このworkflowでの自動適用に任せず、
 # デプロイ順序を人間が管理した上で手動適用すること（例: 新コードのデプロイ完了を
-# 確認してから該当migrationを個別に`apply`する）。
+# 確認してから、このworkflowを`allow_non_additive`付きでworkflow_dispatchする）。
+# 手順は docs/db-schema-migration-reference.md の「非加法的(contract)なmigrationの適用」。
 #
 # Prerequisites / 前提条件:
 # - GitHub Environment "production" / "preview" の双方に
@@ -124,7 +125,20 @@ on:
   # 手動再実行ではGitHub UIでmainまたはpreviewのrefを選ぶ。Environmentを別inputで
   # 選ばせると「previewコード + production secret」のような危険な組合せを作れるため、
   # 対象Environmentは常にGITHUB_REFから機械的に導出する。
-  workflow_dispatch: {}
+  #
+  # allow_non_additive: 非加法的(contract)なmigrationを適用する唯一のCI経路。
+  # db-migrate.js の非加法ガードは pending に非加法的な文が1件でもあると apply 全体を
+  # 止めるため、contract migration が merge されると後続の additive migration も
+  # 適用されなくなる（preview run 41100644424 が #1965 の DROP FUNCTION で停止した）。
+  # 手動適用に DATABASE_URL を手元へ持ち出させないよう、人間がアプリ側の準備完了
+  # （削除対象を読むコードが残っていないこと）を確認したうえで、このinputを付けて
+  # dispatchする。push では常に false で、自動適用は additive のみという運用は変えない。
+  workflow_dispatch:
+    inputs:
+      allow_non_additive:
+        description: '非加法的(contract)なmigrationの適用を許可する。削除対象を読むアプリコードが対象環境に残っていないことを確認してから使う'
+        type: boolean
+        default: false
 
 # このworkflow専用の独立したconcurrencyグループ。cancel-in-progress: false により、
 # 同一ブランチへの連続pushがあっても、先行のmigration runが完走するまで後続はキューで待つ
@@ -168,14 +182,24 @@ jobs:
       # job-level ifに加えstep内でもrefを検証する多重防御。将来job条件が編集されても、
       # main/preview以外のコードからmigration-capable secretを使ったDDLを実行させない。
       # apply後のverifyで履歴checksumとdisk上migrationの不一致も同じrun内で検出する。
+      # 非加法的な適用を許可したrunでは、何が適用されるかを同じrunのログに残すため
+      # apply の前に plan を出力する。
       - name: Apply PlanetScale migrations
         run: |
           if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/preview" ]; then
             echo "::error::PlanetScale migrations are only allowed from main or preview"
             exit 1
           fi
-          node scripts/db-migrate.js apply --provider=planetscale
+          APPLY_FLAGS=""
+          if [ "$ALLOW_NON_ADDITIVE" = "true" ]; then
+            echo "::warning::非加法的(contract)なmigrationの適用を許可して実行します（workflow_dispatch input）"
+            node scripts/db-migrate.js plan --provider=planetscale --allow-non-additive
+            APPLY_FLAGS="--allow-non-additive"
+          fi
+          node scripts/db-migrate.js apply --provider=planetscale $APPLY_FLAGS
           node scripts/db-migrate.js verify --provider=planetscale
         env:
           DATABASE_URL: ${{ secrets.PLANETSCALE_DATABASE_URL }}
           MIGRATION_APPLIED_BY: github-actions[${{ github.run_id }}]
+          # push には inputs が無く空文字になるため、dispatch で明示したときだけ true。
+          ALLOW_NON_ADDITIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_non_additive && 'true' || 'false' }}
