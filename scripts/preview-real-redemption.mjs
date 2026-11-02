@@ -1,0 +1,464 @@
+// preview の実チャネルポイント交換テスト（ローカル専用。docs/QA.md「Preview 実経路ゲート」）。
+//
+//   npm run e2e:preview-redemption -- login            専用プロファイルの Chrome を通常起動し、Twitch と preview に手動ログインする（初回のみ）
+//   npm run e2e:preview-redemption -- check            交換せずに overlay / 報酬メニュー / 履歴API / チャット / Worker tail の到達性を確認する
+//   npm run e2e:preview-redemption -- run [--count N]  実交換を N 回（既定 2）行い、overlay・Twitch チャット・ガチャ履歴・Worker ログを交換ごとに突き合わせる
+//
+// 固定 preview URL 以外には接続しない。Cookie・トークンを読み出したり出力したりしない。
+// 結果は ~/.twica-preview-e2e/runs/<時刻>-<mode>/ に result.json・worker-logs.json・スクリーンショットで残す。
+// Worker ログには `wrangler login` 済みであることが必要（`--logs off` で省略できる）。
+
+import { spawn } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const APP = 'https://twica-preview.tsubasa-azumagakito.workers.dev'
+const DEFAULTS = {
+  channel: 'azumagbanjo',
+  reward: 'ドッスン君？！',
+  streamerId: '9d0f9d09-3972-4aa2-b32e-c6d222a6cfd9',
+  count: 2,
+  logs: 'on',
+}
+const HOME = join(homedir(), '.twica-preview-e2e')
+const PROFILE = join(HOME, 'chrome-profile')
+const OVERLAY_TIMEOUT_MS = 20_000
+const CHAT_TIMEOUT_MS = 45_000
+const HISTORY_TIMEOUT_MS = 30_000
+
+function parseArgs(argv) {
+  const [command, ...rest] = argv
+  const opts = { ...DEFAULTS }
+  for (let i = 0; i < rest.length; i += 2) {
+    const key = rest[i]?.replace(/^--/, '')
+    const value = rest[i + 1]
+    if (!(key in DEFAULTS) || value === undefined) throw new Error(`unknown or incomplete option: ${rest[i]}`)
+    opts[key] = key === 'count' ? Number(value) : value
+  }
+  if (!/^[a-z0-9_]{3,25}$/.test(opts.channel)) throw new Error(`invalid channel login: ${opts.channel}`)
+  if (!/^[0-9a-f-]{36}$/.test(opts.streamerId)) throw new Error(`invalid streamerId: ${opts.streamerId}`)
+  if (!Number.isInteger(opts.count) || opts.count < 1 || opts.count > 5) throw new Error('count must be 1..5')
+  if (!['on', 'off'].includes(opts.logs)) throw new Error('logs must be on|off')
+  return { command, opts }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const now = () => new Date().toISOString()
+
+async function launch() {
+  mkdirSync(PROFILE, { recursive: true })
+  // unit test から純粋関数だけを読み込めるよう、ブラウザ依存は実行時に読み込む。
+  const { chromium } = await import('playwright-core')
+  return chromium.launchPersistentContext(PROFILE, {
+    channel: 'chrome',
+    headless: false,
+    viewport: null,
+    // login で通常起動した Chrome は Cookie を macOS キーチェーンの鍵で暗号化して保存する。
+    // Playwright 既定の --use-mock-keychain のままだと復号できず、未ログインに見える。
+    ignoreDefaultArgs: ['--use-mock-keychain'],
+    // overlay と chat は背景タブでも観測し続けるため、タイマー間引きを止める。
+    args: [
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+    ],
+  })
+}
+
+// ---- overlay ---------------------------------------------------------------
+
+async function openOverlay(context, streamerId) {
+  const page = await context.newPage()
+  await page.goto(`${APP}/overlay/${streamerId}?debug=true`, { waitUntil: 'domcontentloaded' })
+  await page.getByText(/Status: connected/).waitFor({ timeout: 30_000 })
+  return page
+}
+
+// 最初に陽性になった sample（カード DOM + 画像画素）を返す。
+async function waitOverlayCard(page, sinceMs) {
+  const deadline = Date.now() + OVERLAY_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const sample = await page.evaluate(() => {
+      const root = document.querySelector('[data-overlay-card="true"]')
+      if (!root) return null
+      const style = getComputedStyle(root)
+      const rect = root.getBoundingClientRect()
+      const img = root.querySelector('img')
+      const fallback = root.querySelector('[data-overlay-card-fallback="true"]')
+      return {
+        instance: root.getAttribute('data-overlay-display-instance'),
+        text: root.innerText.trim().slice(0, 200),
+        opacity: style.opacity,
+        visibility: style.visibility,
+        rect: { w: Math.round(rect.width), h: Math.round(rect.height) },
+        image: img ? { complete: img.complete, w: img.naturalWidth, h: img.naturalHeight } : null,
+        fallback: Boolean(fallback),
+      }
+    })
+    const visible = sample && sample.visibility !== 'hidden' && Number(sample.opacity) > 0 && sample.rect.w > 0
+    const painted = sample && (sample.fallback || (sample.image?.complete && sample.image.w > 0 && sample.image.h > 0))
+    if (visible && painted) return { ...sample, latencyMs: Date.now() - sinceMs }
+    await sleep(300)
+  }
+  return null
+}
+
+// ---- history (preview app session) ----------------------------------------
+
+async function openApp(context) {
+  const page = await context.newPage()
+  // dashboard はクライアント側で遷移することがあるため、落ち着いてから same-origin fetch に使う。
+  await page.goto(`${APP}/dashboard`, { waitUntil: 'networkidle' })
+  return page
+}
+
+async function fetchHistory(appPage) {
+  return appPage.evaluate(async () => {
+    const res = await fetch('/api/gacha-history?perPage=10', { credentials: 'include', cache: 'no-store' })
+    if (!res.ok) return { status: res.status, rows: [] }
+    const body = await res.json()
+    const rows = (body.history ?? []).map((row) => ({
+      id: row.id,
+      card: row.cards?.name ?? null,
+      rarity: row.cards?.rarity ?? null,
+      user: row.user_twitch_username ?? null,
+      redeemedAt: row.redeemed_at ?? null,
+    }))
+    return { status: res.status, rows }
+  })
+}
+
+async function waitNewHistory(appPage, knownIds) {
+  const deadline = Date.now() + HISTORY_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const { rows } = await fetchHistory(appPage)
+    const fresh = rows.filter((row) => !knownIds.has(row.id))
+    if (fresh.length > 0) return fresh
+    await sleep(2_000)
+  }
+  return []
+}
+
+// ---- Twitch popout chat ---------------------------------------------------
+
+async function openChat(context, channel) {
+  const page = await context.newPage()
+  await page.goto(`https://www.twitch.tv/popout/${channel}/chat`, { waitUntil: 'domcontentloaded' })
+  await page.locator('[data-a-target="chat-input"]').first().waitFor({ timeout: 30_000 })
+  return page
+}
+
+async function chatLines(page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('[data-a-target="chat-line-message"], .chat-line__message')].map((el) =>
+      el.innerText.replace(/\s+/g, ' ').trim(),
+    ),
+  )
+}
+
+async function waitChatLine(page, baseline, needle) {
+  const deadline = Date.now() + CHAT_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const lines = (await chatLines(page)).slice(baseline)
+    const hit = lines.find((line) => line.includes(needle))
+    if (hit) return hit
+    await sleep(1_000)
+  }
+  return null
+}
+
+async function openRewardDetail(page, reward) {
+  const pointsButton = page
+    .locator('[data-test-selector="community-points-summary"] button')
+    .or(page.getByRole('button', { name: /ビッツとポイント|Bits and Points/ }))
+    .first()
+  await pointsButton.click()
+  // 初回だけ「パワーアップ＆報酬」の案内カードが報酬一覧の代わりに出る（ポイントは消費しない）。
+  const onboarding = page.getByRole('button', { name: /早速始めましょう|Get Started/ })
+  if (await onboarding.isVisible({ timeout: 3_000 }).catch(() => false)) await onboarding.click()
+  // 報酬が Twitch 側で無効（is_enabled=false）だと一覧に出ない。報酬名はタイルの下の
+  // ラベルで、押せるのはコストを表示したタイル本体の button なので、両方を含む最小の要素から辿る。
+  const title = page.getByText(reward, { exact: true })
+  await title.first().waitFor({ timeout: 10_000 })
+  await page.locator('div', { has: title }).filter({ has: page.locator('button') }).last().locator('button').first().click()
+  // 確認画面の交換ボタン（例: 「交換 10」）。押すのは run のときだけ。
+  const redeem = page.getByRole('dialog').getByRole('button', { name: /^(交換|Redeem)/ }).last()
+  await redeem.waitFor({ timeout: 10_000 })
+  // 別の報酬の確認画面で押さないよう、確認画面に対象の報酬名があることを確かめる。
+  await page.getByRole('dialog').getByText(reward, { exact: true }).last().waitFor({ timeout: 5_000 })
+  await page.waitForTimeout(800) // 開くアニメーションの途中で撮影しない
+  return redeem
+}
+
+// ---- Worker logs (wrangler tail) ------------------------------------------
+
+const TAIL_WORKERS = ['twica-preview', 'twica-overlay-realtime-preview', 'twica-chat-delivery-preview']
+
+// tail の event にはリクエストヘッダー（Cookie、EventSub 署名など）が入るため、
+// ヘッダーは捨て、Worker 名・結果・パス・ステータス・ログ本文・例外だけを残す。
+function redactTailEvent(event) {
+  let path = null
+  try {
+    path = event.event?.request?.url ? new URL(event.event.request.url).pathname : null
+  } catch {
+    path = null
+  }
+  return {
+    worker: event.scriptName,
+    at: event.eventTimestamp ? new Date(event.eventTimestamp).toISOString() : null,
+    outcome: event.outcome,
+    method: event.event?.request?.method ?? null,
+    path,
+    status: event.event?.response?.status ?? null,
+    queue: event.event?.queue ?? null,
+    cron: event.event?.cron ?? null,
+    logs: (event.logs ?? []).map((log) => `${log.level}: ${JSON.stringify(log.message).slice(0, 400)}`),
+    exceptions: (event.exceptions ?? []).map((ex) => `${ex.name}: ${String(ex.message).slice(0, 300)}`),
+  }
+}
+
+// `wrangler tail --format json` は 1 event ごとに整形済み JSON を出力し、chunk の境界は
+// event の境界と一致しない。トップレベルの { } が閉じた所で区切り、残りは次の chunk へ回す。
+function splitJsonObjects(buffer) {
+  const objects = []
+  let depth = 0
+  let start = -1
+  let inString = false
+  let escaped = false
+  let consumed = 0
+  for (let i = 0; i < buffer.length; i += 1) {
+    const c = buffer[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') inString = true
+    else if (c === '{') {
+      if (depth === 0) start = i
+      depth += 1
+    } else if (c === '}' && depth > 0) {
+      depth -= 1
+      if (depth === 0) {
+        objects.push(buffer.slice(start, i + 1))
+        consumed = i + 1
+      }
+    }
+  }
+  return { objects, rest: buffer.slice(consumed) }
+}
+
+const tailChildren = new Set()
+// 異常終了しても wrangler tail を孤児にしない。
+process.on('exit', () => {
+  for (const child of tailChildren) child.kill('SIGKILL')
+})
+
+function startTail(worker) {
+  // リポジトリの devDependency の wrangler を使う。
+  const child = spawn('npx', ['wrangler', 'tail', worker, '--format', 'json'], {
+    cwd: REPO_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  tailChildren.add(child)
+  child.on('exit', () => tailChildren.delete(child))
+  const tail = { worker, events: [], stderr: '', child }
+  let buffer = ''
+  child.stdout.on('data', (chunk) => {
+    const { objects, rest } = splitJsonObjects(buffer + chunk)
+    buffer = rest
+    for (const text of objects) {
+      try {
+        tail.events.push(redactTailEvent(JSON.parse(text)))
+      } catch {
+        // 壊れた断片は捨てる
+      }
+    }
+  })
+  child.stderr.on('data', (chunk) => {
+    tail.stderr = (tail.stderr + chunk).slice(-2_000)
+  })
+  return tail
+}
+
+async function stopTails(tails) {
+  for (const tail of tails) tail.child.kill('SIGINT')
+  await sleep(1_000)
+  for (const tail of tails) if (tail.child.exitCode === null) tail.child.kill('SIGKILL')
+}
+
+function summarizeTails(tails) {
+  const events = tails.flatMap((tail) => tail.events)
+  const text = (event) => [...event.logs, ...event.exceptions].join('\n')
+  return {
+    connected: Object.fromEntries(tails.map((tail) => [tail.worker, !/error|✘/i.test(tail.stderr)])),
+    events: Object.fromEntries(tails.map((tail) => [tail.worker, tail.events.length])),
+    eventsub: events.filter((event) => event.path === '/api/twitch/eventsub').map((event) => ({ at: event.at, status: event.status, outcome: event.outcome })),
+    redemptionLogs: events.filter((event) => /channel_points_custom_reward_redemption/.test(text(event))).length,
+    chatSentLogs: events.filter((event) => /Chat message sent/i.test(text(event))).length,
+    retryLogs: events.filter((event) => /retry|retrying|parked|stall/i.test(text(event))).map((event) => ({ worker: event.worker, at: event.at, logs: event.logs.slice(0, 3) })),
+    nonOk: events.filter((event) => event.outcome && event.outcome !== 'ok').map((event) => ({ worker: event.worker, at: event.at, outcome: event.outcome, path: event.path })),
+    errorLogs: events.filter((event) => event.exceptions.length > 0 || event.logs.some((log) => log.startsWith('error'))).map((event) => ({ worker: event.worker, at: event.at, path: event.path, logs: event.logs.filter((log) => log.startsWith('error')).slice(0, 3), exceptions: event.exceptions })),
+    http5xx: events.filter((event) => event.status >= 500).map((event) => ({ worker: event.worker, at: event.at, path: event.path, status: event.status })),
+  }
+}
+
+// ---- commands -------------------------------------------------------------
+
+// Twitch のログイン画面は自動操作中の Chrome を「未対応のブラウザ」として拒否する。
+// 検知の回避はせず、ログインだけは同じ専用プロファイルを通常起動した Chrome で人が行い、
+// check / run はそこで保存されたセッションを再利用する。
+function login() {
+  mkdirSync(PROFILE, { recursive: true })
+  const child = spawn(
+    'open',
+    ['-na', 'Google Chrome', '--args', `--user-data-dir=${PROFILE}`, '--no-first-run',
+      'https://www.twitch.tv/login', `${APP}/`],
+    { stdio: 'inherit' },
+  )
+  child.on('exit', (code) => {
+    console.log('専用プロファイルの Chrome を通常起動しました。')
+    console.log('(1) Twitch にログイン、(2) preview の TwiCa に Twitch でログインしたら、')
+    console.log('その Chrome を Cmd+Q で終了してください（プロファイルのロックを外すため）。')
+    process.exitCode = code ?? 0
+  })
+}
+
+async function check(opts, out) {
+  const context = await launch()
+  const result = { mode: 'check', startedAt: now(), opts, checks: {} }
+  const tails = opts.logs === 'on' ? TAIL_WORKERS.map(startTail) : []
+  try {
+    if (tails.length > 0) await sleep(8_000) // tail の接続を待つ（接続前の event は届かない）
+    const overlay = await openOverlay(context, opts.streamerId)
+    result.checks.overlayConnected = true
+    const app = await openApp(context)
+    const history = await fetchHistory(app)
+    result.checks.historyApi = { status: history.status, rows: history.rows.length }
+    const chat = await openChat(context, opts.channel)
+    result.checks.chatReady = true
+    await openRewardDetail(chat, opts.reward)
+    result.checks.rewardDetailOpened = true
+    await chat.screenshot({ path: join(out, 'check-reward-detail.png') })
+    await overlay.screenshot({ path: join(out, 'check-overlay.png') })
+    await chat.keyboard.press('Escape')
+    if (tails.length > 0) {
+      await sleep(5_000)
+      // プロセスが生きているだけでは受信の証拠にならないため、受信 event 数も残す。
+      // check でも overlay と dashboard を開くので、少なくとも app Worker には event が届く。
+      result.checks.tail = Object.fromEntries(tails.map((tail) => [tail.worker, {
+        alive: tail.child.exitCode === null && !/error|✘/i.test(tail.stderr),
+        events: tail.events.length,
+        stderr: tail.stderr.trim().slice(-200) || null,
+      }]))
+    }
+    const tailChecks = Object.values(result.checks.tail ?? {})
+    result.ok = history.status === 200 && tailChecks.every((t) => t.alive) &&
+      (tails.length === 0 || (result.checks.tail['twica-preview']?.events ?? 0) > 0)
+  } catch (error) {
+    result.ok = false
+    result.error = String(error?.message ?? error).slice(0, 500)
+    for (const [i, page] of context.pages().entries()) {
+      await page.screenshot({ path: join(out, `check-error-${i}.png`) }).catch(() => {})
+    }
+  } finally {
+    result.finishedAt = now()
+    await stopTails(tails)
+    await context.close()
+  }
+  return result
+}
+
+async function run(opts, out) {
+  const context = await launch()
+  const result = { mode: 'run', startedAt: now(), opts, redemptions: [] }
+  const tails = opts.logs === 'on' ? TAIL_WORKERS.map(startTail) : []
+  try {
+    if (tails.length > 0) await sleep(8_000) // tail の接続を待つ（接続前の event は届かない）
+    const overlay = await openOverlay(context, opts.streamerId)
+    const app = await openApp(context)
+    const initial = await fetchHistory(app)
+    if (initial.status !== 200) throw new Error(`gacha-history API returned ${initial.status}（preview に未ログインの可能性）`)
+    const knownIds = new Set(initial.rows.map((row) => row.id))
+    const chat = await openChat(context, opts.channel)
+
+    for (let n = 1; n <= opts.count; n += 1) {
+      const entry = { n }
+      const baseline = (await chatLines(chat)).length
+      const redeem = await openRewardDetail(chat, opts.reward)
+      const clickedAt = Date.now()
+      entry.redeemedAt = new Date(clickedAt).toISOString()
+      await redeem.click()
+      await chat.screenshot({ path: join(out, `${n}-twitch-redeemed.png`) })
+
+      entry.overlay = await waitOverlayCard(overlay, clickedAt)
+      await overlay.screenshot({ path: join(out, `${n}-overlay.png`) })
+
+      const fresh = await waitNewHistory(app, knownIds)
+      fresh.forEach((row) => knownIds.add(row.id))
+      entry.history = fresh
+
+      const cardName = fresh[0]?.card
+      entry.chat = cardName ? await waitChatLine(chat, baseline, cardName) : null
+      await chat.screenshot({ path: join(out, `${n}-chat.png`) })
+      await chat.keyboard.press('Escape').catch(() => {})
+
+      entry.ok = Boolean(entry.overlay && fresh.length > 0 && entry.chat)
+      result.redemptions.push(entry)
+      console.log(`#${n}: overlay=${Boolean(entry.overlay)} history=${fresh.length} chat=${Boolean(entry.chat)} card=${cardName ?? '-'}`)
+      // 交換単位を識別できるよう間隔を空ける。
+      if (n < opts.count) await sleep(8_000)
+    }
+    result.ok = result.redemptions.length === opts.count && result.redemptions.every((entry) => entry.ok)
+    if (tails.length > 0) {
+      await sleep(15_000) // chat 配信や overlay の遅れて届く event を拾う
+      const logs = summarizeTails(tails)
+      logs.ok =
+        Object.values(logs.connected).every(Boolean) &&
+        logs.eventsub.filter((event) => event.status === 200).length >= opts.count &&
+        logs.nonOk.length === 0 && logs.errorLogs.length === 0 && logs.http5xx.length === 0 && logs.retryLogs.length === 0
+      result.logs = logs
+      writeFileSync(join(out, 'worker-logs.json'), JSON.stringify(tails.map(({ worker, events }) => ({ worker, events })), null, 2))
+      result.ok = result.ok && logs.ok
+    }
+  } catch (error) {
+    result.ok = false
+    result.error = String(error?.message ?? error).slice(0, 500)
+    for (const [i, page] of context.pages().entries()) {
+      await page.screenshot({ path: join(out, `run-error-${i}.png`) }).catch(() => {})
+    }
+  } finally {
+    result.finishedAt = now()
+    await stopTails(tails)
+    await context.close()
+  }
+  return result
+}
+
+async function main() {
+  const { command, opts } = parseArgs(process.argv.slice(2))
+  if (command === 'login') {
+    login()
+  } else if (command === 'check' || command === 'run') {
+    const out = join(HOME, 'runs', `${now().replace(/[:.]/g, '-')}-${command}`)
+    mkdirSync(out, { recursive: true })
+    const result = command === 'check' ? await check(opts, out) : await run(opts, out)
+    writeFileSync(join(out, 'result.json'), JSON.stringify(result, null, 2))
+    console.log(JSON.stringify(result, null, 2))
+    console.log(`output: ${out}`)
+    process.exitCode = result.ok ? 0 : 1
+  } else {
+    console.error('usage: npm run e2e:preview-redemption -- <login|check|run> [--count N] [--channel login] [--reward title] [--streamerId uuid] [--logs on|off]')
+    process.exitCode = 2
+  }
+}
+
+if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+  await main()
+}
+
+export { parseArgs, redactTailEvent, splitJsonObjects, summarizeTails }
