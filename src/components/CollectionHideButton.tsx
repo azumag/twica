@@ -1,12 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { postJsonWithCsrfRetry } from "@/lib/collection-client";
 
 interface CollectionHideButtonProps {
-  streamerId: string;
   /** aria-label 用の配信者表示名（同じ文言のボタンが並ぶため、対象を読み上げに含める） */
   streamerName: string;
   /**
@@ -14,58 +10,36 @@ interface CollectionHideButtonProps {
    * false = 再表示する（「非表示のコレクション」内のボタン）。
    */
   hide: boolean;
+  /** 送信中（同じ配信者への二重送信を防ぐ）。 */
+  disabled: boolean;
+  onClick: () => void;
+  /** 直前の更新が失敗したか。true のときボタンの下にエラー文言を出す。 */
+  error: boolean;
 }
 
 /**
  * マイコレクション一覧の「非表示 / 再表示」ボタン (#1953)。
  *
- * - サーバーコンポーネントの一覧(Collection)から、クリック操作が必要なこの部品だけを
- *   client component に切り出している（一覧全体を client 化しない）。
- * - 書き込みは postJsonWithCsrfRetry（src/lib/collection-client.ts）を使う。
- *   CSRF cookie が未発行（HttpOnly + 遅延発行、src/lib/csrf.ts）のときの
- *   403 CSRF_TOKEN_INVALID → GET /api/session → 1回だけ再送、という本リポジトリ共通の
- *   復旧手順を実装している（preview の postTradeJson と同じ手順）。
- * - 確認ダイアログは出さない。非表示はカード所持に影響せず、「非表示のコレクション」
- *   から 1 クリックで元に戻せる可逆な操作のため、確認で操作を重くしない。
- * - 成功後は router.refresh() でサーバー側の一覧（並び・件数・折りたたみ）を再取得する。
- *   送信中と再取得中は disabled にして二重送信を防ぐ（API 自体も冪等）。
+ * 状態と通信は持たない表示専用の部品。楽観的更新・POST・失敗時の巻き戻しは、
+ * カードの移動と一体で扱う親の CollectionStreamerList が行う。
+ * 確認ダイアログは出さない。非表示はカード所持に影響せず、「非表示のコレクション」
+ * から 1 クリックで元に戻せる可逆な操作のため、確認で操作を重くしない。
  */
 export default function CollectionHideButton({
-  streamerId,
   streamerName,
   hide,
+  disabled,
+  onClick,
+  error,
 }: CollectionHideButtonProps) {
   const t = useTranslations("collection.hide");
-  const router = useRouter();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(false);
-  // router.refresh() の完了まで isRefreshing が true になり、再取得中の再クリックも防ぐ
-  const [isRefreshing, startTransition] = useTransition();
-
-  const handleClick = async () => {
-    setSubmitting(true);
-    setError(false);
-    try {
-      const result = await postJsonWithCsrfRetry("/api/collection/hidden-streamers", {
-        streamerId,
-        hidden: hide,
-      });
-      if (result.ok) {
-        startTransition(() => router.refresh());
-      } else {
-        setError(true);
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   return (
     <div className="flex flex-col items-end">
       <button
         type="button"
-        onClick={handleClick}
-        disabled={submitting || isRefreshing}
+        onClick={onClick}
+        disabled={disabled}
         aria-label={hide ? t("hideAria", { name: streamerName }) : t("showAria", { name: streamerName })}
         className="rounded-lg border border-gray-600 px-3 py-2 text-sm text-gray-300 transition-colors hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
       >

@@ -3,10 +3,9 @@ import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import type { Streamer, Card } from "@/types/database";
 import {
-  DEFAULT_STREAMER_COLLECTION_SORT,
   type StreamerCollectionSortMode,
 } from "@/lib/collection-utils";
-import CollectionHideButton from "@/components/CollectionHideButton";
+import CollectionStreamerList from "@/components/CollectionStreamerList";
 
 interface CardWithDetails extends Card {
   streamer: Streamer;
@@ -36,60 +35,67 @@ interface StreamerCollectionEntry {
 
 interface CollectionProps {
   /**
-   * 通常一覧に表示する配信者（並び替え済み。Object.values の順で表示する）。
-   * キーは UUID（配列インデックスに解釈される整数文字列ではない）なので
-   * 挿入順が保たれる。並び替えは呼び出し側（page.tsx）の sortStreamerCollections で行う。
+   * 全配信者（非表示を含む）。キーは配信者ID。ここでの順序には意味が無く、表示順は orders で決まる。
+   * 非表示かどうかも client 側の状態で決まる（hiddenStreamerIds は初期値）。
    */
   cardsByStreamer: Record<string, StreamerCollectionEntry>;
-  /** 視聴者が非表示にした配信者（#1953）。一覧の下の折りたたみ内に表示する。 */
-  hiddenCardsByStreamer?: Record<string, StreamerCollectionEntry>;
-  /** 現在の並び替えモード（切替リンクの強調表示用。並びそのものは cardsByStreamer 側で確定済み）。 */
-  sortMode?: StreamerCollectionSortMode;
+  /**
+   * 並び替えモードごとの配信者ID配列（page.tsx が sortStreamerCollections で確定させたもの）。
+   * 比較ロジックを client に複製しないため、順序はサーバーで確定させ ID だけを渡す。
+   */
+  orders?: Record<StreamerCollectionSortMode, string[]>;
+  /** 視聴者が非表示にした配信者ID（#1953。初期値。以降の増減は client 側で楽観的に反映する）。 */
+  hiddenStreamerIds?: string[];
 }
 
-/** 並び替えモード切替リンク。既定(recent)は URL を汚さないようクエリ無しにする。 */
-const SORT_OPTIONS: ReadonlyArray<{ mode: StreamerCollectionSortMode; href: string }> = [
-  { mode: "recent", href: "/dashboard/collection" },
-  { mode: "name", href: "/dashboard/collection?sort=name" },
-  { mode: "completion", href: "/dashboard/collection?sort=completion" },
-];
+/** orders 未指定（カード0枚の呼び出しなど）のときの空の並び。 */
+const EMPTY_ORDERS: Record<StreamerCollectionSortMode, string[]> = {
+  recent: [],
+  name: [],
+  completion: [],
+};
 
 /**
  * Collection Component (Server Component)
  * Displays summary of user's card collection by streamer
  * コレクションコンポーネント（サーバーコンポーネント）- 配信者ごとのコレクションサマリを表示
+ *
+ * #1953: 各カードの中身（ヘッダー・レアリティサマリ・リンク）はここでサーバー描画し、
+ * 並び替え・非表示の切替は client component の CollectionStreamerList に任せる。
+ * 以前は並び替え(?sort= の Link 遷移)も非表示(POST 後の router.refresh())も、操作のたびに
+ * サーバーで画面全体を作り直しており、米国 colo → DB(ソウル) の往復も重なって
+ * 本番実測で 2.2〜2.8 秒かかっていたため（Refs #1953）。
  */
 export default async function Collection({
   cardsByStreamer,
-  hiddenCardsByStreamer = {},
-  sortMode = DEFAULT_STREAMER_COLLECTION_SORT,
+  orders = EMPTY_ORDERS,
+  hiddenStreamerIds = [],
 }: CollectionProps) {
   const t = await getTranslations("collection");
   const tStats = await getTranslations("stats");
   const tCollectionPage = await getTranslations("collectionPage");
 
-  const visibleEntries = Object.values(cardsByStreamer);
-  const hiddenEntries = Object.values(hiddenCardsByStreamer);
+  const entries = Object.values(cardsByStreamer);
 
   /**
-   * 配信者1件分のカード。通常一覧と「非表示のコレクション」で同じ見た目を使い、
-   * 違いは操作ボタン（非表示 / 再表示）だけにする。
-   * hidden = true のとき「再表示」ボタンを出す。
+   * 配信者1件分のカードの中身（ヘッダーとレアリティサマリ、「コレクションを見る」リンク）。
+   * カード外枠・リンクと非表示ボタンを並べる行・非表示ボタンは、非表示/再表示で
+   * カードが移動するため client 側（CollectionStreamerList）で描画する。
    */
-  const renderStreamerCard = (
-    { streamer, cards, totalActive, ownedActive, isComplete }: StreamerCollectionEntry,
-    hidden: boolean,
-  ) => {
+  const renderStreamerItem = ({
+    streamer,
+    cards,
+    totalActive,
+    ownedActive,
+    isComplete,
+  }: StreamerCollectionEntry) => {
     // Calculate rarity statistics for each streamer
     // 各配信者のレアリティ別統計を計算
     const streamerStats = calculateStreamerStats(cards);
     const streamerCompletionPercent = totalActive > 0 ? Math.round((ownedActive / totalActive) * 100) : 0;
     const safeStreamerCompletionPercent = Math.max(0, Math.min(100, streamerCompletionPercent));
-    return (
-      <div
-        key={streamer.id}
-        className="rounded-xl bg-gray-800 p-4 hover:bg-gray-700 transition-colors"
-      >
+    const body = (
+      <>
         {/* Streamer Header - 配信者ヘッダー */}
         <div className="flex items-center gap-3 mb-4">
           {streamer.twitch_profile_image_url && (
@@ -168,24 +174,26 @@ export default async function Collection({
           )}
         </div>
 
-        {/* View Collection Button - コレクション表示ボタン
-          非表示中でも直リンクは生きている（非表示は一覧の見せ方だけの設定）ため、
-          「コレクションを見る」は両方のセクションに出す。 */}
-        <div className="flex items-start gap-2">
-          <Link
-            href={`/collection/${streamer.id}`}
-            className="block flex-1 rounded-lg bg-purple-600 hover:bg-purple-700 px-4 py-2 text-center text-sm font-medium text-white transition-colors"
-          >
-            {t("viewCollection")}
-          </Link>
-          <CollectionHideButton
-            streamerId={streamer.id}
-            streamerName={streamer.twitch_display_name}
-            hide={!hidden}
-          />
-        </div>
-      </div>
+      </>
     );
+
+    // 「コレクションを見る」は非表示中でも直リンクが生きている（非表示は一覧の見せ方だけの設定）
+    // ため、通常一覧・非表示セクションの両方に出す。
+    const viewLink = (
+      <Link
+        href={`/collection/${streamer.id}`}
+        className="block flex-1 rounded-lg bg-purple-600 hover:bg-purple-700 px-4 py-2 text-center text-sm font-medium text-white transition-colors"
+      >
+        {t("viewCollection")}
+      </Link>
+    );
+
+    return {
+      id: streamer.id,
+      body,
+      viewLink,
+      streamerName: streamer.twitch_display_name,
+    };
   };
 
   return (
@@ -193,7 +201,7 @@ export default async function Collection({
       <h2 className="mb-6 text-2xl font-semibold text-white">{t("title")}</h2>
 
       {/* Streamer List with Summary - 配信者一覧とサマリ */}
-      {visibleEntries.length === 0 && hiddenEntries.length === 0 ? (
+      {entries.length === 0 ? (
         <div className="rounded-xl bg-gray-800 p-8 text-center">
           <p className="text-gray-400">
             {t("empty.line1")}
@@ -202,57 +210,13 @@ export default async function Collection({
           </p>
         </div>
       ) : (
-        <>
-          {/* #1953: 並び替え。URL クエリ ?sort= を切り替える Link にして、サーバーコンポーネントのまま
-              実現する（client 化せず、並び順を共有・ブックマークできる）。
-              1件以下では並び替える意味が無いので出さない。 */}
-          {visibleEntries.length > 1 && (
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <span className="text-sm text-gray-400">{t("sort.label")}</span>
-              {SORT_OPTIONS.map(({ mode, href }) => (
-                <Link
-                  key={mode}
-                  href={href}
-                  scroll={false}
-                  aria-current={sortMode === mode ? "true" : undefined}
-                  className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                    sortMode === mode
-                      ? "bg-purple-600 text-white"
-                      : "border border-gray-600 text-gray-300 hover:bg-gray-700"
-                  }`}
-                >
-                  {t(`sort.${mode}`)}
-                </Link>
-              ))}
-            </div>
-          )}
-
-          {visibleEntries.length === 0 ? (
-            // 全件を非表示にした状態。「カードが無い」空状態とは別の文言にして、
-            // 下の「非表示のコレクション」から戻せることが分かるようにする。
-            <div className="rounded-xl bg-gray-800 p-8 text-center">
-              <p className="text-gray-400">{t("hidden.allHidden")}</p>
-            </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {visibleEntries.map((entry) => renderStreamerCard(entry, false))}
-            </div>
-          )}
-
-          {/* #1953: 非表示のコレクション。既定は折りたたみで、<details> なので
-              JS 無しでも開閉でき、サーバーコンポーネントのまま実現できる。 */}
-          {hiddenEntries.length > 0 && (
-            <details className="mt-8 rounded-xl border border-gray-700 p-4">
-              <summary className="cursor-pointer text-sm font-medium text-gray-300">
-                {t("hidden.summary", { count: hiddenEntries.length })}
-              </summary>
-              <p className="mt-2 mb-4 text-xs text-gray-500">{t("hidden.description")}</p>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {hiddenEntries.map((entry) => renderStreamerCard(entry, true))}
-              </div>
-            </details>
-          )}
-        </>
+        // #1953: 並び替え・非表示セクション・全件非表示の文言は client 側の状態で決まるため、
+        // CollectionStreamerList が描画する（表示順はサーバー確定の orders に従う）。
+        <CollectionStreamerList
+          items={entries.map(renderStreamerItem)}
+          orders={orders}
+          initialHiddenIds={hiddenStreamerIds}
+        />
       )}
     </section>
   );
