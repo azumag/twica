@@ -1124,7 +1124,9 @@ async function fetchActiveCardCountPg(
  * @param userName - ガチャを引いたユーザー名
  * @param userId - ガチャを引いたユーザーのTwitch ID
  * @param cards - 複数枚ガチャ時の獲得カード一覧
- * @param collectionName - 抽選が絞られたパックの collection_name（無制限ガチャは null/undefined、Issue #597）
+ * @param collectionName - 抽選が絞られたパックの collection_name（無制限ガチャは null/undefined、Issue #597）。
+ *   #974 以降 {packName} はカード自身の collection_name のみで解決するため通知本文には未使用。
+ *   outbox payload（gachaResult.collectionName）との引数位置を維持するため残置。
  * @param snapshot - ガチャcommit時点の所有数系placeholder（outbox v1では必須）
  * @param beforeExternalSend - 資格情報解決後・各Twitch送信直前に行うowner fence。
  *   bounded配送では、送信+checkpointの最低予算が無い場合にbudget-exhaustedを返す。
@@ -1365,12 +1367,15 @@ export async function sendChatAnnouncement(
 
   // Issue #948: {packName} は獲得カード自身のパックを優先して解決する（未分類
   // カードもデフォルトパック名で埋める）。resolveCardPackKey / resolvePackDisplayName
-  // のdocstringに解決規則の詳細と旧payloadへのフォールバック根拠がある。
+  // のdocstringに解決規則の詳細がある。#974 で旧outbox payload向けの抽選
+  // スコープへのフォールバック分岐は撤去済み（本番outbox実測で対象行0件）。
+  // collectionName 引数自体は payload 互換と caller 契約のため残置するが、
+  // {packName} 解決には使わない。
   //
   // フォールバックラベル「デフォルトパック」とビューアページタブの汎用ラベル
   // 「デフォルト」の1語差は既知の設計判断（#973で追跡、コード変更なしで据え置き）。
   const packName = resolvePackDisplayName(
-    resolveCardPackKey(card.collection_name, collectionName),
+    resolveCardPackKey(card.collection_name),
     streamer.default_card_pack_name ?? null,
     DEFAULT_PACK_CHAT_FALLBACK_LABEL
   );
