@@ -75,6 +75,8 @@ npm run e2e:preview-redemption -- run --count 2   # 実引き換え。実チャ�
 
 - `run` は、交換前に固定overlay（`/overlay/<streamerId>?debug=true`）を開いて `Status: connected` を確認し、同じタブを維持したまま Twitch のポップアウトチャットで対象報酬を交換します。交換ごとに、overlay のカード DOM と画像画素（または明示 fallback）の最初の陽性 sample、`/api/gacha-history` の新しい行、そのカード名を含むチャット行を対応付けます。
 - `wrangler login` 済みなら、アプリ・overlay-realtime・chat-delivery の preview Worker を `wrangler tail` で観測し、EventSub の受信（HTTP 200）が交換回数ぶんあること、例外・5xx・再試行ログ（`chat announcement retry scheduled` を含む）が無いことも判定に含めます。tail の event はリクエストヘッダーを捨ててから保存します。
+- `--user` は交換する Twitch アカウントの表示名です（既定 `あずまぐ`）。履歴・overlay・チャット通知の交換者名は表示名で記録されるため、ログイン名ではなく表示名を指定します。交換直前の履歴・表示・チャットを基準に、新しい表示インスタンス、カード名、交換者、交換後の履歴時刻を照合します。同じユーザーの同時交換で対応が曖昧な場合は不合格にします。overlay で交換者名を隠す設定や、交換者・カード名を省略／変更したカスタム chat テンプレートは自動相関できないため、通常表示・標準通知文で実行します。
+- JSON tail の接続成立は受信 event で確認します。交換前に全 Worker から event を受信するまで最大 90 秒待ち（chat-delivery は毎分 cron も観測可能）、終了・切断・未受信の場合は実交換を開始しません。交換期間にも全 Worker の受信が必要で、起動時の event だけを交換成功の証拠にしません。
 - 結果は `~/.twica-preview-e2e/runs/<時刻>-<mode>/` に `result.json`・`worker-logs.json`・スクリーンショットで残ります。
 - 既定の対象（チャンネル `azumagbanjo`、報酬 `ドッスン君？！`、streamerId）は preview DB の `streamers` に合わせています。変わった場合は `--channel` / `--reward` / `--streamerId` で上書きします。
 - 報酬が Twitch 側で無効（`is_enabled=false`）だと報酬メニューに出ず、`check` が失敗します。テスト前に配信者が有効にし、終了後に無効へ戻します。

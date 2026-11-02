@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   parseArgs,
   redactTailEvent,
   splitJsonObjects,
   summarizeTails,
+  correlateRedemption,
+  chatMatches,
+  tailAlive,
+  waitTailsReady,
 } from '../../scripts/preview-real-redemption.mjs'
 
 /**
@@ -127,5 +131,98 @@ describe('preview-real-redemption', () => {
       expect(() => parseArgs(['run', '--url', 'https://example.com'])).toThrow('unknown or incomplete option')
       expect(() => parseArgs(['run', '--channel', 'Bad Name'])).toThrow('invalid channel login')
     })
+
+    it('--user は表示名（非 ASCII 可）を小文字にそろえて受け付け、空白や @ を含む値は拒否する', () => {
+      expect(parseArgs(['run', '--user', 'テスト']).opts.user).toBe('テスト')
+      expect(parseArgs(['run', '--user', 'TestUser']).opts.user).toBe('testuser')
+      expect(() => parseArgs(['run', '--user', 'a b'])).toThrow('invalid user display name')
+      expect(() => parseArgs(['run', '--user', '@testuser'])).toThrow('invalid user display name')
+    })
+  })
+})
+
+// Synthetic identities only: these cases exercise the gate, not a real Twitch account.
+describe('redemption correlation gate', () => {
+  const since = Date.UTC(2026, 10, 2)
+  const row = { id: 'history-new', user: 'testuser', card: 'Card B', redeemedAt: new Date(since + 100).toISOString() }
+  const display = { instance: '2', card: 'Card B', user: 'testuser', observedAt: since + 500 }
+  const prior = new Set(['1'])
+
+  it('accepts one fresh matching display and history', () => {
+    expect(correlateRedemption([display], [row], 'testuser', since, prior)).toEqual({ overlay: display, history: row })
+    expect(chatMatches('@testuser が【コモン】Card B を獲得しました！', row, 'testuser')).toBe(true)
+  })
+
+  it.each([
+    { ...display, card: 'Card A' },
+    { ...display, user: 'otheruser' },
+    { ...display, instance: '1' },
+    { ...display, instance: null },
+    { ...display, observedAt: since - 1 },
+  ])('rejects a different or old overlay: %j', (sample) => {
+    expect(correlateRedemption([sample], [row], 'testuser', since, prior)).toBeNull()
+  })
+
+  it('rejects old history, another recipient, and ambiguous simultaneous draws', () => {
+    for (const rows of [
+      [{ ...row, redeemedAt: new Date(since - 1).toISOString() }],
+      [{ ...row, user: 'otheruser' }],
+      [row, { ...row, id: 'second-draw' }],
+    ]) expect(correlateRedemption([display], rows, 'testuser', since, prior)).toBeNull()
+    expect(correlateRedemption([display, { ...display, instance: '3' }], [row], 'testuser', since, prior)).toBeNull()
+  })
+
+  it('rejects chat for another recipient or a card with only a shared prefix', () => {
+    expect(chatMatches('@otheruser が【コモン】Card B を獲得しました！', row, 'testuser')).toBe(false)
+    expect(chatMatches('@testuser2 が【コモン】Card B を獲得しました！', row, 'testuser')).toBe(false)
+    expect(chatMatches('@testuser が【コモン】Card B2 を獲得しました！', row, 'testuser')).toBe(false)
+    expect(chatMatches('@testuser が【コモン】Card B を獲得しました！', { ...row, card: 'B' }, 'testuser')).toBe(false)
+  })
+})
+
+describe('tail observation gate', () => {
+  const event = { at: '2026-11-02T00:00:01Z', outcome: 'ok', path: '/api/twitch/eventsub', status: 200, logs: [], exceptions: [] }
+  const tail = { worker: 'test-worker', stderr: '', failed: false, child: { exitCode: null, signalCode: null, killed: false }, events: [event] }
+
+  it('requires a live process and positive receipt evidence', () => {
+    expect(summarizeTails([tail]).connected['test-worker']).toBe(true)
+    expect(summarizeTails([{ ...tail, events: [] }]).connected['test-worker']).toBe(false)
+  })
+
+  it.each([
+    { ...tail, failed: true },
+    { ...tail, child: { ...tail.child, exitCode: 1 } },
+    { ...tail, child: { ...tail.child, exitCode: 0 } },
+    { ...tail, child: { ...tail.child, signalCode: 'SIGTERM' } },
+    { ...tail, child: { ...tail.child, killed: true } },
+    { ...tail, child: undefined },
+  ])('does not let a successful HTTP event conceal loss of observation', (stopped) => {
+    expect(tailAlive(stopped)).toBe(false)
+    expect(summarizeTails([stopped]).connected['test-worker']).toBe(false)
+  })
+})
+
+
+describe('tail startup race', () => {
+  it('repeats safe probes when the request before tail attachment was lost', async () => {
+    vi.useFakeTimers()
+    const tail = { worker: 'test-worker', failed: false, child: { exitCode: null, signalCode: null, killed: false }, events: [] as object[] }
+    const probe = vi.fn(async () => {
+      if (probe.mock.calls.length === 2) tail.events.push({})
+    })
+    try {
+      const ready = waitTailsReady([tail], probe)
+      await vi.advanceTimersByTimeAsync(10_500)
+      await ready
+      expect(probe).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('refuses to probe or redeem after an early tail exit', async () => {
+    const probe = vi.fn()
+    await expect(waitTailsReady([{ failed: true }], probe)).rejects.toThrow('stopped before redemption')
+    expect(probe).not.toHaveBeenCalled()
   })
 })
