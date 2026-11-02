@@ -26,7 +26,8 @@
  *   - 未適用migrationに非加法的な文（DROP COLUMN / RENAME / ALTER COLUMN TYPE /
  *     DROP TABLE等 / TRUNCATE）が含まれる場合、apply/plan をブロックする。
  *     自動適用は additive な変更のみ許可する運用（planetscale-migrate.yml）のためで、
- *     `--allow-non-additive` で明示的に解除する（Issue #800）
+ *     `--allow-non-additive` で明示的に解除する（Issue #800）。例外として、
+ *     APPROVED_CONTRACT_MIGRATIONS に登録され内容の checksum が一致するものはブロックしない
  *
  * 使い方:
  *   DATABASE_URL="postgres://..." node scripts/db-migrate.js status
@@ -128,6 +129,8 @@ const HELP_TEXT = `
             デプロイ順序を人間が管理して手動適用すること。DROP INDEX / DROP CONSTRAINT /
             DROP POLICY / DROP TRIGGER は対象外（意図的に許可）。bootstrap はSQLを実行せず
             履歴登録のみのためガード対象外（--allow-non-additive は不要・no-op）。
+            APPROVED_CONTRACT_MIGRATIONS に登録済みで内容が一致する migration は、
+            このフラグ無しでも適用する。
   --help, -h
             このヘルプを表示する
 
@@ -432,6 +435,29 @@ function printBlockingErrors(state) {
 }
 
 /**
+ * レビュー済みの contract migration（version → 内容の SHA-256 と根拠）。
+ *
+ * ここに載せた migration は、非加法的な文を含んでいても push の自動適用で適用する。
+ * app と migration は非同期にデプロイされるため、載せてよいのは「適用前後のどの版の
+ * app・Worker も、削除・変更する対象を使っていない」ことを確認した migration だけ。
+ * 根拠を reason に書き、この一覧への追加は PR でレビューする。
+ * checksum が一致しない（承認後に内容が変わった）場合は承認として扱わずブロックする。
+ * 確認できないものは載せず、planetscale-migrate.yml の workflow_dispatch（allow_non_additive）で
+ * 人がデプロイ順序を管理して適用する。
+ */
+const APPROVED_CONTRACT_MIGRATIONS = new Map([
+  [
+    '20261024120000',
+    {
+      checksum: '1e2c7f1e7ad06327ded60628a6e2feaad530f23806bb1d4a22ab0e4213ec39dd',
+      reason:
+        'DROP FUNCTION get_live_directory_rankings()。main/preview とも migration とテスト以外に参照が無く、' +
+        'PlanetScale Insights でも 2026-10-03 以降 prod/preview の呼び出しは 0 件（後継は _by_period）',
+    },
+  ],
+])
+
+/**
  * 未適用migrationに非加法的(non-additive)な文が含まれるかを検査する / Issue #800。
  *
  * CI（planetscale-migrate.yml）は main push 毎に apply を自動実行するため、
@@ -442,20 +468,32 @@ function printBlockingErrors(state) {
  * 部分適用を防ぐため、1件でも検出したら全体をブロックする（先行のadditive分だけ適用して
  * 途中で止まる、を許さない）。
  *
+ * APPROVED_CONTRACT_MIGRATIONS に載り、内容の checksum が承認時と一致するものは
+ * violations ではなく approved に分ける（ブロックしない）。
+ *
  * @param {{ pending: { sourceDir: string, filename: string, version: string, name: string }[] }} state
- * @returns {{ version: string, name: string, findings: { kind: string, line: number }[] }[]}
- *   非加法的な文を含む pending migration の一覧（無ければ空配列）
+ * @param {Map<string, { checksum: string, reason: string }>} [approvedList]
+ * @returns {{
+ *   violations: { version: string, name: string, findings: { kind: string, line: number }[], checksumMismatch: boolean }[],
+ *   approved: { version: string, name: string, reason: string }[],
+ * }}
  */
-function findNonAdditivePending(state) {
+function findNonAdditivePending(state, approvedList = APPROVED_CONTRACT_MIGRATIONS) {
   const violations = []
+  const approved = []
   for (const d of state.pending) {
     const content = core.readMigrationFile(d.sourceDir, d.filename)
     const findings = core.detectNonAdditiveStatements(content)
-    if (findings.length > 0) {
-      violations.push({ version: d.version, name: d.name, findings })
+    if (findings.length === 0) continue
+    // checksum は読み込んだ内容から計算し直す。承認後に1バイトでも変われば承認として扱わない。
+    const approval = approvedList.get(d.version)
+    if (approval && approval.checksum === core.computeChecksum(content)) {
+      approved.push({ version: d.version, name: d.name, reason: approval.reason })
+    } else {
+      violations.push({ version: d.version, name: d.name, findings, checksumMismatch: Boolean(approval) })
     }
   }
-  return violations
+  return { violations, approved }
 }
 
 function printNonAdditiveBlock(violations) {
@@ -463,6 +501,9 @@ function printNonAdditiveBlock(violations) {
   for (const v of violations) {
     for (const f of v.findings) {
       console.error(`  - ${v.version} ${v.name}: ${f.kind} (行 ${f.line})`)
+    }
+    if (v.checksumMismatch) {
+      console.error(`    ${v.version} はレビュー済み一覧にありますが、内容が承認時の checksum と一致しません。`)
     }
   }
   console.error('[db-migrate] このパイプラインでの自動適用は additive な変更のみ許可されています。')
@@ -482,12 +523,17 @@ function printNonAdditiveWarning(violations) {
 /**
  * 非加法的migrationガード。1件でも検出されたらブロックする（exit 1）。
  * --allow-non-additive 指定時は警告ログのみで続行する。
+ * レビュー済み一覧（APPROVED_CONTRACT_MIGRATIONS）に一致するものはブロックせず、ログだけ出す。
  * @param {{ pending: object[] }} state
  * @param {boolean} allowNonAdditive
+ * @param {Map<string, { checksum: string, reason: string }>} [approvedList] テスト用の差し替え口
  * @returns {boolean} true ならブロック（呼び出し側は処理を中止して exit 1 を返すこと）
  */
-function shouldBlockNonAdditive(state, allowNonAdditive) {
-  const violations = findNonAdditivePending(state)
+function shouldBlockNonAdditive(state, allowNonAdditive, approvedList) {
+  const { violations, approved } = findNonAdditivePending(state, approvedList)
+  for (const a of approved) {
+    console.log(`[db-migrate] レビュー済みの contract migration として扱います: ${a.version} ${a.name}（${a.reason}）`)
+  }
   if (violations.length === 0) return false
   if (allowNonAdditive) {
     printNonAdditiveWarning(violations)
@@ -876,6 +922,7 @@ module.exports = {
   hasBlockingErrors,
   shouldBlockFreshApply,
   shouldBlockNonAdditive,
+  APPROVED_CONTRACT_MIGRATIONS,
   FRESH_APPLY_PENDING_THRESHOLD,
   resolveMigrationsDirs,
   SUPABASE_MIGRATIONS_DIR,

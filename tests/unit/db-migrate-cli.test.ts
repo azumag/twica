@@ -1,5 +1,6 @@
-import { describe, expect, it, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'fs'
+import { describe, expect, it, afterEach, vi } from 'vitest'
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync } from 'fs'
+import { createHash } from 'crypto'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -9,6 +10,7 @@ import {
   hasBlockingErrors,
   shouldBlockFreshApply,
   shouldBlockNonAdditive,
+  APPROVED_CONTRACT_MIGRATIONS,
   FRESH_APPLY_PENDING_THRESHOLD,
   resolveMigrationsDirs,
   SUPABASE_MIGRATIONS_DIR,
@@ -389,5 +391,53 @@ describe('shouldBlockNonAdditive (Issue #800)', () => {
       '20260901000001_drop_constraint.sql': 'ALTER TABLE users DROP CONSTRAINT IF EXISTS users_pkey;',
     })
     expect(shouldBlockNonAdditive(state, false)).toBe(false)
+  })
+
+  describe('レビュー済み contract migration 一覧', () => {
+    const dropSql = 'DROP FUNCTION IF EXISTS public.legacy_rpc();'
+    const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
+
+    it('一覧にあり checksum が一致する migration はブロックしない', () => {
+      const state = makePending({ '20260901000000_drop_rpc.sql': dropSql })
+      const approved = new Map([['20260901000000', { checksum: sha256(dropSql), reason: 'test' }]])
+      expect(shouldBlockNonAdditive(state, false, approved)).toBe(false)
+    })
+
+    it('一覧にあっても内容が変わって checksum が一致しなければブロックする（コメント追加だけでも）', () => {
+      const state = makePending({ '20260901000000_drop_rpc.sql': `-- edited\n${dropSql}` })
+      const approved = new Map([['20260901000000', { checksum: sha256(dropSql), reason: 'test' }]])
+      const errors: string[] = []
+      const spy = vi.spyOn(console, 'error').mockImplementation((msg: string) => void errors.push(msg))
+      try {
+        expect(shouldBlockNonAdditive(state, false, approved)).toBe(true)
+      } finally {
+        spy.mockRestore()
+      }
+      expect(errors.some((m) => m.includes('承認時の checksum と一致しません'))).toBe(true)
+    })
+
+    it('承認済みと未承認の非加法的 migration が混在すればブロックする', () => {
+      const state = makePending({
+        '20260901000000_drop_rpc.sql': dropSql,
+        '20260901000001_drop_column.sql': 'ALTER TABLE users DROP COLUMN old_col;',
+      })
+      const approved = new Map([['20260901000000', { checksum: sha256(dropSql), reason: 'test' }]])
+      expect(shouldBlockNonAdditive(state, false, approved)).toBe(true)
+    })
+
+    // 一覧の checksum はリポジトリ上の実ファイルと一致していなければ意味が無い
+    // （不一致なら本番の自動適用でブロックされ、承認した意図が効かない）。
+    it('一覧の各 entry はリポジトリ上の実ファイルと checksum が一致する', () => {
+      expect(APPROVED_CONTRACT_MIGRATIONS.size).toBeGreaterThan(0)
+      for (const [version, { checksum }] of APPROVED_CONTRACT_MIGRATIONS) {
+        const matches = [SUPABASE_MIGRATIONS_DIR, PLANETSCALE_MIGRATIONS_DIR].flatMap((dir) =>
+          readdirSync(dir)
+            .filter((f) => f.startsWith(`${version}_`))
+            .map((f) => readFileSync(join(dir, f), 'utf8'))
+        )
+        expect(matches, version).toHaveLength(1)
+        expect(sha256(matches[0]), version).toBe(checksum)
+      }
+    })
   })
 })

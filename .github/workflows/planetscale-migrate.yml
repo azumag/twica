@@ -132,7 +132,8 @@ on:
   # 適用されなくなる（preview run 41100644424 が #1965 の DROP FUNCTION で停止した）。
   # 手動適用に DATABASE_URL を手元へ持ち出させないよう、人間がアプリ側の準備完了
   # （削除対象を読むコードが残っていないこと）を確認したうえで、このinputを付けて
-  # dispatchする。push では常に false で、自動適用は additive のみという運用は変えない。
+  # dispatchする。push では常に false。push で自動適用される非加法的 migration は、
+  # db-migrate.js の APPROVED_CONTRACT_MIGRATIONS にレビューを経て登録したものだけ。
   workflow_dispatch:
     inputs:
       allow_non_additive:
