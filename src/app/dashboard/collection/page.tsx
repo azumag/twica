@@ -10,12 +10,15 @@ import {
   parseStreamerCollectionSort,
   sortCollectedCards,
   sortStreamerCollections,
+  type StreamerCollectionSortMode,
 } from "@/lib/collection-utils";
 import Collection from "@/components/Collection";
 import type { Card, Streamer } from "@/types/database";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
+
+const STREAMER_SORT_MODES: readonly StreamerCollectionSortMode[] = ["recent", "name", "completion"];
 
 /**
  * Extended card interface with streamer and count information
@@ -43,6 +46,9 @@ interface StreamerCollectionEntry {
  *
  * #1953: `?sort=recent|name|completion` で配信者の並び替え、非表示にした配信者は
  * 通常一覧から外して折りたたみセクションへ回す。
+ * 並び替え・非表示の切替はブラウザ内で即時に行う（サーバー往復と米国 colo → DB(ソウル) の
+ * 往復で 2 秒超かかった実測による。Refs #1953）。そのため全モードの並びをここで確定させ、
+ * ID 配列だけを渡す（比較ロジックを client に複製しない）。
  * Next.js 16 では searchParams は Promise（await が必要）。
  */
 export default async function CollectionPage({
@@ -65,13 +71,11 @@ export default async function CollectionPage({
   // ユーザーのカードコレクションを取得
   // 非表示設定と最終獲得日時はカード取得と互いに依存しないので並列に取得する。
   // どちらも失敗時は内部で縮退（非表示なし / 日時不明）するため、ここで reject されない。
-  // 最終獲得日時は recent 並びでしか使わないので、他のモードではクエリ自体を省く。
+  // 最終獲得日時は、client 側で recent に切り替えても即時に並べられるよう sortMode に関わらず常に取得する。
   const [userCards, hiddenStreamerIds, lastObtainedAtByStreamer] = await Promise.all([
     getUserCards(session.twitchUserId),
     getHiddenCollectionStreamerIds(session.twitchUserId),
-    sortMode === "recent"
-      ? getLastObtainedAtByStreamer(session.twitchUserId)
-      : Promise.resolve(new Map<string, string | null>()),
+    getLastObtainedAtByStreamer(session.twitchUserId),
   ]);
 
   // Sort cards by rarity (legendary first)
@@ -124,28 +128,24 @@ export default async function CollectionPage({
     cardsByStreamer[streamerId].isComplete = isComplete;
   }
 
-  // #1953: 並び替えて、非表示の配信者を通常一覧から分ける。
+  // #1953: 3モードそれぞれの並び順（配信者ID配列）を、非表示の配信者も含めて確定させる。
   // 並び替えは完成した進捗（ownedActive / totalActive）を使うため、進捗計算の後に行う。
+  // 非表示かどうかの振り分けと、モード切替時の並び替えは client 側（CollectionStreamerList）が行う。
   // 以前の暗黙の順序（レアリティ順ソート→グループ化の副作用で、最高レアを持つ配信者が先）
   // は、明示的な並び替えに置き換わった。
-  const sortedEntries = sortStreamerCollections(
-    Object.values(cardsByStreamer),
-    sortMode,
-    lastObtainedAtByStreamer
-  );
-  const visibleCardsByStreamer: Record<string, StreamerCollectionEntry> = {};
-  const hiddenCardsByStreamer: Record<string, StreamerCollectionEntry> = {};
-  for (const entry of sortedEntries) {
-    const target = hiddenStreamerIds.has(entry.streamer.id)
-      ? hiddenCardsByStreamer
-      : visibleCardsByStreamer;
-    target[entry.streamer.id] = entry;
-  }
+  const entries = Object.values(cardsByStreamer);
+  const orders = Object.fromEntries(
+    STREAMER_SORT_MODES.map((mode) => [
+      mode,
+      sortStreamerCollections(entries, mode, lastObtainedAtByStreamer).map((e) => e.streamer.id),
+    ])
+  ) as Record<StreamerCollectionSortMode, string[]>;
 
   return (
     <Collection
-      cardsByStreamer={visibleCardsByStreamer}
-      hiddenCardsByStreamer={hiddenCardsByStreamer}
+      cardsByStreamer={cardsByStreamer}
+      orders={orders}
+      hiddenStreamerIds={[...hiddenStreamerIds]}
       sortMode={sortMode}
     />
   );
