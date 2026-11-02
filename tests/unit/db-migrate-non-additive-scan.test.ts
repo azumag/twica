@@ -29,8 +29,9 @@ const KNOWN_APPLIED_NON_ADDITIVE = new Set([
   '00070_add_gacha_history_reward_id.sql',
   // Issue #933: contract migration dropping the legacy live-directory ranking RPC
   // `get_live_directory_rankings()` (20260811120000_add_live_directory_rankings.sql).
-  // Non-additive by design (DROP FUNCTION); applied manually with --allow-non-additive
-  // after the read-only observation workflow confirms zero production calls.
+  // Non-additive by design (DROP FUNCTION). Applied to preview via workflow_dispatch
+  // (allow_non_additive); listed in APPROVED_CONTRACT_MIGRATIONS so the production
+  // release applies it on push.
   '20261024120000_drop_legacy_live_directory_rankings_rpc.sql',
 ])
 

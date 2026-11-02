@@ -24,7 +24,7 @@
 
 ## 非加法的(contract)なmigrationの適用
 
-`DROP FUNCTION` / `DROP COLUMN` / `RENAME` / 型変更 / `TRUNCATE` などの非加法的な文を含む migration は、push による `planetscale-migrate.yml` の自動適用では適用されません。`scripts/db-migrate.js` は pending にこれらが 1 件でもあると apply 全体を止めるため、同じ branch に後から merge された additive な migration も、contract migration を適用するまで止まり続けます（preview run 41100644424 は #1965 の `DROP FUNCTION` で停止しました）。
+`DROP FUNCTION` / `DROP COLUMN` / `RENAME` / 型変更 / `TRUNCATE` などの非加法的な文を含む migration は、後述のレビュー済み一覧にあるものを除き、push による `planetscale-migrate.yml` の自動適用では適用されません。`scripts/db-migrate.js` は pending にこれらが 1 件でもあると apply 全体を止めるため、同じ branch に後から merge された additive な migration も、contract migration を適用するまで止まり続けます（preview run 41100644424 は #1965 の `DROP FUNCTION` で停止しました）。
 
 適用手順:
 
@@ -37,7 +37,20 @@
 
 本番への適用を人の承認で止められるよう、GitHub Environment `production` には required reviewers を設定します。承認はジョブ開始前に求められるため、承認者は plan ではなく手順 1 の一覧を見て判断します。また required reviewers を付けると、main への push による additive な自動適用も毎回承認待ちになります。
 
-本番リリースでは、contract migration を含むリリースが main に merge されると、まず push run がガードで失敗し、その間は同じリリースの additive な migration も適用されません（アプリは deploy-window fallback で縮退します）。新しいアプリのデプロイ完了を確認してから dispatch すると、非加法的な migration と additive な migration がファイル名順にまとめて適用されます。
+本番リリースでは、一覧に登録されていない contract migration を含むリリースが main に merge されると、まず push run がガードで失敗し、その間は同じリリースの additive な migration も適用されません（アプリは deploy-window fallback で縮退します）。新しいアプリのデプロイ完了を確認してから dispatch すると、非加法的な migration と additive な migration がファイル名順にまとめて適用されます。
+
+### レビュー済み contract migration の自動適用
+
+dispatch の手作業を省けるのは、適用前後のどの版のアプリ・Worker も削除・変更する対象を使っていないと確認できた migration だけです。それらは `scripts/db-migrate.js` の `APPROVED_CONTRACT_MIGRATIONS` に version、ファイル内容の SHA-256、根拠を登録しておくと、push の自動適用でほかの migration と一緒に適用されます。ガードは登録されていない非加法的 migration と、登録時から内容が変わった（checksum が一致しない）migration をこれまでどおり止めます。
+
+登録の手順:
+
+1. 手順 2 と同じ確認（`src` などの grep と、PlanetScale Insights で対象の呼び出しが 0 件であること）を、本番と preview で行います。アプリと migration は別々にデプロイされるため、いま動いている版と次に出す版のどちらにも参照が無いことが条件です。
+2. `shasum -a 256 <migration ファイル>`（Linux では `sha256sum`）の値と、確認結果を短くまとめた根拠を `APPROVED_CONTRACT_MIGRATIONS` に追加し、PR でレビューします。`tests/unit/db-migrate-cli.test.ts` が、登録した checksum とリポジトリ上のファイルの一致を確認します。
+
+列の削除や型変更のように、旧版のアプリが動いている間は適用できない migration は登録しません。これまでどおり、新しいアプリのデプロイ完了後に dispatch で適用します。
+
+登録した migration のファイル内のコメントは登録前に書かれたもので、「`--allow-non-additive` で手動適用する」などの記述が残っていることがあります。適用済みのファイルは checksum が変わるため編集せず、一覧の reason を正とします。本番に適用された後のエントリはガードに使われなくなるので、一覧から外してかまいません。
 
 ## Live Directory 設定列
 
