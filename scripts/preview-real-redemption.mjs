@@ -291,6 +291,10 @@ async function stopTails(tails) {
   for (const tail of tails) if (tail.child.exitCode === null) tail.child.kill('SIGKILL')
 }
 
+function isCanceledAfterResponse(event) {
+  return event.outcome === 'canceled' && event.status >= 200 && event.status < 300
+}
+
 function summarizeTails(tails) {
   const events = tails.flatMap((tail) => tail.events)
   const text = (event) => [...event.logs, ...event.exceptions].join('\n')
@@ -301,7 +305,11 @@ function summarizeTails(tails) {
     redemptionLogs: events.filter((event) => /channel_points_custom_reward_redemption/.test(text(event))).length,
     chatSentLogs: events.filter((event) => /Chat message sent/i.test(text(event))).length,
     retryLogs: events.filter((event) => /retry|retrying|parked|stall/i.test(text(event))).map((event) => ({ worker: event.worker, at: event.at, logs: event.logs.slice(0, 3) })),
-    nonOk: events.filter((event) => event.outcome && event.outcome !== 'ok').map((event) => ({ worker: event.worker, at: event.at, outcome: event.outcome, path: event.path })),
+    // 呼び出し元が status だけ読んで本文を cancel すると（src/lib/overlay-realtime/publisher.ts の
+    // discardResponseBody）、呼ばれた側は 2xx を返していても outcome=canceled になる。
+    // 応答を返し終えた後の cancel は失敗ではないため、別枠に記録するだけにする。
+    canceledAfterResponse: events.filter(isCanceledAfterResponse).map((event) => ({ worker: event.worker, at: event.at, path: event.path, status: event.status })),
+    nonOk: events.filter((event) => event.outcome && event.outcome !== 'ok' && !isCanceledAfterResponse(event)).map((event) => ({ worker: event.worker, at: event.at, outcome: event.outcome, path: event.path, status: event.status })),
     errorLogs: events.filter((event) => event.exceptions.length > 0 || event.logs.some((log) => log.startsWith('error'))).map((event) => ({ worker: event.worker, at: event.at, path: event.path, logs: event.logs.filter((log) => log.startsWith('error')).slice(0, 3), exceptions: event.exceptions })),
     http5xx: events.filter((event) => event.status >= 500).map((event) => ({ worker: event.worker, at: event.at, path: event.path, status: event.status })),
   }

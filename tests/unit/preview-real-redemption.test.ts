@@ -103,6 +103,23 @@ describe('preview-real-redemption', () => {
     })
   })
 
+  it('2xx を返した後の canceled（呼び出し元の本文 cancel）は失敗に数えない', () => {
+    const base = { logs: [], exceptions: [], method: 'POST', queue: null, cron: null }
+    const summary = summarizeTails([
+      {
+        worker: 'twica-overlay-realtime-preview',
+        stderr: '',
+        events: [
+          { ...base, worker: 'twica-overlay-realtime-preview', at: 't1', outcome: 'canceled', path: '/internal/v1/rooms/s/publish', status: 202 },
+          { ...base, worker: 'twica-overlay-realtime-preview', at: 't2', outcome: 'canceled', path: '/internal/v1/rooms/s/publish', status: null },
+          { ...base, worker: 'twica-overlay-realtime-preview', at: 't3', outcome: 'exceededCpu', path: '/publish', status: 202 },
+        ],
+      },
+    ])
+    expect(summary.canceledAfterResponse).toEqual([{ worker: 'twica-overlay-realtime-preview', at: 't1', path: '/internal/v1/rooms/s/publish', status: 202 }])
+    expect(summary.nonOk.map((event: { at: string }) => event.at)).toEqual(['t2', 't3'])
+  })
+
   describe('parseArgs', () => {
     it('既定値を返し、範囲外・未知の引数を拒否する', () => {
       expect(parseArgs(['run', '--count', '3'])).toMatchObject({ command: 'run', opts: { count: 3, logs: 'on' } })
