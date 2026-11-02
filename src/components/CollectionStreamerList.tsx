@@ -1,10 +1,14 @@
 "use client";
 
-import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useMemo, useState, useTransition, type MouseEvent, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import CollectionHideButton from "@/components/CollectionHideButton";
 import { postJsonWithCsrfRetry } from "@/lib/collection-client";
-import type { StreamerCollectionSortMode } from "@/lib/collection-utils";
+import {
+  parseStreamerCollectionSort,
+  type StreamerCollectionSortMode,
+} from "@/lib/collection-utils";
 
 /** サーバー側(Collection)で描画済みの配信者カード1件分。 */
 export interface CollectionStreamerItem {
@@ -21,7 +25,6 @@ interface CollectionStreamerListProps {
   items: CollectionStreamerItem[];
   /** モードごとの並び（配信者ID配列）。比較ロジックは client に複製せず、サーバーで確定したものを使う。 */
   orders: Record<StreamerCollectionSortMode, string[]>;
-  initialSort: StreamerCollectionSortMode;
   initialHiddenIds: string[];
 }
 
@@ -52,18 +55,27 @@ function withId(set: ReadonlySet<string>, id: string, present: boolean): Set<str
  *   URL だけ history.replaceState で更新する（共有・再読み込みで同じ並びになる）。
  *   修飾キー付き・中クリックは <a href> の既定動作（新規タブ等）に任せる。
  * - 非表示 / 再表示: 楽観的更新。クリック時点でカードを移動し、裏で POST する。失敗したら元に戻して
- *   そのカードにエラーを出す。router.refresh() は呼ばない（画面全体の再取得で 2 秒以上かかるため）。
+ *   そのカードにエラーを出す。router.refresh()（画面全体の再取得で 2 秒以上かかる）の完了は待たず、
+ *   成功後に裏で呼んでキャッシュを揃えるだけにする（「戻る」で古い状態を出さないため）。
  *   送信中のカードだけボタンを disabled にして二重送信を防ぎ、他の配信者は並行して操作できる
  *   （API 自体も冪等）。そのため state の更新は必ず関数型 setState で行い、並行操作で互いを壊さない。
  */
 export default function CollectionStreamerList({
   items,
   orders,
-  initialSort,
   initialHiddenIds,
 }: CollectionStreamerListProps) {
   const t = useTranslations("collection");
-  const [sortMode, setSortMode] = useState(initialSort);
+  const router = useRouter();
+  const [, startTransition] = useTransition();
+  // 初期の並び替えモードは props ではなく URL から決める。ブラウザの「戻る」では、Next.js が
+  // 履歴エントリに対応するキャッシュ済み payload（replaceState する前の ?sort= で描画したもの）を
+  // 復元してこのコンポーネントを作り直すため、props を初期値にすると URL（replaceState 後の
+  // ?sort=）と表示がずれる（preview 実測で再現）。orders は全モード分あるので URL だけで並べられる。
+  const searchParams = useSearchParams();
+  const [sortMode, setSortMode] = useState(() =>
+    parseStreamerCollectionSort(searchParams.get("sort") ?? undefined),
+  );
   const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(() => new Set(initialHiddenIds));
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [errorIds, setErrorIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -120,6 +132,12 @@ export default function CollectionStreamerList({
         // 失敗: カードを元の側へ戻し、そのカードにだけエラーを出す
         setHiddenIds((prev) => withId(prev, id, !nextHidden));
         setErrorIds((prev) => withId(prev, id, true));
+      } else {
+        // 成功: 表示は更新済みなので待たない。裏で router.refresh() してルーターのキャッシュを
+        // 保存後の状態に揃える。これをしないと、別ページへ移動してから「戻る」で戻ったときに、
+        // 非表示にする前の payload が復元されて古い状態が表示される。refresh の結果で props が
+        // 変わっても hiddenIds などの state は保持されるので、操作中の表示は巻き戻らない。
+        startTransition(() => router.refresh());
       }
     } finally {
       setPendingIds((prev) => withId(prev, id, false));

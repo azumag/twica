@@ -15,6 +15,8 @@ import type { Streamer } from "@/types/database";
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   postJsonWithCsrfRetry: vi.fn(),
+  // useSearchParams が返すクエリ（URL の ?sort= を初期の並びにする挙動を検証する）
+  search: "",
 }));
 
 vi.mock("next-intl/server", () => ({
@@ -26,9 +28,11 @@ vi.mock("next-intl", () => ({
   useTranslations: () => (key: string, values?: Record<string, unknown>) =>
     values ? `${key}:${JSON.stringify(values)}` : key,
 }));
-// 画面全体の再取得(router.refresh)に依存しないことを検証するため、呼ばれたら検出できるようにしておく
+// 並び替えでは画面全体の再取得(router.refresh)をしないこと、非表示の保存成功後だけ裏で呼ぶことを
+// 検証するため、呼ばれたら検出できるようにしておく
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: mocks.refresh }),
+  useSearchParams: () => new URLSearchParams(mocks.search),
 }));
 vi.mock("@/lib/collection-client", () => ({
   postJsonWithCsrfRetry: mocks.postJsonWithCsrfRetry,
@@ -75,12 +79,15 @@ function listed(container: HTMLElement) {
   };
 }
 
-function renderList(props: Partial<React.ComponentProps<typeof CollectionStreamerList>> = {}) {
+function renderList(
+  props: Partial<React.ComponentProps<typeof CollectionStreamerList>> = {},
+  search = "",
+) {
+  mocks.search = search;
   return render(
     <CollectionStreamerList
       items={ITEMS}
       orders={ORDERS}
-      initialSort="recent"
       initialHiddenIds={[]}
       {...props}
     />,
@@ -118,7 +125,7 @@ describe("Collection (サーバーコンポーネント) (#1953)", () => {
 
 describe("CollectionStreamerList: 並び替え (#1953)", () => {
   it("3つの並び替えリンク(<a href>)を出し、現在のモードに aria-current を付ける", () => {
-    renderList({ initialSort: "name" });
+    renderList({}, "?sort=name");
     const recent = screen.getByRole("link", { name: "sort.recent" });
     const name = screen.getByRole("link", { name: "sort.name" });
     const completion = screen.getByRole("link", { name: "sort.completion" });
@@ -130,9 +137,13 @@ describe("CollectionStreamerList: 並び替え (#1953)", () => {
     expect(recent).not.toHaveAttribute("aria-current");
   });
 
-  it("初期表示は initialSort の orders の順", () => {
-    const { container } = renderList({ initialSort: "name" });
+  it("初期表示は URL の ?sort= の orders の順（props ではなく URL を正とする）", () => {
+    const { container } = renderList({}, "?sort=name");
     expect(listed(container).visible).toEqual(["Charlie", "Bravo", "Alpha"]);
+  });
+
+  it("URL の ?sort= が無い・不正なら既定(recent)の順", () => {
+    expect(listed(renderList({}, "?sort=bogus").container).visible).toEqual(["Alpha", "Bravo", "Charlie"]);
   });
 
   it("クリックすると fetch / router を呼ばずに並びが入れ替わり、replaceState と aria-current が移る", () => {
@@ -226,7 +237,7 @@ describe("CollectionStreamerList: 非表示セクション (#1953)", () => {
 });
 
 describe("CollectionStreamerList: 非表示 / 再表示（楽観的更新）(#1953)", () => {
-  it("非表示: POST の完了前にカードが移り、正しい引数で呼び、pending 中はボタンが disabled。router.refresh は呼ばない", async () => {
+  it("非表示: POST の完了前にカードが移り、正しい引数で呼び、pending 中はボタンが disabled。成功後に裏で router.refresh する", async () => {
     let resolvePost: (v: { ok: boolean }) => void = () => {};
     mocks.postJsonWithCsrfRetry.mockReturnValue(new Promise((r) => (resolvePost = r)));
     const { container } = renderList();
@@ -252,7 +263,8 @@ describe("CollectionStreamerList: 非表示 / 再表示（楽観的更新）(#19
     await waitFor(() => expect(showButton).not.toBeDisabled());
     expect(listed(container)).toEqual({ visible: ["Alpha", "Charlie"], hidden: ["Bravo"] });
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(mocks.refresh).not.toHaveBeenCalled();
+    // 「戻る」で古い payload が復元されないよう、保存成功後にキャッシュを揃える（完了は待たない）
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
   });
 
   it("非表示が失敗(ok=false)したらカードが元の通常一覧へ戻り、そのカードに role=alert が出る", async () => {
