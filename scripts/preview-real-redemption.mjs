@@ -31,6 +31,17 @@ const PROFILE = join(HOME, 'chrome-profile')
 const OVERLAY_TIMEOUT_MS = 20_000
 const CHAT_TIMEOUT_MS = 45_000
 const HISTORY_TIMEOUT_MS = 30_000
+// DB の redeemed_at（サーバ時計）とローカルのクリック時刻の比較に使う許容ずれ。
+// knownIds が古い行を除外済みなので、ローカル時計が数秒進んでいても新しい行を落とさない
+// よう緩める（2026-11-02 実測のずれは約 4ms、余裕は 1.6〜1.8 秒）。
+const HISTORY_SKEW_MS = 3_000
+// QA.md「固定overlayの先行観測順序」の目安は受信後 2〜5 秒。latencyMs は記録だけでなく
+// この上限を超えたらその交換を不合格にする。
+const OVERLAY_LATENCY_TARGET_MS = 5_000
+// 「2xx を返した後の canceled」を失敗から外してよい根拠は overlay-realtime の publish
+// 経路（src/lib/overlay-realtime/publisher.ts の discardResponseBody）だけなので、
+// そのパスに限定する。他のパスの canceled は引き続き失敗として数える。
+const PUBLISH_PATH = /^\/internal\/v1\/rooms\/[^/]+\/publish$/
 
 function parseArgs(argv) {
   const [command, ...rest] = argv
@@ -58,7 +69,7 @@ async function launch() {
   mkdirSync(PROFILE, { recursive: true })
   // unit test から純粋関数だけを読み込めるよう、ブラウザ依存は実行時に読み込む。
   const { chromium } = await import('playwright-core')
-  return chromium.launchPersistentContext(PROFILE, {
+  const context = await chromium.launchPersistentContext(PROFILE, {
     channel: 'chrome',
     headless: false,
     viewport: null,
@@ -72,6 +83,8 @@ async function launch() {
       '--disable-backgrounding-occluded-windows',
     ],
   })
+  activeContext = context
+  return context
 }
 
 // ---- overlay ---------------------------------------------------------------
@@ -84,18 +97,25 @@ async function openOverlay(context, streamerId) {
 }
 
 // 最初に陽性になった sample（カード DOM + 画像画素）を返す。
+// 返り値は { samples, epoch } で、epoch はリロード検出に使う世代マーカー。
 async function observeOverlayCards(page, sinceMs, previousInstances, out, n) {
   const samples = new Map()
+  let latestEpoch = null
   const deadline = Date.now() + OVERLAY_TIMEOUT_MS
   while (Date.now() < deadline) {
     const sample = await page.evaluate(() => {
+      // overlay が交換中にリロードされると表示インスタンス番号が 1 から振り直され、
+      // 今回の表示が前回と同じ番号で「既出」と誤判定される（偽陰性）。リロードで
+      // グローバル変数が消えることを利用し、世代マーカーでリロードを検出する。
+      window.__twicaOverlayEpoch ??= Math.random().toString(36).slice(2)
       const root = document.querySelector('[data-overlay-card="true"]')
-      if (!root) return null
+      if (!root) return { epoch: window.__twicaOverlayEpoch, empty: true }
       const style = getComputedStyle(root)
       const rect = root.getBoundingClientRect()
       const img = root.querySelector('img')
       const fallback = root.querySelector('[data-overlay-card-fallback="true"]')
       return {
+        epoch: window.__twicaOverlayEpoch,
         instance: root.getAttribute('data-overlay-display-instance'),
         text: root.innerText.trim().slice(0, 200),
         // Exact visible identities: names hidden by image-only settings cannot prove correlation.
@@ -109,17 +129,29 @@ async function observeOverlayCards(page, sinceMs, previousInstances, out, n) {
         fallback: Boolean(fallback),
       }
     })
-    const visible = sample && sample.visibility !== 'hidden' && Number(sample.opacity) > 0 && sample.rect.w > 0
-    const painted = sample && (sample.fallback || (sample.image?.complete && sample.image.w > 0 && sample.image.h > 0))
-    if (visible && painted && sample.instance && !previousInstances.has(sample.instance) && !samples.has(sample.instance)) {
+    // リロード検出用の世代マーカーを呼び出し側へ伝える。
+    if (sample?.epoch && sample.epoch !== latestEpoch) latestEpoch = sample.epoch
+    const visible = sample && !sample.empty && sample.visibility !== 'hidden' &&
+      Number(sample.opacity) > 0 && sample.rect?.w > 0
+    const painted = sample && !sample.empty &&
+      (sample.fallback || (sample.image?.complete && sample.image.w > 0 && sample.image.h > 0))
+    // instance 番号はリロードで振り直されるため、世代（epoch）込みで重複を除く。
+    const key = sample?.epoch && sample?.instance ? `${sample.epoch}:${sample.instance}` : null
+    if (visible && painted && sample.instance && key && !previousInstances.has(key) && !samples.has(key)) {
       const observedAt = Date.now()
+      const latencyMs = observedAt - sinceMs
       const screenshot = `${n}-overlay-${samples.size + 1}.png`
       await page.screenshot({ path: join(out, screenshot) })
-      samples.set(sample.instance, { ...sample, observedAt, latencyMs: observedAt - sinceMs, screenshot })
+      samples.set(key, { ...sample, observedAt, latencyMs, latencyOk: latencyMs <= OVERLAY_LATENCY_TARGET_MS, screenshot })
     }
     await sleep(300)
   }
-  return [...samples.values()]
+  return { samples: [...samples.values()], epoch: latestEpoch }
+}
+
+// 世代マーカー。リロードでグローバルが消えるため、値が変わればリロードと分かる。
+async function overlayEpoch(page) {
+  return page.evaluate(() => (window.__twicaOverlayEpoch ??= Math.random().toString(36).slice(2)))
 }
 
 // ---- history (preview app session) ----------------------------------------
@@ -152,7 +184,7 @@ async function waitNewHistory(appPage, knownIds, user, sinceMs) {
   while (Date.now() < deadline) {
     const { rows } = await fetchHistory(appPage)
     const fresh = rows.filter((row) => !knownIds.has(row.id) &&
-      row.user?.toLowerCase() === user && Date.parse(row.redeemedAt) >= sinceMs)
+      row.user?.toLowerCase() === user && Date.parse(row.redeemedAt) >= sinceMs - HISTORY_SKEW_MS)
     if (fresh.length > 0) return fresh
     await sleep(2_000)
   }
@@ -187,23 +219,56 @@ function chatMatches(line, row, user) {
     line.includes(`】${row.card} を獲得しました！`))
 }
 
-async function waitChatLine(page, baseline, row, user) {
-  const deadline = Date.now() + CHAT_TIMEOUT_MS
+// 基準を取る前にチャット描画が落ち着くまで待つ。Twitch が過去メッセージを遅れて描画
+// したり既存行の DOM を作り直したりすると、遅れて出た前の交換の通知を今回の通知と
+// 取り違える。新しい行 id が連続して現れなくなってから基準を取る。
+async function waitChatSettled(page, quietMs = 2_000, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  const seen = new Set()
+  let lastNewAt = Date.now()
   while (Date.now() < deadline) {
-    const hit = (await chatLines(page)).find((line) => !baseline.has(line.id) && chatMatches(line.text, row, user))
-    if (hit) return hit.text
+    const lines = await chatLines(page)
+    const added = lines.filter((line) => !seen.has(line.id))
+    if (added.length > 0) {
+      added.forEach((line) => seen.add(line.id))
+      lastNewAt = Date.now()
+    }
+    if (Date.now() - lastNewAt >= quietMs) return seen
+    await sleep(500)
+  }
+  return seen
+}
+
+// 一致する新しい行が「1件だけ」であることを条件にする。前の通知の重複送信などで
+// 2件以上一致した場合は取り違えの可能性があるため、不合格側に倒す。
+async function waitChatLines(page, baseline, row, user) {
+  const deadline = Date.now() + CHAT_TIMEOUT_MS
+  const matches = new Map()
+  let firstMatchAt = 0
+  while (Date.now() < deadline) {
+    for (const line of await chatLines(page)) {
+      if (!baseline.has(line.id) && !matches.has(line.id) && chatMatches(line.text, row, user)) {
+        matches.set(line.id, line.text)
+        firstMatchAt ||= Date.now()
+      }
+    }
+    // 最初の一致後も短く観測を続け、遅れて届く重複通知を件数に含める。
+    if (firstMatchAt && Date.now() - firstMatchAt >= 4_000) break
     await sleep(1_000)
   }
-  return null
+  return [...matches.values()]
 }
 
 // Only an unambiguous new display and history for this user/time window can pass.
 // A simultaneous draw by the same user is ambiguous, so fail rather than guessing.
 function correlateRedemption(samples, rows, user, sinceMs, previousInstances) {
-  const fresh = rows.filter((row) => row.user?.toLowerCase() === user && Date.parse(row.redeemedAt) >= sinceMs)
+  const fresh = rows.filter((row) => row.user?.toLowerCase() === user && Date.parse(row.redeemedAt) >= sinceMs - HISTORY_SKEW_MS)
   if (fresh.length !== 1) return null
   const row = fresh[0]
-  const displays = samples.filter((sample) => sample.instance && !previousInstances.has(sample.instance) &&
+  // instance 番号はリロードで振り直されるため世代（epoch）込みで照合する。
+  // epoch の無い sample（古い記録形式）は instance だけで照合する。
+  const keyOf = (sample) => (sample.epoch ? `${sample.epoch}:${sample.instance}` : sample.instance)
+  const displays = samples.filter((sample) => sample.instance && !previousInstances.has(keyOf(sample)) &&
     sample.observedAt >= sinceMs && sample.user?.toLowerCase() === user && sample.card === row.card)
   return displays.length === 1 ? { history: row, overlay: displays[0] } : null
 }
@@ -292,6 +357,21 @@ function splitJsonObjects(buffer) {
 
 const tailChildren = new Set()
 let tailCleanupRegistered = false
+// 中断（SIGINT 等）でも途中までの result.json を残せるよう、実行中の結果を持ち回る。
+const pendingResult = { out: null, result: null }
+// signal ハンドラーから正常終了を試みるため、起動中のブラウザを持ち回る。
+let activeContext = null
+
+// npx が先に終了して wrangler の cli がグループに残ることがある。直接の子の生死ではなく
+// プロセスグループ自体の有無で送り先を決める（kill(-pid, 0) は ESRCH で消滅を示す）。
+function tailGroupAlive(child) {
+  try {
+    process.kill(-child.pid, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
 
 // wrangler tail は npx → wrangler.js → cli の多段で起動し、SIGKILL は子へ転送されない。
 // 独立したプロセスグループで起動し（detached）、グループごと signal を送って孤児にしない。
@@ -310,10 +390,31 @@ function registerTailCleanup() {
   if (tailCleanupRegistered) return
   tailCleanupRegistered = true
   process.on('exit', () => {
-    for (const child of tailChildren) killTail(child, 'SIGKILL')
+    // 子プロセス自体は exit 済みでもグループに残った cli だけを拾うため、グループの
+    // 生死を確認してから送る。消えたグループへの遅れ SIGKILL（PID 再利用への誤爆）を防ぐ。
+    for (const child of tailChildren) {
+      if (tailGroupAlive(child)) killTail(child, 'SIGKILL')
+    }
+    // SIGTERM / SIGHUP で即 exit すると result.json が残らず、途中まで行った実交換の
+    // 記録が失われる。pending の結果があれば interrupted 印を付けて書き出す。
+    if (pendingResult.out && pendingResult.result) {
+      try {
+        writeFileSync(join(pendingResult.out, 'result.json'),
+          JSON.stringify({ ...pendingResult.result, interrupted: true, finishedAt: now() }, null, 2))
+      } catch {
+        // 書き出せない場合は何もしない（exit ハンドラー内では投げられない）
+      }
+    }
   })
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(signal, () => process.exit(128 + osConstants.signals[signal]))
+    process.on(signal, () => {
+      // Playwright が Chrome を正常に閉じる前に exit すると専用プロファイルの Chrome が
+      // 強制終了される。上限 3 秒だけ正常終了を待ってから exit する。
+      const closing = activeContext
+        ? Promise.race([activeContext.close().catch(() => {}), sleep(3_000)])
+        : Promise.resolve()
+      closing.finally(() => process.exit(128 + osConstants.signals[signal]))
+    })
   }
 }
 
@@ -325,8 +426,9 @@ function startTail(worker) {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   })
+  // exit 後も消さずに保持する。npx だけが終了して wrangler cli がグループに残った
+  // 場合、exit ハンドラーがグループごと回収できるようにするため。
   tailChildren.add(child)
-  child.on('exit', () => tailChildren.delete(child))
   const tail = { worker, events: [], stderr: '', child, failed: false }
   // Latch failures: later output or a successful HTTP event cannot repair a gap in observation.
   child.on('error', () => { tail.failed = true })
@@ -345,6 +447,9 @@ function startTail(worker) {
       }
     }
   })
+  // stdout と同様に utf8 でデコードする。生の chunk 連結だとマルチバイト文字の
+  // 境界で「✘」が分断され、失敗検知を見落とす可能性がある。
+  child.stderr.setEncoding('utf8')
   child.stderr.on('data', (chunk) => {
     tail.stderr = (tail.stderr + chunk).slice(-2_000)
     if (/error|✘|reconnect|disconnect|closed unexpectedly/i.test(tail.stderr)) tail.failed = true
@@ -353,9 +458,13 @@ function startTail(worker) {
 }
 
 async function stopTails(tails) {
-  for (const tail of tails) killTail(tail.child, 'SIGINT')
+  for (const tail of tails) {
+    if (tailGroupAlive(tail.child)) killTail(tail.child, 'SIGINT')
+  }
   await sleep(1_000)
-  for (const tail of tails) killTail(tail.child, 'SIGKILL')
+  for (const tail of tails) {
+    if (tailGroupAlive(tail.child)) killTail(tail.child, 'SIGKILL')
+  }
 }
 
 function tailAlive(tail) {
@@ -397,7 +506,8 @@ async function probeTailReadiness(tails, overlay, appPage) {
 }
 
 function isCanceledAfterResponse(event) {
-  return event.outcome === 'canceled' && event.status >= 200 && event.status < 300
+  return event.outcome === 'canceled' && event.status >= 200 && event.status < 300 &&
+    PUBLISH_PATH.test(event.path ?? '')
 }
 
 function summarizeTails(tails) {
@@ -442,8 +552,13 @@ function login() {
 }
 
 async function check(opts, out) {
+  registerTailCleanup()
   const context = await launch()
   const result = { mode: 'check', startedAt: now(), opts, checks: {} }
+  pendingResult.out = out
+  pendingResult.result = result
+  // 例外で終わっても「Worker ログ未確認」だったことが分かるよう先に印を付ける。
+  if (opts.logs === 'off') result.logs = 'skipped'
   const tails = opts.logs === 'on' ? TAIL_WORKERS.map(startTail) : []
   try {
     const overlay = await openOverlay(context, opts.streamerId)
@@ -469,9 +584,9 @@ async function check(opts, out) {
         stderr: tail.stderr.trim().slice(-200) || null,
       }]))
     }
-    const tailChecks = Object.values(result.checks.tail ?? {})
-    result.ok = history.status === 200 && tailChecks.every((t) => t.alive) &&
-      (tails.length === 0 || (result.checks.tail['twica-preview']?.events ?? 0) > 0)
+    // tail.alive には受信 event 数 > 0 が既に含まれるため二重に判定しない。
+    result.ok = history.status === 200 &&
+      Object.values(result.checks.tail ?? {}).every((t) => t.alive)
   } catch (error) {
     result.ok = false
     result.error = String(error?.message ?? error).slice(0, 500)
@@ -487,8 +602,13 @@ async function check(opts, out) {
 }
 
 async function run(opts, out) {
+  registerTailCleanup()
   const context = await launch()
   const result = { mode: 'run', startedAt: now(), opts, redemptions: [] }
+  pendingResult.out = out
+  pendingResult.result = result
+  // 例外で終わっても「Worker ログ未確認」だったことが分かるよう先に印を付ける。
+  if (opts.logs === 'off') result.logs = 'skipped'
   const tails = opts.logs === 'on' ? TAIL_WORKERS.map(startTail) : []
   try {
     const overlay = await openOverlay(context, opts.streamerId)
@@ -500,27 +620,45 @@ async function run(opts, out) {
     await waitTailsReady(tails, () => probeTailReadiness(tails, overlay, app))
     const runLogOffsets = tails.map((tail) => tail.events.length)
     const previousInstances = new Set()
+    let overlayEpochSeen = await overlayEpoch(overlay)
+    let previousCard = null
 
     for (let n = 1; n <= opts.count; n += 1) {
       const entry = { n }
-      const baseline = new Set((await chatLines(chat)).map((line) => line.id))
+      // 2回目以降は overlay が観測を続けていることを交換前に再確認する（QA の接続ゲート）。
+      if (n > 1) {
+        await overlay.getByText(/Status: connected/).waitFor({ timeout: 15_000 })
+        entry.overlayConnectedBefore = true
+      }
+      // 基準を取る前にチャット描画が落ち着くまで待ち、遅れて届く前回通知との取り違えを防ぐ。
+      const baseline = await waitChatSettled(chat)
       const redeem = await openRewardDetail(chat, opts.reward)
       const before = await fetchHistory(app)
       if (before.status !== 200) throw new Error('Cannot establish pre-redemption history baseline')
       before.rows.forEach((row) => knownIds.add(row.id))
+      // overlay がリロードされると instance 番号が振り直される。世代が変わっていれば
+      // 「既出 instance」の記録は意味をなさないので破棄し、リロードを結果に記録する。
+      const epoch = await overlayEpoch(overlay)
+      if (epoch !== overlayEpochSeen) {
+        previousInstances.clear()
+        overlayEpochSeen = epoch
+        entry.overlayReloaded = true
+      }
       const oldInstance = await overlay.locator('[data-overlay-card="true"]').getAttribute('data-overlay-display-instance', { timeout: 500 }).catch(() => null)
-      if (oldInstance) previousInstances.add(oldInstance)
+      if (oldInstance) previousInstances.add(`${epoch}:${oldInstance}`)
       if (!tails.every(tailAlive)) throw new Error('Worker tail stopped before redemption')
       const logOffsets = tails.map((tail) => tail.events.length)
+      // 確認画面が開いてからここまで約1秒あるため、別の報酬へ変わっていないか押す直前に再確認する。
+      await chat.getByRole('dialog').getByText(opts.reward, { exact: true }).last().waitFor({ timeout: 3_000 })
       const clickedAt = Date.now()
       entry.redeemedAt = new Date(clickedAt).toISOString()
       // Start sampling before the click, then keep collecting while history/chat are read.
-      const observation = observeOverlayCards(overlay, clickedAt, previousInstances, out, n).catch(() => [])
+      const observation = observeOverlayCards(overlay, clickedAt, previousInstances, out, n).catch(() => ({ samples: [], epoch }))
       await redeem.click()
       await chat.screenshot({ path: join(out, `${n}-twitch-redeemed.png`) })
 
-      await waitNewHistory(app, knownIds, opts.user, clickedAt)
-      const samples = await observation
+      const waited = await waitNewHistory(app, knownIds, opts.user, clickedAt)
+      const { samples } = await observation
       // Re-read after the observation window so concurrent draws cannot be hidden by
       // accepting only the first row that happened to arrive.
       const after = await fetchHistory(app)
@@ -528,16 +666,23 @@ async function run(opts, out) {
       const fresh = after.rows.filter((row) => !knownIds.has(row.id))
       fresh.forEach((row) => knownIds.add(row.id))
       const correlated = correlateRedemption(samples, fresh, opts.user, clickedAt, previousInstances)
-      samples.forEach((sample) => previousInstances.add(sample.instance))
+      samples.forEach((sample) => previousInstances.add(`${sample.epoch}:${sample.instance}`))
       entry.history = fresh
+      entry.historyFirst = waited.map((row) => row.id)
       entry.overlay = correlated?.overlay ?? null
       const cardName = correlated?.history.card
-      entry.chat = correlated ? await waitChatLine(chat, baseline, correlated.history, opts.user) : null
+      // 前の交換と同じカード名なら、チャット照合の取り違え余地として結果に記録する。
+      entry.sameCardAsPrevious = previousCard !== null && cardName === previousCard
+      if (cardName) previousCard = cardName
+      const chatHits = correlated ? await waitChatLines(chat, baseline, correlated.history, opts.user) : []
+      entry.chatMatchCount = chatHits.length
+      entry.chat = chatHits.length === 1 ? chatHits[0] : null
       entry.workerEvents = Object.fromEntries(tails.map((tail, i) => [tail.worker, tail.events.length - logOffsets[i]]))
       await chat.screenshot({ path: join(out, `${n}-chat.png`) })
       await chat.keyboard.press('Escape').catch(() => {})
 
-      entry.ok = Boolean(correlated && entry.chat)
+      // latencyOk は QA の表示までの目安（2〜5 秒）の判定。overlay が無い場合は既に不合格。
+      entry.ok = Boolean(correlated && correlated.overlay.latencyOk && entry.chat)
       result.redemptions.push(entry)
       console.log(`#${n}: overlay=${Boolean(entry.overlay)} history=${fresh.length} chat=${Boolean(entry.chat)} card=${cardName ?? '-'}`)
       // 交換単位を識別できるよう間隔を空ける。
@@ -556,7 +701,6 @@ async function run(opts, out) {
       result.ok = result.ok && logs.ok
     } else {
       // QA の実経路ゲートは Worker ログの確認を含むため、省略したことを結果に残す。
-      result.logs = 'skipped'
       console.log('Worker ログ未確認（--logs off）: QA の実経路ゲートの証拠としては不足')
     }
   } catch (error) {
@@ -582,6 +726,8 @@ async function main() {
     mkdirSync(out, { recursive: true })
     const result = command === 'check' ? await check(opts, out) : await run(opts, out)
     writeFileSync(join(out, 'result.json'), JSON.stringify(result, null, 2))
+    pendingResult.out = null
+    pendingResult.result = null
     console.log(JSON.stringify(result, null, 2))
     console.log(`output: ${out}`)
     process.exitCode = result.ok ? 0 : 1

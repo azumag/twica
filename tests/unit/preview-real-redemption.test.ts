@@ -13,7 +13,8 @@ import {
 /**
  * scripts/preview-real-redemption.mjs は preview の実チャネルポイント交換を
  * ブラウザで実行するローカル専用ハーネスで、ブラウザ操作自体は実 preview でしか
- * 検証できない。ここでは実行結果の保存に関わる純粋関数を固定する。
+ * 検証できない。ここでは実行結果の保存と合格判定に関わる純粋関数（redact、
+ * tail 集計、overlay/履歴/チャットの照合ゲート）を固定する。
  * 特に wrangler tail の event はリクエストヘッダー（Cookie、EventSub 署名）を含むため、
  * 保存前に落とすことを回帰として持つ。
  */
@@ -117,11 +118,14 @@ describe('preview-real-redemption', () => {
           { ...base, worker: 'twica-overlay-realtime-preview', at: 't1', outcome: 'canceled', path: '/internal/v1/rooms/s/publish', status: 202 },
           { ...base, worker: 'twica-overlay-realtime-preview', at: 't2', outcome: 'canceled', path: '/internal/v1/rooms/s/publish', status: null },
           { ...base, worker: 'twica-overlay-realtime-preview', at: 't3', outcome: 'exceededCpu', path: '/publish', status: 202 },
+          // 例外を許す根拠は publish 経路（discardResponseBody）だけなので、
+          // 他パスの canceled は 2xx でも失敗として残る。
+          { ...base, worker: 'twica-preview', at: 't4', outcome: 'canceled', path: '/api/gacha-history', status: 200 },
         ],
       },
     ])
     expect(summary.canceledAfterResponse).toEqual([{ worker: 'twica-overlay-realtime-preview', at: 't1', path: '/internal/v1/rooms/s/publish', status: 202 }])
-    expect(summary.nonOk.map((event: { at: string }) => event.at)).toEqual(['t2', 't3'])
+    expect(summary.nonOk.map((event: { at: string }) => event.at)).toEqual(['t2', 't3', 't4'])
   })
 
   describe('parseArgs', () => {
@@ -163,9 +167,15 @@ describe('redemption correlation gate', () => {
     expect(correlateRedemption([sample], [row], 'testuser', since, prior)).toBeNull()
   })
 
+  it('accepts history slightly before click within clock-skew tolerance', () => {
+    // DB のサーバ時計とローカル時計のずれを許容する（knownIds が古い行を除外済み）。
+    const skewed = { ...row, redeemedAt: new Date(since - 2_000).toISOString() }
+    expect(correlateRedemption([display], [skewed], 'testuser', since, prior)).toEqual({ overlay: display, history: skewed })
+  })
+
   it('rejects old history, another recipient, and ambiguous simultaneous draws', () => {
     for (const rows of [
-      [{ ...row, redeemedAt: new Date(since - 1).toISOString() }],
+      [{ ...row, redeemedAt: new Date(since - 5_000).toISOString() }],
       [{ ...row, user: 'otheruser' }],
       [row, { ...row, id: 'second-draw' }],
     ]) expect(correlateRedemption([display], rows, 'testuser', since, prior)).toBeNull()
