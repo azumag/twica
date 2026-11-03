@@ -16,8 +16,21 @@ import { isMaintenanceWriteExempt, type MaintenanceWriteSurface } from '@/lib/ma
 // パスが '/api/' 始まりであることは tests/unit/maintenance-write-surfaces-schema.test.ts
 // が実行時に検証しており、この cast は「型を偽っているだけ」にはならない。
 import maintenanceWriteSurfacesJson from '../config/maintenance-write-surfaces.json'
+import { logger } from '@/lib/logger'
 
 const maintenanceWriteSurfaces = maintenanceWriteSurfacesJson as MaintenanceWriteSurface[]
+
+// Issue #1980 Phase 1: isolate 起動マーカー（ブートマーカー）。
+// 本番の cpuTimeMs 跳ね上がりが「新規 isolate の初回リクエスト」由来かを判別するため、
+// モジュール評価時（= isolate 起動時にちょうど1回）に isolate 識別子と起動時刻を出す。
+// matcher で除外される /robots.txt 等でも、OpenNext の worker.js が
+// middleware/handler.mjs を静的 import して起動時に評価するため、
+// 全リクエスト経路の cpuTimeMs と時系列で突合できる。
+// isolateId は同時刻に複数 isolate が起動した場合のログ行の区別用。
+// 起動コストへの影響を避けるため、追加 I/O や重い依存は行わず
+// Workers 標準の crypto.randomUUID / Date のみを使う。
+const isolateBootId = crypto.randomUUID()
+logger.info('[IsolateBoot]', { isolateId: isolateBootId, bootedAt: new Date().toISOString() })
 
 /** maintenance write block の対象となる HTTP メソッド（読み取り系は対象外）。 */
 const MAINTENANCE_GUARDED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
