@@ -107,6 +107,17 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 #   SESSION_COOKIE_SECRET  — required; missing → startup/runtime failure (fail-closed)
 # Production: `wrangler secret put SESSION_COOKIE_SECRET`
 
+# Issue #1979: Smart Placement を preview にだけ有効化し、本番適用前に
+# DB 往復の遅延改善を実測する。本番 Worker (twica) と preview の DB
+# (PlanetScale ap-northeast-2 系) の距離が /dashboard/collection などの
+# wall time を支配しているため、Worker を DB 近接拠点で実行させる。
+# top-level には [placement] を置かない: 本番の実行場所は変えず、
+# preview の有効化前後で [Perf] ログと wall time を比較してから判断する。
+# なお Smart Placement は確立まで最大15分の分析期間があり、preview の
+# 呼び出し数が少ないと INSUFFICIENT_INVOCATIONS になる点に注意。
+[env.preview.placement]
+mode = "smart"
+
 [env.preview.observability]
 enabled = true
 
