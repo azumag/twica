@@ -2280,8 +2280,9 @@ export async function getActiveCardCountsForStreamers(
 /**
  * 所持配信者のアクティブカード数を1クエリで取得 (#1981)
  *
- * user_cards → users → cards の JOIN で、該当ユーザーが所持している
- * 配信者のアクティブカード (id, streamer_id) を1クエリ・LIMIT無しで返却する。
+ * 所持配信者集合（該当ユーザーがカードを1枚以上所持している配信者）を
+ * 副問い合わせで解決し、その配信者の全アクティブカード (id, streamer_id) を
+ * 1クエリ・LIMIT無しで返却する。
  * 既存 RPC (get_user_card_counts) の契約は変更しない。
  *
  * @param twitchUserId 視聴者のTwitchユーザーID
@@ -2299,17 +2300,22 @@ export async function getActiveCardCountsForCollectedStreamers(
       async () => {
         const { db } = await getDb();
         return db
-          .selectDistinct({
+          .select({
             id: cardsTable.id,
             streamer_id: cardsTable.streamer_id,
           })
           .from(cardsTable)
-          .innerJoin(userCardsTable, eq(userCardsTable.card_id, cardsTable.id))
-          .innerJoin(usersTable, eq(usersTable.id, userCardsTable.user_id))
           .where(
             and(
               eq(cardsTable.is_active, true),
-              eq(usersTable.twitch_user_id, twitchUserId)
+              inArray(
+                cardsTable.streamer_id,
+                sql`SELECT DISTINCT c.streamer_id
+                      FROM cards c
+                      INNER JOIN user_cards uc ON uc.card_id = c.id
+                      INNER JOIN users u ON u.id = uc.user_id
+                      WHERE u.twitch_user_id = ${twitchUserId}`
+              )
             )
           );
       },
