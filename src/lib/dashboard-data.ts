@@ -2278,6 +2278,80 @@ export async function getActiveCardCountsForStreamers(
 }
 
 /**
+ * 所持配信者のアクティブカード数を1クエリで取得 (#1981)
+ *
+ * 所持配信者集合（該当ユーザーがカードを1枚以上所持している配信者）を
+ * 副問い合わせで解決し、その配信者の全アクティブカード (id, streamer_id) を
+ * 1クエリ・LIMIT無しで返却する。
+ * 既存 RPC (get_user_card_counts) の契約は変更しない。
+ *
+ * @param twitchUserId 視聴者のTwitchユーザーID
+ * @returns 配信者ID → { totalActive, activeCardIds } のマップ
+ */
+export async function getActiveCardCountsForCollectedStreamers(
+  twitchUserId: string
+): Promise<Map<string, ActiveCardCountForStreamer>> {
+  const startedAt = perfStart();
+  const counts = new Map<string, ActiveCardCountForStreamer>();
+
+  let data: Array<{ id: string; streamer_id: string }>;
+  try {
+    data = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: cardsTable.id,
+            streamer_id: cardsTable.streamer_id,
+          })
+          .from(cardsTable)
+          .where(
+            and(
+              eq(cardsTable.is_active, true),
+              inArray(
+                cardsTable.streamer_id,
+                sql`SELECT DISTINCT c.streamer_id
+                      FROM cards c
+                      INNER JOIN user_cards uc ON uc.card_id = c.id
+                      INNER JOIN users u ON u.id = uc.user_id
+                      WHERE u.twitch_user_id = ${twitchUserId}`
+              )
+            )
+          );
+      },
+      "getActiveCardCountsForCollectedStreamers",
+      { idempotent: true }
+    );
+  } catch (error) {
+    reportError(
+      new Error(
+        `active card count for collected streamers query failed: ${error instanceof Error ? error.message : String(error)}`
+      )
+    );
+    logPerf("dashboard-data", "getActiveCardCountsForCollectedStreamers", startedAt, {
+      failed: true,
+    });
+    return counts;
+  }
+
+  for (const row of data) {
+    let entry = counts.get(row.streamer_id);
+    if (!entry) {
+      entry = { totalActive: 0, activeCardIds: new Set() };
+      counts.set(row.streamer_id, entry);
+    }
+    entry.totalActive += 1;
+    entry.activeCardIds.add(row.id);
+  }
+
+  logPerf("dashboard-data", "getActiveCardCountsForCollectedStreamers", startedAt, {
+    streamerCount: counts.size,
+    activeCardCount: data.length,
+  });
+  return counts;
+}
+
+/**
  * 配信者ごとの「最後にカードを獲得した日時」を取得する (#1953)。
  *
  * マイコレクション一覧の「最近カードを獲得した順」の並び替え用。
