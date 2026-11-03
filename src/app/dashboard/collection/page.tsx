@@ -1,7 +1,7 @@
 import { getSession } from "@/lib/session";
 import {
   getUserCards,
-  getActiveCardCountsForStreamers,
+  getActiveCardCountsForCollectedStreamers,
   getHiddenCollectionStreamerIds,
   getLastObtainedAtByStreamer,
 } from "@/lib/dashboard-data";
@@ -64,11 +64,13 @@ export default async function CollectionPage() {
   // 非表示設定と最終獲得日時はカード取得と互いに依存しないので並列に取得する。
   // どちらも失敗時は内部で縮退（非表示なし / 日時不明）するため、ここで reject されない。
   // 最終獲得日時は、client 側で recent に切り替えても即時に並べられるよう ?sort= に関わらず常に取得する。
-  const [userCards, hiddenStreamerIds, lastObtainedAtByStreamer] = await Promise.all([
-    getUserCards(session.twitchUserId),
-    getHiddenCollectionStreamerIds(session.twitchUserId),
-    getLastObtainedAtByStreamer(session.twitchUserId),
-  ]);
+  const [userCards, hiddenStreamerIds, lastObtainedAtByStreamer, activeCardCounts] =
+    await Promise.all([
+      getUserCards(session.twitchUserId),
+      getHiddenCollectionStreamerIds(session.twitchUserId),
+      getLastObtainedAtByStreamer(session.twitchUserId),
+      getActiveCardCountsForCollectedStreamers(session.twitchUserId),
+    ]);
 
   // Sort cards by rarity (legendary first)
   // レアリティでソート（レジェンダリーが先頭）
@@ -93,15 +95,9 @@ export default async function CollectionPage() {
     {} as Record<string, StreamerCollectionEntry>
   );
 
-  // Fetch active card totals per streamer in parallel for progress display
-  // 進捗表示用に、配信者ごとのアクティブカード総数とアクティブ所持数を並列取得
-  // Note: getUserCards() returns all owned cards including inactive ones,
-  // so we must intersect with active cards to get accurate progress counts.
-  // getUserCards() は非アクティブカードも含むため、進捗には
-  // アクティブカードとの交差で正確な所持数を算出する
-  const streamerIds = Object.keys(cardsByStreamer);
-  const activeCardCounts = await getActiveCardCountsForStreamers(streamerIds);
-  for (const streamerId of streamerIds) {
+  // activeCardCounts は Promise.all で getUserCards と並列に取得済み。
+  // 所持配信者のみを対象とするため streamerIds の事前取得が不要で、直列2段を解消した。
+  for (const streamerId of Object.keys(cardsByStreamer)) {
     const activeCardData = activeCardCounts.get(streamerId) ?? {
       totalActive: 0,
       activeCardIds: new Set<string>(),
