@@ -1,0 +1,462 @@
+# docich Actions silence watch — azumag/docich#3509
+#
+# 目的:
+#   2026-10-30〜11-04 に azumag/docich で GitHub Actions が約 5.2 日間
+#   「実行ゼロ」のまま止まり、その間にマージされた大量の PR が CI 未検証で
+#   main に入った（必須チェック ci-required は owner の pull_request bypass
+#   で素通しされた）。同じ事象が再発しても、runs API の一覧に「無い」ことは
+#   誰にも通知されない —— 失敗 run は赤く見えるが、存在しない run は何も
+#   言わない。本 workflow は docich リポジトリの外側（twica 側）から
+#   runs API を読み取り専用で定期観測し、「活動（push/PR）はあるのに run が
+#   無い」状態が閾値を超えたら Discord へ通知する dead man's switch である。
+#
+# なぜ docich 側に置かないか（Issue #3509 の DSH 判断）:
+#   検知すべき故障は「docich の Actions 全体が発火しない」こと自体であり、
+#   docich 内の scheduled workflow に監視を置くと障害と同時に監視も死ぬ
+#   （実際、docich 内の既存監視 workflow も今回の無音期間中は止まっていた
+#   = 自己監視は自壊する）。そのため監視は別リポジトリ twica に置く。
+#
+# アラート条件（複合条件・誤検知防止）:
+#   1. docich の最新 workflow run の created_at から
+#      SILENCE_THRESHOLD_SECONDS（2 時間）が経過している、かつ
+#   2. docich の pushed_at が同期間内にある（push/マージの活動は続いている）。
+#   docich は平常時は数分間隔で run がある（1日数百件）ため 2 時間の無音は
+#   明確に異常。条件 2 は「開発が止まっている静寂期間」の誤報を防ぐ
+#   （例: 連休で誰も push しなければ run が無いのは正常）。
+#
+# control group による自動切り分け:
+#   同じ判定を azumag/twica と azumag/soviet_now にも適用し、
+#   「docich のみ無音 = リポジトリ固有（enforcement / 設定 / イベント配送不全
+#   の疑い）」「control も無音 = GitHub Actions プラットフォーム側の部分障害
+#   の疑い」をアラート文に含める。なお GitHub Actions が全体的に死んだ場合は
+#   本 workflow 自身も起きない（下記「既知の限界」）。
+#
+# 通知の頻度制御（chat-outbox-watch.yml と同じ機構）:
+#   無音が継続する間の毎 run 送信はスパムになるため、「最後に Discord 送信に
+#   成功した時刻」を main HEAD コミットに対する commit status
+#   （context: docich-actions-silence-watch/alert）として記録し、抑制窓
+#   （ALERT_SUPPRESS_WINDOW_SECONDS = 55 分）以内の run では送信だけを
+#   スキップする。run 自体は failure のまま残し、Actions の赤 run /
+#   failure email という第 2 の可視経路は毎周期継続する。正常 run は
+#   docich-actions-silence-watch/recovered status を置き、次の無音を
+#   即時通知できるようにする。
+#
+# 手動実行（workflow_dispatch）:
+#   heartbeat=true を指定すると、アラート条件を満たさない場合に限り現在の
+#   観測値を載せた「生存確認」メッセージを Discord へ送る（webhook の疎通と
+#   watchdog 自身の生存の確認用）。
+#
+# 安全設計（db-readonly-check-production.yml / chat-outbox-watch.yml と同じ方針）:
+#   - checkout しない（repo のコードを一切実行しない）。
+#   - 外部 API への書き込みは一切しない。読み取るのは公開リポジトリの
+#     runs / pushed_at / commit status のみ。書き込みは twica 自身の
+#     commit status（anchor）と Discord webhook の送信だけ。
+#   - 閾値・対象リポジトリを差し替える input を作らない。
+#   - 公開ログを最小化する: リポジトリ名・時刻・経過秒のみを出し、
+#     API 応答の生データやトークンは出さない。
+#
+# 既知の限界（Issue #3509 の DSH 判断で許容済み）:
+#   - 本 workflow 自体も GitHub Actions で動くため、GitHub Actions の
+#     プラットフォーム全体障害では自壊しうる（その場合アラートは出ない。
+#     control group 判定は「部分障害」の切り分けにのみ有効）。
+#   - GitHub は 60 日間リポジトリにアクティビティが無いと schedule を自動
+#     無効化する。twica は常時稼働しているため実害は薄いが、将来 twica が
+#     静止化した場合は本監視も止まる。
+#   - これらが問題になった場合は Cloudflare Workers Cron 等の
+#     プラットフォーム外スケジューラへの置き換えを検討すること。
+
+name: docich Actions silence watch
+
+on:
+  # main へのマージ時にも 1 回観測する。GitHub の schedule は新規登録直後に
+  # 発火まで時間がかかるうえ、このリポジトリでは高頻度 cron が実効的に
+  # 数十分間隔へ抑制されることを実測している（chat-outbox-watch.yml 冒頭
+  # コメント参照）。push でも観測することで「実際に動いている監視」にする。
+  # どちらも観測内容は完全に同一。
+  push:
+    branches: [main]
+  schedule:
+    # 15 分ごと（GitHub 側の抑制で実効間隔は延びうる）。検知閾値は 2 時間
+    # なので、遅延しても検知 latency にしか影響せず誤報・誤陰性は生じない。
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      heartbeat:
+        description: "アラート未検知時に生存確認メッセージを Discord へ送る"
+        required: false
+        type: boolean
+        default: false
+
+# 同一 watch の連続実行はキャンセルせず直列に並べる。送信中のアラートを
+# 打ち切らないため（chat-outbox-watch と同じ設計）。
+concurrency:
+  group: docich-actions-silence-watch
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    name: Watch docich Actions silence
+    # workflow_dispatch は任意 ref を選べるため、job 開始前に main 以外を
+    # 拒否する。Discord webhook secret を使う経路を既定ブランチに限定する。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # アラート送信の anchor（最終送信時刻）を main HEAD の commit status
+      # として記録・参照するために使う。それ以外に GITHUB_TOKEN を使わない。
+      statuses: write
+    timeout-minutes: 5
+    env:
+      # 無音と判定する閾値（秒）= 2 時間。根拠は冒頭コメント参照。
+      SILENCE_THRESHOLD_SECONDS: "7200"
+      # Discord 重複送信の抑制窓（秒）。最終送信からこの間隔が経過するまで
+      # 送信を省略し、無音継続中は約 55 分ごとに再送する。
+      ALERT_SUPPRESS_WINDOW_SECONDS: "3300"
+      # 監視対象と control group（スペース区切り）。先頭が監視対象。
+      WATCH_TARGET: "azumag/docich"
+      WATCH_CONTROLS: "azumag/twica azumag/soviet_now"
+
+    steps:
+      # job-level の if に加えた多重防御。将来 if が編集されても、main 以外の
+      # コード実行コンテキストから通知 secret を使わせない。
+      - name: Guard the target ref
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::the docich actions silence watch only runs from refs/heads/main"
+            exit 1
+          fi
+
+      # 観測の出所を記録する（secret は含まれない）。
+      - name: Record provenance
+        run: |
+          echo "ref=$GITHUB_REF"
+          echo "sha=$GITHUB_SHA"
+          echo "run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT event=$GITHUB_EVENT_NAME"
+
+      # 観測 + 判定。GITHUB_TOKEN（本リポジトリの installation token）は公開
+      # リポジトリの読み取りにも使えるためレート制限回避に使う。認証が通らない
+      # 応答（公開情報ゆえ匿名でも読める）に限り匿名へフォールバックする。
+      # 出力は判定フラグと通知本文のみ。
+      - name: Observe Actions silence across repositories
+        id: evaluate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone
+
+          api_base = os.environ["GITHUB_API_URL"]
+          token = os.environ.get("GH_TOKEN", "")
+          threshold = int(os.environ["SILENCE_THRESHOLD_SECONDS"])
+          target = os.environ["WATCH_TARGET"]
+          controls = os.environ["WATCH_CONTROLS"].split()
+          now = datetime.now(timezone.utc)
+
+          def get(path, allow_anonymous=True):
+              # 公開リポジトリの読み取り専用 GET。installation token で 401/403/404
+              # が返った場合のみ匿名へフォールバックする（公開情報のため機密性の
+              # 問題はない）。その他のエラーは観測不能として上位へ投げる。
+              for use_token in ([True, False] if allow_anonymous else [True]):
+                  headers = {"Accept": "application/vnd.github+json"}
+                  if use_token and token:
+                      headers["Authorization"] = f"Bearer {token}"
+                  request = urllib.request.Request(
+                      f"{api_base}{path}", headers=headers,
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=20) as response:
+                          return json.load(response)
+                  except urllib.error.HTTPError as error:
+                      if use_token and error.code in (401, 403, 404):
+                          continue
+                      raise
+
+          def parse_ts(value):
+              return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+          def observe(repo):
+              # 最新 run の時刻と pushed_at を読む。run が一件も無い場合は
+              # last_run_at=None（無音歴=無限大）として扱う。
+              runs = get(f"/repos/{repo}/actions/runs?per_page=1")
+              info = get(f"/repos/{repo}")
+              last_run_at = None
+              run_list = runs.get("workflow_runs") or []
+              if run_list:
+                  last_run_at = parse_ts(run_list[0]["created_at"])
+              pushed_at = parse_ts(info["pushed_at"]) if info.get("pushed_at") else None
+              run_age = None if last_run_at is None else int((now - last_run_at).total_seconds())
+              push_age = None if pushed_at is None else int((now - pushed_at).total_seconds())
+              # 無音判定: run が閾値を超えて無い（または一度も無い）かつ
+              # 同期間内に push がある。活動自体が無い静寂は正常とみなす。
+              silent = (run_age is None or run_age > threshold) and (
+                  push_age is not None and push_age < threshold
+              )
+              return {
+                  "repo": repo,
+                  "last_run_at": last_run_at.isoformat() if last_run_at else None,
+                  "run_age_seconds": run_age,
+                  "pushed_at": pushed_at.isoformat() if pushed_at else None,
+                  "push_age_seconds": push_age,
+                  "silent": silent,
+              }
+
+          observations = {}
+          for repo in [target] + controls:
+              observations[repo] = observe(repo)
+
+          target_obs = observations[target]
+          alert = target_obs["silent"]
+          silent_controls = [r for r in controls if observations[r]["silent"]]
+
+          # 自動切り分け: control も無音ならプラットフォーム側障害の疑い、
+          # docich のみならリポジトリ固有の疑い。
+          if not alert:
+              classification = "none"
+          elif silent_controls:
+              classification = (
+                  f"platform-suspect: control 側にも無音あり ({', '.join(silent_controls)})。"
+                  "GitHub Actions プラットフォームの部分障害の可能性"
+              )
+          else:
+              classification = (
+                  "repo-specific: 監視対象のみ無音で control は正常。"
+                  "リポジトリ固有の Actions 無効化 / enforcement / イベント配送不全の可能性"
+              )
+
+          def fmt_age(seconds):
+              return "なし" if seconds is None else f"{seconds} 秒"
+
+          run_url = (
+              f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+              f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          )
+          lines = []
+          for repo in [target] + controls:
+              obs = observations[repo]
+              lines.append(
+                  f"- {repo}: 最新 run {obs['last_run_at'] or '記録なし'}"
+                  f"（経過 {fmt_age(obs['run_age_seconds'])}）"
+                  f" / pushed_at {obs['pushed_at'] or '不明'}"
+                  f"（経過 {fmt_age(obs['push_age_seconds'])}）"
+                  f" → {'無音' if obs['silent'] else '正常'}"
+              )
+          lines += [
+              f"閾値: {threshold} 秒（無音判定には同期間内の push も必須）",
+              f"run: {run_url}",
+          ]
+
+          alert_message = "\n".join(
+              [
+                  "⚠️ [GitHub Actions 無音検知] docich の workflow run が閾値を超えて記録されていません",
+                  f"切り分け: {classification}",
+                  "参照: azumag/docich#3509（Actions 無音事象の原因調査）",
+              ]
+              + lines
+              + ["対応手順: docs/actions-silence-watch.md"]
+          )
+          heartbeat_message = "\n".join(
+              [
+                  "✅ [GitHub Actions 無音 watch] 生存確認（手動実行・アラート条件未充足）",
+              ]
+              + lines
+          )
+
+          # 判定結果を run log にも出す（リポジトリ名と時刻のみで安全）。
+          print(f"alert={alert} classification={classification}")
+          for repo in [target] + controls:
+              obs = observations[repo]
+              print(
+                  f"  {repo}: silent={obs['silent']} run_age={obs['run_age_seconds']}"
+                  f" push_age={obs['push_age_seconds']}"
+              )
+          gh_output = os.environ.get("GITHUB_OUTPUT")
+          if gh_output:
+              with open(gh_output, "a", encoding="utf-8") as handle:
+                  for key, value in (
+                      ("alert", "true" if alert else "false"),
+                      ("classification", classification),
+                      ("alert_message", alert_message),
+                      ("heartbeat_message", heartbeat_message),
+                  ):
+                      # heredoc 区切り文字列が値に混入すると出力が黙って途切れる。
+                      # 通知本文は固定テンプレート + 時刻のため起こらないが、
+                      # 将来の文面変更で壊れないよう fail-closed に禁止する。
+                      assert "WATCH_OUTPUT_EOF" not in value, key
+                      handle.write(f"{key}<<WATCH_OUTPUT_EOF\n{value}\nWATCH_OUTPUT_EOF\n")
+          PY
+
+      # Discord 通知と run の結論。alert 時は Discord 送信の成否にかかわらず
+      # run を failure にする（抑制で送信を省いた場合も同じ）。
+      - name: Notify Discord and conclude the run
+        env:
+          ALERT: ${{ steps.evaluate.outputs.alert }}
+          ALERT_MESSAGE: ${{ steps.evaluate.outputs.alert_message }}
+          HEARTBEAT: ${{ github.event_name == 'workflow_dispatch' && inputs.heartbeat == true && 'true' || 'false' }}
+          HEARTBEAT_MESSAGE: ${{ steps.evaluate.outputs.heartbeat_message }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          # anchor status の target_url に載せる run URL。
+          WATCH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$ALERT" != "true" ]; then
+            if [ "$HEARTBEAT" = "true" ]; then
+              echo "heartbeat dispatch: sending the current observation to Discord"
+              curl -fsS --retry 3 --retry-all-errors --max-time 20 -o /dev/null \
+                -H 'content-type: application/json' \
+                -d "$(python3 -c 'import json, os; print(json.dumps({"content": os.environ["HEARTBEAT_MESSAGE"]}))')" \
+                "$DISCORD_WEBHOOK_URL"
+            else
+              echo "no silence detected; nothing to notify"
+              python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          try:
+              api_base = os.environ["GITHUB_API_URL"]
+              repository = os.environ["GITHUB_REPOSITORY"]
+              request = urllib.request.Request(
+                  f"{api_base}/repos/{repository}/statuses/{os.environ['GITHUB_SHA']}",
+                  data=json.dumps(
+                      {
+                          "state": "success",
+                          "context": "docich-actions-silence-watch/recovered",
+                          "description": "docich Actions is firing (no silence)",
+                          "target_url": os.environ.get("WATCH_RUN_URL", ""),
+                      }
+                  ).encode("utf-8"),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(request, timeout=20):
+                  pass
+          except Exception as error:  # noqa: BLE001
+              print(f"::warning::recovery marker recording failed ({error})")
+          PY
+            fi
+            exit 0
+          fi
+
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::error::DISCORD_WEBHOOK_URL is not configured; cannot deliver the alert"
+            exit 1
+          fi
+
+          # 抑制判定: 「最後に Discord 送信に成功した時刻」を main HEAD の
+          # commit status（context: docich-actions-silence-watch/alert）として
+          # 読み、抑制窓以内なら送信だけスキップする。run は failure のまま残す。
+          # anchor は実際に送信した run だけが作るため、観測不能エラーなど
+          # 無関係な failure が直前にあっても本物の初回アラートは黙らない。
+          # 判定自体が失敗した場合は抑制せず送信する（抑制は頻度制御であって
+          # 安全機構ではないため、失敗は送信側へ倒す）。
+          suppressed="false"
+          if ! suppressed="$(python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from datetime import datetime, timezone
+
+          window_seconds = int(os.environ["ALERT_SUPPRESS_WINDOW_SECONDS"])
+          api_base = os.environ["GITHUB_API_URL"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          # commit status は commit 紐づきのため、main の HEAD が merge で変わると
+          # 直前の anchor を見失う。直近の複数 commit を遡って、context が
+          # docich-actions-silence-watch/alert / .../recovered の status を持つ
+          # 最新のものを探す（chat-outbox-watch と同じ SHA 遷移またぎ対策）。
+          commits_request = urllib.request.Request(
+              f"{api_base}/repos/{repository}/commits?sha=main&per_page=10",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+              },
+          )
+          with urllib.request.urlopen(commits_request, timeout=20) as response:
+              commits = json.load(response) or []
+          alert_at = None
+          recovered_at = None
+          for commit in commits:
+              status_request = urllib.request.Request(
+                  f"{api_base}/repos/{repository}/commits/{commit['sha']}/status",
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                  },
+              )
+              with urllib.request.urlopen(status_request, timeout=20) as response:
+                  combined = json.load(response)
+              for entry in combined.get("statuses") or []:
+                  context = entry.get("context")
+                  created = datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00"))
+                  if context == "docich-actions-silence-watch/alert" and (alert_at is None or created > alert_at):
+                      alert_at = created
+                  elif context == "docich-actions-silence-watch/recovered" and (recovered_at is None or created > recovered_at):
+                      recovered_at = created
+          # alert anchor が無ければ抑制しない。復旧マーカーが anchor より新しい
+          # 場合も抑制しない（再発を黙らせない）。
+          if alert_at is None:
+              print("false")
+          elif recovered_at is not None and recovered_at > alert_at:
+              print("false")
+          else:
+              age_seconds = (datetime.now(timezone.utc) - alert_at).total_seconds()
+              print("true" if age_seconds < window_seconds else "false")
+          PY
+          )"; then
+            echo "::warning::抑制判定に失敗したため、送信を続行する"
+            suppressed="false"
+          fi
+
+          if [ "$suppressed" = "true" ]; then
+            echo "::warning::最終送信から抑制窓内のため Discord 送信をスキップ（run は failure として記録）"
+            exit 1
+          fi
+
+          echo "sending the silence alert to Discord"
+          curl -fsS --retry 3 --retry-all-errors --max-time 20 -o /dev/null \
+            -H 'content-type: application/json' \
+            -d "$(python3 -c 'import json, os; print(json.dumps({"content": os.environ["ALERT_MESSAGE"]}))')" \
+            "$DISCORD_WEBHOOK_URL"
+
+          # 送信の anchor を記録する（次 run 以降の抑制判定に使う）。記録に失敗
+          # しても送信自体は完了しているため warning だけ残す。
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          api_base = os.environ["GITHUB_API_URL"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          request = urllib.request.Request(
+              f"{api_base}/repos/{repository}/statuses/{os.environ['GITHUB_SHA']}",
+              data=json.dumps(
+                  {
+                      "state": "failure",
+                      "context": "docich-actions-silence-watch/alert",
+                      "description": "docich actions silence alert sent",
+                      "target_url": os.environ["WATCH_RUN_URL"],
+                  }
+              ).encode("utf-8"),
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Content-Type": "application/json",
+                  "Accept": "application/vnd.github+json",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  response.read()
+          except (urllib.error.URLError, TimeoutError) as error:
+              print(f"::warning::failed to record the alert anchor status ({error}); next run may re-send sooner")
+          PY
+          # 送信後も run を failure にする。以降の周期 run は anchor が抑制窓を
+          # 空けるまで送信を省略し、空けば無音継続の生存確認として再送する。
+          exit 1
