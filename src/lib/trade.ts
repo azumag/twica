@@ -19,14 +19,12 @@ import {
   cardTradeSettings as cardTradeSettingsTable,
   streamers as streamersTable,
   tradeOffers as tradeOffersTable,
-  tradeOffersWithoutQuantity,
   userCards as userCardsTable,
   users as usersTable,
 } from "@/lib/db/schema";
 import {
   getErrorChain,
   getSqlState,
-  isPgFunctionNotFoundError,
   isPgMissingNamedColumnError,
   isPgUniqueViolationError,
 } from "@/lib/db/errors";
@@ -160,54 +158,13 @@ export function viewerUserIdOf(twitchUserId: string): SQL {
 }
 
 // -----------------------------------------------------------------------------
-// Deploy window of trade_offers.wanted_quantity (#1789)
-//
-// planetscale-migrate and the app deploy run independently (issue #788), so
-// the new app can briefly run against a database without the column. Drizzle
-// lists EVERY schema column in INSERT (unset ones as `default`) and in
-// unqualified SELECT/RETURNING, so without a fallback every trade statement
-// would fail with 42703. Same "try full columns → on 42703 of the new column
-// retry without it" pattern as src/lib/db/streamers-safe-columns.ts. Without
-// the column every stored offer is a 1-copy offer (the column default), so
-// reading it as the literal 1 is exact, not an approximation. Becomes a dead
-// branch once 20261011120000 is applied everywhere.
-// -----------------------------------------------------------------------------
-
-const TRADE_QUANTITY_COLUMNS = ["wanted_quantity"] as const;
-
-async function withTradeQuantityColumnFallback<T>(
-  attempt: (withoutQuantity: boolean) => Promise<T>,
-): Promise<T> {
-  try {
-    return await attempt(false);
-  } catch (error) {
-    if (!isPgMissingNamedColumnError(error, TRADE_QUANTITY_COLUMNS)) throw error;
-    return attempt(true);
-  }
-}
-
-/**
- * Every trade_offers column of `table` (the table or one of its aliases) with
- * wanted_quantity read as the literal 1 while the column does not exist.
- */
-function offerRowFields(
-  table: typeof tradeOffersTable | typeof createReplayOffer,
-  withoutQuantity: boolean,
-) {
-  const { wanted_quantity: wantedQuantity, ...columns } = getTableColumns(table);
-  return {
-    ...columns,
-    wanted_quantity: withoutQuantity
-      ? sql<number>`1`.mapWith(Number)
-      : sql<number>`${qualifiedColumn(wantedQuantity)}`.mapWith(Number),
-  };
-}
-
-// -----------------------------------------------------------------------------
 // Deploy window of cards.trade_wantable (#1790)
 //
-// Same situation as wanted_quantity above: the new app can briefly run
-// against a database without 20261014100000. The column lives in the narrow
+// planetscale-migrate and the app deploy run independently (issue #788), so
+// the new app can briefly run against a database without 20261014100000.
+// (The same-shaped wanted_quantity window (#1789) was measured on production
+// and preview and its fallback removed in #1792, like the #954 cleanup.) The
+// column lives in the narrow
 // cardTradeSettings definition (src/lib/db/schema.ts explains why it is not
 // part of `cards`), so only the trade statements below reference it, and
 // only through explicit fragments. On 42703 for that column they are retried
@@ -215,12 +172,19 @@ function offerRowFields(
 // before the migration no card can be non-wantable (the column default is
 // true and the old schema has no way to store anything else). Becomes a dead
 // branch once 20261014100000 is applied everywhere.
-//
-// Wraps the wanted_quantity fallback (outer = trade_wantable, inner =
-// wanted_quantity): an error for the other column is rethrown by the inner
-// wrapper and handled here, so any combination of missing columns converges
-// in at most four attempts, and only during the deploy window.
 // -----------------------------------------------------------------------------
+
+/**
+ * Every trade_offers column of `table` (the table or one of its aliases),
+ * with wanted_quantity as a Number mapped integer column.
+ */
+function offerRowFields(table: typeof tradeOffersTable | typeof createReplayOffer) {
+  const { wanted_quantity: wantedQuantity, ...columns } = getTableColumns(table);
+  return {
+    ...columns,
+    wanted_quantity: sql<number>`${qualifiedColumn(wantedQuantity)}`.mapWith(Number),
+  };
+}
 
 const TRADE_WANTABLE_COLUMNS = ["trade_wantable"] as const;
 
@@ -518,16 +482,12 @@ const wantedStreamerMeta = alias(streamersTable, "wanted_streamer");
 const offererMeta = alias(usersTable, "offerer_user");
 const acceptorMeta = alias(usersTable, "acceptor_user");
 
-async function findOfferByCreateRequest(
-  userId: string,
-  requestId: string,
-  withoutQuantity: boolean,
-) {
+async function findOfferByCreateRequest(userId: string, requestId: string) {
   const rows = await withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
-        .select(offerRowFields(tradeOffersTable, withoutQuantity))
+        .select(offerRowFields(tradeOffersTable))
         .from(tradeOffersTable)
         .where(
           and(
@@ -611,27 +571,20 @@ export async function createTradeOffer(input: {
   // statement returns exactly one row for a known user and none otherwise.
   // Only decisions moved to TypeScript; their order below is unchanged.
   //
-  // Deploy window (#1789): the column-less retry is only allowed for a 1-copy
-  // request. A multi-copy offer cannot be stored without the column, so its
-  // 42703 is left to surface as a 500 ("try again later") instead of silently
-  // listing a ×1 offer the viewer did not ask for. The returned
-  // `withoutQuantity` is the shape the check ran with; the INSERT below uses
-  // the same shape. The trade_wantable fallback (#1790) only affects this
-  // read (the INSERT does not touch cards) and is allowed for any quantity.
+  // The trade_wantable fallback (#1790) only affects this read (the INSERT
+  // does not touch cards) and is allowed for any quantity.
   //
   // #1791: "already listed" now means "locked" (open offer, auction listing or
   // active bid; see copyLockedExpr) and the open-listing limit counts auction
   // listings too. Both read the auction schema, so the whole check also runs
   // inside withTradeAuctionSchemaFallback (outermost). Any combination of the
-  // three deploy windows converges in at most eight attempts, only during the
+  // two deploy windows converges in at most four attempts, only during the
   // windows.
   const wantedQuantity = input.wantedQuantity ?? 1;
   const runChecks = async (
-    withoutQuantity: boolean,
     withoutWantable: boolean,
     withoutAuctions: boolean,
   ) => ({
-    withoutQuantity,
     rows: await withDbRetry(
       async () => {
         const { db } = await getDb();
@@ -639,7 +592,7 @@ export async function createTradeOffer(input: {
           .select({
             userId: usersTable.id,
             // Full row of a previous create with the same requestId (or null).
-            replay: offerRowFields(createReplayOffer, withoutQuantity),
+            replay: offerRowFields(createReplayOffer),
             offeredUserCardId: createOfferedCopy.id,
             offeredCardId: createOfferedCard.id,
             offeredStreamerId: createOfferedCard.streamer_id,
@@ -709,13 +662,9 @@ export async function createTradeOffer(input: {
       { idempotent: true },
     ),
   });
-  const { rows: checkRows, withoutQuantity } = await withTradeAuctionSchemaFallback(
+  const { rows: checkRows } = await withTradeAuctionSchemaFallback(
     (withoutAuctions) => withTradeWantableColumnFallback(
-      (withoutWantable) => wantedQuantity === 1
-        ? withTradeQuantityColumnFallback(
-          (withoutQuantity) => runChecks(withoutQuantity, withoutWantable, withoutAuctions),
-        )
-        : runChecks(false, withoutWantable, withoutAuctions),
+      (withoutWantable) => runChecks(withoutWantable, withoutAuctions),
     ),
   );
   const check = checkRows[0];
@@ -810,23 +759,16 @@ export async function createTradeOffer(input: {
       image_url: check.wantedImageUrl,
     }),
     request_id: input.requestId,
-  } satisfies typeof tradeOffersWithoutQuantity.$inferInsert;
+    wanted_quantity: wantedQuantity,
+  } satisfies typeof tradeOffersTable.$inferInsert;
 
   try {
     const rows: TradeOfferRow[] = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        if (withoutQuantity) {
-          // Deploy window: only reachable for wantedQuantity === 1 (see the
-          // check above), which is exactly the column default.
-          return db
-            .insert(tradeOffersWithoutQuantity)
-            .values(values)
-            .returning(offerRowFields(tradeOffersTable, true));
-        }
         return db
           .insert(tradeOffersTable)
-          .values({ ...values, wanted_quantity: wantedQuantity })
+          .values(values)
           .returning();
       },
       "trade:create-insert",
@@ -855,7 +797,7 @@ export async function createTradeOffer(input: {
 
     // Rare conflict path: kept as separate follow-up reads (not part of the
     // round-trip budget of the normal path).
-    const byRequest = await findOfferByCreateRequest(userId, input.requestId, withoutQuantity);
+    const byRequest = await findOfferByCreateRequest(userId, input.requestId);
     if (byRequest) {
       return { kind: "ok", offer: byRequest, idempotentReplay: true };
     }
@@ -898,9 +840,9 @@ type ListContext = "board" | "mine";
  * missing streamer/user row (or an open offer without acceptor) yields NULL
  * fields instead of dropping the offer.
  */
-function offerListFields(viewerUserId: SQL | null, withoutQuantity: boolean) {
+function offerListFields(viewerUserId: SQL | null) {
   return {
-    offer: offerRowFields(tradeOffersTable, withoutQuantity),
+    offer: offerRowFields(tradeOffersTable),
     // The resolved viewer id is returned with every row so that isOwnOffer /
     // mineRole are computed from the same snapshot as the WHERE clause. NULL
     // for anonymous viewers and for unknown twitch user ids.
@@ -1001,11 +943,9 @@ function toUserSummary(row: JoinedUser): TradeUserSummary | null {
  * id, which a correlated sub-select may use from the enclosing query. The
  * inner aliases are literal; the result is identical to the previous form.
  */
-function acceptStateFor(viewerUserId: SQL, withoutQuantity: boolean, withoutAuctions: boolean) {
+function acceptStateFor(viewerUserId: SQL, withoutAuctions: boolean) {
   const wantedCardId = qualifiedColumn(tradeOffersTable.wanted_card_id);
-  const wantedQuantity = withoutQuantity
-    ? sql`1`
-    : qualifiedColumn(tradeOffersTable.wanted_quantity);
+  const wantedQuantity = qualifiedColumn(tradeOffersTable.wanted_quantity);
   // #1791: `free` excludes every locked copy (open offer, auction listing or
   // active bid) with the same trade_copy_locked() the accept RPC now uses to
   // pick the payment copies, so "all_listed" also covers copies held by the
@@ -1202,14 +1142,14 @@ export async function listTradeOffers(input: {
   // outermost auction-schema fallback (only reachable for a logged-in viewer).
   const rows: OfferListRow[] = await withTradeAuctionSchemaFallback((withoutAuctions) =>
     withTradeWantableColumnFallback((withoutWantable) =>
-    withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
+    withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
         .select({
-          ...offerListFields(viewerUserId, withoutQuantity),
+          ...offerListFields(viewerUserId),
           acceptState: viewerUserId
-            ? acceptStateFor(viewerUserId, withoutQuantity, withoutAuctions)
+            ? acceptStateFor(viewerUserId, withoutAuctions)
             : sql<TradeCanAccept | null>`NULL`,
         })
         .from(tradeOffersTable)
@@ -1224,7 +1164,7 @@ export async function listTradeOffers(input: {
     },
     "trade:list-open",
     { idempotent: true },
-  ))));
+  )));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
@@ -1267,12 +1207,12 @@ export async function listMyTradeOffers(
   // round trip.
   const offset = (page - 1) * TRADE_PAGE_SIZE;
   const rows: OfferListRow[] = await withTradeWantableColumnFallback((withoutWantable) =>
-    withTradeQuantityColumnFallback((withoutQuantity) => withDbRetry(
+    withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
         .select({
-          ...offerListFields(viewerUserId, withoutQuantity),
+          ...offerListFields(viewerUserId),
           tradeableState: tradeableStateFor(withoutWantable),
         })
         .from(tradeOffersTable)
@@ -1287,7 +1227,7 @@ export async function listMyTradeOffers(
     },
     "trade:list-mine",
     { idempotent: true },
-  )));
+  ));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
@@ -1435,27 +1375,9 @@ function isValidTradeAcceptRpcResult(
 }
 
 /**
- * 42883 because the 4-argument accept_trade_offer itself does not exist yet
- * (deploy window). Other 42883 errors raised INSIDE the function (e.g. a
- * missing operator after a future change) must not be mistaken for the
- * window: they would otherwise turn every ×N accept into a silent mismatch.
- */
-function isAcceptRpcMissingError(error: unknown): boolean {
-  if (!isPgFunctionNotFoundError(error)) return false;
-  return getErrorChain(error).some((layer) => {
-    const message = (layer as { message?: unknown } | null)?.message;
-    return typeof message === "string" && message.includes("accept_trade_offer(");
-  });
-}
-
-/**
  * Calls the 4-argument accept_trade_offer (#1789), which transfers only when
  * `expectedQuantity` — the quantity the viewer was shown and agreed to —
- * equals the offer's wanted_quantity (compare-and-set). Deploy window: before
- * 20261011120000 the function does not exist (42883); every offer is then a
- * 1-copy offer, so the 3-argument original is exactly equivalent for an
- * expected quantity of 1. Any other expectation cannot match a column-less
- * offer and is reported as a mismatch without calling the old function.
+ * equals the offer's wanted_quantity (compare-and-set).
  */
 async function callAcceptTradeOfferRpc(input: {
   twitchUserId: string;
@@ -1464,9 +1386,7 @@ async function callAcceptTradeOfferRpc(input: {
   expectedQuantity: number;
 }): Promise<TradeAcceptRpcResult> {
   const { sql: query } = await getDb();
-  let rows: Array<{ result: unknown }>;
-  try {
-    rows = await query<Array<{ result: unknown }>>`
+  const rows = await query<Array<{ result: unknown }>>`
       SELECT public.accept_trade_offer(
         ${input.twitchUserId},
         ${input.tradeOfferId}::uuid,
@@ -1474,19 +1394,6 @@ async function callAcceptTradeOfferRpc(input: {
         ${input.expectedQuantity}::smallint
       ) AS result
     `;
-  } catch (error) {
-    if (!isAcceptRpcMissingError(error)) throw error;
-    if (input.expectedQuantity !== 1) {
-      return { success: false, error: "QUANTITY_MISMATCH" };
-    }
-    rows = await query<Array<{ result: unknown }>>`
-      SELECT public.accept_trade_offer(
-        ${input.twitchUserId},
-        ${input.tradeOfferId}::uuid,
-        ${input.requestId}::uuid
-      ) AS result
-    `;
-  }
   const result = rows[0]?.result;
   if (!isValidTradeAcceptRpcResult(result, input.tradeOfferId)) {
     throw new Error("accept_trade_offer returned an invalid response");
