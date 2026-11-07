@@ -290,7 +290,9 @@ describe("ChannelPointSettings save message priority (Issue #1998)", () => {
           { status: 200, headers: { "content-type": "application/json" } }
         );
       }
-      return mockFetch()(input, init);
+      // フォールバックは共通の mockFetch に委譲する。FetchMock（vi.fn の
+      // Mock 型）は型上直接呼び出せないため、fetch のシグネチャにキャストする。
+      return (mockFetch() as unknown as typeof fetch)(input, init);
     });
 
     renderComponent();
