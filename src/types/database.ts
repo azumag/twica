@@ -30,6 +30,11 @@ export interface Database {
           // メイン報酬に紐付くカードパック名（NULL=全カード対象）。Issue #393
           // Card pack bound to the main channel-point reward (NULL = all cards)
           channel_point_collection_name: string | null
+          // Issue #1994: メイン報酬に割り当てた複数パック（先頭は channel_point_collection_name
+          // と常に一致するミラー。空配列なら旧単一列を読む）。migration
+          // 20261108120000 の列。デプロイ窓では列が無く取得されないため optional。
+          // Multi-pack binding for the main reward (head mirrors the legacy column).
+          channel_point_pack_names?: string[]
           is_active: boolean
           // ガチャ効果音URL - R2に保存された音声ファイルのURL
           gacha_sound_url: string | null
@@ -132,6 +137,7 @@ export interface Database {
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
           channel_point_collection_name?: string | null
+          channel_point_pack_names?: string[]
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -171,6 +177,7 @@ export interface Database {
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
           channel_point_collection_name?: string | null
+          channel_point_pack_names?: string[]
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -573,6 +580,10 @@ export interface Database {
           // 追加報酬に紐付くカードパック名（NULL=全カード対象）。Issue #393
           // Card pack bound to this additional reward (NULL = all cards)
           collection_name: string | null
+          // Issue #1994: この追加報酬に割り当てた複数パック（先頭は collection_name と
+          // 常に一致するミラー。空配列なら collection_name を読む）。デプロイ窓では
+          // 列が無く取得されないため optional。
+          reward_pack_names?: string[]
           created_at: string
         }
         Insert: {
@@ -583,6 +594,7 @@ export interface Database {
           draw_count?: number
           is_raid_limited?: boolean
           collection_name?: string | null
+          reward_pack_names?: string[]
           created_at?: string
         }
         Update: {
@@ -593,6 +605,7 @@ export interface Database {
           draw_count?: number
           is_raid_limited?: boolean
           collection_name?: string | null
+          reward_pack_names?: string[]
           created_at?: string
         }
       }
@@ -807,6 +820,8 @@ export interface Database {
       // the new name across cards.collection_name /
       // streamers.channel_point_collection_name /
       // streamer_additional_gacha_rewards.collection_name for that streamer.
+      // Issue #1994 (20261108120000) also cascades into the multi-pack arrays
+      // streamers.channel_point_pack_names / streamer_additional_gacha_rewards.reward_pack_names.
       // See supabase/migrations/00063_add_default_pack_name_and_rename.sql.
       rename_card_pack: {
         Args: {

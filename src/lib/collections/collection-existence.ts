@@ -144,6 +144,32 @@ export function isMissingPackRarityWeightsColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, ["pack_rarity_weights"]);
 }
 
+/**
+ * Issue #1994: `streamers.channel_point_pack_names`（メイン報酬の複数パック割り当て,
+ * migration 20261108120000）の未デプロイ検知。
+ *
+ * 列ごとに専用関数を持つ既存の慣習に合わせる。列名は既存検知の部分一致
+ * （"collection_name" / "card_pack_names"）を含まないように選んであるため、
+ * 新列だけが欠落した窓で既存チェイン（旧列欠落用）が誤発火することはない。
+ * 呼び出し側は欠落時に旧単一列 channel_point_collection_name だけで動作する。
+ */
+export function isMissingChannelPointPackNamesColumnError(error: unknown): boolean {
+  if (!error) return false;
+
+  return isPgMissingNamedColumnError(error, ["channel_point_pack_names"]);
+}
+
+/**
+ * Issue #1994: `streamer_additional_gacha_rewards.reward_pack_names`（追加報酬の
+ * 複数パック割り当て, migration 20261108120000）の未デプロイ検知。
+ * 理由・使い方は isMissingChannelPointPackNamesColumnError と同じ。
+ */
+export function isMissingRewardPackNamesColumnError(error: unknown): boolean {
+  if (!error) return false;
+
+  return isPgMissingNamedColumnError(error, ["reward_pack_names"]);
+}
+
 export type CollectionExistenceResult =
   | "exists" // at least one active card belongs to this pack
   | "absent"; // no active card belongs to this pack → would cause empty draws

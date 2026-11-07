@@ -7,7 +7,13 @@ import { ERROR_MESSAGES } from "@/lib/constants";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { logger } from "@/lib/logger.server";
-import { resolveCollectionNameField, isRegisteredOrUnchanged, DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import {
+  resolveCollectionNamesField,
+  resolveEffectiveRewardPackNames,
+  toLegacyCollectionName,
+  findUnregisteredRewardPackName,
+  DEFAULT_PACK_SENTINEL,
+} from "@/lib/validation/collection-name";
 import { validateRewardId, validateRewardName } from "@/lib/validations";
 import {
   checkCollectionHasActiveCards,
@@ -22,10 +28,11 @@ import { and, asc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
-import { getErrorChain, getSqlState } from "@/lib/db/errors";
+import { getErrorChain, getSqlState, isPgMissingNamedColumnError } from "@/lib/db/errors";
 import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
+  streamerAdditionalGachaRewardsWithPackNames as streamerAdditionalGachaRewardsWithPackNamesTable,
 } from "@/lib/db/schema";
 
 type GenericDbError = { message?: string; code?: string; details?: string; hint?: string } | null | undefined;
@@ -74,6 +81,9 @@ interface AdditionalRewardRow {
   draw_count: number;
   is_raid_limited: boolean;
   collection_name: string | null;
+  // Issue #1994: 実効のパック割り当て（resolveEffectiveRewardPackNames 済み）。
+  // collection_name は先頭要素のミラー（後方互換）。
+  collection_names: string[];
   created_at: string | null;
 }
 
@@ -129,8 +139,27 @@ const ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME = {
 
 const ADDITIONAL_REWARD_RESPONSE_COLUMNS = {
   ...ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME,
-  collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+  collection_name: streamerAdditionalGachaRewardsWithPackNamesTable.collection_name,
+  // Issue #1994: 複数パック割り当て。応答には collection_names として解決済みの
+  // 配列を載せる（下記 mapAdditionalRewardRow）。
+  reward_pack_names: streamerAdditionalGachaRewardsWithPackNamesTable.reward_pack_names,
 } as const;
+
+/**
+ * DB 行（collection_name + reward_pack_names）を API 応答形状
+ * （collection_name + collection_names）へ変換する。collection_names は
+ * resolveEffectiveRewardPackNames のフォールバック規則で解決し、DB 列
+ * reward_pack_names 自体は応答に含めない（内部表現のため）。
+ */
+function mapAdditionalRewardRow(
+  row: Omit<AdditionalRewardRow, "collection_names"> & { reward_pack_names?: unknown },
+): AdditionalRewardRow {
+  const { reward_pack_names, ...rest } = row;
+  return {
+    ...rest,
+    collection_names: resolveEffectiveRewardPackNames(reward_pack_names, row.collection_name),
+  };
+}
 
 /**
  * listAdditionalRewardsPg の各列セレクトと 2 段フォールバックチェイン (#663)
@@ -148,9 +177,9 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
         const { db } = await getDb();
         return db
           .select(ADDITIONAL_REWARD_RESPONSE_COLUMNS)
-          .from(streamerAdditionalGachaRewardsTable)
-          .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
-          .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
+          .from(streamerAdditionalGachaRewardsWithPackNamesTable)
+          .where(eq(streamerAdditionalGachaRewardsWithPackNamesTable.streamer_id, streamerId))
+          .orderBy(asc(streamerAdditionalGachaRewardsWithPackNamesTable.created_at));
       },
       "Additional Rewards API: GET(full)",
       { idempotent: true },
@@ -190,23 +219,67 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
     );
 
   try {
-    return await selectFull();
+    const rows = await selectFull();
+    return rows.map((row) => mapAdditionalRewardRow(row));
   } catch (error) {
+    // Issue #1994: reward_pack_names 列のみ未デプロイなら、新列を除く
+    // collection_name ありの中間列セットで再試行し collection_names=[] 補完
+    // （= 旧単一列だけで解決する）。collection_name 欠落フォールバックより先に
+    // 判定する（列名の部分一致誤検知を避けるため、名前で厳密判定する）。
+    if (isPgMissingNamedColumnError(error, ["reward_pack_names"])) {
+      try {
+        const rows = await withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            return db
+              .select({
+                ...ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME,
+                collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+              })
+              .from(streamerAdditionalGachaRewardsTable)
+              .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
+              .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
+          },
+          "Additional Rewards API: GET(no reward_pack_names)",
+          { idempotent: true },
+        );
+        return rows.map((row) => ({ ...row, collection_names: [] as string[] }));
+      } catch (packNamesError) {
+        // 中間列セットも失敗した場合は、従来の欠落チェインへ誤判定なく委ねる。
+        if (isMissingCollectionNameColumn(packNamesError as GenericDbError)) {
+          try {
+            const rows = await selectWithoutCollectionName();
+            return rows.map((row) => ({ ...row, collection_name: null, collection_names: [] as string[] }));
+          } catch (error2) {
+            if (isRaidOptionsSchemaErrorPg(error2)) {
+              const rows = await selectMinimal();
+              return rows.map((row) => ({ ...row, draw_count: 1, is_raid_limited: false, collection_name: null, collection_names: [] as string[] }));
+            }
+            throw error2;
+          }
+        }
+        if (isRaidOptionsSchemaErrorPg(packNamesError)) {
+          const rows = await selectMinimal();
+          return rows.map((row) => ({ ...row, draw_count: 1, is_raid_limited: false, collection_name: null, collection_names: [] as string[] }));
+        }
+        throw packNamesError;
+      }
+    }
     if (isMissingCollectionNameColumn(error as GenericDbError)) {
       try {
         const rows = await selectWithoutCollectionName();
-        return rows.map((row) => ({ ...row, collection_name: null }));
+        return rows.map((row) => ({ ...row, collection_name: null, collection_names: [] as string[] }));
       } catch (error2) {
         if (isRaidOptionsSchemaErrorPg(error2)) {
           const rows = await selectMinimal();
-          return rows.map((row) => ({ ...row, draw_count: 1, is_raid_limited: false, collection_name: null }));
+          return rows.map((row) => ({ ...row, draw_count: 1, is_raid_limited: false, collection_name: null, collection_names: [] as string[] }));
         }
         throw error2;
       }
     }
     if (isRaidOptionsSchemaErrorPg(error)) {
       const rows = await selectMinimal();
-      return rows.map((row) => ({ ...row, draw_count: 1, is_raid_limited: false, collection_name: null }));
+      return rows.map((row) => ({ ...row, draw_count: 1, is_raid_limited: false, collection_name: null, collection_names: [] as string[] }));
     }
     throw error;
   }
@@ -396,6 +469,18 @@ async function insertAdditionalRewardPg(
     // column is not migrated yet. Must run BEFORE the raid-options check because
     // both match the same generic missing-column shape; otherwise we would
     // return a misleading 503.
+    // Issue #1994: reward_pack_names 列のみ未デプロイなら新列だけ剥がし、
+    // 旧単一列（先頭要素ミラー）への書き込みを続行する。collection_name の
+    // 部分一致検知より先に判定する（列名の誤検知防止）。
+    if (isPgMissingNamedColumnError(error, ["reward_pack_names"]) && "reward_pack_names" in insertPayload) {
+      delete insertPayload.reward_pack_names;
+      try {
+        const rows = await runInsert(insertPayload);
+        return { kind: "ok", reward: rows[0] ?? null };
+      } catch (retryError) {
+        return classifyError(retryError);
+      }
+    }
     if (isMissingCollectionNameColumn(error as GenericDbError) && "collection_name" in insertPayload) {
       delete insertPayload.collection_name;
       try {
@@ -463,9 +548,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { rewardId, rewardName, drawCount, isRaidLimited } = body;
 
-    // Issue #393: optional pack binding for this additional reward.
-    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
-    if (!collectionNameResult.ok) {
+    // Issue #1994: optional multi-pack binding. 複数形 collectionNames（配列）
+    // を正規とし、旧単一形 collectionName も受理する（併用は曖昧なので 400）。
+    const collectionNamesResult = resolveCollectionNamesField(body, "collectionNames", "collectionName");
+    if (!collectionNamesResult.ok) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -540,11 +626,13 @@ export async function POST(request: NextRequest) {
     // streamer implicitly has this pseudo-pack (their unclassified cards), so
     // membership validation is skipped for it entirely; existence is verified
     // separately below via checkCollectionHasActiveCards.
+    // Issue #1994: membership 検証は全要素へ（DEFAULT_PACK_SENTINEL は
+    // findUnregisteredRewardPackName 内部で免除）。POST は常に新規紐付けのため
+    // 現在値は空配列を渡す。
     if (
-      typeof collectionNameResult.value === "string" &&
-      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
+      collectionNamesResult.value !== undefined &&
       !cardPackNamesUnavailable &&
-      !isRegisteredOrUnchanged(collectionNameResult.value, null, registeredPackNames)
+      findUnregisteredRewardPackName(collectionNamesResult.value, [], registeredPackNames) !== null
     ) {
       return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
     }
@@ -552,26 +640,29 @@ export async function POST(request: NextRequest) {
     // デプロイ窓でmembership検証ができない間は、新しいパック紐付けの書き込み
     // 自体を見送る(報酬自体の作成は続行)。
     const collectionNameSkippedDeployWindow =
-      cardPackNamesUnavailable && typeof collectionNameResult.value === "string";
+      cardPackNamesUnavailable &&
+      collectionNamesResult.value !== undefined &&
+      collectionNamesResult.value.length > 0;
 
     // Issue #393: when a pack is bound, ensure it actually has active cards so the
     // reward never resolves to an empty draw pool at redemption time. Skip the
     // check during the deploy window (column not migrated yet) and when the
     // assignment could not be persisted anyway.
-    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
-      const existence = await checkCollectionHasActiveCards(
-        streamer.id,
-        collectionNameResult.value
-      );
-      if (existence === "absent") {
-        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+    // Issue #1994: 複数割り当てでは紐付く各パックへ同じ検査を行う。
+    if (collectionNamesResult.value !== undefined && !collectionNameSkippedDeployWindow) {
+      for (const name of collectionNamesResult.value) {
+        const existence = await checkCollectionHasActiveCards(streamer.id, name);
+        if (existence === "absent") {
+          return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+        }
       }
     }
 
     // Insert the new additional reward
     // 新しい追加報酬を挿入
-    // collection_name は値が指定された場合のみ含める。未指定/null の通常作成では
-    // 列を含めないことで、collection_name 列が未デプロイでも作成を壊さない。
+    // collection_name / reward_pack_names は値が指定された場合のみ含める。
+    // 未指定の通常作成では列を含めないことで、列が未デプロイでも作成を壊さない。
+    // Issue #1994: 両列を同じ INSERT で書き、旧列には先頭要素をミラーする。
     const insertPayload: Record<string, unknown> = {
       streamer_id: streamer.id,
       reward_id: rewardId,
@@ -579,8 +670,9 @@ export async function POST(request: NextRequest) {
       draw_count: normalizedDrawCount,
       is_raid_limited: isRaidLimited ?? false,
     };
-    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
-      insertPayload.collection_name = collectionNameResult.value;
+    if (collectionNamesResult.value !== undefined && !collectionNameSkippedDeployWindow) {
+      insertPayload.reward_pack_names = collectionNamesResult.value;
+      insertPayload.collection_name = toLegacyCollectionName(collectionNamesResult.value);
     }
 
     const insertOutcome = await insertAdditionalReward(insertPayload);
@@ -642,7 +734,7 @@ async function getAdditionalRewardForUpdatePg(
   streamerId: string,
   rewardId: string,
 ): Promise<{
-  reward: { id: string; collection_name: string | null } | null;
+  reward: { id: string; collection_name: string | null; reward_pack_names?: unknown } | null;
   collectionNameUnavailable: boolean;
   error: unknown;
 }> {
@@ -652,10 +744,11 @@ async function getAdditionalRewardForUpdatePg(
         const { db } = await getDb();
         return db
           .select({
-            id: streamerAdditionalGachaRewardsTable.id,
-            collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+            id: streamerAdditionalGachaRewardsWithPackNamesTable.id,
+            collection_name: streamerAdditionalGachaRewardsWithPackNamesTable.collection_name,
+            reward_pack_names: streamerAdditionalGachaRewardsWithPackNamesTable.reward_pack_names,
           })
-          .from(streamerAdditionalGachaRewardsTable)
+          .from(streamerAdditionalGachaRewardsWithPackNamesTable)
           .where(
             and(
               eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
@@ -691,6 +784,38 @@ async function getAdditionalRewardForUpdatePg(
     const rows = await selectWithCollectionName();
     return { reward: rows[0] ?? null, collectionNameUnavailable: false, error: null };
   } catch (error) {
+    // Issue #1994: reward_pack_names 列のみ未デプロイなら新列だけ外して再試行し、
+    // 旧単一列だけで現在値を解決する。collection_name 欠落より先に判定する。
+    if (isPgMissingNamedColumnError(error, ["reward_pack_names"])) {
+      try {
+        const rows = await withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            return db
+              .select({
+                id: streamerAdditionalGachaRewardsTable.id,
+                collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+              })
+              .from(streamerAdditionalGachaRewardsTable)
+              .where(
+                and(
+                  eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
+                  eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId)
+                )
+              )
+              .limit(1);
+          },
+          "Additional Rewards API: PUT lookup (no reward_pack_names)",
+          { idempotent: true },
+        );
+        return { reward: rows[0] ?? null, collectionNameUnavailable: false, error: null };
+      } catch (packNamesError) {
+        if (!isMissingCollectionNameColumn(packNamesError as GenericDbError)) {
+          return { reward: null, collectionNameUnavailable: false, error: packNamesError };
+        }
+        // collection_name も無い場合は従来のフォールバックへ続行する。
+      }
+    }
     if (isMissingCollectionNameColumn(error as GenericDbError)) {
       try {
         const rows = await selectWithoutCollectionName();
@@ -822,6 +947,29 @@ async function updateAdditionalRewardPg(
     // 含まれるため、SET が draw_count のみの更新でも 42703 になり得る。そのため
     // 「collection_name が SET にある」だけでなく、列欠落エラーそのもので
     // 再試行へ分岐する。
+    // Issue #1994: reward_pack_names 列のみ未デプロイなら新列だけ剥がし、
+    // 旧単一列（先頭要素ミラー）への書き込みを続行する。collection_name の
+    // 部分一致検知より先に判定する。
+    if (isPgMissingNamedColumnError(error, ["reward_pack_names"]) && "reward_pack_names" in updatePayload) {
+      const stripped = { ...updatePayload };
+      delete stripped.reward_pack_names;
+      try {
+        return await tryUpdate(stripped, true, true, expectedCollectionName);
+      } catch (retryError) {
+        if (isMissingCollectionNameColumn(retryError as GenericDbError)) {
+          delete stripped.collection_name;
+          try {
+            return await tryUpdate(stripped, true, true, undefined);
+          } catch (finalError) {
+            return { kind: "error", error: finalError };
+          }
+        }
+        if (isRaidOptionsSchemaErrorPg(retryError)) {
+          return { kind: "raid-options-unavailable", error: retryError };
+        }
+        return { kind: "error", error: retryError };
+      }
+    }
     if (isMissingCollectionNameColumn(error as GenericDbError)) {
       // 呼び出し元の updatePayload をミューテートせず、コピーから剥がして再試行する
       // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
@@ -830,6 +978,9 @@ async function updateAdditionalRewardPg(
       const stripped = { ...updatePayload };
       const hadCollectionName = "collection_name" in stripped;
       delete stripped.collection_name;
+      // Issue #1994: collection_name 欠落環境に reward_pack_names は無い
+      // （新列は旧列より後発のため）が、仮に SET に残っていれば同時に剥がす。
+      delete stripped.reward_pack_names;
       try {
         // collection_name 列欠落が確定した再試行では CAS 条件にも同列を使えない。
         return await tryUpdate(stripped, hadCollectionName, true, undefined);
@@ -906,10 +1057,11 @@ export async function PUT(request: NextRequest) {
     }
     const { rewardId, drawCount } = body as Record<string, unknown>;
 
-    // Issue #393: optional pack binding for this additional reward.
-    // undefined = 変更なし、null = 全カードへ戻す、string = パックへ紐付け。
-    const collectionNameResult = resolveCollectionNameField(body, "collectionName");
-    if (!collectionNameResult.ok) {
+    // Issue #1994: optional multi-pack binding for this additional reward.
+    // undefined = 変更なし、null/[] = 全カードへ戻す、配列 = パック和集合へ紐付け。
+    // 旧単一形 collectionName も受理する（併用は曖昧なので 400）。
+    const collectionNamesResult = resolveCollectionNamesField(body, "collectionNames", "collectionName");
+    if (!collectionNamesResult.ok) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -972,58 +1124,69 @@ export async function PUT(request: NextRequest) {
       ? streamer.card_pack_names
       : [];
 
+    // Issue #1994: 現在の実効割り当て（配列列 + 旧列ミラーから解決）。
+    const currentEffectiveNames = resolveEffectiveRewardPackNames(
+      currentResult.reward.reward_pack_names,
+      currentResult.reward.collection_name,
+    );
+
     // Issue #393再設計: POST と同じ membership 検証。ただし PUT は既存紐付けの
-    // 再送信（現在値と同一）も許可するため isRegisteredOrUnchanged の
-    // currentValue に現在の collection_name を渡す（孤立参照を壊さない）。
-    // Issue #555: DEFAULT_PACK_SENTINEL は予約値のため membership 検証をスキップ。
+    // 再送信（現在値と同一）も許可するため、現在の実効割り当て集合を
+    // 「変更なし」の基準にする（孤立参照を壊さない）。
+    // Issue #555: DEFAULT_PACK_SENTINEL は予約値のため membership 検証をスキップ
+    // （findUnregisteredRewardPackName が内部で免除する）。
     if (
-      typeof collectionNameResult.value === "string" &&
-      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
+      collectionNamesResult.value !== undefined &&
       !cardPackNamesUnavailable &&
-      !isRegisteredOrUnchanged(
-        collectionNameResult.value,
-        currentResult.reward.collection_name,
+      findUnregisteredRewardPackName(
+        collectionNamesResult.value,
+        currentEffectiveNames,
         registeredPackNames
-      )
+      ) !== null
     ) {
       return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
     }
 
+    const nextEffectiveNames = collectionNamesResult.value ?? currentEffectiveNames;
+    const namesChanged =
+      collectionNamesResult.value !== undefined &&
+      (collectionNamesResult.value.length !== currentEffectiveNames.length ||
+        collectionNamesResult.value.some((name, i) => name !== currentEffectiveNames[i]));
+
     // デプロイ窓で membership 検証ができない間は、新しいパック紐付けの書き込み
     // 自体を見送る（現在値の維持は続行。POST と同じ方針）。
-    // 現在値と同じパック名の再送は「変更要求」ではないため対象外にし、
-    // 「反映待ち」の誤表示を防ぐ。センチネル（デフォルトパックのみ）は登録不要の
-    // 疑似パックのため membership 検証自体が不要で、見送り対象からも除外する。
+    // 現在値と同じ割り当ての再送は「変更要求」ではないため対象外にし、
+    // 「反映待ち」の誤表示を防ぐ。
+    // センチネル（デフォルトパックのみ）と現在値維持の要素は登録不要のため、
+    // 見送り対象は「新たに紐付く非センチネル要素がある」ときだけにする。
     const collectionNameSkippedDeployWindow =
       cardPackNamesUnavailable &&
-      typeof collectionNameResult.value === "string" &&
-      collectionNameResult.value !== DEFAULT_PACK_SENTINEL &&
-      collectionNameResult.value !== currentResult.reward.collection_name;
+      namesChanged &&
+      nextEffectiveNames.some(
+        (name) => name !== DEFAULT_PACK_SENTINEL && !currentEffectiveNames.includes(name),
+      );
 
     // Issue #393: 紐付け先が変わる場合のみ、アクティブカードの存在を確認する
     // （空プールになる紐付けは拒否。POST と同じ #1 方針）。
-    if (
-      typeof collectionNameResult.value === "string" &&
-      !collectionNameSkippedDeployWindow &&
-      collectionNameResult.value !== currentResult.reward.collection_name
-    ) {
-      const existence = await checkCollectionHasActiveCards(
-        streamer.id,
-        collectionNameResult.value
-      );
-      if (existence === "absent") {
-        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+    // Issue #1994: 複数割り当てでは「新たに紐付く各パック」へ同じ検査を行う。
+    if (namesChanged && !collectionNameSkippedDeployWindow) {
+      for (const name of nextEffectiveNames) {
+        if (!currentEffectiveNames.includes(name)) {
+          const existence = await checkCollectionHasActiveCards(streamer.id, name);
+          if (existence === "absent") {
+            return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+          }
+        }
       }
     }
 
-    // 更新するフィールドを構築。collection_name は値が指定された場合のみ
-    // 含め、列未デプロイ窓でも更新自体を壊さない（POST と同じ方針）。
+    // 更新するフィールドを構築。collection_name / reward_pack_names は値が
+    // 指定された場合のみ含め、列未デプロイ窓でも更新自体を壊さない
+    // （POST と同じ方針）。両列を同じ UPDATE で書き、旧列には先頭要素をミラーする。
     const updatePayload: Record<string, unknown> = {};
-    if (typeof collectionNameResult.value === "string" && !collectionNameSkippedDeployWindow) {
-      updatePayload.collection_name = collectionNameResult.value;
-    } else if (collectionNameResult.value === null) {
-      // 明示的な「全カードへ戻す」（null）は常に保存する。
-      updatePayload.collection_name = null;
+    if (collectionNamesResult.value !== undefined && !collectionNameSkippedDeployWindow) {
+      updatePayload.reward_pack_names = collectionNamesResult.value;
+      updatePayload.collection_name = toLegacyCollectionName(collectionNamesResult.value);
     }
     if (normalizedDrawCount !== undefined) {
       updatePayload.draw_count = normalizedDrawCount;

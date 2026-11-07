@@ -220,3 +220,174 @@ export function isRegisteredOrUnchanged(
   }
   return registeredNames.includes(newValue);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1994: 1つのチャネルポイント報酬に複数のカードパックを割り当てる。
+//
+// 保存形式: 新しい JSONB 配列列（streamers.channel_point_pack_names /
+// streamer_additional_gacha_rewards.reward_pack_names）に選択全体を持ち、旧単一列
+// （channel_point_collection_name / collection_name）には常に先頭要素をミラーする。
+// 旧列ミラーは、コードをロールバックしても「全カード抽選」へ落ちず、有効な
+// 1パックから抽選させるための後方互換（旧コードは旧列しか読まない）。
+//
+// 意味づけ（gacha.ts の抽選経路と一致させる）:
+//   []        → 全カード（現状どおり）
+//   [x]       → 現行の単一パック経路（per_pack 重み・{packName} 挙動を含む）
+//   [x, y, …] → 和集合プールから抽選する新経路
+// ---------------------------------------------------------------------------
+
+/**
+ * 1報酬に割り当てられるパック数の上限。
+ *
+ * 事前登録パックの上限（MAX_CARD_PACK_NAMES = 50, migration 00062 の CHECK）に
+ * DEFAULT_PACK_SENTINEL（未分類カード）の1つを足した値。これで「登録済みの全パック
+ * + デフォルトパック」を明示的に選べる。これより小さい上限を設けると、パックを
+ * 多く登録した配信者だけが特定の組み合わせを表現できなくなるため、カタログ側の
+ * 上限に揃える。DB 側の CHECK（jsonb_array_length <= 51）と必ず同じ値にすること
+ * （tests/unit/reward-multi-pack-names-migration.test.ts で両者の一致を検査する）。
+ */
+export const MAX_REWARD_PACK_NAMES = MAX_CARD_PACK_NAMES + 1;
+
+/**
+ * 文字列以外・空文字を捨て、先頭出現を残して重複を除く（順序は保持）。
+ * 先頭要素は旧単一列へのミラー対象なので、並び替えてはならない。
+ */
+function dedupePackNames(values: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string" || value.length === 0 || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+/**
+ * DB から読んだ「配列列」と「旧単一列」から、実効のパック割り当てを解決する。
+ * gacha（抽選）・設定 API・追加報酬 API・bootstrap・設定ページがすべてこの関数を
+ * 通すことで、フォールバック規則を1か所に閉じ込める（UI は規則を知らなくてよい）。
+ *
+ * 規則:
+ * 1. 配列列が空/null/欠落（デプロイ窓で列が未作成のときは undefined が渡る）なら、
+ *    旧単一列を読む。既存データのバックフィルは不要（列の既定値は '[]'）。
+ * 2. 配列の先頭が旧単一列と食い違うなら、旧単一列を正とする。新コードは常に
+ *    「旧列 = 配列の先頭（空配列なら NULL）」を同じ UPDATE で書くため、食い違いは
+ *    配列列を知らない書き手（ロールバックした旧コードなど）が旧列だけを書き換えた
+ *    証拠である。その場合に古い配列が勝つと、配信者が旧コードで選び直した設定が
+ *    黙って無視されるため、旧列を優先する。
+ * 3. それ以外は配列を（重複除去して）そのまま使う。
+ */
+export function resolveEffectiveRewardPackNames(
+  arrayValue: unknown,
+  legacyValue: string | null | undefined
+): string[] {
+  const legacy = typeof legacyValue === "string" && legacyValue.length > 0 ? legacyValue : null;
+  const names = Array.isArray(arrayValue) ? dedupePackNames(arrayValue) : [];
+  if (names.length === 0 || names[0] !== legacy) {
+    return legacy === null ? [] : [legacy];
+  }
+  return names;
+}
+
+/** 旧単一列へ書き込むミラー値（先頭要素、空選択なら NULL = 全カード）。 */
+export function toLegacyCollectionName(names: readonly string[]): string | null {
+  return names[0] ?? null;
+}
+
+export type CollectionNamesFieldResult =
+  | { ok: true; value: string[] | undefined }
+  | { ok: false };
+
+/**
+ * 報酬のパック割り当てをリクエスト body から読み、保存すべき配列へ正規化する。
+ *
+ * - `arrayKey`（新形式, 例: "collectionNames"）: string[] | null。null / [] は
+ *   「全カード」。各要素は `normalizeCollectionName` と同じ trim 規則で正規化し、
+ *   空要素・非文字列・80文字超は 400。重複は除去（先頭出現を残す）してから
+ *   上限 MAX_REWARD_PACK_NAMES を検査する。
+ * - `legacyKey`（旧形式, 例: "collectionName"）: 後方互換の単一値。キャッシュ済みの
+ *   旧クライアントや外部呼び出しのため受理し、[name] / [] に変換する。単一値で
+ *   保存した場合も配列列を [name] / [] で書き直すことで、古い複数パック配列が
+ *   残って勝つことを防ぐ（呼び出し側が両列を同じ UPDATE で書く）。
+ * - 両方が同時に送られた場合は優先順位を暗黙に決めず 400 にする。どちらを採用しても
+ *   送信者の意図と食い違う可能性があり、黙って片方を捨てるより明示的に拒否する方が
+ *   安全なため。
+ *
+ * 戻り値の `value: undefined` は「どちらのキーも無い = 列を変更しない」。
+ * 登録済みパックかどうかの検証は DB 状態が必要なため呼び出し側で行う
+ * （findUnregisteredRewardPackName）。
+ */
+export function resolveCollectionNamesField(
+  body: Record<string, unknown>,
+  arrayKey: string,
+  legacyKey: string
+): CollectionNamesFieldResult {
+  const arrayProvided = Object.hasOwn(body, arrayKey);
+  const legacyProvided = Object.hasOwn(body, legacyKey);
+
+  if (arrayProvided && legacyProvided) {
+    return { ok: false };
+  }
+
+  if (legacyProvided) {
+    const legacy = resolveCollectionNameField(body, legacyKey);
+    if (!legacy.ok) return { ok: false };
+    return { ok: true, value: typeof legacy.value === "string" ? [legacy.value] : [] };
+  }
+
+  if (!arrayProvided) {
+    return { ok: true, value: undefined };
+  }
+
+  const raw = body[arrayKey];
+  if (raw === null) {
+    return { ok: true, value: [] };
+  }
+  if (!Array.isArray(raw)) {
+    return { ok: false };
+  }
+
+  const normalized: string[] = [];
+  for (const element of raw) {
+    const name = normalizeCollectionName(element);
+    // undefined（非文字列）と null（空白のみ）はどちらも不正な要素として扱う。
+    // 「全カード」は配列全体を空にして表現する規約で、要素単位の空は意味を持たない。
+    if (typeof name !== "string" || name.length > MAX_COLLECTION_NAME_LENGTH) {
+      return { ok: false };
+    }
+    normalized.push(name);
+  }
+
+  const deduped = dedupePackNames(normalized);
+  if (deduped.length > MAX_REWARD_PACK_NAMES) {
+    return { ok: false };
+  }
+  return { ok: true, value: deduped };
+}
+
+/**
+ * 複数パック版の membership 検証。`next` のうち、登録済みでも現在の割り当てでも
+ * DEFAULT_PACK_SENTINEL でもない最初の名前を返す（全て許可なら null）。
+ *
+ * 各要素を既存の `isRegisteredOrUnchanged` へ委ねる。「変更なし」は現在の実効
+ * 割り当て集合に含まれることで判定する — パック管理で登録解除された（孤立した）
+ * パックを含む割り当てでも、他の要素を編集しただけで保存できなくなってはいけない
+ * （単一値で確立済みの「孤立参照は値を変えない限り壊れない」方針の複数版）。
+ * DEFAULT_PACK_SENTINEL は card_pack_names に登録できない予約値なので、単一値の
+ * 経路と同じく membership 検証自体を免除する。
+ */
+export function findUnregisteredRewardPackName(
+  next: readonly string[],
+  current: readonly string[],
+  registeredNames: string[]
+): string | null {
+  for (const name of next) {
+    if (name === DEFAULT_PACK_SENTINEL) continue;
+    const currentValue = current.includes(name) ? name : null;
+    if (!isRegisteredOrUnchanged(name, currentValue, registeredNames)) {
+      return name;
+    }
+  }
+  return null;
+}

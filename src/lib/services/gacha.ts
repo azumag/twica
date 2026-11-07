@@ -15,17 +15,20 @@ import {
   isPgMissingNamedColumnError,
   isPgMissingTableError,
 } from '@/lib/db/errors'
-import { and, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm'
+import { and, count, desc, eq, inArray, isNotNull, } from 'drizzle-orm'
 import {
   cards as cardsTable,
   gachaHistory,
   gachaHistoryEventTombstones,
   streamerAdditionalGachaRewards,
+  streamerAdditionalGachaRewardsWithPackNames,
+  streamerEventSubGachaRead,
   streamers,
   userCards,
 } from '@/lib/db/schema'
 import { CARD_ISSUANCE_MESSAGES } from '@/lib/card-issuance'
-import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
+import { resolveEffectiveRewardPackNames } from '@/lib/validation/collection-name'
+import { buildPackScopePredicate } from '@/lib/collections/pack-scope'
 import { computeEffectiveWeights, resolveRarityWeightsForPool } from '@/lib/rarity-weight-calculator'
 
 export interface GachaCard {
@@ -252,6 +255,13 @@ export interface ExecuteGachaParams {
    */
   collectionName?: string | null
   /**
+   * Issue #1994: 報酬に割り当てられたパック集合（resolveEffectiveRewardPackNames
+   * 済み・重複除去済み）。2要素以上のときだけ和集合プール経路になり、
+   * collectionName より優先される。0/1要素は従来経路と同一のため、呼び出し側は
+   * その場合 collectionName のみを渡せばよい（本項目は2要素以上のときだけ使う）。
+   */
+  collectionNames?: readonly string[]
+  /**
    * Issue #579 (#576 フェーズ2): パック内レアリティ自動配分に使う配信者の
    * 重み設定。collectionName が未指定の場合や手動モードの場合は無視され、
    * 従来どおり drop_rate ベースの抽選になる。
@@ -341,6 +351,11 @@ interface ExecuteGachaDrawsParams {
    */
   collectionName?: string | null
   /**
+   * Issue #1994: 報酬に割り当てられたパック集合（ExecuteGachaParams.collectionNames
+   * と同じ規約）。2要素以上のときだけ和集合プール経路になる。
+   */
+  collectionNames?: readonly string[]
+  /**
    * Issue #579 (#576 フェーズ2): 各ドローに同じ重み設定を forward する
    * (複数枚ドローでも同じレアリティ配分を一貫して適用するため)。
    */
@@ -410,6 +425,7 @@ export class GachaService {
         eventId,
         rewardCost,
         collectionName,
+        collectionNames,
         weightsConfig,
         rewardId,
         chatOutbox,
@@ -418,6 +434,16 @@ export class GachaService {
         // previousCardIdInput として保持し、早期return経路では解決を待たない。
         previousCardId: previousCardIdInput,
       } = params
+
+      // Issue #1994: 実効のパック割り当て。collectionNames（2要素以上）が
+      // あれば和集合経路、なければ従来の単一 collectionName。単一経路の SQL・
+      // 重み解決・{packName} 挙動は一切変えないため、isMultiPackScope 分岐は
+      // プール条件・SELECT 列・重み・通知スコープだけに閉じ込める。
+      const multiPackNames =
+        collectionNames && collectionNames.length >= 2 ? collectionNames : null
+      const isMultiPackScope = multiPackNames !== null
+      const effectivePackNames: readonly string[] = multiPackNames
+        ?? (collectionName ? [collectionName] : [])
 
       // Get active cards for this streamer (optionally scoped to a pack).
       // collection_name は抽選後に下流で使われないため SELECT しない。これにより
@@ -458,10 +484,15 @@ export class GachaService {
           eq(cardsTable.streamer_id, streamerId),
           eq(cardsTable.is_active, true),
         ]
-        if (collectionName) {
-          predicates.push(collectionName === DEFAULT_PACK_SENTINEL
-            ? isNull(cardsTable.collection_name)
-            : eq(cardsTable.collection_name, collectionName))
+        // Issue #1994: buildPackScopePredicate が 0/1/2+ 要素の3経路を
+        // 一元化する。1要素は旧実装（eq / isNull）と同一の SQL を生成し、
+        // 2要素以上だけ `IN (...) [OR IS NULL]` の和集合条件になる。
+        const scopePredicate = buildPackScopePredicate(
+          cardsTable.collection_name,
+          effectivePackNames,
+        )
+        if (scopePredicate) {
+          predicates.push(scopePredicate)
         }
         const rows = await db.select({
           id: cardsTable.id,
@@ -472,7 +503,15 @@ export class GachaService {
           rarity: cardsTable.rarity,
           drop_rate: cardsTable.drop_rate,
           max_issuance_count: cardsTable.max_issuance_count,
-          ...(collectionName ? { intra_rarity_weight: cardsTable.intra_rarity_weight } : {}),
+          ...(collectionName || isMultiPackScope
+            ? {
+                intra_rarity_weight: cardsTable.intra_rarity_weight,
+                // Issue #1994: 和集合経路では {packName} を当たったカード自身の
+                // パックから解決するため、カードの実パック名が下流（結果の
+                // GachaCard.collection_name）で必要になる。
+                ...(isMultiPackScope ? { collection_name: cardsTable.collection_name } : {}),
+              }
+            : {}),
         }).from(cardsTable).where(and(...predicates))
 
         return rows.map(row => ({
@@ -537,14 +576,23 @@ export class GachaService {
       // 同じ規則)。
       // ドロップ率に基づいてカードを選択（パック指定+自動モード時はパック内
       // 実効重みで選択、それ以外は従来どおり drop_rate ベース）
-      const resolvedRarityWeights = collectionName
-        ? resolveRarityWeightsForPool(
-            weightsConfig?.rarityWeightsScope,
-            weightsConfig?.rarityWeights,
-            weightsConfig?.packRarityWeights,
-            collectionName
-          )
-        : null
+      // Issue #1994: 2パック以上ではパック別上書き（per_pack scope）は使わず、
+      // グローバルの rarityWeights を和集合プールへ適用する（issue 本文の案A）。
+      // rarityWeights が null/{} の手動モードは従来どおり drop_rate 再正規化。
+      const globalWeights =
+        weightsConfig?.rarityWeights && Object.keys(weightsConfig.rarityWeights).length > 0
+          ? weightsConfig.rarityWeights
+          : null
+      const resolvedRarityWeights = isMultiPackScope
+        ? globalWeights
+        : collectionName
+          ? resolveRarityWeightsForPool(
+              weightsConfig?.rarityWeightsScope,
+              weightsConfig?.rarityWeights,
+              weightsConfig?.packRarityWeights,
+              collectionName
+            )
+          : null
 
       // R1 (PR #450 レビュー follow-up): execute_gacha_transaction は、選択した
       // カードが「同時実行中の別ドローに先に発行枠を取られた」または「選択後に
@@ -1076,6 +1124,12 @@ export class GachaService {
       drop_rate: originalCard.drop_rate,
       // Issue #108: 発行上限の再チェックに参照するため、再構築後も必ず引き継ぐ。
       max_issuance_count: originalCard.max_issuance_count ?? null,
+      // Issue #1994: 和集合経路で SELECT した実パック名を GachaCard へ引き継ぐ
+      // （{packName} が当たったカード自身のパックから解決される規約の一部。
+      // 単一パック経路では SELECT しないため undefined のまま）。
+      ...('collection_name' in originalCard
+        ? { collection_name: (originalCard as { collection_name?: string | null }).collection_name ?? null }
+        : {}),
     }
   }
 
@@ -1171,6 +1225,7 @@ export class GachaService {
       eventId,
       rewardCost,
       collectionName,
+      collectionNames,
       weightsConfig,
       rewardId,
     } = params
@@ -1231,6 +1286,7 @@ export class GachaService {
         eventId: drawEventId,
         rewardCost: drawRewardCost,
         collectionName,
+        collectionNames,
         weightsConfig,
         rewardId,
         chatOutbox: eventId
@@ -1238,7 +1294,10 @@ export class GachaService {
               batchId: eventId,
               drawIndex: index + 1,
               drawCount,
-              collectionName,
+              // Issue #1994: 和集合経路（2パック以上）の抽選スコープは null。
+              // RPC のシグネチャは変えず、{packName} はカード payload の
+              // collection_name（カード自身の実パック）から解決される。
+              collectionName: collectionNames && collectionNames.length >= 2 ? null : collectionName,
             }
           : undefined,
         previousCardId,
@@ -1365,6 +1424,7 @@ export class GachaService {
         id: string
         channel_point_reward_id: string | null
         channel_point_collection_name: string | null
+        channel_point_pack_names?: unknown
         chat_announcement_enabled: boolean
         chat_announcement_template: string | null
         chat_announcement_multi_template: string | null
@@ -1381,25 +1441,56 @@ export class GachaService {
         const rows = await withDbRetry(async () => {
           const { db } = await getDb()
           return db.select({
-            id: streamers.id,
-            channel_point_reward_id: streamers.channel_point_reward_id,
-            channel_point_collection_name: streamers.channel_point_collection_name,
-            chat_announcement_enabled: streamers.chat_announcement_enabled,
-            chat_announcement_template: streamers.chat_announcement_template,
-            chat_announcement_multi_template: streamers.chat_announcement_multi_template,
-            chat_announcement_multi_show_cards: streamers.chat_announcement_multi_show_cards,
-            raid_gacha_active_until: streamers.raid_gacha_active_until,
-            rarity_weights: streamers.rarity_weights,
-            rarity_weights_scope: streamers.rarity_weights_scope,
-            pack_rarity_weights: streamers.pack_rarity_weights,
-            default_card_pack_name: streamers.default_card_pack_name,
-          }).from(streamers).where(eq(streamers.twitch_user_id, event.broadcaster_user_id)).limit(1)
+            id: streamerEventSubGachaRead.id,
+            channel_point_reward_id: streamerEventSubGachaRead.channel_point_reward_id,
+            channel_point_collection_name: streamerEventSubGachaRead.channel_point_collection_name,
+            channel_point_pack_names: streamerEventSubGachaRead.channel_point_pack_names,
+            chat_announcement_enabled: streamerEventSubGachaRead.chat_announcement_enabled,
+            chat_announcement_template: streamerEventSubGachaRead.chat_announcement_template,
+            chat_announcement_multi_template: streamerEventSubGachaRead.chat_announcement_multi_template,
+            chat_announcement_multi_show_cards: streamerEventSubGachaRead.chat_announcement_multi_show_cards,
+            raid_gacha_active_until: streamerEventSubGachaRead.raid_gacha_active_until,
+            rarity_weights: streamerEventSubGachaRead.rarity_weights,
+            rarity_weights_scope: streamerEventSubGachaRead.rarity_weights_scope,
+            pack_rarity_weights: streamerEventSubGachaRead.pack_rarity_weights,
+            default_card_pack_name: streamerEventSubGachaRead.default_card_pack_name,
+          }).from(streamerEventSubGachaRead).where(eq(streamerEventSubGachaRead.twitch_user_id, event.broadcaster_user_id)).limit(1)
         }, 'gacha:executeGachaForEventSub:streamer', { idempotent: true })
         streamer = rows[0] ?? null
         streamerError = null
       } catch (error) {
-        streamer = null
-        streamerError = normalizePgReadError(error)
+        // Issue #1994: channel_point_pack_names 列のみ未デプロイなら、新列を
+        // 含まない本体定義で再読込し '[]'（= 旧単一列を読む）で補完する。
+        // それ以外の列欠落・接続障害は従来どおり streamerError として報告する。
+        if (isPgMissingNamedColumnError(error, ['channel_point_pack_names'])) {
+          try {
+            const rows = await withDbRetry(async () => {
+              const { db } = await getDb()
+              return db.select({
+                id: streamers.id,
+                channel_point_reward_id: streamers.channel_point_reward_id,
+                channel_point_collection_name: streamers.channel_point_collection_name,
+                chat_announcement_enabled: streamers.chat_announcement_enabled,
+                chat_announcement_template: streamers.chat_announcement_template,
+                chat_announcement_multi_template: streamers.chat_announcement_multi_template,
+                chat_announcement_multi_show_cards: streamers.chat_announcement_multi_show_cards,
+                raid_gacha_active_until: streamers.raid_gacha_active_until,
+                rarity_weights: streamers.rarity_weights,
+                rarity_weights_scope: streamers.rarity_weights_scope,
+                pack_rarity_weights: streamers.pack_rarity_weights,
+                default_card_pack_name: streamers.default_card_pack_name,
+              }).from(streamers).where(eq(streamers.twitch_user_id, event.broadcaster_user_id)).limit(1)
+            }, 'gacha:executeGachaForEventSub:streamer(no pack_names)', { idempotent: true })
+            streamer = rows[0] ? { ...rows[0], channel_point_pack_names: [] } : null
+            streamerError = null
+          } catch (fallbackError) {
+            streamer = null
+            streamerError = normalizePgReadError(fallbackError)
+          }
+        } else {
+          streamer = null
+          streamerError = normalizePgReadError(error)
+        }
       }
 
       // Issue #579 (#576 フェーズ2): rarity_weights_scope / pack_rarity_weights は
@@ -1438,12 +1529,22 @@ export class GachaService {
         return err('Streamer not found')
       }
 
+      // Issue #1994: 実効のパック割り当てを抽選引数へ展開する。
+      // 0要素 = 全カード、1要素 = 従来の単一パック経路、2要素以上 = 和集合経路。
+      const toDrawScope = (names: readonly string[]) =>
+        names.length >= 2
+          ? { collectionName: null as string | null, collectionNames: names }
+          : { collectionName: (names[0] ?? null) as string | null, collectionNames: undefined }
+
       // ガチャ実行用のヘルパー: 結果にストリーマー情報を付加して返す
       // Issue #393: collectionName を受け取り、指定パックに抽選対象を絞る
+      // Issue #1994: collectionNames（2要素以上）を受け取り、和集合プールに絞る
       const executeAndAttachStreamer = async (
         drawCount = 1,
-        collectionName?: string | null
+        collectionName?: string | null,
+        collectionNames?: readonly string[]
       ): Promise<Result<GachaResult>> => {
+        const scope = collectionNames ? toDrawScope(collectionNames) : { collectionName, collectionNames: undefined }
         const result = await this.executeGachaDraws({
           streamerId: streamer.id,
           userTwitchId: event.user_id,
@@ -1451,7 +1552,8 @@ export class GachaService {
           drawCount,
           eventId,
           rewardCost: event.reward.cost,
-          collectionName,
+          collectionName: scope.collectionName,
+          collectionNames: scope.collectionNames,
           weightsConfig: {
             rarityWeightsScope: streamer.rarity_weights_scope,
             rarityWeights: streamer.rarity_weights,
@@ -1468,7 +1570,9 @@ export class GachaService {
           rewardId: event.reward.id,
           // Issue #597: {packName} プレースホルダ解決用に、この抽選が絞られた
           // パックの collection_name をそのまま結果に持たせる。
-          collectionName: collectionName ?? null,
+          // Issue #1994: 和集合経路の抽選スコープは null（{packName} は当たった
+          // カード自身のパックから解決される。eventsub-redemption.ts 参照）。
+          collectionName: scope.collectionNames ? null : (scope.collectionName ?? null),
           streamer: {
             id: streamer.id,
             chat_announcement_enabled: streamer.chat_announcement_enabled,
@@ -1483,8 +1587,14 @@ export class GachaService {
       // Check if the reward ID matches the main reward
       // メイン報酬のIDと一致するかチェック
       if (streamer.channel_point_reward_id === event.reward.id) {
+        // Issue #1994: メイン報酬の複数パック割り当て（channel_point_pack_names）。
+        // 列欠落フォールバック時は []（= 旧単一列を読む）で補完済み。
+        const effectiveNames = resolveEffectiveRewardPackNames(
+          streamer.channel_point_pack_names,
+          streamer.channel_point_collection_name,
+        )
         // Issue #393: メイン報酬に紐付くパックで抽選対象を絞る
-        return await executeAndAttachStreamer(1, streamer.channel_point_collection_name)
+        return await executeAndAttachStreamer(1, undefined, effectiveNames)
       }
 
       // Check if the reward ID matches any additional reward
@@ -1494,17 +1604,21 @@ export class GachaService {
         draw_count: number
         is_raid_limited: boolean
         collection_name: string | null
+        // Issue #1994: 複数パック割り当て。列欠落フォールバック時は [] 補完
+        // （= 旧単一列を読む）。
+        reward_pack_names: unknown
       } | null
       let additionalError: GachaReadDriverError | null
       try {
         const rows = await withDbRetry(async () => {
           const { db } = await getDb()
           return db.select({
-            id: streamerAdditionalGachaRewards.id,
-            draw_count: streamerAdditionalGachaRewards.draw_count,
-            is_raid_limited: streamerAdditionalGachaRewards.is_raid_limited,
-            collection_name: streamerAdditionalGachaRewards.collection_name,
-          }).from(streamerAdditionalGachaRewards).where(and(
+            id: streamerAdditionalGachaRewardsWithPackNames.id,
+            draw_count: streamerAdditionalGachaRewardsWithPackNames.draw_count,
+            is_raid_limited: streamerAdditionalGachaRewardsWithPackNames.is_raid_limited,
+            collection_name: streamerAdditionalGachaRewardsWithPackNames.collection_name,
+            reward_pack_names: streamerAdditionalGachaRewardsWithPackNames.reward_pack_names,
+          }).from(streamerAdditionalGachaRewardsWithPackNames).where(and(
             eq(streamerAdditionalGachaRewards.streamer_id, streamer.id),
             eq(streamerAdditionalGachaRewards.reward_id, event.reward.id),
           )).limit(1)
@@ -1512,8 +1626,32 @@ export class GachaService {
         additionalReward = rows[0] ?? null
         additionalError = null
       } catch (error) {
-        additionalReward = null
-        additionalError = normalizePgReadError(error)
+        // Issue #1994: reward_pack_names 列のみ未デプロイなら、新列を除いた
+        // 本体定義で再試行し旧単一列だけで動作する（メイン報酬と同じ規約）。
+        if (isPgMissingNamedColumnError(error, ['reward_pack_names'])) {
+          try {
+            const rows = await withDbRetry(async () => {
+              const { db } = await getDb()
+              return db.select({
+                id: streamerAdditionalGachaRewards.id,
+                draw_count: streamerAdditionalGachaRewards.draw_count,
+                is_raid_limited: streamerAdditionalGachaRewards.is_raid_limited,
+                collection_name: streamerAdditionalGachaRewards.collection_name,
+              }).from(streamerAdditionalGachaRewards).where(and(
+                eq(streamerAdditionalGachaRewards.streamer_id, streamer.id),
+                eq(streamerAdditionalGachaRewards.reward_id, event.reward.id),
+              )).limit(1)
+            }, 'gacha:executeGachaForEventSub:additionalReward(no pack_names)', { idempotent: true })
+            additionalReward = rows[0] ? { ...rows[0], reward_pack_names: [] } : null
+            additionalError = null
+          } catch (fallbackError) {
+            additionalReward = null
+            additionalError = normalizePgReadError(fallbackError)
+          }
+        } else {
+          additionalReward = null
+          additionalError = normalizePgReadError(error)
+        }
       }
 
       // Deploy-window fallback: only the collection_name column is missing.
@@ -1551,9 +1689,13 @@ export class GachaService {
         // 追加報酬が一致したのでガチャを実行
         // Issue #641: upper bound raised from 10 to 15 (fixed limit, confirmed by owner).
         const drawCount = Math.min(Math.max(Number(additionalReward.draw_count ?? 1), 1), 15)
-        logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}, drawCount=${drawCount}, raidLimited=${Boolean(additionalReward.is_raid_limited)}, collectionName=${additionalReward.collection_name ?? 'all'}`)
-        // Issue #393: 追加報酬に紐付くパックで抽選対象を絞る
-        return await executeAndAttachStreamer(drawCount, additionalReward.collection_name)
+        const effectiveNames = resolveEffectiveRewardPackNames(
+          additionalReward.reward_pack_names,
+          additionalReward.collection_name,
+        )
+        logger.info(`Gacha triggered by additional reward: rewardId=${event.reward.id}, streamerId=${streamer.id}, drawCount=${drawCount}, raidLimited=${Boolean(additionalReward.is_raid_limited)}, packNames=${effectiveNames.length > 0 ? effectiveNames.join('|') : 'all'}`)
+        // Issue #393/#1994: 追加報酬に紐付くパック（単一 or 和集合）で抽選対象を絞る
+        return await executeAndAttachStreamer(drawCount, undefined, effectiveNames)
       }
 
       return err('Reward ID mismatch')

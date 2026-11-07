@@ -8,6 +8,13 @@ import { normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 import SettingsLayout from "@/components/SettingsLayout";
 import { getChatDeliveryCapability } from "@/lib/twitch/chat-delivery-capability";
 import { createOverlayPresenceToken } from "@/lib/overlay-realtime/presence-token";
+// Issue #1994: メイン報酬の複数パック割り当て（channel_point_pack_names）。
+// 列欠落（migration未適用のデプロイ窓）では旧単一列だけで解決する。
+import { getDb } from "@/lib/db/client";
+import { streamerChannelPointPackBindings } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+import { isPgMissingNamedColumnError } from "@/lib/db/errors";
+import { resolveEffectiveRewardPackNames } from "@/lib/validation/collection-name";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -91,6 +98,31 @@ export default async function SettingsPage({
         rewardId: streamerData.streamer.channel_point_reward_id,
         rewardName: streamerData.streamer.channel_point_reward_name,
         collectionName: streamerData.streamer.channel_point_collection_name ?? null,
+        collectionNames: await (async () => {
+          // Issue #1994: 実効割り当て（配列列 + 旧列ミラーから解決）。
+          // 狭い定義で1行だけ読み、42703（列未デプロイ）は旧列へフォールバック。
+          try {
+            const { db } = await getDb();
+            const rows = await db
+              .select({
+                channel_point_pack_names:
+                  streamerChannelPointPackBindings.channel_point_pack_names,
+              })
+              .from(streamerChannelPointPackBindings)
+              .where(eq(streamerChannelPointPackBindings.id, streamerData.streamer.id))
+              .limit(1);
+            return resolveEffectiveRewardPackNames(
+              rows[0]?.channel_point_pack_names,
+              streamerData.streamer.channel_point_collection_name,
+            );
+          } catch (error) {
+            if (!isPgMissingNamedColumnError(error, ["channel_point_pack_names"])) throw error;
+            return resolveEffectiveRewardPackNames(
+              undefined,
+              streamerData.streamer.channel_point_collection_name,
+            );
+          }
+        })(),
       }}
       gachaSound={{
         soundUrl: streamerData.streamer.gacha_sound_url ?? null,
