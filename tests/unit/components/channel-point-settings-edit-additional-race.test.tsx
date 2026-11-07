@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider";
@@ -130,8 +130,8 @@ describe("ChannelPointSettings additional-reward edit race", () => {
     // PUT が未完了の間に別行へ編集対象を切り替える。入力は未変更なので確認ダイアログは不要。
     fireEvent.click(screen.getByRole("button", { name: "Extra 2のパック・枚数を編集" }));
 
-    const secondPackSelect = screen.getByLabelText("編集する引き換えのカードパック") as HTMLSelectElement;
-    expect(secondPackSelect.value).toBe("characters");
+    const secondGroup = await screen.findByRole("group", { name: "編集する引き換えのカードパック" });
+    expect(within(secondGroup).getByRole("checkbox", { name: "characters" })).toBeChecked();
     expect((screen.getByLabelText("一度に排出する枚数（編集）") as HTMLInputElement).value).toBe("1");
 
     resolvePut?.(
@@ -149,7 +149,8 @@ describe("ChannelPointSettings additional-reward edit race", () => {
 
     // 404 は保存開始時の行だけを閉じる対象にし、後から開いた別行のフォームは保持する。
     expect(screen.getByRole("button", { name: "Extra 2のパック・枚数を編集" })).toBeDisabled();
-    expect((screen.getByLabelText("編集する引き換えのカードパック") as HTMLSelectElement).value).toBe("characters");
+    const group = screen.getByRole("group", { name: "編集する引き換えのカードパック" });
+    expect(within(group).getByRole("checkbox", { name: "characters" })).toBeChecked();
     expect(screen.getByRole("button", { name: "キャンセル" })).toBeInTheDocument();
   });
 });

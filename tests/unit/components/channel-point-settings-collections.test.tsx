@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import jaMessages from "../../../messages/ja.json";
@@ -85,41 +85,41 @@ describe("ChannelPointSettings card pack dropdowns", () => {
     });
   });
 
-  it("renders the fetched pack names as <option>s", async () => {
+  // Issue #1994: パック選択は複数チェックボックス群（role=group）になった。
+  it("renders the fetched pack names as checkboxes", async () => {
     renderComponent();
 
     await waitFor(() => {
-      // Both the main-reward and additional-reward selects list the packs,
-      // so each name appears at least once.
-      expect(screen.getAllByRole("option", { name: "weapons" }).length).toBeGreaterThan(0);
-      expect(screen.getAllByRole("option", { name: "characters" }).length).toBeGreaterThan(0);
+      // Both the main-reward and additional-reward pack groups list the packs,
+      // so each name appears at least once as a checkbox label.
+      expect(screen.getAllByRole("checkbox", { name: "weapons" }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("checkbox", { name: "characters" }).length).toBeGreaterThan(0);
     });
   });
 
   // Issue #393再設計: パック選択はもうゲート対象外(新規登録はパック管理
   // モーダル側でのみ発生する)。選択肢は常に有効(disabledではない)。
-  it("does not disable pack options (selection is never gated here)", async () => {
+  it("does not disable pack checkboxes (selection is never gated here)", async () => {
     renderComponent();
 
     await waitFor(() => {
-      const options = screen.getAllByRole("option", { name: "weapons" }) as HTMLOptionElement[];
-      expect(options.length).toBeGreaterThan(0);
-      options.forEach((option) => expect(option.disabled).toBe(false));
+      const boxes = screen.getAllByRole("checkbox", { name: "weapons" }) as HTMLInputElement[];
+      expect(boxes.length).toBeGreaterThan(0);
+      boxes.forEach((box) => expect(box.disabled).toBe(false));
     });
   });
 
   // Issue #555: a fixed "default pack only" option (collection_name IS NULL)
   // must appear alongside "all cards" and the registered pack names, in both
-  // the main-reward and additional-reward selects.
-  it('renders a "default pack only" option in both pack selects', async () => {
+  // the main-reward and additional-reward pack groups.
+  it('renders a "default pack only" checkbox in both pack groups', async () => {
     renderComponent();
 
     await waitFor(() => {
-      const options = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLOptionElement[];
-      expect(options.length).toBe(2);
-      options.forEach((option) => {
-        expect(option.disabled).toBe(false);
-        expect((option as HTMLOptionElement).value).toBe("__default__");
+      const boxes = screen.getAllByRole("checkbox", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLInputElement[];
+      expect(boxes.length).toBe(2);
+      boxes.forEach((box) => {
+        expect(box.disabled).toBe(false);
       });
     });
   });
@@ -141,8 +141,8 @@ describe("ChannelPointSettings card pack dropdowns", () => {
     );
 
     await waitFor(() => {
-      const defaultOptions = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" });
-      expect(defaultOptions.length).toBe(2);
+      const defaultBoxes = screen.getAllByRole("checkbox", { name: "デフォルトパック（未分類のカードのみ）" });
+      expect(defaultBoxes.length).toBe(2);
     });
     expect(screen.queryByText(/登録解除済み/)).not.toBeInTheDocument();
   });
@@ -160,16 +160,16 @@ describe("ChannelPointSettings card pack dropdowns", () => {
     renderComponent();
 
     await waitFor(() => {
-      // Normal packs render as usual (main + additional select = 2 each).
-      expect(screen.getAllByRole("option", { name: "weapons" }).length).toBe(2);
+      // Normal packs render as usual (main + additional group = 2 each).
+      expect(screen.getAllByRole("checkbox", { name: "weapons" }).length).toBe(2);
     });
-    // Exactly the two FIXED default-pack options remain — no third/fourth
-    // option coming from the legacy "__default__" entry in the response.
-    const defaultOptions = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLOptionElement[];
-    expect(defaultOptions.length).toBe(2);
-    // The raw reserved names never appear as option labels.
-    expect(screen.queryByRole("option", { name: "__default__" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "__legacy" })).not.toBeInTheDocument();
+    // Exactly the two FIXED default-pack checkboxes remain — no third/fourth
+    // checkbox coming from the legacy "__default__" entry in the response.
+    const defaultBoxes = screen.getAllByRole("checkbox", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLInputElement[];
+    expect(defaultBoxes.length).toBe(2);
+    // The raw reserved names never appear as checkbox labels.
+    expect(screen.queryByRole("checkbox", { name: "__default__" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "__legacy" })).not.toBeInTheDocument();
   });
 });
 
@@ -194,8 +194,8 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     await waitFor(() => {
       expect(screen.getAllByText("カードパック（支援プラン限定機能）").length).toBeGreaterThan(0);
     });
-    expect(screen.queryByLabelText("引き換え対象のカードパック")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("追加の引き換え対象のカードパック")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "引き換え対象のカードパック" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "追加の引き換え対象のカードパック" })).not.toBeInTheDocument();
   });
 
   it("canManage=false + an existing main-reward binding: shows the select but disabled, plus the upsell hint", async () => {
@@ -205,9 +205,10 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     });
 
     await waitFor(() => {
-      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
-      expect(select).toBeDisabled();
-      expect(select.value).toBe("weapons");
+      const group = screen.getByRole("group", { name: "引き換え対象のカードパック" });
+      const boxes = within(group).getAllByRole("checkbox") as HTMLInputElement[];
+      boxes.forEach((box) => expect(box.disabled).toBe(true));
+      expect(within(group).getByRole("checkbox", { name: "weapons" })).toBeChecked();
     });
     expect(screen.getAllByText("カードパック（支援プラン限定機能）").length).toBeGreaterThan(0);
   });
@@ -218,8 +219,10 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     renderComponent({ cardPacks: { canManage: true, defaultPackName: null } });
 
     await waitFor(() => {
-      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
-      expect(select).not.toBeDisabled();
+      const group = screen.getByRole("group", { name: "引き換え対象のカードパック" });
+      within(group).getAllByRole("checkbox").forEach((box) =>
+        expect(box).not.toBeDisabled()
+      );
     });
     expect(
       screen.getAllByText("パック名はカード管理の「パック管理」から登録できます").length
@@ -231,8 +234,10 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     renderComponent({ cardPacks: { canManage: true, defaultPackName: null } });
 
     await waitFor(() => {
-      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
-      expect(select).not.toBeDisabled();
+      const group = screen.getByRole("group", { name: "引き換え対象のカードパック" });
+      within(group).getAllByRole("checkbox").forEach((box) =>
+        expect(box).not.toBeDisabled()
+      );
     });
     expect(screen.queryByText("カードパック（支援プラン限定機能）")).not.toBeInTheDocument();
     expect(screen.queryByText("パック名はカード管理の「パック管理」から登録できます")).not.toBeInTheDocument();
@@ -242,8 +247,8 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     renderComponent({ cardPacks: { canManage: true, defaultPackName: "オリジナルカード" } });
 
     await waitFor(() => {
-      const options = screen.getAllByRole("option", { name: "オリジナルカード（未分類のカードのみ）" });
-      expect(options.length).toBe(2);
+      const boxes = screen.getAllByRole("checkbox", { name: "オリジナルカード（未分類のカードのみ）" });
+      expect(boxes.length).toBe(2);
     });
     expect(screen.queryByText("デフォルトパック（未分類のカードのみ）")).not.toBeInTheDocument();
   });

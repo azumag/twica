@@ -77,6 +77,8 @@ export interface SettingsLayoutData {
     rewardName: string | null;
     // Issue #393: pack bound to the main reward (null = all cards)
     collectionName: string | null;
+    // Issue #1994: メイン報酬の実効パック割り当て（配列）。
+    collectionNames?: string[] | null;
   };
   gachaSound: {
     soundUrl: string | null;
@@ -158,6 +160,7 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
+              currentCollectionNames={data.channelPoint.collectionNames ?? null}
           cardPacks={data.cardPacks}
           compact
         />
@@ -296,6 +299,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
+              currentCollectionNames={data.channelPoint.collectionNames ?? null}
           cardPacks={data.cardPacks}
         />
       ),

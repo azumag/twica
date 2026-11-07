@@ -17,10 +17,12 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import {
-  resolveCollectionNameField,
+  resolveCollectionNamesField,
+  resolveEffectiveRewardPackNames,
+  toLegacyCollectionName,
+  findUnregisteredRewardPackName,
   validateCardPackNamesInput,
   validatePackName,
-  isRegisteredOrUnchanged,
   DEFAULT_PACK_SENTINEL,
 } from "@/lib/validation/collection-name";
 import { validateRewardId, validateRewardName, validateChatAnnouncementTemplate } from "@/lib/validations";
@@ -63,6 +65,8 @@ import {
 } from "@/lib/collection-album";
 import {
   streamers as streamersTable,
+  streamersWithChannelPointPackNames as streamersWithChannelPointPackNamesTable,
+  streamerChannelPointPackBindings as streamerChannelPointPackBindingsTable,
   streamerChatSenderSettings as streamerChatSenderSettingsTable,
   twitchBotAccounts as twitchBotAccountsTable,
 } from "@/lib/db/schema";
@@ -558,6 +562,9 @@ interface ApplyStreamerSettingsUpdateResult {
   albumSettingsWriteSkipped: boolean;
   duplicateDisplayTiersWriteSkipped: boolean;
   rarityStylesWriteSkipped: boolean;
+  // Issue #1994: channel_point_pack_names 列未デプロイ窓で配列列を剥がし、かつ
+  // 旧単一列（先頭要素）だけでは表せない2要素以上の割り当てだった場合に true。
+  channelPointPackNamesWriteSkipped: boolean;
 }
 
 /**
@@ -666,12 +673,27 @@ async function applyStreamerSettingsUpdatePg(
   // skip-and-flag パターンを踏襲する。1列のみの migration のため1段だけ。
   let duplicateDisplayTiersWriteSkipped = false;
   let rarityStylesWriteSkipped = false;
+  let channelPointPackNamesWriteSkipped = false;
 
+  // Issue #1994（PR #1995 必須1）: Drizzle の .set() はテーブル定義にある列だけを
+  // SET 句へ描画し、定義に無いキーは黙って捨てる。streamers 本体定義には
+  // channel_point_pack_names が無いため、本体定義のままだと配列列が SQL に一度も
+  // 出なかった。payload に配列列を含むときだけ、全列 + 配列列を持つ UPDATE 専用定義で
+  // 1本の UPDATE を組む（旧列ミラー・reward_id など同時保存の列も同じ SQL に乗る）。
+  // 含まないときは本体定義のまま = パックと無関係な保存は migration 未適用の
+  // デプロイ窓でも 42703 にならない。下のフォールバックで配列列を delete すると、
+  // 次の試行は自動的に本体定義へ戻る（判定を呼び出しごとに行うため）。
   const runUpdate = (data: Record<string, unknown>, context: string) =>
     withDbRetry(
       async () => {
         // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
         const { db } = await getDb();
+        if ("channel_point_pack_names" in data) {
+          return db
+            .update(streamersWithChannelPointPackNamesTable)
+            .set(data as Partial<typeof streamersWithChannelPointPackNamesTable.$inferInsert>)
+            .where(eq(streamersWithChannelPointPackNamesTable.id, streamerId));
+        }
         return db
           .update(streamersTable)
           .set(data as Partial<typeof streamersTable.$inferInsert>)
@@ -722,6 +744,26 @@ async function applyStreamerSettingsUpdatePg(
     delete updateData.default_card_pack_name;
     defaultCardPackNameWriteSkipped = true;
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no default_card_pack_name)");
+  }
+
+  // Issue #1994: channel_point_pack_names 列未デプロイ窓では新列だけ剥がして
+  // 旧単一列（先頭要素ミラー）への書き込みを続行する。ロールバック互換の
+  // 書き込み経路を絶やさないため、旧列側のフォールバックより先に判定する。
+  // （両列が同時に欠落することはない — 新列が無い環境では旧列は必ず存在する。）
+  // 剥がした後の再試行は runUpdate が本体定義を選ぶため、旧列ミラーと他の設定列は
+  // 引き続き同じ1本の UPDATE で書かれる。2要素以上の割り当ては旧列（先頭要素）だけ
+  // では表せず2要素目以降が保存されないため、skip フラグで呼び出し元へ知らせる
+  // （0/1 要素は旧列だけで完全に表せるので欠損ではない）。
+  if (
+    error
+    && isPgMissingNamedColumnError(error, ["channel_point_pack_names"])
+    && "channel_point_pack_names" in updateData
+  ) {
+    const strippedPackNames = updateData.channel_point_pack_names;
+    delete updateData.channel_point_pack_names;
+    channelPointPackNamesWriteSkipped =
+      Array.isArray(strippedPackNames) && strippedPackNames.length > 1;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_pack_names)");
   }
 
   if (error && isMissingCollectionNameColumn(error as GenericDbError) && "channel_point_collection_name" in updateData) {
@@ -812,6 +854,7 @@ async function applyStreamerSettingsUpdatePg(
     albumSettingsWriteSkipped,
     duplicateDisplayTiersWriteSkipped,
     rarityStylesWriteSkipped,
+    channelPointPackNamesWriteSkipped,
   };
 }
 
@@ -1117,9 +1160,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    // Issue #393: validate the main-reward pack name (null = all cards).
-    const channelPointCollectionResult = resolveCollectionNameField(body, "channelPointCollectionName");
-    if (!channelPointCollectionResult.ok) {
+    // Issue #1994: メイン報酬のパック割り当ては複数形（channelPointCollectionNames:
+    // string[] | null）を正規とし、旧単一形 channelPointCollectionName も受理する
+    // （両方が同時に送られた場合は曖昧さを避けるため 400）。値は常に配列へ正規化
+    // され、null/[] は「全カード」。
+    const channelPointPackNamesResult = resolveCollectionNamesField(
+      body,
+      "channelPointCollectionNames",
+      "channelPointCollectionName"
+    );
+    if (!channelPointPackNamesResult.ok) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -1132,6 +1182,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
+    // Issue #1994: 現在の実効パック割り当て。読み取りが必要なのはリクエストが
+    // パック割り当てを変更しようとするときだけなので、ここでは解決を遅延する
+    // （下の membership 検証ブロックで初めて読む。パック変更を含まない
+    // 設定保存で余計なクエリを発行しない）。
     const currentCardPackNames: string[] = Array.isArray(streamer.card_pack_names)
       ? streamer.card_pack_names
       : [];
@@ -1250,31 +1304,63 @@ export async function POST(request: NextRequest) {
     // が持つ疑似パック(=未分類カード)として、membership検証自体を常に
     // スキップして受理する(存在検証は下のcheckCollectionHasActiveCardsで
     // 別途行う)。
-    if (
-      channelPointCollectionResult.value !== undefined &&
-      channelPointCollectionResult.value !== DEFAULT_PACK_SENTINEL &&
-      !isRegisteredOrUnchanged(
-        channelPointCollectionResult.value,
+    // Issue #1994: パック割り当て変更時のみ現在値を読む。channel_point_pack_names
+    // は streamers 本体とは別の狭い定義で読み、列欠落（デプロイ窓）のときは
+    // undefined → 旧単一列のみで解決する（resolveEffectiveRewardPackNames の規約）。
+    let currentEffectivePackNames: string[] = [];
+    if (channelPointPackNamesResult.value !== undefined) {
+      let currentPackNamesColumn: unknown = undefined;
+      try {
+        const packBindingRows = await withDbRetry(async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              channel_point_pack_names:
+                streamerChannelPointPackBindingsTable.channel_point_pack_names,
+            })
+            .from(streamerChannelPointPackBindingsTable)
+            .where(eq(streamerChannelPointPackBindingsTable.id, streamer.id))
+            .limit(1);
+        }, "Streamer Settings API: pack names lookup", { idempotent: true });
+        currentPackNamesColumn = packBindingRows[0]?.channel_point_pack_names ?? [];
+      } catch (packNamesError) {
+        if (!isPgMissingNamedColumnError(packNamesError, ["channel_point_pack_names"])) {
+          // 列欠落以外の障害は黙って旧列に倒さない（複数パック割り当てが一時障害で
+          // 単一パックへ縮退・上書きされるのを防ぐため fail-fast）。
+          return handleDatabaseError(packNamesError, "Streamer Settings API: pack names lookup");
+        }
+      }
+      currentEffectivePackNames = resolveEffectiveRewardPackNames(
+        currentPackNamesColumn,
         streamer.channel_point_collection_name,
+      );
+    }
+
+    if (channelPointPackNamesResult.value !== undefined) {
+      const unregistered = findUnregisteredRewardPackName(
+        channelPointPackNamesResult.value,
+        currentEffectivePackNames,
         persistedCardPackNames
-      )
-    ) {
-      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+      );
+      if (unregistered !== null) {
+        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+      }
     }
 
     // Issue #393: reject binding the main reward to a pack with no active cards,
     // which would always resolve to an empty draw pool at redemption time.
     // 値が実際に変わる場合のみチェックする(#1: 孤立参照の再送信では走らせない)。
-    if (
-      typeof channelPointCollectionResult.value === "string" &&
-      channelPointCollectionResult.value !== streamer.channel_point_collection_name
-    ) {
-      const existence = await checkCollectionHasActiveCards(
-        streamer.id,
-        channelPointCollectionResult.value
-      );
-      if (existence === "absent") {
-        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+    // Issue #1994: 複数割り当てでは「新たに紐付く各パック」へ同じ検査を行う。
+    // 空パックが1つ混ざっても他パックからは当たるが、タイポ等の設定ミスを
+    // 早期に止める既存方針を複数形へそのまま拡張する。
+    if (channelPointPackNamesResult.value !== undefined) {
+      for (const name of channelPointPackNamesResult.value) {
+        if (!currentEffectivePackNames.includes(name)) {
+          const existence = await checkCollectionHasActiveCards(streamer.id, name);
+          if (existence === "absent") {
+            return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+          }
+        }
       }
     }
 
@@ -1298,10 +1384,16 @@ export async function POST(request: NextRequest) {
     if (channelPointRewardName !== undefined) {
       updateData.channel_point_reward_name = channelPointRewardName;
     }
-    // Issue #393: persist the main-reward pack binding (null clears it = all cards).
-    // membership検証(上記)を通っているため、ここでは無条件に保存する。
-    if (channelPointCollectionResult.value !== undefined) {
-      updateData.channel_point_collection_name = channelPointCollectionResult.value;
+    // Issue #1994: persist the main-reward pack binding to BOTH columns in the
+    // same UPDATE — the array column holds the full selection while the legacy
+    // column keeps the first element as a rollback-compatible mirror
+    // (null clears it = all cards). membership検証(上記)を通っているため、
+    // ここでは無条件に保存する。
+    if (channelPointPackNamesResult.value !== undefined) {
+      updateData.channel_point_pack_names = channelPointPackNamesResult.value;
+      updateData.channel_point_collection_name = toLegacyCollectionName(
+        channelPointPackNamesResult.value
+      );
     }
 
     // ガチャ効果音設定
@@ -1544,6 +1636,8 @@ export async function POST(request: NextRequest) {
     // skip-and-flag パターンを踏襲する。
     let duplicateDisplayTiersWriteSkipped = false;
     let rarityStylesWriteSkipped = false;
+    // Issue #1994: メイン報酬の複数パック割り当てがデプロイ窓で先頭1件へ縮退した場合。
+    let channelPointPackNamesWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
@@ -1561,6 +1655,7 @@ export async function POST(request: NextRequest) {
       albumSettingsWriteSkipped = updateResult.albumSettingsWriteSkipped;
       duplicateDisplayTiersWriteSkipped = updateResult.duplicateDisplayTiersWriteSkipped;
       rarityStylesWriteSkipped = updateResult.rarityStylesWriteSkipped;
+      channelPointPackNamesWriteSkipped = updateResult.channelPointPackNamesWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
@@ -1660,6 +1755,11 @@ export async function POST(request: NextRequest) {
         : {}),
       ...(rarityStylesWriteSkipped
         ? { rarityStylesSkippedDeployWindow: true }
+        : {}),
+      // Issue #1994: 配列列が未デプロイで、旧列（先頭要素）しか保存できなかった場合。
+      // 他の skip フラグと同じく「保存できた」と偽らないために返す。
+      ...(channelPointPackNamesWriteSkipped
+        ? { channelPointCollectionNamesSkippedDeployWindow: true }
         : {}),
     });
   } catch (error) {

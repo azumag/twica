@@ -4,6 +4,9 @@ import {
   isMissingCollectionNameColumn,
   isMissingDefaultCardPackNameColumnError,
   isMissingRenameCardPackFunctionError,
+  isMissingCardPackNamesColumnError,
+  isMissingChannelPointPackNamesColumnError,
+  isMissingRewardPackNamesColumnError,
   checkCollectionHasActiveCards,
 } from "@/lib/collections/collection-existence";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
@@ -131,6 +134,50 @@ describe("isMissingCollectionNameColumn", () => {
 });
 
 // Issue #554: `streamers.default_card_pack_name` deploy-window detection.
+// Issue #1994: 複数パック割り当ての新列。既存検知は列名の部分一致なので、新列の
+// 欠落エラーを既存の旧列用チェインへ流しても誤発火しないこと、新列専用の検知だけが
+// 拾うことを固定する（誤発火すると settings の読み取りチェインが id だけの SELECT へ
+// 縮退し、card_pack_names=[] として扱われる）。
+describe("multi-pack column detectors (Issue #1994)", () => {
+  const missingChannelPointPackNames = {
+    code: "42703",
+    message: 'column streamers.channel_point_pack_names does not exist',
+  };
+  const missingRewardPackNames = {
+    code: "42703",
+    message: 'column "reward_pack_names" of relation "streamer_additional_gacha_rewards" does not exist',
+  };
+
+  it("does not trip the legacy collection_name / card_pack_names detectors", () => {
+    for (const error of [missingChannelPointPackNames, missingRewardPackNames]) {
+      expect(isMissingCollectionNameColumn(error)).toBe(false);
+      expect(isMissingCardPackNamesColumnError(error)).toBe(false);
+    }
+  });
+
+  it("is detected only by the matching new-column detector", () => {
+    expect(isMissingChannelPointPackNamesColumnError(missingChannelPointPackNames)).toBe(true);
+    expect(isMissingRewardPackNamesColumnError(missingChannelPointPackNames)).toBe(false);
+    expect(isMissingRewardPackNamesColumnError(missingRewardPackNames)).toBe(true);
+    expect(isMissingChannelPointPackNamesColumnError(missingRewardPackNames)).toBe(false);
+  });
+
+  it("does not treat legacy-column errors or non-42703 errors as the new columns", () => {
+    const legacy = { code: "42703", message: "column streamers.channel_point_collection_name does not exist" };
+    expect(isMissingChannelPointPackNamesColumnError(legacy)).toBe(false);
+    expect(isMissingRewardPackNamesColumnError(legacy)).toBe(false);
+    expect(
+      isMissingChannelPointPackNamesColumnError({ code: "23514", message: "channel_point_pack_names check" })
+    ).toBe(false);
+    expect(isMissingRewardPackNamesColumnError(null)).toBe(false);
+  });
+
+  it("follows the Drizzle cause chain", () => {
+    const wrapped = Object.assign(new Error("Failed query: select ..."), { cause: missingRewardPackNames });
+    expect(isMissingRewardPackNamesColumnError(wrapped)).toBe(true);
+  });
+});
+
 describe("isMissingDefaultCardPackNameColumnError", () => {
   it("detects the WRITE shape (42703)", () => {
     expect(

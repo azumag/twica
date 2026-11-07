@@ -35,8 +35,27 @@ interface AdditionalReward {
   is_raid_limited: boolean;
   // Issue #393: card pack bound to this additional reward (null = all cards)
   collection_name: string | null;
+  // Issue #1994: 実効パック割り当て（API は collection_names で返す）。
+  // 旧APIやdeploy窓では undefined になりうるため collection_name にフォールバックする。
+  collection_names?: string[];
   created_at: string;
 }
+
+// Issue #1994: 追加報酬行の実効パック割り当て。collection_names が無い
+// （deploy窓や旧API）ときは collection_name から1要素配列を作る。
+const effectiveRewardPackNames = (reward: AdditionalReward): string[] =>
+  reward.collection_names ?? (reward.collection_name ? [reward.collection_name] : []);
+
+// Issue #1994: 未保存判定用の「同じパック集合か」。チェックボックスの ON/OFF 順で
+// 配列の並びが変わる（A→B と B→A）ため、JSON.stringify の順序依存比較では
+// 選び直しただけで「未保存の変更あり」と誤判定する。ソートしたコピーで比較し、
+// state の配列自体は並べ替えない（先頭要素は旧列ミラーになるため順序を保つ）。
+const sameRewardPackSelection = (a: readonly string[], b: readonly string[]): boolean => {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((name, i) => name === sortedB[i]);
+};
 
 const getRaidSubscriptionWarning = (data: unknown): string => {
   const raidSubscription = (data as { raidSubscription?: { warning?: unknown } })?.raidSubscription;
@@ -56,6 +75,9 @@ interface ChannelPointSettingsProps {
   currentRewardName: string | null;
   // Issue #393: pack currently bound to the main reward (null = all cards)
   currentCollectionName?: string | null;
+  // Issue #1994: メイン報酬の実効パック割り当て（配列列 + 旧列ミラーから解決済み）。
+  // 未指定の旧呼び出しでは currentCollectionName だけから初期化する。
+  currentCollectionNames?: string[] | null;
   /**
    * compact: シンプル表示モード用の縮約レンダリング。
    * EventSub 診断パネル / 追加報酬セクション / 詳細エラーリストを隠し、
@@ -89,6 +111,7 @@ export default function ChannelPointSettings({
   currentRewardId,
   currentRewardName,
   currentCollectionName = null,
+  currentCollectionNames = null,
   compact = false,
   cardPacks,
 }: ChannelPointSettingsProps) {
@@ -103,12 +126,15 @@ export default function ChannelPointSettings({
   const [selectedRewardId, setSelectedRewardId] = useState(currentRewardId || "");
   const [selectedRewardName, setSelectedRewardName] = useState(currentRewardName || "");
   // Issue #393: pack selections + available pack list
-  const [selectedCollectionName, setSelectedCollectionName] = useState(currentCollectionName || "");
+  // Issue #1994: 複数パック割り当ては string[] で保持する。初期値は実効配列
+  // （currentCollectionNames）を優先し、無ければ旧単一値から1要素配列を作る。
+  const [selectedCollectionNames, setSelectedCollectionNames] = useState<string[]>(
+    () => currentCollectionNames ?? (currentCollectionName ? [currentCollectionName] : []));
   const [collections, setCollections] = useState<string[]>([]);
   // collectionsLoaded: true のときだけ「登録解除済み」警告を出す。
   // 取得前/取得失敗時に実在パックを誤警告しないためのガード。
   const [collectionsLoaded, setCollectionsLoaded] = useState(false);
-  const [selectedAdditionalCollectionName, setSelectedAdditionalCollectionName] = useState("");
+  const [selectedAdditionalCollectionNames, setSelectedAdditionalCollectionNames] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -138,7 +164,7 @@ export default function ChannelPointSettings({
   // 追加報酬の編集（パック変更・枚数変更）用 state。editingRewardId が非 null の
   // ときだけ該当行の下に編集フォームを表示する。
   const [editingRewardId, setEditingRewardId] = useState<string | null>(null);
-  const [editingCollectionName, setEditingCollectionName] = useState("");
+  const [editingCollectionNames, setEditingCollectionNames] = useState<string[]>([]);
   const [editingDrawCount, setEditingDrawCount] = useState(1);
   const [updatingAdditional, setUpdatingAdditional] = useState(false);
   const [raidGiftDrawCount, setRaidGiftDrawCount] = useState(0);
@@ -449,8 +475,8 @@ export default function ChannelPointSettings({
           streamerId,
           channelPointRewardId: selectedRewardId,
           channelPointRewardName: selectedRewardName,
-          // Issue #393: bind the main reward to a pack ("" → null = all cards)
-          channelPointCollectionName: selectedCollectionName || null,
+          // Issue #1994: bind the main reward to a set of packs ([] = all cards).
+          channelPointCollectionNames: selectedCollectionNames,
         }),
       });
 
@@ -590,8 +616,8 @@ export default function ChannelPointSettings({
           rewardName: rewardName,
           drawCount: additionalDrawCount,
           isRaidLimited: false,
-          // Issue #393: bind this additional reward to a pack ("" → null = all cards)
-          collectionName: selectedAdditionalCollectionName || null,
+          // Issue #1994: bind this additional reward to a set of packs ([] = all cards)
+          collectionNames: selectedAdditionalCollectionNames,
         }),
       });
 
@@ -608,7 +634,7 @@ export default function ChannelPointSettings({
       // 状態を更新
       setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
       setSelectedAdditionalRewardId("");
-      setSelectedAdditionalCollectionName("");
+      setSelectedAdditionalCollectionNames([]);
       setAdditionalDrawCount(1);
       await fetchAdditionalRewards();
       await fetchEventSubStatus(selectedRewardId);
@@ -639,14 +665,14 @@ export default function ChannelPointSettings({
       const currentReward = additionalRewards.find((r) => r.reward_id === editingRewardId) ?? null;
       const hasUnsavedChanges =
         currentReward !== null &&
-        (editingCollectionName !== (currentReward.collection_name || "") ||
+        (!sameRewardPackSelection(editingCollectionNames, effectiveRewardPackNames(currentReward)) ||
           editingDrawCount !== currentReward.draw_count);
       if (hasUnsavedChanges && !window.confirm(t("additionalRewards.editDiscardConfirm"))) {
         return;
       }
     }
     setEditingRewardId(reward.reward_id);
-    setEditingCollectionName(reward.collection_name || "");
+    setEditingCollectionNames(effectiveRewardPackNames(reward));
     setEditingDrawCount(reward.draw_count);
   };
 
@@ -655,7 +681,7 @@ export default function ChannelPointSettings({
    */
   const handleCancelEditAdditionalReward = () => {
     setEditingRewardId(null);
-    setEditingCollectionName("");
+    setEditingCollectionNames([]);
     setEditingDrawCount(1);
   };
 
@@ -685,7 +711,7 @@ export default function ChannelPointSettings({
           // という意図を API 契約に合わせて明確にする。
           ...(editingPackControlMode === "hidden"
             ? {}
-            : { collectionName: editingCollectionName || null }),
+            : { collectionNames: editingCollectionNames }),
           drawCount: editingDrawCount,
         }),
       });
@@ -1042,13 +1068,14 @@ export default function ChannelPointSettings({
     if (!cardPacks || cardPacks.canManage) return "enabled";
     return hasBinding ? "disabled" : "hidden";
   };
-  const mainPackControlMode = resolvePackControlMode(selectedCollectionName !== "");
-  const additionalPackControlMode = resolvePackControlMode(selectedAdditionalCollectionName !== "");
+  const mainPackControlMode = resolvePackControlMode(selectedCollectionNames.length > 0);
+  const additionalPackControlMode = resolvePackControlMode(selectedAdditionalCollectionNames.length > 0);
   // Issue #554: 編集フォームのパック select は「追加フォームの選択値」ではなく
   // 「編集対象の報酬に既存の紐付けがあるか」で制御する（canManage=false の
   // ダウングレード後も既存紐付けの維持表示は有効、新規紐付けのみ禁止）。
   const editingReward = additionalRewards.find((r) => r.reward_id === editingRewardId) ?? null;
-  const editingPackControlMode = resolvePackControlMode(Boolean(editingReward?.collection_name));
+  const editingPackControlMode = resolvePackControlMode(
+    editingReward ? effectiveRewardPackNames(editingReward).length > 0 : false);
   // canManage=true だが登録済みパックが0件の場合の案内(「すべてのカード」
   // 「デフォルトパックのみ」は常に有効な選択肢のため、select自体は表示する)。
   const showNoPacksRegisteredHint = Boolean(cardPacks?.canManage) && collections.length === 0;
@@ -1057,6 +1084,85 @@ export default function ChannelPointSettings({
   // アップセル表示。邪魔にならないよう text-xs のグレーアウトテキストとする。
   // リンク文言「支援特典について」は他コンポーネント(CardPackModal 等)と
   // 同じ既存パターンを踏襲し、あえて i18n キー化せずハードコードしている。
+  // Issue #1994: パック割り当ての複数選択UI。先頭の「すべてのカード」は
+  // 選択を空にするマスターで、その他はチェックボックスで個別ON/OFFする。
+  // 保存済みだが一覧に無い（登録解除済み）名前も選択肢に残し、黙って
+  // スコープが全カードに変わる事故を防ぐ（旧selectと同じ方針）。
+  const renderPackCheckboxes = (
+    selected: string[],
+    onChange: (next: string[]) => void,
+    disabled: boolean,
+    ariaLabel: string
+  ) => {
+    const toggle = (name: string) =>
+      onChange(selected.includes(name) ? selected.filter((n) => n !== name) : [...selected, name]);
+    const missing = selected.filter(
+      (name) => name !== DEFAULT_PACK_SENTINEL && !collections.includes(name)
+    );
+    return (
+      <div
+        role="group"
+        aria-label={ariaLabel}
+        className="mt-1 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-600 bg-gray-800 p-2 text-sm text-gray-100"
+      >
+        <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gray-700/60">
+          <input
+            type="checkbox"
+            checked={selected.length === 0}
+            onChange={() => onChange([])}
+            disabled={disabled}
+            className="h-3.5 w-3.5 accent-purple-500 disabled:cursor-not-allowed"
+          />
+          <span>{t("collections.all")}</span>
+        </label>
+        {/* Issue #555: 「デフォルトパックのみ」= 未分類(collection_name IS NULL)の
+            カードに絞る擬似パック。他パックと併用可能（和集合）。 */}
+        <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gray-700/60">
+          <input
+            type="checkbox"
+            checked={selected.includes(DEFAULT_PACK_SENTINEL)}
+            onChange={() => toggle(DEFAULT_PACK_SENTINEL)}
+            disabled={disabled}
+            className="h-3.5 w-3.5 accent-purple-500 disabled:cursor-not-allowed"
+          />
+          <span>{t("collections.defaultOnly", { name: defaultPackDisplayName })}</span>
+        </label>
+        {collections.map((name) => (
+          <label
+            key={name}
+            className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gray-700/60"
+          >
+            <input
+              type="checkbox"
+              checked={selected.includes(name)}
+              onChange={() => toggle(name)}
+              disabled={disabled}
+              className="h-3.5 w-3.5 accent-purple-500 disabled:cursor-not-allowed"
+            />
+            <span className="break-all">{name}</span>
+          </label>
+        ))}
+        {missing.map((name) => (
+          <label
+            key={name}
+            className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gray-700/60"
+          >
+            <input
+              type="checkbox"
+              checked
+              onChange={() => toggle(name)}
+              disabled={disabled}
+              className="h-3.5 w-3.5 accent-amber-500 disabled:cursor-not-allowed"
+            />
+            <span className="break-all text-amber-300">
+              {collectionsLoaded ? t("collections.missing", { name }) : name}
+            </span>
+          </label>
+        ))}
+      </div>
+    );
+  };
+
   const renderPackUpsellHint = () => (
     <p className="mt-1 text-xs text-gray-500">
       {t("collections.premiumLocked")}
@@ -1370,46 +1476,19 @@ export default function ChannelPointSettings({
                    renderPackUpsellHint()
                  ) : (
                    <>
-                     <label className="mt-3 block text-xs text-gray-300">
-                       {t("collections.mainLabel")}
-                       <select
-                         value={selectedCollectionName}
-                         onChange={(e) => setSelectedCollectionName(e.target.value)}
-                         disabled={mainPackControlMode === "disabled"}
-                         className="mt-1 h-9 w-full rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40 disabled:cursor-not-allowed disabled:opacity-60"
-                       >
-                         <option value="">{t("collections.all")}</option>
-                         {/* Issue #555: 「デフォルトパックのみ」= 未分類(collection_name
-                             IS NULL)のカードだけに抽選対象を絞る選択肢。事前登録された
-                             パックとは独立した固定オプションとして常に表示する。 */}
-                         <option value={DEFAULT_PACK_SENTINEL}>
-                           {t("collections.defaultOnly", { name: defaultPackDisplayName })}
-                         </option>
-                         {collections.map((name) => (
-                           <option key={name} value={name}>{name}</option>
-                         ))}
-                         {/* 保存済みだが一覧に無い(パック管理で登録解除された)パックも
-                             選択肢に残し、黙ってスコープが全カードに変わる事故を防ぐ。
-                             #393再設計後、この一覧は「事前登録済みパック名」のみを
-                             返す(アクティブカードの有無は問わない)ため、ここに来る
-                             ケースは常に「登録解除済み」であり「抽選可能カードなし」
-                             ではない。取得完了後のみラベルを付す
-                             （取得前/失敗時は素の名前で表示）。
-                             Issue #555: DEFAULT_PACK_SENTINEL は上の固定オプションと
-                             して既に選択肢にあるため、ここでは除外する(除外しないと
-                             同じ値のoptionが2つ並び、誤って「登録解除済み」ラベルの
-                             方が選択されてしまう)。 */}
-                         {selectedCollectionName
-                           && selectedCollectionName !== DEFAULT_PACK_SENTINEL
-                           && !collections.includes(selectedCollectionName) && (
-                           <option value={selectedCollectionName}>
-                             {collectionsLoaded
-                               ? t("collections.missing", { name: selectedCollectionName })
-                               : selectedCollectionName}
-                           </option>
-                         )}
-                       </select>
-                     </label>
+                     {/* Issue #1994: 外側を <label> にしない。中に複数の
+                         <label><input type="checkbox"> が入る入れ子は HTML として不正で、
+                         見出しクリックが先頭の「すべてのカード」を起動して選択を全消去しうる。
+                         グループ名は renderPackCheckboxes の role="group" + aria-label が担う。 */}
+                     <div className="mt-3 text-xs text-gray-300">
+                       <span className="block">{t("collections.mainLabel")}</span>
+                       {renderPackCheckboxes(
+                         selectedCollectionNames,
+                         setSelectedCollectionNames,
+                         mainPackControlMode === "disabled",
+                         t("collections.mainLabel")
+                       )}
+                     </div>
                      <p className="mt-1 text-xs text-gray-400">
                        {t("collections.help")}
                      </p>
@@ -1468,19 +1547,23 @@ export default function ChannelPointSettings({
                                  事前登録一覧には現れず、素の "__default__" 文字列
                                  表示や「登録解除済み」誤判定を避けるため専用ラベルを
                                  優先して表示する。 */}
-                             {reward.collection_name ? (
-                               reward.collection_name === DEFAULT_PACK_SENTINEL ? (
-                                 <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
-                                   {t("collections.defaultOnly", { name: defaultPackDisplayName })}
-                                 </span>
-                               ) : collectionsLoaded && !collections.includes(reward.collection_name) ? (
-                                 <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
-                                   {t("collections.missing", { name: reward.collection_name })}
-                                 </span>
-                               ) : (
-                                 <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
-                                   {reward.collection_name}
-                                 </span>
+                             {/* Issue #1994: 複数パック割り当ては各パックを個別バッジで
+                                 表示する。登録解除済みは警告色、センチネルは専用ラベル。 */}
+                             {effectiveRewardPackNames(reward).length > 0 ? (
+                               effectiveRewardPackNames(reward).map((name) =>
+                                 name === DEFAULT_PACK_SENTINEL ? (
+                                   <span key={name} className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                                     {t("collections.defaultOnly", { name: defaultPackDisplayName })}
+                                   </span>
+                                 ) : collectionsLoaded && !collections.includes(name) ? (
+                                   <span key={name} className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
+                                     {t("collections.missing", { name })}
+                                   </span>
+                                 ) : (
+                                   <span key={name} className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
+                                     {name}
+                                   </span>
+                                 )
                                )
                              ) : (
                                <span className="rounded bg-gray-700 px-2 py-0.5 text-gray-200">
@@ -1530,37 +1613,12 @@ export default function ChannelPointSettings({
                                  {t("collections.premiumLocked")}
                                </div>
                              ) : (
-                               <select
-                                 value={editingCollectionName}
-                                 onChange={(e) => setEditingCollectionName(e.target.value)}
-                                 // 追加フォームのプルダウン（additionalLabel）とは別の
-                                 // ラベルにする。同じ aria-label だと accessible name が
-                                 // 重複し、getByLabelText が多重一致するため。
-                                 aria-label={t("collections.editLabel")}
-                                 disabled={editingPackControlMode === "disabled"}
-                                 className="h-9 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40 disabled:cursor-not-allowed disabled:opacity-60"
-                               >
-                                 <option value="">{t("collections.all")}</option>
-                                 {/* Issue #555: メイン報酬の選択肢と同様に「デフォルトパックのみ」を追加 */}
-                                 <option value={DEFAULT_PACK_SENTINEL}>
-                                   {t("collections.defaultOnly", { name: defaultPackDisplayName })}
-                                 </option>
-                                 {collections.map((name) => (
-                                   <option key={name} value={name}>{name}</option>
-                                 ))}
-                                 {/* 保存済みだが一覧に無い(パック管理で登録解除された)パックも
-                                     選択肢に残し、黙ってスコープが全カードに変わる事故を防ぐ
-                                     （メイン報酬のプルダウンと同じ方針）。 */}
-                                 {editingCollectionName
-                                   && editingCollectionName !== DEFAULT_PACK_SENTINEL
-                                   && !collections.includes(editingCollectionName) && (
-                                   <option value={editingCollectionName}>
-                                     {collectionsLoaded
-                                       ? t("collections.missing", { name: editingCollectionName })
-                                       : editingCollectionName}
-                                   </option>
-                                 )}
-                               </select>
+                               renderPackCheckboxes(
+                                 editingCollectionNames,
+                                 setEditingCollectionNames,
+                                 editingPackControlMode === "disabled",
+                                 t("collections.editLabel")
+                               )
                              )}
                              <label className="group flex h-9 items-center gap-2 rounded-md border border-gray-600 bg-gray-700 pl-3 pr-1.5 text-sm text-gray-200 transition-colors hover:border-gray-500 focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500/40">
                                <span className="whitespace-nowrap text-xs text-gray-300">
@@ -1655,22 +1713,12 @@ export default function ChannelPointSettings({
                      {t("collections.premiumLocked")}
                    </div>
                  ) : (
-                   <select
-                     value={selectedAdditionalCollectionName}
-                     onChange={(e) => setSelectedAdditionalCollectionName(e.target.value)}
-                     aria-label={t("collections.additionalLabel")}
-                     disabled={additionalPackControlMode === "disabled"}
-                     className="h-10 min-w-0 rounded-md border border-gray-600 bg-gray-700 px-3 text-sm text-gray-100 transition-colors hover:border-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/40 disabled:cursor-not-allowed disabled:opacity-60"
-                   >
-                     <option value="">{t("collections.all")}</option>
-                     {/* Issue #555: メイン報酬の選択肢と同様に「デフォルトパックのみ」を追加 */}
-                     <option value={DEFAULT_PACK_SENTINEL}>
-                       {t("collections.defaultOnly", { name: defaultPackDisplayName })}
-                     </option>
-                     {collections.map((name) => (
-                       <option key={name} value={name}>{name}</option>
-                     ))}
-                   </select>
+                   renderPackCheckboxes(
+                     selectedAdditionalCollectionNames,
+                     setSelectedAdditionalCollectionNames,
+                     additionalPackControlMode === "disabled",
+                     t("collections.additionalLabel")
+                   )
                  )}
                  {/*
                    ラベルと数値入力を1コンポーネントとして見せるためのコンテナ。
