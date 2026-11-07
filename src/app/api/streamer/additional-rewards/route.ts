@@ -137,6 +137,16 @@ const ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME = {
   created_at: streamerAdditionalGachaRewardsTable.created_at,
 } as const;
 
+/**
+ * Issue #1994: reward_pack_names 列（20261108120000）が未デプロイの窓で使う応答列。
+ * 旧単一列 collection_name は残し、collection_names を旧列から解決できるようにする
+ * （minimal へ落とすと collection_name まで失い、パックバッジが「すべてのカード」に化ける）。
+ */
+const ADDITIONAL_REWARD_LEGACY_RESPONSE_COLUMNS = {
+  ...ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME,
+  collection_name: streamerAdditionalGachaRewardsTable.collection_name,
+} as const;
+
 const ADDITIONAL_REWARD_RESPONSE_COLUMNS = {
   ...ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME,
   collection_name: streamerAdditionalGachaRewardsWithPackNamesTable.collection_name,
@@ -150,10 +160,14 @@ const ADDITIONAL_REWARD_RESPONSE_COLUMNS = {
  * （collection_name + collection_names）へ変換する。collection_names は
  * resolveEffectiveRewardPackNames のフォールバック規則で解決し、DB 列
  * reward_pack_names 自体は応答に含めない（内部表現のため）。
+ *
+ * GET 一覧・POST の作成結果・PUT の更新結果で同じ形を返すため、行の型は
+ * 呼び出し側の列セットに合わせて汎用にする。reward_pack_names が無い行
+ * （列未デプロイ窓の縮退）は旧列だけで解決される（resolve の規約）。
  */
-function mapAdditionalRewardRow(
-  row: Omit<AdditionalRewardRow, "collection_names"> & { reward_pack_names?: unknown },
-): AdditionalRewardRow {
+function mapAdditionalRewardRow<T extends { collection_name?: string | null; reward_pack_names?: unknown }>(
+  row: T,
+): Omit<T, "reward_pack_names"> & { collection_names: string[] } {
   const { reward_pack_names, ...rest } = row;
   return {
     ...rest,
@@ -223,8 +237,8 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
     return rows.map((row) => mapAdditionalRewardRow(row));
   } catch (error) {
     // Issue #1994: reward_pack_names 列のみ未デプロイなら、新列を除く
-    // collection_name ありの中間列セットで再試行し collection_names=[] 補完
-    // （= 旧単一列だけで解決する）。collection_name 欠落フォールバックより先に
+    // collection_name ありの中間列セットで再試行し、collection_names は
+    // 旧単一列だけで解決する。collection_name 欠落フォールバックより先に
     // 判定する（列名の部分一致誤検知を避けるため、名前で厳密判定する）。
     if (isPgMissingNamedColumnError(error, ["reward_pack_names"])) {
       try {
@@ -232,10 +246,7 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
           async () => {
             const { db } = await getDb();
             return db
-              .select({
-                ...ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME,
-                collection_name: streamerAdditionalGachaRewardsTable.collection_name,
-              })
+              .select(ADDITIONAL_REWARD_LEGACY_RESPONSE_COLUMNS)
               .from(streamerAdditionalGachaRewardsTable)
               .where(eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId))
               .orderBy(asc(streamerAdditionalGachaRewardsTable.created_at));
@@ -243,7 +254,9 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
           "Additional Rewards API: GET(no reward_pack_names)",
           { idempotent: true },
         );
-        return rows.map((row) => ({ ...row, collection_names: [] as string[] }));
+        // collection_names は旧列から解決する（[] 固定にすると、旧列に1パックが
+        // 入っている報酬が「すべてのカード」に見え、編集保存でパックが消える）。
+        return rows.map((row) => mapAdditionalRewardRow(row));
       } catch (packNamesError) {
         // 中間列セットも失敗した場合は、従来の欠落チェインへ誤判定なく委ねる。
         if (isMissingCollectionNameColumn(packNamesError as GenericDbError)) {
@@ -433,10 +446,22 @@ type InsertAdditionalRewardOutcome =
 async function insertAdditionalRewardPg(
   insertPayload: Record<string, unknown>
 ): Promise<InsertAdditionalRewardOutcome> {
+  // Issue #1994（PR #1995 必須1）: Drizzle は定義に無いキーを INSERT 列から黙って
+  // 捨てるため、本体定義へ reward_pack_names を渡しても SQL に出ず配列列が書かれなかった。
+  // payload に配列列を含むときだけ拡張定義で INSERT する。含まないとき（パック指定なしの
+  // 作成、または下の 42703 フォールバックで剥がした後の再試行）は本体定義に戻す。
+  // INSERT と引数なし returning() は定義の全列を列挙するので、拡張定義のまま再試行すると
+  // migration 未適用の窓で RETURNING 側から 42703 が再発する（判定を呼び出しごとに行う理由）。
   const runInsert = (payload: Record<string, unknown>) =>
     withDbRetry(
       async () => {
         const { db } = await getDb();
+        if ("reward_pack_names" in payload) {
+          return db
+            .insert(streamerAdditionalGachaRewardsWithPackNamesTable)
+            .values(payload as typeof streamerAdditionalGachaRewardsWithPackNamesTable.$inferInsert)
+            .returning();
+        }
         return db
           .insert(streamerAdditionalGachaRewardsTable)
           .values(payload as typeof streamerAdditionalGachaRewardsTable.$inferInsert)
@@ -702,7 +727,13 @@ export async function POST(request: NextRequest) {
       return handleDatabaseError(insertOutcome.error, "Additional Rewards API: POST");
     }
 
-    const newReward = insertOutcome.reward;
+    // Issue #1994: 応答の形を GET と揃える（collection_names に解決済み配列、生の
+    // reward_pack_names は出さない）。作成直後の行は配列列と旧列を同じ INSERT で
+    // 書いているので、ここでの解決結果は要求した割り当てと一致する。
+    const insertedRow = insertOutcome.reward as
+      | ({ collection_name?: string | null; reward_pack_names?: unknown } & Record<string, unknown>)
+      | null;
+    const newReward = insertedRow ? mapAdditionalRewardRow({ collection_name: null, ...insertedRow }) : null;
 
     logger.info(
       `Additional reward registered: streamerId=${streamer.id}, rewardId=${rewardId}, rewardName=${rewardName}, drawCount=${normalizedDrawCount}, raidLimited=${isRaidLimited ?? false}`
@@ -834,12 +865,16 @@ async function getAdditionalRewardForUpdatePg(
 }
 
 type UpdateAdditionalRewardOutcome =
-  // collectionNameStripped: collection_name 列未デプロイ窓で当該列を剥がして
-  // 再試行した場合に true。パック変更が破棄されたことを呼び出し元へ伝え、
-  // 応答に collectionNameSkippedDeployWindow として反映する（黙って破棄しない）。
-  | { kind: "ok"; reward: unknown; collectionNameStripped?: boolean }
+  // collectionNameStripped: 列未デプロイ窓で要求したパック変更の一部または全部を
+  // 書けなかった場合に true。呼び出し元へ伝え、応答に collectionNameSkippedDeployWindow
+  // として反映する（黙って破棄しない）。
+  //   - collection_name 列欠落: SET から collection_name を剥がした（パック変更が全て未反映）。
+  //   - reward_pack_names 列欠落（Issue #1994）: 旧列（先頭要素）には書けたが、2要素以上の
+  //     割り当ての2要素目以降が保存されなかった。0/1 要素は旧列だけで完全に表せるため立てない。
+  // writtenFields: 実際に SET へ出した列（ログ用。剥がした列を含めず障害調査を誤誘導しない）。
+  | { kind: "ok"; reward: unknown; collectionNameStripped?: boolean; writtenFields: string[] }
   | { kind: "not-found" }
-  // lookup 後に collection_name が別リクエストで変わった場合の CAS 不一致。
+  // lookup 後に collection_name / reward_pack_names が別リクエストで変わった場合の CAS 不一致。
   // 「削除済み」とは区別し、呼び出し元で 409 + 再取得へ誘導する。
   | { kind: "conflict" }
   // collection_name 列未デプロイ窓でパック変更のみの更新を送ると、ストリップ後に
@@ -851,29 +886,52 @@ type UpdateAdditionalRewardOutcome =
   | { kind: "error"; error: unknown };
 
 /**
- * 追加報酬の更新（collection_name / draw_count）を実行する pg 実装。
+ * 成功時 RETURNING の列セット。
+ * - full: 通常スキーマ（collection_name + reward_pack_names）。
+ * - legacy: reward_pack_names 列未デプロイ窓（Issue #1994）。collection_name は残して
+ *   collection_names を旧列から解決する。
+ * - minimal: collection_name 列も無い窓（#393 由来の既存縮退）。
+ */
+type UpdateReturningMode = "full" | "legacy" | "minimal";
+
+/** CAS（楽観排他）で WHERE に含める、lookup 時点の現在値。undefined の項目は比較しない。 */
+interface UpdateCasExpectation {
+  collectionName?: string | null;
+  // Issue #1994: lookup で読めた生の reward_pack_names（列未デプロイ窓では undefined）。
+  packNames?: unknown[];
+}
+
+/**
+ * 追加報酬の更新（collection_name / reward_pack_names / draw_count）を実行する pg 実装。
  *
- * POST の insertAdditionalRewardPg と同じく、collection_name 列未デプロイ窓では
- * 当該列を剥がして再試行する（それ以外の失敗は握りつぶさない）。
- * 通常スキーマでは collection_name の現在値を CAS 条件へ含め、0行更新を
- * concurrent conflict として検出する。collection_name 未デプロイ窓だけは
- * 当該列を参照できないため従来の streamer/reward 条件へ縮退し、0行を not-found とする。
+ * POST の insertAdditionalRewardPg と同じく、列未デプロイ窓では当該列を剥がして
+ * 再試行する（それ以外の失敗は握りつぶさない）。
+ * 通常スキーマでは collection_name と reward_pack_names の現在値を CAS 条件へ含め、
+ * 0行更新を concurrent conflict として検出する。列未デプロイ窓では参照できない列を
+ * CAS から外し、collection_name まで無い窓では0行を not-found とする。
  */
 async function updateAdditionalRewardPg(
   streamerId: string,
   rewardId: string,
   updatePayload: Record<string, unknown>,
-  expectedCollectionName?: string | null,
+  expected: UpdateCasExpectation | undefined,
 ): Promise<UpdateAdditionalRewardOutcome> {
-  // collection_name 列未デプロイ窓では RETURNING にも collection_name を含めない。
-  // Drizzle の引数なし returning() はスキーマ定義の全列を明示列挙するため、
-  // SET から外しても RETURNING 側で 42703 が再発する（レビュー指摘対応）。
+  // 列未デプロイ窓では RETURNING にも欠落列を含めない。SET から外しても RETURNING 側で
+  // 42703 が再発するため（レビュー指摘対応。Issue #1994 必須3: 枚数だけの PUT でも
+  // RETURNING の reward_pack_names で 42703 になり500になっていた）。
   // 成功時の RETURNING は GET（listAdditionalRewardsPg の selectFull）と同じ
   // 明示列に揃え、API 全体で streamer_id の有無を統一する（streamer_id は返さない）。
+  const returningColumns = (mode: UpdateReturningMode) =>
+    mode === "full"
+      ? ADDITIONAL_REWARD_RESPONSE_COLUMNS
+      : mode === "legacy"
+        ? ADDITIONAL_REWARD_LEGACY_RESPONSE_COLUMNS
+        : ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME;
+
   const runUpdate = (
     payload: Record<string, unknown>,
-    returningMinimal: boolean,
-    expectedCollectionNameForCas?: string | null,
+    mode: UpdateReturningMode,
+    cas: UpdateCasExpectation | undefined,
   ) =>
     withDbRetry(
       async () => {
@@ -882,116 +940,135 @@ async function updateAdditionalRewardPg(
           eq(streamerAdditionalGachaRewardsTable.streamer_id, streamerId),
           eq(streamerAdditionalGachaRewardsTable.reward_id, rewardId),
         ];
-        // lookup → membership 判定 → UPDATE の間で collection_name が変わると、
-        // lookup 時点では「現在値と同じ」として許可した登録解除済みパックを
-        // stale なリクエストが後から書き戻せる。通常スキーマでは現在値を
-        // WHERE に含める compare-and-swap にし、その競合を0行更新として検出する。
-        // collection_name 列未デプロイ窓はこの列自体を参照できないため CAS を外す。
-        if (expectedCollectionNameForCas !== undefined) {
+        // lookup → membership 判定 → UPDATE の間で割り当てが変わると、lookup 時点では
+        // 「現在値と同じ」として許可した登録解除済みパックを stale なリクエストが後から
+        // 書き戻せる。通常スキーマでは現在値を WHERE に含める compare-and-swap にし、
+        // その競合を0行更新として検出する。列未デプロイ窓はその列自体を参照できないため外す。
+        if (cas?.collectionName !== undefined) {
           predicates.push(
-            expectedCollectionNameForCas === null
+            cas.collectionName === null
               ? isNull(streamerAdditionalGachaRewardsTable.collection_name)
-              : eq(streamerAdditionalGachaRewardsTable.collection_name, expectedCollectionNameForCas),
+              : eq(streamerAdditionalGachaRewardsTable.collection_name, cas.collectionName),
           );
         }
-        const query = db
-          .update(streamerAdditionalGachaRewardsTable)
-          .set(payload as typeof streamerAdditionalGachaRewardsTable.$inferInsert)
-          .where(and(...predicates));
-        const baseReturning = ADDITIONAL_REWARD_COLUMNS_WITHOUT_COLLECTION_NAME;
-        return returningMinimal
-          ? query.returning(baseReturning)
-          : query.returning(ADDITIONAL_REWARD_RESPONSE_COLUMNS);
+        // Issue #1994: 旧列は先頭要素のミラーなので、[A,B] → [A,C] のように先頭が同じ
+        // 競合は旧列の比較だけでは検出できない。配列列も JSONB の等値比較で CAS に含める
+        // （JSONB の = は要素順まで含めた構造比較。保存側は常に正規化済み配列を書く）。
+        if (cas?.packNames !== undefined) {
+          predicates.push(eq(streamerAdditionalGachaRewardsWithPackNamesTable.reward_pack_names, cas.packNames as string[]));
+        }
+        // Issue #1994（PR #1995 必須1）: Drizzle の .set() は定義に無いキーを SET から黙って
+        // 捨てる。payload に reward_pack_names を含むときだけ拡張定義で UPDATE し、
+        // 含まないとき（枚数だけの更新・列欠落で剥がした後の再試行）は本体定義を使う。
+        const query = "reward_pack_names" in payload
+          ? db
+              .update(streamerAdditionalGachaRewardsWithPackNamesTable)
+              .set(payload as typeof streamerAdditionalGachaRewardsWithPackNamesTable.$inferInsert)
+              .where(and(...predicates))
+          : db
+              .update(streamerAdditionalGachaRewardsTable)
+              .set(payload as typeof streamerAdditionalGachaRewardsTable.$inferInsert)
+              .where(and(...predicates));
+        return query.returning(returningColumns(mode));
       },
       "Additional Rewards API: PUT update",
       {
-        // CAS付きで collection_name を「別の値」へ変える更新は、初回COMMIT成功後に
-        // 応答だけ失われると再試行時の CAS が0行になり、成功済みなのに409へ誤分類
-        // し得る。そのためこのケースだけ接続断リトライを禁止する。
-        // draw_countのみ・collection_name同値更新・列未デプロイ再試行は最終状態が
-        // 同じで CAS 条件も維持されるため、従来どおり冪等リトライを許可する。
+        // CAS付きで割り当てを「別の値」へ変える更新は、初回COMMIT成功後に応答だけ
+        // 失われると再試行時の CAS が0行になり、成功済みなのに409へ誤分類し得る。
+        // そのためこのケースだけ接続断リトライを禁止する。旧列だけでなく配列列の変更
+        // （先頭が同じ [A,B] → [A,C]）も同じ理由で対象にする。
+        // draw_countのみ・同値更新・列未デプロイ再試行は最終状態が同じで CAS 条件も
+        // 維持されるため、従来どおり冪等リトライを許可する。
         idempotent: !(
-          "collection_name" in payload &&
-          expectedCollectionNameForCas !== undefined &&
-          payload.collection_name !== expectedCollectionNameForCas
+          ("collection_name" in payload &&
+            cas?.collectionName !== undefined &&
+            payload.collection_name !== cas.collectionName) ||
+          ("reward_pack_names" in payload &&
+            cas?.packNames !== undefined &&
+            JSON.stringify(payload.reward_pack_names) !== JSON.stringify(cas.packNames))
         ),
       },
     );
 
   // 空 SET を実行すると Drizzle が throw するため、実行前に空チェックで no-op へ分岐。
   // collectionNameStripped はストリップ後の再試行から引き継ぐ。
-  // returningMinimal は列欠落窓からの再試行で常に true（成功時の RETURNING にも
-  // collection_name が含まれるため、SET になくても 42703 が再発する）。
-  // 初回は常に (false, false) で呼び、再試行だけがストリップ由来の値を渡す
-  // （3 引数はすべて必須とし、引数の組み合わせ解釈を固定する）。
+  // 初回は常に (false, "full") で呼び、再試行だけがストリップ由来の値を渡す
+  // （引数はすべて必須とし、引数の組み合わせ解釈を固定する）。
   const tryUpdate = async (
     payload: Record<string, unknown>,
     collectionNameStripped: boolean,
-    returningMinimal: boolean,
-    expectedCollectionNameForCas?: string | null,
+    mode: UpdateReturningMode,
+    cas: UpdateCasExpectation | undefined,
   ): Promise<UpdateAdditionalRewardOutcome> => {
     if (Object.keys(payload).length === 0) return { kind: "no-op", collectionNameStripped };
-    const rows = await runUpdate(payload, returningMinimal, expectedCollectionNameForCas);
+    const rows = await runUpdate(payload, mode, cas);
     if (rows.length === 0) {
-      return expectedCollectionNameForCas === undefined
+      return cas?.collectionName === undefined && cas?.packNames === undefined
         ? { kind: "not-found" }
         : { kind: "conflict" };
     }
-    return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
+    return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped, writtenFields: Object.keys(payload) };
+  };
+
+  // collection_name 列欠落の再試行: SET・RETURNING・CAS から collection_name を外す
+  // （reward_pack_names は collection_name より後発の列なので、旧列が無い環境には無い）。
+  const retryWithoutCollectionName = async (
+    payload: Record<string, unknown>,
+    previouslyStripped: boolean,
+  ): Promise<UpdateAdditionalRewardOutcome> => {
+    // 呼び出し元の updatePayload をミューテートせず、コピーから剥がして再試行する
+    // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
+    // ストリップフラグは「SET に collection_name があり、実際に剥がした」場合
+    // だけ立て、drawCount のみの更新で「パック変更は反映待ち」と誤表示しない。
+    const stripped = { ...payload };
+    const hadCollectionName = "collection_name" in stripped;
+    delete stripped.collection_name;
+    delete stripped.reward_pack_names;
+    try {
+      return await tryUpdate(stripped, previouslyStripped || hadCollectionName, "minimal", undefined);
+    } catch (retryError) {
+      if (isRaidOptionsSchemaErrorPg(retryError)) {
+        return { kind: "raid-options-unavailable", error: retryError };
+      }
+      // ストリップ後の再試行が失敗した場合は、他分岐と同じ handleDatabaseError
+      // （{ kind: "error" }）へ寄せて分類を揃える。
+      return { kind: "error", error: retryError };
+    }
   };
 
   try {
-    return await tryUpdate(updatePayload, false, false, expectedCollectionName);
+    return await tryUpdate(updatePayload, false, "full", expected);
   } catch (error) {
+    // Issue #1994: reward_pack_names 列のみ未デプロイの窓。SET に配列列が無い枚数だけの
+    // 更新でも、成功時 RETURNING の reward_pack_names で 42703 になる（必須3）ため、
+    // 「SET にあるか」ではなく列欠落エラーそのもので分岐する。配列列を SET・RETURNING・
+    // CAS から外し、旧単一列（先頭要素ミラー）と collection_name の CAS は維持して再試行する。
+    // collection_name の部分一致検知より先に判定する（列名の誤検知防止）。
+    if (isPgMissingNamedColumnError(error, ["reward_pack_names"])) {
+      const stripped = { ...updatePayload };
+      const strippedPackNames = stripped.reward_pack_names;
+      delete stripped.reward_pack_names;
+      const lostExtraPacks = Array.isArray(strippedPackNames) && strippedPackNames.length > 1;
+      const legacyCas: UpdateCasExpectation | undefined =
+        expected?.collectionName !== undefined ? { collectionName: expected.collectionName } : undefined;
+      try {
+        return await tryUpdate(stripped, lostExtraPacks, "legacy", legacyCas);
+      } catch (retryError) {
+        if (isMissingCollectionNameColumn(retryError as GenericDbError)) {
+          return retryWithoutCollectionName(stripped, lostExtraPacks);
+        }
+        if (isRaidOptionsSchemaErrorPg(retryError)) {
+          return { kind: "raid-options-unavailable", error: retryError };
+        }
+        return { kind: "error", error: retryError };
+      }
+    }
     // collection_name 列未デプロイ窓: 成功時の RETURNING に collection_name が
     // 含まれるため、SET が draw_count のみの更新でも 42703 になり得る。そのため
     // 「collection_name が SET にある」だけでなく、列欠落エラーそのもので
     // 再試行へ分岐する。
-    // Issue #1994: reward_pack_names 列のみ未デプロイなら新列だけ剥がし、
-    // 旧単一列（先頭要素ミラー）への書き込みを続行する。collection_name の
-    // 部分一致検知より先に判定する。
-    if (isPgMissingNamedColumnError(error, ["reward_pack_names"]) && "reward_pack_names" in updatePayload) {
-      const stripped = { ...updatePayload };
-      delete stripped.reward_pack_names;
-      try {
-        return await tryUpdate(stripped, true, true, expectedCollectionName);
-      } catch (retryError) {
-        if (isMissingCollectionNameColumn(retryError as GenericDbError)) {
-          delete stripped.collection_name;
-          try {
-            return await tryUpdate(stripped, true, true, undefined);
-          } catch (finalError) {
-            return { kind: "error", error: finalError };
-          }
-        }
-        if (isRaidOptionsSchemaErrorPg(retryError)) {
-          return { kind: "raid-options-unavailable", error: retryError };
-        }
-        return { kind: "error", error: retryError };
-      }
-    }
     if (isMissingCollectionNameColumn(error as GenericDbError)) {
-      // 呼び出し元の updatePayload をミューテートせず、コピーから剥がして再試行する
-      // （同じオブジェクトを delete すると、呼び出し元のログ・テストが壊れる）。
-      // ストリップフラグは「SET に collection_name があり、実際に剥がした」場合
-      // だけ立て、drawCount のみの更新で「パック変更は反映待ち」と誤表示しない。
-      const stripped = { ...updatePayload };
-      const hadCollectionName = "collection_name" in stripped;
-      delete stripped.collection_name;
-      // Issue #1994: collection_name 欠落環境に reward_pack_names は無い
-      // （新列は旧列より後発のため）が、仮に SET に残っていれば同時に剥がす。
-      delete stripped.reward_pack_names;
-      try {
-        // collection_name 列欠落が確定した再試行では CAS 条件にも同列を使えない。
-        return await tryUpdate(stripped, hadCollectionName, true, undefined);
-      } catch (retryError) {
-        if (isRaidOptionsSchemaErrorPg(retryError)) {
-          return { kind: "raid-options-unavailable", error: retryError };
-        }
-        // ストリップ後の再試行が失敗した場合は、他分岐と同じ handleDatabaseError
-        // （{ kind: "error" }）へ寄せて分類を揃える。
-        return { kind: "error", error: retryError };
-      }
+      return retryWithoutCollectionName(updatePayload, false);
     }
     // draw_count / is_raid_limited 列未デプロイ窓は POST と同じ 503 扱い
     // （接続断・権限エラーは isRaidOptionsSchemaErrorPg が除外するため握りつぶさない）。
@@ -1205,15 +1282,21 @@ export async function PUT(request: NextRequest) {
       });
     }
 
+    // collection_name を実際に書く更新だけ CAS 対象にする。
+    // drawCount-only や deploy-window で pack 書き込みを見送った更新は、
+    // 同時に pack が変わっても直交する変更なので不要な409にしない。
+    // Issue #1994: 配列列は lookup で読めた（= 列が存在する）ときだけ CAS に含める。
+    const writesPackBinding = "collection_name" in updatePayload && !currentResult.collectionNameUnavailable;
+    const currentPackNamesColumn = currentResult.reward.reward_pack_names;
     const updateOutcome = await updateAdditionalRewardPg(
       streamer.id,
       rewardId,
       updatePayload,
-      // collection_name を実際に書く更新だけ CAS 対象にする。
-      // drawCount-only や deploy-window で pack 書き込みを見送った更新は、
-      // 同時に pack が変わっても直交する変更なので不要な409にしない。
-      "collection_name" in updatePayload && !currentResult.collectionNameUnavailable
-        ? currentResult.reward.collection_name
+      writesPackBinding
+        ? {
+            collectionName: currentResult.reward.collection_name,
+            ...(Array.isArray(currentPackNamesColumn) ? { packNames: currentPackNamesColumn } : {}),
+          }
         : undefined,
     );
 
@@ -1263,18 +1346,22 @@ export async function PUT(request: NextRequest) {
       return handleDatabaseError(updateOutcome.error, "Additional Rewards API: PUT");
     }
 
-    // 実際に永続化された列をログに出す（ストリップ時は collection_name を
-    // 書いていないため除外し、障害調査時の誤誘導を防ぐ）。
-    const writtenFields = updateOutcome.collectionNameStripped
-      ? Object.keys(updatePayload).filter((key) => key !== "collection_name")
-      : Object.keys(updatePayload);
+    // 実際に SET へ出した列をログに出す（列欠落で剥がした collection_name /
+    // reward_pack_names は書いていないため含めず、障害調査時の誤誘導を防ぐ）。
     logger.info(
-      `Additional reward updated: streamerId=${streamer.id}, rewardId=${rewardId}, fields=${writtenFields.join(",")}`
+      `Additional reward updated: streamerId=${streamer.id}, rewardId=${rewardId}, fields=${updateOutcome.writtenFields.join(",")}`
     );
+
+    // Issue #1994: 応答の reward を GET と同じ形（collection_names に解決済み配列、生の
+    // reward_pack_names は出さない）にする。RETURNING が minimal（collection_name 列も無い窓）
+    // の行は collection_name: null を補ってから解決する。
+    const updatedRow = updateOutcome.reward as
+      | ({ collection_name?: string | null; reward_pack_names?: unknown } & Record<string, unknown>)
+      | null;
 
     return NextResponse.json({
       success: true,
-      reward: updateOutcome.reward,
+      reward: updatedRow ? mapAdditionalRewardRow({ collection_name: null, ...updatedRow }) : null,
       // card_pack_names 列欠落（既存）または collection_name 列欠落（ストリップ）の
       // どちらでも、パック変更が反映されなかったことを応答で明示する。
       ...((updateOutcome.collectionNameStripped || collectionNameSkippedDeployWindow)

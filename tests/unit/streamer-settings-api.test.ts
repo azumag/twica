@@ -10,6 +10,7 @@ import { getDb } from '@/lib/db/client'
 import {
   cards as cardsTable,
   streamers as streamersTable,
+  streamersWithChannelPointPackNames as streamersWithChannelPointPackNamesTable,
   streamerChannelPointPackBindings as streamerChannelPointPackBindingsTable,
   streamerChatSenderSettings as streamerChatSenderSettingsTable,
   twitchBotAccounts as twitchBotAccountsTable,
@@ -84,6 +85,8 @@ function tableName(table: unknown): string {
   // Issue #1994: 配列列だけを持つ狭い定義も streamers 物理テーブルとして扱う。
   // fixture 側は channel_point_pack_names を含む行を返してよい。
   if (table === streamerChannelPointPackBindingsTable) return 'streamers'
+  // パック割り当てを含む UPDATE は全列 + 配列列の UPDATE 専用定義を使う（PR #1995 必須1）。
+  if (table === streamersWithChannelPointPackNamesTable) return 'streamers'
   if (table === streamersTable) return 'streamers'
   if (table === cardsTable) return 'cards'
   if (table === streamerChatSenderSettingsTable) return 'streamer_chat_sender_settings'

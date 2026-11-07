@@ -26,7 +26,7 @@ import { ERROR_MESSAGES } from '@/lib/constants'
 import { __resetTwitchAppTokenForTests } from '@/lib/twitch/app-token'
 import {
   streamers as streamersTable,
-  streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
+  streamerAdditionalGachaRewardsWithPackNames as streamerAdditionalGachaRewardsWithPackNamesTable,
 } from '@/lib/db/schema'
 
 vi.mock('@/lib/logger', () => ({
@@ -150,10 +150,12 @@ const FALLBACK_REWARD_ROW = {
   created_at: '2020-01-01T00:00:00.000+00:00',
 }
 
-const EXPECTED_FULL_ADDITIONAL_REWARDS = [FULL_REWARD_ROW]
+// Issue #1994: 応答には GET /api/streamer/additional-rewards と同じ collection_names
+// （実効のパック割り当て）が付く。fixture に reward_pack_names が無い行は旧列から解決される。
+const EXPECTED_FULL_ADDITIONAL_REWARDS = [{ ...FULL_REWARD_ROW, collection_names: ['weapons'] }]
 // フォールバック時は collection_name も null で補完される（#393 のバッジ表示に必要）
 const EXPECTED_FALLBACK_ADDITIONAL_REWARDS = [
-  { ...FALLBACK_REWARD_ROW, draw_count: 1, is_raid_limited: false, collection_name: null },
+  { ...FALLBACK_REWARD_ROW, draw_count: 1, is_raid_limited: false, collection_name: null, collection_names: [] },
 ]
 
 // ---------------------------------------------------------------------------
@@ -290,12 +292,14 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: フル select �
     expect(streamerCall.whereCondition).toEqual(eq(streamersTable.twitch_user_id, TWITCH_USER_ID))
     expect(streamerCall.limitValue).toBe(1)
 
+    // Issue #1994: 追加報酬は reward_pack_names を持つ拡張定義で読む（collection_names 解決用）。
     const rewardsCall = db.calls[1]
-    expect(rewardsCall.table).toBe(streamerAdditionalGachaRewardsTable)
+    expect(rewardsCall.table).toBe(streamerAdditionalGachaRewardsWithPackNamesTable)
+    expect(Object.keys(rewardsCall.fields)).toContain('reward_pack_names')
     expect(rewardsCall.whereCondition).toEqual(
-      eq(streamerAdditionalGachaRewardsTable.streamer_id, FULL_STREAMER_ROW.id)
+      eq(streamerAdditionalGachaRewardsWithPackNamesTable.streamer_id, FULL_STREAMER_ROW.id)
     )
-    expect(rewardsCall.orderByCondition).toEqual(asc(streamerAdditionalGachaRewardsTable.created_at))
+    expect(rewardsCall.orderByCondition).toEqual(asc(streamerAdditionalGachaRewardsWithPackNamesTable.created_at))
   })
 })
 
@@ -402,7 +406,7 @@ describe('GET /api/twitch/channel-point-bootstrap?diagnostics=1: raid系カラ�
 
     expect(res.status).toBe(200)
     expect(body.additionalRewards).toEqual([
-      { ...rewardWithoutCollectionName, collection_name: null },
+      { ...rewardWithoutCollectionName, collection_name: null, collection_names: [] },
     ])
     // streamers 1回 + rewards 2回(full → no-collection_name)で復旧し、
     // raid列まで剥がすminimal queryには進まない。

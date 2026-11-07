@@ -65,6 +65,7 @@ import {
 } from "@/lib/collection-album";
 import {
   streamers as streamersTable,
+  streamersWithChannelPointPackNames as streamersWithChannelPointPackNamesTable,
   streamerChannelPointPackBindings as streamerChannelPointPackBindingsTable,
   streamerChatSenderSettings as streamerChatSenderSettingsTable,
   twitchBotAccounts as twitchBotAccountsTable,
@@ -561,6 +562,9 @@ interface ApplyStreamerSettingsUpdateResult {
   albumSettingsWriteSkipped: boolean;
   duplicateDisplayTiersWriteSkipped: boolean;
   rarityStylesWriteSkipped: boolean;
+  // Issue #1994: channel_point_pack_names 列未デプロイ窓で配列列を剥がし、かつ
+  // 旧単一列（先頭要素）だけでは表せない2要素以上の割り当てだった場合に true。
+  channelPointPackNamesWriteSkipped: boolean;
 }
 
 /**
@@ -669,12 +673,27 @@ async function applyStreamerSettingsUpdatePg(
   // skip-and-flag パターンを踏襲する。1列のみの migration のため1段だけ。
   let duplicateDisplayTiersWriteSkipped = false;
   let rarityStylesWriteSkipped = false;
+  let channelPointPackNamesWriteSkipped = false;
 
+  // Issue #1994（PR #1995 必須1）: Drizzle の .set() はテーブル定義にある列だけを
+  // SET 句へ描画し、定義に無いキーは黙って捨てる。streamers 本体定義には
+  // channel_point_pack_names が無いため、本体定義のままだと配列列が SQL に一度も
+  // 出なかった。payload に配列列を含むときだけ、全列 + 配列列を持つ UPDATE 専用定義で
+  // 1本の UPDATE を組む（旧列ミラー・reward_id など同時保存の列も同じ SQL に乗る）。
+  // 含まないときは本体定義のまま = パックと無関係な保存は migration 未適用の
+  // デプロイ窓でも 42703 にならない。下のフォールバックで配列列を delete すると、
+  // 次の試行は自動的に本体定義へ戻る（判定を呼び出しごとに行うため）。
   const runUpdate = (data: Record<string, unknown>, context: string) =>
     withDbRetry(
       async () => {
         // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
         const { db } = await getDb();
+        if ("channel_point_pack_names" in data) {
+          return db
+            .update(streamersWithChannelPointPackNamesTable)
+            .set(data as Partial<typeof streamersWithChannelPointPackNamesTable.$inferInsert>)
+            .where(eq(streamersWithChannelPointPackNamesTable.id, streamerId));
+        }
         return db
           .update(streamersTable)
           .set(data as Partial<typeof streamersTable.$inferInsert>)
@@ -731,12 +750,19 @@ async function applyStreamerSettingsUpdatePg(
   // 旧単一列（先頭要素ミラー）への書き込みを続行する。ロールバック互換の
   // 書き込み経路を絶やさないため、旧列側のフォールバックより先に判定する。
   // （両列が同時に欠落することはない — 新列が無い環境では旧列は必ず存在する。）
+  // 剥がした後の再試行は runUpdate が本体定義を選ぶため、旧列ミラーと他の設定列は
+  // 引き続き同じ1本の UPDATE で書かれる。2要素以上の割り当ては旧列（先頭要素）だけ
+  // では表せず2要素目以降が保存されないため、skip フラグで呼び出し元へ知らせる
+  // （0/1 要素は旧列だけで完全に表せるので欠損ではない）。
   if (
     error
     && isPgMissingNamedColumnError(error, ["channel_point_pack_names"])
     && "channel_point_pack_names" in updateData
   ) {
+    const strippedPackNames = updateData.channel_point_pack_names;
     delete updateData.channel_point_pack_names;
+    channelPointPackNamesWriteSkipped =
+      Array.isArray(strippedPackNames) && strippedPackNames.length > 1;
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_pack_names)");
   }
 
@@ -828,6 +854,7 @@ async function applyStreamerSettingsUpdatePg(
     albumSettingsWriteSkipped,
     duplicateDisplayTiersWriteSkipped,
     rarityStylesWriteSkipped,
+    channelPointPackNamesWriteSkipped,
   };
 }
 
@@ -1609,6 +1636,8 @@ export async function POST(request: NextRequest) {
     // skip-and-flag パターンを踏襲する。
     let duplicateDisplayTiersWriteSkipped = false;
     let rarityStylesWriteSkipped = false;
+    // Issue #1994: メイン報酬の複数パック割り当てがデプロイ窓で先頭1件へ縮退した場合。
+    let channelPointPackNamesWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
@@ -1626,6 +1655,7 @@ export async function POST(request: NextRequest) {
       albumSettingsWriteSkipped = updateResult.albumSettingsWriteSkipped;
       duplicateDisplayTiersWriteSkipped = updateResult.duplicateDisplayTiersWriteSkipped;
       rarityStylesWriteSkipped = updateResult.rarityStylesWriteSkipped;
+      channelPointPackNamesWriteSkipped = updateResult.channelPointPackNamesWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
@@ -1725,6 +1755,11 @@ export async function POST(request: NextRequest) {
         : {}),
       ...(rarityStylesWriteSkipped
         ? { rarityStylesSkippedDeployWindow: true }
+        : {}),
+      // Issue #1994: 配列列が未デプロイで、旧列（先頭要素）しか保存できなかった場合。
+      // 他の skip フラグと同じく「保存できた」と偽らないために返す。
+      ...(channelPointPackNamesWriteSkipped
+        ? { channelPointCollectionNamesSkippedDeployWindow: true }
         : {}),
     });
   } catch (error) {

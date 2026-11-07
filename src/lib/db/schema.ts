@@ -51,7 +51,12 @@ import type { Json } from '@/types/database'
 //       00065 rarity_weights_scope / pack_rarity_weights, 00066 gacha_sound_rules,
 //       20260817100000 trade_enabled / cross_channel_trade_enabled (#722)
 // -----------------------------------------------------------------------------
-export const streamers = pgTable('streamers', {
+// 列定義を関数にしているのは、Issue #1994 の channel_point_pack_names 列を持つ
+// UPDATE 専用の拡張定義（streamersWithChannelPointPackNames）と列を共有するため。
+// Drizzle の列ビルダーはテーブルごとに新しいインスタンスが必要なので、
+// additionalGachaRewardBaseColumns / tradeOfferBaseColumns と同じく呼び出しごとに
+// 新しいオブジェクトを返す。
+const streamerBaseColumns = () => ({
   id: uuid('id').primaryKey().default(sql`uuid_generate_v4()`),
   twitch_user_id: text('twitch_user_id').notNull(),
   twitch_username: text('twitch_username').notNull(),
@@ -128,6 +133,35 @@ export const streamers = pgTable('streamers', {
     .default(sql`NULL`),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
+})
+
+export const streamers = pgTable('streamers', streamerBaseColumns())
+
+/**
+ * Issue #1994: streamers の全列 + channel_point_pack_names を持つ、**UPDATE 専用**の定義。
+ *
+ * なぜ必要か: Drizzle の `.set()` はテーブル定義にある列だけを SET 句へ描画し、定義に
+ * 無いキーは黙って捨てる。本体定義（streamers）で channel_point_pack_names を渡しても
+ * SQL に出ず、配列列が一度も書かれなかった（PR #1995 独立レビュー必須1）。一方、
+ * 狭い定義（streamerChannelPointPackBindings）で UPDATE すると、今度は同じリクエストで
+ * 送られた channel_point_reward_id などが SET から落ちる。設定 API は報酬 ID・名前・
+ * パック割り当てを1リクエストで保存するため、全列を知っている定義で1本の UPDATE に
+ * 閉じ込める必要がある（旧列ミラーと配列列を別 UPDATE に分けない理由は下の
+ * streamerChannelPointPackBindings のコメント参照）。
+ *
+ * UPDATE は `.set()` に渡したキーだけを SET に出すので、この定義でも無関係な列は
+ * SQL に現れない。設定 API は payload に channel_point_pack_names を含むときだけ
+ * この定義を使い、含まないときは本体定義を使う（migration 未適用のデプロイ窓で、
+ * パックと無関係の保存が 42703 にならないようにするため）。
+ *
+ * 禁止事項: `.insert()` / 無指定の `.select()` / 無指定の `.returning()` には使わない。
+ * それらは定義の全列を列挙するため、デプロイ窓で 42703 になる（本体へ列を足さない
+ * のと同じ理由）。migration 適用を本番・preview で確認したら本体へ一本化してよい。
+ */
+export const streamersWithChannelPointPackNames = pgTable('streamers', {
+  ...streamerBaseColumns(),
+  // 20261108120000: 選択全体（[] = 旧単一列を読む）。要素検証はアプリ層。
+  channel_point_pack_names: jsonb('channel_point_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
 })
 
 // -----------------------------------------------------------------------------
@@ -429,9 +463,11 @@ export const storageReservations = pgTable('storage_reservations', {
  * ガチャ抽選（src/lib/services/gacha.ts）と設定 API（src/app/api/streamer/settings）
  * だけなので、そこだけがこの定義を参照し、各所で列欠落時は旧単一列へフォールバックする。
  *
- * channel_point_collection_name も持つのは、パック割り当ての書き込みを
- * 「旧単一列（先頭要素のミラー）+ 配列列」の1本の UPDATE に閉じ込めるため
- * （別々の UPDATE に分けると片方だけが成功し、古い配列が勝つ状態を作りうる）。
+ * この定義は**読み取り専用**（設定ページ・設定 API の現在値読み取り）。書き込みは
+ * 「旧単一列（先頭要素のミラー）+ 配列列 + 同時に保存する他の設定列」を1本の UPDATE に
+ * 閉じ込めるため、全列を持つ streamersWithChannelPointPackNames を使う
+ * （別々の UPDATE に分けると片方だけが成功し、古い配列が勝つ状態を作りうる。
+ * また、この狭い定義で UPDATE すると reward_id など定義外のキーが SET から黙って落ちる）。
  *
  * 同じ物理テーブルを2つの pgTable で表すのは tradeOffersWithoutQuantity と同じ手法
  * （drizzle-kit による DDL 生成は使っておらず、DDL の正本は migration）。
@@ -503,7 +539,12 @@ export const streamerAdditionalGachaRewards = pgTable(
  * `.insert()`（values に無い列も `default` として列挙される）で、本体に足すと
  * migration 未適用のデプロイ窓で作成が 42703 になる。この定義を使う経路
  * （ガチャ抽選・追加報酬 API・bootstrap）は、42703（reward_pack_names）を検知したら
- * 本体定義で再試行し、旧単一列 collection_name だけで動作する。migration 適用を
+ * 本体定義で再試行し、旧単一列 collection_name だけで動作する。
+ *
+ * 書き込み（追加報酬 API の INSERT / UPDATE）は、payload に reward_pack_names を
+ * 含むときだけこの定義を使う。Drizzle は定義に無いキーを SET / INSERT 列から黙って
+ * 捨てるため、本体定義へ reward_pack_names を渡しても SQL に出ない（PR #1995 必須1）。
+ * 逆にパックと無関係な作成・更新は本体定義のままにし、デプロイ窓で壊さない。migration 適用を
  * 本番・preview で確認したら本体へ一本化してよい（tradeOffersWithoutQuantity と逆向きの同じ手法）。
  */
 export const streamerAdditionalGachaRewardsWithPackNames = pgTable('streamer_additional_gacha_rewards', {

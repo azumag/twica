@@ -46,6 +46,17 @@ interface AdditionalReward {
 const effectiveRewardPackNames = (reward: AdditionalReward): string[] =>
   reward.collection_names ?? (reward.collection_name ? [reward.collection_name] : []);
 
+// Issue #1994: 未保存判定用の「同じパック集合か」。チェックボックスの ON/OFF 順で
+// 配列の並びが変わる（A→B と B→A）ため、JSON.stringify の順序依存比較では
+// 選び直しただけで「未保存の変更あり」と誤判定する。ソートしたコピーで比較し、
+// state の配列自体は並べ替えない（先頭要素は旧列ミラーになるため順序を保つ）。
+const sameRewardPackSelection = (a: readonly string[], b: readonly string[]): boolean => {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((name, i) => name === sortedB[i]);
+};
+
 const getRaidSubscriptionWarning = (data: unknown): string => {
   const raidSubscription = (data as { raidSubscription?: { warning?: unknown } })?.raidSubscription;
   return typeof raidSubscription?.warning === "string" ? raidSubscription.warning : "";
@@ -654,7 +665,7 @@ export default function ChannelPointSettings({
       const currentReward = additionalRewards.find((r) => r.reward_id === editingRewardId) ?? null;
       const hasUnsavedChanges =
         currentReward !== null &&
-        (JSON.stringify(editingCollectionNames) !== JSON.stringify(effectiveRewardPackNames(currentReward)) ||
+        (!sameRewardPackSelection(editingCollectionNames, effectiveRewardPackNames(currentReward)) ||
           editingDrawCount !== currentReward.draw_count);
       if (hasUnsavedChanges && !window.confirm(t("additionalRewards.editDiscardConfirm"))) {
         return;
@@ -1465,15 +1476,19 @@ export default function ChannelPointSettings({
                    renderPackUpsellHint()
                  ) : (
                    <>
-                     <label className="mt-3 block text-xs text-gray-300">
-                       {t("collections.mainLabel")}
+                     {/* Issue #1994: 外側を <label> にしない。中に複数の
+                         <label><input type="checkbox"> が入る入れ子は HTML として不正で、
+                         見出しクリックが先頭の「すべてのカード」を起動して選択を全消去しうる。
+                         グループ名は renderPackCheckboxes の role="group" + aria-label が担う。 */}
+                     <div className="mt-3 text-xs text-gray-300">
+                       <span className="block">{t("collections.mainLabel")}</span>
                        {renderPackCheckboxes(
                          selectedCollectionNames,
                          setSelectedCollectionNames,
                          mainPackControlMode === "disabled",
                          t("collections.mainLabel")
                        )}
-                     </label>
+                     </div>
                      <p className="mt-1 text-xs text-gray-400">
                        {t("collections.help")}
                      </p>

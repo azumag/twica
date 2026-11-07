@@ -480,6 +480,43 @@ describe("ChannelPointSettings additional-reward editing", () => {
     });
   });
 
+  // Issue #1994: チェックを外して付け直すと配列の並びが変わる（[weapons, characters]
+  // → [characters, weapons]）。集合としては保存値と同じなので「未保存の変更あり」と
+  // 判定しない（JSON.stringify の順序依存比較で誤って confirm を出していた）。
+  it("does not confirm when the pack selection only changed order", async () => {
+    const multiPackReward = {
+      ...DEFAULT_ADDITIONAL_REWARDS[0],
+      collection_name: "weapons",
+      collection_names: ["weapons", "characters"],
+    };
+    const secondReward = {
+      id: "ar-2",
+      reward_id: "extra-reward-2",
+      reward_name: "Extra 2",
+      draw_count: 1,
+      is_raid_limited: false,
+      collection_name: "characters",
+      created_at: "2026-01-02T00:00:00.000Z",
+    };
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", mockFetch([multiPackReward, secondReward]));
+    const confirmMock = vi.fn().mockReturnValue(false);
+    vi.stubGlobal("confirm", confirmMock);
+    renderComponent();
+
+    const editButtons = await screen.findAllByRole("button", { name: /のパック・枚数を編集$/ });
+    fireEvent.click(editButtons[0]);
+    // weapons を外して付け直す → state は [characters, weapons]（順序だけが変わる）
+    fireEvent.click(await packCheckbox("weapons"));
+    fireEvent.click(await packCheckbox("weapons"));
+    expect(await packCheckbox("weapons")).toBeChecked();
+    expect(await packCheckbox("characters")).toBeChecked();
+
+    fireEvent.click(editButtons[1]);
+
+    expect(confirmMock).not.toHaveBeenCalled();
+  });
+
   // 保存中に他行の編集へ移っても、保存完了で開いているフォームを閉じない。
   it("keeps the newly opened form when save completes after switching rows", async () => {
     const secondReward = {
