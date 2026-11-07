@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import { MaintenanceStatusContext } from "@/components/MaintenanceStatusProvider";
@@ -16,6 +16,22 @@ vi.mock("@/lib/logger");
 // - キャンセルでフォームが閉じる
 
 type FetchMock = ReturnType<typeof vi.fn>;
+
+// Issue #1994: パック選択は複数チェックボックス群になった。
+// グループ内の該当チェックボックスを取得するヘルパー。
+const packGroup = async () =>
+  await screen.findByLabelText("編集する引き換えのカードパック");
+const packCheckbox = async (name: string | RegExp) =>
+  within(await packGroup()).getByRole("checkbox", { name });
+// 旧単一selectの「値を変更する」操作相当: 選択中をすべて外してから next を選択する
+const replacePackSelection = async (next: string) => {
+  const group = await packGroup();
+  for (const box of within(group).getAllByRole("checkbox")) {
+    if ((box as HTMLInputElement).checked) fireEvent.click(box);
+  }
+  fireEvent.click(within(group).getByRole("checkbox", { name: next }));
+};
+
 
 const DEFAULT_ADDITIONAL_REWARDS = [
   {
@@ -148,8 +164,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     fireEvent.click(editButton);
 
 // 編集フォームが表示され、パック選択に現在値（weapons）がプリフィルされる
-    const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
-    expect(packSelect.value).toBe("weapons");
+    expect((await packCheckbox("weapons"))).toBeChecked();
     // 枚数入力も現在値（3連）がプリフィルされる（追加フォームと重複しない専用ラベル）
     const drawCountInput = screen.getByLabelText("一度に排出する枚数（編集）") as HTMLInputElement;
     expect(drawCountInput.value).toBe("3");
@@ -163,8 +178,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     const editButton = await screen.findByRole("button", { name: /のパック・枚数を編集$/ });
     fireEvent.click(editButton);
 
-    const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
-    fireEvent.change(packSelect, { target: { value: "characters" } });
+    await replacePackSelection("characters");
     const drawCountInput = screen.getByLabelText("一度に排出する枚数（編集）") as HTMLInputElement;
     fireEvent.change(drawCountInput, { target: { value: "5" } });
 
@@ -179,7 +193,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
       const body = JSON.parse((putCall![1] as RequestInit).body as string);
       expect(body).toEqual({
         rewardId: "extra-reward",
-        collectionName: "characters",
+        collectionNames: ["characters"],
         drawCount: 5,
       });
     });
@@ -216,9 +230,11 @@ describe("ChannelPointSettings additional-reward editing", () => {
     const editButton = await screen.findByRole("button", { name: /のパック・枚数を編集$/ });
     fireEvent.click(editButton);
 
-    const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
-    expect(packSelect).toBeDisabled();
-    expect(packSelect.value).toBe("weapons");
+    const packGroupEl = await packGroup();
+    for (const box of within(packGroupEl).getAllByRole("checkbox")) {
+      expect(box).toBeDisabled();
+    }
+    expect((await packCheckbox("weapons"))).toBeChecked();
     // 枚数入力はプランに関係なく編集できる
     expect(screen.getByLabelText("一度に排出する枚数（編集）")).toBeInTheDocument();
   });
@@ -255,6 +271,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
       expect(putCall).toBeDefined();
       const body = JSON.parse((putCall![1] as RequestInit).body as string);
       expect(body).not.toHaveProperty("collectionName");
+      expect(body).not.toHaveProperty("collectionNames");
       expect(body).toEqual(expect.objectContaining({ rewardId: "extra-reward-3", drawCount: 1 }));
     });
   });
@@ -396,9 +413,8 @@ describe("ChannelPointSettings additional-reward editing", () => {
 
     const editButtons = await screen.findAllByRole("button", { name: /のパック・枚数を編集$/ });
     fireEvent.click(editButtons[0]);
-    // 未保存の変更を作る
-    const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
-    fireEvent.change(packSelect, { target: { value: "characters" } });
+    // 未保存の変更を作る（characters を追加選択した状態）
+    fireEvent.click(await packCheckbox("characters"));
 
     fireEvent.click(editButtons[1]);
 
@@ -424,15 +440,13 @@ describe("ChannelPointSettings additional-reward editing", () => {
 
     const editButtons = await screen.findAllByRole("button", { name: /のパック・枚数を編集$/ });
     fireEvent.click(editButtons[0]);
-    const packSelect = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
-    fireEvent.change(packSelect, { target: { value: "characters" } });
+    fireEvent.click(await packCheckbox("characters"));
 
     fireEvent.click(editButtons[1]);
 
     // 2 件目の編集フォームに切り替わり、characters がプリフィルされる
-    await waitFor(() => {
-      const switched = screen.getByLabelText("編集する引き換えのカードパック") as HTMLSelectElement;
-      expect(switched.value).toBe("characters");
+    await waitFor(async () => {
+      expect((await packCheckbox("characters"))).toBeChecked();
     });
   });
 
@@ -508,8 +522,7 @@ describe("ChannelPointSettings additional-reward editing", () => {
     const secondButtons = screen.getAllByRole("button", { name: /のパック・枚数を編集$/ });
     expect(secondButtons[1]).not.toBeDisabled();
     fireEvent.click(secondButtons[1]);
-    const switched = (await screen.findByLabelText("編集する引き換えのカードパック")) as HTMLSelectElement;
-    expect(switched.value).toBe("characters");
+    expect((await packCheckbox("characters"))).toBeChecked();
     // PUT が完了しても 2 件目のフォームが残る
     resolvePut(
       new Response(JSON.stringify({ success: true }), {
@@ -521,8 +534,6 @@ describe("ChannelPointSettings additional-reward editing", () => {
       expect(screen.getByText("追加の引き換えを更新しました")).toBeInTheDocument();
     });
     expect(screen.queryByRole("button", { name: "キャンセル" })).toBeInTheDocument();
-    expect(
-      (screen.getByLabelText("編集する引き換えのカードパック") as HTMLSelectElement).value
-    ).toBe("characters");
+    expect(within(await packGroup()).getByRole("checkbox", { name: "characters" })).toBeChecked();
   });
 });

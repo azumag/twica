@@ -11,7 +11,10 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { getDb } from "@/lib/db/client";
-import { streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable } from "@/lib/db/schema";
+import {
+  streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
+  streamerAdditionalGachaRewardsWithPackNames as streamerAdditionalGachaRewardsWithPackNamesTable,
+} from "@/lib/db/schema";
 import { ERROR_MESSAGES } from "@/lib/constants";
 
 vi.mock("@/lib/session");
@@ -191,9 +194,12 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const pgBody = await pgResponse.json();
 
       expect(pgResponse.status).toBe(200);
-      expect(pgBody).toEqual([REWARD_ROW]);
+      // Issue #1994: 応答には実効パック割り当て collection_names が付く
+      // （collection_name は先頭要素のミラー）。
+      expect(pgBody).toEqual([{ ...REWARD_ROW, collection_names: ["weapons"] }]);
       expect(getDb).toHaveBeenCalled();
-      expect(pg.selectCalls[1].where).toEqual(eq(streamerAdditionalGachaRewardsTable.streamer_id, "streamer-1"));
+      // Issue #1994: 一覧は reward_pack_names まで含む WithPackNames 定義で読む。
+      expect(pg.selectCalls[1].where).toEqual(eq(streamerAdditionalGachaRewardsWithPackNamesTable.streamer_id, "streamer-1"));
     });
 
     it("streamerが見つからなければ404", async () => {

@@ -35,6 +35,23 @@ vi.mock('@/lib/overlay-realtime/presence-token', () => ({
   createOverlayPresenceToken: vi.fn().mockResolvedValue('presence-token'),
 }))
 vi.mock('next/navigation', () => ({ redirect: mocks.redirect }))
+// Issue #1994: settings page が channel_point_pack_names を狭い定義で1行読む。
+// このテストでは配列列は空行相当（[]）を返し、旧列からの実効解決に任せる。
+vi.mock('@/lib/db/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/db/client')>()
+  return {
+    ...actual,
+    getDb: vi.fn().mockResolvedValue({
+      db: {
+        select: () => ({
+          from: () => ({
+            where: () => ({ limit: () => Promise.resolve([]) }),
+          }),
+        }),
+      },
+    }),
+  }
+})
 vi.mock('@/components/SettingsLayout', () => ({
   default: (props: Record<string, unknown>) => (
     <div
