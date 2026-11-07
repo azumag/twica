@@ -27,8 +27,9 @@ import {
 } from "@/lib/validation/collection-name";
 import { validateRewardId, validateRewardName, validateChatAnnouncementTemplate } from "@/lib/validations";
 import {
-  checkCollectionHasActiveCards,
+  checkCollectionsHaveActiveCards,
   isMissingCollectionNameColumn,
+  isMissingChannelPointPackNamesColumnError,
   isMissingCardPackNamesColumnError,
   isMissingDefaultCardPackNameColumnError,
   isMissingRarityWeightsScopeColumnError,
@@ -749,26 +750,34 @@ async function applyStreamerSettingsUpdatePg(
   // Issue #1994: channel_point_pack_names 列未デプロイ窓では新列だけ剥がして
   // 旧単一列（先頭要素ミラー）への書き込みを続行する。ロールバック互換の
   // 書き込み経路を絶やさないため、旧列側のフォールバックより先に判定する。
-  // （両列が同時に欠落することはない — 新列が無い環境では旧列は必ず存在する。）
   // 剥がした後の再試行は runUpdate が本体定義を選ぶため、旧列ミラーと他の設定列は
   // 引き続き同じ1本の UPDATE で書かれる。2要素以上の割り当ては旧列（先頭要素）だけ
   // では表せず2要素目以降が保存されないため、skip フラグで呼び出し元へ知らせる
   // （0/1 要素は旧列だけで完全に表せるので欠損ではない）。
-  if (
-    error
-    && isPgMissingNamedColumnError(error, ["channel_point_pack_names"])
-    && "channel_point_pack_names" in updateData
-  ) {
-    const strippedPackNames = updateData.channel_point_pack_names;
-    delete updateData.channel_point_pack_names;
-    channelPointPackNamesWriteSkipped =
-      Array.isArray(strippedPackNames) && strippedPackNames.length > 1;
-    error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_pack_names)");
-  }
-
-  if (error && isMissingCollectionNameColumn(error as GenericDbError) && "channel_point_collection_name" in updateData) {
-    delete updateData.channel_point_collection_name;
-    error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_collection_name)");
+  //
+  // Issue #1996 (任意3): PostgreSQL は1回の失敗で欠落列を1つしか報告しないため、
+  // channel_point_pack_names と後続チェインの別列（例: channel_point_collection_name）
+  // が同時に未適用だと、「先に報告された列」を剥がした再試行でもう1列が 42703 に
+  // なり、その時点では配列列のチェックを通過済みで誰も処理せず 500 になる穴があった。
+  // 2列のフォールバックを最大2回の繰り返しチェインにし、報告順序に依存しないようにする。
+  for (let packBindingFallbackRound = 0; packBindingFallbackRound < 2 && error; packBindingFallbackRound++) {
+    if (
+      isMissingChannelPointPackNamesColumnError(error)
+      && "channel_point_pack_names" in updateData
+    ) {
+      const strippedPackNames = updateData.channel_point_pack_names;
+      delete updateData.channel_point_pack_names;
+      channelPointPackNamesWriteSkipped =
+        Array.isArray(strippedPackNames) && strippedPackNames.length > 1;
+      error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_pack_names)");
+      continue;
+    }
+    if (isMissingCollectionNameColumn(error as GenericDbError) && "channel_point_collection_name" in updateData) {
+      delete updateData.channel_point_collection_name;
+      error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_collection_name)");
+      continue;
+    }
+    break;
   }
 
   if (error && gachaSoundRulesRequested && isMissingGachaSoundRulesColumnError(error)) {
@@ -1324,7 +1333,7 @@ export async function POST(request: NextRequest) {
         }, "Streamer Settings API: pack names lookup", { idempotent: true });
         currentPackNamesColumn = packBindingRows[0]?.channel_point_pack_names ?? [];
       } catch (packNamesError) {
-        if (!isPgMissingNamedColumnError(packNamesError, ["channel_point_pack_names"])) {
+        if (!isMissingChannelPointPackNamesColumnError(packNamesError)) {
           // 列欠落以外の障害は黙って旧列に倒さない（複数パック割り当てが一時障害で
           // 単一パックへ縮退・上書きされるのを防ぐため fail-fast）。
           return handleDatabaseError(packNamesError, "Streamer Settings API: pack names lookup");
@@ -1354,12 +1363,15 @@ export async function POST(request: NextRequest) {
     // 空パックが1つ混ざっても他パックからは当たるが、タイポ等の設定ミスを
     // 早期に止める既存方針を複数形へそのまま拡張する。
     if (channelPointPackNamesResult.value !== undefined) {
-      for (const name of channelPointPackNamesResult.value) {
-        if (!currentEffectivePackNames.includes(name)) {
-          const existence = await checkCollectionHasActiveCards(streamer.id, name);
-          if (existence === "absent") {
-            return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
-          }
+      // Issue #1996 (任意9): 新たに紐付くパックの存在検査を直列 SELECT ではなく
+      // 1本の GROUP BY クエリに集約する（最大51回の直列クエリを防ぐ）。
+      const newlyBoundPackNames = channelPointPackNamesResult.value.filter(
+        (name) => !currentEffectivePackNames.includes(name)
+      );
+      const existenceByPack = await checkCollectionsHaveActiveCards(streamer.id, newlyBoundPackNames);
+      for (const name of newlyBoundPackNames) {
+        if (existenceByPack.get(name) === "absent") {
+          return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
         }
       }
     }

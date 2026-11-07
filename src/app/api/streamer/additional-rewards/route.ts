@@ -16,9 +16,10 @@ import {
 } from "@/lib/validation/collection-name";
 import { validateRewardId, validateRewardName } from "@/lib/validations";
 import {
-  checkCollectionHasActiveCards,
+  checkCollectionsHaveActiveCards,
   isMissingCollectionNameColumn,
   isMissingCardPackNamesColumnError,
+  isMissingRewardPackNamesColumnError,
 } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
 // GET、POST、DELETE の DB アクセスはすべて PlanetScale の単一接続を使う。
@@ -28,7 +29,7 @@ import { and, asc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
-import { getErrorChain, getSqlState, isPgMissingNamedColumnError } from "@/lib/db/errors";
+import { getErrorChain, getSqlState } from "@/lib/db/errors";
 import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
@@ -240,7 +241,7 @@ async function listAdditionalRewardsPg(streamerId: string): Promise<AdditionalRe
     // collection_name ありの中間列セットで再試行し、collection_names は
     // 旧単一列だけで解決する。collection_name 欠落フォールバックより先に
     // 判定する（列名の部分一致誤検知を避けるため、名前で厳密判定する）。
-    if (isPgMissingNamedColumnError(error, ["reward_pack_names"])) {
+    if (isMissingRewardPackNamesColumnError(error)) {
       try {
         const rows = await withDbRetry(
           async () => {
@@ -438,7 +439,13 @@ async function getStreamerForAdditionalRewardPost(
 }
 
 type InsertAdditionalRewardOutcome =
-  | { kind: "ok"; reward: unknown }
+  // collectionNameStripped: 列未デプロイ窓で要求したパック割り当ての一部を
+  // 書けなかった場合に true（PUT の同名フラグと同じ契約）。
+  //   - reward_pack_names 列欠落（Issue #1994）: 旧列（先頭要素）には書けたが
+  //     2要素以上の割り当ての2要素目以降が保存されなかった。0/1 要素は旧列だけで
+  //     完全に表せるため立てない。
+  //   - collection_name 列欠落: パック変更が全て未反映。
+  | { kind: "ok"; reward: unknown; collectionNameStripped?: boolean }
   | { kind: "raid-options-unavailable"; error: unknown }
   | { kind: "conflict" }
   | { kind: "error"; error: unknown };
@@ -497,25 +504,43 @@ async function insertAdditionalRewardPg(
     // Issue #1994: reward_pack_names 列のみ未デプロイなら新列だけ剥がし、
     // 旧単一列（先頭要素ミラー）への書き込みを続行する。collection_name の
     // 部分一致検知より先に判定する（列名の誤検知防止）。
-    if (isPgMissingNamedColumnError(error, ["reward_pack_names"]) && "reward_pack_names" in insertPayload) {
-      delete insertPayload.reward_pack_names;
-      try {
-        const rows = await runInsert(insertPayload);
-        return { kind: "ok", reward: rows[0] ?? null };
-      } catch (retryError) {
-        return classifyError(retryError);
+    //
+    // Issue #1996 (任意2+3): PostgreSQL は1回の失敗で欠落列を1つしか報告しない。
+    // reward_pack_names と collection_name が同時に未適用の環境では、先に報告
+    // された列を剥がした再試行でもう1列が 42703 になり得るため、2列のフォール
+    // バックを繰り返しチェインにする（settings ルートの同一構造と対称）。
+    // 剥がした配列列が2要素以上なら「旧列（先頭要素）だけでは表せない欠損」が
+    // 発生するため、collectionNameStripped フラグで呼び出し元へ知らせる
+    // （これまで POST は欠落を返さず通常の成功に見えた）。
+    let currentError: unknown = error;
+    let collectionNameStripped = false;
+    for (let packBindingFallbackRound = 0; packBindingFallbackRound < 2 && currentError; packBindingFallbackRound++) {
+      if (isMissingRewardPackNamesColumnError(currentError) && "reward_pack_names" in insertPayload) {
+        const strippedPackNames = insertPayload.reward_pack_names;
+        delete insertPayload.reward_pack_names;
+        collectionNameStripped ||= Array.isArray(strippedPackNames) && strippedPackNames.length > 1;
+        try {
+          const rows = await runInsert(insertPayload);
+          return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
+        } catch (retryError) {
+          currentError = retryError;
+          continue;
+        }
       }
-    }
-    if (isMissingCollectionNameColumn(error as GenericDbError) && "collection_name" in insertPayload) {
-      delete insertPayload.collection_name;
-      try {
-        const rows = await runInsert(insertPayload);
-        return { kind: "ok", reward: rows[0] ?? null };
-      } catch (retryError) {
-        return classifyError(retryError);
+      if (isMissingCollectionNameColumn(currentError as GenericDbError) && "collection_name" in insertPayload) {
+        delete insertPayload.collection_name;
+        collectionNameStripped = true;
+        try {
+          const rows = await runInsert(insertPayload);
+          return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
+        } catch (retryError) {
+          currentError = retryError;
+          continue;
+        }
       }
+      break;
     }
-    return classifyError(error);
+    return classifyError(currentError);
   }
 }
 
@@ -675,9 +700,10 @@ export async function POST(request: NextRequest) {
     // assignment could not be persisted anyway.
     // Issue #1994: 複数割り当てでは紐付く各パックへ同じ検査を行う。
     if (collectionNamesResult.value !== undefined && !collectionNameSkippedDeployWindow) {
+      // Issue #1996 (任意9): 複数パックの存在検査は1本の GROUP BY クエリに集約する。
+      const existenceByPack = await checkCollectionsHaveActiveCards(streamer.id, collectionNamesResult.value);
       for (const name of collectionNamesResult.value) {
-        const existence = await checkCollectionHasActiveCards(streamer.id, name);
-        if (existence === "absent") {
+        if (existenceByPack.get(name) === "absent") {
           return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
         }
       }
@@ -742,7 +768,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       reward: newReward,
-      ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
+      // card_pack_names 列欠落（membership検証不能で見送り）または
+      // reward_pack_names / collection_name 列欠落（INSERT時ストリップ）の
+      // どちらでも、パック割り当てが反映されなかったことを応答で明示する。
+      ...(collectionNameSkippedDeployWindow || insertOutcome.collectionNameStripped
+        ? { collectionNameSkippedDeployWindow: true }
+        : {}),
     });
   } catch (error) {
     return handleApiError(error, "Additional Rewards API: POST");
@@ -817,7 +848,7 @@ async function getAdditionalRewardForUpdatePg(
   } catch (error) {
     // Issue #1994: reward_pack_names 列のみ未デプロイなら新列だけ外して再試行し、
     // 旧単一列だけで現在値を解決する。collection_name 欠落より先に判定する。
-    if (isPgMissingNamedColumnError(error, ["reward_pack_names"])) {
+    if (isMissingRewardPackNamesColumnError(error)) {
       try {
         const rows = await withDbRetry(
           async () => {
@@ -1044,7 +1075,7 @@ async function updateAdditionalRewardPg(
     // 「SET にあるか」ではなく列欠落エラーそのもので分岐する。配列列を SET・RETURNING・
     // CAS から外し、旧単一列（先頭要素ミラー）と collection_name の CAS は維持して再試行する。
     // collection_name の部分一致検知より先に判定する（列名の誤検知防止）。
-    if (isPgMissingNamedColumnError(error, ["reward_pack_names"])) {
+    if (isMissingRewardPackNamesColumnError(error)) {
       const stripped = { ...updatePayload };
       const strippedPackNames = stripped.reward_pack_names;
       delete stripped.reward_pack_names;
@@ -1247,12 +1278,15 @@ export async function PUT(request: NextRequest) {
     // （空プールになる紐付けは拒否。POST と同じ #1 方針）。
     // Issue #1994: 複数割り当てでは「新たに紐付く各パック」へ同じ検査を行う。
     if (namesChanged && !collectionNameSkippedDeployWindow) {
-      for (const name of nextEffectiveNames) {
-        if (!currentEffectiveNames.includes(name)) {
-          const existence = await checkCollectionHasActiveCards(streamer.id, name);
-          if (existence === "absent") {
-            return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
-          }
+      // Issue #1996 (任意9): 新たに紐付くパックの存在検査を直列 SELECT ではなく
+      // 1本の GROUP BY クエリに集約する（settings ルートと同じ対応）。
+      const newlyBoundPackNames = nextEffectiveNames.filter(
+        (name) => !currentEffectiveNames.includes(name)
+      );
+      const existenceByPack = await checkCollectionsHaveActiveCards(streamer.id, newlyBoundPackNames);
+      for (const name of newlyBoundPackNames) {
+        if (existenceByPack.get(name) === "absent") {
+          return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
         }
       }
     }

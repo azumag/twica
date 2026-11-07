@@ -13,11 +13,43 @@ import { createOverlayPresenceToken } from "@/lib/overlay-realtime/presence-toke
 import { getDb } from "@/lib/db/client";
 import { streamerChannelPointPackBindings } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
-import { isPgMissingNamedColumnError } from "@/lib/db/errors";
+import { isMissingChannelPointPackNamesColumnError } from "@/lib/collections/collection-existence";
 import { resolveEffectiveRewardPackNames } from "@/lib/validation/collection-name";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
+
+/**
+ * Issue #1994: メイン報酬の実効パック割り当て（channel_point_pack_names +
+ * channel_point_collection_name の旧列ミラーから解決）を読む。
+ * 狭い定義で1行だけ読み、42703（列未デプロイ）は旧列へフォールバックする。
+ * 列欠落以外のエラー（一過性障害等）は縮退値に倒さず伝播させる — 複数パック
+ * 割り当てが旧列1件に縮退表示され、保存時に実データが縮むのを防ぐため
+ * （settings API の現在値読み取りと同じ fail-fast 方針。Issue #1996）。
+ */
+async function loadChannelPointCollectionNames(
+  streamerId: string,
+  legacyCollectionName: string | null
+): Promise<string[]> {
+  try {
+    const { db } = await getDb();
+    const rows = await db
+      .select({
+        channel_point_pack_names:
+          streamerChannelPointPackBindings.channel_point_pack_names,
+      })
+      .from(streamerChannelPointPackBindings)
+      .where(eq(streamerChannelPointPackBindings.id, streamerId))
+      .limit(1);
+    return resolveEffectiveRewardPackNames(
+      rows[0]?.channel_point_pack_names,
+      legacyCollectionName,
+    );
+  } catch (error) {
+    if (!isMissingChannelPointPackNamesColumnError(error)) throw error;
+    return resolveEffectiveRewardPackNames(undefined, legacyCollectionName);
+  }
+}
 
 /**
  * Settings page for streamers
@@ -58,11 +90,18 @@ export default async function SettingsPage({
     ? "announcement" as const
     : undefined;
 
-  const [botAccount, chatDeliveryCapability] = await Promise.all([
+  const [botAccount, chatDeliveryCapability, channelPointCollectionNames] = await Promise.all([
     getCustomBotAccountDisplayForStreamer(streamerData.streamer.id),
     // dashboard layoutと同じtwitchUserIdで呼ぶためReact cacheが効き、設定ページ
     // 固有のDB I/O追加は発生せず、helper自体も外部Twitch APIを呼ばない。
     getChatDeliveryCapability(session.twitchUserId),
+    // Issue #1996 (任意8): JSX 内のインライン IIFE で行っていた DB 読み取りを
+    // 他のデータ取得と同じく Promise.all へ移す。42703 以外のエラーは
+    // streamerData 取得と同様にページ全体のエラーへ伝播させる。
+    loadChannelPointCollectionNames(
+      streamerData.streamer.id,
+      streamerData.streamer.channel_point_collection_name
+    ),
   ]);
 
   // Issue #638(回帰): gacha_sound_enabled は PR #595 F1 で「有効なcatch-all
@@ -98,31 +137,7 @@ export default async function SettingsPage({
         rewardId: streamerData.streamer.channel_point_reward_id,
         rewardName: streamerData.streamer.channel_point_reward_name,
         collectionName: streamerData.streamer.channel_point_collection_name ?? null,
-        collectionNames: await (async () => {
-          // Issue #1994: 実効割り当て（配列列 + 旧列ミラーから解決）。
-          // 狭い定義で1行だけ読み、42703（列未デプロイ）は旧列へフォールバック。
-          try {
-            const { db } = await getDb();
-            const rows = await db
-              .select({
-                channel_point_pack_names:
-                  streamerChannelPointPackBindings.channel_point_pack_names,
-              })
-              .from(streamerChannelPointPackBindings)
-              .where(eq(streamerChannelPointPackBindings.id, streamerData.streamer.id))
-              .limit(1);
-            return resolveEffectiveRewardPackNames(
-              rows[0]?.channel_point_pack_names,
-              streamerData.streamer.channel_point_collection_name,
-            );
-          } catch (error) {
-            if (!isPgMissingNamedColumnError(error, ["channel_point_pack_names"])) throw error;
-            return resolveEffectiveRewardPackNames(
-              undefined,
-              streamerData.streamer.channel_point_collection_name,
-            );
-          }
-        })(),
+        collectionNames: channelPointCollectionNames,
       }}
       gachaSound={{
         soundUrl: streamerData.streamer.gacha_sound_url ?? null,

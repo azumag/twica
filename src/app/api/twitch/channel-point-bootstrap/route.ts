@@ -21,7 +21,7 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgMissingColumnError, isPgMissingNamedColumnError } from "@/lib/db/errors";
-import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+import { isMissingCollectionNameColumn, isMissingRewardPackNamesColumnError } from "@/lib/collections/collection-existence";
 import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
@@ -257,7 +257,7 @@ async function getAdditionalRewardsPg(streamerId: string) {
   // 再実行せず、そのエラーから従来どおり縮退を続ける（デプロイ窓で無駄な往復を増やさない）。
   const selectWithoutPackNames = async (priorError: unknown) => {
     try {
-      if (!isPgMissingNamedColumnError(priorError, ["reward_pack_names"])) {
+      if (!isMissingRewardPackNamesColumnError(priorError)) {
         throw priorError;
       }
       return await selectFull();
