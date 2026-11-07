@@ -964,7 +964,8 @@
       "reauthorizeFailed": "再認証に失敗しました。時間をおいて再度お試しください。",
       "channelPointsUnavailable": "現在Twitch上でチャネルポイントを利用できません。Twitch Creator Dashboardで収益化オンボーディングとチャネルポイント設定をご確認ください。",
       "temporarilyUnavailable": "Twitchへの確認に一時的に失敗しました。時間をおいて再試行してください。",
-      "checkStatus": "状態を確認してください"
+      "checkStatus": "状態を確認してください",
+      "saveSuccessPackPending": "保存しました（パック割り当ての一部は反映待ちです）"
     },
     "form": {
       "selectReward": "カード引き換えのきっかけにするチャネルポイント引き換えを選択",
@@ -1039,7 +1040,8 @@
       "raidStatusDisable": "OFF",
       "raidStatusEnabled": "レイドガチャ受付を30分間有効にしました",
       "raidStatusDisabled": "レイドガチャ受付を停止しました",
-      "raidStatusFailed": "レイドガチャ設定の更新に失敗しました"
+      "raidStatusFailed": "レイドガチャ設定の更新に失敗しました",
+      "addSuccessPackPending": "追加の引き換えを登録しました（パック割り当ての一部は反映待ちです）"
     },
     "collections": {
       "mainLabel": "引き換え対象のカードパック",

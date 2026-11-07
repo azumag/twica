@@ -2,6 +2,7 @@
 // DB access is fixed to the PlanetScale PostgreSQL/Drizzle path. Pure name
 // validation lives separately in `@/lib/validation/collection-name`.
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
+import { buildPackScopePredicate } from "@/lib/collections/pack-scope";
 import { getErrorChain, isPgMissingNamedColumnError } from "@/lib/db/errors";
 import { and, count, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
@@ -238,4 +239,56 @@ export async function checkCollectionHasActiveCards(
   collectionName: string
 ): Promise<CollectionExistenceResult> {
   return checkCollectionHasActiveCardsPg(streamerId, collectionName);
+}
+
+/**
+ * Issue #1996 (#1994 follow-up): 複数パック割り当ての存在検査を1本のクエリで行う。
+ *
+ * 従来は「新たに紐付く各パック」へ checkCollectionHasActiveCards を直列で呼び、
+ * パック上限（50件+センチネル）に近い割り当てでは保存1回あたり最大51回の
+ * 直列 SELECT が走った。各 SELECT は streamer_id+is_active で絞った count で
+ * あるため、collection_name で GROUP BY した1クエリに集約しても結果は同じ。
+ *
+ * 1要素だけの呼び出しは既存の checkCollectionHasActiveCardsPg へ委譲し、
+ * 単一パック経路の SQL（eq/isNull + count）を一切変えない。
+ * DEFAULT_PACK_SENTINEL は「collection_name IS NULL のカード」を意味するため、
+ * GROUP BY の NULL 行で存在を判定する（buildPackScopePredicate と同じ規則）。
+ */
+export async function checkCollectionsHaveActiveCards(
+  streamerId: string,
+  collectionNames: readonly string[]
+): Promise<Map<string, CollectionExistenceResult>> {
+  if (collectionNames.length === 1) {
+    const result = await checkCollectionHasActiveCardsPg(streamerId, collectionNames[0]);
+    return new Map([[collectionNames[0], result]]);
+  }
+
+  const results = new Map<string, CollectionExistenceResult>();
+  if (collectionNames.length === 0) return results;
+
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select({ collection_name: cardsTable.collection_name })
+        .from(cardsTable)
+        .where(
+          and(
+            eq(cardsTable.streamer_id, streamerId),
+            eq(cardsTable.is_active, true),
+            buildPackScopePredicate(cardsTable.collection_name, collectionNames)
+          )
+        )
+        .groupBy(cardsTable.collection_name);
+    },
+    "checkCollectionsHaveActiveCards",
+    { idempotent: true },
+  );
+
+  const presentKeys = new Set(rows.map((row) => row.collection_name));
+  for (const name of collectionNames) {
+    const key = name === DEFAULT_PACK_SENTINEL ? null : name;
+    results.set(name, presentKeys.has(key) ? "exists" : "absent");
+  }
+  return results;
 }

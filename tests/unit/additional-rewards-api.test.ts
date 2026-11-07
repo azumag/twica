@@ -55,6 +55,9 @@ function primeDb(config: { selects?: DbResponse[]; inserts?: DbResponse[]; updat
         from: vi.fn(() => builder),
         where: vi.fn(() => builder),
         limit: vi.fn(() => builder),
+        // Issue #1996: バッチ存在検査（GROUP BY 1クエリ）が使う。戻り値は同じ
+        // 行キューから解決されるため、fixture 側の意識は不要。
+        groupBy: vi.fn(() => builder),
         then: (onFulfilled: any, onRejected: any) =>
           resolve().then(onFulfilled, onRejected),
       };
@@ -737,5 +740,61 @@ it("drops pack binding when card_pack_names is not deployed (deploy window)", as
     );
     const response = await PUT(request({ rewardId: REWARD_ID }, "PUT"));
     expect(response.status).toBe(415);
+  });
+});
+
+describe("/api/streamer/additional-rewards multi-pack (Issue #1996)", () => {
+  const REWARD_ID = "44444444-4444-4444-4444-444444444444";
+
+  it("PUT returns 409 when reward_pack_names CAS mismatch occurs", async () => {
+    // lookup で配列列が読めたときは CAS に packNames も含まれる。
+    // UPDATE が0行なら別リクエストが割り当てを変更したとみなし 409 を返す。
+    primeDb({
+      selects: [
+        { rows: [streamer(["weapons", "x", "y"])] },
+        { rows: [{ id: "additional-1", collection_name: "weapons", reward_pack_names: ["weapons", "x"] }] },
+        { rows: [{ count: 1 }] }, // 新規紐付け "y" の存在検査
+      ],
+      updates: [{ rows: [] }],
+    });
+    const response = await PUT(request({
+      rewardId: REWARD_ID,
+      collectionNames: ["weapons", "y"],
+    }, "PUT"));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: ERROR_MESSAGES.ADDITIONAL_REWARD_CONCURRENT_UPDATE,
+    });
+  });
+
+  it("POST flags collectionNameSkippedDeployWindow when reward_pack_names column is missing", async () => {
+    // reward_pack_names 列未デプロイ: 配列列だけ剥がして INSERT 成功するが、
+    // 2要素以上の割り当ては旧列（先頭要素）では表せないため欠落フラグを返す。
+    const { insertCalls } = primeDb({
+      selects: [
+        { rows: [streamer(["weapons", "x"])] },
+        // バッチ存在検査（GROUP BY 1クエリ）が返す行。
+        { rows: [{ collection_name: "weapons" }, { collection_name: "x" }] },
+      ],
+      inserts: [
+        { error: { code: "42703", message: 'column "reward_pack_names" of relation "streamer_additional_gacha_rewards" does not exist' } },
+        { rows: [{ id: "additional-1", reward_id: REWARD_ID, collection_name: "weapons" }] },
+      ],
+    });
+    const response = await POST(request({
+      rewardId: REWARD_ID,
+      rewardName: "Extra",
+      collectionNames: ["weapons", "x"],
+    }));
+    const body = await response.json();
+    if (response.status !== 200) console.log("DEBUGBODY", JSON.stringify(body));
+    expect(response.status).toBe(200);
+    expect(body.collectionNameSkippedDeployWindow).toBe(true);
+    // 再試行の INSERT から配列列が剥がれている（旧列ミラーは残る）。
+    // insertCalls は route がミューテートした後の値を共有するため、
+    // 「配列列を含む INSERT が1回 + 剥がした再試行が1回」の回数で検証する。
+    expect(insertCalls.length).toBe(2);
+    expect(insertCalls[1]).not.toHaveProperty("reward_pack_names");
+    expect(insertCalls[1]).toHaveProperty("collection_name", "weapons");
   });
 });

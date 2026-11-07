@@ -540,7 +540,13 @@ export class GachaService {
       }
 
       if (!cards || cards.length === 0) {
-        return err(collectionName ? 'No cards available for this collection' : 'No cards available for this streamer')
+        // Issue #1996 (任意6): 和集合経路では collectionName が null のため、
+        // このままだと複数パックの空プールが 'No cards available for this
+        // streamer'（呼び出し元で retryable=false の warn のみ）に分類され、
+        // 単一パックの 'No cards available for this collection'（reportError +
+        // retryable）と扱いが分かれていた。パックスコープ指定時は単一・複数を
+        // 問わず collection 側のエラーで返し、下流の扱いを揃える。
+        return err(collectionName || isMultiPackScope ? 'No cards available for this collection' : 'No cards available for this streamer')
       }
 
       const limitedCards = cards.filter((card) => card.max_issuance_count !== null && card.max_issuance_count !== undefined)
