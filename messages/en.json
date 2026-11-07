@@ -964,7 +964,8 @@
       "reauthorizeFailed": "Re-authentication failed. Please try again later.",
       "channelPointsUnavailable": "Channel Points are not currently available on Twitch for this channel. Please check your monetization onboarding and Channel Points settings in the Twitch Creator Dashboard.",
       "temporarilyUnavailable": "Temporarily unable to check with Twitch. Please try again shortly.",
-      "checkStatus": "Please check the status"
+      "checkStatus": "Please check the status",
+      "saveSuccessPackPending": "Saved (part of the pack assignment is pending deployment)"
     },
     "form": {
       "selectReward": "Select the channel point redemption that triggers card draws",
@@ -1039,7 +1040,8 @@
       "raidStatusDisable": "Off",
       "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
       "raidStatusDisabled": "Raid gacha window disabled",
-      "raidStatusFailed": "Failed to update raid gacha settings"
+      "raidStatusFailed": "Failed to update raid gacha settings",
+      "addSuccessPackPending": "Additional redemption added (part of the pack assignment is pending deployment)"
     },
     "collections": {
       "mainLabel": "Card pack for redemption",

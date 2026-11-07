@@ -128,8 +128,12 @@ export default function ChannelPointSettings({
   // Issue #393: pack selections + available pack list
   // Issue #1994: 複数パック割り当ては string[] で保持する。初期値は実効配列
   // （currentCollectionNames）を優先し、無ければ旧単一値から1要素配列を作る。
-  const [selectedCollectionNames, setSelectedCollectionNames] = useState<string[]>(
-    () => currentCollectionNames ?? (currentCollectionName ? [currentCollectionName] : []));
+  // Issue #1996 (任意4): 初期値（実効割り当て）を保持し、保存時に「実際に変わった」
+  // ときだけ channelPointCollectionNames を送る。未変更でも毎回配列を送ると、
+  // サーバ側で常に配列列を含む拡張 UPDATE が組まれ、列未適用のデプロイ窓では
+  // 保存のたびにフォールバックへ頼ることになる。
+  const initialCollectionNames = currentCollectionNames ?? (currentCollectionName ? [currentCollectionName] : []);
+  const [selectedCollectionNames, setSelectedCollectionNames] = useState<string[]>(initialCollectionNames);
   const [collections, setCollections] = useState<string[]>([]);
   // collectionsLoaded: true のときだけ「登録解除済み」警告を出す。
   // 取得前/取得失敗時に実在パックを誤警告しないためのガード。
@@ -476,7 +480,12 @@ export default function ChannelPointSettings({
           channelPointRewardId: selectedRewardId,
           channelPointRewardName: selectedRewardName,
           // Issue #1994: bind the main reward to a set of packs ([] = all cards).
-          channelPointCollectionNames: selectedCollectionNames,
+          // Issue #1996 (任意4): 未変更のときは送らない。先頭要素は旧列ミラーに
+          // なるため、並び替えも「変更」とみなして順序敏感に比較する。
+          ...(selectedCollectionNames.length === initialCollectionNames.length &&
+              selectedCollectionNames.every((name, i) => name === initialCollectionNames[i])
+            ? {}
+            : { channelPointCollectionNames: selectedCollectionNames }),
         }),
       });
 
@@ -495,6 +504,14 @@ export default function ChannelPointSettings({
         return;
       }
 
+      // Issue #1996 (任意1): 複数パック割り当てがデプロイ窓で旧列（先頭1件）だけに
+      // 縮退保存されたとき、API は channelPointCollectionNamesSkippedDeployWindow
+      // を返す。これを読まず通常の「保存しました」を出すと2件目以降が消えたように
+      // 見えるため、専用文言へ差し替える。
+      const settingsData = await settingsResponse.json().catch(() => null);
+      const packNamesSkippedDeployWindow =
+        settingsData?.channelPointCollectionNamesSkippedDeployWindow === true;
+
       // Subscribe to EventSub
       const eventSubResponse = await fetch("/api/twitch/eventsub/subscribe", {
         method: "POST",
@@ -511,7 +528,8 @@ export default function ChannelPointSettings({
 
       // レスポンスのsuccessフィールドで判定（ステータスコードではなく）
       if (eventSubData.success) {
-        setMessage(raidSubscriptionWarning || eventSubData.message || t("messages.saveSuccess"));
+        setMessage(raidSubscriptionWarning || eventSubData.message ||
+          (packNamesSkippedDeployWindow ? t("messages.saveSuccessPackPending") : t("messages.saveSuccess")));
         setEventSubStatus("pending");
         setRegistrationFailed(false);
         setSavedMainRewardId(selectedRewardId);
@@ -617,7 +635,12 @@ export default function ChannelPointSettings({
           drawCount: additionalDrawCount,
           isRaidLimited: false,
           // Issue #1994: bind this additional reward to a set of packs ([] = all cards)
-          collectionNames: selectedAdditionalCollectionNames,
+          // Issue #1996 (任意4): 未選択（空配列=全カード）はサーバ側の既定と同じ
+          // 意味なので送らない。送ると配列列を含む INSERT になり、列未適用の
+          // デプロイ窓で毎回フォールバックへ頼る。
+          ...(selectedAdditionalCollectionNames.length > 0
+            ? { collectionNames: selectedAdditionalCollectionNames }
+            : {}),
         }),
       });
 
@@ -632,7 +655,12 @@ export default function ChannelPointSettings({
 
       // 3. Update state
       // 状態を更新
-      setMessage(raidSubscriptionWarning || t("additionalRewards.addSuccess"));
+      // Issue #1996 (任意2): パック割り当てがデプロイ窓でストリップされたときは
+      // 「反映待ち」文言を出す（更新側と同じ扱い。欠落が通常の成功に見えないように）。
+      setMessage(raidSubscriptionWarning ||
+        (dbData.collectionNameSkippedDeployWindow
+          ? t("additionalRewards.addSuccessPackPending")
+          : t("additionalRewards.addSuccess")));
       setSelectedAdditionalRewardId("");
       setSelectedAdditionalCollectionNames([]);
       setAdditionalDrawCount(1);
@@ -709,7 +737,13 @@ export default function ChannelPointSettings({
           // パック選択が非表示（canManage=false かつ既存紐付けなし）の場合は
           // 送らない（undefined）。フォームに出ていない項目は更新しない、
           // という意図を API 契約に合わせて明確にする。
-          ...(editingPackControlMode === "hidden"
+          // Issue #1996 (任意4): 値が変わっていないときも送らない（空配列含め
+          // 毎回送信すると配列列 UPDATE になり、デプロイ窓で毎回フォールバック
+          // へ頼る。並び替えも変更とみなし、集合比較ではなく順序比較で判定）。
+          ...(editingPackControlMode === "hidden" ||
+              (editingReward &&
+                editingCollectionNames.length === effectiveRewardPackNames(editingReward).length &&
+                editingCollectionNames.every((name, i) => name === effectiveRewardPackNames(editingReward)[i]))
             ? {}
             : { collectionNames: editingCollectionNames }),
           drawCount: editingDrawCount,

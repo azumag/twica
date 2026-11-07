@@ -22,7 +22,7 @@ import { checkRateLimit, getRateLimitIdentifier } from '@/lib/rate-limit'
 import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
 import { getUserPlan } from '@/lib/plan'
-import { checkCollectionHasActiveCards } from '@/lib/collections/collection-existence'
+import { checkCollectionHasActiveCards, checkCollectionsHaveActiveCards } from '@/lib/collections/collection-existence'
 import { hasScope, getTwitchAccessToken } from '@/lib/twitch/token-manager'
 import { POST as settingsPOST } from '@/app/api/streamer/settings/route'
 import {
@@ -43,6 +43,8 @@ vi.mock('@/lib/plan')
 vi.mock('@/lib/collections/collection-existence', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/collections/collection-existence')>()),
   checkCollectionHasActiveCards: vi.fn(),
+  // 複数パックの存在検査はバッチ版へ集約済み（Issue #1996）。パック存在ありと答えるスタブ。
+  checkCollectionsHaveActiveCards: vi.fn(),
 }))
 vi.mock('@/lib/twitch/token-manager', () => ({
   hasScope: vi.fn(),
@@ -157,6 +159,9 @@ beforeEach(() => {
   vi.mocked(validateContentType).mockReturnValue(null as any)
   vi.mocked(getUserPlan).mockResolvedValue('support' as any)
   vi.mocked(checkCollectionHasActiveCards).mockResolvedValue('present' as any)
+  // 呼び出し名に関わらず常に exists を返す（存在検査は本テストの対象外）。
+  vi.mocked(checkCollectionsHaveActiveCards).mockImplementation(async (_id: string, names: readonly string[]) =>
+    new Map(names.map((name) => [name, 'exists' as const])))
 })
 
 // ---------------------------------------------------------------------------

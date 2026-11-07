@@ -160,7 +160,7 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
-              currentCollectionNames={data.channelPoint.collectionNames ?? null}
+          currentCollectionNames={data.channelPoint.collectionNames ?? null}
           cardPacks={data.cardPacks}
           compact
         />
@@ -299,7 +299,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
-              currentCollectionNames={data.channelPoint.collectionNames ?? null}
+          currentCollectionNames={data.channelPoint.collectionNames ?? null}
           cardPacks={data.cardPacks}
         />
       ),
