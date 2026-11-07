@@ -787,7 +787,6 @@ describe("/api/streamer/additional-rewards multi-pack (Issue #1996)", () => {
       collectionNames: ["weapons", "x"],
     }));
     const body = await response.json();
-    if (response.status !== 200) console.log("DEBUGBODY", JSON.stringify(body));
     expect(response.status).toBe(200);
     expect(body.collectionNameSkippedDeployWindow).toBe(true);
     // 再試行の INSERT から配列列が剥がれている（旧列ミラーは残る）。
