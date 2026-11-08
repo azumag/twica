@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
@@ -61,7 +61,7 @@ function toEditingMap(
 
 /**
  * 入力欄の状態を送信用マップへ変換する（全レアリティ空 = null = 機能OFF）。
- * 数値でない欄は落とす（数値入力でも空文字や不正値が届きうるため）。
+ * 呼び出し側が isValidSlots で整数であることを確認済みの前提で、空欄だけを落とす。
  */
 function toPayload(
   editing: Record<string, EditingThresholds>,
@@ -71,29 +71,50 @@ function toPayload(
   for (const rarity of rarities) {
     const parsed = (getOwnThresholds(editing, rarity) ?? [])
       .filter((slot) => slot !== "")
-      .map((slot) => Number(slot))
-      .filter((value) => Number.isInteger(value));
+      .map((slot) => Number(slot));
     if (parsed.length > 0) entries.push([rarity, parsed]);
   }
   // 送信値も plain object とし、合法名 __proto__ を JSON から落とさない。
   return entries.length > 0 ? Object.fromEntries(entries) : null;
 }
 
+/** 空欄を末尾へ寄せた入力状態にする（"" は「その段階は使わない」）。 */
+function compactSlots(slots: EditingThresholds): EditingThresholds {
+  const filled = slots.map((slot) => slot.trim()).filter((slot) => slot !== "");
+  return [...filled, ...Array.from({ length: MAX_DUPLICATE_TIERS - filled.length }, () => "")];
+}
+
+/** 保存済みのしきい値が1つでもあるか（リセットボタンの有効判定）。 */
+function hasAnyThreshold(map: Record<string, EditingThresholds>): boolean {
+  return Object.values(map).some((slots) => slots.some((slot) => slot !== ""));
+}
+
 /**
- * 被りカードの表示段階設定 (Issue #1782)
+ * 重複カードのバッジ設定 (Issue #1782)
  *
  * レアリティごとに「所有枚数がこの枚数に達したら表示段階を1つ上げる」という
  * しきい値を、最大3段階まで設定する。視聴者側のコレクション / カード詳細で
  * 段階に応じたバッジと枠が出る。
  *
  * 保存は既存の POST /api/streamer/settings（CSRF・maintenance・デプロイ窓の
- * フォールバックを共通で持つ唯一の配信者設定経路）へ、変更のたびにマップ全体を
- * 送る。AlbumDisplaySettings と同じく、保存できなかった場合は画面上の値を元へ
- * 戻し、「保存したつもり」を作らない。
+ * フォールバックを共通で持つ唯一の配信者設定経路）へ、マップ全体を送る。
+ * AlbumDisplaySettings と同じく、保存できなかった場合は画面上の値を元へ戻し、
+ * 「保存したつもり」を作らない。
  *
- * Settings for the duplicate-card display tiers (Issue #1782). Persisted
- * through the shared streamer settings route so CSRF / maintenance /
- * deploy-window behavior stays single, exactly like AlbumDisplaySettings.
+ * 入力は「確定操作」で保存する（フォーカスが外れたとき / Enter）。キー入力のたびに
+ * 検証・保存すると、次の2つの問題が起きるため:
+ *  1. 「10」を1文字消すと途中で「1」（最小値 2 未満）になり、不正入力として元の
+ *     「10」へ巻き戻されて消せない（2桁以上の値は打ち込みにくくもなる）。
+ *  2. キー入力ごとの保存で入力欄が disabled になりフォーカスを失う。
+ * 入力中の値は下書き（draft）に留め、確定時に保存済み（saved）と突き合わせる。
+ * 保存要求は直列化し、複数欄を続けて確定しても書き込みが競合しないようにする。
+ *
+ * 全設定は「すべて未設定に戻す」ボタンで null を送って解除できる（機能OFF）。
+ *
+ * Settings for the duplicate-card badge tiers (Issue #1782). Edits live in a
+ * draft and are committed on blur / Enter, so intermediate values such as the
+ * "1" while deleting "10" are never validated or rolled back. Saves are
+ * serialized through a promise chain.
  */
 export default function DuplicateDisplayTierSettings({
   streamerId,
@@ -106,29 +127,49 @@ export default function DuplicateDisplayTierSettings({
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const isMaintenanceBlocked = maintenanceMode !== "off";
 
-  const [thresholds, setThresholds] = useState<Record<string, EditingThresholds>>(() =>
+  // saved = サーバへ保存済みの値、draft = 入力中の値。ref は直列化した保存処理が
+  // 最新値を読むために持つ（state は再描画用）。
+  const [draft, setDraftState] = useState<Record<string, EditingThresholds>>(() =>
     toEditingMap(currentDuplicateDisplayTiers, rarities)
   );
-  const [saving, setSaving] = useState(false);
+  const [saved, setSavedState] = useState<Record<string, EditingThresholds>>(() =>
+    toEditingMap(currentDuplicateDisplayTiers, rarities)
+  );
+  const draftRef = useRef(draft);
+  const savedRef = useRef(saved);
+  // 直列化した保存処理の末尾。確定操作を順に処理する。
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const [pendingCount, setPendingCount] = useState(0);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
 
-  const saveSettings = useCallback(
-    async (payload: { duplicateDisplayTiers: DuplicateDisplayTiers | null }): Promise<boolean> => {
-      setSaving(true);
+  const setDraft = useCallback((next: Record<string, EditingThresholds>) => {
+    draftRef.current = next;
+    setDraftState(next);
+  }, []);
+  const setSaved = useCallback((next: Record<string, EditingThresholds>) => {
+    savedRef.current = next;
+    setSavedState(next);
+  }, []);
+
+  /** 保存要求を送る。成功したら true。失敗時のメッセージ表示までここで行う。 */
+  const postSettings = useCallback(
+    async (
+      tiers: DuplicateDisplayTiers | null
+    ): Promise<{ ok: true; confirmed: DuplicateDisplayTiers | undefined } | { ok: false }> => {
       try {
         const response = await fetch("/api/streamer/settings", {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ streamerId, ...payload }),
+          body: JSON.stringify({ streamerId, duplicateDisplayTiers: tiers }),
         });
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
           const maintenanceError = parseMaintenanceError(response, errorData);
           setMessage(maintenanceError?.message || errorData.error || t("errors.saveFailed"));
           setIsError(true);
-          return false;
+          return { ok: false };
         }
         const data: unknown = await response.json().catch(() => null);
         const echoed =
@@ -146,77 +187,138 @@ export default function DuplicateDisplayTierSettings({
         if (echoed?.duplicateDisplayTiersSkippedDeployWindow === true) {
           setMessage(t("errors.unavailable"));
           setIsError(true);
-          return false;
+          return { ok: false };
         }
 
-        // サーバ側で確定した値を取り込み、表示と DB を一致させる。
-        // 応答にキーが無い場合（保存対象が無かった等）は送信値を保持する。
-        if (echoed && "duplicateDisplayTiers" in echoed) {
-          const sanitized = sanitizeDuplicateDisplayTiers(echoed.duplicateDisplayTiers);
-          setThresholds(toEditingMap(sanitized, rarities));
-        }
-        setIsError(false);
-        setMessage(t("messages.saved"));
-        return true;
+        // サーバ側で確定した値があれば取り込む。応答にキーが無い場合
+        // （保存対象が無かった等）は送信値をそのまま確定値とする。
+        const confirmed =
+          echoed && "duplicateDisplayTiers" in echoed
+            ? sanitizeDuplicateDisplayTiers(echoed.duplicateDisplayTiers)
+            : undefined;
+        return { ok: true, confirmed };
       } catch (error) {
         logger.error("DuplicateDisplayTierSettings save failed:", error);
         setMessage(t("errors.saveFailed"));
         setIsError(true);
-        return false;
-      } finally {
-        setSaving(false);
+        return { ok: false };
       }
     },
-    [streamerId, rarities, t]
+    [streamerId, t]
   );
 
-  const handleThresholdChange = useCallback(
-    async (rarity: string, slotIndex: number, rawValue: string) => {
-      // disabled 中（maintenance / 保存中）は、DOM 側で change が発火しても
-      // 書き込みを送らない。UI の disabled だけに依存しない。
-      if (isMaintenanceBlocked || saving) return;
+  /** 1レアリティの入力を確定する（保存要求の直列チェーンの中で実行する）。 */
+  const commitRarity = useCallback(
+    async (rarity: string) => {
+      const savedSlots = getOwnThresholds(savedRef.current, rarity) ?? emptySlots();
+      const draftSlots = getOwnThresholds(draftRef.current, rarity) ?? emptySlots();
+      const revert = () =>
+        setDraft({ ...draftRef.current, [rarity]: savedSlots });
 
-      const previous = thresholds;
-      const previousSlots = getOwnThresholds(previous, rarity) ?? emptySlots();
+      // 空欄は末尾へ寄せる。1・2段階目を空けたまま3段階目だけ入力すると
+      // 「配列の穴」ができ、厳密増加の検証で毎回 400 になるため、入力しなかった
+      // 下位段階は「存在しない段階」として扱う。
+      const nextSlots = compactSlots(draftSlots);
 
-      // 空欄（＝その段階は使わない）を許可するため入力は文字列のまま保持する。
-      // 空欄は必ず末尾へ寄せる: 例えば1・2段階目を空けたまま3段階目だけ入力
-      // すると「配列の穴」ができ、厳密増加の検証で毎回 400 になる。
-      // 入力しなかった下位段階は「存在しない段階」として扱う。
-      const edited = [...previousSlots];
-      edited[slotIndex] = rawValue.trim();
-      const filled = edited.filter((slot) => slot !== "");
-      const nextSlots: EditingThresholds = [
-        ...filled,
-        ...Array.from({ length: MAX_DUPLICATE_TIERS - filled.length }, () => ""),
-      ];
-
-      const next: Record<string, EditingThresholds> = { ...previous, [rarity]: nextSlots };
-      setThresholds(next);
-
+      // 小数など整数でない入力は送らない（黙って落とすと別の値が保存される）。
+      const allIntegers = nextSlots
+        .filter((slot) => slot !== "")
+        .every((slot) => Number.isInteger(Number(slot)));
+      const next = { ...savedRef.current, [rarity]: nextSlots };
       const tiersToSend = toPayload(next, rarities);
 
       // 昇順でない・範囲外のしきい値は送らずに元へ戻す。黙って並べ替えると
       // 「入力と違う段階が保存された」ことになり、配信者の段階設計が崩れるため。
-      if (!validateDuplicateDisplayTiers(tiersToSend).ok) {
-        setThresholds(previous);
+      if (!allIntegers || !validateDuplicateDisplayTiers(tiersToSend).ok) {
+        revert();
         setMessage(t("errors.invalid"));
         setIsError(true);
         return;
       }
 
-      const ok = await saveSettings({ duplicateDisplayTiers: tiersToSend });
-      if (!ok) setThresholds(previous);
+      // 保存済みと同じなら送らない（フォーカスを通過しただけの確定を無害にする）。
+      if (nextSlots.join("|") === savedSlots.join("|")) {
+        setDraft({ ...draftRef.current, [rarity]: nextSlots });
+        return;
+      }
+
+      const result = await postSettings(tiersToSend);
+      if (!result.ok) {
+        revert();
+        return;
+      }
+      const confirmedMap = toEditingMap(result.confirmed ?? tiersToSend ?? {}, rarities);
+      setSaved(confirmedMap);
+      setDraft({
+        ...draftRef.current,
+        [rarity]: getOwnThresholds(confirmedMap, rarity) ?? emptySlots(),
+      });
+      setIsError(false);
+      setMessage(t("messages.saved"));
     },
-    [thresholds, saveSettings, isMaintenanceBlocked, saving, rarities, t]
+    [postSettings, rarities, setDraft, setSaved, t]
   );
 
-  const disabled = saving || isMaintenanceBlocked;
+  /** すべてのしきい値を解除する（null = 機能OFF）。 */
+  const resetAll = useCallback(async () => {
+    const result = await postSettings(null);
+    if (!result.ok) return;
+    const empty = toEditingMap({}, rarities);
+    setSaved(empty);
+    setDraft(empty);
+    setIsError(false);
+    setMessage(t("messages.reset"));
+  }, [postSettings, rarities, setDraft, setSaved, t]);
+
+  /** 保存処理を直列チェーンへ積む。 */
+  const enqueue = useCallback((task: () => Promise<void>) => {
+    setPendingCount((count) => count + 1);
+    saveChainRef.current = saveChainRef.current
+      .then(task)
+      .catch((error) => logger.error("DuplicateDisplayTierSettings task failed:", error))
+      .finally(() => setPendingCount((count) => count - 1));
+  }, []);
+
+  const handleThresholdChange = useCallback(
+    (rarity: string, slotIndex: number, rawValue: string) => {
+      // disabled 中（maintenance）は、DOM 側で change が発火しても書き込まない。
+      if (isMaintenanceBlocked) return;
+      const slots = [...(getOwnThresholds(draftRef.current, rarity) ?? emptySlots())];
+      slots[slotIndex] = rawValue;
+      setDraft({ ...draftRef.current, [rarity]: slots });
+    },
+    [isMaintenanceBlocked, setDraft]
+  );
+
+  const handleCommit = useCallback(
+    (rarity: string) => {
+      if (isMaintenanceBlocked) return;
+      enqueue(() => commitRarity(rarity));
+    },
+    [isMaintenanceBlocked, enqueue, commitRarity]
+  );
+
+  const handleReset = useCallback(() => {
+    if (isMaintenanceBlocked) return;
+    enqueue(resetAll);
+  }, [isMaintenanceBlocked, enqueue, resetAll]);
+
+  const saving = pendingCount > 0;
+  // 入力は保存中も受け付ける（保存は直列化済み）。止めるのは maintenance のみ。
+  const disabled = isMaintenanceBlocked;
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-semibold text-white">{t("title")}</h2>
+        <button
+          type="button"
+          onClick={handleReset}
+          disabled={disabled || !hasAnyThreshold(saved)}
+          className="rounded-lg border border-gray-600 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-50"
+        >
+          {t("resetButton")}
+        </button>
       </div>
 
       <p className="mb-4 text-sm text-gray-400">{t("description")}</p>
@@ -227,7 +329,7 @@ export default function DuplicateDisplayTierSettings({
 
       <div className="space-y-3">
         {rarities.map((rarity) => {
-          const slots = getOwnThresholds(thresholds, rarity) ?? emptySlots();
+          const slots = getOwnThresholds(draft, rarity) ?? emptySlots();
           const rarityLabel = getRarityDisplayInfo(rarity).label;
           return (
             <div key={rarity} className="flex flex-wrap items-center gap-2">
@@ -247,8 +349,13 @@ export default function DuplicateDisplayTierSettings({
                         placeholder={t("thresholdUnused")}
                         aria-label={`${rarityLabel} ${slotLabel}`}
                         onChange={(event) =>
-                          void handleThresholdChange(rarity, slotIndex, event.target.value)
+                          handleThresholdChange(rarity, slotIndex, event.target.value)
                         }
+                        onBlur={() => handleCommit(rarity)}
+                        onKeyDown={(event) => {
+                          // Enter は確定操作。blur を経由して同じ経路で保存する。
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
                         disabled={disabled}
                         className="w-20 rounded-lg border border-gray-600 bg-gray-800 px-2 py-1 text-sm text-gray-200 disabled:opacity-50"
                       />

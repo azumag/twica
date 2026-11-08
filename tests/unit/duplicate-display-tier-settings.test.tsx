@@ -36,6 +36,13 @@ function mount(overrides: Partial<React.ComponentProps<typeof DuplicateDisplayTi
   )
 }
 
+// 入力は確定操作（フォーカスが外れたとき）で保存される。キー入力の途中値は
+// 検証も保存もされないので、実際の操作と同じく change → blur の順で再現する。
+function edit(input: HTMLElement, value: string) {
+  fireEvent.change(input, { target: { value } })
+  fireEvent.blur(input)
+}
+
 describe('DuplicateDisplayTierSettings', () => {
   it('レアリティごとに最大3段階分のしきい値入力と、既定の日本語ラベルを出す', () => {
     mount()
@@ -76,7 +83,7 @@ describe('DuplicateDisplayTierSettings', () => {
 
       const first = screen.getByRole('spinbutton', { name: `${rarity} 1段階目` })
       expect(first).toHaveValue(null)
-      fireEvent.change(first, { target: { value: '3' } })
+      edit(first, '3')
 
       await waitFor(() => expect(first).toHaveValue(4))
       const saved = JSON.parse(mockFetch.mock.calls[0][1].body).duplicateDisplayTiers
@@ -84,7 +91,7 @@ describe('DuplicateDisplayTierSettings', () => {
       expect(saved[rarity]).toEqual([3])
       expect(screen.queryByText(messages.duplicateTierSettings.errors.saveFailed)).not.toBeInTheDocument()
 
-      fireEvent.change(first, { target: { value: '' } })
+      edit(first, '')
       await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2))
       expect(JSON.parse(mockFetch.mock.calls[1][1].body).duplicateDisplayTiers).toBeNull()
       await waitFor(() => expect(first).not.toBeDisabled())
@@ -110,7 +117,7 @@ describe('DuplicateDisplayTierSettings', () => {
     }
     for (const [index, rarity] of rarities.entries()) {
       const first = screen.getByRole('spinbutton', { name: `${rarity} 1段階目` })
-      fireEvent.change(first, { target: { value: '4' } })
+      edit(first, '4')
       await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(index + 1))
       await waitFor(() => expect(first).not.toBeDisabled())
 
@@ -127,9 +134,7 @@ describe('DuplicateDisplayTierSettings', () => {
   it('しきい値を入力するとマップ全体を保存する', async () => {
     mount()
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), {
-      target: { value: '3' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), '3')
 
     await waitFor(() =>
       expect(mockFetch).toHaveBeenCalledWith(
@@ -149,9 +154,7 @@ describe('DuplicateDisplayTierSettings', () => {
   it('既存の段階に追加すると、そのレアリティの段階が増える', async () => {
     mount({ currentDuplicateDisplayTiers: { legendary: [2] } })
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'レジェンダリー 2段階目' }), {
-      target: { value: '7' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'レジェンダリー 2段階目' }), '7')
 
     await waitFor(() =>
       expect(mockFetch).toHaveBeenCalledWith(
@@ -171,9 +174,7 @@ describe('DuplicateDisplayTierSettings', () => {
     // 繰り上げないと「配列の穴」ができ、厳密増加の検証で毎回 400 になる。
     mount({ currentDuplicateDisplayTiers: { legendary: [2, 5] } })
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'レジェンダリー 1段階目' }), {
-      target: { value: '' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'レジェンダリー 1段階目' }), '')
 
     await waitFor(() =>
       expect(mockFetch).toHaveBeenCalledWith(
@@ -191,9 +192,7 @@ describe('DuplicateDisplayTierSettings', () => {
   it('すべて空にすると null（機能OFF）を保存する', async () => {
     mount({ currentDuplicateDisplayTiers: { common: [3] } })
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), {
-      target: { value: '' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), '')
 
     await waitFor(() =>
       expect(mockFetch).toHaveBeenCalledWith(
@@ -211,9 +210,7 @@ describe('DuplicateDisplayTierSettings', () => {
   it('しきい値 1 は弾いて元へ戻す（1枚は「被り」ではない）', async () => {
     mount()
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), {
-      target: { value: '1' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), '1')
 
     expect(await screen.findByText(messages.duplicateTierSettings.errors.invalid)).toBeInTheDocument()
     expect(mockFetch).not.toHaveBeenCalled()
@@ -223,9 +220,7 @@ describe('DuplicateDisplayTierSettings', () => {
   it('小さい順になっていないしきい値は弾いて元へ戻す', async () => {
     mount({ currentDuplicateDisplayTiers: { legendary: [5] } })
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'レジェンダリー 2段階目' }), {
-      target: { value: '2' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'レジェンダリー 2段階目' }), '2')
 
     expect(await screen.findByText(messages.duplicateTierSettings.errors.invalid)).toBeInTheDocument()
     expect(mockFetch).not.toHaveBeenCalled()
@@ -238,9 +233,7 @@ describe('DuplicateDisplayTierSettings', () => {
     mockFetch.mockImplementation(async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 }))
     mount({ currentDuplicateDisplayTiers: { common: [3] } })
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'コモン 2段階目' }), {
-      target: { value: '9' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'コモン 2段階目' }), '9')
 
     expect(await screen.findByText('boom')).toBeInTheDocument()
     expect(screen.getByRole('spinbutton', { name: 'コモン 1段階目' })).toHaveValue(3)
@@ -253,9 +246,7 @@ describe('DuplicateDisplayTierSettings', () => {
     )
     mount()
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), {
-      target: { value: '3' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), '3')
 
     expect(
       await screen.findByText(messages.duplicateTierSettings.errors.unavailable)
@@ -270,9 +261,7 @@ describe('DuplicateDisplayTierSettings', () => {
     )
     mount()
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'コモン 2段階目' }), {
-      target: { value: '9' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'コモン 2段階目' }), '9')
 
     await waitFor(() =>
       expect(screen.getByRole('spinbutton', { name: 'コモン 2段階目' })).toHaveValue(8)
@@ -296,9 +285,121 @@ describe('DuplicateDisplayTierSettings', () => {
     expect(screen.getByRole('spinbutton', { name: 'コモン 1段階目' })).toBeDisabled()
     expect(screen.getByText(messages.maintenance.writeDisabled)).toBeInTheDocument()
 
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), {
-      target: { value: '3' },
-    })
+    edit(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), '3')
     expect(mockFetch).not.toHaveBeenCalled()
+  })
+  it('2桁の値を1文字ずつ消しても、途中の「1」で巻き戻されず、確定時にだけ検証する', async () => {
+    mount({ currentDuplicateDisplayTiers: { common: [10] } })
+    const first = screen.getByRole('spinbutton', { name: 'コモン 1段階目' })
+
+    // 「10」→「1」: 入力途中なので検証も保存もしない（以前はここで「10」へ巻き戻っていた）
+    fireEvent.change(first, { target: { value: '1' } })
+    expect(first).toHaveValue(1)
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(screen.queryByText(messages.duplicateTierSettings.errors.invalid)).not.toBeInTheDocument()
+
+    // 「1」→「」→ 確定: 全て空 = null（機能OFF）を保存する
+    fireEvent.change(first, { target: { value: '' } })
+    fireEvent.blur(first)
+    await waitFor(() =>
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).duplicateDisplayTiers).toBeNull()
+    )
+  })
+
+  it('確定時に不正な値（1）のままなら、エラーを出して保存済みの値へ戻す', async () => {
+    mount({ currentDuplicateDisplayTiers: { common: [10] } })
+    const first = screen.getByRole('spinbutton', { name: 'コモン 1段階目' })
+
+    edit(first, '1')
+
+    expect(await screen.findByText(messages.duplicateTierSettings.errors.invalid)).toBeInTheDocument()
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(first).toHaveValue(10)
+  })
+
+  it('小数は送らずに弾く（黙って落として別の値を保存しない）', async () => {
+    mount({ currentDuplicateDisplayTiers: { common: [3] } })
+
+    edit(screen.getByRole('spinbutton', { name: 'コモン 2段階目' }), '4.5')
+
+    expect(await screen.findByText(messages.duplicateTierSettings.errors.invalid)).toBeInTheDocument()
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('値が変わらない確定（フォーカスが通過しただけ）では保存を送らない', async () => {
+    mount({ currentDuplicateDisplayTiers: { common: [3] } })
+
+    fireEvent.blur(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }))
+
+    await waitFor(() => expect(screen.queryByText(messages.duplicateTierSettings.messages.saving)).not.toBeInTheDocument())
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('Enter キーで確定して保存する', async () => {
+    mount()
+    const first = screen.getByRole('spinbutton', { name: 'コモン 1段階目' })
+    first.focus()
+    fireEvent.change(first, { target: { value: '3' } })
+    fireEvent.keyDown(first, { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).duplicateDisplayTiers).toEqual({ common: [3] })
+    )
+  })
+
+  it('「すべて未設定に戻す」で全レアリティを解除（null）し、入力欄を空にする', async () => {
+    mount({ currentDuplicateDisplayTiers: { common: [2, 5], legendary: [3] } })
+
+    fireEvent.click(screen.getByRole('button', { name: messages.duplicateTierSettings.resetButton }))
+
+    await waitFor(() =>
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).duplicateDisplayTiers).toBeNull()
+    )
+    expect(await screen.findByText(messages.duplicateTierSettings.messages.reset)).toBeInTheDocument()
+    for (const name of ['コモン 1段階目', 'コモン 2段階目', 'レジェンダリー 1段階目']) {
+      expect(screen.getByRole('spinbutton', { name })).toHaveValue(null)
+    }
+    // 何も設定されていないのでボタンは押せない
+    expect(screen.getByRole('button', { name: messages.duplicateTierSettings.resetButton })).toBeDisabled()
+  })
+
+  it('リセットに失敗したら入力欄の値を保つ', async () => {
+    mockFetch.mockImplementation(async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 }))
+    mount({ currentDuplicateDisplayTiers: { common: [3] } })
+
+    fireEvent.click(screen.getByRole('button', { name: messages.duplicateTierSettings.resetButton }))
+
+    expect(await screen.findByText('boom')).toBeInTheDocument()
+    expect(screen.getByRole('spinbutton', { name: 'コモン 1段階目' })).toHaveValue(3)
+  })
+
+  it('maintenance 中はリセットボタンも無効', () => {
+    render(
+      <NextIntlClientProvider locale="ja" messages={messages}>
+        <MaintenanceStatusContext.Provider value={{ mode: 'read-only' }}>
+          <DuplicateDisplayTierSettings
+            streamerId="streamer-1"
+            rarities={['common']}
+            currentDuplicateDisplayTiers={{ common: [3] }}
+          />
+        </MaintenanceStatusContext.Provider>
+      </NextIntlClientProvider>
+    )
+    expect(screen.getByRole('button', { name: messages.duplicateTierSettings.resetButton })).toBeDisabled()
+  })
+
+  it('続けて別の欄を確定しても、保存要求は直列で、後の値が先の保存を上書きしない', async () => {
+    mockFetch.mockImplementation(async (_url, init) =>
+      new Response(JSON.stringify({ success: true, duplicateDisplayTiers: JSON.parse(init.body).duplicateDisplayTiers }))
+    )
+    mount()
+    edit(screen.getByRole('spinbutton', { name: 'コモン 1段階目' }), '3')
+    edit(screen.getByRole('spinbutton', { name: 'レジェンダリー 1段階目' }), '5')
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body).duplicateDisplayTiers).toEqual({
+      common: [3],
+      legendary: [5],
+    })
   })
 })
