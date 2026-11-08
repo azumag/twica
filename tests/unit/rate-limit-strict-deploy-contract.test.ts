@@ -82,7 +82,10 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
     ] as const) {
       const workflow = read(file);
       expect(workflow).toContain("workflow_dispatch:");
-      expect(workflow).not.toMatch(/on:\s*\n(?!\s+workflow_dispatch)/s);
+      // workflow_dispatch 以外のトリガ（push/pull_request 等）の混入を検知。
+      // `on:` 直後の行が workflow_dispatch 以外で始まることを否定する。
+      // 否定先読みのみで `.` を使わないため `s` フラグは不要。
+      expect(workflow).not.toMatch(/on:\s*\n(?!\s+workflow_dispatch)/);
       expect(workflow).toContain("confirm == 'deploy'");
       expect(workflow).toContain("contents: read");
       expect(workflow).toContain(env);
