@@ -134,6 +134,12 @@ export default function ChannelPointSettings({
   // 保存のたびにフォールバックへ頼ることになる。
   const initialCollectionNames = currentCollectionNames ?? (currentCollectionName ? [currentCollectionName] : []);
   const [selectedCollectionNames, setSelectedCollectionNames] = useState<string[]>(initialCollectionNames);
+  // 保存時の「変更あり?」判定の基準。props 由来の initialCollectionNames は保存成功後も
+  // 更新されない（親は router.refresh も key 再マウントもしない）ため、これを基準に
+  // 使い続けると、保存後に「初期値へ戻す」操作が未変更と誤判定されて送信が省略され、
+  // 画面は「保存しました」なのに DB が古い値のまま残る。そこで保存成功のたびに
+  // 「実際に DB に残る実効値」へ更新する state を基準にする。
+  const [savedCollectionNames, setSavedCollectionNames] = useState<string[]>(initialCollectionNames);
   const [collections, setCollections] = useState<string[]>([]);
   // collectionsLoaded: true のときだけ「登録解除済み」警告を出す。
   // 取得前/取得失敗時に実在パックを誤警告しないためのガード。
@@ -470,6 +476,18 @@ export default function ChannelPointSettings({
         }
       }
 
+      // Issue #1994: bind the main reward to a set of packs ([] = all cards).
+      // Issue #1996 (任意4): 未変更のときは送らない。先頭要素は旧列ミラーに
+      // なるため、並び替えも「変更」とみなして順序敏感に比較する。
+      // 送信値は fetch 前に確定させる（PR #2006 レビュー指摘）: 保存中も
+      // checkbox は操作できるため、応答待ち中の toggle で selectedCollectionNames が
+      // 変わると基準更新が「送った値」ではなく「最新 UI 値」で計算され、
+      // DB と UI が静的に乖離する。body と基準更新の両方にこの確定値を使う。
+      const packNamesChanged =
+        selectedCollectionNames.length !== savedCollectionNames.length ||
+        selectedCollectionNames.some((name, i) => name !== savedCollectionNames[i]);
+      const sentCollectionNames = packNamesChanged ? [...selectedCollectionNames] : undefined;
+
       // Save settings
       const settingsResponse = await fetch("/api/streamer/settings", {
         method: "POST",
@@ -479,13 +497,7 @@ export default function ChannelPointSettings({
           streamerId,
           channelPointRewardId: selectedRewardId,
           channelPointRewardName: selectedRewardName,
-          // Issue #1994: bind the main reward to a set of packs ([] = all cards).
-          // Issue #1996 (任意4): 未変更のときは送らない。先頭要素は旧列ミラーに
-          // なるため、並び替えも「変更」とみなして順序敏感に比較する。
-          ...(selectedCollectionNames.length === initialCollectionNames.length &&
-              selectedCollectionNames.every((name, i) => name === initialCollectionNames[i])
-            ? {}
-            : { channelPointCollectionNames: selectedCollectionNames }),
+          ...(sentCollectionNames ? { channelPointCollectionNames: sentCollectionNames } : {}),
         }),
       });
 
@@ -511,6 +523,20 @@ export default function ChannelPointSettings({
       const settingsData = await settingsResponse.json().catch(() => null);
       const packNamesSkippedDeployWindow =
         settingsData?.channelPointCollectionNamesSkippedDeployWindow === true;
+
+      // 設定は保存済みなので、EventSub 登録の成否（下の分岐）に関わらずここで基準を更新する。
+      // EventSub が失敗しても DB には保存されているため、分岐内で更新すると基準がずれる。
+      // - 送信しなかった（未変更だった）とき: 基準は変わらないので更新しない。
+      // - デプロイ窓で先頭1件しか保存されなかったとき: DB に残るのは先頭1件のみ。
+      //   送った配列全体を基準にすると次回「未変更」と判定されて 2 件目以降が永久に
+      //   再送されないため、先頭1要素を基準にして列適用後に再送されるようにする。
+      // 基準更新も送信時に確定した sentCollectionNames を使う。
+      // 応答待ち中に UI の選択が変わっていても、基準は「DB に書いた値」に揃える。
+      if (sentCollectionNames) {
+        setSavedCollectionNames(
+          packNamesSkippedDeployWindow ? sentCollectionNames.slice(0, 1) : sentCollectionNames
+        );
+      }
 
       // Subscribe to EventSub
       const eventSubResponse = await fetch("/api/twitch/eventsub/subscribe", {
