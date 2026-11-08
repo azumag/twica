@@ -1050,7 +1050,7 @@
       "all": "All cards",
       "defaultOnly": "{name} (unclassified cards only)",
       "defaultOnlyName": "Default pack",
-      "help": "Limit eligible cards by the pack names registered in \"Pack Management\" under card management. Binding a pack with no drawable cards will fail on save.",
+      "help": "Limit eligible cards by the pack names registered in \"Pack Management\" under card management. If you select multiple packs, each draw picks from all of the selected packs combined. Binding a pack with no drawable cards will fail on save.",
       "missing": "{name} (removed from Pack Management; the current binding is kept)",
       "premiumLocked": "Card Pack (supporter plan feature)",
       "packHint": "Register pack names from \"Pack Management\" in card management"
