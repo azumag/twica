@@ -2293,19 +2293,21 @@
     "activateBlocked": "This card is configured as the completion reward for “{packName}”. Remove the reward setting before enabling random draws."
   },
   "duplicateTierSettings": {
-    "title": "Duplicate card display tiers",
-    "description": "Show viewers a stepped badge and frame based on how many copies of the same card they own. Set, per rarity, the owned counts that unlock the 1st, 2nd and 3rd tier. Leave a tier blank to not use it.",
+    "title": "Duplicate card badge settings",
+    "description": "When a viewer owns several copies of the same card, a badge and frame appear on the card and become more prominent as the number of copies grows. For each rarity, set how many copies are needed to reach the 1st, 2nd and 3rd tier. Leave a tier blank to not use it.",
     "thresholdLabel": "Tier {tier}",
     "thresholdUnused": "Unused",
-    "thresholdHelp": "Thresholds must be 2 or more (owning a single copy is not a duplicate). Enter them in ascending order.",
+    "thresholdHelp": "Enter a whole number of 2 or more, and use a larger number for each higher tier. 1 cannot be used because a single copy is not a duplicate. Your input is saved when you click outside the field or press Enter. If you leave a middle tier blank, the later tiers move up. If every field is blank, no badge is shown.",
+    "resetButton": "Reset all to unset",
     "messages": {
       "saving": "Saving...",
-      "saved": "Saved"
+      "saved": "Saved",
+      "reset": "Reset to unset"
     },
     "errors": {
       "saveFailed": "Failed to save",
       "unavailable": "This setting cannot be saved right now (pending rollout). Please try again later.",
-      "invalid": "Thresholds must be integers of 2 or more, in ascending order."
+      "invalid": "Enter whole numbers of 2 or more, in ascending order."
     }
   }
 }
