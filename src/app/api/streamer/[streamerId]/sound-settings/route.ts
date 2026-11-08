@@ -1,7 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 
-import { PRIVATE_NO_STORE_CACHE_CONTROL } from "@/lib/cache-control";
+import {
+  PRIVATE_NO_STORE_CACHE_CONTROL,
+  soundSettingsCacheTag,
+} from "@/lib/cache-control";
+import { isCanonicalUuid } from "@/lib/uuid-validation";
 import { handleApiError } from "@/lib/error-handler";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { logger } from "@/lib/logger.server";
@@ -22,12 +26,16 @@ interface RouteParams {
 }
 
 // #675: Workers Cache の公開GETパイロット。
-// settings POST 側の Cache-Tag purge はまだ結線していないため、まずは 1 秒だけ
-// edge cache し、同時リクエストの request collapsing を有効にする。長TTL化は
-// tag purge と同時に行い、設定変更直後の古い値が長時間残る退行を作らない。
+// #1334 で settings POST 成功後の best-effort purge（正規 URL への
+// caches.default.delete()、src/lib/cache-control.ts）を結線済みだが、
+// s-maxage 延長は実トラフィックの HIT 率確認後に判断するため、引き続き
+// 1 秒だけ edge cache して同時リクエストの request collapsing に限定する。
 const SOUND_SETTINGS_CACHE_CONTROL = "public, max-age=0, s-maxage=1";
 
 interface SoundSettingsRow {
+  // Cache-Tag / purge URL はこの正規化済み id（小文字UUID）から生成する。
+  // path param の表記揺れ（大文字UUID等）をタグへ持ち込まないため (#1334)。
+  id: string;
   gacha_sound_url: string | null;
   gacha_sound_enabled: boolean | null;
   gacha_sound_rules: unknown;
@@ -63,6 +71,7 @@ async function getSoundSettingsPg(streamerId: string): Promise<SoundSettingsLook
         const { db } = await getDb();
         return db
           .select({
+            id: streamersTable.id,
             gacha_sound_url: streamersTable.gacha_sound_url,
             gacha_sound_enabled: streamersTable.gacha_sound_enabled,
             gacha_sound_rules: streamersTable.gacha_sound_rules,
@@ -82,6 +91,7 @@ async function getSoundSettingsPg(streamerId: string): Promise<SoundSettingsLook
         const { db } = await getDb();
         return db
           .select({
+            id: streamersTable.id,
             gacha_sound_url: streamersTable.gacha_sound_url,
             gacha_sound_enabled: streamersTable.gacha_sound_enabled,
           })
@@ -178,20 +188,30 @@ export async function GET(
       streamer.gacha_sound_enabled ?? true,
     );
 
-    // 効果音設定を返す。streamerId は DB の PK として取得成功した値だけがここへ
-    // 到達するため、そのまま Cache-Tag のスコープキーとして使用できる。
+    // #1334: 公開キャッシュ可能なのは「path param が正規 UUID 構造」かつ
+    // 「DB が返した正規化済み id と完全一致」する場合だけに限定する。
+    // purge は保存側が正規 URL（小文字UUID）へ caches.default.delete() する
+    // 方式のため、大文字表記など別表記 URL でキャッシュさせると削除が届かず
+    // stale エントリが残る。非正規表記は 200 のまま private, no-store に倒す。
+    const isCanonicalRequestId =
+      isCanonicalUuid(streamerId) && streamer.id === streamerId;
+
+    // 効果音設定を返す。Cache-Tag は path param ではなく DB が返す正規化済み
+    // id から生成し、保存側の purge と同じスコープキーを共有する (#1334)。
     return NextResponse.json(
       {
         soundUrl: streamer.gacha_sound_url,
         soundEnabled: streamer.gacha_sound_enabled ?? true, // デフォルトはtrue
         soundRules: soundRules.length > 0 ? soundRules : legacyRules,
       },
-      {
-        headers: {
-          "Cache-Control": SOUND_SETTINGS_CACHE_CONTROL,
-          "Cache-Tag": `sound-settings-${streamerId}`,
-        },
-      }
+      isCanonicalRequestId
+        ? {
+            headers: {
+              "Cache-Control": SOUND_SETTINGS_CACHE_CONTROL,
+              "Cache-Tag": soundSettingsCacheTag(streamer.id),
+            },
+          }
+        : { headers: { "Cache-Control": PRIVATE_NO_STORE_CACHE_CONTROL } }
     );
   } catch (error) {
     const response = await handleApiError(error, "Streamer Sound Settings API");

@@ -105,6 +105,17 @@ const CACHEABLE_PUBLIC_PATHS = [
   /^\/api\/overlay\/[^/]+\/realtime-config$/,
 ]
 
+// Set-Cookie と public の共存方針 (#1334):
+// cacheable public path 上でも updateSession はセッション異常時に
+// Cookie 削除の Set-Cookie を返し得る（route 側は cookie を一切発行しない
+// 契約。発行する route をこのリストへ追加してはならない）。
+// Cloudflare Workers Cache は既定で Set-Cookie を含む応答をキャッシュしない
+// ため、この同居は「その1回だけキャッシュを素通りする」挙動であり、
+// セッション Cookie が edge cache へ焼き付く事故にはならない。
+// この既定挙動への依存を方針として明文化する（docs/ARCHITECTURE.md
+// 「Workers Cache」節も参照）。Cache API の cache.put 等で Set-Cookie を
+// 強制保存する変更を入れた場合はこの前提が崩れるため、同時に見直すこと。
+
 /**
  * #694 Stage 3: maintenance mode (off 以外) のとき、/api 配下の write メソッド
  * (POST/PUT/PATCH/DELETE) を一律ブロックする。
