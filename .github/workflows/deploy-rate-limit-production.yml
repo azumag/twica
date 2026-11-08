@@ -8,6 +8,11 @@ on:
         required: true
         type: string
 
+# DO Worker の同時デプロイを防ぐ（二重 dispatch や誤操作連打でも直列化）。
+concurrency:
+  group: deploy-rate-limit-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     if: ${{ github.event.inputs.confirm == 'deploy' }}
