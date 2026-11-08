@@ -73,6 +73,29 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
     expect(workflow).not.toContain("rate-limit:deploy");
   });
 
+  it("keeps both dispatch workflows manual, confirm-gated, and read-only", () => {
+    // 本番配備は gated dispatch でのみ行う。自動トリガの混入・権限拡大・
+    // confirm ゲートの消失をここで固定する（#1888 の有効化ゲート）。
+    for (const [file, env, script] of [
+      [".github/workflows/deploy-rate-limit.yml", "environment: preview", "rate-limit:deploy:preview"],
+      [".github/workflows/deploy-rate-limit-production.yml", "environment: production", "rate-limit:deploy"],
+    ] as const) {
+      const workflow = read(file);
+      expect(workflow).toContain("workflow_dispatch:");
+      // workflow_dispatch 以外のトリガ（push/pull_request 等）の混入を検知。
+      // `on:` 直後の行が workflow_dispatch 以外で始まることを否定する。
+      // 否定先読みのみで `.` を使わないため `s` フラグは不要。
+      expect(workflow).not.toMatch(/on:\s*\n(?!\s+workflow_dispatch)/);
+      expect(workflow).toContain("confirm == 'deploy'");
+      expect(workflow).toContain("contents: read");
+      expect(workflow).toContain(env);
+      expect(workflow).toContain(`npm run ${script}`);
+      // 同時デプロイ抑止
+      expect(workflow).toContain("concurrency:");
+      expect(workflow).toContain("cancel-in-progress: false");
+    }
+  });
+
   it("documents the app binding only after the DO Worker is deployed", () => {
     const docs = read("docs/rate-limit-backend-policy.md");
 
