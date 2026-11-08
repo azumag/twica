@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
+import { purgeCacheTagsBestEffort } from "@/lib/workers-cache-purge";
 
 import { handleApiError, handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
@@ -1686,6 +1687,19 @@ export async function POST(request: NextRequest) {
       } catch (recalculationError) {
         logger.error("Streamer Settings API: Recalculation failed after weight save", recalculationError);
       }
+    }
+
+    // #1334: 効果音設定を更新した場合、Workers Cache の公開GET
+    // (/api/streamer/[streamerId]/sound-settings) を best-effort で無効化する。
+    // purge 失敗はログのみで保存成功を損なわない。タグは DB の正規化済み id
+    // (streamer.id) から生成し、path param の表記揺れによる purge 漏れを防ぐ。
+    if (
+      streamer &&
+      (gachaSoundUrl !== undefined ||
+        gachaSoundEnabled !== undefined ||
+        gachaSoundRules !== undefined)
+    ) {
+      await purgeCacheTagsBestEffort([`sound-settings-${streamer.id}`]);
     }
 
     return NextResponse.json({

@@ -90,7 +90,30 @@ Migration workflow は deploy workflow と分離されています。デプロ�
 加法的 migration に限ります。列削除・rename・型変更などの contract 変更は、
 expand/contract 手順とアプリのデプロイ順を明示して個別に実施してください。
 
-### 補助 Worker
+### Workers Cache（Cache-Tag / purge）の方針
+
+本体 Worker は `[cache] enabled = true` を使い、`src/middleware.ts` の fail-closed 方針で
+明示許可した公開 GET 以外に `private, no-store` を付与する（#906）。キャッシュ対象は
+ルート側が `Cache-Control: public` を返す JSON エンドポイントに限定し、HTML は対象外
+（nonce 付き CSP が edge キャッシュに焼き付くため）。
+
+- **`Cache-Tag` と purge**: `Cache-Tag` はレスポンスに付与できるが、クライアントには返却
+  されない（Cloudflare が strip）。purge はゾーン API/Terraform ではなく **Worker 内 API**
+  `import { cache } from "cloudflare:workers"; await cache.purge({ tags })` を使う（プラン
+  非依存、rate limit は常に Free tier 相当）。Next.js route handler は `ctx` を受け取らない
+  ため import 形式が必須。`cloudflare:workers` は Workers 固有モジュールなので、実装は
+  dynamic import + best-effort（失敗はログのみ、保存処理の成否に影響させない）とする。
+- **タグの生成**: path param ではなく **DB が返す正規化済み `id`** から生成する。大文字等の
+  表記揺れで URL キー/タグが重複すると purge 漏れや無駄なエントリが生じる。公開 GET は
+  `isCanonicalUuid` で不正入力を 404 に落とし、DB 主キー境界を allowlist する。
+- **`Set-Cookie` と `public` の共存**: `updateSession` は期限切れ/不正セッションの除去時のみ
+  `Set-Cookie` を付与し、正常な認証済み/匿名リクエストには付与しない。オーバーレイ用の公開
+  GET はセッション非依存で、通常は `Set-Cookie` を伴わないため `public` キャッシュと共存
+  できる。新たに `Set-Cookie` を返し得る経路を公開キャッシュ対象へ追加する場合は、
+  Cloudflare の `private=Set-Cookie` 等の既定挙動への依存を明文化するか、明示的に
+  `private, no-store` へ倒すこと（#1334）。
+
+## 補助 Worker
 
 `deploy-cloudflare.yml` は以下をデプロイします。
 

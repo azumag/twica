@@ -15,19 +15,20 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgMissingNamedColumnError } from "@/lib/db/errors";
+import { isCanonicalUuid } from "@/lib/uuid-validation";
 import { streamers as streamersTable } from "@/lib/db/schema";
 
 interface RouteParams {
   params: Promise<{ streamerId: string }>;
 }
 
-// #675: Workers Cache の公開GETパイロット。
-// settings POST 側の Cache-Tag purge はまだ結線していないため、まずは 1 秒だけ
-// edge cache し、同時リクエストの request collapsing を有効にする。長TTL化は
-// tag purge と同時に行い、設定変更直後の古い値が長時間残る退行を作らない。
+// #675/#1334: Workers Cache の公開GETパイロット。設定更新時の Cache-Tag purge は
+// POST /api/streamer/settings 側で best-effort に結線済み。s-maxage 延長は
+// 実トラフィックの HIT 率実測後に判断するため、現時点では 1 秒のままとする。
 const SOUND_SETTINGS_CACHE_CONTROL = "public, max-age=0, s-maxage=1";
 
 interface SoundSettingsRow {
+  id: string;
   gacha_sound_url: string | null;
   gacha_sound_enabled: boolean | null;
   gacha_sound_rules: unknown;
@@ -63,6 +64,9 @@ async function getSoundSettingsPg(streamerId: string): Promise<SoundSettingsLook
         const { db } = await getDb();
         return db
           .select({
+            // Cache-Tag は DB が返す正規化済み id から生成する（#1334）。
+            // path param は表記揺れ（大文字等）で別 URL/タグになるため使わない。
+            id: streamersTable.id,
             gacha_sound_url: streamersTable.gacha_sound_url,
             gacha_sound_enabled: streamersTable.gacha_sound_enabled,
             gacha_sound_rules: streamersTable.gacha_sound_rules,
@@ -82,6 +86,7 @@ async function getSoundSettingsPg(streamerId: string): Promise<SoundSettingsLook
         const { db } = await getDb();
         return db
           .select({
+            id: streamersTable.id,
             gacha_sound_url: streamersTable.gacha_sound_url,
             gacha_sound_enabled: streamersTable.gacha_sound_enabled,
           })
@@ -148,6 +153,19 @@ export async function GET(
       );
     }
 
+    // #1334: 不正な UUID 文字列を PostgreSQL の uuid 列へ渡すと SQLSTATE 22P02 に
+    // なり、公開エンドポイントでは誰でも投げられる（#908 と同様）。有効だが未登録の
+    // ID と同じ 404 契約へ先に落とし、DBアクセス・ログを発生させない。
+    if (!isCanonicalUuid(streamerId)) {
+      return NextResponse.json(
+        { error: ERROR_MESSAGES.STREAMER_NOT_FOUND },
+        {
+          status: 404,
+          headers: { "Cache-Control": PRIVATE_NO_STORE_CACHE_CONTROL },
+        }
+      );
+    }
+
     const lookup = await getSoundSettings(streamerId);
 
     if (lookup.kind === "degraded") {
@@ -178,8 +196,9 @@ export async function GET(
       streamer.gacha_sound_enabled ?? true,
     );
 
-    // 効果音設定を返す。streamerId は DB の PK として取得成功した値だけがここへ
-    // 到達するため、そのまま Cache-Tag のスコープキーとして使用できる。
+    // 効果音設定を返す。Cache-Tag は DB が返す正規化済み id を使う（#1334）。
+    // path param のままだと大文字等の表記揺れで URL キーが重複し、将来の purge が
+    // 意図したエントリに届かないリスクがある。
     return NextResponse.json(
       {
         soundUrl: streamer.gacha_sound_url,
@@ -189,7 +208,7 @@ export async function GET(
       {
         headers: {
           "Cache-Control": SOUND_SETTINGS_CACHE_CONTROL,
-          "Cache-Tag": `sound-settings-${streamerId}`,
+          "Cache-Tag": `sound-settings-${streamer.id}`,
         },
       }
     );
