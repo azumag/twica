@@ -75,6 +75,20 @@ describe('CardAlbumView - 画像のみのアルバム表示 (Issue #1765)', () =
     expect(screen.queryByTestId('card-album-page')).not.toBeInTheDocument()
   })
 
+  it('カード同士は隙間なく敷き詰める（gap・角丸を持たない）', () => {
+    // 角丸や gap が残ると、隣り合うカードの間に余白ができる。
+    renderAlbum([albumCard(1), albumCard(2, { isOwned: false })])
+
+    const grid = screen.getByTestId('card-album-grid')
+    expect(grid.className).toMatch(/(^|\s)gap-0(\s|$)/)
+    expect(grid.className).not.toMatch(/(^|\s)gap-[1-9]/)
+    // 所持カードの枠・リンク、空きスロットのいずれも角丸にしない
+    for (const tile of Array.from(grid.children)) {
+      expect(tile.className).not.toMatch(/rounded/)
+    }
+    expect(screen.getByRole('link', { name: /CardName1/ }).className).not.toMatch(/rounded/)
+  })
+
   it('名前やレアリティの文字を描かず、画像だけを並べる', () => {
     renderAlbum([albumCard(1)])
 

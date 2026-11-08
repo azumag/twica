@@ -163,10 +163,12 @@ export default function CardAlbumView({
       </div>
 
       {/* N×N 固定: 列数は常に N。端末幅によって並ぶ枚数が変わらないよう
-          レスポンシブなグリッド指定は使わず、inline style で列数を決める。 */}
+          レスポンシブなグリッド指定は使わず、inline style で列数を決める。
+          カード同士は隙間なく敷き詰める（gap なし・角丸なし）。角丸のままだと
+          隣り合う角に三角形の隙間ができ、アルバムのページらしく見えないため。 */}
       <div
         data-testid="card-album-grid"
-        className="mx-auto grid w-full gap-2"
+        className="mx-auto grid w-full gap-0"
         style={{
           gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))`,
           // 3×3 のときは従来と同じ幅（max-w-sm 相当）に収め、大きい N では
@@ -188,24 +190,25 @@ export default function CardAlbumView({
                 key={slotKey}
                 role="img"
                 aria-label={translations.emptySlot}
-                className="aspect-square rounded-lg border border-dashed border-gray-700 bg-gray-800/60"
+                className="aspect-square border border-dashed border-gray-700 bg-gray-800/60"
               />
             );
           }
 
           // aria-label は画像の alt より優先されるため、画像なしでも位置とカード名を
           // 読めるようにする。外向きの ring は overflow-hidden 内のリンクで切れるので、
-          // 子リンクの focus-visible に応じてラッパー自身に描き、画像の角丸は維持する。
+          // 子リンクの focus-visible に応じてラッパー自身に描く。隙間がないため、
+          // 拡大表示（hover）とフォーカスリングは隣のカードより前面（z-10）に出す。
           return (
             <div
               key={slotKey}
-              className="aspect-square overflow-hidden rounded-lg bg-gray-700 transition-transform hover:scale-105 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-purple-400"
+              className="relative aspect-square overflow-hidden bg-gray-700 transition-transform hover:z-10 hover:scale-105 has-[:focus-visible]:z-10 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-purple-400"
             >
               <Link
                 href={`/collection/${streamerId}/card/${card.id}`}
                 prefetch={false}
                 aria-label={`${positionLabel}: ${card.name}`}
-                className="block h-full w-full rounded-lg focus:outline-none"
+                className="block h-full w-full focus:outline-none"
               >
                 {card.image_url ? (
                   <Image
