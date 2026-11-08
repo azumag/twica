@@ -18,7 +18,12 @@ vi.mock("@/lib/logger", () => ({
  * DB例外だけをfixtureとして注入し、廃止済みPostgREST clientには依存しない。
  */
 function primeSoundSettingsDb(response: {
-  row?: { gacha_sound_url: string | null; gacha_sound_enabled: boolean | null; gacha_sound_rules?: unknown };
+  row?: {
+    id?: string;
+    gacha_sound_url: string | null;
+    gacha_sound_enabled: boolean | null;
+    gacha_sound_rules?: unknown;
+  };
   error?: unknown;
 }) {
   const select = vi.fn((fields: Record<string, unknown>) => {
@@ -45,8 +50,12 @@ function primeSoundSettingsDb(response: {
   };
 }
 
-function request() {
-  return new NextRequest("http://localhost:3000/api/streamer/streamer-1/sound-settings");
+// #1334: 公開キャッシュ契約は「path param が正規UUID構造かつDB行の正規化
+// id と一致」が前提になったため、canonical ケースは実在形の小文字UUIDを使う。
+const CANONICAL_STREAMER_ID = "94cb6927-8733-4f1c-8e7e-0afb89773daa";
+
+function request(streamerId: string = CANONICAL_STREAMER_ID) {
+  return new NextRequest(`http://localhost:3000/api/streamer/${streamerId}/sound-settings`);
 }
 
 describe("GET /api/streamer/[streamerId]/sound-settings", () => {
@@ -57,18 +66,19 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
   it("returns the configured sound settings", async () => {
     const pg = primeSoundSettingsDb({
       row: {
+        id: CANONICAL_STREAMER_ID,
         gacha_sound_url: "https://cdn.example.com/sound.mp3",
         gacha_sound_enabled: true,
       },
     });
 
     const response = await GET(request(), {
-      params: Promise.resolve({ streamerId: "streamer-1" }),
+      params: Promise.resolve({ streamerId: CANONICAL_STREAMER_ID }),
     });
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, s-maxage=1");
-    expect(response.headers.get("Cache-Tag")).toBe("sound-settings-streamer-1");
+    expect(response.headers.get("Cache-Tag")).toBe(`sound-settings-${CANONICAL_STREAMER_ID}`);
     await expect(response.json()).resolves.toEqual({
       soundUrl: "https://cdn.example.com/sound.mp3",
       soundEnabled: true,
@@ -81,6 +91,48 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
       ],
     });
     expect(pg.select).toHaveBeenCalledTimes(1);
+  });
+
+  // #1334: 大文字UUIDは isCanonicalUuid の構文としては受理されるが、
+  // DB の正規化済み id（小文字）と一致しないため URL 単位の purge が届かない。
+  // stale エントリを残さないよう public キャッシュを拒否する。
+  it("keeps uppercase UUID responses non-cacheable and untagged", async () => {
+    primeSoundSettingsDb({
+      row: {
+        id: CANONICAL_STREAMER_ID,
+        gacha_sound_url: "https://cdn.example.com/sound.mp3",
+        gacha_sound_enabled: true,
+      },
+    });
+
+    const upperCaseId = CANONICAL_STREAMER_ID.toUpperCase();
+    const response = await GET(request(upperCaseId), {
+      params: Promise.resolve({ streamerId: upperCaseId }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  // #1334: 正規UUID構造を持たない path param は、仮にDBが行を返しても
+  // 正規 purge URL の対象外になるため public キャッシュへ回さない。
+  it("keeps non-UUID streamerId responses non-cacheable and untagged", async () => {
+    primeSoundSettingsDb({
+      row: {
+        id: "streamer-1",
+        gacha_sound_url: "https://cdn.example.com/sound.mp3",
+        gacha_sound_enabled: true,
+      },
+    });
+
+    const response = await GET(request("streamer-1"), {
+      params: Promise.resolve({ streamerId: "streamer-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
   });
 
   it("keeps missing streamerId as a non-cacheable 400", async () => {
@@ -107,7 +159,7 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     primeSoundSettingsDb({});
 
     const response = await GET(request(), {
-      params: Promise.resolve({ streamerId: "missing-streamer" }),
+      params: Promise.resolve({ streamerId: "94cb6927-8733-4f1c-8e7e-0afb89773daa" }),
     });
 
     expect(response.status).toBe(404);
@@ -122,7 +174,7 @@ describe("GET /api/streamer/[streamerId]/sound-settings", () => {
     });
 
     const response = await GET(request(), {
-      params: Promise.resolve({ streamerId: "streamer-1" }),
+      params: Promise.resolve({ streamerId: CANONICAL_STREAMER_ID }),
     });
 
     expect(response.status).toBe(200);

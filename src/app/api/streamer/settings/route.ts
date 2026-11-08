@@ -43,6 +43,7 @@ import {
   type GachaSoundRule,
 } from "@/lib/gacha-sound-rules";
 import { getUserPlan } from "@/lib/plan";
+import { purgeSoundSettingsCache } from "@/lib/cache-control";
 import { validateRarityStylesInput } from "@/lib/rarity-styles";
 // -----------------------------------------------------------------------------
 // 設定更新の全 DB 操作は PlanetScale の単一接続を使う。
@@ -1671,6 +1672,21 @@ export async function POST(request: NextRequest) {
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
+      }
+
+      // #1334: 効果音関連の列（gacha_sound_url / gacha_sound_enabled /
+      // gacha_sound_rules。rules 保存時の旧ミラー列への書き戻しも含む）を
+      // 実際に書き込んだ場合だけ、公開 GET の edge cache を無効化する。
+      // 無関係の設定保存まで purge すると、HIT 中の正規エントリを毎回
+      // 捨ててキャッシュの意義を削ぐため、効果音フィールド限定に絞る。
+      // purge は best-effort（失敗はログのみ、保存応答へ影響させない）で、
+      // id は path param ではなく DB が返した正規化済み streamer.id を使う。
+      const soundSettingsWritten =
+        updateData.gacha_sound_url !== undefined ||
+        updateData.gacha_sound_enabled !== undefined ||
+        updateData.gacha_sound_rules !== undefined;
+      if (soundSettingsWritten) {
+        await purgeSoundSettingsCache(request.url, streamer.id);
       }
     }
 

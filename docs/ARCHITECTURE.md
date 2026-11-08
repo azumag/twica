@@ -39,3 +39,21 @@ flowchart LR
 旧 Secret は PG/DO-only release の観測期間を完了して利用ゼロを確認した後、preview、
 production の順で削除します。コード撤去と Secret revoke を同時に行わないことで、
 障害時の原因を切り分けます。
+
+## Workers Cache
+
+- Workers Cache（`[cache] enabled = true`、wrangler.toml）の公開対象は
+  `src/middleware.ts` の `CACHEABLE_PUBLIC_PATHS` に限定し、それ以外の全
+  レスポンスへ middleware が `private, no-store` を fail-closed 付与する。
+- 公開 GET が `Cache-Tag` / `Cache-Control: public` を発行する場合、無効化は
+  保存側 route が `caches.default.delete()` で正規 URL を削除する
+  best-effort purge（`src/lib/cache-control.ts`）。Cache-Tag 指定の purge は
+  Zone API（API トークン）が必要で Worker ランタイムからは呼べず、
+  `cloudflare:workers` も OpenNext の route handler ビルドでは解決できない
+  ため、タグは発行しつつ URL 単位の削除で運用する。
+- `Set-Cookie` と `public` の共存方針: 公開 GET route は cookie を発行しない。
+  middleware の `updateSession` がセッション異常時の Cookie 削除で
+  `Set-Cookie` を付けることがあるが、Cloudflare Workers Cache は既定で
+  `Set-Cookie` を含む応答をキャッシュしないため、その応答は1回だけ素通り
+  する。この既定挙動への依存を明示的な方針とし、`cache.put` 等で
+  `Set-Cookie` 応答を強制保存する変更を入れる場合はこの前提を見直す。

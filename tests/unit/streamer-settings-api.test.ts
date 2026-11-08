@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/streamer/settings/route'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
@@ -2955,6 +2955,85 @@ describe('POST /api/streamer/settings', () => {
       // 書き込めていないので、確定値はエコーバックしない（楽観反映を戻させる）。
       expect(data.packAlbumGridSizes).toBeUndefined()
       expect(data.collectionDefaultView).toBeUndefined()
+    })
+  })
+
+  // #1334: 効果音設定の保存成功後に公開GETのedge cacheを best-effort purge する。
+  // purge は DB が返す正規化済み streamer.id から正規URLを組み立て、
+  // 失敗しても保存応答（200）へ影響させない。
+  describe('sound-settings edge cache purge (#1334)', () => {
+    const streamerRow = () => ({
+      data: {
+        id: 'streamer123',
+        twitch_user_id: 'streamer123',
+      },
+      error: null,
+    })
+
+    const postSettings = (body: Record<string, unknown>) =>
+      POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }))
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it('purges the canonical sound-settings GET URL after a sound update', async () => {
+      const cacheDelete = vi.fn().mockResolvedValue(true)
+      vi.stubGlobal('caches', { default: { delete: cacheDelete } })
+
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await postSettings({
+        streamerId: 'streamer123',
+        gachaSoundEnabled: false,
+      })
+
+      expect(response.status).toBe(200)
+      expect(cacheDelete).toHaveBeenCalledWith(
+        'http://localhost:3000/api/streamer/streamer123/sound-settings'
+      )
+    })
+
+    it('does not purge when the update did not touch sound settings', async () => {
+      const cacheDelete = vi.fn().mockResolvedValue(true)
+      vi.stubGlobal('caches', { default: { delete: cacheDelete } })
+
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await postSettings({
+        streamerId: 'streamer123',
+        channelPointRewardName: 'Test Reward',
+      })
+
+      expect(response.status).toBe(200)
+      expect(cacheDelete).not.toHaveBeenCalled()
+    })
+
+    it('keeps the save response successful when the purge rejects', async () => {
+      const cacheDelete = vi.fn().mockRejectedValue(new Error('cache api down'))
+      vi.stubGlobal('caches', { default: { delete: cacheDelete } })
+
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await postSettings({
+        streamerId: 'streamer123',
+        gachaSoundEnabled: true,
+      })
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.success).toBe(true)
+      expect(cacheDelete).toHaveBeenCalled()
     })
   })
 })
