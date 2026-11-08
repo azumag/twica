@@ -23,6 +23,7 @@ import { validateCSRFToken } from '@/lib/csrf'
 import { validateContentType } from '@/lib/request-validation'
 import { getUserPlan } from '@/lib/plan'
 import { checkCollectionHasActiveCards, checkCollectionsHaveActiveCards } from '@/lib/collections/collection-existence'
+import { DEFAULT_PACK_SENTINEL } from '@/lib/validation/collection-name'
 import { hasScope, getTwitchAccessToken } from '@/lib/twitch/token-manager'
 import { POST as settingsPOST } from '@/app/api/streamer/settings/route'
 import {
@@ -616,5 +617,187 @@ describe('GET /api/twitch/channel-point-bootstrap: 追加報酬の collection_na
     expect(rewardSelects[1].sql).not.toContain('reward_pack_names')
     expect(rewardSelects[1].sql).toContain('"collection_name"')
     expect(body.additionalRewards[0].collection_names).toEqual(['A'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Issue #2005 (任意2): 「先に報告された列を剥がした後、もう1列も 42703」になる
+// 2段フォールバック。PostgreSQL は1回の失敗で欠落列を1つしか報告しないため、
+// 配列列と旧単一列が同時に未適用の窓ではフォールバックを2回たどる必要がある。
+// ---------------------------------------------------------------------------
+
+describe('POST /api/streamer/settings: 2段フォールバック (Issue #2005 任意2)', () => {
+  it('channel_point_pack_names と channel_point_collection_name が連続して 42703 でも、報告順に2列とも剥がして書き切る', async () => {
+    const log = installSqlDb((q) => {
+      if (q.sql.startsWith('select')) {
+        // 列が実在しない窓では現在値の SELECT 自体も 42703 になる
+        // （ルート側は isMissingChannelPointPackNamesColumnError で縮退する）。
+        if (q.sql.includes('"channel_point_pack_names"')) {
+          throw missingColumnError('channel_point_pack_names', 'streamers')
+        }
+        return settingsSelectRows(q)
+      }
+      // 欠落列は1回の失敗で1つしか報告されないため、配列列を剥がした再試行で
+      // 初めて旧列の欠落が報告される順序を再現する。
+      if (q.sql.includes('"channel_point_pack_names"')) {
+        throw missingColumnError('channel_point_pack_names', 'streamers')
+      }
+      if (q.sql.includes('"channel_point_collection_name"')) {
+        throw missingColumnError('channel_point_collection_name', 'streamers')
+      }
+      return []
+    })
+
+    const res = await settingsPOST(jsonRequest('http://localhost/api/streamer/settings', 'POST', {
+      streamerId: STREAMER_ID,
+      channelPointRewardId: MAIN_REWARD_ID,
+      channelPointCollectionNames: ['A', 'B'],
+    }))
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    const updates = log.filter((q) => isUpdate(q, 'streamers'))
+    expect(updates).toHaveLength(3)
+    expect(setClause(updates[0])).toContain('"channel_point_pack_names" = ')
+    const secondSet = setClause(updates[1])
+    expect(secondSet).not.toContain('channel_point_pack_names')
+    expect(secondSet).toContain('"channel_point_collection_name" = ')
+    const lastSet = setClause(updates[2])
+    expect(lastSet).not.toContain('channel_point_pack_names')
+    expect(lastSet).not.toContain('channel_point_collection_name')
+    // パック列を全部剥がしても、同時に送った他項目は最後の UPDATE に残る。
+    expect(lastSet).toContain('"channel_point_reward_id" = ')
+    expect(updates[2].params).toContain(MAIN_REWARD_ID)
+    // 2要素以上の割り当ては旧列（先頭要素）だけでも表せず、今回は旧列すら
+    // 書けなかったため、欠損をフラグで知らせる（黙って成功扱いにしない）。
+    expect(body.channelPointCollectionNamesSkippedDeployWindow).toBe(true)
+  })
+})
+
+describe('POST /api/streamer/additional-rewards: 2段フォールバック (Issue #2005 任意2)', () => {
+  it('reward_pack_names と collection_name が連続して 42703 でも、報告順に2列とも剥がして INSERT し直す', async () => {
+    const log = installSqlDb((q) => {
+      if (isSelectFrom(q, 'streamers')) return [streamerOwnershipRow()]
+      if (isInsert(q, ADDITIONAL_TABLE)) {
+        // 欠落判定は INSERT の列リストだけで見る（引数なし returning() が定義の
+        // 全列を描画するため、SQL 全体で探すと RETURNING 側に残る列名に誤爆する）。
+        const columns = q.sql.slice(0, q.sql.indexOf(' values '))
+        if (columns.includes('reward_pack_names')) throw missingColumnError('reward_pack_names', ADDITIONAL_TABLE)
+        if (columns.includes('"collection_name"')) throw missingColumnError('collection_name', ADDITIONAL_TABLE)
+        return [insertedRow()]
+      }
+      return []
+    })
+
+    const res = await additionalRewardsPOST(jsonRequest('http://localhost/api/streamer/additional-rewards', 'POST', {
+      rewardId: ADDITIONAL_REWARD_ID,
+      rewardName: 'Extra',
+      collectionNames: ['A', 'B'],
+    }))
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    const inserts = log.filter((q) => isInsert(q, ADDITIONAL_TABLE))
+    expect(inserts).toHaveLength(3)
+    const secondColumns = inserts[1].sql.slice(0, inserts[1].sql.indexOf(' values '))
+    expect(secondColumns).not.toContain('reward_pack_names')
+    expect(secondColumns).toContain('"collection_name"')
+    const lastColumns = inserts[2].sql.slice(0, inserts[2].sql.indexOf(' values '))
+    expect(lastColumns).not.toContain('reward_pack_names')
+    expect(lastColumns).not.toContain('collection_name')
+    // パック割り当ては一切書けなかったため、欠損をフラグで知らせる。
+    expect(body.collectionNameSkippedDeployWindow).toBe(true)
+  })
+
+  it('逆順（collection_name → reward_pack_names の順に 42703）でも、報告順に2列とも剥がして INSERT し直す', async () => {
+    const log = installSqlDb((q) => {
+      if (isSelectFrom(q, 'streamers')) return [streamerOwnershipRow()]
+      if (isInsert(q, ADDITIONAL_TABLE)) {
+        const columns = q.sql.slice(0, q.sql.indexOf(' values '))
+        // collection_name の欠落が先に報告される順序。剥がした後の再試行で
+        // reward_pack_names が報告され、最終的に両方を含まない INSERT になる。
+        if (columns.includes('"collection_name"')) throw missingColumnError('collection_name', ADDITIONAL_TABLE)
+        if (columns.includes('reward_pack_names')) throw missingColumnError('reward_pack_names', ADDITIONAL_TABLE)
+        return [insertedRow()]
+      }
+      return []
+    })
+
+    const res = await additionalRewardsPOST(jsonRequest('http://localhost/api/streamer/additional-rewards', 'POST', {
+      rewardId: ADDITIONAL_REWARD_ID,
+      rewardName: 'Extra',
+      collectionNames: ['A', 'B'],
+    }))
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    const inserts = log.filter((q) => isInsert(q, ADDITIONAL_TABLE))
+    expect(inserts).toHaveLength(3)
+    const secondColumns = inserts[1].sql.slice(0, inserts[1].sql.indexOf(' values '))
+    expect(secondColumns).not.toContain('collection_name')
+    expect(secondColumns).toContain('"reward_pack_names"')
+    const lastColumns = inserts[2].sql.slice(0, inserts[2].sql.indexOf(' values '))
+    expect(lastColumns).not.toContain('reward_pack_names')
+    expect(lastColumns).not.toContain('collection_name')
+    expect(body.collectionNameSkippedDeployWindow).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Issue #2005 (任意3): checkCollectionsHaveActiveCards（複数パックのバッチ存在
+// 検査）が実際に発行する SQL を恒久テストにする。これまでは丸ごとモックか
+// SQL を見ずに行を返すモックしかなかった。固定する内容（レビュアーの描画確認
+// と同じ）: `select "collection_name" from "cards" where (streamer_id = $1 and
+// is_active = $2 and (collection_name in ($3,$4) or collection_name is null))
+// group by collection_name` — パック名は全てパラメータで、__default__ は
+// GROUP BY の NULL 行として存在判定される。
+// ---------------------------------------------------------------------------
+
+describe('checkCollectionsHaveActiveCards: 発行 SQL (Issue #2005 任意3)', () => {
+  it('複数パックは1本の GROUP BY クエリで検査し、パック名は全てパラメータ、__default__ は NULL 行で判定する', async () => {
+    const { checkCollectionsHaveActiveCards: realCheck } =
+      await vi.importActual<typeof import('@/lib/collections/collection-existence')>(
+        '@/lib/collections/collection-existence'
+      )
+    const log = installSqlDb(() => [
+      { collection_name: 'weapons' },
+      // __default__（未分類パック）に対応する GROUP BY の NULL 行。
+      { collection_name: null },
+    ])
+
+    const result = await realCheck(STREAMER_ID, ['weapons', 'characters', DEFAULT_PACK_SENTINEL])
+
+    const selects = log.filter((q) => isSelectFrom(q, 'cards'))
+    expect(selects).toHaveLength(1)
+    const query = selects[0]
+    expect(query.sql).toMatch(/^select "collection_name" from "cards"/)
+    expect(query.sql).toContain('group by')
+    // パック名は SQL 文へ直接埋め込まれず、全てバインドパラメータになる
+    // （streamer_id と is_active を含む WHERE 全体でプレースホルダのみ）。
+    expect(query.params).toEqual([STREAMER_ID, true, 'weapons', 'characters'])
+    expect(query.sql).not.toContain('weapons')
+    expect(query.sql).not.toContain('characters')
+    // __default__ は IN リストの文字列としてではなく IS NULL 条件に展開される
+    // （センチネルをパラメータにも含めない）。
+    expect(query.params).not.toContain(DEFAULT_PACK_SENTINEL)
+    expect(query.sql).toContain(' is null')
+    expect(query.sql).not.toContain('__default__')
+    // 行が返ったパックのみ exists。NULL 行は __default__ の存在として判定される。
+    expect(result.get('weapons')).toBe('exists')
+    expect(result.get('characters')).toBe('absent')
+    expect(result.get(DEFAULT_PACK_SENTINEL)).toBe('exists')
+  })
+
+  it('GROUP BY の結果に NULL 行が無ければ __default__ は absent と判定する', async () => {
+    const { checkCollectionsHaveActiveCards: realCheck } =
+      await vi.importActual<typeof import('@/lib/collections/collection-existence')>(
+        '@/lib/collections/collection-existence'
+      )
+    installSqlDb(() => [{ collection_name: 'weapons' }])
+
+    const result = await realCheck(STREAMER_ID, ['weapons', DEFAULT_PACK_SENTINEL])
+
+    expect(result.get('weapons')).toBe('exists')
+    expect(result.get(DEFAULT_PACK_SENTINEL)).toBe('absent')
   })
 })

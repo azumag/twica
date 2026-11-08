@@ -553,6 +553,34 @@ export const streamerAdditionalGachaRewardsWithPackNames = pgTable('streamer_add
   reward_pack_names: jsonb('reward_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
 })
 
+/**
+ * Issue #2005 (任意2): collection_name 列欠落窓（#393 フォールバック）の
+ * INSERT 再試行用の縮退定義。`.insert()` は values に無い列も `default` として
+ * 列挙するため、payload からキーを delete するだけでは列を剥がせない。
+ * 物理的に collection_name を持たない定義が必要になる（WithPackNames と同じ手法）。
+ */
+const additionalGachaRewardColumnsWithoutCollectionName = () => {
+  const columns: Record<string, unknown> = additionalGachaRewardBaseColumns()
+  delete columns.collection_name
+  return columns as ReturnType<typeof additionalGachaRewardBaseColumns>
+}
+
+export const streamerAdditionalGachaRewardsWithoutCollectionName = pgTable(
+  'streamer_additional_gacha_rewards',
+  additionalGachaRewardColumnsWithoutCollectionName(),
+)
+
+/**
+ * Issue #2005 (任意2): reward_pack_names は残すが collection_name だけ欠落した窓
+ * （例: 00061 のみ未適用で 20261108120000 は適用済み）の INSERT 再試行用定義。
+ * PostgreSQL は1回の失敗で欠落列を1つしか報告しないため、POST の2段フォール
+ * バックは collection_name → reward_pack_names の報告順序にも対応する必要がある。
+ */
+export const streamerAdditionalGachaRewardsPackNamesOnly = pgTable('streamer_additional_gacha_rewards', {
+  ...additionalGachaRewardColumnsWithoutCollectionName(),
+  reward_pack_names: jsonb('reward_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+})
+
 // -----------------------------------------------------------------------------
 // errors（エラーログ。GitHub Issue 自動作成用）
 // 根拠: 00012 初版
