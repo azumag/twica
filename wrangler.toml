@@ -86,6 +86,18 @@ service = "twica-overlay-realtime"
 binding = "CHAT_NOTIFICATION_QUEUE"
 queue = "chat-notification-wakeup"
 
+# #1888: authLogin / activateCode の strict 経路 (Durable Object の直列化カウンタ)。
+# class とmigration は workers/rate-limit/wrangler.toml (Worker: twica-rate-limit) が
+# 所有する。アプリ本体は OpenNext 生成物で class を export できないため、
+# script_name 付きで参照だけする (migration はここに書かない)。
+# 配備順序: twica-rate-limit の deploy と migration 適用の後にのみ merge する。
+# 先に merge すると binding 解決エラーで production deploy が失敗する。
+# 詳細: docs/rate-limit-backend-policy.md「Durable Object Worker の配備」。
+[[durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+script_name = "twica-rate-limit"
+
 # Public value that must survive dashboard-only configuration overwrites.
 [vars]
 NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
@@ -136,3 +148,13 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 [[env.preview.services]]
 binding = "OVERLAY_REALTIME_SERVICE"
 service = "twica-overlay-realtime-preview"
+
+# #1888: preview の authLogin / activateCode 用の strict 経路 binding。
+# script_name は workers/rate-limit/wrangler.toml の [env.preview]
+# (twica-rate-limit-preview) を指す。[[services]] ではなく DO namespace 形式。
+# 同じ binding は preview ブランチ側にも必要 (稼働中の twica-preview は preview
+# ブランチから配備される)。Worker 配備前に merge しない (policy doc の手順 2)。
+[[env.preview.durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+script_name = "twica-rate-limit-preview"

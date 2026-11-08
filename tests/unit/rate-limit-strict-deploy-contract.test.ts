@@ -73,6 +73,31 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
     expect(workflow).not.toContain("rate-limit:deploy");
   });
 
+  it("references the DO Worker from the app config without owning the migration", () => {
+    // アプリ本体は script_name 付き binding で DO Worker を参照するだけ。
+    // migration をアプリ側に書くと class を持たない Worker に適用されてしまう。
+    const config = read("wrangler.toml");
+
+    expect(config).toContain(
+      [
+        "[[durable_objects.bindings]]",
+        'name = "STRICT_RATE_LIMITER"',
+        'class_name = "StrictRateLimitDurableObject"',
+        'script_name = "twica-rate-limit"',
+      ].join("\n"),
+    );
+    expect(config).toContain(
+      [
+        "[[env.preview.durable_objects.bindings]]",
+        'name = "STRICT_RATE_LIMITER"',
+        'class_name = "StrictRateLimitDurableObject"',
+        'script_name = "twica-rate-limit-preview"',
+      ].join("\n"),
+    );
+    expect(config).not.toContain("[[migrations]]");
+    expect(config).not.toContain("[[env.preview.migrations]]");
+  });
+
   it("documents the app binding only after the DO Worker is deployed", () => {
     const docs = read("docs/rate-limit-backend-policy.md");
 
