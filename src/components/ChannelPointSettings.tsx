@@ -1146,9 +1146,13 @@ export default function ChannelPointSettings({
     //   不格好だった。さらに幅160pxのセルでは「スターター（未分類のカードのみ）」が
     //   途中で折り返された。
     // - そこで各項目を「枠付きチップ」にして auto-fill グリッドへ並べる。
-    //   minmax(11rem,1fr) は「1チップ最低11rem(約176px)」を確保しつつ、
-    //   コンテナ幅に応じて列数が自動で増減する指定。狭くても1列に落ちるだけで、
-    //   文字が1〜2文字ごとに折れることはない。
+    //   minmax(min(18rem,100%),1fr) は「1チップ最低18rem(約288px)」を確保しつつ、
+    //   コンテナ幅に応じて列数が自動で増減する指定。18remは最長の定型ラベル
+    //   「スターター（未分類のカードのみ）」が text-sm で1行に収まる幅
+    //   (必要幅の見積もりは約268pxで、フォント描画差で再び折れないよう約20pxの余裕を持たせた。
+    //   旧指定の11remでは実測208pxで「…のカ|ードのみ）」と途中で2行に折れた)。
+    //   min(…,100%) により、コンテナが18remより狭い画面では最小幅がコンテナ幅に
+    //   切り詰められて1列に落ち、横にはみ出さない。
     // - チップ内の文字は min-w-0 + break-words + leading-tight。グリッド/フレックス子は
     //   既定で min-width:auto のため、長いパック名(連続した英数字)が列幅を押し広げて
     //   はみ出さないよう min-w-0 を付け、単語途中でも折り返せるようにする。
@@ -1180,7 +1184,7 @@ export default function ChannelPointSettings({
       <div
         role="group"
         aria-label={ariaLabel}
-        className={`mt-1 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-2 text-sm text-gray-100 ${
+        className={`mt-1 grid grid-cols-[repeat(auto-fill,minmax(min(18rem,100%),1fr))] gap-2 text-sm text-gray-100 ${
           // スクロール時はフォーカスリングが枠で切れないよう余白を足す。
           scrollable ? "max-h-48 overflow-y-auto p-1" : ""
         }`}
