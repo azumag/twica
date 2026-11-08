@@ -86,8 +86,22 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
       // `on:` 直後の行が workflow_dispatch 以外で始まることを否定する。
       // 否定先読みのみで `.` を使わないため `s` フラグは不要。
       expect(workflow).not.toMatch(/on:\s*\n(?!\s+workflow_dispatch)/);
+      // on: ブロック後方への別トリガ追加（push: / pull_request: / schedule: 等）も検知する
+      // （DSH 任意指摘1: `on:` 直後だけを見るアサーションでは後方追加を検出できない）。
+      expect(workflow).not.toMatch(/^\s{2}(push|pull_request|pull_request_target|schedule|merge_group|release):/m);
       expect(workflow).toContain("confirm == 'deploy'");
       expect(workflow).toContain("contents: read");
+      // DSH 任意指摘2: `contents: read` の文字列一致だけでは、contents: write や
+      // id-token: write 等の権限併記を検出できない。permissions: ブロックを
+      // 抽出して contents: read 単独であることを確認する。
+      const permissionsBody =
+        workflow.match(/permissions:\n((?:\s{6,}[^\n]*\n?)+)/)?.[1] ?? "";
+      expect(
+        permissionsBody
+          .trim()
+          .split("\n")
+          .map((line) => line.trim())
+      ).toEqual(["contents: read"]);
       expect(workflow).toContain(env);
       expect(workflow).toContain(`npm run ${script}`);
       // 同時デプロイ抑止
