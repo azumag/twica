@@ -34,6 +34,8 @@ import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
   streamerAdditionalGachaRewardsWithPackNames as streamerAdditionalGachaRewardsWithPackNamesTable,
+  streamerAdditionalGachaRewardsWithoutCollectionName as streamerAdditionalGachaRewardsWithoutCollectionNameTable,
+  streamerAdditionalGachaRewardsPackNamesOnly as streamerAdditionalGachaRewardsPackNamesOnlyTable,
 } from "@/lib/db/schema";
 
 type GenericDbError = { message?: string; code?: string; details?: string; hint?: string } | null | undefined;
@@ -459,18 +461,31 @@ async function insertAdditionalRewardPg(
   // 作成、または下の 42703 フォールバックで剥がした後の再試行）は本体定義に戻す。
   // INSERT と引数なし returning() は定義の全列を列挙するので、拡張定義のまま再試行すると
   // migration 未適用の窓で RETURNING 側から 42703 が再発する（判定を呼び出しごとに行う理由）。
-  const runInsert = (payload: Record<string, unknown>) =>
+  // omitCollectionName: collection_name 列欠落窓の再試行用。Drizzle の insert は
+  // values に無い列も `default` としてテーブル定義の全列を列挙するため、キーを
+  // delete するだけでは列を剥がせず、物理的に collection_name を持たない定義へ
+  // 切り替える必要がある（Issue #2005 任意2。reward_pack_names の有無でさらに
+  // 2分岐するため、定義は4通りの組み合わせになる）。
+  const runInsert = (payload: Record<string, unknown>, omitCollectionName = false) =>
     withDbRetry(
       async () => {
         const { db } = await getDb();
         if ("reward_pack_names" in payload) {
           return db
-            .insert(streamerAdditionalGachaRewardsWithPackNamesTable)
+            .insert(
+              omitCollectionName
+                ? streamerAdditionalGachaRewardsPackNamesOnlyTable
+                : streamerAdditionalGachaRewardsWithPackNamesTable
+            )
             .values(payload as typeof streamerAdditionalGachaRewardsWithPackNamesTable.$inferInsert)
             .returning();
         }
         return db
-          .insert(streamerAdditionalGachaRewardsTable)
+          .insert(
+            omitCollectionName
+              ? streamerAdditionalGachaRewardsWithoutCollectionNameTable
+              : streamerAdditionalGachaRewardsTable
+          )
           .values(payload as typeof streamerAdditionalGachaRewardsTable.$inferInsert)
           .returning();
       },
@@ -514,13 +529,17 @@ async function insertAdditionalRewardPg(
     // （これまで POST は欠落を返さず通常の成功に見えた）。
     let currentError: unknown = error;
     let collectionNameStripped = false;
+    // collection_name を INSERT から物理的に除いた定義へ切り替えたか。
+    // 一度剥がしたら後続の再試行でも縮退定義を維持する必要があるため、ループの
+    // 状態として持つ（キー削除だけでは再発する。runInsert のコメント参照）。
+    let collectionNameOmitted = false;
     for (let packBindingFallbackRound = 0; packBindingFallbackRound < 2 && currentError; packBindingFallbackRound++) {
       if (isMissingRewardPackNamesColumnError(currentError) && "reward_pack_names" in insertPayload) {
         const strippedPackNames = insertPayload.reward_pack_names;
         delete insertPayload.reward_pack_names;
         collectionNameStripped ||= Array.isArray(strippedPackNames) && strippedPackNames.length > 1;
         try {
-          const rows = await runInsert(insertPayload);
+          const rows = await runInsert(insertPayload, collectionNameOmitted);
           return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
         } catch (retryError) {
           currentError = retryError;
@@ -529,9 +548,10 @@ async function insertAdditionalRewardPg(
       }
       if (isMissingCollectionNameColumn(currentError as GenericDbError) && "collection_name" in insertPayload) {
         delete insertPayload.collection_name;
+        collectionNameOmitted = true;
         collectionNameStripped = true;
         try {
-          const rows = await runInsert(insertPayload);
+          const rows = await runInsert(insertPayload, collectionNameOmitted);
           return { kind: "ok", reward: rows[0] ?? null, collectionNameStripped };
         } catch (retryError) {
           currentError = retryError;

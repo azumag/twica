@@ -797,6 +797,21 @@ export default function ChannelPointSettings({
           ? t("additionalRewards.updateSuccessPackPending")
           : t("additionalRewards.updateSuccess")
       );
+      // Issue #2005 (任意1): 「現在値との比較」の基準となる一覧行を、PUT の成功
+      // 応答（GET と同じ collection_names 形式の確定行）で即時更新する。
+      // 従来は後続の一覧再取得だけが基準の更新経路で、再取得の失敗は
+      // fetchAdditionalRewards 内で黙って捨てられるため、古い一覧が基準として
+      // 残り続けた。その状態で編集し直すと collectionNamesUnchanged が誤って
+      // true になり、保存すべき変更が省略される穴があった。GET 失敗でも基準が
+      // 確定値へ進むよう応答で更新し、一覧の再取得は他行の同期用に留める。
+      if (data.reward && typeof data.reward === "object") {
+        const updatedReward = data.reward as AdditionalReward;
+        setAdditionalRewards((current) =>
+          current.map((reward) =>
+            reward.reward_id === targetRewardId ? { ...reward, ...updatedReward } : reward
+          )
+        );
+      }
       // 保存中に他行の編集へ移っていた場合は、開いているフォームを残す
       setEditingRewardId((current) => (current === targetRewardId ? null : current));
       await fetchAdditionalRewards();
