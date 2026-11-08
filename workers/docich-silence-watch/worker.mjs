@@ -46,7 +46,8 @@ const TARGET = "azumag/docich";
 const CONTROLS = ["azumag/twica", "azumag/soviet_now"];
 const SILENCE_MS = 2 * 60 * 60 * 1000; // 2 時間
 const SUPPRESS_MS = 55 * 60 * 1000; // 55 分（GitHub 版と同じ抑制窓）
-const KV_KEY = "last_alert_at";
+const KV_ALERT_KEY = "last_alert_at";
+const KV_RECOVERED_KEY = "last_recovered_at";
 const API_VERSION = "2026-03-10";
 
 function parseTs(value) {
@@ -157,8 +158,19 @@ async function sendDiscord(env, content) {
   if (!res.ok) throw new Error(`discord_${res.status}`);
 }
 
+// 抑制判定を純粋関数として分離（テスト容易化）。
+// last_alert が窓内でも、その後に recovered が記録されていれば抑制しない
+// （GitHub 版の recovered status anchor に相当）。一度復帰した後の再発は
+// 連続した同一障害ではなく新しい事象として扱い、即座に通知すべきため。
+export function shouldSuppress(lastAlertAt, lastRecoveredAt, nowMs, suppressMs = SUPPRESS_MS) {
+  if (lastAlertAt === null || nowMs - lastAlertAt >= suppressMs) return false;
+  return lastRecoveredAt === null || lastRecoveredAt <= lastAlertAt;
+}
+
 // cron 本体。観測→判定→（抑制窓を見て）Discord 送信→最終送信時刻を KV 記録。
 // 観測不能（API エラー）は誤アラートを出さずにログへ残す。
+// KV 読み取り失敗は「送信する」側に倒す fail-open 設計: 監視系が自身の状態
+// ストア故障で黙る方が重複通知より害が大きいため（DSH レビュー指摘）。
 async function runWatch(env) {
   const nowMs = Date.now();
   const observations = [];
@@ -167,18 +179,39 @@ async function runWatch(env) {
   }
   const { alert, classification } = classify(observations);
   console.log(JSON.stringify({ alert, classification, observations }));
-  if (!alert) return { alert: false, sent: false, observations };
 
-  const lastAlertAt = parseTs(await env.SILENCE_KV.get(KV_KEY));
-  const suppressed =
-    lastAlertAt !== null && nowMs - lastAlertAt < SUPPRESS_MS;
-  if (suppressed) {
+  if (!alert) {
+    // 正常時は recovered マーカーを記録し、直前アラートとの新旧比較に使う。
+    // KV 書き込み失敗は観測結果に影響しないためログに留める。
+    try {
+      await env.SILENCE_KV.put(KV_RECOVERED_KEY, new Date(nowMs).toISOString());
+    } catch (error) {
+      console.log(`kv_recovered_put_failed: ${error?.message || error}`);
+    }
+    return { alert: false, sent: false, observations };
+  }
+
+  let lastAlertAt = null;
+  let lastRecoveredAt = null;
+  try {
+    lastAlertAt = parseTs(await env.SILENCE_KV.get(KV_ALERT_KEY));
+    lastRecoveredAt = parseTs(await env.SILENCE_KV.get(KV_RECOVERED_KEY));
+  } catch (error) {
+    // fail-open: KV 読み取りに失敗したら抑制せず送信する。
+    console.log(`kv_get_failed_failing_open: ${error?.message || error}`);
+  }
+  if (shouldSuppress(lastAlertAt, lastRecoveredAt, nowMs)) {
     console.log("suppressed: within the 55-minute suppression window");
     return { alert: true, sent: false, suppressed: true, observations };
   }
   await sendDiscord(env, buildAlertMessage(observations, classification));
   // 送信成功後にだけ anchor を記録する（送信失敗では黙らせない）。
-  await env.SILENCE_KV.put(KV_KEY, new Date(nowMs).toISOString());
+  // put 失敗は次回の重複送信を招くだけで今回の通知は済んでいるためログに留める。
+  try {
+    await env.SILENCE_KV.put(KV_ALERT_KEY, new Date(nowMs).toISOString());
+  } catch (error) {
+    console.log(`kv_alert_put_failed: ${error?.message || error}`);
+  }
   return { alert: true, sent: true, observations };
 }
 

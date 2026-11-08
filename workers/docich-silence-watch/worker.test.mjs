@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { judgeSilent, classify } from "./worker.mjs";
+import { judgeSilent, classify, shouldSuppress } from "./worker.mjs";
 
 const H = 60 * 60 * 1000;
 
@@ -39,4 +39,14 @@ test("classify: target 正常 → 通知なし", () => {
     { repo: "azumag/soviet_now", silent: false },
   ]);
   assert.equal(r.alert, false);
+});
+
+test("shouldSuppress: recovered が alert より新しければ抑制しない", () => {
+  const now = 100 * 60 * 1000;
+  const alert = now - 10 * 60 * 1000; // 窓内のアラート
+  const recovered = now - 5 * 60 * 1000; // アラート後に復帰
+  assert.equal(shouldSuppress(alert, recovered, now), false);
+  assert.equal(shouldSuppress(alert, recovered - 10 * 60 * 1000, now), true);
+  assert.equal(shouldSuppress(alert, null, now), true);
+  assert.equal(shouldSuppress(null, null, now), false);
 });
