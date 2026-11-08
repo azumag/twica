@@ -1140,62 +1140,95 @@ export default function ChannelPointSettings({
     const missing = selected.filter(
       (name) => name !== DEFAULT_PACK_SENTINEL && !collections.includes(name)
     );
+    // 見た目の方針(ロジックは一切変えない):
+    // - 旧実装は max-h-40 の縦長の枠に縦一列でチェックボックスを並べていたため、
+    //   追加フォームの1行(高さ40pxの select / 枚数 / ボタンと同居)で縦に突き出して
+    //   不格好だった。さらに幅160pxのセルでは「スターター（未分類のカードのみ）」が
+    //   途中で折り返された。
+    // - そこで各項目を「枠付きチップ」にして auto-fill グリッドへ並べる。
+    //   minmax(11rem,1fr) は「1チップ最低11rem(約176px)」を確保しつつ、
+    //   コンテナ幅に応じて列数が自動で増減する指定。狭くても1列に落ちるだけで、
+    //   文字が1〜2文字ごとに折れることはない。
+    // - チップ内の文字は min-w-0 + break-words + leading-tight。グリッド/フレックス子は
+    //   既定で min-width:auto のため、長いパック名(連続した英数字)が列幅を押し広げて
+    //   はみ出さないよう min-w-0 を付け、単語途中でも折り返せるようにする。
+    // - 登録パックは最大50件ありうるので、項目数が多いときだけ高さを max-h-48 で
+    //   頭打ちにしてスクロールさせる(少数のときは枠が不要に縦長にならない)。
+    const itemCount = 2 + collections.length + missing.length;
+    const scrollable = itemCount > 12;
+    // チェック状態・無効状態・登録解除済みに応じたチップの見た目。
+    // チェック時は紫の強調、未チェックは灰色の枠、無効時は操作不可を示す減光。
+    // 登録解除済み(missing)は従来どおり amber 系で「注意が要る項目」と分かるようにする。
+    const chipClass = (checked: boolean, variant: "normal" | "missing" = "normal") => {
+      const tone =
+        variant === "missing"
+          ? "border-amber-500/60 bg-amber-500/10 text-amber-300"
+          : checked
+            ? "border-purple-500 bg-purple-500/10 text-gray-100"
+            : "border-gray-600 bg-gray-800 text-gray-100";
+      // 無効時はホバーで枠色を変えない(押せないものが反応して見えるのを避ける)。
+      const interaction = disabled
+        ? "cursor-not-allowed opacity-60"
+        : `cursor-pointer ${checked || variant === "missing" ? "" : "hover:border-gray-500"}`;
+      // focus-within: 内側のチェックボックスにキーボードフォーカスが当たったとき
+      // チップ全体にリングを出す(入力自体は小さいため)。
+      return `flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 transition-colors focus-within:ring-1 focus-within:ring-purple-500/40 ${tone} ${interaction}`;
+    };
+    const checkboxClass = "h-3.5 w-3.5 shrink-0 accent-purple-500 disabled:cursor-not-allowed";
+    const textClass = "min-w-0 break-words leading-tight";
     return (
       <div
         role="group"
         aria-label={ariaLabel}
-        className="mt-1 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-600 bg-gray-800 p-2 text-sm text-gray-100"
+        className={`mt-1 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-2 text-sm text-gray-100 ${
+          // スクロール時はフォーカスリングが枠で切れないよう余白を足す。
+          scrollable ? "max-h-48 overflow-y-auto p-1" : ""
+        }`}
       >
-        <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gray-700/60">
+        <label className={chipClass(selected.length === 0)}>
           <input
             type="checkbox"
             checked={selected.length === 0}
             onChange={() => onChange([])}
             disabled={disabled}
-            className="h-3.5 w-3.5 accent-purple-500 disabled:cursor-not-allowed"
+            className={checkboxClass}
           />
-          <span>{t("collections.all")}</span>
+          <span className={textClass}>{t("collections.all")}</span>
         </label>
         {/* Issue #555: 「デフォルトパックのみ」= 未分類(collection_name IS NULL)の
             カードに絞る擬似パック。他パックと併用可能（和集合）。 */}
-        <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gray-700/60">
+        <label className={chipClass(selected.includes(DEFAULT_PACK_SENTINEL))}>
           <input
             type="checkbox"
             checked={selected.includes(DEFAULT_PACK_SENTINEL)}
             onChange={() => toggle(DEFAULT_PACK_SENTINEL)}
             disabled={disabled}
-            className="h-3.5 w-3.5 accent-purple-500 disabled:cursor-not-allowed"
+            className={checkboxClass}
           />
-          <span>{t("collections.defaultOnly", { name: defaultPackDisplayName })}</span>
+          <span className={textClass}>{t("collections.defaultOnly", { name: defaultPackDisplayName })}</span>
         </label>
         {collections.map((name) => (
-          <label
-            key={name}
-            className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gray-700/60"
-          >
+          <label key={name} className={chipClass(selected.includes(name))}>
             <input
               type="checkbox"
               checked={selected.includes(name)}
               onChange={() => toggle(name)}
               disabled={disabled}
-              className="h-3.5 w-3.5 accent-purple-500 disabled:cursor-not-allowed"
+              className={checkboxClass}
             />
-            <span className="break-all">{name}</span>
+            <span className={textClass}>{name}</span>
           </label>
         ))}
         {missing.map((name) => (
-          <label
-            key={name}
-            className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-gray-700/60"
-          >
+          <label key={name} className={chipClass(true, "missing")}>
             <input
               type="checkbox"
               checked
               onChange={() => toggle(name)}
               disabled={disabled}
-              className="h-3.5 w-3.5 accent-amber-500 disabled:cursor-not-allowed"
+              className="h-3.5 w-3.5 shrink-0 accent-amber-500 disabled:cursor-not-allowed"
             />
-            <span className="break-all text-amber-300">
+            <span className={textClass}>
               {collectionsLoaded ? t("collections.missing", { name }) : name}
             </span>
           </label>
@@ -1645,12 +1678,16 @@ export default function ChannelPointSettings({
                            せずに設定だけ更新できる（PUT /api/streamer/additional-rewards）。 */}
                        {editingRewardId === reward.reward_id && (
                          <div className="mt-2 rounded border border-purple-500/30 bg-gray-800/80 p-3">
-                           <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px_auto] sm:items-center">
+                           {/* パック選択は全幅の1段目に置く(編集の主目的であり、チップは幅が要るため)。
+                               枚数・更新/キャンセルは2段目の1行にまとめる。
+                               旧レイアウトは1行3セルのうち最初のセルに縦長の枠を入れていた。 */}
+                           <div className="text-xs text-gray-300">
+                             <span className="block">{t("collections.editLabel")}</span>
                              {/* Issue #554: パック選択の表示制御は追加フォームと同じ
                                  （canManage=false ではアップセル表示/disabled）。
                                  枚数変更はプランゲート対象外のため編集自体は許可する。 */}
                              {editingPackControlMode === "hidden" ? (
-                               <div className="flex h-9 min-w-0 items-center rounded-md border border-gray-700 bg-gray-800/60 px-2 text-[11px] leading-tight text-gray-500">
+                               <div className="mt-1 flex h-9 min-w-0 items-center rounded-md border border-gray-700 bg-gray-800/60 px-2 text-[11px] leading-tight text-gray-500">
                                  {t("collections.premiumLocked")}
                                </div>
                              ) : (
@@ -1661,6 +1698,8 @@ export default function ChannelPointSettings({
                                  t("collections.editLabel")
                                )
                              )}
+                           </div>
+                           <div className="mt-2 grid gap-2 sm:grid-cols-[160px_auto] sm:items-center">
                              <label className="group flex h-9 items-center gap-2 rounded-md border border-gray-600 bg-gray-700 pl-3 pr-1.5 text-sm text-gray-200 transition-colors hover:border-gray-500 focus-within:border-purple-500 focus-within:ring-1 focus-within:ring-purple-500/40">
                                <span className="whitespace-nowrap text-xs text-gray-300">
                                  {t("additionalRewards.drawCount")}
@@ -1718,7 +1757,12 @@ export default function ChannelPointSettings({
 
                {/* Add new additional reward */}
                {/* 新しい追加報酬を追加 */}
-               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px_180px_auto] sm:items-center">
+               {/* 追加フォームは2段構成にする。
+                   1段目: 報酬select(伸縮) + 枚数 + 追加ボタンを、どれも高さ40pxの1行に揃える。
+                   2段目: パック選択を全幅・可視見出し付きで置く。
+                   旧レイアウトは160pxのセルにパック欄を押し込んでいたため、縦長の枠が
+                   1行から突き出し、パック名も途中で折り返されていた。 */}
+               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto] sm:items-center">
                  {/*
                    ネイティブの矢印アイコンを残しつつ右側に余白を確保。
                    bg-gray-700 で他のフォーム要素と階調を揃え、フォーカスリングで状態を明示する。
@@ -1743,24 +1787,6 @@ export default function ChannelPointSettings({
                        </option>
                      ))}
                  </select>
-                 {/* Issue #393再設計: この追加報酬に紐付けるカードパック（任意）。
-                     パック管理で事前登録した一覧から選ぶだけで、ここではゲート
-                     対象外(報酬自体の新規作成は常に可能)。
-                     Issue #554: canManage=false かつ紐付けなしの場合、グリッド
-                     レイアウトを崩さないよう同じセル内に短い案内テキストを表示し、
-                     詳しい案内(リンク付き)はグリッド全体の下に別途表示する。 */}
-                 {additionalPackControlMode === "hidden" ? (
-                   <div className="flex h-10 min-w-0 items-center rounded-md border border-gray-700 bg-gray-800/60 px-2 text-[11px] leading-tight text-gray-500">
-                     {t("collections.premiumLocked")}
-                   </div>
-                 ) : (
-                   renderPackCheckboxes(
-                     selectedAdditionalCollectionNames,
-                     setSelectedAdditionalCollectionNames,
-                     additionalPackControlMode === "disabled",
-                     t("collections.additionalLabel")
-                   )
-                 )}
                  {/*
                    ラベルと数値入力を1コンポーネントとして見せるためのコンテナ。
                    focus-within で内側 input のフォーカスに合わせてコンテナを強調する。
@@ -1789,6 +1815,29 @@ export default function ChannelPointSettings({
                  >
                    {addingAdditional ? tCommon("loading") : tCommon("add")}
                  </button>
+               </div>
+               {/* Issue #393再設計: この追加報酬に紐付けるカードパック（任意）。
+                   パック管理で事前登録した一覧から選ぶだけで、ここではゲート
+                   対象外(報酬自体の新規作成は常に可能)。
+                   Issue #554: canManage=false かつ紐付けなしの場合は、同じ2段目に
+                   短い案内ボックスを表示し、詳しい案内(リンク付き)はその下に別途表示する。
+                   見出しは可視の <span>。外側を <label> にしない理由はメイン報酬と同じ
+                   (中のチェックボックスlabelとの入れ子を避ける)。グループ名は
+                   renderPackCheckboxes の role="group" + aria-label が担う。 */}
+               <div className="mt-2 text-xs text-gray-300">
+                 <span className="block">{t("collections.additionalLabel")}</span>
+                 {additionalPackControlMode === "hidden" ? (
+                   <div className="mt-1 flex h-10 min-w-0 items-center rounded-md border border-gray-700 bg-gray-800/60 px-2 text-[11px] leading-tight text-gray-500">
+                     {t("collections.premiumLocked")}
+                   </div>
+                 ) : (
+                   renderPackCheckboxes(
+                     selectedAdditionalCollectionNames,
+                     setSelectedAdditionalCollectionNames,
+                     additionalPackControlMode === "disabled",
+                     t("collections.additionalLabel")
+                   )
+                 )}
                </div>
                {(additionalPackControlMode === "hidden" || additionalPackControlMode === "disabled") &&
                  renderPackUpsellHint()}
