@@ -431,4 +431,57 @@ describe("ChannelPointSettings main pack save baseline", () => {
     await save(3);
     expect(settingsBodies[2].channelPointCollectionNames).toEqual(["weapons"]);
   });
+
+  // PR #2006 レビュー指摘: 保存中も checkbox は操作できるため、応答待ち中に toggle しても
+  // 基準は「実際に送信した値」で更新されなければならない。応答時点の UI 値で基準を
+  // 計算すると DB（送信値）と基準（UI 値）が静的に乖離し、以後の保存が省略され続ける。
+  it("uses the sent value (not the in-flight UI value) as baseline when the selection changes while saving", async () => {
+    // settings POST の応答を手動で保留できる fetch。
+    let resolveSettings!: (r: Response) => void;
+    const settingsGate = new Promise<Response>((resolve) => { resolveSettings = resolve; });
+    const ok = () => new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const fallback = mockFetch() as unknown as typeof fetch;
+    fetchMock = mockFetch();
+    settingsBodies = [];
+    let settingsCall = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/streamer/settings" && init?.method === "POST") {
+        settingsBodies.push(JSON.parse(String(init.body)));
+        return ++settingsCall === 1 ? settingsGate : ok();
+      }
+      if (url === "/api/twitch/eventsub/subscribe" && init?.method === "POST") {
+        return ok();
+      }
+      return fallback(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderComponent();
+    await waitFor(() => expect(mainPack("weapons")).toBeInTheDocument());
+
+    // [weapons] を保存開始（応答は保留中）
+    fireEvent.click(mainPack("weapons"));
+    const saveButton = await screen.findByRole("button", { name: "保存 & EventSub登録" });
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(settingsBodies.length).toBe(1));
+    expect(settingsBodies[0].channelPointCollectionNames).toEqual(["weapons"]);
+
+    // 応答待ち中に weapons を外す → UI の選択は [] になる
+    fireEvent.click(mainPack("weapons"));
+    resolveSettings(ok());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "保存 & EventSub登録" })).not.toBeDisabled()
+    );
+
+    // 基準が「送信した [weapons]」に更新されていれば、現在の UI 値 [] は変更扱いになり
+    // 次の保存で channelPointCollectionNames: [] が送られる。
+    // 基準が応答時点の UI 値 [] で計算される実装だと「未変更」と誤判定されて送信が省略される。
+    fireEvent.click(screen.getByRole("button", { name: "保存 & EventSub登録" }));
+    await waitFor(() => expect(settingsBodies.length).toBe(2));
+    expect(settingsBodies[1]).toHaveProperty("channelPointCollectionNames", []);
+  });
 });

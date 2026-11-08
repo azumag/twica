@@ -476,6 +476,18 @@ export default function ChannelPointSettings({
         }
       }
 
+      // Issue #1994: bind the main reward to a set of packs ([] = all cards).
+      // Issue #1996 (任意4): 未変更のときは送らない。先頭要素は旧列ミラーに
+      // なるため、並び替えも「変更」とみなして順序敏感に比較する。
+      // 送信値は fetch 前に確定させる（PR #2006 レビュー指摘）: 保存中も
+      // checkbox は操作できるため、応答待ち中の toggle で selectedCollectionNames が
+      // 変わると基準更新が「送った値」ではなく「最新 UI 値」で計算され、
+      // DB と UI が静的に乖離する。body と基準更新の両方にこの確定値を使う。
+      const packNamesChanged =
+        selectedCollectionNames.length !== savedCollectionNames.length ||
+        selectedCollectionNames.some((name, i) => name !== savedCollectionNames[i]);
+      const sentCollectionNames = packNamesChanged ? [...selectedCollectionNames] : undefined;
+
       // Save settings
       const settingsResponse = await fetch("/api/streamer/settings", {
         method: "POST",
@@ -485,13 +497,7 @@ export default function ChannelPointSettings({
           streamerId,
           channelPointRewardId: selectedRewardId,
           channelPointRewardName: selectedRewardName,
-          // Issue #1994: bind the main reward to a set of packs ([] = all cards).
-          // Issue #1996 (任意4): 未変更のときは送らない。先頭要素は旧列ミラーに
-          // なるため、並び替えも「変更」とみなして順序敏感に比較する。
-          ...(selectedCollectionNames.length === savedCollectionNames.length &&
-              selectedCollectionNames.every((name, i) => name === savedCollectionNames[i])
-            ? {}
-            : { channelPointCollectionNames: selectedCollectionNames }),
+          ...(sentCollectionNames ? { channelPointCollectionNames: sentCollectionNames } : {}),
         }),
       });
 
@@ -524,12 +530,11 @@ export default function ChannelPointSettings({
       // - デプロイ窓で先頭1件しか保存されなかったとき: DB に残るのは先頭1件のみ。
       //   送った配列全体を基準にすると次回「未変更」と判定されて 2 件目以降が永久に
       //   再送されないため、先頭1要素を基準にして列適用後に再送されるようにする。
-      const packNamesWereSent =
-        selectedCollectionNames.length !== savedCollectionNames.length ||
-        selectedCollectionNames.some((name, i) => name !== savedCollectionNames[i]);
-      if (packNamesWereSent) {
+      // 基準更新も送信時に確定した sentCollectionNames を使う。
+      // 応答待ち中に UI の選択が変わっていても、基準は「DB に書いた値」に揃える。
+      if (sentCollectionNames) {
         setSavedCollectionNames(
-          packNamesSkippedDeployWindow ? selectedCollectionNames.slice(0, 1) : selectedCollectionNames
+          packNamesSkippedDeployWindow ? sentCollectionNames.slice(0, 1) : sentCollectionNames
         );
       }
 
