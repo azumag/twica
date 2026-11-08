@@ -311,3 +311,124 @@ describe("ChannelPointSettings save message priority (Issue #1998)", () => {
     // message スロットを奪わないことだけを検証する。
   });
 });
+
+// メイン報酬のパック保存は「初期値から変わったときだけ」channelPointCollectionNames
+// を送る（サーバーはキー無し=変更なし、[]=全カードと解釈する）。比較基準が props 由来の
+// 初期値のまま固定だと、保存成功後に初期値へ戻す操作が「未変更」と誤判定されて
+// 送信が省略され、画面は「保存しました」なのに DB が古い値のまま残る。
+// 保存成功のたびに基準を「実際に DB に残る実効値」へ更新することを確認する。
+describe("ChannelPointSettings main pack save baseline", () => {
+  let fetchMock: FetchMock;
+  let settingsBodies: Array<Record<string, unknown>>;
+
+  // settings POST の応答だけ差し替えられるようにする。EventSub は成功を返す。
+  function installFetch(settingsResponses: Array<Record<string, unknown>> = []) {
+    settingsBodies = [];
+    let settingsCall = 0;
+    fetchMock = mockFetch();
+    const fallback = mockFetch() as unknown as typeof fetch;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/streamer/settings" && init?.method === "POST") {
+        settingsBodies.push(JSON.parse(String(init.body)));
+        const payload = settingsResponses[settingsCall++] ?? { success: true };
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "/api/twitch/eventsub/subscribe" && init?.method === "POST") {
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return fallback(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  }
+
+  // メイン報酬側のパックグループ内のチェックボックスを返す。
+  // 追加報酬側は「追加の引き換え対象のカードパック」で名前が異なるため完全一致で区別できる。
+  const mainPack = (name: string) =>
+    within(screen.getByRole("group", { name: "引き換え対象のカードパック" })).getByRole("checkbox", { name });
+
+  // 保存ボタンを押し、その保存が完了する（ボタンが再び有効になる）まで待つ。
+  async function save(expectedPosts: number) {
+    const saveButton = await screen.findByRole("button", { name: "保存 & EventSub登録" });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(settingsBodies.length).toBe(expectedPosts));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "保存 & EventSub登録" })).not.toBeDisabled()
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("resends [] after saving [weapons] and then unchecking it (initial [] baseline must not stick)", async () => {
+    installFetch();
+    renderComponent();
+    await waitFor(() => expect(mainPack("weapons")).toBeInTheDocument());
+
+    fireEvent.click(mainPack("weapons"));
+    await save(1);
+    expect(settingsBodies[0].channelPointCollectionNames).toEqual(["weapons"]);
+
+    fireEvent.click(mainPack("weapons"));
+    await save(2);
+    expect(settingsBodies[1]).toHaveProperty("channelPointCollectionNames", []);
+  });
+
+  it("resends [weapons] after saving [] and then re-checking it", async () => {
+    installFetch();
+    renderComponent({ currentCollectionNames: ["weapons"] });
+    await waitFor(() => expect(mainPack("weapons")).toBeChecked());
+
+    fireEvent.click(mainPack("weapons"));
+    await save(1);
+    expect(settingsBodies[0]).toHaveProperty("channelPointCollectionNames", []);
+
+    fireEvent.click(mainPack("weapons"));
+    await save(2);
+    expect(settingsBodies[1].channelPointCollectionNames).toEqual(["weapons"]);
+  });
+
+  it("still omits channelPointCollectionNames when the selection is unchanged (twice in a row)", async () => {
+    installFetch();
+    renderComponent({ currentCollectionNames: ["weapons"] });
+    await waitFor(() => expect(mainPack("weapons")).toBeChecked());
+
+    await save(1);
+    await save(2);
+    expect(settingsBodies[0]).not.toHaveProperty("channelPointCollectionNames");
+    expect(settingsBodies[1]).not.toHaveProperty("channelPointCollectionNames");
+  });
+
+  it("uses only the first name as baseline when the deploy window stripped the rest, so the full array is resent", async () => {
+    // 1回目: 列未適用のデプロイ窓で先頭1件(characters)しか保存されなかった応答。
+    installFetch([{ success: true, channelPointCollectionNamesSkippedDeployWindow: true }, { success: true }, { success: true }]);
+    renderComponent({ currentCollectionNames: ["weapons"] });
+    await waitFor(() => expect(mainPack("weapons")).toBeChecked());
+
+    // ["weapons"] → ["characters","weapons"]（先頭が旧列ミラーになる並び）にして保存。
+    fireEvent.click(mainPack("weapons"));
+    fireEvent.click(mainPack("characters"));
+    fireEvent.click(mainPack("weapons"));
+    await save(1);
+    expect(settingsBodies[0].channelPointCollectionNames).toEqual(["characters", "weapons"]);
+
+    // 選択を変えずに再保存 → 基準は先頭1件["characters"]なので全体が再送される。
+    await save(2);
+    expect(settingsBodies[1].channelPointCollectionNames).toEqual(["characters", "weapons"]);
+
+    // characters を外して ["weapons"]（= props の初期値と同じ）にして保存。
+    // DB に実際に残っているのは ["characters"] なので、初期値と等しくても送信が必要。
+    // 基準が props 初期値のままだと、ここが「未変更」と誤判定されて省略される。
+    fireEvent.click(mainPack("characters"));
+    await save(3);
+    expect(settingsBodies[2].channelPointCollectionNames).toEqual(["weapons"]);
+  });
+});
