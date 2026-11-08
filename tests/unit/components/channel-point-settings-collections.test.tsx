@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import jaMessages from "../../../messages/ja.json";
@@ -251,5 +251,63 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
       expect(boxes.length).toBe(2);
     });
     expect(screen.queryByText("デフォルトパック（未分類のカードのみ）")).not.toBeInTheDocument();
+  });
+});
+
+// Issue #1998 (指摘2): 保存成功メッセージの優先順位。
+// settings API が channelPointCollectionNamesSkippedDeployWindow=true を返した
+// とき、EventSub 応答の raid warning / message より「反映待ち」文言を優先して
+// 表示することを確認する（旧順序では warning/message が先に評価され、
+// 反映待ち通知が覆い隠され得た）。
+describe("ChannelPointSettings save message priority (Issue #1998)", () => {
+  let fetchMock: FetchMock;
+
+  beforeEach(() => {
+    fetchMock = mockFetch();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the deploy-window pending message even when EventSub returns a message and raid warning", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/streamer/settings" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({ success: true, channelPointCollectionNamesSkippedDeployWindow: true }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (url === "/api/twitch/eventsub/subscribe" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            message: "EVENTSUB_MESSAGE_MARKER",
+            raidSubscription: { status: "error", warning: "RAID_WARNING_MARKER" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      // フォールバックは共通の mockFetch に委譲する。FetchMock（vi.fn の
+      // Mock 型）は型上直接呼び出せないため、fetch のシグネチャにキャストする。
+      return (mockFetch() as unknown as typeof fetch)(input, init);
+    });
+
+    renderComponent();
+
+    const saveButton = await screen.findByRole("button", { name: "保存 & EventSub登録" });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("保存しました（パック割り当ての一部は反映待ちです）")
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText("EVENTSUB_MESSAGE_MARKER")).not.toBeInTheDocument();
+    // raid warning は別スロット（raidEventSubWarning）で表示されるため、
+    // message スロットを奪わないことだけを検証する。
   });
 });

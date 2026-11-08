@@ -528,8 +528,12 @@ export default function ChannelPointSettings({
 
       // レスポンスのsuccessフィールドで判定（ステータスコードではなく）
       if (eventSubData.success) {
-        setMessage(raidSubscriptionWarning || eventSubData.message ||
-          (packNamesSkippedDeployWindow ? t("messages.saveSuccessPackPending") : t("messages.saveSuccess")));
+        // Issue #1998 (指摘2): デプロイ窓でパック割り当てがストリップされたときの
+        // 「反映待ち」通知を最優先にする。raidSubscriptionWarning や
+        // eventSubData.message が先に来ると、このスロットでは反映待ち文言が
+        // 覆い隠されて「全部保存された」と誤解させるため。
+        setMessage(packNamesSkippedDeployWindow ? t("messages.saveSuccessPackPending") :
+          (raidSubscriptionWarning || eventSubData.message || t("messages.saveSuccess")));
         setEventSubStatus("pending");
         setRegistrationFailed(false);
         setSavedMainRewardId(selectedRewardId);
@@ -657,10 +661,10 @@ export default function ChannelPointSettings({
       // 状態を更新
       // Issue #1996 (任意2): パック割り当てがデプロイ窓でストリップされたときは
       // 「反映待ち」文言を出す（更新側と同じ扱い。欠落が通常の成功に見えないように）。
-      setMessage(raidSubscriptionWarning ||
-        (dbData.collectionNameSkippedDeployWindow
-          ? t("additionalRewards.addSuccessPackPending")
-          : t("additionalRewards.addSuccess")));
+      // Issue #1998 (指摘2): 保存成功側と同じく反映待ち通知を最優先にする。
+      setMessage(dbData.collectionNameSkippedDeployWindow
+        ? t("additionalRewards.addSuccessPackPending")
+        : (raidSubscriptionWarning || t("additionalRewards.addSuccess")));
       setSelectedAdditionalRewardId("");
       setSelectedAdditionalCollectionNames([]);
       setAdditionalDrawCount(1);
@@ -723,6 +727,12 @@ export default function ChannelPointSettings({
     // 保存開始時の編集対象をキャプチャする。保存中に他行の編集へ移っていた
     // 場合は、開いているフォームを勝手に閉じない。
     const targetRewardId = editingRewardId;
+    // Issue #1998 (指摘3): 未変更判定の比較対象は保存処理中に不変なので、
+    // every の反復内で effectiveRewardPackNames を再計算せず一度だけ求める。
+    const currentRewardPackNames = editingReward ? effectiveRewardPackNames(editingReward) : null;
+    const collectionNamesUnchanged = currentRewardPackNames !== null &&
+      editingCollectionNames.length === currentRewardPackNames.length &&
+      editingCollectionNames.every((name, i) => name === currentRewardPackNames[i]);
 
     setUpdatingAdditional(true);
     setMessage("");
@@ -740,10 +750,7 @@ export default function ChannelPointSettings({
           // Issue #1996 (任意4): 値が変わっていないときも送らない（空配列含め
           // 毎回送信すると配列列 UPDATE になり、デプロイ窓で毎回フォールバック
           // へ頼る。並び替えも変更とみなし、集合比較ではなく順序比較で判定）。
-          ...(editingPackControlMode === "hidden" ||
-              (editingReward &&
-                editingCollectionNames.length === effectiveRewardPackNames(editingReward).length &&
-                editingCollectionNames.every((name, i) => name === effectiveRewardPackNames(editingReward)[i]))
+          ...(editingPackControlMode === "hidden" || collectionNamesUnchanged
             ? {}
             : { collectionNames: editingCollectionNames }),
           drawCount: editingDrawCount,
