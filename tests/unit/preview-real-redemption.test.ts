@@ -153,8 +153,27 @@ describe('redemption correlation gate', () => {
   const prior = new Set(['1'])
 
   it('accepts one fresh matching display and history', () => {
-    expect(correlateRedemption([display], [row], 'testuser', since, prior)).toEqual({ overlay: display, history: row })
+    expect(correlateRedemption([display], [row], 'testuser', since, prior)).toEqual({ overlay: display, history: row, nameHidden: false })
     expect(chatMatches('@testuser が【コモン】Card B を獲得しました！', row, 'testuser')).toBe(true)
+  })
+
+  it('accepts a portrait-layout display whose username text is not rendered', () => {
+    // 縦長/imageOnly レイアウトでは「X が引いたカード」とカード名の帯が描画されず
+    // sample.user は null になる（issue #2004）。カード名は img.alt 由来で残るため、
+    // ユーザー名非表示の表示だけはカード名で照合し、nameHidden を記録する。
+    const portrait = { ...display, user: null, text: '' }
+    expect(correlateRedemption([portrait], [row], 'testuser', since, prior))
+      .toEqual({ overlay: portrait, history: row, nameHidden: true })
+  })
+
+  it('rejects a name-hidden display for a different card, and ambiguous hidden displays', () => {
+    // alt 由来のカード名が履歴と一致しない表示は他人の引きの可能性があるため照合しない。
+    expect(correlateRedemption([{ ...display, user: null, card: 'Card A' }], [row], 'testuser', since, prior)).toBeNull()
+    // 名前非表示の表示が2枚あると同一ユーザー表示の取り違えと区別できないため不合格。
+    const portrait = { ...display, user: null }
+    expect(correlateRedemption([portrait, { ...portrait, instance: '3' }], [row], 'testuser', since, prior)).toBeNull()
+    // ユーザー名が描画されているのに別ユーザーなら従来どおり不合格（退行なし）。
+    expect(correlateRedemption([{ ...display, user: 'otheruser' }], [row], 'testuser', since, prior)).toBeNull()
   })
 
   it.each([
@@ -170,7 +189,7 @@ describe('redemption correlation gate', () => {
   it('accepts history slightly before click within clock-skew tolerance', () => {
     // DB のサーバ時計とローカル時計のずれを許容する（knownIds が古い行を除外済み）。
     const skewed = { ...row, redeemedAt: new Date(since - 2_000).toISOString() }
-    expect(correlateRedemption([display], [skewed], 'testuser', since, prior)).toEqual({ overlay: display, history: skewed })
+    expect(correlateRedemption([display], [skewed], 'testuser', since, prior)).toEqual({ overlay: display, history: skewed, nameHidden: false })
   })
 
   it('rejects old history, another recipient, and ambiguous simultaneous draws', () => {

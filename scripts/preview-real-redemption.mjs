@@ -269,8 +269,18 @@ function correlateRedemption(samples, rows, user, sinceMs, previousInstances) {
   // epoch の無い sample（古い記録形式）は instance だけで照合する。
   const keyOf = (sample) => (sample.epoch ? `${sample.epoch}:${sample.instance}` : sample.instance)
   const displays = samples.filter((sample) => sample.instance && !previousInstances.has(keyOf(sample)) &&
-    sample.observedAt >= sinceMs && sample.user?.toLowerCase() === user && sample.card === row.card)
-  return displays.length === 1 ? { history: row, overlay: displays[0] } : null
+    sample.observedAt >= sinceMs)
+  const exact = displays.filter((sample) => sample.user?.toLowerCase() === user && sample.card === row.card)
+  if (exact.length === 1) return { history: row, overlay: exact[0], nameHidden: false }
+  // 縦長画像や imageOnly レイアウトでは「<user> が引いたカード」とカード名の帯が
+  // 描画されず（portraitShowUsername / portraitShowName は既定で非表示）、テキスト
+  // 照合が必ず偽陰性になる（issue #2004）。ただしカード名は img.alt と代替表示の
+  // aria-label に常に残るため、ユーザー名が描画されていない表示に限りカード画像由来の
+  // 名前と新規表示インスタンスで照合する。nameHidden は「ユーザー名テキストではなく
+  // alt/aria-label 由来の名前で照合した」ことを呼び出し側が記録できるよう返す。
+  const hidden = displays.filter((sample) => sample.user == null && sample.card === row.card)
+  if (hidden.length === 1) return { history: row, overlay: hidden[0], nameHidden: true }
+  return null
 }
 
 async function openRewardDetail(page, reward) {
@@ -666,15 +676,36 @@ async function run(opts, out) {
       const fresh = after.rows.filter((row) => !knownIds.has(row.id))
       fresh.forEach((row) => knownIds.add(row.id))
       const correlated = correlateRedemption(samples, fresh, opts.user, clickedAt, previousInstances)
-      samples.forEach((sample) => previousInstances.add(`${sample.epoch}:${sample.instance}`))
       entry.history = fresh
       entry.historyFirst = waited.map((row) => row.id)
       entry.overlay = correlated?.overlay ?? null
-      const cardName = correlated?.history.card
+      // 「overlay は表示されたが名前が非表示」と「検知できなかった」を区別して残す
+      // （issue #2004）。matched-name-hidden はテキスト非描画レイアウトで alt/aria-label
+      // 由来のカード名と新規インスタンスで照合できた場合。shown-unidentified は新規の
+      // 表示自体は観測したが履歴行と一意に対応付けられなかった場合。
+      if (correlated) {
+        entry.overlayStatus = correlated.nameHidden ? 'matched-name-hidden' : 'matched'
+      } else {
+        const unmatched = samples.filter((sample) => sample.instance &&
+          !previousInstances.has(`${sample.epoch}:${sample.instance}`) && sample.observedAt >= clickedAt)
+        entry.overlayStatus = unmatched.length > 0 ? 'shown-unidentified' : 'not-detected'
+        if (unmatched.length > 0) {
+          entry.overlayUnmatched = unmatched.map((sample) =>
+            ({ instance: sample.instance, card: sample.card ?? null, user: sample.user ?? null, latencyOk: sample.latencyOk }))
+        }
+      }
+      samples.forEach((sample) => previousInstances.add(`${sample.epoch}:${sample.instance}`))
+      // チャット通知は overlay 表示とは独立した経路なので、履歴行がこの交換と一意に
+      // 特定できれば overlay 照合の成否に関係なく照合する。縦長レイアウトで overlay
+      // 照合が外れても「チャットは送信済み」を潰さないため（issue #2004 の5回目）。
+      const historyRow = correlated?.history ??
+        (fresh.length === 1 && fresh[0].user?.toLowerCase() === opts.user &&
+          Date.parse(fresh[0].redeemedAt) >= clickedAt - HISTORY_SKEW_MS ? fresh[0] : null)
+      const cardName = historyRow?.card ?? null
       // 前の交換と同じカード名なら、チャット照合の取り違え余地として結果に記録する。
       entry.sameCardAsPrevious = previousCard !== null && cardName === previousCard
       if (cardName) previousCard = cardName
-      const chatHits = correlated ? await waitChatLines(chat, baseline, correlated.history, opts.user) : []
+      const chatHits = historyRow ? await waitChatLines(chat, baseline, historyRow, opts.user) : []
       entry.chatMatchCount = chatHits.length
       entry.chat = chatHits.length === 1 ? chatHits[0] : null
       entry.workerEvents = Object.fromEntries(tails.map((tail, i) => [tail.worker, tail.events.length - logOffsets[i]]))
