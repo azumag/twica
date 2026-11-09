@@ -167,6 +167,19 @@ mainマージ後は、タグ・ワークフロー・Workers Buildsの成功に�
 - チャット通知に影響する変更（outbox、decoder、`payload_version`）を含むリリースでは、マージ後に `chat_notification_outbox` の `dead` 行が増えていないことも確認する。
 - アプリの先行デプロイが必要なmigration（`app-first` ヘッダー付き）の扱いは、次節「migrationとアプリの適用順序」に従う。
 
+### deploy-failure 再発時の証拠採取
+
+デプロイAPIが新バージョンを示しているのに旧バージョンが実行され続ける事象が再発した場合、原因調査のために次の証拠を採取する。**応急処置の再デプロイは証拠採取の後に行う。** 再デプロイで実行バージョンが切り替わると、旧版が処理した期間のログ流入が止まり、切り替わり前後の対比が取りにくくなるため。
+
+- `cf workers deployments list --script-name twica` の出力（デプロイAPIが示すバージョン配分・deployment ID・時刻。実行バージョンとの乖離を記録する一次証拠）
+- telemetry の `$workers.scriptVersion.id` の時系列。旧版が実行していた期間が分かるよう、上記クエリの `--timeframe-from` を事象の開始前まで広げて採取する
+- 本番のHTMLに埋め込まれる Next.js ビルドIDと、新旧両バンドルのビルドIDの突き合わせ結果（旧版実行の独立した証拠）
+- 期待バージョンの根拠: `cf builds list --external-script-id <twica Worker tag>` の対象ビルドと `cf builds logs get <build-uuid>` の `Current Version ID`
+- 補助 Worker（`twica-chat-delivery`、`twica-overlay-realtime` など）でも同じ scriptVersion 確認を行う。v1.120.0 では補助 Worker が同時に旧版だったか未確認のまま残った論点のため、採取対象に含める
+- 被害範囲の記録: 事象の発生時刻（UTC）と、`chat_notification_outbox` の `dead` 行の件数・時刻など利用者影響の範囲
+
+採取した証拠は時刻をすべて UTC で記録し、`production` / `deploy-failure` のIssueへredaction済みで添える。原因調査はこの証拠を使って別途行う。
+
 ## migrationとアプリの適用順序
 
 `planetscale-migrate.yml` はmain（previewではpreview側DB）へのpushでmigrationを即時適用し、アプリ（Worker）のデプロイはWorkers Buildsが別系統で行う。このため、同じリリースに入れたmigrationは**アプリより先に本番DBへ入る**。DB先行で問題が出る変更は、順序を運用で分ける（#2023、案1）。
