@@ -96,6 +96,56 @@ describe('deliverChatNotificationSlice (Issue #1665)', () => {
     expect(mockSend).not.toHaveBeenCalled()
   })
 
+  // Issue #2019: writer migration と decoder対応アプリが同一mergeで出ると、
+  // ロールアウト中の旧workerが新versionの行をclaimする。即DLQせずretryへ回し、
+  // 新workerへ届くまで行を生かす。
+  it('retries instead of dead-lettering when the payload version is newer than this worker supports', async () => {
+    const { reportError } = await import('@/lib/sentry/error-handler')
+    const futureClaim = { ...claim, payloadVersion: 99 }
+    mockClaim.mockResolvedValue(futureClaim)
+    mockDecode.mockReturnValue(null)
+    mockRetry.mockResolvedValue('pending')
+
+    await expect(deliverChatNotificationSlice('batch-1')).resolves.toMatchObject({
+      kind: 'retryable',
+      nextAttemptAt: expect.any(String),
+    })
+
+    expect(mockRetry).toHaveBeenCalledWith(
+      futureClaim,
+      expect.stringContaining('payload v99 is invalid'),
+    )
+    expect(mockDeadLetter).not.toHaveBeenCalled()
+    expect(reportError).not.toHaveBeenCalled()
+    expect(mockSend).not.toHaveBeenCalled()
+  })
+
+  it('dead-letters and reports once a newer-version payload exhausts retries', async () => {
+    const { reportError } = await import('@/lib/sentry/error-handler')
+    const futureClaim = { ...claim, payloadVersion: 99, attemptCount: 5 }
+    mockClaim.mockResolvedValue(futureClaim)
+    mockDecode.mockReturnValue(null)
+    mockRetry.mockResolvedValue('dead')
+
+    await expect(deliverChatNotificationSlice('batch-1')).resolves.toEqual({
+      kind: 'terminal',
+      code: 'invalid_payload',
+    })
+
+    expect(reportError).toHaveBeenCalledTimes(1)
+    expect(mockSend).not.toHaveBeenCalled()
+  })
+
+  it('returns lease_lost when the newer-version retry update loses its lease', async () => {
+    const futureClaim = { ...claim, payloadVersion: 99 }
+    mockClaim.mockResolvedValue(futureClaim)
+    mockDecode.mockReturnValue(null)
+    mockRetry.mockResolvedValue('lost-lease')
+
+    await expect(deliverChatNotificationSlice('batch-1')).resolves.toEqual({ kind: 'lease_lost' })
+    expect(mockDeadLetter).not.toHaveBeenCalled()
+  })
+
   it('marks sent and returns complete on a full send', async () => {
     mockClaim.mockResolvedValue(claim)
     mockDecode.mockReturnValue(decodedData)
