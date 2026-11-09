@@ -5,6 +5,19 @@ function read(path: string) {
   return readFileSync(path, "utf8");
 }
 
+// `on:` ブロック（jobs: 等の非インデント行まで）から、トリガキー名の一覧を
+// 抽出する。workflow_dispatch 以外のトリガ（push/pull_request/workflow_call 等）
+// が後方に追加されても検出できるよう、キー列挙への依存を持たない構造比較に使う。
+// トリガキーは `on:` 直下でインデント2つの行として現れる（それより深い行は
+// inputs/confirm 等のネストした設定値）。
+function triggerKeysOf(workflow: string): string[] {
+  const onBlock = workflow.match(/on:\n((?:\s{2,}[^\n]*\n?)+)/)?.[1] ?? "";
+  return onBlock
+    .split("\n")
+    .filter((line) => /^ {2}\S/.test(line))
+    .map((line) => line.trim().split(":")[0]);
+}
+
 /**
  * #1888: strict レート制限の Durable Object は専用 Worker として配備する。
  * アプリ本体の entrypoint は OpenNext の生成物なので class を export できず、
@@ -82,13 +95,10 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
     ] as const) {
       const workflow = read(file);
       expect(workflow).toContain("workflow_dispatch:");
-      // workflow_dispatch 以外のトリガ（push/pull_request 等）の混入を検知。
-      // `on:` 直後の行が workflow_dispatch 以外で始まることを否定する。
-      // 否定先読みのみで `.` を使わないため `s` フラグは不要。
-      expect(workflow).not.toMatch(/on:\s*\n(?!\s+workflow_dispatch)/);
-      // on: ブロック後方への別トリガ追加（push: / pull_request: / schedule: 等）も検知する
-      // （DSH 任意指摘1: `on:` 直後だけを見るアサーションでは後方追加を検出できない）。
-      expect(workflow).not.toMatch(/^\s{2}(push|pull_request|pull_request_target|schedule|merge_group|release):/m);
+      // workflow_dispatch 専用であることを、`on:` ブロックのトリガキー一覧の
+      // 構造比較で固定する（DSH 必須指摘: キー列挙方式だと workflow_call 等の
+      // 列挙漏れで uses: 経由の deploy が可能になる）。
+      expect(triggerKeysOf(workflow)).toEqual(["workflow_dispatch"]);
       expect(workflow).toContain("confirm == 'deploy'");
       expect(workflow).toContain("contents: read");
       // DSH 任意指摘2: `contents: read` の文字列一致だけでは、contents: write や
@@ -108,6 +118,16 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
       expect(workflow).toContain("concurrency:");
       expect(workflow).toContain("cancel-in-progress: false");
     }
+  });
+
+  it("detects a second trigger added after workflow_dispatch (mutation fixture)", () => {
+    // アサーション自体の回帰確認: workflow_call を後方に足した変異が
+    // FAIL になることを固定する（DSH 必須指摘の変異確認ケース）。
+    const mutated = read(".github/workflows/deploy-rate-limit-production.yml").replace(
+      "workflow_dispatch:",
+      "workflow_dispatch:\n  workflow_call:",
+    );
+    expect(triggerKeysOf(mutated)).toEqual(["workflow_dispatch", "workflow_call"]);
   });
 
   it("documents the app binding only after the DO Worker is deployed", () => {
