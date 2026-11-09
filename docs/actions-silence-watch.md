@@ -6,7 +6,9 @@ twica 側の scheduled workflow `.github/workflows/docich-actions-silence-watch.
 
 ## 検知ロジック
 
-- 15 分ごとの schedule と main への push で起動する。
+- 1 時間ごとの schedule と main への push で起動する。
+  （元は 15 分間隔だったが、GitHub の高頻度 cron 抑制で実効数時間に1回以下
+  だったため 1 時間間隔へ引き下げた。azumag/docich#3509 参照）
 - `GET /repos/azumag/docich/actions/runs?per_page=1` の最新 run `created_at` と
   repo の `pushed_at` を読み、以下の複合条件でアラートする:
   - 最新 run から `SILENCE_THRESHOLD_SECONDS`（2 時間）超過、**かつ**

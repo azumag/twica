@@ -1,0 +1,26 @@
+# docich-silence-watch — azumag/docich#3509 段階1
+# GitHub Actions 版 watchdog（twica main の scheduled workflow）の backstop として、
+# GitHub プラットフォームの外側で動く独立監視。詳細は worker.mjs 冒頭と README。
+#
+# 配備には新規 Cloudflare リソース（Worker 本体 + KV namespace）と secret が
+# 必要なため、owner 承認後に実行する（README の Deploy 手順参照）。
+name = "docich-silence-watch"
+main = "worker.mjs"
+# 直近の完了した UTC 日付を使う。未来日は Cloudflare API に拒否される。
+compatibility_date = "2026-11-07"
+
+[observability]
+enabled = true
+
+[triggers]
+# 30 分ごと。検知閾値は 2 時間なので、最悪でも「閾値 + 30 分 + 抑制窓」以内に
+# 収まる。15 分より粗いのは、実行コストと GitHub API 呼び出しを半減させるため
+# （検知 latency への影響は最大 15 分で、閾値 2 時間に対して誤差の範囲）。
+crons = ["*/30 * * * *"]
+
+# 最終アラート送信時刻（55 分抑制窓の anchor）を保持する KV namespace。
+# デプロイ前に `npx wrangler kv namespace create SILENCE_KV` で作成し、
+# 返された id を下に記入する（README 参照）。
+# [[kv_namespaces]]
+# binding = "SILENCE_KV"
+# id = "REPLACE_WITH_NAMESPACE_ID"
