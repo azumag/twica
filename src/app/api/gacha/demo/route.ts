@@ -57,7 +57,9 @@ function toOverlayDemoCard(card: OverlayDemoCard): OverlayDemoCard {
 /**
  * 実カード取得のアクセスモード。
  *
- * - "owner": broadcast 分岐（セッションと所有権を検証済みのログイン中の配信者本人）。
+ * - "owner": broadcast 分岐（セッションと所有権を検証済みのログイン中の配信者本人）、
+ *   または非 broadcast でもセッションの配信者が指定 streamerId の所有者である場合
+ *   （設定画面のプレビューDEMO。resolveNonBroadcastAccess 参照）。
  *   自分のカードなので公開設定に関係なく実カードを使える。
  * - "public": 無認証を含むそれ以外。コレクションページと同じ公開設定に従い、配信者が
  *   `show_unowned_cards` と `show_unowned_card_details` の「両方」をオンにしている
@@ -69,6 +71,40 @@ function toOverlayDemoCard(card: OverlayDemoCard): OverlayDemoCard {
  *   （別クエリで先に確認する方式は確認後の設定変更との競合を生み、往復も増える）。
  */
 type CardAccess = "owner" | "public";
+
+/**
+ * 非 broadcast リクエストのアクセスモードを決める。
+ *
+ * dashboard/settings の「プレビューDEMO」は、設定画面に埋め込んだ overlay iframe
+ * (overlay/[streamerId]/page.tsx) から broadcast なしでこの API を呼ぶ。#1901 で
+ * 非 broadcast を一律 "public" にしたため、未所持カードを非公開にしている配信者
+ * （既定値。本番の大半）は選んだカードが公開設定の条件で弾かれ、組み込みデモカードの
+ * ランダム表示に縮退していた。
+ *
+ * iframe の URL は `${NEXT_PUBLIC_APP_URL}/overlay/...` で、設定画面と同じアプリ URL
+ * から開く運用では同一オリジンになり、fetch には配信者本人のセッション Cookie が
+ * 乗る（URL が設定画面のホストと異なる場合は Cookie が乗らず従来どおり public）。セッションの配信者が指定 streamerId の所有者と一致する場合だけ "owner" にし、
+ * 本人が自分のカードをプレビューできるようにする。
+ * - 読み取りのみ（KV / DO への状態変更なし）なので CSRF 検証は不要。セッション Cookie は
+ *   SameSite=Lax のため他サイトからの POST には乗らず、他人が本人のセッションで非公開
+ *   カードを読み出すこともできない（レスポンスも CORS で他オリジンからは読めない）。
+ * - OBS のブラウザソース等、セッションの無い呼び出しは従来どおり "public"。
+ * - Cookie が無い場合は getSession が DB に触れずに null を返すため、無認証経路の
+ *   追加コストは無い。セッション読み取り（リクエスト外での cookies() 等）や所有者照会の
+ *   失敗は "public" へ倒す（デモ表示自体は止めない）。
+ */
+async function resolveNonBroadcastAccess(streamerId: string | null): Promise<CardAccess> {
+  if (!streamerId) return "public";
+  try {
+    const session = await getSession();
+    if (!session) return "public";
+    const ownedStreamer = await getStreamerIdByTwitchUserId(session.twitchUserId);
+    return ownedStreamer?.id === streamerId ? "owner" : "public";
+  } catch (error) {
+    logger.warn("gacha/demo: owner lookup failed; falling back to public access", { error });
+    return "public";
+  }
+}
 
 /** 条件に合うオーバーレイ表示用カードを取得する（access に応じて公開設定で絞る）。 */
 function selectOverlayCards(
@@ -337,8 +373,11 @@ export async function POST(request: NextRequest) {
     }
 
     // broadcast 分岐は上で CSRF・セッション・所有権を検証済みの配信者本人だけが到達する。
-    // それ以外（無認証含む）は公開設定に従う（CardAccess 参照）。
-    const access: CardAccess = broadcast && streamerId ? "owner" : "public";
+    // 非 broadcast でも、ログイン中の配信者本人が自分の streamerId を指定した場合は
+    // owner として扱う（resolveNonBroadcastAccess 参照）。それ以外は公開設定に従う。
+    const access: CardAccess = broadcast && streamerId
+      ? "owner"
+      : await resolveNonBroadcastAccess(streamerId);
 
     const respondWithCard = async (card: OverlayDemoCard, targetStreamerId: string | null) => {
       if (broadcast && targetStreamerId) {

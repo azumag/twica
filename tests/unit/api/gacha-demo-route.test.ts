@@ -293,7 +293,10 @@ describe('POST /api/gacha/demo: KV demo publication authorization', () => {
     expect(response.status).toBe(200)
     expect(body.card).toBeDefined()
     expect(mockValidateCSRFToken).not.toHaveBeenCalled()
-    expect(mockGetSession).not.toHaveBeenCalled()
+    // 設定画面のプレビューDEMOで本人を判定するためセッションは読むが、無ければ
+    // 所有者照会はせず公開設定に従う（認証を要求しない）。
+    expect(mockGetSession).toHaveBeenCalledTimes(1)
+    expect(mockGetStreamerIdByTwitchUserId).not.toHaveBeenCalled()
     expect(mockCreateOverlayDemoEvent).not.toHaveBeenCalled()
     expect(mockStoreOverlayDemoEvent).not.toHaveBeenCalled()
     expect(mockPublishOverlayDemoRealtimeEvent).not.toHaveBeenCalled()
