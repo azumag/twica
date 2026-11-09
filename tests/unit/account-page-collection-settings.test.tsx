@@ -28,13 +28,16 @@ vi.mock('next/navigation', () => ({ redirect: mocks.redirect }))
 // #715: カードトレード設定は CARD_TRADE_UI_VISIBLE で入口ごと隠す（main #1803 の取り込み）。
 // 既存の受け渡し検証は「表示中」の前提で行い、非表示時は別テストで固定するため、
 // モジュール定数を hoisted な可変オブジェクト経由の getter に差し替える。
-const flags = vi.hoisted(() => ({ tradeUiVisible: true }))
+const flags = vi.hoisted(() => ({ tradeUiVisible: true, duplicateTierUiVisible: true }))
 vi.mock('@/lib/constants', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/constants')>()
   return {
     ...actual,
     get CARD_TRADE_UI_VISIBLE() {
       return flags.tradeUiVisible
+    },
+    get DUPLICATE_DISPLAY_TIER_SETTINGS_UI_VISIBLE() {
+      return flags.duplicateTierUiVisible
     },
   }
 })
@@ -131,6 +134,7 @@ describe('AccountSettingsPage collection sharing section', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     flags.tradeUiVisible = true
+    flags.duplicateTierUiVisible = true
     mocks.getSession.mockResolvedValue({ twitchUserId: 'twitch-user-1' })
     mocks.canUseStreamerFeatures.mockReturnValue(true)
     mocks.getUserPlan.mockResolvedValue('basic')
@@ -233,5 +237,25 @@ describe('AccountSettingsPage collection sharing section', () => {
     expect(screen.getByTestId('collection-sharing-section')).toBeInTheDocument()
     expect(screen.getByTestId('visibility-probe')).toBeInTheDocument()
     expect(screen.getByTestId('album-probe')).toBeInTheDocument()
+  })
+
+  it('DUPLICATE_DISPLAY_TIER_SETTINGS_UI_VISIBLE=false なら重複カードのバッジ設定だけを出さず、他の設定は残す (#1782)', async () => {
+    flags.duplicateTierUiVisible = false
+
+    render(await AccountSettingsPage())
+
+    expect(screen.queryByTestId('duplicate-tier-probe')).toBeNull()
+    // 設定欄だけを隠し、同じセクションの他の設定は壊れていないことを同時に確認する
+    expect(screen.getByTestId('collection-sharing-section')).toBeInTheDocument()
+    expect(screen.getByTestId('visibility-probe')).toBeInTheDocument()
+    expect(screen.getByTestId('album-probe')).toBeInTheDocument()
+    expect(screen.getByTestId('trade-probe')).toBeInTheDocument()
+  })
+
+  it('本番の既定値は重複カードのバッジ設定を隠す（復帰は定数を true に戻すだけ）', async () => {
+    const { DUPLICATE_DISPLAY_TIER_SETTINGS_UI_VISIBLE } = await vi.importActual<
+      typeof import('@/lib/constants')
+    >('@/lib/constants')
+    expect(DUPLICATE_DISPLAY_TIER_SETTINGS_UI_VISIBLE).toBe(false)
   })
 })
