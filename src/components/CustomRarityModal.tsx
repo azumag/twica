@@ -11,7 +11,13 @@ import {
 } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import { isEnterKeySubmit } from "@/lib/keyboard-utils";
-import type { RarityStyle } from "@/lib/rarity-styles";
+import { getRarityStylePresentation } from "@/lib/rarity";
+import {
+  normalizeColorValue,
+  normalizeGlowValue,
+  normalizeGradientValue,
+  type RarityStyle,
+} from "@/lib/rarity-styles";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
@@ -35,6 +41,69 @@ function styleSignature(styles: Record<string, RarityStyle>, keys: string[]): st
         Object.entries(styles[key]).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
       ])
   );
+}
+
+/**
+ * Issue #2029: `<input type="color">` は #RRGGBB しか扱えないため、保存値を
+ * ピッカー用の6桁HEXへ揃える。#RGB は各桁を複写し、それ以外の不正値・未設定は
+ * グレーへ倒す（ピッカーが黒に化けて「設定済みに見える」事故を防ぐ）。
+ */
+function toColorInputValue(hex: string | undefined): string {
+  if (!hex) return "#808080";
+  // DB にはフェーズ1の Tailwind クラス形式（"bg-red-500" 等）が残り得るため、
+  // 保存時と同じ正規化を先に通してからピッカーへ渡す（#2029）。
+  const value = normalizeColorValue(hex.trim()) ?? hex.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(value)) return value;
+  if (/^#[0-9a-fA-F]{3}$/.test(value)) {
+    return `#${value
+      .slice(1)
+      .split("")
+      .map((c) => c + c)
+      .join("")}`;
+  }
+  return "#808080";
+}
+
+/**
+ * Issue #2029: グローの保存値（#RRGGBB または #RRGGBBAA）を、色ピッカー用の
+ * RGB 部と不透明度スライダー用の 0-100% に分解する。#RGB / #RGBA 等の短縮形は
+ * アルファを持たない色として扱う（検証側も 8 桁以外のアルファを許可しない）。
+ */
+function parseGlowValue(glow: string | undefined): { color: string; opacity: number } {
+  // legacy の "shadow-purple-500/50" 形式も HEX8 へ正規化してから分解する。
+  const normalized = glow ? normalizeGlowValue(glow) : undefined;
+  if (normalized && /^#[0-9a-fA-F]{8}$/.test(normalized)) {
+    return {
+      color: normalized.slice(0, 7),
+      opacity: Math.round((parseInt(normalized.slice(7), 16) / 255) * 100),
+    };
+  }
+  return { color: toColorInputValue(normalized ?? glow), opacity: 100 };
+}
+
+/**
+ * Issue #2029: グローの色と不透明度から保存値を組み立てる。不透明度100%は
+ * アルファを付けず #RRGGBB のまま保存する（値を最小限に保ち、従来の
+ * `<input type="color">` だけで編集できる値と同じ形式に揃える）。
+ */
+function composeGlowValue(color: string, opacity: number): string {
+  if (opacity >= 100) return color;
+  const alpha = Math.round((opacity / 100) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `${color}${alpha}`;
+}
+
+/**
+ * Issue #2029: 保存済みグラデーション（"#rrggbb,#rrggbb"）を from/to に分解する。
+ * 未設定・片方だけ・不正値の側は #808080 に倒し、ピッカーが常に有効な値を持つ
+ * ようにする（実際の描画でグレーになる既定値と同じ色）。
+ */
+function parseGradientValue(gradient: string | undefined): [string, string] {
+  // legacy の "from-red-500 to-blue-600" 形式も HEX ペアへ正規化してから分解する。
+  const normalized = gradient ? normalizeGradientValue(gradient) : undefined;
+  const parts = normalized?.split(",").map((part) => part.trim()) ?? [];
+  return [toColorInputValue(parts[0]), toColorInputValue(parts[1])];
 }
 
 interface CustomRarityModalProps {
@@ -192,6 +261,25 @@ export default function CustomRarityModal({
     });
   };
 
+  // Issue #2029: プロパティ単位の更新・既定戻しを共通化する。
+  // 文字色と同じく「未設定のキーは送らない」ため、消したプロパティは delete し、
+  // 全プロパティが空になったらそのレアリティのエントリごと落とす。
+  const updateRarityStyle = (key: string, patch: Partial<RarityStyle>) =>
+    setStyles((prev) => ({ ...prev, [key]: { ...(prev[key] ?? {}), ...patch } }));
+
+  const clearRarityStyleProp = (key: string, prop: keyof RarityStyle) =>
+    setStyles((prev) => {
+      const next = { ...prev };
+      const current = { ...(next[key] ?? {}) };
+      delete current[prop];
+      if (Object.keys(current).length === 0) {
+        delete next[key];
+      } else {
+        next[key] = current;
+      }
+      return next;
+    });
+
   const handleSave = async () => {
     // #694 Stage 6c: フッターのSaveボタン自体はdisableしているが、
     // CardManager.handleSubmitと同じ方針で送信経路の先頭でも二重にガードする。
@@ -341,73 +429,189 @@ export default function CustomRarityModal({
                   {t("customRarity.empty")}
                 </p>
               ) : (
-                <ul className="space-y-2">
-                  {list.map((value) => (
-                    <li
-                      key={value}
-                      className="flex items-center justify-between gap-2 rounded-lg bg-gray-700 px-4 py-2"
-                    >
-                      <span className="text-white break-all">{value}</span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="color"
-                          value={styles[value]?.color?.startsWith("#") ? styles[value]!.color! : "#808080"}
-                          onChange={(e) =>
-                            setStyles((prev) => ({
-                              ...prev,
-                              [value]: { ...(prev[value] ?? {}), color: e.target.value },
-                            }))
-                          }
-                          className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-transparent"
-                          aria-label={t("customRarity.colorLabel", { rarity: value })}
-                        />
-                        {/* Issue #1783: 既定表示（gray）へ戻す手段を用意する。
-                            未設定のスタイルは送らないので、キーごと落とす。 */}
-                        {styles[value]?.color !== undefined && (
+                <ul className="space-y-3">
+                  {list.map((value) => {
+                    const style = styles[value];
+                    const [gradientFrom, gradientTo] = parseGradientValue(
+                      style?.gradient
+                    );
+                    const glow = parseGlowValue(style?.glow);
+                    // Issue #2029: 編集中の見た目を実描画と同じ解決ロジック
+                    // (getRarityStylePresentation) でプレビューする。未設定の
+                    // プロパティはプリセット色へ倒れ、「既定」の見た目になる。
+                    const preview = getRarityStylePresentation(value, stylesForList);
+                    return (
+                      <li
+                        key={value}
+                        className="space-y-3 rounded-lg bg-gray-700 px-4 py-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-white break-all">{value}</span>
                           <button
                             type="button"
-                            onClick={() =>
-                              setStyles((prev) => {
-                                const next = { ...prev };
-                                const current = { ...(next[value] ?? {}) };
-                                delete current.color;
-                                if (Object.keys(current).length === 0) {
-                                  delete next[value];
-                                } else {
-                                  next[value] = current;
-                                }
-                                return next;
+                            onClick={() => handleRemove(value)}
+                            className="text-gray-400 hover:text-red-400"
+                            aria-label={`Remove ${value}`}
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className="h-5 w-5"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M6 18L18 6M6 6l12 12"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+
+                        {/* Issue #2029: 保存前に見た目を確認するプレビュー。
+                            左はコレクション/詳細のバッジ（文字色+グロー）、
+                            右はオーバーレイのカード枠（グラデーション+グロー）。
+                            shadow-md は影色クラス(shadow-[color:...])を可視化する幅。 */}
+                        <div
+                          className="flex items-center gap-3"
+                          aria-label={t("customRarity.previewLabel", { rarity: value })}
+                        >
+                          <span
+                            style={preview.styleVars}
+                            className={`rounded-full px-3 py-1 text-sm text-white shadow-md ${preview.colorClass} ${preview.glowClass}`}
+                          >
+                            {value}
+                          </span>
+                          <span
+                            style={preview.styleVars}
+                            className={`inline-block rounded-lg bg-gradient-to-br p-0.5 shadow-md ${preview.gradientClass} ${preview.glowClass}`}
+                          >
+                            <span className="block h-6 w-10 rounded-md bg-gray-900" />
+                          </span>
+                        </div>
+
+                        {/* 文字色 */}
+                        <div className="flex items-center gap-2">
+                          <span className="w-24 shrink-0 text-xs text-gray-300">
+                            {t("customRarity.colorField")}
+                          </span>
+                          <input
+                            type="color"
+                            value={toColorInputValue(style?.color)}
+                            onChange={(e) =>
+                              updateRarityStyle(value, { color: e.target.value })
+                            }
+                            className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-transparent"
+                            aria-label={t("customRarity.colorLabel", { rarity: value })}
+                          />
+                          {/* Issue #1783: 既定表示（gray）へ戻す手段を用意する。
+                              未設定のスタイルは送らないので、キーごと落とす。 */}
+                          {style?.color !== undefined && (
+                            <button
+                              type="button"
+                              onClick={() => clearRarityStyleProp(value, "color")}
+                              aria-label={t("customRarity.resetColorLabel", { rarity: value })}
+                              className="rounded border border-gray-600 px-2 py-1 text-xs text-gray-300 hover:border-gray-400 hover:text-white transition"
+                            >
+                              {t("customRarity.clearColor")}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Issue #2029: グラデーション（from/to の2色）。片方だけ
+                            設定しても描画側は from/to 両方必要なため、ここでも
+                            必ず "#rrggbb,#rrggbb" のペアで保存する。 */}
+                        <div className="flex items-center gap-2">
+                          <span className="w-24 shrink-0 text-xs text-gray-300">
+                            {t("customRarity.gradientField")}
+                          </span>
+                          <input
+                            type="color"
+                            value={gradientFrom}
+                            onChange={(e) =>
+                              updateRarityStyle(value, {
+                                gradient: `${e.target.value},${gradientTo}`,
                               })
                             }
-                            className="rounded border border-gray-600 px-2 py-1 text-xs text-gray-300 hover:border-gray-400 hover:text-white transition"
-                          >
-                            {t("customRarity.clearColor")}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => handleRemove(value)}
-                          className="ml-2 text-gray-400 hover:text-red-400"
-                          aria-label={`Remove ${value}`}
-                        >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          className="h-5 w-5"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M6 18L18 6M6 6l12 12"
+                            className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-transparent"
+                            aria-label={t("customRarity.gradientFromLabel", { rarity: value })}
                           />
-                        </svg>
-                      </button>
-                      </div>
-                    </li>
-                  ))}
+                          <input
+                            type="color"
+                            value={gradientTo}
+                            onChange={(e) =>
+                              updateRarityStyle(value, {
+                                gradient: `${gradientFrom},${e.target.value}`,
+                              })
+                            }
+                            className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-transparent"
+                            aria-label={t("customRarity.gradientToLabel", { rarity: value })}
+                          />
+                          {style?.gradient !== undefined && (
+                            <button
+                              type="button"
+                              onClick={() => clearRarityStyleProp(value, "gradient")}
+                              aria-label={t("customRarity.resetGradientLabel", { rarity: value })}
+                              className="rounded border border-gray-600 px-2 py-1 text-xs text-gray-300 hover:border-gray-400 hover:text-white transition"
+                            >
+                              {t("customRarity.clearColor")}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Issue #2029: グロー（色 + 不透明度）。不透明度は
+                            #RRGGBBAA のアルファとして保存する（100%は #RRGGBB）。 */}
+                        <div className="flex items-center gap-2">
+                          <span className="w-24 shrink-0 text-xs text-gray-300">
+                            {t("customRarity.glowField")}
+                          </span>
+                          <input
+                            type="color"
+                            value={glow.color}
+                            onChange={(e) =>
+                              updateRarityStyle(value, {
+                                glow: composeGlowValue(e.target.value, glow.opacity),
+                              })
+                            }
+                            className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-transparent"
+                            aria-label={t("customRarity.glowLabel", { rarity: value })}
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={5}
+                            value={glow.opacity}
+                            onChange={(e) =>
+                              updateRarityStyle(value, {
+                                glow: composeGlowValue(
+                                  glow.color,
+                                  Number(e.target.value)
+                                ),
+                              })
+                            }
+                            className="h-2 w-20 cursor-pointer accent-purple-500"
+                            aria-label={t("customRarity.glowOpacityLabel", { rarity: value })}
+                          />
+                          <span className="w-9 text-right text-xs text-gray-400">
+                            {glow.opacity}%
+                          </span>
+                          {style?.glow !== undefined && (
+                            <button
+                              type="button"
+                              onClick={() => clearRarityStyleProp(value, "glow")}
+                              aria-label={t("customRarity.resetGlowLabel", { rarity: value })}
+                              className="rounded border border-gray-600 px-2 py-1 text-xs text-gray-300 hover:border-gray-400 hover:text-white transition"
+                            >
+                              {t("customRarity.clearColor")}
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </div>
