@@ -407,7 +407,13 @@
       "rarity": "Rarity",
       "recent": "Recently obtained",
       "name": "Streamer name",
-      "completion": "Completion"
+      "completion": "Completion",
+      "ascending": "Ascending",
+      "descending": "Descending",
+      "switchTo": {
+        "asc": "Switch to ascending",
+        "desc": "Switch to descending"
+      }
     },
     "hide": {
       "hideButton": "Hide",
