@@ -402,4 +402,88 @@ describe('DuplicateDisplayTierSettings', () => {
       legendary: [5],
     })
   })
+
+  // 保存の通信中に続けて入力すると、保存完了時の「確定値での上書き」で打った値が
+  // 消えて見える（巻き戻り）。通信中に変えた欄は、保存結果で上書きしない。
+  describe('保存の通信中に続けて入力しても、入力した値が巻き戻らない', () => {
+    const echo = async (_url: unknown, init: { body: string }) =>
+      new Response(
+        JSON.stringify({ success: true, duplicateDisplayTiers: JSON.parse(init.body).duplicateDisplayTiers })
+      )
+
+    // 1回目の保存だけ、テスト側が解放するまで応答しない。
+    function holdFirstSave(response: () => Response) {
+      let release: () => void = () => {}
+      mockFetch.mockImplementationOnce(
+        () => new Promise<Response>((resolve) => { release = () => resolve(response()) })
+      )
+      mockFetch.mockImplementation(echo)
+      return () => release()
+    }
+
+    it('同じレアリティの別の段階を、保存中に入力しても消えない', async () => {
+      const release = holdFirstSave(
+        () => new Response(JSON.stringify({ success: true, duplicateDisplayTiers: { common: [3] } }))
+      )
+      mount()
+      const first = screen.getByRole('spinbutton', { name: 'コモン 1段階目' })
+      const second = screen.getByRole('spinbutton', { name: 'コモン 2段階目' })
+
+      edit(first, '3')
+      // 保存は直列キュー経由で始まるため、実際に通信中になってから続きを入力する。
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1))
+      fireEvent.change(second, { target: { value: '5' } }) // 通信中に続けて入力
+      release()
+
+      // 保存の完了（成功表示）を待ってから確認する。完了前の値を見ても巻き戻りは検出できない。
+      await waitFor(() => expect(screen.getByText(messages.duplicateTierSettings.messages.saved)).toBeInTheDocument())
+      expect(first).toHaveValue(3)
+      expect(second).toHaveValue(5) // 保存結果（2段階目は空）で巻き戻されない
+
+      fireEvent.blur(second) // 確定すると、両方の値で保存される
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2))
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).duplicateDisplayTiers).toEqual({ common: [3, 5] })
+      await waitFor(() => expect(second).toHaveValue(5))
+    })
+
+    it('同じ欄を保存中に打ち直しても、直前の保存値へ戻らない', async () => {
+      const release = holdFirstSave(
+        () => new Response(JSON.stringify({ success: true, duplicateDisplayTiers: { common: [3] } }))
+      )
+      mount()
+      const first = screen.getByRole('spinbutton', { name: 'コモン 1段階目' })
+
+      edit(first, '3')
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1)) // 通信中
+      fireEvent.change(first, { target: { value: '4' } }) // 通信中に打ち直し
+      release()
+
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(screen.getByText(messages.duplicateTierSettings.messages.saved)).toBeInTheDocument())
+      expect(first).toHaveValue(4)
+
+      fireEvent.blur(first)
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2))
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).duplicateDisplayTiers).toEqual({ common: [4] })
+    })
+
+    it('保存が失敗しても、通信中に入力した別の段階は消さず、失敗した段階だけ元へ戻す', async () => {
+      const release = holdFirstSave(
+        () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 })
+      )
+      mount()
+      const first = screen.getByRole('spinbutton', { name: 'コモン 1段階目' })
+      const second = screen.getByRole('spinbutton', { name: 'コモン 2段階目' })
+
+      edit(first, '3') // この保存は失敗する
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1)) // 通信中
+      fireEvent.change(second, { target: { value: '5' } })
+      release()
+
+      // 保存の失敗（エラー表示）を待ってから確認する。
+      await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument())
+      expect(first).toHaveValue(null) // 失敗した段階は元（空）へ
+      expect(second).toHaveValue(5) // 通信中の入力は残る
+    })
+  })
 })
