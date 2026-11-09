@@ -84,6 +84,23 @@ function compactSlots(slots: EditingThresholds): EditingThresholds {
   return [...filled, ...Array.from({ length: MAX_DUPLICATE_TIERS - filled.length }, () => "")];
 }
 
+/**
+ * 保存の通信中にユーザーが入力を続けても、その入力を保存結果で上書きしない。
+ *
+ * 保存完了時（成功の確定値・失敗時の元の値）にレアリティの入力欄を丸ごと置き換えると、
+ * 通信中に打った別の段階や打ち直した値が消えて「巻き戻る」ように見える。そこで、
+ * 確定操作の開始時点（snapshot）から**変わっていない欄だけ**を target に置き換え、
+ * 通信中に変わった欄は現在の入力（current）を保つ。保つ入力は次の確定操作で改めて
+ * 検証・保存される。
+ */
+function mergeUnchangedSlots(
+  snapshot: EditingThresholds,
+  current: EditingThresholds,
+  target: EditingThresholds
+): EditingThresholds {
+  return current.map((slot, index) => (slot === snapshot[index] ? target[index] ?? "" : slot));
+}
+
 /** 保存済みのしきい値が1つでもあるか（リセットボタンの有効判定）。 */
 function hasAnyThreshold(map: Record<string, EditingThresholds>): boolean {
   return Object.values(map).some((slots) => slots.some((slot) => slot !== ""));
@@ -212,8 +229,16 @@ export default function DuplicateDisplayTierSettings({
     async (rarity: string) => {
       const savedSlots = getOwnThresholds(savedRef.current, rarity) ?? emptySlots();
       const draftSlots = getOwnThresholds(draftRef.current, rarity) ?? emptySlots();
+      // 失敗・不正入力で元へ戻すときも、確定操作の開始後に入力された欄は戻さない。
       const revert = () =>
-        setDraft({ ...draftRef.current, [rarity]: savedSlots });
+        setDraft({
+          ...draftRef.current,
+          [rarity]: mergeUnchangedSlots(
+            draftSlots,
+            getOwnThresholds(draftRef.current, rarity) ?? emptySlots(),
+            savedSlots
+          ),
+        });
 
       // 空欄は末尾へ寄せる。1・2段階目を空けたまま3段階目だけ入力すると
       // 「配列の穴」ができ、厳密増加の検証で毎回 400 になるため、入力しなかった
@@ -249,9 +274,14 @@ export default function DuplicateDisplayTierSettings({
       }
       const confirmedMap = toEditingMap(result.confirmed ?? tiersToSend ?? {}, rarities);
       setSaved(confirmedMap);
+      // 通信中に入力が続いた欄は確定値で上書きしない（巻き戻り防止）。
       setDraft({
         ...draftRef.current,
-        [rarity]: getOwnThresholds(confirmedMap, rarity) ?? emptySlots(),
+        [rarity]: mergeUnchangedSlots(
+          draftSlots,
+          getOwnThresholds(draftRef.current, rarity) ?? emptySlots(),
+          getOwnThresholds(confirmedMap, rarity) ?? emptySlots()
+        ),
       });
       setIsError(false);
       setMessage(t("messages.saved"));
