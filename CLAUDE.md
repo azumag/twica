@@ -80,6 +80,7 @@
 - 必須ゲート成功後だけ固定HEADをpreviewへマージし、preview ref、CI、Workers Builds/デプロイ、必要なブラウザー・実経路・安全なGETを確認する。実経路に影響する累積変更では`twica-preview-real-redemption`の手順を適用する。
 - preview検証後は同じpreview HEADの昇格PRを一つだけ用意し、上記のタイトル・本文規則を満たすことを読み戻して確認する。main必須CIとWorkers Buildsがすべて成功した場合だけmainへマージする。
 - mainマージ後はmain SHA、Auto Releaseのタグと本文、productionのWorkers/補助Worker、公開エンドポイントのGETを確認する。タグまたは本番デプロイの証拠が無い場合は成功扱いにせず停止する。
+- デプロイAPIの表示やビルド成功は、本番が新バージョンで動いている証拠にならない。`docs/QA.md` の「main昇格後の本番実行バージョン確認」に従い、Workerログの実行バージョンと新ルートの応答を実測してから完了とする。
 
 ## 実行環境とCloudflare MCP
 - このリリース手順を実行するエージェントはsandbox内で動作する。ローカルの`wrangler`/CLIは、sandboxのネットワーク・認証・ファイルシステム制約により利用できない場合がある。

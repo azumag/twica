@@ -142,6 +142,31 @@ previewからmainへ昇格する際のテスト対象は、起点となった単
 - 証拠を記録する前に、種別を問わず資格情報・認証情報・署名鍵・接続文字列・署名付きURL・個人識別値をすべて `(redacted)` に置換する。代表例はアクセストークン、リフレッシュトークン、`client_secret`、Cookie、`session_id`、`EVENTSUB_REPLAY_SECRET`、PlanetScale接続文字列、Cloudflare APIトークン、Twitch EventSub署名シークレット、OAuthの`code`/`state`である。未加工のログやスクリーンショットは添付せず、redaction済みの抜粋だけを証拠として記録する。
 - 通常のリリースは、レビュー判定、必須CI、preview検証、必要な実経路確認、main昇格、productionデプロイ、タグとリリース本文の確認を順に満たしてから完了とする。緊急本番修正だけは明示的な例外として、最小テストと静的検証後に復旧を優先できるが、復旧後に独立レビューと未達ゲートの充足を終えるまで成功扱いにしない。
 
+## main昇格後の本番実行バージョン確認
+
+mainマージ後は、タグ・ワークフロー・Workers Buildsの成功に加えて、**本番が実際に新バージョンで動いていること**を確認してから完了とする。2026-11-09のv1.120.0では、デプロイAPIが新バージョンを100%と表示していたのに、実リクエストは約15分間旧バージョンが処理し、チャット通知が13件失敗した（#2022）。デプロイAPIの表示（`wrangler deployments list` / `cf workers deployments list`）や「ビルドがsuccess」は、実行バージョンの証拠にならない。
+
+次の3点を、デプロイ後に実測する。いずれかが一致しなければ成功扱いにせず停止する。
+
+1. **期待するバージョン**: `cf builds list --external-script-id <twica Worker tag>` でmain SHAのビルドを見つけ、`cf builds logs get <build-uuid>` の `Current Version ID` を控える。
+2. **実際に実行しているバージョン**: 本番の公開URLへGETを数回送った後、Workerログの `$workers.scriptVersion.id` を確認する。マージ後のイベントがすべて期待するバージョンであること。
+
+   ```bash
+   now=$(($(date +%s)*1000))
+   cf o11y telemetry query --query-id adhoc-prod-ver-check --view events --limit 100 \
+     --timeframe-from $((now-300000)) --timeframe-to $((now+60000)) \
+     --parameters-filters '[{"key":"$metadata.service","operation":"eq","type":"string","value":"twica"}]' \
+     --parameters-order-by-value timestamp --parameters-order-by-order asc
+   ```
+3. **利用者から見える差**: 今回のリリースで新設したルート（GETで副作用のないもの）が、404ではなくpreviewと同じ応答（200/401/400/307など）になること。新設ルートが無いリリースでは、HTMLのNext.jsビルドIDが新バンドルのものであることを確認する。
+
+反映されていない場合の扱い:
+
+- 数分待っても旧バージョンのままなら、リリースを成功扱いにせず、`production` / `deploy-failure` として記録する。
+- 応急処置は、同じバージョンを再度100%にするデプロイ（`cf workers deployments create --script-name twica --strategy percentage --versions '[{"version_id":"<期待するバージョン>","percentage":100}]'`）。本番を変更する操作なので、事前に `--dry-run` で内容を確認し、ユーザーの承認を得てから実行する。旧バージョンへのロールバックは、DB migration適用済みの場合は安全と限らない。
+- チャット通知に影響する変更（outbox、decoder、`payload_version`）を含むリリースでは、マージ後に `chat_notification_outbox` の `dead` 行が増えていないことも確認する。
+- アプリの先行デプロイが必要なmigration（ヘッダーに適用順序の注意があるもの）を含む昇格では、適用順序の根拠を昇格PR本文に記録する（方針は #2023 で検討中）。
+
 ## Transactional chat outbox
 
 ガチャ確定とチャット通知payloadは
