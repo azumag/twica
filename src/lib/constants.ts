@@ -491,6 +491,20 @@ export const VOTE_CAMPAIGN_DISMISS_KEY = 'vote-campaign-dismissed'
 export const CARD_TRADE_UI_VISIBLE = false
 
 /**
+ * 重複カードのバッジ設定（Issue #1782）の入口UIの表示ゲート。
+ *
+ * 設定の仕様と実装方式を見直す間、配信者が目にする設定欄を隠す。false の間は
+ * /dashboard/account の「重複カードのバッジ設定」(DuplicateDisplayTierSettings)を描画しない。
+ *
+ * 内部実装は削除していない。DB列(streamers.duplicate_display_tiers)、設定API
+ * (/api/streamer/settings の duplicateDisplayTiers)、DuplicateDisplayTierSettings コンポーネント、
+ * 翻訳、視聴者側の段階表示は維持され、この定数を true に戻すだけで設定欄が復帰する
+ * (設定値の再保存は不要)。注意: すでに保存済みのしきい値は、設定欄を隠しても視聴者側の
+ * コレクション・カード詳細に引き続き反映される(設定欄から変更・解除はできなくなる)。
+ */
+export const DUPLICATE_DISPLAY_TIER_SETTINGS_UI_VISIBLE = false
+
+/**
  * 支援プラン設定
  * コード入力のバリデーション制限値
  */
