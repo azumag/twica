@@ -115,6 +115,7 @@ const bidderSteps = [
 const auctionRules = [
   { key: "activeBids", icon: "list" },
   { key: "privacy", icon: "eyeOff" },
+  { key: "bidCardVisible", icon: "eye" },
   { key: "crossBid", icon: "globe" },
 ] as const satisfies readonly { key: string; icon: GuideIconName }[];
 
@@ -143,6 +144,7 @@ const faqItems = [
   { key: "cardInactive", icon: "ban" },
   { key: "alreadyDone", icon: "check" },
   { key: "notEnough", icon: "cards" },
+  { key: "allListed", icon: "lock" },
   { key: "limitReached", icon: "list" },
   { key: "alreadyListed", icon: "lock" },
   { key: "noPartner", icon: "globe" },

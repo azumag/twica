@@ -1995,7 +1995,7 @@
       "cancel": "Before it is accepted, you can cancel it with \"Cancel\" under \"Open\" in \"My trades\". The card stays with you.",
       "rules": {
         "summary": "Details",
-        "limit": "You can have up to {max} listings at a time, regular listings and auctions combined. A slot frees up when one is completed or cancelled.",
+        "limit": "You can have up to {max} listings at a time, regular listings and auctions combined. A slot frees up when one is completed or cancelled, and also when an auction ends without a trade.",
         "locked": "A card in a listing cannot be used for another listing or a bid. It is free to use again when the listing ends or is cancelled.",
         "crossTitle": "To trade with cards of other channels",
         "inChannelCaption": "Cards of this one channel",
@@ -2058,13 +2058,14 @@
         },
         "wait": {
           "title": "Wait for the seller to pick",
-          "description": "If your bid is picked, the trade happens. If not, your cards are free to use again. You cannot withdraw during this time."
+          "description": "If your bid is picked, the trade happens. If not, your cards are free to use again. You cannot withdraw during this time (a bid that can no longer be completed can be withdrawn)."
         }
       },
       "rules": {
         "summary": "Details",
         "activeBids": "You can have up to {max} active bids at a time.",
         "privacy": "Only the seller and the bidder can see what a bid contains (cards, quantity, bidder).",
+        "bidCardVisible": "A card used in a bid must be visible to the seller as well as to the bidder. If the streamer keeps unowned cards private, the card can only be used in a bid when the seller owns it; otherwise \"This card cannot be used for a bid\" is shown.",
         "crossBid": "You can also bid on \"Other channels' auctions\" (when both channels allow cross-channel trading).",
         "statusTitle": "What the status labels mean",
         "status": {
@@ -2083,8 +2084,8 @@
       "actionLabel": "Fix",
       "disabled": {
         "question": "\"This streamer does not allow trading\" is shown",
-        "reason": "The streamer of that channel (for a cross-channel trade, the other streamer too) has turned trading off.",
-        "action": "Wait until they turn trading on."
+        "reason": "The streamer of that channel (for a cross-channel trade, the other streamer too) has turned trading off. For a cross-channel trade, it is also shown when either streamer has turned cross-channel trading off.",
+        "action": "Wait until they turn trading on (for a cross-channel trade, cross-channel trading too)."
       },
       "cardInactive": {
         "question": "\"This card cannot be traded right now\" is shown",
@@ -2093,13 +2094,18 @@
       },
       "alreadyDone": {
         "question": "\"This trade has already been completed (or is no longer valid)\" is shown",
-        "reason": "Someone else accepted it first, or the lister gave up the card so the listing became invalid.",
+        "reason": "The listing is completed or no longer valid: someone else accepted it first, the lister cancelled it, the lister gave up the card, or a card used in the listing was deleted.",
         "action": "Reload the board and accept another listing."
       },
       "notEnough": {
         "question": "The accept button says \"You don't own this card\" or \"Not enough copies\"",
-        "reason": "You don't have as many copies of the card to give as the listing asks for (cards in a listing or a bid are not counted).",
-        "action": "Collect more copies, cancel a listing or bid, or wait for its result so the cards are free to use again."
+        "reason": "\"You don't own this card\" means you have none of the card to give. \"Not enough copies\" means you own fewer copies than the listing asks for (the count includes copies in a listing or a bid).",
+        "action": "Collect the missing copies."
+      },
+      "allListed": {
+        "question": "The accept button says \"Not enough tradeable copies (listed or bid)\"",
+        "reason": "You own enough copies of the card to give, but not enough once the copies in a listing or a bid are excluded.",
+        "action": "Cancel a listing or bid, or wait for its result so the cards are free to use again."
       },
       "limitReached": {
         "question": "\"You have reached the listing limit\" or \"You have reached the active bid limit\" is shown",
@@ -2109,7 +2115,7 @@
       "alreadyListed": {
         "question": "\"This card is already listed or used in a bid\" is shown",
         "reason": "One copy of a card cannot be used in a listing, an auction and a bid at the same time.",
-        "action": "If you own more copies of the card, use another one."
+        "action": "The listing form automatically uses a free copy if you own several, and a card with no free copy cannot be selected. If another listing or bid took the copy first, check \"My trades\" and wait until the card is free to use again."
       },
       "noPartner": {
         "question": "\"No streamers are available for cross-channel trades\" is shown",
@@ -2118,7 +2124,7 @@
       },
       "notWantable": {
         "question": "\"The streamer does not allow requesting this card in trades\" is shown",
-        "reason": "The streamer has made this card unavailable as a card you want (it cannot be used for an auction bid either).",
+        "reason": "The streamer has made this card unavailable as a card you want (it cannot be used for an auction bid either; for a bid, \"The streamer does not allow using this card as payment in trades\" is shown).",
         "action": "Choose another card, or put this one on the giving side."
       },
       "bidUnsettleable": {
@@ -2143,7 +2149,7 @@
         "mockOff": "When trading is OFF",
         "stateOn": "ON",
         "stateOff": "OFF",
-        "off": "When it is OFF, current listings disappear from the board and cannot be accepted. They are not deleted and come back when you turn it on again. Auctions cannot be completed either."
+        "off": "When it is OFF, current listings disappear from the board and cannot be accepted. Regular listings are not deleted and come back when you turn it on again. Auctions cannot be completed either, but their deadline and selection period keep running while it is OFF. An auction whose time has run out stays expired and does not come back when you turn it on again."
       },
       "wantable": {
         "title": "Keep a card from being picked as a card viewers want",
