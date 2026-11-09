@@ -1499,8 +1499,7 @@
       "description": "表示言語を選択してください。"
     },
     "collectionSharing": {
-      "title": "配信者向け: コレクションの公開とトレード",
-      "description": "あなたのチャンネルのコレクションページの公開範囲と、視聴者間のカードトレードを設定します。"
+      "title": "配信者向け設定"
     }
   },
   "gachaHistoryPage": {

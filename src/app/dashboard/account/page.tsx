@@ -12,7 +12,10 @@ import CardVisibilitySettings from "@/components/CardVisibilitySettings";
 import AlbumDisplaySettings from "@/components/AlbumDisplaySettings";
 import DuplicateDisplayTierSettings from "@/components/DuplicateDisplayTierSettings";
 import TradeSettings from "@/components/TradeSettings";
-import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
+import {
+  CARD_TRADE_UI_VISIBLE,
+  DUPLICATE_DISPLAY_TIER_SETTINGS_UI_VISIBLE,
+} from "@/lib/constants";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -109,9 +112,6 @@ export default async function AccountSettingsPage() {
               >
                 {t("collectionSharing.title")}
               </h2>
-              <p className="mt-1 text-sm text-gray-400">
-                {t("collectionSharing.description")}
-              </p>
             </div>
             <CardVisibilitySettings
               streamerId={collectionSettings.streamerId}
@@ -129,12 +129,16 @@ export default async function AccountSettingsPage() {
             />
             {/* Issue #1782: 被りカードの所有枚数に応じた表示段階。コレクションの
                 見た目に関する設定なので公開設定と同じセクションに置き、保存経路も
-                共通にする（設定経路を増やさない）。 */}
-            <DuplicateDisplayTierSettings
-              streamerId={collectionSettings.streamerId}
-              rarities={collectionSettings.rarities}
-              currentDuplicateDisplayTiers={collectionSettings.duplicateDisplayTiers}
-            />
+                共通にする（設定経路を増やさない）。仕様の見直し中は
+                DUPLICATE_DISPLAY_TIER_SETTINGS_UI_VISIBLE=false で設定欄だけを隠す
+                （DB列・API・コンポーネントは維持。true に戻すだけで復帰する）。 */}
+            {DUPLICATE_DISPLAY_TIER_SETTINGS_UI_VISIBLE && (
+              <DuplicateDisplayTierSettings
+                streamerId={collectionSettings.streamerId}
+                rarities={collectionSettings.rarities}
+                currentDuplicateDisplayTiers={collectionSettings.duplicateDisplayTiers}
+              />
+            )}
             {/* #715: カードトレードの入口UIは一般公開準備中のため
                 CARD_TRADE_UI_VISIBLE=false の間は描画しない。main #1803 は
                 /dashboard/settings のトレードセクションを同じ定数で隠したが、

@@ -127,6 +127,10 @@ describe('POST /api/gacha/demo: 無認証経路の公開設定と返却列', () 
     vi.mocked(checkRateLimit).mockResolvedValue({ success: true, limit: 30, remaining: 29, reset: Date.now() + 60_000 })
     vi.mocked(getRateLimitIdentifier).mockResolvedValue('ip:test')
     vi.mocked(validateCSRFToken).mockResolvedValue({ valid: true })
+    // clearAllMocks は戻り値の設定を消さないため、前のテストのセッションが漏れないよう
+    // 既定は「セッション無し（OBS ブラウザソース等の無認証）」に戻す。
+    vi.mocked(getSession).mockResolvedValue(null)
+    vi.mocked(getStreamerIdByTwitchUserId).mockResolvedValue(null)
     vi.mocked(createOverlayDemoEvent).mockImplementation((card) => ({
       id: 'demo:1',
       eventId: 'demo:1',
@@ -248,5 +252,85 @@ describe('POST /api/gacha/demo: 無認証経路の公開設定と返却列', () 
     expect(vi.mocked(createOverlayDemoEvent)).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'card-1', name: 'カード1' })
     )
+  })
+  describe('非 broadcast でのログイン中の配信者本人（設定画面のプレビューDEMO）', () => {
+    // 回帰: 設定画面のプレビューDEMOは overlay iframe から broadcast なしで呼ぶため、
+    // #1901 以降は未所持カード非公開の配信者だと選んだカードが組み込みデモカードの
+    // ランダム表示に縮退していた。
+    const ownerSession = {
+      twitchUserId: 'twitch-1',
+      twitchUsername: 'user1',
+      broadcasterType: 'affiliate',
+    } as Awaited<ReturnType<typeof getSession>>
+
+    it('セッションの配信者が streamerId の所有者なら、公開設定に関係なく選んだ実カードを返す', async () => {
+      const captured = primeDb([FULL_ROW])
+      vi.mocked(getSession).mockResolvedValue(ownerSession)
+      vi.mocked(getStreamerIdByTwitchUserId).mockResolvedValue({ id: 'streamer-1' })
+
+      const response = await POST(request({ streamerId: 'streamer-1', cardId: 'card-1' }))
+      const json = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(captured.joins).toBe(0)
+      const { sql } = renderWhere(captured.where[0])
+      expect(sql).toContain('"cards"."id" = $')
+      expect(sql).not.toContain('show_unowned')
+      expect(json.card.id).toBe('card-1')
+      expect(Object.keys(json.card).sort()).toEqual(OVERLAY_FIELDS)
+      // 読み取りのみ: broadcast ではないので CSRF 検証も KV / DO への配信もしない
+      expect(vi.mocked(validateCSRFToken)).not.toHaveBeenCalled()
+      expect(vi.mocked(createOverlayDemoEvent)).not.toHaveBeenCalled()
+    })
+
+    it('本人がカードを指定しない（ランダム）場合も公開設定の条件を付けず自分の実カードから選ぶ', async () => {
+      const captured = primeDb([FULL_ROW])
+      vi.mocked(getSession).mockResolvedValue(ownerSession)
+      vi.mocked(getStreamerIdByTwitchUserId).mockResolvedValue({ id: 'streamer-1' })
+
+      const response = await POST(request({ streamerId: 'streamer-1' }))
+      const json = await response.json()
+
+      expect(captured.joins).toBe(0)
+      expect(renderWhere(captured.where[0]).sql).not.toContain('show_unowned')
+      expect(json.card.id).toBe('card-1')
+    })
+
+    it('別の配信者のセッションでは公開設定の条件が付く（他人の非公開カードは見えない）', async () => {
+      const captured = primeDb([])
+      vi.mocked(getSession).mockResolvedValue(ownerSession)
+      vi.mocked(getStreamerIdByTwitchUserId).mockResolvedValue({ id: 'streamer-other' })
+
+      const response = await POST(request({ streamerId: 'streamer-1', cardId: 'card-1' }))
+      const json = await response.json()
+
+      expect(captured.joins).toBeGreaterThan(0)
+      expect(renderWhere(captured.where[0]).sql).toContain('"streamers"."show_unowned_card_details" = $')
+      expect(json.card.id).not.toBe('card-1')
+      expect(json.card.name).toContain('デモカード')
+    })
+
+    it('セッションが無ければ所有者照会をせず公開設定の条件が付く（OBS ブラウザソース等）', async () => {
+      const captured = primeDb([FULL_ROW])
+      vi.mocked(getSession).mockResolvedValue(null)
+
+      await POST(request({ streamerId: 'streamer-1', cardId: 'card-1' }))
+
+      expect(vi.mocked(getStreamerIdByTwitchUserId)).not.toHaveBeenCalled()
+      expect(captured.joins).toBe(1)
+    })
+
+    it('所有者照会が失敗したら公開設定へ倒し、デモ表示自体は返す', async () => {
+      const captured = primeDb([])
+      vi.mocked(getSession).mockResolvedValue(ownerSession)
+      vi.mocked(getStreamerIdByTwitchUserId).mockRejectedValue(new Error('db down'))
+
+      const response = await POST(request({ streamerId: 'streamer-1', cardId: 'card-1' }))
+      const json = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(captured.joins).toBeGreaterThan(0)
+      expect(json.card.name).toContain('デモカード')
+    })
   })
 })
