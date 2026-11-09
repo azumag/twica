@@ -51,7 +51,12 @@ import type { Json } from '@/types/database'
 //       00065 rarity_weights_scope / pack_rarity_weights, 00066 gacha_sound_rules,
 //       20260817100000 trade_enabled / cross_channel_trade_enabled (#722)
 // -----------------------------------------------------------------------------
-export const streamers = pgTable('streamers', {
+// 列定義を関数にしているのは、Issue #1994 の channel_point_pack_names 列を持つ
+// UPDATE 専用の拡張定義（streamersWithChannelPointPackNames）と列を共有するため。
+// Drizzle の列ビルダーはテーブルごとに新しいインスタンスが必要なので、
+// additionalGachaRewardBaseColumns / tradeOfferBaseColumns と同じく呼び出しごとに
+// 新しいオブジェクトを返す。
+const streamerBaseColumns = () => ({
   id: uuid('id').primaryKey().default(sql`uuid_generate_v4()`),
   twitch_user_id: text('twitch_user_id').notNull(),
   twitch_username: text('twitch_username').notNull(),
@@ -84,6 +89,9 @@ export const streamers = pgTable('streamers', {
     .default(sql`NULL`),
   // 00049: DB 型は text[] ではなく JSONB の文字列配列（database.ts では string[]）
   custom_rarities: jsonb('custom_rarities').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  // Issue #1783: カスタムレアリティごとの表示スタイル（色/グラデーション/グロー/エフェクト）。
+  // キーはレアリティ名、値は RarityStyle オブジェクト。未設定時は空オブジェクト。
+  rarity_styles: jsonb('rarity_styles').$type<Record<string, import('@/lib/rarity-styles').RarityStyle>>().notNull().default(sql`'{}'::jsonb`),
   // 00062: 同上、JSONB の文字列配列
   card_pack_names: jsonb('card_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   // 00063: デフォルト（未分類）パックの表示名オーバーライド
@@ -104,8 +112,56 @@ export const streamers = pgTable('streamers', {
   // 20260817100000 (#722): トレード機能の配信者オプトイン（両方デフォルトOFF）
   trade_enabled: boolean('trade_enabled').notNull().default(false),
   cross_channel_trade_enabled: boolean('cross_channel_trade_enabled').notNull().default(false),
+  // 20261014120000 (#1765 フォローアップ): アルバム表示の並び (N×N) を
+  // コレクション(パック)ごとに指定する JSONB マップ。
+  // キー: __all__（すべてのパック / 個別指定が無いパックの既定）,
+  //       __default__（未分類のデフォルトパック）, または実パック名。
+  // 値: 1ページの N（ALBUM_GRID_SIZE_MIN..MAX。CHECK 制約は DB 側で担保）
+  pack_album_grid_sizes: jsonb('pack_album_grid_sizes')
+    .$type<Record<string, number>>()
+    .default(sql`NULL`),
+  // 20261014120000 (#1765 フォローアップ): コレクションページの初期表示。
+  // 'grid'（従来のカード一覧、既定）| 'album'（アルバムで開く）
+  collection_default_view: text('collection_default_view').notNull().default('grid'),
+  // 20261015120000 (#1782): 被りカードの「所有枚数に応じた表示段階」のしきい値。
+  // レアリティ名 → 厳密増加する所有枚数の配列（1..3 要素）。
+  //   例: {"legendary": [2, 5]} = 2枚で1段階・5枚で2段階。
+  // エントリが無いレアリティ／NULL（既定）は段階表示をしない（＝機能OFF）。
+  // CHECK 制約は DB 側、アプリ側の検証は src/lib/duplicate-display-tiers.ts。
+  duplicate_display_tiers: jsonb('duplicate_display_tiers')
+    .$type<Record<string, number[]>>()
+    .default(sql`NULL`),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
+})
+
+export const streamers = pgTable('streamers', streamerBaseColumns())
+
+/**
+ * Issue #1994: streamers の全列 + channel_point_pack_names を持つ、**UPDATE 専用**の定義。
+ *
+ * なぜ必要か: Drizzle の `.set()` はテーブル定義にある列だけを SET 句へ描画し、定義に
+ * 無いキーは黙って捨てる。本体定義（streamers）で channel_point_pack_names を渡しても
+ * SQL に出ず、配列列が一度も書かれなかった（PR #1995 独立レビュー必須1）。一方、
+ * 狭い定義（streamerChannelPointPackBindings）で UPDATE すると、今度は同じリクエストで
+ * 送られた channel_point_reward_id などが SET から落ちる。設定 API は報酬 ID・名前・
+ * パック割り当てを1リクエストで保存するため、全列を知っている定義で1本の UPDATE に
+ * 閉じ込める必要がある（旧列ミラーと配列列を別 UPDATE に分けない理由は下の
+ * streamerChannelPointPackBindings のコメント参照）。
+ *
+ * UPDATE は `.set()` に渡したキーだけを SET に出すので、この定義でも無関係な列は
+ * SQL に現れない。設定 API は payload に channel_point_pack_names を含むときだけ
+ * この定義を使い、含まないときは本体定義を使う（migration 未適用のデプロイ窓で、
+ * パックと無関係の保存が 42703 にならないようにするため）。
+ *
+ * 禁止事項: `.insert()` / 無指定の `.select()` / 無指定の `.returning()` には使わない。
+ * それらは定義の全列を列挙するため、デプロイ窓で 42703 になる（本体へ列を足さない
+ * のと同じ理由）。migration 適用を本番・preview で確認したら本体へ一本化してよい。
+ */
+export const streamersWithChannelPointPackNames = pgTable('streamers', {
+  ...streamerBaseColumns(),
+  // 20261108120000: 選択全体（[] = 旧単一列を読む）。要素検証はアプリ層。
+  channel_point_pack_names: jsonb('channel_point_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
 })
 
 // -----------------------------------------------------------------------------
@@ -152,6 +208,31 @@ export const cards = pgTable('cards', {
   skill_power: integer('skill_power').default(10),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
+  // NOTE: cards.trade_wantable（#1790, 20261014100000）は意図的にここへ定義しない。
+  // 下の cardTradeSettings を参照。
+})
+
+/**
+ * cards のトレード設定列だけを持つ狭い定義（#1790, 20261014100000_card_trade_wantable.sql）。
+ *
+ * trade_wantable = トレードの「求めるカード」に指定できるか（既定 true）。
+ *
+ * cards 本体に列を足さない理由: cards はガチャ・デモ・図鑑・カード管理
+ * （getStreamerData / GET /api/cards / gacha/demo 等）で無指定 `.select()`、
+ * カード作成で `.insert()`（values に無い列も `default` として列挙される）、
+ * 更新で無指定 `.returning()` されている。本体に列を足すと、planetscale-migrate と
+ * アプリデプロイが非同期なデプロイ窓（issue #788）でそれら全経路が 42703 になり、
+ * ガチャ実経路まで止まる。列を使うのはトレード（src/lib/trade.ts）とカード管理の
+ * 指定可否トグル（src/lib/card-trade-wantable.ts）だけなので、そこだけがこの定義を
+ * 参照し、各所で列欠落時のフォールバックを持つ。
+ *
+ * 同じ物理テーブルを2つの pgTable で表すのは tradeOffersWithoutQuantity と同じ手法
+ * （drizzle-kit による DDL 生成は使っておらず、DDL の正本は migration）。
+ */
+export const cardTradeSettings = pgTable('cards', {
+  id: uuid('id').primaryKey(),
+  streamer_id: uuid('streamer_id').notNull(),
+  trade_wantable: boolean('trade_wantable').notNull().default(true),
 })
 
 // -----------------------------------------------------------------------------
@@ -220,6 +301,21 @@ export const gachaHistory = pgTable('gacha_history', {
 })
 
 // -----------------------------------------------------------------------------
+// gacha_history_event_tombstones（削除された履歴の冪等性キー）
+// 根拠: 20261027000000 gacha history event tombstones
+// 視聴者が履歴を削除しても、再送・replay で同じ event のカードを再発行しないため、
+// 削除時に trigger が event_id を残す。migration 未適用の窓では参照すると 42P01 になる。
+// -----------------------------------------------------------------------------
+export const gachaHistoryEventTombstones = pgTable('gacha_history_event_tombstones', {
+  event_id: text('event_id').primaryKey(),
+  streamer_id: uuid('streamer_id').notNull(),
+  user_twitch_id: text('user_twitch_id').notNull(),
+  card_id: uuid('card_id').notNull(),
+  redeemed_at: timestamp('redeemed_at', { withTimezone: true, mode: 'string' }),
+  deleted_at: timestamp('deleted_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+// -----------------------------------------------------------------------------
 // streamer_chat_multi_delivery_settings（Issue #1549: N連チャット配送方式）
 // 根拠: 20260912013000 paced multi draw chat
 // -----------------------------------------------------------------------------
@@ -240,6 +336,10 @@ export const streamerChatMultiDeliverySettings = pgTable('streamer_chat_multi_de
 export const chatNotificationOutbox = pgTable('chat_notification_outbox', {
   id: uuid('id').primaryKey().default(sql`extensions.uuid_generate_v4()`),
   batch_id: text('batch_id').notNull(),
+  // Issue #1548: 1=flagスナップショットを尊重する旧セマンティクス、
+  // 2=placeholder駆動（chat_announcement_multi_show_cardsを読まない）の
+  // 新セマンティクス。書き込み側は必ずversionを明示するためDEFAULT=1は据え置き
+  // （20261031120000でCHECKを{1,2}へ緩和し、RPCが2を書き込む）。
   payload_version: smallint('payload_version').notNull().default(1),
   payload: jsonb('payload').$type<Json>().notNull(),
   expected_draw_count: integer('expected_draw_count').notNull(),
@@ -340,10 +440,79 @@ export const blobFiles = pgTable('blob_files', {
 })
 
 // -----------------------------------------------------------------------------
+// storage_reservations（保存前の容量予約。Issue #1907）
+// 根拠: 20261023000000_storage_reservation_and_reconcile.sql
+// -----------------------------------------------------------------------------
+export const storageReservations = pgTable('storage_reservations', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  user_prefix: varchar('user_prefix', { length: 8 }).notNull(),
+  file_size: bigint('file_size', { mode: 'number' }).notNull(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  expires_at: timestamp('expires_at', { withTimezone: true, mode: 'string' }).notNull(),
+})
+
+/**
+ * Issue #1994: メイン報酬の複数パック割り当て列だけを持つ streamers の狭い定義
+ * （20261108120000_add_reward_multi_pack_names.sql）。
+ *
+ * streamers 本体に列を足さない理由は cardTradeSettings と同じ: streamers は
+ * auth callback / vote-campaign の `.insert()`（values に無い列も `default` として
+ * 列挙される）や dashboard の無指定 `.select()` で全列を要求されるため、本体に足すと
+ * planetscale-migrate とアプリデプロイが非同期なデプロイ窓（issue #788）でそれらが
+ * 42703 になる（新規配信者の作成やダッシュボード表示が止まる）。列を使うのは
+ * ガチャ抽選（src/lib/services/gacha.ts）と設定 API（src/app/api/streamer/settings）
+ * だけなので、そこだけがこの定義を参照し、各所で列欠落時は旧単一列へフォールバックする。
+ *
+ * この定義は**読み取り専用**（設定ページ・設定 API の現在値読み取り）。書き込みは
+ * 「旧単一列（先頭要素のミラー）+ 配列列 + 同時に保存する他の設定列」を1本の UPDATE に
+ * 閉じ込めるため、全列を持つ streamersWithChannelPointPackNames を使う
+ * （別々の UPDATE に分けると片方だけが成功し、古い配列が勝つ状態を作りうる。
+ * また、この狭い定義で UPDATE すると reward_id など定義外のキーが SET から黙って落ちる）。
+ *
+ * 同じ物理テーブルを2つの pgTable で表すのは tradeOffersWithoutQuantity と同じ手法
+ * （drizzle-kit による DDL 生成は使っておらず、DDL の正本は migration）。
+ */
+export const streamerChannelPointPackBindings = pgTable('streamers', {
+  id: uuid('id').primaryKey(),
+  twitch_user_id: text('twitch_user_id').notNull(),
+  channel_point_collection_name: text('channel_point_collection_name'),
+  // 20261108120000: 選択全体（[] = 旧単一列を読む）。要素検証はアプリ層。
+  channel_point_pack_names: jsonb('channel_point_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+})
+
+/**
+ * Issue #1994: EventSub ガチャの streamer 読み取りで使う、channel_point_pack_names
+ * まで含む定義。読み取り1クエリに畳むための専用定義で、42703（同列未デプロイ）
+ * を検知したら streamers 本体定義で再試行する（gacha.ts 参照）。
+ */
+export const streamerEventSubGachaRead = pgTable('streamers', {
+  id: uuid('id').primaryKey(),
+  twitch_user_id: text('twitch_user_id').notNull(),
+  channel_point_reward_id: text('channel_point_reward_id'),
+  channel_point_collection_name: text('channel_point_collection_name'),
+  channel_point_pack_names: jsonb('channel_point_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  chat_announcement_enabled: boolean('chat_announcement_enabled').notNull().default(false),
+  chat_announcement_template: text('chat_announcement_template'),
+  chat_announcement_multi_template: text('chat_announcement_multi_template'),
+  chat_announcement_multi_show_cards: boolean('chat_announcement_multi_show_cards').notNull().default(true),
+  raid_gacha_active_until: timestamp('raid_gacha_active_until', { withTimezone: true, mode: 'string' }),
+  rarity_weights: jsonb('rarity_weights').$type<Record<string, number>>().default(sql`NULL`),
+  rarity_weights_scope: text('rarity_weights_scope').notNull().default('global'),
+  pack_rarity_weights: jsonb('pack_rarity_weights')
+    .$type<Record<string, Record<string, number>>>()
+    .default(sql`NULL`),
+  default_card_pack_name: text('default_card_pack_name'),
+})
+
+// -----------------------------------------------------------------------------
 // streamer_additional_gacha_rewards（追加のガチャ用チャネルポイント報酬）
 // 根拠: 00008 初版, 00041 draw_count / is_raid_limited 追加, 00061 collection_name 追加
 // -----------------------------------------------------------------------------
-export const streamerAdditionalGachaRewards = pgTable('streamer_additional_gacha_rewards', {
+// 列定義を関数にしているのは、Issue #1994 の reward_pack_names 列を持つ拡張定義
+// （streamerAdditionalGachaRewardsWithPackNames）と列を共有するため。Drizzle の列
+// ビルダーはテーブルごとに新しいインスタンスが必要なので、tradeOfferBaseColumns と
+// 同じく呼び出しごとに新しいオブジェクトを返す。
+const additionalGachaRewardBaseColumns = () => ({
   id: uuid('id').primaryKey().default(sql`uuid_generate_v4()`),
   streamer_id: uuid('streamer_id').notNull(),
   reward_id: text('reward_id').notNull(),
@@ -352,9 +521,64 @@ export const streamerAdditionalGachaRewards = pgTable('streamer_additional_gacha
   draw_count: integer('draw_count').notNull().default(1),
   // 00041: レイド限定報酬フラグ
   is_raid_limited: boolean('is_raid_limited').notNull().default(false),
-  // 00061: この報酬に紐付くパック名（NULL = 全カード対象）
+  // 00061: この報酬に紐付くパック名（NULL = 全カード対象）。
+  // Issue #1994 以降は reward_pack_names の先頭要素のミラー（ロールバック互換）。
   collection_name: text('collection_name'),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).default(sql`now()`),
+})
+
+export const streamerAdditionalGachaRewards = pgTable(
+  'streamer_additional_gacha_rewards',
+  additionalGachaRewardBaseColumns(),
+)
+
+/**
+ * Issue #1994: reward_pack_names 列（20261108120000）まで含む追加報酬の定義。
+ *
+ * 本体（streamerAdditionalGachaRewards）に列を足さない理由: 追加報酬の作成は
+ * `.insert()`（values に無い列も `default` として列挙される）で、本体に足すと
+ * migration 未適用のデプロイ窓で作成が 42703 になる。この定義を使う経路
+ * （ガチャ抽選・追加報酬 API・bootstrap）は、42703（reward_pack_names）を検知したら
+ * 本体定義で再試行し、旧単一列 collection_name だけで動作する。
+ *
+ * 書き込み（追加報酬 API の INSERT / UPDATE）は、payload に reward_pack_names を
+ * 含むときだけこの定義を使う。Drizzle は定義に無いキーを SET / INSERT 列から黙って
+ * 捨てるため、本体定義へ reward_pack_names を渡しても SQL に出ない（PR #1995 必須1）。
+ * 逆にパックと無関係な作成・更新は本体定義のままにし、デプロイ窓で壊さない。migration 適用を
+ * 本番・preview で確認したら本体へ一本化してよい（tradeOffersWithoutQuantity と逆向きの同じ手法）。
+ */
+export const streamerAdditionalGachaRewardsWithPackNames = pgTable('streamer_additional_gacha_rewards', {
+  ...additionalGachaRewardBaseColumns(),
+  // 20261108120000: 選択全体（[] = collection_name を読む）。要素検証はアプリ層。
+  reward_pack_names: jsonb('reward_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+})
+
+/**
+ * Issue #2005 (任意2): collection_name 列欠落窓（#393 フォールバック）の
+ * INSERT 再試行用の縮退定義。`.insert()` は values に無い列も `default` として
+ * 列挙するため、payload からキーを delete するだけでは列を剥がせない。
+ * 物理的に collection_name を持たない定義が必要になる（WithPackNames と同じ手法）。
+ */
+const additionalGachaRewardColumnsWithoutCollectionName = () => {
+  const columns: Record<string, unknown> = additionalGachaRewardBaseColumns()
+  delete columns.collection_name
+  return columns as ReturnType<typeof additionalGachaRewardBaseColumns>
+}
+
+export const streamerAdditionalGachaRewardsWithoutCollectionName = pgTable(
+  'streamer_additional_gacha_rewards',
+  additionalGachaRewardColumnsWithoutCollectionName(),
+)
+
+/**
+ * Issue #2005 (任意2): reward_pack_names は残すが collection_name だけ欠落した窓
+ * （例: 00061 のみ未適用で 20261108120000 は適用済み）の INSERT 再試行用定義。
+ * PostgreSQL は1回の失敗で欠落列を1つしか報告しないため、POST の2段フォール
+ * バックは collection_name → reward_pack_names の報告順序にも対応する必要がある。
+ */
+export const streamerAdditionalGachaRewardsPackNamesOnly = pgTable('streamer_additional_gacha_rewards', {
+  ...additionalGachaRewardColumnsWithoutCollectionName(),
+  reward_pack_names: jsonb('reward_pack_names').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
 })
 
 // -----------------------------------------------------------------------------
@@ -653,9 +877,12 @@ export const cardStoneTransactions = pgTable('card_stone_transactions', {
 
 // -----------------------------------------------------------------------------
 // trade_offers（カードトレードのオープンオファー。completed 行がそのまま履歴になる）
-// 根拠: 20260817100000 初版（Issue #722, #715 子2）
+// 根拠: 20260817100000 初版（Issue #722, #715 子2）、20261011120000（#1789 wanted_quantity）
 // -----------------------------------------------------------------------------
-export const tradeOffers = pgTable('trade_offers', {
+// 列定義はファクトリで共有する。Drizzle の pgTable は列ビルダーからテーブルごとに列
+// オブジェクトを生成するため、同じビルダーを2つのテーブルへ渡さず、呼び出しごとに新しい
+// ビルダーを作る。
+const tradeOfferBaseColumns = () => ({
   id: uuid('id').primaryKey().default(sql`extensions.uuid_generate_v4()`),
   offerer_user_id: uuid('offerer_user_id').notNull(),
   // 意図的に FK なし（migration のコメント参照。user_cards 行はカードストーン交換で
@@ -683,6 +910,77 @@ export const tradeOffers = pgTable('trade_offers', {
   accepted_request_id: uuid('accepted_request_id'),
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
   updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+export const tradeOffers = pgTable('trade_offers', {
+  ...tradeOfferBaseColumns(),
+  // #1789: 応諾者が渡す wanted_card_id のコピー枚数（1〜10。CHECK は DB 側で担保）
+  wanted_quantity: smallint('wanted_quantity').notNull().default(1),
+})
+
+/**
+ * 20261011120000 適用前の trade_offers（wanted_quantity 列なし）。
+ *
+ * デプロイ窓（planetscale-migrate とアプリデプロイが非同期、issue #788）専用。
+ * Drizzle の INSERT は values に無い列も `default` として列挙し、無指定の
+ * `.select()` / `.returning()` も schema の全列を要求するため、列が未作成の DB では
+ * tradeOffers を使う文がすべて 42703 で失敗する。src/lib/trade.ts はその場合だけ
+ * この定義で再試行する。migration 適用後は到達しない死に分岐になるので、本番・preview
+ * 双方の適用を確認したら tradeOffers に一本化して削除してよい。
+ */
+export const tradeOffersWithoutQuantity = pgTable('trade_offers', tradeOfferBaseColumns())
+
+// -----------------------------------------------------------------------------
+// trade_auctions / trade_auction_bids / trade_auction_bid_items（オークション形式の出品）
+// 根拠: 20261018030000_trade_auctions.sql（Issue #1791）
+// 書き込みはすべて同 migration の RPC（create/place/withdraw/cancel/settle）が行う。
+// アプリはこれらの定義を一覧・詳細の読み取りにだけ使う（src/lib/trade-auction.ts）。
+// migration 未適用の窓では参照すると 42P01 になるため、オークション API は 503 を返し、
+// 既存トレードの拘束判定は src/lib/trade.ts で「オークション拘束なし」へ縮退する。
+// -----------------------------------------------------------------------------
+export const tradeAuctions = pgTable('trade_auctions', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  seller_user_id: uuid('seller_user_id').notNull(),
+  // 意図的に FK なし（trade_offers.offered_user_card_id と同じ理由）
+  offered_user_card_id: uuid('offered_user_card_id').notNull(),
+  // ON DELETE SET NULL のため NULL 許容
+  offered_card_id: uuid('offered_card_id'),
+  offered_streamer_id: uuid('offered_streamer_id').notNull(),
+  offered_card_snapshot: jsonb('offered_card_snapshot').$type<Json>().notNull(),
+  ends_at: timestamp('ends_at', { withTimezone: true, mode: 'string' }).notNull(),
+  selection_deadline: timestamp('selection_deadline', { withTimezone: true, mode: 'string' }).notNull(),
+  // 'open' | 'completed' | 'cancelled' | 'expired'（CHECK 制約は DB 側で担保）
+  status: text('status').notNull().default('open'),
+  winning_bid_id: uuid('winning_bid_id'),
+  request_id: uuid('request_id').notNull(),
+  settle_request_id: uuid('settle_request_id'),
+  completed_at: timestamp('completed_at', { withTimezone: true, mode: 'string' }),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+export const tradeAuctionBids = pgTable('trade_auction_bids', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  auction_id: uuid('auction_id').notNull(),
+  bidder_user_id: uuid('bidder_user_id').notNull(),
+  // ON DELETE SET NULL のため NULL 許容（表示はスナップショット）
+  bid_card_id: uuid('bid_card_id'),
+  bid_streamer_id: uuid('bid_streamer_id').notNull(),
+  // 1〜10（CHECK は DB 側で担保）
+  quantity: smallint('quantity').notNull(),
+  bid_card_snapshot: jsonb('bid_card_snapshot').$type<Json>().notNull(),
+  is_cross_channel: boolean('is_cross_channel').notNull(),
+  // 'active' | 'withdrawn' | 'won' | 'lost'（CHECK 制約は DB 側で担保）
+  status: text('status').notNull().default('active'),
+  request_id: uuid('request_id').notNull(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+export const tradeAuctionBidItems = pgTable('trade_auction_bid_items', {
+  bid_id: uuid('bid_id').notNull(),
+  // 意図的に FK なし
+  user_card_id: uuid('user_card_id').notNull(),
 })
 
 // =============================================================================

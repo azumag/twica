@@ -37,12 +37,12 @@ function renderLayout() {
           needsAttention: false,
           template: null,
           multiTemplate: null,
-          multiShowCards: true,
         }}
-        visibility={{ showUnowned: false, showUnownedDetails: false }}
         liveDirectory={{ publishLiveStatus: false, publishStats: false }}
-        // 「有効化済みでもUIを出さない」ことを検証するため true を渡す。
-        trade={{ enabled: true, crossChannelEnabled: true }}
+        // preview 側ではトレード設定・公開設定は /dashboard/account へ移動済みのため、
+        // SettingsLayout は visibility / trade の props を持たない（main/preview 同期時に
+        // preview の props 形へ合わせた）。account page 側の非表示は
+        // tests/unit/account-page-collection-settings.test.tsx が固定する。
         initialModeHint="advanced"
       />
     </NextIntlClientProvider>,
@@ -50,13 +50,12 @@ function renderLayout() {
 }
 
 describe("SettingsLayout: カードトレード設定セクションの非表示 (#715)", () => {
-  it("trade_enabled=true でもカードトレードのON/OFFセクションを表示しない", () => {
+  it("詳細モードにカードトレードのON/OFFトグルを表示しない", () => {
     renderLayout();
 
-    // サイドバー項目とパネル見出しは同じ翻訳キーを使うため、どちらもDOMに
-    // 現れないことを確認する。
-    expect(screen.queryByText(section.trade)).not.toBeInTheDocument();
-    expect(screen.queryByText(section.tradeDesc)).not.toBeInTheDocument();
+    // preview の messages には settingsPage.advanced.section.trade が無い（セクション
+    // 自体が account page へ移動済み）ため、トレード設定フォームの実チェックボックスが
+    // 詳細モードのどこにも現れないことで確認する。
     expect(
       screen.queryByRole("checkbox", {
         name: jaMessages.tradeSettings.form.tradeEnabled,

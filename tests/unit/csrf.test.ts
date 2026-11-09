@@ -69,6 +69,7 @@ describe('CSRF Protection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.unstubAllEnvs()
+    delete process.env.SESSION_COOKIE_SECRET
     vi.stubEnv('CSRF_TOKEN_SALT', 'test-salt-for-csrf-token-hashing')
 
     const mockCookieStore = createMockCookieStore()

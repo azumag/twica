@@ -559,6 +559,9 @@ describe('POST /api/admin/eventsub-replay', () => {
           newCardNames: ['Alpha'],
         },
         expect.any(Function),
+        // Issue #1548: payloadVersion=1 の行は flag スナップショットを尊重する
+        // 旧セマンティクスで再生する（legacyMultiShowCardsGate=true）。
+        true,
       )
       expect(mocks.markChatNotificationSent).toHaveBeenCalledWith(claim)
       expect(json.results[0].outcome).toBe('succeeded')
@@ -682,7 +685,7 @@ describe('POST /api/admin/eventsub-replay', () => {
       let entered: (() => void) | undefined
       const enteredSend = new Promise<void>((resolve) => { entered = resolve })
       mocks.sendChatAnnouncement.mockImplementationOnce(async (...args) => {
-        const beforeExternalSend = args.at(-1) as () => Promise<boolean>
+        const beforeExternalSend = args.at(-2) as () => Promise<boolean>
         // 15秒reserve前に開始した送信は、後続のHelix応答をrouteが待つ。
         await expect(beforeExternalSend()).resolves.toBe(true)
         entered?.()
@@ -710,7 +713,7 @@ describe('POST /api/admin/eventsub-replay', () => {
       const claim = makeChatOutboxClaim()
       mocks.claimDueChatNotifications.mockResolvedValueOnce([claim]).mockResolvedValueOnce([])
       mocks.sendChatAnnouncement.mockImplementationOnce(async (...args) => {
-        const beforeExternalSend = args.at(-1) as () => Promise<boolean>
+        const beforeExternalSend = args.at(-2) as () => Promise<boolean>
         // route本体の105秒deadlineではなく、15秒reserveを引いた開始期限を越える。
         vi.setSystemTime(new Date(90_000))
         expect(await beforeExternalSend()).toBe(false)
@@ -739,7 +742,7 @@ describe('POST /api/admin/eventsub-replay', () => {
         return true
       })
       mocks.sendChatAnnouncement.mockImplementationOnce(async (...args) => {
-        const beforeExternalSend = args.at(-1) as () => Promise<boolean>
+        const beforeExternalSend = args.at(-2) as () => Promise<boolean>
         expect(await beforeExternalSend()).toBe(false)
         return { outcome: 'aborted', reason: 'chat delivery ownership lost before send' }
       })

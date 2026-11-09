@@ -103,6 +103,21 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 
 [env.preview]
 
+# Secrets (set via `wrangler secret put ... --env preview`):
+#   SESSION_COOKIE_SECRET  — required; missing → startup/runtime failure (fail-closed)
+# Production: `wrangler secret put SESSION_COOKIE_SECRET`
+
+# Issue #1979: Smart Placement を preview にだけ有効化し、本番適用前に
+# DB 往復の遅延改善を実測する。本番 Worker (twica) と preview の DB
+# (PlanetScale ap-northeast-2 系) の距離が /dashboard/collection などの
+# wall time を支配しているため、Worker を DB 近接拠点で実行させる。
+# top-level には [placement] を置かない: 本番の実行場所は変えず、
+# preview の有効化前後で [Perf] ログと wall time を比較してから判断する。
+# なお Smart Placement は確立まで最大15分の分析期間があり、preview の
+# 呼び出し数が少ないと INSUFFICIENT_INVOCATIONS になる点に注意。
+[env.preview.placement]
+mode = "smart"
+
 [env.preview.observability]
 enabled = true
 
@@ -136,3 +151,28 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 [[env.preview.services]]
 binding = "OVERLAY_REALTIME_SERVICE"
 service = "twica-overlay-realtime-preview"
+
+# Preview-only: prod queue still unprovisioned (Step 5), but the preview queue
+# created on 2026-10-08 (chat-notification-wakeup-preview) can safely be bound
+# to twica-preview. Dispatch stays disabled until Step 3 unifies the delivery
+# owners; this binding only makes enqueue available.
+[[env.preview.queues.producers]]
+binding = "CHAT_NOTIFICATION_QUEUE"
+queue = "chat-notification-wakeup-preview"
+
+# #1888: preview の authLogin / activateCode を Durable Object の直列化カウンタ
+# (strict 経路) に接続する binding。script_name は workers/rate-limit/wrangler.toml
+# の [env.preview] (twica-rate-limit-preview) を指す。HTTP services 形式
+# ([[services]]) ではなく DO namespace 形式であること。namespace API
+# (idFromName/get) は service binding が持たず、誤配線すると runtime で
+# TypeError → catch → 503 fail-closed になり authLogin/activateCode が恒常
+# 失敗する。
+# この binding は twica-rate-limit-preview の作成・migration 適用後に初めて
+# 解決できる。配備順序を逆にすると preview の deploy が binding 解決エラーで
+# 失敗するため、Worker 配備前に merge しない (policy doc の手順 2)。
+# production (top-level) への追加は別承認 (policy doc の有効化ゲート 4) のため
+# ここでは行わない。
+[[env.preview.durable_objects.bindings]]
+name = "STRICT_RATE_LIMITER"
+class_name = "StrictRateLimitDurableObject"
+script_name = "twica-rate-limit-preview"

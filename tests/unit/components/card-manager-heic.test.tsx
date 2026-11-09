@@ -61,7 +61,7 @@ const jpegFile = () => new File(['jpeg-data'], 'photo.jpg', { type: 'image/jpeg'
 
 describe('CardManager HEIC conversion (issue #770)', () => {
   afterEach(() => {
-    vi.restoreAllMocks()
+    vi.resetAllMocks()
   })
 
   it('HEIC選択時に変換中表示を出し、変換完了後はクロップモード選択モーダルが開く', async () => {

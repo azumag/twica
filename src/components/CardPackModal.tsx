@@ -1,7 +1,7 @@
 "use client";
 
 import PackCompletionRewardSettings from './PackCompletionRewardSettings';
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   MAX_CARD_PACK_NAMES,
@@ -126,7 +126,17 @@ export default function CardPackModal({
   const isRenaming = editingPack !== null || editingDefault;
 
   // モーダルを開くたびに、保存済みの最新値から編集を開始する。
-  useEffect(() => {
+  // effect 内の同期 setState は react-hooks/set-state-in-effect が禁止するため、
+  // 「prev値をstateに保存して条件付き更新」する React 標準パターンで render 中に
+  // リセットする。閉じた状態でのprops変化にも追従して prev を最新に保つため、
+  // `if (!isOpen) return null` より前の毎render実行パスに置く。
+  const [prevModalSync, setPrevModalSync] = useState({ isOpen, cardPackNames, defaultPackName });
+  if (
+    prevModalSync.isOpen !== isOpen
+    || prevModalSync.cardPackNames !== cardPackNames
+    || prevModalSync.defaultPackName !== defaultPackName
+  ) {
+    setPrevModalSync({ isOpen, cardPackNames, defaultPackName });
     if (isOpen) {
       setList(cardPackNames);
       setCurrentDefaultPackName(defaultPackName);
@@ -138,7 +148,7 @@ export default function CardPackModal({
       setRenameInput("");
       setRenameError(null);
     }
-  }, [isOpen, cardPackNames, defaultPackName]);
+  }
 
   const hasChanges = useMemo(() => {
     if (list.length !== cardPackNames.length) return true;

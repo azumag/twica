@@ -38,6 +38,14 @@ function getToggles() {
 }
 
 describe('CardVisibilitySettings accessible descriptions', () => {
+  it('コレクション公開設定の見出しを表示する', () => {
+    renderSettings({ mode: 'off' })
+
+    expect(
+      screen.getByRole('heading', { name: jaMessages.cardVisibilitySettings.title })
+    ).toBeInTheDocument()
+  })
+
   it('未所持カード表示トグルを補足説明へ関連付ける', () => {
     renderSettings({ mode: 'off' })
     const [showUnownedToggle] = getToggles()

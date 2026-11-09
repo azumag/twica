@@ -546,7 +546,7 @@ export async function postRedemptionNotify(
             degradation: outcome.degradation,
           });
           await reportNotificationError(
-            new Error(`Chat delivery used fallback sender: ${outcome.degradation.reason}`),
+            new Error(`Chat delivery used fallback sender: ${outcome.degradation.code}`),
             {
               context: 'eventsub:postRedemptionNotify:chatDegradation',
               streamerId: data.streamer.id,
@@ -1124,10 +1124,19 @@ async function fetchActiveCardCountPg(
  * @param userName - ガチャを引いたユーザー名
  * @param userId - ガチャを引いたユーザーのTwitch ID
  * @param cards - 複数枚ガチャ時の獲得カード一覧
- * @param collectionName - 抽選が絞られたパックの collection_name（無制限ガチャは null/undefined、Issue #597）
+ * @param collectionName - 抽選が絞られたパックの collection_name（無制限ガチャは null/undefined、Issue #597）。
+ *   #974 以降 {packName} はカード自身の collection_name のみで解決するため通知本文には未使用。
+ *   outbox payload（gachaResult.collectionName）との引数位置を維持するため残置。
  * @param snapshot - ガチャcommit時点の所有数系placeholder（outbox v1では必須）
  * @param beforeExternalSend - 資格情報解決後・各Twitch送信直前に行うowner fence。
  *   bounded配送では、送信+checkpointの最低予算が無い場合にbudget-exhaustedを返す。
+ * @param legacyMultiShowCardsGate - Issue #1548: payload_version=1 の outbox 行を
+ *   再生するときだけ true を渡す旧セマンティクススイッチ。v1 行はエンキュー時点の
+ *   `chat_announcement_multi_show_cards` と保存済みテンプレートのスナップショットを
+ *   持つため、flag をそのまま尊重して当時の本文を再現する。v2 以降の行および
+ *   将来の同期経路は placeholder 駆動（flag を読まない）なので、デフォルト
+ *   false = 新セマンティクスのまま呼ぶこと。`=== true` 比較にすることで、
+ *   旧契約でこの引数を省略した caller が意図せず旧挙動へ引きずられないようにする。
  */
 export type ChatAnnouncementOutcome = (
   | { outcome: 'sent' }
@@ -1160,7 +1169,14 @@ export async function sendChatAnnouncement(
   collectionName?: string | null,
   snapshot?: ChatAnnouncementSnapshot,
   beforeExternalSend?: () => Promise<ChatSendFenceResult>,
+  legacyMultiShowCardsGate?: boolean,
 ): Promise<ChatAnnouncementOutcome> {
+  // Issue #1548: N連通知を placeholder 駆動へ一本化する移行の新旧分岐。
+  // v1 outbox行（legacyMultiShowCardsGate === true）はスナップショットされた
+  // flag で旧挙動を再現し、v2 以降は flag を読まず常にカード名系を解決する。
+  const effectiveShowCards = legacyMultiShowCardsGate === true
+    ? streamer.chat_announcement_multi_show_cards
+    : true;
   const drawnCards = cards && cards.length > 0 ? cards : [card];
   const isMultiDraw = drawnCards.length > 1;
   const cardNames = drawnCards.map((drawnCard) => drawnCard.name);
@@ -1210,11 +1226,15 @@ export async function sendChatAnnouncement(
   const needsUniqueCount = /\{unique\}/.test(effectiveTemplate);
   const needsAllCount = /\{all\}/.test(effectiveTemplate);
   const usesNewCardPlaceholders = /\{newCards\}|\{newCardCount\}|\{newCardsOrNone\}/.test(effectiveTemplate);
+  // Issue #1548: 「multi_template未設定（=DEFAULT使用）なら初出接尾辞を付ける」は
+  // v2でも維持する恒久ルール（列DEFAULT=trueの旧既定と同じ実効出力）。
+  // effectiveShowCardsは新セマンティクスでは常にtrueのため、条件は !multi_template
+  // だけに縮退する。v1行はflagがfalseなら旧挙動どおり接尾辞を付けない。
   const shouldAppendDefaultNewCards = isMultiDraw
-    && streamer.chat_announcement_multi_show_cards
+    && effectiveShowCards
     && !streamer.chat_announcement_multi_template;
   const needsNewCardInfo = isMultiDraw
-    && streamer.chat_announcement_multi_show_cards
+    && effectiveShowCards
     && (usesNewCardPlaceholders || shouldAppendDefaultNewCards);
 
   let cardCount: number | undefined = snapshot?.cardCount;
@@ -1347,12 +1367,15 @@ export async function sendChatAnnouncement(
 
   // Issue #948: {packName} は獲得カード自身のパックを優先して解決する（未分類
   // カードもデフォルトパック名で埋める）。resolveCardPackKey / resolvePackDisplayName
-  // のdocstringに解決規則の詳細と旧payloadへのフォールバック根拠がある。
+  // のdocstringに解決規則の詳細がある。#974 で旧outbox payload向けの抽選
+  // スコープへのフォールバック分岐は撤去済み（本番outbox実測で対象行0件）。
+  // collectionName 引数自体は payload 互換と caller 契約のため残置するが、
+  // {packName} 解決には使わない。
   //
   // フォールバックラベル「デフォルトパック」とビューアページタブの汎用ラベル
   // 「デフォルト」の1語差は既知の設計判断（#973で追跡、コード変更なしで据え置き）。
   const packName = resolvePackDisplayName(
-    resolveCardPackKey(card.collection_name, collectionName),
+    resolveCardPackKey(card.collection_name),
     streamer.default_card_pack_name ?? null,
     DEFAULT_PACK_CHAT_FALLBACK_LABEL
   );
@@ -1362,7 +1385,7 @@ export async function sendChatAnnouncement(
   const placeholders: ChatMessagePlaceholders = {
     user: userName,
     card: card.name,
-    cards: isMultiDraw && streamer.chat_announcement_multi_show_cards
+    cards: isMultiDraw && effectiveShowCards
       ? cardNames.join(CARD_LIST_SEPARATOR)
       : undefined,
     draws: isMultiDraw ? drawnCards.length : undefined,
@@ -1399,7 +1422,7 @@ export async function sendChatAnnouncement(
     ? countCharacters(' 初出: ') + countCharacters(newCardNames.join(CARD_LIST_SEPARATOR))
     : 0;
 
-  if (isMultiDraw && streamer.chat_announcement_multi_show_cards && usesMultiDrawPlaceholders) {
+  if (isMultiDraw && effectiveShowCards && usesMultiDrawPlaceholders) {
     const fitted = fitCardNamesForMessage(
       cardNames,
       (cardsText) => chatService.buildMessage(messageTemplate, { ...placeholders, cards: cardsText }),
@@ -1409,7 +1432,12 @@ export async function sendChatAnnouncement(
     message = fitted.message;
   } else {
     const baseMessage = chatService.buildMessage(messageTemplate, placeholders);
-    if (isMultiDraw && streamer.chat_announcement_multi_show_cards && !usesMultiDrawPlaceholders) {
+    // Issue #1548: 暗黙の「（全N枚: {cards}）」追記は v1 行の再生だけに残す旧挙動。
+    // v2 では絶対に発火させない（bake済み行は追記がテンプレートに焼き込み済み、
+    // OFF移行済み行は追記不要）。`legacyMultiShowCardsGate === true` を条件に
+    // 含めることで、新セマンティクス経路がこの分岐へ入る余地を構造的に無くす。
+    if (isMultiDraw && legacyMultiShowCardsGate === true
+      && effectiveShowCards && !usesMultiDrawPlaceholders) {
       message = fitCardNamesForMessage(
         cardNames,
         (cardsText) => `${baseMessage}（全${drawnCards.length}枚: ${cardsText}）`,

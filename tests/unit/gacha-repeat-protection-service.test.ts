@@ -68,6 +68,12 @@ interface FixtureOptions {
   latestCardId?: string | null
   latestCardIds?: Array<string | null>
   latestHistoryError?: unknown
+  /**
+   * Issue #1300: 直近履歴readの解決をテスト側が制御するゲート。
+   * 設定時は即時resolveせずこのPromiseを返すため、履歴readが未解決の間に
+   * 後続の独立read(カードプール等)が発火するかを決定的に観測できる。
+   */
+  latestHistoryGate?: Promise<Array<{ card_id: string }>>
   completedPrefixes?: Array<Array<{ event_id: string }>>
   additionalDrawCount?: number
   transactions?: Array<{ result?: TransactionResult; error?: unknown }>
@@ -79,6 +85,20 @@ function consume<T>(values: T[] | undefined, index: number, fallback: T): T {
 }
 
 /**
+ * drizzle の desc()/asc() が返すSQLオブジェクトから、並び順キーの列名を取り出す。
+ * queryChunks 内のColumnだけが name を持つため、それ以外(SQL断片)は無視する。
+ */
+function orderKeyColumnNames(orderKeys: unknown[]): string[] {
+  return orderKeys.flatMap((key) => {
+    const chunks = (key as { queryChunks?: unknown } | null)?.queryChunks
+    if (!Array.isArray(chunks)) return []
+    return chunks
+      .map((chunk) => (chunk as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === 'string')
+  })
+}
+
+/**
  * Issue #1296 の読み取り経路だけを再現する最小Drizzle fixture。
  * select fieldsを見て、同じgacha_historyテーブルの「N連完了prefix」と
  * 「直前カード1件」を区別する。
@@ -86,6 +106,13 @@ function consume<T>(values: T[] | undefined, index: number, fallback: T): T {
 function installDbFixture(options: FixtureOptions = {}) {
   const tableReads: string[] = []
   const transactionCalls: unknown[][] = []
+  /**
+   * getLatestCardIdForStreamer が orderBy に渡した並び順キーの列名。
+   * Issue #1300: 既存covering indexのキー内で時刻とcard_idを同じ逆順に読む。
+   * SQL文字列だけでなくorderBy引数を固定し、実際のplanner選択はPG17 fixtureで
+   * 検証する。unit testで性能成功を代用しない。
+   */
+  const latestHistoryOrderByColumns: string[][] = []
   let latestCardCursor = 0
   let completedPrefixCursor = 0
   let transactionCursor = 0
@@ -103,7 +130,12 @@ function installDbFixture(options: FixtureOptions = {}) {
       }),
       where: chain,
       limit: chain,
-      orderBy: chain,
+      orderBy: vi.fn((...orderKeys: unknown[]) => {
+        if (tableName === 'gacha_history' && 'card_id' in fields) {
+          latestHistoryOrderByColumns.push(orderKeyColumnNames(orderKeys))
+        }
+        return builder
+      }),
       then: (
         onFulfilled: (value: unknown[]) => unknown,
         onRejected?: (reason: unknown) => unknown,
@@ -114,7 +146,9 @@ function installDbFixture(options: FixtureOptions = {}) {
           completedPrefixCursor += 1
           promise = Promise.resolve(prefix)
         } else if (tableName === 'gacha_history' && 'card_id' in fields) {
-          if (options.latestHistoryError) {
+          if (options.latestHistoryGate) {
+            promise = options.latestHistoryGate
+          } else if (options.latestHistoryError) {
             promise = Promise.reject(options.latestHistoryError)
           } else {
             const latestCardId = options.latestCardIds
@@ -171,7 +205,7 @@ function installDbFixture(options: FixtureOptions = {}) {
     sql: sql as never,
   })
 
-  return { tableReads, transactionCalls }
+  return { tableReads, transactionCalls, latestHistoryOrderByColumns }
 }
 
 beforeEach(() => {
@@ -242,6 +276,24 @@ describe('GachaService repeat protection', () => {
     expect(fixture.transactionCalls).toHaveLength(1)
     expect(fixture.transactionCalls[0][3]).toBe('card-b')
     expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(1)
+  })
+
+  it('最新履歴取得は既存covering indexの redeemed_at と card_id を並び順キーにする', async () => {
+    // 同刻の最新履歴をcard_id順で安定させる。record idを戻さず、既存index内で
+    // 順序を供給できる形を固定する。redeemed_atのNULL除外やread障害fallbackは
+    // 既存testで維持し、性能はtests/fixtures/gacha-latest-history-plan.shで検証する。
+    const fixture = installDbFixture({ latestCardId: 'card-a' })
+    mockSecureRandomUnit(0)
+
+    const result = await new GachaService().executeGachaWithRepeatProtection({
+      streamerId: 'streamer-1',
+      userTwitchId: 'user-1',
+      userTwitchUsername: 'Viewer',
+      eventId: 'event-order-keys',
+    })
+
+    expect(result.success).toBe(true)
+    expect(fixture.latestHistoryOrderByColumns).toEqual([['redeemed_at', 'card_id']])
   })
 
   it('redeemed_atがNULLの履歴しかなくても、従来の独立抽選へ安全にフォールバックする', async () => {
@@ -401,5 +453,82 @@ describe('GachaService repeat protection', () => {
     }
     // prefix初回 + 最新カード初回 + duplicate後prefix再読込 + 最新カード再同期。
     expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(4)
+  })
+
+  it('直近履歴readが未解決の間にカードプールreadへ進む(単発read並列化)', async () => {
+    // Issue #1300: 履歴readをゲートで保留にし、selectCardFromPoolが値を要求するまで
+    // 独立したcards readが先行発火することを固定する。直列だとcardsは
+    // ゲート解放後にしか読めないため、このassertionは並列化の検出にも効く。
+    let releaseHistory!: (rows: Array<{ card_id: string }>) => void
+    const gate = new Promise<Array<{ card_id: string }>>((resolve) => {
+      releaseHistory = resolve
+    })
+    const fixture = installDbFixture({ latestHistoryGate: gate })
+    mockSecureRandomUnit(0)
+
+    const pending = new GachaService().executeGachaWithRepeatProtection({
+      streamerId: 'streamer-1',
+      userTwitchId: 'user-1',
+      userTwitchUsername: 'Viewer',
+      eventId: 'event-overlap-single',
+    })
+
+    // 履歴readは発火済み(orderBy記録済み)だが未解決の間にcardsが読まれる。
+    await vi.waitFor(() => {
+      expect(fixture.latestHistoryOrderByColumns).toHaveLength(1)
+      expect(fixture.tableReads).toContain('cards')
+    })
+
+    releaseHistory([{ card_id: 'card-a' }])
+    const result = await pending
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.card.id).toBe('card-b')
+    }
+    expect(fixture.transactionCalls[0][3]).toBe('card-b')
+  })
+
+  it('N連でも直近履歴readが未解決の間にprefix確認と初回カードreadへ進む', async () => {
+    // Issue #1300: executeGachaDraws でも履歴Promiseを先頭drawへそのまま渡し、
+    // prefix確認readと1枚目のcards readが履歴readと重なることを固定する。
+    let releaseHistory!: (rows: Array<{ card_id: string }>) => void
+    const gate = new Promise<Array<{ card_id: string }>>((resolve) => {
+      releaseHistory = resolve
+    })
+    const fixture = installDbFixture({
+      latestHistoryGate: gate,
+      additionalDrawCount: 2,
+    })
+    mockSecureRandomUnit(0)
+
+    const pending = new GachaService().executeGachaForEventSub({
+      event: {
+        broadcaster_user_id: 'broadcaster-1',
+        user_id: 'user-1',
+        user_login: 'viewer',
+        user_name: 'Viewer',
+        reward: { id: 'multi-reward', cost: 200 },
+      },
+      eventId: 'event-overlap-multi',
+    })
+
+    // 履歴read発火済み・未解決の間にprefix確認とcards readが発火する。
+    await vi.waitFor(() => {
+      expect(fixture.latestHistoryOrderByColumns).toHaveLength(1)
+      expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(2)
+      expect(fixture.tableReads).toContain('cards')
+    })
+
+    releaseHistory([{ card_id: 'card-a' }])
+    const result = await pending
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.cards?.map((card) => card.id)).toEqual(['card-b', 'card-a'])
+    }
+    expect(fixture.transactionCalls.map((call) => call[3])).toEqual(['card-b', 'card-a'])
+    // N連prefix確認 + 直前カード取得。ドロー毎の追加履歴readは発生しない。
+    expect(fixture.tableReads.filter((table) => table === 'gacha_history')).toHaveLength(2)
   })
 })

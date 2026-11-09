@@ -396,6 +396,7 @@ describe('signSession / verifySession', () => {
     } else {
       process.env.SESSION_COOKIE_SECRET = originalSecret
     }
+    vi.unstubAllEnvs()
   })
 
   it('should return the original payload when SESSION_COOKIE_SECRET is not set', async () => {
@@ -450,6 +451,33 @@ describe('signSession / verifySession', () => {
     const tampered = signed.replace(/.$/, signed.endsWith('a') ? 'b' : 'a')
 
     await expect(verifySession(tampered)).rejects.toThrow('Session cookie signature invalid')
+  })
+
+  it('throws when signing in production without a secret', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+    vi.stubEnv('NODE_ENV', 'production')
+
+    await expect(signSession('{"foo":"bar"}')).rejects.toThrow(
+      'SESSION_COOKIE_SECRET is required in production'
+    )
+  })
+
+  it('rejects unsigned cookies in production without a secret', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+    vi.stubEnv('NODE_ENV', 'production')
+
+    await expect(verifySession('{"foo":"bar"}')).rejects.toThrow(
+      'SESSION_COOKIE_SECRET is required in production'
+    )
+  })
+
+  it('still rejects legacy unsigned cookies in production without a secret', async () => {
+    delete process.env.SESSION_COOKIE_SECRET
+    vi.stubEnv('NODE_ENV', 'production')
+
+    await expect(
+      verifySession('{"foo":"bar"}', { allowUnsignedLegacy: true })
+    ).rejects.toThrow('SESSION_COOKIE_SECRET is required in production')
   })
 
   it('should treat unsigned payloads containing dots as legacy cookies', async () => {

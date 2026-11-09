@@ -19,16 +19,18 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-# 2種類の独立した Cron トリガー（Free プランで最大3トリガー/worker まで無料、
-# 2個使ってもまだ1個分の余裕がある）:
+# 3種類の独立した Cron トリガー（Free プラン上限の3トリガー/worker）:
 #   - */5 * * * *  : 既存トリガー。errors/inquiries/backlog監視の3処理
 #   - */20 * * * * : EventSub 退避 backlog 自動ドレイン（Issue #695 の代替、
 #     KVベース部分改善の2項目目）専用トリガー。5分毎ほどの高頻度は不要
 #     （HTTP経由でアプリ本体の書き込み系APIを叩く処理のため）。
 #     src/index.ts の EVENTSUB_AUTO_DRAIN_CRON 定数と完全に一致させること
 #     （scheduled() がこの文字列で分岐する）。
+#   - 17 4 * * *   : Issue #1907 のストレージ台帳再照合＋未使用効果音回収。
+#     R2 list と全ユーザー集計を伴うため日次。src/index.ts の
+#     STORAGE_MAINTENANCE_CRON 定数と完全に一致させること。
 [triggers]
-crons = ["*/5 * * * *", "*/20 * * * *"]
+crons = ["*/5 * * * *", "*/20 * * * *", "17 4 * * *"]
 
 # 公開可能な変数（wrangler.toml に直接記載）
 [vars]
@@ -142,3 +144,14 @@ localConnectionString = "postgres://user:password@localhost:5432/postgres"
 #   EVENTSUB_HEALTH_SECRET と同じ値。上記と同様に設定すること。
 # どちらも未設定の場合、該当ターゲットへのヘルスチェックのみを安全にスキップし
 # 警告ログを出す。デプロイ後にオーナーが設定する想定。
+
+# Issue #1907: ストレージ台帳の再照合・未使用効果音回収ジョブ用の追加 secrets:
+# - STORAGE_MAINTENANCE_SECRET_PROD: 本番アプリ（twica）の
+#   STORAGE_MAINTENANCE_SECRET と同じ値。本番アプリ側にも
+#   `wrangler secret put STORAGE_MAINTENANCE_SECRET` で設定する。
+# - STORAGE_MAINTENANCE_SECRET_PREVIEW: preview アプリ（twica-preview）の
+#   STORAGE_MAINTENANCE_SECRET と同じ値。
+# どちらも未設定の場合、該当ターゲットの保守ジョブだけを安全にスキップし
+# 警告ログを出す（既存の errors/inquiries/EventSub 処理には影響しない）。
+# 初回は手動で dry-run（npm run storage:maintenance -- --action=collect-unused-sounds
+# --url=...）を実行し、対象キーを確認してから有効化すること。

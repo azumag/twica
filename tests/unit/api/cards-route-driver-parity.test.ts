@@ -1,8 +1,8 @@
 /**
  * #663: POST/GET /api/cards のPlanetScale契約テスト
  *
- * 現行 Drizzle 実装の所有権・読み書き・競合応答と、
- * 本番スキーマ移行中の安全な列フォールバックを検証する。
+ * 現行 Drizzle 実装の所有権・読み書き・競合応答と、#834/#954 による
+ * 単一経路化（デプロイ窓フォールバック撤去）後の挙動を検証する。
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
@@ -12,7 +12,6 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { getStorageUsage } from "@/lib/storage-usage";
 import { getDb } from "@/lib/db/client";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR } from "@/lib/db/card-padding-color-errors";
 
 vi.mock("@/lib/session");
 vi.mock("@/lib/rate-limit");
@@ -119,9 +118,9 @@ function createDrizzleDbMock(
       const resolve = () => {
         if (response.error) return Promise.reject(response.error);
         const rows = response.rows ?? [];
-        // #899: .returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR) のような明示列指定時は、
-        // select(fields) と同じ「fields のキーだけを持つ行にマップする」フェイクを行い、
-        // image_padding_color が実際に応答から除外されることをテストで検証できるようにする。
+        // .returning(明示列) 指定時は select(fields) と同じ「fields のキーだけを
+        // 持つ行にマップする」フェイクを行う（現在の単一経路では無指定 returning()
+        // のため通常 rows がそのまま返る）。
         const fields = call.returningFields;
         return Promise.resolve(
           fields ? rows.map((row) => Object.fromEntries(Object.keys(fields).map((key) => [key, row[key] ?? null]))) : rows
@@ -281,7 +280,13 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       expect(pg.insertCalls).toHaveLength(0);
     });
 
-    it("card_number列デプロイ窓では列を落として再試行し200を返す", async () => {
+    // #954: card_number 列のデプロイ窓フォールバック（42703 検知時に
+    // insertData から card_number を削って再試行）は、本番・preview の
+    // information_schema.columns 実測で card_number が実在すること、および
+    // Drizzle の INSERT が values() に無い列も `default` として全列列挙するため
+    // 再試行しても同じ 42703 になること（構造的に効かなかった）を根拠に撤去した。
+    // 欠落エラーは再試行せずそのまま伝播する単一経路になったことを回帰として固定する。
+    it("INSERT時の42703（列欠落）は再試行せずエラー応答になる（単一経路, #954）", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" of relation "cards" does not exist',
@@ -289,13 +294,12 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
 
       const pg = createDrizzleDbMock({
         selects: [{ rows: [STREAMER_ROW] }],
-        inserts: [{ error: missingColumnErrorPg }, { rows: [CREATED_ROW] }],
+        inserts: [{ error: missingColumnErrorPg }],
       });
       primePgDb(pg);
       const pgRes = await POST(createPostRequest(REQUEST_BODY));
-      expect(pgRes.status).toBe(200);
-      expect(pg.insertCalls).toHaveLength(2);
-      expect(pg.insertCalls[1].values).not.toHaveProperty("card_number");
+      expect(pgRes.status).toBe(500);
+      expect(pg.insertCalls).toHaveLength(1);
     });
 
     it("card_number一意制約違反(23505)は409を返す", async () => {
@@ -311,51 +315,34 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       primePgDb(pg);
       const pgRes = await POST(createPostRequest({ ...REQUEST_BODY, cardNumber: 5 }));
       expect(pgRes.status).toBe(409);
+      // 一意制約違反は列欠落ではなく現役の isCardNumberConflictError 経由の
+      // 409 応答（デプロイ窓フォールバックとは無関係）。
+      expect(pg.insertCalls).toHaveLength(1);
     });
 
-    // Fable厳格レビュー指摘(#899 PR #903)対応の回帰テスト。修正前は
-    // isMissingCardsBattleColumnError のみを見る末尾フォールバックが
-    // image_padding_color 欠落エラーを拾えず、imagePaddingColor を一切
-    // 指定しない（=insertDataに含まれない）POSTまでもがmigration未適用の
-    // デプロイ窓で全て失敗していた。#834 で「本番未デプロイ8列」フォールバック
-    // 自体は撤去されたが、image_padding_color 専用の末尾フォールバック
-    // （CARDS_COLUMNS_WITHOUT_PADDING_COLOR への切替）は引き続き必要なため残す。
-    it("本番未デプロイのimage_padding_color列: imagePaddingColorを指定しないPOSTでもRETURNING失敗時に明示列リストで再試行し200を返す (#899)", async () => {
+    // #899 で「明示列リスト（CARDS_COLUMNS_WITHOUT_PADDING_COLOR）への切替再試行」
+    // が最後の砦として存在したが、#954 で撤去した。根拠: PlanetScale 本番・preview
+    // の information_schema.columns 実測で image_padding_color の実在を確認した
+    // こと、および Drizzle の INSERT が values() に無い列も `default` として全列
+    // 列挙するため、列が真に欠落する環境では RETURNING の切替以前に INSERT の
+    // 列リストで失敗し、このフォールバックは到達しても成功しなかったこと。
+    it("image_padding_color欠落の42703も再試行せずエラー応答になる（単一経路, #954）", async () => {
       const missingPaddingErrorPg = {
         code: "42703",
         message: 'column "image_padding_color" of relation "cards" does not exist',
       };
-      const CREATED_ROW_SAFE = {
-        id: "card-1",
-        streamer_id: "streamer-1",
-        name: "Test Card",
-        description: "desc",
-        image_url: "https://example.com/a.png",
-        rarity: "common",
-        rarity_order: null,
-        max_issuance_count: null,
-        collection_name: null,
-        drop_rate: 0.5,
-        intra_rarity_weight: 1,
-        is_active: true,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-01T00:00:00Z",
-      };
 
       const pg = createDrizzleDbMock({
         selects: [{ rows: [STREAMER_ROW] }],
-        inserts: [
-          { error: missingPaddingErrorPg }, // attempt1: 無指定RETURNINGがimage_padding_colorで失敗
-          { rows: [CREATED_ROW_SAFE] }, // attempt2: SAFE_COLUMNSで再試行し成功
-        ],
+        inserts: [{ error: missingPaddingErrorPg }],
       });
       primePgDb(pg);
       // imagePaddingColor はリクエストに含めない = insertData に含まれない
-      // ため、途中の「列を落として再試行」フォールバックはスキップされる。
       const pgRes = await POST(createPostRequest(REQUEST_BODY));
-      expect(pgRes.status).toBe(200);
-      expect(pg.insertCalls).toHaveLength(2);
-      expect(pg.insertCalls[1].returningFields).toEqual(CARDS_COLUMNS_WITHOUT_PADDING_COLOR);
+      expect(pgRes.status).toBe(500);
+      // 無指定 returning() の1回だけ実行される（明示列リストへの切替再試行なし）。
+      expect(pg.insertCalls).toHaveLength(1);
+      expect(pg.insertCalls[0].returningFields).toBeUndefined();
     });
   });
 
@@ -418,7 +405,12 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
       expect(pgRes.status).toBe(403);
     });
 
-    it("card_numberソート列デプロイ窓ではcreated_atへフォールバックする", async () => {
+    // #954: card_number ソート列のデプロイ窓フォールバック（42703 検知時に
+    // created_at へ切り替えて再試行）は撤去した。根拠: この無指定 select 自体が
+    // schema.ts の全列を列挙するため、card_number が真に欠落する環境では
+    // ソート列を変えても同じ 42703 で失敗し、フォールバックとして完結していなかった
+    // （card_number の本番実在は #834 で実測、#954 で再確認）。
+    it("card_numberソートのSELECT失敗(42703)は再試行せずエラーになる（単一経路, #954）", async () => {
       const missingColumnErrorPg = {
         code: "42703",
         message: 'column "card_number" does not exist',
@@ -429,16 +421,13 @@ describe("POST/GET /api/cards: PlanetScale契約 (#663)", () => {
           { rows: [STREAMER_OWNERSHIP_ROW] },
           { rows: [{ count: 2 }] },
           { error: missingColumnErrorPg },
-          { rows: CARD_ROWS },
         ],
       });
       primePgDb(pg);
       const pgRes = await GET(createGetRequest({ streamerId: "streamer-1", sortField: "card_number" }));
-      expect(pgRes.status).toBe(200);
-      const pgJson = await pgRes.json();
-
-      expect(pgJson.cards).toHaveLength(2);
-      expect(pgJson.pagination.total).toBe(2);
+      expect(pgRes.status).toBe(500);
+      // 行取得 select は1回だけ（created_at への切替再試行なし）。
+      expect(pg.selectCalls).toHaveLength(3);
     });
 
   });

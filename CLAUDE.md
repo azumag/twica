@@ -39,6 +39,7 @@
 - **チャネルポイント引き換えは配信者本人のアカウントでも、チャンネルがオフラインでも実行できる。** 配信を開始する必要はなく、別の視聴者アカウントを用意する必要もない。「配信中でないと引き換えられない」と思い込んで手を止めないこと。
 - 対象チャンネルは Twitch の**ログイン名**で開く（`twitch.tv/<twitch_username>`）。表示名（`twitch_display_name`）とログイン名は別物で、DBの `streamers.twitch_username` が正本。表示名から推測したURLを開くと**別人のチャンネル**を見ることになる。
 - preview と本番は別の Twitch client ID・別の報酬・別の callback を使う。EventSub 購読は `reward_id` 単位（`src/app/api/twitch/eventsub/subscribe/route.ts`）なので、preview 用の報酬を引き換えても本番側は発火しない。どの報酬がどちらの環境かは各環境DBの `streamers.channel_point_reward_id` / `channel_point_reward_name` で確認する。
+- 交換・overlay・チャット・履歴・Workerログの確認は `npm run e2e:preview-redemption -- run` で自動実行できる（手順と前提は `docs/QA.md`「実引き換えの自動実行」）。実引き換えなので実行前にユーザーの了承を得る。
 - 観測は引き換え前に用意しておく: `npx wrangler tail <worker名>`（worker名は**位置引数**。`--name` は使えない）でアプリ Worker と overlay-realtime Worker の両方、加えてオーバーレイURLをブラウザで開いておく。
 - Twitchのオフライン状態、報酬メニューの表示可否、固定overlayの黒画面は別々に判定する。オフラインだけで交換を諦めず、報酬・ポイント・認証・権限の実状態を調べ、overlay表示失敗があっても交換・チャット・履歴・Workerログの確認を独立して進める。
 - Twitchの「ビッツとポイントの残高」はBitsを含む複合表示のため、数値だけをチャネルポイント残高と解釈しない。対象チャネルの配信者本人（アカウント所有者）で実引き換えする場合は、ポイント残高表示やBits残高を阻害条件にせず、報酬メニュー表示・交換操作・引き換え結果を一次証拠にする。視聴者アカウントでは実際のチャネルポイント不足を別途確認し、Bits残高を代用根拠にしない。

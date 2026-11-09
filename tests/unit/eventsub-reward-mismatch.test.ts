@@ -44,10 +44,10 @@ vi.mock('@/lib/services/chat-notification-outbox', () => ({
 }))
 
 vi.mock('@/lib/services/gacha', () => ({
-  GachaService: vi.fn().mockImplementation(() => ({
+  GachaService: vi.fn().mockImplementation(function() { return ({
     executeGachaForEventSub: mocks.executeGachaForEventSub,
     executeGachaForRaidEvent: mocks.executeGachaForRaidEvent,
-  })),
+  }) }),
 }))
 
 vi.mock('@/lib/sentry/error-handler', () => ({
@@ -71,10 +71,10 @@ vi.mock('@/lib/overlay-realtime/publisher', () => ({
 
 vi.mock('@/lib/twitch/chat-service', () => ({
   DEFAULT_CHAT_TEMPLATE: '{user} got {card}',
-  TwitchChatService: vi.fn().mockImplementation(() => ({
+  TwitchChatService: vi.fn().mockImplementation(function() { return ({
     buildMessage: mocks.buildMessage,
     sendChatMessage: mocks.sendChatMessage,
-  })),
+  }) }),
 }))
 
 vi.mock('@/lib/logger', () => ({

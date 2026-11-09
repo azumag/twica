@@ -62,6 +62,86 @@ export interface RateLimitStorage {
 }
 
 /**
+ * Rate limit storage backend kind (issue #728 observability).
+ * レート制限ストレージの種別（issue #728 の計測点用）。
+ *
+ * Memory は isolate ローカルなカウンタ、KV は Workers 全体で共有される KV の
+ * read-modify-write カウンタを意味する。両者は分散環境での挙動が異なるため、
+ * Observability で区別できるようにする。
+ */
+export type RateLimitStorageKind = 'memory' | 'kv';
+
+/**
+ * storage 操作の種別（issue #728 の計測点用）。
+ *
+ * `write` 側の失敗は KV の same-key 1 write/秒制限（429）を、`read` 側の失敗は
+ * 取得経路の失敗を意味する。両者は対処が異なるため分けて記録する。
+ */
+type RateLimitStorageOp = 'read' | 'write';
+
+/**
+ * #728 計測点: storage の read/write がこの時間(ms)を超えたときだけ Workers
+ * Observability へ記録する。
+ *
+ * `rateLimits.global` は middleware で全APIリクエストに適用される（分あたり1000回/IP）
+ * ため、毎リクエストログを出すとログ量・Observabilityコストが無視できない。
+ * 通常帯は出力せず、遅延の尾だけを拾う計測点とする。
+ */
+const RATE_LIMIT_SLOW_STORAGE_MS = 250;
+
+/**
+ * storage 操作が遅かった場合だけ記録する（#728 のレイテンシ計測点）。
+ *
+ * identifier（生IP / Twitch user id）はstorageキーにしか使わず、ログには出さない。
+ * 遅延の原因が read か write かを見分けられるよう op を付与する。
+ */
+function recordStorageDuration(
+  name: string,
+  op: RateLimitStorageOp,
+  durationMs: number,
+): void {
+  if (durationMs < RATE_LIMIT_SLOW_STORAGE_MS) {
+    return;
+  }
+  logger.warn('[rate-limit] slow storage op', {
+    name,
+    storage: currentStorageKind,
+    op,
+    durationMs,
+  });
+}
+
+/**
+ * storageキーをログ出力前に除去する。
+ *
+ * storageキーは `ratelimit:<name>:<identifier>` で、identifier には生IP
+ * （`ip:203.0.113.7`）や Twitch user id が入る。KV の実エラーメッセージが
+ * 対象キーを埋め込む構成だった場合に、fail-openログから identifier が漏れるため、
+ * メッセージ文字列に対してのみ決定論的に置換する（Errorオブジェクトを組み替えると
+ * 本来のstackを失い、原因追跡に不利になる）。
+ */
+function redactStorageKey(text: string, key: string): string {
+  return text.includes(key)
+    ? text.split(key).join('[ratelimit key redacted]')
+    : text;
+}
+
+/**
+ * Diagnostic formatting must not change the storage-error fail-open result.
+ * 型判定・message getter・文字列化自体がthrowする値も、固定文言へfallbackする。
+ * 元の拒否値をfallbackとしてログへ渡さず、識別子や任意のcontextを追加しない。
+ */
+function formatStorageErrorForLog(error: unknown, key: string): string {
+  const fallback = "[storage error message unavailable]";
+  try {
+    const message = error instanceof Error ? error.message : String(error);
+    return typeof message === "string" ? redactStorageKey(message, key) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
  * Memory-based rate limit storage (for development and single-instance deployments)
  * メモリベースのレート制限ストレージ（開発環境と単一インスタンスデプロイ用）
  *
@@ -185,6 +265,15 @@ interface KVNamespace {
 let currentStorage: RateLimitStorage = new MemoryRateLimitStorage();
 
 /**
+ * 現在選ばれているstorage種別（issue #728 の計測点）。
+ *
+ * `MemoryRateLimitStorage` は isolate ローカルなため、分散環境では別 isolate に
+ * 当たるたびカウンタが 1 にリセットされる。Observability から「preview で実際に
+ * KV が選ばれているか」を1行で判別できるようにするため、選択結果を記憶しておく。
+ */
+let currentStorageKind: RateLimitStorageKind = 'memory';
+
+/**
  * KV ストレージへの初期化（一度だけ実行し、以後は結果を再利用する）。
  *
  * Cloudflare Workers（本番）では RATE_LIMIT_KV バインディングを解決して
@@ -209,10 +298,16 @@ async function ensureKvRateLimitStorage(): Promise<void> {
         // KVNamespaceLike は get/put/delete の最小契約のみ持つため、
         // 実装上必要になる 'json' 型指定付き get を持つ形へ型を寄せる。
         currentStorage = new KVRateLimitStorage(kv as unknown as KVNamespace);
+        currentStorageKind = 'kv';
       }
     } catch {
       // バインディング解決失敗時はメモリ実装のまま継続（fail-open 契約を維持）
     }
+
+    // #728 計測点: どのstorageが選ばれたかを isolate ごとに1行だけ記録する。
+    // `storage: memory` が継続して出る場合は RATE_LIMIT_KV が実経路で使えて
+    // おらず、分散環境でカウンタが isolate ローカルになっている兆候になる。
+    logger.info('[rate-limit] storage selected', { storage: currentStorageKind });
   })();
   return storageInitPromise;
 }
@@ -238,6 +333,9 @@ async function ensureKvRateLimitStorage(): Promise<void> {
  */
 export function setRateLimitStorage(storage: RateLimitStorage): void {
   currentStorage = storage;
+  // #728 計測点: テストや将来の明示的配線で差し替えられたstorageも、選択ログと
+  // fail-openログの `storage` フィールドに正しく反映されるようにする。
+  currentStorageKind = storage instanceof KVRateLimitStorage ? 'kv' : 'memory';
 }
 
 /**
@@ -310,12 +408,22 @@ async function checkRateLimitInternal(
   // Include endpoint name in key so counters are not shared across different endpoints
   const key = `ratelimit:${name}:${storageIdentifier}`;
 
+  // #728 計測点: storage操作の所要時間と、fail-open時にどの操作で落ちたかを
+  // Observability から判別できるようにする。identifier（生IP / Twitch user id）は
+  // storageキーにしか使わず、ログには含めない。
+  let storageOp: RateLimitStorageOp = 'read';
+  let opStartedAt = Date.now();
+
   try {
     const existing = await currentStorage.get(key);
+    recordStorageDuration(name, storageOp, Date.now() - opStartedAt);
+    storageOp = 'write';
+    opStartedAt = Date.now();
     const resetTime = now + windowMs;
 
     if (!existing || now > existing.resetTime) {
       await currentStorage.set(key, { count: 1, resetTime }, windowMs);
+      recordStorageDuration(name, storageOp, Date.now() - opStartedAt);
       return {
         success: true,
         limit,
@@ -335,6 +443,7 @@ async function checkRateLimitInternal(
 
     existing.count++;
     await currentStorage.set(key, existing, existing.resetTime - now);
+    recordStorageDuration(name, storageOp, Date.now() - opStartedAt);
     return {
       success: true,
       limit,
@@ -344,7 +453,17 @@ async function checkRateLimitInternal(
   } catch (error) {
     // On storage errors, fail open (allow the request)
     // ストレージエラー時はフェイルオープン（リクエストを許可）
-    logger.warn("Rate limit storage error, failing open:", error);
+    //
+    // #728: KV は同一keyへの書き込みを最大1 write/秒に制限し、超過分は 429 になり得る。
+    // このfail-open契約のままでは、その429がそのままレート制限の素通りに繋がるため、
+    // 「どのstorageのどの操作で何ms落ちたか」をsanitizedに記録して実測できるようにする。
+    logger.warn('[rate-limit] fail-open (storage error, request allowed)', {
+      name,
+      storage: currentStorageKind,
+      op: storageOp,
+      durationMs: Date.now() - opStartedAt,
+      error: formatStorageErrorForLog(error, key),
+    });
     return {
       success: true,
       limit,
@@ -428,6 +547,9 @@ export const rateLimits = {
   // ガチャ統計は集計処理があるため少し厳しめ
   // Gacha stats involves aggregation, so use a slightly stricter limit
   gachaStatsGet: createRatelimit("gachaStatsGet", 30, 60 * 1000),
+  // Issue #742: 匿名ランキング取得。snapshot への数行 lookup のみで毎リクエスト
+  // DB 到達しても軽いが、/api/gacha-stats と同水準（30req/60s）に揃える。
+  streamerRankingGet: createRatelimit("streamerRankingGet", 30, 60 * 1000),
   // OBS overlay polling fallback. One browser source polling every few seconds
   // should fit comfortably while still limiting accidental tight loops.
   overlayEventsGet: createRatelimit("overlayEventsGet", 120, 60 * 1000),

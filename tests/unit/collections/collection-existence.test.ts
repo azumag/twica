@@ -4,6 +4,9 @@ import {
   isMissingCollectionNameColumn,
   isMissingDefaultCardPackNameColumnError,
   isMissingRenameCardPackFunctionError,
+  isMissingCardPackNamesColumnError,
+  isMissingChannelPointPackNamesColumnError,
+  isMissingRewardPackNamesColumnError,
   checkCollectionHasActiveCards,
 } from "@/lib/collections/collection-existence";
 import { DEFAULT_PACK_SENTINEL } from "@/lib/validation/collection-name";
@@ -85,8 +88,8 @@ describe("isMissingCollectionNameColumn", () => {
   // Drizzle エラーをそのまま isMissingCollectionNameColumn 等に渡す。Drizzle は
   // postgres.js のエラーを `{ query, params, cause }` で1段ラップするため、
   // トップレベルの code/message だけを見ていると pg 経路でこのフォールバックが
-  // 機能しない（src/lib/db/errors.ts の getErrorChain が対応する、他モジュール
-  // （card-padding-color-errors.ts / card-number-errors.ts 等）と同じ原因）。
+  // 機能しない（src/lib/db/errors.ts の getErrorChain が対応する、card-number-
+  // errors.ts 等と同じ原因）。
   it("detects the READ shape (42703) even when wrapped by Drizzle ({ query, params, cause })", () => {
     const wrapped = {
       query: 'select "collection_name" from "cards" where ...',
@@ -131,6 +134,50 @@ describe("isMissingCollectionNameColumn", () => {
 });
 
 // Issue #554: `streamers.default_card_pack_name` deploy-window detection.
+// Issue #1994: 複数パック割り当ての新列。既存検知は列名の部分一致なので、新列の
+// 欠落エラーを既存の旧列用チェインへ流しても誤発火しないこと、新列専用の検知だけが
+// 拾うことを固定する（誤発火すると settings の読み取りチェインが id だけの SELECT へ
+// 縮退し、card_pack_names=[] として扱われる）。
+describe("multi-pack column detectors (Issue #1994)", () => {
+  const missingChannelPointPackNames = {
+    code: "42703",
+    message: 'column streamers.channel_point_pack_names does not exist',
+  };
+  const missingRewardPackNames = {
+    code: "42703",
+    message: 'column "reward_pack_names" of relation "streamer_additional_gacha_rewards" does not exist',
+  };
+
+  it("does not trip the legacy collection_name / card_pack_names detectors", () => {
+    for (const error of [missingChannelPointPackNames, missingRewardPackNames]) {
+      expect(isMissingCollectionNameColumn(error)).toBe(false);
+      expect(isMissingCardPackNamesColumnError(error)).toBe(false);
+    }
+  });
+
+  it("is detected only by the matching new-column detector", () => {
+    expect(isMissingChannelPointPackNamesColumnError(missingChannelPointPackNames)).toBe(true);
+    expect(isMissingRewardPackNamesColumnError(missingChannelPointPackNames)).toBe(false);
+    expect(isMissingRewardPackNamesColumnError(missingRewardPackNames)).toBe(true);
+    expect(isMissingChannelPointPackNamesColumnError(missingRewardPackNames)).toBe(false);
+  });
+
+  it("does not treat legacy-column errors or non-42703 errors as the new columns", () => {
+    const legacy = { code: "42703", message: "column streamers.channel_point_collection_name does not exist" };
+    expect(isMissingChannelPointPackNamesColumnError(legacy)).toBe(false);
+    expect(isMissingRewardPackNamesColumnError(legacy)).toBe(false);
+    expect(
+      isMissingChannelPointPackNamesColumnError({ code: "23514", message: "channel_point_pack_names check" })
+    ).toBe(false);
+    expect(isMissingRewardPackNamesColumnError(null)).toBe(false);
+  });
+
+  it("follows the Drizzle cause chain", () => {
+    const wrapped = Object.assign(new Error("Failed query: select ..."), { cause: missingRewardPackNames });
+    expect(isMissingRewardPackNamesColumnError(wrapped)).toBe(true);
+  });
+});
+
 describe("isMissingDefaultCardPackNameColumnError", () => {
   it("detects the WRITE shape (42703)", () => {
     expect(
@@ -279,14 +326,19 @@ describe("checkCollectionHasActiveCards: PlanetScale経路", () => {
     );
   });
 
-  it("pg 経路で列未デプロイエラー(42703)時は schema-not-ready を返す", async () => {
+  // #954: 以前は 42703（cards.collection_name 列欠落）を schema-not-ready として
+  // 返し、検証をスキップするデプロイ窓フォールバックだったが、本番・preview の
+  // information_schema.columns 実測で cards.collection_name の実在を確認したため
+  // 撤去した（Issue #954）。42703 は再試行・スキップせず throw する単一経路。
+  it("pg 経路で列未デプロイエラー(42703)時はフォールバックせず throw する（単一経路, #954）", async () => {
     const pg = createDrizzleDbMock({
       error: { code: "42703", message: "column cards.collection_name does not exist" },
     });
     vi.mocked(getDb).mockResolvedValue({ db: pg.db, sql: {} } as any);
 
-    const result = await checkCollectionHasActiveCards("streamer-1", "weapons");
-    expect(result).toBe("schema-not-ready");
+    await expect(checkCollectionHasActiveCards("streamer-1", "weapons")).rejects.toMatchObject({
+      code: "42703",
+    });
   });
 
   it("pg 経路で想定外のエラーは throw する", async () => {

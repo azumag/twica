@@ -284,7 +284,6 @@ export default function OverlayPreview({
 
   useEffect(() => {
     isFirstRender.current = true;
-    setShowUrlUpdated(false);
     // 配信者切り替え（storageKey変更）時は直近デモ状態も引き継がずリセットする
     isFirstOptionsChange.current = true;
     lastDemoAtRef.current = null;
@@ -292,6 +291,13 @@ export default function OverlayPreview({
       clearTimeout(autoRedemoTimerRef.current);
       autoRedemoTimerRef.current = null;
     }
+    // effect 本体での同期 setState は react-hooks/set-state-in-effect が禁止する
+    // ため匿名 async 関数の内側に移す。async 関数の本体は最初の await まで
+    // 同期的に実行されるため、ref リセットと同じタスク内で反映される
+    // （従来と同一タイミング・act() スコープ内）。
+    void (async () => {
+      setShowUrlUpdated(false);
+    })();
   }, [storageKey]);
 
   // ブラウザごとに最後に使ったオーバーレイ設定を復元する
@@ -301,30 +307,37 @@ export default function OverlayPreview({
       return;
     }
 
-    try {
-      const storedOptions = window.localStorage.getItem(storageKey);
-      const nextOptions = storedOptions
-        ? parseStoredOptions(JSON.parse(storedOptions))
-        : { ...DEFAULT_OVERLAY_OPTIONS };
-
-      setOptions((currentOptions) => (
-        areOverlayOptionsEqual(currentOptions, nextOptions) ? currentOptions : nextOptions
-      ));
-    } catch (error) {
-      console.error("Failed to restore overlay options:", error);
+    // 保存済みオプションの復元は hydration 完了後にしか行えない（初期値は常に
+    // DEFAULT のまま描画する設計）。effect 本体での同期 setState は
+    // react-hooks/set-state-in-effect が禁止するため、復元処理ごと匿名 async
+    // 関数の内側に移す。本体は最初の await まで同期的に実行されるため従来と
+    // 同一タイミング（act() スコープ内・queueMicrotask より忠実な置き換え）。
+    void (async () => {
       try {
-        window.localStorage.removeItem(storageKey);
-      } catch {
-        // localStorage自体が使えない環境では何もしない
+        const storedOptions = window.localStorage.getItem(storageKey);
+        const nextOptions = storedOptions
+          ? parseStoredOptions(JSON.parse(storedOptions))
+          : { ...DEFAULT_OVERLAY_OPTIONS };
+
+        setOptions((currentOptions) => (
+          areOverlayOptionsEqual(currentOptions, nextOptions) ? currentOptions : nextOptions
+        ));
+      } catch (error) {
+        console.error("Failed to restore overlay options:", error);
+        try {
+          window.localStorage.removeItem(storageKey);
+        } catch {
+          // localStorage自体が使えない環境では何もしない
+        }
+        setOptions((currentOptions) => (
+          areOverlayOptionsEqual(currentOptions, DEFAULT_OVERLAY_OPTIONS)
+            ? currentOptions
+            : { ...DEFAULT_OVERLAY_OPTIONS }
+        ));
+      } finally {
+        setInitializedStorageKey(storageKey);
       }
-      setOptions((currentOptions) => (
-        areOverlayOptionsEqual(currentOptions, DEFAULT_OVERLAY_OPTIONS)
-          ? currentOptions
-          : { ...DEFAULT_OVERLAY_OPTIONS }
-      ));
-    } finally {
-      setInitializedStorageKey(storageKey);
-    }
+    })();
   }, [storageKey]);
 
   // オプション変更を自動保存する

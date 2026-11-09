@@ -60,11 +60,13 @@ const baseTranslations = {
   sortLabel: '並び替え',
   sortByNumber: '番号順',
   sortByRarity: 'レアリティ順',
-  // Issue #1765: アルバム表示（3×3固定・画像のみ）の翻訳
+  // Issue #1765: アルバム表示（画像のみ・N×N）の翻訳
   album: {
     viewLabel: '表示',
     gridView: 'カード',
     albumView: 'アルバム',
+    gridSizeLabel: '並び',
+    gridSizeOption: '{size}×{size}',
     pageIndicator: '{page} / {total}',
     prevPage: '前のページ',
     nextPage: '次のページ',

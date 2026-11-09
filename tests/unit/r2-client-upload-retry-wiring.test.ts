@@ -49,12 +49,17 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@opennextjs/cloudflare', () => ({
   getCloudflareContext: mocks.getCloudflareContext,
 }))
+// Vitest 4 (tinyspy) は `new` で呼ばれるモックに本物のコンストラクタを要求するため、
+// mockImplementation にアロー関数を渡すと "is not a constructor" で落ちる。
+// 呼び出し形状は変えず function 式にして、コンストラクタ呼び出し可能にする。
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn().mockImplementation((config: Record<string, unknown>) => {
+  S3Client: vi.fn().mockImplementation(function (config: Record<string, unknown>) {
     mocks.s3ClientConfigs.push(config)
     return { send: mocks.sendMock }
   }),
-  PutObjectCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  PutObjectCommand: vi.fn().mockImplementation(function (input: unknown) {
+    return { input }
+  }),
 }))
 const sendMock = mocks.sendMock
 const getCloudflareContextMock = mocks.getCloudflareContext

@@ -19,10 +19,10 @@ import { logger } from "@/lib/logger.server";
 import { deleteOwnedStorageImage } from "@/lib/storage-cleanup";
 import { isAssignableImageUrl } from "@/lib/storage-utils";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
-import { CARD_NUMBER_MESSAGES, isCardNumberConflictError, isMissingCardNumberColumnError } from "@/lib/card-number-errors";
-import { CARD_ISSUANCE_MESSAGES, isMissingCardIssuanceColumnError, parseCardIssuanceLimit } from "@/lib/card-issuance";
+import { CARD_NUMBER_MESSAGES, isCardNumberConflictError } from "@/lib/card-number-errors";
+import { CARD_ISSUANCE_MESSAGES, parseCardIssuanceLimit } from "@/lib/card-issuance";
 import { resolveCollectionNameField, isRegisteredOrUnchanged } from "@/lib/validation/collection-name";
-import { isMissingCollectionNameColumn, isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
+import { isMissingCardPackNamesColumnError } from "@/lib/collections/collection-existence";
 // -----------------------------------------------------------------------------
 // #663 (#570/#572 パイロット踏襲): PlanetScale 接続。PUT/DELETE とも読み取り
 // （所有権確認）と書き込み（UPDATE/DELETE）が混在するため、関数全体を
@@ -34,7 +34,8 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
+import { revalidateTag } from "next/cache";
+import { cardsListCacheTag, updateCardTradeWantable } from "@/lib/card-trade-wantable";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 // pg (postgres.js) が throw するエラーの汎用形状。card-number-errors.ts /
@@ -147,36 +148,9 @@ async function selectCardOwnershipWithoutCardPackNames(id: string): Promise<Card
   return row ? { ...row, card_pack_names: [] } : null;
 }
 
-async function selectCardOwnershipWithoutCollectionAndPackNames(id: string): Promise<CardOwnershipRowPg | null> {
-  const rows = await withDbRetry(
-    async () => {
-      const { db } = await getDb();
-      return db
-        .select({
-          streamer_id: cardsTable.streamer_id,
-          image_url: cardsTable.image_url,
-          rarity: cardsTable.rarity,
-          is_active: cardsTable.is_active,
-          intra_rarity_weight: cardsTable.intra_rarity_weight,
-          twitch_user_id: streamersTable.twitch_user_id,
-          rarity_weights: streamersTable.rarity_weights,
-        })
-        .from(cardsTable)
-        .innerJoin(streamersTable, eq(streamersTable.id, cardsTable.streamer_id))
-        .where(eq(cardsTable.id, id))
-        .limit(1);
-    },
-    "Cards API PUT: ownership check (retry without card_pack_names/collection_name)",
-    { idempotent: true }
-  );
-  const row = rows[0];
-  return row ? { ...row, collection_name: null, card_pack_names: [] } : null;
-}
-
 /**
  * PUT /api/cards/[id] のオーナーシップ確認 SELECT（cards INNER JOIN streamers、
- * card_pack_names → collection_name の2段階デプロイ窓フォールバック付き）の
- * pg 直結実装 (#663)。
+ * card_pack_names デプロイ窓フォールバック付き）の pg 直結実装 (#663)。
  *
  * - `streamers!cards_streamer_id_fkey!inner(...)` は
  *   `.innerJoin(streamersTable, eq(streamersTable.id, cardsTable.streamer_id))`
@@ -188,6 +162,14 @@ async function selectCardOwnershipWithoutCollectionAndPackNames(id: string): Pro
  * - 想定外のエラーを含め、いずれの取得も最終的に失敗した場合は throw せず
  *   `!card` だけで 403 に倒しており（cardSelectError は「フォールバック判定」
  *   にのみ使われる）、同じ外部挙動に合わせるため。
+ *
+ * #954: 以前は collection_name 列の欠落（Issue #269）時に collection_name と
+ * card_pack_names を併せて落として再試行する2段階目のフォールバック
+ * （selectCardOwnershipWithoutCollectionAndPackNames）も持っていたが、#834
+ * (PR #953) と同じ手順で PlanetScale 本番・preview の information_schema.columns
+ * 実測により cards.collection_name の実在を確認したため撤去した（Issue #954）。
+ * card_pack_names（streamers 側の別列、#954 の実測対象外）のフォールバックは
+ * 残す。
  */
 async function fetchCardForUpdatePg(id: string): Promise<{
   card: {
@@ -223,18 +205,6 @@ async function fetchCardForUpdatePg(id: string): Promise<{
     }
   }
 
-  // Issue #269 (self-review fix): collection_name 列がデプロイ窓で未検出の場合、
-  // それを落として再試行する。card_pack_names も併せて落とす(両方同時に
-  if (currentError && isMissingCollectionNameColumn(currentError as CardsSchemaError)) {
-    cardPackNamesUnavailable = true;
-    currentError = null;
-    try {
-      row = await selectCardOwnershipWithoutCollectionAndPackNames(id);
-    } catch (error) {
-      currentError = error;
-    }
-  }
-
   if (currentError || !row) {
     return { card: null, cardPackNamesUnavailable };
   }
@@ -258,24 +228,31 @@ async function fetchCardForUpdatePg(id: string): Promise<{
 }
 
 /**
- * PUT /api/cards/[id] のカード UPDATE（card_number → max_issuance_count →
- * collection_name の3段階デプロイ窓フォールバック付き、さらに RETURNING 列の
- * image_padding_color フォールバックを末尾に追加）の pg 直結実装 (#663 self-review fix)。
+ * PUT /api/cards/[id] のカード UPDATE の pg 直結実装 (#663 self-review fix)。
  *
  * - `.update(...).eq("id", id).select().maybeSingle()` は
  *   `.update(...).set(...).where(eq(id, ...)).returning()` が等価。
- * - 各フォールバックは同じ判定ヘルパー(isMissingCardNumberColumnError 等)を
- *   そのまま再利用する。
  * - リクエストボディの明示的な最終値を書き込む UPDATE のため冪等（リトライ可）。
  * - unique_violation (23505) は呼び出し元(PUT)で isCardNumberConflictError
  *
- * #834: 「本番未デプロイ8列」（card_number/hp/atk/def/spd/skill_*）に対する
- * RETURNING フォールバックは、本番実測で8列とも実在することを確認したため撤去
- * した。image_padding_color（#899、本Issueとは独立した別デプロイ窓）だけは
- * 無指定 `.returning()` が失敗しうるため、CARDS_COLUMNS_WITHOUT_PADDING_COLOR
- * へ切り替えて最後にもう一度だけ再試行する（updateData に無い場合も RETURNING
- * は set() の内容と無関係に schema.ts の全列を要求するため、この最終
- * フォールバックが必要）。
+ * #834/#954: 以前は card_number → max_issuance_count → collection_name の
+ * 3段階の「入力値から該当フィールドを削って再試行」デプロイ窓フォールバックと、
+ * 末尾に image_padding_color 用の CARDS_COLUMNS_WITHOUT_PADDING_COLOR 明示列
+ * RETURNING 再試行（#899）を持っていたが、いずれも撤去した。
+ *
+ * 撤去の根拠（Issue #954、#834 (PR #953) と同じ手順）:
+ * PlanetScale 本番・preview の information_schema.columns 実測で 4列とも実在を
+ * 確認した（#834 実測対象外だった max_issuance_count / collection_name /
+ * image_padding_color を含む）。列が実在する環境では全フォールバックは到達しない
+ * 死に分岐である。
+ *
+ * 補足（INSERT との構造差）: UPDATE の SET 句は updateData の列のみを含むため、
+ * 「フィールド削除＋明示列 RETURNING」の再試行は INSERT 経路と異なり、列が真に
+ * 欠落する環境でも技術的には成功し得た。ただし本実測で列が実在することが確認
+ * できた以上、その再試行は発火しない死に分岐であり、撤去の根拠に影響しない
+ * （INSERT 側で効かなかった構造的理由の詳細は src/app/api/cards/route.ts の
+ * insertCardPg コメント参照）。
+ * 無指定 `.returning()` の単一経路へ戻す。
  */
 async function updateCardPg(
   id: string,
@@ -283,63 +260,24 @@ async function updateCardPg(
 ): Promise<{ updatedCard: Record<string, unknown> | null; error: unknown }> {
   const updateData = { ...updateDataInitial };
 
-  async function attemptUpdate(
-    useColumnsWithoutPaddingColor = false
-  ): Promise<{ updatedCard: Record<string, unknown> | null; error: unknown }> {
-    try {
-      const rows = await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          const query = db
-            .update(cardsTable)
-            .set(updateData as Partial<typeof cardsTable.$inferInsert>)
-            .where(eq(cardsTable.id, id));
-          return useColumnsWithoutPaddingColor
-            ? query.returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
-            : query.returning();
-        },
-        "Cards API PUT: update card",
-        // 明示的な最終値を書く UPDATE のため冪等（リトライ可）
-        { idempotent: true }
-      );
-      return { updatedCard: rows[0] ?? null, error: null };
-    } catch (error) {
-      return { updatedCard: null, error };
-    }
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .update(cardsTable)
+          .set(updateData as Partial<typeof cardsTable.$inferInsert>)
+          .where(eq(cardsTable.id, id))
+          .returning();
+      },
+      "Cards API PUT: update card",
+      // 明示的な最終値を書く UPDATE のため冪等（リトライ可）
+      { idempotent: true }
+    );
+    return { updatedCard: rows[0] ?? null, error: null };
+  } catch (error) {
+    return { updatedCard: null, error };
   }
-
-  let { updatedCard, error } = await attemptUpdate();
-
-  if (error && isMissingCardNumberColumnError(error) && "card_number" in updateData) {
-    delete updateData.card_number;
-    ({ updatedCard, error } = await attemptUpdate());
-  }
-  if (error && isMissingCardIssuanceColumnError(error) && "max_issuance_count" in updateData) {
-    delete updateData.max_issuance_count;
-    ({ updatedCard, error } = await attemptUpdate());
-  }
-  if (error && isMissingCollectionNameColumn(error as CardsSchemaError) && "collection_name" in updateData) {
-    delete updateData.collection_name;
-    ({ updatedCard, error } = await attemptUpdate());
-  }
-  // #899: image_padding_color 列が migration 未適用の環境では、この列を落として再試行する
-  //（余白情報だけが更新されず、カード更新自体は継続する）
-  if (error && isMissingCardPaddingColorError(error) && "image_padding_color" in updateData) {
-    delete updateData.image_padding_color;
-    ({ updatedCard, error } = await attemptUpdate());
-  }
-  // 上記までの入力値フォールバックを尽くしてもなお、無指定 RETURNING が
-  // image_padding_color 列の欠落で失敗している場合、明示列リストで最後にもう
-  // 一度だけ試す。image_padding_color が updateData に無い場合（未指定
-  // リクエスト）は直前のフォールバックの `"image_padding_color" in updateData`
-  // 条件を満たさずスキップされるため、この分岐が無いと migration 未適用の
-  // 環境では imagePaddingColor を送らないカード更新まで含めて全滅していた
-  // （#899 Fable厳格レビュー指摘・PR #903）。
-  if (error && isMissingCardPaddingColorError(error)) {
-    ({ updatedCard, error } = await attemptUpdate(true));
-  }
-
-  return { updatedCard, error };
 }
 
 export async function PUT(
@@ -385,7 +323,14 @@ export async function PUT(
   try {
 
     const body = await request.json();
-    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber, maxIssuanceCount, imagePaddingColor } = body;
+    const { name, description, imageUrl, rarity, dropRate, isActive, intraRarityWeight, cardNumber, maxIssuanceCount, imagePaddingColor, tradeWantable } = body;
+
+    // #1790: 「求めるカードに指定できる」(cards.trade_wantable)。省略時は変更しない。
+    // 真偽値以外（文字列 "false" 等）を truthy/falsy で解釈すると意図と逆の値を
+    // 保存しうるため、boolean だけを受け付ける。
+    if (tradeWantable !== undefined && typeof tradeWantable !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
 
     // Issue #393: optional card pack name (null clears it = all cards).
     const collectionNameResult = resolveCollectionNameField(body, "collectionName");
@@ -560,7 +505,13 @@ export async function PUT(
     if (intraRarityWeight !== undefined) updateData.intra_rarity_weight = intraRarityWeight;
     if (isActive !== undefined) updateData.is_active = isActive;
 
-    const { updatedCard, error } = await updateCardPg(id, updateData);
+    // #1790: tradeWantable だけを送る要求では本体の UPDATE を行わない
+    // （空の set() は Drizzle が例外にする）。現在の本体行は返さず、
+    // id と trade_wantable だけを返す。
+    const tradeWantableOnly = tradeWantable !== undefined && Object.keys(updateData).length === 0;
+    const { updatedCard, error } = tradeWantableOnly
+      ? { updatedCard: { id } as Record<string, unknown>, error: null }
+      : await updateCardPg(id, updateData);
 
     if (error) {
       const rewardPack = getRewardCardProtectionPack(error);
@@ -583,11 +534,47 @@ export async function PUT(
     // だけが消える。updatedCard が null = 0行更新（並行削除など）も同様に
     // 新しい image_url が永続化されていないため削除しない。
     // 削除失敗はカード更新を妨げない（ログのみ）。
+    // #1801: trade_wantable の別 UPDATE が DB エラーで throw しても、ここで
+    // 旧画像のクリーンアップがスキップされストレージに残らないよう、
+    // trade_wantable の更新より前に実行する。
     if (updatedCard && isImageChanging && oldImageUrl) {
       try {
         await deleteOwnedStorageImage(oldImageUrl, session.twitchUserId, "Cards API (update)");
       } catch (storageError) {
         logger.warn(`Failed to delete old storage image: ${oldImageUrl}`, storageError);
+      }
+    }
+
+    // #1790: trade_wantable は cards 本体の Drizzle 定義に無い列のため
+    // （src/lib/db/schema.ts の cardTradeSettings 参照）、本体の UPDATE の後に
+    // 別の UPDATE で書く。所有者の認可は上の所有権確認（このカードの配信者
+    // 本人であること）がそのまま担保する。
+    //   - 本体の UPDATE が失敗した場合（409 等）は上で return 済みで、ここへは
+    //     来ない。本体だけ成功してこちらが失敗した場合は 500 になるが、どちらも
+    //     明示的な最終値を書く冪等な UPDATE なので、同じ内容の再送で収束する。
+    //   - 応答の trade_wantable は tradeWantable を送った要求にだけ含める。
+    //     CardManager は指定可否をカード行とは別の state で持ち、この値で更新する
+    //     （カード行は本体の無指定 RETURNING 等で丸ごと置き換わるため）。
+    let tradeWantableSkippedDeployWindow = false;
+    let tradeWantableResult: boolean | undefined;
+    if (updatedCard && tradeWantable !== undefined) {
+      const written = await updateCardTradeWantable(id, tradeWantable);
+      if (written === "column_missing") {
+        // デプロイ窓: 列が無い = 全カード指定可。指定不可は保存できない。
+        tradeWantableSkippedDeployWindow = tradeWantable === false;
+        tradeWantableResult = true;
+      } else if (written === null) {
+        // 並行削除: 本体の UPDATE と同じく 0 行更新。値は応答に載せない。
+        tradeWantableResult = undefined;
+      } else {
+        tradeWantableResult = written.trade_wantable;
+        // GET /api/cards は unstable_cache（TTL 30秒）で trade_wantable を含む
+        // 一覧を返す。無効化しないと、保存直後の CardManager の再読み込み
+        // （並び替え・フィルター変更）が古い値を受け取り、トグルが保存前の
+        // 状態に戻って見える。古い値のまま別の編集を保存すると制限が意図せず
+        // 外れうる（CardManager 側でも未変更なら送らないが、表示も正しく保つ）。
+        // revalidateTag の使い方は pack-completion-rewards と同じ（即時失効）。
+        revalidateTag(cardsListCacheTag(card.streamer_id), { expire: 0 });
       }
     }
 
@@ -607,8 +594,10 @@ export async function PUT(
 
     return NextResponse.json({
       ...updatedCard,
+      ...(tradeWantableResult !== undefined ? { trade_wantable: tradeWantableResult } : {}),
       recalculatedCards,
       ...(collectionNameSkippedDeployWindow ? { collectionNameSkippedDeployWindow: true } : {}),
+      ...(tradeWantableSkippedDeployWindow ? { tradeWantableSkippedDeployWindow: true } : {}),
     });
   } catch (error) {
     return handleApiError(error, "Cards API: PUT");

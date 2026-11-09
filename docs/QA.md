@@ -63,6 +63,26 @@ overlayを含む実引き換えでは、次の順序を必須とする。設定�
 6. analysis dashboard の主要集計が PlanetScale の値と一致することを確認する（`npm run check:analysis-dashboard-vs-sql`、`docs/analysis-dashboard-db-permissions.md`「確認手順」参照。対象環境の限定read接続文字列が実行環境に無い場合は、ブラウザ目視ではなくこの未接続自体を証跡として起票する）。このスクリプトはRPCと基礎集計SQLの数値一致のみを検証し、`adminApiPg.ts` → UI への表示ラベル・フィールド結線までは検証しないため、UI側の目視確認も引き続き併用する。
 7. 対象ファイルのアップロード、保存先からの取得、権限境界、Workerログを確認する。
 
+### 実引き換えの自動実行（項目 1-3 と Workerログ）
+
+項目 1-3 と固定overlayの先行観測順序は、ローカルの `npm run e2e:preview-redemption` で自動実行できます。実行するのは人の端末だけで、CI からは実行しません（Twitch の報酬交換は API で発生させられず、ログイン済みの Twitch 画面が必要なため）。
+
+```sh
+npm run e2e:preview-redemption -- login           # 初回のみ。専用プロファイルの Chrome を通常起動して Twitch と preview に手動ログインし、Cmd+Q で終了する
+npm run e2e:preview-redemption -- check           # 交換せずに到達性を確認する（ポイントを消費しない）
+npm run e2e:preview-redemption -- run --count 2   # 実引き換え。実チャンネルのチャットに通知が流れる
+```
+
+- `run` は、交換前に固定overlay（`/overlay/<streamerId>?debug=true`）を開いて `Status: connected` を確認し、同じタブを維持したまま Twitch のポップアウトチャットで対象報酬を交換します。交換ごとに、overlay のカード DOM と画像画素（または明示 fallback）の最初の陽性 sample、`/api/gacha-history` の新しい行、そのカード名を含むチャット行を対応付けます。
+- 既定（`--logs on`）では、アプリ・overlay-realtime・chat-delivery の preview Worker を `wrangler tail` で観測し、EventSub の受信（HTTP 200）が交換回数ぶんあること、例外・5xx・再試行ログ（`chat announcement retry scheduled` を含む）が無いことも判定に含めます。tail の event はリクエストヘッダーを捨ててから保存します。`wrangler login` していないと tail が起動せず、交換前に中止します。`--logs off` は Worker ログを確認しないため、結果に `logs: "skipped"` が残り、QA の実経路ゲートの証拠としては不足します。
+- `--user` は交換する Twitch アカウントの表示名です（既定 `あずまぐ`）。履歴・overlay・チャット通知の交換者名は表示名で記録されるため、ログイン名ではなく表示名を指定します。交換直前の履歴・表示・チャットを基準に、新しい表示インスタンス、カード名、交換者、交換後の履歴時刻を照合します。同じユーザーの同時交換で対応が曖昧な場合は不合格にします。交換者・カード名を省略／変更したカスタム chat テンプレートは自動相関できないため、標準通知文で実行します。
+- 縦長画像や imageOnly レイアウトでは「<交換者> が引いたカード」とカード名の帯が描画されません（`portraitShowUsername` / `portraitShowName` は既定で非表示）。この場合ハーネスは、新しいカード DOM の表示インスタンス、画像画素（または明示 fallback）、`img.alt`／代替表示の `aria-label` に残るカード名で履歴行と対応付け、`result.json` の各交換に `overlayStatus: "matched-name-hidden"` を記録します。テキスト照合の成功は `"matched"`、新しい表示を観測したが履歴行と一意に対応付けられなかった場合は `"shown-unidentified"`（観測した表示を `overlayUnmatched` に残す）、表示自体を検知できなかった場合は `"not-detected"` で、いずれも不合格側に倒します。チャット照合は overlay 照合とは独立に行うため、overlay を検知できなかった交換でも通知の送信有無は `chatMatchCount` に残ります。
+- JSON tail の接続成立は受信 event で確認します。交換前に全 Worker から event を受信するまで最大 90 秒待ち（chat-delivery は毎分 cron も観測可能。overlay-realtime は WebSocket が閉じるまで event が出ないため、交換前に限り overlay タブを再読み込みします）、終了・切断・未受信の場合は実交換を開始しません。交換期間にも全 Worker の受信が必要で、起動時の event だけを交換成功の証拠にしません。
+- 結果は `~/.twica-preview-e2e/runs/<時刻>-<mode>/` に `result.json`・`worker-logs.json`・スクリーンショットで残ります。
+- 既定の対象（チャンネル `azumagbanjo`、報酬 `ドッスン君？！`、streamerId）は preview DB の `streamers` に合わせています。変わった場合は `--channel` / `--reward` / `--streamerId` で上書きします。
+- 報酬が Twitch 側で無効（`is_enabled=false`）だと報酬メニューに出ず、`check` が失敗します。テスト前に配信者が有効にし、終了後に無効へ戻します。
+- 項目 4 の EventSub direct は、このハーネスの交換が Twitch から実際に届く EventSub を通ることで確認します。項目 5-7 は対象外のため、該当する変更では別途実行します。
+
 production 反映後は同じ主要経路を smoke test し、旧 provider の outbound request と
 Secret access がゼロであることを観測してから旧 Secret を削除します。
 

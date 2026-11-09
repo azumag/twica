@@ -577,21 +577,30 @@ export class OverlayRoom {
 
       let allowed: boolean
       if (kind === 'connect') {
-        ledger.connectCount += 1
         const bucket = clientBucket ?? 'unknown'
-        ledger.clientConnectCounts[bucket] =
-          (ledger.clientConnectCounts[bucket] ?? 0) + 1
-        allowed =
-          ledger.connectCount <= boundedInteger(
-            this.env.MAX_ROOM_CONNECTS_PER_MINUTE,
-            60,
-            600
-          )
-          && ledger.clientConnectCounts[bucket] <= boundedInteger(
-            this.env.MAX_CLIENT_CONNECTS_PER_MINUTE,
-            10,
-            60
-          )
+        const roomLimit = boundedInteger(
+          this.env.MAX_ROOM_CONNECTS_PER_MINUTE,
+          60,
+          600
+        )
+        const clientLimit = boundedInteger(
+          this.env.MAX_CLIENT_CONNECTS_PER_MINUTE,
+          10,
+          60
+        )
+        const currentClientCount =
+          ledger.clientConnectCounts[bucket] ?? 0
+        if (currentClientCount >= clientLimit) {
+          // IP exceeded: record the rejection for this IP bucket only.
+          // Do not consume room-wide budget for a rejected attempt, so one
+          // abusive source cannot starve other legitimate clients.
+          ledger.clientConnectCounts[bucket] = currentClientCount + 1
+          allowed = false
+        } else {
+          ledger.connectCount += 1
+          ledger.clientConnectCounts[bucket] = currentClientCount + 1
+          allowed = ledger.connectCount <= roomLimit
+        }
       } else {
         ledger.publishCount += 1
         allowed = ledger.publishCount <= boundedInteger(

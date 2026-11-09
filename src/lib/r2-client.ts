@@ -25,9 +25,44 @@ import { CLOUDFLARE_R2_TRANSIENT_MARKERS } from './r2-retry-policy';
  * Cloudflare Workers R2 APIの最小限のインターフェース定義。
  * tsconfigに@cloudflare/workers-typesを要求しないようにする。
  */
+interface R2ObjectLike {
+  key: string;
+  size: number;
+  uploaded?: Date;
+}
+
+interface R2ListResultLike {
+  objects: R2ObjectLike[];
+  truncated: boolean;
+  cursor?: string;
+}
+
 interface R2BucketLike {
   put(key: string, value: ArrayBuffer | ArrayBufferView | string | ReadableStream | Blob, options?: { httpMetadata?: { contentType?: string } }): Promise<unknown>;
   delete(key: string | string[]): Promise<void>;
+  /**
+   * 回収ジョブ (#1907) 用。Cloudflare の R2Bucket.list() と同じ最小形。
+   * 既存のアップロード/削除経路は list を使わないため、バインディング未実装の
+   * 環境でもアップロードには影響しない。
+   */
+  list(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<R2ListResultLike>;
+}
+
+/** 効果音回収ジョブが扱う 1 オブジェクト。 */
+export interface SoundObjectInfo {
+  key: string;
+  size: number;
+  /**
+   * R2/S3 が返す作成日時。取得できない場合は null。
+   * 回収ジョブは「経過時間を確認できないオブジェクト」を削除しない（fail-closed）。
+   */
+  uploaded: Date | null;
+}
+
+export interface ListSoundObjectsResult {
+  objects: SoundObjectInfo[];
+  /** maxObjects に達して打ち切った場合 true。次回実行で続きを回収できる。 */
+  truncated: boolean;
 }
 
 /**
@@ -301,6 +336,120 @@ export async function deleteSoundFromR2(fileName: string): Promise<void> {
     logger.info(`[R2 Sound] Deleted sound file: ${fileName}`);
   } catch (error) {
     logger.error('[R2 Sound] Failed to delete sound file:', error);
+    throw error;
+  }
+}
+
+const SOUND_OBJECT_PREFIX = 'sound_';
+const DEFAULT_LIST_MAX_OBJECTS = 10_000;
+
+/**
+ * 効果音バケットのオブジェクト一覧を取得する (#1907)。
+ *
+ * 未使用オブジェクト回収ジョブだけが使う。既存のアップロード/削除経路には
+ * list 操作を追加しない（R2 の list は従量課金・レイテンシとも無視できないため、
+ * 定期ジョブからのみ呼ぶ）。
+ *
+ * Workers ではネイティブ binding、ローカルでは S3 SDK を使う既存の
+ * deleteSoundFromR2 と同じ分岐に揃える。ページングは両者で形式が異なるため、
+ * `SoundObjectInfo` に正規化して返す。
+ *
+ * @param options.prefix - 対象キーの接頭辞（既定 'sound_'）
+ * @param options.maxObjects - 1 回の実行で列挙する上限（暴走・コスト防止）
+ */
+export async function listSoundObjects(options: {
+  prefix?: string;
+  maxObjects?: number;
+} = {}): Promise<ListSoundObjectsResult> {
+  const prefix = options.prefix ?? SOUND_OBJECT_PREFIX;
+  const maxObjects = options.maxObjects ?? DEFAULT_LIST_MAX_OBJECTS;
+  if (!Number.isInteger(maxObjects) || maxObjects <= 0) {
+    throw new Error(`Invalid maxObjects: ${maxObjects}`);
+  }
+
+  const objects: SoundObjectInfo[] = [];
+  let truncated = false;
+
+  try {
+    const binding = await getR2Binding('R2_SOUNDS');
+    if (binding) {
+      let cursor: string | undefined;
+      while (objects.length < maxObjects) {
+        const page = await binding.list({
+          prefix,
+          cursor,
+          limit: Math.min(1000, maxObjects - objects.length),
+        });
+        for (const object of page.objects) {
+          objects.push({
+            key: object.key,
+            size: object.size,
+            uploaded: object.uploaded instanceof Date ? object.uploaded : null,
+          });
+          if (objects.length >= maxObjects) break;
+        }
+        if (objects.length >= maxObjects) {
+          // ページ途中で打ち切った可能性があるため、保守的に truncated=true とする
+          // （次回実行で続きを列挙する。余分な1回の list は無害）。
+          truncated = true;
+          break;
+        }
+        if (!page.truncated) break;
+        if (!page.cursor) {
+          // 契約上 truncated=true なら cursor が返るはずだが、返らない実装でも
+          // 「続きがある」ことを呼び出し元へ伝える（次回実行で再列挙）。
+          truncated = true;
+          break;
+        }
+        cursor = page.cursor;
+      }
+      return { objects, truncated };
+    }
+
+    // S3 SDK fallback for local development
+    const bucket = process.env.R2_SOUND_BUCKET_NAME;
+    if (!bucket) throw new Error('Missing R2_SOUND_BUCKET_NAME environment variable');
+    const { S3Client, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+    const endpoint = process.env.R2_ENDPOINT;
+    const accessKeyId = process.env.R2_SOUND_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.R2_SOUND_SECRET_ACCESS_KEY;
+    if (!endpoint || !accessKeyId || !secretAccessKey) {
+      throw new Error('Missing R2 environment variables for sounds (R2_ENDPOINT, R2_SOUND_ACCESS_KEY_ID, R2_SOUND_SECRET_ACCESS_KEY)');
+    }
+
+    const client = new S3Client({ region: 'auto', endpoint, credentials: { accessKeyId, secretAccessKey } });
+    let continuationToken: string | undefined;
+    while (objects.length < maxObjects) {
+      const page = await client.send(new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        MaxKeys: Math.min(1000, maxObjects - objects.length),
+        ContinuationToken: continuationToken,
+      }));
+      for (const object of page.Contents ?? []) {
+        if (!object.Key) continue;
+        objects.push({
+          key: object.Key,
+          size: object.Size ?? 0,
+          uploaded: object.LastModified instanceof Date ? object.LastModified : null,
+        });
+        if (objects.length >= maxObjects) break;
+      }
+      continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+      if (objects.length >= maxObjects) {
+        truncated = true;
+        break;
+      }
+      if (!continuationToken) {
+        // IsTruncated=true なのに token が無い実装でも「続きがある」ことを
+        // 呼び出し元へ伝える（Workers ネイティブ経路の cursor 欠落と同じ扱い）。
+        truncated = page.IsTruncated === true;
+        break;
+      }
+    }
+    return { objects, truncated };
+  } catch (error) {
+    logger.error('[R2 Sound] Failed to list sound files:', error);
     throw error;
   }
 }

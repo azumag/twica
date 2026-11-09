@@ -430,7 +430,7 @@ export function StreamerGachaHistory() {
                   cx="50%"
                   cy="50%"
                   labelLine={false}
-                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(1)}%`}
+                  label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(1)}%`}
                   outerRadius={80}
                   fill="#8884d8"
                   dataKey="value"
@@ -471,7 +471,7 @@ export function StreamerGachaHistory() {
                 width={100}
               />
               <Tooltip
-                formatter={(value: number) => [value, '回数']}
+                formatter={(value) => [Number(value ?? 0), '回数']}
                 labelFormatter={(label) => `カード: ${label}`}
               />
               <Bar

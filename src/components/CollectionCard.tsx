@@ -2,6 +2,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
+import { duplicateTierBadgeClass, duplicateTierFrameClass } from "@/lib/duplicate-display-tiers";
+import type { RarityStyleVars } from "@/lib/rarity";
 
 /**
  * Props for the CollectionCard component
@@ -27,6 +29,9 @@ interface CollectionCardProps {
   rarityInfo: {
     label: string;
     color: string;
+    // カスタムレアリティ色を当てるインライン CSS 変数（Issue #1783）。
+    // 未設定（undefined）なら従来どおりクラスの色だけが使われる。
+    styleVars?: RarityStyleVars;
   };
   // Stable collection number for encyclopedia-style display
   // 図鑑表示用の固定カード番号
@@ -58,6 +63,13 @@ interface CollectionCardProps {
   // Description component to render (passed to avoid client-side i18n issues)
   // 描画する説明コンポーネント（クライアントサイドのi18n問題を避けるため渡す）
   descriptionComponent?: React.ReactNode;
+  // Issue #1782: 被りカードの表示段階（0 = 表示しない）。配信者がレアリティ別に
+  // 設定した所有枚数のしきい値を、所有枚数から解決した値。
+  // Duplicate-card display tier (0 = no tier, so no badge).
+  duplicateTierLevel?: number;
+  // 段階バッジのラベル（サーバー側で組み立てた文字列）。
+  // Pre-rendered label for the tier badge (built server-side for i18n).
+  duplicateTierLabel?: string;
 }
 
 /**
@@ -82,10 +94,17 @@ export default function CollectionCard({
   isInactive = false,
   inactiveLabel,
   descriptionComponent,
+  duplicateTierLevel = 0,
+  duplicateTierLabel,
 }: CollectionCardProps) {
+  // Issue #1782: 段階が上がるほど枠のリングを強くして、所有枚数の到達度が
+  // 一瞬で判別できるようにする。配布停止中(isInactive)のリングと競合するため、
+  // 段階表示を優先して後面のリングは畳む（情報の重複より「どちらが見えるか」を
+  // 一定に保つ方が、閲覧者にとって予測可能）。
+  const tierFrameClass = duplicateTierFrameClass(duplicateTierLevel);
   const cardClassName = `group relative overflow-hidden rounded-lg bg-gray-700 transition-transform ${
     isOwned ? "cursor-pointer hover:scale-105" : "cursor-default"
-  } ${isInactive ? "ring-1 ring-amber-400/30" : ""}`;
+  } ${tierFrameClass || (isInactive ? "ring-1 ring-amber-400/30" : "")}`;
 
   const cardContent = (
     <>
@@ -110,10 +129,21 @@ export default function CollectionCard({
           </div>
           <span
             className={`rounded-full px-2 py-0.5 text-white shrink-0 ml-2 text-xs ${rarityInfo.color}`}
+            style={rarityInfo.styleVars}
           >
             {rarityInfo.label}
           </span>
         </div>
+        {/* Issue #1782: 被りカードの表示段階バッジ。ラベルは呼び出し側が
+            サーバー側で組み立てて渡す（このコンポーネントは Client からも
+            使われるため、翻訳は注入側の責務）。 */}
+        {duplicateTierLevel > 0 && duplicateTierLabel && (
+          <span
+            className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${duplicateTierBadgeClass(duplicateTierLevel)}`}
+          >
+            {duplicateTierLabel}
+          </span>
+        )}
       </div>
 
       {!isOwned && (

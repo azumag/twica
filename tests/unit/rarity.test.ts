@@ -114,4 +114,20 @@ describe("rarity helpers", () => {
       ]);
     });
   });
+
+  // Issue #1783 フェーズ2: 保存済みスタイルを描画する経路は
+  // getRarityStylePresentation に一本化した。クラス専用のこれら3ヘルパは
+  // プリセット専用で、styles 引数を持たない（HEX が className に混入する
+  // footgun を残さないため）。
+  describe("custom rarity style overrides (Issue #1783)", () => {
+    it("returns the built-in presets and the shared fallback", () => {
+      expect(getRarityColorClass("legendary")).toBe("bg-yellow-500");
+      expect(getRarityGradientClass("legendary")).toBe("from-yellow-400 to-orange-500");
+      expect(getRarityGlowClass("legendary")).toBe("shadow-yellow-500/50");
+      // カスタムレアリティは色定義が無いため共有フォールバックへ倒す。
+      expect(getRarityColorClass("mythic")).toBe("bg-gray-500");
+      expect(getRarityGradientClass("mythic")).toBe("from-gray-400 to-gray-600");
+      expect(getRarityGlowClass("mythic")).toBe("shadow-gray-500/50");
+    });
+  });
 });

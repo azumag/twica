@@ -2,13 +2,13 @@
 
 Next.js 16 reports the `middleware.ts` convention as deprecated and recommends
 renaming it to `proxy.ts`. TwiCa intentionally keeps `src/middleware.ts` for
-now because the repository is pinned to `@opennextjs/cloudflare` 1.20.2, which
+now because the repository is pinned to `@opennextjs/cloudflare` 1.20.12, which
 predates the adapter's Node.js middleware / `proxy.ts` support.
 
 ## Current Decision
 
 - Keep `src/middleware.ts` on `preview` while TwiCa remains on
-  `@opennextjs/cloudflare` 1.20.2 and the `proxy.ts` path has not been verified
+  `@opennextjs/cloudflare` 1.20.12 and the `proxy.ts` path has not been verified
   with TwiCa's existing middleware behavior.
 - Do not add `src/proxy.ts` yet.
 - Upstream support is no longer only a future Adapters API direction:
@@ -41,11 +41,11 @@ was closed on 2026-08-25 when
 merged. `@opennextjs/cloudflare` 1.20.3, published on 2026-08-26, includes that
 experimental `proxy.ts` support.
 
-Upstream status last checked: **2026-09-13**. The recheck confirms #1277 remains
+Upstream status last checked: **2026-10-21**. The recheck confirms #1277 remains
 closed, #1309 remains merged, and
 [`opennextjs-cloudflare#1373`](https://github.com/opennextjs/opennextjs-cloudflare/issues/1373)
 remains open as a bundle-size regression report for the Node.js middleware
-path. TwiCa is still pinned to `@opennextjs/cloudflare` 1.20.2, so the upstream
+path. TwiCa is still pinned to `@opennextjs/cloudflare` 1.20.12, so the upstream
 support has not yet changed the repository's verified deployment contract.
 
 ## Revisit Conditions

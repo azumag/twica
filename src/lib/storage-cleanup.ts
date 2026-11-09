@@ -38,8 +38,9 @@ export type StorageImageDeleteOutcome = 'deleted' | 'not-storage' | 'forbidden';
 /**
  * 所有権を検証したうえでストレージ画像を削除する
  *
- * DB記録の削除は best-effort（失敗しても警告ログのみ。使用量は初期化スクリプトで
- * 再計算できる）。ストレージ削除の失敗は呼び出し元が扱えるよう throw する。
+ * DB記録の削除は best-effort（失敗しても警告ログのみ。使用量は #1907 の
+ * 再照合ジョブ `/api/internal/storage-maintenance` で blob_files から再計算できる）。
+ * ストレージ削除の失敗は呼び出し元が扱えるよう throw する。
  *
  * @param url - 削除対象のストレージURL
  * @param twitchUserId - 削除を要求しているTwitchユーザーID

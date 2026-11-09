@@ -32,9 +32,11 @@ export const LIVE_DIRECTORY_SETTINGS_COLUMNS = [
  * デプロイ窓対象列を除いた streamers テーブルの明示的な列オブジェクト。
  * Drizzle の `.select({ ... })` にそのまま渡せる。
  *
- * trade_enabled / cross_channel_trade_enabled も意図的に含めないため、この安全列で再試行した
- * 行では両設定値が undefined になりうる。消費側はデプロイ窓中の未定義値を有効扱いせず、
- * `?? false` などで必ず fail-closed に扱うこと。
+ * trade_enabled / cross_channel_trade_enabled (#722) と pack_album_grid_sizes /
+ * collection_default_view (#1765 フォローアップ) も意図的に含めないため、この安全列で
+ * 再試行した行ではこれらの設定値が undefined になりうる。消費側はデプロイ窓中の
+ * 未定義値を有効扱いせず、`?? false` / 既定（3×3・'grid'）などで必ず fail-closed に
+ * 扱うこと。
  */
 export const STREAMERS_SAFE_COLUMNS = {
   id: streamersTable.id,
@@ -91,7 +93,9 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
  * 元々は cards テーブルの「本番未デプロイ8列」フォールバック
  * （旧 cards-safe-columns.ts の withCardsBattleColumnFallback）と同型の設計だったが、そちらは
  * 本番実測で対象8列とも実在することを確認したため #834 で撤去された（撤去後のファイルは
- * card-padding-color-errors.ts に改名・縮小）。
+ * card-padding-color-errors.ts に改名・縮小され、さらに #954 で image_padding_color
+ * フォールバックごと削除された）。本ヘルパー（streamers 側の列群）は #954 の実測
+ * 対象外のため温存する。
  */
 export async function withLiveDirectorySettingsColumnFallback<T>(
   attempt: (useSafeColumns: boolean) => Promise<T>
@@ -102,7 +106,10 @@ export async function withLiveDirectorySettingsColumnFallback<T>(
     if (
       !isMissingLiveDirectorySettingsColumnError(error) &&
       !isMissingTradeSettingsColumnError(error) &&
-      !isMissingCardRankingSettingsColumnError(error)
+      !isMissingAlbumSettingsColumnError(error) &&
+      !isMissingCardRankingSettingsColumnError(error) &&
+      !isMissingDuplicateDisplayTiersColumnError(error) &&
+      !isMissingRarityStylesColumnError(error)
     ) {
       throw error;
     }
@@ -134,6 +141,29 @@ export function isMissingTradeSettingsColumnError(error: unknown): boolean {
 }
 
 /**
+ * デプロイ窓で欠落しうる streamers の新列(20261014120000 の migration で追加。
+ * #1765 フォローアップ)。publish_live_status / publish_stats (#738) や
+ * trade_enabled (#722) と同じ「アプリデプロイとmigration適用が独立した
+ * タイミングで完了する」リスクを持つため、同型のフォールバックを追加する。
+ *
+ * STREAMERS_SAFE_COLUMNS はこの2列を含まない（＝再試行側では undefined に
+ * なりうる）。消費側は欠落時に既定へ fail-closed（並び=3×3、初期表示=grid）で
+ * 倒すこと。
+ */
+export const ALBUM_SETTINGS_COLUMNS = [
+  "pack_album_grid_sizes",
+  "collection_default_view",
+] as const;
+
+/**
+ * streamers の pack_album_grid_sizes / collection_default_view 列の欠落
+ * (20261014120000 の migration 未適用の環境)を検知する。
+ */
+export function isMissingAlbumSettingsColumnError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, ALBUM_SETTINGS_COLUMNS);
+}
+
+/**
  * デプロイ窓で欠落しうる streamers の新列(20261015050000 の migration で追加。
  * Issue #934)。publish_live_status / publish_stats (#738) と同じ「アプリデプロイと
  * migration適用が独立したタイミングで完了する」リスクを持つため、同型のフォールバックを
@@ -151,4 +181,48 @@ export const CARD_RANKING_SETTINGS_COLUMNS = ["publish_card_ranking"] as const;
  */
 export function isMissingCardRankingSettingsColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, CARD_RANKING_SETTINGS_COLUMNS);
+}
+
+/**
+ * デプロイ窓で欠落しうる streamers の新列(20261015120000 の migration で追加。
+ * Issue #1782)。上記各列と同じ「アプリデプロイとmigration適用が独立した
+ * タイミングで完了する」リスクを持つため、同型のフォールバックに追加する。
+ *
+ * STREAMERS_SAFE_COLUMNS はこの列を含まない（＝再試行側では undefined に
+ * なりうる）。消費側は欠落時に「段階表示なし」へ fail-closed に倒すこと
+ * （sanitizeDuplicateDisplayTiers(undefined) は空マップを返すので、
+ *  そのまま resolveDuplicateTier へ渡せば段階 0 = バッジなしになる）。
+ */
+export const DUPLICATE_DISPLAY_TIER_COLUMNS = ["duplicate_display_tiers"] as const;
+
+/**
+ * streamers の duplicate_display_tiers 列の欠落
+ * (20261015120000 の migration 未適用の環境)を検知する。
+ */
+export function isMissingDuplicateDisplayTiersColumnError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, DUPLICATE_DISPLAY_TIER_COLUMNS);
+}
+
+/**
+ * デプロイ窓で欠落しうる streamers の新列(20261018020000 の migration で追加。
+ * Issue #1783)。上記各列と同じ「アプリデプロイとmigration適用が独立した
+ * タイミングで完了する」リスクを持つため、同型のフォールバックに追加する。
+ *
+ * getStreamerData は streamer: streamersTable の無指定 select（全列）を使うため、
+ * この列が無い環境では SELECT 自体が 42703 で失敗する。検知条件に加えないと
+ * フォールバックへ到達せず、ダッシュボードが null（= /dashboard へリダイレクト）
+ * になる。
+ *
+ * STREAMERS_SAFE_COLUMNS はこの列を含まない（＝再試行側では undefined に
+ * なりうる）。消費側は欠落時に「上書きなし = 既定表示」へ fail-closed に倒すこと
+ * （`?? {}`）。
+ */
+export const RARITY_STYLES_COLUMNS = ["rarity_styles"] as const;
+
+/**
+ * streamers の rarity_styles 列の欠落
+ * (20261018020000 の migration 未適用の環境)を検知する。
+ */
+export function isMissingRarityStylesColumnError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, RARITY_STYLES_COLUMNS);
 }

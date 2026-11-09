@@ -18,6 +18,7 @@ export const requiredEnvVars: EnvConfig[] = [
   // Workers (or DATABASE_URL_PLANETSCALE for local development), not by a
   // Supabase URL/key pair. BLOB_READ_WRITE_TOKEN is also obsolete after R2.
   { name: 'CSRF_TOKEN_SALT', required: true },
+  { name: 'SESSION_COOKIE_SECRET', required: true },
 ]
 
 /**

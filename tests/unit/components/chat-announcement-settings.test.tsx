@@ -32,17 +32,10 @@ function stubLocationHref() {
   });
 }
 
-// next-intl unescapes the ICU '{'...'}' sequences from messages/ja.json into literal
-// {newCards}/{newCardsOrNone}/{newCardCount} at render time, so the expectation here is the rendered
-// text rather than the raw JSON string.
-const NEW_CARD_WARNING_TEXT =
-  "「N連通知にカード名一覧を含める」が無効なため、テンプレート内の {newCards} / {newCardsOrNone} / {newCardCount} は送信時に空文字に置き換わります。内容を表示したい場合は上のチェックボックスを有効にしてください。";
-
 function renderSettings(
   overrides: Partial<{
     currentTemplate: string | null;
     currentMultiTemplate: string | null;
-    currentMultiShowCards: boolean;
     currentEnabled: boolean;
     botAccount: { username: string | null; displayName: string | null } | null;
   }> = {}
@@ -55,7 +48,6 @@ function renderSettings(
           currentEnabled={overrides.currentEnabled ?? false}
           currentTemplate={overrides.currentTemplate ?? null}
           currentMultiTemplate={overrides.currentMultiTemplate ?? null}
-          currentMultiShowCards={overrides.currentMultiShowCards ?? true}
           botAccount={overrides.botAccount ?? null}
         />
       </ChatReauthorizationProvider>
@@ -140,7 +132,10 @@ describe("ChatAnnouncementSettings", () => {
     expect(screen.queryByText("詳細設定を表示する")).not.toBeInTheDocument();
     expect(await screen.findByText("カスタムテンプレート（任意）")).toBeInTheDocument();
     expect(screen.getByText("N連ガチャ用テンプレート（任意）")).toBeInTheDocument();
-    expect(screen.getByText("N連通知にカード名一覧を含める")).toBeInTheDocument();
+    // Issue #1548: 「N連通知にカード名一覧を含める」チェックボックスは廃止。
+    // カード名一覧の表示有無はテンプレートの {cards} 等の有無で決まるため、
+    // フラグ用のUIが復活していないことをここで固定する。
+    expect(screen.queryByText("N連通知にカード名一覧を含める")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "チャットデモ" })).toBeInTheDocument();
   });
 
@@ -214,80 +209,9 @@ describe("ChatAnnouncementSettings", () => {
     });
   });
 
-  // Issue #504: {newCards}/{newCardCount} is silently replaced with an empty string
-  // when multi_show_cards is off, which looks like a misconfiguration. The UI must
-  // surface a warning whenever the template references those placeholders while the
-  // "show card names" toggle is disabled, and stay quiet otherwise.
-  describe("newCards/newCardCount placeholder warning (#504)", () => {
-    it("is hidden when multiShowCards is enabled even if the template uses {newCards}", async () => {
-      renderSettings({
-        currentMultiTemplate: "@{user} が新規カード {newCards} を獲得！",
-        currentMultiShowCards: true,
-      });
-
-      await screen.findByText("N連ガチャ用テンプレート（任意）");
-      expect(screen.queryByText(NEW_CARD_WARNING_TEXT)).not.toBeInTheDocument();
-    });
-
-    it("is hidden when multiShowCards is disabled but the template does not reference the placeholders", async () => {
-      renderSettings({
-        currentMultiTemplate: "@{user} が{draws}連ガチャを引きました！",
-        currentMultiShowCards: false,
-      });
-
-      await screen.findByText("N連ガチャ用テンプレート（任意）");
-      expect(screen.queryByText(NEW_CARD_WARNING_TEXT)).not.toBeInTheDocument();
-    });
-
-    it("is shown when multiShowCards is disabled and the template uses {newCards}", async () => {
-      renderSettings({
-        currentMultiTemplate: "@{user} が新規カード {newCards} を獲得！",
-        currentMultiShowCards: false,
-      });
-
-      expect(await screen.findByText(NEW_CARD_WARNING_TEXT)).toBeInTheDocument();
-    });
-
-    it("is shown when multiShowCards is disabled and the template uses {newCardCount}", async () => {
-      renderSettings({
-        currentMultiTemplate: "@{user} が新規カードを{newCardCount}種類獲得！",
-        currentMultiShowCards: false,
-      });
-
-      expect(await screen.findByText(NEW_CARD_WARNING_TEXT)).toBeInTheDocument();
-    });
-
-    it("is shown when multiShowCards is disabled and the template uses {newCardsOrNone}", async () => {
-      renderSettings({
-        currentMultiTemplate: "@{user} が新規カード {newCardsOrNone} を獲得！",
-        currentMultiShowCards: false,
-      });
-
-      expect(await screen.findByText(NEW_CARD_WARNING_TEXT)).toBeInTheDocument();
-    });
-
-    it("toggles live as the user flips the multiShowCards checkbox", async () => {
-      renderSettings({
-        currentMultiTemplate: "@{user} が新規カード {newCards} を獲得！",
-        currentMultiShowCards: true,
-      });
-
-      await screen.findByText("N連ガチャ用テンプレート（任意）");
-      expect(screen.queryByText(NEW_CARD_WARNING_TEXT)).not.toBeInTheDocument();
-
-      const checkbox = screen.getByRole("checkbox", { name: "N連通知にカード名一覧を含める" });
-      fireEvent.click(checkbox);
-      expect(await screen.findByText(NEW_CARD_WARNING_TEXT)).toBeInTheDocument();
-
-      fireEvent.click(checkbox);
-      expect(screen.queryByText(NEW_CARD_WARNING_TEXT)).not.toBeInTheDocument();
-    });
-  });
-
   it("shows {newCardsOrNone} in the multi-draw placeholder help and replaces it in the demo", async () => {
     renderSettings({
       currentMultiTemplate: "初入手: {newCardsOrNone}",
-      currentMultiShowCards: true,
     });
 
     expect(await screen.findByText(/\{newCardsOrNone\}=今回初めて獲得したカード名一覧/)).toBeInTheDocument();
@@ -300,7 +224,6 @@ describe("ChatAnnouncementSettings", () => {
     async (placeholder) => {
       renderSettings({
         currentMultiTemplate: placeholder,
-        currentMultiShowCards: true,
       });
 
       const multiTemplateSettings = await screen.findByTestId("multi-template-settings");
@@ -314,7 +237,6 @@ describe("ChatAnnouncementSettings", () => {
     renderSettings({
       currentTemplate: "@{user} が {card} を獲得しました！",
       currentMultiTemplate: "{newCardsOrNone}",
-      currentMultiShowCards: true,
     });
 
     expect(await screen.findByTestId("multi-template-length-warning")).toBeInTheDocument();

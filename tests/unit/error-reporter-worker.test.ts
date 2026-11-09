@@ -112,7 +112,10 @@ describe('reporter worker', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock = vi.fn();
-    global.fetch = fetchMock;
+    // Vitest 4 では vi.fn() の型が Procedure | Constructable になり、
+    // そのまま global.fetch（関数型）へ代入できない。fetch のシグネチャへ
+    // 明示的に絞ってから代入する。
+    global.fetch = fetchMock as unknown as typeof global.fetch;
 
     // DB モック: 呼び出しごとに新しい sql モックを用意し（fetchMock と同じ方針）、
     // postgres() ファクトリが常にこのテストのモックを返すよう差し替える。

@@ -287,10 +287,20 @@ describe('analysis/vite.config.ts', () => {
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n')
 
-  it('dev サーバーはループバックのみで待ち受け(LAN公開しない)', () => {
-    expect(source).toMatch(/host:\s*'127\.0\.0\.1'/)
+  it('dev サーバーは既定でループバックのみに待ち受ける(LAN公開しない)', async () => {
+    // bind 先は analysis/dev/devServerBinding.ts が決める（既定 loopback、
+    // 明示オプトインの env がある場合だけ外部公開）。設定文字列ではなく
+    // 解決結果を検証する。
+    const binding = await import('../../analysis/dev/devServerBinding')
+    expect(binding.resolveDevServerBinding({}).host).toBe('127.0.0.1')
+    expect(
+      binding.resolveDevServerBinding({ TWICA_ANALYSIS_DEV_ALLOW_EXTERNAL: '' }).host
+    ).toBe('127.0.0.1')
+    expect(
+      binding.resolveDevServerBinding({ TWICA_ANALYSIS_DEV_ALLOW_EXTERNAL: 'yes' }).host
+    ).toBe('127.0.0.1')
+    expect(source).toMatch(/toServerOptions/)
     expect(source).not.toMatch(/host:\s*true/)
-    expect(source).not.toMatch(/0\.0\.0\.0/)
   })
 
   it('CORS を許可しない(他オリジンが index.html のトークンを読めないように)', () => {

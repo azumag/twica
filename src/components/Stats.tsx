@@ -1,5 +1,6 @@
 import { getTranslations } from "next-intl/server";
-import { getRarityDisplayInfo } from "@/lib/rarity";
+import { getRarityDisplayInfo, getRarityStylePresentation } from "@/lib/rarity";
+import type { RarityStyles } from "@/lib/rarity-styles";
 
 interface StatsProps {
   stats: {
@@ -13,6 +14,9 @@ interface StatsProps {
     // 後方互換のため未指定（undefined）も許容する。
     customRarities?: { rarity: string; count: number }[];
   };
+  // 配信者がカスタムレアリティごとに設定した表示スタイル（Issue #1783）。
+  // 未設定なら従来のフォールバック色のまま（後方互換）。
+  rarityStyles?: RarityStyles | null;
 }
 
 /**
@@ -20,7 +24,7 @@ interface StatsProps {
  * Shows card collection statistics by rarity
  * 統計表示コンポーネント（サーバーコンポーネント）- レアリティ別のカードコレクション統計を表示
  */
-export default async function Stats({ stats }: StatsProps) {
+export default async function Stats({ stats, rarityStyles }: StatsProps) {
   const t = await getTranslations("stats");
   return (
     <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
@@ -55,9 +59,10 @@ export default async function Stats({ stats }: StatsProps) {
         <div className="text-sm text-gray-400/70">{t("common")}</div>
       </div>
       {/* カスタムレアリティ別の内訳（デフォルト4種の後ろに追加表示）。
-          色は固定レアリティ用の色定義が無いため共通フォールバックを使う。 */}
+          配信者が rarity_styles を設定していればその色、未設定なら共通
+          フォールバックを使う（Issue #1783）。 */}
       {(stats.customRarities ?? []).map(({ rarity, count }) => {
-        const info = getRarityDisplayInfo(rarity);
+        const style = getRarityStylePresentation(rarity, rarityStyles);
         return (
           <div
             key={rarity}
@@ -66,9 +71,10 @@ export default async function Stats({ stats }: StatsProps) {
             <div className="text-3xl font-bold text-white">{count}</div>
             <div className="mt-1 flex justify-center">
               <span
-                className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${info.color}`}
+                className={`inline-block rounded-full px-2 py-0.5 text-xs text-white ${style.colorClass}`}
+                style={style.styleVars}
               >
-                {info.label}
+                {getRarityDisplayInfo(rarity).label}
               </span>
             </div>
           </div>

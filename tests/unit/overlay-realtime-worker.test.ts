@@ -510,6 +510,25 @@ describe('OverlayRoom Durable Object', () => {
     expect(harness.records.has('rate-limit-ledger')).toBe(true)
   })
 
+  it('does not consume room budget for rejected client attempts (CWE-400)', async () => {
+    const harness = createRoomHarness()
+    const room = harness.room as unknown as {
+      consumeRoomRateLimit(
+        kind: 'connect' | 'publish',
+        clientBucket?: string
+      ): Promise<boolean>
+    }
+    // client-a makes 10 allowed + 50 rejected attempts
+    for (let i = 0; i < 10; i++) {
+      await expect(room.consumeRoomRateLimit('connect', 'client-a')).resolves.toBe(true)
+    }
+    for (let i = 0; i < 50; i++) {
+      await expect(room.consumeRoomRateLimit('connect', 'client-a')).resolves.toBe(false)
+    }
+    // client-b's first request must still pass (room budget not consumed by rejections)
+    await expect(room.consumeRoomRateLimit('connect', 'client-b')).resolves.toBe(true)
+  })
+
   it('accepts a publisher retry but fans out one stable event only once', async () => {
     vi.stubGlobal('WebSocket', { OPEN: 1 })
     const harness = createRoomHarness(1)

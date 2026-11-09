@@ -126,7 +126,40 @@ describe('sendClaimedChatAnnouncement individual delivery', () => {
         allCount: 10,
       }),
       fence,
+      // payloadVersion=1 の行は flag スナップショットを尊重する旧セマンティクス
+      // （Issue #1548）。sendIndividualCard経路にも同じgate値を渡す。
+      true,
     )
+  })
+
+  // Issue #1548: v2行はplaceholder駆動の新セマンティクスで再生する。
+  // gate=false が下位のsendChatAnnouncementへ届くことを両経路で固定する。
+  it.each([
+    ['summary', 'summary' as const],
+    ['individual', 'individual' as const],
+  ])('routes payloadVersion=2 %s rows through the placeholder-driven engine', async (_label, deliveryMode) => {
+    const data = makeData(true)
+    const claim = { ...makeClaim(), payloadVersion: 2, deliveryMode }
+    if (deliveryMode === 'individual') {
+      mocks.sendPacedMultiDrawChatAnnouncement.mockImplementation(
+        async (_broadcaster, cards, _userName, options) => {
+          await options.sendIndividualCard?.(cards[1], 1)
+          return { outcome: 'sent' }
+        },
+      )
+    }
+
+    const { sendClaimedChatAnnouncement } = await import('@/lib/services/eventsub-redemption-delivery')
+    await expect(sendClaimedChatAnnouncement(
+      claim as never,
+      data as never,
+      vi.fn().mockResolvedValue(true),
+    )).resolves.toEqual({ outcome: 'sent' })
+
+    // summaryとindividual(sendIndividualCard)でcards/snapshot引数の形が異なるため、
+    // 共通の末尾引数（gate=false）だけを固定する。
+    expect(mocks.sendChatAnnouncement).toHaveBeenCalledTimes(1)
+    expect(mocks.sendChatAnnouncement.mock.calls[0][9]).toBe(false)
   })
 
   it('keeps pre-cardCounts outboxes on the legacy deterministic paced fallback', async () => {

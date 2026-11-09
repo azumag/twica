@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { PlanType } from "@/lib/plan-constants";
@@ -41,7 +41,14 @@ export default function SupportPlanSection({ currentPlan }: SupportPlanSectionPr
   // アクティベーション成功後にプランを楽観的に更新
   // router.refresh() でサーバーから新しい currentPlan が渡された場合も同期する
   const [activePlan, setActivePlan] = useState<PlanType>(currentPlan);
-  useEffect(() => { setActivePlan(currentPlan); }, [currentPlan]);
+  // router.refresh() 後に届いた新しい currentPlan へ同期する。
+  // effect 内の同期 setState は react-hooks/set-state-in-effect が禁止するため、
+  // React の「prev値をstateに保存して条件付き更新」パターンで render 中に調整する。
+  const [prevCurrentPlan, setPrevCurrentPlan] = useState(currentPlan);
+  if (prevCurrentPlan !== currentPlan) {
+    setPrevCurrentPlan(currentPlan);
+    setActivePlan(currentPlan);
+  }
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return "0 MB";

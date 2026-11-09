@@ -33,7 +33,22 @@ describe("dashboard dynamic imports", () => {
     expect(source).toContain('dynamic(() => import("@/components/ChannelPointSettings")');
     expect(source).toContain('dynamic(() => import("@/components/GachaSoundSettings")');
     expect(source).toContain('dynamic(() => import("@/components/ChatAnnouncementSettings")');
-    expect(source).toContain('dynamic(() => import("@/components/CardVisibilitySettings")');
-    expect(source).toContain('dynamic(() => import("@/components/TradeSettings")');
+    expect(source).toContain('dynamic(() => import("@/components/LiveDirectorySettings")');
+  });
+
+  it("does not load collection visibility / card trading panels in the streamer settings layout", () => {
+    // コレクション公開設定とカードトレード設定は /dashboard/account へ移動した(#715 §6.7)。
+    // SettingsLayout に再び dynamic import が現れたら二重トグルになるため回帰として検出する。
+    const source = readSource("src/components/SettingsLayout.tsx");
+
+    expect(source).not.toContain("CardVisibilitySettings");
+    expect(source).not.toContain("TradeSettings");
+  });
+
+  it("renders collection visibility / card trading panels on the account page", () => {
+    const source = readSource("src/app/dashboard/account/page.tsx");
+
+    expect(source).toContain('import CardVisibilitySettings from "@/components/CardVisibilitySettings"');
+    expect(source).toContain('import TradeSettings from "@/components/TradeSettings"');
   });
 });

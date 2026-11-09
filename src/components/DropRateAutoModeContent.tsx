@@ -50,6 +50,17 @@ function clampPercent(value: number): number {
   return value;
 }
 
+// アクティブカードから intra weight の初期マップを組み立てる。
+// useState の遅延初期化と activeCards 変更時のリセット（render 中の条件付き
+// 更新）で共有するため、コンポーネント外に置く純粋関数にする。
+function buildInitialIntraWeights(activeCards: Card[]): Map<string, number> {
+  const initial = new Map<string, number>();
+  activeCards.forEach((card) => {
+    initial.set(card.id, card.intra_rarity_weight ?? 1.0);
+  });
+  return initial;
+}
+
 /**
  * Issue #580: 2つのパック別重みマップ(ネストしたRecord<string,Record<string,number>>)
  * が実質的に等しいかどうかを判定する。保存ボタンの活性化判定(scopeOrPackHasChanges)
@@ -233,15 +244,24 @@ export default function DropRateAutoModeContent({
   const [selectedPackKey, setSelectedPackKey] = useState<string>(DEFAULT_PACK_SENTINEL);
 
   // === タブ2: カードごとの調整 state ===
-  const [localIntraWeights, setLocalIntraWeights] = useState<
-    Map<string, number>
-  >(new Map());
-  const [perCardSaving, setPerCardSaving] = useState(false);
-
   const activeCards = useMemo(
     () => cards.filter((card) => card.is_active),
     [cards]
   );
+
+  // activeCards の変更時は下の render 中の条件付き更新でリセットする
+  // （effect 内の同期 setState を避けるため。React の「prev値をstateに保存して
+  // 条件付き更新」パターン）。
+  const [localIntraWeights, setLocalIntraWeights] = useState<
+    Map<string, number>
+  >(() => buildInitialIntraWeights(activeCards));
+  const [perCardSaving, setPerCardSaving] = useState(false);
+
+  const [prevActiveCards, setPrevActiveCards] = useState(activeCards);
+  if (prevActiveCards !== activeCards) {
+    setPrevActiveCards(activeCards);
+    setLocalIntraWeights(buildInitialIntraWeights(activeCards));
+  }
 
   // レアリティキー一覧の計算
   const rarityKeys = useMemo(() => {
@@ -286,20 +306,26 @@ export default function DropRateAutoModeContent({
   // 当該キーを 0 で先行登録する。これをしないと、新キーが入力欄に 0 表示
   // される一方で合計には反映されず、「合計100%」制約と実表示が乖離して
   // 保存できなくなる（カスタムレアリティ追加でUI制約が破綻する）ため。
-  useEffect(() => {
+  // effect 内の同期 setState は react-hooks/set-state-in-effect が禁止するため、
+  // React の「stateをrender中に条件付き更新」パターンで埋める。更新は条件付きな
+  // ので、全キー登録済みになった時点で再renderは収束する。
+  const missingRarityKeys = rarityKeys.filter(
+    (key) => !Object.prototype.hasOwnProperty.call(draftWeights, key)
+  );
+  if (missingRarityKeys.length > 0) {
     setDraftWeights((prev) => {
-      const missingKeys = rarityKeys.filter(
+      const stillMissing = rarityKeys.filter(
         (key) => !Object.prototype.hasOwnProperty.call(prev, key)
       );
-      if (missingKeys.length === 0) return prev;
+      if (stillMissing.length === 0) return prev;
 
       const next = { ...prev };
-      for (const key of missingKeys) {
+      for (const key of stillMissing) {
         next[key] = clampPercent(rarityWeights[key] ?? 0);
       }
       return next;
     });
-  }, [rarityKeys, rarityWeights]);
+  }
 
   // レアリティ別合計
   const rarityTotal = useMemo(() => {
@@ -373,15 +399,6 @@ export default function DropRateAutoModeContent({
       [selectedPackKey]: { ...prev[selectedPackKey], [rarity]: nextValue },
     }));
   };
-
-  // カードごと: intra weight初期化
-  useEffect(() => {
-    const initial = new Map<string, number>();
-    activeCards.forEach((card) => {
-      initial.set(card.id, card.intra_rarity_weight ?? 1.0);
-    });
-    setLocalIntraWeights(initial);
-  }, [activeCards]);
 
   // カードごと: 変更チェック
   const perCardHasChanges = useMemo(() => {

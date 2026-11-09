@@ -102,7 +102,10 @@
       },
       "fitColorNote": "The whole image is fitted into a square card frame, so padding is added depending on the image shape. Transparent is saved as PNG.",
       "fitProceed": "Add padding with this color",
-      "fitDescription": "Fits the whole image"
+      "fitDescription": "Fits the whole image",
+      "tradeWantable": "Can be requested in trades",
+      "tradeWantableHelp": "When off, viewers cannot list offers that ask for this card. Existing offers asking for it are hidden from the trade board and cannot be accepted (they come back when you turn this on again). Viewers can still offer this card to others.",
+      "tradeWantableDeployWindow": "The \"cannot be requested in trades\" setting could not be saved because the feature is still being prepared (your other changes were saved). Please try again shortly."
     },
     "fileUpload": {
       "formats": "Supported: JPEG, PNG, GIF, WebP | ",
@@ -129,7 +132,7 @@
       "errorOccurred": "An error occurred ({status})",
       "uploadLimited": "Upload feature is limited",
       "imageUsage": "Image usage: {usage} / {limit}",
-      "userLimitReached": "The image upload limit is currently 10MB per account. If you exceed the limit, please delete existing images and try again.",
+      "userLimitReached": "The image upload limit varies per account based on your plan and supporter storage bonuses. If you exceed the limit, please delete existing images and try again.",
       "globalLimitReached": "The image upload limit has been reached.",
       "planOverLimit": "Storage capacity exceeded. Please upgrade your support plan or delete images.",
       "storageLimitReason": "Image Upload Storage Notice\n\nThe current image storage limit is 10MB per account. If you exceed the limit, please delete unnecessary images or consider using URLs to reference images stored on external services (URL references do not count toward the storage limit).\n\nWe are grateful that more users than expected are enjoying the service. This storage limit is a necessary measure to keep the service free. We appreciate your understanding. If we receive many requests for increased storage, we will consider introducing paid plans in the future.",
@@ -255,10 +258,13 @@
       "add": "Add",
       "empty": "No custom rarities yet",
       "deleteNote": "Removing a custom rarity does not change existing cards (it is only removed from the card-creation suggestions).",
+      "clearColor": "Reset to default",
+      "colorLabel": "Text color for {rarity}",
       "save": "Save",
       "saving": "Saving...",
       "saved": "Saved",
       "saveFailed": "Failed to save",
+      "stylesNotSaved": "Rarity names were saved, but display styles are not available yet and could not be saved. Please try again later.",
       "confirmClose": "You have unsaved changes. Close anyway?",
       "errorEmpty": "Enter a rarity name",
       "errorTooLong": "Rarity name must be 40 characters or fewer",
@@ -404,19 +410,24 @@
       "description": "These collections are hidden from the list. Your cards are kept, and you can bring them back anytime with \"Show\".",
       "allHidden": "All of your collections are hidden."
     },
+    "viewCollection": "View Collection",
+    "unownedCard": "???",
+    "unownedStatus": "Unowned card",
     "album": {
       "viewLabel": "View",
       "gridView": "Cards",
       "albumView": "Album",
+      "gridSizeLabel": "Grid",
+      "gridSizeOption": "{size}×{size}",
       "pageIndicator": "{page} / {total}",
       "prevPage": "Previous page",
       "nextPage": "Next page",
       "emptySlot": "Empty slot",
       "cardPosition": "Slot {number}"
     },
-    "viewCollection": "View Collection",
-    "unownedCard": "???",
-    "unownedStatus": "Unowned card"
+    "duplicateTier": {
+      "badge": "Duplicate tier {tier}"
+    }
   },
   "collectionProgress": {
     "progress": "{owned}/{total} types",
@@ -524,6 +535,8 @@
       "saveFailed": "Failed to save settings",
       "deleteFailed": "Failed to delete",
       "rateLimit": "Too many requests. Please wait and try again.",
+      "storageUserLimitReached": "The sound effect upload limit has been reached. Delete unused sound effects and try again.",
+      "storageGlobalLimitReached": "The sound effect upload limit has been reached.",
       "deployWindow": "The sound rules feature is not ready yet, so your changes could not be saved. Please try again shortly."
     },
     "confirmDelete": "Delete this sound effect?",
@@ -545,9 +558,8 @@
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
       "multiTemplate": "Multi-draw Template (optional)",
       "multiTemplatePlaceholder": "@'{'user'}' got '{'rarityCounts'}' from a '{'draws'}'-draw gacha! '{'cards'}'",
-      "multiShowCards": "Include card-name list in multi-draw announcements",
       "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL, '{'packName'}'=pack of the first card (like '{'card'}'; unclassified cards show the default pack's display name, or the fixed label \"デフォルトパック\" if not configured — chat messages are Japanese-only regardless of your site language)",
-      "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list, '{'newCards'}'=newly obtained card names this draw, '{'newCardsOrNone'}'=newly obtained card names this draw (or \"なし\" when zero new cards were resolved), '{'newCardCount'}'=count of newly obtained card types this draw ('{'newCards'}'/'{'newCardsOrNone'}'/'{'newCardCount'}' only have content when \"Include card-name list in multi-draw announcements\" is enabled; otherwise, or when new-card information cannot be resolved, they are replaced with an empty string)",
+      "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list, '{'newCards'}'=newly obtained card names this draw, '{'newCardsOrNone'}'=newly obtained card names this draw (or \"なし\" when zero new cards were resolved), '{'newCardCount'}'=count of newly obtained card types this draw (card-name placeholders produce output only where you write them — write '{'cards'}' etc. to show that content, or omit it to hide it. If new-card information cannot be resolved they are replaced with an empty string)",
       "previewLength": "Preview length: {current} / {max} characters"
     },
     "buttons": {
@@ -565,7 +577,6 @@
       "checkingScope": "Checking permissions...",
       "saved": "Settings saved",
       "lengthWarning": "If placeholder values such as card-name lists, card descriptions, or URLs are long, the outgoing message may reach about {estimated} characters. Anything over {max} characters will be truncated when sent.",
-      "newCardPlaceholderWarning": "\"Include card-name list in multi-draw announcements\" is disabled, so '{'newCards'}' / '{'newCardsOrNone'}' / '{'newCardCount'}' in your template will be replaced with an empty string when sent. Enable the checkbox above if you want them to show content.",
       "botDisconnected": "Linked account disconnected"
     },
     "errors": {
@@ -596,7 +607,7 @@
     "reauthFailed": "Could not start re-authorization. Please try again shortly."
   },
   "cardVisibilitySettings": {
-    "title": "Unowned Card Visibility",
+    "title": "Collection visibility",
     "description": "Choose whether viewers can see cards they haven't collected yet on your collection page.",
     "status": {
       "enabled": "Visible",
@@ -605,7 +616,7 @@
     "form": {
       "showUnowned": "Show unowned cards to viewers",
       "showUnownedHelp": "When off, viewers see only cards they have collected (default).",
-      "showDetails": "Reveal image and description of unowned cards",
+      "showDetails": "Reveal name, image, and description of unowned cards",
       "showDetailsHelp": "When off, unowned cards show only their rarity; the image, name, and description are masked as placeholders.",
       "requiresShowUnowned": "requires \"Show unowned cards\""
     },
@@ -620,54 +631,24 @@
       "saveFailed": "Failed to save settings"
     }
   },
-  "trade": {
-    "boardTitle": "{channelName} Trade Board",
-    "backToCollection": "Back to collection",
-    "tradeButton": "Trade",
-    "tabInChannel": "In-channel",
-    "tabCrossChannel": "Cross-channel",
-    "filterWantedCard": "Wanted card",
-    "filterWantedPlaceholder": "Filter by card name",
-    "filterOfferedCard": "Offered card",
-    "filterOfferedPlaceholder": "Filter by card name",
-    "filterRarity": "Rarity",
-    "filterAllRarities": "All",
-    "offeredByLabel": "Offered by",
-    "metaSeparator": "·",
-    "acceptButton": "Accept this trade",
-    "acceptButtonNotOwned": "Not owned",
-    "acceptButtonAllListed": "No tradable copies (all listed)",
-    "acceptButtonLoginRequired": "Log in to accept",
-    "autoSelectNotice": "※ When you own multiple copies, the oldest one is selected automatically",
-    "ownOfferBadge": "Your offer",
-    "cancelOfferButton": "Cancel",
-    "cancelConfirmText": "Cancel this offer?",
-    "cancelConfirmYes": "Cancel offer",
-    "cancelConfirmNo": "Back",
-    "confirmModalTitle": "Confirm this trade?",
-    "confirmModalGiveLabel": "Give",
-    "confirmModalReceiveLabel": "Receive",
-    "confirmModalWarning": "⚠ Your oldest copy of the card will be selected. Trades cannot be undone.",
-    "confirmModalCancelButton": "Cancel",
-    "confirmModalSubmitButton": "Trade",
-    "confirmModalSubmitting": "Trading...",
-    "confirmModalSuccess": "Trade completed!",
-    "modalCloseButton": "Close",
-    "directionIconLabel": "Trade direction: give and receive",
-    "emptyStateMessage": "No offers yet. Be the first to list one!",
-    "errorTradeDisabled": "Trading is not enabled for this channel",
-    "errorTradeAlreadyCompletedOrInvalid": "This trade is already completed (or no longer valid)",
-    "errorTradeBusy": "The service is busy. Please try again shortly",
-    "errorTradeCardNotOwned": "You have no card available for this trade",
-    "errorTradeSelfAccept": "You cannot accept your own offer",
-    "errorTradeOfferNotFound": "The specified offer was not found",
-    "errorRateLimited": "Too many requests. Please try again shortly",
-    "errorGeneric": "The request failed. Please try again shortly",
-    "errorLoadFailed": "Failed to load offers",
-    "retryButton": "Retry",
-    "paginationPrev": "Previous",
-    "paginationNext": "Next",
-    "paginationPage": "Page {page}"
+  "albumDisplaySettings": {
+    "title": "Album view",
+    "description": "Configure the default album grid size per card pack and the view mode the collection page opens with. Viewers can still change the grid size while browsing.",
+    "allPacks": "All packs",
+    "defaultPackFallback": "Default",
+    "viewLabel": "Default view",
+    "viewHelp": "How the collection page opens. Viewers can switch at any time.",
+    "gridSizeTitle": "Album grid",
+    "gridSizeHelp": "Pick N for an N×N grid: each page shows N×N image-only tiles. \"Default\" follows the \"All packs\" setting (3×3 when unset).",
+    "gridSizeInherit": "Default",
+    "messages": {
+      "saving": "Saving...",
+      "saved": "Saved"
+    },
+    "errors": {
+      "saveFailed": "Failed to save",
+      "unavailable": "This setting can't be saved right now (deployment in progress). Please try again later."
+    }
   },
   "tradeSettings": {
     "title": "Card Trading Settings",
@@ -694,7 +675,267 @@
     "errors": {
       "saveFailed": "Failed to save trade settings",
       "deployWindow": "Trade settings are not ready in the database yet. Please try again shortly."
-    }
+    },
+    "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, turn on both \"Show unowned cards to viewers\" and \"Reveal name, image, and description of unowned cards\" in \"Collection visibility\" just above. If they are not public, viewers can only trade cards they already own."
+  },
+  "trade": {
+    "collectionTradeButton": "Trade",
+    "backToCollection": "Back to collection",
+    "boardTitle": "{channelName} Trade Board",
+    "tabsLabel": "Trade type",
+    "tabInChannel": "In-channel",
+    "tabCrossChannel": "Cross-channel",
+    "createOfferButton": "Create offer",
+    "loginToCreate": "Log in to create an offer",
+    "myTradesLink": "My trades",
+    "filterLabel": "Filter",
+    "filterWantedCard": "Requested card (you give)",
+    "filterOfferedCard": "Offered card (you get)",
+    "filterAll": "All",
+    "offeredByLabel": "Offered by: {name}",
+    "unknownUser": "Unknown user",
+    "giveLabel": "You give",
+    "receiveLabel": "You get",
+    "directionIconLabel": "give/get",
+    "cardStreamerLabel": "{name}'s card",
+    "acceptButton": "Accept this trade",
+    "acceptButtonNotOwned": "You don't own this card",
+    "acceptButtonAllListed": "Not enough tradeable copies (listed or bid)",
+    "acceptButtonNotEnough": "Not enough copies",
+    "acceptButtonLoginRequired": "Log in to accept",
+    "autoSelectNotice": "{count, plural, one {* If you own several copies, your oldest copy is used automatically.} other {* Your # oldest copies are used automatically.}}",
+    "ownOfferBadge": "Your offer",
+    "ownOfferManageLink": "Cancel it from My trades",
+    "unrevealedNotice": "This channel doesn't reveal cards you don't own, so an offer is shown only if you own every unrevealed card in it (your own offers are always shown).",
+    "emptyStateMessage": "No offers yet. Be the first to create one!",
+    "emptyStateUnrevealed": "There are no offers you can see yet.",
+    "emptyStateFiltered": "No offers match the filter.",
+    "emptyStateCta": "Create offer",
+    "loading": "Loading...",
+    "loadError": "Could not load offers.",
+    "retryButton": "Reload",
+    "refreshFailedNotice": "Could not fetch the latest information. What is shown may be out of date.",
+    "tradeDisabledNotice": "Card trading is not enabled for this channel.",
+    "crossDisabledNotice": "This channel does not allow cross-channel trades.",
+    "listedNotice": "Your offer has been listed.",
+    "collectionDelayNotice": "It may take a moment for your collection to reflect this change.",
+    "pageNumber": "Page {page}",
+    "paginationLabel": "Pagination",
+    "confirmModalTitle": "Complete this trade?",
+    "confirmModalGiveLabel": "You give",
+    "confirmModalReceiveLabel": "You get",
+    "confirmModalWarning": "{count, plural, one {Your oldest copy of the card will be given.} other {Your # oldest copies of the card will be given.}} Trades cannot be undone.",
+    "confirmModalCancelButton": "Cancel",
+    "confirmModalSubmitButton": "Trade",
+    "confirmModalSubmitting": "Trading...",
+    "confirmModalSuccess": "Trade completed!",
+    "confirmModalReceivedLabel": "Card received",
+    "confirmModalCloseButton": "Close",
+    "errorTradeDisabled": "This streamer does not allow trading.",
+    "errorTradeOfferNotFound": "The offer could not be found.",
+    "errorTradeAlreadyCompletedOrInvalid": "This trade has already been completed (or is no longer valid).",
+    "errorTradeBusy": "The server is busy. Please try again shortly.",
+    "errorTradeCardNotOwned": "You have no card available to trade.",
+    "errorTradeSelfAccept": "You cannot accept your own offer.",
+    "errorTradeOfferLimit": "You have reached the listing limit (max 10 offers and auctions combined).",
+    "errorTradeOfferedCardInactive": "This card cannot be traded right now.",
+    "errorTradeWantedCardUnavailable": "This card cannot be requested.",
+    "errorTradeWantedCardNotWantable": "The streamer does not allow requesting this card in trades.",
+    "errorTradeOfferUnavailable": "This trade is not available right now.",
+    "errorTradeSameCard": "You cannot trade a card for the same card.",
+    "errorTradeCardAlreadyListed": "This card is already listed or used in a bid.",
+    "errorTradeAuctionUnavailable": "Auctions are not available yet. Please try again later.",
+    "errorTradeAuctionNotFound": "The auction could not be found.",
+    "errorTradeAuctionNotOpen": "This auction is no longer accepting bids or changes.",
+    "errorTradeAuctionStillBidding": "The auction is still open for bids. Complete it after it ends.",
+    "errorTradeAuctionExpired": "The selection period has ended, so this auction expired without a trade.",
+    "errorTradeAuctionHasBids": "An auction with bids cannot be cancelled.",
+    "errorTradeAuctionSelfBid": "You cannot bid on your own auction.",
+    "errorTradeAuctionBidNotFound": "The bid could not be found.",
+    "errorTradeAuctionBidNotActive": "This bid is no longer active.",
+    "errorTradeAuctionBidLocked": "This bid cannot be withdrawn while the seller is choosing a winner.",
+    "errorTradeAuctionBidLimit": "You have reached the active bid limit (max 10).",
+    "errorTradeAuctionBidInvalid": "This bid can no longer be completed. Please choose another bid.",
+    "errorTradeBidCardUnavailable": "This card cannot be used for a bid.",
+    "errorTradeBidCardNotWantable": "The streamer does not allow using this card as payment in trades.",
+    "errorTradeNotEnoughCards": "You do not have enough free copies for this bid (listed or bid copies cannot be used).",
+    "errorUnauthorized": "Login required. Please reload the page and log in again.",
+    "errorRateLimited": "Too many requests. Please try again shortly.",
+    "errorTradeQuantityMismatch": "The offer was listed for {stored, plural, one {# copy} other {# copies}} instead of the {requested, plural, one {# copy} other {# copies}} you chose. Please cancel it in My Trades.",
+    "errorGeneric": "Something went wrong. Please try again later.",
+    "errorNetwork": "Network error. Check your connection and try again.",
+    "deletedCardLabel": "Deleted card",
+    "createPageTitle": "Create an offer on {channelName}",
+    "createModeLabel": "Offer type",
+    "createStep1Title": "1. Choose the card to give",
+    "createStep1ListedBadge": "Listed",
+    "quantityBadge": "×{count}",
+    "createStep1ListedCount": "{count} listed",
+    "createStep1Empty": "You have no cards from this channel that can be traded.",
+    "createStep2Title": "2. Choose the card you want",
+    "createStep2QuantityLabel": "Number of copies you want",
+    "createStep2QuantityOption": "{count, plural, one {# copy} other {# copies}}",
+    "createStep2UnownedBadge": "Not owned",
+    "createStep2SameCard": "You cannot choose the same card you give.",
+    "createStep2Empty": "There are no cards you can request.",
+    "createStep2UnrevealedNotice": "This streamer does not reveal the names of cards you don't own, so you can only request cards you own.",
+    "createStep2SelectStreamer": "Choose the partner streamer",
+    "createStep2NoPartners": "No streamers are available for cross-channel trades. The partner streamer must allow cross-channel trades and you must own at least one of their cards.",
+    "createConfirmTitle": "3. Confirm",
+    "createConfirmSummary": "Give {offeredCard} ⇄ want {wantedCard}",
+    "createConfirmSummaryMultiple": "Give {offeredCard} ⇄ want {wantedCard} ×{count}",
+    "createConfirmPending": "Choose the card to give and the card you want.",
+    "createSubmitButton": "Create offer",
+    "createSubmitting": "Creating...",
+    "createLimitNotice": "You can have up to 10 open offers at a time.",
+    "createBackToBoard": "Back to board",
+    "myTradesTitle": "My trades",
+    "myTradesTabOpen": "Open",
+    "myTradesTabCompleted": "Completed",
+    "myTradesTabCancelled": "Cancelled",
+    "myTradesEmptyOpen": "You have no open offers.",
+    "myTradesEmptyCompleted": "You have no completed trades.",
+    "myTradesEmptyCancelled": "You have no cancelled offers.",
+    "myTradesGave": "Gave",
+    "myTradesReceived": "Received",
+    "myTradesGive": "Give",
+    "myTradesWant": "Want",
+    "myTradesPartner": "Partner: {name}",
+    "myTradesRoleOfferer": "Your offer",
+    "myTradesRoleAcceptor": "Offer you accepted",
+    "myTradesCreatedAt": "Listed: {date}",
+    "myTradesCompletedAt": "Completed: {date}",
+    "myTradesUpdatedAt": "Cancelled: {date}",
+    "myTradesUnavailableBadge": "No longer acceptable",
+    "myTradesUnavailableHelp": "A card in this offer was deleted, so nobody can accept it.",
+    "myTradesUnavailableHelpNotTradeable": "This offer can no longer be accepted: the channel's trade setting is off, the wanted card can no longer be requested, or a card is no longer available.",
+    "myTradesBoardLink": "View trade board",
+    "myTradesLoadError": "Could not load your trades.",
+    "cancelOfferButton": "Cancel",
+    "cancelOfferConfirm": "Cancel this offer?",
+    "cancelOfferModalWarning": "The card stays in your collection and the offer leaves the board.",
+    "cancelOfferModalDismissButton": "Keep offer",
+    "cancelOfferModalConfirmButton": "Cancel offer",
+    "cancelOfferSuccess": "Offer cancelled.",
+    "cancelOfferSubmitting": "Cancelling...",
+    "tabAuction": "Auctions",
+    "createAuctionButton": "Start an auction",
+    "auctionScopeLabel": "Auction scope",
+    "auctionScopeInChannel": "This channel's auctions",
+    "auctionScopeCrossChannel": "Other channels' auctions",
+    "auctionBoardHelp": "Bids are collected until the deadline, then the seller picks one bid to trade with. Cards you bid stay locked until the result.",
+    "auctionUnavailableNotice": "Auctions are not available yet. Please try again later.",
+    "auctionLoadError": "Could not load the auctions",
+    "auctionEmptyState": "No auctions are running",
+    "auctionEmptyStateCta": "Start an auction",
+    "auctionListedNotice": "Your auction has started",
+    "auctionPhaseBidding": "Taking bids",
+    "auctionPhaseSelecting": "Awaiting selection",
+    "auctionPhaseCompleted": "Completed",
+    "auctionPhaseExpired": "No deal",
+    "auctionPhaseCancelled": "Cancelled",
+    "auctionTimeLeftDaysHours": "{days, plural, one {# day} other {# days}} {hours, plural, one {# hour} other {# hours}} left",
+    "auctionTimeLeftHoursMinutes": "{hours, plural, one {# hour} other {# hours}} {minutes, plural, one {# minute} other {# minutes}} left",
+    "auctionTimeLeftMinutes": "{minutes, plural, one {# minute} other {# minutes}} left",
+    "auctionTimeLeftSoon": "Ending soon",
+    "auctionTimeLeftPassed": "Closed (refresh pending)",
+    "auctionBidCount": "{count, plural, =0 {No bids} one {# bid} other {# bids}}",
+    "auctionOfferedCardLabel": "Card up for auction",
+    "auctionOwnBadge": "Your auction",
+    "auctionRowMyBid": "Your bid: {card} ×{count} ({state})",
+    "auctionRowDetailLink": "Details & bid",
+    "auctionRowMyBidLink": "View or change your bid",
+    "auctionRowManageLink": "View bids",
+    "auctionBidStateActive": "Bidding",
+    "auctionBidStateSelecting": "Awaiting selection",
+    "auctionBidStateWon": "Won",
+    "auctionBidStateLost": "Not chosen",
+    "auctionBidStateReleased": "Released (no deal / cancelled)",
+    "auctionBidUnsettleableBadge": "Bid can't be completed",
+    "auctionDetailPageTitle": "Auction on {channelName}",
+    "auctionDetailTitle": "Auction details",
+    "auctionBackToBoard": "Back to auctions",
+    "auctionDetailLoadError": "Could not load the auction",
+    "auctionStatusLabel": "Status",
+    "auctionBidCountLabel": "Bids",
+    "auctionSellerLabel": "Seller",
+    "auctionEndsAtLabel": "Bidding deadline",
+    "auctionEndsAt": "Deadline: {date}",
+    "auctionSelectionDeadlineLabel": "Selection deadline",
+    "auctionSelectionDeadline": "Select by: {date}",
+    "auctionBidsTitle": "Bids",
+    "auctionBidsEmpty": "No bids yet",
+    "auctionBidderLabel": "Bidder: {name}",
+    "auctionSellerBiddingHelp": "After the bidding deadline, pick one bid to complete the trade. You have 72 hours after the deadline to choose.",
+    "auctionSellerSelectingHelp": "Pick one bid by {date}. If you don't, the auction ends with no deal and every card is released.",
+    "auctionSellerCompletedHelp": "This auction has been completed.",
+    "auctionSellerClosedHelp": "This auction has ended. The auctioned card and all bid cards have been released.",
+    "auctionSellerBidWon": "Chosen bid",
+    "auctionSellerBidLost": "Not chosen",
+    "auctionSellerUnsettleableHelp": "This bid can no longer be completed because a trade setting or a card changed. Please choose another bid.",
+    "auctionSettleButton": "Trade with this bid",
+    "auctionSettleSubmitting": "Completing...",
+    "auctionSettleConfirmTitle": "Complete the auction with this bid?",
+    "auctionSettleConfirmWarning": "Your auctioned card is exchanged for the cards of this bid. All other bids are released. This trade cannot be undone.",
+    "auctionSettleConfirmButton": "Complete",
+    "auctionSettleSuccess": "The auction has been completed",
+    "auctionCancelButton": "Cancel auction",
+    "auctionCancelSubmitting": "Cancelling...",
+    "auctionCancelConfirmTitle": "Cancel this auction?",
+    "auctionCancelConfirmWarning": "Your card is returned to you and the auction is removed from the list.",
+    "auctionCancelConfirmButton": "Cancel auction",
+    "auctionCancelSuccess": "The auction has been cancelled",
+    "auctionCancelHasBidsHelp": "An auction with bids cannot be cancelled. Pick a bid after the deadline.",
+    "auctionMyBidTitle": "Your bid",
+    "auctionMyBidUnsettleableHelp": "This bid can no longer be completed because a trade setting or a card changed. Withdraw it to get your cards back.",
+    "auctionWaitingForSeller": "Waiting for the seller to pick a bid (by {date})",
+    "auctionBiddingClosedNotice": "Bidding on this auction has closed",
+    "auctionLoginToBid": "Log in to bid",
+    "auctionBidFormTitle": "Place a bid",
+    "auctionBidChangeTitle": "Change your bid",
+    "auctionBidFormHelp": "Choose one kind of card and how many copies to bid. You can have one bid per auction and change or withdraw it before the deadline.",
+    "auctionBidCardsEmpty": "You don't have any cards you can bid with (only cards the streamer allows as payment can be used)",
+    "auctionBidSameCard": "You can't bid the same card that is up for auction",
+    "auctionBidSameCardBadge": "Same card",
+    "auctionBidUsableBadge": "{count, plural, =0 {None usable} one {# usable} other {# usable}}",
+    "auctionBidQuantityLabel": "Copies",
+    "auctionBidSummary": "Bid {count, plural, one {# copy} other {# copies}} of {card}",
+    "auctionBidPending": "Choose a card to bid",
+    "auctionBidLockNotice": "Cards you bid can't be used for other listings or bids until the auction ends or you withdraw.",
+    "auctionBidSubmit": "Place bid",
+    "auctionBidChangeSubmit": "Change bid",
+    "auctionBidSubmitting": "Sending...",
+    "auctionBidSuccess": "Your bid has been placed",
+    "auctionBidChangeSuccess": "Your bid has been changed",
+    "auctionWithdrawButton": "Withdraw bid",
+    "auctionWithdrawSubmitting": "Withdrawing...",
+    "auctionWithdrawConfirmTitle": "Withdraw this bid?",
+    "auctionWithdrawConfirmWarning": "The cards you bid are returned to you.",
+    "auctionWithdrawConfirmButton": "Withdraw",
+    "auctionWithdrawSuccess": "Your bid has been withdrawn",
+    "createKindLabel": "Listing type",
+    "createKindOffer": "Regular listing",
+    "createKindOfferHelp": "Name the card you want and trade instantly with whoever accepts",
+    "createKindAuction": "Auction",
+    "createKindAuctionHelp": "Collect bids until a deadline, then pick one bid to trade with",
+    "createAuctionStep1Title": "1. Choose the card to auction",
+    "createAuctionStep2Title": "2. Choose the deadline",
+    "createAuctionDuration24h": "24 hours",
+    "createAuctionDuration3d": "3 days",
+    "createAuctionDuration7d": "7 days",
+    "createAuctionRulesNotice": "Pick one bid within 72 hours after the deadline. An auction with bids cannot be cancelled. If nobody bids by the deadline, the auction ends and your card is returned.",
+    "createAuctionConfirmSummary": "Auction {offeredCard} with a {duration} deadline",
+    "createAuctionConfirmPending": "Choose the card and the deadline",
+    "createAuctionSubmitButton": "Start auction",
+    "myTradesTabAuction": "Auctions",
+    "myAuctionsRoleLabel": "Auctions to show",
+    "myAuctionsRoleSelling": "My auctions",
+    "myAuctionsRoleBidding": "My bids",
+    "myAuctionsEmptySelling": "You have no auctions",
+    "myAuctionsEmptyBidding": "You have no bids",
+    "myAuctionsLoadError": "Could not load your auctions",
+    "myAuctionsSettleLink": "Pick a bid to complete",
+    "myAuctionsDetailLink": "View details"
   },
   "channelPointSettings": {
     "title": "Card Redemption Settings",
@@ -723,7 +964,8 @@
       "reauthorizeFailed": "Re-authentication failed. Please try again later.",
       "channelPointsUnavailable": "Channel Points are not currently available on Twitch for this channel. Please check your monetization onboarding and Channel Points settings in the Twitch Creator Dashboard.",
       "temporarilyUnavailable": "Temporarily unable to check with Twitch. Please try again shortly.",
-      "checkStatus": "Please check the status"
+      "checkStatus": "Please check the status",
+      "saveSuccessPackPending": "Saved (part of the pack assignment is pending deployment)"
     },
     "form": {
       "selectReward": "Select the channel point redemption that triggers card draws",
@@ -798,7 +1040,8 @@
       "raidStatusDisable": "Off",
       "raidStatusEnabled": "Raid gacha window enabled for 30 minutes",
       "raidStatusDisabled": "Raid gacha window disabled",
-      "raidStatusFailed": "Failed to update raid gacha settings"
+      "raidStatusFailed": "Failed to update raid gacha settings",
+      "addSuccessPackPending": "Additional redemption added (part of the pack assignment is pending deployment)"
     },
     "collections": {
       "mainLabel": "Card pack for redemption",
@@ -807,7 +1050,7 @@
       "all": "All cards",
       "defaultOnly": "{name} (unclassified cards only)",
       "defaultOnlyName": "Default pack",
-      "help": "Limit eligible cards by the pack names registered in \"Pack Management\" under card management. Binding a pack with no drawable cards will fail on save.",
+      "help": "Limit eligible cards by the pack names registered in \"Pack Management\" under card management. If you select multiple packs, each draw picks from all of the selected packs combined. Binding a pack with no drawable cards will fail on save.",
       "missing": "{name} (removed from Pack Management; the current binding is kept)",
       "premiumLocked": "Card Pack (supporter plan feature)",
       "packHint": "Register pack names from \"Pack Management\" in card management"
@@ -964,12 +1207,8 @@
         "soundDesc": "Gacha sound effect",
         "announcement": "Chat alert",
         "announcementDesc": "Auto chat message",
-        "visibility": "Visibility",
-        "visibilityDesc": "Unowned card display",
         "liveDirectory": "Live directory",
         "liveDirectoryDesc": "Live directory listing and ranking identity",
-        "trade": "Card trading",
-        "tradeDesc": "Channel and cross-channel trading permissions",
         "share": "Share",
         "shareDesc": "Collection page URL"
       }
@@ -1258,6 +1497,10 @@
     "language": {
       "title": "Language",
       "description": "Select your preferred display language."
+    },
+    "collectionSharing": {
+      "title": "For streamers: collection visibility and trading",
+      "description": "Control what viewers can see on your channel collection page and whether they can trade cards with each other."
     }
   },
   "gachaHistoryPage": {
@@ -1381,7 +1624,8 @@
       "7d": "7 Days",
       "30d": "30 Days",
       "channelPoints": "Channel Points",
-      "byCard": "By Card"
+      "byCard": "By Card",
+      "comparison": "Compare Channels"
     },
     "totalDraws": "Total Draws",
     "draws": "draws",
@@ -1415,9 +1659,37 @@
       "noOwners": "No owners"
     },
     "raritySummary": "Rarity Summary",
+    "comparison": {
+      "anonymityNotice": "Channel names are never shown in the ranking (your name is not visible to other streamers either). Updated hourly.",
+      "updatedAt": "Updated: {time}",
+      "minutesAgo": "{minutes} min ago",
+      "hoursAgo": "{hours} h ago",
+      "loadError": "Failed to load the ranking.",
+      "retry": "Retry",
+      "preparing": "Statistics are being prepared. Please wait a moment.",
+      "summaryHeading": "Your standing",
+      "boardHeading": "Ranking",
+      "boardLabel": "{metric} ranking",
+      "rank": "Rank",
+      "you": "You",
+      "rankOf": "#{rank} / {count}",
+      "percentileTop": "Top {pct}%",
+      "noDataInPeriod": "No draws in this period yet",
+      "outOfPopulation": "Not ranked: there were no draws in the last 30 days",
+      "rankUnavailable": "Not ranked",
+      "insufficientData": "The ranking is hidden because fewer than 5 channels can be compared (it updates hourly).",
+      "valueDraws": "Draws",
+      "valueCardCount": "Registered cards",
+      "metrics": {
+        "drawsTotal": "Total gacha draws",
+        "drawsDaily": "Today",
+        "drawsWeekly": "Last 7 days",
+        "cardCount": "Registered cards"
+      }
+    },
     "fullPeriodStats": {
       "title": "About Full Period Stats",
-      "message": "Full period statistics require significant server resources for aggregation. We will decide whether to implement this feature once a monetization plan is in place."
+      "message": "Cumulative gacha draws are available in the \"Compare Channels\" tab (pre-aggregated and updated hourly). For other full-period statistics, aggregation requires significant server resources, so we will decide whether to implement them once a monetization plan is in place."
     }
   },
   "inquiriesPage": {
@@ -1626,6 +1898,284 @@
       "description": "See the usage guide for details on creating cards and setting them up on your stream."
     }
   },
+  "tradeGuidePage": {
+    "title": "How to Use Card Trading",
+    "metaDescription": "A guide to TwiCa card trading: how to accept a listing, how to list the card you want, how auctions work, and the streamer settings.",
+    "entryLink": "How trading works",
+    "lead": "You can trade the cards you own with other viewers.",
+    "streamerLink": "Streamers need to set up trading first",
+    "choose": {
+      "title": "Which one should I use?",
+      "accept": {
+        "title": "Accept a listing",
+        "description": "Pick a listing someone else posted and trade on the spot. This is the easiest way."
+      },
+      "offer": {
+        "title": "List the card you want",
+        "description": "Say \"I'll give this card, I want that one.\" The trade happens as soon as someone accepts."
+      },
+      "auction": {
+        "title": "Start an auction",
+        "description": "Put up a card and collect bids. After the deadline, you pick one bid and trade with it."
+      }
+    },
+    "start": {
+      "title": "Before you start",
+      "where": "Trading is available on channels where the streamer has turned it on. Open it with the \"Trade\" button on the channel's collection page.",
+      "tabsLabel": "The trade board",
+      "termsLabel": "Words used in this guide",
+      "terms": {
+        "offer": {
+          "term": "List",
+          "description": "Put your card up for trade."
+        },
+        "accept": {
+          "term": "Accept",
+          "description": "Answer someone's listing and trade."
+        },
+        "bid": {
+          "term": "Bid",
+          "description": "Offer a card of yours in an auction."
+        }
+      }
+    },
+    "accept": {
+      "title": "Accept a listing and trade",
+      "example": {
+        "title": "Example",
+        "give": "You give",
+        "get": "You get",
+        "giveCard": "Slime",
+        "getCard": "Dragon",
+        "arrowLabel": "Trade",
+        "caption": "Say the board has a listing \"Dragon ×{get} ⇄ Slime ×{give}\". If you own Slime ×{give}, just accept it: you give Slime ×{give} and get Dragon ×{get}."
+      },
+      "steps": {
+        "title": "Steps",
+        "find": {
+          "title": "Find a listing on the board",
+          "description": "The \"In-channel\" tab lists trades between cards of this channel. The \"Cross-channel\" tab lists trades with cards of other channels."
+        },
+        "accept": {
+          "title": "Press \"Accept this trade\"",
+          "description": "The cards you give and the cards you get appear in a confirmation window."
+        },
+        "confirm": {
+          "title": "Press \"Trade\"",
+          "description": "The trade is completed on the spot and cannot be undone."
+        }
+      }
+    },
+    "offer": {
+      "title": "List the card you want (regular listing)",
+      "example": {
+        "title": "Example",
+        "give": "Card to give",
+        "want": "Card you want",
+        "giveCard": "Dragon",
+        "wantCard": "Slime",
+        "arrowLabel": "Trade",
+        "caption": "A listing that says \"I give Dragon ×{give} and want Slime ×{want}.\" When someone accepts, you give Dragon ×{give} and get Slime ×{want}."
+      },
+      "steps": {
+        "title": "Steps",
+        "card": {
+          "title": "Choose the card to give",
+          "description": "Press \"Create offer +\", then choose one of your cards in \"1. Choose the card to give\"."
+        },
+        "want": {
+          "title": "Choose the card you want",
+          "description": "In \"2. Choose the card you want\", pick a card and set \"Number of copies you want\" (1 to {max})."
+        },
+        "confirm": {
+          "title": "Check and list it",
+          "description": "Review \"3. Confirm\" and press \"Create offer\". The trade happens automatically when someone accepts; check the result in \"My trades\"."
+        }
+      },
+      "cancel": "Before it is accepted, you can cancel it with \"Cancel\" under \"Open\" in \"My trades\". The card stays with you.",
+      "rules": {
+        "summary": "Details",
+        "limit": "You can have up to {max} listings at a time, regular listings and auctions combined. A slot frees up when one is completed or cancelled, and also when an auction ends without a trade.",
+        "locked": "A card in a listing cannot be used for another listing or a bid. It is free to use again when the listing ends or is cancelled.",
+        "crossTitle": "To trade with cards of other channels",
+        "inChannelCaption": "Cards of this one channel",
+        "crossCaption": "Cards of another channel",
+        "streamerA": "Streamer A",
+        "streamerB": "Streamer B",
+        "sideA": "You give a card of the channel you are viewing",
+        "sideB": "You get a card of the streamer you pick in \"Choose the partner streamer\"",
+        "condition": "Works only when both streamers allow cross-channel trading"
+      }
+    },
+    "auction": {
+      "title": "Start an auction to find a trade partner",
+      "durationSeparator": " / ",
+      "timeline": {
+        "title": "Example: how an auction runs",
+        "cards": {
+          "slime": "Slime",
+          "golem": "Golem",
+          "pixie": "Pixie"
+        },
+        "bidding": {
+          "title": "List Dragon ×1 for \"{duration}\"",
+          "bidsLabel": "Bids that came in"
+        },
+        "deadline": "Deadline",
+        "selecting": {
+          "title": "The seller picks \"{bid}\""
+        },
+        "maxHours": "Within {hours} hours of the deadline",
+        "completed": "Dragon ×1 is traded for \"{bid}\". The cards of the bids not picked are free to use again.",
+        "expired": "If the seller picks nothing within {hours} hours, or there are no bids, it ends with no trade.",
+        "caption": "Bids come in until the deadline. After it, the seller picks one bid and the trade happens."
+      },
+      "seller": {
+        "title": "If you are the seller",
+        "create": {
+          "title": "List the card",
+          "description": "Press \"Start an auction +\" in the \"Auctions\" tab, then choose one card and a duration ({durations})."
+        },
+        "wait": {
+          "title": "Wait for the deadline",
+          "description": "Bids come in. Once there is even one bid, you can no longer cancel the auction."
+        },
+        "select": {
+          "title": "Pick one bid",
+          "description": "Within {hours} hours of the deadline, open \"Pick a bid to complete\" in the \"Auctions\" tab of \"My trades\", choose a bid, and press \"Trade with this bid\" then \"Complete\"."
+        },
+        "note": "If you pick nothing within {hours} hours, it ends with no deal (with no bids, it ends at the deadline). The cards of the bids you did not pick are free to use again."
+      },
+      "bidder": {
+        "title": "If you are bidding",
+        "bid": {
+          "title": "Place a bid",
+          "description": "Open \"Details & bid\" on the auction and use \"Place a bid\" to choose one kind of card and how many (1 to {max})."
+        },
+        "change": {
+          "title": "Change or withdraw",
+          "description": "Until the deadline, you can use \"Change your bid\" or \"Withdraw bid\"."
+        },
+        "wait": {
+          "title": "Wait for the seller to pick",
+          "description": "If your bid is picked, the trade happens. If not, your cards are free to use again. You cannot withdraw during this time (a bid that can no longer be completed can be withdrawn)."
+        }
+      },
+      "rules": {
+        "summary": "Details",
+        "activeBids": "You can have up to {max} active bids at a time.",
+        "privacy": "Only the seller and the bidder can see what a bid contains (cards, quantity, bidder).",
+        "bidCardVisible": "A card used in a bid must be visible to the seller as well as to the bidder. If the streamer keeps unowned cards private, the card can only be used in a bid when the seller owns it; otherwise \"This card cannot be used for a bid\" is shown.",
+        "crossBid": "You can also bid on \"Other channels' auctions\" (when both channels allow cross-channel trading).",
+        "statusTitle": "What the status labels mean",
+        "status": {
+          "bidding": "Bids are being accepted.",
+          "selecting": "The deadline has passed and the seller is choosing a bid.",
+          "completed": "The seller picked a bid and the trade is done.",
+          "expired": "Ended without a trade (no bid was picked, or there were no bids).",
+          "cancelled": "The seller cancelled it.",
+          "unsettleable": "A trade setting or a card changed, so this bid can't be completed. The seller picks another bid; the bidder can withdraw it."
+        }
+      }
+    },
+    "faq": {
+      "title": "When something goes wrong",
+      "reasonLabel": "Why",
+      "actionLabel": "Fix",
+      "disabled": {
+        "question": "\"This streamer does not allow trading\" is shown",
+        "reason": "The streamer of that channel (for a cross-channel trade, the other streamer too) has turned trading off. For a cross-channel trade, it is also shown when either streamer has turned cross-channel trading off.",
+        "action": "Wait until they turn trading on (for a cross-channel trade, cross-channel trading too)."
+      },
+      "cardInactive": {
+        "question": "\"This card cannot be traded right now\" is shown",
+        "reason": "The card has been deactivated.",
+        "action": "Choose another card. If it was deactivated after you listed it, \"My trades\" shows \"No longer acceptable\": cancel that listing."
+      },
+      "alreadyDone": {
+        "question": "\"This trade has already been completed (or is no longer valid)\" is shown",
+        "reason": "The listing is completed or no longer valid: someone else accepted it first, the lister cancelled it, the lister gave up the card, or a card used in the listing was deleted.",
+        "action": "Reload the board and accept another listing."
+      },
+      "notEnough": {
+        "question": "The accept button says \"You don't own this card\" or \"Not enough copies\"",
+        "reason": "\"You don't own this card\" means you have none of the card to give. \"Not enough copies\" means you own fewer copies than the listing asks for (the count includes copies in a listing or a bid).",
+        "action": "Collect the missing copies."
+      },
+      "allListed": {
+        "question": "The accept button says \"Not enough tradeable copies (listed or bid)\"",
+        "reason": "You own enough copies of the card to give, but not enough once the copies in a listing or a bid are excluded.",
+        "action": "Cancel a listing or bid, or wait for its result so the cards are free to use again."
+      },
+      "limitReached": {
+        "question": "\"You have reached the listing limit\" or \"You have reached the active bid limit\" is shown",
+        "reason": "You can have up to {maxListings} listings (regular listings and auctions combined) and {maxBids} active bids.",
+        "action": "Wait until a slot frees up because a listing is completed or cancelled, or a bid is withdrawn."
+      },
+      "alreadyListed": {
+        "question": "\"This card is already listed or used in a bid\" is shown",
+        "reason": "One copy of a card cannot be used in a listing, an auction and a bid at the same time.",
+        "action": "The listing form automatically uses a free copy if you own several, and a card with no free copy cannot be selected. If another listing or bid took the copy first, check \"My trades\" and wait until the card is free to use again."
+      },
+      "noPartner": {
+        "question": "\"No streamers are available for cross-channel trades\" is shown",
+        "reason": "The channel of the board and the partner streamer must both allow cross-channel trading, and you must own a card of that streamer.",
+        "action": "Use the \"In-channel\" tab until there is a streamer that meets this."
+      },
+      "notWantable": {
+        "question": "\"The streamer does not allow requesting this card in trades\" is shown",
+        "reason": "The streamer has made this card unavailable as a card you want (it cannot be used for an auction bid either; for a bid, \"The streamer does not allow using this card as payment in trades\" is shown).",
+        "action": "Choose another card, or put this one on the giving side."
+      },
+      "bidUnsettleable": {
+        "question": "A bid shows \"Bid can't be completed\"",
+        "reason": "After the bid was placed, the streamer's trade setting changed, the card was deactivated, or the bidder gave up the card.",
+        "action": "The seller picks another bid. The bidder withdraws it to use the cards again."
+      },
+      "selectionExpired": {
+        "question": "\"The selection period has ended, so this auction expired without a trade\" is shown",
+        "reason": "The seller did not pick a bid within {hours} hours of the bidding deadline.",
+        "action": "Nothing was traded and every card is free to use again. The seller can list again."
+      }
+    },
+    "streamer": {
+      "title": "For streamers",
+      "lead": "The rest of this page is for the streamer of the channel. Viewers can stop reading here.",
+      "whereLabel": "Where to find it",
+      "enable": {
+        "title": "Turn trading on",
+        "description": "Turn on \"Allow viewer-to-viewer card trading\". To also allow trades with other channels, turn on \"Allow cross-channel trading\" too (the other channel must allow it as well).",
+        "mockOn": "When trading is ON",
+        "mockOff": "When trading is OFF",
+        "stateOn": "ON",
+        "stateOff": "OFF",
+        "off": "When it is OFF, current listings disappear from the board and cannot be accepted. Regular listings are not deleted and come back when you turn it on again. Auctions cannot be completed either, but their deadline and selection period keep running while it is OFF. An auction whose time has run out stays expired and does not come back when you turn it on again."
+      },
+      "wantable": {
+        "title": "Keep a card from being picked as a card viewers want",
+        "description": "On the card's edit screen, uncheck \"Can be requested in trades\". (\"Requested\" means a viewer picks the card as a card they want.)",
+        "checked": "Can be requested (default)",
+        "unchecked": "Cannot be requested",
+        "effectsTitle": "When unchecked",
+        "effect1": "Existing listings that want this card disappear from the board (they come back when you check it again).",
+        "effect2": "Viewers can still give this card in a trade, but it can no longer be used for an auction bid."
+      },
+      "visibility": {
+        "title": "If you keep unowned cards hidden",
+        "description": "Unless both \"Show unowned cards to viewers\" and \"Reveal name, image, and description of unowned cards\" are on, viewers can only trade cards they own.",
+        "tableLabel": "What viewers see in trading, by visibility setting",
+        "aspect": "A viewer sees",
+        "public": "Both on (revealed)",
+        "hidden": "Either off (hidden, default)",
+        "listings": "Listings and auctions that include a card the viewer does not own",
+        "listingsPublic": "Shown on the board",
+        "listingsHidden": "Not shown on that viewer's board",
+        "wanted": "Picking an unowned card as the card you want",
+        "wantedPublic": "Possible",
+        "wantedHidden": "Not possible (owned cards only)"
+      }
+    }
+  },
   "livePage": {
     "metadata": {
       "title": "TwiCa channels and rankings",
@@ -1747,5 +2297,23 @@
     "orphan": "Setting for a removed pack",
     "defaultPack": "Default",
     "activateBlocked": "This card is configured as the completion reward for “{packName}”. Remove the reward setting before enabling random draws."
+  },
+  "duplicateTierSettings": {
+    "title": "Duplicate card badge settings",
+    "description": "When a viewer owns several copies of the same card, a badge and frame appear on the card and become more prominent as the number of copies grows. For each rarity, set how many copies are needed to reach the 1st, 2nd and 3rd tier. Leave a tier blank to not use it.",
+    "thresholdLabel": "Tier {tier}",
+    "thresholdUnused": "Unused",
+    "thresholdHelp": "Enter a whole number of 2 or more, and use a larger number for each higher tier. 1 cannot be used because a single copy is not a duplicate. Your input is saved when you click outside the field or press Enter. If you leave a middle tier blank, the later tiers move up. If every field is blank, no badge is shown.",
+    "resetButton": "Reset all to unset",
+    "messages": {
+      "saving": "Saving...",
+      "saved": "Saved",
+      "reset": "Reset to unset"
+    },
+    "errors": {
+      "saveFailed": "Failed to save",
+      "unavailable": "This setting cannot be saved right now (pending rollout). Please try again later.",
+      "invalid": "Enter whole numbers of 2 or more, in ascending order."
+    }
   }
 }

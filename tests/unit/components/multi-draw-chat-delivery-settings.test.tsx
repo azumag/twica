@@ -23,7 +23,6 @@ function renderSettings() {
           currentEnabled={false}
           currentTemplate={null}
           currentMultiTemplate={null}
-          currentMultiShowCards
           botAccount={null}
         />
       </ChatReauthorizationProvider>

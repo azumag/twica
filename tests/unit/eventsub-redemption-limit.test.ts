@@ -41,9 +41,9 @@ vi.mock('@/lib/overlay-realtime/publisher', () => ({
 }))
 
 vi.mock('@/lib/twitch/chat-service', () => ({
-  TwitchChatService: vi.fn().mockImplementation(() => ({
+  TwitchChatService: vi.fn().mockImplementation(function() { return ({
     sendChatMessage: mocks.sendChatMessage,
-  })),
+  }) }),
   DEFAULT_CHAT_TEMPLATE: '',
 }))
 
@@ -167,9 +167,13 @@ describe('EventSub redemption: card issuance limit error handling', () => {
     const { reportError } = await import('@/lib/sentry/error-handler')
     const mockReport = vi.mocked(reportError)
     const mockExecute = vi.fn().mockResolvedValue({ success: false, error: CARD_ISSUANCE_MESSAGES.soldOut })
-    vi.mocked(GachaService).mockImplementation(() => ({
-      executeGachaForEventSub: mockExecute,
-    }) as unknown as InstanceType<typeof GachaService>)
+    // Vitest 4 は `new` されるモックにコンストラクタ互換の実装を要求する。
+    // `this` へ代入する形なら `(this: T) => void` を満たし、型キャストも不要。
+    vi.mocked(GachaService).mockImplementation(function (
+      this: InstanceType<typeof GachaService>,
+    ) {
+      this.executeGachaForEventSub = mockExecute
+    })
 
     // route.ts は import 時に GachaService を読み込むため、モック確定後に動的 import する
     const { POST } = await import('@/app/api/twitch/eventsub/route')
@@ -185,12 +189,14 @@ describe('EventSub redemption: card issuance limit error handling', () => {
     const { GachaService } = await import('@/lib/services/gacha')
     const { reportError } = await import('@/lib/sentry/error-handler')
     const mockReport = vi.mocked(reportError)
-    vi.mocked(GachaService).mockImplementation(() => ({
-      executeGachaForEventSub: vi.fn().mockResolvedValue({
+    vi.mocked(GachaService).mockImplementation(function (
+      this: InstanceType<typeof GachaService>,
+    ) {
+      this.executeGachaForEventSub = vi.fn().mockResolvedValue({
         success: false,
         error: 'このカードは発行可能枚数に達しています',
-      }),
-    }) as unknown as InstanceType<typeof GachaService>)
+      })
+    })
 
     const { POST } = await import('@/app/api/twitch/eventsub/route')
     const req = await buildRedemptionRequest('msg-limit-2')
@@ -215,12 +221,14 @@ describe('EventSub redemption: card issuance limit error handling', () => {
     const { GachaService } = await import('@/lib/services/gacha')
     const { reportError } = await import('@/lib/sentry/error-handler')
     const mockReport = vi.mocked(reportError)
-    vi.mocked(GachaService).mockImplementation(() => ({
-      executeGachaForEventSub: vi.fn().mockResolvedValue({
+    vi.mocked(GachaService).mockImplementation(function (
+      this: InstanceType<typeof GachaService>,
+    ) {
+      this.executeGachaForEventSub = vi.fn().mockResolvedValue({
         success: false,
         error: CARD_ISSUANCE_MESSAGES.limitUnavailable,
-      }),
-    }) as unknown as InstanceType<typeof GachaService>)
+      })
+    })
     mocks.streamerSettings = { chat_announcement_enabled: true }
     mocks.cancelRedemption.mockResolvedValue({ success: true })
 
@@ -246,12 +254,14 @@ describe('EventSub redemption: card issuance limit error handling', () => {
     const { GachaService } = await import('@/lib/services/gacha')
     const { reportError } = await import('@/lib/sentry/error-handler')
     const mockReport = vi.mocked(reportError)
-    vi.mocked(GachaService).mockImplementation(() => ({
-      executeGachaForEventSub: vi.fn().mockResolvedValue({
+    vi.mocked(GachaService).mockImplementation(function (
+      this: InstanceType<typeof GachaService>,
+    ) {
+      this.executeGachaForEventSub = vi.fn().mockResolvedValue({
         success: false,
         error: 'Database error: connection refused',
-      }),
-    }) as unknown as InstanceType<typeof GachaService>)
+      })
+    })
 
     const { POST } = await import('@/app/api/twitch/eventsub/route')
     const req = await buildRedemptionRequest('msg-other-1')
@@ -269,9 +279,14 @@ describe('EventSub redemption: sold-out chat notification + channel points refun
     // エラー文字列としては返らないため、実態に合わせて修正した。
     const { CARD_ISSUANCE_MESSAGES } = await import('@/lib/card-issuance')
     const { GachaService } = await import('@/lib/services/gacha')
-    vi.mocked(GachaService).mockImplementation(() => ({
-      executeGachaForEventSub: vi.fn().mockResolvedValue({ success: false, error: CARD_ISSUANCE_MESSAGES.soldOut }),
-    }) as unknown as InstanceType<typeof GachaService>)
+    vi.mocked(GachaService).mockImplementation(function (
+      this: InstanceType<typeof GachaService>,
+    ) {
+      this.executeGachaForEventSub = vi.fn().mockResolvedValue({
+        success: false,
+        error: CARD_ISSUANCE_MESSAGES.soldOut,
+      })
+    })
   }
 
   it('返還成功時: cancelRedemption が正しい引数で呼ばれ、返還済み文言でチャット通知される', async () => {

@@ -24,7 +24,6 @@ import type { Rarity } from "@/types/database";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { cards as cardsTable, streamers as streamersTable } from "@/lib/db/schema";
-import { CARDS_COLUMNS_WITHOUT_PADDING_COLOR, isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
 import type { ApiRateLimitResponse } from "@/types/api";
 
 
@@ -82,44 +81,37 @@ async function selectStreamerForBatchCreatePg(
  * #834: 以前は無指定 `.returning()` が本番未デプロイの8列(card_number/hp/atk/
  * def/spd/skill_*)を要求して失敗する前提で、列を絞った明示 RETURNING へ切り替える
  * 再試行を持っていたが、PlanetScale 本番の実測で8列とも実在することを確認した
- * ため撤去した(card-padding-color-errors.ts 参照)。
+ * ため撤去した(#834 撤去時に一時新設した CARDS_COLUMNS_WITHOUT_PADDING_COLOR
+ * も #954 で撤去。ファイル自体削除済み)。
  *
- * ただし image_padding_color（#899、本Issueとは独立した別デプロイ窓）は
- * cardsToInsert に一切含まれない列(このエンドポイントはbatchCardInputに
- * imagePaddingColorを持たない)にもかかわらず、無指定 `.returning()` は
- * VALUES の内容と無関係に schema.ts の全列を要求するため、この列が未適用の
- * 環境では一括作成が全滅しうる。検知したら CARDS_COLUMNS_WITHOUT_PADDING_COLOR
- * へ切り替えて一度だけ再試行する（cards/route.ts の insertCardPg と同じ方針）。
+ * #954: image_padding_color（#899）用の「42703 検知時に
+ * CARDS_COLUMNS_WITHOUT_PADDING_COLOR へ切り替えて再試行」フォールバックも
+ * 撤去した。根拠: (1) PlanetScale 本番・preview の information_schema.columns
+ * 実測で image_padding_color の実在を確認（Issue #954。#899 当時は書き込み側
+ * のみ保護された非対称な状態だったが、読み取り側が本番で正常動作している実績が
+ * 列実在の傍証となっていた）、(2) Drizzle の INSERT は values() に含めない列も
+ * `default` として schema.ts の全列を列挙するため、この列を含まない一括作成
+ * （cardsToInsert に imagePaddingColor は存在しない）であっても、列が真に
+ * 欠落する環境では無指定 RETURNING どころか INSERT の列リスト自体が失敗し、
+ * 明示列 RETURNING への切替でも救済できていなかった。
+ * したがって無指定 `.returning()` の単一経路へ戻す。
  */
 async function insertCardsBatchPg(
   cardsToInsert: Record<string, unknown>[]
 ): Promise<{ createdCards: Record<string, unknown>[] | null; error: unknown }> {
-  async function attemptInsert(
-    useColumnsWithoutPaddingColor = false
-  ): Promise<{ createdCards: Record<string, unknown>[] | null; error: unknown }> {
-    try {
-      const rows = await withDbRetry(
-        async () => {
-          const { db } = await getDb();
-          const query = db.insert(cardsTable).values(cardsToInsert as (typeof cardsTable.$inferInsert)[]);
-          return useColumnsWithoutPaddingColor
-            ? query.returning(CARDS_COLUMNS_WITHOUT_PADDING_COLOR)
-            : query.returning();
-        },
-        "Cards Batch API: bulk insert cards"
-        // ON CONFLICT の無い INSERT は再実行で二重作成になりうるため非冪等(既定 = リトライなし)
-      );
-      return { createdCards: rows, error: null };
-    } catch (error) {
-      return { createdCards: null, error };
-    }
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db.insert(cardsTable).values(cardsToInsert as (typeof cardsTable.$inferInsert)[]).returning();
+      },
+      "Cards Batch API: bulk insert cards"
+      // ON CONFLICT の無い INSERT は再実行で二重作成になりうるため非冪等(既定 = リトライなし)
+    );
+    return { createdCards: rows, error: null };
+  } catch (error) {
+    return { createdCards: null, error };
   }
-
-  let { createdCards, error } = await attemptInsert();
-  if (error && isMissingCardPaddingColorError(error)) {
-    ({ createdCards, error } = await attemptInsert(true));
-  }
-  return { createdCards, error };
 }
 
 /**

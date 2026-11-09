@@ -267,6 +267,14 @@ export const ERROR_MESSAGES = {
   // the `rename_card_pack` RPC is not deployed yet (deploy-window fallback,
   // mirrors the cardPackNamesSkippedDeployWindow pattern used elsewhere).
   PACK_RENAME_NOT_READY: 'Pack renaming is not available yet. Please try again shortly.',
+  // Issue #741: POST /api/internal/stats/refresh returns this when the
+  // aggregation migration is not deployed yet (deploy-window fallback,
+  // mirrors PACK_RENAME_NOT_READY).
+  STATS_REFRESH_NOT_READY: 'Stats aggregation is not available yet. Please try again shortly.',
+  // Issue #742: GET /api/streamer-ranking returns this when the read-function
+  // migration is not deployed yet (deploy-window fallback, mirrors
+  // STATS_REFRESH_NOT_READY). snapshot が空の通常ケースは 200 + computedAt:null。
+  STREAMER_RANKING_NOT_READY: 'Streamer ranking is not available yet. Please try again shortly.',
   CONTENT_TYPE_MISSING: 'Content-Type header is required',
   CONTENT_TYPE_INVALID: 'Invalid Content-Type. Expected {expected}, received {received}',
   CARD_NAME_REQUIRED: 'Card name is required',
@@ -301,6 +309,25 @@ export const ERROR_MESSAGES = {
   TRADE_BUSY: 'Trade processing is busy. Please try again',
   TRADE_SAME_CARD: 'Offered and wanted cards must be different',
   TRADE_WANTED_CARD_UNAVAILABLE: 'The requested card is not available for trading',
+  TRADE_WANTED_CARD_NOT_WANTABLE: 'The streamer does not allow requesting this card in trades',
+  TRADE_OFFERED_CARD_INACTIVE: 'This card is no longer available for trading',
+  TRADE_OFFER_UNAVAILABLE: 'This trade offer is not currently available',
+  // Trade auctions (Issue #1791)
+  TRADE_AUCTION_UNAVAILABLE: 'Trade auctions are not available yet',
+  TRADE_AUCTION_NOT_FOUND: 'Trade auction not found',
+  TRADE_AUCTION_NOT_OPEN: 'This auction is no longer accepting bids or changes',
+  TRADE_AUCTION_STILL_BIDDING: 'The auction has not ended yet',
+  TRADE_AUCTION_EXPIRED: 'The selection period of this auction has ended',
+  TRADE_AUCTION_HAS_BIDS: 'An auction with active bids cannot be cancelled',
+  TRADE_AUCTION_SELF_BID: 'You cannot bid on your own auction',
+  TRADE_AUCTION_BID_NOT_FOUND: 'Bid not found',
+  TRADE_AUCTION_BID_NOT_ACTIVE: 'This bid is no longer active',
+  TRADE_AUCTION_BID_LOCKED: 'This bid cannot be withdrawn while the seller is choosing a winner',
+  TRADE_AUCTION_BID_LIMIT: 'You have reached the maximum number of active bids',
+  TRADE_AUCTION_BID_INVALID: 'This bid can no longer be completed',
+  TRADE_BID_CARD_UNAVAILABLE: 'This card cannot be used for a bid',
+  TRADE_BID_CARD_NOT_WANTABLE: 'The streamer does not allow using this card in trades',
+  TRADE_NOT_ENOUGH_CARDS: 'You do not have enough free copies of this card',
   UNEXPECTED_ERROR: 'Unexpected error',
 
   // File upload errors
@@ -353,6 +380,10 @@ export const ERROR_MESSAGES = {
   // EventSub errors
   INVALID_SIGNATURE: 'Invalid signature',
   UNKNOWN_MESSAGE_TYPE: 'Unknown message type',
+  // Issue #1895: EventSub webhook の本文サイズ上限超過（413）用。
+  // 上限超過は未署名入力でも起こり得る恒久エラーではないため、errors テーブル
+  // INSERT → 自動 Issue の経路に流さず、この 4xx 応答で完結させる。
+  PAYLOAD_TOO_LARGE: 'Payload too large',
 
   // Twitch API errors
 
@@ -446,9 +477,12 @@ export const VOTE_CAMPAIGN_DISMISS_KEY = 'vote-campaign-dismissed'
  *
  * カードトレードはDB列(streamers.trade_enabled / cross_channel_trade_enabled)、
  * 設定API(/api/streamer/settings)、トレードボードと成立処理のゲート判定まで内部実装済みだが、
- * 一般公開の準備が整うまでユーザーが目にする入口を隠す。false の間は次の2箇所が非表示になる:
- *   - 配信者設定 /dashboard/settings の「カードトレード」セクション(ON/OFFトグル)
+ * 一般公開の準備が整うまでユーザーが目にする入口を隠す。false の間は次の入口が非表示になる:
+ *   - 配信者設定 /dashboard/settings の「カードトレード」セクション(ON/OFFトグル。
+ *     SettingsLayout の trade セクションフィルタ)
+ *   - /dashboard/account の「トレード設定」(preview ではトレード設定の移動先。TradeSettings)
  *   - /collection/[streamerId] の「トレード」ボタン
+ *   - /dashboard/collection の「マイトレード」リンク
  *
  * 内部実装は削除していない。設定API・DB列・ゲート判定・TradeSettings コンポーネント・翻訳は
  * すべて維持され、この定数を true に戻すだけで入口が同時に復帰する(設定値の再保存は不要)。
@@ -479,4 +513,20 @@ export const STORAGE_LIMIT_MESSAGES = {
   USER_LIMIT_REACHED: '画像のアップロード上限は現在一アカウントにつき10MBです。上限を超える場合は、既存の画像を削除してから再度お試しください。',
   // GLOBAL_LIMIT_REACHED も同じく外部・未知クライアント向けの互換文言として維持する。
   GLOBAL_LIMIT_REACHED: '画像のアップロード上限に達しました。',
+} as const
+
+/**
+ * 効果音アップロードの 507 用フォールバック文言 (#1907)。
+ *
+ * 画像と効果音は同じストレージ容量を共有するが、利用者が次に取るべき行動
+ * （画像を消す / 効果音を消す）が異なる。従来は STORAGE_LIMIT_MESSAGES の
+ * 「画像のアップロード上限…」をそのまま返していたため、公式UIの i18n だけでなく
+ * 外部・未知クライアント向けの互換文言も効果音向けに分離する。
+ * 公式UIは code (USER_LIMIT_REACHED / GLOBAL_LIMIT_REACHED) から
+ * messages/*.json の gachaSoundSettings.errors.* を解決する。
+ */
+export const SOUND_STORAGE_LIMIT_MESSAGES = {
+  USER_LIMIT_REACHED:
+    '効果音のアップロード上限に達しました。不要な効果音を削除してから再度お試しください。',
+  GLOBAL_LIMIT_REACHED: '効果音のアップロード上限に達しました。',
 } as const

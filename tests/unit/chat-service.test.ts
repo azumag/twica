@@ -1040,7 +1040,7 @@ describe('TwitchChatService', () => {
       expect(reportError).toHaveBeenCalledTimes(1);
       expect(reportError).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: expect.stringContaining('configured BOT credential requires reauthorization'),
+          message: expect.stringContaining('credential_unavailable'),
         }),
         expect.objectContaining({
           context: 'chat-service:sendChatMessage:degraded-success',

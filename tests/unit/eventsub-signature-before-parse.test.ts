@@ -116,12 +116,17 @@ describe('EventSub route: 署名検証 → JSON パースの順序', () => {
     delete process.env.TWITCH_EVENTSUB_SECRET
   })
 
-  it('署名が無い/不正で JSON も壊れているリクエストは 403 で、handleApiError(errors 記録)を呼ばない', async () => {
+  it('署名が無い/不正で JSON も壊れているリクエストは4xxで、handleApiError(errors 記録)を呼ばない', async () => {
     const { POST } = await import('@/app/api/twitch/eventsub/route')
 
-    for (const signature of ['invalid', 'missing'] as const) {
+    // #1895: 署名ヘッダの欠落はリクエスト構造の不正として 400、形式不正は署名不正として 403。
+    const cases = [
+      ['invalid', 403],
+      ['missing', 400],
+    ] as const
+    for (const [signature, status] of cases) {
       const response = await POST(await makeRequest('{"not json', 'notification', { signature }))
-      expect(response.status).toBe(403)
+      expect(response.status).toBe(status)
     }
     expect(mocks.handleApiError).not.toHaveBeenCalled()
     expect(mocks.reportError).not.toHaveBeenCalled()

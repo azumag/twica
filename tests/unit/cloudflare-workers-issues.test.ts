@@ -81,6 +81,44 @@ function pushPaths(workflow: string): string[] {
   return sequenceValues(blockBelow(lines, pathsLine));
 }
 
+// actions/setup-node を使う各 step のブロック（`- ` で始まる step から次の step/親ブロックまで）
+// を切り出す。file-level の toContain では複数 step のうち 1 つだけ
+// node-version-file を欠くケースを見逃すため、step 単位で検査するために使う。
+function setupNodeSteps(text: string): string[] {
+  const lines = text.split("\n");
+  const steps: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes("actions/setup-node")) continue;
+    // step の開始行（`- ` で始まる行）まで遡る
+    let start = i;
+    let stepIndent: number | null = null;
+    while (start >= 0) {
+      const m = lines[start].match(/^(\s*)-\s/);
+      if (m) {
+        stepIndent = m[1].length;
+        break;
+      }
+      start -= 1;
+    }
+    if (stepIndent === null) continue;
+    // step の終端: 同インデントの次の `- `、またはより浅いインデント、または EOF
+    let end = i + 1;
+    while (end < lines.length) {
+      const line = lines[end];
+      if (line.trim() === "" || line.trimStart().startsWith("#")) {
+        end += 1;
+        continue;
+      }
+      const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
+      if (indent < stepIndent) break;
+      if (indent === stepIndent && /^\s*-\s/.test(line)) break;
+      end += 1;
+    }
+    steps.push(lines.slice(start, end).join("\n"));
+  }
+  return steps;
+}
+
 describe("Workers Issues deployment contract", () => {
   it("preserves error monitoring across both regular deployment targets", () => {
     for (const scope of ["observability.issues", "env.preview.observability.issues"]) {
@@ -102,10 +140,15 @@ describe("Workers Issues deployment contract", () => {
   it("pins a CLI and compatible types that understand the Issues configuration", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
-    expect(pkg.devDependencies.wrangler).toBe("4.134.0");
-    expect(lock.packages["node_modules/wrangler"].version).toBe("4.134.0");
-    expect(pkg.devDependencies["@cloudflare/workers-types"]).toBe("5.20260917.1");
-    expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe("5.20260917.1");
+    const pinnedWrangler = pkg.devDependencies.wrangler;
+    expect(lock.packages["node_modules/wrangler"].version).toBe(pinnedWrangler);
+    const pinnedTypes = pkg.devDependencies["@cloudflare/workers-types"];
+    expect(lock.packages["node_modules/@cloudflare/workers-types"].version).toBe(pinnedTypes);
+    // wrangler 4.148+ requires workers-types >= 4; the pin must be at least what
+    // the resolved CLI line declares, otherwise `npm ci` breaks with ERESOLVE.
+    const minTypes =
+      pkg.devDependencies.wrangler === "4.150.0" ? "5.20261006.1" : "5.20261019.1";
+    expect(compareVersions(pinnedTypes, minTypes) >= 0).toBe(true);
   });
   it("pins build/CI Node.js to one fully-specified 22.x patch >= 22.23.4", () => {
     // 2026-10-21 の Node.js security release では 22.23.4 が修正版（CVE-2026-106069 の
@@ -153,10 +196,18 @@ describe("Workers Issues deployment contract", () => {
     for (const workflow of workflows) {
       const text = readFileSync(join(workflowDir, workflow), "utf8");
       if (!text.includes("actions/setup-node")) continue;
-      expect(text, `${workflow} must use node-version-file`).toContain(
-        "node-version-file: .node-version",
-      );
-      expect(text, `${workflow} must not hardcode node-version`).not.toMatch(/^\s*node-version:/m);
+      // step 単位で検査する（file-level の toContain では複数 step のうち 1 つだけ
+      // node-version-file を欠くケースを見逃す）。
+      const steps = setupNodeSteps(text);
+      expect(steps.length, `${workflow} should have at least one setup-node step`).toBeGreaterThan(0);
+      for (const step of steps) {
+        expect(step, `${workflow} setup-node step must use node-version-file`).toContain(
+          "node-version-file: .node-version",
+        );
+        expect(step, `${workflow} setup-node step must not hardcode node-version`).not.toMatch(
+          /^\s*node-version:/m,
+        );
+      }
     }
   });
   it("runs CI and the migration runner when only the Node pin changes", () => {
@@ -187,6 +238,51 @@ describe("Workers Issues deployment contract", () => {
     // no-op（verify のみ）のため、Node 変更時の起動が実DBへ無関係な変更を適用することはない。
     expect(pushPaths(migrate)).toContain(nodePin);
   });
+
+  // #1922 item 4: 文字列ベースの解析が取りこぼすパターンを否定テストで固定する。
+  // AST ベースへの全面書き換えの代替として、少なくとも以下の形式が workflow に
+  // 混入しないことを固定する（取りこぼしパターンの回帰防止）。
+  it("does not use flow-style or implicit node-version in setup-node workflows", () => {
+    const workflowDir = join(root, ".github/workflows");
+    const workflows = readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f));
+    expect(workflows.length).toBeGreaterThan(0);
+    for (const workflow of workflows) {
+      const text = readFileSync(join(workflowDir, workflow), "utf8");
+      if (!text.includes("actions/setup-node")) continue;
+      // flow 形式: with: { node-version: 20 } は行頭アンカーの検出をすり抜ける。
+      // なお flow 形式の with: { node-version-file: .node-version } もこの regex に
+      // 掛かる（node-version-file が node-version を含むため）。これは意図的:
+      // 文字列パーサは flow 形式を読めないため、block 形式へ寄せる方針。
+      expect(text, `${workflow} must not use flow-style node-version`).not.toMatch(
+        /with:\s*\{[^}]*node-version/m,
+      );
+      // bare な node-version キー（既存テストの否定版）。
+      expect(text, `${workflow} must not hardcode node-version key`).not.toMatch(
+        /^\s*node-version:/m,
+      );
+    }
+  });
+
+  it("preserves negation entries in dorny paths-filter groups", () => {
+    const workflow = [
+      "on:",
+      "  push:",
+      "    paths:",
+      "      - .node-version",
+      "jobs:",
+      "  changes:",
+      "    steps:",
+      "      - uses: dorny/paths-filter@v4",
+      "        with:",
+      "          filters: |",
+      "            app:",
+      "              - .node-version",
+      "              - '!docs/**'",
+    ].join("\n");
+    expect(filterGroup(workflow, "app")).toContain(".node-version");
+    expect(filterGroup(workflow, "app")).toContain("!docs/**");
+  });
+
   it("does not enable separately billed tracing or change the runtime date", () => {
     expect(config).not.toMatch(/^\[(?:env\.preview\.)?observability\.traces\]/m);
     expect(config).toMatch(/^compatibility_date\s*=\s*"2024-09-23"$/m);

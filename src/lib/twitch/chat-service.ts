@@ -327,7 +327,7 @@ export class TwitchChatService {
       if (reportFailures && credentialDegradation) {
         try {
           await reportError(
-            new Error(`Chat delivery used fallback sender: ${credentialDegradation.reason}`),
+            new Error(`Chat delivery used fallback sender: ${credentialDegradation.code}`),
             {
               context: 'chat-service:sendChatMessage:degraded-success',
               broadcasterTwitchUserId,

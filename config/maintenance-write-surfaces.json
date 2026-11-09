@@ -367,6 +367,61 @@
     "reviewedAt": "2026-10-04"
   },
   {
+    "path": "/api/trades/auctions",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "オークション出品の作成（#1791）。create_trade_auction DB関数がtrade_auctionsへ書き込み、出品コピーを拘束するためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
+    "path": "/api/trades/auctions/[id]/bids",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "オークションへの入札・入札変更（#1791）。place_trade_auction_bid DB関数がtrade_auction_bids/itemsへ書き込み、入札コピーを拘束するためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
+    "path": "/api/trades/auctions/[id]/bids/[bidId]/withdraw",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "オークション入札の取り下げ（#1791）。withdraw_trade_auction_bid DB関数が入札状態を書き換えるためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
+    "path": "/api/trades/auctions/[id]/cancel",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "入札0件のオークション出品の取消（#1791）。cancel_trade_auction DB関数がtrade_auctionsの状態を書き換えるためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
+    "path": "/api/trades/auctions/[id]/settle",
+    "methods": [
+      "POST"
+    ],
+    "category": "trade",
+    "maintenanceBehavior": "block",
+    "reason": "オークションの成立（#1791）。settle_trade_auction DB関数がuser_cards所有権とオークション・入札の状態を書き換えるためメンテナンス中はブロックする。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-17"
+  },
+  {
     "path": "/api/tos/accept",
     "methods": [
       "POST"
@@ -466,6 +521,28 @@
     "reason": "専用Chat Delivery Queue WorkerがService Binding経由で呼ぶ内部配送境界（Issue #1665）。deliverはchat_notification_outboxのclaim/ack/retry/dead、dispatch-dueはwake予約を伴うDB書き込みのため、他の書き込みAPIと同様にメンテ中はブロックし、状態を失わず延期する。",
     "owner": "azumag",
     "reviewedAt": "2026-09-22"
+  },
+  {
+    "path": "/api/internal/stats/refresh",
+    "methods": [
+      "POST"
+    ],
+    "category": "streamer",
+    "maintenanceBehavior": "block",
+    "reason": "stats-aggregator cron Workerが呼ぶランキング統計バッチの内部実行境界（Issue #741）。refresh_streamer_ranking()は日次ロールアップのupsertとスナップショットのDELETE→INSERTを伴うDB書き込みのため、他の書き込みAPIと同様にメンテ中はブロックし、状態を失わず延期する（前回snapshotが残るため数時間の停滞は壊れない）。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-07"
+  },
+  {
+    "path": "/api/internal/storage-maintenance",
+    "methods": [
+      "POST"
+    ],
+    "category": "upload",
+    "maintenanceBehavior": "block",
+    "reason": "Issue #1907 の台帳再照合・未使用効果音回収ジョブ。blob_files/storage_usage の更新とR2削除を伴う内部書き込み境界で、共有シークレット必須。メンテ中は他の書き込みAPIと同様にブロックし、解除後に実行する（ジョブは冪等で次回実行で追いつく）。",
+    "owner": "azumag",
+    "reviewedAt": "2026-10-23"
   },
   {
     "path": "/api/streamer/pack-completion-rewards",

@@ -1,16 +1,16 @@
-import { getErrorChain, isPgMissingNamedColumnError } from "@/lib/db/errors";
+import { getErrorChain } from "@/lib/db/errors";
 
 export const CARD_NUMBER_MESSAGES = {
   duplicate: "このカード番号はすでに別のカードで使われています。",
   invalid: "カード番号は1以上の整数で入力してください。",
 } as const;
 
-// cause チェーン対応 (2026-07 本番障害の恒久対応): この2関数は
+// cause チェーン対応 (2026-07 本番障害の恒久対応): この関数は
 // src/app/api/cards/route.ts の insertCardPg が db.insert(...).returning() の
 // catch にそのまま渡す。Drizzle は
 // postgres.js の PostgresError を DrizzleQueryError で1段ラップし、SQLSTATE・
 // 実メッセージは cause 側にしか無いため、トップレベルの code/message/details
-// だけを見ていると pg 経路でこのフォールバックが機能しない。getErrorChain で
+// だけを見ていると pg 経路でこの判定が機能しない。getErrorChain で
 // トップレベル→cause の各階層に同じ判定を適用する（生の postgres.js /
 // postgres.js の生エラーはチェーンが1要素になる）。
 //
@@ -21,8 +21,15 @@ export const CARD_NUMBER_MESSAGES = {
 // （cause が実際は unique_violation ではなく全く別の理由でも、SQL 文に
 // "card_number" が写っているだけで isCardNumberConflictError が true になる
 // 等）。各階層の自分自身の code/message/details だけで旧判定を適用し、
-// どこか1階層でも満たせば true とする（src/lib/db/errors.ts の
-// isPgMissingNamedColumnError / getErrorChain に委譲する他モジュールと同じ設計）。
+// どこか1階層でも満たせば true とする。
+//
+// #954: 旧来はここに isMissingCardNumberColumnError（cards.card_number 列の
+// デプロイ窓フォールバック判定）も置いていたが、#834 (PR #953) と同じ手順で
+// PlanetScale 本番・preview の information_schema.columns 実測により card_number
+// の実在を確認したため撤去した（Issue #954 参照）。このファイルに残る
+// isCardNumberConflictError はデプロイ窓フォールバックではなく、カード番号の
+// unique 制約違反 (23505) をユーザー向けメッセージに変換する現役の
+// エラーハンドリングであり、本実測とは無関係なので温存する。
 
 export function isCardNumberConflictError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -35,8 +42,4 @@ export function isCardNumberConflictError(error: unknown): boolean {
     const text = `${String(err.message || "")} ${String(err.details || "")}`;
     return text.includes("cards_streamer_card_number_unique") || text.includes("card_number");
   });
-}
-
-export function isMissingCardNumberColumnError(error: unknown): boolean {
-  return isPgMissingNamedColumnError(error, ["card_number"]);
 }

@@ -1,11 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getSession, canUseStreamerFeatures, type Session } from "@/lib/session";
 
-import { handleApiError, handleDatabaseError, recordApiError } from "@/lib/error-handler";
+import { handleDatabaseError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
 import { ADDITIONAL_SCOPES } from "@/lib/twitch/scopes";
-import { TwitchTokenError, getTwitchAccessToken, hasScope, isPermanentRefreshFailure, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
+import { getTwitchAccessToken, hasScope } from "@/lib/twitch/token-manager";
+import { isReauthRequiredTokenError, handleTwitchTokenError } from "@/lib/twitch/token-error-handler";
 import {
   deriveEventSubStatus,
   type EventSubSubscriptionForStatus,
@@ -20,11 +21,13 @@ import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgMissingColumnError, isPgMissingNamedColumnError } from "@/lib/db/errors";
-import { isMissingCollectionNameColumn } from "@/lib/collections/collection-existence";
+import { isMissingCollectionNameColumn, isMissingRewardPackNamesColumnError } from "@/lib/collections/collection-existence";
 import {
   streamers as streamersTable,
   streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
+  streamerAdditionalGachaRewardsWithPackNames as streamerAdditionalGachaRewardsWithPackNamesTable,
 } from "@/lib/db/schema";
+import { resolveEffectiveRewardPackNames } from "@/lib/validation/collection-name";
 import {
   getChannelPointsAccessState,
   persistChannelPointsCapability,
@@ -90,31 +93,6 @@ async function getTwitchRewards(twitchUserId: string): Promise<TwitchRewardsResu
   return { rewards: data.data || [] };
 }
 
-/**
- * Issue #1018: TwitchTokenErrorのうち「step-up再認証でしか回復しない
- * 恒久トークン失効」に該当するかを判定する。
- *
- * - NO_TOKEN: DBにrefresh可能なトークンが一切無い状態。現在の実装では
- *   getTwitchAccessTokenがnullを返すため到達しない防御的経路だが、
- *   将来throw方式へ戻っても同じ401契約になるようにここで集約する。
- * - REFRESH_FAILED かつ恒久失効: refreshがTwitchのtoken endpointから恒久
- *   エラー(invalid_grant・refresh token失効等の400/401)で拒否された
- *   ケース。判定は isPermanentRefreshFailure(token-manager.ts) に委譲し、
- *   kind='http' かつ status ∈ {400,401} のホワイトリストに絞る。
- *   403はWAF・client設定起因の一過性障害になり得るため対象外。
- *
- * 一過性の5xx(429/5xx、520/521/525/526/530等のCloudflare系を含む)、network
- * エラー、invalid_response、DB障害起因のrefresh失敗(diagnostic未付与)は再認証
- * で回復しないため対象外(false)とし、従来どおりhandleApiErrorの500を維持する。
- * これにより一時障害を恒久失効と誤判定してcapabilityをreauth_requiredへ
- * 誤確定させるのを防ぐ。
- */
-function isReauthRequiredTokenError(error: unknown): boolean {
-  if (!(error instanceof TwitchTokenError)) return false;
-  if (error.code === "NO_TOKEN") return true;
-  return isPermanentRefreshFailure(error);
-}
-
 async function getSubscriptionsByUserId(
   userId: string,
 ): Promise<EventSubSubscriptionForStatus[]> {
@@ -159,11 +137,43 @@ async function getSubscriptionsByUserId(
  *   minimal へ落とすと draw_count/is_raid_limited まで失うため順序が重要）。
  * - フォールバック時は draw_count: 1 / is_raid_limited: false / collection_name:
  *   null を補完する（streamerAdditionalGachaRewards schema の DEFAULT 値と一致）。
+ * - Issue #1994（PR #1995 必須2）: 複数パック割り当て（reward_pack_names）も読み、
+ *   GET /api/streamer/additional-rewards と同じ collection_names（resolveEffectiveRewardPackNames
+ *   で解決した実効割り当て）を返す。UI（ChannelPointSettings）は初回表示の追加報酬一覧を
+ *   この応答から組むため、collection_names が無いと旧列（先頭要素）だけで [A,B] が [A] に
+ *   見え、編集保存で B が消えていた。生の reward_pack_names は応答に含めない（GET と同じ）。
+ *   reward_pack_names 列のみ未デプロイ（42703）の窓では従来の全列 SELECT へ縮退し、
+ *   collection_names は旧列から解決する。route.ts は HTTP メソッド以外を export できない
+ *   （Next.js の制約）ため、GET 側の listAdditionalRewardsPg とは同じ順序で複製している。
  * - withDbRetry 内で発生した例外はそのまま伝播させる（呼び出し元の
  *   GET ハンドラの try/catch が handleApiError で 500 を返す既存挙動を維持）。
  */
 async function getAdditionalRewardsPg(streamerId: string) {
-  // 1段目: 全列（collection_name を含む）。通常はここで成功する。
+  // 0段目（Issue #1994）: reward_pack_names まで含む全列。通常はここで成功する。
+  const selectWithPackNames = () =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamerAdditionalGachaRewardsWithPackNamesTable.id,
+            reward_id: streamerAdditionalGachaRewardsWithPackNamesTable.reward_id,
+            reward_name: streamerAdditionalGachaRewardsWithPackNamesTable.reward_name,
+            draw_count: streamerAdditionalGachaRewardsWithPackNamesTable.draw_count,
+            is_raid_limited: streamerAdditionalGachaRewardsWithPackNamesTable.is_raid_limited,
+            collection_name: streamerAdditionalGachaRewardsWithPackNamesTable.collection_name,
+            reward_pack_names: streamerAdditionalGachaRewardsWithPackNamesTable.reward_pack_names,
+            created_at: streamerAdditionalGachaRewardsWithPackNamesTable.created_at,
+          })
+          .from(streamerAdditionalGachaRewardsWithPackNamesTable)
+          .where(eq(streamerAdditionalGachaRewardsWithPackNamesTable.streamer_id, streamerId))
+          .orderBy(asc(streamerAdditionalGachaRewardsWithPackNamesTable.created_at));
+      },
+      "getAdditionalRewards:with-pack-names",
+      { idempotent: true },
+    );
+
+  // 1段目: reward_pack_names 未デプロイ窓向けの全列（collection_name を含む）。
   const selectFull = () =>
     withDbRetry(
       async () => {
@@ -230,39 +240,84 @@ async function getAdditionalRewardsPg(streamerId: string) {
       { idempotent: true },
     );
 
-  try {
-    return await selectFull();
-  } catch (error) {
-    // collection_name 欠落（42703 かつ列名一致）だけを剥がす。それ以外の
-    // 42703（raid 列）や接続障害は誤って縮退させない。
-    if (isMissingCollectionNameColumn(error)) {
-      try {
-        const rows = await selectWithoutCollectionName();
-        return rows.map((row) => ({ ...row, collection_name: null }));
-      } catch (error2) {
-        if (isPgMissingNamedColumnError(error2, ["draw_count", "is_raid_limited"])) {
-          const rows = await selectMinimal();
-          return rows.map((row) => ({
-            ...row,
-            draw_count: 1,
-            is_raid_limited: false,
-            collection_name: null,
-          }));
-        }
-        throw error2;
+  // collection_names は全分岐で付ける（旧列しか無い分岐は旧列から、旧列も無い分岐は []）。
+  const withCollectionNames = <T extends { collection_name: string | null; reward_pack_names?: unknown }>(
+    row: T,
+  ) => {
+    const { reward_pack_names, ...rest } = row;
+    return {
+      ...rest,
+      collection_names: resolveEffectiveRewardPackNames(reward_pack_names, row.collection_name),
+    };
+  };
+
+  // 1〜3段目: reward_pack_names 列が無い窓の従来チェイン（旧列 collection_name までの縮退）。
+  // priorError は0段目の失敗。reward_pack_names 欠落なら旧来の全列で再試行する。
+  // collection_name / raid 列の欠落なら selectFull も同じ列で失敗するだけなので
+  // 再実行せず、そのエラーから従来どおり縮退を続ける（デプロイ窓で無駄な往復を増やさない）。
+  const selectWithoutPackNames = async (priorError: unknown) => {
+    try {
+      if (!isMissingRewardPackNamesColumnError(priorError)) {
+        throw priorError;
       }
+      return await selectFull();
+    } catch (error) {
+      // collection_name 欠落（42703 かつ列名一致）だけを剥がす。それ以外の
+      // 42703（raid 列）や接続障害は誤って縮退させない。
+      if (isMissingCollectionNameColumn(error)) {
+        try {
+          const rows = await selectWithoutCollectionName();
+          return rows.map((row) => ({ ...row, collection_name: null }));
+        } catch (error2) {
+          if (isPgMissingNamedColumnError(error2, ["draw_count", "is_raid_limited"])) {
+            const rows = await selectMinimal();
+            return rows.map((row) => ({
+              ...row,
+              draw_count: 1,
+              is_raid_limited: false,
+              collection_name: null,
+            }));
+          }
+          throw error2;
+        }
+      }
+      if (isPgMissingNamedColumnError(error, ["draw_count", "is_raid_limited"])) {
+        const rows = await selectMinimal();
+        return rows.map((row) => ({
+          ...row,
+          draw_count: 1,
+          is_raid_limited: false,
+          collection_name: null,
+        }));
+      }
+      throw error;
     }
-    if (isPgMissingNamedColumnError(error, ["draw_count", "is_raid_limited"])) {
-      const rows = await selectMinimal();
-      return rows.map((row) => ({
-        ...row,
-        draw_count: 1,
-        is_raid_limited: false,
-        collection_name: null,
-      }));
+  };
+
+  let packNamesError: unknown;
+  try {
+    const rows = await selectWithPackNames();
+    return rows.map(withCollectionNames);
+  } catch (error) {
+    packNamesError = error;
+    // 列欠落（42703 かつ列名一致）だけを従来チェインへ縮退させる。それ以外（接続障害
+    // など）は握りつぶさず伝播させる。reward_pack_names だけでなく旧来の列名も見るのは、
+    // PostgreSQL が SELECT 列のうち最初に見つけた欠落列だけを報告するため。
+    // collection_name / draw_count が無い古いスキーマでは reward_pack_names も無いが、
+    // エラーには先に並ぶ旧列の名前が出る。従来チェインはそれぞれを自分で判別する。
+    if (
+      !isPgMissingNamedColumnError(packNamesError, [
+        "reward_pack_names",
+        "collection_name",
+        "draw_count",
+        "is_raid_limited",
+      ])
+    ) {
+      throw packNamesError;
     }
-    throw error;
   }
+
+  return (await selectWithoutPackNames(packNamesError)).map(withCollectionNames);
 }
 
 async function getAdditionalRewards(streamerId: string) {
@@ -461,24 +516,18 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(responsePayload);
   } catch (error) {
-    // Issue #1018: トークン恒久失効(REFRESH_FAILEDで恒久status {400,401} /
-    // NO_TOKEN)は汎用500ではなく401+requiresReauthを返す。rewards/emotesルートと
-    // 同一のbody契約で、クライアント側(ChannelPointSettings)がstep-up再認証CTAを
-    // 表示できる。一過性5xx/network/DB起因のrefresh失敗は再認証で回復しないため
-    // 500を維持する(isReauthRequiredTokenError参照)。エラー記録経路
-    // (recordApiError→errorsテーブル→auto-generated bug report)は維持し、
-    // capability確定状態もreauth_requiredへ同期する
+    // Issue #1018 / #1088: トークン恒久失効(NO_TOKEN / REFRESH_FAILED の400・401)は
+    // 汎用500ではなく401+requiresReauthを返し、クライアント(ChannelPointSettings)が
+    // step-up再認証CTAを表示できるようにする。判定と記録は共通ヘルパ
+    // (`@/lib/twitch/token-error-handler`)へ集約し、emotes / rewards GET・POST と
+    // 同一のbody契約・同一の診断記録経路(recordApiError→errorsテーブル→
+    // auto-generated bug report)を共有する。一過性5xx/network/DB起因のrefresh失敗は
+    // 再認証で回復しないため500を維持する。capability確定状態はreauth_requiredへ同期する
     // (recordChannelPointsApiFailureは内部で失敗を吸収するため応答に影響しない)。
     if (session && isReauthRequiredTokenError(error)) {
-      await recordApiError(error, "Channel Point Bootstrap API", twitchTokenErrorReportContext(error));
       await recordChannelPointsApiFailure(session.twitchUserId, 401);
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED, requiresReauth: true },
-        { status: 401 }
-      );
     }
-    // refresh診断の永続化・非二重報告契約は twitchTokenErrorReportContext のJSDocを参照。
-    return handleApiError(error, "Channel Point Bootstrap API", twitchTokenErrorReportContext(error));
+    return handleTwitchTokenError(error, "Channel Point Bootstrap API");
   } finally {
     logPerf("api", "channel-point-bootstrap", startedAt, { diagnostics });
   }

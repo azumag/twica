@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import ChannelPointSettings from "@/components/ChannelPointSettings";
 import jaMessages from "../../../messages/ja.json";
@@ -85,41 +85,41 @@ describe("ChannelPointSettings card pack dropdowns", () => {
     });
   });
 
-  it("renders the fetched pack names as <option>s", async () => {
+  // Issue #1994: パック選択は複数チェックボックス群（role=group）になった。
+  it("renders the fetched pack names as checkboxes", async () => {
     renderComponent();
 
     await waitFor(() => {
-      // Both the main-reward and additional-reward selects list the packs,
-      // so each name appears at least once.
-      expect(screen.getAllByRole("option", { name: "weapons" }).length).toBeGreaterThan(0);
-      expect(screen.getAllByRole("option", { name: "characters" }).length).toBeGreaterThan(0);
+      // Both the main-reward and additional-reward pack groups list the packs,
+      // so each name appears at least once as a checkbox label.
+      expect(screen.getAllByRole("checkbox", { name: "weapons" }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("checkbox", { name: "characters" }).length).toBeGreaterThan(0);
     });
   });
 
   // Issue #393再設計: パック選択はもうゲート対象外(新規登録はパック管理
   // モーダル側でのみ発生する)。選択肢は常に有効(disabledではない)。
-  it("does not disable pack options (selection is never gated here)", async () => {
+  it("does not disable pack checkboxes (selection is never gated here)", async () => {
     renderComponent();
 
     await waitFor(() => {
-      const options = screen.getAllByRole("option", { name: "weapons" }) as HTMLOptionElement[];
-      expect(options.length).toBeGreaterThan(0);
-      options.forEach((option) => expect(option.disabled).toBe(false));
+      const boxes = screen.getAllByRole("checkbox", { name: "weapons" }) as HTMLInputElement[];
+      expect(boxes.length).toBeGreaterThan(0);
+      boxes.forEach((box) => expect(box.disabled).toBe(false));
     });
   });
 
   // Issue #555: a fixed "default pack only" option (collection_name IS NULL)
   // must appear alongside "all cards" and the registered pack names, in both
-  // the main-reward and additional-reward selects.
-  it('renders a "default pack only" option in both pack selects', async () => {
+  // the main-reward and additional-reward pack groups.
+  it('renders a "default pack only" checkbox in both pack groups', async () => {
     renderComponent();
 
     await waitFor(() => {
-      const options = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLOptionElement[];
-      expect(options.length).toBe(2);
-      options.forEach((option) => {
-        expect(option.disabled).toBe(false);
-        expect((option as HTMLOptionElement).value).toBe("__default__");
+      const boxes = screen.getAllByRole("checkbox", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLInputElement[];
+      expect(boxes.length).toBe(2);
+      boxes.forEach((box) => {
+        expect(box.disabled).toBe(false);
       });
     });
   });
@@ -141,8 +141,8 @@ describe("ChannelPointSettings card pack dropdowns", () => {
     );
 
     await waitFor(() => {
-      const defaultOptions = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" });
-      expect(defaultOptions.length).toBe(2);
+      const defaultBoxes = screen.getAllByRole("checkbox", { name: "デフォルトパック（未分類のカードのみ）" });
+      expect(defaultBoxes.length).toBe(2);
     });
     expect(screen.queryByText(/登録解除済み/)).not.toBeInTheDocument();
   });
@@ -160,16 +160,16 @@ describe("ChannelPointSettings card pack dropdowns", () => {
     renderComponent();
 
     await waitFor(() => {
-      // Normal packs render as usual (main + additional select = 2 each).
-      expect(screen.getAllByRole("option", { name: "weapons" }).length).toBe(2);
+      // Normal packs render as usual (main + additional group = 2 each).
+      expect(screen.getAllByRole("checkbox", { name: "weapons" }).length).toBe(2);
     });
-    // Exactly the two FIXED default-pack options remain — no third/fourth
-    // option coming from the legacy "__default__" entry in the response.
-    const defaultOptions = screen.getAllByRole("option", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLOptionElement[];
-    expect(defaultOptions.length).toBe(2);
-    // The raw reserved names never appear as option labels.
-    expect(screen.queryByRole("option", { name: "__default__" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "__legacy" })).not.toBeInTheDocument();
+    // Exactly the two FIXED default-pack checkboxes remain — no third/fourth
+    // checkbox coming from the legacy "__default__" entry in the response.
+    const defaultBoxes = screen.getAllByRole("checkbox", { name: "デフォルトパック（未分類のカードのみ）" }) as HTMLInputElement[];
+    expect(defaultBoxes.length).toBe(2);
+    // The raw reserved names never appear as checkbox labels.
+    expect(screen.queryByRole("checkbox", { name: "__default__" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "__legacy" })).not.toBeInTheDocument();
   });
 });
 
@@ -194,8 +194,8 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     await waitFor(() => {
       expect(screen.getAllByText("カードパック（支援プラン限定機能）").length).toBeGreaterThan(0);
     });
-    expect(screen.queryByLabelText("引き換え対象のカードパック")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("追加の引き換え対象のカードパック")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "引き換え対象のカードパック" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "追加の引き換え対象のカードパック" })).not.toBeInTheDocument();
   });
 
   it("canManage=false + an existing main-reward binding: shows the select but disabled, plus the upsell hint", async () => {
@@ -205,9 +205,10 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     });
 
     await waitFor(() => {
-      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
-      expect(select).toBeDisabled();
-      expect(select.value).toBe("weapons");
+      const group = screen.getByRole("group", { name: "引き換え対象のカードパック" });
+      const boxes = within(group).getAllByRole("checkbox") as HTMLInputElement[];
+      boxes.forEach((box) => expect(box.disabled).toBe(true));
+      expect(within(group).getByRole("checkbox", { name: "weapons" })).toBeChecked();
     });
     expect(screen.getAllByText("カードパック（支援プラン限定機能）").length).toBeGreaterThan(0);
   });
@@ -218,8 +219,10 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     renderComponent({ cardPacks: { canManage: true, defaultPackName: null } });
 
     await waitFor(() => {
-      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
-      expect(select).not.toBeDisabled();
+      const group = screen.getByRole("group", { name: "引き換え対象のカードパック" });
+      within(group).getAllByRole("checkbox").forEach((box) =>
+        expect(box).not.toBeDisabled()
+      );
     });
     expect(
       screen.getAllByText("パック名はカード管理の「パック管理」から登録できます").length
@@ -231,8 +234,10 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     renderComponent({ cardPacks: { canManage: true, defaultPackName: null } });
 
     await waitFor(() => {
-      const select = screen.getByLabelText("引き換え対象のカードパック") as HTMLSelectElement;
-      expect(select).not.toBeDisabled();
+      const group = screen.getByRole("group", { name: "引き換え対象のカードパック" });
+      within(group).getAllByRole("checkbox").forEach((box) =>
+        expect(box).not.toBeDisabled()
+      );
     });
     expect(screen.queryByText("カードパック（支援プラン限定機能）")).not.toBeInTheDocument();
     expect(screen.queryByText("パック名はカード管理の「パック管理」から登録できます")).not.toBeInTheDocument();
@@ -242,9 +247,241 @@ describe("ChannelPointSettings cardPacks display control (Issue #554)", () => {
     renderComponent({ cardPacks: { canManage: true, defaultPackName: "オリジナルカード" } });
 
     await waitFor(() => {
-      const options = screen.getAllByRole("option", { name: "オリジナルカード（未分類のカードのみ）" });
-      expect(options.length).toBe(2);
+      const boxes = screen.getAllByRole("checkbox", { name: "オリジナルカード（未分類のカードのみ）" });
+      expect(boxes.length).toBe(2);
     });
     expect(screen.queryByText("デフォルトパック（未分類のカードのみ）")).not.toBeInTheDocument();
+  });
+});
+
+// Issue #1998 (指摘2): 保存成功メッセージの優先順位。
+// settings API が channelPointCollectionNamesSkippedDeployWindow=true を返した
+// とき、EventSub 応答の raid warning / message より「反映待ち」文言を優先して
+// 表示することを確認する（旧順序では warning/message が先に評価され、
+// 反映待ち通知が覆い隠され得た）。
+describe("ChannelPointSettings save message priority (Issue #1998)", () => {
+  let fetchMock: FetchMock;
+
+  beforeEach(() => {
+    fetchMock = mockFetch();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the deploy-window pending message even when EventSub returns a message and raid warning", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/streamer/settings" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({ success: true, channelPointCollectionNamesSkippedDeployWindow: true }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (url === "/api/twitch/eventsub/subscribe" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            message: "EVENTSUB_MESSAGE_MARKER",
+            raidSubscription: { status: "error", warning: "RAID_WARNING_MARKER" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      // フォールバックは共通の mockFetch に委譲する。FetchMock（vi.fn の
+      // Mock 型）は型上直接呼び出せないため、fetch のシグネチャにキャストする。
+      return (mockFetch() as unknown as typeof fetch)(input, init);
+    });
+
+    renderComponent();
+
+    const saveButton = await screen.findByRole("button", { name: "保存 & EventSub登録" });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("保存しました（パック割り当ての一部は反映待ちです）")
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText("EVENTSUB_MESSAGE_MARKER")).not.toBeInTheDocument();
+    // raid warning は別スロット（raidEventSubWarning）で表示されるため、
+    // message スロットを奪わないことだけを検証する。
+  });
+});
+
+// メイン報酬のパック保存は「初期値から変わったときだけ」channelPointCollectionNames
+// を送る（サーバーはキー無し=変更なし、[]=全カードと解釈する）。比較基準が props 由来の
+// 初期値のまま固定だと、保存成功後に初期値へ戻す操作が「未変更」と誤判定されて
+// 送信が省略され、画面は「保存しました」なのに DB が古い値のまま残る。
+// 保存成功のたびに基準を「実際に DB に残る実効値」へ更新することを確認する。
+describe("ChannelPointSettings main pack save baseline", () => {
+  let fetchMock: FetchMock;
+  let settingsBodies: Array<Record<string, unknown>>;
+
+  // settings POST の応答だけ差し替えられるようにする。EventSub は成功を返す。
+  function installFetch(settingsResponses: Array<Record<string, unknown>> = []) {
+    settingsBodies = [];
+    let settingsCall = 0;
+    fetchMock = mockFetch();
+    const fallback = mockFetch() as unknown as typeof fetch;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/streamer/settings" && init?.method === "POST") {
+        settingsBodies.push(JSON.parse(String(init.body)));
+        const payload = settingsResponses[settingsCall++] ?? { success: true };
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "/api/twitch/eventsub/subscribe" && init?.method === "POST") {
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return fallback(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  }
+
+  // メイン報酬側のパックグループ内のチェックボックスを返す。
+  // 追加報酬側は「追加の引き換え対象のカードパック」で名前が異なるため完全一致で区別できる。
+  const mainPack = (name: string) =>
+    within(screen.getByRole("group", { name: "引き換え対象のカードパック" })).getByRole("checkbox", { name });
+
+  // 保存ボタンを押し、その保存が完了する（ボタンが再び有効になる）まで待つ。
+  async function save(expectedPosts: number) {
+    const saveButton = await screen.findByRole("button", { name: "保存 & EventSub登録" });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(settingsBodies.length).toBe(expectedPosts));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "保存 & EventSub登録" })).not.toBeDisabled()
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("resends [] after saving [weapons] and then unchecking it (initial [] baseline must not stick)", async () => {
+    installFetch();
+    renderComponent();
+    await waitFor(() => expect(mainPack("weapons")).toBeInTheDocument());
+
+    fireEvent.click(mainPack("weapons"));
+    await save(1);
+    expect(settingsBodies[0].channelPointCollectionNames).toEqual(["weapons"]);
+
+    fireEvent.click(mainPack("weapons"));
+    await save(2);
+    expect(settingsBodies[1]).toHaveProperty("channelPointCollectionNames", []);
+  });
+
+  it("resends [weapons] after saving [] and then re-checking it", async () => {
+    installFetch();
+    renderComponent({ currentCollectionNames: ["weapons"] });
+    await waitFor(() => expect(mainPack("weapons")).toBeChecked());
+
+    fireEvent.click(mainPack("weapons"));
+    await save(1);
+    expect(settingsBodies[0]).toHaveProperty("channelPointCollectionNames", []);
+
+    fireEvent.click(mainPack("weapons"));
+    await save(2);
+    expect(settingsBodies[1].channelPointCollectionNames).toEqual(["weapons"]);
+  });
+
+  it("still omits channelPointCollectionNames when the selection is unchanged (twice in a row)", async () => {
+    installFetch();
+    renderComponent({ currentCollectionNames: ["weapons"] });
+    await waitFor(() => expect(mainPack("weapons")).toBeChecked());
+
+    await save(1);
+    await save(2);
+    expect(settingsBodies[0]).not.toHaveProperty("channelPointCollectionNames");
+    expect(settingsBodies[1]).not.toHaveProperty("channelPointCollectionNames");
+  });
+
+  it("uses only the first name as baseline when the deploy window stripped the rest, so the full array is resent", async () => {
+    // 1回目: 列未適用のデプロイ窓で先頭1件(characters)しか保存されなかった応答。
+    installFetch([{ success: true, channelPointCollectionNamesSkippedDeployWindow: true }, { success: true }, { success: true }]);
+    renderComponent({ currentCollectionNames: ["weapons"] });
+    await waitFor(() => expect(mainPack("weapons")).toBeChecked());
+
+    // ["weapons"] → ["characters","weapons"]（先頭が旧列ミラーになる並び）にして保存。
+    fireEvent.click(mainPack("weapons"));
+    fireEvent.click(mainPack("characters"));
+    fireEvent.click(mainPack("weapons"));
+    await save(1);
+    expect(settingsBodies[0].channelPointCollectionNames).toEqual(["characters", "weapons"]);
+
+    // 選択を変えずに再保存 → 基準は先頭1件["characters"]なので全体が再送される。
+    await save(2);
+    expect(settingsBodies[1].channelPointCollectionNames).toEqual(["characters", "weapons"]);
+
+    // characters を外して ["weapons"]（= props の初期値と同じ）にして保存。
+    // DB に実際に残っているのは ["characters"] なので、初期値と等しくても送信が必要。
+    // 基準が props 初期値のままだと、ここが「未変更」と誤判定されて省略される。
+    fireEvent.click(mainPack("characters"));
+    await save(3);
+    expect(settingsBodies[2].channelPointCollectionNames).toEqual(["weapons"]);
+  });
+
+  // PR #2006 レビュー指摘: 保存中も checkbox は操作できるため、応答待ち中に toggle しても
+  // 基準は「実際に送信した値」で更新されなければならない。応答時点の UI 値で基準を
+  // 計算すると DB（送信値）と基準（UI 値）が静的に乖離し、以後の保存が省略され続ける。
+  it("uses the sent value (not the in-flight UI value) as baseline when the selection changes while saving", async () => {
+    // settings POST の応答を手動で保留できる fetch。
+    let resolveSettings!: (r: Response) => void;
+    const settingsGate = new Promise<Response>((resolve) => { resolveSettings = resolve; });
+    const ok = () => new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const fallback = mockFetch() as unknown as typeof fetch;
+    fetchMock = mockFetch();
+    settingsBodies = [];
+    let settingsCall = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/streamer/settings" && init?.method === "POST") {
+        settingsBodies.push(JSON.parse(String(init.body)));
+        return ++settingsCall === 1 ? settingsGate : ok();
+      }
+      if (url === "/api/twitch/eventsub/subscribe" && init?.method === "POST") {
+        return ok();
+      }
+      return fallback(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderComponent();
+    await waitFor(() => expect(mainPack("weapons")).toBeInTheDocument());
+
+    // [weapons] を保存開始（応答は保留中）
+    fireEvent.click(mainPack("weapons"));
+    const saveButton = await screen.findByRole("button", { name: "保存 & EventSub登録" });
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(settingsBodies.length).toBe(1));
+    expect(settingsBodies[0].channelPointCollectionNames).toEqual(["weapons"]);
+
+    // 応答待ち中に weapons を外す → UI の選択は [] になる
+    fireEvent.click(mainPack("weapons"));
+    resolveSettings(ok());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "保存 & EventSub登録" })).not.toBeDisabled()
+    );
+
+    // 基準が「送信した [weapons]」に更新されていれば、現在の UI 値 [] は変更扱いになり
+    // 次の保存で channelPointCollectionNames: [] が送られる。
+    // 基準が応答時点の UI 値 [] で計算される実装だと「未変更」と誤判定されて送信が省略される。
+    fireEvent.click(screen.getByRole("button", { name: "保存 & EventSub登録" }));
+    await waitFor(() => expect(settingsBodies.length).toBe(2));
+    expect(settingsBodies[1]).toHaveProperty("channelPointCollectionNames", []);
   });
 });

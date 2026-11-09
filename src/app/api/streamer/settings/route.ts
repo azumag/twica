@@ -17,16 +17,19 @@ import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { recalculateIfAutoMode } from "@/lib/recalculate-drop-rates";
 import {
-  resolveCollectionNameField,
+  resolveCollectionNamesField,
+  resolveEffectiveRewardPackNames,
+  toLegacyCollectionName,
+  findUnregisteredRewardPackName,
   validateCardPackNamesInput,
   validatePackName,
-  isRegisteredOrUnchanged,
   DEFAULT_PACK_SENTINEL,
 } from "@/lib/validation/collection-name";
 import { validateRewardId, validateRewardName, validateChatAnnouncementTemplate } from "@/lib/validations";
 import {
-  checkCollectionHasActiveCards,
+  checkCollectionsHaveActiveCards,
   isMissingCollectionNameColumn,
+  isMissingChannelPointPackNamesColumnError,
   isMissingCardPackNamesColumnError,
   isMissingDefaultCardPackNameColumnError,
   isMissingRarityWeightsScopeColumnError,
@@ -40,6 +43,8 @@ import {
   type GachaSoundRule,
 } from "@/lib/gacha-sound-rules";
 import { getUserPlan } from "@/lib/plan";
+import { purgeSoundSettingsCache } from "@/lib/cache-control";
+import { validateRarityStylesInput } from "@/lib/rarity-styles";
 // -----------------------------------------------------------------------------
 // 設定更新の全 DB 操作は PlanetScale の単一接続を使う。
 // getDb() は各 withDbRetry queryFn 内で取得し、リトライ時に接続状態を引き継がない。
@@ -50,7 +55,20 @@ import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { isPgMissingNamedColumnError } from "@/lib/db/errors";
 import {
+  isMissingAlbumSettingsColumnError,
+  isMissingDuplicateDisplayTiersColumnError,
+} from "@/lib/db/streamers-safe-columns";
+import { validateDuplicateDisplayTiers } from "@/lib/duplicate-display-tiers";
+import {
+  pruneAlbumGridSizeMap,
+  sanitizeAlbumGridSizeMap,
+  validateAlbumGridSizeMap,
+  type AlbumGridSizeMap,
+} from "@/lib/collection-album";
+import {
   streamers as streamersTable,
+  streamersWithChannelPointPackNames as streamersWithChannelPointPackNamesTable,
+  streamerChannelPointPackBindings as streamerChannelPointPackBindingsTable,
   streamerChatSenderSettings as streamerChatSenderSettingsTable,
   twitchBotAccounts as twitchBotAccountsTable,
 } from "@/lib/db/schema";
@@ -261,6 +279,8 @@ interface StreamerForSettingsUpdate {
   channel_point_collection_name: string | null;
   card_pack_names: string[];
   pack_rarity_weights: Record<string, Record<string, number>> | null;
+  // #1765 フォローアップ: カタログ縮小時に残った並び既定を prune するためだけに読む。
+  pack_album_grid_sizes?: AlbumGridSizeMap | null;
 }
 
 /**
@@ -294,12 +314,34 @@ async function getStreamerForSettingsUpdatePg(
             channel_point_collection_name: streamersTable.channel_point_collection_name,
             card_pack_names: streamersTable.card_pack_names,
             pack_rarity_weights: streamersTable.pack_rarity_weights,
+            pack_album_grid_sizes: streamersTable.pack_album_grid_sizes,
           })
           .from(streamersTable)
           .where(ownerCondition)
           .limit(1);
       },
       "getStreamerForSettingsUpdate(full)",
+      { idempotent: true },
+    );
+
+  // #1765 フォローアップ: pack_album_grid_sizes 列のデプロイ窓用フォールバック。
+  // この列だけを落とした射影で再試行し、欠けた値は null(＝未設定)として扱う。
+  const selectWithoutAlbumGridSizes = () =>
+    withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: streamersTable.id,
+            channel_point_collection_name: streamersTable.channel_point_collection_name,
+            card_pack_names: streamersTable.card_pack_names,
+            pack_rarity_weights: streamersTable.pack_rarity_weights,
+          })
+          .from(streamersTable)
+          .where(ownerCondition)
+          .limit(1);
+      },
+      "getStreamerForSettingsUpdate(no pack_album_grid_sizes)",
       { idempotent: true },
     );
 
@@ -360,7 +402,18 @@ async function getStreamerForSettingsUpdatePg(
     let row: StreamerForSettingsUpdate | null = null;
     let resolved = false;
 
-    if (isMissingPackRarityWeightsColumnError(currentError as GenericDbError)) {
+    if (currentError && isMissingAlbumSettingsColumnError(currentError as GenericDbError)) {
+      try {
+        const rows = await selectWithoutAlbumGridSizes();
+        row = rows[0] ? { ...rows[0], pack_album_grid_sizes: null } : null;
+        resolved = true;
+        currentError = null;
+      } catch (err) {
+        currentError = err;
+      }
+    }
+
+    if (currentError && isMissingPackRarityWeightsColumnError(currentError as GenericDbError)) {
       try {
         const rows = await selectWithoutPackRarityWeights();
         row = rows[0] ? { ...rows[0], pack_rarity_weights: null } : null;
@@ -508,6 +561,12 @@ interface ApplyStreamerSettingsUpdateResult {
   gachaSoundRulesWriteSkipped: boolean;
   liveDirectorySettingsWriteSkipped: boolean;
   tradeSettingsWriteSkipped: boolean;
+  albumSettingsWriteSkipped: boolean;
+  duplicateDisplayTiersWriteSkipped: boolean;
+  rarityStylesWriteSkipped: boolean;
+  // Issue #1994: channel_point_pack_names 列未デプロイ窓で配列列を剥がし、かつ
+  // 旧単一列（先頭要素）だけでは表せない2要素以上の割り当てだった場合に true。
+  channelPointPackNamesWriteSkipped: boolean;
 }
 
 /**
@@ -611,12 +670,32 @@ async function applyStreamerSettingsUpdatePg(
   let gachaSoundRulesWriteSkipped = false;
   let liveDirectorySettingsWriteSkipped = false;
   let tradeSettingsWriteSkipped = false;
+  let albumSettingsWriteSkipped = false;
+  // Issue #1782: duplicate_display_tiers も同じ理由(デプロイ窓)で
+  // skip-and-flag パターンを踏襲する。1列のみの migration のため1段だけ。
+  let duplicateDisplayTiersWriteSkipped = false;
+  let rarityStylesWriteSkipped = false;
+  let channelPointPackNamesWriteSkipped = false;
 
+  // Issue #1994（PR #1995 必須1）: Drizzle の .set() はテーブル定義にある列だけを
+  // SET 句へ描画し、定義に無いキーは黙って捨てる。streamers 本体定義には
+  // channel_point_pack_names が無いため、本体定義のままだと配列列が SQL に一度も
+  // 出なかった。payload に配列列を含むときだけ、全列 + 配列列を持つ UPDATE 専用定義で
+  // 1本の UPDATE を組む（旧列ミラー・reward_id など同時保存の列も同じ SQL に乗る）。
+  // 含まないときは本体定義のまま = パックと無関係な保存は migration 未適用の
+  // デプロイ窓でも 42703 にならない。下のフォールバックで配列列を delete すると、
+  // 次の試行は自動的に本体定義へ戻る（判定を呼び出しごとに行うため）。
   const runUpdate = (data: Record<string, unknown>, context: string) =>
     withDbRetry(
       async () => {
         // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
         const { db } = await getDb();
+        if ("channel_point_pack_names" in data) {
+          return db
+            .update(streamersWithChannelPointPackNamesTable)
+            .set(data as Partial<typeof streamersWithChannelPointPackNamesTable.$inferInsert>)
+            .where(eq(streamersWithChannelPointPackNamesTable.id, streamerId));
+        }
         return db
           .update(streamersTable)
           .set(data as Partial<typeof streamersTable.$inferInsert>)
@@ -669,9 +748,37 @@ async function applyStreamerSettingsUpdatePg(
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no default_card_pack_name)");
   }
 
-  if (error && isMissingCollectionNameColumn(error as GenericDbError) && "channel_point_collection_name" in updateData) {
-    delete updateData.channel_point_collection_name;
-    error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_collection_name)");
+  // Issue #1994: channel_point_pack_names 列未デプロイ窓では新列だけ剥がして
+  // 旧単一列（先頭要素ミラー）への書き込みを続行する。ロールバック互換の
+  // 書き込み経路を絶やさないため、旧列側のフォールバックより先に判定する。
+  // 剥がした後の再試行は runUpdate が本体定義を選ぶため、旧列ミラーと他の設定列は
+  // 引き続き同じ1本の UPDATE で書かれる。2要素以上の割り当ては旧列（先頭要素）だけ
+  // では表せず2要素目以降が保存されないため、skip フラグで呼び出し元へ知らせる
+  // （0/1 要素は旧列だけで完全に表せるので欠損ではない）。
+  //
+  // Issue #1996 (任意3): PostgreSQL は1回の失敗で欠落列を1つしか報告しないため、
+  // channel_point_pack_names と後続チェインの別列（例: channel_point_collection_name）
+  // が同時に未適用だと、「先に報告された列」を剥がした再試行でもう1列が 42703 に
+  // なり、その時点では配列列のチェックを通過済みで誰も処理せず 500 になる穴があった。
+  // 2列のフォールバックを最大2回の繰り返しチェインにし、報告順序に依存しないようにする。
+  for (let packBindingFallbackRound = 0; packBindingFallbackRound < 2 && error; packBindingFallbackRound++) {
+    if (
+      isMissingChannelPointPackNamesColumnError(error)
+      && "channel_point_pack_names" in updateData
+    ) {
+      const strippedPackNames = updateData.channel_point_pack_names;
+      delete updateData.channel_point_pack_names;
+      channelPointPackNamesWriteSkipped =
+        Array.isArray(strippedPackNames) && strippedPackNames.length > 1;
+      error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_pack_names)");
+      continue;
+    }
+    if (isMissingCollectionNameColumn(error as GenericDbError) && "channel_point_collection_name" in updateData) {
+      delete updateData.channel_point_collection_name;
+      error = await attempt(updateData, "applyStreamerSettingsUpdate(no channel_point_collection_name)");
+      continue;
+    }
+    break;
   }
 
   if (error && gachaSoundRulesRequested && isMissingGachaSoundRulesColumnError(error)) {
@@ -708,6 +815,43 @@ async function applyStreamerSettingsUpdatePg(
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no trade settings)");
   }
 
+  if (
+    error
+    && isMissingAlbumSettingsColumnError(error as GenericDbError)
+    && ("pack_album_grid_sizes" in updateData || "collection_default_view" in updateData)
+  ) {
+    // #1765 フォローアップ: 同一 migration で2列が入るため「両方同時に欠落」しか
+    // あり得ない。2キーをまとめて剥がし、他の設定だけ保存する。
+    delete updateData.pack_album_grid_sizes;
+    delete updateData.collection_default_view;
+    albumSettingsWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no album settings)");
+  }
+
+  // Issue #1782: duplicate_display_tiers は本 migration で1列だけが増えるため、
+  // 「その1列が欠落」しかあり得ない。キーを剥がして他の設定だけ保存し、
+  // UIには skip フラグで通知する（pack_album_grid_sizes と同じ設計）。
+  if (
+    error
+    && isMissingDuplicateDisplayTiersColumnError(error as GenericDbError)
+    && "duplicate_display_tiers" in updateData
+  ) {
+    delete updateData.duplicate_display_tiers;
+    duplicateDisplayTiersWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no duplicate display tiers)");
+  }
+
+  // Issue #1783: rarity_styles も同じ deploy-window パターン。
+  if (
+    error
+    && isPgMissingNamedColumnError(error as GenericDbError, ["rarity_styles"])
+    && "rarity_styles" in updateData
+  ) {
+    delete updateData.rarity_styles;
+    rarityStylesWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no rarity_styles)");
+  }
+
   return {
     error,
     rarityWeightsScopeWriteSkipped,
@@ -717,6 +861,10 @@ async function applyStreamerSettingsUpdatePg(
     gachaSoundRulesWriteSkipped,
     liveDirectorySettingsWriteSkipped,
     tradeSettingsWriteSkipped,
+    albumSettingsWriteSkipped,
+    duplicateDisplayTiersWriteSkipped,
+    rarityStylesWriteSkipped,
+    channelPointPackNamesWriteSkipped,
   };
 }
 
@@ -788,7 +936,9 @@ export async function POST(request: NextRequest) {
       chatAnnouncementEnabled,
       chatAnnouncementTemplate,
       chatAnnouncementMultiTemplate,
-      chatAnnouncementMultiShowCards,
+      // Issue #1548: chatAnnouncementMultiShowCards は廃止（N連カード名一覧は
+      // テンプレートの placeholder 駆動へ一本化）。body で送られても読まず無視する
+      // — 400 にしないのは、キャッシュ済み旧UIからの暫定リクエストを壊さないため。
       // レアリティ別自動確率設定（オプション）
       rarityWeights,
       // レアリティ重みのスコープ（オプション、Issue #578）: 'global'(全パック共通)
@@ -808,6 +958,9 @@ export async function POST(request: NextRequest) {
       // カスタムレアリティ名の一覧（オプション、ドロップ率設定とは独立）
       // Custom rarity name catalog (optional, decoupled from drop-rate settings)
       customRarities,
+      // Issue #1783: カスタムレアリティごとの表示スタイル（オプション）
+      // Custom rarity display styles (optional, Issue #1783)
+      rarityStyles,
       // 事前登録カードパック名の一覧（オプション、カード/報酬紐付けとは独立）
       // Pre-defined card pack name catalog (optional, decoupled from card/reward bindings)
       cardPackNames,
@@ -830,6 +983,16 @@ export async function POST(request: NextRequest) {
       // カードトレード設定（オプション、Issue #725）
       tradeEnabled,
       crossChannelTradeEnabled,
+      // アルバム表示設定（オプション、#1765 フォローアップ）。
+      // packAlbumGridSizes: コレクション(パック)ごとの並び N（null で全クリア）。
+      // collectionDefaultView: コレクションページの初期表示 ('grid' | 'album')。
+      // Album display settings (optional, #1765 follow-up): per-pack grid
+      // sizes (null clears all) and the collection page's default view mode.
+      packAlbumGridSizes,
+      collectionDefaultView,
+      // Issue #1782: 被りカードの表示段階しきい値（レアリティ → 昇順の所有枚数）。
+      // Duplicate-card display tier thresholds (rarity -> ascending owned counts).
+      duplicateDisplayTiers,
       // BOTアカウント連携解除（オプション）
       // Disconnect optional BOT account used for chat announcements
       disconnectBot,
@@ -858,6 +1021,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
+    // collectionDefaultView: 'grid' | 'album' の2値のみ許可（#1765 フォローアップ）。
+    // 不明値は 400 にして、表示が黙って既定へ落ちるのを避ける。
+    if (
+      collectionDefaultView !== undefined
+      && collectionDefaultView !== "grid"
+      && collectionDefaultView !== "album"
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+
+    // Issue #1782: duplicateDisplayTiers はレアリティ名 → 厳密増加する所有枚数の
+    // 配列。`null` は「全エントリをクリア（段階表示をすべて解除）」として許可する。
+    // しきい値が逆順・同値のまま保存すると「何枚で何段階か」が一意に定まらず
+    // 視聴者側の段階表示が崩れるため、ここで弾いて呼び出し側に 400 を返す
+    // （黙って並べ替えると「入力と違う段階が保存された」ことになる）。
+    let normalizedDuplicateDisplayTiers: Record<string, number[]> | null | undefined;
+    if (duplicateDisplayTiers !== undefined) {
+      const validation = validateDuplicateDisplayTiers(duplicateDisplayTiers);
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedDuplicateDisplayTiers = validation.value;
+    }
+
     // customRarities はレアリティ名の一覧のみを保持し、ドロップ率には影響しない。
     // そのため再計算は行わず、独立した列にそのまま保存する。
     let normalizedCustomRarities: string[] | undefined;
@@ -867,6 +1054,25 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
       }
       normalizedCustomRarities = validation.value;
+    }
+
+    // Issue #1783: rarity_styles はカスタムレアリティごとの表示スタイル。
+    // キーはカスタムレアリティ名のみ（既定レアリティ名は validateRarityStylesInput が
+    // 常に拒否する）。customRarities が同一リクエストで送られていればその新一覧を
+    // 許可キー集合として使い、送られていない場合はキーの形式のみを検証する
+    // （DB 読み取りを1往復増やしてまで登録済みかどうかは照合しない。UI は常に
+    // customRarities と同時送信するため、実経路では前者の厳しい検証が効く）。
+    let normalizedRarityStyles: Record<string, import("@/lib/rarity-styles").RarityStyle> | undefined;
+    if (rarityStyles !== undefined) {
+      const allowedKeys =
+        normalizedCustomRarities !== undefined
+          ? normalizedCustomRarities
+          : undefined;
+      const validation = validateRarityStylesInput(rarityStyles, allowedKeys);
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedRarityStyles = validation.value;
     }
 
     // cardPackNames は事前登録カードパック名の一覧のみを保持する（Issue #393再設計）。
@@ -919,12 +1125,6 @@ export async function POST(request: NextRequest) {
     if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
-    if (
-      chatAnnouncementMultiShowCards !== undefined
-      && typeof chatAnnouncementMultiShowCards !== "boolean"
-    ) {
-      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
-    }
 
     if (gachaSoundRules !== undefined && !Array.isArray(gachaSoundRules)) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
@@ -970,9 +1170,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
-    // Issue #393: validate the main-reward pack name (null = all cards).
-    const channelPointCollectionResult = resolveCollectionNameField(body, "channelPointCollectionName");
-    if (!channelPointCollectionResult.ok) {
+    // Issue #1994: メイン報酬のパック割り当ては複数形（channelPointCollectionNames:
+    // string[] | null）を正規とし、旧単一形 channelPointCollectionName も受理する
+    // （両方が同時に送られた場合は曖昧さを避けるため 400）。値は常に配列へ正規化
+    // され、null/[] は「全カード」。
+    const channelPointPackNamesResult = resolveCollectionNamesField(
+      body,
+      "channelPointCollectionNames",
+      "channelPointCollectionName"
+    );
+    if (!channelPointPackNamesResult.ok) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
 
@@ -985,6 +1192,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.FORBIDDEN }, { status: 403 });
     }
 
+    // Issue #1994: 現在の実効パック割り当て。読み取りが必要なのはリクエストが
+    // パック割り当てを変更しようとするときだけなので、ここでは解決を遅延する
+    // （下の membership 検証ブロックで初めて読む。パック変更を含まない
+    // 設定保存で余計なクエリを発行しない）。
     const currentCardPackNames: string[] = Array.isArray(streamer.card_pack_names)
       ? streamer.card_pack_names
       : [];
@@ -996,6 +1207,15 @@ export async function POST(request: NextRequest) {
       && typeof streamer.pack_rarity_weights === "object"
       && !Array.isArray(streamer.pack_rarity_weights)
         ? (streamer.pack_rarity_weights as Record<string, Record<string, number>>)
+        : null;
+
+    // #1765 フォローアップ: pack_album_grid_sizes も同じく object 前提の列。
+    // 配列/非objectは不正データとして無視し null（＝未設定）に倒す。
+    const currentPackAlbumGridSizes: AlbumGridSizeMap | null =
+      streamer.pack_album_grid_sizes
+      && typeof streamer.pack_album_grid_sizes === "object"
+      && !Array.isArray(streamer.pack_album_grid_sizes)
+        ? sanitizeAlbumGridSizeMap(streamer.pack_album_grid_sizes)
         : null;
 
     // Issue #578(#576 フェーズ1): packRarityWeights のキーは、同一リクエストで
@@ -1014,6 +1234,21 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
       }
       normalizedPackRarityWeights = validation.value;
+    }
+
+    // #1765 フォローアップ: packAlbumGridSizes のキーも pack_rarity_weights と
+    // 同じ実効カタログ（同一リクエストの cardPackNames があればそれ、無ければ
+    // DB の現在値）で検証する。null は「全クリア」として常に許可。
+    let normalizedPackAlbumGridSizes: AlbumGridSizeMap | null | undefined;
+    if (packAlbumGridSizes !== undefined) {
+      const validation = validateAlbumGridSizeMap(
+        packAlbumGridSizes,
+        effectivePackCatalogForRarityWeights
+      );
+      if (!validation.ok) {
+        return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+      }
+      normalizedPackAlbumGridSizes = validation.value;
     }
 
     // Issue #269再設計: 「新しい登録」= card_pack_names一覧への新規追加のみを
@@ -1048,6 +1283,24 @@ export async function POST(request: NextRequest) {
       // プルーニングすべき既存エントリが無いため何もしない(undefinedのまま)。
     }
 
+    // #1765 フォローアップ: cardPackNames の縮小に追随して、消えたパックの
+    // 並び既定も落とす（__all__ / __default__ は常に保持）。pack_rarity_weights と
+    // 同じ規則・同じ理由（カタログから消えたパックの設定を持ち続けない）。
+    let packAlbumGridSizesToPersist: AlbumGridSizeMap | null | undefined =
+      normalizedPackAlbumGridSizes;
+
+    if (normalizedCardPackNames !== undefined) {
+      const albumPruneBasis = packAlbumGridSizesToPersist !== undefined
+        ? packAlbumGridSizesToPersist
+        : currentPackAlbumGridSizes;
+      if (albumPruneBasis !== null) {
+        packAlbumGridSizesToPersist = pruneAlbumGridSizeMap(
+          albumPruneBasis,
+          persistedCardPackNames
+        );
+      }
+    }
+
     // Issue #393再設計: メイン報酬のパック紐付けは、null化・現在値の再送信は
     // 常に許可し、新しい値は「この保存で確定した persistedCardPackNames」に
     // 登録済みであることを要求する(#5参照: cardPackNamesのゲート適用後の
@@ -1061,31 +1314,66 @@ export async function POST(request: NextRequest) {
     // が持つ疑似パック(=未分類カード)として、membership検証自体を常に
     // スキップして受理する(存在検証は下のcheckCollectionHasActiveCardsで
     // 別途行う)。
-    if (
-      channelPointCollectionResult.value !== undefined &&
-      channelPointCollectionResult.value !== DEFAULT_PACK_SENTINEL &&
-      !isRegisteredOrUnchanged(
-        channelPointCollectionResult.value,
+    // Issue #1994: パック割り当て変更時のみ現在値を読む。channel_point_pack_names
+    // は streamers 本体とは別の狭い定義で読み、列欠落（デプロイ窓）のときは
+    // undefined → 旧単一列のみで解決する（resolveEffectiveRewardPackNames の規約）。
+    let currentEffectivePackNames: string[] = [];
+    if (channelPointPackNamesResult.value !== undefined) {
+      let currentPackNamesColumn: unknown = undefined;
+      try {
+        const packBindingRows = await withDbRetry(async () => {
+          const { db } = await getDb();
+          return db
+            .select({
+              channel_point_pack_names:
+                streamerChannelPointPackBindingsTable.channel_point_pack_names,
+            })
+            .from(streamerChannelPointPackBindingsTable)
+            .where(eq(streamerChannelPointPackBindingsTable.id, streamer.id))
+            .limit(1);
+        }, "Streamer Settings API: pack names lookup", { idempotent: true });
+        currentPackNamesColumn = packBindingRows[0]?.channel_point_pack_names ?? [];
+      } catch (packNamesError) {
+        if (!isMissingChannelPointPackNamesColumnError(packNamesError)) {
+          // 列欠落以外の障害は黙って旧列に倒さない（複数パック割り当てが一時障害で
+          // 単一パックへ縮退・上書きされるのを防ぐため fail-fast）。
+          return handleDatabaseError(packNamesError, "Streamer Settings API: pack names lookup");
+        }
+      }
+      currentEffectivePackNames = resolveEffectiveRewardPackNames(
+        currentPackNamesColumn,
         streamer.channel_point_collection_name,
+      );
+    }
+
+    if (channelPointPackNamesResult.value !== undefined) {
+      const unregistered = findUnregisteredRewardPackName(
+        channelPointPackNamesResult.value,
+        currentEffectivePackNames,
         persistedCardPackNames
-      )
-    ) {
-      return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+      );
+      if (unregistered !== null) {
+        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_REGISTERED }, { status: 400 });
+      }
     }
 
     // Issue #393: reject binding the main reward to a pack with no active cards,
     // which would always resolve to an empty draw pool at redemption time.
     // 値が実際に変わる場合のみチェックする(#1: 孤立参照の再送信では走らせない)。
-    if (
-      typeof channelPointCollectionResult.value === "string" &&
-      channelPointCollectionResult.value !== streamer.channel_point_collection_name
-    ) {
-      const existence = await checkCollectionHasActiveCards(
-        streamer.id,
-        channelPointCollectionResult.value
+    // Issue #1994: 複数割り当てでは「新たに紐付く各パック」へ同じ検査を行う。
+    // 空パックが1つ混ざっても他パックからは当たるが、タイポ等の設定ミスを
+    // 早期に止める既存方針を複数形へそのまま拡張する。
+    if (channelPointPackNamesResult.value !== undefined) {
+      // Issue #1996 (任意9): 新たに紐付くパックの存在検査を直列 SELECT ではなく
+      // 1本の GROUP BY クエリに集約する（最大51回の直列クエリを防ぐ）。
+      const newlyBoundPackNames = channelPointPackNamesResult.value.filter(
+        (name) => !currentEffectivePackNames.includes(name)
       );
-      if (existence === "absent") {
-        return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+      const existenceByPack = await checkCollectionsHaveActiveCards(streamer.id, newlyBoundPackNames);
+      for (const name of newlyBoundPackNames) {
+        if (existenceByPack.get(name) === "absent") {
+          return NextResponse.json({ error: ERROR_MESSAGES.COLLECTION_NOT_FOUND }, { status: 400 });
+        }
       }
     }
 
@@ -1109,10 +1397,16 @@ export async function POST(request: NextRequest) {
     if (channelPointRewardName !== undefined) {
       updateData.channel_point_reward_name = channelPointRewardName;
     }
-    // Issue #393: persist the main-reward pack binding (null clears it = all cards).
-    // membership検証(上記)を通っているため、ここでは無条件に保存する。
-    if (channelPointCollectionResult.value !== undefined) {
-      updateData.channel_point_collection_name = channelPointCollectionResult.value;
+    // Issue #1994: persist the main-reward pack binding to BOTH columns in the
+    // same UPDATE — the array column holds the full selection while the legacy
+    // column keeps the first element as a rollback-compatible mirror
+    // (null clears it = all cards). membership検証(上記)を通っているため、
+    // ここでは無条件に保存する。
+    if (channelPointPackNamesResult.value !== undefined) {
+      updateData.channel_point_pack_names = channelPointPackNamesResult.value;
+      updateData.channel_point_collection_name = toLegacyCollectionName(
+        channelPointPackNamesResult.value
+      );
     }
 
     // ガチャ効果音設定
@@ -1224,9 +1518,9 @@ export async function POST(request: NextRequest) {
     if (chatAnnouncementMultiTemplate !== undefined) {
       updateData.chat_announcement_multi_template = chatAnnouncementMultiTemplate;
     }
-    if (chatAnnouncementMultiShowCards !== undefined) {
-      updateData.chat_announcement_multi_show_cards = chatAnnouncementMultiShowCards;
-    }
+    // Issue #1548: chat_announcement_multi_show_cards 列は v1 outbox 行の再生と
+    // 旧スナップショット互換のために残すが、UI/API からは更新しない
+    // （列削除は追跡 Issue で行う）。
 
     // rarityWeights: レアリティ別目標確率（nullで自動モード無効）
     if (rarityWeights !== undefined) {
@@ -1244,9 +1538,31 @@ export async function POST(request: NextRequest) {
       updateData.pack_rarity_weights = packRarityWeightsToPersist;
     }
 
+    // #1765 フォローアップ: アルバムの並び既定と初期表示。
+    // packAlbumGridSizes は packRarityWeights と同じく、確定後の永続値を返す。
+    if (packAlbumGridSizesToPersist !== undefined) {
+      updateData.pack_album_grid_sizes = packAlbumGridSizesToPersist;
+    }
+    if (collectionDefaultView !== undefined) {
+      updateData.collection_default_view = collectionDefaultView;
+    }
+
+    // Issue #1782: 被りカードの表示段階しきい値。サーバ側で黙って加工する
+    // シナリオは無い（カタログ所属チェックをしないため。未知のレアリティ名は
+    // どのカードにも一致せず表示上は単に無効になる）ので、検証を通った値を
+    // そのまま保存する。デプロイ窓で列が未作成の場合は skip フラグで通知する。
+    if (normalizedDuplicateDisplayTiers !== undefined) {
+      updateData.duplicate_display_tiers = normalizedDuplicateDisplayTiers;
+    }
+
     // カスタムレアリティ名（ドロップ率の再計算は不要）
     if (customRarities !== undefined) {
       updateData.custom_rarities = normalizedCustomRarities;
+    }
+
+    // Issue #1783: カスタムレアリティごとの表示スタイル。
+    if (rarityStyles !== undefined) {
+      updateData.rarity_styles = normalizedRarityStyles;
     }
 
     // 事前登録カードパック名（Issue #393再設計）。ゲートで一部却下されていても
@@ -1326,6 +1642,15 @@ export async function POST(request: NextRequest) {
     // 「両方同時に欠落」しかあり得ない。2キーをまとめて剥がす1段のみ追加する。
     let liveDirectorySettingsWriteSkipped = false;
     let tradeSettingsWriteSkipped = false;
+    // #1765 フォローアップ: pack_album_grid_sizes / collection_default_view も
+    // 同じ理由(デプロイ窓)で skip-and-flag パターンを踏襲する。
+    let albumSettingsWriteSkipped = false;
+    // Issue #1782: duplicate_display_tiers も同じ理由(デプロイ窓)で
+    // skip-and-flag パターンを踏襲する。
+    let duplicateDisplayTiersWriteSkipped = false;
+    let rarityStylesWriteSkipped = false;
+    // Issue #1994: メイン報酬の複数パック割り当てがデプロイ窓で先頭1件へ縮退した場合。
+    let channelPointPackNamesWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
@@ -1340,9 +1665,28 @@ export async function POST(request: NextRequest) {
       gachaSoundRulesWriteSkipped = updateResult.gachaSoundRulesWriteSkipped;
       liveDirectorySettingsWriteSkipped = updateResult.liveDirectorySettingsWriteSkipped;
       tradeSettingsWriteSkipped = updateResult.tradeSettingsWriteSkipped;
+      albumSettingsWriteSkipped = updateResult.albumSettingsWriteSkipped;
+      duplicateDisplayTiersWriteSkipped = updateResult.duplicateDisplayTiersWriteSkipped;
+      rarityStylesWriteSkipped = updateResult.rarityStylesWriteSkipped;
+      channelPointPackNamesWriteSkipped = updateResult.channelPointPackNamesWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
+      }
+
+      // #1334: 効果音関連の列（gacha_sound_url / gacha_sound_enabled /
+      // gacha_sound_rules。rules 保存時の旧ミラー列への書き戻しも含む）を
+      // 実際に書き込んだ場合だけ、公開 GET の edge cache を無効化する。
+      // 無関係の設定保存まで purge すると、HIT 中の正規エントリを毎回
+      // 捨ててキャッシュの意義を削ぐため、効果音フィールド限定に絞る。
+      // purge は best-effort（失敗はログのみ、保存応答へ影響させない）で、
+      // id は path param ではなく DB が返した正規化済み streamer.id を使う。
+      const soundSettingsWritten =
+        updateData.gacha_sound_url !== undefined ||
+        updateData.gacha_sound_enabled !== undefined ||
+        updateData.gacha_sound_rules !== undefined;
+      if (soundSettingsWritten) {
+        await purgeSoundSettingsCache(request.url, streamer.id);
       }
     }
 
@@ -1414,6 +1758,37 @@ export async function POST(request: NextRequest) {
       ...(gachaSoundRulesPremiumRequired ? { gachaSoundRulesPremiumRequired: true } : {}),
       ...(liveDirectorySettingsWriteSkipped ? { liveDirectorySettingsSkippedDeployWindow: true } : {}),
       ...(tradeSettingsWriteSkipped ? { tradeSettingsSkippedDeployWindow: true } : {}),
+      // #1765 フォローアップ: packAlbumGridSizes はサーバ側で prune（カタログから
+      // 消えたパックの既定を除去）されるシナリオがあるため、確定後の永続値を
+      // エコーバックしてクライアントを再同期させる。デプロイ窓 skip 時は
+      // 書き込めていないのでエコーせずフラグで通知する。
+      ...(packAlbumGridSizesToPersist !== undefined && !albumSettingsWriteSkipped
+        ? { packAlbumGridSizes: packAlbumGridSizesToPersist }
+        : {}),
+      ...(collectionDefaultView !== undefined && !albumSettingsWriteSkipped
+        ? { collectionDefaultView }
+        : {}),
+      ...(albumSettingsWriteSkipped ? { albumSettingsSkippedDeployWindow: true } : {}),
+      // Issue #1782: duplicateDisplayTiers もサーバ側の却下・加工シナリオは無いが、
+      // デプロイ窓で書き込めなかった可能性をフラグで通知する。albumSettings と同じく
+      // 「保存できた」と偽って楽観反映させるサイレント欠損を防ぐため。
+      ...(normalizedDuplicateDisplayTiers !== undefined && !duplicateDisplayTiersWriteSkipped
+        ? { duplicateDisplayTiers: normalizedDuplicateDisplayTiers }
+        : {}),
+      ...(duplicateDisplayTiersWriteSkipped
+        ? { duplicateDisplayTiersSkippedDeployWindow: true }
+        : {}),
+      ...(normalizedRarityStyles !== undefined && !rarityStylesWriteSkipped
+        ? { rarityStyles: normalizedRarityStyles }
+        : {}),
+      ...(rarityStylesWriteSkipped
+        ? { rarityStylesSkippedDeployWindow: true }
+        : {}),
+      // Issue #1994: 配列列が未デプロイで、旧列（先頭要素）しか保存できなかった場合。
+      // 他の skip フラグと同じく「保存できた」と偽らないために返す。
+      ...(channelPointPackNamesWriteSkipped
+        ? { channelPointCollectionNamesSkippedDeployWindow: true }
+        : {}),
     });
   } catch (error) {
     return handleApiError(error, "Streamer Settings API: General");

@@ -25,6 +25,8 @@ type BotAccountDisplay = { username: string | null; displayName: string | null }
 // 配信設定ページのレイアウト切替クライアントコンポーネント。
 // Simple = 集中度の高いクイックスタート 2 ステップ表示。
 // Advanced = sticky 左サイドバー + 右コンテンツの単一セクション表示。
+// コレクション公開設定とカードトレード設定は配信設定ではなくアカウント側の
+// 設定として /dashboard/account へ移した（#715 §6.7）。ここには置かない。
 // 各モードで実コンポーネント (OverlayPreview / ChannelPointSettings 等) を
 // 個別にマウントするため、トグル時は子の内部状態がリセットされる。
 // これは fetch 重複を避けるため意図的にした設計判断。
@@ -46,15 +48,7 @@ const ChatAnnouncementSettings = dynamic(() => import("@/components/ChatAnnounce
   ssr: false,
   loading: () => <SettingsPanelSkeleton />,
 });
-const CardVisibilitySettings = dynamic(() => import("@/components/CardVisibilitySettings"), {
-  ssr: false,
-  loading: () => <SettingsPanelSkeleton />,
-});
 const LiveDirectorySettings = dynamic(() => import("@/components/LiveDirectorySettings"), {
-  ssr: false,
-  loading: () => <SettingsPanelSkeleton />,
-});
-const TradeSettings = dynamic(() => import("@/components/TradeSettings"), {
   ssr: false,
   loading: () => <SettingsPanelSkeleton />,
 });
@@ -83,6 +77,8 @@ export interface SettingsLayoutData {
     rewardName: string | null;
     // Issue #393: pack bound to the main reward (null = all cards)
     collectionName: string | null;
+    // Issue #1994: メイン報酬の実効パック割り当て（配列）。
+    collectionNames?: string[] | null;
   };
   gachaSound: {
     soundUrl: string | null;
@@ -95,19 +91,10 @@ export interface SettingsLayoutData {
     needsAttention: boolean;
     template: string | null;
     multiTemplate: string | null;
-    multiShowCards: boolean;
-  };
-  visibility: {
-    showUnowned: boolean;
-    showUnownedDetails: boolean;
   };
   liveDirectory: {
     publishLiveStatus: boolean;
     publishStats: boolean;
-  };
-  trade: {
-    enabled: boolean;
-    crossChannelEnabled: boolean;
   };
   // Issue #554: カードパックのプルダウン表示制御 + デフォルト名。未指定
   // (undefined)の場合は ChannelPointSettings 側が従来どおりの表示にフォール
@@ -173,6 +160,7 @@ function SimpleLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
+          currentCollectionNames={data.channelPoint.collectionNames ?? null}
           cardPacks={data.cardPacks}
           compact
         />
@@ -275,16 +263,12 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
     enabled: data.chatAnnouncement.enabled,
     needsAttention: announcementNeedsAttention,
   });
-  const visibilityStatus: SettingsSection["status"] = data.visibility.showUnowned
-    ? "active"
-    : "empty";
   // 配信一覧への掲載とランキングでのチャネル表示は独立した設定なので、
   // どちらか一方でも有効ならセクション全体を設定済みとして示す。
   const liveDirectoryStatus: SettingsSection["status"] =
     data.liveDirectory.publishLiveStatus || data.liveDirectory.publishStats
       ? "active"
       : "empty";
-  const tradeStatus: SettingsSection["status"] = data.trade.enabled ? "active" : "empty";
 
   const sections: SettingsSection[] = [
     {
@@ -315,6 +299,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           currentRewardId={data.channelPoint.rewardId}
           currentRewardName={data.channelPoint.rewardName}
           currentCollectionName={data.channelPoint.collectionName}
+          currentCollectionNames={data.channelPoint.collectionNames ?? null}
           cardPacks={data.cardPacks}
         />
       ),
@@ -352,22 +337,7 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
           currentEnabled={data.chatAnnouncement.enabled}
           currentTemplate={data.chatAnnouncement.template}
           currentMultiTemplate={data.chatAnnouncement.multiTemplate}
-          currentMultiShowCards={data.chatAnnouncement.multiShowCards}
           botAccount={data.botAccount}
-        />
-      ),
-    },
-    {
-      id: "visibility",
-      label: t("advanced.section.visibility"),
-      description: t("advanced.section.visibilityDesc"),
-      icon: <SectionIcon name="eye" />,
-      status: visibilityStatus,
-      content: (
-        <CardVisibilitySettings
-          streamerId={data.streamerId}
-          currentShowUnowned={data.visibility.showUnowned}
-          currentShowUnownedDetails={data.visibility.showUnownedDetails}
         />
       ),
     },
@@ -386,20 +356,6 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
       ),
     },
     {
-      id: "trade",
-      label: t("advanced.section.trade"),
-      description: t("advanced.section.tradeDesc"),
-      icon: <SectionIcon name="trade" />,
-      status: tradeStatus,
-      content: (
-        <TradeSettings
-          streamerId={data.streamerId}
-          currentTradeEnabled={data.trade.enabled}
-          currentCrossChannelTradeEnabled={data.trade.crossChannelEnabled}
-        />
-      ),
-    },
-    {
       id: "share",
       label: t("advanced.section.share"),
       description: t("advanced.section.shareDesc"),
@@ -413,6 +369,10 @@ function AdvancedLayout({ data }: { data: SettingsLayoutData }) {
   // sections 配列自体は無改変なので、定数を true に戻せばサイドバーとパネルの両方が
   // 元どおりになる。フィルタ後に AdvancedSettingsLayout へ渡すことで、初期選択
   // セクションやサイドバーの並びも「表示されるセクション」だけを基準に決まる。
+  // main/preview 同期時の注記: preview ではトレード設定が /dashboard/account へ移動済みで、
+  // この sections に "trade" は現在存在しない（移動先は account page 側で同じ定数により
+  // ゲートしている）。main #1803 の分岐は、将来ここへトレード設定が戻った場合も
+  // 非表示が自動的に効くよう残している。
   const visibleSections = sections.filter(
     (section) => section.id !== "trade" || CARD_TRADE_UI_VISIBLE,
   );
@@ -465,7 +425,7 @@ function PageHeader({ title, description }: { title: string; description?: strin
 // 一つの <SectionIcon> でラップし、共通の svg 属性を共有することで boilerplate を削減。
 // ---------------------------------------------------------------------------
 
-type IconName = "overlay" | "reward" | "sound" | "chat" | "eye" | "broadcast" | "trade" | "share";
+type IconName = "overlay" | "reward" | "sound" | "chat" | "broadcast" | "share";
 
 const ICON_PATHS: Record<IconName, React.ReactNode> = {
   overlay: (
@@ -488,24 +448,10 @@ const ICON_PATHS: Record<IconName, React.ReactNode> = {
     </>
   ),
   chat: <path d="M4 5h16v11H8l-4 4V5z" />,
-  eye: (
-    <>
-      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
-      <circle cx="12" cy="12" r="3" />
-    </>
-  ),
   broadcast: (
     <>
       <circle cx="12" cy="12" r="2" />
       <path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8" />
-    </>
-  ),
-  trade: (
-    <>
-      <path d="M4 7h12" />
-      <path d="m13 4 3 3-3 3" />
-      <path d="M20 17H8" />
-      <path d="m11 14-3 3 3 3" />
     </>
   ),
   share: (

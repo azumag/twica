@@ -32,9 +32,9 @@ vi.mock('@/lib/services/chat-notification-outbox', () => ({
 }))
 
 vi.mock('@/lib/services/gacha', () => ({
-  GachaService: vi.fn().mockImplementation(() => ({
+  GachaService: vi.fn().mockImplementation(function() { return ({
     executeGachaForEventSub: mocks.executeGachaForEventSub,
-  })),
+  }) }),
 }))
 
 vi.mock('@/lib/sentry/error-handler', () => ({
@@ -64,11 +64,11 @@ vi.mock('@/lib/twitch/chat-service', () => ({
     TWITCH_REJECTED: 'twitch_rejected',
     CONTENT_REJECTED: 'content_rejected',
   },
-  TwitchChatService: vi.fn().mockImplementation(() => ({
+  TwitchChatService: vi.fn().mockImplementation(function() { return ({
     buildMessage: mocks.buildMessage,
     sendChatMessage: mocks.sendChatMessage,
     sendChatMessageDetailed: mocks.sendChatMessageDetailed,
-  })),
+  }) }),
 }))
 
 vi.mock('@/lib/logger.server', () => ({

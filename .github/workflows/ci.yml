@@ -93,35 +93,64 @@ jobs:
               - 'tests/fixtures/analysis-dashboard-pagination-postgres.sql'
               - 'tests/fixtures/transactional-chat-outbox-postgres.sql'
               - 'tests/fixtures/transactional-chat-outbox-concurrency.sh'
-              - 'tests/fixtures/add-card-trading-postgres.sql'
-              - 'tests/fixtures/add-card-trading-concurrency.sh'
-              - 'tests/fixtures/redemption-ranking-exclusions-postgres.sql'
-              - 'tests/fixtures/pack-completion-rewards-postgres.sql'
-              # #934 同志カードランキング RPC の実DB検証（述語・同率決定順・
-              # period過濾・返却allowlist・fail-closed）。migration と同じく
-              # 変更時に実行ゲートが必要。
-              - 'tests/fixtures/card-ranking-postgres.sql'
-              # 実PG統合テストとその専用DBセットアップ資材。変更時は
-              # planetscale-migration-postgres ジョブで実DB実行する（#1747）。
-              - 'tests/fixtures/pack-completion-rewards-local.sql'
-              - 'tests/integration/pack-completion-rewards-pg.test.ts'
-              - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
-              - 'src/lib/services/chat-notification-outbox.ts'
-              - 'src/lib/services/chat-notification-delivery.ts'
-              - 'tests/integration/trade-visibility-pg.test.ts'
-              # trade 公開判定 SQL の正しさを担保するのは実PGテストだけなので、
-              # 実装の変更でも同ジョブを起動する（#1747）。
-              - 'src/lib/trade.ts'
-              # db-readonly-check(production).yml の集計 SQL を実PG17で検証する。fixture 側の
-              # 変更でも実行ゲートが必要。production 用 workflow は main にのみ存在する。
+              # db-readonly-check.yml の集計 SQL を実PG17で検証する。fixture 側の変更でも
+              # PG17 job を回さないと、その検証が黙って古くなる。
               - 'tests/fixtures/chat-outbox-readonly-counts-pg17.mjs'
               - '.github/workflows/db-readonly-check.yml'
-              - '.github/workflows/db-readonly-check-production.yml'
+              - 'tests/fixtures/add-card-trading-postgres.sql'
+              - 'tests/fixtures/add-card-trading-concurrency.sh'
+              - 'tests/fixtures/trade-auction-concurrency.sh'
+              - 'tests/fixtures/redemption-ranking-exclusions-postgres.sql'
+              - 'tests/fixtures/stats-ranking-ties-postgres.sql'
+              - 'tests/fixtures/pack-completion-rewards-postgres.sql'
+              - 'tests/fixtures/card-ranking-postgres.sql'
+              - 'tests/fixtures/gacha-latest-history-plan.sh'
+              - 'tests/fixtures/streamer-ranking-read-postgres.sql'
+              # These suites execute real SQL through the application DB layer;
+              # changes to their runtime, schema or test setup must re-run PG17.
+              - 'src/lib/trade.ts'
+              - 'src/lib/trade-auction.ts'
+              - 'src/lib/uuid-validation.ts'
+              - 'src/lib/db/**'
+              # gacha-latest-history-plan.sh が getLatestCardIdForStreamer の
+              # 並び順キー(orderBy)に対応する実行計画を実PGで検証するため、
+              # クエリを変えるPRでは必ずPG17ジョブを回す。
+              - 'src/lib/services/gacha.ts'
+              - 'tests/integration/trade-visibility-pg.test.ts'
+              - 'tests/integration/trade-auction-pg.test.ts'
               # chat-outbox-watch.yml（Issue #1837 の滞留watchdog）の観測 SQL と
               # アラート判定を同じく実PG17で検証する。判定 block の変更でも実行する。
               - 'tests/fixtures/chat-outbox-watch-pg17.mjs'
               - '.github/workflows/chat-outbox-watch.yml'
-              # Node の固定版を変えるときは PG17 も回す（保守的に）。
+              # main から取り込んだ production 用 workflow (#1836) も同じ集計 SQL を
+              # 持つため、その変更でも PG17 job を回す。
+              - '.github/workflows/db-readonly-check-production.yml'
+              - 'tests/fixtures/pack-completion-rewards-local.sql'
+              - 'tests/integration/pack-completion-rewards-pg.test.ts'
+              - 'tests/integration/chat-outbox-attempt-accounting-pg.test.ts'
+              - 'tests/integration/storage-reservation-pg.test.ts'
+              # 履歴削除後も event_id の冪等性を保つ墓石（trigger・RPC・再開位置）を
+              # 実PG17で検証する。
+              - 'tests/integration/gacha-history-tombstone-pg.test.ts'
+              - 'db/planetscale/migrations/*gacha_history_event_tombstones*'
+              - 'src/lib/services/chat-notification-outbox.ts'
+              - 'src/lib/services/chat-notification-delivery.ts'
+              # 容量予約のSQL契約（reserve/commit/release/reconcile）を変えるPRでは
+              # 実PG17で並列予約・再照合を検証する。
+              - 'src/lib/storage-db.ts'
+              - 'src/lib/storage-usage.ts'
+              - 'src/lib/storage-maintenance.ts'
+              - 'db/planetscale/migrations/*storage*'
+              - 'tests/fixtures/pack-completion-rewards-pg-seed.sql'
+              - 'tests/setup.ts'
+              - 'tests/stubs/**'
+              - 'vitest.config.*'
+              - 'tsconfig*.json'
+              - 'package.json'
+              - 'package-lock.json'
+              # app と重複するが意図的: postgres_fixtures は PG17 / integration job を
+              # 独立にゲートする。Node の固定版を変えるときは保守的に実PG検証も回す
+              # （.node-version は CI / Workers Builds / migration runner の共通 pin）。
               - '.node-version'
             analysis:
               - 'analysis/**'
@@ -300,6 +329,14 @@ jobs:
           TWITCH_CLIENT_SECRET: dummy_client_secret
           TWITCH_EVENTSUB_SECRET: dummy_eventsub_secret
           CSRF_TOKEN_SALT: dummy_csrf_salt_at_least_32_chars_long
+
+      - name: Smoke-test the built Worker at runtime
+        # 2026-10-21 の preview 全ルート 500 障害の再発防止。Next.js と
+        # @opennextjs/cloudflare の組み合わせが未対応でも `workers:build` は成功し、
+        # Worker 起動後の初期化 (`Unexpected loadManifest(...)`) で初めて落ちる。
+        # peer 範囲 (`next >=16.2.11` など) は未検証の将来版も許容するため
+        # `npm ls` では検出できない。生成物を workerd で実際に起動して確認する。
+        run: bash scripts/smoke-opennext-worker.sh
 
       - name: Typecheck Chat Delivery Worker
         run: npm run chat-delivery:typecheck
@@ -569,6 +606,15 @@ jobs:
         run: node tests/fixtures/paced-multi-draw-chat-postgres.mjs
 
       - name: Verify the read-only check counts match the completion UPDATE
+        # db-readonly-check.yml に埋め込まれた集計 SQL をその YAML から取り出して実 PostgreSQL 17 で
+        # 実行する。有効 lease 中の processing 行を数えないこと・targets_total = 内訳和・
+        # targets_total が補正 UPDATE の実際の変更行数と一致することを固定する
+        # （SQL 文字列テストでは検証できないため実DBで実行する）。
+        env:
+          PGPASSWORD: postgres
+        run: node tests/fixtures/chat-outbox-readonly-counts-pg17.mjs
+
+      - name: Verify the production read-only check counts match the completion UPDATE
         # db-readonly-check-production.yml に埋め込まれた集計 SQL をその YAML から取り出し、
         # 実 PostgreSQL 17 で実行する。有効 lease 中の processing 行を数えないこと・
         # targets_total = 内訳和・targets_total が補正 UPDATE の実際の変更行数と一致することを
@@ -618,6 +664,15 @@ jobs:
           PGPASSWORD: postgres
         run: bash tests/fixtures/add-card-trading-concurrency.sh
 
+      - name: Verify trade auction concurrent lock and deadline fencing
+        # #1791: 入札 × 通常出品(トリガー)・入札 × 応諾の支払い・入札変更 × 成立・
+        # 入札/成立 × 期限境界を、実際の2接続のロック待ちで検証する(単一
+        # トランザクションでは「ロック待ちの間に進む時刻」と接続間の行ロック競合を
+        # 再現できない)。各シナリオは tests/fixtures/trade-auction-concurrency.sh 冒頭参照。
+        env:
+          PGPASSWORD: postgres
+        run: bash tests/fixtures/trade-auction-concurrency.sh
+
       - name: Verify redemption ranking exclusions
         # #1034/#1032 Auto Review必須指摘: SQL文字列の正規表現テストだけでは、
         # BOTアカウント連携解除(物理DELETE)によるtrg_sync_channel_point_usage_stat_bot_account
@@ -640,36 +695,87 @@ jobs:
           psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
             -f tests/fixtures/card-ranking-postgres.sql
 
-      - name: Setup Node.js
+      - name: Verify gacha latest history query plan
+        # #1300: getLatestCardIdForStreamer の最新1件取得が、履歴件数・直近の新旧に
+        # 依存せず covering index を使うことを実DBで検証する。VACUUM が必要なため
+        # (投入直後のdirty visibility mapではplannerの見積もりが本番とずれる)、
+        # 投入→VACUUM→計測→後片付けをshell fixtureで行う。prepared statementで
+        # ウォームアップしてからEXPLAINし、アプリが実際に使うplanを見る。
+        env:
+          PGPASSWORD: postgres
+        run: bash tests/fixtures/gacha-latest-history-plan.sh
+
+      - name: Verify streamer ranking read function
+        # #742 子B: get_streamer_ranking() の匿名化・順位/位置の使い分け・self フォールバック・
+        # insufficientData 境界・snapshot 0 行・権限は SQL 文字列テストでは検証できない。
+        # 全 migration 適用済みの実 PostgreSQL 17 で関数を呼び、末尾の ROLLBACK で
+        # 投入データを残さない (後続の fixture / integration suite に影響させない)。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/streamer-ranking-read-postgres.sql
+
+      - name: Verify streamer ranking ties and stable positions
+        # Calls the migrated runtime functions and rolls all fixture data back.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/stats-ranking-ties-postgres.sql
+
+      - name: Setup Node.js for PostgreSQL integration tests
         uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install integration test dependencies
         run: npm ci
 
-      - name: Run pack completion reward tests on disposable PostgreSQL
-        # tests/integration/pack-completion-rewards-pg.test.ts は共有DBではなく
-        # 専用の破棄可能なDBで実行する（#1747）。空DBへ簡略fixture→対象migration
-        # の順に適用する手順は、ローカル実行の定義
-        # （docs/superpowers/specs/2026-09-07-pack-completion-rewards-validation.md）
-        # どおり。PACK_REWARD_TEST_DATABASE_URL が未設定だと skip されるため、
-        # ここで必ず渡して skip を解除する。
+      - name: Verify trade visibility against PostgreSQL
         env:
-          PGPASSWORD: postgres
-          PACK_REWARD_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/pack_rewards_test
-        run: |
-          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
-            -c 'CREATE DATABASE pack_rewards_test;'
-          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d pack_rewards_test \
-            -c 'CREATE EXTENSION IF NOT EXISTS pgcrypto;' \
-            -f tests/fixtures/pack-completion-rewards-local.sql
-          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d pack_rewards_test \
-            -f db/planetscale/migrations/20260907000000_add_pack_completion_rewards.sql
-          npx vitest run tests/integration/pack-completion-rewards-pg.test.ts
+          TRADE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/trade-visibility-pg.test.ts
+
+      - name: Verify trade auctions against PostgreSQL
+        # #1791: オークションの RPC・拘束判定・trade_offers トリガー・accept の
+        # 支払い除外を、アプリの service 関数経由で実 DB に対して検証する。
+        env:
+          TRADE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/trade-auction-pg.test.ts
 
       - name: Verify chat outbox attempt accounting against PostgreSQL
         env:
           CHAT_OUTBOX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: npx vitest run tests/integration/chat-outbox-attempt-accounting-pg.test.ts
+
+      - name: Verify storage reservation ledger against PostgreSQL
+        # #1907: 同一ユーザー/並列ユーザーの予約が上限を突破しないこと、
+        # commit/release の原子性、blob_files からの再照合を実DBで確認する。
+        env:
+          STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/storage-reservation-pg.test.ts
+
+      - name: Verify gacha history tombstones against PostgreSQL
+        # 視聴者が履歴を削除しても、再送・replay で同じ交換のカードを再発行しない
+        # こと（N連の途中削除・完了後削除・単発・カード削除のCASCADE）を、
+        # アプリの GachaService と RPC 経由で実DBに対して確認する。
+        env:
+          GACHA_TOMBSTONE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/gacha-history-tombstone-pg.test.ts
+
+      - name: Seed completion reward PostgreSQL integration tests
+        # Use the migrated schema, not the local fixture that creates tables/roles.
+        # Trade tests and all existing fixtures finish first: the pack suite's
+        # beforeAll truncates shared tables and must never race another suite.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/pack-completion-rewards-pg-seed.sql
+
+      - name: Verify completion rewards against PostgreSQL
+        env:
+          PACK_REWARD_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/pack-completion-rewards-pg.test.ts

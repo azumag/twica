@@ -30,6 +30,11 @@ export interface Database {
           // メイン報酬に紐付くカードパック名（NULL=全カード対象）。Issue #393
           // Card pack bound to the main channel-point reward (NULL = all cards)
           channel_point_collection_name: string | null
+          // Issue #1994: メイン報酬に割り当てた複数パック（先頭は channel_point_collection_name
+          // と常に一致するミラー。空配列なら旧単一列を読む）。migration
+          // 20261108120000 の列。デプロイ窓では列が無く取得されないため optional。
+          // Multi-pack binding for the main reward (head mirrors the legacy column).
+          channel_point_pack_names?: string[]
           is_active: boolean
           // ガチャ効果音URL - R2に保存された音声ファイルのURL
           gacha_sound_url: string | null
@@ -68,6 +73,11 @@ export interface Database {
           // 配信者が定義したカスタムレアリティ名の一覧（rarity_weights とは独立）
           // List of streamer-defined custom rarity names (decoupled from rarity_weights)
           custom_rarities: string[]
+          // カスタムレアリティ名をキーにした表示スタイル（色/グラデーション/グロー/
+          // エフェクト）。実体と検証規則は src/lib/rarity-styles.ts が正本（Issue #1783）。
+          // Per-custom-rarity display styles keyed by rarity name. The shape and the
+          // validation rules live in src/lib/rarity-styles.ts (Issue #1783).
+          rarity_styles: Record<string, import('@/lib/rarity-styles').RarityStyle>
           // 配信者が事前登録したカードパック名の一覧（Issue #393再設計）
           // Pre-defined card pack names the streamer manages (Issue #393 redesign)
           card_pack_names: string[]
@@ -103,6 +113,18 @@ export interface Database {
           // incoming raid 送信者に自動付与するガチャ回数（0=無効）
           // Number of gacha draws gifted to the raider on incoming raids. 0 disables gifts.
           raid_gacha_draw_count: number
+          // #1765 フォローアップ: コレクション(パック)ごとのアルバム並び N。
+          // キーは __all__ / __default__ / 実パック名、値は N（3..12）
+          // Per-collection album grid size map (scope key -> N).
+          pack_album_grid_sizes: Record<string, number> | null
+          // コレクションページの初期表示 ('grid' | 'album')
+          // Default view mode of the collection page.
+          collection_default_view: 'grid' | 'album'
+          // #1782: 被りカードの表示段階のしきい値（レアリティ名 → 厳密増加する
+          // 所有枚数の配列）。NULL = 全レアリティで段階表示しない（既定）。
+          // Owned-copy thresholds driving the duplicate-card display tiers,
+          // keyed by rarity name. NULL disables the feature.
+          duplicate_display_tiers: Record<string, number[]> | null
           created_at: string
           updated_at: string
         }
@@ -115,6 +137,7 @@ export interface Database {
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
           channel_point_collection_name?: string | null
+          channel_point_pack_names?: string[]
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -127,6 +150,7 @@ export interface Database {
           rarity_weights_scope?: 'global' | 'per_pack'
           pack_rarity_weights?: Record<string, Record<string, number>> | null
           custom_rarities?: string[]
+          rarity_styles?: Record<string, import('@/lib/rarity-styles').RarityStyle>
           card_pack_names?: string[]
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
@@ -138,6 +162,9 @@ export interface Database {
           publish_card_ranking?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
+          pack_album_grid_sizes?: Record<string, number> | null
+          collection_default_view?: 'grid' | 'album'
+          duplicate_display_tiers?: Record<string, number[]> | null
           created_at?: string
           updated_at?: string
         }
@@ -150,6 +177,7 @@ export interface Database {
           channel_point_reward_id?: string | null
           channel_point_reward_name?: string | null
           channel_point_collection_name?: string | null
+          channel_point_pack_names?: string[]
           is_active?: boolean
           gacha_sound_url?: string | null
           gacha_sound_enabled?: boolean
@@ -162,6 +190,7 @@ export interface Database {
           rarity_weights_scope?: 'global' | 'per_pack'
           pack_rarity_weights?: Record<string, Record<string, number>> | null
           custom_rarities?: string[]
+          rarity_styles?: Record<string, import('@/lib/rarity-styles').RarityStyle>
           card_pack_names?: string[]
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
@@ -173,6 +202,9 @@ export interface Database {
           publish_card_ranking?: boolean
           raid_gacha_active_until?: string | null
           raid_gacha_draw_count?: number
+          pack_album_grid_sizes?: Record<string, number> | null
+          collection_default_view?: 'grid' | 'album'
+          duplicate_display_tiers?: Record<string, number[]> | null
           created_at?: string
           updated_at?: string
         }
@@ -548,6 +580,10 @@ export interface Database {
           // 追加報酬に紐付くカードパック名（NULL=全カード対象）。Issue #393
           // Card pack bound to this additional reward (NULL = all cards)
           collection_name: string | null
+          // Issue #1994: この追加報酬に割り当てた複数パック（先頭は collection_name と
+          // 常に一致するミラー。空配列なら collection_name を読む）。デプロイ窓では
+          // 列が無く取得されないため optional。
+          reward_pack_names?: string[]
           created_at: string
         }
         Insert: {
@@ -558,6 +594,7 @@ export interface Database {
           draw_count?: number
           is_raid_limited?: boolean
           collection_name?: string | null
+          reward_pack_names?: string[]
           created_at?: string
         }
         Update: {
@@ -568,6 +605,7 @@ export interface Database {
           draw_count?: number
           is_raid_limited?: boolean
           collection_name?: string | null
+          reward_pack_names?: string[]
           created_at?: string
         }
       }
@@ -782,6 +820,8 @@ export interface Database {
       // the new name across cards.collection_name /
       // streamers.channel_point_collection_name /
       // streamer_additional_gacha_rewards.collection_name for that streamer.
+      // Issue #1994 (20261108120000) also cascades into the multi-pack arrays
+      // streamers.channel_point_pack_names / streamer_additional_gacha_rewards.reward_pack_names.
       // See supabase/migrations/00063_add_default_pack_name_and_rename.sql.
       rename_card_pack: {
         Args: {

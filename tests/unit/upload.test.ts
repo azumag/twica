@@ -6,7 +6,9 @@ import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { getFileTypeFromBuffer } from '@/lib/file-utils'
 import { validateCSRFToken } from '@/lib/csrf'
-import { uploadToR2WithRetry } from '@/lib/r2-client'
+import { uploadToR2WithRetry, deleteFromR2 } from '@/lib/r2-client'
+import { recordBlobFile, releaseStorageReservation } from '@/lib/storage-db'
+import { getStorageUsage, reserveStorageCapacity } from '@/lib/storage-usage'
 
 // Mock dependencies
 vi.mock('next/headers')
@@ -23,13 +25,15 @@ vi.mock('@/lib/csrf')
 // R2クライアントをモックしてアップロード機能をテスト
 vi.mock('@/lib/r2-client', () => ({
   uploadToR2WithRetry: vi.fn(),
+  deleteFromR2: vi.fn(),
 }))
 // Mock storage-db to avoid unmocked supabase/admin dependency
 // ストレージDBをモックしてsupabase/adminの未モック依存を回避
 vi.mock('@/lib/storage-db', () => ({
-  recordBlobFile: vi.fn().mockResolvedValue(undefined),
+  recordBlobFile: vi.fn().mockResolvedValue('committed'),
+  releaseStorageReservation: vi.fn().mockResolvedValue(true),
 }))
-// Mock storage-usage to provide storage limit info
+// Mock storage-usage to provide the early usage check and atomic reservation (#1907)
 vi.mock('@/lib/storage-usage', () => ({
   getStorageUsage: vi.fn().mockResolvedValue({
     userUsage: 0,
@@ -38,6 +42,12 @@ vi.mock('@/lib/storage-usage', () => ({
     globalLimitReached: false,
     userLimitBytes: 100 * 1024 * 1024,
     globalLimitBytes: 1000 * 1024 * 1024,
+    planOverLimit: false,
+  }),
+  reserveStorageCapacity: vi.fn().mockResolvedValue({
+    ok: true,
+    reservationId: 'reservation-1',
+    degraded: false,
   }),
 }))
 
@@ -46,6 +56,11 @@ const mockGetSession = vi.mocked(getSession)
 const mockCanUseStreamerFeatures = vi.mocked(canUseStreamerFeatures)
 const mockCheckRateLimit = vi.mocked(checkRateLimit)
 const mockUploadToR2WithRetry = vi.mocked(uploadToR2WithRetry)
+const mockDeleteFromR2 = vi.mocked(deleteFromR2)
+const mockRecordBlobFile = vi.mocked(recordBlobFile)
+const mockReleaseStorageReservation = vi.mocked(releaseStorageReservation)
+const mockReserveStorageCapacity = vi.mocked(reserveStorageCapacity)
+const mockGetStorageUsage = vi.mocked(getStorageUsage)
 const mockValidateCSRFToken = vi.mocked(validateCSRFToken)
 
 describe('POST /api/upload', () => {
@@ -490,6 +505,205 @@ describe('POST /api/upload', () => {
       expect(response.status).toBe(500)
       const body = await response.json()
       expect(body.error).toBe('Internal server error')
+    })
+  })
+
+  describe('容量制限・台帳整合 (#1896 / #1907)', () => {
+    // clearAllMocks 後に予約成功・commit 成功・解放成功の正常値を確実に張り直す
+    // （clearAllMocks は実装を消さないため、前テストの mockRejectedValue 漏洩も防ぐ）
+    beforeEach(() => {
+      mockGetStorageUsage.mockResolvedValue({
+        userUsage: 0,
+        globalUsage: 0,
+        userLimitReached: false,
+        globalLimitReached: false,
+        userLimitBytes: 100 * 1024 * 1024,
+        globalLimitBytes: 1000 * 1024 * 1024,
+        planOverLimit: false,
+      })
+      mockReserveStorageCapacity.mockResolvedValue({
+        ok: true,
+        reservationId: 'reservation-1',
+    degraded: false,
+      })
+      mockRecordBlobFile.mockResolvedValue('committed')
+      mockReleaseStorageReservation.mockResolvedValue(true)
+      mockDeleteFromR2.mockResolvedValue(undefined)
+    })
+
+    const mockStreamerSession = () => {
+      mockGetSession.mockResolvedValue({
+        twitchUserId: 'test-user-id',
+        twitchUsername: 'test-user',
+        twitchDisplayName: 'Test User',
+        twitchProfileImageUrl: 'https://example.com/avatar.jpg',
+        broadcasterType: '',
+        expiresAt: Date.now() + 3600000,
+        version: 1,
+      })
+    }
+
+    const makeUploadRequest = () => {
+      const formData = new FormData()
+      formData.append(
+        'file',
+        new File([createMinimalJpegBuffer()], 'test.jpg', { type: 'image/jpeg' })
+      )
+      return new NextRequest('http://localhost:3000/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+    }
+
+    it('全体上限: 予約が global_limit を返したら507で拒否しR2に保存しない', async () => {
+      mockStreamerSession()
+      mockReserveStorageCapacity.mockResolvedValue({ ok: false, reason: 'global_limit' })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(507)
+      const body = await response.json()
+      expect(body.code).toBe('GLOBAL_LIMIT_REACHED')
+      expect(mockUploadToR2WithRetry).not.toHaveBeenCalled()
+      expect(mockRecordBlobFile).not.toHaveBeenCalled()
+    })
+
+    it('ユーザー上限: 予約が user_limit を返したら507で拒否する（追加バイト数込みの原子的判定）', async () => {
+      mockStreamerSession()
+      mockReserveStorageCapacity.mockResolvedValue({ ok: false, reason: 'user_limit' })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(507)
+      const body = await response.json()
+      expect(body.code).toBe('USER_LIMIT_REACHED')
+      expect(mockUploadToR2WithRetry).not.toHaveBeenCalled()
+    })
+
+    it('容量が取得不能な場合（fail-closed）も予約失敗として507で拒否する', async () => {
+      mockStreamerSession()
+      // reserveStorageCapacity は getStorageUsage の flags=true を
+      // { ok: false, reason: 'global_limit' } に変換する。
+      mockReserveStorageCapacity.mockResolvedValue({ ok: false, reason: 'global_limit' })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(507)
+      expect(mockUploadToR2WithRetry).not.toHaveBeenCalled()
+    })
+
+    it('早期チェックの usage を再利用して予約し、getStorageUsage は1回だけ呼ぶ', async () => {
+      mockStreamerSession()
+      mockUploadToR2WithRetry.mockResolvedValue({ url: 'https://r2.example.com/test.jpg' })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(200)
+      expect(mockGetStorageUsage).toHaveBeenCalledTimes(1)
+      expect(mockReserveStorageCapacity).toHaveBeenCalledWith(
+        expect.stringMatching(/^[a-f0-9]{8}$/),
+        'test-user-id',
+        expect.any(Number),
+        expect.objectContaining({ userLimitReached: false, globalLimitReached: false }),
+      )
+    })
+
+    it('早期チェックで上限到達（flags=true）なら body を読まずに507で拒否する', async () => {
+      mockStreamerSession()
+      mockGetStorageUsage.mockResolvedValue({
+        userUsage: 0,
+        globalUsage: 0,
+        userLimitReached: true,
+        globalLimitReached: true,
+        userLimitBytes: 100 * 1024 * 1024,
+        globalLimitBytes: 1000 * 1024 * 1024,
+        planOverLimit: false,
+      })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(507)
+      expect(mockReserveStorageCapacity).not.toHaveBeenCalled()
+      expect(mockUploadToR2WithRetry).not.toHaveBeenCalled()
+    })
+
+    it('台帳確定失敗時は500を返し、R2オブジェクトと予約を補償する', async () => {
+      mockStreamerSession()
+      mockUploadToR2WithRetry.mockResolvedValue({ url: 'https://r2.example.com/test.jpg' })
+      mockRecordBlobFile.mockRejectedValue(new Error('db down'))
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(500)
+      const body = await response.json()
+      expect(body.code).toBe('STORAGE_LEDGER_FAILED')
+      // 補償: 台帳未記録のオブジェクトがR2に残らないよう、保存直後のファイル名で削除
+      expect(mockDeleteFromR2).toHaveBeenCalledTimes(1)
+      expect(mockDeleteFromR2).toHaveBeenCalledWith(mockUploadToR2WithRetry.mock.calls[0][0])
+      // 補償: 予約も解放する（TTL まで容量を占有しない）
+      expect(mockReleaseStorageReservation).toHaveBeenCalledWith('reservation-1')
+    })
+
+    it('予約RPC未適用（degraded）でも旧経路でアップロードを継続する', async () => {
+      mockStreamerSession()
+      mockReserveStorageCapacity.mockResolvedValue({
+        ok: true,
+        reservationId: null,
+        degraded: true,
+      })
+      mockUploadToR2WithRetry.mockResolvedValue({ url: 'https://r2.example.com/test.jpg' })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(200)
+      expect(mockRecordBlobFile).toHaveBeenCalledWith(
+        null,
+        'https://r2.example.com/test.jpg',
+        expect.any(String),
+        expect.any(Number),
+        'r2',
+      )
+      expect(mockReleaseStorageReservation).not.toHaveBeenCalled()
+    })
+
+    it('予約が確定済みなら台帳失敗扱いにせずR2も予約も解放しない', async () => {
+      mockStreamerSession()
+      mockUploadToR2WithRetry.mockResolvedValue({ url: 'https://r2.example.com/test.jpg' })
+      mockRecordBlobFile.mockResolvedValue('already_committed')
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(200)
+      expect(mockDeleteFromR2).not.toHaveBeenCalled()
+      expect(mockReleaseStorageReservation).not.toHaveBeenCalled()
+    })
+
+    it('R2アップロード失敗時は予約を解放する', async () => {
+      mockStreamerSession()
+      mockUploadToR2WithRetry.mockResolvedValue({ error: 'R2 quota exceeded' })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(507)
+      expect(mockRecordBlobFile).not.toHaveBeenCalled()
+      expect(mockReleaseStorageReservation).toHaveBeenCalledWith('reservation-1')
+    })
+
+    it('台帳記録成功時は予約ID・URL・ユーザー・サイズ・ストレージ種別を記録する', async () => {
+      mockStreamerSession()
+      mockUploadToR2WithRetry.mockResolvedValue({ url: 'https://r2.example.com/test.jpg' })
+
+      const response = await POST(makeUploadRequest())
+
+      expect(response.status).toBe(200)
+      expect(mockRecordBlobFile).toHaveBeenCalledWith(
+        'reservation-1',
+        'https://r2.example.com/test.jpg',
+        expect.any(String),
+        expect.any(Number),
+        'r2'
+      )
+      expect(mockReleaseStorageReservation).not.toHaveBeenCalled()
     })
   })
 })

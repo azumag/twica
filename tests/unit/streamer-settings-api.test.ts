@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import { POST } from '@/app/api/streamer/settings/route'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
@@ -10,6 +10,8 @@ import { getDb } from '@/lib/db/client'
 import {
   cards as cardsTable,
   streamers as streamersTable,
+  streamersWithChannelPointPackNames as streamersWithChannelPointPackNamesTable,
+  streamerChannelPointPackBindings as streamerChannelPointPackBindingsTable,
   streamerChatSenderSettings as streamerChatSenderSettingsTable,
   twitchBotAccounts as twitchBotAccountsTable,
 } from '@/lib/db/schema'
@@ -80,6 +82,11 @@ function installDbFixture(fixture: any) {
 }
 
 function tableName(table: unknown): string {
+  // Issue #1994: 配列列だけを持つ狭い定義も streamers 物理テーブルとして扱う。
+  // fixture 側は channel_point_pack_names を含む行を返してよい。
+  if (table === streamerChannelPointPackBindingsTable) return 'streamers'
+  // パック割り当てを含む UPDATE は全列 + 配列列の UPDATE 専用定義を使う（PR #1995 必須1）。
+  if (table === streamersWithChannelPointPackNamesTable) return 'streamers'
   if (table === streamersTable) return 'streamers'
   if (table === cardsTable) return 'cards'
   if (table === streamerChatSenderSettingsTable) return 'streamer_chat_sender_settings'
@@ -279,6 +286,8 @@ describe('POST /api/streamer/settings', () => {
         chatAnnouncementEnabled: true,
         chatAnnouncementTemplate: '@{user} got {card}',
         chatAnnouncementMultiTemplate: '@{user}: {draws}連 {rarityCounts} {cards}',
+        // Issue #1548: 廃止済みフラグ。旧UIのキャッシュ済みクライアントが送っても
+        // 400 にせず無視されることを固定する（DB列自体は v1 outbox 互換で残存）。
         chatAnnouncementMultiShowCards: false,
       }),
     })
@@ -290,8 +299,11 @@ describe('POST /api/streamer/settings', () => {
       chat_announcement_enabled: true,
       chat_announcement_template: '@{user} got {card}',
       chat_announcement_multi_template: '@{user}: {draws}連 {rarityCounts} {cards}',
-      chat_announcement_multi_show_cards: false,
     }))
+    // 廃止フラグはどの update 呼び出しにも載らない（保存経路が残っていないことの固定）
+    for (const call of query.update.mock.calls) {
+      expect(call[0]).not.toHaveProperty('chat_announcement_multi_show_cards')
+    }
   })
 
   describe('trade settings (Issue #725)', () => {
@@ -604,6 +616,162 @@ describe('POST /api/streamer/settings', () => {
       expect(response.status).toBe(200)
       const data = await response.json()
       expect(data.recalculatedCards).toBeNull()
+    })
+  })
+
+  // Issue #1783: カスタムレアリティの表示スタイル。
+  // 色は HEX かプリセットの Tailwind クラスのみを許可し（任意 CSS を通さない）、
+  // キーはカスタムレアリティ名に限定する。
+  describe('custom rarity styles validation (Issue #1783)', () => {
+    const buildRequest = (body: Record<string, unknown>) =>
+      new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', ...body }),
+      })
+
+    const mockOk = async () => {
+      const mockDbFixture = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const built = mockDbFixture.build()
+      installDbFixture(built)
+      return mockDbFixture.getQueryBuilder()
+    }
+
+    it('rejects a non-object value', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ rarityStyles: 'mythic' }))
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a style for a built-in rarity', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest({ rarityStyles: { legendary: { color: '#ff0000' } } })
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects a key that is not in the same-request customRarities', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['super'],
+          rarityStyles: { other: { color: '#ff0000' } },
+        })
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('rejects non-HEX / non-preset colors and empty styles', async () => {
+      await mockOk()
+      const arbitraryCss = await POST(
+        buildRequest({ rarityStyles: { super: { color: 'url(https://evil.example/x.png)' } } })
+      )
+      expect(arbitraryCss.status).toBe(400)
+
+      await mockOk()
+      const empty = await POST(buildRequest({ rarityStyles: { super: {} } }))
+      expect(empty.status).toBe(400)
+    })
+
+    it('persists normalized styles together with customRarities', async () => {
+      const query = await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: [' super '],
+          rarityStyles: { super: { color: '#ff0000' } },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          custom_rarities: ['super'],
+          rarity_styles: { super: { color: '#ff0000' } },
+        })
+      )
+      const data = await response.json()
+      expect(data.rarityStyles).toEqual({ super: { color: '#ff0000' } })
+    })
+
+    it('accepts an empty map as "no overrides"', async () => {
+      await mockOk()
+      const response = await POST(buildRequest({ rarityStyles: {} }))
+      expect(response.status).toBe(200)
+    })
+
+    // Issue #1783 互換対応: フェーズ1 の API が受理していたプリセット Tailwind クラスを
+    // 400 で拒否せず、HEX へ正規化して保存する（描画できないクラス名を永続化しない）。
+    it('normalizes legacy preset classes to HEX instead of rejecting them', async () => {
+      const query = await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['super'],
+          rarityStyles: {
+            super: {
+              color: 'bg-red-500',
+              gradient: 'from-red-500 to-blue-600',
+              glow: 'shadow-purple-500/50',
+            },
+          },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rarity_styles: {
+            super: { color: '#fb2c36', gradient: '#fb2c36,#155dfc', glow: '#ad46ff80' },
+          },
+        })
+      )
+      const data = await response.json()
+      expect(data.rarityStyles).toEqual({
+        super: { color: '#fb2c36', gradient: '#fb2c36,#155dfc', glow: '#ad46ff80' },
+      })
+    })
+
+    it('accepts constructor / prototype as rarity names (互換: 画面側が許可する既存名)', async () => {
+      // validateCustomRaritiesInput は "constructor" / "prototype" を許可するため、
+      // それらに色を設定しただけで編集全体が 400 にならないことを固定する。
+      const query = await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['constructor', 'prototype'],
+          rarityStyles: {
+            constructor: { color: '#ff0000' },
+            prototype: { glow: '#00ff0080' },
+          },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(query.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rarity_styles: {
+            constructor: { color: '#ff0000' },
+            prototype: { glow: '#00ff0080' },
+          },
+        })
+      )
+    })
+
+    it('still rejects __proto__ as a rarity name (object map で安全に表現できない)', async () => {
+      await mockOk()
+      const response = await POST(
+        buildRequest({
+          customRarities: ['__proto__'],
+          rarityStyles: JSON.parse('{"__proto__":{"color":"#ff0000"}}'),
+        })
+      )
+      expect(response.status).toBe(400)
+    })
+
+    it('still rejects preset classes outside the legacy allowlist', async () => {
+      await mockOk()
+      // slate はフェーズ1 の許可集合に無い（任意 CSS と同様に 400）。
+      const response = await POST(
+        buildRequest({ customRarities: ['super'], rarityStyles: { super: { color: 'bg-slate-500' } } })
+      )
+      expect(response.status).toBe(400)
     })
   })
 
@@ -2584,6 +2752,288 @@ describe('POST /api/streamer/settings', () => {
         const data = await response.json()
         expect(data.packRarityWeightsSkippedDeployWindow).toBe(true)
       })
+    })
+  })
+
+  // #1765 フォローアップ: アルバム表示（パック別の並び N×N と初期表示モード）。
+  // pack_rarity_weights (#578) と同じ検証・prune・デプロイ窓 skip の規約に従う。
+  describe('album display settings (#1765 follow-up)', () => {
+    const streamerRow = (overrides: Record<string, unknown> = {}) => ({
+      data: {
+        id: 'streamer123',
+        twitch_user_id: 'streamer123',
+        channel_point_collection_name: null,
+        card_pack_names: ['weapons', 'armor'],
+        pack_rarity_weights: null,
+        pack_album_grid_sizes: null,
+        ...overrides,
+      },
+      error: null,
+    })
+
+    it('saves a valid packAlbumGridSizes (reserved keys + catalog pack) and the default view', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packAlbumGridSizes: { __all__: 6, [DEFAULT_PACK_SENTINEL]: 3, weapons: 9 },
+          collectionDefaultView: 'album',
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.packAlbumGridSizes).toEqual({
+        __all__: 6,
+        [DEFAULT_PACK_SENTINEL]: 3,
+        weapons: 9,
+      })
+      expect(data.collectionDefaultView).toBe('album')
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pack_album_grid_sizes: { __all__: 6, [DEFAULT_PACK_SENTINEL]: 3, weapons: 9 },
+          collection_default_view: 'album',
+        })
+      )
+    })
+
+    it('accepts null as "clear all entries"', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', packAlbumGridSizes: null }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({ pack_album_grid_sizes: null })
+      )
+    })
+
+    it('rejects a key that is not in the effective pack catalog (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packAlbumGridSizes: { unknown_pack: 6 },
+        }),
+      }))
+
+      expect(response.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('rejects an out-of-range grid size and an unknown default view (400)', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const tooLarge = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', packAlbumGridSizes: { __all__: 99 } }),
+      }))
+      expect(tooLarge.status).toBe(400)
+
+      const badView = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', collectionDefaultView: 'gallery' }),
+      }))
+      expect(badView.status).toBe(400)
+      expect(streamerQuery.update).not.toHaveBeenCalled()
+    })
+
+    it('prunes entries for a pack removed from the catalog, even though packAlbumGridSizes was not sent', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(
+        streamerRow({
+          pack_album_grid_sizes: {
+            __all__: 6,
+            weapons: 9,
+            armor: 3,
+            [DEFAULT_PACK_SENTINEL]: 3,
+          },
+        })
+      )
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      // Removing 'armor' from the catalog — packAlbumGridSizes is NOT part of this request.
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', cardPackNames: ['weapons'] }),
+      }))
+
+      expect(response.status).toBe(200)
+      expect(streamerQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pack_album_grid_sizes: {
+            __all__: 6,
+            weapons: 9,
+            [DEFAULT_PACK_SENTINEL]: 3,
+          },
+        })
+      )
+    })
+
+    it('falls back to a safe projection when the read hits the undeployed column', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          data: null,
+          error: {
+            code: '42703',
+            message: 'column "pack_album_grid_sizes" of relation "streamers" does not exist',
+          },
+        })
+        .mockResolvedValue(streamerRow({ pack_album_grid_sizes: undefined }))
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          collectionDefaultView: 'album',
+        }),
+      }))
+
+      // 読み取りは安全な射影へフォールバックし、初期表示の保存は継続する。
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.collectionDefaultView).toBe('album')
+    })
+
+    it('skips both columns and reports the flag when the UPDATE fails on them', async () => {
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+      ;(streamerQuery.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        eq: vi.fn().mockResolvedValue({
+          error: {
+            code: '42703',
+            message: 'column "pack_album_grid_sizes" of relation "streamers" does not exist',
+          },
+        }),
+      })
+
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          packAlbumGridSizes: { __all__: 6 },
+          collectionDefaultView: 'album',
+        }),
+      }))
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.albumSettingsSkippedDeployWindow).toBe(true)
+      // 書き込めていないので、確定値はエコーバックしない（楽観反映を戻させる）。
+      expect(data.packAlbumGridSizes).toBeUndefined()
+      expect(data.collectionDefaultView).toBeUndefined()
+    })
+  })
+
+  // #1334: 効果音設定の保存成功後に公開GETのedge cacheを best-effort purge する。
+  // purge は DB が返す正規化済み streamer.id から正規URLを組み立て、
+  // 失敗しても保存応答（200）へ影響させない。
+  describe('sound-settings edge cache purge (#1334)', () => {
+    const streamerRow = () => ({
+      data: {
+        id: 'streamer123',
+        twitch_user_id: 'streamer123',
+      },
+      error: null,
+    })
+
+    const postSettings = (body: Record<string, unknown>) =>
+      POST(new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }))
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it('purges the canonical sound-settings GET URL after a sound update', async () => {
+      const cacheDelete = vi.fn().mockResolvedValue(true)
+      vi.stubGlobal('caches', { default: { delete: cacheDelete } })
+
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await postSettings({
+        streamerId: 'streamer123',
+        gachaSoundEnabled: false,
+      })
+
+      expect(response.status).toBe(200)
+      expect(cacheDelete).toHaveBeenCalledWith(
+        'http://localhost:3000/api/streamer/streamer123/sound-settings'
+      )
+    })
+
+    it('does not purge when the update did not touch sound settings', async () => {
+      const cacheDelete = vi.fn().mockResolvedValue(true)
+      vi.stubGlobal('caches', { default: { delete: cacheDelete } })
+
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await postSettings({
+        streamerId: 'streamer123',
+        channelPointRewardName: 'Test Reward',
+      })
+
+      expect(response.status).toBe(200)
+      expect(cacheDelete).not.toHaveBeenCalled()
+    })
+
+    it('keeps the save response successful when the purge rejects', async () => {
+      const cacheDelete = vi.fn().mockRejectedValue(new Error('cache api down'))
+      vi.stubGlobal('caches', { default: { delete: cacheDelete } })
+
+      const streamerQuery = createMockQueryBuilder()
+      ;(streamerQuery.maybeSingle as ReturnType<typeof vi.fn>).mockResolvedValue(streamerRow())
+      installDbFixture({ from: vi.fn(() => streamerQuery) })
+
+      const response = await postSettings({
+        streamerId: 'streamer123',
+        gachaSoundEnabled: true,
+      })
+
+      expect(response.status).toBe(200)
+      const data = await response.json()
+      expect(data.success).toBe(true)
+      expect(cacheDelete).toHaveBeenCalled()
     })
   })
 })

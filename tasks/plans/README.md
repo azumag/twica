@@ -41,7 +41,8 @@ DBとruntimeの接続方式については、[`docs/db-driver-migration.md`](../
 
 - DB基盤は #722 で現行 PlanetScale PostgreSQL へ実装済みで、migration正本は `db/planetscale/migrations/20260817100000_add_card_trading.sql` です。API・settings実装では #723 / #724 / #725 の最新Issue本文を現在の接続・retry境界として扱います。
 - `RATE_LIMIT_KV` のコード配線は #728 の lazy auto-init 方式で実装済みです。設計書に残る「未配線なので常にMemory」という前提は採用しません。一方、Workers KV の same-key write制限、eventual consistency、非原子的RMW、fail-openを踏まえた strict backend 方針と実環境観測は #728 の未完了条件です。
-- 成立通知は #729 の最新状態を正とし、旧Supabase Realtime案を復活させず、現行Cloudflare / PlanetScale transportから再設計します。
+- 成立通知・不正検知（フェーズ2）は #729 で扱い、**MVPリリース後まで保留**と決定済みです（2026-10-08 オーナー判断）。MVPでは通知せず、マイトレード画面での確認に留めます。
+- #729 を再開するときは、旧Supabase Realtime broadcast / private channel migration 案を復活させず、MVP実データの悪用傾向を観測したうえで、現行 Cloudflare / PlanetScale の overlay transport（Durable Objects WebSocket を primary、PlanetScale-backed HTTP polling を fallback とする `src/lib/realtime.ts` の facade）を土台に、成立通知 transport・private delivery 境界・badge 更新経路を再設計します。複数アカウント集約と RMT の検知設計も同時に再ベースラインし、#729 を再開するまで通知実装は行いません。
 
 カードトレード設計にある原子性、冪等性、所有権、履歴保持、設定ゲート等の機能要件まで無効化するものではありません。
 

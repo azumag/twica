@@ -6,7 +6,7 @@
  * (他のanalysis/dev/*.tsと同じく)rootのvitestから直接importしてテストできる。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { adminApi, AdminApiRequestError } from '../../analysis/src/lib/adminApi'
+import { adminApi, adminAuthHeaders, AdminApiRequestError } from '../../analysis/src/lib/adminApi'
 
 function fakeFetchResponse(init: { ok: boolean; status?: number; json?: unknown }) {
   return {
@@ -160,5 +160,68 @@ describe('adminApi: RequestOptionsによるsignal透過(#701 UI state/UX)', () =
 
     expect(anySpy).toHaveBeenCalledWith([controller.signal, expect.any(AbortSignal)])
     anySpy.mockRestore()
+  })
+})
+
+/**
+ * twica#1901 相当: /__admin は dev サーバーが index.html の meta に埋め込む
+ * 起動ごとのトークンを `x-admin-token` ヘッダで要求する（#1892 の同期で
+ * preview も main #1901 の方式に揃えた）。トークンが無い環境（本番ビルド等）では
+ * ヘッダを付けない。
+ */
+describe("adminApi: /__admin の認証ヘッダ (#1901)", () => {
+  const TOKEN_HEADER = "x-admin-token"
+  const META_NAME = "twica-admin-token"
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function stubMetaToken(token: string | null) {
+    vi.stubGlobal("document", {
+      querySelector: (selector: string) =>
+        selector === `meta[name="${META_NAME}"]` && token !== null
+          ? { getAttribute: () => token }
+          : null,
+    })
+  }
+
+  it("meta のトークンを x-admin-token として書き込みリクエストに添える", async () => {
+    stubMetaToken("test-token")
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) => fakeFetchResponse({ ok: true, json: { ok: true } }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await adminApi.deleteAnnouncement("a1")
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect((init as RequestInit).headers).toMatchObject({ [TOKEN_HEADER]: "test-token" })
+  })
+
+  it("読み取りリクエストにも同じヘッダを添える", async () => {
+    stubMetaToken("test-token")
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) => fakeFetchResponse({ ok: true, json: { stats: {} } }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await adminApi.getOverview()
+
+    const [input, init] = fetchMock.mock.calls[0]
+    expect(String(input)).toBe("/__admin/overview")
+    expect((init as RequestInit).headers).toMatchObject({ [TOKEN_HEADER]: "test-token" })
+  })
+
+  it("meta が無い場合は認証ヘッダを付けない", async () => {
+    stubMetaToken(null)
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) => fakeFetchResponse({ ok: true, json: { stats: {} } }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await adminApi.getOverview()
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect((init as RequestInit).headers).not.toHaveProperty(TOKEN_HEADER)
+  })
+
+  it("document が無い（サーバー評価）場合は空のヘッダを返す", () => {
+    vi.stubGlobal("document", undefined)
+    expect(adminAuthHeaders()).toEqual({})
   })
 })

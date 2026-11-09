@@ -94,6 +94,11 @@ db/planetscale/.local-backups/
 # Keep the local zellij development helper out of repository history.
 /zellij_monitor.sh
 
+# PR 本文の下書き（#1794 で誤って root へ commit された教訓）。
+# `gh pr create --body-file` の素材であり、リポジトリの正本資産ではない。
+/pr-body.md
+/pr-preview.md
+
 # supabase backup
 .backup.sql
 

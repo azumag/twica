@@ -11,7 +11,10 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { validateCSRFToken } from "@/lib/csrf";
 import { validateContentType } from "@/lib/request-validation";
 import { getDb } from "@/lib/db/client";
-import { streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable } from "@/lib/db/schema";
+import {
+  streamerAdditionalGachaRewards as streamerAdditionalGachaRewardsTable,
+  streamerAdditionalGachaRewardsWithPackNames as streamerAdditionalGachaRewardsWithPackNamesTable,
+} from "@/lib/db/schema";
 import { ERROR_MESSAGES } from "@/lib/constants";
 
 vi.mock("@/lib/session");
@@ -191,9 +194,12 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const pgBody = await pgResponse.json();
 
       expect(pgResponse.status).toBe(200);
-      expect(pgBody).toEqual([REWARD_ROW]);
+      // Issue #1994: 応答には実効パック割り当て collection_names が付く
+      // （collection_name は先頭要素のミラー）。
+      expect(pgBody).toEqual([{ ...REWARD_ROW, collection_names: ["weapons"] }]);
       expect(getDb).toHaveBeenCalled();
-      expect(pg.selectCalls[1].where).toEqual(eq(streamerAdditionalGachaRewardsTable.streamer_id, "streamer-1"));
+      // Issue #1994: 一覧は reward_pack_names まで含む WithPackNames 定義で読む。
+      expect(pg.selectCalls[1].where).toEqual(eq(streamerAdditionalGachaRewardsWithPackNamesTable.streamer_id, "streamer-1"));
     });
 
     it("streamerが見つからなければ404", async () => {
@@ -395,7 +401,12 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const pgBody = await pgResponse.json();
 
       expect(pgResponse.status).toBe(200);
-      expect(pgBody).toEqual(expect.objectContaining({ success: true, reward: NEW_REWARD }));
+      // Issue #1994: 応答の reward は GET と同じ形（collection_names に解決済み配列）。
+      // パック指定なしの作成なので collection_name は null、collection_names は []。
+      expect(pgBody).toEqual(expect.objectContaining({
+        success: true,
+        reward: { ...NEW_REWARD, collection_name: null, collection_names: [] },
+      }));
       expect(getDb).toHaveBeenCalled();
       expect(pg.insertCalls[0].table).toBe(streamerAdditionalGachaRewardsTable);
       expect(pg.insertCalls[0].values).toEqual(
@@ -612,9 +623,15 @@ describe("streamer/additional-rewards: PlanetScale契約 (#663)", () => {
       const pgBody = await pgResponse.json();
 
       expect(pgResponse.status).toBe(200);
-      expect(pgBody).toEqual(expect.objectContaining({ success: true, reward: UPDATED_REWARD }));
+      // Issue #1994: 応答の reward は GET と同じ形（collection_names に解決済み配列）。
+      expect(pgBody).toEqual(expect.objectContaining({
+        success: true,
+        reward: { ...UPDATED_REWARD, collection_names: ["characters"] },
+      }));
       expect(getDb).toHaveBeenCalled();
-      expect(pg.updateCalls[0].table).toBe(streamerAdditionalGachaRewardsTable);
+      // パック割り当てを書く UPDATE は reward_pack_names を持つ拡張定義で発行する
+      // （本体定義では Drizzle が配列列を SET から黙って捨てるため。PR #1995 必須1）。
+      expect(pg.updateCalls[0].table).toBe(streamerAdditionalGachaRewardsWithPackNamesTable);
       expect(pg.updateCalls[0].values).toEqual(
         expect.objectContaining({ collection_name: "characters", draw_count: 5 })
       );

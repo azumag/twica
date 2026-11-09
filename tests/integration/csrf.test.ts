@@ -9,6 +9,7 @@ vi.mock('next/headers')
 describe('CSRF Integration Tests', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    delete process.env.SESSION_COOKIE_SECRET
   })
 
   describe('validateCSRFToken - httpOnly cookie validation', () => {

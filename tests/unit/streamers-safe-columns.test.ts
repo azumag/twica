@@ -2,8 +2,14 @@ import { getTableColumns } from 'drizzle-orm'
 import { describe, expect, it, vi } from 'vitest'
 import { streamers as streamersTable } from '@/lib/db/schema'
 import {
+  ALBUM_SETTINGS_COLUMNS,
+  isMissingAlbumSettingsColumnError,
   CARD_RANKING_SETTINGS_COLUMNS,
   isMissingCardRankingSettingsColumnError,
+  DUPLICATE_DISPLAY_TIER_COLUMNS,
+  isMissingDuplicateDisplayTiersColumnError,
+  RARITY_STYLES_COLUMNS,
+  isMissingRarityStylesColumnError,
   isMissingLiveDirectorySettingsColumnError,
   isMissingTradeSettingsColumnError,
   LIVE_DIRECTORY_SETTINGS_COLUMNS,
@@ -15,7 +21,12 @@ import {
 const DEPLOY_WINDOW_COLUMNS = [
   ...LIVE_DIRECTORY_SETTINGS_COLUMNS,
   ...TRADE_SETTINGS_COLUMNS,
+  ...ALBUM_SETTINGS_COLUMNS,
   ...CARD_RANKING_SETTINGS_COLUMNS,
+  // Issue #1782: 被りカードの表示段階しきい値。1列のみの migration のため1件。
+  ...DUPLICATE_DISPLAY_TIER_COLUMNS,
+  // Issue #1783: カスタムレアリティの表示スタイル。1列のみの migration のため1件。
+  ...RARITY_STYLES_COLUMNS,
 ] as const
 
 function missingColumnError(column: string) {
@@ -76,6 +87,15 @@ describe('streamers デプロイ窓の列集合契約', () => {
 
     expect(isMissingTradeSettingsColumnError(error)).toBe(true)
     expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+    expect(isMissingAlbumSettingsColumnError(error)).toBe(false)
+  })
+
+  it.each(ALBUM_SETTINGS_COLUMNS)('%s は album 設定列としてのみ検知する', (column) => {
+    const error = missingColumnError(column)
+
+    expect(isMissingAlbumSettingsColumnError(error)).toBe(true)
+    expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+    expect(isMissingTradeSettingsColumnError(error)).toBe(false)
     expect(isMissingCardRankingSettingsColumnError(error)).toBe(false)
   })
 
@@ -87,6 +107,33 @@ describe('streamers デプロイ窓の列集合契約', () => {
       expect(isMissingCardRankingSettingsColumnError(error)).toBe(true)
       expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
       expect(isMissingTradeSettingsColumnError(error)).toBe(false)
+    },
+  )
+
+  it.each(DUPLICATE_DISPLAY_TIER_COLUMNS)(
+    '%s は duplicate display tier 設定列としてのみ検知する',
+    (column) => {
+      const error = missingColumnError(column)
+
+      expect(isMissingDuplicateDisplayTiersColumnError(error)).toBe(true)
+      expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+      expect(isMissingTradeSettingsColumnError(error)).toBe(false)
+      expect(isMissingAlbumSettingsColumnError(error)).toBe(false)
+      expect(isMissingCardRankingSettingsColumnError(error)).toBe(false)
+    },
+  )
+
+  it.each(RARITY_STYLES_COLUMNS)(
+    '%s は rarity styles 設定列としてのみ検知する',
+    (column) => {
+      const error = missingColumnError(column)
+
+      expect(isMissingRarityStylesColumnError(error)).toBe(true)
+      expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+      expect(isMissingTradeSettingsColumnError(error)).toBe(false)
+      expect(isMissingAlbumSettingsColumnError(error)).toBe(false)
+      expect(isMissingCardRankingSettingsColumnError(error)).toBe(false)
+      expect(isMissingDuplicateDisplayTiersColumnError(error)).toBe(false)
     },
   )
 
@@ -102,7 +149,17 @@ describe('streamers デプロイ窓の列集合契約', () => {
       'trade_enabled',
       'cross_channel_trade_enabled',
     ])
+    expect(ALBUM_SETTINGS_COLUMNS).toEqual([
+      'pack_album_grid_sizes',
+      'collection_default_view',
+    ])
     expect(CARD_RANKING_SETTINGS_COLUMNS).toEqual(['publish_card_ranking'])
+    // Issue #1782: 1列のみの migration なので1件。将来この migration に列を足す場合は
+    // ここも更新する（検知経路は it.each で直接カバーされるが、列集合そのものは
+    // 部分文字列を含みうるため明示的に固定する）。
+    expect(DUPLICATE_DISPLAY_TIER_COLUMNS).toEqual(['duplicate_display_tiers'])
+    // Issue #1783: 1列のみの migration なので1件（上のコメントと同じ理由で明示固定）。
+    expect(RARITY_STYLES_COLUMNS).toEqual(['rarity_styles'])
   })
 
   it('安全な列集合にはデプロイ窓で欠落しうる実SQL列を含めない', () => {

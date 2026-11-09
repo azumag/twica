@@ -21,6 +21,14 @@ import {
 import StreamerCollection from "@/components/StreamerCollection";
 import type { StreamerCollectionCard } from "@/components/StreamerCollection";
 import { aggregateCustomRarities } from "@/lib/rarity";
+import {
+  normalizeAlbumDefaultView,
+  sanitizeAlbumGridSizeMap,
+} from "@/lib/collection-album";
+import {
+  resolveDuplicateTier,
+  sanitizeDuplicateDisplayTiers,
+} from "@/lib/duplicate-display-tiers";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -86,46 +94,72 @@ export default async function StreamerCollectionPage({
   const rewardCardIds = new Set(rewardResult.rewardCardIds);
   const activeCardIds = new Set(activeCards.map((card) => card.id));
   const collectionNumberMap = createCollectionNumberMap([...activeCards, ...userCards]);
+  // Issue #1782: 配信者がレアリティ別に設定した「被り枚数 → 表示段階」のしきい値。
+  // デプロイ窓で列が未作成の間は undefined になるため、sanitize で空マップ
+  // （＝全カード段階 0 = バッジなし）へ fail-closed に倒す。
+  const duplicateDisplayTiers = sanitizeDuplicateDisplayTiers(streamer.duplicate_display_tiers);
+
   const ownedCards: StreamerCollectionCard[] = sortCollectedCards(userCards).map((card) => ({
     ...card,
     count: card.count,
     isOwned: true,
     isCompletionReward: rewardCardIds.has(card.id),
     collectionNumber: collectionNumberMap.get(card.id),
+    // Issue #1782: 所有枚数とレアリティから表示段階を解決する（0 = バッジなし）。
+    duplicateTier: resolveDuplicateTier(duplicateDisplayTiers, card.rarity, card.count),
   }));
 
   // 未所持カードの視聴者向け表示（Issue #395）
   // Unowned-card visibility for viewers (Issue #395):
   //  - show_unowned_cards=false (default): viewer sees only owned cards (legacy behavior)
   //  - show_unowned_cards=true: viewer also sees unowned active cards (sorted by rarity, after owned)
-  // 「未所持の詳細を隠す」表示制御は SortedCardGrid の props で行うため、ここではカード自体を含めるかだけを判定する。
-  // The "hide details" toggle is enforced in SortedCardGrid; here we only decide inclusion.
-  // Issue #1748: クライアント側のマスクだけでは RSC ペイロードに name / image_url が
-  // 含まれたままになるため、details 非公開時はサーバ側で未所持カードの詳細を落としてから
-  // client component へ渡す。並び替え・パック絞り込みに必要な rarity / card_number /
-  // collection_name / id は残す。表示名はクライアント側の translations.unownedCard
-  // プレースホルダーで描画されるため、ここでは空文字に置き換える。
-  // Strip unowned-card details server-side so they never reach the browser via the
-  // RSC payload when show_unowned_card_details=false (client-side masking alone leaks).
-  const hideUnownedDetails = !streamer.show_unowned_card_details;
+  // Client-side masking cannot protect the RSC payload. For private unowned
+  // cards, copy only public metadata and use neutral values for the detail
+  // fields required by the grid's Card type. Do not spread the database row:
+  // skill names or future columns could otherwise reveal private details.
+  // 公開メタデータは番号・ソート・パック絞り込みを維持し、元のカード行は変更しない。
   const ownedCardIds = new Set(ownedCards.map((card) => card.id));
   const unownedCards: StreamerCollectionCard[] = streamer.show_unowned_cards
     ? sortCollectedCards(
         activeCards.filter((card) => !ownedCardIds.has(card.id))
-      ).map((card) => {
-        const base = {
-          ...card,
-          count: 0,
-          isOwned: false as const,
-          collectionNumber: collectionNumberMap.get(card.id),
-        };
-        // details 非公開時は name / image_url / description を落とす
-        // （client 側は translations.unownedCard のプレースホルダーで描画）。
-        return hideUnownedDetails
-          ? { ...base, name: "", image_url: null, description: null }
-          : base;
-      })
+      ).map((card) => ({
+        ...(streamer.show_unowned_card_details === true ? card : {
+          id: card.id,
+          streamer_id: card.streamer_id,
+          rarity: card.rarity,
+          card_number: card.card_number,
+          collection_name: card.collection_name,
+          is_active: card.is_active,
+          created_at: card.created_at,
+          updated_at: "",
+          name: "",
+          description: null,
+          image_url: null,
+          image_padding_color: null,
+          max_issuance_count: null,
+          drop_rate: 0,
+          intra_rarity_weight: 0,
+          hp: 0,
+          atk: 0,
+          def: 0,
+          spd: 0,
+          skill_type: "attack" as const,
+          skill_name: "",
+          skill_power: 0,
+        }),
+        count: 0,
+        isOwned: false,
+        collectionNumber: collectionNumberMap.get(card.id),
+      }))
     : [];
+
+  // 付与履歴は現在所持を意味しない。serviceが最新countで補正したカードを
+  // 正本とし、未所持報酬は両設定が明示公開の場合だけクライアントへ渡す。
+  const showUnownedRewardDetails = streamer.show_unowned_cards === true
+    && streamer.show_unowned_card_details === true;
+  const completionRewards = rewardResult.views.filter((view) =>
+    view.state === 'locked' || ownedCardIds.has(view.card?.id ?? '') || showUnownedRewardDetails
+  );
 
   // 所持カードを先頭に、未所持カードを後ろに連結
   // Owned cards first, unowned cards appended after — keeps "your collection" at the top.
@@ -217,7 +251,7 @@ export default async function StreamerCollectionPage({
   return (
     <StreamerCollection
       streamer={streamer}
-      completionRewards={rewardResult.views}
+      completionRewards={completionRewards}
       cards={cards}
       stats={stats}
       progress={progress}
@@ -227,6 +261,16 @@ export default async function StreamerCollectionPage({
       completionHistory={completionHistoryForDisplay}
       // 未所持カードの画像/詳細を隠すかどうか（show_unowned_cards=false の場合は意味を持たない）
       hideUnownedDetails={!streamer.show_unowned_card_details}
+      // #726: getStreamerById selects every streamers column, so trade_enabled
+      // is present at runtime (the shared Streamer type predates it). During
+      // the trade-columns deploy window the safe-column fallback omits it and
+      // the button stays hidden (fail closed).
+      tradeEnabled={(streamer as typeof streamer & { trade_enabled?: boolean }).trade_enabled === true}
+      // #1765 フォローアップ: 配信者がパックごとに指定したアルバムの並び N と、
+      // コレクションページの初期表示モード。デプロイ窓で列が未作成の間は
+      // undefined になるため、安全側（3×3 / カード表示）へ縮退させる。
+      albumGridSizes={sanitizeAlbumGridSizeMap(streamer.pack_album_grid_sizes)}
+      albumDefaultView={normalizeAlbumDefaultView(streamer.collection_default_view)}
       // Issue #557: パック絞り込みタブ。isComplete/hasStoredRecord は記録判定用の
       // サーバー内部値なのでUIへは渡さない。
       packs={packs.map(({ key, displayName, progress: packProgress, completionHistory: packCompletionHistory }) => ({

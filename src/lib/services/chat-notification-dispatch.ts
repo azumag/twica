@@ -156,7 +156,10 @@ export async function dispatchDueChatNotifications(
   reservationSeconds: number,
 ): Promise<DispatchDueChatNotificationsResult> {
   const env = await getDispatchEnvironment()
-  if (!env.dispatchEnabled) return { reserved: 0, enqueued: 0, skippedDisabled: true }
+  if (!env.dispatchEnabled) {
+    logger.info('[chat-notification-dispatch] dispatchDue skipped (disabled)', { skippedDisabled: true })
+    return { reserved: 0, enqueued: 0, skippedDisabled: true }
+  }
 
   const candidates = await reserveDueChatNotificationOutboxForWake(limit, reservationSeconds)
   // 各行は互いに独立したenqueueであり、直列にawaitする理由がない
@@ -168,5 +171,16 @@ export async function dispatchDueChatNotifications(
     candidates.map((candidate) => sendWakeup(env, candidate.batchId)),
   )
   const enqueued = results.filter((result) => result.outcome === 'enqueued').length
+  logger.info('[chat-notification-dispatch] dispatchDue result', {
+    reserved: candidates.length,
+    enqueued,
+    skippedDisabled: false,
+  })
+  if (candidates.length > 0 && enqueued === 0) {
+    logger.warn('[chat-notification-dispatch] dispatchDue produced zero enqueued despite reserved rows', {
+      reserved: candidates.length,
+      enqueued,
+    })
+  }
   return { reserved: candidates.length, enqueued, skippedDisabled: false }
 }

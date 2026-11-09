@@ -19,6 +19,7 @@ import { logger } from './logger.server';
 // -----------------------------------------------------------------------------
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/lib/db/client';
+import { isPgFunctionNotFoundError } from '@/lib/db/errors';
 
 import { withDbRetry } from '@/lib/db/retry';
 import {
@@ -59,9 +60,9 @@ export interface BlobFileInfo {
  * 旧 PostgREST 実装との対応:
  * - storage_usage を user_prefix IN (userPrefix, GLOBAL_PREFIX) で取得する
  *   `.in()` は inArray() が等価。
- * - 取得失敗時は「アップロードをブロックしない」安全側のデフォルト値を返す
- *   （既存の外側 catch と同じ外部挙動。pg はエラーが throw になるため
- *   単一の try/catch で同じ結果に落とす）。
+ * - 取得失敗時は usage=0 かつ両 limit フラグを true にした fail-closed の
+ *   デフォルト値を返す（#1896。容量不明のまま無制限保存へ進めない）。
+ *   pg はエラーが throw になるため、単一の try/catch で同じ結果に落とす。
  */
 async function getStorageUsageFromDBPg(userPrefix: string): Promise<StorageUsageResult> {
   try {
@@ -99,14 +100,13 @@ async function getStorageUsageFromDBPg(userPrefix: string): Promise<StorageUsage
       globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
     };
   } catch (error) {
-    // 使用量を確認できない場合は、アップロードをブロックしないように制限に達していないと仮定
-    // ただし、エラーログは出力する
-    logger.error('[StorageDB] Failed to get storage usage, returning defaults:', error);
+    // 容量が取得不能な場合は無制限保存へ進めない (#1896)
+    logger.error('[StorageDB] Failed to get storage usage, blocking upload:', error);
     return {
       userUsage: 0,
       globalUsage: 0,
-      userLimitReached: false,
-      globalLimitReached: false,
+      userLimitReached: true,
+      globalLimitReached: true,
       userLimitBytes: UPLOAD_CONFIG.USER_STORAGE_LIMIT,
       globalLimitBytes: UPLOAD_CONFIG.GLOBAL_STORAGE_LIMIT,
     };
@@ -119,89 +119,287 @@ export async function getStorageUsageFromDB(userPrefix: string): Promise<Storage
 }
 
 /**
- * ファイル情報をDBに記録（アップロード時）
- * 使用量テーブルも同時に更新する
+ * 容量予約 (#1907)
  *
- * @param url - アップロードされたファイルのURL
- * @param userPrefix - ユーザー識別用のプレフィックス
- * @param fileSize - ファイルサイズ（バイト）
- * @param storageType - ストレージの種類 ('r2' or 'vercel')
+ * アップロード経路は「R2 保存 → 台帳記録」の前にこの予約を取る。予約は
+ * storage_usage ではなく storage_reservations に行を追加するだけで、
+ * 上限判定には「確定済み使用量 + 有効な予約」を使う。これにより並列要求が
+ * 互いの予約を見ずに上限を突破することを DB 側で防ぐ。
+ *
+ * 予約の確定/解放は recordBlobFile / releaseStorageReservation が担う。
+ * 予約 RPC は非冪等（同じ要求で2行作ると容量を二重に占有する）ため、
+ * 接続断の自動リトライは行わない。
  */
+export type StorageReserveOutcome = 'reserved' | 'user_limit' | 'global_limit';
+
+export interface StorageReserveResult {
+  reservationId: string | null;
+  outcome: StorageReserveOutcome;
+  /**
+   * true は「予約 RPC が未適用のデプロイ窓」で旧経路へ縮退したことを示す。
+   * この場合 reservationId は null で、recordBlobFile が旧来の INSERT +
+   * update_storage_usage を実行する（原子性は一時的に失われる）。
+   */
+  degraded: boolean;
+}
+
+export type StorageCommitOutcome =
+  | 'committed'
+  | 'already_committed'
+  | 'reservation_not_found';
+
+export interface StorageReconcileDiff {
+  userPrefix: string;
+  previousBytes: number;
+  actualBytes: number;
+  previousCount: number;
+  actualCount: number;
+}
+
+function assertReservableUserPrefix(userPrefix: string): void {
+  // DB 側の CHECK と同じ条件。ここで弾くのは無効な値で RPC を呼ばないため。
+  if (userPrefix.length !== 8 || userPrefix === GLOBAL_PREFIX) {
+    throw new Error(`Invalid storage user prefix: ${userPrefix}`);
+  }
+}
+
 /**
- * recordBlobFile の pg 直結実装 (#572)
+ * 追加バイト数を原子的に予約する。
  *
- * 旧 PostgREST 実装との対応:
- * - blob_files INSERT の失敗は log + `Failed to record blob file: ...` の throw、
- *   外側 catch の log + 再 throw まで同じ流れ（エラーメッセージ本文はドライバ由来で
- *   異なるが、Error の形状・プレフィックスは同一）。
- * - RPC update_storage_usage（migration 00006 で定義）は sql タグの
- *   名前付き引数呼び出し（p_xxx => 値）に置換。supabase-js の
- *   .rpc('update_storage_usage', { p_user_prefix, ... }) と同じ名前ベースの束縛で、
- *   将来の引数追加・並び替えに対して位置引数より安全。
- * - RPC の失敗はログのみで throw しない（次回の計算で補正される。既存と同じ）。
+ * @param userPrefix - 8 文字のユーザープレフィックス
+ * @param fileSize - 追加バイト数（1 以上）
+ * @param userLimitBytes - ボーナス・プラン込みの実効ユーザー上限
+ * @param globalLimitBytes - 全体上限
  */
-async function recordBlobFilePg(
-  url: string,
+export async function reserveStorageUsage(
   userPrefix: string,
   fileSize: number,
-  storageType: 'r2' | 'vercel'
-): Promise<void> {
+  userLimitBytes: number,
+  globalLimitBytes: number
+): Promise<StorageReserveResult> {
+  assertReservableUserPrefix(userPrefix);
+  if (!Number.isSafeInteger(fileSize) || fileSize <= 0) {
+    throw new Error(`Invalid storage reservation size: ${fileSize}`);
+  }
+
   try {
-    // ファイル情報を記録
-    try {
-      await withDbRetry(
-        async () => {
-          // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
-          const { db } = await getDb();
-          return db.insert(blobFilesTable).values({
-            url,
-            user_prefix: userPrefix,
-            file_size: fileSize,
-            storage_type: storageType,
-          });
-        },
-        'recordBlobFile(insert)',
-        // ON CONFLICT の無い INSERT（url が PK）は再実行で一意制約違反になりうる
-        // ため非冪等（既定 = リトライなし）
-      );
-    } catch (insertError) {
-      logger.error('[StorageDB] Failed to insert blob file record:', insertError);
-      throw new Error(
-        `Failed to record blob file: ${insertError instanceof Error ? insertError.message : String(insertError)}`
-      );
+    const rows = await withDbRetry(
+      async () => {
+        // 規約: getDb() は queryFn の中で呼ぶ（src/lib/db/retry.ts 参照）
+        const { sql } = await getDb();
+        return sql`
+          select reservation_id, outcome
+          from reserve_storage_usage(
+            p_user_prefix => ${userPrefix},
+            p_size => ${fileSize},
+            p_user_limit => ${userLimitBytes},
+            p_global_limit => ${globalLimitBytes}
+          )
+        `;
+      },
+      'reserveStorageUsage(rpc)',
+      // 予約の再実行は容量の二重占有になるため非冪等（既定 = リトライなし）
+    );
+
+    const row = rows[0] as { reservation_id?: string | null; outcome?: string } | undefined;
+    const outcome = row?.outcome;
+    if (outcome !== 'reserved' && outcome !== 'user_limit' && outcome !== 'global_limit') {
+      throw new Error(`Unexpected reserve_storage_usage outcome: ${String(outcome)}`);
     }
 
-    // 使用量を更新（ユーザーとグローバル）
-    try {
-      await withDbRetry(
-        async () => {
-          const { sql } = await getDb();
-          return sql`select update_storage_usage(p_user_prefix => ${userPrefix}, p_size_delta => ${fileSize}, p_count_delta => ${1})`;
-        },
-        'recordBlobFile(rpc:update_storage_usage)',
-        // 使用量カウンタの加算は再実行で二重加算になるため非冪等（既定 = リトライなし）
-      );
-    } catch (rpcError) {
-      logger.error('[StorageDB] Failed to update storage usage:', rpcError);
-      // ファイル記録は成功したが使用量更新が失敗した場合、ログを出すが例外は投げない
-      // 次回の計算で補正される
-    }
-
-    logger.info(`[StorageDB] Recorded blob file: ${url}, size: ${fileSize}, type: ${storageType}`);
+    return {
+      reservationId: outcome === 'reserved' ? (row?.reservation_id ?? null) : null,
+      outcome,
+      degraded: false,
+    };
   } catch (error) {
-    logger.error('[StorageDB] Error recording blob file:', error);
+    if (isPgFunctionNotFoundError(error)) {
+      // deploy-window fallback (#1907): migration がまだ適用されていない間は
+      // 予約 RPC が存在しない。ここで 500 にすると画像・音声の全アップロードが
+      // 停止するため、旧来の非原子的な容量チェックへ縮退する。呼び出し元は
+      // reservationId=null を見て recordBlobFile の legacy 経路を使う。
+      // migration 適用後はこの分岐に入らない（恒久的なフォールバックではない）。
+      logger.warn(
+        '[StorageDB] reserve_storage_usage is not deployed yet; falling back to legacy non-atomic capacity check'
+      );
+      return { reservationId: null, outcome: 'reserved', degraded: true };
+    }
+    logger.error('[StorageDB] Failed to reserve storage usage:', error);
     throw error;
   }
 }
 
-export async function recordBlobFile(
+/**
+ * 旧経路の台帳確定（deploy-window fallback 専用）。
+ *
+ * 予約 RPC が未適用の間だけ使う。blob_files INSERT と update_storage_usage が
+ * 別文になるため原子的ではないが、#1907 以前と同じ動作でアップロードを継続する。
+ * RPC 失敗は握りつぶさず throw する（呼び出し元が R2 を補償削除できるようにする）。
+ */
+async function recordBlobFileLegacy(
   url: string,
   userPrefix: string,
   fileSize: number,
   storageType: 'r2' | 'vercel'
-): Promise<void> {
-  // INSERT と使用量更新を同じ PlanetScale 接続で完結させる。
-  return recordBlobFilePg(url, userPrefix, fileSize, storageType);
+): Promise<StorageCommitOutcome> {
+  try {
+    await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db.insert(blobFilesTable).values({
+          url,
+          user_prefix: userPrefix,
+          file_size: fileSize,
+          storage_type: storageType,
+        });
+      },
+      'recordBlobFile(legacy insert)',
+      // url が PK の INSERT は再実行で一意制約違反になりうるため非冪等
+    );
+
+    await withDbRetry(
+      async () => {
+        const { sql } = await getDb();
+        return sql`select update_storage_usage(p_user_prefix => ${userPrefix}, p_size_delta => ${fileSize}, p_count_delta => ${1})`;
+      },
+      'recordBlobFile(legacy rpc:update_storage_usage)',
+      // 使用量加算は再実行で二重加算になるため非冪等
+    );
+
+    logger.info(`[StorageDB] Recorded blob file via legacy path: ${url}, size: ${fileSize}`);
+    return 'committed';
+  } catch (error) {
+    logger.error('[StorageDB] Failed to record blob file via legacy path:', error);
+    throw new Error(
+      `Failed to record blob file: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * 予約を確定して blob_files と storage_usage を原子的に更新する (#1907)。
+ *
+ * 旧実装は blob_files INSERT と update_storage_usage RPC が別文で、RPC 失敗を
+ * 握りつぶしていた。本実装は 1 つの RPC で両方を行い、失敗は例外で呼び出し元へ
+ * 返す（呼び出し元は R2 オブジェクト削除と予約解放で補償できる）。
+ *
+ * `reservationId` が null の場合は、予約 RPC 未適用のデプロイ窓で
+ * reserveStorageUsage が縮退したことを意味し、旧経路へフォールバックする。
+ *
+ * @returns
+ *   committed: 新規確定
+ *   already_committed: 同じ URL が既に確定済み（再送。使用量は増えない）
+ *   reservation_not_found: 予約も確定済み URL も無い（補償が必要）
+ */
+export async function recordBlobFile(
+  reservationId: string | null,
+  url: string,
+  userPrefix: string,
+  fileSize: number,
+  storageType: 'r2' | 'vercel'
+): Promise<StorageCommitOutcome> {
+  assertReservableUserPrefix(userPrefix);
+  if (!reservationId) {
+    return recordBlobFileLegacy(url, userPrefix, fileSize, storageType);
+  }
+
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { sql } = await getDb();
+        return sql`
+          select commit_storage_reservation(
+            p_reservation_id => ${reservationId}::uuid,
+            p_url => ${url},
+            p_storage_type => ${storageType},
+            p_user_prefix => ${userPrefix},
+            p_size => ${fileSize}
+          ) as outcome
+        `;
+      },
+      'recordBlobFile(rpc:commit_storage_reservation)',
+      // commit は同じ予約 ID + URL の再送を already_committed / 再確定として扱う
+      // （接続断で応答だけ失われた場合も、再実行で最終状態が同じになる）ため
+      // 冪等としてリトライしてよい。これがないと「台帳確定済みなのに呼び出し元が
+      // R2 を削除する」不整合が起きうる。
+      { idempotent: true },
+    );
+
+    const row = rows[0] as { outcome?: string } | undefined;
+    const outcome = row?.outcome;
+    if (outcome !== 'committed' && outcome !== 'already_committed' && outcome !== 'reservation_not_found') {
+      throw new Error(`Unexpected commit_storage_reservation outcome: ${String(outcome)}`);
+    }
+
+    if (outcome === 'reservation_not_found') {
+      logger.warn(
+        `[StorageDB] Storage reservation was not found when recording blob file: ${url} (reservation ${reservationId})`
+      );
+    } else {
+      logger.info(
+        `[StorageDB] Recorded blob file: ${url}, size: ${fileSize}, type: ${storageType}, outcome: ${outcome}`
+      );
+    }
+    return outcome;
+  } catch (error) {
+    logger.error('[StorageDB] Failed to commit blob file record:', error);
+    throw new Error(
+      `Failed to record blob file: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * 容量予約を解放する (#1907)。予約は storage_usage を変更しないため減算は無い。
+ * R2 保存失敗・台帳確定失敗の補償で呼ぶ。既に無い場合は false（冪等）。
+ */
+export async function releaseStorageReservation(reservationId: string | null): Promise<boolean> {
+  // デプロイ窓の legacy 経路（予約なし）では解放対象が無い。
+  if (!reservationId) return false;
+
+  const rows = await withDbRetry(
+    async () => {
+      const { sql } = await getDb();
+      return sql`
+        select release_storage_reservation(p_reservation_id => ${reservationId}::uuid) as released
+      `;
+    },
+    'releaseStorageReservation(rpc)',
+    // 予約行の DELETE は冪等（2 回目は 0 行）。
+    { idempotent: true }
+  );
+
+  return Boolean((rows[0] as { released?: boolean } | undefined)?.released);
+}
+
+/**
+ * blob_files（正本）と storage_usage（キャッシュ）を再照合する (#1907)。
+ * 戻り値は修正した差分のみ。0 件なら整合している。
+ */
+export async function reconcileStorageUsage(): Promise<StorageReconcileDiff[]> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { sql } = await getDb();
+        return sql`select * from reconcile_storage_usage()`;
+      },
+      'reconcileStorageUsage(rpc)',
+      // 再計算は冪等（同じ blob_files から同じ結果になる）
+      { idempotent: true }
+    );
+
+    return (rows as Array<Record<string, unknown>>).map((row) => ({
+      userPrefix: String(row.user_prefix),
+      // bigint は postgres.js では文字列で返るため数値へ揃える。
+      previousBytes: Number(row.previous_bytes ?? 0),
+      actualBytes: Number(row.actual_bytes ?? 0),
+      previousCount: Number(row.previous_count ?? 0),
+      actualCount: Number(row.actual_count ?? 0),
+    }));
+  } catch (error) {
+    logger.error('[StorageDB] Failed to reconcile storage usage:', error);
+    throw error;
+  }
 }
 
 /**

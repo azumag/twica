@@ -8,9 +8,48 @@ import { normalizeGachaSoundRules } from "@/lib/gacha-sound-rules";
 import SettingsLayout from "@/components/SettingsLayout";
 import { getChatDeliveryCapability } from "@/lib/twitch/chat-delivery-capability";
 import { createOverlayPresenceToken } from "@/lib/overlay-realtime/presence-token";
+// Issue #1994: メイン報酬の複数パック割り当て（channel_point_pack_names）。
+// 列欠落（migration未適用のデプロイ窓）では旧単一列だけで解決する。
+import { getDb } from "@/lib/db/client";
+import { streamerChannelPointPackBindings } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+import { isMissingChannelPointPackNamesColumnError } from "@/lib/collections/collection-existence";
+import { resolveEffectiveRewardPackNames } from "@/lib/validation/collection-name";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
+
+/**
+ * Issue #1994: メイン報酬の実効パック割り当て（channel_point_pack_names +
+ * channel_point_collection_name の旧列ミラーから解決）を読む。
+ * 狭い定義で1行だけ読み、42703（列未デプロイ）は旧列へフォールバックする。
+ * 列欠落以外のエラー（一過性障害等）は縮退値に倒さず伝播させる — 複数パック
+ * 割り当てが旧列1件に縮退表示され、保存時に実データが縮むのを防ぐため
+ * （settings API の現在値読み取りと同じ fail-fast 方針。Issue #1996）。
+ */
+async function loadChannelPointCollectionNames(
+  streamerId: string,
+  legacyCollectionName: string | null
+): Promise<string[]> {
+  try {
+    const { db } = await getDb();
+    const rows = await db
+      .select({
+        channel_point_pack_names:
+          streamerChannelPointPackBindings.channel_point_pack_names,
+      })
+      .from(streamerChannelPointPackBindings)
+      .where(eq(streamerChannelPointPackBindings.id, streamerId))
+      .limit(1);
+    return resolveEffectiveRewardPackNames(
+      rows[0]?.channel_point_pack_names,
+      legacyCollectionName,
+    );
+  } catch (error) {
+    if (!isMissingChannelPointPackNamesColumnError(error)) throw error;
+    return resolveEffectiveRewardPackNames(undefined, legacyCollectionName);
+  }
+}
 
 /**
  * Settings page for streamers
@@ -51,11 +90,18 @@ export default async function SettingsPage({
     ? "announcement" as const
     : undefined;
 
-  const [botAccount, chatDeliveryCapability] = await Promise.all([
+  const [botAccount, chatDeliveryCapability, channelPointCollectionNames] = await Promise.all([
     getCustomBotAccountDisplayForStreamer(streamerData.streamer.id),
     // dashboard layoutと同じtwitchUserIdで呼ぶためReact cacheが効き、設定ページ
     // 固有のDB I/O追加は発生せず、helper自体も外部Twitch APIを呼ばない。
     getChatDeliveryCapability(session.twitchUserId),
+    // Issue #1996 (任意8): JSX 内のインライン IIFE で行っていた DB 読み取りを
+    // 他のデータ取得と同じく Promise.all へ移す。42703 以外のエラーは
+    // streamerData 取得と同様にページ全体のエラーへ伝播させる。
+    loadChannelPointCollectionNames(
+      streamerData.streamer.id,
+      streamerData.streamer.channel_point_collection_name
+    ),
   ]);
 
   // Issue #638(回帰): gacha_sound_enabled は PR #595 F1 で「有効なcatch-all
@@ -66,21 +112,17 @@ export default async function SettingsPage({
   const hasEnabledGachaSoundRule = normalizeGachaSoundRules(streamerData.streamer.gacha_sound_rules)
     .some((rule) => rule.enabled);
 
+  // コレクション公開設定(show_unowned_*)とカードトレード設定は /dashboard/account へ
+  // 移動済みで、このページの Advanced セクションには存在しない。それらを「詳細設定を
+  // 使用中」の判定に含めると、移動先の無い設定のために Advanced が初期表示される
+  // 不整合になるため、ここでは見ない。
   const hasAdvancedSettingsInUse =
     Boolean(streamerData.streamer.gacha_sound_enabled) ||
     hasEnabledGachaSoundRule ||
     Boolean(streamerData.streamer.chat_announcement_enabled) ||
-    Boolean(streamerData.streamer.show_unowned_cards) ||
-    Boolean(streamerData.streamer.show_unowned_card_details) ||
     // Issue #738/#740: /live掲載またはランキング上のチャネル表示がONなら使用中とみなす
     Boolean(streamerData.streamer.publish_live_status) ||
     Boolean(streamerData.streamer.publish_stats);
-  // 注: trade_enabled / cross_channel_trade_enabled はここに含めない。
-  // カードトレード設定セクションは SettingsLayout の
-  // TRADE_SETTINGS_SECTION_VISIBLE=false で非表示中であり、表示されない設定を
-  // 「使用中」と数えて初期モードを advanced に固定すると、該当UIが存在しないのに
-  // 詳細モードで開いて「設定が消えた」ように見える混乱を招くため。
-  // 内部の設定値・API・ゲート判定は従来どおり維持する。
 
   return (
     <SettingsLayout
@@ -95,6 +137,7 @@ export default async function SettingsPage({
         rewardId: streamerData.streamer.channel_point_reward_id,
         rewardName: streamerData.streamer.channel_point_reward_name,
         collectionName: streamerData.streamer.channel_point_collection_name ?? null,
+        collectionNames: channelPointCollectionNames,
       }}
       gachaSound={{
         soundUrl: streamerData.streamer.gacha_sound_url ?? null,
@@ -109,19 +152,10 @@ export default async function SettingsPage({
         needsAttention: chatDeliveryCapability.needsAttention,
         template: streamerData.streamer.chat_announcement_template ?? null,
         multiTemplate: streamerData.streamer.chat_announcement_multi_template ?? null,
-        multiShowCards: streamerData.streamer.chat_announcement_multi_show_cards ?? true,
-      }}
-      visibility={{
-        showUnowned: streamerData.streamer.show_unowned_cards ?? false,
-        showUnownedDetails: streamerData.streamer.show_unowned_card_details ?? false,
       }}
       liveDirectory={{
         publishLiveStatus: streamerData.streamer.publish_live_status ?? false,
         publishStats: streamerData.streamer.publish_stats ?? false,
-      }}
-      trade={{
-        enabled: streamerData.streamer.trade_enabled ?? false,
-        crossChannelEnabled: streamerData.streamer.cross_channel_trade_enabled ?? false,
       }}
       cardPacks={{
         // canManage=false によるパックselectの非表示/disabled は progressive

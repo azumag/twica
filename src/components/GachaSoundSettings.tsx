@@ -105,9 +105,12 @@ export default function GachaSoundSettings({
     if (!isPremium) return;
 
     let cancelled = false;
-    setRewardsStatus("loading");
 
     (async () => {
+      // 取得中状態への遷移。async コールバック内に置くことで、effect 本体での
+      // 同期 setState（react-hooks/set-state-in-effect 禁止）を避ける。
+      // async関数の本体は最初の await まで同期的に走るため実行順序は従来と同じ。
+      setRewardsStatus("loading");
       try {
         const response = await fetch("/api/twitch/rewards", { credentials: "include" });
         if (!response.ok) {
@@ -278,7 +281,21 @@ export default function GachaSoundSettings({
         const errorData = await response.json();
         // maintenance mode による503拒否ならサーバーの案内文言を優先する。
         const maintenanceError = parseMaintenanceError(response, errorData);
-        setMessage(maintenanceError?.message || errorData.error || (response.status === 429 ? t("errors.rateLimit") : t("errors.uploadFailed")));
+        // #1907: 507 は画像向けの共通文言ではなく、効果音向けの i18n を code から解決する。
+        // 未知の code は従来どおりサーバー文言へフォールバックする。
+        const storageLimitMessage = response.status === 507
+          ? errorData.code === "GLOBAL_LIMIT_REACHED"
+            ? t("errors.storageGlobalLimitReached")
+            : errorData.code === "USER_LIMIT_REACHED"
+              ? t("errors.storageUserLimitReached")
+              : null
+          : null;
+        setMessage(
+          maintenanceError?.message
+            || storageLimitMessage
+            || errorData.error
+            || (response.status === 429 ? t("errors.rateLimit") : t("errors.uploadFailed"))
+        );
         setIsError(true);
         return;
       }

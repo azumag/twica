@@ -19,10 +19,10 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/services/gacha', () => ({
-  GachaService: vi.fn().mockImplementation(() => ({
+  GachaService: vi.fn().mockImplementation(function() { return ({
     executeGachaForEventSub: mocks.executeGachaForEventSub,
     executeGachaForRaidEvent: mocks.executeGachaForRaidEvent,
-  })),
+  }) }),
 }))
 
 vi.mock('@/lib/sentry/error-handler', () => ({

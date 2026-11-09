@@ -60,6 +60,13 @@ const eslintConfig = defineConfig([
     files: ["src/**/*.{ts,tsx}", "workers/**/*.ts"],
     rules: {
       "react/no-danger": "error",
+      // eval 系は TrustedHTML sink ではないが、CSP（nonce + strict-dynamic、
+      // src/lib/security-headers.ts）の第2層防御を eval 1発で無効化できるため、
+      // OBS/CEF 連鎖に対する defense-in-depth として禁止する。HTML sink と
+      // 同じ files 範囲（src / workers）に限定し、ビルドコードは対象外。
+      "no-eval": "error",
+      "no-implied-eval": "error",
+      "no-new-func": "error",
       "no-restricted-syntax": [
         "error",
         {

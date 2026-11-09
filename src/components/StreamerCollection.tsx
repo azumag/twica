@@ -9,6 +9,7 @@ import CollectionProgress from "./CollectionProgress";
 import CollectionPackFilter from "./CollectionPackFilter";
 import type { CollectionPackDisplay } from "./CollectionPackFilter";
 import type { Streamer, Card } from "@/types/database";
+import type { AlbumDefaultView, AlbumGridSizeMap } from "@/lib/collection-album";
 import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
 
 export interface StreamerCollectionCard extends Card {
@@ -16,6 +17,9 @@ export interface StreamerCollectionCard extends Card {
   isOwned: boolean;
   collectionNumber?: number;
   isCompletionReward?: boolean;
+  // Issue #1782: 被りカードの表示段階（0 = 表示しない）。
+  // Duplicate-card display tier resolved from the streamer's thresholds.
+  duplicateTier?: number;
 }
 
 interface StreamerCollectionProps {
@@ -49,6 +53,15 @@ interface StreamerCollectionProps {
   // 配信者では見た目・挙動とも完全に不変）。
   // Pack filter tabs. Empty (default) = no filter UI, legacy layout untouched.
   packs?: CollectionPackDisplay[];
+  // #726: the channel allows card trading (streamers.trade_enabled). Only then
+  // is the "Trade" entry point shown; the board itself re-checks the gate.
+  tradeEnabled?: boolean;
+  // #1765 フォローアップ: 配信者がコレクション(パック)ごとに指定した
+  // アルバムの並び N（スコープキー → N）と、ページの初期表示モード。
+  // Streamer-configured per-pack album grid sizes + the collection page's
+  // default view mode.
+  albumGridSizes?: AlbumGridSizeMap;
+  albumDefaultView?: AlbumDefaultView;
 }
 
 /**
@@ -67,18 +80,26 @@ export default async function StreamerCollection({
   hideUnownedDetails = false,
   packs = [],
   completionRewards = [],
+  tradeEnabled = false,
+  albumGridSizes,
+  albumDefaultView,
 }: StreamerCollectionProps) {
   const t = await getTranslations("collection");
   const tStreamer = await getTranslations("streamerCollection");
   const tCommon = await getTranslations("common");
   const tCardManager = await getTranslations("cardManager");
-  const tTrade = await getTranslations("trade");
 
   // SortedCardGrid 向けのシリアライズ済み翻訳。従来表示とパックフィルタ表示の
   // 両方でグリッドを描画するため、1回だけ組み立てて共有する。
   // Pass template strings instead of functions (Server -> Client serialization)
   // 関数ではなくテンプレート文字列を渡す（サーバー→クライアントのシリアライズ用）
   const tReward = await getTranslations("packCompletionReward");
+  // Issue #1806: トレード導線は CARD_TRADE_UI_VISIBLE=false の間描画されないため、
+  // 非表示中は「描画しないUI」の翻訳名前空間を実行時に要求しない。
+  // （将来 messages から trade を外してもコレクション画面が落ちないようにする）
+  const tTrade = CARD_TRADE_UI_VISIBLE
+    ? await getTranslations("trade")
+    : null;
   const gridTranslations = {
     completionRewardStatus: tReward("rewardBadge"),
     cardCountTemplate: t("cardCount", { count: "{count}" }),
@@ -86,17 +107,21 @@ export default async function StreamerCollection({
     unownedCard: t("unownedCard"),
     inactiveStatus: tCardManager("status.paused"),
     cardNumberTemplate: t("cardNumber"),
+    // Issue #1782: 被りカードの表示段階バッジ。{tier} は段階番号で置換する。
+    duplicateTierBadgeTemplate: t("duplicateTier.badge", { tier: "{tier}" }),
     unownedStatus: t("unownedStatus"),
     sortLabel: t("sort.label"),
     sortByNumber: t("sort.number"),
     sortByRarity: t("sort.rarity"),
-    // #1765: アルバム表示（3×3固定・画像のみ）の翻訳。
-    // {page}/{total}/{number} は ICU に食われないよう、既存の cardCount と同じく
-    // 置換用トークンを引数として渡して文字列を組み立てる。
+    // #1765: アルバム表示（画像のみ・N×N）の翻訳。
+    // {page}/{total}/{number}/{size} は ICU に食われないよう、既存の cardCount と
+    // 同じく置換用トークンを引数として渡して文字列を組み立てる。
     album: {
       viewLabel: t("album.viewLabel"),
       gridView: t("album.gridView"),
       albumView: t("album.albumView"),
+      gridSizeLabel: t("album.gridSizeLabel"),
+      gridSizeOption: t("album.gridSizeOption", { size: "{size}" }),
       pageIndicator: t("album.pageIndicator", { page: "{page}", total: "{total}" }),
       prevPage: t("album.prevPage"),
       nextPage: t("album.nextPage"),
@@ -123,7 +148,7 @@ export default async function StreamerCollection({
               unoptimized
             />
           )}
-          <div>
+          <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-bold text-white">
               {tStreamer("title", { streamerName: streamer.twitch_display_name })}
             </h1>
@@ -133,19 +158,23 @@ export default async function StreamerCollection({
           </div>
           {/* #726: trade_enabled 時のみトレードボードへの導線を表示。
               #715 の一般公開準備中は CARD_TRADE_UI_VISIBLE=false で入口ごと隠す
-              (直リンク /trade/[streamerId] の掲示板・応諾フローは維持)。 */}
-          {CARD_TRADE_UI_VISIBLE && streamer.trade_enabled === true && (
+              (直リンク /trade/[streamerId] の掲示板・応諾フローは維持)。
+              preview 側の tradeEnabled prop（親ページが viewer / streamer 設定から算出）と
+              main 側のゲート定数を AND し、どちらかが false なら表示しない。 */}
+          {CARD_TRADE_UI_VISIBLE && tradeEnabled && (
             <Link
               href={`/trade/${streamer.id}`}
-              className="ml-auto shrink-0 rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+              className="shrink-0 rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-purple-700"
             >
-              {tTrade("tradeButton")}
+              {tTrade?.("collectionTradeButton")}
             </Link>
           )}
         </div>
 
         {/* Stats */}
-        <Stats stats={stats} />
+        {/* #1783: 配信者がカスタムレアリティごとに設定した表示スタイル。列が未デプロイの
+            環境では undefined になり、各所で従来色へフォールバックする。 */}
+        <Stats stats={stats} rarityStyles={streamer.rarity_styles} />
 
         {packs.length > 0 ? (
           // Issue #557: 名前付きパックがある場合はパック絞り込みUI。
@@ -159,6 +188,9 @@ export default async function StreamerCollection({
             overallCompletionHistory={completionHistory}
             packs={packs}
             gridTranslations={gridTranslations}
+            rarityStyles={streamer.rarity_styles}
+            albumGridSizes={albumGridSizes}
+            albumDefaultView={albumDefaultView}
           />
         ) : (
           <>
@@ -182,6 +214,9 @@ export default async function StreamerCollection({
                 streamerId={streamer.id}
                 hideUnownedDetails={hideUnownedDetails}
                 translations={gridTranslations}
+                albumGridSizes={albumGridSizes}
+                albumDefaultView={albumDefaultView}
+                rarityStyles={streamer.rarity_styles}
               />
             )}
           </>

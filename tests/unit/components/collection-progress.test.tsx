@@ -35,7 +35,9 @@ describe('CollectionProgress hydration mismatch (Issue #557 regression)', () => 
     // Intl.DateTimeFormat をモックし、1回目の呼び出し（SSR相当）と2回目以降の呼び出し
     // （クライアント相当）で異なる文字列を返すことで、UTC/JSTのようなTZ差を再現する。
     let callCount = 0
-    vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(() => {
+    // Vitest 4 (tinyspy) は `new` で呼ばれるモックに本物のコンストラクタを要求するため、
+    // mockImplementation にアロー関数を渡すと "is not a constructor" で落ちる。
+    vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function () {
       callCount += 1
       const isServerRender = callCount <= baseProps.completionHistory.length
       return {

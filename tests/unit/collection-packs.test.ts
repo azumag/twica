@@ -119,29 +119,28 @@ describe("collection-packs", () => {
     });
   });
 
-  // Issue #948: {packName} 用に、獲得カード自身のパックキーを解決する（旧payload
-  // は抽選スコープへフォールバック）。PR #972 レビュー指摘: eventsub-redemption.ts
-  // 内の三項＋??混在の可読性・空文字collection_nameのエッジケースを、純粋関数へ
-  // 切り出して直接テストできるようにした。
+  // Issue #948: {packName} 用に、獲得カード自身のパックキーを解決する。
+  // PR #972 レビュー指摘: eventsub-redemption.ts 内の三項＋??混在の可読性・
+  // 空文字collection_nameのエッジケースを、純粋関数へ切り出して直接テスト
+  // できるようにした。#974 で旧outbox payload向けの抽選スコープへの
+  // フォールバック（undefined 分岐と drawScopeCollectionName 引数）を撤去
+  // し、常にカード自身の collection_name だけを見る形に単純化した
+  // （撤去前に本番outboxの対象行0件をread-onlyで実測済み）。
   describe("resolveCardPackKey", () => {
-    it("falls back to the draw scope when the card's collection_name is undefined (legacy payload)", () => {
-      expect(resolveCardPackKey(undefined, "抽選パック")).toBe("抽選パック");
-      expect(resolveCardPackKey(undefined, null)).toBeNull();
-      expect(resolveCardPackKey(undefined, undefined)).toBeUndefined();
-    });
-
-    it("resolves to DEFAULT_PACK_SENTINEL when the card is unclassified (null), ignoring the draw scope", () => {
-      expect(resolveCardPackKey(null, "抽選パック")).toBe(DEFAULT_PACK_SENTINEL);
-      expect(resolveCardPackKey(null, undefined)).toBe(DEFAULT_PACK_SENTINEL);
+    it("resolves to DEFAULT_PACK_SENTINEL when the card is unclassified (null)", () => {
+      expect(resolveCardPackKey(null)).toBe(DEFAULT_PACK_SENTINEL);
     });
 
     it("treats an empty string the same as null (defensive: normalizeCollectionName blanks to null at write time)", () => {
-      expect(resolveCardPackKey("", "抽選パック")).toBe(DEFAULT_PACK_SENTINEL);
+      expect(resolveCardPackKey("")).toBe(DEFAULT_PACK_SENTINEL);
     });
 
-    it("returns the card's own named pack verbatim, ignoring the draw scope", () => {
-      expect(resolveCardPackKey("レアパック", "抽選パック")).toBe("レアパック");
-      expect(resolveCardPackKey("レアパック", null)).toBe("レアパック");
+    it("treats a missing key (undefined) as unclassified (defensive; the payload decoder may still tolerate it)", () => {
+      expect(resolveCardPackKey(undefined)).toBe(DEFAULT_PACK_SENTINEL);
+    });
+
+    it("returns the card's own named pack verbatim", () => {
+      expect(resolveCardPackKey("レアパック")).toBe("レアパック");
     });
   });
 

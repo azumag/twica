@@ -25,7 +25,7 @@
 | Reporter KV/DB | 本体production KV/Hyperdriveと共用 | Hyperdrive `1e3f6c4569bf4202a41c42711c878b86` のみ | previewにKV/varsを継承しない縮退設定。root preview DBとはIDが異なる。勝手に統合しない |
 | Chat Delivery | `twica-chat-delivery`（設定案のみ） | `twica-chat-delivery-preview`（設定案のみ） | deploy workflow に opt-in の `chat-delivery` job を追加済み（`vars.CHAT_DELIVERY_DEPLOY_ENABLED == 'true'` のときのみ実行、#1665 Step 2 準備）。flag既定OFFのため実配備はなし。Queue作成やconsumer有効化は #1665 の別工程 |
 | Chat Queue | `chat-notification-wakeup` | `chat-notification-wakeup-preview` | producer `CHAT_NOTIFICATION_QUEUE`、consumer batch=1/concurrency=5/retries=5、1分cron。現物の存在は未確認 |
-| Strict rate-limit DO | `twica-rate-limit`（定義のみ・未配備） | `twica-rate-limit-preview`（定義のみ・未配備） | `STRICT_RATE_LIMITER → StrictRateLimitDurableObject`、SQLite DO `v1`。アプリ本体は OpenNext 生成 entrypoint のため class を export できず、`script_name` 付き binding で参照する。配備は owner 承認後 (#1888) |
+| Strict rate-limit DO | `twica-rate-limit`（定義のみ・未配備） | `twica-rate-limit-preview`（定義のみ・未配備） | `STRICT_RATE_LIMITER → StrictRateLimitDurableObject`、SQLite DO `v1`。アプリ本体は OpenNext 生成 entrypoint のため class を export できず、`script_name` 付き binding で参照する。今回の preview port は既存 main #1889 の設定と固定 Wrangler を維持し、cf/Vite 移行や実配備を混ぜない。配備は owner 承認後 (#1888) |
 | CHAT_APP | `twica` | `twica-preview` | service bindingとCHAT_APP_BASE_URLを同じ環境に向ける |
 
 根拠: [root](https://github.com/azumag/twica/blob/preview/wrangler.toml)、[overlay](https://github.com/azumag/twica/blob/preview/workers/overlay-realtime/wrangler.toml)、[reporter](https://github.com/azumag/twica/blob/preview/workers/error-reporter/wrangler.toml)、[chat](https://github.com/azumag/twica/blob/preview/workers/chat-delivery/wrangler.toml)
@@ -37,8 +37,9 @@
 3. Cloudflare Dashboardの非production branch build OFF / build cache ON、watch pathsが一次のコスト制御。シェルの `WORKERS_CI_BRANCH` は二次防御
 4. Workers CIでは不正branchのbuild/deploy/uploadをskip。CI外ではproductionの誤branch deployを拒否、previewの誤branch deployはversion uploadへ落とす。これらを `cf deploy` 直呼びへ置換しない
 5. local標準は `npm run dev:next` = Next webpack / localhost:3000。Worker実行は `workers:build` の後に `workers:dev`。未buildの古い `.open-next` を正常確認として扱わない
-6. 基準時点は Node 22（`.node-version`）、OpenNext 1.20.2 / Wrangler 4.134.0 / workers-types 5.20260917.1。CI/deploy workflow は `node-version-file: .node-version` で Node を統一する。`auxiliary-workers:build` は overlay・reporter に加え chat-delivery・rate-limit の production/preview 両 bundle を含む。OpenNextは維持。cf移行自体の互換性確認は別途必要
-7. OpenNext設定の `queue: "direct"` はadapterの設定で、chat notification Queueの配備状態を意味しない
+6. 基準時点は Node 22（`.node-version`）、OpenNext 1.20.12 / Wrangler 4.151.3 / workers-types 5.20261022.1。CI/deploy workflow は `node-version-file: .node-version` で Node を統一する。OpenNextは維持。cf移行自体の互換性確認は別途必要
+7. `auxiliary-workers:build` は既存の overlay・reporter・chat-delivery・stats-aggregator を保持し、rate-limit の production/preview dry-run bundle を追加する。live resource・app binding・配備 workflow は変更しない
+8. OpenNext設定の `queue: "direct"` はadapterの設定で、chat notification Queueの配備状態を意味しない
 
 根拠: [運用文書](https://github.com/azumag/twica/blob/preview/docs/cloudflare-workers-builds.md)、[package scripts](https://github.com/azumag/twica/blob/preview/package.json)、[deploy guard](https://github.com/azumag/twica/blob/preview/scripts/cloudflare-workers-build-deploy.sh)、[workflow](https://github.com/azumag/twica/blob/preview/.github/workflows/deploy-cloudflare.yml)
 

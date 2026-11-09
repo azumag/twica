@@ -46,9 +46,22 @@ import { withDbRetry } from "@/lib/db/retry";
 // #834: cards テーブルの「本番未デプロイ8列」（card_number/hp/atk/def/spd/
 // skill_type/skill_name/skill_power、#625 参照）に対する SELECT フォールバックは、
 // PlanetScale 本番の information_schema.columns への実測で8列とも実在することを
-// 確認したため撤去した（詳細は card-padding-color-errors.ts のコメント参照）。
-// 無指定 select の単一経路に戻す。
-import { isMissingCardPaddingColorError } from "@/lib/db/card-padding-color-errors";
+// 確認したため撤去した。無指定 select の単一経路に戻す。
+// #954: 残っていた image_padding_color（#899）の列欠落再試行フォールバック
+// （card-padding-color-errors.ts。#834 撤去時に一時新設）も、同じ実測手順
+// （本番・preview の information_schema.columns）で実在を確認したため、
+// ファイルごと撤去した。
+import {
+  normalizeAlbumDefaultView,
+  sanitizeAlbumGridSizeMap,
+  type AlbumDefaultView,
+  type AlbumGridSizeMap,
+} from "@/lib/collection-album";
+import {
+  sanitizeDuplicateDisplayTiers,
+  type DuplicateDisplayTiers,
+} from "@/lib/duplicate-display-tiers";
+import { RARITIES } from "@/lib/constants";
 import {
   STREAMERS_SAFE_COLUMNS,
   withLiveDirectorySettingsColumnFallback,
@@ -77,6 +90,10 @@ type StreamerWithTradeSettings = Streamer & {
   // STREAMERS_SAFE_COLUMNSへ縮退した行だけundefinedになり得るためoptionalにする。
   trade_enabled?: boolean;
   cross_channel_trade_enabled?: boolean;
+  // Issue #1783: カスタムレアリティの表示スタイル。同じ理由（デプロイ窓の
+  // STREAMERS_SAFE_COLUMNS 縮退）で undefined になり得るため optional。
+  // 消費側は `?? {}` で「上書きなし = 既定表示」へ倒すこと。
+  rarity_styles?: Record<string, import("@/lib/rarity-styles").RarityStyle>;
 };
 
 interface CardWithDetails extends Card {
@@ -1601,43 +1618,34 @@ async function fetchGachaDropStatsFromHistory(
         "dashboard:gachaDropStats:history",
         { idempotent: true },
       ),
-      // Fable厳格レビュー指摘(#899 PR #903)対応: image_padding_color が
-      // migration 未適用の環境では、この明示 select が丸ごと失敗し
-      // Promise.all 全体が catch(1556行目) に落ちて排出統計全体が0件表示に
-      // なっていた(gacha.ts の loadPgCards と同じ deploy-window フォールバック
-      // をここにも揃える)。
-      (async () => {
-        const loadCards = async (includePaddingColor: boolean) => {
+      // #899/#954: image_padding_color は明示 select に含めて取得する。
+      // 以前は当該列が migration 未適用の環境で Promise.all 全体が落ちるのを
+      // 避けるため「42703 検知時に列を落として再試行する」deploy-window
+      // フォールバック（#899 PR #903）を置いていたが、#834 (PR #953) と同じ
+      // 手順で PlanetScale 本番・preview の information_schema.columns 実測により
+      // image_padding_color の実在を確認したため撤去した（Issue #954）。
+      // 列を落とした再試行は無意味ではないものの列実在が確認できた以上
+      // 死に分岐であり、単一経路のほうが読み取り契約が明確になる。
+      withDbRetry(
+        async () => {
           const { db } = await getDb();
-          const rows = await db
+          return db
             .select({
               id: cardsTable.id,
               name: cardsTable.name,
               rarity: cardsTable.rarity,
               image_url: cardsTable.image_url,
-              ...(includePaddingColor ? { image_padding_color: cardsTable.image_padding_color } : {}),
+              image_padding_color: cardsTable.image_padding_color,
               drop_rate: cardsTable.drop_rate,
               created_at: cardsTable.created_at,
             })
             .from(cardsTable)
             .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
             .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at));
-          return rows.map((row) => ({
-            ...row,
-            image_padding_color: ("image_padding_color" in row ? row.image_padding_color : null) ?? null,
-          }));
-        };
-        try {
-          return await withDbRetry(() => loadCards(true), "dashboard:gachaDropStats:cards", { idempotent: true });
-        } catch (error) {
-          if (!isMissingCardPaddingColorError(error)) throw error;
-          return withDbRetry(
-            () => loadCards(false),
-            "dashboard:gachaDropStats:cards:padding-fallback",
-            { idempotent: true },
-          );
-        }
-      })(),
+        },
+        "dashboard:gachaDropStats:cards",
+        { idempotent: true },
+      ),
       // カード別の排出数はSQL側でGROUP BYして正確に取る（#833: 以前はhistoryの
       // LIMIT 10000サンプルから数えていたため、期間内の総排出数が10000件を超える
       // 配信者では全カードのactualRateが黙って過小表示されていた）。
@@ -1984,39 +1992,28 @@ async function fetchCardOwnerStatsFromUserCards(
   let ownerCountRows: Array<{ card_id: string; count: number | string }>;
   try {
     [cards, ownerRows, ownerCountRows] = await Promise.all([
-      // Fable厳格レビュー指摘(#899 PR #903)対応: 上のgachaDropStatsと同じ
-      // deploy-window フォールバック(image_padding_color 列欠落時は列を
-      // 落として再試行)。
-      (async () => {
-        const loadCards = async (includePaddingColor: boolean) => {
+      // #899/#954: gachaDropStats と同じく、image_padding_color の列欠落時
+      // 再試行フォールバック（#899 PR #903）は information_schema 実測により
+      // 列が本番・preview とも実在することを確認したため撤去した
+      // （Issue #954）。常に列を含む単一経路。
+      withDbRetry(
+        async () => {
           const { db } = await getDb();
-          const rows = await db
+          return db
             .select({
               id: cardsTable.id,
               name: cardsTable.name,
               rarity: cardsTable.rarity,
               image_url: cardsTable.image_url,
-              ...(includePaddingColor ? { image_padding_color: cardsTable.image_padding_color } : {}),
+              image_padding_color: cardsTable.image_padding_color,
             })
             .from(cardsTable)
             .where(and(eq(cardsTable.streamer_id, streamerId), eq(cardsTable.is_active, true)))
             .orderBy(asc(cardsTable.rarity_order), desc(cardsTable.created_at));
-          return rows.map((row) => ({
-            ...row,
-            image_padding_color: ("image_padding_color" in row ? row.image_padding_color : null) ?? null,
-          }));
-        };
-        try {
-          return await withDbRetry(() => loadCards(true), "dashboard:cardOwnerStats:cards", { idempotent: true });
-        } catch (error) {
-          if (!isMissingCardPaddingColorError(error)) throw error;
-          return withDbRetry(
-            () => loadCards(false),
-            "dashboard:cardOwnerStats:cards:padding-fallback",
-            { idempotent: true },
-          );
-        }
-      })(),
+        },
+        "dashboard:cardOwnerStats:cards",
+        { idempotent: true },
+      ),
       withDbRetry(
         async () => {
           const { db } = await getDb();
@@ -2281,6 +2278,80 @@ export async function getActiveCardCountsForStreamers(
 }
 
 /**
+ * 所持配信者のアクティブカード数を1クエリで取得 (#1981)
+ *
+ * 所持配信者集合（該当ユーザーがカードを1枚以上所持している配信者）を
+ * 副問い合わせで解決し、その配信者の全アクティブカード (id, streamer_id) を
+ * 1クエリ・LIMIT無しで返却する。
+ * 既存 RPC (get_user_card_counts) の契約は変更しない。
+ *
+ * @param twitchUserId 視聴者のTwitchユーザーID
+ * @returns 配信者ID → { totalActive, activeCardIds } のマップ
+ */
+export async function getActiveCardCountsForCollectedStreamers(
+  twitchUserId: string
+): Promise<Map<string, ActiveCardCountForStreamer>> {
+  const startedAt = perfStart();
+  const counts = new Map<string, ActiveCardCountForStreamer>();
+
+  let data: Array<{ id: string; streamer_id: string }>;
+  try {
+    data = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: cardsTable.id,
+            streamer_id: cardsTable.streamer_id,
+          })
+          .from(cardsTable)
+          .where(
+            and(
+              eq(cardsTable.is_active, true),
+              inArray(
+                cardsTable.streamer_id,
+                sql`SELECT DISTINCT c.streamer_id
+                      FROM cards c
+                      INNER JOIN user_cards uc ON uc.card_id = c.id
+                      INNER JOIN users u ON u.id = uc.user_id
+                      WHERE u.twitch_user_id = ${twitchUserId}`
+              )
+            )
+          );
+      },
+      "getActiveCardCountsForCollectedStreamers",
+      { idempotent: true }
+    );
+  } catch (error) {
+    reportError(
+      new Error(
+        `active card count for collected streamers query failed: ${error instanceof Error ? error.message : String(error)}`
+      )
+    );
+    logPerf("dashboard-data", "getActiveCardCountsForCollectedStreamers", startedAt, {
+      failed: true,
+    });
+    return counts;
+  }
+
+  for (const row of data) {
+    let entry = counts.get(row.streamer_id);
+    if (!entry) {
+      entry = { totalActive: 0, activeCardIds: new Set() };
+      counts.set(row.streamer_id, entry);
+    }
+    entry.totalActive += 1;
+    entry.activeCardIds.add(row.id);
+  }
+
+  logPerf("dashboard-data", "getActiveCardCountsForCollectedStreamers", startedAt, {
+    streamerCount: counts.size,
+    activeCardCount: data.length,
+  });
+  return counts;
+}
+
+/**
  * 配信者ごとの「最後にカードを獲得した日時」を取得する (#1953)。
  *
  * マイコレクション一覧の「最近カードを獲得した順」の並び替え用。
@@ -2518,6 +2589,138 @@ async function getStreamerByIdPg(streamerId: string): Promise<Streamer | null> {
 export const getStreamerById = cache(async (streamerId: string): Promise<Streamer | null> => {
   return getStreamerByIdPg(streamerId);
 });
+
+/**
+ * コレクション公開設定・カードトレード設定の初期値 (/dashboard/account 用)
+ */
+export interface StreamerCollectionSettings {
+  streamerId: string;
+  showUnownedCards: boolean;
+  showUnownedCardDetails: boolean;
+  tradeEnabled: boolean;
+  crossChannelTradeEnabled: boolean;
+  // #1765 フォローアップ: パック別アルバム既定の設定UIが必要とする値。
+  // カタログ(card_pack_names)・デフォルトパック表示名・保存済みの並び既定
+  // マップ・初期表示モード。列未デプロイ時は安全側（空マップ / 'grid'）。
+  packNames: string[];
+  defaultPackName: string | null;
+  albumGridSizes: AlbumGridSizeMap;
+  albumDefaultView: AlbumDefaultView;
+  // Issue #1782: 被りカード表示段階の設定UIに必要な値。
+  // 既定 + カスタムレアリティの一覧（設定行を出す対象）と、保存済みのしきい値。
+  // 列未デプロイ時は安全側（空マップ = 段階表示なし）。
+  rarities: string[];
+  duplicateDisplayTiers: DuplicateDisplayTiers;
+}
+
+/**
+ * アカウント設定画面に置くコレクション公開設定/トレード設定の初期値だけを取得する。
+ *
+ * getStreamerData は cards を全件 JOIN するため、4つのフラグのためだけに使うには
+ * 重すぎる。twitch_user_id(UNIQUE) で streamers を1行・5列だけ読む。
+ *
+ * - trade_enabled / cross_channel_trade_enabled が未デプロイ(42703)のデプロイ窓では
+ *   既存の withLiveDirectorySettingsColumnFallback で2列を除いた射影へ再試行し、欠けた
+ *   値は false(fail-closed)にする。show_unowned_* は STREAMERS_SAFE_COLUMNS にも含まれる
+ *   既存列なので再試行側にも残す。
+ * - 配信者行が無い / DBエラーの場合は null。呼び出し側は null ならセクションを出さない。
+ *   設定セクションの初期値が取れないだけでアカウントページ全体を落とさないため、例外は
+ *   ここで握りつぶしてログだけ残す。
+ */
+export const getStreamerCollectionSettings = cache(
+  async (twitchUserId: string): Promise<StreamerCollectionSettings | null> => {
+    try {
+      const rows = await withLiveDirectorySettingsColumnFallback(async (useSafeColumns) =>
+        withDbRetry(
+          async () => {
+            const { db } = await getDb();
+            const query = useSafeColumns
+              ? db.select({
+                  id: streamersTable.id,
+                  show_unowned_cards: streamersTable.show_unowned_cards,
+                  show_unowned_card_details: streamersTable.show_unowned_card_details,
+                  // STREAMERS_SAFE_COLUMNS にも含まれる既存列なので、
+                  // デプロイ窓の再試行側でもパック一覧は取得できる。
+                  card_pack_names: streamersTable.card_pack_names,
+                  default_card_pack_name: streamersTable.default_card_pack_name,
+                  // STREAMERS_SAFE_COLUMNS にも含まれる既存列なので、デプロイ窓の
+                  // 再試行側でもレアリティ一覧は取得できる。
+                  custom_rarities: streamersTable.custom_rarities,
+                })
+              : db.select({
+                  id: streamersTable.id,
+                  show_unowned_cards: streamersTable.show_unowned_cards,
+                  show_unowned_card_details: streamersTable.show_unowned_card_details,
+                  card_pack_names: streamersTable.card_pack_names,
+                  default_card_pack_name: streamersTable.default_card_pack_name,
+                  // Issue #1782: 被りカード表示段階の設定行に既定 + カスタム
+                  // レアリティを出すために使う。既存列なのでフォールバック側の
+                  // 射影（STREAMERS_SAFE_COLUMNS に含まれる）でも取得できる。
+                  custom_rarities: streamersTable.custom_rarities,
+                  trade_enabled: streamersTable.trade_enabled,
+                  cross_channel_trade_enabled: streamersTable.cross_channel_trade_enabled,
+                  pack_album_grid_sizes: streamersTable.pack_album_grid_sizes,
+                  collection_default_view: streamersTable.collection_default_view,
+                  duplicate_display_tiers: streamersTable.duplicate_display_tiers,
+                });
+            return query
+              .from(streamersTable)
+              .where(eq(streamersTable.twitch_user_id, twitchUserId))
+              .limit(1);
+          },
+          "getStreamerCollectionSettings",
+          { idempotent: true },
+        )
+      );
+      // 再試行側の行型には trade 列が無いため、実行時に undefined になり得る列を
+      // optional として読み、`?? false` で fail-closed に倒す。
+      const row = rows[0] as
+        | {
+            id: string;
+            show_unowned_cards: boolean | null;
+            show_unowned_card_details: boolean | null;
+            card_pack_names?: string[] | null;
+            default_card_pack_name?: string | null;
+            trade_enabled?: boolean | null;
+            cross_channel_trade_enabled?: boolean | null;
+            pack_album_grid_sizes?: unknown;
+            collection_default_view?: string | null;
+            duplicate_display_tiers?: unknown;
+            custom_rarities?: string[] | null;
+          }
+        | undefined;
+      if (!row) return null;
+      return {
+        streamerId: row.id,
+        showUnownedCards: row.show_unowned_cards ?? false,
+        showUnownedCardDetails: row.show_unowned_card_details ?? false,
+        tradeEnabled: row.trade_enabled ?? false,
+        crossChannelTradeEnabled: row.cross_channel_trade_enabled ?? false,
+        // デプロイ窓（列未作成）や破損値は空配列 / 空マップ / 'grid' へ縮退する。
+        packNames: Array.isArray(row.card_pack_names) ? row.card_pack_names : [],
+        defaultPackName: row.default_card_pack_name ?? null,
+        albumGridSizes: sanitizeAlbumGridSizeMap(row.pack_album_grid_sizes),
+        albumDefaultView: normalizeAlbumDefaultView(row.collection_default_view),
+        // Issue #1782: 設定行は「既定レアリティ + 配信者が定義したカスタムレアリティ」。
+        // 既定だけを出すと、カスタムレアリティのカードは段階表示を設定できず
+        // 「機能が半分動かない」状態になるため、両方を対象にする。
+        // 重複（カスタム名が既定と一致することは validation 側で禁じているが、
+        // 過去データや手動編集では有り得る）は1行に畳む。
+        rarities: [
+          ...RARITIES.map((rarity) => rarity.value),
+          ...(Array.isArray(row.custom_rarities) ? row.custom_rarities : []),
+        ].filter(
+          (rarity, index, all) => all.indexOf(rarity) === index && typeof rarity === "string"
+        ),
+        // デプロイ窓（列未作成）や破損値は空マップ = 段階表示なしへ縮退する。
+        duplicateDisplayTiers: sanitizeDuplicateDisplayTiers(row.duplicate_display_tiers),
+      };
+    } catch (error) {
+      logger.error("Error in getStreamerCollectionSettings (pg)", { error });
+      return null;
+    }
+  }
+);
 
 /**
  * getUserCardDetail の Drizzle（pg 直結）実装 (#571)

@@ -3,7 +3,10 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { handleApiError } from "@/lib/error-handler";
 import { checkRateLimit, rateLimits, getRateLimitIdentifier } from "@/lib/rate-limit";
 import { ERROR_MESSAGES } from "@/lib/constants";
-import { getTwitchAccessToken, twitchTokenErrorReportContext } from "@/lib/twitch/token-manager";
+import {
+  handleTwitchTokenError,
+  requireTwitchAccessToken,
+} from "@/lib/twitch/token-error-handler";
 
 const TWITCH_API_URL = "https://api.twitch.tv/helix";
 
@@ -25,18 +28,6 @@ interface TwitchEmote {
   format: string[];
   scale: string[];
   theme_mode: string[];
-}
-
-/**
- * Helper function to get Twitch access token or throw an error
- * Twitchアクセストークンを取得するか、エラーをスローするヘルパー関数
- */
-async function getTwitchAccessTokenOrError(twitchUserId: string): Promise<string> {
-  const accessToken = await getTwitchAccessToken(twitchUserId);
-  if (accessToken === null) {
-    throw new Error(ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED);
-  }
-  return accessToken;
 }
 
 /**
@@ -73,7 +64,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const accessToken = await getTwitchAccessTokenOrError(session.twitchUserId);
+    const accessToken = await requireTwitchAccessToken(session.twitchUserId);
 
     // Fetch channel emotes from Twitch API
     // Twitch APIからチャネルエモートを取得
@@ -109,14 +100,11 @@ export async function GET(request: Request) {
 
     return NextResponse.json(transformedEmotes);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : '';
-    if (errorMessage === ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED) {
-      return NextResponse.json(
-        { error: ERROR_MESSAGES.TWITCH_TOKEN_REQUIRED, requiresReauth: true },
-        { status: 401 }
-      );
-    }
-    // refresh診断の永続化・非二重報告契約は twitchTokenErrorReportContext のJSDocを参照。
-    return handleApiError(error, "Twitch emotes fetch", twitchTokenErrorReportContext(error));
+    // Issue #1088: token error の catch を共通ヘルパへ集約する。
+    // - トークン未保持(MissingTwitchTokenError): 記録せず 401 + requiresReauth。
+    // - 恒久refresh失効(#1018 の channel-point-bootstrap と同型: NO_TOKEN /
+    //   REFRESH_FAILED 400・401): 診断記録を維持したまま 401 + requiresReauth。
+    // - 一過性5xx/network/DB起因: 従来どおり500(handleApiError)。
+    return handleTwitchTokenError(error, "Twitch emotes fetch");
   }
 }

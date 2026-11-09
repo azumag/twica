@@ -6,7 +6,9 @@ import { useTranslations } from "next-intl";
 import type { Card, Rarity } from "@/types/database";
 import { RARITIES, DEFAULT_RARITY_WEIGHTS, CARD_DESCRIPTION_MAX_CHARACTERS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
-import { formatRarityLabel, getRarityDisplayInfo } from "@/lib/rarity";
+import { formatRarityLabel, getRarityDisplayInfo, getRarityStylePresentation } from "@/lib/rarity";
+// Issue #1783: カスタムレアリティの表示スタイル（型のみ）。
+import type { RarityStyle } from "@/lib/rarity-styles";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { validateUpload, getUploadErrorMessage } from "@/lib/upload-validation";
 import { countCharacters } from "@/lib/text-utils";
@@ -92,6 +94,12 @@ interface CardManagerProps {
   // 配信者が定義したカスタムレアリティ名（rarity_weights とは独立）
   // Streamer-defined custom rarity names (decoupled from rarity_weights)
   initialCustomRarities?: string[];
+  // Issue #1783: カスタムレアリティごとの表示スタイル（色/グラデーション/グロー/
+  // エフェクト）。キーはレアリティ名。undefined/null（列未デプロイのデプロイ窓を
+  // 含む）は空マップ = 全レアリティ既定表示として扱う。
+  // Issue #1783: per-custom-rarity display styles. undefined/null (including the
+  // deploy window where the column does not exist yet) means "no overrides".
+  initialRarityStyles?: Record<string, RarityStyle> | null;
   // 配信者が事前登録したカードパック名（Issue #393再設計）。カード作成/編集
   // フォームの collectionName は自由入力ではなく、このリストからのみ選択する。
   // Pre-defined card pack names (Issue #393 redesign). The collectionName
@@ -119,6 +127,12 @@ interface CardManagerProps {
   // Issue #269再設計: 新規パック登録(パック管理モーダルでの追加)にのみ適用する
   // プラン判定。デフォルトfalse(フェイルクローズ)。
   isPremium?: boolean;
+  // Issue #1790: 「トレードの求めるカードに指定できない」カードの id 一覧
+  // (cards.trade_wantable = false)。未指定・空は全カード指定可。
+  // Card 行とは別に持つのは、カード行が本体の無指定 RETURNING や再計算結果で
+  // 丸ごと置き換わる(それらはこの列を含まない)ため。行に載せると置き換えの
+  // たびに値が消え、編集フォームが既定値(指定可)を表示して誤って戻しうる。
+  initialNonWantableCardIds?: string[];
 }
 
 // Sorting field options
@@ -135,6 +149,8 @@ type CardFormData = {
   collectionName: string;
   dropRate: number;
   intraRarityWeight: number;
+  // Issue #1790: トレードの「求めるカード」に指定できるか(編集時のみ送信)
+  tradeWantable: boolean;
 };
 
 // Sorting direction options
@@ -168,11 +184,13 @@ export default function CardManager({
   maxUploadSize,
   initialRarityWeights = null,
   initialCustomRarities = [],
+  initialRarityStyles = null,
   initialCardPackNames = [],
   initialDefaultPackName = null,
   initialRarityWeightsScope = "global",
   initialPackRarityWeights = null,
   isPremium = false,
+  initialNonWantableCardIds = [],
 }: CardManagerProps) {
   // i18n translations
   // i18n翻訳
@@ -202,6 +220,11 @@ export default function CardManager({
   });
   // カスタムレアリティ名（ドロップ率設定とは独立。専用モーダルで管理）
   const [customRarities, setCustomRarities] = useState<string[]>(initialCustomRarities);
+  // Issue #1783: カスタムレアリティの表示スタイル（専用モーダルで管理）。
+  // null/undefined（列未デプロイのデプロイ窓を含む）は空マップ = 既定表示。
+  const [rarityStyles, setRarityStyles] = useState<Record<string, RarityStyle>>(
+    initialRarityStyles ?? {}
+  );
   // 事前登録カードパック名（Issue #393再設計。専用モーダルで管理）
   const [cardPackNames, setCardPackNames] = useState<string[]>(initialCardPackNames);
   // 「デフォルト」(未分類)パックの表示名オーバーライド（Issue #554。専用モーダルで管理）
@@ -251,6 +274,12 @@ export default function CardManager({
   // Track if this is the first render to skip initial reload
   // 初回レンダリングかどうかを追跡して初期リロードをスキップ
   const isFirstRender = useRef(true);
+  // Issue #1790: 求めるカードに指定できないカードの id(props の説明参照)。
+  // reloadCards がこのsetterを参照するため、宣言順序上ここに置く必要がある
+  // (react-hooks/immutability: 宣言前アクセス禁止)。
+  const [nonWantableCardIds, setNonWantableCardIds] = useState<Set<string>>(
+    () => new Set(initialNonWantableCardIds)
+  );
 
   /**
    * Reload all cards from server (called when sort/filter changes)
@@ -274,6 +303,17 @@ export default function CardManager({
       if (response.ok) {
         const data = await response.json();
         setCards(data.cards);
+        // Issue #1790: GET /api/cards は各カードに trade_wantable を付ける。
+        // ステータスフィルター時は一部のカードしか返らないため、返ったカードの
+        // 分だけ上書きし、それ以外の既知の値は保つ。
+        setNonWantableCardIds((prev) => {
+          const next = new Set(prev);
+          for (const card of data.cards as Array<Card & { trade_wantable?: unknown }>) {
+            if (card.trade_wantable === false) next.add(card.id);
+            else if (card.trade_wantable === true) next.delete(card.id);
+          }
+          return next;
+        });
       } else {
         logger.error("[CardManager] reloadCards failed:", response.status);
       }
@@ -438,7 +478,17 @@ export default function CardManager({
     collectionName: "",
     dropRate: 0.25,
     intraRarityWeight: 1.0,
+    tradeWantable: true,
   });
+  // Issue #1790: 編集フォームを開いた時点の指定可否。保存時はこれと比べて
+  // 変わったときだけ tradeWantable を送る。GET /api/cards はキャッシュ
+  // (unstable_cache)経由のため nonWantableCardIds が古い値になりうる。
+  // 未変更でも毎回送ると、名前だけの編集で古い「指定可」が書き戻され、
+  // 配信者が設定した「指定不可」が黙って外れてしまう。
+  const [tradeWantableAtOpen, setTradeWantableAtOpen] = useState(true);
+  // Issue #1790: デプロイ窓(trade_wantable列未作成)で指定不可を保存できなかった通知。
+  // deployWindowNotice(パック名)と同じく、resetForm()から独立させる。
+  const [tradeWantableDeployWindowNotice, setTradeWantableDeployWindowNotice] = useState(false);
   // Issue #393再設計: 事前登録パック一覧 + (編集中カードの現在値がその一覧に
   // 無ければ)孤立参照を選択肢として残す(ChannelPointSettingsの「一覧に無い
   // パックも表示」パターンと同じ。パック管理から削除された後の既存紐付けを
@@ -577,8 +627,21 @@ export default function CardManager({
   // サムネイル最適化前の元URLを保持し、高解像度のまま表示する
   const [zoomedImage, setZoomedImage] = useState<{ url: string; name: string } | null>(null);
   // Stores the thumbnail button that opened the modal so we can return focus when closed
-  // モーダルを開いた元のサムネイルボタンを保持し、閉じた際にフォーカスを戻すための参照
-  const zoomTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // モーダルを開いた元のサムネイルボタンを保持し、閉じた際にフォーカスを戻すための参照。
+  // useRef ではなく useState にしている: `event.currentTarget`（render 中に作られる
+  // クロージャ経由で取得した値）を ref へ代入すると、引数が ref value と型推論され
+  // react-hooks/refs に検出されるため。イベントハンドラ/タイマー内でしか読まない値。
+  const [zoomTrigger, setZoomTrigger] = useState<HTMLButtonElement | null>(null);
+  // グリッド表示のサムネイルクリックで拡大モーダルを開く共通処理。
+  // クリック元ボタンはフォーカス復帰用に zoomTrigger へ保持する。
+  const openZoomFromEvent = (
+    event: React.MouseEvent<HTMLButtonElement>,
+    url: string,
+    name: string,
+  ) => {
+    setZoomTrigger(event.currentTarget);
+    setZoomedImage({ url, name });
+  };
   const [emotes, setEmotes] = useState<TwitchEmote[]>([]);
   const [selectedEmotes, setSelectedEmotes] = useState<Set<string>>(new Set());
   const [loadingEmotes, setLoadingEmotes] = useState(false);
@@ -618,7 +681,14 @@ export default function CardManager({
   }, []);
 
   useEffect(() => {
-    fetchStorageStatus();
+    // fetchStorageStatus は内部で同期的に setStorageLoading(true) を呼ぶため、
+    // effect 本体からの直接呼び出しは react-hooks/set-state-in-effect に抵触する。
+    // 匿名 async 関数の内側に移せば、同期プロローグの setState は最初の await
+    // まで同期的に実行されるため従来と同一タイミング（act() スコープ内に収まり
+    // queueMicrotask による遅延より忠実な置き換え）。
+    void (async () => {
+      await fetchStorageStatus();
+    })();
   }, [fetchStorageStatus]);
 
   // Close the zoom modal when Escape is pressed and restore focus to the trigger
@@ -628,8 +698,8 @@ export default function CardManager({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setZoomedImage(null);
-        const trigger = zoomTriggerRef.current;
-        zoomTriggerRef.current = null;
+        const trigger = zoomTrigger;
+        setZoomTrigger(null);
         if (trigger) {
           requestAnimationFrame(() => trigger.focus());
         }
@@ -637,7 +707,9 @@ export default function CardManager({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [zoomedImage]);
+    // zoomTrigger は zoomedImage と同じクリックで一緒に設定/クリアされるため、
+    // deps への追加による挙動変化はない（exhaustive-deps 警告回避のため記載）。
+  }, [zoomedImage, zoomTrigger]);
 
   // 未設定の配信者向けにデフォルトレアリティ重みをDBに自動保存（マウント時1回のみ）
   const autoSavedWeightsRef = useRef(false);
@@ -1121,6 +1193,7 @@ export default function CardManager({
       collectionName: "",
       dropRate: 0.25,
       intraRarityWeight: 1.0,
+      tradeWantable: true,
     });
     setConfirmedImageUrl("");
     setUserModifiedImage(true);
@@ -1430,7 +1503,9 @@ export default function CardManager({
       collectionName: card.collection_name || "",
       dropRate: card.drop_rate,
       intraRarityWeight: card.intra_rarity_weight ?? 1.0,
+      tradeWantable: !nonWantableCardIds.has(card.id),
     });
+    setTradeWantableAtOpen(!nonWantableCardIds.has(card.id));
     setConfirmedImageUrl(card.image_url || "");
     // Issue #899: 余白付きカードの編集時は既存の余白色を復元する
     setImagePaddingColor(card.image_padding_color ?? null);
@@ -1544,6 +1619,12 @@ export default function CardManager({
           dropRate: formData.dropRate,
           // intraRarityWeightはautoMode時のみ送信（手動モードでは不要）
           ...(rarityWeights !== null ? { intraRarityWeight: formData.intraRarityWeight } : {}),
+          // Issue #1790: 指定可否は既存カードの編集時に、フォームを開いた時点から
+          // 変わった場合だけ送る(理由は tradeWantableAtOpen の説明参照)。新規作成は
+          // 既定の指定可で、POST /api/cards はこの項目を扱わない。
+          ...(editingCard && formData.tradeWantable !== tradeWantableAtOpen
+            ? { tradeWantable: formData.tradeWantable }
+            : {}),
         }),
       });
 
@@ -1559,8 +1640,24 @@ export default function CardManager({
         const savedCardData = { ...(responseData as Record<string, unknown>) };
         delete savedCardData.recalculatedCards;
         delete savedCardData.collectionNameSkippedDeployWindow;
+        // Issue #1790: 指定可否は別 state で持つ(props の説明参照)。応答の
+        // trade_wantable は保存後の実際の値(デプロイ窓で保存できなかった場合は
+        // true)なので、それで state を更新し、カード行からは取り除く。
+        const savedTradeWantable = savedCardData.trade_wantable;
+        const tradeWantableSkippedDeployWindow = savedCardData.tradeWantableSkippedDeployWindow === true;
+        delete savedCardData.trade_wantable;
+        delete savedCardData.tradeWantableSkippedDeployWindow;
         const savedCard = savedCardData as unknown as Card;
         setDeployWindowNotice(collectionNameSkippedDeployWindow);
+        setTradeWantableDeployWindowNotice(tradeWantableSkippedDeployWindow);
+        if (typeof savedTradeWantable === "boolean") {
+          setNonWantableCardIds((prev) => {
+            const next = new Set(prev);
+            if (savedTradeWantable) next.delete(savedCard.id);
+            else next.add(savedCard.id);
+            return next;
+          });
+        }
 
         if (editingCard) {
           setCards((prevCards) => {
@@ -1697,7 +1794,12 @@ export default function CardManager({
     }
   };
 
-  const getRarityInfo = (rarity: Rarity) => getRarityDisplayInfo(rarity);
+  // #1783: 配信者が設定したカスタムレアリティ色をカード一覧へ反映する。
+  // 未設定・レアリティ未登録なら getRarityStylePresentation が従来のプリセットを返す。
+  const getRarityInfo = (rarity: Rarity) => {
+    const style = getRarityStylePresentation(rarity, rarityStyles);
+    return { ...style, label: getRarityDisplayInfo(rarity).label };
+  };
 
   // storage-status API の message はロケール依存の日本語文言が直に来るため、
   // 機械判別用フラグから t() で解決した文言を表示に使う（#835: 英語ロケールでも
@@ -1785,6 +1887,12 @@ export default function CardManager({
       {deployWindowNotice && (
         <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
           <p className="text-sm text-yellow-300">{t("form.collectionNameDeployWindow")}</p>
+        </div>
+      )}
+      {/* Issue #1790: 指定不可がデプロイ窓で保存できなかった通知(パック名と同じ方式) */}
+      {tradeWantableDeployWindowNotice && (
+        <div className="mb-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 p-4">
+          <p className="text-sm text-yellow-300">{t("form.tradeWantableDeployWindow")}</p>
         </div>
       )}
 
@@ -2251,6 +2359,31 @@ export default function CardManager({
                 </div>
               </div>
             )}
+            {/* Issue #1790: トレードの「求めるカード」に指定できるか。既存カードの
+                編集時だけ表示する(新規カードは既定の指定可)。切り替えられるのは
+                このカードの配信者だけで、認可は PUT /api/cards/[id] の所有権確認が
+                担う。オフにすると、このカードを求める既存の出品もボードから消えて
+                応じられなくなり、オンに戻すと復活する。 */}
+            {editingCard && (
+              <div className="md:col-span-2">
+                <label className="flex items-start gap-2 text-sm text-gray-300">
+                  <input
+                    type="checkbox"
+                    name="tradeWantable"
+                    checked={formData.tradeWantable}
+                    onChange={(e) =>
+                      setFormData({ ...formData, tradeWantable: e.target.checked })
+                    }
+                    aria-describedby="card-trade-wantable-help"
+                    className="mt-0.5 h-4 w-4 rounded accent-purple-500"
+                  />
+                  <span>{t("form.tradeWantable")}</span>
+                </label>
+                <p id="card-trade-wantable-help" className="mt-1 text-xs text-gray-400">
+                  {t("form.tradeWantableHelp")}
+                </p>
+              </div>
+            )}
             <div className="md:col-span-2">
               <label className="mb-1 block text-sm text-gray-300">{t("form.description")}</label>
               <textarea
@@ -2551,9 +2684,10 @@ export default function CardManager({
                   if (!card.image_url) return;
                   // リスト表示のサムネイルクリックでも同じ拡大モーダルを使い、閉じたらフォーカスを戻す
                   // Reuse the same zoom modal for list view so closing returns focus to the clicked thumbnail
-                  zoomTriggerRef.current = trigger;
+                  setZoomTrigger(trigger);
                   setZoomedImage({ url: card.image_url, name: card.name });
                 }}
+                rarityStyles={rarityStyles}
               />
             ) : (
               /* Thumbnail grid view */
@@ -2605,7 +2739,8 @@ export default function CardManager({
                           <h3 className="font-semibold text-white truncate">{card.name}</h3>
                           {completionRewardIds.includes(card.id) && <button type="button" className="text-xs text-purple-300 underline" onClick={() => setShowCardPackModal(true)}>{tReward('rewardBadge')} · {tReward('settingsRemove')}</button>}
                           <span
-                            className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.color}`}
+                            className={`rounded-full px-2 py-0.5 text-xs text-white shrink-0 ml-2 ${rarityInfo.colorClass}`}
+                            style={rarityInfo.styleVars}
                           >
                             {getRarityLabel(card.rarity)}
                           </span>
@@ -2635,10 +2770,7 @@ export default function CardManager({
                             return (
                               <button
                                 type="button"
-                                onClick={(e) => {
-                                  zoomTriggerRef.current = e.currentTarget;
-                                  setZoomedImage({ url: imageUrl, name: card.name });
-                                }}
+                                onClick={(e) => openZoomFromEvent(e, imageUrl, card.name)}
                                 className="block h-full w-full cursor-zoom-in overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
                                 aria-label={t("actions.enlargeImage", { name: card.name })}
                               >
@@ -3002,7 +3134,9 @@ export default function CardManager({
         onClose={() => setShowCustomRarityModal(false)}
         streamerId={streamerId}
         customRarities={customRarities}
+        rarityStyles={rarityStyles}
         onSaved={setCustomRarities}
+        onSavedStyles={setRarityStyles}
       />
 
       {/* Card Pack Modal (Issue #393再設計) */}
@@ -3228,8 +3362,8 @@ export default function CardManager({
           setZoomedImage(null);
           // モーダルを閉じたら元のサムネイルボタンへフォーカスを戻す（アクセシビリティ）
           // Return focus to the originating thumbnail button for keyboard users
-          const trigger = zoomTriggerRef.current;
-          zoomTriggerRef.current = null;
+          const trigger = zoomTrigger;
+          setZoomTrigger(null);
           if (trigger) {
             // requestAnimationFrame: 再レンダリング後にフォーカスを戻す
             requestAnimationFrame(() => trigger.focus());

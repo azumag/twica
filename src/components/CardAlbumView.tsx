@@ -1,35 +1,44 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { getOptimizedImageUrl } from "@/lib/image-utils";
 import { cardImageFitClass, cardImageFitStyle } from "@/lib/card-image-style";
+import {
+  ALBUM_GRID_SIZES,
+  DEFAULT_ALBUM_GRID_SIZE,
+  normalizeAlbumGridSize,
+} from "@/lib/collection-album";
 
 /**
- * カードアルバム表示（3×3固定・画像のみ） — 視聴者からの機能要望 (#1765)
+ * カードアルバム表示（画像のみ・N×N可変） — 視聴者からの機能要望 (#1765)
  *
  * 要望の要点:
- *  - 端末幅によって横に並ぶ枚数が変わる現状のグリッドを、3×3 の決まった並びで見たい
+ *  - 端末幅によって横に並ぶ枚数が変わる現状のグリッドを、決まった並びで見たい
  *  - 名前・レアリティなどの文字を出さず、画像だけを並べて眺めたい
  *  - 将来は「アルバム上で完成するパズル」のようなガチャへ広げたい（＝穴あきの枠）
  *
  * そのため、このコンポーネントは:
- *  - 列数は常に 3（レスポンシブ分岐を一切持たない。`sm:`/`lg:` 等を書かない）
- *  - 1ページ = 9 枠固定。最終ページも空き枠で埋めて常に 3×3 の枠を描く
+ *  - 列数・行数は呼び出し側が渡す N（既定 3）。1ページ = N×N 枠。
+ *    レスポンシブな列数指定（`sm:` 等）は一切持たない＝端末幅で並びが変わらない
+ *  - 1ページの枠数は常に N×N。最終ページも空き枠で埋める
  *  - タイルに表示するのは画像のみ（名前・レアリティ・枚数バッジを出さない。
  *    カード名は画像の alt とリンクの accessible name に保持し、読み上げに使う）
  *  - 未所持カードは画像を出さず「空きスロット」として残す（アルバム＝所持カードの
  *    コレクション。未所持を画像で埋めると要望の「集めた画像を並べる」体験と
  *    パズルの穴の両方が壊れるため、公開モードでもアルバムでは伏せる）
  *
- * Card album view: a fixed 3×3 image-only grid (no names / no rarity badges) with
- * page navigation. Unowned cards stay as empty slots so the album reads as a
- * collection with gaps, which is also the base for the requested puzzle idea.
+ * 並び (N) は配信者がコレクション(パック)ごとに指定した既定値を初期値とし、
+ * 閲覧者がその場で変更できる。制御コンポーネントとして使う場合は gridSize と
+ * onGridSizeChange を両方渡す（親が選択を保持する）。どちらも未指定なら
+ * 内部 state で既定 N から始まる。
+ *
+ * Card album view: an image-only N×N grid (no names / no rarity badges) with page
+ * navigation and a viewer-selectable grid size. Unowned cards stay as empty slots
+ * so the album reads as a collection with gaps, which is also the base for the
+ * requested puzzle idea.
  */
-
-// 3×3 固定 = 1ページ 9 枚
-export const ALBUM_PAGE_SIZE = 9;
 
 export interface AlbumCard {
   id: string;
@@ -51,6 +60,10 @@ export interface AlbumTranslations {
   gridView: string;
   // 「アルバム」表示への切替
   albumView: string;
+  // 並び (N×N) セレクタのラベル
+  gridSizeLabel: string;
+  // 並びの選択肢。"{size}" を置換して使う（例: "3×3"）
+  gridSizeOption: string;
   // ページ位置。"{page}" と "{total}" を置換して使う
   pageIndicator: string;
   prevPage: string;
@@ -65,39 +78,103 @@ interface CardAlbumViewProps {
   cards: AlbumCard[];
   streamerId: string;
   translations: AlbumTranslations;
+  // アルバムの並び N（N×N）。未指定は既定 3。
+  gridSize?: number;
+  // 並びの変更通知。渡された場合は制御コンポーネントとして扱う。
+  onGridSizeChange?: (size: number) => void;
 }
 
 export default function CardAlbumView({
   cards,
   streamerId,
   translations,
+  gridSize,
+  onGridSizeChange,
 }: CardAlbumViewProps) {
   const [page, setPage] = useState(0);
+  // 同じページに複数のアルバムが載っても id が衝突しないようにする。
+  const gridSizeSelectId = useId();
+  const [internalGridSize, setInternalGridSize] = useState(
+    () => normalizeAlbumGridSize(gridSize) ?? DEFAULT_ALBUM_GRID_SIZE
+  );
 
-  const totalPages = Math.max(1, Math.ceil(cards.length / ALBUM_PAGE_SIZE));
-  // カード数が減っても（パック絞り込みの切替など）表示中ページが範囲外にならないようにする
+  const size =
+    onGridSizeChange !== undefined
+      ? normalizeAlbumGridSize(gridSize) ?? DEFAULT_ALBUM_GRID_SIZE
+      : internalGridSize;
+  const pageSize = size * size;
+
+  const totalPages = Math.max(1, Math.ceil(cards.length / pageSize));
+  // カード数・並びが変わっても（パック絞り込みの切替など）表示中ページが
+  // 範囲外にならないようにする
   const safePage = Math.min(page, totalPages - 1);
-  const pageStart = safePage * ALBUM_PAGE_SIZE;
-  const pageCards = cards.slice(pageStart, pageStart + ALBUM_PAGE_SIZE);
-  // 最終ページも 3×3 の枠を埋める（null = 追加の空きスロット）
+  const pageStart = safePage * pageSize;
+  const pageCards = cards.slice(pageStart, pageStart + pageSize);
+  // 最終ページも N×N の枠を埋める（null = 追加の空きスロット）
   const slots: (AlbumCard | null)[] = [
     ...pageCards,
-    ...Array<null>(ALBUM_PAGE_SIZE - pageCards.length).fill(null),
+    ...Array<null>(pageSize - pageCards.length).fill(null),
   ];
 
+  // 並びが変わるとページ数も変わるため、選択時は先頭ページへ戻す。
+  const selectGridSize = (next: number) => {
+    const normalized = normalizeAlbumGridSize(next);
+    if (normalized === null || normalized === size) return;
+    setPage(0);
+    if (onGridSizeChange) {
+      onGridSizeChange(normalized);
+    } else {
+      setInternalGridSize(normalized);
+    }
+  };
+
+  // 同じトークンが複数回現れても全て置換する（gridSizeOption の "{size}×{size}" など）。
   const fillTemplate = (template: string, values: Record<string, string>) =>
     Object.entries(values).reduce(
-      (text, [key, value]) => text.replace(`{${key}}`, value),
+      (text, [key, value]) => text.split(`{${key}}`).join(value),
       template
     );
 
   return (
     <div data-testid="card-album">
-      {/* 3×3 固定: 列数は常に 3。端末幅によって並ぶ枚数が変わらないよう
-          レスポンシブなグリッド指定は使わない。 */}
+      {/* 並び (N×N) の選択。配信者の既定値を初期値に、閲覧者がその場で変更できる。 */}
+      <div className="mb-3 flex items-center justify-center gap-2">
+        <label
+          htmlFor={gridSizeSelectId}
+          className="text-sm text-gray-400"
+        >
+          {translations.gridSizeLabel}
+        </label>
+        <select
+          id={gridSizeSelectId}
+          data-testid="card-album-grid-size"
+          value={String(size)}
+          onChange={(event) => selectGridSize(Number(event.target.value))}
+          className="rounded-lg border border-gray-600 bg-gray-800 px-2 py-1 text-sm text-gray-200"
+        >
+          {ALBUM_GRID_SIZES.map((option) => (
+            <option key={option} value={String(option)}>
+              {fillTemplate(translations.gridSizeOption, {
+                size: String(option),
+              })}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* N×N 固定: 列数は常に N。端末幅によって並ぶ枚数が変わらないよう
+          レスポンシブなグリッド指定は使わず、inline style で列数を決める。
+          カード同士は隙間なく敷き詰める（gap なし・角丸なし）。角丸のままだと
+          隣り合う角に三角形の隙間ができ、アルバムのページらしく見えないため。 */}
       <div
         data-testid="card-album-grid"
-        className="mx-auto grid w-full max-w-sm grid-cols-3 gap-2"
+        className="mx-auto grid w-full gap-0"
+        style={{
+          gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))`,
+          // 3×3 のときは従来と同じ幅（max-w-sm 相当）に収め、大きい N では
+          // 読み取れる大きさを保つため最大 9 列分まで広げる。
+          maxWidth: `${Math.min(size, 9) * 8}rem`,
+        }}
       >
         {slots.map((card, index) => {
           const slotKey = card ? card.id : `empty-slot-${index}`;
@@ -113,24 +190,25 @@ export default function CardAlbumView({
                 key={slotKey}
                 role="img"
                 aria-label={translations.emptySlot}
-                className="aspect-square rounded-lg border border-dashed border-gray-700 bg-gray-800/60"
+                className="aspect-square border border-dashed border-gray-700 bg-gray-800/60"
               />
             );
           }
 
           // aria-label は画像の alt より優先されるため、画像なしでも位置とカード名を
           // 読めるようにする。外向きの ring は overflow-hidden 内のリンクで切れるので、
-          // 子リンクの focus-visible に応じてラッパー自身に描き、画像の角丸は維持する。
+          // 子リンクの focus-visible に応じてラッパー自身に描く。隙間がないため、
+          // 拡大表示（hover）とフォーカスリングは隣のカードより前面（z-10）に出す。
           return (
             <div
               key={slotKey}
-              className="aspect-square overflow-hidden rounded-lg bg-gray-700 transition-transform hover:scale-105 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-purple-400"
+              className="relative aspect-square overflow-hidden bg-gray-700 transition-transform hover:z-10 hover:scale-105 has-[:focus-visible]:z-10 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-purple-400"
             >
               <Link
                 href={`/collection/${streamerId}/card/${card.id}`}
                 prefetch={false}
                 aria-label={`${positionLabel}: ${card.name}`}
-                className="block h-full w-full rounded-lg focus:outline-none"
+                className="block h-full w-full focus:outline-none"
               >
                 {card.image_url ? (
                   <Image

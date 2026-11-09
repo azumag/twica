@@ -185,7 +185,7 @@ export async function deliverChatNotificationSlice(
           degradation: outcome.degradation,
         })
         await reportDeliveryError(
-          new Error(`Chat delivery used fallback sender: ${outcome.degradation.reason}`),
+          new Error(`Chat delivery used fallback sender: ${outcome.degradation.code}`),
           { context: 'chat-notification-delivery:chatDegradation', ...logContext, degradation: outcome.degradation },
         )
       }

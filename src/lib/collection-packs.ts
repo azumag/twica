@@ -123,19 +123,26 @@ export function computePackProgress(
 
 /**
  * Issue #948: resolve which pack key a gacha card should be looked up under
- * for the `{packName}` chat announcement placeholder — the card's OWN pack
- * takes priority over the pack the draw was scoped to.
+ * for the `{packName}` chat announcement placeholder — always the card's OWN
+ * pack.
  *
- * - `cardCollectionName === undefined` — pre-#948 outbox payload (built
- *   before the migration that added `collection_name` to the card payload).
- *   Falls back to `drawScopeCollectionName`, i.e. the original #597 behavior.
- * - `cardCollectionName` is `null` or `''` — the card is unclassified.
- *   Resolves to `DEFAULT_PACK_SENTINEL` so the caller shows the default
- *   pack's display name instead of leaving `{packName}` blank. (The first
- *   #948 fix left unclassified cards blank; on catalogs where most cards are
- *   unclassified, `{packName}` stayed empty almost always, so the reported
- *   symptom persisted.) `''` is defensive — `normalizeCollectionName` blanks
- *   to `null` at write time, so only `null` is expected in practice.
+ * Issue #974: the `undefined -> drawScopeCollectionName` fallback for
+ * pre-#948 outbox payloads (rows built before the migration that added
+ * `collection_name` to the card payload) was removed after the outbox
+ * retention windows (sent=7d / dead-letter=30d) elapsed past the 2026-08-14
+ * production deploy and a read-only production check confirmed zero rows
+ * lacking the key. `undefined` now collapses into the same
+ * `DEFAULT_PACK_SENTINEL` bucket as `null` — defensive only, since the
+ * payload decoder may still tolerate a missing key on malformed rows.
+ *
+ * - `cardCollectionName` is `null`, `''`, or `undefined` — the card is
+ *   unclassified (or the key is absent). Resolves to `DEFAULT_PACK_SENTINEL`
+ *   so the caller shows the default pack's display name instead of leaving
+ *   `{packName}` blank. (The first #948 fix left unclassified cards blank;
+ *   on catalogs where most cards are unclassified, `{packName}` stayed
+ *   empty almost always, so the reported symptom persisted.) `''` and
+ *   `undefined` are defensive — `normalizeCollectionName` blanks to `null`
+ *   at write time, so only `null` is expected in practice.
  * - any other string — the card's own named pack, verbatim.
  *
  * `null`/`''` mapping to `DEFAULT_PACK_SENTINEL` is safe because real pack
@@ -144,10 +151,8 @@ export function computePackProgress(
  * an actual pack name.
  */
 export function resolveCardPackKey(
-  cardCollectionName: string | null | undefined,
-  drawScopeCollectionName: string | null | undefined
-): string | null | undefined {
-  if (cardCollectionName === undefined) return drawScopeCollectionName;
+  cardCollectionName: string | null | undefined
+): string {
   return cardCollectionName || DEFAULT_PACK_SENTINEL;
 }
 

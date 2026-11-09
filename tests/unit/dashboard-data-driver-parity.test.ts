@@ -17,6 +17,7 @@ import {
   getGachaHistoryForUser,
   getRecentGachaHistory,
   getStreamerById,
+  getStreamerCollectionSettings,
   getStreamerData,
   getStreamerDataPaginated,
   getUserCardDetail,
@@ -72,6 +73,8 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     rarity_weights_scope: 'global',
     pack_rarity_weights: null,
     custom_rarities: [],
+    // Issue #1783: カスタムレアリティごとの表示スタイル（未設定 = 空オブジェクト）。
+    rarity_styles: {},
     card_pack_names: [],
     default_card_pack_name: null,
     show_unowned_cards: false,
@@ -83,6 +86,11 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     raid_gacha_draw_count: 0,
     trade_enabled: false,
     cross_channel_trade_enabled: false,
+    // #1765 フォローアップ: アルバム表示のパック別既定と初期表示。
+    pack_album_grid_sizes: null,
+    collection_default_view: 'grid',
+    // Issue #1782: 被りカードの表示段階しきい値（既定 = null = 段階表示なし）。
+    duplicate_display_tiers: null,
     created_at: '2025-12-01T00:00:00.000+00:00',
     updated_at: '2025-12-01T00:00:00.000+00:00',
     ...overrides,
@@ -701,5 +709,126 @@ describe('dashboard-data: Drizzle 読み取り', () => {
       )
       expect(result).toEqual([])
     })
+  })
+})
+
+describe('dashboard-data: getStreamerCollectionSettings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('4つの設定値と配信者IDだけを細い射影で取得する（cards を JOIN しない）', async () => {
+    const { result, db } = await runWithDb(
+      {
+        tables: tableRows([
+          [
+            streamersTable,
+            [
+              makeStreamerRow({
+                show_unowned_cards: true,
+                show_unowned_card_details: true,
+                trade_enabled: true,
+                cross_channel_trade_enabled: true,
+              }),
+            ],
+          ],
+        ]),
+      },
+      () => getStreamerCollectionSettings('twitch-user-1')
+    )
+
+    expect(result).toEqual({
+      streamerId: 'streamer-1',
+      showUnownedCards: true,
+      showUnownedCardDetails: true,
+      tradeEnabled: true,
+      crossChannelTradeEnabled: true,
+      packNames: [],
+      defaultPackName: null,
+      albumGridSizes: {},
+      albumDefaultView: 'grid',
+      // Issue #1782: 既定レアリティ4種のみ（fixture の custom_rarities は空）。
+      rarities: ['common', 'rare', 'epic', 'legendary'],
+      duplicateDisplayTiers: {},
+    })
+    expect(db.select).toHaveBeenCalledTimes(1)
+    expect(Object.keys(db.select.mock.calls[0][0] as object).sort()).toEqual([
+      'card_pack_names',
+      'collection_default_view',
+      'cross_channel_trade_enabled',
+      'custom_rarities',
+      'default_card_pack_name',
+      'duplicate_display_tiers',
+      'id',
+      'pack_album_grid_sizes',
+      'show_unowned_card_details',
+      'show_unowned_cards',
+      'trade_enabled',
+    ])
+  })
+
+  it('配信者行が無ければ null を返す', async () => {
+    const { result } = await runWithDb(
+      { tables: tableRows([[streamersTable, []]]) },
+      () => getStreamerCollectionSettings('missing-user')
+    )
+    expect(result).toBeNull()
+  })
+
+  it('trade 列が未デプロイ(42703)なら trade 列を除いて再試行し、trade は false にする', async () => {
+    const { result, db } = await runWithDb(
+      {
+        tables: tableRows([
+          [
+            streamersTable,
+            [makeStreamerRow({ show_unowned_cards: true, show_unowned_card_details: true })],
+          ],
+        ]),
+        errors: new Map([[streamersTable, [missingColumnError('trade_enabled')]]]),
+      },
+      () => getStreamerCollectionSettings('twitch-user-1')
+    )
+
+    expect(result).toEqual({
+      streamerId: 'streamer-1',
+      showUnownedCards: true,
+      showUnownedCardDetails: true,
+      tradeEnabled: false,
+      crossChannelTradeEnabled: false,
+      packNames: [],
+      defaultPackName: null,
+      albumGridSizes: {},
+      albumDefaultView: 'grid',
+      // Issue #1782: 既定レアリティ4種のみ（fixture の custom_rarities は空）。
+      rarities: ['common', 'rare', 'epic', 'legendary'],
+      duplicateDisplayTiers: {},
+    })
+    expect(db.select).toHaveBeenCalledTimes(2)
+    expect(Object.keys(db.select.mock.calls[1][0] as object).sort()).toEqual([
+      'card_pack_names',
+      'custom_rarities',
+      'default_card_pack_name',
+      'id',
+      'show_unowned_card_details',
+      'show_unowned_cards',
+    ])
+  })
+
+  it('列欠落以外のDBエラーは握りつぶして null を返し、ログに残す（ページを落とさない）', async () => {
+    const { result } = await runWithDb(
+      {
+        tables: tableRows([[streamersTable, [STREAMER]]]),
+        errors: new Map([
+          [streamersTable, [Object.assign(new Error('permission denied'), { code: '42501' })]],
+        ]),
+      },
+      () => getStreamerCollectionSettings('twitch-user-1')
+    )
+
+    expect(result).toBeNull()
+    expect(logger.error).toHaveBeenCalledWith(
+      'Error in getStreamerCollectionSettings (pg)',
+      expect.objectContaining({ error: expect.any(Error) })
+    )
   })
 })
