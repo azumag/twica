@@ -396,7 +396,13 @@
       "rarity": "レアリティ順",
       "recent": "最近獲得した順",
       "name": "配信者名順",
-      "completion": "コンプ率順"
+      "completion": "コンプ率順",
+      "ascending": "昇順",
+      "descending": "降順",
+      "switchTo": {
+        "asc": "昇順に切り替える",
+        "desc": "降順に切り替える"
+      }
     },
     "hide": {
       "hideButton": "非表示",
