@@ -1499,8 +1499,7 @@
       "description": "Select your preferred display language."
     },
     "collectionSharing": {
-      "title": "For streamers: collection visibility and trading",
-      "description": "Control what viewers can see on your channel collection page and whether they can trade cards with each other."
+      "title": "Streamer settings"
     }
   },
   "gachaHistoryPage": {

@@ -109,9 +109,6 @@ export default async function AccountSettingsPage() {
               >
                 {t("collectionSharing.title")}
               </h2>
-              <p className="mt-1 text-sm text-gray-400">
-                {t("collectionSharing.description")}
-              </p>
             </div>
             <CardVisibilitySettings
               streamerId={collectionSettings.streamerId}
