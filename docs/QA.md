@@ -165,7 +165,28 @@ mainマージ後は、タグ・ワークフロー・Workers Buildsの成功に�
 - 数分待っても旧バージョンのままなら、リリースを成功扱いにせず、`production` / `deploy-failure` として記録する。
 - 応急処置は、同じバージョンを再度100%にするデプロイ（`cf workers deployments create --script-name twica --strategy percentage --versions '[{"version_id":"<期待するバージョン>","percentage":100}]'`）。本番を変更する操作なので、事前に `--dry-run` で内容を確認し、ユーザーの承認を得てから実行する。旧バージョンへのロールバックは、DB migration適用済みの場合は安全と限らない。
 - チャット通知に影響する変更（outbox、decoder、`payload_version`）を含むリリースでは、マージ後に `chat_notification_outbox` の `dead` 行が増えていないことも確認する。
-- アプリの先行デプロイが必要なmigration（ヘッダーに適用順序の注意があるもの）を含む昇格では、適用順序の根拠を昇格PR本文に記録する（方針は #2023 で検討中）。
+- アプリの先行デプロイが必要なmigration（`app-first` ヘッダー付き）の扱いは、次節「migrationとアプリの適用順序」に従う。
+
+## migrationとアプリの適用順序
+
+`planetscale-migrate.yml` はmain（previewではpreview側DB）へのpushでmigrationを即時適用し、アプリ（Worker）のデプロイはWorkers Buildsが別系統で行う。このため、同じリリースに入れたmigrationは**アプリより先に本番DBへ入る**。DB先行で問題が出る変更は、順序を運用で分ける（#2023、案1）。
+
+**アプリ先行が必要な変更**とは、新しいDB状態を旧アプリが正しく扱えないものをいう。例: 旧アプリのdecoderが未知値をDLQ化する値（`payload_version=2` など）をDB関数が書き始める、旧アプリが読む列のNOT NULL化・型変更・削除、旧アプリが呼ぶ関数の契約変更。列やテーブルの追加のような加法的な変更は、DB先行で構わない。
+
+規則:
+
+1. アプリ先行が必要なmigrationは、依存するアプリ変更とは**別のPR・別のリリース**にする。リリースNでは「新旧どちらのDB状態でも動くアプリ」だけを昇格し、リリースN+1でmigrationを昇格する。
+2. そのmigrationの先頭（`migration-transaction` / `migration-providers` の直後）に、依存するアプリ変更を示すヘッダーを書く。ツールは解釈しない通常のSQLコメントで、昇格時の機械的な検出（`grep`）と人の確認に使う。
+
+   ```sql
+   -- app-first: <アプリ変更のPR番号>（<旧アプリで何が壊れるか>）
+   ```
+3. 昇格時は、累積差分に含まれるmigrationを列挙し（`git diff --name-only <merge-base> origin/preview -- db/planetscale/migrations`）、`app-first` ヘッダー付きのものについて次を確認する。
+   - 依存するアプリ変更が**すでに本番で実行されている**こと。「main昇格後の本番実行バージョン確認」を通過した先行リリースに含まれることを、PR番号とバージョンで示す。
+   - 依存するアプリ変更が**同じ昇格に含まれている**場合は昇格を止め、migrationの構成PRを「構成PRを切り離す場合」の手順で切り離して、次のリリースに回す。
+4. 確認の結果（対象migration、依存PR、本番で実行中のバージョン）を、昇格PR本文の「確認済み」に記録する。
+
+previewでも同じpush時適用が走るため、previewで実経路を確認するときは、依存するアプリ変更を先にpreviewへ入れてからmigrationを入れる。
 
 ## Transactional chat outbox
 
