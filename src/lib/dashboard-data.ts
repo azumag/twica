@@ -2310,11 +2310,13 @@ export async function getActiveCardCountsForCollectedStreamers(
               eq(cardsTable.is_active, true),
               inArray(
                 cardsTable.streamer_id,
-                sql`SELECT DISTINCT c.streamer_id
+                // 括弧必須: drizzle の inArray は sql を括弧なしで展開するため、
+                // サブクエリは自前で () に包まないと `in SELECT ...` となり構文エラーになる (#2020)
+                sql`(SELECT DISTINCT c.streamer_id
                       FROM cards c
                       INNER JOIN user_cards uc ON uc.card_id = c.id
                       INNER JOIN users u ON u.id = uc.user_id
-                      WHERE u.twitch_user_id = ${twitchUserId}`
+                      WHERE u.twitch_user_id = ${twitchUserId})`
               )
             )
           );
