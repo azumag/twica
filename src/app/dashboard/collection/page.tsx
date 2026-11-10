@@ -10,6 +10,7 @@ import {
   sortCollectedCards,
   sortStreamerCollections,
   type StreamerCollectionSortMode,
+  type StreamerCollectionSortOrder,
 } from "@/lib/collection-utils";
 import Collection from "@/components/Collection";
 import type { Card, Streamer } from "@/types/database";
@@ -18,6 +19,8 @@ import type { Card, Streamer } from "@/types/database";
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
 
 const STREAMER_SORT_MODES: readonly StreamerCollectionSortMode[] = ["recent", "name", "completion"];
+// #2032: 向きはモード切替とは独立に選べるため、両方向の並びをあらかじめ確定させて渡す。
+const STREAMER_SORT_ORDERS: readonly StreamerCollectionSortOrder[] = ["asc", "desc"];
 
 /**
  * Extended card interface with streamer and count information
@@ -125,9 +128,16 @@ export default async function CollectionPage() {
   const orders = Object.fromEntries(
     STREAMER_SORT_MODES.map((mode) => [
       mode,
-      sortStreamerCollections(entries, mode, lastObtainedAtByStreamer).map((e) => e.streamer.id),
+      Object.fromEntries(
+        STREAMER_SORT_ORDERS.map((order) => [
+          order,
+          sortStreamerCollections(entries, mode, lastObtainedAtByStreamer, order).map(
+            (e) => e.streamer.id
+          ),
+        ])
+      ),
     ])
-  ) as Record<StreamerCollectionSortMode, string[]>;
+  ) as Record<StreamerCollectionSortMode, Record<StreamerCollectionSortOrder, string[]>>;
 
   return (
     <Collection

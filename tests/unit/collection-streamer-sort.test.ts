@@ -5,7 +5,9 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_STREAMER_COLLECTION_ORDER,
   DEFAULT_STREAMER_COLLECTION_SORT,
+  parseStreamerCollectionOrder,
   parseStreamerCollectionSort,
   sortStreamerCollections,
 } from '@/lib/collection-utils'
@@ -31,6 +33,30 @@ describe('parseStreamerCollectionSort', () => {
     expect(parseStreamerCollectionSort('NAME')).toBe('recent')
     expect(parseStreamerCollectionSort(['name', 'completion'])).toBe('recent')
     expect(parseStreamerCollectionSort('__proto__')).toBe('recent')
+  })
+})
+
+describe('parseStreamerCollectionOrder (#2032)', () => {
+  it('asc / desc をそのまま返す', () => {
+    expect(parseStreamerCollectionOrder('asc', 'recent')).toBe('asc')
+    expect(parseStreamerCollectionOrder('desc', 'name')).toBe('desc')
+  })
+
+  it('未指定・不正値はモードの既定の向きにフォールバックする', () => {
+    // 既定の向きは #1954 の固定の向きと同じ（既存 URL の並びが変わらない）
+    expect(DEFAULT_STREAMER_COLLECTION_ORDER).toEqual({
+      recent: 'desc',
+      name: 'asc',
+      completion: 'desc',
+    })
+    expect(parseStreamerCollectionOrder(undefined, 'recent')).toBe('desc')
+    expect(parseStreamerCollectionOrder(undefined, 'name')).toBe('asc')
+    expect(parseStreamerCollectionOrder(undefined, 'completion')).toBe('desc')
+    expect(parseStreamerCollectionOrder('', 'name')).toBe('asc')
+    expect(parseStreamerCollectionOrder('ASC', 'name')).toBe('asc')
+    expect(parseStreamerCollectionOrder('down', 'recent')).toBe('desc')
+    expect(parseStreamerCollectionOrder(['asc', 'desc'], 'completion')).toBe('desc')
+    expect(parseStreamerCollectionOrder('__proto__', 'recent')).toBe('desc')
   })
 })
 
@@ -100,6 +126,52 @@ describe('sortStreamerCollections', () => {
       entry('w', 'Weird', 4, 0),
     ]
     expect(ids(sortStreamerCollections(items, 'completion'))).toEqual(['a', 'b', 'x', 'w'])
+  })
+
+  it('recent asc: 獲得が古い順、日時不明は向きによらず末尾 (#2032)', () => {
+    const items = [entry('a', 'A'), entry('b', 'B'), entry('c', 'C'), entry('u', 'Unknown')]
+    const last = new Map<string, string | null>([
+      ['a', '2026-10-01T00:00:00.000000Z'],
+      ['b', '2026-10-20T00:00:00.000000Z'],
+      ['c', '2026-10-10T00:00:00.000000Z'],
+      // 'u' は日時不明
+    ])
+    expect(ids(sortStreamerCollections(items, 'recent', last, 'asc'))).toEqual([
+      'a', 'c', 'b', 'u',
+    ])
+    // desc（既定）でも日時不明は末尾のまま
+    expect(ids(sortStreamerCollections(items, 'recent', last, 'desc'))).toEqual([
+      'b', 'c', 'a', 'u',
+    ])
+    // order 省略時は既定(desc)と同じ
+    expect(ids(sortStreamerCollections(items, 'recent', last))).toEqual([
+      'b', 'c', 'a', 'u',
+    ])
+  })
+
+  it('name desc: 名前の逆順でも同順位の決着(id昇順)は変わらず決定的 (#2032)', () => {
+    const items = [entry('b', 'Same'), entry('a', 'Same'), entry('c', 'Zulu'), entry('d', 'Alpha')]
+    expect(ids(sortStreamerCollections(items, 'name', new Map(), 'desc'))).toEqual([
+      'c', 'a', 'b', 'd',
+    ])
+    // 入力順を反転しても結果が同じ（決定的）
+    expect(
+      ids(sortStreamerCollections([...items].reverse(), 'name', new Map(), 'desc'))
+    ).toEqual(['c', 'a', 'b', 'd'])
+  })
+
+  it('completion asc: 率の低い順、同率は表示名→id (#2032)', () => {
+    const items = [
+      entry('full', 'Full', 3, 3),
+      entry('half', 'Half', 5, 10),
+      entry('low', 'Low', 1, 10),
+      // 同率ペア: 表示名で 'Ay' が先
+      entry('a', 'Ay', 1, 2),
+      entry('b', 'Bee', 1, 2),
+    ]
+    expect(ids(sortStreamerCollections(items, 'completion', new Map(), 'asc'))).toEqual([
+      'low', 'a', 'b', 'half', 'full',
+    ])
   })
 
   it('入力配列を破壊的に変更しない', () => {

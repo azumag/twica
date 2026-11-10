@@ -260,6 +260,17 @@
       "deleteNote": "削除しても既存カードのレアリティは変わりません（カード作成時の候補から外れるだけです）。",
       "clearColor": "既定に戻す",
       "colorLabel": "{rarity} の文字色",
+      "colorField": "文字色",
+      "gradientField": "グラデーション",
+      "gradientFromLabel": "{rarity} のグラデーション開始色",
+      "gradientToLabel": "{rarity} のグラデーション終了色",
+      "glowField": "グロー",
+      "glowLabel": "{rarity} のグロー色",
+      "glowOpacityLabel": "{rarity} のグロー不透明度",
+      "previewLabel": "{rarity} のスタイルプレビュー",
+      "resetColorLabel": "{rarity} の文字色を既定に戻す",
+      "resetGradientLabel": "{rarity} のグラデーションを既定に戻す",
+      "resetGlowLabel": "{rarity} のグローを既定に戻す",
       "save": "保存",
       "saving": "保存中...",
       "saved": "保存しました",
@@ -396,7 +407,13 @@
       "rarity": "レアリティ順",
       "recent": "最近獲得した順",
       "name": "配信者名順",
-      "completion": "コンプ率順"
+      "completion": "コンプ率順",
+      "ascending": "昇順",
+      "descending": "降順",
+      "switchTo": {
+        "asc": "昇順に切り替える",
+        "desc": "降順に切り替える"
+      }
     },
     "hide": {
       "hideButton": "非表示",

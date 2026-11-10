@@ -5,6 +5,7 @@ import type { Streamer, Card } from "@/types/database";
 import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
 import {
   type StreamerCollectionSortMode,
+  type StreamerCollectionSortOrder,
 } from "@/lib/collection-utils";
 import CollectionStreamerList from "@/components/CollectionStreamerList";
 
@@ -44,16 +45,19 @@ interface CollectionProps {
    * 並び替えモードごとの配信者ID配列（page.tsx が sortStreamerCollections で確定させたもの）。
    * 比較ロジックを client に複製しないため、順序はサーバーで確定させ ID だけを渡す。
    */
-  orders?: Record<StreamerCollectionSortMode, string[]>;
+  orders?: Record<StreamerCollectionSortMode, Record<StreamerCollectionSortOrder, string[]>>;
   /** 視聴者が非表示にした配信者ID（#1953。初期値。以降の増減は client 側で楽観的に反映する）。 */
   hiddenStreamerIds?: string[];
 }
 
 /** orders 未指定（カード0枚の呼び出しなど）のときの空の並び。 */
-const EMPTY_ORDERS: Record<StreamerCollectionSortMode, string[]> = {
-  recent: [],
-  name: [],
-  completion: [],
+const EMPTY_ORDERS: Record<
+  StreamerCollectionSortMode,
+  Record<StreamerCollectionSortOrder, string[]>
+> = {
+  recent: { asc: [], desc: [] },
+  name: { asc: [], desc: [] },
+  completion: { asc: [], desc: [] },
 };
 
 /**

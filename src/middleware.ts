@@ -84,6 +84,12 @@ const RATE_LIMIT_EXCLUDED_PATHS = [
   '/api/auth/twitch/callback',
   '/api/twitch/eventsub',
   '/api/auth/twitch/login',
+  // Issue #2039: /api/overlay/ 配下は全ルートが独自リミッター
+  // (overlayEventsGet 120/分・overlayCardRankingGet 60/分、realtime-config は
+  // edge キャッシュ対象) を持つため、global リミッターによる二重の KV
+  // read-modify-write を除外する。overlay ポーリングが本番トラフィックの
+  // 主成分であり、ここで KV op を半減させる。
+  '/api/overlay/',
 ]
 
 // Issue #906: Workers Cache でキャッシュする公開エンドポイント。
