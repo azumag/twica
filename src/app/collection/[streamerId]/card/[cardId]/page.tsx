@@ -2,6 +2,7 @@ import { redirect, notFound } from "next/navigation";
 import { getSession } from "@/lib/session";
 import { getUserCardDetail, getStreamerById } from "@/lib/dashboard-data";
 import CardDetail from "@/components/CardDetail";
+import { UUID_REGEX } from "@/lib/validations";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -30,6 +31,12 @@ export default async function CardDetailPage({
   if (!session) {
     const returnTo = encodeURIComponent(`/collection/${streamerId}/card/${cardId}`);
     redirect(`/api/auth/twitch/login?redirect=true&returnTo=${returnTo}`);
+  }
+
+  // URL由来のIDがUUID形式でないままDBへ渡すとPostgreSQLが22P02(invalid input syntax for type uuid)を
+  // 投げて500になり、エラーIssueが自動起票される (#2042)。不正なIDは存在しないリソースとして404にする。
+  if (!UUID_REGEX.test(streamerId) || !UUID_REGEX.test(cardId)) {
+    notFound();
   }
 
   // Get streamer info
