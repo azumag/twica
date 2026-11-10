@@ -89,9 +89,12 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
   it("keeps both dispatch workflows manual, confirm-gated, and read-only", () => {
     // 本番配備は gated dispatch でのみ行う。自動トリガの混入・権限拡大・
     // confirm ゲートの消失をここで固定する（#1888 の有効化ゲート）。
-    for (const [file, env, script] of [
-      [".github/workflows/deploy-rate-limit.yml", "environment: preview", "rate-limit:deploy:preview"],
-      [".github/workflows/deploy-rate-limit-production.yml", "environment: production", "rate-limit:deploy"],
+    for (const [file, env, script, confirmToken] of [
+      // #2041: confirm トークンは環境ごとに別物（production は 'deploy-production'）。
+      // preview/production の dispatch を誤って混同して実行しないよう、
+      // ゲート式のトークンを workflow ごとに固定する。
+      [".github/workflows/deploy-rate-limit.yml", "environment: preview", "rate-limit:deploy:preview", "deploy"],
+      [".github/workflows/deploy-rate-limit-production.yml", "environment: production", "rate-limit:deploy", "deploy-production"],
     ] as const) {
       const workflow = read(file);
       expect(workflow).toContain("workflow_dispatch:");
@@ -99,7 +102,18 @@ describe("strict rate-limit Durable Object deploy contract (#1888)", () => {
       // 構造比較で固定する（DSH 必須指摘: キー列挙方式だと workflow_call 等の
       // 列挙漏れで uses: 経由の deploy が可能になる）。
       expect(triggerKeysOf(workflow)).toEqual(["workflow_dispatch"]);
-      expect(workflow).toContain("confirm == 'deploy'");
+      expect(workflow).toContain(`confirm == '${confirmToken}'`);
+      // クロス環境トークン混同の防止（DSH 強く推奨）: production に preview の
+      // トークン、preview に production のトークンが紛れ込まないことを確認。
+      // 'deploy-production' は 'deploy' を前方一致で含むため、逆方向の混同は
+      // 文字列比較では検出できない点に注意（ゲート式自体を正確に照合する）。
+      if (confirmToken === "deploy") {
+        expect(workflow).not.toContain("'deploy-production'");
+      } else {
+        expect(workflow).not.toContain("confirm == 'deploy'");
+      }
+      // description も同じトークンを案内すること（UI 上の誤入力防止）。
+      expect(workflow).toContain(`'${confirmToken}'`);
       expect(workflow).toContain("contents: read");
       // DSH 任意指摘2: `contents: read` の文字列一致だけでは、contents: write や
       // id-token: write 等の権限併記を検出できない。permissions: ブロックを
