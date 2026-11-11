@@ -1086,8 +1086,8 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         requestId: req(9),
         expectedQuantity: 2,
       })).resolves.toEqual({ success: false, error: "QUANTITY_MISMATCH" });
-      // The pre-#1789 app calls the 3-argument RPC: refused with a code it
-      // already knows, instead of silently giving 3 copies.
+      // The 3-argument signature the migration retains for pre-#1789 bundles
+      // refuses with a code the app knows, instead of silently giving 3 copies.
       const [legacy] = await sql!<Array<{ result: { success: boolean; error?: string } }>>`
         SELECT public.accept_trade_offer(${TW.QV}, ${offerIds.x3}::uuid, ${req(10)}::uuid) AS result`;
       expect(legacy.result).toEqual({ success: false, error: "OFFER_NOT_OPEN" });
@@ -1142,8 +1142,9 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         requestId: req(11),
         expectedQuantity: 3,
       })).resolves.toMatchObject({ success: true, idempotentReplay: true, givenUserCardId: QUC.V_B2 });
-      // A replay of the same requestId through the 3-argument RPC (an old tab
-      // retrying after a deploy) still reports the original success.
+      // A replay of the same requestId through the retained 3-argument
+      // signature (an old tab retrying after a deploy) still reports the
+      // original success.
       const [legacyReplay] = await sql!<Array<{ result: { success: boolean; idempotentReplay?: boolean } }>>`
         SELECT public.accept_trade_offer(${TW.QV}, ${offerIds.x3}::uuid, ${req(11)}::uuid) AS result`;
       expect(legacyReplay.result).toMatchObject({ success: true, idempotentReplay: true });
@@ -1224,51 +1225,7 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       expect(counts).toEqual({ viewer: 1, offerer: 3 });
     });
 
-    it("deploy window: works as 1-copy offers while the column does not exist yet", async () => {
-      const { createTradeOffer, listTradeOffers, listMyTradeOffers } = await import("@/lib/trade");
-      // Simulate the database before 20261011120000 for the app code: the
-      // generated SQL must not reference the column (rename instead of drop so
-      // the column and its CHECK come back unchanged).
-      await sql!`ALTER TABLE trade_offers RENAME COLUMN wanted_quantity TO wanted_quantity_hidden`;
-      try {
-        const created = await createTradeOffer({
-          twitchUserId: TW.QO,
-          offeredUserCardId: QUC.O_A3,
-          wantedCardId: QC.C,
-          requestId: req(31),
-        });
-        expect(created).toMatchObject({ kind: "ok", idempotentReplay: false });
-        if (created.kind !== "ok") throw new Error("unreachable");
-        expect(created.offer.wanted_quantity).toBe(1);
 
-        // Same requestId → replay through the column-less projection.
-        await expect(createTradeOffer({
-          twitchUserId: TW.QO,
-          offeredUserCardId: QUC.O_A3,
-          wantedCardId: QC.C,
-          requestId: req(31),
-        })).resolves.toMatchObject({ kind: "ok", idempotentReplay: true, offer: { id: created.offer.id, wanted_quantity: 1 } });
-
-        // A multi-copy listing cannot be stored: the error surfaces instead
-        // of silently listing ×1.
-        await expect(createTradeOffer({
-          twitchUserId: TW.QO,
-          offeredUserCardId: QUC.O_A2,
-          wantedCardId: QC.C,
-          wantedQuantity: 2,
-          requestId: req(32),
-        })).rejects.toMatchObject({ cause: { code: "42703" } });
-
-        const board = await listTradeOffers({ streamerId: S.QTY, scope: "in_channel", page: 1, twitchUserId: TW.QV });
-        // Every row reads as ×1 (the stored ×5 is not visible to the old schema).
-        expect(board.offers.map((offer) => offer.wantedQuantity)).toEqual(board.offers.map(() => 1));
-        expect(board.offers.find((offer) => offer.id === created.offer.id)).toMatchObject({ canAccept: "not_owned" });
-        const mine = await listMyTradeOffers(TW.QO, { status: "open" });
-        expect(mine.offers.map((offer) => offer.id)).toContain(created.offer.id);
-      } finally {
-        await sql!`ALTER TABLE trade_offers RENAME COLUMN wanted_quantity_hidden TO wanted_quantity`;
-      }
-    });
   });
 
   // ---------------------------------------------------------------------------
