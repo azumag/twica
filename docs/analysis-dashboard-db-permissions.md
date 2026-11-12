@@ -2,8 +2,20 @@
 
 analysis ダッシュボードの管理 API は `analysis/dev/adminApiPg.ts` から
 PlanetScale PostgreSQL へ直接接続します。これはローカル開発用の Node process であり、
-Cloudflare Worker の Hyperdrive binding を共有しません。接続先は
-`analysis/.env.local` の `DASHBOARD_DATABASE_URL` だけです。
+Cloudflare Worker の Hyperdrive binding を共有しません。接続先は、起動 mode ごとの
+env ファイルにある `DASHBOARD_DATABASE_URL` だけです。
+
+| 起動コマンド | Vite mode | 接続文字列の置き場所 | 接続先 |
+| --- | --- | --- | --- |
+| `npm run dev` | `production` | `analysis/.env.production.local` | production 用限定ロール → `prod` DB |
+| `npm run dev:preview` | `preview` | `analysis/.env.preview.local` | preview 用限定ロール → `preview` DB |
+
+`analysis/.env.local` には `DASHBOARD_DATABASE_URL` を置きません。Vite は `.env.local` を
+mode に関係なく読み込むため、置くと `dev:preview` で production の接続文字列が使われる
+（またはその逆の）取り違えが起きます。mode 別ファイル（`.env.[mode].local`）は
+`.env.local` より優先されますが、片方の mode のファイルを作り忘れたときに `.env.local` へ
+黙ってフォールバックするので、`.env.local` 自体に置かないことで防ぎます。
+いずれのファイルも root の `.gitignore`（`.env*`）でコミット対象外です。
 
 ## 原則
 
@@ -54,9 +66,59 @@ DB 権限と同じ強さの境界として扱います（#1899）。
 ロールベース policy に置換できる場合はそちらを優先します。
 
 ロール変更は PlanetScale の管理接続を持つ担当者が production と preview に別々に適用し、
-接続文字列は各環境の `analysis/.env.local` にのみ保存します。SQL の正本は
+接続文字列は上表の mode 別 env ファイルにのみ保存します。SQL の正本は
 `db/planetscale/` と現行 migration です。運用ドキュメントに固定パスワードや接続文字列を
 記録しません。
+
+## 限定ロールの作り方
+
+現行のロールは `twica_analysis_prod`（production）と `twica_analysis_preview`（preview）です。
+属性とメンバーシップは次のとおりです。
+
+| 項目 | 値 | 理由 |
+| --- | --- | --- |
+| `LOGIN` | あり | dashboard が直接接続するため |
+| `BYPASSRLS` | あり | `support_codes` / `user_licenses` の policy は `auth.role() = 'service_role'` だが、PlanetScale 上の `auth.role()` は常に `'anon'` を返すため、メンバーシップだけでは通らない |
+| `CONNECTION LIMIT` | 5 | dev server 1台分で足り、接続漏れが本番の接続枠を食い潰すのを防ぐ |
+| メンバーシップ | `service_role` | `get_analysis_*` の `EXECUTE` と、`TO service_role` の policy・テーブル権限を継承するため |
+| `SUPERUSER` / `CREATEDB` / `CREATEROLE` | なし | 既定値のまま（下記の注意を参照） |
+
+prod と preview は同じ PlanetScale クラスタ内の別 database のため、ロールはクラスタ全体で
+共有されます（`docs/history/migration/DB_PHASE2_RUNBOOK.md` 1.1節）。prod 用ロールでも `preview` DB に接続
+できる点は承知のうえで、認証情報だけを環境ごとに分けています。
+
+作成手順:
+
+1. パスワードはローカルで生成し、SQL には SCRAM-SHA-256 の verifier
+   （`SCRAM-SHA-256$4096:<salt>$<StoredKey>:<ServerKey>`）だけを載せる。平文パスワードは
+   env ファイルにだけ書き、PlanetScale コンソール・チャット・Issue には出さない。
+2. PlanetScale のブランチ `main` の Console（Database は `prod` / `preview` のどちらでもよい）で、
+   次を **1文ずつ** 実行する。Console は複数文の一括実行と `BEGIN` / `COMMIT` に対応していない。
+
+   ```sql
+   DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '<role>') THEN CREATE ROLE <role> LOGIN; END IF; END $$;
+   ALTER ROLE <role> WITH LOGIN BYPASSRLS CONNECTION LIMIT 5 PASSWORD '<SCRAM-SHA-256 verifier>';
+   GRANT service_role TO <role>;
+   ```
+
+3. 接続文字列は `postgresql://<role>.<branch_id>:<password>@<host>:5432/<prod|preview>?sslmode=verify-full&sslrootcert=system`
+   の形にする。PlanetScale はユーザー名の末尾の `.<branch_id>` でブランチへ振り分ける。
+   host と branch id は既存の Hyperdrive 設定や PlanetScale ダッシュボードで確認する。
+4. 下記「確認手順」で、ログイン・`get_analysis_*` の実行・RLS 対象テーブルの読み取りを確認する。
+
+注意:
+
+- PlanetScale Console の接続ロールは SUPERUSER ではないため、`ALTER ROLE` に `NOSUPERUSER`
+  を明示すると `Only roles with the SUPERUSER attribute may change the SUPERUSER attribute.`
+  で拒否される（2026-11-10 に実測）。`SUPERUSER` / `CREATEDB` / `CREATEROLE` は新規ロールでは
+  既定で無効なので、`NO*` 属性は書かない。
+- Console のタブを長時間開いたままにすると、Console 自身の一時ロールが失効し
+  `password authentication failed for user "pscale_api_..."` になる。タブを再読み込みすれば直る
+  （作成中のロールとは無関係のエラー）。
+- `npm run check:analysis-dashboard-vs-sql` は env ファイルを読まず `process.env` だけを見る。
+  実行時は対象環境の値を明示的に渡す（例:
+  `DASHBOARD_DATABASE_URL="$(grep '^DASHBOARD_DATABASE_URL=' analysis/.env.preview.local | cut -d= -f2-)" npm run check:analysis-dashboard-vs-sql`）。
+  接続文字列は `&` を含むため、env ファイルをシェルで `source` しない。
 
 ## 限定 read 接続の準備責任
 
