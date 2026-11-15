@@ -39,6 +39,7 @@ import { cancelRedemption } from "@/lib/twitch/channel-points";
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolveCardPackKey, resolvePackDisplayName } from "@/lib/collection-packs";
+import { readPackCountsEntry, type PackCountsEntry } from "@/lib/twitch/multi-draw-chat";
 import { runInBackground } from "@/lib/background-task";
 import {
   claimChatNotificationBatch,
@@ -419,6 +420,13 @@ export interface ChatAnnouncementSnapshot {
    * optionalとし、fieldが無い移行前outbox行は「判定不能」としてfail-closedに扱う。
    */
   newCardNamesResolved?: boolean;
+  /**
+   * Issue #2045: {packUnique}/{packAll} 用のパック別進捗（key = resolveCardPackKey）。
+   * テンプレートがトークンを含むときだけ DB trigger が保存する additive field で、
+   * migration前の行・集計スキップ行には無い。永続化JSON由来なので readPackCountsEntry で
+   * 検証してから使い、欠落・不正は空文字にする（snapshot の無い経路でも DB は引かない）。
+   */
+  packCounts?: Record<string, PackCountsEntry>;
 }
 
 /**
@@ -1374,11 +1382,17 @@ export async function sendChatAnnouncement(
   //
   // フォールバックラベル「デフォルトパック」とビューアページタブの汎用ラベル
   // 「デフォルト」の1語差は既知の設計判断（#973で追跡、コード変更なしで据え置き）。
+  const cardPackKey = resolveCardPackKey(card.collection_name);
   const packName = resolvePackDisplayName(
-    resolveCardPackKey(card.collection_name),
+    cardPackKey,
     streamer.default_card_pack_name ?? null,
     DEFAULT_PACK_CHAT_FALLBACK_LABEL
   );
+  // Issue #2045: {packUnique}/{packAll} は {packName} と同じカード（N連まとめは先頭、
+  // individual は各draw）のパックキーで、commit時点の snapshot.packCounts から引く。
+  // {unique}/{all} と違い snapshot の無い経路用の DB フォールバックは持たない
+  // （outbox 経由が正規経路で、欠落時は空文字にして通知は送る）。
+  const packProgress = readPackCountsEntry(snapshot?.packCounts, cardPackKey);
 
   // メッセージのプレースホルダーを構築
   // Build message placeholders
@@ -1404,6 +1418,8 @@ export async function sendChatAnnouncement(
     num: cardCount,
     unique: uniqueCount,
     all: allCount,
+    packUnique: packProgress?.unique,
+    packAll: packProgress?.all,
     url: collectionUrl,
     packName: packName || undefined,
   };

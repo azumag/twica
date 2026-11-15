@@ -8,6 +8,7 @@ import {
   MULTI_DRAW_CHAT_INTERVAL_MS,
   normalizeMultiDrawChatChunkSize,
   normalizeMultiDrawChatDeliveryMode,
+  readPackCountsEntry,
 } from '@/lib/twitch/multi-draw-chat'
 import type { GachaCard } from '@/lib/services/gacha'
 
@@ -128,6 +129,122 @@ describe('multi-draw chat segmentation', () => {
     }
 
     expect(buildIndividualChatSnapshot([card(1), card(2)], 1, snapshot)).toEqual(snapshot)
+  })
+
+  describe('packCounts (Issue #2045)', () => {
+    const inPack = (index: number, collectionName: string | null) => ({
+      ...card(index),
+      collection_name: collectionName,
+    })
+
+    it('carries final packCounts through the aggregate fallback (pre-cardCounts rows)', () => {
+      const snapshot = {
+        cardCount: 7,
+        uniqueCount: 9,
+        allCount: 12,
+        newCardNames: [],
+        packCounts: { Alpha: { unique: 3, all: 5 } },
+      }
+
+      expect(buildIndividualChatSnapshot([inPack(1, 'Alpha'), card(2)], 1, snapshot)).toEqual(snapshot)
+    })
+
+    it('restores per-draw packUnique from final pack counts; packAll stays final', () => {
+      // A1 (already owned) / A2 (new, first at draw 1) / A2 / B1 (new, other pack) / A3 (new, draw 4)
+      const a1 = inPack(1, 'Alpha')
+      const a2 = inPack(2, 'Alpha')
+      const a3 = inPack(3, 'Alpha')
+      const b1 = inPack(4, null)
+      const cards = [a1, a2, a2, b1, a3]
+      const snapshot = {
+        cardCount: 5,
+        uniqueCount: 8,
+        allCount: 20,
+        newCardNames: [a2.name, b1.name, a3.name],
+        newCardNamesResolved: true,
+        cardCounts: { [a1.id]: 5, [a2.id]: 2, [b1.id]: 1, [a3.id]: 1 },
+        packCounts: {
+          Alpha: { unique: 4, all: 6 },
+          __default__: { unique: 1, all: 3 },
+        },
+      }
+
+      const packAt = (drawIndex: number) =>
+        buildIndividualChatSnapshot(cards, drawIndex, snapshot)?.packCounts
+      expect(packAt(0)?.Alpha).toEqual({ unique: 2, all: 6 })
+      expect(packAt(1)?.Alpha).toEqual({ unique: 3, all: 6 })
+      expect(packAt(2)?.Alpha).toEqual({ unique: 3, all: 6 })
+      // The other pack's new card does not lower Alpha, and its own pack is final at draw 3.
+      expect(packAt(3)?.__default__).toEqual({ unique: 1, all: 3 })
+      expect(packAt(4)?.Alpha).toEqual({ unique: 4, all: 6 })
+      // The shared snapshot object is never mutated by per-draw reconstruction.
+      expect(snapshot.packCounts.Alpha).toEqual({ unique: 4, all: 6 })
+    })
+
+    it('keeps the final pack value when the newly acquired types exceed final unique', () => {
+      const a1 = inPack(1, 'Alpha')
+      const a2 = inPack(2, 'Alpha')
+      const snapshot = {
+        cardCount: 1,
+        uniqueCount: 5,
+        allCount: 10,
+        newCardNames: [],
+        cardCounts: { [a1.id]: 1, [a2.id]: 1 },
+        packCounts: { Alpha: { unique: 1, all: 3 } },
+      }
+
+      expect(buildIndividualChatSnapshot([a1, a2], 0, snapshot)?.packCounts).toEqual({
+        Alpha: { unique: 1, all: 3 },
+      })
+    })
+
+    it('does not add a packCounts key when the snapshot has none', () => {
+      const a1 = inPack(1, 'Alpha')
+      const snapshot = {
+        cardCount: 1,
+        uniqueCount: 1,
+        allCount: 3,
+        newCardNames: [],
+        cardCounts: { [a1.id]: 2 },
+      }
+
+      // cardCounts is consistent, so this exercises the reconstructed (non-fallback) return.
+      const individual = buildIndividualChatSnapshot([a1, a1], 0, snapshot)
+      expect(individual).toMatchObject({ cardCount: 1, uniqueCount: 1 })
+      expect(individual).not.toHaveProperty('packCounts')
+    })
+  })
+
+  describe('readPackCountsEntry (Issue #2045)', () => {
+    it('returns a valid entry for the pack key', () => {
+      expect(readPackCountsEntry({ Alpha: { unique: 2, all: 4 } }, 'Alpha')).toEqual({ unique: 2, all: 4 })
+      expect(readPackCountsEntry({ __default__: { unique: 0, all: 1 } }, '__default__')).toEqual({ unique: 0, all: 1 })
+    })
+
+    it('reads only own properties, so pack names like constructor/toString are safe', () => {
+      expect(readPackCountsEntry({}, 'constructor')).toBeUndefined()
+      expect(readPackCountsEntry({}, 'toString')).toBeUndefined()
+      expect(readPackCountsEntry(JSON.parse('{"constructor":{"unique":1,"all":2}}'), 'constructor'))
+        .toEqual({ unique: 1, all: 2 })
+    })
+
+    it.each([
+      ['missing container', undefined],
+      ['null container', null],
+      ['array container', [{ unique: 1, all: 2 }]],
+      ['string container', 'Alpha'],
+      ['null entry', { Alpha: null }],
+      ['array entry', { Alpha: [1, 2] }],
+      ['missing all', { Alpha: { unique: 1 } }],
+      ['string counts', { Alpha: { unique: '1', all: '2' } }],
+      ['fractional count', { Alpha: { unique: 1.5, all: 2 } }],
+      ['negative count', { Alpha: { unique: -1, all: 2 } }],
+      ['unique above all', { Alpha: { unique: 3, all: 2 } }],
+      ['zero all', { Alpha: { unique: 0, all: 0 } }],
+      ['other pack only', { Beta: { unique: 1, all: 2 } }],
+    ])('rejects %s', (_label, packCounts) => {
+      expect(readPackCountsEntry(packCounts, 'Alpha')).toBeUndefined()
+    })
   })
 
   it('normalizes invalid persisted settings fail-safe to summary / chunk size 3', () => {

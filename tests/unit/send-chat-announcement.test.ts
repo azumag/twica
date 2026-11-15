@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { sendChatAnnouncement } from '@/lib/services/eventsub-redemption'
-import { CHAT_SEND_TERMINAL_CODES, TwitchChatService } from '@/lib/twitch/chat-service'
+import { DEFAULT_MULTI_DRAW_CHAT_TEMPLATE, sendChatAnnouncement } from '@/lib/services/eventsub-redemption'
+import { CHAT_SEND_TERMINAL_CODES, DEFAULT_CHAT_TEMPLATE, TwitchChatService } from '@/lib/twitch/chat-service'
 import { logger } from '@/lib/logger.server'
 import { getDb } from '@/lib/db/client'
 
@@ -775,5 +775,123 @@ describe('sendChatAnnouncement: Issue #1548 v1 flag再生 / v2 placeholder駆動
     )
 
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=Alpha')
+  })
+})
+
+// Issue #2045: {packUnique}/{packAll} は snapshot.packCounts から、{packName} と同じ
+// カードのパックキー（resolveCardPackKey）で解決し、欠落・不正は空文字にする。
+describe('sendChatAnnouncement: {packUnique}/{packAll} は snapshot.packCounts から解決する (#2045)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const streamer = {
+    id: 'streamer-1',
+    chat_announcement_enabled: true,
+    chat_announcement_template: 'pack={packUnique}/{packAll} all={unique}/{all}',
+    chat_announcement_multi_template: 'multi={packUnique}/{packAll}',
+    chat_announcement_multi_show_cards: false,
+  }
+  const alpha = {
+    id: 'card-1',
+    name: 'Alpha',
+    description: null,
+    image_url: null,
+    rarity: 'common',
+    drop_rate: 1,
+    collection_name: 'スターター',
+  }
+  const baseSnapshot = {
+    cardCount: 1,
+    uniqueCount: 5,
+    allCount: 10,
+    newCardNames: [],
+    newCardNamesResolved: true,
+  }
+  const send = async (
+    card: typeof alpha | (Omit<typeof alpha, 'collection_name'> & { collection_name: string | null }),
+    snapshot: Parameters<typeof sendChatAnnouncement>[7],
+    cards?: Array<typeof alpha>,
+  ) => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    await sendChatAnnouncement('130871908', streamer, card, 'Viewer', 'viewer-1', cards, undefined, snapshot)
+    return sendSpy.mock.calls[0]?.[1]
+  }
+
+  it('獲得カードのパックの値を使い、全パック合算の {unique}/{all} は変えない', async () => {
+    const message = await send(alpha, {
+      ...baseSnapshot,
+      packCounts: { スターター: { unique: 2, all: 4 }, 別パック: { unique: 1, all: 9 } },
+    })
+
+    expect(message).toBe('pack=2/4 all=5/10')
+  })
+
+  it('未分類カードはデフォルトパックのキー __default__ で解決する', async () => {
+    const message = await send({ ...alpha, collection_name: null }, {
+      ...baseSnapshot,
+      packCounts: { __default__: { unique: 0, all: 3 } },
+    })
+
+    expect(message).toBe('pack=0/3 all=5/10')
+  })
+
+  it('constructor という名前のパックも自身のプロパティとして解決し、未登録なら空文字', async () => {
+    const constructorCard = { ...alpha, collection_name: 'constructor' }
+    expect(await send(constructorCard, {
+      ...baseSnapshot,
+      packCounts: JSON.parse('{"constructor":{"unique":1,"all":2}}'),
+    })).toBe('pack=1/2 all=5/10')
+
+    vi.restoreAllMocks()
+    expect(await send(constructorCard, { ...baseSnapshot, packCounts: {} })).toBe('pack=/ all=5/10')
+  })
+
+  it('N連まとめ通知は先頭カードのパックで解決する（{packName} と同じ基準）', async () => {
+    const beta = { ...alpha, id: 'card-2', name: 'Beta', collection_name: '別パック' }
+    const message = await send(alpha, {
+      ...baseSnapshot,
+      packCounts: { スターター: { unique: 2, all: 4 }, 別パック: { unique: 1, all: 9 } },
+    }, [alpha, beta])
+
+    expect(message).toBe('multi=2/4')
+  })
+
+  it.each([
+    ['packCounts 欠落（migration前・集計スキップ行）', undefined],
+    ['当該パックのキーが無い', { 別パック: { unique: 1, all: 2 } }],
+    ['配列', [{ unique: 1, all: 2 }]],
+    ['数値が文字列', { スターター: { unique: '1', all: '2' } }],
+    ['unique > all', { スターター: { unique: 3, all: 2 } }],
+    ['all = 0', { スターター: { unique: 0, all: 0 } }],
+  ])('%s の場合は空文字に置換して通知は送る', async (_label, packCounts) => {
+    const message = await send(alpha, {
+      ...baseSnapshot,
+      ...(packCounts !== undefined ? { packCounts: packCounts as never } : {}),
+    })
+
+    expect(message).toBe('pack=/ all=5/10')
+  })
+
+  it('snapshot の無い経路でも packCounts 用の DB フォールバックは引かず空文字にする', async () => {
+    const message = await send(alpha, undefined)
+
+    // {unique}/{all} は既存どおりDBフォールバックを試みるため、pack系だけを検査する
+    expect(message).toMatch(/^pack=\/ /)
+  })
+})
+
+describe('DEFAULTテンプレートは {packUnique}/{packAll} を含まない (#2045)', () => {
+  // DB trigger（snapshot_chat_outbox_pack_counts）は、payloadのテンプレートがNULL
+  // （=DEFAULT使用）のときトークン無しとして集計をスキップする。DEFAULTにトークンを
+  // 入れると、その配信者のpackCountsが保存されず常に空文字になるため、この前提を固定する。
+  it.each([
+    ['単発', DEFAULT_CHAT_TEMPLATE],
+    ['N連', DEFAULT_MULTI_DRAW_CHAT_TEMPLATE],
+  ])('%s', (_label, template) => {
+    expect(template).not.toContain('{packUnique}')
+    expect(template).not.toContain('{packAll}')
   })
 })

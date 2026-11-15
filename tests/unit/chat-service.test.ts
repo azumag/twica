@@ -1433,4 +1433,49 @@ describe('TwitchChatService', () => {
       expect(message).toBe('@SampleUser が【レジェンダリー】Legendary Card（レアパック）を獲得！');
     });
   });
+
+  // Issue #2045: パック単位のコンプ進捗 {packUnique}/{packAll}
+  describe('buildMessage - パック進捗プレースホルダー ({packUnique}/{packAll})', () => {
+    const basePlaceholders = {
+      user: 'SampleUser',
+      card: 'Legendary Card',
+      rarity: 'レジェンダリー',
+    };
+
+    it('{packUnique} と {packAll} が値に置換され、{unique}/{all} とは独立している', () => {
+      const message = service.buildMessage(
+        '{packName} {packUnique}/{packAll} 全体 {unique}/{all}',
+        { ...basePlaceholders, packName: 'スターター', packUnique: 2, packAll: 4, unique: 5, all: 10 },
+      );
+
+      expect(message).toBe('スターター 2/4 全体 5/10');
+    });
+
+    it('packUnique=0 でも "0" として置換される', () => {
+      const message = service.buildMessage(
+        'パック {packUnique}/{packAll}',
+        { ...basePlaceholders, packUnique: 0, packAll: 4 },
+      );
+
+      expect(message).toBe('パック 0/4');
+    });
+
+    it('未指定時は空文字に置換され、{unique}/{all} の値は変わらない', () => {
+      const message = service.buildMessage(
+        '{card} パック[{packUnique}/{packAll}] 全体[{unique}/{all}]',
+        { ...basePlaceholders, unique: 5, all: 10 },
+      );
+
+      expect(message).toBe('Legendary Card パック[/] 全体[5/10]');
+    });
+
+    it('{packName} より前に置換するため、パック名に含まれるトークン文字列は数値に化けない', () => {
+      const message = service.buildMessage(
+        '『{packName}』 {packUnique}/{packAll}',
+        { ...basePlaceholders, packName: '{packUnique}と{packAll}', packUnique: 2, packAll: 4 },
+      );
+
+      expect(message).toBe('『{packUnique}と{packAll}』 2/4');
+    });
+  });
 });
