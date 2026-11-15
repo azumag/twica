@@ -218,9 +218,13 @@ DBの`sent`記録前に実行環境が停止した場合だけ、lease失効後�
 - N連途中のDB一時障害は、ライブWebhookへ2xxを返す前に生通知を7日TTLのKV durable
   inboxへ保存します。Cron replayが確定済みprefixを飛ばして残りを完遂し、最終drawが
   outboxを組み立てます。KV保存にも失敗した通常時だけ503を返してTwitch再送を要求します。
-- `{num}`、`{unique}`、`{all}`、`{newCards}`はガチャcommit時点の値をoutboxへ保存し、
-  relay時に現在の所有数/catalogを再読込しません。backoff中に別ガチャや設定変更が
-  起きても、初回に送る予定だった本文を維持します。
+- `{num}`、`{unique}`、`{all}`、`{newCards}`、`{packUnique}`、`{packAll}`はガチャcommit
+  時点の値をoutboxへ保存し、relay時に現在の所有数/catalogを再読込しません。backoff中に
+  別ガチャや設定変更が起きても、初回に送る予定だった本文を維持します。
+  `{packUnique}`/`{packAll}`は、単発・N連どちらかのテンプレートがそのトークンを含む場合だけ
+  outbox INSERT triggerが`chatSnapshot.packCounts`へ保存し、値が無い行では空文字になります。
+  トークンを使い始めた後に旧アプリへロールバックすると、旧アプリは置換しないため
+  `{packUnique}`/`{packAll}`が文字のままチャットに出ます。
 - `sent`は7日、`dead`は調査用に30日保持した後、Cron relayが削除します。
 - DB outbox relayはmaintenance EventSubのKV一覧取得より先に実行します。KV障害中も
   チャットbacklogは1回につき最大`limit`件ずつ進みます。

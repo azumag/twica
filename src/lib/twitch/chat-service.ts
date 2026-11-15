@@ -35,7 +35,7 @@ const CHAT_SEND_RETRY_DELAYS_MS = [250, 500]
  * Twitchが「30秒以内の同一本文」として送信を抑止したときの drop_reason.code。
  *
  * これは障害ではなくTwitch側の意図的な連投抑止であり、通常運用で発生する:
- * チャット通知テンプレートは {user}/{card}/{rarity}/{unique}/{all} を展開するため、
+ * チャット通知テンプレートは {user}/{card}/{rarity}/{unique}/{all}/{packUnique}/{packAll} を展開するため、
  * 同じ視聴者が同じカードを30秒以内に2回引くと（重複カードなら進捗も変わらないので）
  * 本文が完全一致する。issue #842/#843 がこの経路で自動生成された。
  *
@@ -111,6 +111,14 @@ export interface ChatMessagePlaceholders {
   // コンプ進捗用: 配信者のアクティブカードの総種類数（オプション）
   // Collection progress: total number of active card types for this streamer (optional)
   all?: number
+  // パック単位のコンプ進捗（Issue #2045）: 獲得カード（N連まとめ通知では先頭カード。
+  // {packName} と同じ基準）が属するパック内で、ユーザーが所持しているアクティブカードの
+  // 種類数（オプション）。{unique} は全パック合算で、こちらはパック内に限る
+  // Pack-scoped progress: owned active card types within the obtained card's pack (optional)
+  packUnique?: number
+  // パック単位のコンプ進捗: そのパックのアクティブカード総種類数（オプション）
+  // Pack-scoped progress: total active card types in the obtained card's pack (optional)
+  packAll?: number
   // 獲得したカードが属するパックの表示名（オプション）。抽選がパックに絞られて
   // いない場合や値が空文字の場合は未指定として扱われ、プレースホルダーは空文字に置換される
   // Display name of the pack the obtained card belongs to (optional). Treated as
@@ -830,6 +838,23 @@ export class TwitchChatService {
       message = message.replace(/\{newCardsOrNone\}/g, placeholders.newCardsOrNone)
     } else {
       message = message.replace(/\{newCardsOrNone\}/g, '')
+    }
+
+    // パック単位のコンプ進捗（Issue #2045）。値はガチャcommit時点のoutbox snapshot
+    // （chatSnapshot.packCounts）由来で、欠落・不正なら呼び出し側がundefinedを渡し空文字になる。
+    // {packName} より前に置換する: パック名は配信者が自由に付けられるため、名前に
+    // 「{packUnique}」等の文字列を含むと、後から置換した場合にパック名の一部が数値へ
+    // 化けてしまう。先に置換しておけば、パック名はそのまま文字どおりに出る。
+    if (placeholders.packUnique !== undefined) {
+      message = message.replace(/\{packUnique\}/g, String(placeholders.packUnique))
+    } else {
+      message = message.replace(/\{packUnique\}/g, '')
+    }
+
+    if (placeholders.packAll !== undefined) {
+      message = message.replace(/\{packAll\}/g, String(placeholders.packAll))
+    } else {
+      message = message.replace(/\{packAll\}/g, '')
     }
 
     if (placeholders.packName) {
