@@ -439,15 +439,17 @@ BEGIN
   -- 'CI Pack' に未当選を含む有効カード2枚を用意し、新規viewerがFiveを引く。
   -- triggerはoutbox INSERT文のsnapshotで user_cards を読むため、同一transactionで
   -- 付与されたFiveが unique=1 として数えられる（付与前の値なら0になる）。
+  -- カードIDは 8888.../9999... を使う。5555.../6666.../7777... は同一DBで後続実行される
+  -- transactional-chat-outbox-concurrency.sh のseedが使うため、cards_pkey衝突を避ける。
   INSERT INTO public.cards (id, streamer_id, name, rarity, drop_rate, is_active, collection_name)
   VALUES
     (
-      '55555555-5555-4555-8555-555555555555',
+      '88888888-8888-4888-8888-888888888888',
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       'Five', 'common', 0.5, true, 'CI Pack'
     ),
     (
-      '66666666-6666-4666-8666-666666666666',
+      '99999999-9999-4999-8999-999999999999',
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       'Six', 'rare', 0.5, true, 'CI Pack'
     );
@@ -456,7 +458,7 @@ BEGIN
   WHERE id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   v_result := public.execute_gacha_transaction_with_chat_outbox(
     'pack-event', 'pack-viewer', 'Pack Viewer',
-    '55555555-5555-4555-8555-555555555555'::uuid,
+    '88888888-8888-4888-8888-888888888888'::uuid,
     'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'::uuid,
     100, 'pack-reward', 'pack-event', 1, 1, 'CI Pack'
   );
