@@ -30,6 +30,14 @@ GitHub Actions はアプリ本体を二重デプロイせず、PlanetScale migra
 - これはビルド/CI/migration runner の Node であり、本番 Worker は workerd で動くため
   `compatibility_date` とは無関係。Workers Builds の環境変数 `NODE_VERSION` は公式に
   `.node-version` との優先順位の記載がないため設定せず、`.node-version` を正とする。
+- `@swc/core` 1.16.x のネイティブアドオンは、読み込み時にキャッシュへ展開し、キャッシュの祖先
+  ディレクトリの権限を検査する。2026-11-15 以降、Workers Builds では `/opt/buildhome/.cache`
+  と `/tmp` の両方がこの検査に落ち、`next build` が `ERR_SWC_NATIVE_CACHE` で失敗した
+  （最後の成功は 2026-11-11 の `86faa7e8`。lockfile と Node 版は同一なので、ビルド
+  イメージ側の変更と推定）。`scripts/lib/workers-ci-swc-native-cache.sh` が
+  `WORKERS_CI=1` のときだけ `SWC_NATIVE_BINDING_CACHE_SKIP_SECURITY_CHECK=1` と専用の
+  展開先を設定し、build・deploy の両スクリプトから読み込む。ローカルと GitHub Actions
+  には影響しない。
 - Workers Builds に設定するのは公開ビルド値だけです。例:
   `NEXT_PUBLIC_APP_URL`、`NEXT_PUBLIC_TWITCH_CLIENT_ID`、
   `NEXT_PUBLIC_CF_IMAGES_ENABLED`。
