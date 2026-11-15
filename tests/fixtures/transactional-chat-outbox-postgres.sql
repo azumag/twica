@@ -433,6 +433,45 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'expired lease was not reclaimed with fencing';
   END IF;
+
+  -- Issue #2047: 手動INSERTではなく実RPC経由で、同一transaction内の新規付与カードが
+  -- trigger集計のpackCountsに入ることを確認する（#2046レビューでの手動検証を定型化）。
+  -- 'CI Pack' に未当選を含む有効カード2枚を用意し、新規viewerがFiveを引く。
+  -- triggerはoutbox INSERT文のsnapshotで user_cards を読むため、同一transactionで
+  -- 付与されたFiveが unique=1 として数えられる（付与前の値なら0になる）。
+  INSERT INTO public.cards (id, streamer_id, name, rarity, drop_rate, is_active, collection_name)
+  VALUES
+    (
+      '55555555-5555-4555-8555-555555555555',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      'Five', 'common', 0.5, true, 'CI Pack'
+    ),
+    (
+      '66666666-6666-4666-8666-666666666666',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      'Six', 'rare', 0.5, true, 'CI Pack'
+    );
+  UPDATE public.streamers
+  SET chat_announcement_template = '{user} {packUnique}/{packAll}'
+  WHERE id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  v_result := public.execute_gacha_transaction_with_chat_outbox(
+    'pack-event', 'pack-viewer', 'Pack Viewer',
+    '55555555-5555-4555-8555-555555555555'::uuid,
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'::uuid,
+    100, 'pack-reward', 'pack-event', 1, 1, 'CI Pack'
+  );
+  IF (v_result ->> 'is_duplicate')::boolean IS DISTINCT FROM false THEN
+    RAISE EXCEPTION 'pack draw did not succeed: %', v_result;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.chat_notification_outbox
+    WHERE batch_id = 'pack-event'
+      AND payload #> '{chatSnapshot,packCounts}'
+        = '{"CI Pack": {"unique": 1, "all": 2}}'::jsonb
+  ) THEN
+    RAISE EXCEPTION 'newly granted card was not counted into packCounts';
+  END IF;
 END
 $$;
 
