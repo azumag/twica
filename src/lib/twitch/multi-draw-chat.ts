@@ -1,5 +1,6 @@
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from '@/lib/constants'
 import { countCharacters, truncateCharacters } from '@/lib/text-utils'
+import { resolveCardPackKey } from '@/lib/collection-packs'
 import type { GachaCard } from '@/lib/services/gacha'
 
 export const MULTI_DRAW_CHAT_DELIVERY_MODES = ['summary', 'individual', 'chunked'] as const
@@ -22,6 +23,16 @@ export interface MultiDrawChatSegment {
 }
 
 /**
+ * Issue #2045: {packUnique}/{packAll} のsnapshot値。
+ * unique = そのパック内でユーザーが所持する有効カードの種類数、
+ * all = そのパックの有効カード総数。どちらもガチャcommit時点の最終値。
+ */
+export interface PackCountSnapshot {
+  unique: number
+  all: number
+}
+
+/**
  * Outbox snapshots can carry a per-card final count as an additive field. Older rows do
  * not have cardCounts, so callers must keep a deterministic fallback for those rows.
  */
@@ -32,6 +43,13 @@ export interface MultiDrawChatSnapshot {
   newCardNames: string[]
   newCardNamesResolved?: boolean
   cardCounts?: Record<string, number>
+  /**
+   * Issue #2045: 当選カードが属する各パックの最終カウント。keyは
+   * resolveCardPackKey と同じ規則のpackKey（未分類カードは __default__）。
+   * cardCounts と同じくadditive fieldで、field欠落の旧outbox行は
+   * パック系プレースホルダーを空文字にして配送する。
+   */
+  packCounts?: Record<string, PackCountSnapshot>
 }
 
 export type IndividualChatSnapshot = Omit<MultiDrawChatSnapshot, 'cardCounts'>
@@ -106,6 +124,11 @@ export function buildIndividualChatSnapshot(
     ...(snapshot.newCardNamesResolved !== undefined
       ? { newCardNamesResolved: snapshot.newCardNamesResolved }
       : {}),
+    // packCountsはadditive field。欠落の旧行ではキー自体を持たせず、
+    // {packUnique}/{packAll} を空文字化させる契約を保つ。
+    ...(snapshot.packCounts !== undefined
+      ? { packCounts: snapshot.packCounts }
+      : {}),
   }
   const card = cards[drawIndex]
   const cardCounts = snapshot.cardCounts
@@ -115,11 +138,17 @@ export function buildIndividualChatSnapshot(
 
   const drawCounts = new Map<string, number>()
   const firstDrawIndex = new Map<string, number>()
+  const packKeyByCardId = new Map<string, string>()
   for (let index = 0; index < cards.length; index += 1) {
     const drawnCard = cards[index]
     if (!drawnCard) continue
     drawCounts.set(drawnCard.id, (drawCounts.get(drawnCard.id) ?? 0) + 1)
     if (!firstDrawIndex.has(drawnCard.id)) firstDrawIndex.set(drawnCard.id, index)
+    // {packUnique} 復元用に各カードの所属パックも固定する。カードpayloadの
+    // collection_name を trigger のpackKeyと同じ規則（resolveCardPackKey）で写す。
+    if (!packKeyByCardId.has(drawnCard.id)) {
+      packKeyByCardId.set(drawnCard.id, resolveCardPackKey(drawnCard.collection_name))
+    }
   }
 
   for (const [cardId, drawnCount] of drawCounts) {
@@ -147,10 +176,51 @@ export function buildIndividualChatSnapshot(
     (cardId) => (firstDrawIndex.get(cardId) ?? Number.POSITIVE_INFINITY) <= drawIndex,
   ).length
 
+  // Issue #2045: {packUnique} は当該drawのカードが属するパックだけを対象に、
+  // {unique} と同じ考え方で各draw直後の値を復元する。
+  //   packUnique_i = 最終のパック内所持種類数
+  //     - （このバッチで同パックに初入手された種類のうち、drawIndexより後に
+  //        初登場するものの数）
+  // snapshot値がバッチ内初入手種類数を下回る不整合データでは再計算せず、
+  // commit時点の最終値をそのまま残して壊れた中間値を出さない。
+  let adjustedPackCounts = snapshot.packCounts
+  if (
+    adjustedPackCounts
+    && typeof adjustedPackCounts === 'object'
+    && !Array.isArray(adjustedPackCounts)
+  ) {
+    const packKey = packKeyByCardId.get(card.id) ?? resolveCardPackKey(card.collection_name)
+    const packEntry = adjustedPackCounts[packKey]
+    if (
+      packEntry
+      && typeof packEntry === 'object'
+      && !Array.isArray(packEntry)
+      && Number.isInteger(packEntry.unique)
+      && Number.isInteger(packEntry.all)
+    ) {
+      const newlyAcquiredInPack = newlyAcquiredCardIds.filter(
+        (cardId) => packKeyByCardId.get(cardId) === packKey,
+      )
+      if (packEntry.unique >= newlyAcquiredInPack.length) {
+        const packNewlySeenByThisDraw = newlyAcquiredInPack.filter(
+          (cardId) => (firstDrawIndex.get(cardId) ?? Number.POSITIVE_INFINITY) <= drawIndex,
+        ).length
+        adjustedPackCounts = {
+          ...adjustedPackCounts,
+          [packKey]: {
+            unique: packEntry.unique - newlyAcquiredInPack.length + packNewlySeenByThisDraw,
+            all: packEntry.all,
+          },
+        }
+      }
+    }
+  }
+
   return {
     ...fallback,
     cardCount,
     uniqueCount: uniqueBeforeBatch + newlySeenByThisDraw,
+    ...(adjustedPackCounts !== undefined ? { packCounts: adjustedPackCounts } : {}),
   }
 }
 

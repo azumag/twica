@@ -92,6 +92,7 @@ jobs:
               - 'tests/fixtures/paced-multi-draw-chat-postgres.mjs'
               - 'tests/fixtures/analysis-dashboard-pagination-postgres.sql'
               - 'tests/fixtures/transactional-chat-outbox-postgres.sql'
+              - 'tests/fixtures/chat-outbox-pack-counts-postgres.sql'
               - 'tests/fixtures/transactional-chat-outbox-concurrency.sh'
               # db-readonly-check.yml の集計 SQL を実PG17で検証する。fixture 側の変更でも
               # PG17 job を回さないと、その検証が黙って古くなる。
@@ -592,6 +593,17 @@ jobs:
         run: |
           psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
             -f tests/fixtures/transactional-chat-outbox-postgres.sql
+
+      - name: Verify chat outbox packCounts trigger invariants
+        # Issue #2045: {packUnique}/{packAll} 用に BEFORE INSERT trigger が
+        # payload.chatSnapshot.packCounts を保存する契約（保存・is_active境界・
+        # __default__・未使用時は書かない・最小payload fail-open）は、SQL文字列
+        # テストではjsonb結合と三値論理を検証できないため実DBで確かめる。
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres \
+            -f tests/fixtures/chat-outbox-pack-counts-postgres.sql
 
       - name: Verify concurrent duplicate fencing
         # 先行COMMIT前に同じeventを別接続から実行し、同じcard/別cardのどちらでも

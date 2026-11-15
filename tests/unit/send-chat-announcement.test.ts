@@ -777,3 +777,212 @@ describe('sendChatAnnouncement: Issue #1548 v1 flag再生 / v2 placeholder駆動
     expect(sendSpy).toHaveBeenCalledWith('130871908', 'new=Alpha')
   })
 })
+
+/**
+ * Issue #2045: {packUnique}/{packAll} は獲得カード（N連まとめ通知では先頭カード）が
+ * 属するパック単位のコンプ進捗。outbox triggerが保存した snapshot.packCounts を
+ * 解決し、field欠落の旧行やsnapshot無し経路での失敗時は空文字にする。
+ */
+describe('sendChatAnnouncement: {packUnique}/{packAll} のパック単位解決 (#2045)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const streamer = {
+    id: 'streamer-1',
+    chat_announcement_enabled: true,
+    chat_announcement_template: 'pack={packUnique}/{packAll}',
+    chat_announcement_multi_template: null,
+    chat_announcement_multi_show_cards: false,
+  }
+  const card = {
+    id: 'card-1',
+    name: 'Alpha',
+    description: null,
+    image_url: null,
+    rarity: 'common',
+    drop_rate: 1,
+  }
+  const snapshot = {
+    cardCount: 1,
+    uniqueCount: 1,
+    allCount: 10,
+    newCardNames: [],
+    newCardNamesResolved: true,
+  }
+
+  it('snapshot.packCountsから当該カードのパックの値を解決する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const packedCard = { ...card, collection_name: 'レアパック' }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, packedCard, 'Viewer', 'viewer-1',
+      undefined, undefined,
+      {
+        ...snapshot,
+        packCounts: {
+          'レアパック': { unique: 3, all: 8 },
+          '__default__': { unique: 1, all: 4 },
+        },
+      },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=3/8')
+  })
+
+  it('未分類カード（collection_name: null）は__default__キーの値を使う', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const unclassifiedCard = { ...card, collection_name: null }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, unclassifiedCard, 'Viewer', 'viewer-1',
+      undefined, undefined,
+      { ...snapshot, packCounts: { '__default__': { unique: 2, all: 5 } } },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=2/5')
+  })
+
+  it('migration未適用の旧snapshot（packCounts欠落）は空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const packedCard = { ...card, collection_name: 'レアパック' }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, packedCard, 'Viewer', 'viewer-1',
+      undefined, undefined, snapshot,
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=/')
+  })
+
+  it('packCountsに当該カードのパックが無い場合も空文字にする', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const packedCard = { ...card, collection_name: 'レアパック' }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, packedCard, 'Viewer', 'viewer-1',
+      undefined, undefined,
+      { ...snapshot, packCounts: { '__default__': { unique: 2, all: 5 } } },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=/')
+  })
+
+  it('packCountsのエントリが壊れていても空文字で通知を継続する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const packedCard = { ...card, collection_name: 'レアパック' }
+
+    await sendChatAnnouncement(
+      '130871908', streamer, packedCard, 'Viewer', 'viewer-1',
+      undefined, undefined,
+      {
+        ...snapshot,
+        packCounts: { 'レアパック': { unique: 'broken', all: 8 } } as never,
+      },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=/8')
+  })
+
+  it('N連まとめ通知は先頭カードのパックを解決する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const multiStreamer = {
+      ...streamer,
+      chat_announcement_multi_template: 'pack={packUnique}/{packAll}',
+    }
+    const first = { ...card, collection_name: null }
+    const second = { ...card, id: 'card-2', name: 'Beta', collection_name: 'レアパック' }
+
+    await sendChatAnnouncement(
+      '130871908', multiStreamer, first, 'Viewer', 'viewer-1',
+      [first, second], undefined,
+      {
+        ...snapshot,
+        packCounts: {
+          '__default__': { unique: 2, all: 5 },
+          'レアパック': { unique: 3, all: 8 },
+        },
+      },
+    )
+
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=2/5')
+  })
+
+  it('snapshot無し経路ではパック単位の件数をpg直結で取得する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const packedCard = { ...card, collection_name: 'レアパック' }
+    const sql = vi.fn().mockImplementation((strings: TemplateStringsArray) => {
+      const text = strings.join('?')
+      if (text.includes('get_user_card_counts')) {
+        return Promise.resolve([{
+          result: [
+            { count: 1, card: { id: card.id, is_active: true, collection_name: 'レアパック' } },
+            { count: 2, card: { id: 'card-2', is_active: true, collection_name: 'レアパック' } },
+            { count: 3, card: { id: 'card-3', is_active: true, collection_name: '通常パック' } },
+            { count: 1, card: { id: 'card-4', is_active: true, collection_name: null } },
+            { count: 1, card: { id: 'card-5', is_active: false, collection_name: 'レアパック' } },
+          ],
+        }])
+      }
+      return Promise.resolve([{ count: 8 }])
+    })
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as never)
+
+    await sendChatAnnouncement(
+      '130871908', streamer, packedCard, 'Viewer', 'viewer-1',
+    )
+
+    // レアパック内の所持は is_active な card-1/card-2 の2種類だけ
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=2/8')
+  })
+
+  it('snapshot無し経路でクエリが失敗しても空文字で通知を継続する', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    vi.mocked(getDb).mockRejectedValue(new Error('database unavailable'))
+    const packedCard = { ...card, collection_name: 'レアパック' }
+
+    const outcome = await sendChatAnnouncement(
+      '130871908', streamer, packedCard, 'Viewer', 'viewer-1',
+    )
+
+    expect(outcome).toEqual({ outcome: 'sent' })
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'pack=/')
+  })
+
+  it('テンプレートがパック系placeholderを使わない場合はパック用クエリを発行しない', async () => {
+    const sendSpy = vi.spyOn(TwitchChatService.prototype, 'sendChatMessageDetailed').mockResolvedValue({
+      outcome: 'sent',
+    })
+    const sql = vi.fn().mockResolvedValue([{ count: 1 }])
+    vi.mocked(getDb).mockResolvedValue({ db: {}, sql } as never)
+    const packedCard = { ...card, collection_name: 'レアパック' }
+    const noPackStreamer = {
+      ...streamer,
+      chat_announcement_template: '{user} got {card} {all}',
+    }
+
+    await sendChatAnnouncement(
+      '130871908', noPackStreamer, packedCard, 'Viewer', 'viewer-1',
+    )
+
+    // {all} の1クエリのみ。パック集計クエリや所持一覧RPCは発行しない。
+    expect(sql).toHaveBeenCalledTimes(1)
+    expect(sendSpy).toHaveBeenCalledWith('130871908', 'Viewer got Alpha 1')
+  })
+})

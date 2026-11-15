@@ -39,6 +39,7 @@ import { cancelRedemption } from "@/lib/twitch/channel-points";
 import { CARD_ISSUANCE_MESSAGES } from "@/lib/card-issuance";
 import { countCharacters } from "@/lib/text-utils";
 import { resolveCardPackKey, resolvePackDisplayName } from "@/lib/collection-packs";
+import type { PackCountSnapshot } from "@/lib/twitch/multi-draw-chat";
 import { runInBackground } from "@/lib/background-task";
 import {
   claimChatNotificationBatch,
@@ -419,6 +420,15 @@ export interface ChatAnnouncementSnapshot {
    * optionalとし、fieldが無い移行前outbox行は「判定不能」としてfail-closedに扱う。
    */
   newCardNamesResolved?: boolean;
+  /**
+   * Issue #2045: {packUnique}/{packAll} 用のパック単位カウント。keyは
+   * resolveCardPackKey と同じ規則のpackKey（未分類カードは __default__）。
+   * payloadへのadditive fieldであり、migration未適用期間のoutbox行では
+   * field自体が無い。その場合はパック系プレースホルダーを空文字にする。
+   * individual配送では buildIndividualChatSnapshot が各draw直後の値へ調整済みの
+   * 同じmapを渡すため、ここでは一律「当該カードのpackKeyの値」を読むだけでよい。
+   */
+  packCounts?: Record<string, PackCountSnapshot>;
 }
 
 /**
@@ -1114,6 +1124,43 @@ async function fetchActiveCardCountPg(
 }
 
 /**
+ * Issue #2045: snapshotを持たない経路向けの {packAll} 用pg直結集計。
+ * 指定パックの有効カード総数を返す。packKeyはアプリ側の resolveCardPackKey と
+ * 同じ規則（未分類カードは __default__）で、DB上は空文字/NULLの
+ * collection_name を __default__ として数える。outbox triggerの
+ * snapshot_chat_outbox_pack_counts と同じ集計定義。
+ * 読取失敗はerror値へ正規化し、プレースホルダーを空文字化して通知は継続する。
+ */
+async function fetchActiveCardCountByPackPg(
+  streamerId: string,
+  packKey: string,
+): Promise<{ count: number | null; error: { message: string } | null }> {
+  try {
+    const count = await withDbRetry(
+      async () => {
+        const { sql } = await getDb();
+        const rows = await sql<{ count: number }[]>`
+          select count(*)::integer as count
+          from cards
+          where streamer_id = ${streamerId}::uuid
+            and is_active = true
+            and coalesce(nullif(collection_name, ''), '__default__') = ${packKey}
+        `;
+        return rows[0]?.count ?? 0;
+      },
+      "eventsub:sendChatAnnouncement:activePackCardCount",
+      { idempotent: true },
+    );
+    return { count, error: null };
+  } catch (error) {
+    return {
+      count: null,
+      error: { message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+/**
  * チャット通知を送信する
  * Send chat announcement for gacha result
  *
@@ -1236,6 +1283,12 @@ export async function sendChatAnnouncement(
   const needsNewCardInfo = isMultiDraw
     && effectiveShowCards
     && (usesNewCardPlaceholders || shouldAppendDefaultNewCards);
+  // Issue #2045: {packUnique}/{packAll}。獲得カード（N連まとめ通知では先頭カード）
+  // が属するパックを基準にする点は {packName} と同じ。片方だけを使うテンプレートで
+  // 不要側のDBクエリを発行しないよう、個別に判定する。
+  const needsPackUnique = /\{packUnique\}/.test(effectiveTemplate);
+  const needsPackAll = /\{packAll\}/.test(effectiveTemplate);
+  const cardPackKey = resolveCardPackKey(card.collection_name);
 
   let cardCount: number | undefined = snapshot?.cardCount;
   let uniqueCount: number | undefined = snapshot?.uniqueCount;
@@ -1249,11 +1302,31 @@ export async function sendChatAnnouncement(
   // DBが明示的に完全性を検証した新fieldだけを信頼し、移行前payloadは空文字へfail-closedにする。
   let newCardInfoResolved = snapshot?.newCardNamesResolved === true;
 
-  if (!snapshot && (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo)) {
+  // Issue #2045: snapshotのpackCountsから当該カードのパックの値を解決する。
+  // additive fieldのため、migration未適用期間のoutbox行ではmap自体が欠落し、
+  // その場合は {packUnique}/{packAll} を空文字にする（誤値を通知しない）。
+  // individual配送では buildIndividualChatSnapshot が各draw直後の値へ調整済み。
+  let packUniqueCount: number | undefined;
+  let packAllCount: number | undefined;
+  const packCounts = snapshot?.packCounts;
+  if (packCounts && typeof packCounts === 'object' && !Array.isArray(packCounts)) {
+    const packEntry = packCounts[cardPackKey];
+    if (packEntry && typeof packEntry === 'object' && !Array.isArray(packEntry)) {
+      if (Number.isInteger(packEntry.unique)) packUniqueCount = packEntry.unique;
+      if (Number.isInteger(packEntry.all)) packAllCount = packEntry.all;
+    }
+  }
+
+  if (!snapshot && (needsCardCount || needsUniqueCount || needsAllCount || needsNewCardInfo || needsPackUnique || needsPackAll)) {
     // {all} は配信者のアクティブカード総数のため、直接 cards テーブルを count クエリ
     // {all}: count active cards for this streamer (user-independent)
     const allCountPromise = needsAllCount
       ? fetchActiveCardCountPg(streamer.id)
+      : null;
+
+    // {packAll} は獲得カードのパックに絞ったアクティブカード総数（Issue #2045）
+    const packAllCountPromise = needsPackAll
+      ? fetchActiveCardCountByPackPg(streamer.id, cardPackKey)
       : null;
 
     // {num} / {unique} は RPC `get_user_card_counts` で DB 側 GROUP BY 済みの
@@ -1265,7 +1338,7 @@ export async function sendChatAnnouncement(
     //
     // Supabase admin clientは削除済みなので、環境に残る旧driver secretを参照せず
     // 直前のガチャ確定と同じPlanetScaleから最新の所持数を読む。
-    const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo)
+    const userCardCountsPromise = (needsCardCount || needsUniqueCount || needsNewCardInfo || needsPackUnique)
       ? fetchUserCardCountsRpcPg(userId, streamer.id)
       : null;
 
@@ -1275,10 +1348,26 @@ export async function sendChatAnnouncement(
     // Wrap the Promise.all so transient transport/runtime rejections don't abort
     // the whole chat announcement. Normalized DB error payloads are handled below.
     try {
-      const [allCountResult, userCardCountsResult] = await Promise.all([
+      const [allCountResult, userCardCountsResult, packAllCountResult] = await Promise.all([
         allCountPromise,
         userCardCountsPromise,
+        packAllCountPromise,
       ]);
+
+      if (needsPackAll) {
+        if (packAllCountResult?.error) {
+          logger.warn('Failed to fetch {packAll} card count for chat announcement', {
+            streamerId: streamer.id,
+            error: packAllCountResult.error.message,
+          });
+          await reportNotificationError(new Error(packAllCountResult.error.message), {
+            context: 'eventsub:sendChatAnnouncement:activePackCardCount',
+            streamerId: streamer.id,
+          });
+        } else {
+          packAllCount = packAllCountResult?.count ?? 0;
+        }
+      }
 
       if (needsAllCount) {
         if (allCountResult?.error) {
@@ -1295,7 +1384,7 @@ export async function sendChatAnnouncement(
         }
       }
 
-      if (needsCardCount || needsUniqueCount || needsNewCardInfo) {
+      if (needsCardCount || needsUniqueCount || needsNewCardInfo || needsPackUnique) {
         if (userCardCountsResult?.error) {
           logger.warn('Failed to fetch user card counts for chat announcement', {
             streamerId: streamer.id,
@@ -1315,7 +1404,7 @@ export async function sendChatAnnouncement(
           // RPC returns a JSONB array; each row holds { count, card: {...}, streamer }
           const rows = (userCardCountsResult?.data ?? []) as Array<{
             count: number;
-            card: { id: string; is_active: boolean };
+            card: { id: string; is_active: boolean; collection_name?: string | null };
           }>;
 
           if (needsCardCount) {
@@ -1329,6 +1418,16 @@ export async function sendChatAnnouncement(
             // アクティブカードのみ数えてコンプ進捗を算出
             // Count only active cards to match the progress definition in dashboard UI
             uniqueCount = rows.filter((row) => row.card?.is_active === true).length;
+          }
+
+          if (needsPackUnique) {
+            // Issue #2045: {packUnique} は獲得カードのパックに絞った所持種類数。
+            // 未分類カードはデフォルトパック(__default__)として数え、outbox
+            // trigger（snapshot_chat_outbox_pack_counts）と同じ集計定義に揃える。
+            packUniqueCount = rows.filter(
+              (row) => row.card?.is_active === true
+                && resolveCardPackKey(row.card.collection_name) === cardPackKey,
+            ).length;
           }
 
           // `data: null, error: null` は0件配列ではなく応答欠落として扱う。空配列だけが
@@ -1375,7 +1474,7 @@ export async function sendChatAnnouncement(
   // フォールバックラベル「デフォルトパック」とビューアページタブの汎用ラベル
   // 「デフォルト」の1語差は既知の設計判断（#973で追跡、コード変更なしで据え置き）。
   const packName = resolvePackDisplayName(
-    resolveCardPackKey(card.collection_name),
+    cardPackKey,
     streamer.default_card_pack_name ?? null,
     DEFAULT_PACK_CHAT_FALLBACK_LABEL
   );
@@ -1404,6 +1503,10 @@ export async function sendChatAnnouncement(
     num: cardCount,
     unique: uniqueCount,
     all: allCount,
+    // Issue #2045: パック単位のコンプ進捗。snapshot欠落・解決失敗・クエリ失敗時は
+    // undefinedのまま渡し、buildMessageで空文字化する（誤った0を通知しない）。
+    packUnique: packUniqueCount,
+    packAll: packAllCount,
     url: collectionUrl,
     packName: packName || undefined,
   };

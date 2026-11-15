@@ -221,6 +221,10 @@ DBの`sent`記録前に実行環境が停止した場合だけ、lease失効後�
 - `{num}`、`{unique}`、`{all}`、`{newCards}`はガチャcommit時点の値をoutboxへ保存し、
   relay時に現在の所有数/catalogを再読込しません。backoff中に別ガチャや設定変更が
   起きても、初回に送る予定だった本文を維持します。
+- `{packUnique}`、`{packAll}`（獲得カードが属するパック単位の所持種類数/全種類数、
+  未分類カードはデフォルトパック扱い）も同じくcommit時点の値をoutboxへ保存します
+  （`payload.chatSnapshot.packCounts`）。テンプレートにこれらを含まない配信者では
+  集計を行わず、packCountsは保存されません。
 - `sent`は7日、`dead`は調査用に30日保持した後、Cron relayが削除します。
 - DB outbox relayはmaintenance EventSubのKV一覧取得より先に実行します。KV障害中も
   チャットbacklogは1回につき最大`limit`件ずつ進みます。

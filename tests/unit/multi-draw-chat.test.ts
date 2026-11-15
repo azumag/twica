@@ -130,6 +130,121 @@ describe('multi-draw chat segmentation', () => {
     expect(buildIndividualChatSnapshot([card(1), card(2)], 1, snapshot)).toEqual(snapshot)
   })
 
+  it('reconstructs per-draw packUnique within the drawn card\'s own pack (#2045)', () => {
+    const packACard = { ...card(1), collection_name: 'パックA' }
+    const packANewCard = { ...card(2), collection_name: 'パックA' }
+    const packBCard = { ...card(3), collection_name: 'パックB' }
+    const cards = [packACard, packANewCard, packBCard]
+    const snapshot = {
+      cardCount: 4,
+      uniqueCount: 5,
+      allCount: 12,
+      newCardNames: [packANewCard.name, packBCard.name],
+      newCardNamesResolved: true,
+      cardCounts: {
+        [packACard.id]: 4, // 既所持（final 4 - drawn 1 > 0）
+        [packANewCard.id]: 1, // このバッチで初入手
+        [packBCard.id]: 1, // このバッチで初入手
+      },
+      packCounts: {
+        'パックA': { unique: 3, all: 5 },
+        'パックB': { unique: 1, all: 4 },
+      },
+    }
+
+    // draw0（既所持のパックAカード）: パックAの初入手カードはまだ出ていない → 2
+    expect(buildIndividualChatSnapshot(cards, 0, snapshot)).toMatchObject({
+      cardCount: 4,
+      uniqueCount: 5 - 2,
+      packCounts: {
+        'パックA': { unique: 2, all: 5 },
+        'パックB': { unique: 1, all: 4 },
+      },
+    })
+    // draw1（パックA初入手カード）: パックAだけが最終値3へ進む
+    expect(buildIndividualChatSnapshot(cards, 1, snapshot)).toMatchObject({
+      packCounts: {
+        'パックA': { unique: 3, all: 5 },
+        'パックB': { unique: 1, all: 4 },
+      },
+    })
+    // draw2（パックB初入手カード）: パックBは0→1
+    expect(buildIndividualChatSnapshot(cards, 2, snapshot)).toMatchObject({
+      packCounts: {
+        'パックA': { unique: 3, all: 5 },
+        'パックB': { unique: 1, all: 4 },
+      },
+    })
+  })
+
+  it('keeps packCounts unchanged for draws whose card was already owned (#2045)', () => {
+    const packACard = { ...card(1), collection_name: 'パックA' }
+    const cards = [packACard, packACard]
+    const snapshot = {
+      cardCount: 4,
+      uniqueCount: 5,
+      allCount: 12,
+      newCardNames: [],
+      newCardNamesResolved: true,
+      cardCounts: { [packACard.id]: 4 },
+      packCounts: { 'パックA': { unique: 3, all: 5 } },
+    }
+
+    // 既所持カードの連続drawではパック内所持種類数は動かない
+    expect(buildIndividualChatSnapshot(cards, 0, snapshot)?.packCounts?.['パックA'])
+      .toEqual({ unique: 3, all: 5 })
+    expect(buildIndividualChatSnapshot(cards, 1, snapshot)?.packCounts?.['パックA'])
+      .toEqual({ unique: 3, all: 5 })
+  })
+
+  it('resolves unclassified drawn cards to the __default__ pack key (#2045)', () => {
+    const freeCard = { ...card(1), collection_name: null }
+    const snapshot = {
+      cardCount: 1,
+      uniqueCount: 1,
+      allCount: 12,
+      newCardNames: [freeCard.name],
+      newCardNamesResolved: true,
+      cardCounts: { [freeCard.id]: 1 },
+      packCounts: { '__default__': { unique: 1, all: 2 } },
+    }
+
+    expect(buildIndividualChatSnapshot([freeCard], 0, snapshot)?.packCounts?.['__default__'])
+      .toEqual({ unique: 1, all: 2 })
+  })
+
+  it('leaves packCounts untouched when the stored value contradicts the batch (#2045)', () => {
+    const packACard = { ...card(1), collection_name: 'パックA' }
+    const cards = [packACard]
+    const snapshot = {
+      cardCount: 1,
+      uniqueCount: 1,
+      allCount: 12,
+      newCardNames: [packACard.name],
+      newCardNamesResolved: true,
+      cardCounts: { [packACard.id]: 1 },
+      // final=1枚初入手なのにパック内unique=0は矛盾。壊れた中間値を出さず最終値を残す
+      packCounts: { 'パックA': { unique: 0, all: 5 } },
+    }
+
+    expect(buildIndividualChatSnapshot(cards, 0, snapshot)?.packCounts?.['パックA'])
+      .toEqual({ unique: 0, all: 5 })
+  })
+
+  it('pre-packCounts outbox rows keep no packCounts key (#2045)', () => {
+    const snapshot = {
+      cardCount: 4,
+      uniqueCount: 5,
+      allCount: 12,
+      newCardNames: [],
+      newCardNamesResolved: true,
+      cardCounts: { [card(1).id]: 4, [card(2).id]: 1 },
+    }
+
+    const rebuilt = buildIndividualChatSnapshot([card(1), card(2)], 1, snapshot)
+    expect(rebuilt?.packCounts).toBeUndefined()
+  })
+
   it('normalizes invalid persisted settings fail-safe to summary / chunk size 3', () => {
     expect(normalizeMultiDrawChatDeliveryMode('unexpected')).toBe('summary')
     expect(normalizeMultiDrawChatDeliveryMode(undefined)).toBe('summary')

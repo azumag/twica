@@ -50,6 +50,10 @@ const MAX_TEMPLATE_PLACEHOLDER_LENGTHS = {
   // Collection progress counts realistically fit in 4 digits
   unique: 4,
   all: 4,
+  // Issue #2045: パック単位のコンプ進捗も同じ桁数で見積もる
+  // Pack-scoped progress counts use the same estimate as unique/all
+  packUnique: 4,
+  packAll: 4,
   detail: CARD_DESCRIPTION_MAX_CHARACTERS,
   // 3つとも最大15枚のカード名一覧を展開できる。正常0件の{newCardsOrNone}だけは
   // 「なし」になるが、警告は取り得る最大本文長で判定する。
@@ -75,6 +79,8 @@ function buildChatPreviewMessage(
     num: string;
     unique: string;
     all: string;
+    packUnique: string;
+    packAll: string;
     detail: string;
     url: string;
     newCards: string;
@@ -93,6 +99,8 @@ function buildChatPreviewMessage(
     .replace(/\{num\}/g, placeholders.num)
     .replace(/\{unique\}/g, placeholders.unique)
     .replace(/\{all\}/g, placeholders.all)
+    .replace(/\{packUnique\}/g, placeholders.packUnique)
+    .replace(/\{packAll\}/g, placeholders.packAll)
     .replace(/\{detail\}/g, placeholders.detail)
     .replace(/\{url\}/g, placeholders.url)
     .replace(/\{newCards\}/g, placeholders.newCards)
@@ -159,6 +167,8 @@ export default function ChatAnnouncementSettings({
       num: "3",
       unique: "5",
       all: "10",
+      packUnique: "2",
+      packAll: "6",
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
       newCards: "レジェンダリーカード、レアカード",
@@ -182,6 +192,8 @@ export default function ChatAnnouncementSettings({
       num: "3",
       unique: "5",
       all: "10",
+      packUnique: "2",
+      packAll: "6",
       detail: "特別なカードの説明文です",
       url: `https://twica.live/collection/${streamerId}`,
       newCards: "レジェンダリーカード、レアカード",
@@ -208,6 +220,8 @@ export default function ChatAnnouncementSettings({
       num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
       unique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.unique),
       all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
+      packUnique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packUnique),
+      packAll: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packAll),
       detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
       url: `https://twica.live/collection/${streamerId}`,
       newCards: "",
@@ -233,6 +247,8 @@ export default function ChatAnnouncementSettings({
       num: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.num),
       unique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.unique),
       all: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.all),
+      packUnique: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packUnique),
+      packAll: "9".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.packAll),
       detail: "説".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.detail),
       url: `https://twica.live/collection/${streamerId}`,
       newCards: "カ".repeat(MAX_TEMPLATE_PLACEHOLDER_LENGTHS.newCards),

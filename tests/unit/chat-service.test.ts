@@ -1433,4 +1433,53 @@ describe('TwitchChatService', () => {
       expect(message).toBe('@SampleUser が【レジェンダリー】Legendary Card（レアパック）を獲得！');
     });
   });
+
+  // Issue #2045: 獲得カードが属するパック単位のコンプ進捗 {packUnique}/{packAll}
+  describe('buildMessage - パック単位コンプ進捗プレースホルダー ({packUnique}/{packAll})', () => {
+    const basePlaceholders = {
+      user: 'SampleUser',
+      card: 'Legendary Card',
+      rarity: 'レジェンダリー',
+    };
+
+    it('{packUnique} と {packAll} が値に置換される', () => {
+      const message = service.buildMessage(
+        'パック進捗: {packUnique}/{packAll}種類ゲット！',
+        { ...basePlaceholders, packUnique: 3, packAll: 8 },
+      );
+      expect(message).toBe('パック進捗: 3/8種類ゲット！');
+    });
+
+    it('packUnique=0 でも "0" として置換される（パック内未所持）', () => {
+      const message = service.buildMessage(
+        '{user} はパック内 {packUnique}/{packAll}種類を所持しています',
+        { ...basePlaceholders, packUnique: 0, packAll: 8 },
+      );
+      expect(message).toBe('SampleUser はパック内 0/8種類を所持しています');
+    });
+
+    it('packUnique/packAll 未指定時はプレースホルダーが空文字に置換される', () => {
+      const message = service.buildMessage(
+        '{user} が {card} を獲得！{packUnique}{packAll}',
+        basePlaceholders,
+      );
+      expect(message).toBe('SampleUser が Legendary Card を獲得！');
+    });
+
+    it('packAll のみ指定された場合でも {packUnique} は空文字に置換される', () => {
+      const message = service.buildMessage(
+        'パック総数: {packAll}種類',
+        { ...basePlaceholders, packAll: 8 },
+      );
+      expect(message).toBe('パック総数: 8種類');
+    });
+
+    it('{unique}/{all} と併用しても互いの置換に影響しない', () => {
+      const message = service.buildMessage(
+        '全体 {unique}/{all} / パック {packUnique}/{packAll}',
+        { ...basePlaceholders, unique: 5, all: 10, packUnique: 3, packAll: 8 },
+      );
+      expect(message).toBe('全体 5/10 / パック 3/8');
+    });
+  });
 });

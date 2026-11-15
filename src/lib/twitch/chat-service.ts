@@ -111,6 +111,16 @@ export interface ChatMessagePlaceholders {
   // コンプ進捗用: 配信者のアクティブカードの総種類数（オプション）
   // Collection progress: total number of active card types for this streamer (optional)
   all?: number
+  // Issue #2045 パック単位のコンプ進捗: 獲得カード（N連まとめ通知では先頭カード）が
+  // 属するパック内で、ユーザーが所持している有効カードの種類数（オプション）。
+  // {unique} と違い全パック合算ではなく当該パック内だけを数える。未分類カードは
+  // デフォルトパック(__default__)として数える。未指定時は空文字に置換される。
+  // Pack-scoped progress: unique active card types the user owns within the
+  // obtained card's pack (optional). Unset renders as an empty string.
+  packUnique?: number
+  // Issue #2045 パック単位のコンプ進捗: そのパックの有効カード総数（オプション）
+  // Pack-scoped progress: total active card types in that pack (optional)
+  packAll?: number
   // 獲得したカードが属するパックの表示名（オプション）。抽選がパックに絞られて
   // いない場合や値が空文字の場合は未指定として扱われ、プレースホルダーは空文字に置換される
   // Display name of the pack the obtained card belongs to (optional). Treated as
@@ -794,6 +804,20 @@ export class TwitchChatService {
       message = message.replace(/\{all\}/g, String(placeholders.all))
     } else {
       message = message.replace(/\{all\}/g, '')
+    }
+
+    // Issue #2045 パック単位のコンプ進捗プレースホルダー。snapshot欠落の旧outboxや
+    // 解決失敗時は空文字に置換する（{unique}/{all}と同じ契約）。
+    if (placeholders.packUnique !== undefined) {
+      message = message.replace(/\{packUnique\}/g, String(placeholders.packUnique))
+    } else {
+      message = message.replace(/\{packUnique\}/g, '')
+    }
+
+    if (placeholders.packAll !== undefined) {
+      message = message.replace(/\{packAll\}/g, String(placeholders.packAll))
+    } else {
+      message = message.replace(/\{packAll\}/g, '')
     }
 
     if (placeholders.cards) {

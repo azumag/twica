@@ -162,6 +162,53 @@ describe('sendClaimedChatAnnouncement individual delivery', () => {
     expect(mocks.sendChatAnnouncement.mock.calls[0][9]).toBe(false)
   })
 
+  // Issue #2045: individual配送のsegmentには「そのdraw直後」のパック内所持種類数を
+  // 渡す。最終値を含む chatSnapshot.packCounts と cardCounts から draw 単位の
+  // {packUnique} を復元した上で sendChatAnnouncement へ届くことを固定する。
+  it('routes per-draw reconstructed packCounts to the drawn card\'s pack', async () => {
+    const data = makeData(true)
+    // テスト用ヘルパーの card() は collection_name を持たないため、payload 側の
+    // パック帰属だけをここで与える。
+    ;(data.gachaResult.cards[0] as { collection_name?: string }).collection_name = 'パックA'
+    ;(data.gachaResult.cards[1] as { collection_name?: string }).collection_name = 'パックB'
+    ;(data.chatSnapshot as { packCounts?: unknown }).packCounts = {
+      'パックA': { unique: 1, all: 3 },
+      'パックB': { unique: 1, all: 4 },
+    }
+    mocks.sendPacedMultiDrawChatAnnouncement.mockImplementation(
+      async (_broadcaster, cards, _userName, options) => {
+        // 2枚目（パックBの初入手カード）のsegmentを再生する
+        await options.sendIndividualCard?.(cards[1], 1)
+        return { outcome: 'sent' }
+      },
+    )
+
+    const { sendClaimedChatAnnouncement } = await import('@/lib/services/eventsub-redemption-delivery')
+    await expect(sendClaimedChatAnnouncement(
+      makeClaim() as never,
+      data as never,
+      vi.fn().mockResolvedValue(true),
+    )).resolves.toEqual({ outcome: 'sent' })
+
+    expect(mocks.sendChatAnnouncement).toHaveBeenCalledExactlyOnceWith(
+      'broadcaster-1',
+      data.streamer,
+      data.gachaResult.cards[1],
+      'Viewer',
+      'viewer-1',
+      undefined,
+      'Collection',
+      expect.objectContaining({
+        packCounts: {
+          'パックA': { unique: 1, all: 3 },
+          'パックB': { unique: 1, all: 4 },
+        },
+      }),
+      expect.anything(),
+      true,
+    )
+  })
+
   it('keeps pre-cardCounts outboxes on the legacy deterministic paced fallback', async () => {
     const data = makeData(false)
     mocks.sendPacedMultiDrawChatAnnouncement.mockImplementation(
