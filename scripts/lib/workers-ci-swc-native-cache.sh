@@ -26,12 +26,15 @@
 #   ローカル開発と GitHub Actions には影響させない（WORKERS_CI=1 のときだけ設定）。
 if [[ "${WORKERS_CI:-}" == "1" ]]; then
   # 失敗した祖先がどれかはログに出ないため、原因の切り分け用に権限を残す（秘密情報は含まない）。
-  echo "[swc-native-cache] uid/gid: $(id)"
-  ls -ld / /opt /opt/buildhome /opt/buildhome/.cache /tmp 2>&1 | sed 's/^/[swc-native-cache] /' || true
+  echo "[swc-native-cache] uid/gid: $(id) HOME=${HOME:-} XDG_CACHE_HOME=${XDG_CACHE_HOME:-} TMPDIR=${TMPDIR:-}"
+  ls -ld / /opt /opt/buildhome /opt/buildhome/.cache /tmp "${TMPDIR:-/tmp}" 2>&1 \
+    | sed 's/^/[swc-native-cache] /' || true
 
-  swc_native_cache_dir="$(mktemp -d)"
-  chmod 700 "$swc_native_cache_dir"
-  export SWC_NATIVE_BINDING_CACHE="$swc_native_cache_dir"
+  # 検査の opt-out が本体。展開先の指定は補助なので、作れなくても（存在しない TMPDIR 等）
+  # set -e でビルドを止めず、SWC の既定キャッシュに任せる。mktemp -d は最初から 0700。
   export SWC_NATIVE_BINDING_CACHE_SKIP_SECURITY_CHECK=1
-  echo "[swc-native-cache] SWC_NATIVE_BINDING_CACHE=$SWC_NATIVE_BINDING_CACHE (security check skipped on Workers Builds only)"
+  if swc_native_cache_dir="$(mktemp -d 2>/dev/null)"; then
+    export SWC_NATIVE_BINDING_CACHE="$swc_native_cache_dir"
+  fi
+  echo "[swc-native-cache] SWC_NATIVE_BINDING_CACHE=${SWC_NATIVE_BINDING_CACHE:-<default>} (security check skipped on Workers Builds only)"
 fi
