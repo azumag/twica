@@ -227,10 +227,17 @@ export function buildIndividualChatSnapshot(
  *               （cardCounts[id] === drawnCount）で、初出drawIndexが i より後のカード種類数)
  * とする。{packAll} はバッチ中に変わらないので final のまま。
  *
- * 当選カードはガチャ抽選の時点で有効カードなので、新規取得分は final.unique に含まれて
- * いるはず。パック内の新規取得種類数が final.unique を超えるなど整合しない場合は、
+ * 「新規取得分は final.unique に含まれる」は通常成り立つが保証ではない（Issue #2047）。
+ * final.unique は commit 時点の is_active=true のカードだけを数えるのに対し、
+ * cardCounts 側の新規取得判定は付与の有無だけを見る。そのため N連の途中で新規取得
+ * カードが無効化されると、final.unique が数えていない種類まで差し引いてしまい、
+ * そのカードの初出より前の draw の {packUnique} が実際より1少なく出る。既存の
+ * uniqueCount 復元にも同じ性質があり、まれなケースとして許容する。
+ * 不整合がより大きい場合（パック内の新規取得種類数が final.unique を超える等）は
  * 誤った途中値を作らず final 値のまま返す（readPackCountsEntry で不正な entry も同様）。
- * 共有の snapshot を書き換えないよう、draw ごとに新しい object を返す。
+ * 共有の snapshot を書き換えないよう、値を復元して返す draw では新しい object を
+ * 作る。早期 return する経路（draw対象カードや対象パック entry の欠落・集計不整合）
+ * は共有参照をそのまま返すが、呼び出し側は読み取り専用でしか使わないため問題ない。
  */
 function reconstructPackCountsAtDraw(
   cards: GachaCard[],
