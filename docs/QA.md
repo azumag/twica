@@ -167,6 +167,19 @@ mainマージ後は、タグ・ワークフロー・Workers Buildsの成功に�
 - チャット通知に影響する変更（outbox、decoder、`payload_version`）を含むリリースでは、マージ後に `chat_notification_outbox` の `dead` 行が増えていないことも確認する。
 - アプリの先行デプロイが必要なmigration（`app-first` ヘッダー付き）の扱いは、次節「migrationとアプリの適用順序」に従う。
 
+### deploy-failure 再発時の証拠採取
+
+デプロイAPIが新バージョンを示しているのに旧バージョンが実行され続ける事象が再発した場合、原因調査のために次の証拠を採取する。**応急処置の再デプロイは証拠採取の後に行う。** 再デプロイで実行バージョンが切り替わると、旧版が処理した期間のログ流入が止まり、切り替わり前後の対比が取りにくくなるため。
+
+- `cf workers deployments list --script-name twica` の出力（デプロイAPIが示すバージョン配分・deployment ID・時刻。実行バージョンとの乖離を記録する一次証拠）
+- telemetry の `$workers.scriptVersion.id` の時系列。旧版が実行していた期間が分かるよう、上記クエリの `--timeframe-from` を事象の開始前まで広げて採取する
+- 本番のHTMLに埋め込まれる Next.js ビルドIDと、新旧両バンドルのビルドIDの突き合わせ結果（旧版実行の独立した証拠）
+- 期待バージョンの根拠: `cf builds list --external-script-id <twica Worker tag>` の対象ビルドと `cf builds logs get <build-uuid>` の `Current Version ID`
+- 補助 Worker（`twica-chat-delivery`、`twica-overlay-realtime` など）でも同じ scriptVersion 確認を行う。v1.120.0 では補助 Worker が同時に旧版だったか未確認のまま残った論点のため、採取対象に含める
+- 被害範囲の記録: 事象の発生時刻（UTC）と、`chat_notification_outbox` の `dead` 行の件数・時刻など利用者影響の範囲
+
+採取した証拠は時刻をすべて UTC で記録し、`production` / `deploy-failure` のIssueへredaction済みで添える。原因調査はこの証拠を使って別途行う。
+
 ## migrationとアプリの適用順序
 
 `planetscale-migrate.yml` はmain（previewではpreview側DB）へのpushでmigrationを即時適用し、アプリ（Worker）のデプロイはWorkers Buildsが別系統で行う。このため、同じリリースに入れたmigrationは**アプリより先に本番DBへ入る**。DB先行で問題が出る変更は、順序を運用で分ける（#2023、案1）。
@@ -205,9 +218,13 @@ DBの`sent`記録前に実行環境が停止した場合だけ、lease失効後�
 - N連途中のDB一時障害は、ライブWebhookへ2xxを返す前に生通知を7日TTLのKV durable
   inboxへ保存します。Cron replayが確定済みprefixを飛ばして残りを完遂し、最終drawが
   outboxを組み立てます。KV保存にも失敗した通常時だけ503を返してTwitch再送を要求します。
-- `{num}`、`{unique}`、`{all}`、`{newCards}`はガチャcommit時点の値をoutboxへ保存し、
-  relay時に現在の所有数/catalogを再読込しません。backoff中に別ガチャや設定変更が
-  起きても、初回に送る予定だった本文を維持します。
+- `{num}`、`{unique}`、`{all}`、`{newCards}`、`{packUnique}`、`{packAll}`はガチャcommit
+  時点の値をoutboxへ保存し、relay時に現在の所有数/catalogを再読込しません。backoff中に
+  別ガチャや設定変更が起きても、初回に送る予定だった本文を維持します。
+  `{packUnique}`/`{packAll}`は、単発・N連どちらかのテンプレートがそのトークンを含む場合だけ
+  outbox INSERT triggerが`chatSnapshot.packCounts`へ保存し、値が無い行では空文字になります。
+  トークンを使い始めた後に旧アプリへロールバックすると、旧アプリは置換しないため
+  `{packUnique}`/`{packAll}`が文字のままチャットに出ます。
 - `sent`は7日、`dead`は調査用に30日保持した後、Cron relayが削除します。
 - DB outbox relayはmaintenance EventSubのKV一覧取得より先に実行します。KV障害中も
   チャットbacklogは1回につき最大`limit`件ずつ進みます。

@@ -23,6 +23,20 @@ strict バケットの追加・削除はセキュリティレビューを要す�
 strict を外すことは総当り防御の穴に直結し、soft を strict に変えることは
 binding 障害時の 503 停止範囲を広げる。どちらも本ドキュメント更新つきの別変更で行う。
 
+## soft 経路の write 非同期化と計測の集約 (#2039)
+
+- soft (KV/memory) 経路の storage write は `ctx.waitUntil` で応答後に実行する。
+  KV write の p50 (実測数百ms) が応答時間へ直列に乗っていたため。soft リミッターは
+  fail-open 契約で RMW が非原子の近似カウンタであり、write を応答後へ遅らせても
+  厳密性は変わらない。write 失敗は `[rate-limit] background write failed` warn
+  として従来どおり sanitized 記録する。`ctx.waitUntil` を取れない環境では
+  同期フォールバックで write を失わない。
+- `/api/overlay/` 配下は全ルートが独自リミッター持ちのため global リミッターを
+  除外し、OBS ポーリングで KV の read-modify-write が二重に走るのを解消した。
+- `slow storage op` は定常ノイズ (本番 warn の大半) だったため warn をやめ、
+  (name, storage, op) 単位の isolate 集計を初回1件目と50件ごとに info で出す。
+  warn チャネルは fail-open / write 失敗など対処を要する異常のために空ける。
+
 ## なぜ KV を厳密用途に使わないか
 
 現行 `KVRateLimitStorage` は同一 `ratelimit:<name>:<identifier>` key への

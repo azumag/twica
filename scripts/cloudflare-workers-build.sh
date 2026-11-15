@@ -17,4 +17,8 @@ if [[ "${WORKERS_CI:-}" == "1" ]]; then
   fi
 fi
 
+# @swc/core のネイティブアドオン展開先（Workers Builds 専用）。理由はファイル内のコメント参照。
+# shellcheck source=scripts/lib/workers-ci-swc-native-cache.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/workers-ci-swc-native-cache.sh"
+
 exec npx opennextjs-cloudflare build

@@ -58,6 +58,32 @@ dispatch の手作業を省けるのは、適用前後のどの版のアプリ�
 
 登録した migration のファイル内のコメントは登録前に書かれたもので、「`--allow-non-additive` で手動適用する」などの記述が残っていることがあります。適用済みのファイルは checksum が変わるため編集せず、一覧の reason を正とします。本番に適用された後のエントリはガードに使われなくなるので、一覧から外してかまいません。
 
+## アプリ先行が必要な migration（`-- app-first:`）
+
+`planetscale-migrate.yml` は main への push で migration を即時適用します。一方、アプリ（Worker）のデプロイは Cloudflare Workers Builds が別系統で進行するため、**migration はアプリより先に本番へ入ります**。v1.120.0（issue #2023）では `20261031120000_chat_outbox_payload_version_2.sql` の適用とアプリのデプロイの間に約 1 分、「DB は v2 の行を書くが、旧アプリの decoder は v2 を受理しない」窓が実測されました。
+
+加法的な変更の多くは DB 先行で問題になりません（アプリは deploy-window fallback で縮退するだけ）。しかし、文法的には additive であっても「**新しいアプリがすでに動いていること**」を前提にしないと安全に適用できない migration があります。典型例は、旧アプリが理解できない新しい `payload_version` や新しい行種別の書き込みを開始する migration で、旧アプリがそれを未知 version として DLQ 化・誤処理します。
+
+運用規則（別 PR・別リリースに分ける、昇格時の確認手順）の正本は `docs/QA.md` の「migrationとアプリの適用順序」です。この節では migration を書く側が知るべき事項だけを記載します。
+
+### ヘッダー規約
+
+対象となる migration は、ファイル先頭の既存ヘッダー（`-- migration-transaction:` / `-- migration-providers:` の直後）に次の行を付けます。
+
+```sql
+-- app-first: <依存するアプリ変更のPR番号>（<旧アプリで何が壊れるか>）
+```
+
+この行は通常の SQL コメントであり、`scripts/db-migrate.js` や `planetscale-migrate.yml` は解釈しません（昇格時の `grep` による機械的な検出と、人・レビューが読む目印。workflow での待機やガードによる強制は、必要になった時点で issue #2023 の案 2・案 3 として別途検討します）。ヘッダー行に加えて、従来どおり本文コメントで「なぜアプリ先行が必要か」「先行適用された場合に起きること」を明記します。
+
+判定の目安:
+
+- 新しい `payload_version`・新しい行種別・新しいエンコーディングの書き込みを開始するもの、旧アプリが読む列の NOT NULL 化・型変更・削除、旧アプリが呼ぶ関数の契約変更 → `app-first` が必要。
+- 新しい列・RPC・テーブルの追加だけで、旧アプリが読み書きする部分に影響しないもの → 不要（通常の additive。DB 先行でよい）。
+- `DROP COLUMN` / `RENAME` / `DROP FUNCTION` / `TRUNCATE` などの非加法的な文を含むもの → `allow_non_additive` の手動 dispatch 経路（上の「非加法的(contract)なmigrationの適用」）で順序管理するのが既存の経路です。削除・契約変更が「旧アプリでは壊れる」性質のものは、ヘッダーを併記して構いません。
+
+適用済みの migration ファイルは checksum が `twica_meta.schema_migrations` に記録されているため、後からヘッダーを追記してはいけません（「既存テーブルへの DDL と lock_timeout」節の checksum 凍結と同じ理由。実際に `20261031120000` には本規約を遡及適用できません）。本規約は新規に追加する migration に対して適用します。
+
 ## Live Directory 設定列
 
 `streamers.publish_live_status` と `streamers.publish_stats` は `supabase/migrations/20260811000000_add_live_directory_settings.sql` で追加されました。

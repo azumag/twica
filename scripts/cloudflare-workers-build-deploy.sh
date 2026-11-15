@@ -59,4 +59,9 @@ if [[ "$mode" == "deploy" && "$branch" != "$expected_branch" ]]; then
   exit 1
 fi
 
+# deploy は build と別プロセスで実行されるため、build スクリプトで export した値は届かない。
+# OpenNext の deploy/upload が @swc/core を読み込んでも同じ検査で落ちないよう、同じ設定を入れる。
+# shellcheck source=scripts/lib/workers-ci-swc-native-cache.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/workers-ci-swc-native-cache.sh"
+
 "${deploy_command[@]}"

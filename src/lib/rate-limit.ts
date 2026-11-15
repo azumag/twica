@@ -90,7 +90,25 @@ type RateLimitStorageOp = 'read' | 'write';
 const RATE_LIMIT_SLOW_STORAGE_MS = 250;
 
 /**
- * storage 操作が遅かった場合だけ記録する（#728 のレイテンシ計測点）。
+ * #2039: slow storage op は本番 warn の大半を占める定常現象（KV の read/write が
+ * p50 数百ms になることは KV の特性であり、個別の異常ではない）だったため、
+ * イベントごとの warn をやめ (name, storage, op) 単位の isolate 集計に変えた。
+ * warn チャネルは fail-open・write 失敗など対処を要する異常のために空ける。
+ * 初回1件目と SLOW_OP_SUMMARY_EVERY 件ごとに集計値を info として吐き出すので、
+ * 頻度・合計・最大値は Observability から引き続き追跡できる。
+ */
+const SLOW_OP_SUMMARY_EVERY = 50;
+
+interface SlowOpBucket {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+}
+
+const slowOpStats = new Map<string, SlowOpBucket>();
+
+/**
+ * storage 操作が遅かった場合だけ記録する（#728 のレイテンシ計測点、#2039 の集計化）。
  *
  * identifier（生IP / Twitch user id）はstorageキーにしか使わず、ログには出さない。
  * 遅延の原因が read か write かを見分けられるよう op を付与する。
@@ -103,12 +121,74 @@ function recordStorageDuration(
   if (durationMs < RATE_LIMIT_SLOW_STORAGE_MS) {
     return;
   }
-  logger.warn('[rate-limit] slow storage op', {
-    name,
-    storage: currentStorageKind,
-    op,
-    durationMs,
-  });
+  const bucketKey = `${currentStorageKind}:${name}:${op}`;
+  const bucket = slowOpStats.get(bucketKey) ?? { count: 0, totalMs: 0, maxMs: 0 };
+  bucket.count += 1;
+  bucket.totalMs += durationMs;
+  bucket.maxMs = Math.max(bucket.maxMs, durationMs);
+  slowOpStats.set(bucketKey, bucket);
+  // 発生1件目は即座に1行出して「このバケットで遅延が起きている」シグナルを残し、
+  // 以後は件数の節目だけ集計値を出す（イベント毎のwarnを避ける）。
+  if (bucket.count === 1 || bucket.count % SLOW_OP_SUMMARY_EVERY === 0) {
+    logger.info('[rate-limit] slow storage op (aggregate)', {
+      name,
+      storage: currentStorageKind,
+      op,
+      slowOps: bucket.count,
+      totalMs: bucket.totalMs,
+      maxMs: bucket.maxMs,
+      latestMs: durationMs,
+    });
+  }
+}
+
+/**
+ * soft 経路の storage write を応答パスから外す（#2039）。
+ *
+ * 変更前は `get` → `count++` → `put` をすべて await していたため、KV write の
+ * p50（実測数百ms）が overlay ポーリングを含む全許可応答へ直列に乗っていた。
+ * soft リミッターは fail-open 契約で RMW 自体が非原子の近似カウンタであり、
+ * write を応答後に遅らせても厳密性は変わらない（Cloudflare KV の same-key
+ * 1 write/秒制限と eventual consistency で既に counting 精度は緩い）。
+ * そのため Workers 標準の `ctx.waitUntil` でリクエスト寿命へ紐付け、
+ * 応答は write 完了を待たない。
+ *
+ * `ctx.waitUntil` を取れない環境（ローカル dev / 単体テストの Node runtime）
+ * ではタスクを await する同期フォールバックにする（background-task.ts と同じ
+ * 方針。未処理タスクを途中切断で残さないため）。write の失敗はリクエスト結果を
+ * 変えないが fail-open と同じく観測対象なので、従来と同じ sanitized 形式で
+ * warn として記録する。
+ */
+async function runStorageWriteInBackground(
+  name: string,
+  key: string,
+  value: RateLimitStore,
+  ttlMs: number,
+): Promise<void> {
+  const opStartedAt = Date.now();
+  const task = (async () => {
+    try {
+      await currentStorage.set(key, value, ttlMs);
+      recordStorageDuration(name, 'write', Date.now() - opStartedAt);
+    } catch (error) {
+      logger.warn('[rate-limit] background write failed', {
+        name,
+        storage: currentStorageKind,
+        op: 'write',
+        durationMs: Date.now() - opStartedAt,
+        error: formatStorageErrorForLog(error, key),
+      });
+    }
+  })();
+  try {
+    const { getCloudflareContext } = await import('@opennextjs/cloudflare');
+    const { ctx } = await getCloudflareContext({ async: true });
+    ctx.waitUntil(task);
+  } catch {
+    // Workers コンテキストが取れない環境では write を同期実行して
+    // カウンタ更新の喪失（=リミット精度の悪化）を避ける。
+    await task;
+  }
 }
 
 /**
@@ -410,20 +490,18 @@ async function checkRateLimitInternal(
 
   // #728 計測点: storage操作の所要時間と、fail-open時にどの操作で落ちたかを
   // Observability から判別できるようにする。identifier（生IP / Twitch user id）は
-  // storageキーにしか使わず、ログには含めない。
-  let storageOp: RateLimitStorageOp = 'read';
-  let opStartedAt = Date.now();
+  // storageキーにしか使わず、ログには含めない。同期パスで await するのは read
+  // だけ（write は runStorageWriteInBackground へ委譲、#2039）。
+  const opStartedAt = Date.now();
 
   try {
     const existing = await currentStorage.get(key);
-    recordStorageDuration(name, storageOp, Date.now() - opStartedAt);
-    storageOp = 'write';
-    opStartedAt = Date.now();
+    recordStorageDuration(name, 'read', Date.now() - opStartedAt);
     const resetTime = now + windowMs;
 
     if (!existing || now > existing.resetTime) {
-      await currentStorage.set(key, { count: 1, resetTime }, windowMs);
-      recordStorageDuration(name, storageOp, Date.now() - opStartedAt);
+      // write は応答をブロックしない（#2039。失敗は background write failed warn）
+      await runStorageWriteInBackground(name, key, { count: 1, resetTime }, windowMs);
       return {
         success: true,
         limit,
@@ -442,8 +520,15 @@ async function checkRateLimitInternal(
     }
 
     existing.count++;
-    await currentStorage.set(key, existing, existing.resetTime - now);
-    recordStorageDuration(name, storageOp, Date.now() - opStartedAt);
+    // バックグラウンド実行される write へは、後続の呼び出しによる in-place 変異が
+    // 混入しないよう値を複製して渡す（existing はこの関数内でしか参照されないが、
+    // defer された task が共有参照を読む可能性を構造的に排除する）。
+    await runStorageWriteInBackground(
+      name,
+      key,
+      { count: existing.count, resetTime: existing.resetTime },
+      existing.resetTime - now,
+    );
     return {
       success: true,
       limit,
@@ -457,10 +542,12 @@ async function checkRateLimitInternal(
     // #728: KV は同一keyへの書き込みを最大1 write/秒に制限し、超過分は 429 になり得る。
     // このfail-open契約のままでは、その429がそのままレート制限の素通りに繋がるため、
     // 「どのstorageのどの操作で何ms落ちたか」をsanitizedに記録して実測できるようにする。
+    // #2039: write は runStorageWriteInBackground 内で個別に処理されるため、
+    // この catch に到達する storage エラーは read 経路のものだけになる（op=read）。
     logger.warn('[rate-limit] fail-open (storage error, request allowed)', {
       name,
       storage: currentStorageKind,
-      op: storageOp,
+      op: 'read',
       durationMs: Date.now() - opStartedAt,
       error: formatStorageErrorForLog(error, key),
     });

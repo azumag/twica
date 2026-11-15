@@ -1,6 +1,7 @@
 import { TWITCH_CHAT_MESSAGE_MAX_CHARACTERS } from '@/lib/constants'
 import { countCharacters, truncateCharacters } from '@/lib/text-utils'
 import type { GachaCard } from '@/lib/services/gacha'
+import { resolveCardPackKey } from '@/lib/collection-packs'
 
 export const MULTI_DRAW_CHAT_DELIVERY_MODES = ['summary', 'individual', 'chunked'] as const
 export type MultiDrawChatDeliveryMode = (typeof MULTI_DRAW_CHAT_DELIVERY_MODES)[number]
@@ -32,9 +33,56 @@ export interface MultiDrawChatSnapshot {
   newCardNames: string[]
   newCardNamesResolved?: boolean
   cardCounts?: Record<string, number>
+  /**
+   * Issue #2045: {packUnique}/{packAll} 用の、ガチャcommit時点のパック別進捗。
+   * key は resolveCardPackKey(collection_name)（未分類は '__default__'）。DB trigger
+   * （snapshot_chat_outbox_pack_counts）がテンプレートにトークンがある場合だけ付ける
+   * additive field なので、欠落は「値なし」（空文字）として扱う。中身は永続化された
+   * JSON 由来で型を信用できないため、読むときは必ず readPackCountsEntry を通す。
+   */
+  packCounts?: Record<string, PackCountsEntry>
+}
+
+export interface PackCountsEntry {
+  unique: number
+  all: number
 }
 
 export type IndividualChatSnapshot = Omit<MultiDrawChatSnapshot, 'cardCounts'>
+
+function isValidPackCount(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0
+}
+
+/**
+ * snapshot.packCounts から1パック分の進捗を厳密に取り出す純関数（Issue #2045）。
+ *
+ * packCounts は outbox payload（JSON）由来で、decoder は DLQ 送りを避けるため検証しない
+ * （chat-notification-outbox.ts）。そのため使う側でここに検証を集約し、不正なら
+ * undefined（= placeholder は空文字）にして通知自体は送る。
+ *
+ * - パック名は配信者が自由に登録でき、`constructor` / `toString` 等も実在し得る。
+ *   素のブラケット参照や `in` は Object.prototype のメンバーを拾ってしまうため、
+ *   Object.hasOwn で自身のプロパティだけを読む（'__' 始まりは予約語で登録不可）。
+ * - unique/all は 0 以上の整数、unique <= all、all > 0 のときだけ有効とする。
+ *   trigger は有効カード0件のパックを出力しないので、all = 0 は不整合とみなす。
+ */
+export function readPackCountsEntry(
+  packCounts: unknown,
+  packKey: string,
+): PackCountsEntry | undefined {
+  if (packCounts === null || typeof packCounts !== 'object' || Array.isArray(packCounts)) {
+    return undefined
+  }
+  if (!Object.hasOwn(packCounts, packKey)) return undefined
+  const entry: unknown = (packCounts as Record<string, unknown>)[packKey]
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return undefined
+  if (!Object.hasOwn(entry, 'unique') || !Object.hasOwn(entry, 'all')) return undefined
+  const { unique, all } = entry as Record<string, unknown>
+  if (!isValidPackCount(unique) || !isValidPackCount(all)) return undefined
+  if (all === 0 || unique > all) return undefined
+  return { unique, all }
+}
 
 export function normalizeMultiDrawChatDeliveryMode(value: unknown): MultiDrawChatDeliveryMode {
   return typeof value === 'string'
@@ -106,6 +154,12 @@ export function buildIndividualChatSnapshot(
     ...(snapshot.newCardNamesResolved !== undefined
       ? { newCardNamesResolved: snapshot.newCardNamesResolved }
       : {}),
+    // Issue #2045: fallback はフィールドを列挙して組み立てるため、packCounts も明示的に
+    // 引き回す（列挙漏れだと individual 配送で {packUnique}/{packAll} が常に空になる）。
+    // 欠落時に key 自体を作らない条件付き spread にし、既存の厳密比較を変えない。
+    ...(snapshot.packCounts !== undefined
+      ? { packCounts: snapshot.packCounts }
+      : {}),
   }
   const card = cards[drawIndex]
   const cardCounts = snapshot.cardCounts
@@ -151,6 +205,70 @@ export function buildIndividualChatSnapshot(
     ...fallback,
     cardCount,
     uniqueCount: uniqueBeforeBatch + newlySeenByThisDraw,
+    ...(snapshot.packCounts !== undefined
+      ? {
+          packCounts: reconstructPackCountsAtDraw(
+            cards,
+            drawIndex,
+            snapshot.packCounts,
+            newlyAcquiredCardIds,
+            firstDrawIndex,
+          ),
+        }
+      : {}),
+  }
+}
+
+/**
+ * Issue #2045: individual 配送の draw i 直後の {packUnique} を、commit時点の最終値から復元する。
+ *
+ * {unique} と同じ考え方で、そのカードのパックについて
+ *   unique(i) = final.unique − (同じパックに属し、今回のバッチで新規取得
+ *               （cardCounts[id] === drawnCount）で、初出drawIndexが i より後のカード種類数)
+ * とする。{packAll} はバッチ中に変わらないので final のまま。
+ *
+ * 「新規取得分は final.unique に含まれる」は通常成り立つが保証ではない（Issue #2047）。
+ * final.unique は commit 時点の is_active=true のカードだけを数えるのに対し、
+ * cardCounts 側の新規取得判定は付与の有無だけを見る。そのため N連の途中で新規取得
+ * カードが無効化されると、final.unique が数えていない種類まで差し引いてしまい、
+ * そのカードの初出より前の draw の {packUnique} が実際より1少なく出る。既存の
+ * uniqueCount 復元にも同じ性質があり、まれなケースとして許容する。
+ * 不整合がより大きい場合（パック内の新規取得種類数が final.unique を超える等）は
+ * 誤った途中値を作らず final 値のまま返す（readPackCountsEntry で不正な entry も同様）。
+ * 共有の snapshot を書き換えないよう、値を復元して返す draw では新しい object を
+ * 作る。早期 return する経路（draw対象カードや対象パック entry の欠落・集計不整合）
+ * は共有参照をそのまま返すが、呼び出し側は読み取り専用でしか使わないため問題ない。
+ */
+function reconstructPackCountsAtDraw(
+  cards: GachaCard[],
+  drawIndex: number,
+  finalPackCounts: Record<string, PackCountsEntry>,
+  newlyAcquiredCardIds: string[],
+  firstDrawIndex: Map<string, number>,
+): Record<string, PackCountsEntry> {
+  const card = cards[drawIndex]
+  if (!card) return finalPackCounts
+  const packKey = resolveCardPackKey(card.collection_name)
+  const finalEntry = readPackCountsEntry(finalPackCounts, packKey)
+  if (!finalEntry) return finalPackCounts
+
+  const packKeyByCardId = new Map<string, string>()
+  for (const drawnCard of cards) {
+    if (drawnCard && !packKeyByCardId.has(drawnCard.id)) {
+      packKeyByCardId.set(drawnCard.id, resolveCardPackKey(drawnCard.collection_name))
+    }
+  }
+  const newlyAcquiredInPack = newlyAcquiredCardIds.filter(
+    (cardId) => packKeyByCardId.get(cardId) === packKey,
+  )
+  if (newlyAcquiredInPack.length > finalEntry.unique) return finalPackCounts
+
+  const acquiredAfterThisDraw = newlyAcquiredInPack.filter(
+    (cardId) => (firstDrawIndex.get(cardId) ?? Number.NEGATIVE_INFINITY) > drawIndex,
+  ).length
+  return {
+    ...finalPackCounts,
+    [packKey]: { unique: finalEntry.unique - acquiredAfterThisDraw, all: finalEntry.all },
   }
 }
 

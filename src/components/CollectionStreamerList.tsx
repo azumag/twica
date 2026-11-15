@@ -6,8 +6,11 @@ import { useTranslations } from "next-intl";
 import CollectionHideButton from "@/components/CollectionHideButton";
 import { postJsonWithCsrfRetry } from "@/lib/collection-client";
 import {
+  DEFAULT_STREAMER_COLLECTION_ORDER,
+  parseStreamerCollectionOrder,
   parseStreamerCollectionSort,
   type StreamerCollectionSortMode,
+  type StreamerCollectionSortOrder,
 } from "@/lib/collection-utils";
 
 /** サーバー側(Collection)で描画済みの配信者カード1件分。 */
@@ -23,17 +26,24 @@ export interface CollectionStreamerItem {
 
 interface CollectionStreamerListProps {
   items: CollectionStreamerItem[];
-  /** モードごとの並び（配信者ID配列）。比較ロジックは client に複製せず、サーバーで確定したものを使う。 */
-  orders: Record<StreamerCollectionSortMode, string[]>;
+  /** モード×向きごとの並び（配信者ID配列）。比較ロジックは client に複製せず、サーバーで確定したものを使う。 */
+  orders: Record<StreamerCollectionSortMode, Record<StreamerCollectionSortOrder, string[]>>;
   initialHiddenIds: string[];
 }
 
-/** 並び替えモード切替リンク。既定(recent)は URL を汚さないようクエリ無しにする。 */
-const SORT_OPTIONS: ReadonlyArray<{ mode: StreamerCollectionSortMode; href: string }> = [
-  { mode: "recent", href: "/dashboard/collection" },
-  { mode: "name", href: "/dashboard/collection?sort=name" },
-  { mode: "completion", href: "/dashboard/collection?sort=completion" },
-];
+const SORT_MODES: readonly StreamerCollectionSortMode[] = ["recent", "name", "completion"];
+
+/**
+ * モード＋向きから URL を組み立てる。既定値(recent・各モードの既定の向き)は
+ * クエリに書かず URL を汚さない。サーバー側の parse 関数の既定と必ず一致させること。
+ */
+function collectionHref(mode: StreamerCollectionSortMode, order: StreamerCollectionSortOrder): string {
+  const params = new URLSearchParams();
+  if (mode !== "recent") params.set("sort", mode);
+  if (order !== DEFAULT_STREAMER_COLLECTION_ORDER[mode]) params.set("order", order);
+  const query = params.toString();
+  return `/dashboard/collection${query ? `?${query}` : ""}`;
+}
 
 /** Set を直接変更せず、id を足した / 除いた新しい Set を返す（関数型 setState 用）。 */
 function withId(set: ReadonlySet<string>, id: string, present: boolean): Set<string> {
@@ -76,15 +86,19 @@ export default function CollectionStreamerList({
   const [sortMode, setSortMode] = useState(() =>
     parseStreamerCollectionSort(searchParams.get("sort") ?? undefined),
   );
+  // #2032: 向きも URL から決める。既定はモードごと(未指定=従来どおりの向き)。
+  const [sortOrder, setSortOrder] = useState<StreamerCollectionSortOrder>(() =>
+    parseStreamerCollectionOrder(searchParams.get("order") ?? undefined, sortMode),
+  );
   const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(() => new Set(initialHiddenIds));
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [errorIds, setErrorIds] = useState<ReadonlySet<string>>(() => new Set());
 
-  // orders[sortMode] の順に並べる。orders に無い id は末尾に置く（防御。通常は起きない）。
+  // orders[sortMode][sortOrder] の順に並べる。orders に無い id は末尾に置く（防御。通常は起きない）。
   const orderedItems = useMemo(() => {
     const byId = new Map(items.map((item) => [item.id, item]));
     const ordered: CollectionStreamerItem[] = [];
-    for (const id of orders[sortMode] ?? []) {
+    for (const id of orders[sortMode]?.[sortOrder] ?? []) {
       const item = byId.get(id);
       if (item) {
         ordered.push(item);
@@ -92,7 +106,7 @@ export default function CollectionStreamerList({
       }
     }
     return [...ordered, ...byId.values()];
-  }, [items, orders, sortMode]);
+  }, [items, orders, sortMode, sortOrder]);
 
   const visibleItems = orderedItems.filter((item) => !hiddenIds.has(item.id));
   const hiddenItems = orderedItems.filter((item) => hiddenIds.has(item.id));
@@ -100,6 +114,7 @@ export default function CollectionStreamerList({
   const handleSortClick = (
     event: MouseEvent<HTMLAnchorElement>,
     mode: StreamerCollectionSortMode,
+    order: StreamerCollectionSortOrder,
     href: string,
   ) => {
     // 修飾キー付き・中クリック等は既定動作（新規タブで開くなど）に任せる
@@ -115,6 +130,7 @@ export default function CollectionStreamerList({
     }
     event.preventDefault();
     setSortMode(mode);
+    setSortOrder(order);
     // Next.js は native history API と統合されているので、URL だけを更新してもルーターと整合する
     window.history.replaceState(null, "", href);
   };
@@ -169,22 +185,41 @@ export default function CollectionStreamerList({
       {visibleItems.length > 1 && (
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <span className="text-sm text-gray-400">{t("sort.label")}</span>
-          {SORT_OPTIONS.map(({ mode, href }) => (
-            // 通常の <a>: JS 無し・修飾キー付きでは href への通常遷移（サーバー再描画）にフォールバックする
-            <a
-              key={mode}
-              href={href}
-              onClick={(event) => handleSortClick(event, mode, href)}
-              aria-current={sortMode === mode ? "true" : undefined}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                sortMode === mode
-                  ? "bg-purple-600 text-white"
-                  : "border border-gray-600 text-gray-300 hover:bg-gray-700"
-              }`}
-            >
-              {t(`sort.${mode}`)}
-            </a>
-          ))}
+          {SORT_MODES.map((mode) => {
+            // モード切替では向きを引き継ぐ（#2032。選択中の向きを各モードにも適用できる）。
+            const href = collectionHref(mode, sortOrder);
+            return (
+              // 通常の <a>: JS 無し・修飾キー付きでは href への通常遷移（サーバー再描画）にフォールバックする
+              <a
+                key={mode}
+                href={href}
+                onClick={(event) => handleSortClick(event, mode, sortOrder, href)}
+                aria-current={sortMode === mode ? "true" : undefined}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                  sortMode === mode
+                    ? "bg-purple-600 text-white"
+                    : "border border-gray-600 text-gray-300 hover:bg-gray-700"
+                }`}
+              >
+                {t(`sort.${mode}`)}
+              </a>
+            );
+          })}
+          {(() => {
+            // 向きの切替 (#2032)。表示は現在の向き、クリックで反対の向きへ切り替える。
+            const nextOrder: StreamerCollectionSortOrder = sortOrder === "asc" ? "desc" : "asc";
+            const href = collectionHref(sortMode, nextOrder);
+            return (
+              <a
+                href={href}
+                onClick={(event) => handleSortClick(event, sortMode, nextOrder, href)}
+                aria-label={t(`sort.switchTo.${nextOrder}`)}
+                className="rounded-lg border border-gray-600 px-3 py-1.5 text-sm font-medium text-gray-300 transition-colors hover:bg-gray-700"
+              >
+                {sortOrder === "asc" ? t("sort.ascending") : t("sort.descending")}
+              </a>
+            );
+          })()}
         </div>
       )}
 

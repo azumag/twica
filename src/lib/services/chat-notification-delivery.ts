@@ -47,6 +47,14 @@ export const DEFAULT_CHAT_DELIVERY_MAX_SEGMENTS = 4
  * ぎりぎり失敗する（無害だが無駄な1往復）ケースを避けるための小さな余裕。
  */
 const CONTINUATION_MIN_DELAY_MS = 250
+/**
+ * このworkerが解釈できる永続payloadの最大version。version bump時はwriter側
+ * migrationの適用前に対応versionを受理するアプリが本番稼働している必要がある
+ * （migration 20261031120000のヘッダ参照）。これより大きいversionの行は
+ * 「自分より新しいコードが書いた行」の可能性が高く、decode失敗でも即DLQしない
+ * （下のinvalidPayload分岐参照。Issue #2019）。
+ */
+const KNOWN_MAX_PAYLOAD_VERSION = 2
 
 export type ChatDeliverySliceOutcome =
   | { kind: 'complete' }
@@ -111,6 +119,38 @@ export async function deliverChatNotificationSlice(
   const data = decodeChatNotificationPayload(claim)
   if (!data) {
     const reason = `transactional chat outbox payload v${claim.payloadVersion} is invalid`
+    // Issue #2019: payload_version bump は writer migration と decoder対応アプリが
+    // 同一mergeで本番へ出る。ロールアウト完了まで残る旧workerが新versionの行を
+    // claimして即DLQすると、新workerへ届く前に通知が永久に失われる
+    // （2026-11-09にv2行がdead化した実績）。このworkerが知らない将来version
+    // だけはdecode失敗でもDLQせず、通常の指数backoff retry（上限到達でdead）へ
+    // 回してロールアウト完了を待つ。既知versionのshape破損は従来どおり即DLQ。
+    // attempt_countはclaim時に消費済みなので、version非対応が解消されない
+    // 場合でもCHAT_OUTBOX_MAX_ATTEMPTSで有限に打ち止めになる。
+    if (claim.payloadVersion > KNOWN_MAX_PAYLOAD_VERSION) {
+      const state = await retryChatNotificationForBoundedDelivery(claim, reason)
+      if (state === 'lost-lease') return { kind: 'lease_lost' }
+      if (state === 'dead') {
+        await reportDeliveryError(new Error(`[chat-notification-delivery] ${reason}`), {
+          context: 'chat-notification-delivery:invalidPayload',
+          outboxId: claim.id,
+          batchId,
+        })
+        return { kind: 'terminal', code: 'invalid_payload' }
+      }
+      logger.warn('[chat-notification-delivery] payload version newer than this worker supports - retrying', {
+        outboxId: claim.id,
+        batchId,
+        payloadVersion: claim.payloadVersion,
+        supportedMaxPayloadVersion: KNOWN_MAX_PAYLOAD_VERSION,
+      })
+      return {
+        kind: 'retryable',
+        nextAttemptAt: new Date(
+          Date.now() + estimateChatOutboxRetryDelayMs(claim.attemptCount),
+        ).toISOString(),
+      }
+    }
     const persisted = await deadLetterChatNotification(claim, reason)
     if (!persisted) return { kind: 'lease_lost' }
     await reportDeliveryError(new Error(`[chat-notification-delivery] ${reason}`), {

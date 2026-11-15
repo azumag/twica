@@ -260,6 +260,17 @@
       "deleteNote": "削除しても既存カードのレアリティは変わりません（カード作成時の候補から外れるだけです）。",
       "clearColor": "既定に戻す",
       "colorLabel": "{rarity} の文字色",
+      "colorField": "文字色",
+      "gradientField": "グラデーション",
+      "gradientFromLabel": "{rarity} のグラデーション開始色",
+      "gradientToLabel": "{rarity} のグラデーション終了色",
+      "glowField": "グロー",
+      "glowLabel": "{rarity} のグロー色",
+      "glowOpacityLabel": "{rarity} のグロー不透明度",
+      "previewLabel": "{rarity} のスタイルプレビュー",
+      "resetColorLabel": "{rarity} の文字色を既定に戻す",
+      "resetGradientLabel": "{rarity} のグラデーションを既定に戻す",
+      "resetGlowLabel": "{rarity} のグローを既定に戻す",
       "save": "保存",
       "saving": "保存中...",
       "saved": "保存しました",
@@ -396,7 +407,13 @@
       "rarity": "レアリティ順",
       "recent": "最近獲得した順",
       "name": "配信者名順",
-      "completion": "コンプ率順"
+      "completion": "コンプ率順",
+      "ascending": "昇順",
+      "descending": "降順",
+      "switchTo": {
+        "asc": "昇順に切り替える",
+        "desc": "降順に切り替える"
+      }
     },
     "hide": {
       "hideButton": "非表示",
@@ -558,7 +575,7 @@
       "templatePlaceholder": "@'{'user'}' が【'{'rarity'}'】'{'card'}' を獲得しました！",
       "multiTemplate": "N連ガチャ用テンプレート（任意）",
       "multiTemplatePlaceholder": "@'{'user'}' が'{'draws'}'連ガチャで '{'rarityCounts'}' を獲得しました！'{'cards'}'",
-      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数, '{'all'}'=全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL, '{'packName'}'=先頭カードが属するパック名（未分類カードはデフォルトパックの表示名。デフォルトパック名を設定していない場合は「デフォルトパック」固定表示）",
+      "placeholderHelp": "使用可能なプレースホルダー: '{'user'}'=ユーザー名, '{'card'}'=先頭カード名, '{'rarity'}'=レアリティ, '{'num'}'=所持枚数, '{'unique'}'=所持種類数（全パック合計）, '{'all'}'=全種類数（全パック合計）, '{'packUnique'}'=獲得カードが属するパック内の所持種類数, '{'packAll'}'=そのパックの全種類数, '{'detail'}'=カード説明, '{'url'}'=コレクションURL, '{'packName'}'=先頭カードが属するパック名（未分類カードはデフォルトパックの表示名。デフォルトパック名を設定していない場合は「デフォルトパック」固定表示）",
       "multiPlaceholderHelp": "N連用: '{'draws'}'=抽選回数, '{'rarityCounts'}'=レアリティ別枚数（例: レアx3、コモンx3）, '{'cards'}'=カード名一覧, '{'newCards'}'=今回初めて獲得したカード名一覧, '{'newCardsOrNone'}'=今回初めて獲得したカード名一覧（初入手がないと正常に判定できた場合は「なし」）, '{'newCardCount'}'=今回初めて獲得したカード種類数（カード名系のプレースホルダーはテンプレートに書いたものだけが表示されます。カード名一覧を出したい場合は '{'cards'}' などを書き、書かなければ表示されません。初入手情報を取得できない場合は空文字に置き換わります）",
       "previewLength": "プレビュー文字数: {current} / {max}文字"
     },

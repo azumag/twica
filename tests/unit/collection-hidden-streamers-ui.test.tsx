@@ -9,7 +9,10 @@ import CollectionHideButton from "@/components/CollectionHideButton";
 import CollectionStreamerList, {
   type CollectionStreamerItem,
 } from "@/components/CollectionStreamerList";
-import type { StreamerCollectionSortMode } from "@/lib/collection-utils";
+import type {
+  StreamerCollectionSortMode,
+  StreamerCollectionSortOrder,
+} from "@/lib/collection-utils";
 import type { Streamer } from "@/types/database";
 
 const mocks = vi.hoisted(() => ({
@@ -62,11 +65,16 @@ function item(id: string, name: string): CollectionStreamerItem {
 }
 
 const ITEMS = [item("a", "Alpha"), item("b", "Bravo"), item("c", "Charlie")];
-// 3モードで順序が異なる並び（サーバーで確定済みの想定）
-const ORDERS: Record<StreamerCollectionSortMode, string[]> = {
-  recent: ["a", "b", "c"],
-  name: ["c", "b", "a"],
-  completion: ["b", "c", "a"],
+// 3モードで順序が異なる並び（サーバーで確定済みの想定）。
+// #2032: orders はモード×向きの2段。既定の向き（recent=desc / name=asc / completion=desc）
+// が初期表示に使われる。
+const ORDERS: Record<
+  StreamerCollectionSortMode,
+  Record<StreamerCollectionSortOrder, string[]>
+> = {
+  recent: { desc: ["a", "b", "c"], asc: ["c", "b", "a"] },
+  name: { asc: ["c", "b", "a"], desc: ["b", "a", "c"] },
+  completion: { desc: ["b", "c", "a"], asc: ["a", "c", "b"] },
 };
 
 /** 通常一覧（<details> の外）と非表示セクション（<details> の中）の h3 を順に取り出す。 */
@@ -105,7 +113,11 @@ describe("Collection (サーバーコンポーネント) (#1953)", () => {
     const { container } = render(
       await Collection({
         cardsByStreamer: { a: entry("a", "Alpha"), b: entry("b", "Bravo") },
-        orders: { recent: ["b", "a"], name: ["a", "b"], completion: ["a", "b"] },
+        orders: {
+          recent: { desc: ["b", "a"], asc: ["a", "b"] },
+          name: { asc: ["a", "b"], desc: ["b", "a"] },
+          completion: { desc: ["a", "b"], asc: ["b", "a"] },
+        },
         hiddenStreamerIds: ["a"],
       }),
     );
@@ -125,16 +137,57 @@ describe("Collection (サーバーコンポーネント) (#1953)", () => {
 
 describe("CollectionStreamerList: 並び替え (#1953)", () => {
   it("3つの並び替えリンク(<a href>)を出し、現在のモードに aria-current を付ける", () => {
+    // #2032: ?sort=name は向き未指定なので name の既定(asc)。モード切替は向きを引き継ぐため、
+    // 既定と異なる向きになるリンクだけ order= を付ける。
     renderList({}, "?sort=name");
     const recent = screen.getByRole("link", { name: "sort.recent" });
     const name = screen.getByRole("link", { name: "sort.name" });
     const completion = screen.getByRole("link", { name: "sort.completion" });
-    // 既定(recent)は URL にクエリを付けない
-    expect(recent).toHaveAttribute("href", "/dashboard/collection");
+    expect(recent).toHaveAttribute("href", "/dashboard/collection?order=asc");
     expect(name).toHaveAttribute("href", "/dashboard/collection?sort=name");
-    expect(completion).toHaveAttribute("href", "/dashboard/collection?sort=completion");
+    expect(completion).toHaveAttribute("href", "/dashboard/collection?sort=completion&order=asc");
     expect(name).toHaveAttribute("aria-current", "true");
     expect(recent).not.toHaveAttribute("aria-current");
+  });
+
+  it("向きトグルを出し、クリックで反対の向きの並びと URL に切り替わる (#2032)", () => {
+    const replaceState = vi.spyOn(window.history, "replaceState");
+    const { container } = renderList();
+    expect(listed(container).visible).toEqual(["Alpha", "Bravo", "Charlie"]);
+
+    // 既定(recent)の向きは desc。トグルには現在の向き(descending)を表示し、
+    // aria-label は切り替え先(asc)を指す。
+    const toggle = screen.getByRole("link", { name: "sort.switchTo.asc" });
+    expect(toggle).toHaveTextContent("sort.descending");
+    expect(toggle).toHaveAttribute("href", "/dashboard/collection?order=asc");
+
+    fireEvent.click(toggle);
+    expect(listed(container).visible).toEqual(["Charlie", "Bravo", "Alpha"]);
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/dashboard/collection?order=asc");
+    // 切替後は desc へ戻すトグル(既定なのでクエリ無し)になる
+    const back = screen.getByRole("link", { name: "sort.switchTo.desc" });
+    expect(back).toHaveTextContent("sort.ascending");
+    expect(back).toHaveAttribute("href", "/dashboard/collection");
+    replaceState.mockRestore();
+  });
+
+  it("URL の ?order= を初期の向きに使い、不正値はモードの既定に落とす (#2032)", () => {
+    expect(listed(renderList({}, "?order=asc").container).visible).toEqual([
+      "Charlie",
+      "Bravo",
+      "Alpha",
+    ]);
+    expect(listed(renderList({}, "?sort=name&order=desc").container).visible).toEqual([
+      "Bravo",
+      "Alpha",
+      "Charlie",
+    ]);
+    // 不正な向きは sort と同じく黙って既定へ（recent の既定=desc）
+    expect(listed(renderList({}, "?order=bogus").container).visible).toEqual([
+      "Alpha",
+      "Bravo",
+      "Charlie",
+    ]);
   });
 
   it("初期表示は URL の ?sort= の orders の順（props ではなく URL を正とする）", () => {
@@ -157,8 +210,13 @@ describe("CollectionStreamerList: 並び替え (#1953)", () => {
     // fireEvent の戻り値は preventDefault されたとき false
     expect(fireEvent.click(name)).toBe(false);
 
-    expect(listed(container).visible).toEqual(["Charlie", "Bravo", "Alpha"]);
-    expect(replaceState).toHaveBeenCalledWith(null, "", "/dashboard/collection?sort=name");
+    // #2032: クリック時の向き(desc)が name に引き継がれ、既定(asc)と違うので order= が付く
+    expect(listed(container).visible).toEqual(["Bravo", "Alpha", "Charlie"]);
+    expect(replaceState).toHaveBeenCalledWith(
+      null,
+      "",
+      "/dashboard/collection?sort=name&order=desc",
+    );
     expect(name).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("link", { name: "sort.recent" })).not.toHaveAttribute("aria-current");
     expect(fetchMock).not.toHaveBeenCalled();
@@ -188,7 +246,7 @@ describe("CollectionStreamerList: 並び替え (#1953)", () => {
   });
 
   it("表示中が1件以下なら並び替えバーを出さない（非表示にして1件に減ったときも消える）", () => {
-    const { unmount } = renderList({ items: [ITEMS[0]], orders: { ...ORDERS, recent: ["a"] } });
+    const { unmount } = renderList({ items: [ITEMS[0]], orders: { ...ORDERS, recent: { desc: ["a"], asc: ["a"] } } });
     expect(screen.queryByRole("link", { name: "sort.name" })).toBeNull();
     unmount();
 
@@ -196,7 +254,11 @@ describe("CollectionStreamerList: 並び替え (#1953)", () => {
     mocks.postJsonWithCsrfRetry.mockReturnValue(new Promise(() => {}));
     renderList({
       items: [ITEMS[0], ITEMS[1]],
-      orders: { recent: ["a", "b"], name: ["a", "b"], completion: ["a", "b"] },
+      orders: {
+          recent: { desc: ["a", "b"], asc: ["b", "a"] },
+          name: { asc: ["a", "b"], desc: ["b", "a"] },
+          completion: { desc: ["a", "b"], asc: ["b", "a"] },
+        },
     });
     expect(screen.getByRole("link", { name: "sort.name" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: 'hideAria:{"name":"Alpha"}' }));
@@ -204,7 +266,7 @@ describe("CollectionStreamerList: 並び替え (#1953)", () => {
   });
 
   it("orders に無い id のカードは末尾に置く", () => {
-    const { container } = renderList({ orders: { ...ORDERS, recent: ["c", "a"] } });
+    const { container } = renderList({ orders: { ...ORDERS, recent: { desc: ["c", "a"], asc: ["a", "c"] } } });
     expect(listed(container).visible).toEqual(["Charlie", "Alpha", "Bravo"]);
   });
 });

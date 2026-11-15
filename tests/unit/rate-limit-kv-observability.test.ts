@@ -83,13 +83,18 @@ describe("rate limit KV observability (#728)", () => {
       );
   }
 
-  /** op/durationMs を持つ遅延ログ（通常帯では出ない）。 */
+  /** #2039: slow storage op は集計され '[rate-limit] slow storage op (aggregate)'
+   * として info に出る（warn ではない）。payload は集計値を持つ。 */
   const slowLogs = () =>
-    warnPayloads().filter(
-      (payload) => payload.op !== undefined && payload.durationMs !== undefined,
-    );
+    mocks.loggerInfo.mock.calls
+      .filter(([message]) => message === "[rate-limit] slow storage op (aggregate)")
+      .map(([, payload]) => payload)
+      .filter(
+        (payload): payload is Record<string, unknown> =>
+          typeof payload === "object" && payload !== null,
+      );
 
-  /** error を持つ fail-open ログ。 */
+  /** error を持つ fail-open / write失敗 ログ。 */
   const failOpenLogs = () => warnPayloads().filter((payload) => payload.error !== undefined);
 
   /** storage選択ログのpayload。 */
@@ -242,9 +247,40 @@ describe("rate limit KV observability (#728)", () => {
     const { checkRateLimit, rateLimits } = await import("@/lib/rate-limit");
     await checkRateLimit(rateLimits.authLogin, "user:kv-slow");
 
+    // #2039: 遅延は warn ではなく (name,storage,op) ごとの集計 info として出る。
+    // 各バケットの1件目で slowOps=1 の集計行が出る。
     expect(slowLogs()).toEqual([
-      expect.objectContaining({ name: "authLogin", storage: "kv", op: "read", durationMs: 300 }),
-      expect.objectContaining({ name: "authLogin", storage: "kv", op: "write", durationMs: 300 }),
+      expect.objectContaining({
+        name: "authLogin", storage: "kv", op: "read",
+        slowOps: 1, totalMs: 300, maxMs: 300, latestMs: 300,
+      }),
+      expect.objectContaining({
+        name: "authLogin", storage: "kv", op: "write",
+        slowOps: 1, totalMs: 300, maxMs: 300, latestMs: 300,
+      }),
+    ]);
+    // warn チャネルへは出さない（本番 warn の大半を占めていた定常ノイズを排除）
+    expect(warnPayloads()).toEqual([]);
+  });
+
+  it("同一バケットの2件目以降は集計のみ行い、50件ごとの節目まで info を出さない", async () => {
+    const kv = createKv({
+      get: async () => {
+        vi.advanceTimersByTime(300);
+        return { count: 1, resetTime: Date.now() + 60_000 };
+      },
+    });
+    mocks.getKvBinding.mockResolvedValue(kv.namespace);
+
+    const { checkRateLimit, rateLimits } = await import("@/lib/rate-limit");
+    // 同一 (name,storage,op) バケットへ slow read を2回発生させる。
+    // write は通常帯（<250ms）なので集計対象外。
+    await checkRateLimit(rateLimits.authLogin, "user:kv-slow-repeat");
+    await checkRateLimit(rateLimits.authLogin, "user:kv-slow-repeat");
+
+    // 1件目だけ集計行が出て、2件目はカウンタ加算のみ（次の出力は50件目）。
+    expect(slowLogs()).toEqual([
+      expect.objectContaining({ op: "read", slowOps: 1 }),
     ]);
   });
 
@@ -359,11 +395,16 @@ describe("rate limit KV observability (#728)", () => {
       const identifier = "ip:203.0.113.11";
 
       // 通常呼び出しと明示fallback引数付きの両方がresolveして許可される。
+      // #2039: write 失敗は応答を変えずバックグラウンド warn のみ残すため、
+      // increment-write では read 済みカウンタ(count=1)の実増分値 remaining=3 が
+      // 返る（旧fail-open経路の固定値 limit-1=4 ではない）。read 失敗は従来どおり
+      // fail-open で remaining=4。
+      const expectedRemaining = failure === "increment-write" ? 3 : 4;
       for (const withFallback of [false, true]) {
         const result = withFallback
           ? await checkRateLimit(rateLimits.authLogin, identifier, 5, 60_000)
           : await checkRateLimit(rateLimits.authLogin, identifier);
-        expect(result).toMatchObject({ success: true, limit: 5, remaining: 4 });
+        expect(result).toMatchObject({ success: true, limit: 5, remaining: expectedRemaining });
         expect(result.reset).toBe(Date.now() + 60_000);
       }
 

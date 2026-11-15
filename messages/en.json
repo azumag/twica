@@ -260,6 +260,17 @@
       "deleteNote": "Removing a custom rarity does not change existing cards (it is only removed from the card-creation suggestions).",
       "clearColor": "Reset to default",
       "colorLabel": "Text color for {rarity}",
+      "colorField": "Text color",
+      "gradientField": "Gradient",
+      "gradientFromLabel": "Gradient start color for {rarity}",
+      "gradientToLabel": "Gradient end color for {rarity}",
+      "glowField": "Glow",
+      "glowLabel": "Glow color for {rarity}",
+      "glowOpacityLabel": "Glow opacity for {rarity}",
+      "previewLabel": "Style preview for {rarity}",
+      "resetColorLabel": "Reset text color for {rarity} to default",
+      "resetGradientLabel": "Reset gradient for {rarity} to default",
+      "resetGlowLabel": "Reset glow for {rarity} to default",
       "save": "Save",
       "saving": "Saving...",
       "saved": "Saved",
@@ -396,7 +407,13 @@
       "rarity": "Rarity",
       "recent": "Recently obtained",
       "name": "Streamer name",
-      "completion": "Completion"
+      "completion": "Completion",
+      "ascending": "Ascending",
+      "descending": "Descending",
+      "switchTo": {
+        "asc": "Switch to ascending",
+        "desc": "Switch to descending"
+      }
     },
     "hide": {
       "hideButton": "Hide",
@@ -558,7 +575,7 @@
       "templatePlaceholder": "@'{'user'}' got a ['{'rarity'}'] '{'card'}'!",
       "multiTemplate": "Multi-draw Template (optional)",
       "multiTemplatePlaceholder": "@'{'user'}' got '{'rarityCounts'}' from a '{'draws'}'-draw gacha! '{'cards'}'",
-      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned, '{'all'}'=total types, '{'detail'}'=card description, '{'url'}'=collection URL, '{'packName'}'=pack of the first card (like '{'card'}'; unclassified cards show the default pack's display name, or the fixed label \"デフォルトパック\" if not configured — chat messages are Japanese-only regardless of your site language)",
+      "placeholderHelp": "Available placeholders: '{'user'}'=username, '{'card'}'=first card name, '{'rarity'}'=rarity, '{'num'}'=owned count, '{'unique'}'=unique types owned (all packs combined), '{'all'}'=total types (all packs combined), '{'packUnique'}'=unique types owned in the obtained card's pack, '{'packAll'}'=total types in that pack, '{'detail'}'=card description, '{'url'}'=collection URL, '{'packName'}'=pack of the first card (like '{'card'}'; unclassified cards show the default pack's display name, or the fixed label \"デフォルトパック\" if not configured — chat messages are Japanese-only regardless of your site language)",
       "multiPlaceholderHelp": "Multi-draw only: '{'draws'}'=draw count, '{'rarityCounts'}'=rarity counts (e.g. Rare x3, Common x3), '{'cards'}'=card-name list, '{'newCards'}'=newly obtained card names this draw, '{'newCardsOrNone'}'=newly obtained card names this draw (or \"なし\" when zero new cards were resolved), '{'newCardCount'}'=count of newly obtained card types this draw (card-name placeholders produce output only where you write them — write '{'cards'}' etc. to show that content, or omit it to hide it. If new-card information cannot be resolved they are replaced with an empty string)",
       "previewLength": "Preview length: {current} / {max} characters"
     },
