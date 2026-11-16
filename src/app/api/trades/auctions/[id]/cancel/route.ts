@@ -8,7 +8,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 /**
  * POST /api/trades/auctions/[id]/cancel
@@ -24,8 +24,11 @@ export async function POST(
   const auth = await authorizeTradeWrite(request);
   if (!auth.ok) return auth.response;
 
-  const { id } = await params;
-  if (!isCanonicalUuid(id)) {
+  // #2061: normalize the path UUID to the DB's lowercase spelling before the
+  // service passes it to the RPC / compares it.
+  const { id: rawId } = await params;
+  const id = normalizeCanonicalUuid(rawId);
+  if (!id) {
     return tradeErrorResponse("INVALID_REQUEST", 400);
   }
 
