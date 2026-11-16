@@ -6,7 +6,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 export async function POST(
   request: NextRequest,
@@ -15,8 +15,11 @@ export async function POST(
   const auth = await authorizeTradeWrite(request);
   if (!auth.ok) return auth.response;
 
-  const { id } = await params;
-  if (!isCanonicalUuid(id)) {
+  // #2061: normalize path UUIDs to the lowercase form the DB returns so the
+  // service's SQL arguments and any JS comparison always match.
+  const { id: rawId } = await params;
+  const id = normalizeCanonicalUuid(rawId);
+  if (!id) {
     return tradeErrorResponse("INVALID_REQUEST", 400);
   }
 

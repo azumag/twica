@@ -8,7 +8,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 /**
  * GET /api/trades/auctions/[id]
@@ -26,8 +26,11 @@ export async function GET(
     const limited = await limitTradeRead(request, session?.twitchUserId);
     if (limited) return limited;
 
-    const { id } = await params;
-    if (!isCanonicalUuid(id)) {
+    // #2061: normalize the path UUID to the lowercase form returned by the DB
+    // so the SQL argument and any JS comparison use one spelling.
+    const { id: rawId } = await params;
+    const id = normalizeCanonicalUuid(rawId);
+    if (!id) {
       return tradeErrorResponse("INVALID_REQUEST", 400);
     }
 

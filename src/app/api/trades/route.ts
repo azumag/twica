@@ -16,7 +16,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 /** HTTP status per create-path service code (unchanged since #723). */
 function createErrorStatus(code: TradeServiceErrorCode): number {
@@ -44,8 +44,10 @@ export async function GET(request: NextRequest) {
     if (limited) return limited;
 
     const { searchParams } = request.nextUrl;
-    const streamerId = searchParams.get("streamerId") ?? "";
-    if (!isCanonicalUuid(streamerId)) {
+    // #2061: client-supplied UUIDs are normalized to the lowercase form the
+    // DB returns, because upstream services compare them as JS strings.
+    const streamerId = normalizeCanonicalUuid(searchParams.get("streamerId") ?? "");
+    if (!streamerId) {
       return tradeErrorResponse("INVALID_REQUEST", 400);
     }
 
@@ -55,12 +57,16 @@ export async function GET(request: NextRequest) {
     }
     const scope = rawScope as TradeScope;
 
-    const wantedCardId = searchParams.get("wantedCardId") ?? undefined;
-    const offeredCardId = searchParams.get("offeredCardId") ?? undefined;
-    if (
-      (wantedCardId !== undefined && !isCanonicalUuid(wantedCardId))
-      || (offeredCardId !== undefined && !isCanonicalUuid(offeredCardId))
-    ) {
+    const rawWantedCardId = searchParams.get("wantedCardId");
+    const wantedCardId =
+      rawWantedCardId === null ? undefined : normalizeCanonicalUuid(rawWantedCardId);
+    if (wantedCardId === null) {
+      return tradeErrorResponse("INVALID_REQUEST", 400);
+    }
+    const rawOfferedCardId = searchParams.get("offeredCardId");
+    const offeredCardId =
+      rawOfferedCardId === null ? undefined : normalizeCanonicalUuid(rawOfferedCardId);
+    if (offeredCardId === null) {
       return tradeErrorResponse("INVALID_REQUEST", 400);
     }
 
@@ -92,10 +98,17 @@ export async function POST(request: NextRequest) {
     const parsed = await readTradeJsonBody(request);
     if (!parsed.ok) return parsed.response;
     const { body } = parsed;
-    const offeredUserCardId =
-      typeof body.offeredUserCardId === "string" ? body.offeredUserCardId : "";
-    const wantedCardId = typeof body.wantedCardId === "string" ? body.wantedCardId : "";
-    const requestId = typeof body.requestId === "string" ? body.requestId : "";
+    // #2061: normalize every client-supplied UUID before the service compares
+    // it with the lowercase ids read back from the DB (same-card check, etc.).
+    const offeredUserCardId = normalizeCanonicalUuid(
+      typeof body.offeredUserCardId === "string" ? body.offeredUserCardId : "",
+    );
+    const wantedCardId = normalizeCanonicalUuid(
+      typeof body.wantedCardId === "string" ? body.wantedCardId : "",
+    );
+    const requestId = normalizeCanonicalUuid(
+      typeof body.requestId === "string" ? body.requestId : "",
+    );
     // #1789: optional for compatibility with clients that predate the field
     // (an open tab with the previous bundle keeps creating 1-copy offers).
     // Only an integer in 1..TRADE_MAX_WANTED_QUANTITY is accepted; the DB
@@ -103,9 +116,9 @@ export async function POST(request: NextRequest) {
     const wantedQuantity = body.wantedQuantity === undefined ? 1 : body.wantedQuantity;
 
     if (
-      !isCanonicalUuid(offeredUserCardId)
-      || !isCanonicalUuid(wantedCardId)
-      || !isCanonicalUuid(requestId)
+      !offeredUserCardId
+      || !wantedCardId
+      || !requestId
       || typeof wantedQuantity !== "number"
       || !Number.isInteger(wantedQuantity)
       || wantedQuantity < 1

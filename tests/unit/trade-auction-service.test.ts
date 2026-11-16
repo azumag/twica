@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
 import { sql as drizzleSql, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
@@ -11,9 +12,34 @@ import { getDb } from "@/lib/db/client";
 // reads. The SQL itself runs on real PostgreSQL in
 // tests/integration/trade-auction-pg.test.ts.
 
+// Route prelude for the #2061 boundary test in the withdraw describe below.
+// The service is the real module (only the DB is mocked), so that test runs
+// the exact path that used to answer 404 for an uppercase auction id.
+const routeMocks = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  validateCSRFToken: vi.fn(),
+  checkRateLimit: vi.fn(),
+  validateContentType: vi.fn(),
+  recordApiError: vi.fn(),
+}));
+
 vi.mock("@/lib/db/client", () => ({ getDb: vi.fn() }));
 vi.mock("@/lib/db/retry", () => ({
   withDbRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock("@/lib/session", () => ({ getSession: routeMocks.getSession }));
+vi.mock("@/lib/csrf", () => ({ validateCSRFToken: routeMocks.validateCSRFToken }));
+vi.mock("@/lib/rate-limit", () => ({
+  checkRateLimit: routeMocks.checkRateLimit,
+  getRateLimitIdentifier: vi.fn().mockResolvedValue("user:viewer-1"),
+  rateLimits: { tradeWrite: { name: "tradeWrite" }, tradeRead: { name: "tradeRead" } },
+}));
+vi.mock("@/lib/request-validation", () => ({
+  validateContentType: routeMocks.validateContentType,
+}));
+vi.mock("@/lib/error-handler", () => ({ recordApiError: routeMocks.recordApiError }));
+vi.mock("@/lib/logger.server", () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 function render(fragment: unknown) {
@@ -208,6 +234,82 @@ describe("RPC result mapping", () => {
     expect(pg.rpcCalls[0].text).toContain("public.create_trade_auction(");
     expect(pg.rpcCalls[0].text).toContain("::integer");
     expect(pg.rpcCalls[0].values).toEqual(["s", COPY_ID, 168, REQUEST_ID]);
+  });
+});
+
+// #2061: before the RPC, withdrawTradeAuctionBid compares the [id] path value
+// with bids.auction_id exactly as Drizzle returned it. PostgreSQL prints uuid
+// values in lowercase, so an uppercase path value never matches even though
+// the database would treat both as the same uuid. The fix normalizes at the
+// API boundary; these fixtures pin the service contract (lowercase in, match)
+// and reproduce the pre-fix mismatch.
+describe("withdraw path auction-id check (#2061)", () => {
+  const HEX_AUCTION_ID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+  const HEX_BID_ID = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e";
+
+  it("reproduces the 404 when an uppercase auctionId reaches the service unnormalized", async () => {
+    prime({ selects: [{ rows: [{ auctionId: HEX_AUCTION_ID }] }] });
+    const { withdrawTradeAuctionBid } = await import("@/lib/trade-auction");
+    await expect(withdrawTradeAuctionBid({
+      twitchUserId: "b",
+      bidId: HEX_BID_ID,
+      auctionId: HEX_AUCTION_ID.toUpperCase(),
+    })).resolves.toEqual({ kind: "error", code: "TRADE_AUCTION_BID_NOT_FOUND" });
+  });
+
+  it("matches the bid's auction after the boundary normalized the id", async () => {
+    const pg = prime({
+      selects: [{ rows: [{ auctionId: HEX_AUCTION_ID }] }],
+      rpc: [rpc({ success: true, bidId: HEX_BID_ID, alreadyWithdrawn: false })],
+    });
+    const { withdrawTradeAuctionBid } = await import("@/lib/trade-auction");
+    await expect(withdrawTradeAuctionBid({
+      twitchUserId: "b",
+      bidId: HEX_BID_ID,
+      auctionId: HEX_AUCTION_ID,
+    })).resolves.toEqual({ kind: "ok", bidId: HEX_BID_ID, alreadyWithdrawn: false });
+    expect(pg.rpcCalls).toHaveLength(1);
+  });
+
+  it("POST withdraw answers 200 for uppercase path ids after boundary normalization (#2061)", async () => {
+    routeMocks.getSession.mockResolvedValue({ twitchUserId: "viewer-1" });
+    routeMocks.validateContentType.mockReturnValue(null);
+    routeMocks.validateCSRFToken.mockResolvedValue({ valid: true });
+    routeMocks.checkRateLimit.mockResolvedValue({
+      success: true,
+      limit: 10,
+      remaining: 9,
+      reset: Date.now() + 60_000,
+    });
+    routeMocks.recordApiError.mockResolvedValue(undefined);
+    prime({
+      selects: [{ rows: [{ auctionId: HEX_AUCTION_ID }] }],
+      rpc: [rpc({ success: true, bidId: HEX_BID_ID, alreadyWithdrawn: false })],
+    });
+
+    const { POST } = await import(
+      "@/app/api/trades/auctions/[id]/bids/[bidId]/withdraw/route"
+    );
+    const response = await POST(
+      new NextRequest(
+        `http://localhost/api/trades/auctions/${HEX_AUCTION_ID.toUpperCase()}`
+        + `/bids/${HEX_BID_ID.toUpperCase()}/withdraw`,
+        { method: "POST", headers: { "content-type": "application/json" } },
+      ),
+      {
+        params: Promise.resolve({
+          id: HEX_AUCTION_ID.toUpperCase(),
+          bidId: HEX_BID_ID.toUpperCase(),
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      success: true,
+      bidId: HEX_BID_ID,
+      alreadyWithdrawn: false,
+    });
   });
 });
 

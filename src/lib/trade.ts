@@ -1361,7 +1361,13 @@ function isValidTradeAcceptRpcResult(
 
   return (
     result.error === undefined
-    && result.tradeOfferId === expectedTradeOfferId
+    // #2061: PostgreSQL prints uuid values in lowercase, while the client may
+    // send the uppercase spelling that isCanonicalUuid also accepts. The RPC
+    // may already have committed the ownership transfer at this point, so an
+    // exact-string mismatch must not reject a valid success as a 500. Compare
+    // only the case of the same id; every other field is validated as before.
+    && typeof result.tradeOfferId === "string"
+    && result.tradeOfferId.toLowerCase() === expectedTradeOfferId.toLowerCase()
     && typeof result.receivedUserCardId === "string"
     && isCanonicalUuid(result.receivedUserCardId)
     && typeof result.givenUserCardId === "string"

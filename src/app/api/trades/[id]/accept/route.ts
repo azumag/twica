@@ -15,7 +15,7 @@ import {
   tradeInternalErrorResponse,
   type TradeAcceptApiErrorCode,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 type AcceptError = TradeAcceptRpcError | TradeAcceptPrecheckError | "TRADE_BUSY";
 
@@ -63,23 +63,30 @@ export async function POST(
   if (!auth.ok) return auth.response;
   const { session, rateLimitIdentifier: identifier } = auth;
 
-  const { id } = await params;
-  if (!isCanonicalUuid(id)) {
+  // #2061: PostgreSQL prints uuid values in lowercase. Normalizing at the
+  // boundary keeps the service, the RPC result check, and the post-commit
+  // audit lookup on the same spelling as the DB row.
+  const { id: rawId } = await params;
+  const id = normalizeCanonicalUuid(rawId);
+  if (!id) {
     return tradeErrorResponse("INVALID_REQUEST", 400);
   }
 
   try {
     const parsed = await readTradeJsonBody(request);
     if (!parsed.ok) return parsed.response;
-    const requestId =
+    // requestId is a client-generated UUID and is also used as a SQL uuid
+    // argument / idempotency key; pass it in the DB's lowercase form too.
+    const rawRequestId =
       typeof parsed.body.requestId === "string" ? parsed.body.requestId : "";
+    const requestId = normalizeCanonicalUuid(rawRequestId);
     // #1789: the quantity the viewer was shown and agreed to. A bundle that
     // predates the field sends none and has only ever shown "1 copy", so the
     // default 1 makes the RPC refuse a ×N offer instead of transferring N.
     const wantedQuantity =
       parsed.body.wantedQuantity === undefined ? 1 : parsed.body.wantedQuantity;
     if (
-      !isCanonicalUuid(requestId)
+      !requestId
       || typeof wantedQuantity !== "number"
       || !Number.isInteger(wantedQuantity)
       || wantedQuantity < 1

@@ -8,7 +8,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 /**
  * POST /api/trades/auctions/[id]/bids/[bidId]/withdraw
@@ -26,8 +26,14 @@ export async function POST(
   const auth = await authorizeTradeWrite(request);
   if (!auth.ok) return auth.response;
 
-  const { id, bidId } = await params;
-  if (!isCanonicalUuid(id) || !isCanonicalUuid(bidId)) {
+  // #2061: the service compares the [id] path value with bids.auction_id as an
+  // exact JS string. PostgreSQL returns uuid values in lowercase, so the
+  // boundary must normalize both path ids or an uppercase URL answers 404
+  // TRADE_AUCTION_BID_NOT_FOUND for a bid that exists.
+  const { id: rawId, bidId: rawBidId } = await params;
+  const id = normalizeCanonicalUuid(rawId);
+  const bidId = normalizeCanonicalUuid(rawBidId);
+  if (!id || !bidId) {
     return tradeErrorResponse("INVALID_REQUEST", 400);
   }
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
 import { getTableName, sql as drizzleSql, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
@@ -7,8 +8,34 @@ import { getDb } from "@/lib/db/client";
 import { tradeOffers } from "@/lib/db/schema";
 import { withDbRetry } from "@/lib/db/retry";
 
+// Route prelude for the #2061 boundary test below. The service itself is the
+// real module (only the DB is mocked), so that test exercises the exact path
+// that used to return 200 for a same-card offer when the client sent an
+// uppercase wantedCardId.
+const routeMocks = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  validateCSRFToken: vi.fn(),
+  checkRateLimit: vi.fn(),
+  validateContentType: vi.fn(),
+  recordApiError: vi.fn(),
+}));
+
 vi.mock("@/lib/db/client", () => ({
   getDb: vi.fn(),
+}));
+vi.mock("@/lib/session", () => ({ getSession: routeMocks.getSession }));
+vi.mock("@/lib/csrf", () => ({ validateCSRFToken: routeMocks.validateCSRFToken }));
+vi.mock("@/lib/rate-limit", () => ({
+  checkRateLimit: routeMocks.checkRateLimit,
+  getRateLimitIdentifier: vi.fn().mockResolvedValue("user:viewer-1"),
+  rateLimits: { tradeWrite: { name: "tradeWrite" }, tradeRead: { name: "tradeRead" } },
+}));
+vi.mock("@/lib/request-validation", () => ({
+  validateContentType: routeMocks.validateContentType,
+}));
+vi.mock("@/lib/error-handler", () => ({ recordApiError: routeMocks.recordApiError }));
+vi.mock("@/lib/logger.server", () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 /** Render a captured Drizzle condition/field to parameterized SQL text. */
 function render(fragment: unknown) {
@@ -377,6 +404,49 @@ describe("trade service (#723)", () => {
       requestId: OFFER.request_id!,
     })).resolves.toEqual({ kind: "error", code });
     expect(roundTrips()).toBe(1);
+    expect(pg.insertCalls).toHaveLength(0);
+  });
+
+  // #2061: createTradeOffer compares the offered card id (read back from the
+  // DB in lowercase) with the wantedCardId exactly as received. Before the
+  // boundary fix an uppercase client value slipped past TRADE_SAME_CARD and
+  // created the offer; the route must normalize first. This test runs the real
+  // route against the real service (only the DB and the request prelude are
+  // mocked) so it fails on the pre-fix code with 200 instead of 400.
+  it("POST /api/trades rejects a same-card offer when wantedCardId is uppercase (#2061)", async () => {
+    // A real hex id (the OFFER fixture uses digits only, which do not change
+    // under toUpperCase()).
+    const sameCardId = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+    routeMocks.getSession.mockResolvedValue({ twitchUserId: "viewer-1" });
+    routeMocks.validateContentType.mockReturnValue(null);
+    routeMocks.validateCSRFToken.mockResolvedValue({ valid: true });
+    routeMocks.checkRateLimit.mockResolvedValue({
+      success: true,
+      limit: 10,
+      remaining: 9,
+      reset: Date.now() + 60_000,
+    });
+    routeMocks.recordApiError.mockResolvedValue(undefined);
+
+    const pg = createDbMock({
+      selects: [{ rows: [checkRow({ offeredCardId: sameCardId, wantedCardId: sameCardId })] }],
+      inserts: [{ rows: [OFFER] }],
+    });
+    primeDb(pg);
+
+    const { POST } = await import("@/app/api/trades/route");
+    const response = await POST(new NextRequest("http://localhost/api/trades", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        offeredUserCardId: OFFER.offered_user_card_id,
+        wantedCardId: sameCardId.toUpperCase(),
+        requestId: OFFER.request_id,
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).code).toBe("TRADE_SAME_CARD");
     expect(pg.insertCalls).toHaveLength(0);
   });
 
