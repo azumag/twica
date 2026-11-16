@@ -17,6 +17,14 @@ import { MAX_RARITY_KEY_LENGTH } from "./constants";
  *   自然なばらつき（揺れ幅・回転量・落下距離・色）を生む。
  * - レアリティ紐付け: 単一の effectStyle ではなく「レアリティ→スタイル」の
  *   マップ（RarityEffectMap）で表現し、OBS URL の `fx=` パラメータに符号化する。
+ * - 開始位相: globals.css の animate-* は `animation-fill-mode` を指定しない
+ *   （= none）ため、正の delay を持つ粒子は遅延中にアニメーションが適用されず、
+ *   inline の opacity 未指定のまま「不透明で静止」する。表示直後は全粒子が
+ *   この状態になり、短い表示時間では一度も動かない粒子が残る。これを避けるため
+ *   環境系8種は「duration を先に決め、-[0, duration) の負の delay を付ける」
+ *   ことで表示開始時点で必ず周期の途中に置く。バーストの同時性を優先する
+ *   fireworks だけは正の delay を残し、CSS 側の `fill-mode: backwards` で
+ *   開始前を透明にする。
  *
  * 描画は overlay page が唯一の実体。OverlayPreview は overlay page を iframe で
  * 埋め込んでプレビューするため、この設定を直接参照しなくても本番と同じ見た目になる。
@@ -240,7 +248,16 @@ export interface OverlayEffectParticlePresentation {
    */
   left?: string;
   top?: string;
-  animationDelay?: string;
+  /**
+   * 開始遅延（秒）の上書き。負値は「周期の途中から開始」を意味する。
+   * CSS では `animation-delay: -0.4s` のように負の time として出力される。
+   */
+  delaySec?: number;
+  /**
+   * 1周期（秒）の上書き。同じ開始時刻を共有する粒子に同じ速さを与えたい
+   * 演出（fireworks のバースト）で使う。
+   */
+  durationSec?: number;
 }
 
 /** スタイルごとのパーティクル生成設定 */
@@ -253,8 +270,19 @@ export interface OverlayEffectParticleConfig {
   spawnTopPercentRange: readonly [number, number];
   /** 1周期の所要秒数の範囲 [min, max] */
   durationSecRange: readonly [number, number];
-  /** 開始遅延秒数の範囲 [min, max] */
-  delaySecRange: readonly [number, number];
+  /**
+   * 正の delay を使うスタイルの開始遅延秒数の範囲 [min, max]。
+   * `startAtRandomPhase: true` のスタイルでは参照しない（負の delay を算出する）ため
+   * 省略する。省略された場合は delay 0（即時開始）にフォールバックする。
+   */
+  delaySecRange?: readonly [number, number];
+  /**
+   * true: 粒子ごとに duration を先に決め、その範囲内の**負の** delay を付ける。
+   * 表示開始時点で必ず周期の途中にいるため、fill-mode: none でも
+   * 「不透明なまま静止する」フレームが生じない（環境系8種が該当）。
+   * false/未指定: delaySecRange から正の delay を選ぶ（fireworks のバースト等）。
+   */
+  startAtRandomPhase?: boolean;
   /** このスタイルの既定パーティクル数（花火/雪など密度が要るものは多めにする） */
   particleCount: number;
   /** index からこのパーティクル固有の見た目（色・サイズ・軌道パラメータ）を生成する */
@@ -289,8 +317,50 @@ const SPARKLE_STAR_CLIP =
   "polygon(50% 0%, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0% 50%, 39% 39%)";
 
 /**
+ * 花火のバースト周期（秒）。全バーストで共通。
+ *
+ * 同じバーストの火花へ同じ delaySec / durationSec を与えるため、乱数ではなく
+ * 固定テーブルにしている。粒子ごとに duration を乱数化すると、同じ中心から
+ * 同時に出た火花の到達距離と消える瞬間がばらけ、「1点から破裂して広がる」形が
+ * 崩れて散発的な点の集まりに見える。ランダム性は火花ごとの放射角・距離・色・
+ * サイズと、中心の±2%ジッターで担保する。
+ *
+ * 周期を全バーストで揃え、開始時刻を period/4 ずつ等間隔に置くのは、
+ * 「全バーストが同時に暗転して画面から火花が消える時間帯」を無くすため。
+ * overlay-effect-fireworks のキーフレームは 60% で opacity 1、100% で 0 に
+ * なるので、opacity が 0.3 を下回るのは周期の約12%（末尾 0.216s）。開始時刻を
+ * 0.45s 間隔にすれば暗い区間が重ならず、常に3バースト以上が明るい状態を保てる。
+ * 周期をバーストごとに変えると、位相がずれて全バーストが同時に暗転する瞬間が
+ * 周期的に現れる（実測: 6秒表示の 4.3s 付近で最大 opacity 0.17 まで低下）。
+ */
+const FIREWORK_BURST_PERIOD_SEC = 1.8;
+
+/**
+ * バーストの中心（%）と開始時刻（秒）。
+ * 中心は spawnLeft [20,80] / spawnTop [12,48] の内側に置く。
+ * delaySec は 0.05 + period/4 × index（= 0.45s 間隔）。
+ */
+const FIREWORK_BURSTS: readonly {
+  center: readonly [number, number];
+  delaySec: number;
+}[] = [
+  { center: [34, 24], delaySec: 0.05 },
+  { center: [66, 30], delaySec: 0.5 },
+  { center: [50, 20], delaySec: 0.95 },
+  { center: [46, 42], delaySec: 1.4 },
+];
+
+/**
  * スタイルごとの設定。animationClassName は globals.css の @theme inline で
  * 定義した animate-* ユーティリティ名（キーフレーム overlay-effect-<style>）。
+ *
+ * `startAtRandomPhase: true` を付けた環境系8種（sparkle / confetti / hearts /
+ * stars / bubbles / petals / snow / coins）は、粒子ごとに duration を先に決めて
+ * -[0, duration) の負の delay を付ける。正の delay のままだと、遅延中は
+ * アニメーション未適用（fill-mode: none）× inline opacity 未指定となり、
+ * 粒子が不透明のまま静止して見えるため。fireworks はバーストの同時性を優先して
+ * 正の delay を保ち、CSS の fill-mode: backwards で開始前を透明にする。
+ * aura は元から負の delay で、かつ複数の光輪を常時重ねる演出なので対象外。
  */
 export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
   Record<Exclude<OverlayEffectStyle, "none">, OverlayEffectParticleConfig>
@@ -301,7 +371,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [0, 100],
     durationSecRange: [1.1, 2.2],
-    delaySecRange: [0, 2],
+    startAtRandomPhase: true,
     particleCount: 22,
     buildParticle: () => {
       const size = rand(6, 16);
@@ -327,7 +397,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [-8, 8],
     durationSecRange: [2.4, 3.8],
-    delaySecRange: [0, 2.4],
+    startAtRandomPhase: true,
     particleCount: 26,
     buildParticle: (index) => {
       const color = pick(CONFETTI_COLORS);
@@ -356,7 +426,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [50, 100],
     durationSecRange: [2.6, 4.2],
-    delaySecRange: [0, 2.4],
+    startAtRandomPhase: true,
     particleCount: 20,
     buildParticle: () => {
       const size = rand(14, 30);
@@ -377,8 +447,8 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
   },
 
   // 花火: 複数の共通中心（バースト）から放射状に飛び散り、重力で少し落ちながら消える火花。
-  // 各パーティクルは1個の火花で、同じバーストに属する火花は出現位置と開始タイミングを
-  // 共有する（buildParticle が left/top/animationDelay を上書きする）。これにより
+  // 各パーティクルは1個の火花で、同じバーストに属する火花は出現位置・開始時刻・周期を
+  // 共有する（buildParticle が left/top/delaySec/durationSec を上書きする）。これにより
   // 「1点から破裂する花火」らしく見える（レビュー指摘: 独立した出現点だと散発的な
   // 火花に見えてしまう）。バースト位置は固定＋微ジッターで、常に spawn 範囲内に収める。
   fireworks: {
@@ -390,15 +460,9 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     // 4バースト × 12火花 = 48。バースト単位でまとまるよう割り切れる数にする。
     particleCount: 48,
     buildParticle: (index) => {
-      // バーストの中心（%）。spawnLeft [20,80] / spawnTop [12,48] の内側に置く。
-      const burstCenters: readonly [number, number][] = [
-        [34, 24],
-        [66, 30],
-        [50, 20],
-        [46, 42],
-      ];
       const sparksPerBurst = 12;
-      const burst = burstCenters[Math.floor(index / sparksPerBurst) % burstCenters.length];
+      const burstIndex = Math.floor(index / sparksPerBurst) % FIREWORK_BURSTS.length;
+      const burst = FIREWORK_BURSTS[burstIndex];
 
       const size = rand(3, 6);
       const color = pick(FIREWORK_COLORS);
@@ -407,10 +471,11 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
       const radius = rand(60, 150);
       return {
         content: "",
-        // 同じバーストの火花は同一中心（±微ジッター）から、ほぼ同時に破裂する
-        left: `${(burst[0] + rand(-2, 2)).toFixed(2)}%`,
-        top: `${(burst[1] + rand(-2, 2)).toFixed(2)}%`,
-        animationDelay: `${((Math.floor(index / sparksPerBurst) % burstCenters.length) * 0.55 + rand(0, 0.25)).toFixed(2)}s`,
+        // 同じバーストの火花は同一中心（±微ジッター）から、同じ時刻に同じ速さで破裂する
+        left: `${(burst.center[0] + rand(-2, 2)).toFixed(2)}%`,
+        top: `${(burst.center[1] + rand(-2, 2)).toFixed(2)}%`,
+        delaySec: burst.delaySec,
+        durationSec: FIREWORK_BURST_PERIOD_SEC,
         visualStyle: {
           width: px(size),
           height: px(size),
@@ -430,7 +495,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [-5, 70],
     spawnTopPercentRange: [0, 55],
     durationSecRange: [1.3, 2.3],
-    delaySecRange: [0, 2.8],
+    startAtRandomPhase: true,
     particleCount: 16,
     buildParticle: () => {
       const length = rand(50, 110);
@@ -462,7 +527,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [55, 100],
     durationSecRange: [3.0, 5.0],
-    delaySecRange: [0, 2.6],
+    startAtRandomPhase: true,
     particleCount: 24,
     buildParticle: () => {
       const size = rand(10, 34);
@@ -490,7 +555,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [-8, 8],
     durationSecRange: [3.0, 4.8],
-    delaySecRange: [0, 2.8],
+    startAtRandomPhase: true,
     particleCount: 28,
     buildParticle: () => {
       const width = rand(9, 15);
@@ -519,7 +584,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [-8, 8],
     durationSecRange: [3.4, 6.0],
-    delaySecRange: [0, 3.0],
+    startAtRandomPhase: true,
     particleCount: 40,
     buildParticle: () => {
       const size = rand(4, 11);
@@ -546,7 +611,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [-8, 6],
     durationSecRange: [1.8, 3.0],
-    delaySecRange: [0, 2.4],
+    startAtRandomPhase: true,
     particleCount: 22,
     buildParticle: () => {
       const size = rand(12, 22);
@@ -609,12 +674,42 @@ function randomInRange([min, max]: readonly [number, number]): number {
 }
 
 /**
+ * 秒数を CSS の time 値へ整形する。`-0.00s` のような負のゼロは有効な CSS だが
+ * DOM 上で紛らわしいため 0 に丸める。
+ */
+function formatSeconds(value: number): string {
+  const normalized = Math.abs(value) < 0.005 ? 0 : value;
+  return `${normalized.toFixed(2)}s`;
+}
+
+/**
+ * 1粒子の開始遅延（秒）を決める。
+ *
+ * - startAtRandomPhase のスタイル: `-[0, duration]` の負の delay を返す。負の delay は
+ *   「あたかも duration のうち [0, |delay|) の時間が既に経過した状態」から開始する
+ *   指定なので、fill-mode: none でも表示開始の最初のフレームからアニメーションが
+ *   適用される。これが「遅延中は不透明なまま静止する」現象を無くす手段。
+ * - それ以外: 宣言された delaySecRange から正の delay を選ぶ（fireworks の
+ *   バースト間隔、aura の位相ずらし）。範囲が無い場合は即時開始（0）に倒す。
+ */
+function resolveDelaySec(
+  config: OverlayEffectParticleConfig,
+  durationSec: number,
+): number {
+  if (config.startAtRandomPhase) {
+    return -randomInRange([0, durationSec]);
+  }
+  return config.delaySecRange ? randomInRange(config.delaySecRange) : 0;
+}
+
+/**
  * 指定スタイルのパーティクル（出現位置・タイミング・見た目）を生成する。
  * 個数は各スタイルの particleCount。"none" や未知スタイルは空配列。
  *
- * left/top はスタイルごとの出現エリアから、delay/duration も範囲からランダムに決め、
- * さらに buildParticle で色・サイズ・軌道パラメータ（CSS変数）を個別化することで、
- * 同一演出内でもパーティクルが機械的に同期しない自然な見た目にする。
+ * left/top はスタイルごとの出現エリアから、色・サイズ・軌道パラメータ（CSS変数）は
+ * buildParticle が個別化することで、同一演出内でもパーティクルが機械的に同期しない
+ * 自然な見た目にする。duration は「先に」確定してから delay を決める（負の delay の
+ * 絶対値が 1 周期を超えると 2 周目に入り、開始位相の意図が崩れるため）。
  */
 export function generateOverlayEffectParticles(
   style: OverlayEffectStyle,
@@ -624,13 +719,15 @@ export function generateOverlayEffectParticles(
   if (!config) return [];
   return Array.from({ length: config.particleCount }, (_, index) => {
     const presentation = config.buildParticle(index);
+    const durationSec = presentation.durationSec ?? randomInRange(config.durationSecRange);
+    const delaySec = presentation.delaySec ?? resolveDelaySec(config, durationSec);
     return {
-      // presentation が left/top/animationDelay を上書きしていればそれを使う
-      // （fireworks の共通バースト中心など、位置・タイミングの協調が必要な演出用）。
+      // presentation が left/top/delaySec/durationSec を上書きしていればそれを使う
+      // （fireworks の共通バースト中心・同時破裂など、位置とタイミングの協調が必要な演出用）。
       left: presentation.left ?? `${randomInRange(config.spawnLeftPercentRange).toFixed(2)}%`,
       top: presentation.top ?? `${randomInRange(config.spawnTopPercentRange).toFixed(2)}%`,
-      animationDelay: presentation.animationDelay ?? `${randomInRange(config.delaySecRange).toFixed(2)}s`,
-      animationDuration: `${randomInRange(config.durationSecRange).toFixed(2)}s`,
+      animationDelay: formatSeconds(delaySec),
+      animationDuration: formatSeconds(durationSec),
       content: presentation.content,
       visualStyle: presentation.visualStyle,
     };
