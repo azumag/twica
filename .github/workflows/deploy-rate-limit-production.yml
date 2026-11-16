@@ -1,21 +1,26 @@
-name: Deploy Rate Limit Worker (production)
+name: Deploy Rate Limit Production Worker
+
+# #1888: production Durable Object Worker (twica-rate-limit) is a new,
+# billable Cloudflare resource. Deployment is therefore owner-gated:
+# this workflow only runs via manual dispatch (no push / PR triggers),
+# requires an exact confirm input, and stays inert until then.
+# The preview counterpart lives in deploy-rate-limit.yml (#1987 / #1992).
 
 on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: "Type 'deploy' to confirm deployment of the rate-limit production Worker"
+        description: "Type 'deploy-production' to confirm deployment of the rate-limit production Worker"
         required: true
         type: string
 
-# DO Worker の同時デプロイを防ぐ（二重 dispatch や誤操作連打でも直列化）。
 concurrency:
   group: deploy-rate-limit-production
   cancel-in-progress: false
 
 jobs:
   deploy:
-    if: ${{ github.event.inputs.confirm == 'deploy' }}
+    if: ${{ github.event.inputs.confirm == 'deploy-production' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,6 +38,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Typecheck rate-limit Worker
+        run: npm run rate-limit:typecheck
+
+      - name: Verify rate-limit production bundle (dry-run, no deploy)
+        run: npm run rate-limit:build:production
 
       - name: Deploy rate-limit production Worker
         run: npm run rate-limit:deploy
