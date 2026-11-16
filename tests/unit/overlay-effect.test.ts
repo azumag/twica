@@ -14,6 +14,21 @@ import {
   parseRarityEffectMap,
 } from '@/lib/overlay-effect'
 
+/**
+ * 「表示開始時点で周期の途中にいる」負の delay を使う環境系スタイル。
+ * fireworks（バースト同期）と aura（元から負の delay の光輪）は対象外。
+ */
+const PHASE_ALIGNED_STYLES = [
+  'sparkle',
+  'confetti',
+  'hearts',
+  'stars',
+  'bubbles',
+  'petals',
+  'snow',
+  'coins',
+] as const
+
 describe('overlay-effect: normalizeOverlayEffectStyle', () => {
   it('既知のスタイル文字列はそのまま返す', () => {
     for (const style of OVERLAY_EFFECT_STYLES) {
@@ -87,8 +102,26 @@ describe('overlay-effect: OVERLAY_EFFECT_PARTICLE_CONFIG', () => {
       expect(config.spawnLeftPercentRange[0]).toBeLessThanOrEqual(config.spawnLeftPercentRange[1])
       expect(config.spawnTopPercentRange[0]).toBeLessThanOrEqual(config.spawnTopPercentRange[1])
       expect(config.durationSecRange[0]).toBeLessThanOrEqual(config.durationSecRange[1])
-      expect(config.delaySecRange[0]).toBeLessThanOrEqual(config.delaySecRange[1])
+      // delaySecRange は「正の delay を使うスタイル」だけが持つ任意項目
+      // （aura は負の delay のみなので範囲も負側になる）
+      if (config.delaySecRange) {
+        expect(config.delaySecRange[0]).toBeLessThanOrEqual(config.delaySecRange[1])
+      }
       expect(config.particleCount).toBeGreaterThan(0)
+    }
+  })
+
+  it('環境系8種は startAtRandomPhase、fireworks/aura は正の delay 範囲を持つ', () => {
+    for (const style of PHASE_ALIGNED_STYLES) {
+      const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
+      expect(config.startAtRandomPhase).toBe(true)
+      // 負の delay を算出するため、正の delay 範囲は持たない（設定の二重管理を防ぐ）
+      expect(config.delaySecRange).toBeUndefined()
+    }
+    for (const style of ['fireworks', 'aura'] as const) {
+      const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
+      expect(config.startAtRandomPhase).toBeFalsy()
+      expect(config.delaySecRange).toBeDefined()
     }
   })
 })
@@ -105,7 +138,7 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
     }
   })
 
-  it('各パーティクルのleft/top/animationDelay/animationDurationがスタイルの設定範囲内に収まる', () => {
+  it('各パーティクルの left/top/animationDuration がスタイルの設定範囲内に収まる', () => {
     for (const style of ANIMATED_OVERLAY_EFFECT_STYLES) {
       const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
       const particles = generateOverlayEffectParticles(style)
@@ -113,23 +146,98 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
       for (const particle of particles) {
         const left = Number.parseFloat(particle.left)
         const top = Number.parseFloat(particle.top)
-        const delay = Number.parseFloat(particle.animationDelay)
         const duration = Number.parseFloat(particle.animationDuration)
 
         expect(particle.left.endsWith('%')).toBe(true)
         expect(particle.top.endsWith('%')).toBe(true)
-        expect(particle.animationDelay.endsWith('s')).toBe(true)
         expect(particle.animationDuration.endsWith('s')).toBe(true)
 
         expect(left).toBeGreaterThanOrEqual(config.spawnLeftPercentRange[0])
         expect(left).toBeLessThanOrEqual(config.spawnLeftPercentRange[1])
         expect(top).toBeGreaterThanOrEqual(config.spawnTopPercentRange[0])
         expect(top).toBeLessThanOrEqual(config.spawnTopPercentRange[1])
-        expect(delay).toBeGreaterThanOrEqual(config.delaySecRange[0])
-        expect(delay).toBeLessThanOrEqual(config.delaySecRange[1])
         expect(duration).toBeGreaterThanOrEqual(config.durationSecRange[0])
         expect(duration).toBeLessThanOrEqual(config.durationSecRange[1])
       }
+    }
+  })
+
+  it('環境系8種は delay が必ず [-duration, 0] に入る（表示開始時点で周期の途中）', () => {
+    for (const style of PHASE_ALIGNED_STYLES) {
+      const particles = generateOverlayEffectParticles(style)
+      expect(particles.length).toBeGreaterThan(0)
+
+      for (const particle of particles) {
+        const delay = Number.parseFloat(particle.animationDelay)
+        const duration = Number.parseFloat(particle.animationDuration)
+
+        expect(particle.animationDelay.endsWith('s')).toBe(true)
+        expect(duration).toBeGreaterThan(0)
+        // 負の delay。0 は「周期の先頭」なので許容するが、正にはしない。
+        expect(delay).toBeLessThanOrEqual(0)
+        // 絶対値が 1 周期を超えると 2 周目に入り、開始位相の意図が崩れる
+        expect(delay).toBeGreaterThanOrEqual(-duration)
+      }
+
+      // 全粒子が同じ位相だと同期して見えるため、位相がばらけていることも確認する
+      const uniqueDelays = new Set(particles.map((p) => p.animationDelay))
+      expect(uniqueDelays.size).toBeGreaterThan(1)
+    }
+  })
+
+  it('fireworks/aura の delay は宣言した delaySecRange に入る', () => {
+    for (const style of ['fireworks', 'aura'] as const) {
+      const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
+      expect(config.delaySecRange).toBeDefined()
+      const range = config.delaySecRange
+      if (!range) throw new Error(`${style} の delaySecRange が未設定`)
+      const [minDelay, maxDelay] = range
+      for (const particle of generateOverlayEffectParticles(style)) {
+        const delay = Number.parseFloat(particle.animationDelay)
+        expect(particle.animationDelay.endsWith('s')).toBe(true)
+        expect(delay).toBeGreaterThanOrEqual(minDelay)
+        expect(delay).toBeLessThanOrEqual(maxDelay)
+      }
+    }
+  })
+
+  it('fireworks の火花はバースト内で delay と duration を共有する', () => {
+    const particles = generateOverlayEffectParticles('fireworks')
+    const sparksPerBurst = 12
+    const bursts = new Map<number, { delay: string; duration: string }[]>()
+    for (let index = 0; index < particles.length; index += 1) {
+      const burstIndex = Math.floor(index / sparksPerBurst)
+      const entry = {
+        delay: particles[index].animationDelay,
+        duration: particles[index].animationDuration,
+      }
+      const list = bursts.get(burstIndex)
+      if (list) list.push(entry)
+      else bursts.set(burstIndex, [entry])
+    }
+
+    expect(bursts.size).toBe(4)
+    for (const sparks of bursts.values()) {
+      expect(sparks).toHaveLength(sparksPerBurst)
+      expect(new Set(sparks.map((s) => s.delay)).size).toBe(1)
+      expect(new Set(sparks.map((s) => s.duration)).size).toBe(1)
+    }
+
+    // バースト間では開始時刻がずれる（全バーストが同時に破裂しない）
+    const burstDelays = [...bursts.values()].map((sparks) => Number.parseFloat(sparks[0].delay))
+    expect(new Set(burstDelays).size).toBe(bursts.size)
+    const burstDurations = [...bursts.values()].map((sparks) => Number.parseFloat(sparks[0].duration))
+    // 周期は全バーストで共通。バーストごとに変えると位相がずれ、全バーストが
+    // 同時に暗転して火花が消える時間帯が周期的に生まれる（実測で確認済み）。
+    expect(new Set(burstDurations).size).toBe(1)
+    // 開始時刻は周期をバースト数で等分した間隔（暗い区間 12% より広い）で並ぶ。
+    // これにより「少なくとも1バーストは明るい」状態が保たれる。
+    const period = burstDurations[0]
+    expect(period).toBeGreaterThan(0)
+    for (let index = 1; index < burstDelays.length; index += 1) {
+      expect(burstDelays[index] - burstDelays[index - 1]).toBeCloseTo(period / bursts.size, 2)
+      // 1バーストの暗転は周期の約12%。間隔がそれより広いことを保証する
+      expect(burstDelays[index] - burstDelays[index - 1]).toBeGreaterThan(period * 0.12)
     }
   })
 
