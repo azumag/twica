@@ -488,7 +488,7 @@ export const VOTE_CAMPAIGN_DISMISS_KEY = 'vote-campaign-dismissed'
  * すべて維持され、この定数を true に戻すだけで入口が同時に復帰する(設定値の再保存は不要)。
  * なお /trade/[streamerId] は直リンクでは従来どおり到達でき、掲示板と応諾フローの挙動は変えない。
  */
-export const CARD_TRADE_UI_VISIBLE = false
+export const CARD_TRADE_UI_VISIBLE = true
 
 /**
  * 重複カードのバッジ設定（Issue #1782）の入口UIの表示ゲート。
