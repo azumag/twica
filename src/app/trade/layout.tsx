@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { getTranslations } from "next-intl/server";
+import { NextIntlClientProvider } from "next-intl";
+import { getMessages, getTranslations } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getUserPlan } from "@/lib/plan";
+import { pick, TRADE_CLIENT_NAMESPACES } from "@/i18n/client-namespaces";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
 import PublicFooter from "@/components/PublicFooter";
@@ -41,6 +43,10 @@ export const metadata: Metadata = {
  */
 export default async function TradeLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();
+  // Nested provider は parent の messages を置換する。匿名/ログインどちらの
+  // branch にも client component（TradeBoard など）がいるため、両方の返り値を
+  // 同じ list の provider で包み、root の list に依存させない。
+  const messages = await getMessages();
   const tGuide = await getTranslations("tradeGuidePage");
   // Right-aligned and capped at the same max-w-4xl the trade pages use, so the
   // link lines up with their content column instead of the viewport edge.
@@ -54,20 +60,22 @@ export default async function TradeLayout({ children }: { children: React.ReactN
 
   if (!session) {
     return (
-      <div className="min-h-screen bg-gray-900">
-        <header className="border-b border-gray-800">
-          <div className="container mx-auto px-4 py-4">
-            <Link href="/" className="text-xl font-bold text-white">
-              TwiCa
-            </Link>
-          </div>
-        </header>
-        <main className="container mx-auto px-4 py-6">
-          {guideLink}
-          {children}
-        </main>
-        <PublicFooter />
-      </div>
+      <NextIntlClientProvider messages={pick(messages, TRADE_CLIENT_NAMESPACES)}>
+        <div className="min-h-screen bg-gray-900">
+          <header className="border-b border-gray-800">
+            <div className="container mx-auto px-4 py-4">
+              <Link href="/" className="text-xl font-bold text-white">
+                TwiCa
+              </Link>
+            </div>
+          </header>
+          <main className="container mx-auto px-4 py-6">
+            {guideLink}
+            {children}
+          </main>
+          <PublicFooter />
+        </div>
+      </NextIntlClientProvider>
     );
   }
 
@@ -80,20 +88,25 @@ export default async function TradeLayout({ children }: { children: React.ReactN
   return (
     // Same single polling source as the dashboard: write buttons on trade
     // pages read the maintenance mode through useMaintenanceStatus().
-    <MaintenanceStatusProvider>
-      <div className="min-h-screen bg-gray-900">
-        <Header session={session} unreadAnnouncementsCount={unreadAnnouncements.length} />
-        <div className="container mx-auto px-4 py-6">
-          <MaintenanceBanner />
-          <div className="mb-6">
-            <DashboardNav isStreamer={isStreamer} isSupporter={plan !== "basic"} />
+    // The trade provider must also wrap this branch: the nested provider
+    // replaces the root messages, so without it the logged-in trade pages would
+    // lose `trade` / `navigation` / `maintenance` while rendering.
+    <NextIntlClientProvider messages={pick(messages, TRADE_CLIENT_NAMESPACES)}>
+      <MaintenanceStatusProvider>
+        <div className="min-h-screen bg-gray-900">
+          <Header session={session} unreadAnnouncementsCount={unreadAnnouncements.length} />
+          <div className="container mx-auto px-4 py-6">
+            <MaintenanceBanner />
+            <div className="mb-6">
+              <DashboardNav isStreamer={isStreamer} isSupporter={plan !== "basic"} />
+            </div>
+            <main>
+              {guideLink}
+              {children}
+            </main>
           </div>
-          <main>
-            {guideLink}
-            {children}
-          </main>
         </div>
-      </div>
-    </MaintenanceStatusProvider>
+      </MaintenanceStatusProvider>
+    </NextIntlClientProvider>
   );
 }

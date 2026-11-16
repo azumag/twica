@@ -2,6 +2,9 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getUserPlanSnapshot } from "@/lib/plan";
 import { logPerf, perfStart } from "@/lib/perf";
+import { NextIntlClientProvider } from "next-intl";
+import { getMessages } from "next-intl/server";
+import { DASHBOARD_CLIENT_NAMESPACES, pick } from "@/i18n/client-namespaces";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
@@ -31,11 +34,22 @@ export default async function DashboardLayout({
   // Get session for authentication check
   // 認証確認のためにセッションを取得
   const session = await getSession();
+  // next-intl の provider はネストすると親の messages を「置換」するため、
+  // この layout 配下（chrome と全 dashboard ページ）で必要な namespace を
+  // ここでまとめて渡す。root layout の list は継承されない。
+  const messages = await getMessages();
 
   // Redirect to login if not authenticated
   // 未認証の場合はログインページにリダイレクト
   if (!session) {
-    return <TwitchLoginRedirect />;
+    // 早期 return も layout の描画結果なので provider で包む。TwitchLoginRedirect は
+    // auth / maintenance を client 側で読むが、dashboard の list はそれを含むため
+    // root の list に依存せずに描画できる。
+    return (
+      <NextIntlClientProvider messages={pick(messages, DASHBOARD_CLIENT_NAMESPACES)}>
+        <TwitchLoginRedirect />
+      </NextIntlClientProvider>
+    );
   }
 
   // Check if user has streamer features (affiliate/partner)
@@ -60,38 +74,43 @@ export default async function DashboardLayout({
   logPerf("dashboard-layout", "load", startedAt, { isStreamer, isSupporter });
 
   return (
-    // MaintenanceStatusProvider を Header 含めダッシュボード全体で共有する。
-    // Header自体は書き込みを行わないが、Providerをこの階層に置くことで
-    // ダッシュボード配下のどのページ・どのコンポーネントからも
-    // useMaintenanceStatus() で同じ1系統のpolling結果を参照できる
-    // （書き込みボタンごとの個別fetchを避ける設計。詳細は
-    // MaintenanceStatusProvider.tsx のコメント参照）。
-    <MaintenanceStatusProvider>
-      {/* 共通警告とsettings内CTAでOAuth state発行を競合させないよう、
-          dashboard全体を1つの再認証single-flight境界に置く。 */}
-      <ChatReauthorizationProvider>
-        <div className="min-h-screen bg-gray-900">
-          <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
+    // Dashboard 配下の client component は、この provider の list だけを参照する。
+    // ここを root layout の provider に任せると全 dashboard ページで root の
+    // 5 namespace しか見えず、dashboard 用 namespace が missing になる。
+    <NextIntlClientProvider messages={pick(messages, DASHBOARD_CLIENT_NAMESPACES)}>
+      {/* MaintenanceStatusProvider を Header 含めダッシュボード全体で共有する。
+          Header自体は書き込みを行わないが、Providerをこの階層に置くことで
+          ダッシュボード配下のどのページ・どのコンポーネントからも
+          useMaintenanceStatus() で同じ1系統のpolling結果を参照できる
+          （書き込みボタンごとの個別fetchを避ける設計。詳細は
+          MaintenanceStatusProvider.tsx のコメント参照）。 */}
+      <MaintenanceStatusProvider>
+        {/* 共通警告とsettings内CTAでOAuth state発行を競合させないよう、
+            dashboard全体を1つの再認証single-flight境界に置く。 */}
+        <ChatReauthorizationProvider>
+          <div className="min-h-screen bg-gray-900">
+            <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
 
-          <div className="container mx-auto px-4 py-6">
-            {/* メンテナンスバナー: read-only中であることをダッシュボード全体で常時表示 */}
-            <MaintenanceBanner />
+            <div className="container mx-auto px-4 py-6">
+              {/* メンテナンスバナー: read-only中であることをダッシュボード全体で常時表示 */}
+              <MaintenanceBanner />
 
-            {/* チャット通知が有効なのに実効送信手段がない場合の非dismissable警告 */}
-            <ChatDeliveryWarning needsAttention={chatDeliveryCapability?.needsAttention ?? false} />
+              {/* チャット通知が有効なのに実効送信手段がない場合の非dismissable警告 */}
+              <ChatDeliveryWarning needsAttention={chatDeliveryCapability?.needsAttention ?? false} />
 
-            {/* Navigation bar */}
-            {/* ナビゲーションバー */}
-            <div className="mb-6">
-              <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
+              {/* Navigation bar */}
+              {/* ナビゲーションバー */}
+              <div className="mb-6">
+                <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
+              </div>
+
+              {/* Page content */}
+              {/* ページコンテンツ */}
+              <main>{children}</main>
             </div>
-
-            {/* Page content */}
-            {/* ページコンテンツ */}
-            <main>{children}</main>
           </div>
-        </div>
-      </ChatReauthorizationProvider>
-    </MaintenanceStatusProvider>
+        </ChatReauthorizationProvider>
+      </MaintenanceStatusProvider>
+    </NextIntlClientProvider>
   );
 }
