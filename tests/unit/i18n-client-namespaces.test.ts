@@ -236,11 +236,40 @@ function collectDependencies(sourceFile: ts.SourceFile): string[] {
  * Resolve a specifier exactly as TypeScript (and therefore Next.js) would.
  * Results outside src/ are intentionally ignored: following node_modules would
  * scan third-party code and could pick up unrelated `useTranslations` calls.
+ *
+ * An unresolved local import (relative or the `@/` tsconfig alias) must throw.
+ * This function defines the edge set of the namespace graph: silently dropping
+ * an unresolved edge also drops every `useTranslations` call in the skipped file
+ * and in anything that file imports. The guard would then report success while
+ * a client component uses a namespace that is missing from the provider list --
+ * a false negative in the exact property this test exists to check. A typo such
+ * as `./Missing` or `@/components/Missing` must therefore fail loudly instead of
+ * being skipped. Bare package specifiers stay out of scope (third-party code),
+ * and non-source assets such as CSS/JSON are not part of the TypeScript graph.
  */
 function resolveSourceModule(specifier: string, containingFile: string): string | null {
   const resolved = ts.resolveModuleName(specifier, containingFile, compilerOptions, ts.sys)
     .resolvedModule;
-  if (!resolved) return null;
+
+  if (!resolved) {
+    const isLocalSpecifier =
+      specifier.startsWith("./") ||
+      specifier.startsWith("../") ||
+      specifier.startsWith("@/");
+    // CSS/JSON/etc. are legitimate Next.js imports that TypeScript does not
+    // resolve without `allowArbitraryExtensions`; keep returning null for them.
+    const extension = path.extname(specifier);
+    const isNonSourceSpecifier = extension !== "" && !SOURCE_FILE_PATTERN.test(specifier);
+
+    if (isLocalSpecifier && !isNonSourceSpecifier) {
+      throw new Error(
+        `Unresolved local module "${specifier}" imported from ${relative(containingFile)}: ` +
+          "the i18n namespace guard cannot follow it, so useTranslations calls in that module would be silently skipped.",
+      );
+    }
+
+    return null;
+  }
 
   const filename = path.resolve(resolved.resolvedFileName);
   if (!filename.startsWith(srcDir + path.sep)) return null;
@@ -468,6 +497,34 @@ function relative(filename: string): string {
 function formatLocation(call: { file: string; line: number; column: number }): string {
   return `${relative(call.file)}:${call.line}:${call.column}`;
 }
+
+describe("resolveSourceModule", () => {
+  const containingFile = path.join(appDir, "live", "layout.tsx");
+
+  it("throws for an unresolved relative import instead of skipping it", () => {
+    // Returning null here used to drop the whole subtree from the graph, which
+    // makes the namespace guard unable to see useTranslations calls in it.
+    expect(() => resolveSourceModule("./__MissingForGuard__", containingFile)).toThrow(
+      /Unresolved local module "\.\/__MissingForGuard__".*src\/app\/live\/layout\.tsx/,
+    );
+  });
+
+  it("throws for an unresolved @/ alias import instead of skipping it", () => {
+    expect(() =>
+      resolveSourceModule("@/components/__MissingForGuard__", containingFile),
+    ).toThrow(
+      /Unresolved local module "@\/components\/__MissingForGuard__".*src\/app\/live\/layout\.tsx/,
+    );
+  });
+
+  it("still ignores unresolved non-source assets and third-party packages", () => {
+    // CSS/JSON are not modules in the TypeScript client graph, and bare package
+    // specifiers are outside src/, so returning null is the intended behaviour.
+    expect(resolveSourceModule("./globals.css", path.join(appDir, "layout.tsx"))).toBeNull();
+    expect(resolveSourceModule("__missing_third_party_package__", containingFile)).toBeNull();
+    expect(resolveSourceModule("react", containingFile)).toBeNull();
+  });
+});
 
 describe("client i18n namespace lists", () => {
   it("has at least one route entry for every provider site", () => {
