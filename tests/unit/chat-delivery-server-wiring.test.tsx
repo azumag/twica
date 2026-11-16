@@ -68,6 +68,18 @@ vi.mock('next/navigation', () => ({
   redirect: mocks.redirect,
 }))
 
+// DashboardLayout now wraps its subtree in a nested NextIntlClientProvider with
+// the dashboard-only namespace list. Server-component unit tests run outside the
+// Next.js request scope, so the real provider (and getMessages) cannot infer the
+// request locale; a passthrough provider is enough for this wiring test.
+vi.mock('next-intl', () => ({
+  NextIntlClientProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}))
+
+vi.mock('next-intl/server', () => ({
+  getMessages: async () => ({}),
+}))
+
 vi.mock('@/lib/perf', () => ({
   perfStart: () => 0,
   logPerf: () => undefined,

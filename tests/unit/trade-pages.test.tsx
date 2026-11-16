@@ -42,7 +42,15 @@ vi.mock("@/lib/trade", () => ({
 vi.mock("@/lib/trade-auction", () => ({ TRADE_MAX_BID_QUANTITY: 10 }));
 vi.mock("@/lib/logger", () => ({ logger: { warn: mocks.loggerWarn, info: vi.fn(), error: vi.fn() } }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect, notFound: mocks.notFound }));
+vi.mock("next-intl", () => ({
+  // The trade layout now owns a nested provider (per-segment message payloads).
+  // Unit tests render server components outside the Next.js request scope, where
+  // the real client provider cannot infer its locale, so keep it as a passthrough.
+  NextIntlClientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 vi.mock("next-intl/server", () => ({
+  // The layout picks its segment payload from the request messages.
+  getMessages: async () => ({}),
   getTranslations: async () => (key: string) => key,
 }));
 vi.mock("@/components/Header", () => ({ default: () => <div data-testid="app-header" /> }));
