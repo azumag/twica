@@ -2820,6 +2820,72 @@ describe('OverlayPage', () => {
       ).toBeNull()
     })
   })
+
+  // Issue #2065回帰: ?demo=true のデモ起動effectがtriggerDemoを依存に持つと、
+  // 効果音設定fetchの解決でenqueueResultが再生成されるたびにデモPOSTが追加発火
+  // していた。デモタイマー発火後にsound-settingsを解決させ、その再生成が
+  // 起きてもPOSTが1回で止まることを固定する。
+  it('demo=trueのデモ初期化はsound-settings解決によるcallback再生成後も1回だけPOSTされる', async () => {
+    vi.useFakeTimers()
+
+    let resolveSoundSettings: (() => void) | undefined
+    const soundSettingsReady = new Promise<void>((resolve) => {
+      resolveSoundSettings = resolve
+    })
+    const fetchMock = vi.fn().mockImplementation((url: unknown) => {
+      const href = String(url)
+      if (href.includes('/api/streamer/') && href.includes('sound-settings')) {
+        return soundSettingsReady.then(() => ({
+          ok: true,
+          json: async () => ({ soundUrl: null, soundEnabled: false, soundRules: [] }),
+        }))
+      }
+      if (href.includes('/api/gacha/demo')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            card: {
+              id: 'demo-card',
+              name: 'DemoCard',
+              description: null,
+              image_url: null,
+              rarity: 'common',
+            },
+            userTwitchUsername: 'Demo',
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    window.history.replaceState({}, '', '/overlay/streamer-1?demo=true')
+    render(<OverlayPage />)
+
+    const demoPostCalls = () =>
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes('/api/gacha/demo') && (init as RequestInit | undefined)?.method === 'POST',
+      )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600)
+    })
+    expect(demoPostCalls()).toHaveLength(1)
+
+    // 初回POSTのあとにsound-settingsが解決 → soundSettings.soundRules更新で
+    // enqueueResult→triggerDemoが再生成される。修正前はここでデモeffectが
+    // 再実行され、500ms後に2回目のPOSTが発火していた。
+    await act(async () => {
+      resolveSoundSettings?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1200)
+    })
+    expect(demoPostCalls()).toHaveLength(1)
+  })
 })
 
 describe('pickSoundBearingCardIndex (F2)', () => {

@@ -2143,6 +2143,18 @@ export default function OverlayPage() {
     }
   }, [enqueueResult, streamerId]);
 
+  // Issue #2065: triggerDemoはenqueueResult経由でsoundSettings.soundRulesを
+  // 依存に持つため、効果音設定のfetch解決（devのStrictModeでは同fetchが2回走り
+  // 2回解決する）ごとに再生成される。デモ起動effectがtriggerDemo自体を依存に
+  // 含めると、タイマー発火後に来た再生成でもeffectが再実行されて追加の
+  // demo POSTが発火していた（観測: 2〜3回）。OverlayPreview.tsxの同名refと
+  // 同じく、最新版をrefで参照して起動effect自体はstreamerId変更時のみ
+  // 再スケジュールする。
+  const triggerDemoRef = useRef(triggerDemo);
+  useEffect(() => {
+    triggerDemoRef.current = triggerDemo;
+  }, [triggerDemo]);
+
   // Check URL for demo param and optional cardId
   // URLパラメータでdemo=trueの場合にデモを実行、cardIdが指定されていればそのカードを表示
   useEffect(() => {
@@ -2151,11 +2163,13 @@ export default function OverlayPage() {
       // cardIdパラメータが指定されていれば特定のカードを表示
       const cardId = urlParams.get("cardId") || undefined;
       const timeoutId = setTimeout(() => {
-        triggerDemo(cardId);
+        // triggerDemoを依存に含めずref経由で呼ぶ（再生成によるデモ再発火を防ぐ）
+        void triggerDemoRef.current(cardId);
       }, 500);
       return () => clearTimeout(timeoutId);
     }
-  }, [triggerDemo]);
+    // streamerId変更時だけ1回だけ再スケジュールする（callbackの再生成では走らせない）
+  }, [streamerId]);
 
   // Issue #638(回帰): レガシーミラー(soundEnabled && soundUrl)を「効果音が
   // 設定されているか」の判定に使うと、レアリティ別・報酬別ルールしか
