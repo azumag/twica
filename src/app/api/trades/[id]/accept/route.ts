@@ -15,7 +15,7 @@ import {
   tradeInternalErrorResponse,
   type TradeAcceptApiErrorCode,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { isCanonicalUuid, normalizeUuid } from "@/lib/uuid-validation";
 
 type AcceptError = TradeAcceptRpcError | TradeAcceptPrecheckError | "TRADE_BUSY";
 
@@ -63,16 +63,22 @@ export async function POST(
   if (!auth.ok) return auth.response;
   const { session, rateLimitIdentifier: identifier } = auth;
 
-  const { id } = await params;
-  if (!isCanonicalUuid(id)) {
+  const { id: pathId } = await params;
+  if (!isCanonicalUuid(pathId)) {
     return tradeErrorResponse("INVALID_REQUEST", 400);
   }
+  // #2061: DBは小文字のUUIDを返す。大文字表記を受理したままサービス層へ渡すと
+  // 文字列比較（accept結果検証・冪等リプレイ判定）が表記差でずれ、成立済みの
+  // 応諾が500になる。境界で小文字へ揃えてから渡す。以降の `id` は正規化済み。
+  const id = normalizeUuid(pathId);
 
   try {
     const parsed = await readTradeJsonBody(request);
     if (!parsed.ok) return parsed.response;
+    // #2061: 冪等キーも境界で小文字化する（precheckのリプレイ判定はDBの
+    // 小文字値と===比較する）。小文字化は受理判定に影響しない。
     const requestId =
-      typeof parsed.body.requestId === "string" ? parsed.body.requestId : "";
+      typeof parsed.body.requestId === "string" ? normalizeUuid(parsed.body.requestId) : "";
     // #1789: the quantity the viewer was shown and agreed to. A bundle that
     // predates the field sends none and has only ever shown "1 copy", so the
     // default 1 makes the RPC refuse a ×N offer instead of transferring N.

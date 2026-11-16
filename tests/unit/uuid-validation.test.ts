@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isCanonicalUuid } from '@/lib/uuid-validation'
+import { isCanonicalUuid, normalizeUuid } from '@/lib/uuid-validation'
 
 describe('isCanonicalUuid', () => {
   it.each([
@@ -19,5 +19,20 @@ describe('isCanonicalUuid', () => {
     ' 94cb6927-8733-4f1c-8e7e-0afb89773daa',
   ])('アプリが生成しないUUID表記を拒否する: %s', (value) => {
     expect(isCanonicalUuid(value)).toBe(false)
+  })
+})
+
+describe('normalizeUuid', () => {
+  // #2061: DBが返す小文字表記へ揃える。小文字入力は変わらない（冪等）。
+  it('大文字表記を小文字へ正規化する', () => {
+    expect(normalizeUuid('94CB6927-8733-4F1C-8E7E-0AFB89773DAA')).toBe(
+      '94cb6927-8733-4f1c-8e7e-0afb89773daa',
+    )
+  })
+
+  it('小文字入力をそのまま返す', () => {
+    expect(normalizeUuid('94cb6927-8733-4f1c-8e7e-0afb89773daa')).toBe(
+      '94cb6927-8733-4f1c-8e7e-0afb89773daa',
+    )
   })
 })

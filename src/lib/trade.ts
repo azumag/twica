@@ -1361,7 +1361,11 @@ function isValidTradeAcceptRpcResult(
 
   return (
     result.error === undefined
-    && result.tradeOfferId === expectedTradeOfferId
+    // #2061: DBが返すtradeOfferIdは小文字表記。入力が大文字表記でも応諾自体は
+    // 成立している（RPC側の::uuidキャストが正規化する）ため、表記差で成立済み
+    // の応諾を「invalid response」としないよう両者を小文字化して比較する。
+    && typeof result.tradeOfferId === "string"
+    && result.tradeOfferId.toLowerCase() === expectedTradeOfferId.toLowerCase()
     && typeof result.receivedUserCardId === "string"
     && isCanonicalUuid(result.receivedUserCardId)
     && typeof result.givenUserCardId === "string"

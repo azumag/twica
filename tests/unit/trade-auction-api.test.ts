@@ -296,6 +296,31 @@ describe("POST withdraw / cancel / settle", () => {
     expect(bad.status).toBe(400);
   });
 
+  // #2061: サービス層はbidの実auction_idとパスの[id]を===比較する。大文字
+  // 表記を受理したまま渡すと不一致→404になるため、境界で小文字へ揃える。
+  it("withdraw lowercases uppercase path ids before calling the service (#2061)", async () => {
+    const UPPER_AUCTION_ID = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+    const UPPER_BID_ID = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB";
+    const { POST } = await import("@/app/api/trades/auctions/[id]/bids/[bidId]/withdraw/route");
+    mocks.withdrawTradeAuctionBid.mockResolvedValueOnce({
+      kind: "ok",
+      bidId: UPPER_BID_ID.toLowerCase(),
+      alreadyWithdrawn: false,
+    });
+
+    const response = await POST(
+      post(`/api/trades/auctions/${UPPER_AUCTION_ID}/bids/${UPPER_BID_ID}/withdraw`),
+      params({ id: UPPER_AUCTION_ID, bidId: UPPER_BID_ID }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.withdrawTradeAuctionBid).toHaveBeenCalledWith({
+      twitchUserId: "viewer-1",
+      bidId: UPPER_BID_ID.toLowerCase(),
+      auctionId: UPPER_AUCTION_ID.toLowerCase(),
+    });
+  });
+
   it("cancel maps TRADE_AUCTION_HAS_BIDS to 409 and returns alreadyCancelled", async () => {
     const { POST } = await import("@/app/api/trades/auctions/[id]/cancel/route");
     mocks.cancelTradeAuction.mockResolvedValueOnce({ kind: "ok", auctionId: AUCTION_ID, alreadyCancelled: true });

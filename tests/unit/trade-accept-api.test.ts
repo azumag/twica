@@ -149,6 +149,43 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     expect(mocks.recordApiError).not.toHaveBeenCalled();
   });
 
+  // #2061: 大文字表記のUUIDは受理するが、サービス層へ渡す前にDB表記（小文字）
+  // へ揃える。揃えないとRPC結果検証が表記差でずれ、成立済みの応諾が500になる。
+  it("lowercases an uppercase path id and requestId before calling the service (#2061)", async () => {
+    const UPPER_OFFER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".toUpperCase();
+    const UPPER_REQUEST_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".toUpperCase();
+    mocks.acceptTradeOffer.mockResolvedValue({
+      success: true,
+      tradeOfferId: UPPER_OFFER_ID.toLowerCase(),
+      givenUserCardId: GIVEN_IDS[0],
+      idempotentReplay: false,
+    });
+    const { POST } = await import("@/app/api/trades/[id]/accept/route");
+
+    const response = await POST(
+      new NextRequest(`http://localhost/api/trades/${UPPER_OFFER_ID}/accept`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requestId: UPPER_REQUEST_ID }),
+      }),
+      { params: Promise.resolve({ id: UPPER_OFFER_ID }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.acceptTradeOffer).toHaveBeenCalledWith({
+      twitchUserId: "viewer-1",
+      tradeOfferId: UPPER_OFFER_ID.toLowerCase(),
+      requestId: UPPER_REQUEST_ID.toLowerCase(),
+      expectedQuantity: 1,
+    });
+    // 監査参照・ログも正規化済みのIDを使う。
+    expect(mocks.getTradeOfferAuditParticipants).toHaveBeenCalledWith(UPPER_OFFER_ID.toLowerCase());
+    expect(mocks.loggerInfo).toHaveBeenCalledWith(
+      "Card trade completed",
+      expect.objectContaining({ tradeOfferId: UPPER_OFFER_ID.toLowerCase() }),
+    );
+  });
+
   describe("wantedQuantity (expected quantity, #1789)", () => {
     const post = async (body: string | Record<string, unknown>) => {
       const { POST } = await import("@/app/api/trades/[id]/accept/route");

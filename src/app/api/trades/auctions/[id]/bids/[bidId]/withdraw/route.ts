@@ -8,7 +8,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { isCanonicalUuid, normalizeUuid } from "@/lib/uuid-validation";
 
 /**
  * POST /api/trades/auctions/[id]/bids/[bidId]/withdraw
@@ -30,17 +30,21 @@ export async function POST(
   if (!isCanonicalUuid(id) || !isCanonicalUuid(bidId)) {
     return tradeErrorResponse("INVALID_REQUEST", 400);
   }
+  // #2061: サービス層はbidの実auction_idとパスの[id]を===比較する。DBは
+  // 小文字を返すため、大文字表記は不一致→404になる。境界で小文字へ揃える。
+  const auctionId = normalizeUuid(id);
+  const normalizedBidId = normalizeUuid(bidId);
 
   try {
     const result = await withdrawTradeAuctionBid({
       twitchUserId: auth.session.twitchUserId,
-      bidId,
-      auctionId: id,
+      bidId: normalizedBidId,
+      auctionId,
     });
     if (result.kind === "error") return tradeAuctionErrorResponse(result.code);
 
     logger.info("Trade auction bid withdrawn", {
-      auctionId: id,
+      auctionId,
       bidId: result.bidId,
       bidderTwitchUserId: auth.session.twitchUserId,
       alreadyWithdrawn: result.alreadyWithdrawn,

@@ -16,7 +16,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { isCanonicalUuid, normalizeUuid } from "@/lib/uuid-validation";
 
 /** HTTP status per create-path service code (unchanged since #723). */
 function createErrorStatus(code: TradeServiceErrorCode): number {
@@ -114,12 +114,14 @@ export async function POST(request: NextRequest) {
       return tradeErrorResponse("INVALID_REQUEST", 400);
     }
 
+    // #2061: 同一カード判定はDBの小文字IDと入力を===比較する。大文字表記を
+    // 受理したまま渡すと判定をすり抜けるため、境界で小文字へ揃えてから渡す。
     const result = await createTradeOffer({
       twitchUserId: auth.session.twitchUserId,
-      offeredUserCardId,
-      wantedCardId,
+      offeredUserCardId: normalizeUuid(offeredUserCardId),
+      wantedCardId: normalizeUuid(wantedCardId),
       wantedQuantity,
-      requestId,
+      requestId: normalizeUuid(requestId),
     });
     if (result.kind === "error") {
       return tradeErrorResponse(result.code, createErrorStatus(result.code));

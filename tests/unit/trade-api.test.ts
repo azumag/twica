@@ -286,6 +286,47 @@ describe("POST /api/trades (#723, #715 PR-C)", () => {
     });
   });
 
+  // #2061: 同一カード判定はDBの小文字IDと===比較する。大文字表記を受理した
+  // まま渡すと判定をすり抜けるため、境界で小文字へ揃えてから渡す。
+  it("lowercases uppercase UUIDs in the create body before calling the service (#2061)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    const UPPER = {
+      offeredUserCardId: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+      wantedCardId: "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB",
+      requestId: "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC",
+    };
+    mocks.createTradeOffer.mockResolvedValue({
+      kind: "ok",
+      idempotentReplay: false,
+      offer: {
+        id: OFFER_ID,
+        offered_user_card_id: UPPER.offeredUserCardId.toLowerCase(),
+        offered_card_id: "66666666-6666-4666-8666-666666666666",
+        offered_streamer_id: STREAMER_ID,
+        wanted_card_id: UPPER.wantedCardId.toLowerCase(),
+        wanted_streamer_id: STREAMER_ID,
+        wanted_quantity: 1,
+        offered_card_snapshot: { name: "A" },
+        wanted_card_snapshot: { name: "B" },
+        is_cross_channel: false,
+        status: "open",
+        created_at: "2026-10-04T00:00:00.000Z",
+      },
+    });
+
+    const { POST } = await import("@/app/api/trades/route");
+    const response = await POST(postJson("/api/trades", UPPER));
+
+    expect(response.status).toBe(200);
+    expect(mocks.createTradeOffer).toHaveBeenCalledWith({
+      twitchUserId: "viewer-1",
+      offeredUserCardId: UPPER.offeredUserCardId.toLowerCase(),
+      wantedCardId: UPPER.wantedCardId.toLowerCase(),
+      requestId: UPPER.requestId.toLowerCase(),
+      wantedQuantity: 1,
+    });
+  });
+
   describe("wantedQuantity (#1789)", () => {
     const createdOffer = (wantedQuantity: number) => ({
       kind: "ok",

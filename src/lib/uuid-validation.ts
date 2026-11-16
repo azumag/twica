@@ -2,7 +2,9 @@
 // 8-4-4-4-12の標準構造へ統一されている。PostgreSQL自体は波括弧付きや
 // ハイフン省略形も受理するが、アプリが生成しない表記まで外部入力で許可する
 // 必要はないため、境界ではこの構造だけをallowlistする。既存overlay検証との
-// 互換性を保つため英字の大文字・小文字は区別せず、表記の小文字化は行わない。
+// 互換性を保つため英字の大文字・小文字は区別せず、isCanonicalUuid自身は
+// 表記の小文字化を行わない。大文字表記を受理した境界がサービス層へ渡す
+// 前に小文字へ揃える必要があるときは normalizeUuid を使う（#2061）。
 const CANONICAL_UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -14,4 +16,18 @@ const CANONICAL_UUID_PATTERN =
  */
 export function isCanonicalUuid(value: string): boolean {
   return CANONICAL_UUID_PATTERN.test(value)
+}
+
+/**
+ * UUIDをDBが返す表記（小文字）へ揃える。
+ *
+ * PostgreSQLのuuid比較は表記を区別しないが、アプリ側でIDを文字列として
+ * 比較する箇所（accept RPC結果の検証、入札取り下げのauctionId照合、
+ * 同一カード判定）は表記差をそのまま見る。isCanonicalUuidが大文字表記を
+ * 受理するため、境界はこの関数で小文字化してからサービス層へ渡す。
+ * これを怠ると大文字UUIDの応諾が成立後に500になる、入札取り下げが404に
+ * なる、同一カード判定をすり抜ける、といった不整合が起きる（#2061）。
+ */
+export function normalizeUuid(value: string): string {
+  return value.toLowerCase()
 }

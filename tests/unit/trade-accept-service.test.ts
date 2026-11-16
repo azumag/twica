@@ -148,6 +148,23 @@ describe("acceptTradeOffer (#724)", () => {
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
 
+  it("matches the RPC's tradeOfferId case-insensitively (#2061)", async () => {
+    // DBは小文字のIDを返す。大文字表記の入力が残っていても（境界の正規化とは
+    // 別の防衛線として）成立済みの応諾を invalid response としない。
+    const result = rpcSuccess({ tradeOfferId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+    const sqlMock = vi.fn().mockResolvedValue([{ result }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(
+      acceptTradeOffer({
+        ...ACCEPT_INPUT,
+        tradeOfferId: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+      }),
+    ).resolves.toEqual(result);
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
   it("retries SQLSTATE 40P01 exactly once with the same requestId", async () => {
     const success = rpcSuccess({ idempotentReplay: true });
     const sqlMock = vi.fn()
