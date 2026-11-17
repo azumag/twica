@@ -43,6 +43,8 @@ import {
   maskTradeCardImages,
   normalizeSnapshot,
   qualifiedColumn,
+  toIsoTimestamp,
+  TRADE_COLLECTION_PREVIEW_SIZE,
   TRADE_PAGE_SIZE,
   tradeEnabledGate,
   viewerUserIdOf,
@@ -636,8 +638,9 @@ export async function listTradeAuctions(input: {
  * ハブのコレクション別オークション一覧 (#2079)。
  *
  * 出品一覧と同じく、所持する全コレクション分を1クエリで取る。配置先は
- * offered_streamer_id だけ（オークションに wanted 側は無い）。先頭5件は
- * ROW_NUMBER() の外側 WHERE rn <= 5 で SQL 内で切り、total は COUNT OVER、
+ * offered_streamer_id だけ（オークションに wanted 側は無い）。先頭
+ * TRADE_COLLECTION_PREVIEW_SIZE 件は ROW_NUMBER() の外側 WHERE で SQL 内で
+ * 切り、total は COUNT OVER、
  * latestCreatedAt は MAX OVER で全件から返す。
  *
  * sort は newest（created_at DESC）と ending_soon（ends_at ASC）の2つだけ。
@@ -649,7 +652,7 @@ export async function listTradeAuctions(input: {
  */
 export async function listTradeAuctionsByCollection(input: {
   twitchUserId: string;
-  /** undefined: 所持する全コレクションの先頭5件。指定時: その1配信者のページ。 */
+  /** undefined: 所持する全コレクションの先頭 TRADE_COLLECTION_PREVIEW_SIZE 件。 */
   streamerId?: string;
   sort: TradeCollectionSort;
   /** streamerId 指定時のみ使う（1始まり）。 */
@@ -664,9 +667,26 @@ export async function listTradeAuctionsByCollection(input: {
     async () => {
       const { db } = await getDb();
       const partition = qualifiedColumn(auctionsTable.offered_streamer_id);
+      const endsAt = qualifiedColumn(auctionsTable.ends_at);
+      const auctionId = qualifiedColumn(auctionsTable.id);
+      // 第1キー: 入札中（まだ締切前）を先、選択待ちを後ろにする真偽値。
+      // auctionBoardConditions が trade_auction_holds_cards() で「入札中」と
+      // 「選択待ち」だけに絞っているため、ここで ends_at を過ぎている行は
+      // 選択待ち（有効な入札があり、選択期限内）と同義。now() ではなく
+      // clock_timestamp() を使うのは、holds_cards が同じ clock_timestamp()
+      // で境界を判定しているため。now() はトランザクション開始時刻で固定
+      // され、締切をまたいだときに DB 関数の判定と食い違いうる。
+      const isSelecting = sql<boolean>`(${endsAt} <= clock_timestamp())`;
+      // 入札中は ends_at ASC（締切が近い順）。選択待ちは ends_at DESC
+      // （直近に締め切られた順）で、/trade/mine が created_at DESC で
+      // 新しい順に出す既存の流儀に合わせる。CASE が NULL になるのは
+      // 相手側のバケットの行だけなので、同じバケット内では次のキーが効く。
       const orderBy = input.sort === "ending_soon"
-        ? sql`${qualifiedColumn(auctionsTable.ends_at)} ASC, ${qualifiedColumn(auctionsTable.id)} ASC`
-        : sql`${qualifiedColumn(auctionsTable.created_at)} DESC, ${qualifiedColumn(auctionsTable.id)} DESC`;
+        ? sql`${isSelecting} ASC,
+            CASE WHEN ${isSelecting} THEN ${endsAt} END DESC,
+            CASE WHEN ${endsAt} > clock_timestamp() THEN ${endsAt} END ASC,
+            ${auctionId} ASC`
+        : sql`${qualifiedColumn(auctionsTable.created_at)} DESC, ${auctionId} DESC`;
       const ranked = db
         .select({
           auctionId: auctionsTable.id,
@@ -678,7 +698,10 @@ export async function listTradeAuctionsByCollection(input: {
           total: sql<number>`count(*) OVER (
             PARTITION BY ${partition}
           )`.mapWith(Number).as("total"),
-          latestCreatedAt: sql<string>`max(${qualifiedColumn(auctionsTable.created_at)}) OVER (
+          // 生 SQL は Drizzle の列デコーダを通らないため MAX(timestamptz) は
+          // ドライバ設定により Date / 文字列のどちらでも返りうる。DTO へ渡す
+          // 前に toIsoTimestamp で string にそろえる。
+          latestCreatedAt: sql<string | Date>`max(${qualifiedColumn(auctionsTable.created_at)}) OVER (
             PARTITION BY ${partition}
           )`.as("latestCreatedAt"),
         })
@@ -700,7 +723,7 @@ export async function listTradeAuctionsByCollection(input: {
           ...(page > 1 ? [gt(ranked.rn, offset)] : []),
           lte(ranked.rn, offset + TRADE_PAGE_SIZE),
         ]
-        : [lte(ranked.rn, 5)];
+        : [lte(ranked.rn, TRADE_COLLECTION_PREVIEW_SIZE)];
 
       return db
         .select({
@@ -729,7 +752,8 @@ export async function listTradeAuctionsByCollection(input: {
     placementStreamerId: string;
     rn: number;
     total: number;
-    latestCreatedAt: string;
+    /** MAX(timestamptz): raw SQL bypasses the column decoder (see toIsoTimestamp). */
+    latestCreatedAt: string | Date;
   }>;
 
   const masked = await maskAuctionListImages(
@@ -747,7 +771,7 @@ export async function listTradeAuctionsByCollection(input: {
         streamer,
         auctions: [],
         total: Number(row.total),
-        latestCreatedAt: row.latestCreatedAt,
+        latestCreatedAt: toIsoTimestamp(row.latestCreatedAt),
       };
       groups.set(streamer.id, group);
     }

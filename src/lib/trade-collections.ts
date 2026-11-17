@@ -21,13 +21,14 @@ import {
  *     純粋な処理なので、単体テストで順序を固定できる。
  *
  * コレクションの並びは「最新の出品の作成日時が新しい順、同じなら配信者 id の
- * 昇順」で決定的にする。最新日時は、先頭5件ではなく各配置先の全件の MAX
+ * 昇順」で決定的にする。最新日時は、プレビュー件数 (src/lib/trade.ts の
+ * TRADE_COLLECTION_PREVIEW_SIZE) ではなく各配置先の全件の MAX
  * (SQL の MAX OVER) を使う。6件目以降に新しい出品があっても順位が変わらない。
  */
 export type TradeCollectionSection = {
   streamer: TradeStreamerSummary;
   offers: TradeOfferDto[];
-  /** そのコレクションに配置された出品の全件数（先頭5件ではない）。 */
+  /** そのコレクションに配置された出品の全件数（プレビュー件数ではない）。 */
   offerTotal: number;
   auctions: TradeAuctionDto[];
   /** そのコレクションに配置されたオークションの全件数。 */
@@ -143,7 +144,7 @@ export type TradeCollectionPageResult =
 /**
  * 展開 API の1ページ。折りたたみ時と同じ listTradeOffersByCollection /
  * listTradeAuctionsByCollection を、配信者1件・TRADE_PAGE_SIZE 件で呼ぶ。
- * これにより、先頭5件と展開後の先頭20件が同じ条件・同じ並び・同じ DTO で
+ * これにより、プレビューと展開後の先頭 TRADE_PAGE_SIZE 件が同じ条件・同じ並び・同じ DTO で
  * 作られる（別実装にすると可視性や件数がずれる）。
  *
  * 閲覧者がそのコレクションを持っていない場合は null（API は 404）。

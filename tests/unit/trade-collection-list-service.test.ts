@@ -217,7 +217,7 @@ describe("listTradeOffersByCollection (#2079)", () => {
   it("uses ONE union query with both cross placements, the shared visibility/gates, and rn <= 5 in SQL", async () => {
     const pg = createDbMock(() => []);
 
-    const { listTradeOffersByCollection } = await import("@/lib/trade");
+    const { listTradeOffersByCollection, TRADE_COLLECTION_PREVIEW_SIZE } = await import("@/lib/trade");
     await listTradeOffersByCollection({ twitchUserId: "viewer-1" });
 
     const baseCalls = pg.selectCalls.filter(
@@ -275,7 +275,23 @@ describe("listTradeOffersByCollection (#2079)", () => {
     const finalCall = pg.selectCalls.find((call) => "acceptState" in call.fields);
     expect(finalCall).toBeDefined();
     expect(render(finalCall!.where).sql).toMatch(/"rn" <= \$/);
+    // The preview size is a named constant shared with the auction list.
+    expect(render(finalCall!.where).params).toContain(TRADE_COLLECTION_PREVIEW_SIZE);
     expect(finalCall!.orderBy).toBeDefined();
+  });
+
+  it("normalizes the raw MAX(timestamptz) value (Date from postgres.js) to an ISO string", async () => {
+    const latest = new Date("2026-10-04T00:00:00.000Z");
+    createDbMock((call) => ("offer" in call.fields ? [offerRow({ latestCreatedAt: latest })] : []));
+
+    const { listTradeOffersByCollection } = await import("@/lib/trade");
+    const groups = await listTradeOffersByCollection({ twitchUserId: "viewer-1" });
+
+    // Drizzle's raw SQL does not run the column decoder, so a driver can hand
+    // back a Date. The service must hand the UI a string that Date.parse can
+    // read (timeOf in trade-collections.ts).
+    expect(groups[0].latestCreatedAt).toBe(latest.toISOString());
+    expect(Number.isNaN(Date.parse(groups[0].latestCreatedAt))).toBe(false);
   });
 
   it("returns the total and the first rows with wanted-side images masked", async () => {
@@ -475,13 +491,32 @@ describe("listTradeAuctionsByCollection (#2079)", () => {
     );
     const rn = render((base!.fields.rn as { sql: SQL }).sql).sql;
     expect(rn).toMatch(/row_number\(\) OVER \(\s*PARTITION BY/);
-    expect(rn).toContain('"trade_auctions"."ends_at" ASC');
+    // Bidding auctions first (the bucket is false before true), then the
+    // soonest deadline. Selecting auctions follow, most recently ended first.
+    expect(rn).toContain('("trade_auctions"."ends_at" <= clock_timestamp()) ASC');
+    expect(rn).toMatch(
+      /CASE WHEN \("trade_auctions"\."ends_at" <= clock_timestamp\(\)\) THEN "trade_auctions"\."ends_at" END DESC/,
+    );
+    expect(rn).toMatch(
+      /CASE WHEN "trade_auctions"\."ends_at" > clock_timestamp\(\) THEN "trade_auctions"\."ends_at" END ASC/,
+    );
     expect(render(base!.where).sql).toContain("collected_card.streamer_id");
     expect(render(base!.where).sql).toContain("trade_auction_holds_cards");
 
     const finalCall = pg.selectCalls.find((call) => "auction" in call.fields);
     expect(render(finalCall!.where).sql).toMatch(/"rn" <= \$/);
     expect(groups[0].total).toBe(3);
+  });
+
+  it("normalizes the auction MAX(timestamptz) value to an ISO string", async () => {
+    const latest = new Date("2026-10-03T00:00:00.000Z");
+    createDbMock((call) => ("auction" in call.fields ? [auctionRow({ latestCreatedAt: latest })] : []));
+
+    const { listTradeAuctionsByCollection } = await import("@/lib/trade-auction");
+    const groups = await listTradeAuctionsByCollection({ twitchUserId: "viewer-1", sort: "newest" });
+
+    expect(groups[0].latestCreatedAt).toBe(latest.toISOString());
+    expect(Number.isNaN(Date.parse(groups[0].latestCreatedAt))).toBe(false);
   });
 
   it("uses created_at DESC for the newest sort", async () => {

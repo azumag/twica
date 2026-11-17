@@ -53,7 +53,7 @@ describe("collection list SQL builder (#2079)", () => {
     const statements = primeRealBuilder();
     const { getCollectedStreamerIds } = await import("@/lib/collected-streamers");
 
-    await getCollectedStreamerIds("viewer-1");
+    await getCollectedStreamerIds("viewer-1", "streamer-a");
 
     expect(statements).toHaveLength(1);
     expect(statements[0]).toMatch(/select distinct "streamer_id" from "cards"/);
@@ -61,7 +61,7 @@ describe("collection list SQL builder (#2079)", () => {
     expect(statements[0]).toContain("collected_owned");
   });
 
-  it("renders the auction window query ordered by ends_at", async () => {
+  it("renders the auction window query with bidding before selecting for ending_soon", async () => {
     const statements = primeRealBuilder();
     const { listTradeAuctionsByCollection } = await import("@/lib/trade-auction");
 
@@ -70,7 +70,16 @@ describe("collection list SQL builder (#2079)", () => {
     expect(statements).toHaveLength(1);
     const sql = statements[0];
     expect(sql).toMatch(/row_number\(\) OVER \(\s*PARTITION BY/);
-    expect(sql).toContain('"trade_auctions"."ends_at" ASC');
+    // 入札中（ends_at 前）を先にするバケット。DB 関数と同じ
+    // clock_timestamp() で判定する（now() はトランザクション開始時刻で固定）。
+    expect(sql).toContain('("trade_auctions"."ends_at" <= clock_timestamp()) ASC');
+    // 入札中は締切が近い順（ASC）、選択待ちは直近に終わった順（DESC）。
+    expect(sql).toMatch(
+      /CASE WHEN \("trade_auctions"\."ends_at" <= clock_timestamp\(\)\) THEN "trade_auctions"\."ends_at" END DESC/,
+    );
+    expect(sql).toMatch(
+      /CASE WHEN "trade_auctions"\."ends_at" > clock_timestamp\(\) THEN "trade_auctions"\."ends_at" END ASC/,
+    );
     expect(sql).toContain('"rn" <= $');
     expect(sql).toContain('"trade_auctions"."id" = "ranked_collection_auctions"."id"');
   });

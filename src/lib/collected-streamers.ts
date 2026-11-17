@@ -11,19 +11,21 @@ import {
 /**
  * "持っているコレクション" の単一の定義 (#2079)。
  *
- * マイコレクション一覧 (/dashboard/collection) は getUserCards() の結果を
- * `card.streamer` でグルーピングしており、配信者（= コレクション）を
- * 「その配信者のカードを1枚以上 user_cards に持っている」と定義している。
- * トレードハブのコレクション別一覧も同じ定義でなければ、片方にだけ出る
- * 配信者や、反対に「持っていないのに出品だけ見える」状態が生まれる。
+ * トレードハブ (/trade) のコレクション別一覧と、展開 API
+ * (GET /api/trades/collections/[streamerId]) の権限確認は、同じ
+ * 「その配信者のカードを1枚以上 user_cards に持っている」という定義を
+ * 共有しなければならない。片方だけが別の定義になると、一覧に出ている
+ * コレクションを展開できない（またはその逆）状態が生まれる。
  *
  * このサブクエリがその定義の正本である。カードの is_active は条件にしない
- * （非アクティブになったカードでも、所持していればコレクションは表示される。
- * これはマイコレクション一覧のグルーピングと同じ）。
+ * （非アクティブになったカードでも、所持していればコレクションに含める。
+ * これはマイコレクション一覧が getUserCards() の結果を `card.streamer` で
+ * グルーピングする定義と同じ）。
  *
  * SQL 側の IN 副問い合わせとして使える形にしてあるため、トレードの一覧
  * （出品・オークション）は viewer の所持配信者をこの1か所から参照する。
- * 同じ定義を TS 側で必要な画面は getCollectedStreamerIds() を使う。
+ * TS 側で1配信者だけを確かめる展開 API は getCollectedStreamerIds() を使う。
+ * どちらもこのサブクエリを経由するので、定義は1か所に閉じている。
  */
 export function collectedStreamerIdsSubquery(twitchUserId: string): SQL {
   return sql`(
@@ -38,20 +40,20 @@ export function collectedStreamerIdsSubquery(twitchUserId: string): SQL {
 }
 
 /**
- * 視聴者がカードを持っている配信者IDの集合。
+ * 視聴者がカードを持っている配信者IDの集合を、`streamerId` の1件に絞って返す。
  *
- * `streamerId` を渡すと、同じ定義のまま1配信者だけに絞る（展開 API の
- * 権限確認に使う）。展開 API は「持っていないコレクション」を 404 にする
- * 必要があるが、一覧クエリが0行だっただけでは「持っていない」のか
- * 「持っているが出品が無い」のか区別できないため、この関数で先に確かめる。
+ * 用途は展開 API の権限確認だけ。展開 API は「持っていないコレクション」を
+ * 404 にする必要があるが、一覧クエリが0行だっただけでは「持っていない」のか
+ * 「持っているが出品・オークションが無い」のか区別できないため、この関数で
+ * 先に確かめる。`streamerId` を必須にして、全コレクションを数える用途
+ * （一覧側は SQL の collectedStreamerIdsSubquery が担う）と混ざらないようにする。
  *
  * 読み取り専用なので withDbRetry は idempotent: true。失敗時は呼び出し側が
- * 縮退を決められるよう例外をそのまま返す（ダッシュボードは getUserCards の
- * 結果へフォールバックし、API は 500 にする）。
+ * 縮退を決められるよう例外をそのまま返す（API は 500 にする）。
  */
 export async function getCollectedStreamerIds(
   twitchUserId: string,
-  streamerId?: string,
+  streamerId: string,
 ): Promise<Set<string>> {
   const inCollected = sql<boolean>`${cardsTable.streamer_id} IN ${collectedStreamerIdsSubquery(twitchUserId)}`;
   const rows = await withDbRetry(
@@ -60,11 +62,7 @@ export async function getCollectedStreamerIds(
       return db
         .selectDistinct({ streamerId: cardsTable.streamer_id })
         .from(cardsTable)
-        .where(
-          streamerId
-            ? and(inCollected, eq(cardsTable.streamer_id, streamerId))
-            : inCollected,
-        );
+        .where(and(inCollected, eq(cardsTable.streamer_id, streamerId)));
     },
     "collected-streamers:ids",
     { idempotent: true },

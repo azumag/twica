@@ -41,6 +41,16 @@ import { logger } from "@/lib/logger.server";
 import { isCanonicalUuid } from "@/lib/uuid-validation";
 
 export const TRADE_PAGE_SIZE = 20;
+/**
+ * ハブの各コレクションで最初に出す件数 (#2079)。
+ *
+ * 一覧は所持する全コレクションを1クエリで読み、配置先ごとに
+ * ROW_NUMBER() を付けて SQL の外側 WHERE で先頭 N 件に絞る。TS 側で
+ * slice しないのは、total（COUNT OVER）と先頭 N 件が必ず同じ集合から
+ * 出るようにするため。展開ボタンはこの値ではなく total と表示件数の差で
+ * 決まる（展開後は TRADE_PAGE_SIZE 件ずつ返す）。
+ */
+export const TRADE_COLLECTION_PREVIEW_SIZE = 5;
 export const TRADE_MAX_OPEN_OFFERS = 10;
 /**
  * Upper bound of trade_offers.wanted_quantity (#1789). Must match the
@@ -57,6 +67,7 @@ export type TradeScope = "in_channel" | "cross_channel";
  *
  * - newest: 新着順（出品・オークションとも created_at DESC）
  * - ending_soon: 締切が近い順。オークションだけに効き、トレードは新着順のまま。
+ *   入札中を先に並べ、選択待ちはその後ろ（直近に終了した順）に置く。
  *
  * レアリティ順は意図的に用意しない。カスタムレアリティ (#2029) には全配信者で
  * 共通の順序が無く、画面ごとに「レアリティ順」の意味が変わってしまうため。
@@ -228,6 +239,24 @@ export function viewerUserIdOf(twitchUserId: string): SQL {
     FROM ${usersTable} AS viewer
     WHERE viewer.twitch_user_id = ${twitchUserId}
   )`;
+}
+
+/**
+ * `MAX(timestamptz)` / `created_at` を DTO の ISO 8601（UTC）文字列にそろえる
+ * (#2079)。
+ *
+ * Drizzle の生 SQL (`sql<...>`) は列の mapFromDriverValue を通らないため、
+ * 実行環境のドライバ設定によって timestamptz が Date でも文字列でも返る
+ * （本番の postgres.js は installIsoTimestampParsers で ISO 文字列を返すが、
+ * Drizzle の透過パーサだけを通るテストや素の postgres.js では Date、PG の
+ * テキスト形式の文字列になることもある）。UI 側は
+ * `Date.parse(latestCreatedAt)` でコレクションを並べるので、ここで ISO に
+ * 正規化し、パース結果を環境に依存させない。パースできない値だけは
+ * データ破損時に画面を壊さないよう元の文字列のまま返す。
+ */
+export function toIsoTimestamp(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
 }
 
 // -----------------------------------------------------------------------------
@@ -680,9 +709,10 @@ export type TradeOfferDto = {
 };
 
 /**
- * 1コレクション分の出品一覧 (#2079)。total は画面に出す先頭5件ではなく、
- * その配置先に属する全件数（SQL の COUNT(*) OVER）。latestCreatedAt は
- * ハブのコレクション並び（最新の出品が新しい順）に使う全件の最大値。
+ * 1コレクション分の出品一覧 (#2079)。total は画面に出す先頭
+ * TRADE_COLLECTION_PREVIEW_SIZE 件ではなく、その配置先に属する全件数
+ * （SQL の COUNT(*) OVER）。latestCreatedAt はハブのコレクション並び
+ * （最新の出品が新しい順）に使う全件の最大値。
  */
 export type TradeCollectionOfferGroup = {
   streamer: TradeStreamerSummary;
@@ -1558,8 +1588,8 @@ export async function listTradeOffers(input: {
 
 /**
  * SQL predicate: `streamerColumn` is one of the collections the viewer owns.
- * The definition itself lives in collected-streamers.ts so the dashboard and
- * the trade hub cannot drift apart (#2079).
+ * The definition itself lives in collected-streamers.ts so the hub's
+ * collection sections and the expand API cannot drift apart (#2079).
  */
 function placementIsCollected(streamerColumn: AnyColumn, twitchUserId: string) {
   return sql<boolean>`${qualifiedColumn(streamerColumn)} IN ${collectedStreamerIdsSubquery(twitchUserId)}`;
@@ -1570,7 +1600,8 @@ type CollectionOfferRow = OfferListRow & {
   placementStreamerId: string;
   rn: number;
   total: number;
-  latestCreatedAt: string;
+  /** MAX(timestamptz): raw SQL bypasses the column decoder (see toIsoTimestamp). */
+  latestCreatedAt: string | Date;
 };
 
 /**
@@ -1590,9 +1621,10 @@ type CollectionOfferRow = OfferListRow & {
  *    所持コレクションの述語を必ず入れるため、持っていない配信者の下には
  *    行が作られない。
  *
- * 3. 各配置先の先頭5件は SQL で選ぶ。ROW_NUMBER() で並べ、外側の
- *    WHERE rn <= 5 で切る。TS 側で slice しないので、total（COUNT OVER）と
- *    先頭5件が必ず同じ集合から出る。latestCreatedAt（MAX OVER）は
+ * 3. 各配置先の先頭 TRADE_COLLECTION_PREVIEW_SIZE 件は SQL で選ぶ。
+ *    ROW_NUMBER() で並べ、外側の WHERE rn <= TRADE_COLLECTION_PREVIEW_SIZE
+ *    で切る。TS 側で slice しないので、total（COUNT OVER）と先頭 N 件が
+ *    必ず同じ集合から出る。latestCreatedAt（MAX OVER）は
  *    ハブのコレクション並び（最新の出品が新しい順）に使う。MAX/COUNT は
  *    外側の rn 絞り込みより前に評価されるため、6件目以降も含めた全件の
  *    値になる。
@@ -1609,7 +1641,7 @@ type CollectionOfferRow = OfferListRow & {
  */
 export async function listTradeOffersByCollection(input: {
   twitchUserId: string;
-  /** undefined: 所持する全コレクションの先頭5件。指定時: その1配信者のページ。 */
+  /** undefined: 所持する全コレクションの先頭 TRADE_COLLECTION_PREVIEW_SIZE 件。 */
   streamerId?: string;
   /** streamerId 指定時のみ使う（1始まり）。 */
   page?: number;
@@ -1684,7 +1716,9 @@ export async function listTradeOffersByCollection(input: {
           total: sql<number>`count(*) OVER (
             PARTITION BY ${placed.placementStreamerId}
           )`.mapWith(Number).as("total"),
-          latestCreatedAt: sql<string>`max(${placed.createdAt}) OVER (
+          // 生 SQL は Drizzle の列デコーダを通らない。実値は Date になりうる
+          // ため string | Date とし、DTO へ渡す前に toIsoTimestamp でそろえる。
+          latestCreatedAt: sql<string | Date>`max(${placed.createdAt}) OVER (
             PARTITION BY ${placed.placementStreamerId}
           )`.as("latestCreatedAt"),
         })
@@ -1698,7 +1732,7 @@ export async function listTradeOffersByCollection(input: {
           ...(page > 1 ? [gt(ranked.rn, offset)] : []),
           lte(ranked.rn, offset + TRADE_PAGE_SIZE),
         ]
-        : [lte(ranked.rn, 5)];
+        : [lte(ranked.rn, TRADE_COLLECTION_PREVIEW_SIZE)];
 
       return db
         .select({
@@ -1746,7 +1780,7 @@ export async function listTradeOffersByCollection(input: {
         streamer,
         offers: [],
         total: Number(row.total),
-        latestCreatedAt: row.latestCreatedAt,
+        latestCreatedAt: toIsoTimestamp(row.latestCreatedAt),
       };
       groups.set(streamer.id, group);
     }
