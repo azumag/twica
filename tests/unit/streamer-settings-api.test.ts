@@ -345,6 +345,76 @@ describe('POST /api/streamer/settings', () => {
       const response = await POST(request)
       expect(response.status).toBe(400)
     })
+
+    // Issue #2070: トレード限定の「未所持カードの名前だけを公開する」設定。
+    // 可視性判定は次回実装だが、設定値の保存・読み出しは今回のリリースで先に配線する。
+    it('accepts and persists tradeUnownedCardNamesVisible', async () => {
+      const builder = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockDbFixture = builder.build()
+      const query = builder.getQueryBuilder()
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          tradeUnownedCardNamesVisible: true,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      // 新キーだけを送ったときに既存の trade キーを勝手に補完しないことも固定する。
+      expect(query.update).toHaveBeenCalledWith({
+        trade_unowned_card_names_visible: true,
+      })
+    })
+
+    it.each([
+      { tradeUnownedCardNamesVisible: 'true' },
+      { tradeUnownedCardNamesVisible: 1 },
+      { tradeUnownedCardNamesVisible: null },
+    ])('rejects non-boolean tradeUnownedCardNamesVisible: %j', async (payload) => {
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ streamerId: 'streamer123', ...payload }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(400)
+    })
+
+    it('persists tradeUnownedCardNamesVisible independently of the other trade keys', async () => {
+      const builder = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      const mockDbFixture = builder.build()
+      const query = builder.getQueryBuilder()
+      installDbFixture(mockDbFixture)
+
+      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          streamerId: 'streamer123',
+          tradeEnabled: true,
+          crossChannelTradeEnabled: false,
+          tradeUnownedCardNamesVisible: true,
+        }),
+      })
+
+      const response = await POST(request)
+      expect(response.status).toBe(200)
+      // 3キーは独立した boolean として同じ UPDATE に載る。既存キーと同時に
+      // 送っても新キーが落ちないことを固定する。
+      expect(query.update).toHaveBeenCalledWith(expect.objectContaining({
+        trade_enabled: true,
+        cross_channel_trade_enabled: false,
+        trade_unowned_card_names_visible: true,
+      }))
+    })
   })
 
   it('should reject rarity weights when total is not 100%', async () => {

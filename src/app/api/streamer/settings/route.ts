@@ -57,6 +57,8 @@ import { isPgMissingNamedColumnError } from "@/lib/db/errors";
 import {
   isMissingAlbumSettingsColumnError,
   isMissingDuplicateDisplayTiersColumnError,
+  isMissingTradeSettingsColumnError,
+  TRADE_SETTINGS_COLUMNS,
 } from "@/lib/db/streamers-safe-columns";
 import { validateDuplicateDisplayTiers } from "@/lib/duplicate-display-tiers";
 import {
@@ -637,14 +639,6 @@ function isMissingLiveDirectorySettingsColumnsError(error: unknown): boolean {
 }
 
 /**
- * Issue #725/#722: trade_enabled / cross_channel_trade_enabled は同一migrationで
- * 追加されるため、デプロイ窓では2列まとめて剥がして再試行する。
- */
-function isMissingTradeSettingsColumnsError(error: unknown): boolean {
-  return isPgMissingNamedColumnError(error, ["trade_enabled", "cross_channel_trade_enabled"]);
-}
-
-/**
  * applyStreamerSettingsUpdate の pg 直結実装 (#663)
  *
  * フォールバックチェイン + gacha_sound_rules 用の最終フォールバックを throw
@@ -804,13 +798,31 @@ async function applyStreamerSettingsUpdatePg(
 
   if (
     error
-    && isMissingTradeSettingsColumnsError(error as GenericDbError)
-    && ("trade_enabled" in updateData || "cross_channel_trade_enabled" in updateData)
+    && isMissingTradeSettingsColumnError(error)
+    && TRADE_SETTINGS_COLUMNS.some((column) => column in updateData)
   ) {
-    // #725: migration未反映窓では2キーをまとめて剥がし、他の設定だけ保存する。
+    // #725: migration未反映窓では該当キーを剥がし、他の設定だけ保存する。
     // UIにはskipフラグを返して楽観反映をロールバックさせる。
-    delete updateData.trade_enabled;
-    delete updateData.cross_channel_trade_enabled;
+    //
+    // #2070: 新列 trade_unowned_card_names_visible は既存2列とは別 migration で
+    // 追加される。そのため、新列だけが未適用の窓で既存2列（適用済み）まで
+    // 剥がすと、同じリクエストで変更した trade_enabled / cross_channel が
+    // 保存されない退行になる。欠落が報告されたグループだけを剥がす。
+    // 既存2列は同一 migration で入るため、片方の欠落報告で両方を剥がす。
+    const missingNewTradeColumn = isPgMissingNamedColumnError(error, [
+      "trade_unowned_card_names_visible",
+    ]);
+    const missingLegacyTradeColumns = isPgMissingNamedColumnError(error, [
+      "trade_enabled",
+      "cross_channel_trade_enabled",
+    ]);
+    if (missingNewTradeColumn) {
+      delete updateData.trade_unowned_card_names_visible;
+    }
+    if (missingLegacyTradeColumns) {
+      delete updateData.trade_enabled;
+      delete updateData.cross_channel_trade_enabled;
+    }
     tradeSettingsWriteSkipped = true;
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no trade settings)");
   }
@@ -983,6 +995,9 @@ export async function POST(request: NextRequest) {
       // カードトレード設定（オプション、Issue #725）
       tradeEnabled,
       crossChannelTradeEnabled,
+      // 未所持カードの名前だけをトレードで公開する（オプション、Issue #2070）。
+      // コレクション画面の showUnownedCardDetails とは独立して保存する。
+      tradeUnownedCardNamesVisible,
       // アルバム表示設定（オプション、#1765 フォローアップ）。
       // packAlbumGridSizes: コレクション(パック)ごとの並び N（null で全クリア）。
       // collectionDefaultView: コレクションページの初期表示 ('grid' | 'album')。
@@ -1120,6 +1135,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (crossChannelTradeEnabled !== undefined && typeof crossChannelTradeEnabled !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    // Issue #2070: 新設定も既存の trade 設定と同じく厳密な boolean のみ受理する。
+    // truthy な文字列や 1 を黙って保存すると、UI のトグルと DB の実値が食い違う。
+    if (
+      tradeUnownedCardNamesVisible !== undefined
+      && typeof tradeUnownedCardNamesVisible !== "boolean"
+    ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
@@ -1601,6 +1624,13 @@ export async function POST(request: NextRequest) {
     }
     if (crossChannelTradeEnabled !== undefined) {
       updateData.cross_channel_trade_enabled = crossChannelTradeEnabled;
+    }
+    // Issue #2070: トレード限定の未所持カード名公開。サーバ側で依存関係
+    // （show_unowned_cards 等）を勝手に補正しない。UI が依存を満たさない間は
+    // disabled にし、保存された値はそのまま保持する（後から公開設定を変えたときに
+    // 配信者の意思を失わないため）。
+    if (tradeUnownedCardNamesVisible !== undefined) {
+      updateData.trade_unowned_card_names_visible = tradeUnownedCardNamesVisible;
     }
 
     let botDisconnected = false;

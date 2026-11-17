@@ -634,7 +634,7 @@
       "showUnowned": "Show unowned cards to viewers",
       "showUnownedHelp": "When off, viewers see only cards they have collected (default).",
       "showDetails": "Reveal name, image, and description of unowned cards",
-      "showDetailsHelp": "When off, unowned cards show only their rarity; the image, name, and description are masked as placeholders.",
+      "showDetailsHelp": "When off, unowned cards on the collection page show only their rarity; the image, name, and description are masked as placeholders. (To reveal only names and rarities in trade screens, use \"Card Trading Settings\" below.)",
       "requiresShowUnowned": "requires \"Show unowned cards\""
     },
     "messages": {
@@ -679,7 +679,11 @@
       "tradeEnabledHelp": "Viewers can trade cards from your channel with each other.",
       "crossChannelEnabled": "Allow cross-channel trading",
       "crossChannelEnabledHelp": "The other channel must also allow cross-channel trading.",
-      "requiresTradeEnabled": "Enable channel trading to change this setting"
+      "requiresTradeEnabled": "Enable channel trading to change this setting",
+      "unownedCardNamesVisible": "Reveal only unowned card names in trades",
+      "unownedCardNamesVisibleHelp": "On trade boards, bids, and acceptance screens only, viewers can see the names and rarities of cards they don't own. Images and descriptions stay hidden, and the collection page is unchanged.",
+      "unownedCardNamesVisibleRequiresShowUnowned": "Requires \"Show unowned cards to viewers\"",
+      "unownedCardNamesVisibleRequiresDetailsOff": "Unavailable while \"Reveal name, image, and description of unowned cards\" is on (names are already public)"
     },
     "notice": "Turning this off temporarily hides open offers and prevents acceptance; offers are not deleted.",
     "messages": {
@@ -687,13 +691,15 @@
       "disabled": "Card trading disabled",
       "crossEnabled": "Cross-channel trading enabled",
       "crossDisabled": "Cross-channel trading disabled",
+      "unownedCardNamesEnabled": "Unowned card names will be revealed in trades",
+      "unownedCardNamesDisabled": "Unowned card names are no longer revealed in trades",
       "saving": "Saving..."
     },
     "errors": {
       "saveFailed": "Failed to save trade settings",
       "deployWindow": "Trade settings are not ready in the database yet. Please try again shortly."
     },
-    "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, turn on both \"Show unowned cards to viewers\" and \"Reveal name, image, and description of unowned cards\" in \"Collection visibility\" just above. If they are not public, viewers can only trade cards they already own."
+    "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, turn on \"Show unowned cards to viewers\" in \"Collection visibility\" just above, then turn on either (1) \"Reveal name, image, and description of unowned cards\" (public on the collection page too) or (2) \"Reveal only unowned card names in trades\" (on trade boards, bids, and acceptance screens only, names and rarities are shown while images and descriptions stay private). If neither is on, viewers can only trade cards they already own."
   },
   "trade": {
     "collectionTradeButton": "Trade",

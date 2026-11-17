@@ -10,12 +10,21 @@ interface TradeSettingsProps {
   streamerId: string;
   currentTradeEnabled: boolean;
   currentCrossChannelTradeEnabled: boolean;
+  // Issue #2070: トレード限定の未所持カード名公開トグルは、コレクション公開設定の
+  // 現在値に依存して操作可否が変わる。サーバー側の初期値をそのまま受け取り、
+  // 依存が満たされない間は disabled + 理由表示にする（値は書き換えない）。
+  currentShowUnownedCards: boolean;
+  currentShowUnownedCardDetails: boolean;
+  currentTradeUnownedCardNamesVisible: boolean;
 }
 
 export default function TradeSettings({
   streamerId,
   currentTradeEnabled,
   currentCrossChannelTradeEnabled,
+  currentShowUnownedCards,
+  currentShowUnownedCardDetails,
+  currentTradeUnownedCardNamesVisible,
 }: TradeSettingsProps) {
   const t = useTranslations("tradeSettings");
   const tMaintenance = useTranslations("maintenance");
@@ -26,6 +35,9 @@ export default function TradeSettings({
   const [crossChannelTradeEnabled, setCrossChannelTradeEnabled] = useState(
     currentCrossChannelTradeEnabled,
   );
+  const [tradeUnownedCardNamesVisible, setTradeUnownedCardNamesVisible] = useState(
+    currentTradeUnownedCardNamesVisible,
+  );
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
@@ -34,6 +46,7 @@ export default function TradeSettings({
     async (payload: {
       tradeEnabled?: boolean;
       crossChannelTradeEnabled?: boolean;
+      tradeUnownedCardNamesVisible?: boolean;
     }): Promise<boolean> => {
       setSaving(true);
       try {
@@ -92,8 +105,34 @@ export default function TradeSettings({
     }
   }, [crossChannelTradeEnabled, saveSettings, t]);
 
+  const handleUnownedCardNamesToggle = useCallback(async () => {
+    const next = !tradeUnownedCardNamesVisible;
+    setTradeUnownedCardNamesVisible(next);
+    const ok = await saveSettings({ tradeUnownedCardNamesVisible: next });
+    if (ok) {
+      setMessage(
+        next
+          ? t("messages.unownedCardNamesEnabled")
+          : t("messages.unownedCardNamesDisabled"),
+      );
+    } else {
+      // 保存失敗・デプロイ窓 skip のどちらでも、楽観反映を必ず元へ戻す。
+      setTradeUnownedCardNamesVisible(!next);
+    }
+  }, [tradeUnownedCardNamesVisible, saveSettings, t]);
+
   const parentDisabled = saving || isMaintenanceBlocked;
   const crossDisabled = !tradeEnabled || saving || isMaintenanceBlocked;
+  // Issue #2070: この設定は「未所持カードを表示する」がONで、かつ詳細公開がOFFの
+  // ときだけ意味を持つ（詳細公開がONなら名前はすでに見えている）。依存を満たさない
+  // 間は操作させず、理由を表示する。保存済みの値を勝手に false へ書き換えない。
+  const unownedCardNamesDependencyReason = !currentShowUnownedCards
+    ? t("form.unownedCardNamesVisibleRequiresShowUnowned")
+    : currentShowUnownedCardDetails
+      ? t("form.unownedCardNamesVisibleRequiresDetailsOff")
+      : null;
+  const unownedCardNamesDisabled =
+    saving || isMaintenanceBlocked || unownedCardNamesDependencyReason !== null;
 
   return (
     <div className="rounded-xl bg-gray-800 p-6">
@@ -155,6 +194,25 @@ export default function TradeSettings({
         {!tradeEnabled && (
           <p className="-mt-2 ml-14 text-xs text-gray-500">
             {t("form.requiresTradeEnabled")}
+          </p>
+        )}
+
+        {/* Issue #2070: トレードの掲示板・入札・応諾に限り、未所持カードの名前と
+            レアリティだけを公開する。画像・説明とコレクション画面の表示は変えない。
+            依存が満たされない間は保存済みの値を保持したまま操作だけを止める。 */}
+        <ToggleRow
+          id="trade-unowned-card-names-visible-toggle"
+          checked={tradeUnownedCardNamesVisible}
+          disabled={unownedCardNamesDisabled}
+          label={t("form.unownedCardNamesVisible")}
+          help={t("form.unownedCardNamesVisibleHelp")}
+          onChange={handleUnownedCardNamesToggle}
+          maintenanceTitle={isMaintenanceBlocked ? tMaintenance("writeDisabled") : undefined}
+          dimmed={unownedCardNamesDependencyReason !== null}
+        />
+        {unownedCardNamesDependencyReason && (
+          <p className="-mt-2 ml-14 text-xs text-gray-500">
+            {unownedCardNamesDependencyReason}
           </p>
         )}
 
