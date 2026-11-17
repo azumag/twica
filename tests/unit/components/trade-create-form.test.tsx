@@ -64,6 +64,7 @@ function renderForm(
         ownedCopies={OWNED}
         wantableCards={WANTABLE}
         wantableRevealsUnowned
+        wantableRevealsUnownedImages
         boardHref="/trade/s-1"
         maxWantedQuantity={10}
         {...props}
@@ -125,6 +126,17 @@ describe("TradeCreateForm (#727 §6.5)", () => {
   it("shows the owned-only notice when the wanted channel hides unowned cards", () => {
     renderForm({ wantableRevealsUnowned: false });
     expect(screen.getByText(ja.createStep2UnrevealedNotice)).toBeInTheDocument();
+  });
+
+  it("explains that a name-only channel lists unowned cards without images (#2070)", () => {
+    renderForm({ wantableRevealsUnowned: true, wantableRevealsUnownedImages: false });
+    expect(screen.getByText(ja.createStep2NameOnlyNotice)).toBeInTheDocument();
+    expect(screen.queryByText(ja.createStep2UnrevealedNotice)).not.toBeInTheDocument();
+  });
+
+  it("does not show the name-only notice when images are public too", () => {
+    renderForm({ wantableRevealsUnowned: true, wantableRevealsUnownedImages: true });
+    expect(screen.queryByText(ja.createStep2NameOnlyNotice)).not.toBeInTheDocument();
   });
 
   it("confirms and POSTs the oldest unlisted copy with the selection-bound requestId", async () => {

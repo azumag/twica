@@ -468,7 +468,7 @@ describe("read DTOs", () => {
     expect(anonymous).not.toHaveProperty("offeredUserCardId");
   });
 
-  it("detail: non-sellers get no bid list and cost one statement; the seller gets the list", async () => {
+  it("detail: non-sellers get no bid list; the seller gets the list", async () => {
     const { getTradeAuction } = await import("@/lib/trade-auction");
     let pg = prime({ selects: [{ rows: [auctionRow()] }] });
     await expect(getTradeAuction({ auctionId: AUCTION_ID, twitchUserId: "v" })).resolves.toMatchObject({ bids: null });
@@ -525,5 +525,86 @@ describe("read DTOs", () => {
     const phase = render((pg.selectCalls[0].fields as Record<string, unknown>).phase).sql;
     expect(phase).toContain('clock_timestamp() < "trade_auctions"."ends_at"');
     expect(phase).not.toContain("now()");
+  });
+});
+
+
+// -----------------------------------------------------------------------------
+// #2070: 未所持カードの名前だけをトレードで公開する設定のデプロイ窓（オークション側）。
+// cardVisibleTo を呼ぶ 5 か所（listTradeAuctions / getTradeAuction /
+// precheckBidVisibility の 3 判定）が、新列の 42703 で旧規則に縮退することを固定する。
+// -----------------------------------------------------------------------------
+describe("name-only trade visibility deploy window (#2070, auctions)", () => {
+  const MISSING_NAME_ONLY_COLUMN = {
+    code: "42703",
+    message: 'column visible_streamer.trade_unowned_card_names_visible does not exist',
+  };
+
+  const cases = [
+    {
+      name: "listTradeAuctions",
+      async run() {
+        const pg = prime({ selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [] }] });
+        const { listTradeAuctions } = await import("@/lib/trade-auction");
+        await expect(listTradeAuctions({ streamerId: AUCTION_ID, scope: "in_channel", page: 1 }))
+          .resolves.toMatchObject({ auctions: [] });
+        return {
+          before: render(pg.selectCalls[0].where).sql,
+          after: render(pg.selectCalls[1].where).sql,
+        };
+      },
+    },
+    {
+      name: "getTradeAuction",
+      async run() {
+        const pg = prime({ selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [] }] });
+        const { getTradeAuction } = await import("@/lib/trade-auction");
+        await expect(getTradeAuction({ auctionId: AUCTION_ID })).resolves.toBeNull();
+        return {
+          before: render(pg.selectCalls[0].where).sql,
+          after: render(pg.selectCalls[1].where).sql,
+        };
+      },
+    },
+    {
+      name: "precheckBidVisibility (bidder and seller checks)",
+      async run() {
+        const pg = prime({
+          selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [visibleRow] }],
+          rpc: [rpc(okBidResult)],
+        });
+        const { placeTradeAuctionBid } = await import("@/lib/trade-auction");
+        await expect(placeTradeAuctionBid(bidInput)).resolves.toMatchObject({ kind: "ok" });
+        const before = pg.selectCalls[0].fields as Record<string, unknown>;
+        const after = pg.selectCalls[1].fields as Record<string, unknown>;
+        return {
+          before: [
+            render(before.offeredVisible).sql,
+            render(before.bidCardVisibleToBidder).sql,
+            render(before.bidCardVisibleToSeller).sql,
+          ].join("\n"),
+          after: [
+            render(after.offeredVisible).sql,
+            render(after.bidCardVisibleToBidder).sql,
+            render(after.bidCardVisibleToSeller).sql,
+          ].join("\n"),
+        };
+      },
+    },
+  ] as const;
+
+  it.each(cases)("$name retries once with the legacy rule", async ({ run }) => {
+    const { before, after } = await run();
+    expect(before).toContain("trade_unowned_card_names_visible");
+    expect(after).not.toContain("trade_unowned_card_names_visible");
+  });
+
+  it("rethrows an unrelated 42703 without retrying", async () => {
+    const other = { code: "42703", message: 'column trade_auctions.some_other_column does not exist' };
+    const pg = prime({ selects: [{ error: other }, { rows: [] }] });
+    const { listTradeAuctions } = await import("@/lib/trade-auction");
+    await expect(listTradeAuctions({ streamerId: AUCTION_ID, scope: "in_channel", page: 1 }))
+      .rejects.toBe(other);
+    expect(pg.selectCalls).toHaveLength(1);
   });
 });

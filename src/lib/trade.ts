@@ -7,6 +7,7 @@ import {
   or,
   getTableColumns,
   getTableName,
+  inArray,
   sql,
   type AnyColumn,
   type SQL,
@@ -33,6 +34,7 @@ import {
   isMissingTradeSettingsColumnError,
   withLiveDirectorySettingsColumnFallback,
 } from "@/lib/db/streamers-safe-columns";
+import { logger } from "@/lib/logger.server";
 import { isCanonicalUuid } from "@/lib/uuid-validation";
 
 export const TRADE_PAGE_SIZE = 20;
@@ -75,11 +77,34 @@ export type TradeServiceErrorCode =
   | "TRADE_OFFERED_CARD_INACTIVE";
 
 // -----------------------------------------------------------------------------
-// Card visibility rules (product decision for #715/#726/#727)
+// Card visibility rules (product decision for #715/#726/#727, refined by #2070)
+//
+// Visibility has TWO levels. They must not be conflated: #2070 adds a state in
+// which the NAME is public but the IMAGE is not, and a single row-level EXISTS
+// cannot express that.
+//
+// Name level (does the row exist for the viewer at all, i.e. may they see the
+// name/rarity and trade for it?) — cardVisibleTo():
 //
 //   visible(card, viewer) ⇔ card.is_active
 //     AND ( viewer owns ≥1 copy of card.id (listed copies included)
-//           OR (card's streamer.show_unowned_cards AND show_unowned_card_details) )
+//           OR (card's streamer.show_unowned_cards
+//               AND (card's streamer.show_unowned_card_details
+//                    OR card's streamer.trade_unowned_card_names_visible)) )
+//
+// Image level (may the viewer receive imageUrl?) — cardImageVisibleTo():
+//
+//   imageVisible(card, viewer) ⇔ viewer owns ≥1 copy
+//     OR (card's streamer.show_unowned_cards
+//         AND card's streamer.show_unowned_card_details)
+//
+// The image rule deliberately does NOT include trade_unowned_card_names_visible
+// (that setting only ever promises names/rarities) and does NOT require
+// is_active: the row has already passed the name-level rule, and a card that
+// was deactivated after the snapshot was taken still follows the same
+// ownership/details rule. show_unowned_cards is kept as the outer gate in both
+// rules: without it the collection page hides unowned cards entirely, so the
+// trade board must not become a side channel that reveals their names.
 //
 // `show_unowned_card_details = false` makes the collection page render unowned
 // cards as placeholders (SortedCardGrid `maskUnownedDetails`), i.e. the card
@@ -140,6 +165,16 @@ export function qualifiedColumn(column: AnyColumn) {
 //     business rules are still evaluated in TypeScript in the original order,
 //     so error precedence (and what each error reveals) is unchanged.
 //
+// #2070 adds ONE deliberate extra round trip to every read that returns
+// `TradeCardSnapshot`s: the image-level mask (maskTradeCardImages) has to ask
+// the database which of the page's card ids the viewer may see the image of,
+// because "owned now" cannot be derived from the snapshot. The mask is per
+// page/function (one statement, not one per row), is skipped entirely when no
+// snapshot has an imageUrl or no card id is known, and never drops rows (it
+// only nulls imageUrl), so pagination / hasMore stay untouched. The budget per
+// function is pinned by tests/unit/trade-service.test.ts and
+// tests/unit/trade-auction-service.test.ts.
+//
 // An unknown twitch_user_id makes the subquery NULL. Every comparison against
 // NULL is not TRUE, which reproduces the previous "user not found" branches
 // (anonymous visibility, empty result, not-found errors) without a branch.
@@ -195,6 +230,36 @@ export async function withTradeWantableColumnFallback<T>(
     return await attempt(false);
   } catch (error) {
     if (!isPgMissingNamedColumnError(error, TRADE_WANTABLE_COLUMNS)) throw error;
+    return attempt(true);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Deploy window of streamers.trade_unowned_card_names_visible (#2070)
+//
+// Same independent-deploy problem as cards.trade_wantable above (#788): the new
+// app can briefly run against a database without 20261117120000. The column is
+// referenced only by the NAME-level rule (cardVisibleTo), so on 42703 for it
+// every reader that uses that rule is retried with the legacy rule
+// `show_unowned_cards AND show_unowned_card_details`. That is exact, not an
+// approximation: before the migration no streamer can have the setting on (the
+// column default is false and the old schema cannot store it), so ignoring the
+// new column reproduces the old behaviour. Becomes a dead branch once the
+// migration is applied everywhere.
+//
+// The IMAGE-level rule never references this column, so the mask query does
+// not need this fallback either.
+// -----------------------------------------------------------------------------
+
+const TRADE_UNOWNED_CARD_NAMES_COLUMNS = ["trade_unowned_card_names_visible"] as const;
+
+export async function withTradeUnownedCardNamesColumnFallback<T>(
+  attempt: (withoutNameOnly: boolean) => Promise<T>,
+): Promise<T> {
+  try {
+    return await attempt(false);
+  } catch (error) {
+    if (!isPgMissingNamedColumnError(error, TRADE_UNOWNED_CARD_NAMES_COLUMNS)) throw error;
     return attempt(true);
   }
 }
@@ -340,12 +405,22 @@ function isTradeOfferTriggerError(
 }
 
 /**
- * `cardIdExpr` is visible to `viewerUserId` according to the rule documented
- * above. Includes the is_active condition. `viewerUserId` is an SQL
- * expression producing users.id (viewerUserIdOf() or an outer column); null
- * means anonymous.
+ * `cardIdExpr` is visible to `viewerUserId` at the NAME level (see the rule
+ * documented at the top of this file), including the is_active condition.
+ * `viewerUserId` is an SQL expression producing users.id (viewerUserIdOf() or
+ * an outer column); null means anonymous.
+ *
+ * `withoutNameOnly` renders the pre-#2070 rule (`show_unowned_cards AND
+ * show_unowned_card_details`) and never references the new column. It exists
+ * only for the deploy window (see withTradeUnownedCardNamesColumnFallback) and
+ * is passed explicitly at every call site so a fallback cannot be forgotten
+ * halfway through a statement.
  */
-export function cardVisibleTo(cardIdExpr: AnyColumn, viewerUserId: SQL | null) {
+export function cardVisibleTo(
+  cardIdExpr: AnyColumn,
+  viewerUserId: SQL | null,
+  withoutNameOnly = false,
+) {
   // Anonymous viewers have no ownership branch at all instead of comparing
   // against NULL, so the intent is explicit in the generated SQL.
   const ownedByViewer = viewerUserId
@@ -356,6 +431,21 @@ export function cardVisibleTo(cardIdExpr: AnyColumn, viewerUserId: SQL | null) {
           AND visible_owned.card_id = visible_card.id
       )`
     : sql`FALSE`;
+  // show_unowned_cards stays the outer gate: a channel that hides unowned
+  // cards in the collection must not reveal their names only on the board.
+  // With details off, the new setting (trade-only) reveals names/rarities.
+  const unownedRevealed = withoutNameOnly
+    ? sql`(
+        visible_streamer.show_unowned_cards = TRUE
+        AND visible_streamer.show_unowned_card_details = TRUE
+      )`
+    : sql`(
+        visible_streamer.show_unowned_cards = TRUE
+        AND (
+          visible_streamer.show_unowned_card_details = TRUE
+          OR visible_streamer.trade_unowned_card_names_visible = TRUE
+        )
+      )`;
   return sql<boolean>`EXISTS (
     SELECT 1
     FROM ${cardsTable} AS visible_card
@@ -364,13 +454,124 @@ export function cardVisibleTo(cardIdExpr: AnyColumn, viewerUserId: SQL | null) {
     WHERE visible_card.id = ${qualifiedColumn(cardIdExpr)}
       AND visible_card.is_active = TRUE
       AND (
+        ${unownedRevealed}
+        OR ${ownedByViewer}
+      )
+  )`;
+}
+
+/**
+ * `cardIdExpr`'s IMAGE is visible to `viewerUserId` (see the rule at the top of
+ * this file): the viewer owns a copy, OR the card's streamer reveals unowned
+ * card details. It intentionally does NOT include is_active (row-level
+ * visibility already decided that) and never includes the name-only setting.
+ *
+ * Same conventions as cardVisibleTo: literal inner aliases, the outer row only
+ * through qualifiedColumn(). Inner table names are distinct from the ones in
+ * cardVisibleTo so both fragments can appear in the same statement (e.g. the
+ * listWantableCards SELECT list plus its WHERE).
+ */
+export function cardImageVisibleTo(cardIdExpr: AnyColumn, viewerUserId: SQL | null) {
+  const ownedByViewer = viewerUserId
+    ? sql`EXISTS (
+        SELECT 1
+        FROM ${userCardsTable} AS image_owned
+        WHERE image_owned.user_id = ${viewerUserId}
+          AND image_owned.card_id = image_card.id
+      )`
+    : sql`FALSE`;
+  return sql<boolean>`EXISTS (
+    SELECT 1
+    FROM ${cardsTable} AS image_card
+    INNER JOIN ${streamersTable} AS image_streamer
+      ON image_streamer.id = image_card.streamer_id
+    WHERE image_card.id = ${qualifiedColumn(cardIdExpr)}
+      AND (
         (
-          visible_streamer.show_unowned_cards = TRUE
-          AND visible_streamer.show_unowned_card_details = TRUE
+          image_streamer.show_unowned_cards = TRUE
+          AND image_streamer.show_unowned_card_details = TRUE
         )
         OR ${ownedByViewer}
       )
   )`;
+}
+
+/**
+ * One snapshot plus the card definition it was taken from. `cardId` is NULL
+ * when the definition was deleted (ON DELETE SET NULL) or the id is unknown.
+ */
+export type TradeCardImageRef = {
+  cardId: string | null;
+  snapshot: TradeCardSnapshot;
+};
+
+/**
+ * Read-time image mask shared by every service function that returns card
+ * snapshots (#2070). Returns NEW snapshot objects (the inputs are never
+ * mutated, and the stored JSONB snapshots stay complete: masking at write time
+ * would deny the image to a user who obtains the card later).
+ *
+ * One query resolves "which of these card ids may this viewer see the image
+ * of" (ownership OR full details; never the name-only setting, never
+ * is_active). It is skipped when there is nothing to decide: no refs, every
+ * snapshot already has imageUrl=null, or no ref has a card id. Deny-by-default:
+ * a card id that is not in the result set (including a failed/unknown row) is
+ * masked.
+ *
+ * The query deliberately does not use withTradeUnownedCardNamesColumnFallback:
+ * cardImageVisibleTo never references streamers.trade_unowned_card_names_visible,
+ * so this statement is valid both before and after 20261117120000.
+ */
+export async function maskTradeCardImages(
+  refs: readonly TradeCardImageRef[],
+  viewerUserId: string | null,
+): Promise<TradeCardSnapshot[]> {
+  const ids = [
+    ...new Set(
+      refs.flatMap((ref) =>
+        ref.cardId !== null && ref.snapshot.imageUrl !== null ? [ref.cardId] : [],
+      ),
+    ),
+  ];
+  if (ids.length === 0) {
+    // No image can be proven visible, so every non-null image in `refs`
+    // belongs to a card whose id we do not know (or there is no image at
+    // all). Copy the snapshots so callers never share mutable objects.
+    return refs.map((ref) => ({ ...ref.snapshot, imageUrl: null }));
+  }
+
+  const rows = await withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      return db
+        .select({ cardId: cardsTable.id })
+        .from(cardsTable)
+        .where(
+          and(
+            inArray(cardsTable.id, ids),
+            // users.id is a plain string here (already resolved), so bind it
+            // as an explicit uuid parameter; NULL reproduces the anonymous
+            // rule.
+            cardImageVisibleTo(
+              cardsTable.id,
+              viewerUserId === null ? null : sql`${viewerUserId}::uuid`,
+            ),
+          ),
+        );
+    },
+    "trade:image-visibility",
+    { idempotent: true },
+  );
+  const visibleCardIds = new Set(
+    rows.flatMap((row) => (typeof row.cardId === "string" ? [row.cardId] : [])),
+  );
+
+  return refs.map((ref) => ({
+    ...ref.snapshot,
+    // A NULL card id can never be proven visible (deny-by-default).
+    imageUrl:
+      ref.cardId !== null && visibleCardIds.has(ref.cardId) ? ref.snapshot.imageUrl : null,
+  }));
 }
 
 export type TradeCardSnapshot = {
@@ -543,10 +744,16 @@ function uniqueConstraintName(error: unknown): string | null {
 // The trade API must not become a side channel that reveals them: creating an
 // offer snapshots the wanted card's name/rarity/image into trade_offers and
 // echoes it back, and the public board returns those snapshots. So a card is
-// treated as non-existent for a viewer unless it is active AND
-//   (its streamer shows unowned cards with details) OR (the viewer owns a copy).
-// Each card is evaluated against ITS OWN streamer's settings, which keeps
-// cross-channel offers safe. The rule mirrors cardVisibleTo on `preview`.
+// treated as non-existent for a viewer unless it passes cardVisibleTo
+// (name level, which since #2070 also accepts the trade-only
+// trade_unowned_card_names_visible setting). Each card is evaluated against ITS
+// OWN streamer's settings, which keeps cross-channel offers safe.
+//
+// Rows and images are decided separately: passing cardVisibleTo only means the
+// NAME may be shown. Every snapshot that leaves a service function goes through
+// maskTradeCardImages, which applies cardImageVisibleTo to each card id, so
+// the name-only setting never leaks imageUrl through a DTO, the POST response
+// or the accept response.
 //
 // The check is done in SQL (a JOIN/WHERE condition) rather than by filtering
 // rows after the fact, so hidden cards never reach the Worker and cannot leak
@@ -578,12 +785,15 @@ export async function createTradeOffer(input: {
   // active bid; see copyLockedExpr) and the open-listing limit counts auction
   // listings too. Both read the auction schema, so the whole check also runs
   // inside withTradeAuctionSchemaFallback (outermost). Any combination of the
-  // two deploy windows converges in at most four attempts, only during the
-  // windows.
+  // deploy windows converges (each layer only handles its own 42703/42P01/
+  // 42883 and rethrows the rest outward, and the retry keeps the flags it
+  // already resolved), only during the windows. #2070 adds the
+  // trade_unowned_card_names_visible window innermost.
   const wantedQuantity = input.wantedQuantity ?? 1;
   const runChecks = async (
     withoutWantable: boolean,
     withoutAuctions: boolean,
+    withoutNameOnly: boolean,
   ) => ({
     rows: await withDbRetry(
       async () => {
@@ -649,8 +859,14 @@ export async function createTradeOffer(input: {
               // filter) with the same predicate as the board, so the name and
               // image of a hidden card are never read into the Worker (the same
               // policy as listWantableCards). A hidden card joins to NULL and
-              // falls into TRADE_WANTED_CARD_UNAVAILABLE below.
-              cardVisibleTo(createWantedCard.id, qualifiedColumn(usersTable.id)),
+              // falls into TRADE_WANTED_CARD_UNAVAILABLE below. The image
+              // itself is masked later (maskTradeCardImages) so a name-only
+              // card never echoes its imageUrl back.
+              cardVisibleTo(
+                createWantedCard.id,
+                qualifiedColumn(usersTable.id),
+                withoutNameOnly,
+              ),
             ),
           )
           .leftJoin(createOfferedGate, eq(createOfferedGate.id, createOfferedCard.streamer_id))
@@ -664,7 +880,9 @@ export async function createTradeOffer(input: {
   });
   const { rows: checkRows } = await withTradeAuctionSchemaFallback(
     (withoutAuctions) => withTradeWantableColumnFallback(
-      (withoutWantable) => runChecks(withoutWantable, withoutAuctions),
+      (withoutWantable) => withTradeUnownedCardNamesColumnFallback(
+        (withoutNameOnly) => runChecks(withoutWantable, withoutAuctions, withoutNameOnly),
+      ),
     ),
   );
   const check = checkRows[0];
@@ -673,11 +891,53 @@ export async function createTradeOffer(input: {
   }
   const userId = check.userId;
 
+  // #2070: the snapshot columns stay complete in the database (a later owner
+  // must still see the image), so the response row is masked at read time.
+  // Every `ok` return below goes through this helper; the mask is one extra
+  // statement and is skipped when both snapshots have no imageUrl.
+  //
+  // Devin Review on #2073: maskTradeCardImages runs AFTER the trade_offers
+  // INSERT has committed (or after a replay row was read back). If that
+  // follow-up visibility read throws, the offer already exists and the copy is
+  // already locked, so letting the exception escape would report a failure
+  // for a published offer (and the retry would only see the replay). Like
+  // acceptTradeOffer, fail CLOSED instead: keep the committed offer and hide
+  // both images, which are the only values that could not be proven visible.
+  // Name and rarity stay: a new row already passed cardVisibleTo, and a
+  // replay / 23505 recovery row is the offerer's own offer.
+  const maskOfferRow = async (offer: TradeOfferRow): Promise<TradeOfferRow> => {
+    const offeredSnapshot = normalizeSnapshot(offer.offered_card_snapshot);
+    const wantedSnapshot = normalizeSnapshot(offer.wanted_card_snapshot);
+    try {
+      const [offeredCard, wantedCard] = await maskTradeCardImages(
+        [
+          { cardId: offer.offered_card_id, snapshot: offeredSnapshot },
+          { cardId: offer.wanted_card_id, snapshot: wantedSnapshot },
+        ],
+        userId,
+      );
+      return { ...offer, offered_card_snapshot: offeredCard, wanted_card_snapshot: wantedCard };
+    } catch (error) {
+      // Exactly one warning per affected response. The snapshots (which hold
+      // imageUrl) and user identifiers are never passed explicitly; the shared
+      // logger additionally redacts Drizzle bind params in the error object.
+      logger.warn(
+        "trade:create image mask failed after COMMIT; returning the offer without card images",
+        { error },
+      );
+      return {
+        ...offer,
+        offered_card_snapshot: { ...offeredSnapshot, imageUrl: null },
+        wanted_card_snapshot: { ...wantedSnapshot, imageUrl: null },
+      };
+    }
+  };
+
   // Create idempotency is checked before mutable business validation. A client
   // retry after a successful commit must return the original offer even if a
   // channel setting changes between attempts.
   if (check.replay) {
-    return { kind: "ok", offer: check.replay, idempotentReplay: true };
+    return { kind: "ok", offer: await maskOfferRow(check.replay), idempotentReplay: true };
   }
 
   // The copy must exist, belong to the user and reference an existing card
@@ -778,7 +1038,7 @@ export async function createTradeOffer(input: {
     );
     const offer = rows[0];
     if (!offer) throw new Error("Trade offer INSERT returned no row");
-    return { kind: "ok", offer, idempotentReplay: false };
+    return { kind: "ok", offer: await maskOfferRow(offer), idempotentReplay: false };
   } catch (error) {
     // #1791: the trade_offers BEFORE INSERT trigger serializes on the copy's
     // user_cards row and rejects a copy that an auction listing / active bid
@@ -799,7 +1059,7 @@ export async function createTradeOffer(input: {
     // round-trip budget of the normal path).
     const byRequest = await findOfferByCreateRequest(userId, input.requestId);
     if (byRequest) {
-      return { kind: "ok", offer: byRequest, idempotentReplay: true };
+      return { kind: "ok", offer: await maskOfferRow(byRequest), idempotentReplay: true };
     }
 
     const constraint = uniqueConstraintName(error);
@@ -1060,6 +1320,32 @@ function toOfferDto(row: OfferListRow, context: ListContext): TradeOfferDto {
   return dto;
 }
 
+/**
+ * Read-time image mask for a page of offer DTOs (#2070): one statement for
+ * both sides of every row, so a name-only channel never returns imageUrl while
+ * the row itself (name/rarity/paging/hasMore) is untouched. The viewer id is
+ * the one the page SELECT already resolved (NULL for anonymous/unknown), so no
+ * extra users lookup is needed.
+ */
+async function maskOfferListImages(
+  offers: TradeOfferDto[],
+  viewerUserId: string | null,
+): Promise<TradeOfferDto[]> {
+  if (offers.length === 0) return offers;
+  const masked = await maskTradeCardImages(
+    offers.flatMap((offer) => [
+      { cardId: offer.offeredCardId, snapshot: offer.offeredCard },
+      { cardId: offer.wantedCardId, snapshot: offer.wantedCard },
+    ]),
+    viewerUserId,
+  );
+  return offers.map((offer, index) => ({
+    ...offer,
+    offeredCard: masked[index * 2],
+    wantedCard: masked[index * 2 + 1],
+  }));
+}
+
 export async function listTradeOffers(input: {
   streamerId: string;
   scope: TradeScope;
@@ -1076,13 +1362,16 @@ export async function listTradeOffers(input: {
   // the is_active / trade_enabled gates below: an offer with an inactive card
   // is not tradeable for anyone, exactly like a trade_enabled=false channel,
   // and stays reachable (cancellable) through /api/trades/mine.
-  const bothSidesVisible = and(
-    cardVisibleTo(tradeOffersTable.offered_card_id, viewerUserId),
-    cardVisibleTo(tradeOffersTable.wanted_card_id, viewerUserId),
+  const bothSidesVisible = (withoutNameOnly: boolean) => and(
+    cardVisibleTo(tradeOffersTable.offered_card_id, viewerUserId, withoutNameOnly),
+    cardVisibleTo(tradeOffersTable.wanted_card_id, viewerUserId, withoutNameOnly),
   )!;
-  const visibilityCondition = viewerUserId
-    ? or(eq(tradeOffersTable.offerer_user_id, viewerUserId), bothSidesVisible)!
-    : bothSidesVisible;
+  const visibilityCondition = (withoutNameOnly: boolean) => {
+    const visible = bothSidesVisible(withoutNameOnly);
+    return viewerUserId
+      ? or(eq(tradeOffersTable.offerer_user_id, viewerUserId), visible)!
+      : visible;
+  };
 
   // Every condition is part of the SQL WHERE clause so that LIMIT/OFFSET,
   // hasMore and the wantedCardId/offeredCardId filters are all computed over
@@ -1101,7 +1390,6 @@ export async function listTradeOffers(input: {
     tradeEnabledGate(tradeOffersTable.wanted_streamer_id),
     cardIsActive(tradeOffersTable.offered_card_id),
     cardIsActive(tradeOffersTable.wanted_card_id),
-    visibilityCondition,
   ];
 
   if (input.scope === "cross_channel") {
@@ -1142,6 +1430,7 @@ export async function listTradeOffers(input: {
   // outermost auction-schema fallback (only reachable for a logged-in viewer).
   const rows: OfferListRow[] = await withTradeAuctionSchemaFallback((withoutAuctions) =>
     withTradeWantableColumnFallback((withoutWantable) =>
+    withTradeUnownedCardNamesColumnFallback((withoutNameOnly) =>
     withDbRetry(
     async () => {
       const { db } = await getDb();
@@ -1157,19 +1446,29 @@ export async function listTradeOffers(input: {
         .leftJoin(wantedStreamerMeta, eq(wantedStreamerMeta.id, tradeOffersTable.wanted_streamer_id))
         .leftJoin(offererMeta, eq(offererMeta.id, tradeOffersTable.offerer_user_id))
         .leftJoin(acceptorMeta, eq(acceptorMeta.id, tradeOffersTable.accepted_by_user_id))
-        .where(and(...conditions, cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable)))
+        .where(and(
+          ...conditions,
+          // #2070: the name-level visibility depends on the deploy window, so
+          // it is built inside the fallback closure (own offers bypass only
+          // this reveal rule, exactly as before).
+          visibilityCondition(withoutNameOnly),
+          cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable),
+        ))
         .orderBy(desc(tradeOffersTable.created_at), desc(tradeOffersTable.id))
         .limit(TRADE_PAGE_SIZE + 1)
         .offset(offset);
     },
     "trade:list-open",
     { idempotent: true },
-  )));
+  ))));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
   return {
-    offers: pageRows.map((row) => toOfferDto(row, "board")),
+    offers: await maskOfferListImages(
+      pageRows.map((row) => toOfferDto(row, "board")),
+      rows[0]?.viewerUserId ?? null,
+    ),
     page: input.page,
     pageSize: TRADE_PAGE_SIZE,
     hasMore,
@@ -1231,8 +1530,13 @@ export async function listMyTradeOffers(
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
-  return {
-    offers: pageRows.map((row) => ({
+  // #2070: /mine is not exempt from the IMAGE rule. The row exemption below
+  // (the viewer chose/received these cards, so no visibility WHERE) is about
+  // which offers exist for them; an image is only returned when the viewer owns
+  // that card NOW or the channel reveals details. In particular a completed
+  // offer does not imply current ownership (the copy may have been traded on).
+  const offers = await maskOfferListImages(
+    pageRows.map((row) => ({
       ...toOfferDto(row, "mine"),
       mineRole:
         row.offer.offerer_user_id === row.viewerUserId
@@ -1240,6 +1544,10 @@ export async function listMyTradeOffers(
           : "acceptor" as const,
       tradeable: row.offer.status === "open" && row.tradeableState === true,
     })),
+    rows[0]?.viewerUserId ?? null,
+  );
+  return {
+    offers,
     page,
     pageSize: TRADE_PAGE_SIZE,
     hasMore,
@@ -1440,15 +1748,29 @@ export type TradeAcceptPrecheckError = "TRADE_OFFER_UNAVAILABLE";
  * cost of a migration. The RPC still re-validates trade_enabled and ownership
  * under row locks.
  */
+type TradeAcceptPrecheck = {
+  error: TradeAcceptPrecheckError | null;
+  /** Resolved users.id of the acceptor (NULL for an unknown twitch user). */
+  viewerUserId: string | null;
+  /**
+   * Card ids of the offer row (NULL when the definition was deleted). They are
+   * used after a successful RPC to apply the image mask (#2070) without a
+   * second offer lookup.
+   */
+  offeredCardId: string | null;
+  wantedCardId: string | null;
+};
+
 async function precheckTradeAccept(input: {
   twitchUserId: string;
   tradeOfferId: string;
   requestId: string;
-}): Promise<TradeAcceptPrecheckError | null> {
+}): Promise<TradeAcceptPrecheck> {
   // The acceptor id is resolved inside the same statement (previously a
   // separate users lookup round trip before this read).
   const acceptorUserId = viewerUserIdOf(input.twitchUserId);
-  const rows = await withTradeWantableColumnFallback((withoutWantable) => withDbRetry(
+  const rows = await withTradeWantableColumnFallback((withoutWantable) =>
+    withTradeUnownedCardNamesColumnFallback((withoutNameOnly) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -1470,7 +1792,11 @@ async function precheckTradeAccept(input: {
           wantedWantable: cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable),
           // The wanted card needs no visibility check: the acceptor must own
           // a copy of it to pay, and owning a copy makes it visible.
-          offeredVisible: cardVisibleTo(tradeOffersTable.offered_card_id, acceptorUserId),
+          offeredVisible: cardVisibleTo(
+            tradeOffersTable.offered_card_id,
+            acceptorUserId,
+            withoutNameOnly,
+          ),
         })
         .from(tradeOffersTable)
         .where(eq(tradeOffersTable.id, input.tradeOfferId))
@@ -1478,12 +1804,20 @@ async function precheckTradeAccept(input: {
     },
     "trade:accept-precheck",
     { idempotent: true },
-  ));
+  )));
   const offer = rows[0];
-  if (!offer) return null;
+  const empty: TradeAcceptPrecheck = {
+    error: null,
+    viewerUserId: null,
+    offeredCardId: null,
+    wantedCardId: null,
+  };
+  if (!offer) return empty;
   // Unknown acceptor: delegated to the RPC, which classifies it (unchanged).
   const acceptorId = offer.acceptorUserId;
-  if (!acceptorId) return null;
+  if (!acceptorId) return empty;
+  const ids = { offeredCardId: offer.offeredCardId, wantedCardId: offer.wantedCardId };
+  const base: TradeAcceptPrecheck = { error: null, viewerUserId: acceptorId, ...ids };
 
   // Replay first (explicit for readability; behaviorally it is also covered
   // by the `status !== "open"` delegation right below, since a replay is
@@ -1492,10 +1826,10 @@ async function precheckTradeAccept(input: {
     offer.status === "completed"
     && offer.acceptedByUserId === acceptorId
     && offer.acceptedRequestId === input.requestId;
-  if (isReplay) return null;
-  if (offer.status !== "open") return null;
-  if (offer.offererUserId === acceptorId) return null;
-  if (!offer.offeredCardId || !offer.wantedCardId) return null;
+  if (isReplay) return base;
+  if (offer.status !== "open") return base;
+  if (offer.offererUserId === acceptorId) return base;
+  if (!offer.offeredCardId || !offer.wantedCardId) return base;
 
   // One code for "inactive", "not visible" and "wanted card not wantable"
   // (#1790): the board already hides all of these offers, and distinguishing
@@ -1507,9 +1841,9 @@ async function precheckTradeAccept(input: {
     || offer.wantedWantable !== true
     || offer.offeredVisible !== true
   ) {
-    return "TRADE_OFFER_UNAVAILABLE";
+    return { ...base, error: "TRADE_OFFER_UNAVAILABLE" };
   }
-  return null;
+  return base;
 }
 
 /**
@@ -1529,30 +1863,66 @@ export async function acceptTradeOffer(input: {
   | TradeAcceptRpcResult
   | { success: false; error: "TRADE_BUSY" | TradeAcceptPrecheckError }
 > {
-  const precheckError = await precheckTradeAccept(input);
-  if (precheckError) {
-    return { success: false, error: precheckError };
+  const precheck = await precheckTradeAccept(input);
+  if (precheck.error) {
+    return { success: false, error: precheck.error };
   }
   const rpcInput = { ...input, expectedQuantity: input.expectedQuantity ?? 1 };
 
+  let result: TradeAcceptRpcResult;
   try {
-    return await callAcceptTradeOfferRpc(rpcInput);
+    result = await callAcceptTradeOfferRpc(rpcInput);
   } catch (error) {
     if (getSqlState(error) !== "40P01") throw error;
-  }
-
-  // Short full-jitter delay. One retry only: sustained deadlock pressure should
-  // be surfaced to the caller instead of becoming an unbounded Worker task.
-  await waitForTradeRetry(Math.floor(Math.random() * 51));
-
-  try {
-    return await callAcceptTradeOfferRpc(rpcInput);
-  } catch (error) {
-    if (getSqlState(error) === "40P01") {
-      return { success: false, error: "TRADE_BUSY" };
+    // Short full-jitter delay. One retry only: sustained deadlock pressure
+    // should be surfaced to the caller instead of becoming an unbounded Worker
+    // task.
+    await waitForTradeRetry(Math.floor(Math.random() * 51));
+    try {
+      result = await callAcceptTradeOfferRpc(rpcInput);
+    } catch (retryError) {
+      if (getSqlState(retryError) === "40P01") {
+        return { success: false, error: "TRADE_BUSY" };
+      }
+      throw retryError;
     }
-    throw error;
   }
+
+  // A failed RPC result carries no snapshots and must stay byte-for-byte
+  // unchanged (the error contract is pinned by trade-accept tests/routes).
+  if (!result.success) return result;
+
+  // #2070: the RPC returns the offer's full snapshot columns; the route spreads
+  // this object into the response (`...result`), so the image mask must happen
+  // HERE, not in the route. The card ids come from the precheck statement (no
+  // extra offer read); an unknown id (deleted definition) is denied. The mask
+  // runs after the ownership transfer, i.e. "owned now" is the post-trade
+  // state: the received card's image becomes visible, a card the acceptor gave
+  // away only keeps its image when the channel reveals details.
+  const offeredSnapshot = normalizeSnapshot(result.offeredCardSnapshot);
+  const wantedSnapshot = normalizeSnapshot(result.wantedCardSnapshot);
+  let masked: [TradeCardSnapshot, TradeCardSnapshot];
+  try {
+    const snapshots = await maskTradeCardImages(
+      [
+        { cardId: precheck.offeredCardId, snapshot: offeredSnapshot },
+        { cardId: precheck.wantedCardId, snapshot: wantedSnapshot },
+      ],
+      precheck.viewerUserId,
+    );
+    masked = [snapshots[0], snapshots[1]];
+  } catch {
+    // The RPC already committed the transfer: a failure of the follow-up
+    // visibility read must not turn a completed trade into a 500 (the route
+    // treats the audit lookup the same way). Fail CLOSED: hide both images
+    // rather than echo an image that could not be proven visible.
+    masked = [
+      { ...offeredSnapshot, imageUrl: null },
+      { ...wantedSnapshot, imageUrl: null },
+    ];
+  }
+  const [offeredCard, wantedCard] = masked;
+  return { ...result, offeredCardSnapshot: offeredCard, wantedCardSnapshot: wantedCard };
 }
 
 /**
@@ -1622,11 +1992,20 @@ export type TradeBoardStreamer = TradeStreamerSummary & {
   tradeEnabled: boolean;
   crossChannelTradeEnabled: boolean;
   /**
-   * true when unowned cards are shown WITH names/images
-   * (show_unowned_cards AND show_unowned_card_details). When false, viewers
-   * can only trade towards cards they already own a copy of.
+   * true when the NAME of an unowned card is revealed on the trade screens:
+   * show_unowned_cards AND (show_unowned_card_details OR
+   * trade_unowned_card_names_visible). When false, viewers can only trade
+   * towards cards they already own a copy of. This is the same rule as
+   * cardVisibleTo, so the copy cannot contradict the SQL.
    */
   revealsUnownedCards: boolean;
+  /**
+   * true when the IMAGE of an unowned card may be revealed too
+   * (show_unowned_cards AND show_unowned_card_details). When
+   * revealsUnownedCards is true but this is false, screens show a name-only
+   * channel: names and rarities are visible, images are placeholders.
+   */
+  revealsUnownedCardImages: boolean;
 };
 
 /**
@@ -1661,6 +2040,12 @@ export async function getTradeBoardStreamer(
             crossChannelTradeEnabled: useSafeColumns
               ? sql<boolean>`FALSE`
               : sql<boolean>`${streamersTable.cross_channel_trade_enabled}`,
+            // #2070: during the deploy window (safe columns) the setting does
+            // not exist, so fail closed to FALSE exactly like the trade flags
+            // above. Otherwise this is the same column cardVisibleTo reads.
+            tradeUnownedCardNamesVisible: useSafeColumns
+              ? sql<boolean>`FALSE`
+              : sql<boolean>`${streamersTable.trade_unowned_card_names_visible}`,
           })
           .from(streamersTable)
           .where(eq(streamersTable.id, streamerId))
@@ -1679,7 +2064,15 @@ export async function getTradeBoardStreamer(
     twitchProfileImageUrl: row.twitchProfileImageUrl,
     tradeEnabled: row.tradeEnabled === true,
     crossChannelTradeEnabled: row.crossChannelTradeEnabled === true,
+    // "Reveals unowned cards" means the NAME is revealed, which is what the
+    // board/create-form copy talks about: details OR the trade-only name
+    // setting, both gated by show_unowned_cards (the same rule as
+    // cardVisibleTo). Image availability is reported separately below so the
+    // screens can explain why a visible name has no picture.
     revealsUnownedCards:
+      row.showUnownedCards === true
+      && (row.showUnownedCardDetails === true || row.tradeUnownedCardNamesVisible === true),
+    revealsUnownedCardImages:
       row.showUnownedCards === true && row.showUnownedCardDetails === true,
   };
 }
@@ -1798,7 +2191,8 @@ export async function listWantableCards(
 
   // #1790: cards whose streamer turned off "can be requested" are left out of
   // the choices. This is only a UI aid; createTradeOffer is authoritative.
-  const rows = await withTradeWantableColumnFallback((withoutWantable) => withDbRetry(
+  const rows = await withTradeWantableColumnFallback((withoutWantable) =>
+    withTradeUnownedCardNamesColumnFallback((withoutNameOnly) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -1815,6 +2209,11 @@ export async function listWantableCards(
                   AND wanted_owned.card_id = ${qualifiedColumn(cardsTable.id)}
               )`
             : sql<boolean>`FALSE`,
+          // #2070: the image rule rides along as a scalar boolean instead of a
+          // per-card follow-up query (this list is every active card of the
+          // channel). It is the same cardImageVisibleTo fragment the other
+          // services mask with, so the picker and the board cannot disagree.
+          imageVisible: cardImageVisibleTo(cardsTable.id, viewerUserId),
         })
         .from(cardsTable)
         .where(
@@ -1822,20 +2221,23 @@ export async function listWantableCards(
             eq(cardsTable.streamer_id, streamerId),
             eq(cardsTable.is_active, true),
             cardIsWantable(cardsTable.id, withoutWantable),
-            cardVisibleTo(cardsTable.id, viewerUserId),
+            // Name level only: a name-only card is selectable (that is the
+            // point of #2070); the image is dropped below.
+            cardVisibleTo(cardsTable.id, viewerUserId, withoutNameOnly),
           ),
         )
         .orderBy(asc(cardsTable.rarity_order), asc(cardsTable.name), asc(cardsTable.id));
     },
     "trade:wantable-cards",
     { idempotent: true },
-  ));
+  )));
 
   return rows.map((row) => ({
     cardId: row.cardId,
     name: row.name,
     rarity: row.rarity,
-    imageUrl: row.imageUrl,
+    // Deny-by-default: only an explicit TRUE keeps the image.
+    imageUrl: row.imageVisible === true ? row.imageUrl : null,
     isOwned: row.isOwned === true,
   }));
 }

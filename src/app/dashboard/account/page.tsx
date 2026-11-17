@@ -151,6 +151,14 @@ export default async function AccountSettingsPage() {
                 streamerId={collectionSettings.streamerId}
                 currentTradeEnabled={collectionSettings.tradeEnabled}
                 currentCrossChannelTradeEnabled={collectionSettings.crossChannelTradeEnabled}
+                // Issue #2070: 新トグルはコレクション公開設定に依存する。
+                // 依存判定に必要な現在値を同じセクションの CardVisibilitySettings と
+                // 同じ初期値から渡す（新たなAPI往復は増やさない）。
+                currentShowUnownedCards={collectionSettings.showUnownedCards}
+                currentShowUnownedCardDetails={collectionSettings.showUnownedCardDetails}
+                currentTradeUnownedCardNamesVisible={
+                  collectionSettings.tradeUnownedCardNamesVisible
+                }
               />
             )}
           </section>

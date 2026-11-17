@@ -415,13 +415,17 @@ describe("trade guide page", () => {
     }
   });
 
-  it("has one row per visibility question (<key>, <key>Public, <key>Hidden) in both locales", () => {
+  it("has one row per visibility question (<key>, <key>Public, <key>NameOnly, <key>Hidden) in both locales", () => {
     for (const { name, messages } of locales) {
       const visibility = messages.tradeGuidePage.streamer.visibility;
       for (const key of listedProps(source, "visibilityRows", "key")) {
-        for (const suffix of ["", "Public", "Hidden"]) {
+        for (const suffix of ["", "Public", "NameOnly", "Hidden"]) {
           expect(visibility[`${key}${suffix}`], `${name}.${key}${suffix}`).toBeTruthy();
         }
+      }
+      // #2070: the three states are columns, so the headers must exist too.
+      for (const header of ["public", "nameOnly", "hidden"]) {
+        expect(visibility[header], `${name}.${header}`).toBeTruthy();
       }
     }
   });

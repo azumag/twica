@@ -84,12 +84,16 @@ export default async function TradeCreatePage({
   const loadWanted = async (): Promise<{
     wantableCards: WantableCard[];
     wantableRevealsUnowned: boolean;
+    wantableRevealsUnownedImages: boolean;
     cross: { partners: TradeCreatePartner[]; selectedPartnerId: string | null } | null;
   }> => {
     if (scope === "in_channel") {
       return {
         wantableCards: await listWantableCards(viewerId, streamer.id),
+        // Names and images are separate rules since #2070: a name-only channel
+        // lists unowned cards but their imageUrl is already null.
         wantableRevealsUnowned: streamer.revealsUnownedCards,
+        wantableRevealsUnownedImages: streamer.revealsUnownedCardImages,
         cross: null,
       };
     }
@@ -103,7 +107,15 @@ export default async function TradeCreatePage({
     // ?partner= id cannot be used to read another channel's catalogue.
     const partner = partners.find((item) => item.id === query.partner) ?? null;
     const cross = { partners, selectedPartnerId: partner?.id ?? null };
-    if (!partner) return { wantableCards: [], wantableRevealsUnowned: true, cross };
+    if (!partner) {
+      // No catalogue is shown at all, so neither notice applies.
+      return {
+        wantableCards: [],
+        wantableRevealsUnowned: true,
+        wantableRevealsUnownedImages: true,
+        cross,
+      };
+    }
     const [cards, partnerInfo] = await Promise.all([
       listWantableCards(viewerId, partner.id),
       getTradeBoardStreamer(partner.id),
@@ -111,10 +123,14 @@ export default async function TradeCreatePage({
     return {
       wantableCards: cards,
       wantableRevealsUnowned: partnerInfo?.revealsUnownedCards ?? false,
+      wantableRevealsUnownedImages: partnerInfo?.revealsUnownedCardImages ?? false,
       cross,
     };
   };
-  const [ownedCopies, { wantableCards, wantableRevealsUnowned, cross }] = await Promise.all([
+  const [
+    ownedCopies,
+    { wantableCards, wantableRevealsUnowned, wantableRevealsUnownedImages, cross },
+  ] = await Promise.all([
     listTradeableOwnedCopies(viewerId, streamer.id),
     loadWanted(),
   ]);
@@ -154,6 +170,7 @@ export default async function TradeCreatePage({
         ownedCopies={ownedCopies}
         wantableCards={wantableCards}
         wantableRevealsUnowned={wantableRevealsUnowned}
+        wantableRevealsUnownedImages={wantableRevealsUnownedImages}
         boardHref={boardHref}
         maxWantedQuantity={TRADE_MAX_WANTED_QUANTITY}
         initialOfferedCardId={typeof query.offered === "string" ? query.offered : null}

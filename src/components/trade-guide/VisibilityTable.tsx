@@ -1,20 +1,24 @@
-import GuideIcon from "./GuideIcon";
+import GuideIcon, { type GuideIconName } from "./GuideIcon";
+
+/** One state of the unowned-card visibility settings (a column). */
+export type VisibilityColumn = {
+  key: string;
+  header: string;
+  icon: GuideIconName;
+};
 
 export type VisibilityRow = {
   key: string;
   /** What is being asked ("name and image of cards the viewer does not own"). */
   aspect: string;
-  /** Result when unowned cards are revealed. */
-  revealed: { ok: boolean; text: string };
-  /** Result when they are hidden. */
-  hidden: { ok: boolean; text: string };
+  /** One cell per column, in the same order as the `columns` prop. */
+  cells: readonly { ok: boolean; text: string }[];
 };
 
 type VisibilityTableProps = {
   caption: string;
   aspectHeader: string;
-  revealedHeader: string;
-  hiddenHeader: string;
+  columns: readonly VisibilityColumn[];
   rows: readonly VisibilityRow[];
 };
 
@@ -36,18 +40,16 @@ function Cell({ ok, text }: { ok: boolean; text: string }) {
 }
 
 /**
- * Small matrix: what a viewer can see / pick, for each unowned-card visibility setting.
- *
- * The settings are the columns (two states) and the questions are the rows, rather
- * than the other way round: with two narrow columns plus the row header the table
- * still fits a 360px screen without sideways scrolling. Every cell has a check/cross
- * icon AND text, so no cell relies on colour.
+ * Small matrix: what a viewer can see / pick, for each unowned-card visibility
+ * setting. #2070 made this a THREE-state setting (off / name-only in trades /
+ * full details), so the settings are the columns and the questions are the
+ * rows. Every cell has a check/cross icon AND text, so no cell relies on
+ * colour, and the row headers keep the table readable at 360px.
  */
 export default function VisibilityTable({
   caption,
   aspectHeader,
-  revealedHeader,
-  hiddenHeader,
+  columns,
   rows,
 }: VisibilityTableProps) {
   return (
@@ -56,21 +58,17 @@ export default function VisibilityTable({
         <caption className="sr-only">{caption}</caption>
         <thead>
           <tr className="bg-gray-700/60 text-gray-100">
-            <th scope="col" className="w-[34%] px-2 py-2 font-semibold sm:px-3">
+            <th scope="col" className="w-[28%] px-2 py-2 font-semibold sm:px-3">
               {aspectHeader}
             </th>
-            <th scope="col" className="px-2 py-2 font-semibold sm:px-3">
-              <span className="inline-flex items-center gap-1">
-                <GuideIcon name="eye" className="h-4 w-4 shrink-0 text-emerald-300" />
-                {revealedHeader}
-              </span>
-            </th>
-            <th scope="col" className="px-2 py-2 font-semibold sm:px-3">
-              <span className="inline-flex items-center gap-1">
-                <GuideIcon name="eyeOff" className="h-4 w-4 shrink-0 text-rose-300" />
-                {hiddenHeader}
-              </span>
-            </th>
+            {columns.map((column) => (
+              <th key={column.key} scope="col" className="px-2 py-2 font-semibold sm:px-3">
+                <span className="inline-flex items-center gap-1">
+                  <GuideIcon name={column.icon} className="h-4 w-4 shrink-0 text-purple-300" />
+                  {column.header}
+                </span>
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-700">
@@ -79,8 +77,9 @@ export default function VisibilityTable({
               <th scope="row" className="px-2 py-3 align-top font-semibold text-gray-100 sm:px-3">
                 {row.aspect}
               </th>
-              <Cell ok={row.revealed.ok} text={row.revealed.text} />
-              <Cell ok={row.hidden.ok} text={row.hidden.text} />
+              {row.cells.map((cell, index) => (
+                <Cell key={columns[index]?.key ?? index} ok={cell.ok} text={cell.text} />
+              ))}
             </tr>
           ))}
         </tbody>
