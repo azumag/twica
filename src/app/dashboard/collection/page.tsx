@@ -5,6 +5,8 @@ import {
   getHiddenCollectionStreamerIds,
   getLastObtainedAtByStreamer,
 } from "@/lib/dashboard-data";
+import { getCollectedStreamerIds } from "@/lib/collected-streamers";
+import { logger } from "@/lib/logger";
 import {
   countOwnedActiveCardTypes,
   sortCollectedCards,
@@ -67,12 +69,22 @@ export default async function CollectionPage() {
   // 非表示設定と最終獲得日時はカード取得と互いに依存しないので並列に取得する。
   // どちらも失敗時は内部で縮退（非表示なし / 日時不明）するため、ここで reject されない。
   // 最終獲得日時は、client 側で recent に切り替えても即時に並べられるよう ?sort= に関わらず常に取得する。
-  const [userCards, hiddenStreamerIds, lastObtainedAtByStreamer, activeCardCounts] =
+  // #2079: 所持コレクションの定義は /trade のコレクション別一覧と同じ関数を使う。
+  // 取得に失敗した場合だけ、画面を壊さないよう getUserCards から導いた集合へ縮退する。
+  const [userCards, hiddenStreamerIds, lastObtainedAtByStreamer, activeCardCounts, collectedStreamerIds] =
     await Promise.all([
       getUserCards(session.twitchUserId),
       getHiddenCollectionStreamerIds(session.twitchUserId),
       getLastObtainedAtByStreamer(session.twitchUserId),
       getActiveCardCountsForCollectedStreamers(session.twitchUserId),
+      getCollectedStreamerIds(session.twitchUserId).catch((error: unknown) => {
+        // 一覧は getUserCards から描画できるため、ここで失敗してもページを
+        // 壊さない。ただし「全件表示」への縮退を無言にしない。
+        logger.warn("collected streamer ids lookup failed; showing the cards-derived set", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }),
     ]);
 
   // Sort cards by rarity (legendary first)
@@ -124,7 +136,15 @@ export default async function CollectionPage() {
   // 非表示かどうかの振り分けと、モード切替時の並び替えは client 側（CollectionStreamerList）が行う。
   // 以前の暗黙の順序（レアリティ順ソート→グループ化の副作用で、最高レアを持つ配信者が先）
   // は、明示的な並び替えに置き換わった。
-  const entries = Object.values(cardsByStreamer);
+  //
+  // #2079: 所持コレクションの集合で絞る。getCollectedStreamerIds が失敗したとき
+  // （null）は、このページが実際に描画するカードから導いた集合へ縮退し、
+  // 一覧が消えるより「取得できた分を出す」方を選ぶ。/trade 側も同じ関数を使うため、
+  // 通常時は両画面の配信者集合が一致する。
+  const collectedIds = collectedStreamerIds ?? new Set(Object.keys(cardsByStreamer));
+  const entries = Object.values(cardsByStreamer).filter((entry) =>
+    collectedIds.has(entry.streamer.id)
+  );
   const orders = Object.fromEntries(
     STREAMER_SORT_MODES.map((mode) => [
       mode,
@@ -138,10 +158,16 @@ export default async function CollectionPage() {
       ),
     ])
   ) as Record<StreamerCollectionSortMode, Record<StreamerCollectionSortOrder, string[]>>;
+  // The client receives only the owned collections, not just their order ids:
+  // a streamer that is missing from `orders` must not remain renderable via
+  // cardsByStreamer (#2079).
+  const visibleCardsByStreamer = Object.fromEntries(
+    entries.map((entry) => [entry.streamer.id, entry])
+  ) as Record<string, StreamerCollectionEntry>;
 
   return (
     <Collection
-      cardsByStreamer={cardsByStreamer}
+      cardsByStreamer={visibleCardsByStreamer}
       orders={orders}
       hiddenStreamerIds={[...hiddenStreamerIds]}
     />

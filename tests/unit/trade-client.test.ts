@@ -29,6 +29,7 @@ const ALL_CODES: Record<TradeApiErrorCode, true> = {
   INTERNAL_ERROR: true,
   TRADE_DISABLED: true,
   TRADE_OFFER_NOT_FOUND: true,
+  TRADE_COLLECTION_NOT_FOUND: true,
   TRADE_OFFER_NOT_OPEN: true,
   TRADE_OFFER_INVALID: true,
   TRADE_SELF_ACCEPT: true,

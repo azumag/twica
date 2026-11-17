@@ -300,6 +300,7 @@ export const ERROR_MESSAGES = {
   // Card trading (Issue #723/#724)
   TRADE_DISABLED: 'Card trading is disabled for one or both channels',
   TRADE_OFFER_NOT_FOUND: 'Trade offer not found',
+  TRADE_COLLECTION_NOT_FOUND: 'Collection not found',
   TRADE_OFFER_NOT_OPEN: 'Trade offer is no longer open',
   TRADE_OFFER_INVALID: 'Trade offer is no longer valid',
   TRADE_SELF_ACCEPT: 'You cannot accept your own trade offer',

@@ -3,6 +3,8 @@ import {
   asc,
   desc,
   eq,
+  gt,
+  lte,
   ne,
   or,
   getTableColumns,
@@ -30,6 +32,7 @@ import {
   isPgUniqueViolationError,
 } from "@/lib/db/errors";
 import { withDbRetry } from "@/lib/db/retry";
+import { collectedStreamerIdsSubquery } from "@/lib/collected-streamers";
 import {
   isMissingTradeSettingsColumnError,
   withLiveDirectorySettingsColumnFallback,
@@ -48,6 +51,37 @@ export const TRADE_MAX_OPEN_OFFERS = 10;
 export const TRADE_MAX_WANTED_QUANTITY = 10;
 
 export type TradeScope = "in_channel" | "cross_channel";
+
+/**
+ * ハブのコレクション別一覧の並び順 (#2079)。
+ *
+ * - newest: 新着順（出品・オークションとも created_at DESC）
+ * - ending_soon: 締切が近い順。オークションだけに効き、トレードは新着順のまま。
+ *
+ * レアリティ順は意図的に用意しない。カスタムレアリティ (#2029) には全配信者で
+ * 共通の順序が無く、画面ごとに「レアリティ順」の意味が変わってしまうため。
+ */
+export type TradeCollectionSort = "newest" | "ending_soon";
+export const DEFAULT_TRADE_COLLECTION_SORT: TradeCollectionSort = "newest";
+
+const TRADE_COLLECTION_SORTS: readonly TradeCollectionSort[] = ["newest", "ending_soon"];
+
+/**
+ * URL クエリ `?sort=` を許可リストで正規化する。不明な値・空・配列は
+ * 既定の newest へ黙って落とす（利用者が自由に書き換えられる値であり、
+ * エラーページにする理由がない。値を SQL の ORDER BY へ直接埋めない）。
+ */
+export function parseTradeCollectionSort(
+  value: string | string[] | undefined,
+): TradeCollectionSort {
+  return typeof value === "string"
+    && (TRADE_COLLECTION_SORTS as readonly string[]).includes(value)
+    ? (value as TradeCollectionSort)
+    : DEFAULT_TRADE_COLLECTION_SORT;
+}
+
+/** 展開 API が受け付ける一覧の種類 (#2079)。 */
+export type TradeCollectionKind = "offer" | "auction";
 /**
  *   yes        — the viewer can pay wanted_quantity unlisted copies
  *   not_owned  — the viewer owns no copy of the wanted card
@@ -66,6 +100,10 @@ export type TradeServiceErrorCode =
   | "TRADE_CARD_NOT_OWNED"
   | "TRADE_CARD_ALREADY_LISTED"
   | "TRADE_OFFER_LIMIT"
+  // #2079: the viewer does not own the collection addressed by the
+  // per-collection page endpoint. Hidden and missing are indistinguishable
+  // (404), like the other trade reads.
+  | "TRADE_COLLECTION_NOT_FOUND"
   | "TRADE_SAME_CARD"
   | "TRADE_WANTED_CARD_UNAVAILABLE"
   // #1790: the wanted card is visible and active, but its streamer turned
@@ -641,6 +679,18 @@ export type TradeOfferDto = {
   mineRole?: "offerer" | "acceptor";
 };
 
+/**
+ * 1コレクション分の出品一覧 (#2079)。total は画面に出す先頭5件ではなく、
+ * その配置先に属する全件数（SQL の COUNT(*) OVER）。latestCreatedAt は
+ * ハブのコレクション並び（最新の出品が新しい順）に使う全件の最大値。
+ */
+export type TradeCollectionOfferGroup = {
+  streamer: TradeStreamerSummary;
+  offers: TradeOfferDto[];
+  total: number;
+  latestCreatedAt: string;
+};
+
 function cardSnapshot(card: {
   name: string;
   rarity: string;
@@ -680,6 +730,9 @@ const createOfferedGate = alias(streamersTable, "offered_gate");
 const createWantedGate = alias(streamersTable, "wanted_gate");
 const offeredStreamerMeta = alias(streamersTable, "offered_streamer");
 const wantedStreamerMeta = alias(streamersTable, "wanted_streamer");
+// #2079: the collection whose section a row is placed under (for a cross
+// offer this can be either side of the trade).
+const placementStreamerMeta = alias(streamersTable, "collection_streamer");
 const offererMeta = alias(usersTable, "offerer_user");
 const acceptorMeta = alias(usersTable, "acceptor_user");
 
@@ -1117,7 +1170,7 @@ function offerListFields(viewerUserId: SQL | null) {
 }
 
 function streamerSummaryFields<
-  T extends typeof offeredStreamerMeta | typeof wantedStreamerMeta,
+  T extends typeof offeredStreamerMeta | typeof wantedStreamerMeta | typeof placementStreamerMeta,
 >(table: T) {
   return {
     id: table.id,
@@ -1346,6 +1399,77 @@ async function maskOfferListImages(
   }));
 }
 
+/**
+ * WHERE 条件 shared by every public offer list (#2079 で抽出): the board and
+ * the hub's per-collection list must agree on what an acceptable, visible
+ * open offer is.
+ *
+ * Both sides must be revealed to the viewer. Own offers bypass only the
+ * *reveal* rule (a channel switching show_unowned_* off later must not hide
+ * the viewer's own listing, whose wanted card they chose themselves), not
+ * the is_active / trade_enabled gates below: an offer with an inactive card
+ * is not tradeable for anyone, exactly like a trade_enabled=false channel,
+ * and stays reachable (cancellable) through /api/trades/mine.
+ *
+ * Every condition is part of the SQL WHERE clause so that LIMIT/OFFSET,
+ * hasMore and the card filters are all computed over the visible set only.
+ * Post-filtering a fetched page would let a client infer hidden offers from
+ * short pages or hasMore=true with no rows.
+ *
+ * cardIsActive() covers a NULL card_id on its own: a card definition deleted
+ * after the offer was created sets offered_card_id/wanted_card_id to NULL
+ * (ON DELETE SET NULL, see 20260817100000_add_card_trading.sql), and then
+ * `active_card.id = NULL` is never TRUE so the EXISTS is false. No separate
+ * IS NOT NULL condition is needed (verified on real PostgreSQL by
+ * tests/integration/trade-visibility-pg.test.ts).
+ *
+ * #1790: an offer whose wanted card was switched to "cannot be requested"
+ * after listing is hidden for everyone, the offerer included — the same
+ * treatment as an inactive card above (nobody can accept it; the offerer
+ * finds it on /mine as not tradeable). It is not cancelled, so switching the
+ * card back brings the offer back. The condition depends on the deploy-window
+ * shape, so withoutWantable is passed explicitly.
+ *
+ * #2070: the name-level visibility depends on the deploy window too, so
+ * withoutNameOnly is passed explicitly at every call site.
+ */
+function openOfferConditions(
+  viewerUserId: SQL | null,
+  withoutNameOnly: boolean,
+  withoutWantable: boolean,
+) {
+  const bothSidesVisible = and(
+    cardVisibleTo(tradeOffersTable.offered_card_id, viewerUserId, withoutNameOnly),
+    cardVisibleTo(tradeOffersTable.wanted_card_id, viewerUserId, withoutNameOnly),
+  )!;
+  const visibilityCondition = viewerUserId
+    ? or(eq(tradeOffersTable.offerer_user_id, viewerUserId), bothSidesVisible)!
+    : bothSidesVisible;
+  return [
+    eq(tradeOffersTable.status, "open"),
+    tradeEnabledGate(tradeOffersTable.offered_streamer_id),
+    tradeEnabledGate(tradeOffersTable.wanted_streamer_id),
+    cardIsActive(tradeOffersTable.offered_card_id),
+    cardIsActive(tradeOffersTable.wanted_card_id),
+    cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable),
+    // A cross-channel offer exists on the board only while BOTH channels
+    // still allow cross-channel trade (same predicate as tradeableStateFor).
+    // In-channel offers keep appearing when cross trade is off; `IS NOT TRUE`
+    // keeps a NULL is_cross_channel on the in-channel side rather than
+    // turning the whole expression into NULL. This is part of the shared
+    // conditions because the hub's per-collection list has no scope filter
+    // that could otherwise drop cross offers on its own (#2079).
+    or(
+      sql<boolean>`${qualifiedColumn(tradeOffersTable.is_cross_channel)} IS NOT TRUE`,
+      and(
+        crossEnabledGate(tradeOffersTable.offered_streamer_id),
+        crossEnabledGate(tradeOffersTable.wanted_streamer_id),
+      )!,
+    )!,
+    visibilityCondition,
+  ];
+}
+
 export async function listTradeOffers(input: {
   streamerId: string;
   scope: TradeScope;
@@ -1356,75 +1480,39 @@ export async function listTradeOffers(input: {
 }) {
   const viewerUserId = input.twitchUserId ? viewerUserIdOf(input.twitchUserId) : null;
 
-  // Both sides must be revealed to the viewer. Own offers bypass only the
-  // *reveal* rule (a channel switching show_unowned_* off later must not hide
-  // the viewer's own listing, whose wanted card they chose themselves), not
-  // the is_active / trade_enabled gates below: an offer with an inactive card
-  // is not tradeable for anyone, exactly like a trade_enabled=false channel,
-  // and stays reachable (cancellable) through /api/trades/mine.
-  const bothSidesVisible = (withoutNameOnly: boolean) => and(
-    cardVisibleTo(tradeOffersTable.offered_card_id, viewerUserId, withoutNameOnly),
-    cardVisibleTo(tradeOffersTable.wanted_card_id, viewerUserId, withoutNameOnly),
-  )!;
-  const visibilityCondition = (withoutNameOnly: boolean) => {
-    const visible = bothSidesVisible(withoutNameOnly);
-    return viewerUserId
-      ? or(eq(tradeOffersTable.offerer_user_id, viewerUserId), visible)!
-      : visible;
-  };
+  // The shared conditions are rebuilt inside the deploy-window closures
+  // because cardIsWantable / cardVisibleTo reference fallback columns.
+  const conditionsFor = (withoutNameOnly: boolean, withoutWantable: boolean) => {
+    const conditions = [
+      ...openOfferConditions(viewerUserId, withoutNameOnly, withoutWantable),
+    ];
 
-  // Every condition is part of the SQL WHERE clause so that LIMIT/OFFSET,
-  // hasMore and the wantedCardId/offeredCardId filters are all computed over
-  // the visible set only. Post-filtering a fetched page would let a client
-  // infer hidden offers from short pages or hasMore=true with no rows.
-  //
-  // cardIsActive() covers a NULL card_id on its own: a card definition deleted
-  // after the offer was created sets offered_card_id/wanted_card_id to NULL
-  // (ON DELETE SET NULL, see 20260817100000_add_card_trading.sql), and then
-  // `active_card.id = NULL` is never TRUE so the EXISTS is false. No separate
-  // IS NOT NULL condition is needed (verified on real PostgreSQL by
-  // tests/integration/trade-visibility-pg.test.ts).
-  const conditions = [
-    eq(tradeOffersTable.status, "open"),
-    tradeEnabledGate(tradeOffersTable.offered_streamer_id),
-    tradeEnabledGate(tradeOffersTable.wanted_streamer_id),
-    cardIsActive(tradeOffersTable.offered_card_id),
-    cardIsActive(tradeOffersTable.wanted_card_id),
-  ];
-
-  if (input.scope === "cross_channel") {
-    conditions.push(
-      eq(tradeOffersTable.is_cross_channel, true),
-      or(
+    if (input.scope === "cross_channel") {
+      conditions.push(
+        eq(tradeOffersTable.is_cross_channel, true),
+        or(
+          eq(tradeOffersTable.offered_streamer_id, input.streamerId),
+          eq(tradeOffersTable.wanted_streamer_id, input.streamerId),
+        )!,
+      );
+    } else {
+      conditions.push(
+        eq(tradeOffersTable.is_cross_channel, false),
         eq(tradeOffersTable.offered_streamer_id, input.streamerId),
-        eq(tradeOffersTable.wanted_streamer_id, input.streamerId),
-      )!,
-      crossEnabledGate(tradeOffersTable.offered_streamer_id),
-      crossEnabledGate(tradeOffersTable.wanted_streamer_id),
-    );
-  } else {
-    conditions.push(
-      eq(tradeOffersTable.is_cross_channel, false),
-      eq(tradeOffersTable.offered_streamer_id, input.streamerId),
-    );
-  }
+      );
+    }
 
-  if (input.wantedCardId) {
-    conditions.push(eq(tradeOffersTable.wanted_card_id, input.wantedCardId));
-  }
-  if (input.offeredCardId) {
-    conditions.push(eq(tradeOffersTable.offered_card_id, input.offeredCardId));
-  }
+    if (input.wantedCardId) {
+      conditions.push(eq(tradeOffersTable.wanted_card_id, input.wantedCardId));
+    }
+    if (input.offeredCardId) {
+      conditions.push(eq(tradeOffersTable.offered_card_id, input.offeredCardId));
+    }
+    return conditions;
+  };
 
   // Single statement (previously user lookup → page → metadata → canAccept,
   // i.e. 4 sequential round trips for a logged-in viewer).
-  //
-  // #1790: an offer whose wanted card was switched to "cannot be requested"
-  // after listing is hidden for everyone, the offerer included — the same
-  // treatment as an inactive card above (nobody can accept it; the offerer
-  // finds it on /mine as not tradeable). It is not cancelled, so switching
-  // the card back brings the offer back. The condition is added inside the
-  // fallback closure because its SQL depends on the deploy-window shape.
   const offset = (input.page - 1) * TRADE_PAGE_SIZE;
   // #1791: canAccept reads the copy locks (acceptStateFor), hence the
   // outermost auction-schema fallback (only reachable for a logged-in viewer).
@@ -1446,14 +1534,7 @@ export async function listTradeOffers(input: {
         .leftJoin(wantedStreamerMeta, eq(wantedStreamerMeta.id, tradeOffersTable.wanted_streamer_id))
         .leftJoin(offererMeta, eq(offererMeta.id, tradeOffersTable.offerer_user_id))
         .leftJoin(acceptorMeta, eq(acceptorMeta.id, tradeOffersTable.accepted_by_user_id))
-        .where(and(
-          ...conditions,
-          // #2070: the name-level visibility depends on the deploy window, so
-          // it is built inside the fallback closure (own offers bypass only
-          // this reveal rule, exactly as before).
-          visibilityCondition(withoutNameOnly),
-          cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable),
-        ))
+        .where(and(...conditionsFor(withoutNameOnly, withoutWantable)))
         .orderBy(desc(tradeOffersTable.created_at), desc(tradeOffersTable.id))
         .limit(TRADE_PAGE_SIZE + 1)
         .offset(offset);
@@ -1473,6 +1554,205 @@ export async function listTradeOffers(input: {
     pageSize: TRADE_PAGE_SIZE,
     hasMore,
   };
+}
+
+/**
+ * SQL predicate: `streamerColumn` is one of the collections the viewer owns.
+ * The definition itself lives in collected-streamers.ts so the dashboard and
+ * the trade hub cannot drift apart (#2079).
+ */
+function placementIsCollected(streamerColumn: AnyColumn, twitchUserId: string) {
+  return sql<boolean>`${qualifiedColumn(streamerColumn)} IN ${collectedStreamerIdsSubquery(twitchUserId)}`;
+}
+
+type CollectionOfferRow = OfferListRow & {
+  placement: JoinedStreamer;
+  placementStreamerId: string;
+  rn: number;
+  total: number;
+  latestCreatedAt: string;
+};
+
+/**
+ * ハブのコレクション別出品一覧 (#2079)。
+ *
+ * 設計上の要点:
+ *
+ * 1. 出品とオークションでそれぞれ1クエリ。配信者ごとに問い合わせる N+1 は
+ *    作らない。`streamerId` を渡したときだけ、同じ関数を1配信者に絞って
+ *    展開 API から呼ぶ（折りたたみ時と同じ条件・同じ DTO・同じマスク）。
+ *
+ * 2. クロスの出品は、渡す側・求める側のうち閲覧者が持っている配信者の
+ *    掲示板に出す。両方持っていれば両方に出す。UNION ALL の2分岐で
+ *    「offered 側の配置」と「wanted 側の配置」を作る。分岐2は
+ *    is_cross_channel かつ offered <> wanted のときだけなので、同じ
+ *    (offer, 配置先) が2回数えられることはない。各分岐の WHERE には
+ *    所持コレクションの述語を必ず入れるため、持っていない配信者の下には
+ *    行が作られない。
+ *
+ * 3. 各配置先の先頭5件は SQL で選ぶ。ROW_NUMBER() で並べ、外側の
+ *    WHERE rn <= 5 で切る。TS 側で slice しないので、total（COUNT OVER）と
+ *    先頭5件が必ず同じ集合から出る。latestCreatedAt（MAX OVER）は
+ *    ハブのコレクション並び（最新の出品が新しい順）に使う。MAX/COUNT は
+ *    外側の rn 絞り込みより前に評価されるため、6件目以降も含めた全件の
+ *    値になる。
+ *
+ * 4. 可視性・ゲート・画像マスクは既存の listTradeOffers と同じ関数
+ *    (openOfferConditions / acceptStateFor / toOfferDto / maskOfferListImages)
+ *    をそのまま使う。UNION で新しい DTO を作らない。クロスの wanted 側の
+ *    画像は wanted カード自身の配信者設定で maskTradeCardImages が判定する。
+ *
+ * sort は「新着順」と「締切が近い順」だけ。締切はオークションにしか無いので、
+ * 出品一覧は sort に関わらず created_at DESC のままにする（呼び出し側の
+ * ending_soon は無視する）。レアリティ順はカスタムレアリティ (#2029) に
+ * 全体共通の順序が無いため作らない。
+ */
+export async function listTradeOffersByCollection(input: {
+  twitchUserId: string;
+  /** undefined: 所持する全コレクションの先頭5件。指定時: その1配信者のページ。 */
+  streamerId?: string;
+  /** streamerId 指定時のみ使う（1始まり）。 */
+  page?: number;
+}): Promise<TradeCollectionOfferGroup[]> {
+  const viewerUserId = viewerUserIdOf(input.twitchUserId);
+  const page = input.page ?? 1;
+  const offset = (page - 1) * TRADE_PAGE_SIZE;
+
+  const rows: CollectionOfferRow[] = await withTradeAuctionSchemaFallback((withoutAuctions) =>
+    withTradeWantableColumnFallback((withoutWantable) =>
+    withTradeUnownedCardNamesColumnFallback((withoutNameOnly) =>
+    withDbRetry(
+    async () => {
+      const { db } = await getDb();
+      const conditions = openOfferConditions(
+        viewerUserId,
+        withoutNameOnly,
+        withoutWantable,
+      );
+
+      // 分岐1: offered 側が所持コレクション（in-channel も cross も含む）。
+      const offeredPlacement = db
+        .select({
+          offerId: tradeOffersTable.id,
+          placementStreamerId: tradeOffersTable.offered_streamer_id,
+          createdAt: tradeOffersTable.created_at,
+        })
+        .from(tradeOffersTable)
+        .where(and(
+          ...conditions,
+          placementIsCollected(tradeOffersTable.offered_streamer_id, input.twitchUserId),
+          // Push the single-collection filter below the window so expanding
+          // one collection does not rank every collection first.
+          ...(input.streamerId
+            ? [eq(tradeOffersTable.offered_streamer_id, input.streamerId)]
+            : []),
+        ));
+
+      // 分岐2: cross の wanted 側が所持コレクション。offered 側も所持して
+      // いる場合は分岐1と両方に出る（要件どおり両方の下に表示）。
+      const wantedPlacement = db
+        .select({
+          offerId: tradeOffersTable.id,
+          placementStreamerId: tradeOffersTable.wanted_streamer_id,
+          createdAt: tradeOffersTable.created_at,
+        })
+        .from(tradeOffersTable)
+        .where(and(
+          ...conditions,
+          eq(tradeOffersTable.is_cross_channel, true),
+          ne(tradeOffersTable.wanted_streamer_id, tradeOffersTable.offered_streamer_id),
+          placementIsCollected(tradeOffersTable.wanted_streamer_id, input.twitchUserId),
+          ...(input.streamerId
+            ? [eq(tradeOffersTable.wanted_streamer_id, input.streamerId)]
+            : []),
+        ));
+
+      const placed = offeredPlacement
+        .unionAll(wantedPlacement)
+        .as("placed_collection_offers");
+
+      // 分岐をまたいだ後に順位と件数を付ける。ORDER BY の第2キー id で
+      // 同時刻でも順位が決定的になる。
+      const ranked = db
+        .select({
+          offerId: placed.offerId,
+          placementStreamerId: placed.placementStreamerId,
+          rn: sql<number>`row_number() OVER (
+            PARTITION BY ${placed.placementStreamerId}
+            ORDER BY ${placed.createdAt} DESC, ${placed.offerId} DESC
+          )`.mapWith(Number).as("rn"),
+          total: sql<number>`count(*) OVER (
+            PARTITION BY ${placed.placementStreamerId}
+          )`.mapWith(Number).as("total"),
+          latestCreatedAt: sql<string>`max(${placed.createdAt}) OVER (
+            PARTITION BY ${placed.placementStreamerId}
+          )`.as("latestCreatedAt"),
+        })
+        .from(placed)
+        .as("ranked_collection_offers");
+
+      const rankedConditions = input.streamerId
+        ? [
+          eq(ranked.placementStreamerId, input.streamerId),
+          // 2ページ目以降は rn をページ範囲に絞る。
+          ...(page > 1 ? [gt(ranked.rn, offset)] : []),
+          lte(ranked.rn, offset + TRADE_PAGE_SIZE),
+        ]
+        : [lte(ranked.rn, 5)];
+
+      return db
+        .select({
+          ...offerListFields(viewerUserId),
+          acceptState: viewerUserId
+            ? acceptStateFor(viewerUserId, withoutAuctions)
+            : sql<TradeCanAccept | null>`NULL`,
+          placement: streamerSummaryFields(placementStreamerMeta),
+          placementStreamerId: ranked.placementStreamerId,
+          rn: ranked.rn,
+          total: ranked.total,
+          latestCreatedAt: ranked.latestCreatedAt,
+        })
+        .from(ranked)
+        .innerJoin(tradeOffersTable, eq(tradeOffersTable.id, ranked.offerId))
+        .leftJoin(offeredStreamerMeta, eq(offeredStreamerMeta.id, tradeOffersTable.offered_streamer_id))
+        .leftJoin(wantedStreamerMeta, eq(wantedStreamerMeta.id, tradeOffersTable.wanted_streamer_id))
+        .leftJoin(offererMeta, eq(offererMeta.id, tradeOffersTable.offerer_user_id))
+        .leftJoin(acceptorMeta, eq(acceptorMeta.id, tradeOffersTable.accepted_by_user_id))
+        .leftJoin(
+          placementStreamerMeta,
+          eq(placementStreamerMeta.id, ranked.placementStreamerId),
+        )
+        .where(and(...rankedConditions))
+        .orderBy(asc(ranked.placementStreamerId), asc(ranked.rn));
+    },
+    "trade:list-collections-offers",
+    { idempotent: true },
+  ))));
+
+  // Images are masked in ONE statement for every collection on this page,
+  // exactly like listTradeOffers. The mapping keeps row order.
+  const masked = await maskOfferListImages(
+    rows.map((row) => toOfferDto(row, "board")),
+    rows[0]?.viewerUserId ?? null,
+  );
+
+  const groups = new Map<string, TradeCollectionOfferGroup>();
+  rows.forEach((row, index) => {
+    const streamer = toStreamerSummary(row.placement);
+    if (!streamer) return;
+    let group = groups.get(streamer.id);
+    if (!group) {
+      group = {
+        streamer,
+        offers: [],
+        total: Number(row.total),
+        latestCreatedAt: row.latestCreatedAt,
+      };
+      groups.set(streamer.id, group);
+    }
+    group.offers.push(masked[index]);
+  });
+  return [...groups.values()];
 }
 
 /**
