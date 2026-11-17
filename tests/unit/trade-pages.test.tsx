@@ -55,6 +55,18 @@ vi.mock("next-intl/server", () => ({
 }));
 vi.mock("@/components/Header", () => ({ default: () => <div data-testid="app-header" /> }));
 vi.mock("@/components/DashboardNav", () => ({ default: () => <nav data-testid="dashboard-nav" /> }));
+// The layout wraps the nav and page content in DashboardShell now. This suite is
+// about the trade layout's data/guard wiring, not the shell's client-side drawer,
+// so a passthrough keeps the same document order (nav, then main) without
+// requiring the next-intl/usePathname context the real client component needs.
+vi.mock("@/components/DashboardShell", () => ({
+  default: ({ nav, children }: { nav: React.ReactNode; children: React.ReactNode }) => (
+    <div>
+      {nav}
+      {children}
+    </div>
+  ),
+}));
 vi.mock("@/components/PublicFooter", () => ({ default: () => <footer data-testid="public-footer" /> }));
 vi.mock("@/components/MaintenanceBanner", () => ({ default: () => null }));
 vi.mock("@/components/MaintenanceStatusProvider", () => ({

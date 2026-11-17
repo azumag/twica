@@ -32,6 +32,16 @@ vi.mock("next-intl/server", () => ({
 vi.mock("@/components/LiveDirectory", () => ({ default: () => null }));
 vi.mock("@/components/Header", () => ({ default: () => null }));
 vi.mock("@/components/DashboardNav", () => ({ default: () => null }));
+// The shell is a client component; this test only resolves the server page's
+// data promises, so keep the tree renderable without a next-intl provider.
+vi.mock("@/components/DashboardShell", () => ({
+  default: ({ nav, children }: { nav: React.ReactNode; children: React.ReactNode }) => (
+    <div>
+      {nav}
+      {children}
+    </div>
+  ),
+}));
 vi.mock("@/components/PublicFooter", () => ({ default: () => null }));
 
 import LivePage from "@/app/live/page";

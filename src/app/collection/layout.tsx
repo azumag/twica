@@ -6,6 +6,7 @@ import { getMessages } from "next-intl/server";
 import { COLLECTION_CLIENT_NAMESPACES, pick } from "@/i18n/client-namespaces";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
+import DashboardShell from "@/components/DashboardShell";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
 
 /**
@@ -63,15 +64,15 @@ export default async function CollectionLayout({
         <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
 
         <div className="container mx-auto px-4 py-6">
-          {/* Navigation bar - same as dashboard, with collection item active */}
-          {/* ナビゲーションバー - ダッシュボードと同じ、コレクション項目がアクティブ */}
-          <div className="mb-6">
-            <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
-          </div>
-
-          {/* Page content */}
-          {/* ページコンテンツ */}
-          <main>{children}</main>
+          {/* Navigation - same as dashboard, with collection item active */}
+          {/* ナビゲーション - ダッシュボードと同じ、コレクション項目がアクティブ */}
+          <DashboardShell
+            nav={<DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />}
+          >
+            {/* Page content */}
+            {/* ページコンテンツ */}
+            <main>{children}</main>
+          </DashboardShell>
         </div>
       </div>
     </NextIntlClientProvider>

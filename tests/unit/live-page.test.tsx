@@ -75,6 +75,17 @@ vi.mock("@/components/DashboardNav", () => ({
     </nav>
   ),
 }));
+// LivePage now renders the nav inside DashboardShell. The shell owns client-only
+// hooks (useTranslations / usePathname) that have no provider in this server
+// component test, so pass its two slots through in the same order.
+vi.mock("@/components/DashboardShell", () => ({
+  default: ({ nav, children }: { nav: React.ReactNode; children: React.ReactNode }) => (
+    <div>
+      {nav}
+      {children}
+    </div>
+  ),
+}));
 vi.mock("@/components/PublicFooter", () => ({
   default: () => <footer>public footer</footer>,
 }));

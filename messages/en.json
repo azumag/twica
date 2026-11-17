@@ -36,7 +36,10 @@
     "stats": "Stats",
     "collection": "My Collection",
     "announcements": "Announcements",
-    "inquiries": "Inquiries"
+    "inquiries": "Inquiries",
+    "menu": "Menu",
+    "closeMenu": "Close menu",
+    "sidebarLabel": "Dashboard navigation"
   },
   "rarity": {
     "common": "Common",
