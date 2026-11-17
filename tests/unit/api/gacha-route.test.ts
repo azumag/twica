@@ -68,7 +68,7 @@ describe("POST /api/gacha", () => {
       outcome: "accepted",
       attempts: 1,
     });
-    // Issue #781: 自チャンネル制限のデフォルトは「呼び出し者(twitch-1)が
+    // Issue #781: 自チャネル制限のデフォルトは「呼び出し者(twitch-1)が
     // streamer-1の持ち主」。既存テストはいずれも streamerId: "streamer-1" を
     // 使っているため、このデフォルトのままなら全て通る。
     mockGetStreamerIdByTwitchUserId.mockResolvedValue({ id: "streamer-1" });
@@ -131,7 +131,7 @@ describe("POST /api/gacha", () => {
     expect(res.status).toBe(500);
   });
 
-  // Issue #781: このQA用手動ドローAPIはチャンネルポイント消費を検証しないため、
+  // Issue #781: このQA用手動ドローAPIはチャネルポイント消費を検証しないため、
   // サーバー側で「呼び出し者自身のstreamerIdか」のチェックが無いと、ログイン済み
   // ユーザーが任意のstreamerIdに対してポイント消費なしの実ドローを行えてしまう。
   describe("self-channel restriction (#781)", () => {

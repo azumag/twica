@@ -995,7 +995,7 @@ export async function POST(request: NextRequest) {
       // カードトレード設定（オプション、Issue #725）
       tradeEnabled,
       crossChannelTradeEnabled,
-      // 未所持カードの名前だけをトレードで公開する（オプション、Issue #2070）。
+      // 未所持カードは名前だけの公開にする（オプション、Issue #2070）。
       // コレクション画面の showUnownedCardDetails とは独立して保存する。
       tradeUnownedCardNamesVisible,
       // アルバム表示設定（オプション、#1765 フォローアップ）。

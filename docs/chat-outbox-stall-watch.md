@@ -75,7 +75,7 @@ Discord 通知と run log には内訳が載る:
 | `wake予約 期限切れ` が多い | sweep 自体がこの行を 2 分以上拾えていない。chat-delivery Worker の scheduled handler と relay sweep の両方が止まっている | Worker の deploy 状態・Observability |
 | `attempt枯渇` が 0 より大きい | 試行上限（CHAT_OUTBOX_MAX_ATTEMPTS = 5）に達した pending 行。flag ON では sweep の対象外のため誰も起こさず永久滞留する。手動確認が必要 | 該当行の `last_error`（read-only workflow で確認） |
 | `processing lease失効` が 0 より大きい | claim 後に放置された行。再帰 consumer が立てば回収される | consumer の実行ログ |
-| `pending far-future(>30分)` / `gate far-future(>30分)` | 同一チャンネルへの大量積みなどで channel gate が 30 分以上先に進んでいる。単体ではアラートしない参考値 | 該当チャンネルの pending 行数・`reserve_chat_channel_send_slot` の呼び出し頻度 |
+| `pending far-future(>30分)` / `gate far-future(>30分)` | 同一チャネルへの大量積みなどで channel gate が 30 分以上先に進んでいる。単体ではアラートしない参考値 | 該当チャネルの pending 行数・`reserve_chat_channel_send_slot` の呼び出し頻度 |
 
 ## 通知先と頻度制御
 

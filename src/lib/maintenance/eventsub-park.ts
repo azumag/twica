@@ -72,7 +72,7 @@ export function buildParkedEventSubKey(receivedAt: string, messageId: string): s
  *   想定継続時間（cutover作業は通常数時間〜長くて1日程度）に対して十分な余裕を持たせる。
  * - 一方で TTL 無し（無期限）にすると、リプレイ手順の実行を運用者が失念した場合や
  *   maintenance mode が想定より長期化した場合に KV ストレージが無制限に増え続ける
- *   （課金・運用上のリスク）。また視聴者の Twitch ユーザーIDやチャンネルポイント
+ *   （課金・運用上のリスク）。また視聴者の Twitch ユーザーIDやチャネルポイント
  *   償還情報を含むデータを無期限に保持し続けることはデータ最小化の観点でも
  *   望ましくない。
  * - 7日は「通常の cutover 作業が長引いても発見・対応できる」実務的な余裕と、
@@ -151,7 +151,7 @@ export async function getMaintenanceKvBinding(): Promise<KVNamespaceLike | null>
  * payload（`{ subscription, event, ... }`）から `event.user_input` を除去した
  * コピーを返す（issue #695代替のKVベース部分改善、項目3: payload最小化）。
  *
- * `user_input` はチャンネルポイント報酬に紐づく視聴者の自由入力テキストで、
+ * `user_input` はチャネルポイント報酬に紐づく視聴者の自由入力テキストで、
  * `handleRedemption`/`handleRaidNotification`（src/lib/services/
  * eventsub-redemption.ts）のどちらも参照しておらず、リプレイ処理に不要
  * （grep で無参照を確認済み）。他のフィールド（`user_id`/`user_name`/

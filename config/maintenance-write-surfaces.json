@@ -473,7 +473,7 @@
     ],
     "category": "twitch",
     "maintenanceBehavior": "block",
-    "reason": "チャンネルポイント報酬のTwitch側登録・DB保存。allowlist未登録のため一律ブロックに従う。",
+    "reason": "チャネルポイント報酬のTwitch側登録・DB保存。allowlist未登録のため一律ブロックに従う。",
     "owner": "azumag",
     "reviewedAt": "2026-07-18"
   },

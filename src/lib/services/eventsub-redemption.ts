@@ -705,10 +705,10 @@ export interface SoldOutNotifyData {
 }
 
 /**
- * 売り切れ(発行枚数上限到達)確定後の通知処理（チャンネルポイント返還 + チャット通知）。
+ * 売り切れ(発行枚数上限到達)確定後の通知処理（チャネルポイント返還 + チャット通知）。
  * waitUntil() でレスポンス返却後にバックグラウンド実行される。
  *
- * Issue #546: redemptionId がある場合のみチャンネルポイント返還(CANCELED更新)を試みる。
+ * Issue #546: redemptionId がある場合のみチャネルポイント返還(CANCELED更新)を試みる。
  * 返還APIの失敗はログ + reportError するのみで、例外を伝播させない
  * （ガチャ自体は既に失敗しているため、この救済処理の失敗でEventSubレスポンスを悪化させない）。
  *
@@ -922,7 +922,7 @@ export async function handleRedemption(messageId: string, event: {
       }
       // カード発行可能枚数の上限到達（本物のsoldOut）、または必須RPC未デプロイを
       // fail-closedにした結果(limitUnavailable、#594)。
-      // どちらの場合も視聴者は既にチャンネルポイントを消費済みでカードを
+      // どちらの場合も視聴者は既にチャネルポイントを消費済みでカードを
       // 受け取れていないため、Issue #544/#546 の返還・チャット通知は両方の
       // ケースで実施する。一方 limitUnavailable は「RPCが本来存在すべきなのに
       // 存在しない」という異常系(#594で意図的に soldOut と別メッセージに
@@ -955,7 +955,7 @@ export async function handleRedemption(messageId: string, event: {
           });
         }
 
-        // Issue #544/#546: 視聴者はチャンネルポイントを消費済みなので、
+        // Issue #544/#546: 視聴者はチャネルポイントを消費済みなので、
         // ポイント返還を試み、結果に応じたチャット通知を送る。
         // 通知処理自体はレスポンスをブロックしないよう waitUntil() で遅延実行する
         // （ガチャ成功時の postRedemptionNotify と同じパターン）。

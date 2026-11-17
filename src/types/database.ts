@@ -95,7 +95,7 @@ export interface Database {
           // 視聴者間のカードトレード許可フラグ (#722/#725)
           // Whether viewers may trade this channel's cards (#722/#725)
           trade_enabled: boolean
-          // クロスチャンネルトレード許可フラグ (#722/#725)
+          // クロスチャネルトレード許可フラグ (#722/#725)
           // Whether cross-channel trades are allowed (#722/#725)
           cross_channel_trade_enabled: boolean
           // 未所持カードの名前とレアリティだけをトレードで公開するか (#2070)

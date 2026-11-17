@@ -682,7 +682,7 @@ describe("trade guide page", () => {
 
     it("glosses \"cross-channel\" where the tab is first introduced and uses the tab's own name after that", () => {
       for (const [name, messages, gloss] of [
-        ["ja", jaMessages, "ほかのチャンネルのカードとの交換"],
+        ["ja", jaMessages, "ほかのチャネルのカードとの交換"],
         ["en", enMessages, "trades with cards of other channels"],
       ] as const) {
         const find = messages.tradeGuidePage.accept.steps.find.description as string;

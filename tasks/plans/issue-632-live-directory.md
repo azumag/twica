@@ -97,7 +97,7 @@ RETURNS JSONB ...
 interface LiveDirectoryEntry {
   streamerId: string;
   twitchUserId: string;
-  twitchLogin: string;        // チャンネルリンク用
+  twitchLogin: string;        // チャネルリンク用
   displayName: string;
   profileImageUrl: string;
   // Helix由来
@@ -123,7 +123,7 @@ interface LiveDirectoryEntry {
 
 - **レイアウト**: レスポンシブなカードグリッド（mobile 1列 / sm 2列 / lg 3列）。既存ダーク基調（`bg-gray-800`/`rounded-xl` 等）に統一。
 - **配信者カード**: サムネイル（16:9, `thumbnail_url` 320x180、`LIVE` バッジ＋視聴者数オーバーレイ）、プロフィール画像＋表示名、配信タイトル（2行clamp）、カテゴリ名、配信経過時間、統計チップ（カード種類数 / 引き換え数。非公開なら非表示 or「統計非公開」）。
-- **リンク**: 主リンク → Twitchチャンネル（`https://twitch.tv/{login}`、外部リンクは `rel="noopener noreferrer"`）、副リンク → `/collection/[streamerId]`（未ログイン時はログイン誘導される点は許容）。**`<a>` の入れ子は禁止**（チームレビュー指摘: invalid nested anchorはクリック挙動不定・スクリーンリーダー破綻）。「カード全体をリンク化」する場合は stretched-link パターン（主リンクを `position:absolute; inset:0` で全面化し、副リンクを `position:relative; z-index` で前面に出す兄弟要素にする）か、単純にサムネイル+配信者名ブロックを主 `<a>`、統計行の外に副 `<a>` を置く構造とし、DOM上はアンカーを兄弟に保つ。
+- **リンク**: 主リンク → Twitchチャネル（`https://twitch.tv/{login}`、外部リンクは `rel="noopener noreferrer"`）、副リンク → `/collection/[streamerId]`（未ログイン時はログイン誘導される点は許容）。**`<a>` の入れ子は禁止**（チームレビュー指摘: invalid nested anchorはクリック挙動不定・スクリーンリーダー破綻）。「カード全体をリンク化」する場合は stretched-link パターン（主リンクを `position:absolute; inset:0` で全面化し、副リンクを `position:relative; z-index` で前面に出す兄弟要素にする）か、単純にサムネイル+配信者名ブロックを主 `<a>`、統計行の外に副 `<a>` を置く構造とし、DOM上はアンカーを兄弟に保つ。
 - **ソートUI**: セレクト or セグメントボタン。`視聴者数（デフォルト）/ 配信開始が新しい順 / カード種類数 / チャネルポイント引換数`。統計系ソートでは `stats=null` を末尾。
 - **状態**: 空状態（誰もライブ中でない/オプトイン0件）は専用イラストなしのシンプルなメッセージ＋「配信者の方はこちらから掲載できます」導線を**常時表示**（設定ページへリンク。未ログインなら既存の認証フローへ自然に誘導される）。エラー時は空状態と同一表示（＋Sentry通知）。
 - **設定側UX**: `LiveDirectorySettings.tsx`（`CardVisibilitySettings.tsx` 踏襲のトグル2つ）。掲載トグルOFF時は統計トグルをdisabled。説明文で「公開される情報の範囲」を明示（プライバシー上の透明性）。

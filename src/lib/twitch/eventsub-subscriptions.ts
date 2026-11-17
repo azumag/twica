@@ -83,7 +83,7 @@ export async function listAllEventSubSubscriptions(): Promise<EventSubSubscripti
  * `chat_user_banned` / `version_removed` / `beta_maintenance` 等）は
  * いずれも Twitch 側でサブスクリプションが終端状態に落ちたことを示し、
  * 放置しても自然回復しない。この状態のまま気づかずにいると、該当streamerの
- * 視聴者はガチャ交換ボタンを押してもチャンネルポイントだけ消費されカードが
+ * 視聴者はガチャ交換ボタンを押してもチャネルポイントだけ消費されカードが
  * 付与されない、という無音の失敗が起き続ける（issue #540 背景の #527 参照）。
  */
 const HEALTHY_OR_TRANSIENT_EVENTSUB_STATUSES = new Set([

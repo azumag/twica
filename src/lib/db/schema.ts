@@ -377,7 +377,7 @@ export const chatNotificationOutbox = pgTable('chat_notification_outbox', {
 // chat_channel_send_gate（Issue #1665: チャネル単位の送信間隔gate）
 // 根拠: 20260922100000 chat_outbox_continuation_and_channel_gate
 // summary/individual/chunkedのどの経路から送っても、また別outbox行・別Worker
-// 実行にまたがっても、同じ配信者チャンネルへの外部送信間隔（既定1.6秒）を守る。
+// 実行にまたがっても、同じ配信者チャネルへの外部送信間隔（既定1.6秒）を守る。
 // -----------------------------------------------------------------------------
 export const chatChannelSendGate = pgTable('chat_channel_send_gate', {
   broadcaster_twitch_user_id: text('broadcaster_twitch_user_id').primaryKey(),
