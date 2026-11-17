@@ -104,6 +104,7 @@ vi.mock("@/components/MyTrades", () => ({
 }));
 
 import TradeLayout, { metadata } from "@/app/trade/layout";
+import TradeHubPage from "@/app/trade/page";
 import TradeBoardPage from "@/app/trade/[streamerId]/page";
 import TradeCreatePage from "@/app/trade/[streamerId]/new/page";
 import MyTradesPage from "@/app/trade/mine/page";
@@ -509,34 +510,66 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
   });
 });
 
-describe("/trade/mine page", () => {
-  it("redirects anonymous visitors to login returning to /trade/mine", async () => {
+describe("/trade hub page (#2078)", () => {
+  it("redirects anonymous visitors to login returning to /trade", async () => {
     mocks.getSession.mockResolvedValue(null);
-    await expect(MyTradesPage()).rejects.toThrow(
-      "REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade%2Fmine",
+    await expect(TradeHubPage()).rejects.toThrow(
+      "REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade",
     );
+    // The hub is login-only: no per-viewer list is loaded before the redirect.
+    expect(mocks.listMyTradeOffers).not.toHaveBeenCalled();
   });
 
-  it("renders the trade list for logged-in users with the open tab's first page prefetched", async () => {
+  it("renders the heading, the disabled create button and the viewer's trades", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     const offer = { id: "o-1", status: "open", mineRole: "offerer" };
     mocks.listMyTradeOffers.mockResolvedValue({ offers: [offer], page: 1, pageSize: 20, hasMore: true });
-    render(await MyTradesPage());
-    expect(mocks.listMyTradeOffers).toHaveBeenCalledWith("viewer-1", { status: "open", page: 1 });
+    render(await TradeHubPage());
+
+    expect(screen.getByRole("heading", { name: "hubTitle" })).toBeInTheDocument();
+    // #2080 is not implemented yet, so the button must not link anywhere. It is
+    // a disabled button with the reason exposed via aria-describedby instead of
+    // a dead link.
+    const create = screen.getByRole("button", { name: "hubCreateButton" });
+    expect(create).toBeDisabled();
+    expect(create).toHaveAttribute("aria-disabled", "true");
+    expect(create).toHaveAttribute("aria-describedby", "trade-create-unavailable");
+    expect(screen.getByText("hubCreateUnavailable")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "myTradesTitle" })).toBeInTheDocument();
     expect(props("my-trades")).toEqual({ initialOpen: { offers: [offer], hasMore: true } });
+  });
+
+  it("prefetches the open tab's first page for logged-in users", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeHubPage());
+    expect(mocks.listMyTradeOffers).toHaveBeenCalledWith("viewer-1", { status: "open", page: 1 });
   });
 
   it("falls back to the client fetch when the prefetch fails", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     mocks.listMyTradeOffers.mockRejectedValue(new Error("db down"));
-    render(await MyTradesPage());
+    render(await TradeHubPage());
     expect(props("my-trades")).toEqual({ initialOpen: null });
     expect(mocks.loggerWarn).toHaveBeenCalledTimes(1);
   });
+});
 
-  it("does not prefetch for anonymous visitors", async () => {
+// #2078: /trade/mine is now a permanent alias of the /trade hub. The hub suite
+// above owns the login gate, SSR prefetch and <MyTrades> coverage that used to
+// live here; this page must only redirect, even for anonymous visitors (the hub
+// then sends them to login with returnTo=/trade).
+describe("/trade/mine page", () => {
+  it("redirects logged-in visitors to the trade hub", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(MyTradesPage()).rejects.toThrow("REDIRECT:/trade");
+    // The alias must not perform the SSR prefetch itself any more.
+    expect(mocks.getSession).not.toHaveBeenCalled();
+    expect(mocks.listMyTradeOffers).not.toHaveBeenCalled();
+  });
+
+  it("redirects anonymous visitors to /trade as well", async () => {
     mocks.getSession.mockResolvedValue(null);
-    await expect(MyTradesPage()).rejects.toThrow("REDIRECT:");
+    await expect(MyTradesPage()).rejects.toThrow("REDIRECT:/trade");
     expect(mocks.listMyTradeOffers).not.toHaveBeenCalled();
   });
 });

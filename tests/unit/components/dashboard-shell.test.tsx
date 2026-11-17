@@ -13,6 +13,11 @@ vi.mock("next/navigation", () => ({
   usePathname: () => router.pathname,
 }));
 
+// #2078: DashboardNav adds the trade item while the feature gate is on. Pin the
+// gate here so the sidebar order assertions stay deterministic if the branch
+// later flips CARD_TRADE_UI_VISIBLE back to false for the public launch.
+vi.mock("@/lib/constants", () => ({ CARD_TRADE_UI_VISIBLE: true }));
+
 function renderShell({
   isStreamer = true,
   isSupporter = true,
@@ -60,6 +65,7 @@ describe("DashboardShell sidebar", () => {
       "/dashboard/history",
       "/dashboard/stats",
       "/dashboard/collection",
+      "/trade",
       "/dashboard/inquiries",
       "/live",
     ]);
@@ -112,7 +118,13 @@ describe("DashboardShell sidebar", () => {
       {
         isStreamer: false,
         isSupporter: false,
-        expected: ["/dashboard", "/dashboard/history", "/dashboard/collection", "/live"],
+        expected: [
+          "/dashboard",
+          "/dashboard/history",
+          "/dashboard/collection",
+          "/trade",
+          "/live",
+        ],
       },
       {
         isStreamer: false,
@@ -121,6 +133,7 @@ describe("DashboardShell sidebar", () => {
           "/dashboard",
           "/dashboard/history",
           "/dashboard/collection",
+          "/trade",
           "/dashboard/inquiries",
           "/live",
         ],
@@ -135,6 +148,7 @@ describe("DashboardShell sidebar", () => {
           "/dashboard/history",
           "/dashboard/stats",
           "/dashboard/collection",
+          "/trade",
           "/live",
         ],
       },

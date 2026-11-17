@@ -134,8 +134,8 @@ const LIST_ROW = {
  * getDb double keyed by the FROM table. Several service reads run in
  * Promise.all (owned copies + wantable cards), so a call-order queue would be
  * racy; the table is unambiguous instead. The image mask query also starts
- * from `cards`, but it is only used by /trade/mine, which does not read cards
- * anywhere else.
+ * from `cards`, but it is only used by the /trade hub prefetch, which does not
+ * read cards anywhere else.
  */
 function primeDb(rows: { streamers?: unknown[]; cards?: unknown[]; user_cards?: unknown[]; trade_offers?: unknown[] }) {
   const calls: Array<{ fields: Record<string, unknown>; table: string | null }> = [];
@@ -211,11 +211,11 @@ describe("trade RSC props on a name-only channel (#2070)", () => {
     ]);
   });
 
-  it("the /trade/mine prefetch never serializes an image of an unowned wanted card", async () => {
+  it("the /trade hub prefetch never serializes an image of an unowned wanted card", async () => {
     primeDb({ trade_offers: [LIST_ROW], cards: [] });
-    const { default: MyTradesPage } = await import("@/app/trade/mine/page");
+    const { default: TradeHubPage } = await import("@/app/trade/page");
 
-    render(await MyTradesPage());
+    render(await TradeHubPage());
 
     const passed = props("my-trades-props");
     expectNoSecret(passed);
