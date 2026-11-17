@@ -929,12 +929,20 @@ export default function OverlayPreview({
   // Preview section content
   const previewSection = showPreview && (
     <div className="rounded-xl bg-gray-800 p-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
-        <h3 className="text-xl font-semibold text-white">{t("preview")}</h3>
+      {/* サイドバー化（#2082）で本文が狭くなり、見出しと操作群の合計幅が枠を超えると
+          justify-between の行が両方を縮めて見出しが1文字ずつ縦積みになっていた。
+          行自体を折り返し可能にして操作群を次の行へ落とせるようにし、見出しは
+          shrink-0 whitespace-nowrap で1行のまま読ませる。サイドバーや
+          SettingsViewMode の切り替え幅は変えない。 */}
+      <div className="mb-4 flex flex-col flex-wrap items-start justify-between gap-4 sm:flex-row sm:items-center">
+        <h3 className="shrink-0 whitespace-nowrap text-xl font-semibold text-white">{t("preview")}</h3>
 
         {/* カード選択とアクションボタン */}
         {/* Card selection and action buttons */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+        {/* セレクトの min-w-[200px] と各ボタンは縮小すると読めなくなるため、
+            枠幅に応じて次の行へ折り返す。min-w-0 は親行の余り幅まで縮められる
+            ようにするため（折り返し時は操作群が単独の行を使う）。 */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {/* カード選択セレクトボックス（カードが登録されている場合のみ表示） */}
           {/* Card selector dropdown (only shown when cards are registered) */}
           {activeCards.length > 0 && (
