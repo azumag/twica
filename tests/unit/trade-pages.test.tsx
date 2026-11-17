@@ -229,7 +229,7 @@ describe("/trade/[streamerId] board page", () => {
       `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}?scope=cross`)}`,
     );
     expect(board.createHref).toBe(
-      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}/new?scope=cross`)}`,
+      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/new?kind=offer&give=${STREAMER_ID}`)}`,
     );
     // Cross tab: no card filter, so the catalogue is not even queried.
     expect(board.filterCards).toEqual([]);
@@ -258,7 +258,9 @@ describe("/trade/[streamerId] board page", () => {
     expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
     const board = props("trade-board");
     expect(board.filterCards).toEqual([{ cardId: "c-1", name: "Visible Card" }]);
-    expect(board.createHref).toBe(`/trade/${STREAMER_ID}/new`);
+    expect(board.createHref).toBe(
+      `/trade/new?kind=offer&give=${STREAMER_ID}&want=${STREAMER_ID}`,
+    );
     expect(board.isLoggedIn).toBe(true);
   });
 
@@ -321,77 +323,68 @@ describe("/trade/[streamerId] board page", () => {
   });
 });
 
-describe("/trade/[streamerId]/new listing page", () => {
-  it("redirects anonymous visitors to login with an encoded returnTo (scope kept)", async () => {
+describe("/trade/[streamerId]/new legacy listing route (#2080)", () => {
+  const legacyRedirect = (searchParams: Record<string, string | string[] | undefined> = {}) =>
+    TradeCreatePage({ params, searchParams: Promise.resolve(searchParams) });
+
+  it("redirects to the unified flow preserving the old in-channel meaning (give === want)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(legacyRedirect({})).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=offer&give=${STREAMER_ID}&want=${STREAMER_ID}`,
+    );
+  });
+
+  it("keeps ?scope=cross as give-only: the wanted collection is chosen in step 3", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(legacyRedirect({ scope: "cross" })).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=offer&give=${STREAMER_ID}`,
+    );
+  });
+
+  it("keeps ?scope=cross&partner=P as give=X&want=P and carries ?offered=", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(
+      legacyRedirect({ scope: "cross", partner: "p-1", offered: "card-keep" }),
+    ).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=offer&give=${STREAMER_ID}&want=p-1&offered=card-keep`,
+    );
+  });
+
+  it("keeps ?kind=auction as the auction kind (no wanted collection)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(legacyRedirect({ kind: "auction" })).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=auction&give=${STREAMER_ID}`,
+    );
+  });
+
+  it("does not read the streamer or its catalogue before redirecting (no 404 gate)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    // Even if the channel is unknown/disabled, the legacy URL is just a view
+    // alias: the new page owns the gates.
+    mocks.getTradeBoardStreamer.mockResolvedValue(null);
+    await expect(legacyRedirect({ scope: "cross" })).rejects.toThrow("REDIRECT:");
+    expect(mocks.getTradeBoardStreamer).not.toHaveBeenCalled();
+    expect(mocks.listTradeableOwnedCopies).not.toHaveBeenCalled();
+    expect(mocks.listWantableCards).not.toHaveBeenCalled();
+    expect(mocks.listCrossTradePartnerStreamers).not.toHaveBeenCalled();
+  });
+
+  it("sends anonymous visitors to login with the CONVERTED URL as returnTo", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    const converted = `/trade/new?kind=offer&give=${STREAMER_ID}`;
+    await expect(legacyRedirect({ scope: "cross" })).rejects.toThrow(
+      `REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(converted)}`,
+    );
+  });
+
+  it("sends an invalid streamer id to the bare /trade/new instead of 404", async () => {
     mocks.getSession.mockResolvedValue(null);
     await expect(
-      TradeCreatePage({ params, searchParams: Promise.resolve({ scope: "cross" }) }),
-    ).rejects.toThrow(
-      `REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}/new?scope=cross`)}`,
-    );
-    expect(mocks.listTradeableOwnedCopies).not.toHaveBeenCalled();
-  });
-
-  it("in-channel: Step 2 candidates come from listWantableCards for this channel", async () => {
-    mocks.getSession.mockResolvedValue(SESSION);
-    render(await TradeCreatePage({ params, searchParams: Promise.resolve({}) }));
-    expect(mocks.listTradeableOwnedCopies).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
-    expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
-    const form = props("trade-create-form");
-    expect(form.cross).toBeNull();
-    expect(form.wantableCards).toHaveLength(1);
-    expect(form.boardHref).toBe(`/trade/${STREAMER_ID}`);
-    // #1789: the server page hands the quantity ceiling to the client form.
-    expect(form.maxWantedQuantity).toBe(10);
-  });
-
-  it("cross: ignores a ?partner= that is not an allowed partner and loads no catalogue", async () => {
-    mocks.getSession.mockResolvedValue(SESSION);
-    mocks.listCrossTradePartnerStreamers.mockResolvedValue([
-      { id: "p-1", twitchUsername: "p1", twitchDisplayName: "P1", twitchProfileImageUrl: null },
-    ]);
-    render(
-      await TradeCreatePage({ params, searchParams: Promise.resolve({ scope: "cross", partner: "not-allowed" }) }),
-    );
-    const form = props("trade-create-form");
-    // Only the rendered fields are serialized to the client.
-    expect(form.cross).toEqual({
-      partners: [{ id: "p-1", twitchDisplayName: "P1", twitchProfileImageUrl: null }],
-      selectedPartnerId: null,
-    });
-    expect(form.wantableCards).toEqual([]);
-    expect(mocks.listWantableCards).not.toHaveBeenCalled();
-  });
-
-  it("cross: loads the chosen partner's wantable cards and reveal setting", async () => {
-    mocks.getSession.mockResolvedValue(SESSION);
-    mocks.listCrossTradePartnerStreamers.mockResolvedValue([
-      { id: "p-1", twitchUsername: "p1", twitchDisplayName: "P1", twitchProfileImageUrl: null },
-    ]);
-    mocks.getTradeBoardStreamer.mockImplementation(async (id: string) =>
-      id === "p-1" ? boardStreamer({ id: "p-1", revealsUnownedCards: false }) : boardStreamer(),
-    );
-    render(
-      await TradeCreatePage({
-        params,
-        searchParams: Promise.resolve({ scope: "cross", partner: "p-1", offered: "card-keep" }),
+      TradeCreatePage({
+        params: Promise.resolve({ streamerId: "not-a-uuid" }),
+        searchParams: Promise.resolve({}),
       }),
-    );
-    expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", "p-1");
-    // Step 1 choice is carried over the partner navigation (validated by the form).
-    expect(props("trade-create-form").initialOfferedCardId).toBe("card-keep");
-    const form = props("trade-create-form");
-    expect(form.cross.selectedPartnerId).toBe("p-1");
-    expect(form.wantableRevealsUnowned).toBe(false);
-    expect(form.boardHref).toBe(`/trade/${STREAMER_ID}?scope=cross`);
-  });
-
-  it("shows a notice instead of the form when cross trading is disabled", async () => {
-    mocks.getSession.mockResolvedValue(SESSION);
-    mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer({ crossChannelTradeEnabled: false }));
-    render(await TradeCreatePage({ params, searchParams: Promise.resolve({ scope: "cross" }) }));
-    expect(screen.getByText("crossDisabledNotice")).toBeInTheDocument();
-    expect(screen.queryByTestId("trade-create-form")).toBeNull();
+    ).rejects.toThrow("REDIRECT:/trade/new");
   });
 });
 
@@ -417,7 +410,7 @@ describe("/trade/[streamerId] auction tab (#1791)", () => {
       streamerId: STREAMER_ID,
       scope: "in_channel",
       isLoggedIn: true,
-      createHref: `/trade/${STREAMER_ID}/new?kind=auction`,
+      createHref: `/trade/new?kind=auction&give=${STREAMER_ID}`,
       justListed: true,
     });
     expect(board.viewerKey).toMatch(/^u:[0-9a-f]{16}$/);
@@ -426,7 +419,7 @@ describe("/trade/[streamerId] auction tab (#1791)", () => {
     expect(screen.getByRole("link", { name: "tabInChannel" })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("link", { name: "createAuctionButton +" })).toHaveAttribute(
       "href",
-      `/trade/${STREAMER_ID}/new?kind=auction`,
+      `/trade/new?kind=auction&give=${STREAMER_ID}`,
     );
   });
 
@@ -459,19 +452,22 @@ describe("/trade/[streamerId] auction tab (#1791)", () => {
     mocks.getSession.mockResolvedValue(null);
     render(await TradeBoardPage({ params, searchParams: Promise.resolve({ tab: "auction" }) }));
     expect(props("trade-auction-board").createHref).toBe(
-      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}/new?kind=auction`)}`,
+      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/new?kind=auction&give=${STREAMER_ID}`)}`,
     );
   });
 });
 
-describe("/trade/[streamerId]/new kind preselection (#1791)", () => {
-  it("?kind=auction preselects the auction kind; anything else is a regular offer", async () => {
+describe("/trade/[streamerId]/new kind allowlist (#1791)", () => {
+  it("?kind=auction maps to the auction flow; anything else is a regular offer", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
-    render(await TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "auction" }) }));
-    expect(props("trade-create-form").initialKind).toBe("auction");
-    cleanup();
-    render(await TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "other" }) }));
-    expect(props("trade-create-form").initialKind).toBe("offer");
+    await expect(
+      TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "auction" }) }),
+    ).rejects.toThrow(`REDIRECT:/trade/new?kind=auction&give=${STREAMER_ID}`);
+    await expect(
+      TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "other" }) }),
+    ).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=offer&give=${STREAMER_ID}&want=${STREAMER_ID}`,
+    );
   });
 });
 
@@ -556,21 +552,21 @@ describe("/trade hub page (#2078)", () => {
     expect(mocks.listMyTradeOffers).not.toHaveBeenCalled();
   });
 
-  it("renders the heading, the disabled create button and the viewer's trades", async () => {
+  it("renders the heading, the create link to the unified flow and the viewer's trades", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     const offer = { id: "o-1", status: "open", mineRole: "offerer" };
     mocks.listMyTradeOffers.mockResolvedValue({ offers: [offer], page: 1, pageSize: 20, hasMore: true });
     render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole("heading", { name: "hubTitle" })).toBeInTheDocument();
-    // #2080 is not implemented yet, so the button must not link anywhere. It is
-    // a disabled button with the reason exposed via aria-describedby instead of
-    // a dead link.
-    const create = screen.getByRole("button", { name: "hubCreateButton" });
-    expect(create).toBeDisabled();
-    expect(create).toHaveAttribute("aria-disabled", "true");
-    expect(create).toHaveAttribute("aria-describedby", "trade-create-unavailable");
-    expect(screen.getByText("hubCreateUnavailable")).toBeInTheDocument();
+    // #2080: the primary action opens the unified listing flow. It must be a
+    // real link (not the old disabled placeholder) so the hub has no dead end.
+    const create = screen.getByRole("link", { name: "hubCreateButton" });
+    expect(create).toHaveAttribute("href", "/trade/new");
+    expect(create).not.toHaveAttribute("disabled");
+    expect(create).not.toHaveAttribute("aria-disabled");
+    // The removed "coming soon" explanation must not linger anywhere.
+    expect(screen.queryByText("hubCreateUnavailable")).toBeNull();
     expect(screen.getByRole("heading", { name: "myTradesTitle" })).toBeInTheDocument();
     expect(props("my-trades")).toEqual({ initialOpen: { offers: [offer], hasMore: true } });
     expect(screen.getByRole("heading", { name: "collectionsTitle" })).toBeInTheDocument();

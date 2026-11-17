@@ -59,13 +59,11 @@ function renderForm(
   return render(
     <NextIntlClientProvider locale={locale} messages={locale === "ja" ? jaMessages : enMessages}>
       <TradeCreateForm
-        streamerId="s-1"
-        cross={null}
+        kind="offer"
         ownedCopies={OWNED}
         wantableCards={WANTABLE}
         wantableRevealsUnowned
         wantableRevealsUnownedImages
-        boardHref="/trade/s-1"
         maxWantedQuantity={10}
         {...props}
       />
@@ -151,7 +149,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     expect(screen.getByText("渡す Dup Card ⇄ 欲しい Want Card Two で出品します")).toBeInTheDocument();
     fireEvent.click(submit);
 
-    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?listed=1"));
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade"));
     // The board's cached pages predate the new offer: dropped before navigating.
     expect(clearTradeListCache).toHaveBeenCalledTimes(1);
     expect(clearTradeListCache.mock.invocationCallOrder[0]).toBeLessThan(push.mock.invocationCallOrder[0]);
@@ -218,41 +216,6 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     expect(clearTradeListCache).not.toHaveBeenCalled();
   });
 
-  it("cross-channel: lists partner channels as links and hides Step 2 cards until one is chosen", () => {
-    renderForm({
-      cross: {
-        partners: [
-          { id: "s-2", twitchDisplayName: "PartnerTwo", twitchProfileImageUrl: null },
-          { id: "s-3", twitchDisplayName: "PartnerThree", twitchProfileImageUrl: null },
-        ],
-        selectedPartnerId: null,
-      },
-      wantableCards: [],
-      boardHref: "/trade/s-1?scope=cross",
-    });
-    expect(screen.getByText(ja.createStep2SelectStreamer)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "PartnerTwo" })).toHaveAttribute(
-      "href",
-      "/trade/s-1/new?scope=cross&partner=s-2",
-    );
-    expect(screen.queryByText(ja.createStep2Empty)).toBeNull();
-  });
-
-  it("cross-channel: carries the Step 1 choice over the partner navigation", () => {
-    renderForm({
-      cross: {
-        partners: [{ id: "s-2", twitchDisplayName: "PartnerTwo", twitchProfileImageUrl: null }],
-        selectedPartnerId: null,
-      },
-      wantableCards: [],
-    });
-    fireEvent.click(tile(step(ja.createStep1Title), "Single Card"));
-    expect(screen.getByRole("link", { name: "PartnerTwo" })).toHaveAttribute(
-      "href",
-      "/trade/s-1/new?scope=cross&partner=s-2&offered=card-single",
-    );
-  });
-
   it("preselects initialOfferedCardId only when it is a listable card", () => {
     renderForm({ initialOfferedCardId: "card-single" });
     expect(tile(step(ja.createStep1Title), "Single Card")).toHaveAttribute("aria-pressed", "true");
@@ -262,28 +225,6 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     renderForm({ initialOfferedCardId: "card-listed" });
     expect(tile(step(ja.createStep1Title), "Listed Card")).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByText(ja.createConfirmPending)).toBeInTheDocument();
-  });
-
-  it("cross-channel: marks the chosen partner and redirects to the cross board after listing", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(200, { tradeOffer: { id: "o-1" } }));
-    renderForm({
-      cross: {
-        partners: [{ id: "s-2", twitchDisplayName: "PartnerTwo", twitchProfileImageUrl: null }],
-        selectedPartnerId: "s-2",
-      },
-      wantableCards: [{ cardId: "p-card", name: "Partner Card", rarity: "rare", imageUrl: null, isOwned: false }],
-      boardHref: "/trade/s-1?scope=cross",
-    });
-    expect(screen.getByRole("link", { name: "PartnerTwo" })).toHaveAttribute("aria-current", "true");
-    fireEvent.click(tile(step(ja.createStep1Title), "Single Card"));
-    fireEvent.click(within(step(ja.createStep2Title)).getByRole("button", { name: /Partner Card/ }));
-    fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
-    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?scope=cross&listed=1"));
-  });
-
-  it("explains when no partner channel is available", () => {
-    renderForm({ cross: { partners: [], selectedPartnerId: null }, wantableCards: [] });
-    expect(screen.getByText(ja.createStep2NoPartners)).toBeInTheDocument();
   });
 
   it("explains when the viewer has nothing to give", () => {
@@ -327,14 +268,9 @@ describe("TradeCreateForm (#727 §6.5)", () => {
       });
     });
 
-    it("is hidden while there is nothing to pick (cross-channel without a chosen partner)", () => {
-      renderForm({
-        cross: {
-          partners: [{ id: "s-2", twitchDisplayName: "PartnerTwo", twitchProfileImageUrl: null }],
-          selectedPartnerId: null,
-        },
-        wantableCards: [],
-      });
+    it("is hidden while there is nothing to pick", () => {
+      renderForm({ wantableCards: [] });
+      expect(screen.getByText(ja.createStep2Empty)).toBeInTheDocument();
       expect(screen.queryByRole("combobox")).toBeNull();
     });
 
@@ -357,7 +293,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
       expect(screen.queryByText("渡す Dup Card ⇄ 欲しい Want Card Two で出品します")).toBeNull();
 
       fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
-      await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?listed=1"));
+      await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade"));
       expect(bodyOf(0)).toMatchObject({
         offeredUserCardId: "uc-dup-mid",
         wantedCardId: "card-want-2",
@@ -414,7 +350,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
 
         submit();
 
-        await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?listed=1"));
+        await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade"));
         expect(screen.queryByRole("alert")).toBeNull();
       });
     });
@@ -487,7 +423,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
   });
 });
 
-describe("TradeCreateForm auction kind (#1791)", () => {
+describe("TradeCreateForm kind and auction (#1791, #2080)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -501,34 +437,42 @@ describe("TradeCreateForm auction kind (#1791)", () => {
     vi.unstubAllGlobals();
   });
 
-  const kindRadio = (name: string) => screen.getByRole("radio", { name: new RegExp(name) });
   const durationRadio = (name: string) => screen.getByRole("radio", { name });
   const auctionSubmit = () => screen.getByRole("button", { name: ja.createAuctionSubmitButton });
 
-  it("starts with the regular offer kind and switches Step 2 to the deadline for an auction", () => {
-    renderForm();
-    expect(kindRadio(ja.createKindOffer)).toBeChecked();
+  it("offer kind: shows the card and wanted-card steps, with no kind switch or partner picker", () => {
+    renderForm({ kind: "offer" });
+    expect(screen.getByRole("region", { name: ja.createStep1Title })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: ja.createStep2Title })).toBeInTheDocument();
-
-    fireEvent.click(kindRadio(ja.createKindAuction));
-    expect(kindRadio(ja.createKindAuction)).toBeChecked();
-    // The wanted-card step is replaced by the deadline choice.
-    expect(screen.queryByRole("region", { name: ja.createStep2Title })).toBeNull();
-    const deadline = screen.getByRole("group", { name: ja.createAuctionStep2Title });
-    expect(within(deadline).getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual(["24", "72", "168"]);
-    // Step 1 is the same copy choice with an auction title.
-    expect(screen.getByRole("region", { name: ja.createAuctionStep1Title })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: ja.createAuctionStep2Title })).toBeNull();
+    // #2080: the kind and the counterpart channel are decided by /trade/new.
+    // No kind radios are left, and the only link is the back link to the hub.
+    expect(screen.queryByRole("radio")).toBeNull();
+    const links = screen.getAllByRole("link");
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "/trade");
+    expect(links[0]).toHaveTextContent(ja.createFlowBackToHub);
   });
 
-  it("preselects the auction kind from initialKind", () => {
-    renderForm({ initialKind: "auction" });
-    expect(kindRadio(ja.createKindAuction)).toBeChecked();
+  it("auction kind: shows the card and deadline steps, with no kind switch or partner picker", () => {
+    renderForm({ kind: "auction" });
+    expect(screen.getByRole("region", { name: ja.createAuctionStep1Title })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: ja.createStep2Title })).toBeNull();
+    const deadline = screen.getByRole("group", { name: ja.createAuctionStep2Title });
+    // Only the three duration radios remain: no kind radios, no partner links.
+    expect(
+      within(deadline)
+        .getAllByRole("radio")
+        .map((radio) => radio.getAttribute("value")),
+    ).toEqual(["24", "72", "168"]);
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+    expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(auctionSubmit()).toBeDisabled();
   });
 
-  it("requires both a card and an explicit deadline, then POSTs the auction and opens the auction tab", async () => {
+  it("requires both a card and an explicit deadline, then POSTs the auction and returns to the hub", async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, { auction: { id: "a-1" }, idempotentReplay: false }));
-    renderForm({ initialKind: "auction" });
+    renderForm({ kind: "auction" });
     expect(screen.getByText(ja.createAuctionConfirmPending)).toBeInTheDocument();
     fireEvent.click(tile(step(ja.createAuctionStep1Title), "Dup Card"));
     expect(auctionSubmit()).toBeDisabled();
@@ -538,7 +482,7 @@ describe("TradeCreateForm auction kind (#1791)", () => {
     ).toBeInTheDocument();
     fireEvent.click(auctionSubmit());
 
-    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade/s-1?tab=auction&listed=1"));
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade"));
     expect(clearTradeListCache).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/trades/auctions");
@@ -550,7 +494,7 @@ describe("TradeCreateForm auction kind (#1791)", () => {
 
   it("reuses the requestId for the same card + deadline and issues a new one when the deadline changes", async () => {
     fetchMock.mockImplementation(async () => jsonResponse(503, { code: "TRADE_BUSY" }));
-    renderForm({ initialKind: "auction" });
+    renderForm({ kind: "auction" });
     fireEvent.click(tile(step(ja.createAuctionStep1Title), "Single Card"));
     fireEvent.click(durationRadio(ja.createAuctionDuration24h));
     fireEvent.click(auctionSubmit());
@@ -571,7 +515,7 @@ describe("TradeCreateForm auction kind (#1791)", () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(409, { code: "TRADE_OFFER_LIMIT" }))
       .mockResolvedValueOnce(jsonResponse(503, { code: "TRADE_AUCTION_UNAVAILABLE" }));
-    renderForm({ initialKind: "auction" });
+    renderForm({ kind: "auction" });
     fireEvent.click(tile(step(ja.createAuctionStep1Title), "Single Card"));
     fireEvent.click(durationRadio(ja.createAuctionDuration24h));
     fireEvent.click(auctionSubmit());
@@ -586,7 +530,7 @@ describe("TradeCreateForm auction kind (#1791)", () => {
     fetchMock.mockImplementation(() => new Promise<Response>((resolve) => {
       resolveFetch = resolve;
     }));
-    renderForm({ initialKind: "auction" });
+    renderForm({ kind: "auction" });
     fireEvent.click(tile(step(ja.createAuctionStep1Title), "Single Card"));
     fireEvent.click(durationRadio(ja.createAuctionDuration24h));
     fireEvent.click(auctionSubmit());
@@ -598,13 +542,4 @@ describe("TradeCreateForm auction kind (#1791)", () => {
     await vi.waitFor(() => expect(auctionSubmit()).toBeEnabled());
   });
 
-  it("cross scope: the auction kind hides the partner picker (an auction has no counterpart channel)", () => {
-    renderForm({
-      initialKind: "auction",
-      cross: { partners: [{ id: "p-1", twitchDisplayName: "Partner", twitchProfileImageUrl: null }], selectedPartnerId: null },
-      wantableCards: [],
-    });
-    expect(screen.queryByText(ja.createStep2SelectStreamer)).toBeNull();
-    expect(screen.queryByRole("link", { name: /Partner/ })).toBeNull();
-  });
 });

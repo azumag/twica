@@ -32,8 +32,10 @@ export const metadata: Metadata = {
  *     maintenance provider/banner because trade pages perform writes;
  *   - anonymous  → minimal public header (Header renders nothing without a
  *     session) and the public footer.
- * Pages that require login (/trade/mine, the listing flow) redirect
- * themselves with a returnTo, like /collection/[streamerId].
+ * The login-required pages are the hub (/trade) and the unified listing flow
+ * (/trade/new); they redirect themselves with a returnTo, like
+ * /collection/[streamerId]. The per-channel board and auction detail
+ * (/trade/[streamerId] and below) stay readable anonymously.
  *
  * Every /trade/** page also carries a small "how it works" link to the public
  * usage guide (/guide/trade). The guide is deliberately linked from here only,

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
@@ -82,27 +83,17 @@ export default async function TradeHubPage({
     <div className="mx-auto max-w-4xl">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <h1 className="text-2xl font-bold text-white">{t("hubTitle")}</h1>
-        <div className="flex flex-col items-end gap-1">
-          {/*
-           * #2080 will turn this into a link to the unified listing flow. Until
-           * that route exists, a disabled button keeps the primary action
-           * visible without creating a dead link. aria-disabled is explicit for
-           * assistive technology, and aria-describedby exposes the reason even
-           * though a native disabled button is not focusable.
-           */}
-          <button
-            type="button"
-            disabled
-            aria-disabled="true"
-            aria-describedby="trade-create-unavailable"
-            className="shrink-0 cursor-not-allowed whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white opacity-50"
-          >
-            {t("hubCreateButton")}
-          </button>
-          <p id="trade-create-unavailable" className="text-xs text-gray-400">
-            {t("hubCreateUnavailable")}
-          </p>
-        </div>
+        {/*
+         * #2080: the primary action is a real link into the unified listing
+         * flow. It is a <Link> (not a button with a router call) so it is
+         * keyboard/middle-click friendly and can be prefetched.
+         */}
+        <Link
+          href="/trade/new"
+          className="shrink-0 whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-purple-700"
+        >
+          {t("hubCreateButton")}
+        </Link>
       </div>
 
       <section aria-labelledby="trade-my-trades-heading">

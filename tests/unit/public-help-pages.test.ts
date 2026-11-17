@@ -500,8 +500,6 @@ describe("trade guide page", () => {
         "trade.createStep2Title": trade.createStep2Title,
         "trade.createConfirmTitle": trade.createConfirmTitle,
         "trade.createStep2QuantityLabel": trade.createStep2QuantityLabel,
-        "trade.createStep2SelectStreamer": trade.createStep2SelectStreamer,
-        "trade.createStep2NoPartners": head(trade.createStep2NoPartners, /[。.]/),
         "trade.createAuctionButton": trade.createAuctionButton,
         "trade.auctionRowDetailLink": trade.auctionRowDetailLink,
         "trade.auctionBidFormTitle": trade.auctionBidFormTitle,

@@ -213,11 +213,16 @@ beforeEach(() => {
 describe("trade RSC props on a name-only channel (#2070)", () => {
   it("the create page never serializes an unowned card image", async () => {
     primeDb({ streamers: [STREAMER_ROW], cards: [WANTABLE_ROW], user_cards: [] });
-    const { default: TradeCreatePage } = await import("@/app/trade/[streamerId]/new/page");
+    // #2080: the unified /trade/new page owns the create props now; the legacy
+    // /trade/[streamerId]/new route only redirects and touches no card data.
+    const { default: TradeNewPage } = await import("@/app/trade/new/page");
 
-    render(await TradeCreatePage({
-      params: Promise.resolve({ streamerId: STREAMER_ID }),
-      searchParams: Promise.resolve({}),
+    render(await TradeNewPage({
+      searchParams: Promise.resolve({
+        kind: "offer",
+        give: STREAMER_ID,
+        want: STREAMER_ID,
+      }),
     }));
 
     const passed = props("create-props");
