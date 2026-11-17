@@ -63,6 +63,16 @@ const S = {
   // the new setting on while show_unowned_cards is off (must stay hidden).
   NAMEONLY: id(10),
   NAMEONLY_BUT_HIDDEN: id(17),
+  // #2079: dedicated world for the hub's per-collection lists. Each channel is
+  // isolated from the shared PUB/PRIV world so the new totals stay exact.
+  COL_A: id(70), // case 1 offered side; private, the viewer owns a copy
+  COL_B: id(71), // case 1 wanted side; private, the viewer owns a copy
+  COL_A2: id(72), // case 2 offered side; private, the viewer owns a copy
+  COL_B2: id(73), // case 2 wanted side; public, the viewer owns nothing
+  COL_MANY: id(74), // case 3/4; private, the viewer owns its cards
+  COL_VIS: id(75), // case 5 offered side; private, the viewer owns a copy
+  COL_NAMEONLY: id(76), // case 5 wanted side; names public, images hidden
+  COL_HIDDEN: id(77), // case 5 wanted side; names and images hidden
 };
 const U = {
   O: id(11),
@@ -75,6 +85,9 @@ const U = {
   // untouched (a new channel owned by O or V would change their candidate list).
   NO: id(18),
   NOV: id(19),
+  // #2079: dedicated users of the per-collection world.
+  COL_OFF: id(81),
+  COL_V: id(82),
 };
 const TW = {
   O: "trade-vis-offerer",
@@ -85,6 +98,8 @@ const TW = {
   WV: "trade-vis-want-viewer",
   NO: "trade-vis-nameonly-offerer",
   NOV: "trade-vis-nameonly-viewer",
+  COL_OFF: "trade-vis-col-offerer",
+  COL_V: "trade-vis-col-viewer",
 };
 const C = {
   PUB_A: id(21),
@@ -1699,4 +1714,260 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
       });
     });
   });
+  // ---------------------------------------------------------------------------
+  // #2079: ハブのコレクション別一覧。専用の世界（ids 77xx、専用の配信者・
+  // ユーザー）を beforeAll で作り、既存の PUB/PRIV の総数を変えない。
+  // 後片付けはこのファイル共通の cleanup() が S/U の全 id を消す。
+  // ---------------------------------------------------------------------------
+  describe("collection lists (#2079)", () => {
+    const K = {
+      A: id(7701),
+      B: id(7702),
+      A2: id(7703),
+      B2: id(7704),
+      MANY: id(7705),
+      MANY_WANT: id(7706),
+      VIS: id(7707),
+      NAMEONLY: id(7708),
+      HIDDEN: id(7709),
+    };
+    const IMAGES = {
+      VIS: "https://secret.example/col-vis.png",
+      NAMEONLY: "https://secret.example/col-nameonly.png",
+      HIDDEN: "https://secret.example/col-hidden.png",
+    };
+    const OFFERS = {
+      CROSS_BOTH: id(7730),
+      CROSS_ONE: id(7731),
+      MANY: Array.from({ length: 6 }, (_, index) => id(7732 + index)),
+      NAMEONLY: id(7738),
+      HIDDEN: id(7739),
+    };
+    const COL_UC = {
+      OFF_A: id(7710),
+      OFF_A2: id(7711),
+      OFF_MANY: Array.from({ length: 6 }, (_, index) => id(7712 + index)),
+      OFF_VIS_1: id(7718),
+      OFF_VIS_2: id(7719),
+      V_A: id(7720),
+      V_B: id(7721),
+      V_A2: id(7722),
+      V_MANY: id(7723),
+      V_MANY_WANT: id(7724),
+      V_VIS: id(7725),
+    };
+
+    beforeAll(async () => {
+      const s = sql!;
+      await s`INSERT INTO streamers (
+        id, twitch_user_id, twitch_username, twitch_display_name,
+        trade_enabled, cross_channel_trade_enabled, show_unowned_cards,
+        show_unowned_card_details, trade_unowned_card_names_visible
+      ) VALUES
+        (${S.COL_A}, 'tv-col-a', 'tv-col-a', 'TV col a', TRUE, TRUE, FALSE, FALSE, FALSE),
+        (${S.COL_B}, 'tv-col-b', 'tv-col-b', 'TV col b', TRUE, TRUE, FALSE, FALSE, FALSE),
+        (${S.COL_A2}, 'tv-col-a2', 'tv-col-a2', 'TV col a2', TRUE, TRUE, FALSE, FALSE, FALSE),
+        (${S.COL_B2}, 'tv-col-b2', 'tv-col-b2', 'TV col b2', TRUE, TRUE, TRUE, TRUE, FALSE),
+        (${S.COL_MANY}, 'tv-col-many', 'tv-col-many', 'TV col many', TRUE, TRUE, FALSE, FALSE, FALSE),
+        (${S.COL_VIS}, 'tv-col-vis', 'tv-col-vis', 'TV col vis', TRUE, TRUE, FALSE, FALSE, FALSE),
+        (${S.COL_NAMEONLY}, 'tv-col-nameonly', 'tv-col-nameonly', 'TV col nameonly', TRUE, TRUE, TRUE, FALSE, TRUE),
+        (${S.COL_HIDDEN}, 'tv-col-hidden', 'tv-col-hidden', 'TV col hidden', TRUE, TRUE, FALSE, FALSE, TRUE)`;
+      await s`INSERT INTO users (id, twitch_user_id, twitch_username, twitch_display_name) VALUES
+        (${U.COL_OFF}, ${TW.COL_OFF}, ${TW.COL_OFF}, 'Collection Offerer'),
+        (${U.COL_V}, ${TW.COL_V}, ${TW.COL_V}, 'Collection Viewer')`;
+      await s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active, image_url) VALUES
+        (${K.A}, ${S.COL_A}, 'Col A', 'common', 0.1, TRUE, NULL),
+        (${K.B}, ${S.COL_B}, 'Col B', 'common', 0.1, TRUE, NULL),
+        (${K.A2}, ${S.COL_A2}, 'Col A2', 'common', 0.1, TRUE, NULL),
+        (${K.B2}, ${S.COL_B2}, 'Col B2', 'common', 0.1, TRUE, NULL),
+        (${K.MANY}, ${S.COL_MANY}, 'Col Many', 'common', 0.1, TRUE, NULL),
+        (${K.MANY_WANT}, ${S.COL_MANY}, 'Col Many Wanted', 'common', 0.1, TRUE, NULL),
+        (${K.VIS}, ${S.COL_VIS}, 'Col Vis', 'common', 0.1, TRUE, ${IMAGES.VIS}),
+        (${K.NAMEONLY}, ${S.COL_NAMEONLY}, 'Col Wanted NameOnly', 'rare', 0.1, TRUE, ${IMAGES.NAMEONLY}),
+        (${K.HIDDEN}, ${S.COL_HIDDEN}, 'Col Wanted Hidden', 'rare', 0.1, TRUE, ${IMAGES.HIDDEN})`;
+      // The offerer owns the offered copies. The viewer owns one copy of each
+      // card that makes a collection "collected" (CA, CB, CA2, MANY, VIS) and
+      // the MANY wanted card, but nothing of CB2/NAMEONLY/HIDDEN.
+      await s`INSERT INTO user_cards (id, user_id, card_id) VALUES
+        (${COL_UC.OFF_A}, ${U.COL_OFF}, ${K.A}),
+        (${COL_UC.OFF_A2}, ${U.COL_OFF}, ${K.A2}),
+        (${COL_UC.OFF_MANY[0]}, ${U.COL_OFF}, ${K.MANY}),
+        (${COL_UC.OFF_MANY[1]}, ${U.COL_OFF}, ${K.MANY}),
+        (${COL_UC.OFF_MANY[2]}, ${U.COL_OFF}, ${K.MANY}),
+        (${COL_UC.OFF_MANY[3]}, ${U.COL_OFF}, ${K.MANY}),
+        (${COL_UC.OFF_MANY[4]}, ${U.COL_OFF}, ${K.MANY}),
+        (${COL_UC.OFF_MANY[5]}, ${U.COL_OFF}, ${K.MANY}),
+        (${COL_UC.OFF_VIS_1}, ${U.COL_OFF}, ${K.VIS}),
+        (${COL_UC.OFF_VIS_2}, ${U.COL_OFF}, ${K.VIS}),
+        (${COL_UC.V_A}, ${U.COL_V}, ${K.A}),
+        (${COL_UC.V_B}, ${U.COL_V}, ${K.B}),
+        (${COL_UC.V_A2}, ${U.COL_V}, ${K.A2}),
+        (${COL_UC.V_MANY}, ${U.COL_V}, ${K.MANY}),
+        (${COL_UC.V_MANY_WANT}, ${U.COL_V}, ${K.MANY_WANT}),
+        (${COL_UC.V_VIS}, ${U.COL_V}, ${K.VIS})`;
+
+      const insertOffer = (
+        offerId: string,
+        userCardId: string,
+        offeredCardId: string,
+        offeredStreamerId: string,
+        wantedCardId: string,
+        wantedStreamerId: string,
+        minutesAgo: number,
+        offeredSnapshot: { name: string; rarity: string; imageUrl: string | null },
+        wantedSnapshot: { name: string; rarity: string; imageUrl: string | null },
+      ) => s`
+        INSERT INTO trade_offers (
+          id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+          wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot, created_at
+        ) VALUES (
+          ${offerId}, ${U.COL_OFF}, ${userCardId}, ${offeredCardId}, ${offeredStreamerId},
+          ${wantedCardId}, ${wantedStreamerId},
+          ${JSON.stringify(offeredSnapshot)}::jsonb, ${JSON.stringify(wantedSnapshot)}::jsonb,
+          now() - make_interval(secs => ${minutesAgo * 60})
+        )`;
+      const snapshot = (name: string, imageUrl: string | null = null) =>
+        ({ name, rarity: "common", imageUrl });
+
+      // Case 1: cross offer where the viewer owns BOTH collections.
+      await insertOffer(
+        OFFERS.CROSS_BOTH, COL_UC.OFF_A, K.A, S.COL_A, K.B, S.COL_B, 10,
+        snapshot("Col A"), snapshot("Col B"),
+      );
+      // Case 2: cross offer where the viewer owns only the offered side. CB2
+      // is public so the wanted side is still visible, but the viewer owns no
+      // CB2 card, so the offer must not be placed under it.
+      await insertOffer(
+        OFFERS.CROSS_ONE, COL_UC.OFF_A2, K.A2, S.COL_A2, K.B2, S.COL_B2, 9,
+        snapshot("Col A2"), snapshot("Col B2"),
+      );
+      // Case 3/4: six in-channel offers, newest first. Six is one more than
+      // the preview size, so rn <= 5 and the expanded page are both exercised.
+      for (let i = 0; i < 6; i += 1) {
+        await insertOffer(
+          OFFERS.MANY[i], COL_UC.OFF_MANY[i], K.MANY, S.COL_MANY, K.MANY_WANT, S.COL_MANY,
+          1 + i, snapshot("Col Many"), snapshot("Col Many Wanted"),
+        );
+      }
+      // Case 5: the wanted card's names/images follow the WANTED streamer.
+      // NAMEONLY names are public but its images are not; HIDDEN reveals
+      // neither, so the whole offer disappears (the offered side is owned by
+      // the viewer and would otherwise be visible).
+      await insertOffer(
+        OFFERS.NAMEONLY, COL_UC.OFF_VIS_1, K.VIS, S.COL_VIS, K.NAMEONLY, S.COL_NAMEONLY, 2,
+        snapshot("Col Vis", IMAGES.VIS),
+        { name: "Col Wanted NameOnly", rarity: "rare", imageUrl: IMAGES.NAMEONLY },
+      );
+      await insertOffer(
+        OFFERS.HIDDEN, COL_UC.OFF_VIS_2, K.VIS, S.COL_VIS, K.HIDDEN, S.COL_HIDDEN, 1,
+        snapshot("Col Vis", IMAGES.VIS),
+        { name: "Col Wanted Hidden", rarity: "rare", imageUrl: IMAGES.HIDDEN },
+      );
+    });
+
+    it("places a cross offer under both owned collections and counts it once in each total", async () => {
+      const { listTradeOffersByCollection } = await import("@/lib/trade");
+      const groups = await listTradeOffersByCollection({ twitchUserId: TW.COL_V });
+      const byId = new Map(groups.map((group) => [group.streamer.id, group]));
+
+      for (const streamerId of [S.COL_A, S.COL_B]) {
+        expect(byId.get(streamerId)?.offers.map((offer) => offer.id))
+          .toEqual([OFFERS.CROSS_BOTH]);
+        // One row per placement; the union must not duplicate the offer
+        // inside the same collection either.
+        expect(byId.get(streamerId)?.total).toBe(1);
+      }
+    });
+
+    it("places a cross offer only under the one collection the viewer owns", async () => {
+      const { listTradeOffersByCollection } = await import("@/lib/trade");
+      const groups = await listTradeOffersByCollection({ twitchUserId: TW.COL_V });
+      const byId = new Map(groups.map((group) => [group.streamer.id, group]));
+
+      expect(byId.get(S.COL_A2)?.offers.map((offer) => offer.id)).toEqual([OFFERS.CROSS_ONE]);
+      expect(byId.get(S.COL_A2)?.total).toBe(1);
+      // The viewer owns no COL_B2 card, so that collection must not appear
+      // even though the wanted card is public.
+      expect(byId.has(S.COL_B2)).toBe(false);
+      expect(groups.flatMap((group) => group.offers).filter((offer) => offer.id === OFFERS.CROSS_ONE))
+        .toHaveLength(1);
+    });
+
+    it("returns the first 5 of 6 offers with the full total, and the expanded page includes the 6th", async () => {
+      const { listTradeOffersByCollection } = await import("@/lib/trade");
+      const { listTradeCollectionPage } = await import("@/lib/trade-collections");
+      const groups = await listTradeOffersByCollection({ twitchUserId: TW.COL_V });
+      const group = groups.find((item) => item.streamer.id === S.COL_MANY);
+
+      expect(group?.total).toBe(6);
+      expect(group?.offers.map((offer) => offer.id)).toEqual(OFFERS.MANY.slice(0, 5));
+
+      // The expand API uses the same function with a single streamer and
+      // TRADE_PAGE_SIZE rows, so the 6th row (the oldest) is included.
+      const expanded = await listTradeOffersByCollection({
+        twitchUserId: TW.COL_V,
+        streamerId: S.COL_MANY,
+        page: 1,
+      });
+      expect(expanded).toHaveLength(1);
+      expect(expanded[0].total).toBe(6);
+      expect(expanded[0].offers.map((offer) => offer.id)).toEqual(OFFERS.MANY);
+
+      const page = await listTradeCollectionPage({
+        twitchUserId: TW.COL_V,
+        streamerId: S.COL_MANY,
+        kind: "offer",
+        sort: "newest",
+        page: 1,
+      });
+      expect(page).toMatchObject({
+        kind: "offer",
+        streamer: { id: S.COL_MANY },
+        total: 6,
+        page: 1,
+        pageSize: 20,
+        hasMore: false,
+      });
+      expect(page?.kind === "offer" ? page.offers.map((offer) => offer.id) : []).toEqual(OFFERS.MANY);
+    });
+
+    it("returns latestCreatedAt as a string that Date.parse accepts", async () => {
+      const { listTradeOffersByCollection } = await import("@/lib/trade");
+      const groups = await listTradeOffersByCollection({ twitchUserId: TW.COL_V });
+      const latest = groups.find((group) => group.streamer.id === S.COL_MANY)?.latestCreatedAt;
+
+      // Raw MAX(timestamptz) bypasses Drizzle's column decoder: this handle's
+      // transparent parser returns the PG text string, while other driver
+      // setups can return Date. The service normalizes both to an ISO string.
+      expect(typeof latest).toBe("string");
+      expect(Number.isNaN(Date.parse(latest!))).toBe(false);
+      // ISO 8601 (UTC): environment-independent for Date.parse / new Date.
+      expect(latest).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    });
+
+    it("masks the wanted card by the wanted streamer's settings (name and image)", async () => {
+      const { listTradeOffersByCollection } = await import("@/lib/trade");
+      const groups = await listTradeOffersByCollection({ twitchUserId: TW.COL_V });
+      const byId = new Map(groups.map((group) => [group.streamer.id, group]));
+
+      const nameOnly = byId.get(S.COL_VIS)?.offers.find((offer) => offer.id === OFFERS.NAMEONLY);
+      expect(nameOnly?.offeredCard.imageUrl).toBe(IMAGES.VIS); // viewer owns the offered card
+      expect(nameOnly?.wantedCard).toEqual({
+        name: "Col Wanted NameOnly",
+        rarity: "rare",
+        imageUrl: null, // names public, images hidden (COL_NAMEONLY)
+      });
+      expect(byId.get(S.COL_VIS)?.total).toBe(1);
+
+      // COL_HIDDEN reveals neither names nor images. The offered side is owned
+      // by the viewer, so only the wanted-side settings can hide the row.
+      expect(groups.flatMap((group) => group.offers).map((offer) => offer.id))
+        .not.toContain(OFFERS.HIDDEN);
+      const serialized = JSON.stringify(groups);
+      expect(serialized).not.toContain("Col Wanted Hidden");
+      expect(serialized).not.toContain(IMAGES.NAMEONLY);
+      expect(serialized).not.toContain(IMAGES.HIDDEN);
+    });
+  });
+
 });

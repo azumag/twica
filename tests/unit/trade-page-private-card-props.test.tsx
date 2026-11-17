@@ -55,6 +55,11 @@ vi.mock("@/components/MyTrades", () => ({
     <div data-testid="my-trades-props" data-props={JSON.stringify(props)} />
   ),
 }));
+vi.mock("@/components/TradeCollections", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="trade-collections-props" data-props={JSON.stringify(props)} />
+  ),
+}));
 
 const SECRET = "https://secret.example/unowned-card.png";
 const STREAMER_ID = "11111111-1111-4111-8111-111111111111";
@@ -131,27 +136,58 @@ const LIST_ROW = {
 };
 
 /**
+ * #2079: one row of the collection list's ranked offer statement. The
+ * placement and total columns are added by ROW_NUMBER/COUNT OVER.
+ */
+const COLLECTION_LIST_ROW = {
+  offer: LIST_ROW.offer,
+  viewerUserId: VIEWER_ID,
+  offeredStreamer: LIST_ROW.offeredStreamer,
+  wantedStreamer: LIST_ROW.wantedStreamer,
+  offerer: LIST_ROW.offerer,
+  acceptedBy: LIST_ROW.acceptedBy,
+  acceptState: "yes",
+  placement: {
+    id: STREAMER_ID,
+    twitchUsername: "chan",
+    twitchDisplayName: "Chan",
+    twitchProfileImageUrl: null,
+  },
+  placementStreamerId: STREAMER_ID,
+  rn: 1,
+  total: 1,
+  latestCreatedAt: "2026-10-04T00:00:00.000Z",
+};
+
+/**
  * getDb double keyed by the FROM table. Several service reads run in
  * Promise.all (owned copies + wantable cards), so a call-order queue would be
  * racy; the table is unambiguous instead. The image mask query also starts
  * from `cards`, but it is only used by the /trade hub prefetch, which does not
  * read cards anywhere else.
+ *
+ * #2079: the collection list's ranked subqueries are not real tables, so the
+ * select builder returns a marker and the finalized rows are keyed by the
+ * subquery alias (`ranked_collection_offers` / `ranked_collection_auctions`).
+ * Rows are still selected by table name, never by call order.
  */
-function primeDb(rows: { streamers?: unknown[]; cards?: unknown[]; user_cards?: unknown[]; trade_offers?: unknown[] }) {
+function primeDb(rows: { streamers?: unknown[]; cards?: unknown[]; user_cards?: unknown[]; trade_offers?: unknown[]; ranked_collection_offers?: unknown[] }) {
   const calls: Array<{ fields: Record<string, unknown>; table: string | null }> = [];
   const db = {
     select: vi.fn((fields: Record<string, unknown>) => {
       const call = { fields, table: null as string | null };
       calls.push(call);
       const builder: any = {};
-      builder.from = vi.fn((table: unknown) => {
-        call.table = getTableName(table as never);
+      builder.from = vi.fn((table: any) => {
+        call.table = table?.__subqueryName ?? getTableName(table as never);
         return builder;
       });
       for (const method of ["innerJoin", "leftJoin", "orderBy", "limit", "offset"]) {
         builder[method] = vi.fn(() => builder);
       }
       builder.where = vi.fn(() => builder);
+      builder.unionAll = vi.fn(() => builder);
+      builder.as = vi.fn((alias: string) => ({ __subqueryName: alias }));
       builder.then = (onFulfilled: never, onRejected: never) =>
         Promise.resolve(rows[(call.table ?? "") as keyof typeof rows] ?? []).then(onFulfilled, onRejected);
       return builder;
@@ -215,7 +251,7 @@ describe("trade RSC props on a name-only channel (#2070)", () => {
     primeDb({ trade_offers: [LIST_ROW], cards: [] });
     const { default: TradeHubPage } = await import("@/app/trade/page");
 
-    render(await TradeHubPage());
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
 
     const passed = props("my-trades-props");
     expectNoSecret(passed);
@@ -224,6 +260,33 @@ describe("trade RSC props on a name-only channel (#2070)", () => {
     expect(JSON.stringify(initialOpen.offers[0])).toContain("Secret Card");
     expect(
       (initialOpen.offers[0].wantedCard as { imageUrl: string | null }).imageUrl,
+    ).toBeNull();
+  });
+
+  it("the /trade hub collection list never serializes a name-only card image", async () => {
+    // The offer is visible by name (trade_unowned_card_names_visible) but its
+    // wanted card's image must be denied by the service mask, exactly as on
+    // the board and /mine.
+    primeDb({ ranked_collection_offers: [COLLECTION_LIST_ROW], cards: [] });
+    const { default: TradeHubPage } = await import("@/app/trade/page");
+
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
+
+    const passed = props("trade-collections-props");
+    expectNoSecret(passed);
+    const initial = passed.initialCollections as Array<{
+      offers: Array<Record<string, unknown>>;
+      streamer: { id: string };
+    }>;
+    expect(initial).toHaveLength(1);
+    expect(initial[0].streamer.id).toBe(STREAMER_ID);
+    expect(initial[0].offers).toHaveLength(1);
+    expect(JSON.stringify(initial[0].offers[0])).toContain("Secret Card");
+    expect(
+      (initial[0].offers[0].wantedCard as { imageUrl: string | null }).imageUrl,
+    ).toBeNull();
+    expect(
+      (initial[0].offers[0].offeredCard as { imageUrl: string | null }).imageUrl,
     ).toBeNull();
   });
 });

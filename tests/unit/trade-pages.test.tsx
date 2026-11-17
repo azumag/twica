@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isValidElement, type ElementType, type ReactElement, type ReactNode } from "react";
 import { cleanup, render, screen, within } from "@testing-library/react";
 
 /**
@@ -36,6 +37,9 @@ vi.mock("@/lib/trade", () => ({
   listTradeableOwnedCopies: mocks.listTradeableOwnedCopies,
   listCrossTradePartnerStreamers: mocks.listCrossTradePartnerStreamers,
   listMyTradeOffers: mocks.listMyTradeOffers,
+  // The hub parses ?sort= before loading the collection section (#2079).
+  parseTradeCollectionSort: (value: string | string[] | undefined) =>
+    value === "ending_soon" ? "ending_soon" : "newest",
 }));
 // The detail page passes TRADE_MAX_BID_QUANTITY (#1791); the real module
 // pulls in the DB layer, so the value is mirrored here.
@@ -102,7 +106,18 @@ vi.mock("@/components/MyTrades", () => ({
     <div data-testid="my-trades" data-props={JSON.stringify(props)} />
   ),
 }));
+vi.mock("@/components/TradeCollections", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="trade-collections" data-props={JSON.stringify(props)} />
+  ),
+}));
+// The collection lists have their own service suite (#2079); here the hub
+// only needs to prove it passes the parsed sort and the loaded sections down.
+vi.mock("@/lib/trade-collections", () => ({
+  listTradeCollections: async () => [],
+}));
 
+import MyTrades from "@/components/MyTrades";
 import TradeLayout, { metadata } from "@/app/trade/layout";
 import TradeHubPage from "@/app/trade/page";
 import TradeBoardPage from "@/app/trade/[streamerId]/page";
@@ -128,6 +143,27 @@ function boardStreamer(overrides: Record<string, unknown> = {}) {
 
 function props(testId: string) {
   return JSON.parse(screen.getByTestId(testId).getAttribute("data-props")!);
+}
+
+/**
+ * React consumes `key` instead of passing it as a prop, so the mocked
+ * component cannot expose it through data-props. Walk the server component's
+ * returned element tree instead and read the key off the <MyTrades> element.
+ */
+function findElement(node: ReactNode, type: ElementType): ReactElement | null {
+  // Do not use Children.toArray(): it clones unkeyed elements with synthetic
+  // keys (".1"), which would hide the key this test is checking.
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findElement(child, type);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isValidElement(node)) return null;
+  if (node.type === type) return node;
+  const children = (node.props as { children?: ReactNode }).children;
+  return findElement(children, type);
 }
 
 const params = Promise.resolve({ streamerId: STREAMER_ID });
@@ -513,7 +549,7 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
 describe("/trade hub page (#2078)", () => {
   it("redirects anonymous visitors to login returning to /trade", async () => {
     mocks.getSession.mockResolvedValue(null);
-    await expect(TradeHubPage()).rejects.toThrow(
+    await expect(TradeHubPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
       "REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade",
     );
     // The hub is login-only: no per-viewer list is loaded before the redirect.
@@ -524,7 +560,7 @@ describe("/trade hub page (#2078)", () => {
     mocks.getSession.mockResolvedValue(SESSION);
     const offer = { id: "o-1", status: "open", mineRole: "offerer" };
     mocks.listMyTradeOffers.mockResolvedValue({ offers: [offer], page: 1, pageSize: 20, hasMore: true });
-    render(await TradeHubPage());
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole("heading", { name: "hubTitle" })).toBeInTheDocument();
     // #2080 is not implemented yet, so the button must not link anywhere. It is
@@ -537,18 +573,49 @@ describe("/trade hub page (#2078)", () => {
     expect(screen.getByText("hubCreateUnavailable")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "myTradesTitle" })).toBeInTheDocument();
     expect(props("my-trades")).toEqual({ initialOpen: { offers: [offer], hasMore: true } });
+    expect(screen.getByRole("heading", { name: "collectionsTitle" })).toBeInTheDocument();
+    expect(props("trade-collections")).toEqual({ initialCollections: [], sort: "newest" });
+  });
+
+  it("passes the allowlisted sort to the server-rendered collection list", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeHubPage({ searchParams: Promise.resolve({ sort: "ending_soon" }) }));
+    expect(props("trade-collections")).toEqual({ initialCollections: [], sort: "ending_soon" });
+
+    cleanup();
+    render(await TradeHubPage({ searchParams: Promise.resolve({ sort: "unknown" }) }));
+    expect(props("trade-collections")).toEqual({ initialCollections: [], sort: "newest" });
+  });
+
+  it("remounts MyTrades on every server render with a fresh key", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    // A request-scoped key: router.refresh() must produce a different one so
+    // the client component and its per-mount cache are discarded.
+    const first = findElement(
+      await TradeHubPage({ searchParams: Promise.resolve({}) }),
+      MyTrades,
+    );
+    const second = findElement(
+      await TradeHubPage({ searchParams: Promise.resolve({}) }),
+      MyTrades,
+    );
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first!.key).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second!.key).not.toBe(first!.key);
   });
 
   it("prefetches the open tab's first page for logged-in users", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
-    render(await TradeHubPage());
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
     expect(mocks.listMyTradeOffers).toHaveBeenCalledWith("viewer-1", { status: "open", page: 1 });
   });
 
   it("falls back to the client fetch when the prefetch fails", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     mocks.listMyTradeOffers.mockRejectedValue(new Error("db down"));
-    render(await TradeHubPage());
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
     expect(props("my-trades")).toEqual({ initialOpen: null });
     expect(mocks.loggerWarn).toHaveBeenCalledTimes(1);
   });

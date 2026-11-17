@@ -6,6 +6,13 @@ import type { TradeAuctionDto } from "@/lib/trade-auction";
 import jaMessages from "../../../messages/ja.json";
 import { jsonResponse, makeAuction, makeBid, NOW } from "./trade-auction-fixtures";
 
+// MyTrades refreshes the server-rendered hub after a successful cancel (#2079
+// review); this suite only exercises the auction tab, where no cancel runs.
+const routerMocks = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: routerMocks.refresh }),
+}));
+
 const ja = jaMessages.trade;
 
 function renderMine() {

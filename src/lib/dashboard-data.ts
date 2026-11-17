@@ -35,6 +35,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { getDb, type DbHandle } from "@/lib/db/client";
+import { collectedStreamerIdsSubquery } from "@/lib/collected-streamers";
 import {
   isPgFunctionNotFoundError,
   isPgMissingColumnError,
@@ -2311,16 +2312,9 @@ export async function getActiveCardCountsForCollectedStreamers(
           .where(
             and(
               eq(cardsTable.is_active, true),
-              inArray(
-                cardsTable.streamer_id,
-                // 括弧必須: drizzle の inArray は sql を括弧なしで展開するため、
-                // サブクエリは自前で () に包まないと `in SELECT ...` となり構文エラーになる (#2020)
-                sql`(SELECT DISTINCT c.streamer_id
-                      FROM cards c
-                      INNER JOIN user_cards uc ON uc.card_id = c.id
-                      INNER JOIN users u ON u.id = uc.user_id
-                      WHERE u.twitch_user_id = ${twitchUserId})`
-              )
+              // #2079: 「所持している配信者」の定義は collected-streamers.ts に集約し、
+              // トレードハブのコレクション別一覧と同じ定義を使う。
+              sql`${cardsTable.streamer_id} IN ${collectedStreamerIdsSubquery(twitchUserId)}`
             )
           );
       },

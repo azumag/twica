@@ -14,6 +14,7 @@ import { parseMaintenanceError } from "@/lib/maintenance/client";
 export type TradeErrorMessageKey =
   | "errorTradeDisabled"
   | "errorTradeOfferNotFound"
+  | "errorTradeCollectionNotFound"
   | "errorTradeAlreadyCompletedOrInvalid"
   | "errorTradeBusy"
   | "errorTradeCardNotOwned"
@@ -63,6 +64,7 @@ export const TRADE_ERROR_MESSAGE_KEYS: Record<TradeApiErrorCode, TradeErrorMessa
   INTERNAL_ERROR: "errorGeneric",
   TRADE_DISABLED: "errorTradeDisabled",
   TRADE_OFFER_NOT_FOUND: "errorTradeOfferNotFound",
+  TRADE_COLLECTION_NOT_FOUND: "errorTradeCollectionNotFound",
   TRADE_OFFER_NOT_OPEN: "errorTradeAlreadyCompletedOrInvalid",
   TRADE_OFFER_INVALID: "errorTradeAlreadyCompletedOrInvalid",
   TRADE_SELF_ACCEPT: "errorTradeSelfAccept",

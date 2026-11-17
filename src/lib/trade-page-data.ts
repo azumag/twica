@@ -1,5 +1,9 @@
 import { logger } from "@/lib/logger";
-import { listMyTradeOffers } from "@/lib/trade";
+import { listMyTradeOffers, type TradeCollectionSort } from "@/lib/trade";
+import {
+  listTradeCollections,
+  type TradeCollectionSection,
+} from "@/lib/trade-collections";
 import type { TradeListPage } from "@/lib/use-trade-list";
 
 /**
@@ -37,6 +41,30 @@ export async function loadInitialOpenTradePage(
     return { offers, hasMore };
   } catch (error) {
     logger.warn("Trade hub SSR prefetch failed; falling back to the client fetch", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * Server prefetch of the hub's per-collection lists (#2079).
+ *
+ * The ranking (one statement each for offers and auctions) is server-side, so
+ * the first paint already contains the correct order and the first five rows.
+ * On failure we return null instead of pretending there are no listings: the
+ * client shows an error notice with a retry, and the "my trades" panel remains
+ * usable. The failure is a warning for the same reason as the /mine prefetch:
+ * the hub is still usable without this section.
+ */
+export async function loadInitialTradeCollections(
+  twitchUserId: string,
+  sort: TradeCollectionSort,
+): Promise<TradeCollectionSection[] | null> {
+  try {
+    return await listTradeCollections({ twitchUserId, sort });
+  } catch (error) {
+    logger.warn("Trade hub collection prefetch failed; showing the retry state", {
       error: error instanceof Error ? error.message : String(error),
     });
     return null;
