@@ -21,6 +21,21 @@ type AuctionDurationHours = (typeof TRADE_AUCTION_DURATION_OPTIONS)[number];
 /** The hub is both the form's back destination and where a successful create lands. */
 const TRADE_HUB_PATH = "/trade";
 
+/**
+ * Post-create destination per kind (#2080).
+ *
+ * The old flow landed on the board with `?listed=1`, where the board rendered
+ * the one-shot "listed" notice. The unified flow lands on the hub instead, so
+ * it must carry the same confirmation as an allowlisted kind: the hub picks
+ * the offer or auction copy from this value and its client component strips
+ * the parameter after showing it (no navigation / server re-render). Kept as
+ * one table so a new kind cannot silently lose the notice.
+ */
+const TRADE_HUB_LISTED_PATH: Record<TradeCreateKind, string> = {
+  offer: `${TRADE_HUB_PATH}?listed=offer`,
+  auction: `${TRADE_HUB_PATH}?listed=auction`,
+};
+
 /** i18n key of each duration option (24 hours / 3 days / 7 days). */
 const DURATION_LABEL_KEYS: Record<AuctionDurationHours, string> = {
   24: "createAuctionDuration24h",
@@ -203,9 +218,10 @@ export default function TradeCreateForm({
       // canAccept, auction lists) may be stale.
       clearTradeListCache();
       // #2080: land on the hub instead of the old board. The hub remounts
-      // <MyTrades> on every request (key), so the new auction is visible there
-      // without the old ?listed=1 query.
-      router.push(TRADE_HUB_PATH);
+      // <MyTrades> on every request (key), so the new auction is visible there.
+      // `?listed=auction` asks the hub to show the same one-shot confirmation
+      // the auction board used to render after a create.
+      router.push(TRADE_HUB_LISTED_PATH.auction);
       return;
     }
     setErrorText(
@@ -257,9 +273,10 @@ export default function TradeCreateForm({
         setSubmitting(false);
         return;
       }
-      // #2080: the hub is the destination for both kinds (the old board's
-      // ?listed=1 flash is no longer needed; MyTrades is remounted by key).
-      router.push(TRADE_HUB_PATH);
+      // #2080: the hub is the destination for both kinds. `?listed=offer`
+      // asks the hub to show the one-shot "listed" confirmation instead of the
+      // old board's ?listed=1 flash; MyTrades is remounted by key either way.
+      router.push(TRADE_HUB_LISTED_PATH.offer);
       return;
     }
     setErrorText(

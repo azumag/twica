@@ -111,6 +111,14 @@ vi.mock("@/components/TradeCollections", () => ({
     <div data-testid="trade-collections" data-props={JSON.stringify(props)} />
   ),
 }));
+// The notice's own rendering/URL cleanup is covered by
+// tests/unit/components/trade-listed-notice.test.tsx; here the hub only needs
+// to prove it accepts the allowlisted ?listed value and positions the notice.
+vi.mock("@/components/TradeListedNotice", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="trade-listed-notice" data-props={JSON.stringify(props)} />
+  ),
+}));
 // The collection lists have their own service suite (#2079); here the hub
 // only needs to prove it passes the parsed sort and the loaded sections down.
 vi.mock("@/lib/trade-collections", () => ({
@@ -571,6 +579,35 @@ describe("/trade hub page (#2078)", () => {
     expect(props("my-trades")).toEqual({ initialOpen: { offers: [offer], hasMore: true } });
     expect(screen.getByRole("heading", { name: "collectionsTitle" })).toBeInTheDocument();
     expect(props("trade-collections")).toEqual({ initialCollections: [], sort: "newest" });
+  });
+
+  it.each(["offer", "auction"] as const)(
+    "shows the post-listing notice for ?listed=%s between the heading and my trades",
+    async (listed) => {
+      mocks.getSession.mockResolvedValue(SESSION);
+      render(await TradeHubPage({ searchParams: Promise.resolve({ listed }) }));
+
+      // The hub reuses the board's two notices instead of new copy (#2080).
+      expect(props("trade-listed-notice")).toEqual({ kind: listed });
+      // The notice belongs under the heading and above "my trades", where the
+      // viewer looks after being sent back from the form.
+      const notice = screen.getByTestId("trade-listed-notice");
+      const myTradesHeading = screen.getByRole("heading", { name: "myTradesTitle" });
+      expect(
+        notice.compareDocumentPosition(myTradesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    },
+  );
+
+  it.each([
+    ["absent", {}],
+    ["unrelated", { listed: "1" }],
+    ["unknown", { listed: "redeemed" }],
+    ["repeated", { listed: ["offer", "auction"] }],
+  ])("ignores a %s ?listed value and shows no notice", async (_name, query) => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeHubPage({ searchParams: Promise.resolve(query) }));
+    expect(screen.queryByTestId("trade-listed-notice")).toBeNull();
   });
 
   it("passes the allowlisted sort to the server-rendered collection list", async () => {

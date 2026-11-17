@@ -149,7 +149,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     expect(screen.getByText("渡す Dup Card ⇄ 欲しい Want Card Two で出品します")).toBeInTheDocument();
     fireEvent.click(submit);
 
-    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade"));
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade?listed=offer"));
     // The board's cached pages predate the new offer: dropped before navigating.
     expect(clearTradeListCache).toHaveBeenCalledTimes(1);
     expect(clearTradeListCache.mock.invocationCallOrder[0]).toBeLessThan(push.mock.invocationCallOrder[0]);
@@ -293,7 +293,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
       expect(screen.queryByText("渡す Dup Card ⇄ 欲しい Want Card Two で出品します")).toBeNull();
 
       fireEvent.click(screen.getByRole("button", { name: ja.createSubmitButton }));
-      await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade"));
+      await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade?listed=offer"));
       expect(bodyOf(0)).toMatchObject({
         offeredUserCardId: "uc-dup-mid",
         wantedCardId: "card-want-2",
@@ -350,7 +350,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
 
         submit();
 
-        await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade"));
+        await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade?listed=offer"));
         expect(screen.queryByRole("alert")).toBeNull();
       });
     });
@@ -482,7 +482,7 @@ describe("TradeCreateForm kind and auction (#1791, #2080)", () => {
     ).toBeInTheDocument();
     fireEvent.click(auctionSubmit());
 
-    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade"));
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/trade?listed=auction"));
     expect(clearTradeListCache).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/trades/auctions");

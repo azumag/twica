@@ -212,13 +212,22 @@ export async function loadTradeCreateFormData(input: {
  * Deliberately no withDbRetry: this is advisory UI state, and a slow retry
  * would delay the page just to show a notice; any read failure is treated as
  * unavailable (the offer flow does not depend on this at all).
+ *
+ * Read the catalog through the same raw-SQL path as src/lib/trade-auction.ts
+ * (`const { sql: query } = await getDb()` and a postgres.js tagged template).
+ * Drizzle's `db.execute` had no other precedent in src/lib, and its result
+ * shape is driver-specific: reading `rows[0]` from a different shape throws no
+ * error, it just yields undefined and silently disables auctions forever. The
+ * postgres.js client returns a real array, so the deny-by-default check below
+ * observes the actual value. The integration test runs this against a migrated
+ * PostgreSQL to keep the driver shape honest.
  */
 export async function isTradeAuctionSchemaAvailable(): Promise<boolean> {
   try {
-    const { db } = await getDb();
-    const rows = await db.execute<{ available: boolean }>(
-      sql`SELECT to_regclass('public.trade_auctions') IS NOT NULL AS available`,
-    );
+    const { sql: query } = await getDb();
+    const rows = await query<Array<{ available: boolean }>>`
+      SELECT to_regclass('public.trade_auctions') IS NOT NULL AS available
+    `;
     // Deny-by-default: only an explicit TRUE enables the auction entry point.
     return rows[0]?.available === true;
   } catch {

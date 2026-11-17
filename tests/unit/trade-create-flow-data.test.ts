@@ -111,11 +111,19 @@ describe("loadTradeCreateFormData (#2080)", () => {
 
 describe("isTradeAuctionSchemaAvailable (#2080 deploy window)", () => {
   it("is true only when the catalog lookup finds the auction table", async () => {
-    const execute = vi.fn().mockResolvedValue([{ available: true }]);
-    mocks.getDb.mockResolvedValue({ db: { execute }, sql: {} });
+    // Same raw-SQL shape as src/lib/trade-auction.ts: getDb()'s postgres.js
+    // client (`sql`) is the tagged template, not Drizzle's db.execute (#2080
+    // review). The old shape could silently read `undefined` on a driver whose
+    // result is not an array.
+    const query = vi.fn().mockResolvedValue([{ available: true }]);
+    mocks.getDb.mockResolvedValue({ db: {}, sql: query });
 
     await expect(isTradeAuctionSchemaAvailable()).resolves.toBe(true);
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(1);
+    // the probe must be the catalog-only lookup, never a table scan
+    expect(String(query.mock.calls[0][0])).toContain(
+      "to_regclass('public.trade_auctions') IS NOT NULL AS available",
+    );
   });
 
   it.each([
@@ -123,16 +131,16 @@ describe("isTradeAuctionSchemaAvailable (#2080 deploy window)", () => {
     ["the result is empty", []],
   ])("fails closed when %s", async (_name, rows) => {
     mocks.getDb.mockResolvedValue({
-      db: { execute: vi.fn().mockResolvedValue(rows) },
-      sql: {},
+      db: {},
+      sql: vi.fn().mockResolvedValue(rows),
     });
     await expect(isTradeAuctionSchemaAvailable()).resolves.toBe(false);
   });
 
   it("fails closed when the read throws instead of breaking the page", async () => {
     mocks.getDb.mockResolvedValue({
-      db: { execute: vi.fn().mockRejectedValue(new Error("db down")) },
-      sql: {},
+      db: {},
+      sql: vi.fn().mockRejectedValue(new Error("db down")),
     });
     await expect(isTradeAuctionSchemaAvailable()).resolves.toBe(false);
   });
