@@ -977,7 +977,7 @@
     "collectionAuctionCount": "{count}件",
     "collectionExpand": "全{count}件を見る",
     "collectionCollapse": "閉じる",
-    "collectionMoreLink": "トレードボードでもっと見る",
+    "collectionLoadMore": "さらに表示",
     "collectionExpanding": "読み込み中...",
     "collectionOffersEmpty": "表示できるトレードはありません",
     "collectionAuctionsEmpty": "表示できるオークションはありません",

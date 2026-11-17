@@ -55,6 +55,29 @@ export default async function TradeHubPage({
     loadInitialTradeCollections(session.twitchUserId, sort),
   ]);
 
+  /*
+   * Remount <MyTrades> on every server render (#2079 review).
+   *
+   * The panel's open/completed/cancelled pages live in a per-mount
+   * useTradeList cache. That cache intentionally ignores a changed `initial`
+   * prop after mount, so router.refresh() alone would update the server props
+   * (`initialOpen`) but leave the rows on screen unchanged. A key that changes
+   * per request makes the refresh replace the component instance as well, so
+   * the new props seed a fresh cache. The page reads the session, so it is
+   * dynamic and every refresh is a new render/request.
+   *
+   * Tradeoff: remounting resets the panel's local UI state, i.e. the selected
+   * tab returns to "open" (and the page to 1) after a refresh caused by a
+   * mutation elsewhere on the page. That is preferable to showing a completed
+   * trade as still open, and it matches the previous /trade/mine behaviour of
+   * loading the open tab first.
+   *
+   * A random nonce is used instead of Date.now() because two refreshes can
+   * share the same millisecond; the key only needs to differ from the previous
+   * render (it is never persisted or sent to the browser as data).
+   */
+  const myTradesKey = crypto.randomUUID();
+
   return (
     <div className="mx-auto max-w-4xl">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
@@ -91,7 +114,7 @@ export default async function TradeHubPage({
         </h2>
         {/* Server-rendered first page; other tabs/pages are fetched by the
             client component, exactly as on the former /trade/mine page. */}
-        <MyTrades initialOpen={initialOpen} />
+        <MyTrades key={myTradesKey} initialOpen={initialOpen} />
       </section>
 
       {/* #2079: below "my trades", one section per owned collection that has

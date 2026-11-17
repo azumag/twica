@@ -5,6 +5,14 @@ import MyTrades from "@/components/MyTrades";
 import type { TradeOfferDto } from "@/lib/trade";
 import jaMessages from "../../../messages/ja.json";
 
+const mocks = vi.hoisted(() => ({
+  refresh: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: mocks.refresh }),
+}));
+
 const ja = jaMessages.trade;
 
 function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
@@ -67,6 +75,7 @@ describe("MyTrades (#727 §6.6)", () => {
   let hasMore: boolean;
 
   beforeEach(() => {
+    mocks.refresh.mockClear();
     byStatus = { open: [makeOffer()], completed: [], cancelled: [] };
     hasMore = false;
     fetchMock = vi.fn(async (url: string) => {
@@ -103,7 +112,7 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(within(footer as HTMLElement).getByRole("button", { name: ja.cancelOfferButton })).toBeEnabled();
   });
 
-  it("cancels an open offer after the confirmation dialog and refetches", async () => {
+  it("cancels an open offer after the confirmation dialog, refetches and refreshes the hub", async () => {
     renderMine();
     fireEvent.click(await screen.findByRole("button", { name: ja.cancelOfferButton }));
 
@@ -125,6 +134,10 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     const cancelCall = fetchMock.mock.calls.find(([url]) => url === "/api/trades/offer-1/cancel");
     expect(cancelCall![1]).toEqual(expect.objectContaining({ method: "POST" }));
+    // A successful cancel releases the offered card, so the hub's collection
+    // list must re-render on the server (the per-mount list cache cannot see
+    // the change by itself).
+    await waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(1));
   });
 
   it("does not cancel when the confirmation dialog is dismissed", async () => {
@@ -135,6 +148,7 @@ describe("MyTrades (#727 §6.6)", () => {
 
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/cancel"))).toBe(false);
+    expect(mocks.refresh).not.toHaveBeenCalled();
     // The row is still there, so focus returns to its cancel button.
     await waitFor(() => expect(openButton).toHaveFocus());
   });
@@ -150,6 +164,8 @@ describe("MyTrades (#727 §6.6)", () => {
     fireEvent.click(await screen.findByRole("button", { name: ja.cancelOfferButton }));
     fireEvent.click(screen.getByRole("button", { name: ja.cancelOfferModalConfirmButton }));
     expect(await screen.findByRole("alert")).toHaveTextContent(ja.errorTradeAlreadyCompletedOrInvalid);
+    // Only a confirmed cancel changes the server state the hub renders.
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
   it("completed tab: counterpart is acceptedBy for my offers and offerer for offers I accepted", async () => {

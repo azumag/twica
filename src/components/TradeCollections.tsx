@@ -1,16 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { TradeCollectionSort, TradeOfferDto } from "@/lib/trade";
 import type { TradeAuctionDto } from "@/lib/trade-auction";
 import type { TradeCollectionSection } from "@/lib/trade-collections";
 import {
-  tradeAuctionBoardPath,
   tradeAuctionDetailPath,
-  tradeBoardPath,
   tradeLoginHref,
 } from "@/lib/trade-client";
 import { clearTradeListCache } from "@/lib/use-trade-list";
@@ -20,17 +17,25 @@ import TradeAuctionRow from "./TradeAuctionRow";
 import TradeOfferRow from "./TradeOfferRow";
 
 type ExpandedKind =
-  | { kind: "offer"; offers: TradeOfferDto[]; total: number; hasMore: boolean }
-  | { kind: "auction"; auctions: TradeAuctionDto[]; total: number; hasMore: boolean };
+  | { kind: "offer"; offers: TradeOfferDto[]; total: number; hasMore: boolean; page: number }
+  | { kind: "auction"; auctions: TradeAuctionDto[]; total: number; hasMore: boolean; page: number };
 
 function expandKey(kind: "offer" | "auction", streamerId: string) {
   return `${kind}:${streamerId}`;
 }
 
-function boardHref(kind: "offer" | "auction", streamerId: string) {
-  return kind === "offer"
-    ? tradeBoardPath(streamerId, "in_channel")
-    : tradeAuctionBoardPath(streamerId, "in_channel");
+/**
+ * Append the next API page without repeating a row that was already shown.
+ *
+ * Pages are offset-based (page N = rows (N-1)*TRADE_PAGE_SIZE+1..), so a row
+ * created or removed between two requests can shift across the page boundary
+ * and appear on both pages. The UI must not show such a row twice, hence the
+ * id filter instead of a plain concat. The first page replaces the preview
+ * (no append), so this only runs for page >= 2.
+ */
+function appendUniqueById<T extends { id: string }>(current: readonly T[], next: readonly T[]): T[] {
+  const seen = new Set(current.map((row) => row.id));
+  return [...current, ...next.filter((row) => !seen.has(row.id))];
 }
 
 const subscribeToHydration = () => () => {};
@@ -58,11 +63,13 @@ function useIsClient() {
  * 漏えいの面積が増えるため）。
  *
  * 先頭5件はサーバーが SQL の ROW_NUMBER() で返す。6件目以降は
- * GET /api/trades/collections/[streamerId] を展開時に1ページだけ取得する。
- * この API は折りたたみ時と同じサービス関数を配信者1件・TRADE_PAGE_SIZE 件で
- * 呼ぶので、条件・並び・DTO がずれない。TRADE_PAGE_SIZE を超える分は
- * 既存の /trade/[streamerId] ボードへのリンクにする（この画面で無限に
- * ページングしない）。
+ * GET /api/trades/collections/[streamerId] を展開時に1ページ取得し、さらに
+ * 「さらに表示」で page+1 を取得して末尾へ追記する。この API は折りたたみ時と
+ * 同じサービス関数を配信者1件・TRADE_PAGE_SIZE 件で呼ぶので、条件・並び・DTO が
+ * ずれない。以前は残りを /trade/[streamerId] のチャネル内タブへリンクしていたが、
+ * この一覧にはクロスチャネル出品も混ざるため、そのタブでは残りに到達できなかった
+ * (#2079 レビュー)。ページ間で件数が動いても同じ行を二重に表示しないよう、
+ * 追記時は id で重複を除き、API の hasMore が false になったらボタンを消す。
  *
  * ソートはサーバー側で行う（先頭5件がソートで変わるため）。この
  * コンポーネントは select の変更を URL に反映してサーバー再描画を促すだけ。
@@ -87,7 +94,12 @@ export default function TradeCollections({
   const writeBlocked = maintenanceMode !== "off";
 
   const [expanded, setExpanded] = useState<Record<string, ExpandedKind>>({});
-  const [loadingKey, setLoadingKey] = useState<string | null>(null);
+  // A section loads at most one page at a time, but different sections can be
+  // expanded concurrently, so the in-flight flag is per section (key) rather
+  // than a single value. The ref is the synchronous duplicate-click guard: the
+  // disabled attribute only lands after React re-renders.
+  const [loadingKeys, setLoadingKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const inFlightKeys = useRef(new Set<string>());
   const [errorKey, setErrorKey] = useState<string | null>(null);
   // Offers accepted from this page disappear immediately; router.refresh()
   // then replaces the server props. Keep the request ids per offer so a retry
@@ -98,6 +110,7 @@ export default function TradeCollections({
   const acceptTriggerRef = useRef<HTMLButtonElement | null>(null);
   const completedOfferId = useRef<string | null>(null);
   const mounted = useRef(true);
+  const previousInitialCollections = useRef(initialCollections);
 
   useEffect(() => {
     mounted.current = true;
@@ -106,6 +119,19 @@ export default function TradeCollections({
     };
   }, []);
 
+  useEffect(() => {
+    // A server refresh can change what the viewer can accept: cancelling a
+    // listing in <MyTrades> releases the offered card, and accepting here
+    // consumes one. The preview follows the new server props, but pages
+    // fetched through the expand API keep the old canAccept flags, so drop
+    // them when the prefetched sections change. The first render is skipped
+    // (the ref already holds that prop).
+    if (previousInitialCollections.current === initialCollections) return;
+    previousInitialCollections.current = initialCollections;
+    setExpanded({});
+    setErrorKey(null);
+  }, [initialCollections]);
+
   const changeSort = (value: string) => {
     const next = new URLSearchParams();
     if (value === "ending_soon") next.set("sort", "ending_soon");
@@ -113,12 +139,39 @@ export default function TradeCollections({
     router.push(query ? `/trade?${query}` : "/trade");
   };
 
-  const loadExpanded = async (kind: "offer" | "auction", streamerId: string) => {
+  const setSectionLoading = (key: string, loading: boolean) => {
+    setLoadingKeys((current) => {
+      const next = new Set(current);
+      if (loading) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  /**
+   * Load one API page for a section. page 1 replaces the 5-row preview (the
+   * expand button); page > 1 appends (the "load more" button and its retry).
+   *
+   * A failure keeps the rows already on screen: the component only records
+   * errorKey, and the error block's retry calls this function again with the
+   * same page (page 1 when nothing was expanded yet, otherwise
+   * expanded.page + 1), so an append retry does not restart at page 1.
+   */
+  const loadExpanded = async (
+    kind: "offer" | "auction",
+    streamerId: string,
+    page: number,
+  ) => {
     const key = expandKey(kind, streamerId);
-    setLoadingKey(key);
+    // Two rapid clicks can both run before the disabled button re-renders.
+    // Return before issuing the same page twice; the first request's finally
+    // clears the guard.
+    if (inFlightKeys.current.has(key)) return;
+    inFlightKeys.current.add(key);
+    setSectionLoading(key, true);
     setErrorKey(null);
     try {
-      const query = new URLSearchParams({ kind, sort, page: "1" });
+      const query = new URLSearchParams({ kind, sort, page: String(page) });
       const res = await fetch(
         `/api/trades/collections/${streamerId}?${query.toString()}`,
         { credentials: "include", cache: "no-store" },
@@ -131,26 +184,56 @@ export default function TradeCollections({
         hasMore?: boolean;
       };
       if (!mounted.current) return;
-      setExpanded((current) => ({
-        ...current,
-        [key]: kind === "offer"
-          ? {
-            kind: "offer",
-            offers: Array.isArray(data.offers) ? data.offers : [],
-            total: Number(data.total ?? 0),
-            hasMore: data.hasMore === true,
+      const offers = Array.isArray(data.offers) ? data.offers : [];
+      const auctions = Array.isArray(data.auctions) ? data.auctions : [];
+      const total = Number(data.total ?? 0);
+      const hasMore = data.hasMore === true;
+      setExpanded((current) => {
+        const previous = current[key];
+        // A continuation only appends to the section that requested it. If
+        // the viewer collapsed the section (or an accept reset every expanded
+        // page) while this request was in flight, previous is gone; discard
+        // the page instead of re-expanding with page 2+ missing page 1.
+        if (page > 1) {
+          if (previous?.kind === "offer" && kind === "offer") {
+            return {
+              ...current,
+              [key]: {
+                kind: "offer",
+                offers: appendUniqueById(previous.offers, offers),
+                total,
+                hasMore,
+                page,
+              },
+            };
           }
-          : {
-            kind: "auction",
-            auctions: Array.isArray(data.auctions) ? data.auctions : [],
-            total: Number(data.total ?? 0),
-            hasMore: data.hasMore === true,
-          },
-      }));
+          if (previous?.kind === "auction" && kind === "auction") {
+            return {
+              ...current,
+              [key]: {
+                kind: "auction",
+                auctions: appendUniqueById(previous.auctions, auctions),
+                total,
+                hasMore,
+                page,
+              },
+            };
+          }
+          return current;
+        }
+        // The initial expand replaces the 5-row preview.
+        return {
+          ...current,
+          [key]: kind === "offer"
+            ? { kind: "offer", offers, total, hasMore, page }
+            : { kind: "auction", auctions, total, hasMore, page },
+        };
+      });
     } catch {
       if (mounted.current) setErrorKey(key);
     } finally {
-      if (mounted.current) setLoadingKey(null);
+      inFlightKeys.current.delete(key);
+      if (mounted.current) setSectionLoading(key, false);
     }
   };
 
@@ -185,9 +268,13 @@ export default function TradeCollections({
         setHiddenOfferIds((current) => new Set(current).add(completed));
         acceptRequestIds.current.delete(completed);
       }
-      // The trade lists rendered elsewhere on this page (the "my trades"
-      // panel) share the useTradeList browser cache. An accept changes those
-      // rows too, so drop the cache exactly like the board's accept path.
+      // The accept also changes the hub's "my trades" rows. That panel keeps
+      // its pages in a per-mount useTradeList cache, which this module-level
+      // clear cannot reach, but the hub gives <MyTrades> a request-scoped key:
+      // the router.refresh() below re-renders the server page with a new key
+      // and remounts the panel, discarding its cache. clearTradeListCache()
+      // still drops the board's shared browser cache (e.g. the board the
+      // viewer opens later), exactly like the board's own accept path.
       clearTradeListCache();
       // Ownership and the collection totals changed: drop the expanded pages
       // (they were ranked under the previous ownership) and re-render the
@@ -324,11 +411,11 @@ export default function TradeCollections({
                       {expandedOffers?.kind !== "offer" && offerHasMore && (
                         <button
                           type="button"
-                          onClick={() => void loadExpanded("offer", streamerId)}
-                          disabled={loadingKey === offerKey}
+                          onClick={() => void loadExpanded("offer", streamerId, 1)}
+                          disabled={loadingKeys.has(offerKey)}
                           className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-3 py-1 text-xs text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {loadingKey === offerKey
+                          {loadingKeys.has(offerKey)
                             ? t("collectionExpanding")
                             : t("collectionExpand", { count: offerTotal })}
                         </button>
@@ -343,12 +430,16 @@ export default function TradeCollections({
                             {t("collectionCollapse")}
                           </button>
                           {offerHasMore && (
-                            <Link
-                              href={boardHref("offer", streamerId)}
-                              className="shrink-0 whitespace-nowrap text-xs text-purple-300 hover:text-purple-200"
+                            <button
+                              type="button"
+                              onClick={() => void loadExpanded("offer", streamerId, expandedOffers.page + 1)}
+                              disabled={loadingKeys.has(offerKey)}
+                              className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-3 py-1 text-xs text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              {t("collectionMoreLink")}
-                            </Link>
+                              {loadingKeys.has(offerKey)
+                                ? t("collectionExpanding")
+                                : t("collectionLoadMore")}
+                            </button>
                           )}
                         </>
                       )}
@@ -359,8 +450,13 @@ export default function TradeCollections({
                       <span>{t("collectionsLoadError")}</span>
                       <button
                         type="button"
-                        onClick={() => void loadExpanded("offer", streamerId)}
-                        className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-3 py-1 text-xs text-white hover:bg-gray-600"
+                        onClick={() => void loadExpanded(
+                          "offer",
+                          streamerId,
+                          expandedOffers?.kind === "offer" ? expandedOffers.page + 1 : 1,
+                        )}
+                        disabled={loadingKeys.has(offerKey)}
+                        className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-3 py-1 text-xs text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {t("retryButton")}
                       </button>
@@ -401,11 +497,11 @@ export default function TradeCollections({
                       {expandedAuctions?.kind !== "auction" && auctionHasMore && (
                         <button
                           type="button"
-                          onClick={() => void loadExpanded("auction", streamerId)}
-                          disabled={loadingKey === auctionKey}
+                          onClick={() => void loadExpanded("auction", streamerId, 1)}
+                          disabled={loadingKeys.has(auctionKey)}
                           className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-3 py-1 text-xs text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {loadingKey === auctionKey
+                          {loadingKeys.has(auctionKey)
                             ? t("collectionExpanding")
                             : t("collectionExpand", { count: auctionTotal })}
                         </button>
@@ -420,12 +516,16 @@ export default function TradeCollections({
                             {t("collectionCollapse")}
                           </button>
                           {auctionHasMore && (
-                            <Link
-                              href={boardHref("auction", streamerId)}
-                              className="shrink-0 whitespace-nowrap text-xs text-purple-300 hover:text-purple-200"
+                            <button
+                              type="button"
+                              onClick={() => void loadExpanded("auction", streamerId, expandedAuctions.page + 1)}
+                              disabled={loadingKeys.has(auctionKey)}
+                              className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-3 py-1 text-xs text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              {t("collectionMoreLink")}
-                            </Link>
+                              {loadingKeys.has(auctionKey)
+                                ? t("collectionExpanding")
+                                : t("collectionLoadMore")}
+                            </button>
                           )}
                         </>
                       )}
@@ -436,8 +536,13 @@ export default function TradeCollections({
                       <span>{t("collectionsLoadError")}</span>
                       <button
                         type="button"
-                        onClick={() => void loadExpanded("auction", streamerId)}
-                        className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-3 py-1 text-xs text-white hover:bg-gray-600"
+                        onClick={() => void loadExpanded(
+                          "auction",
+                          streamerId,
+                          expandedAuctions?.kind === "auction" ? expandedAuctions.page + 1 : 1,
+                        )}
+                        disabled={loadingKeys.has(auctionKey)}
+                        className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-3 py-1 text-xs text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {t("retryButton")}
                       </button>

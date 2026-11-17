@@ -977,7 +977,7 @@
     "collectionAuctionCount": "{count, plural, one {# auction} other {# auctions}}",
     "collectionExpand": "Show all {count}",
     "collectionCollapse": "Collapse",
-    "collectionMoreLink": "See more on the trade board",
+    "collectionLoadMore": "Show more",
     "collectionExpanding": "Loading...",
     "collectionOffersEmpty": "No trades to show",
     "collectionAuctionsEmpty": "No auctions to show",

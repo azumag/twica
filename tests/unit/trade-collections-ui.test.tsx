@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { TradeCollectionSection } from "@/lib/trade-collections";
 
 /**
@@ -59,6 +59,16 @@ function section(overrides: Partial<TradeCollectionSection> = {}): TradeCollecti
   };
 }
 
+function rows(prefix: string, from: number, to: number) {
+  return Array.from({ length: to - from + 1 }, (_, index) => ({
+    id: `${prefix}-${from + index}`,
+  }));
+}
+
+function page(body: unknown) {
+  return { ok: true, json: async () => body };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
@@ -115,21 +125,176 @@ describe("TradeCollections (#2079)", () => {
     expect(screen.getAllByTestId("offer-row")).toHaveLength(5);
   });
 
-  it("shows the board link only when the expanded page still has more", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        offers: Array.from({ length: 20 }, (_, index) => ({ id: `expanded-${index + 1}` })),
-        total: 25,
-        hasMore: true,
-      }),
-    });
+  it("drops expanded pages when a server refresh replaces the sections", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      page({ offers: rows("expanded", 1, 7), total: 7, hasMore: false }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<TradeCollections initialCollections={[section({ offerTotal: 25 })]} sort="newest" />);
-    expect(screen.queryByRole("link", { name: "collectionMoreLink" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "collectionExpand:25" }));
-    const link = await screen.findByRole("link", { name: "collectionMoreLink" });
-    expect(link).toHaveAttribute("href", `/trade/${STREAMER.id}`);
+    const { rerender } = render(
+      <TradeCollections initialCollections={[section()]} sort="newest" />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "collectionExpand:7" }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(7));
+
+    // <MyTrades> cancelled a listing and called router.refresh(): the server
+    // sends a new section, but the expand API's rows were ranked before the
+    // card was released, so they must not keep the stale canAccept flags.
+    rerender(
+      <TradeCollections
+        initialCollections={[section({ offerTotal: 8 })]}
+        sort="newest"
+      />,
+    );
+    expect(screen.getAllByTestId("offer-row")).toHaveLength(5);
+    expect(screen.queryByRole("button", { name: "collectionCollapse" })).toBeNull();
+  });
+
+  it("appends the next page and hides the button when hasMore is false", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(page({ offers: rows("expanded", 1, 20), total: 23, hasMore: true }))
+      .mockResolvedValueOnce(page({ offers: rows("expanded", 21, 23), total: 23, hasMore: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TradeCollections initialCollections={[section({ offerTotal: 23 })]} sort="newest" />);
+    fireEvent.click(screen.getByRole("button", { name: "collectionExpand:23" }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(20));
+
+    // #2079 review: cross-channel listings are not reachable from the
+    // in-channel board tab, so there must be no /trade/<streamer> "see more"
+    // link at all; the remaining rows are fetched here instead.
+    expect(document.querySelector(`a[href^="/trade/${STREAMER.id}"]`)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "collectionLoadMore" }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(23));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `/api/trades/collections/${STREAMER.id}?kind=offer&sort=newest&page=2`,
+      { credentials: "include", cache: "no-store" },
+    );
+    expect(screen.queryByRole("button", { name: "collectionLoadMore" })).toBeNull();
+  });
+
+  it("does not show a row twice when the pages overlap", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(page({ offers: rows("expanded", 1, 20), total: 21, hasMore: true }))
+      .mockResolvedValueOnce(page({ offers: rows("expanded", 20, 21), total: 21, hasMore: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TradeCollections initialCollections={[section({ offerTotal: 21 })]} sort="newest" />);
+    fireEvent.click(screen.getByRole("button", { name: "collectionExpand:21" }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(20));
+    fireEvent.click(screen.getByRole("button", { name: "collectionLoadMore" }));
+
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(21));
+    const ids = screen.getAllByTestId("offer-row").map((row) => row.getAttribute("data-offer-id"));
+    expect(ids.filter((id) => id === "expanded-20")).toHaveLength(1);
+    expect(ids.filter((id) => id === "expanded-21")).toHaveLength(1);
+  });
+
+  it("keeps the rows already shown and retries the same page when appending fails", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(page({ offers: rows("expanded", 1, 20), total: 22, hasMore: true }))
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(page({ offers: rows("expanded", 21, 22), total: 22, hasMore: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TradeCollections initialCollections={[section({ offerTotal: 22 })]} sort="newest" />);
+    fireEvent.click(screen.getByRole("button", { name: "collectionExpand:22" }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(20));
+    fireEvent.click(screen.getByRole("button", { name: "collectionLoadMore" }));
+
+    expect(await screen.findByText("collectionsLoadError")).toBeInTheDocument();
+    expect(screen.getAllByTestId("offer-row")).toHaveLength(20);
+
+    fireEvent.click(screen.getByRole("button", { name: "retryButton" }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(22));
+    expect(screen.queryByText("collectionsLoadError")).toBeNull();
+    // The retry must resume at page 2, not restart at page 1.
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `/api/trades/collections/${STREAMER.id}?kind=offer&sort=newest&page=2`,
+      { credentials: "include", cache: "no-store" },
+    );
+  });
+
+  it("disables the load-more button while the next page is in flight", async () => {
+    let resolveSecond: (value: unknown) => void = () => {};
+    const second = new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(page({ offers: rows("expanded", 1, 20), total: 21, hasMore: true }))
+      .mockReturnValueOnce(second);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TradeCollections initialCollections={[section({ offerTotal: 21 })]} sort="newest" />);
+    fireEvent.click(screen.getByRole("button", { name: "collectionExpand:21" }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(20));
+
+    fireEvent.click(screen.getByRole("button", { name: "collectionLoadMore" }));
+    const loading = screen.getByRole("button", { name: "collectionExpanding" });
+    expect(loading).toBeDisabled();
+    fireEvent.click(loading);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resolveSecond(page({ offers: rows("expanded", 21, 21), total: 21, hasMore: false }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(21));
+  });
+
+  it("stays collapsed when the next page arrives after collapsing", async () => {
+    let resolveSecond: (value: unknown) => void = () => {};
+    const second = new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(page({ offers: rows("expanded", 1, 20), total: 21, hasMore: true }))
+      .mockReturnValueOnce(second);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<TradeCollections initialCollections={[section({ offerTotal: 21 })]} sort="newest" />);
+    fireEvent.click(screen.getByRole("button", { name: "collectionExpand:21" }));
+    await waitFor(() => expect(screen.getAllByTestId("offer-row")).toHaveLength(20));
+    fireEvent.click(screen.getByRole("button", { name: "collectionLoadMore" }));
+    fireEvent.click(screen.getByRole("button", { name: "collectionCollapse" }));
+    expect(screen.getAllByTestId("offer-row")).toHaveLength(5);
+
+    // The late page must not re-expand the section with page 2 only.
+    await act(async () => {
+      resolveSecond(page({ offers: rows("expanded", 21, 21), total: 21, hasMore: false }));
+    });
+    expect(screen.getAllByTestId("offer-row")).toHaveLength(5);
+    expect(screen.queryByRole("button", { name: "collectionCollapse" })).toBeNull();
+  });
+
+  it("appends auction pages with the same de-duplication", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(page({ auctions: rows("auction", 1, 20), total: 21, hasMore: true }))
+      .mockResolvedValueOnce(page({ auctions: rows("auction", 20, 21), total: 21, hasMore: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <TradeCollections
+        initialCollections={[section({
+          offers: [],
+          offerTotal: 0,
+          auctions: rows("auction", 1, 5) as never,
+          auctionTotal: 21,
+        })]}
+        sort="newest"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "collectionExpand:21" }));
+    await waitFor(() => expect(screen.getAllByTestId("auction-row")).toHaveLength(20));
+    fireEvent.click(screen.getByRole("button", { name: "collectionLoadMore" }));
+
+    await waitFor(() => expect(screen.getAllByTestId("auction-row")).toHaveLength(21));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `/api/trades/collections/${STREAMER.id}?kind=auction&sort=newest&page=2`,
+      { credentials: "include", cache: "no-store" },
+    );
+    const ids = screen.getAllByTestId("auction-row").map((row) => row.getAttribute("data-auction-id"));
+    expect(ids.filter((id) => id === "auction-20")).toHaveLength(1);
   });
 });
