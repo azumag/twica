@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
 
 /**
  * Navigation item definition for dashboard sidebar
@@ -20,6 +21,9 @@ interface NavItem {
   // Whether this item requires supporter plan (support/patron)
   // この項目が支援者プラン（support/patron）を必要とするかどうか
   supporterOnly?: boolean;
+  // Whether this item is only shown while the card-trade UI is publicly enabled
+  // カードトレードUIが一般公開されている間だけ表示するかどうか
+  requiresTradeUi?: boolean;
 }
 
 interface DashboardNavProps {
@@ -168,6 +172,35 @@ export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavPr
       ),
     },
     {
+      /*
+       * #2078: トレードハブは視聴者も使う機能なので streamerOnly を付けない。
+       * 一般公開前 (CARD_TRADE_UI_VISIBLE=false) は、既存のトレード入口と
+       * 同じく項目ごと隠す。ただし /trade への直リンクは /trade/[streamerId]
+       * と同じく到達できる（表示ゲートはサイドバーの入口だけに掛ける）。
+       *
+       * 「マイコレクション」の直後に置くのは、トレードがコレクションから
+       * 発生する作業であり、#2079 のコレクション別一覧へ続く導線だから。
+       */
+      href: "/trade",
+      labelKey: "trade",
+      requiresTradeUi: true,
+      icon: (
+        <svg
+          className="h-5 w-5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+          />
+        </svg>
+      ),
+    },
+    {
       href: "/dashboard/inquiries",
       labelKey: "inquiries",
       supporterOnly: true,
@@ -215,9 +248,12 @@ export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavPr
 
   // Filter navigation items based on user permissions
   // ユーザー権限に基づいてナビゲーション項目をフィルタリング
-  // streamerOnly/supporterOnly に基づいてフィルタリング
+  // streamerOnly/supporterOnly/requiresTradeUi に基づいてフィルタリング
   const visibleNavItems = navItems.filter(
-    (item) => (!item.streamerOnly || isStreamer) && (!item.supporterOnly || isSupporter)
+    (item) =>
+      (!item.streamerOnly || isStreamer) &&
+      (!item.supporterOnly || isSupporter) &&
+      (!item.requiresTradeUi || CARD_TRADE_UI_VISIBLE)
   );
 
   /**
@@ -227,6 +263,8 @@ export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavPr
    * ナビゲーション項目が現在アクティブかどうかを確認
    * /dashboardは完全一致、その他のルートはstartsWithで判定
    * 特殊ケース: /collection/* パスもコレクションナビ項目をアクティブにする
+   * /trade, /trade/[streamerId], /trade/mine は /trade の prefix 判定で
+   * トレード項目だけが点灯する（コレクション項目は点灯しない）。
    */
   const isActive = (href: string) => {
     if (href === "/dashboard") {

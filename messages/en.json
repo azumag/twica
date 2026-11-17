@@ -35,6 +35,7 @@
     "gachaHistory": "Gacha History",
     "stats": "Stats",
     "collection": "My Collection",
+    "trade": "Trade",
     "announcements": "Announcements",
     "inquiries": "Inquiries",
     "menu": "Menu",
@@ -705,6 +706,9 @@
     "visibilityNotice": "For viewers to pick a card they do not own as a wanted card, or to see listings of cards they do not own, turn on \"Show unowned cards to viewers\" in \"Collection visibility\" just above, then turn on either (1) \"Reveal name, image, and description of unowned cards\" (public on the collection page too) or (2) \"Reveal only unowned card names in trades\" (on trade boards, bids, and acceptance screens only, names and rarities are shown while images and descriptions stay private). If neither is on, viewers can only trade cards they already own."
   },
   "trade": {
+    "hubTitle": "Trade",
+    "hubCreateButton": "Create offer",
+    "hubCreateUnavailable": "The listing flow is coming soon.",
     "collectionTradeButton": "Trade",
     "backToCollection": "Back to collection",
     "boardTitle": "{channelName} Trade Board",
