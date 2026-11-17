@@ -17,17 +17,25 @@ function renderNav(isStreamer: boolean, isSupporter = false) {
 }
 
 describe("DashboardNav live directory link", () => {
-  it("places /live after inquiries on desktop and mobile", () => {
+  it("places /live after inquiries in the sidebar", () => {
     renderNav(true, true);
-    const links = within(screen.getByRole("navigation")).getAllByRole("link");
+    // The sidebar is rendered once (responsive switching lives in DashboardShell),
+    // so read the links from the single navigation landmark instead of splitting
+    // a duplicated desktop/mobile list in half.
+    const links = within(
+      screen.getByRole("navigation", {
+        name: jaMessages.navigation.sidebarLabel,
+      }),
+    ).getAllByRole("link");
     const hrefs = links.map((link) => link.getAttribute("href"));
-    const half = hrefs.length / 2;
 
-    expect(hrefs.slice(half - 2, half)).toEqual([
-      "/dashboard/inquiries",
-      "/live",
-    ]);
-    expect(hrefs.slice(-2)).toEqual([
+    expect(hrefs).toEqual([
+      "/dashboard",
+      "/dashboard/cards",
+      "/dashboard/settings",
+      "/dashboard/history",
+      "/dashboard/stats",
+      "/dashboard/collection",
       "/dashboard/inquiries",
       "/live",
     ]);
@@ -38,7 +46,7 @@ describe("DashboardNav live directory link", () => {
 
     expect(
       screen.getAllByRole("link", { name: "公開チャネル" }),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(screen.queryByRole("link", { name: "カード管理" })).not.toBeInTheDocument();
   });
 });

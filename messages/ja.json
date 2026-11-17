@@ -36,7 +36,10 @@
     "stats": "統計",
     "collection": "マイコレクション",
     "announcements": "お知らせ",
-    "inquiries": "お問い合わせ"
+    "inquiries": "お問い合わせ",
+    "menu": "メニュー",
+    "closeMenu": "メニューを閉じる",
+    "sidebarLabel": "ダッシュボードのナビゲーション"
   },
   "rarity": {
     "common": "コモン",

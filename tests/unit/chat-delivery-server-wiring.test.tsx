@@ -87,6 +87,17 @@ vi.mock('@/lib/perf', () => ({
 
 vi.mock('@/components/Header', () => ({ default: () => null }))
 vi.mock('@/components/DashboardNav', () => ({ default: () => null }))
+// DashboardLayout now wraps the nav and page content in DashboardShell. This test
+// checks the server helper wiring, not the drawer, and the suite's next-intl mock
+// only provides the provider, so render the two slots without the client hooks.
+vi.mock('@/components/DashboardShell', () => ({
+  default: ({ nav, children }: { nav: ReactNode; children: ReactNode }) => (
+    <>
+      {nav}
+      {children}
+    </>
+  ),
+}))
 vi.mock('@/components/TwitchLoginRedirect', () => ({ TwitchLoginRedirect: () => null }))
 vi.mock('@/components/MaintenanceBanner', () => ({ default: () => null }))
 vi.mock('@/components/MaintenanceStatusProvider', () => ({

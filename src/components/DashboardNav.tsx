@@ -241,34 +241,24 @@ export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavPr
   };
 
   return (
-    <nav className="bg-gray-800 rounded-xl p-2">
-      {/* Desktop: Horizontal navigation bar / デスクトップ: 水平ナビゲーションバー */}
-      <div className="hidden md:flex md:gap-1">
+    /*
+     * 項目は1回だけ描画する。以前はデスクトップ用の横並びとモバイル用の
+     * 横スクロールを別々に描画しており、同じリンクが DOM に2つ存在していた。
+     * 画面幅による表示の切り替えは DashboardShell 側のサイドバー / ドロワーが
+     * 受け持つため、ここでは常に縦並びのリストだけを返す。
+     *
+     * aria-label はサイドバーというランドマークの名前になる。aria-current は
+     * 「今いるページ」を支援技術へ伝えるためのもので、視覚的なハイライトだけに
+     * 依存しない。
+     */
+    <nav aria-label={t("sidebarLabel")} className="rounded-xl bg-gray-800 p-2">
+      <ul className="flex flex-col gap-1">
         {visibleNavItems.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-              isActive(item.href)
-                ? "bg-purple-600 text-white"
-                : "text-gray-300 hover:bg-gray-700 hover:text-white"
-            }`}
-          >
-            {item.icon}
-            <span>{t(item.labelKey)}</span>
-          </Link>
-        ))}
-      </div>
-
-      {/* Mobile: Horizontal scrollable navigation with scroll indicator */}
-      {/* モバイル: 水平スクロールナビゲーション + スクロールインジケーター */}
-      <div className="relative md:hidden">
-        <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-thin scrollbar-track-gray-700 scrollbar-thumb-gray-500">
-          {visibleNavItems.map((item) => (
+          <li key={item.href}>
             <Link
-              key={item.href}
               href={item.href}
-              className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              aria-current={isActive(item.href) ? "page" : undefined}
+              className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                 isActive(item.href)
                   ? "bg-purple-600 text-white"
                   : "text-gray-300 hover:bg-gray-700 hover:text-white"
@@ -277,16 +267,9 @@ export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavPr
               {item.icon}
               <span>{t(item.labelKey)}</span>
             </Link>
-          ))}
-          {/* 右端のスペーサー - スクロール可能であることを示すための余白 */}
-          <div className="shrink-0 w-2" aria-hidden="true" />
-        </div>
-        {/* 右端にスクロール可能を示すグラデーションオーバーレイ */}
-        <div
-          className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-gray-800 to-transparent"
-          aria-hidden="true"
-        />
-      </div>
+          </li>
+        ))}
+      </ul>
     </nav>
   );
 }

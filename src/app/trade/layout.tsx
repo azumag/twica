@@ -8,6 +8,7 @@ import { getUserPlan } from "@/lib/plan";
 import { pick, TRADE_CLIENT_NAMESPACES } from "@/i18n/client-namespaces";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
+import DashboardShell from "@/components/DashboardShell";
 import PublicFooter from "@/components/PublicFooter";
 import { MaintenanceStatusProvider } from "@/components/MaintenanceStatusProvider";
 import MaintenanceBanner from "@/components/MaintenanceBanner";
@@ -27,7 +28,7 @@ export const metadata: Metadata = {
  * visitors: the trade board must be readable without login, with only the
  * actions (accept / create) leading to login. This is a new pattern in this
  * app ("browse public, act after login"), modelled on /live:
- *   - logged in  → same Header + DashboardNav as the dashboard, plus the
+ *   - logged in  → same Header + DashboardShell (DashboardNav) as the dashboard, plus the
  *     maintenance provider/banner because trade pages perform writes;
  *   - anonymous  → minimal public header (Header renders nothing without a
  *     session) and the public footer.
@@ -97,13 +98,14 @@ export default async function TradeLayout({ children }: { children: React.ReactN
           <Header session={session} unreadAnnouncementsCount={unreadAnnouncements.length} />
           <div className="container mx-auto px-4 py-6">
             <MaintenanceBanner />
-            <div className="mb-6">
-              <DashboardNav isStreamer={isStreamer} isSupporter={plan !== "basic"} />
-            </div>
-            <main>
-              {guideLink}
-              {children}
-            </main>
+            <DashboardShell
+              nav={<DashboardNav isStreamer={isStreamer} isSupporter={plan !== "basic"} />}
+            >
+              <main>
+                {guideLink}
+                {children}
+              </main>
+            </DashboardShell>
           </div>
         </div>
       </MaintenanceStatusProvider>
