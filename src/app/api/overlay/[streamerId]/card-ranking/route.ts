@@ -18,7 +18,7 @@ import { isValidStreamerId } from "@/lib/overlay-realtime/contract";
 // 公開の可否は streamers.publish_card_ranking のオプトインで決まり、判定は DB 側の
 // wrapper get_published_card_ranking が行う（route 側のフィルタには依存しない）。
 // 未 opt-in は SQLSTATE P0002 で返り、この route が 404 へ写像する。未知の streamer と
-// 同じ応答にして、どのチャンネルが opt-in 済みかを探れないようにする。
+// 同じ応答にして、どのチャネルが opt-in 済みかを探れないようにする。
 
 const CARD_RANKING_PERIODS = new Set(["all", "7d", "30d"]);
 const DEFAULT_CARD_RANKING_PERIOD = "all";
@@ -118,7 +118,7 @@ export async function GET(
 
     if (error) {
       // P0002 (no_data_found) = 未 opt-in または未知の streamer。両者を同じ 404 に
-      // して、どのチャンネルが公開を許可しているかを探れないようにする。
+      // して、どのチャネルが公開を許可しているかを探れないようにする。
       if (error.code === CARD_RANKING_NOT_PUBLISHED_SQLSTATE) {
         return NextResponse.json(
           { error: "Card ranking is not published" },

@@ -25,7 +25,7 @@ INSERT INTO public.streamers (
     true, false
   ),
   (
-    -- 両フラグtrue。streamer1との組でクロスチャンネルの正常系(is_cross_channel
+    -- 両フラグtrue。streamer1との組でクロスチャネルの正常系(is_cross_channel
     -- 生成列の評価)を検証するために使う(シナリオ10)。
     '30000000-0000-4000-8000-000000000002',
     'trade-streamer-2', 'trade-streamer-2', 'Trade Streamer 2',
@@ -369,7 +369,7 @@ $$;
 -- 10. is_cross_channel生成列: 異なる配信者間のオファーはtrue、同一配信者間は
 -- false。RPCを呼ばず生成列の評価だけを直接検証する
 -- (Claude Auto Reviewレビュー指摘: streamer3を作成したのに一度も使っていな
--- かった点、is_cross_channelとクロスチャンネルゲートが未検証だった点への対応)。
+-- かった点、is_cross_channelとクロスチャネルゲートが未検証だった点への対応)。
 INSERT INTO public.trade_offers (
   id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
   wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot
@@ -406,7 +406,7 @@ BEGIN
 END
 $$;
 
--- 11. クロスチャンネルゲート: 両配信者ともtrade_enabled=trueだが、片方の
+-- 11. クロスチャネルゲート: 両配信者ともtrade_enabled=trueだが、片方の
 -- cross_channel_trade_enabledがfalseならTRADE_DISABLEDで拒否される
 -- (streamer3はtrade_enabled=true/cross_channel_trade_enabled=false)。
 -- ゲート判定は出品カード実在チェック・支払いカード選定より前に行われるため、

@@ -38,7 +38,7 @@ chat の再試行挙動を確認する場合、自己回復中の `pending` は 
 
 Twitch画面の「ビッツとポイントの残高」はBitsを含む複合表示であり、数値だけをチャネルポイント残高と解釈しません。対象チャネルの配信者本人（アカウント所有者）は、ポイント残高表示やBits残高を理由に実引き換えを中止せず、報酬メニュー表示・交換操作・引き換え結果を一次証拠にします。視聴者アカウントでは実際のチャネルポイント不足を別途確認し、Bits残高を代用根拠にしません。
 
-- 配信者本人のアカウントでも、チャンネルがオフラインのままチャネルポイントを引き換えられる。オフラインだけを理由に実引き換えを`実施不可`扱いにせず、正確なTwitchログイン名、preview用報酬、現在のログインセッション、報酬メニュー表示を確認して交換を試す。
+- 配信者本人のアカウントでも、チャネルがオフラインのままチャネルポイントを引き換えられる。オフラインだけを理由に実引き換えを`実施不可`扱いにせず、正確なTwitchログイン名、preview用報酬、現在のログインセッション、報酬メニュー表示を確認して交換を試す。
 - Twitchのオフライン状態、報酬メニューの表示可否、固定overlayの黒画面は別ゲートとして記録する。overlayが黒画面でも、報酬が利用可能ならチャネルポイント交換、Twitchチャット、履歴、Workerログを独立して確認し、各結果を分けて報告する。
 
 この対応表は `docs/E2E_SCENARIO.md` に定義された Preview Twitch 実経路の必須シナリオを置き換えません。変更が同シナリオの対象になる場合は、対応表の項目と併せて該当シナリオも実行します。
@@ -70,7 +70,7 @@ overlayを含む実引き換えでは、次の順序を必須とする。設定�
 ```sh
 npm run e2e:preview-redemption -- login           # 初回のみ。専用プロファイルの Chrome を通常起動して Twitch と preview に手動ログインし、Cmd+Q で終了する
 npm run e2e:preview-redemption -- check           # 交換せずに到達性を確認する（ポイントを消費しない）
-npm run e2e:preview-redemption -- run --count 2   # 実引き換え。実チャンネルのチャットに通知が流れる
+npm run e2e:preview-redemption -- run --count 2   # 実引き換え。実チャネルのチャットに通知が流れる
 ```
 
 - `run` は、交換前に固定overlay（`/overlay/<streamerId>?debug=true`）を開いて `Status: connected` を確認し、同じタブを維持したまま Twitch のポップアウトチャットで対象報酬を交換します。交換ごとに、overlay のカード DOM と画像画素（または明示 fallback）の最初の陽性 sample、`/api/gacha-history` の新しい行、そのカード名を含むチャット行を対応付けます。
@@ -79,7 +79,7 @@ npm run e2e:preview-redemption -- run --count 2   # 実引き換え。実チャ�
 - 縦長画像や imageOnly レイアウトでは「<交換者> が引いたカード」とカード名の帯が描画されません（`portraitShowUsername` / `portraitShowName` は既定で非表示）。この場合ハーネスは、新しいカード DOM の表示インスタンス、画像画素（または明示 fallback）、`img.alt`／代替表示の `aria-label` に残るカード名で履歴行と対応付け、`result.json` の各交換に `overlayStatus: "matched-name-hidden"` を記録します。テキスト照合の成功は `"matched"`、新しい表示を観測したが履歴行と一意に対応付けられなかった場合は `"shown-unidentified"`（観測した表示を `overlayUnmatched` に残す）、表示自体を検知できなかった場合は `"not-detected"` で、いずれも不合格側に倒します。チャット照合は overlay 照合とは独立に行うため、overlay を検知できなかった交換でも通知の送信有無は `chatMatchCount` に残ります。
 - JSON tail の接続成立は受信 event で確認します。交換前に全 Worker から event を受信するまで最大 90 秒待ち（chat-delivery は毎分 cron も観測可能。overlay-realtime は WebSocket が閉じるまで event が出ないため、交換前に限り overlay タブを再読み込みします）、終了・切断・未受信の場合は実交換を開始しません。交換期間にも全 Worker の受信が必要で、起動時の event だけを交換成功の証拠にしません。
 - 結果は `~/.twica-preview-e2e/runs/<時刻>-<mode>/` に `result.json`・`worker-logs.json`・スクリーンショットで残ります。
-- 既定の対象（チャンネル `azumagbanjo`、報酬 `ドッスン君？！`、streamerId）は preview DB の `streamers` に合わせています。変わった場合は `--channel` / `--reward` / `--streamerId` で上書きします。
+- 既定の対象（チャネル `azumagbanjo`、報酬 `ドッスン君？！`、streamerId）は preview DB の `streamers` に合わせています。変わった場合は `--channel` / `--reward` / `--streamerId` で上書きします。
 - 報酬が Twitch 側で無効（`is_enabled=false`）だと報酬メニューに出ず、`check` が失敗します。テスト前に配信者が有効にし、終了後に無効へ戻します。
 - 項目 4 の EventSub direct は、このハーネスの交換が Twitch から実際に届く EventSub を通ることで確認します。項目 5-7 は対象外のため、該当する変更では別途実行します。
 

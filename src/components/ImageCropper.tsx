@@ -10,7 +10,7 @@ import { getColorManaged2DContext } from "@/lib/canvas-color-space";
 export type CropMode = "square" | "portrait" | "fit";
 
 // 余白（フィット）モードで焼き込む余白の色。transparent のみ PNG 出力になる
-// （JPEG はアルファチャンネルを持たないため）。
+// （JPEG はアルファチャネルを持たないため）。
 export type FitColor = "black" | "white" | "gray" | "transparent";
 
 export const FIT_COLORS: Record<Exclude<FitColor, "transparent">, string> = {
