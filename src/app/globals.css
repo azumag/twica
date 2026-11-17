@@ -257,27 +257,49 @@
 
 /*
  * OBS 等でアニメーション抑制設定（prefers-reduced-motion）が有効な環境では
- * 目に負担のある高速演出を止め、静かにフェードのみ行う（アクセシビリティ配慮）。
+ * 演出の「動き」を止め、静止した粒子をそのまま表示する（アクセシビリティ配慮）。
+ *
+ * reduced-motion の趣旨はコンテンツの非表示ではなく動きの停止のため、粒子を
+ * 消すのではなく各スタイルのキーフレームが取るピークの opacity で固定する。
+ * 以前は全スタイルを 2 秒同期フェード（overlay-effect-reduced-fade）で上書き
+ * していたが、周期の端で全粒子が同時に透明になる ≒ 約2秒周期の明滅という
+ * 動きであり、reduced-motion 環境でこそ排除されるべき性質だった。
+ * 静止表示にすると aura（従来から animation: none の静的表示）とも揃う。
  */
 @media (prefers-reduced-motion: reduce) {
-  [class*="animate-overlay-effect-"] {
-    animation: overlay-effect-reduced-fade 2s ease-in-out infinite !important;
+  /*
+   * ピーク opacity が 1 のスタイル。静止時は出現位置（inline の left/top）に
+   * そのまま残る。fireworks は「破裂途中で静止した火花」になるが、静的な点
+   * として見えるだけなので他スタイルと扱いを統一する。
+   */
+  .animate-overlay-effect-sparkle,
+  .animate-overlay-effect-confetti,
+  .animate-overlay-effect-hearts,
+  .animate-overlay-effect-fireworks,
+  .animate-overlay-effect-stars,
+  .animate-overlay-effect-petals,
+  .animate-overlay-effect-coins {
+    animation: none !important;
+    opacity: 1;
+  }
+  /* シャボン玉は半透明の演出なのでピーク値の 0.9 に固定する */
+  .animate-overlay-effect-bubbles {
+    animation: none !important;
+    opacity: 0.9;
+  }
+  /*
+   * 雪は粒子ごとの透明度を --fx-opacity で持つため、静止時もそれを優先する
+   * （キーフレーム側のピーク値と同じ var() 参照で揃える）。
+   */
+  .animate-overlay-effect-snow {
+    animation: none !important;
+    opacity: var(--fx-opacity, 0.9);
   }
   /* 大きな光輪の拡縮・ゆらぎは止め、カード内の淡い光だけを残す。 */
   .animate-overlay-effect-aura {
     animation: none !important;
     transform: none;
     opacity: 0.55;
-  }
-}
-
-@keyframes overlay-effect-reduced-fade {
-  0%,
-  100% {
-    opacity: 0;
-  }
-  50% {
-    opacity: 0.9;
   }
 }
 
