@@ -49,8 +49,14 @@ interface TradeCreateFormProps {
    * server, so cards hidden from this viewer never reach the client.
    */
   wantableCards: WantableCard[];
-  /** The wanted channel reveals unowned cards (else only owned are wantable). */
+  /**
+   * The wanted channel reveals the NAMES of unowned cards (else only owned are
+   * wantable). Since #2070 this can be true while the images are still hidden
+   * (name-only setting), which the separate flag below reports.
+   */
   wantableRevealsUnowned: boolean;
+  /** The wanted channel also reveals unowned card IMAGES (#2070). */
+  wantableRevealsUnownedImages: boolean;
   /** Board to return to after listing. */
   boardHref: string;
   /**
@@ -142,6 +148,7 @@ export default function TradeCreateForm({
   ownedCopies,
   wantableCards,
   wantableRevealsUnowned,
+  wantableRevealsUnownedImages,
   boardHref,
   maxWantedQuantity,
   initialOfferedCardId = null,
@@ -459,6 +466,14 @@ export default function TradeCreateForm({
               {!wantableRevealsUnowned && (
                 <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
                   {t("createStep2UnrevealedNotice")}
+                </p>
+              )}
+              {/* #2070: names are public but images are not. Say so, otherwise
+                  an unowned card tile with a "no image" placeholder looks like
+                  a broken upload. */}
+              {wantableRevealsUnowned && !wantableRevealsUnownedImages && (
+                <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
+                  {t("createStep2NameOnlyNotice")}
                 </p>
               )}
               {wantableCards.length === 0 ? (

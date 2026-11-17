@@ -130,11 +130,14 @@ const phaseChips = [
   { key: "unsettleable", labelKey: "auctionBidUnsettleableBadge" },
 ] as const;
 
-// 未所持カード非公開の表の行（messages: streamer.visibility.<key> と <key>Public / <key>Hidden）。
-// ok=false が ✗。「持っていないカードを欲しいカードに指定」は非公開だと不可（持っているカードだけ）。
+// 未所持カードの見せ方の表（#2070 で3段階）。
+// messages: streamer.visibility.<key> と <key>Public / <key>NameOnly / <key>Hidden。
+// ok=false が ✗。列は「すべて公開（詳細ON）」「名前だけ公開（トレードのみ）」「非公開」。
+// 名前だけ公開では、行（出品・欲しいカード）は見えるが画像だけが見えない。
 const visibilityRows = [
-  { key: "listings", publicOk: true, hiddenOk: false },
-  { key: "wanted", publicOk: true, hiddenOk: false },
+  { key: "listings", publicOk: true, nameOnlyOk: true, hiddenOk: false },
+  { key: "wanted", publicOk: true, nameOnlyOk: true, hiddenOk: false },
+  { key: "images", publicOk: true, nameOnlyOk: false, hiddenOk: false },
 ] as const;
 
 // うまくいかないとき（messages: faq.<key>.{question,reason,action}）。表示順は配列順、
@@ -151,6 +154,8 @@ const faqItems = [
   { key: "notWantable", icon: "xCircle" },
   { key: "bidUnsettleable", icon: "warning" },
   { key: "selectionExpired", icon: "clock" },
+  // #2070: 名前は見えるが画像は出ない、という新しい中間状態の説明。
+  { key: "nameOnly", icon: "tag" },
 ] as const satisfies readonly { key: string; icon: GuideIconName }[];
 
 /**
@@ -549,13 +554,19 @@ export default async function TradeGuidePage() {
           <VisibilityTable
             caption={t("streamer.visibility.tableLabel")}
             aspectHeader={t("streamer.visibility.aspect")}
-            revealedHeader={t("streamer.visibility.public")}
-            hiddenHeader={t("streamer.visibility.hidden")}
-            rows={visibilityRows.map(({ key, publicOk, hiddenOk }) => ({
+            columns={[
+              { key: "public", header: t("streamer.visibility.public"), icon: "eye" },
+              { key: "nameOnly", header: t("streamer.visibility.nameOnly"), icon: "tag" },
+              { key: "hidden", header: t("streamer.visibility.hidden"), icon: "eyeOff" },
+            ]}
+            rows={visibilityRows.map(({ key, publicOk, nameOnlyOk, hiddenOk }) => ({
               key,
               aspect: t(`streamer.visibility.${key}`),
-              revealed: { ok: publicOk, text: t(`streamer.visibility.${key}Public`) },
-              hidden: { ok: hiddenOk, text: t(`streamer.visibility.${key}Hidden`) },
+              cells: [
+                { ok: publicOk, text: t(`streamer.visibility.${key}Public`) },
+                { ok: nameOnlyOk, text: t(`streamer.visibility.${key}NameOnly`) },
+                { ok: hiddenOk, text: t(`streamer.visibility.${key}Hidden`) },
+              ],
             }))}
           />
         </section>

@@ -59,8 +59,23 @@ const S = {
   MIXED_PARTNER: id(7), // seeded only by the mixed-ownership partner regression
   QTY: id(8), // seeded only by the wanted-quantity block (#1789)
   WANT: id(9), // seeded only by the wantable-restriction block (#1790)
+  // #2070: names only in trades (images stay hidden) and a channel that turns
+  // the new setting on while show_unowned_cards is off (must stay hidden).
+  NAMEONLY: id(10),
+  NAMEONLY_BUT_HIDDEN: id(17),
 };
-const U = { O: id(11), V: id(12), QO: id(13), QV: id(14), WO: id(15), WV: id(16) };
+const U = {
+  O: id(11),
+  V: id(12),
+  QO: id(13),
+  QV: id(14),
+  WO: id(15),
+  WV: id(16),
+  // #2070: dedicated users so the existing PUB/PRIV partner assertions are
+  // untouched (a new channel owned by O or V would change their candidate list).
+  NO: id(18),
+  NOV: id(19),
+};
 const TW = {
   O: "trade-vis-offerer",
   V: "trade-vis-viewer",
@@ -68,6 +83,8 @@ const TW = {
   QV: "trade-vis-qty-viewer",
   WO: "trade-vis-want-offerer",
   WV: "trade-vis-want-viewer",
+  NO: "trade-vis-nameonly-offerer",
+  NOV: "trade-vis-nameonly-viewer",
 };
 const C = {
   PUB_A: id(21),
@@ -78,6 +95,10 @@ const C = {
   PRIV_C: id(33),
   HALF_A: id(41),
   HALF_B: id(42),
+  NAMEONLY_A: id(43),
+  NAMEONLY_B: id(44),
+  NAMEONLY_HIDDEN_A: id(45),
+  NAMEONLY_HIDDEN_B: id(46),
   OFF_A: id(51),
   NOCROSS_A: id(61),
 };
@@ -92,6 +113,9 @@ const UC = {
   O_PRIV_B1: id(107),
   O_PRIV_B2: id(108),
   O_HALF_A: id(109),
+  NO_NAMEONLY_A: id(110),
+  NO_NAMEONLY_HIDDEN_A: id(111),
+  NOV_NAMEONLY_B: id(210),
   V_PRIV_B: id(201),
   V_PRIV_C: id(202),
   V_PUB_B: id(203),
@@ -109,6 +133,14 @@ const OF = {
   HALF: id(307), // HALF_A → HALF_B
   CROSS_PUB_PRIV: id(308), // PUB_A → PRIV_B
   CROSS_PRIV_PUB: id(309), // PRIV_A → PUB_B
+  NAMEONLY: id(310), // NAMEONLY_A → NAMEONLY_B (#2070)
+  NAMEONLY_HIDDEN: id(311), // NAMEONLY_HIDDEN_A → NAMEONLY_HIDDEN_B (#2070)
+};
+/** Secret image URLs stored in the #2070 snapshots. */
+const NAMEONLY_IMAGES = {
+  A: "https://secret.example/nameonly-a.png",
+  B: "https://secret.example/nameonly-b.png",
+  HIDDEN: "https://secret.example/nameonly-hidden.png",
 };
 const HIDDEN_BULK_COUNT = 20;
 const bulkUserCard = (i: number) => id(1000 + i);
@@ -130,24 +162,44 @@ async function seed() {
   const streamer = (
     sid: string,
     name: string,
-    flags: { trade: boolean; cross: boolean; unowned: boolean; details: boolean },
+    flags: {
+      trade: boolean;
+      cross: boolean;
+      unowned: boolean;
+      details: boolean;
+      /** #2070: names only in trades (requires unowned, independent of details). */
+      namesVisible?: boolean;
+    },
   ) => s`
     INSERT INTO streamers (
       id, twitch_user_id, twitch_username, twitch_display_name,
-      trade_enabled, cross_channel_trade_enabled, show_unowned_cards, show_unowned_card_details
+      trade_enabled, cross_channel_trade_enabled, show_unowned_cards,
+      show_unowned_card_details, trade_unowned_card_names_visible
     ) VALUES (
       ${sid}, ${`tv-${name}`}, ${`tv-${name}`}, ${`TV ${name}`},
-      ${flags.trade}, ${flags.cross}, ${flags.unowned}, ${flags.details}
+      ${flags.trade}, ${flags.cross}, ${flags.unowned}, ${flags.details},
+      ${flags.namesVisible ?? false}
     )`;
   await streamer(S.PUB, "pub", { trade: true, cross: true, unowned: true, details: true });
   await streamer(S.PRIV, "priv", { trade: true, cross: true, unowned: false, details: false });
   await streamer(S.HALF, "half", { trade: true, cross: true, unowned: true, details: false });
+  // #2070: name-only channel (names/rarities public in trades, images private)
+  // and a channel where the new setting is on but show_unowned_cards is off
+  // (the setting must not bypass show_unowned_cards).
+  await streamer(S.NAMEONLY, "nameonly", {
+    trade: true, cross: true, unowned: true, details: false, namesVisible: true,
+  });
+  await streamer(S.NAMEONLY_BUT_HIDDEN, "nameonly-hidden", {
+    trade: true, cross: true, unowned: false, details: false, namesVisible: true,
+  });
   await streamer(S.OFF, "off", { trade: false, cross: true, unowned: true, details: true });
   await streamer(S.NOCROSS, "nocross", { trade: true, cross: false, unowned: true, details: true });
 
   await s`INSERT INTO users (id, twitch_user_id, twitch_username, twitch_display_name) VALUES
     (${U.O}, ${TW.O}, ${TW.O}, 'Offerer O'),
-    (${U.V}, ${TW.V}, ${TW.V}, 'Viewer V')`;
+    (${U.V}, ${TW.V}, ${TW.V}, 'Viewer V'),
+    (${U.NO}, ${TW.NO}, ${TW.NO}, 'NameOnly Offerer'),
+    (${U.NOV}, ${TW.NOV}, ${TW.NOV}, 'NameOnly Viewer')`;
 
   const card = (cid: string, sid: string, name: string, rarity: string, active: boolean) =>
     s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
@@ -160,6 +212,10 @@ async function seed() {
   await card(C.PRIV_C, S.PRIV, "Priv C", "rare", true);
   await card(C.HALF_A, S.HALF, "Half A", "common", true);
   await card(C.HALF_B, S.HALF, "Secret Half B", "rare", true);
+  await card(C.NAMEONLY_A, S.NAMEONLY, "NameOnly A", "common", true);
+  await card(C.NAMEONLY_B, S.NAMEONLY, "NameOnly B", "rare", true);
+  await card(C.NAMEONLY_HIDDEN_A, S.NAMEONLY_BUT_HIDDEN, "Hidden Name A", "common", true);
+  await card(C.NAMEONLY_HIDDEN_B, S.NAMEONLY_BUT_HIDDEN, "Hidden Name B", "rare", true);
   await card(C.OFF_A, S.OFF, "Off A", "common", true);
   await card(C.NOCROSS_A, S.NOCROSS, "NoCross A", "common", true);
 
@@ -175,6 +231,9 @@ async function seed() {
   await own(UC.O_PRIV_B1, U.O, C.PRIV_B, 94);
   await own(UC.O_PRIV_B2, U.O, C.PRIV_B, 93);
   await own(UC.O_HALF_A, U.O, C.HALF_A, 92);
+  await own(UC.NO_NAMEONLY_A, U.NO, C.NAMEONLY_A, 91);
+  await own(UC.NO_NAMEONLY_HIDDEN_A, U.NO, C.NAMEONLY_HIDDEN_A, 91);
+  await own(UC.NOV_NAMEONLY_B, U.NOV, C.NAMEONLY_B, 91);
   await own(UC.V_PRIV_B, U.V, C.PRIV_B, 90);
   await own(UC.V_PRIV_C, U.V, C.PRIV_C, 89);
   await own(UC.V_PUB_B, U.V, C.PUB_B, 88);
@@ -208,6 +267,29 @@ async function seed() {
   await offer(OF.HALF, UC.O_HALF_A, C.HALF_A, S.HALF, C.HALF_B, S.HALF, 44);
   await offer(OF.CROSS_PUB_PRIV, UC.O_PUB_A3, C.PUB_A, S.PUB, C.PRIV_B, S.PRIV, 43);
   await offer(OF.CROSS_PRIV_PUB, UC.O_PRIV_A2, C.PRIV_A, S.PRIV, C.PUB_B, S.PUB, 42);
+
+  // #2070: snapshots with real image URLs, so the tests can prove the read-time
+  // mask (the stored JSONB stays complete).
+  await s`INSERT INTO trade_offers (
+      id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+      wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot, created_at
+    ) VALUES (
+      ${OF.NAMEONLY}, ${U.NO}, ${UC.NO_NAMEONLY_A}, ${C.NAMEONLY_A}, ${S.NAMEONLY},
+      ${C.NAMEONLY_B}, ${S.NAMEONLY},
+      ${JSON.stringify({ name: "NameOnly A", rarity: "common", imageUrl: NAMEONLY_IMAGES.A })}::jsonb,
+      ${JSON.stringify({ name: "NameOnly B", rarity: "rare", imageUrl: NAMEONLY_IMAGES.B })}::jsonb,
+      now() - interval '30 minutes'
+    )`;
+  await s`INSERT INTO trade_offers (
+      id, offerer_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+      wanted_card_id, wanted_streamer_id, offered_card_snapshot, wanted_card_snapshot, created_at
+    ) VALUES (
+      ${OF.NAMEONLY_HIDDEN}, ${U.NO}, ${UC.NO_NAMEONLY_HIDDEN_A}, ${C.NAMEONLY_HIDDEN_A}, ${S.NAMEONLY_BUT_HIDDEN},
+      ${C.NAMEONLY_HIDDEN_B}, ${S.NAMEONLY_BUT_HIDDEN},
+      ${JSON.stringify({ name: "Hidden Name A", rarity: "common", imageUrl: NAMEONLY_IMAGES.HIDDEN })}::jsonb,
+      ${JSON.stringify({ name: "Hidden Name B", rarity: "rare", imageUrl: NAMEONLY_IMAGES.HIDDEN })}::jsonb,
+      now() - interval '29 minutes'
+    )`;
 
   // HIDDEN_BULK_COUNT newer offers in PRIV that V can never see (offered
   // PRIV_A is not owned by V). They sit *before* PRIV_BC in created_at DESC
@@ -869,6 +951,16 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         revealsUnownedCards: true,
       });
       await expect(getTradeBoardStreamer(S.HALF)).resolves.toMatchObject({ revealsUnownedCards: false });
+      // #2070: names are public, images are not; without show_unowned_cards
+      // even the new trade-only setting reveals nothing.
+      await expect(getTradeBoardStreamer(S.NAMEONLY)).resolves.toMatchObject({
+        revealsUnownedCards: true,
+        revealsUnownedCardImages: false,
+      });
+      await expect(getTradeBoardStreamer(S.NAMEONLY_BUT_HIDDEN)).resolves.toMatchObject({
+        revealsUnownedCards: false,
+        revealsUnownedCardImages: false,
+      });
       await expect(getTradeBoardStreamer(S.OFF)).resolves.toMatchObject({ tradeEnabled: false });
       await expect(getTradeBoardStreamer(id(9998))).resolves.toBeNull();
       await expect(getTradeBoardStreamer("not-a-uuid")).resolves.toBeNull();
@@ -1513,6 +1605,98 @@ describe.skipIf(!sql)("trade visibility on actual PostgreSQL", () => {
         await sql!`ALTER TABLE cards RENAME COLUMN trade_wantable_hidden TO trade_wantable`;
         await setWantable(WC.COIN, true);
       }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #2070: 名前だけ公開（trade_unowned_card_names_visible）の可視性。
+  // 既存の PUB/PRIV/HALF ケースはそのまま残し、ここで新しい中間状態を固定する。
+  // ---------------------------------------------------------------------------
+  describe("name-only trade visibility (#2070)", () => {
+    it("lists the offer with names and rarities but without the unowned image", async () => {
+      const { listTradeOffers } = await import("@/lib/trade");
+
+      // Anonymous: names are public (no ownership is needed for the name).
+      const anon = await listTradeOffers({ streamerId: S.NAMEONLY, scope: "in_channel", page: 1 });
+      const anonOffer = anon.offers.find((offer) => offer.id === OF.NAMEONLY);
+      expect(anonOffer).toBeDefined();
+      expect(anonOffer!.offeredCard).toEqual({ name: "NameOnly A", rarity: "common", imageUrl: null });
+      expect(JSON.stringify(anon)).not.toContain(NAMEONLY_IMAGES.A);
+
+      // The viewer owns the WANTED card only: that side keeps its image, the
+      // offered side (not owned, details off) is masked, names survive.
+      const viewer = await listTradeOffers({
+        streamerId: S.NAMEONLY,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: TW.NOV,
+      });
+      const offer = viewer.offers.find((item) => item.id === OF.NAMEONLY);
+      expect(offer).toMatchObject({
+        offeredCard: { name: "NameOnly A", rarity: "common", imageUrl: null },
+        wantedCard: { name: "NameOnly B", rarity: "rare", imageUrl: NAMEONLY_IMAGES.B },
+      });
+    });
+
+    it("never lists or names a channel where show_unowned_cards is off, even with the new setting on", async () => {
+      const { listTradeOffers, listWantableCards } = await import("@/lib/trade");
+
+      const board = await listTradeOffers({
+        streamerId: S.NAMEONLY_BUT_HIDDEN,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: TW.NOV,
+      });
+      expect(board.offers.map((offer) => offer.id)).not.toContain(OF.NAMEONLY_HIDDEN);
+      expect(JSON.stringify(board)).not.toContain("Hidden Name");
+
+      // The listing form must not offer those cards either (name or image).
+      // NOV owns none of them; NO owns HIDDEN_A, whose name is legitimately
+      // visible through ownership, but the unowned HIDDEN_B must stay hidden.
+      await expect(listWantableCards(TW.NOV, S.NAMEONLY_BUT_HIDDEN)).resolves.toEqual([]);
+      const noWantable = await listWantableCards(TW.NO, S.NAMEONLY_BUT_HIDDEN);
+      expect(noWantable.map((card) => card.cardId)).toEqual([C.NAMEONLY_HIDDEN_A]);
+      expect(JSON.stringify(noWantable)).not.toContain("Hidden Name B");
+    });
+
+    it("accepts when the viewer owns the wanted card, and the received card's image becomes visible", async () => {
+      const { acceptTradeOffer, listMyTradeOffers } = await import("@/lib/trade");
+
+      const result = await acceptTradeOffer({
+        twitchUserId: TW.NOV,
+        tradeOfferId: OF.NAMEONLY,
+        requestId: id(510),
+      });
+      expect(result.success).toBe(true);
+      // The mask runs AFTER the transfer ("owned now"): the received offered
+      // card is visible, the wanted card the viewer just gave away is not
+      // (the channel reveals details=false and the name-only setting never
+      // promises images).
+      expect(result.success && result.offeredCardSnapshot).toMatchObject({
+        name: "NameOnly A",
+        rarity: "common",
+        imageUrl: NAMEONLY_IMAGES.A,
+      });
+      expect(result.success && result.wantedCardSnapshot).toMatchObject({
+        name: "NameOnly B",
+        rarity: "rare",
+        imageUrl: null,
+      });
+
+      // Same rule on the history read (row kept, image masked per card).
+      const mine = await listMyTradeOffers(TW.NOV);
+      const row = mine.offers.find((offer) => offer.id === OF.NAMEONLY);
+      expect(row?.status).toBe("completed");
+      expect(row?.offeredCard).toEqual({
+        name: "NameOnly A",
+        rarity: "common",
+        imageUrl: NAMEONLY_IMAGES.A,
+      });
+      expect(row?.wantedCard).toEqual({
+        name: "NameOnly B",
+        rarity: "rare",
+        imageUrl: null,
+      });
     });
   });
 });

@@ -39,12 +39,14 @@ import {
   cardVisibleTo,
   crossEnabledGate,
   isTradeAuctionSchemaMissingError,
+  maskTradeCardImages,
   normalizeSnapshot,
   qualifiedColumn,
   TRADE_PAGE_SIZE,
   tradeEnabledGate,
   viewerUserIdOf,
   waitForTradeRetry,
+  withTradeUnownedCardNamesColumnFallback,
   type TradeCardSnapshot,
   type TradeScope,
   type TradeStreamerSummary,
@@ -453,6 +455,39 @@ function toAuctionDto(row: AuctionRow): TradeAuctionDto {
 }
 
 /**
+ * Read-time image mask for a page of auction DTOs (#2070): the offered card of
+ * each auction plus the viewer's own bid card, in ONE statement. Rows are never
+ * dropped (paging/hasMore stay intact); only imageUrl is nulled.
+ *
+ * The viewer id comes from the page SELECT itself (NULL for anonymous), so no
+ * extra users lookup is needed.
+ */
+async function maskAuctionListImages(
+  auctions: TradeAuctionDto[],
+  viewerUserId: string | null,
+): Promise<TradeAuctionDto[]> {
+  if (auctions.length === 0) return auctions;
+  const masked = await maskTradeCardImages(
+    auctions.flatMap((auction) => [
+      { cardId: auction.offeredCardId, snapshot: auction.offeredCard },
+      ...(auction.myBid
+        ? [{ cardId: auction.myBid.bidCardId, snapshot: auction.myBid.bidCard }]
+        : []),
+    ]),
+    viewerUserId,
+  );
+  let index = 0;
+  return auctions.map((auction) => {
+    const offeredCard = masked[index++];
+    // Keep the optional key absent (instead of `myBid: undefined`) when the
+    // auction has no viewer bid, so DTO shape tests and `in` checks stay true.
+    if (!auction.myBid) return { ...auction, offeredCard };
+    const myBid = { ...auction.myBid, bidCard: masked[index++] };
+    return { ...auction, offeredCard, myBid };
+  });
+}
+
+/**
  * Run a read; the missing auction schema (deploy window) becomes
  * TradeAuctionUnavailableError so routes answer 503 instead of 500.
  */
@@ -493,31 +528,42 @@ export async function listTradeAuctions(input: {
   twitchUserId?: string;
 }) {
   const viewerUserId = input.twitchUserId ? viewerUserIdOf(input.twitchUserId) : null;
-  const visible = cardVisibleTo(auctionsTable.offered_card_id, viewerUserId);
-  const conditions = [
-    eq(auctionsTable.status, "open"),
-    sql`public.trade_auction_holds_cards(${qualifiedColumn(auctionsTable.id)})`,
-    cardIsActive(auctionsTable.offered_card_id),
-    tradeEnabledGate(auctionsTable.offered_streamer_id),
-    viewerUserId ? or(eq(auctionsTable.seller_user_id, viewerUserId), visible)! : visible,
-  ];
-  if (input.scope === "cross_channel") {
-    conditions.push(
-      ne(auctionsTable.offered_streamer_id, input.streamerId),
-      crossEnabledGate(auctionsTable.offered_streamer_id),
-      sql`EXISTS (
-        SELECT 1 FROM ${streamersTable} AS board_streamer
-        WHERE board_streamer.id = ${input.streamerId}
-          AND board_streamer.trade_enabled = TRUE
-          AND board_streamer.cross_channel_trade_enabled = TRUE
-      )`,
+  // #2070: the name-level visibility depends on the deploy window of
+  // streamers.trade_unowned_card_names_visible, so the whole condition list is
+  // rebuilt inside the fallback closure.
+  const conditionsFor = (withoutNameOnly: boolean) => {
+    const visible = cardVisibleTo(
+      auctionsTable.offered_card_id,
+      viewerUserId,
+      withoutNameOnly,
     );
-  } else {
-    conditions.push(eq(auctionsTable.offered_streamer_id, input.streamerId));
-  }
+    const conditions = [
+      eq(auctionsTable.status, "open"),
+      sql`public.trade_auction_holds_cards(${qualifiedColumn(auctionsTable.id)})`,
+      cardIsActive(auctionsTable.offered_card_id),
+      tradeEnabledGate(auctionsTable.offered_streamer_id),
+      viewerUserId ? or(eq(auctionsTable.seller_user_id, viewerUserId), visible)! : visible,
+    ];
+    if (input.scope === "cross_channel") {
+      conditions.push(
+        ne(auctionsTable.offered_streamer_id, input.streamerId),
+        crossEnabledGate(auctionsTable.offered_streamer_id),
+        sql`EXISTS (
+          SELECT 1 FROM ${streamersTable} AS board_streamer
+          WHERE board_streamer.id = ${input.streamerId}
+            AND board_streamer.trade_enabled = TRUE
+            AND board_streamer.cross_channel_trade_enabled = TRUE
+        )`,
+      );
+    } else {
+      conditions.push(eq(auctionsTable.offered_streamer_id, input.streamerId));
+    }
+    return conditions;
+  };
 
   const offset = (input.page - 1) * TRADE_PAGE_SIZE;
-  const rows = await guardAuctionRead(() => withDbRetry(
+  const rows = await guardAuctionRead(() =>
+    withTradeUnownedCardNamesColumnFallback((withoutNameOnly) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -525,7 +571,7 @@ export async function listTradeAuctions(input: {
         .from(auctionsTable)
         .leftJoin(sellerMeta, eq(sellerMeta.id, auctionsTable.seller_user_id))
         .leftJoin(auctionStreamerMeta, eq(auctionStreamerMeta.id, auctionsTable.offered_streamer_id))
-        .where(and(...conditions))
+        .where(and(...conditionsFor(withoutNameOnly)))
         // Soonest deadline first: that is what a bidder acts on.
         .orderBy(asc(auctionsTable.ends_at), asc(auctionsTable.id))
         .limit(TRADE_PAGE_SIZE + 1)
@@ -533,11 +579,15 @@ export async function listTradeAuctions(input: {
     },
     "trade-auction:list",
     { idempotent: true },
-  )) as AuctionRow[];
+  ))) as AuctionRow[];
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
+  const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
   return {
-    auctions: (hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows).map(toAuctionDto),
+    auctions: await maskAuctionListImages(
+      pageRows.map(toAuctionDto),
+      rows[0]?.viewerUserId ?? null,
+    ),
     page: input.page,
     pageSize: TRADE_PAGE_SIZE,
     hasMore,
@@ -557,12 +607,13 @@ export async function listTradeAuctions(input: {
  */
 export async function getTradeAuction(input: { auctionId: string; twitchUserId?: string }) {
   const viewerUserId = input.twitchUserId ? viewerUserIdOf(input.twitchUserId) : null;
-  const publicCondition = and(
+  // #2070: name-level visibility is a deploy-window-dependent fragment.
+  const publicConditionFor = (withoutNameOnly: boolean) => and(
     eq(auctionsTable.status, "open"),
     sql`public.trade_auction_holds_cards(${qualifiedColumn(auctionsTable.id)})`,
     cardIsActive(auctionsTable.offered_card_id),
     tradeEnabledGate(auctionsTable.offered_streamer_id),
-    cardVisibleTo(auctionsTable.offered_card_id, viewerUserId),
+    cardVisibleTo(auctionsTable.offered_card_id, viewerUserId, withoutNameOnly),
   )!;
   const participantCondition = viewerUserId
     ? or(
@@ -576,9 +627,11 @@ export async function getTradeAuction(input: { auctionId: string; twitchUserId?:
     )!
     : null;
 
-  const rows = await guardAuctionRead(() => withDbRetry(
+  const rows = await guardAuctionRead(() =>
+    withTradeUnownedCardNamesColumnFallback((withoutNameOnly) => withDbRetry(
     async () => {
       const { db } = await getDb();
+      const publicCondition = publicConditionFor(withoutNameOnly);
       return db
         .select(auctionFields(viewerUserId))
         .from(auctionsTable)
@@ -592,15 +645,22 @@ export async function getTradeAuction(input: { auctionId: string; twitchUserId?:
     },
     "trade-auction:detail",
     { idempotent: true },
-  )) as AuctionRow[];
+  ))) as AuctionRow[];
   const row = rows[0];
   if (!row) return null;
 
   const auction = toAuctionDto(row);
-  if (!auction.isOwnAuction) return { auction, bids: null };
+  const viewerId = row.viewerUserId;
+  if (!auction.isOwnAuction) {
+    // #2070: mask the offered snapshot (and the viewer's own bid, if any) with
+    // the same one-statement rule as every other read.
+    const [maskedAuction] = await maskAuctionListImages([auction], viewerId);
+    return { auction: maskedAuction, bids: null };
+  }
 
-  // Seller only: every non-withdrawn bid with its bidder (second statement;
-  // only reached by the one user entitled to the contents).
+  // Seller only: every non-withdrawn bid with its bidder (only reached by the
+  // one user entitled to the contents). The image mask (#2070) is one more
+  // statement, shared with the auction's own offered snapshot below.
   const bidRows = await guardAuctionRead(() => withDbRetry(
     async () => {
       const { db } = await getDb();
@@ -625,22 +685,36 @@ export async function getTradeAuction(input: { auctionId: string; twitchUserId?:
     { idempotent: true },
   ));
 
-  return {
-    auction,
-    bids: bidRows.map((bidRow): TradeAuctionBidDto => ({
+  // #2070: the seller's bid list and the auction itself are masked in ONE
+  // statement. The mapping goes through the same toBidDto as myBid, so a mask
+  // added there cannot be bypassed here (the previous hand-written copy was
+  // exactly the kind of place that leaks).
+  const bids = bidRows.map((bidRow): TradeAuctionBidDto => ({
+    ...toBidDto({
       id: bidRow.bid.id,
       auctionId: bidRow.bid.auction_id,
       bidCardId: bidRow.bid.bid_card_id,
       bidStreamerId: bidRow.bid.bid_streamer_id,
-      bidCard: normalizeSnapshot(bidRow.bid.bid_card_snapshot),
-      quantity: Number(bidRow.bid.quantity),
+      bidCard: bidRow.bid.bid_card_snapshot,
+      quantity: bidRow.bid.quantity,
       isCrossChannel: bidRow.bid.is_cross_channel,
       status: bidRow.bid.status,
-      state: bidStateOf(bidRow.bid.status, bidRow.holds === true),
+      holds: bidRow.holds,
+      settleable: bidRow.settleable,
       createdAt: bidRow.bid.created_at,
-      settleable: bidRow.settleable === true,
-      bidder: toUser(bidRow.bidder),
-    })),
+    }),
+    bidder: toUser(bidRow.bidder),
+  }));
+  const masked = await maskTradeCardImages(
+    [
+      { cardId: auction.offeredCardId, snapshot: auction.offeredCard },
+      ...bids.map((bid) => ({ cardId: bid.bidCardId, snapshot: bid.bidCard })),
+    ],
+    viewerId,
+  );
+  return {
+    auction: { ...auction, offeredCard: masked[0] },
+    bids: bids.map((bid, index) => ({ ...bid, bidCard: masked[index + 1] })),
   };
 }
 
@@ -698,8 +772,16 @@ export async function listMyTradeAuctions(
   )) as AuctionRow[];
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
+  const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
   return {
-    auctions: (hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows).map(toAuctionDto),
+    // #2070: /mine has no row filter (the viewer chose/received these cards),
+    // but the IMAGE rule still applies per card: offering/receiving a card is
+    // not current ownership of the wanted/bid card, so only "owned now or
+    // details public" keeps an image.
+    auctions: await maskAuctionListImages(
+      pageRows.map(toAuctionDto),
+      rows[0]?.viewerUserId ?? null,
+    ),
     page,
     pageSize: TRADE_PAGE_SIZE,
     hasMore,
@@ -761,7 +843,11 @@ async function precheckBidVisibility(input: {
   requestId: string;
 }): Promise<TradeAuctionServiceErrorCode | null> {
   const bidderUserId = viewerUserIdOf(input.twitchUserId);
-  const rows = await guardAuctionRead(() => withDbRetry(
+  // #2070: all three cardVisibleTo calls share the deploy-window flag. The
+  // bid card is checked against BOTH the bidder and the seller (the seller
+  // will see the bid contents), so both sides must use the same rule.
+  const rows = await guardAuctionRead(() =>
+    withTradeUnownedCardNamesColumnFallback((withoutNameOnly) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -773,11 +859,16 @@ async function precheckBidVisibility(input: {
             WHERE replay_bid.bidder_user_id = ${bidderUserId}
               AND replay_bid.request_id = ${input.requestId}::uuid
           )`,
-          offeredVisible: cardVisibleTo(auctionsTable.offered_card_id, bidderUserId),
-          bidCardVisibleToBidder: cardVisibleTo(bidCardJoin.id, bidderUserId),
+          offeredVisible: cardVisibleTo(
+            auctionsTable.offered_card_id,
+            bidderUserId,
+            withoutNameOnly,
+          ),
+          bidCardVisibleToBidder: cardVisibleTo(bidCardJoin.id, bidderUserId, withoutNameOnly),
           bidCardVisibleToSeller: cardVisibleTo(
             bidCardJoin.id,
             qualifiedColumn(auctionsTable.seller_user_id),
+            withoutNameOnly,
           ),
         })
         .from(auctionsTable)
@@ -787,7 +878,7 @@ async function precheckBidVisibility(input: {
     },
     "trade-auction:bid-precheck",
     { idempotent: true },
-  ));
+  )));
   const row = rows[0];
   if (!row || !row.bidderUserId) return null;
   if (row.isReplay === true) return null;
