@@ -107,16 +107,41 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 #   SESSION_COOKIE_SECRET  — required; missing → startup/runtime failure (fail-closed)
 # Production: `wrangler secret put SESSION_COOKIE_SECRET`
 
-# Issue #1979: Smart Placement を preview にだけ有効化し、本番適用前に
-# DB 往復の遅延改善を実測する。本番 Worker (twica) と preview の DB
-# (PlanetScale ap-northeast-2 系) の距離が /dashboard/collection などの
-# wall time を支配しているため、Worker を DB 近接拠点で実行させる。
-# top-level には [placement] を置かない: 本番の実行場所は変えず、
-# preview の有効化前後で [Perf] ログと wall time を比較してから判断する。
-# なお Smart Placement は確立まで最大15分の分析期間があり、preview の
-# 呼び出し数が少ないと INSUFFICIENT_INVOCATIONS になる点に注意。
+# Issue #1979: preview の Worker 実行場所を DB と同じ東京へ固定する。
+# 本番適用前の perf 検証であり、top-level には [placement] を置かない
+# （本番 Worker の実行場所はこの変更では変えない）。
+#
+# 背景（2026-11 時点の実測）:
+# - 日本の特定回線（ASN 4713）からの認証済みリクエストは、24 時間の
+#   実測で 24/24 回とも日本以外（米国など）の Cloudflare colo で処理された。
+#   同じ /dashboard の p50 は日本 colo 224ms・日本以外 colo 1,084ms で、
+#   DB RPC getUserCards は 70ms・722ms。DB 内の実行は p50 約 10ms なので、
+#   差の大半は Worker→DB の network round trip。
+# - 参照先 DB は PlanetScale の AWS ap-northeast-1（東京）。PlanetScale の
+#   管理 API でリージョンを確認済み。
+# - preview では 2026-11-03 から Smart Placement（mode = "smart"）を有効化して
+#   いたが、応答の cf-placement ヘッダーは local-* のままで、DB 近傍への移動が
+#   観測できなかった。Smart Placement は最大15分の分析を要し、preview の
+#   呼び出し数が少ないと分析に必要なトラフィックが足りない可能性がある（推定）。
+#   そのため、決定的に配置できる Placement Hints へ切り替える。
+#
+# 設定:
+# - Cloudflare の Placement Hints で AWS ap-northeast-1 を指定し、そのリージョンに
+#   最も近い colo で Worker を実行させる。Smart Placement のような分析待ちはない。
+# - mode と region は排他（同時指定不可）なので region だけを書く。
+#
+# 効果の測り方（preview）:
+# - 応答の cf-placement ヘッダーが remote-* になり、実行 colo が DB 寄りに
+#   変わったことを確認する。
+# - 同じ /dashboard を日本国内と日本以外から取得し、wall time と [Perf] ログの
+#   DB RPC（getUserCards など）を変更前・変更後・日本 colo/日本以外 colo で比較する。
+#   DB 内の実行時間（p50 約 10ms）が変わっていないことも併せて確認する。
+# - 対象回線（ASN 4713）での体感はユーザー端末での再測定が必要。
+#
+# 戻し方: この PR を revert して preview へ再デプロイする。設定の差分はこの
+# ブロックだけなので、preview は変更前の mode = "smart" に戻る。
 [env.preview.placement]
-mode = "smart"
+region = "aws:ap-northeast-1"
 
 [env.preview.observability]
 enabled = true
