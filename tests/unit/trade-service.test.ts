@@ -7,6 +7,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { getDb } from "@/lib/db/client";
 import { cards, tradeOffers } from "@/lib/db/schema";
 import { withDbRetry } from "@/lib/db/retry";
+import { logger } from "@/lib/logger.server";
 
 // Route prelude for the #2061 boundary test below. The service itself is the
 // real module (only the DB is mocked), so that test exercises the exact path
@@ -498,6 +499,107 @@ describe("trade service (#723)", () => {
       OFFER.offerer_user_id,
       OFFER.request_id,
     ]);
+  });
+
+  // Devin Review on #2073: the INSERT is already committed when the image mask
+  // runs, so a failure of that follow-up read must not surface as a 500 (the
+  // offer would be published while the UI reports a failure, and the copy
+  // would stay locked). The create path must fail CLOSED like
+  // acceptTradeOffer: keep the offer, hide both images. These tests fail on
+  // the pre-fix code because the mask rejection escapes createTradeOffer.
+  describe("createTradeOffer image mask failure after COMMIT (#2070 review)", () => {
+    const MASK_ERROR = new Error("image visibility SELECT failed");
+    const input = {
+      twitchUserId: "viewer-1",
+      offeredUserCardId: OFFER.offered_user_card_id,
+      wantedCardId: OFFER.wanted_card_id!,
+      requestId: OFFER.request_id!,
+    };
+    /** The committed row after masking: names/rarities stay, images are hidden. */
+    const hiddenOffer = {
+      ...OFFER,
+      offered_card_snapshot: { name: "Offer", rarity: "rare", imageUrl: null },
+      wanted_card_snapshot: { name: "Want", rarity: "epic", imageUrl: null },
+    };
+
+    it("returns the committed offer with both images hidden when the post-INSERT mask fails", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [checkRow()] }, { error: MASK_ERROR }],
+        inserts: [{ rows: [OFFER] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      const result = await createTradeOffer(input);
+
+      expect(result).toEqual({ kind: "ok", offer: hiddenOffer, idempotentReplay: false });
+      // The committed INSERT is not rolled back or repeated by the failed read.
+      expect(pg.insertCalls).toHaveLength(1);
+      expect(roundTrips()).toBe(3);
+      // One warning carrying only the error (never the snapshots / image URLs).
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        expect.stringContaining("image mask"),
+        { error: MASK_ERROR },
+      );
+      expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain("example.test");
+    });
+
+    it("returns the replayed offer with both images hidden when the replay mask fails", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [checkRow({ replay: OFFER })] }, { error: MASK_ERROR }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      const result = await createTradeOffer(input);
+
+      expect(result).toEqual({ kind: "ok", offer: hiddenOffer, idempotentReplay: true });
+      expect(pg.insertCalls).toHaveLength(0);
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns the 23505-recovered offer with both images hidden when its mask fails", async () => {
+      const pg = createDbMock({
+        selects: [{ rows: [checkRow()] }, { rows: [OFFER] }, { error: MASK_ERROR }],
+        inserts: [{
+          error: {
+            code: "23505",
+            constraint: "idx_trade_offers_offerer_request",
+          },
+        }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      const result = await createTradeOffer(input);
+
+      expect(result).toEqual({ kind: "ok", offer: hiddenOffer, idempotentReplay: true });
+      expect(pg.insertCalls).toHaveLength(1);
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the images on the normal path when the mask succeeds", async () => {
+      const pg = createDbMock({
+        selects: [
+          { rows: [checkRow()] },
+          {
+            rows: [
+              { cardId: OFFER.offered_card_id },
+              { cardId: OFFER.wanted_card_id },
+            ],
+          },
+        ],
+        inserts: [{ rows: [OFFER] }],
+      });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      const result = await createTradeOffer(input);
+
+      expect(result).toEqual({ kind: "ok", offer: OFFER, idempotentReplay: false });
+      expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
+    });
   });
 
   it("maps canAccept from the per-row SQL state for other people's offers only", async () => {

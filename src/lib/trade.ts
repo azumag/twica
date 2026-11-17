@@ -34,6 +34,7 @@ import {
   isMissingTradeSettingsColumnError,
   withLiveDirectorySettingsColumnFallback,
 } from "@/lib/db/streamers-safe-columns";
+import { logger } from "@/lib/logger.server";
 import { isCanonicalUuid } from "@/lib/uuid-validation";
 
 export const TRADE_PAGE_SIZE = 20;
@@ -894,15 +895,42 @@ export async function createTradeOffer(input: {
   // must still see the image), so the response row is masked at read time.
   // Every `ok` return below goes through this helper; the mask is one extra
   // statement and is skipped when both snapshots have no imageUrl.
+  //
+  // Devin Review on #2073: maskTradeCardImages runs AFTER the trade_offers
+  // INSERT has committed (or after a replay row was read back). If that
+  // follow-up visibility read throws, the offer already exists and the copy is
+  // already locked, so letting the exception escape would report a failure
+  // for a published offer (and the retry would only see the replay). Like
+  // acceptTradeOffer, fail CLOSED instead: keep the committed offer and hide
+  // both images, which are the only values that could not be proven visible.
+  // Name and rarity stay: a new row already passed cardVisibleTo, and a
+  // replay / 23505 recovery row is the offerer's own offer.
   const maskOfferRow = async (offer: TradeOfferRow): Promise<TradeOfferRow> => {
-    const [offeredCard, wantedCard] = await maskTradeCardImages(
-      [
-        { cardId: offer.offered_card_id, snapshot: normalizeSnapshot(offer.offered_card_snapshot) },
-        { cardId: offer.wanted_card_id, snapshot: normalizeSnapshot(offer.wanted_card_snapshot) },
-      ],
-      userId,
-    );
-    return { ...offer, offered_card_snapshot: offeredCard, wanted_card_snapshot: wantedCard };
+    const offeredSnapshot = normalizeSnapshot(offer.offered_card_snapshot);
+    const wantedSnapshot = normalizeSnapshot(offer.wanted_card_snapshot);
+    try {
+      const [offeredCard, wantedCard] = await maskTradeCardImages(
+        [
+          { cardId: offer.offered_card_id, snapshot: offeredSnapshot },
+          { cardId: offer.wanted_card_id, snapshot: wantedSnapshot },
+        ],
+        userId,
+      );
+      return { ...offer, offered_card_snapshot: offeredCard, wanted_card_snapshot: wantedCard };
+    } catch (error) {
+      // Exactly one warning per affected response. The snapshots (which hold
+      // imageUrl) and user identifiers are never passed explicitly; the shared
+      // logger additionally redacts Drizzle bind params in the error object.
+      logger.warn(
+        "trade:create image mask failed after COMMIT; returning the offer without card images",
+        { error },
+      );
+      return {
+        ...offer,
+        offered_card_snapshot: { ...offeredSnapshot, imageUrl: null },
+        wanted_card_snapshot: { ...wantedSnapshot, imageUrl: null },
+      };
+    }
   };
 
   // Create idempotency is checked before mutable business validation. A client
