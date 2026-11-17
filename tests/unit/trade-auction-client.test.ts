@@ -48,7 +48,7 @@ describe("auction URLs", () => {
     expect(tradeAuctionBoardPath("s", "cross_channel")).toBe("/trade/s?tab=auction&scope=cross");
     expect(tradeAuctionDetailPath("s", "a")).toBe("/trade/s/auctions/a");
     expect(tradeAuctionDetailPath("s", "a", "cross_channel")).toBe("/trade/s/auctions/a?scope=cross");
-    expect(tradeAuctionCreatePath("s")).toBe("/trade/s/new?kind=auction");
+    expect(tradeAuctionCreatePath("s")).toBe("/trade/new?kind=auction&give=s");
   });
 
   it("offers exactly the server's durations (24h / 3d / 7d)", () => {

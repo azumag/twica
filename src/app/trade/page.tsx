@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
@@ -9,8 +10,26 @@ import {
 } from "@/lib/trade-page-data";
 import MyTrades from "@/components/MyTrades";
 import TradeCollections from "@/components/TradeCollections";
+import TradeListedNotice, {
+  type TradeListedKind,
+} from "@/components/TradeListedNotice";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+/**
+ * Allowlist of the post-create `?listed` values (#2080).
+ *
+ * Only the unified create form produces `offer` / `auction`; anything else
+ * (including a repeated parameter, which Next hands over as an array) is
+ * ignored rather than rendered, so an arbitrary query string can never inject
+ * a notice. The old board used `?listed=1` and is intentionally not accepted:
+ * it has no kind, so the hub could not choose the right copy.
+ */
+function parseTradeListed(
+  value: string | string[] | undefined,
+): TradeListedKind | null {
+  return value === "offer" || value === "auction" ? value : null;
+}
 
 /**
  * /trade hub (#2078, collections #2079).
@@ -34,6 +53,11 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
  * server. The per-collection first pages are ranked in SQL, so the first paint
  * already has the requested order; the client only fetches rows 6+ when the
  * viewer expands a section.
+ *
+ * `?listed=offer|auction` is the one-shot confirmation the unified create form
+ * adds to its redirect (#2080). It is shown below the heading, above "my
+ * trades", and stripped from the URL by <TradeListedNotice> after paint, the
+ * same contract the old boards used for `?listed=1`.
  */
 export default async function TradeHubPage({
   searchParams,
@@ -45,6 +69,7 @@ export default async function TradeHubPage({
     redirect(tradeLoginHref("/trade"));
   }
   const sort = parseTradeCollectionSort(query.sort);
+  const listed = parseTradeListed(query.listed);
 
   // The heading, the "my trades" first page and the collection summaries are
   // independent, so start all three after the auth decision and before
@@ -82,28 +107,30 @@ export default async function TradeHubPage({
     <div className="mx-auto max-w-4xl">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <h1 className="text-2xl font-bold text-white">{t("hubTitle")}</h1>
-        <div className="flex flex-col items-end gap-1">
-          {/*
-           * #2080 will turn this into a link to the unified listing flow. Until
-           * that route exists, a disabled button keeps the primary action
-           * visible without creating a dead link. aria-disabled is explicit for
-           * assistive technology, and aria-describedby exposes the reason even
-           * though a native disabled button is not focusable.
-           */}
-          <button
-            type="button"
-            disabled
-            aria-disabled="true"
-            aria-describedby="trade-create-unavailable"
-            className="shrink-0 cursor-not-allowed whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white opacity-50"
-          >
-            {t("hubCreateButton")}
-          </button>
-          <p id="trade-create-unavailable" className="text-xs text-gray-400">
-            {t("hubCreateUnavailable")}
-          </p>
-        </div>
+        {/*
+         * #2080: the primary action is a real link into the unified listing
+         * flow. It is a <Link> (not a button with a router call) so it is
+         * keyboard/middle-click friendly and can be prefetched.
+         */}
+        <Link
+          href="/trade/new"
+          className="shrink-0 whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-purple-700"
+        >
+          {t("hubCreateButton")}
+        </Link>
       </div>
+
+      {/*
+       * #2080: the create form's post-success destination. Rendered above "my
+       * trades", where the viewer looks for the listing they just created.
+       *
+       * The component is intentionally not keyed: a router.refresh() (e.g.
+       * after a mutation in MyTrades) re-renders this server page, but by then
+       * the component's replaceState has already removed `listed` from the
+       * URL, so the next render omits the notice. A one-shot confirmation
+       * disappearing on refresh is acceptable; showing it again is not.
+       */}
+      {listed && <TradeListedNotice kind={listed} />}
 
       <section aria-labelledby="trade-my-trades-heading">
         <h2

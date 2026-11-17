@@ -1,0 +1,204 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * #2080: shared create-form data loader.
+ *
+ * The old /trade/[streamerId]/new page owned this composition. It now lives in
+ * src/lib/trade-create-flow.ts so the new /trade/new page and the legacy
+ * redirect cannot drift: the wanted channel's reveal flags decide the notice
+ * props, and an auction (no wanted channel) must not read a catalogue at all.
+ */
+const mocks = vi.hoisted(() => ({
+  listTradeableOwnedCopies: vi.fn(),
+  listWantableCards: vi.fn(),
+  getTradeBoardStreamer: vi.fn(),
+  getDb: vi.fn(),
+}));
+
+vi.mock("@/lib/trade", () => ({
+  listTradeableOwnedCopies: mocks.listTradeableOwnedCopies,
+  listWantableCards: mocks.listWantableCards,
+  getTradeBoardStreamer: mocks.getTradeBoardStreamer,
+}));
+vi.mock("@/lib/db/client", () => ({ getDb: mocks.getDb }));
+
+import {
+  isTradeAuctionSchemaAvailable,
+  listViewerTradeCollections,
+  loadTradeCreateFormData,
+} from "@/lib/trade-create-flow";
+
+const GIVE = "11111111-1111-4111-8111-111111111111";
+const WANT = "22222222-2222-4222-8222-222222222222";
+
+const COPIED = {
+  userCardId: "uc-1",
+  cardId: "card-1",
+  name: "Card One",
+  rarity: "common",
+  imageUrl: null,
+  obtainedAt: null,
+  isListed: false,
+  ownedCount: 1,
+};
+const WANTABLE = {
+  cardId: "card-2",
+  name: "Visible Card",
+  rarity: "rare",
+  imageUrl: null,
+  isOwned: false,
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.listTradeableOwnedCopies.mockResolvedValue([COPIED]);
+  mocks.listWantableCards.mockResolvedValue([WANTABLE]);
+  mocks.getTradeBoardStreamer.mockResolvedValue({
+    revealsUnownedCards: true,
+    revealsUnownedCardImages: false,
+  });
+});
+
+describe("loadTradeCreateFormData (#2080)", () => {
+  it("loads the give copies and the wanted catalogue with the wanted channel's reveal flags", async () => {
+    const data = await loadTradeCreateFormData({
+      viewerId: "viewer-1",
+      giveStreamerId: GIVE,
+      wantStreamerId: WANT,
+    });
+
+    expect(mocks.listTradeableOwnedCopies).toHaveBeenCalledWith("viewer-1", GIVE);
+    expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", WANT);
+    expect(mocks.getTradeBoardStreamer).toHaveBeenCalledWith(WANT);
+    expect(data).toEqual({
+      ownedCopies: [COPIED],
+      wantableCards: [WANTABLE],
+      wantableRevealsUnowned: true,
+      wantableRevealsUnownedImages: false,
+    });
+  });
+
+  it("does not read a wanted catalogue for an auction (no wanted channel)", async () => {
+    const data = await loadTradeCreateFormData({
+      viewerId: "viewer-1",
+      giveStreamerId: GIVE,
+      wantStreamerId: null,
+    });
+
+    expect(mocks.listTradeableOwnedCopies).toHaveBeenCalledWith("viewer-1", GIVE);
+    expect(mocks.listWantableCards).not.toHaveBeenCalled();
+    expect(mocks.getTradeBoardStreamer).not.toHaveBeenCalled();
+    expect(data).toEqual({
+      ownedCopies: [COPIED],
+      wantableCards: [],
+      // Deny-by-default: the auction branch renders no wanted-catalogue notice.
+      wantableRevealsUnowned: false,
+      wantableRevealsUnownedImages: false,
+    });
+  });
+
+  it("fails closed when the wanted channel disappeared between the gate and the read", async () => {
+    mocks.getTradeBoardStreamer.mockResolvedValue(null);
+    const data = await loadTradeCreateFormData({
+      viewerId: "viewer-1",
+      giveStreamerId: GIVE,
+      wantStreamerId: WANT,
+    });
+    expect(data.wantableRevealsUnowned).toBe(false);
+    expect(data.wantableRevealsUnownedImages).toBe(false);
+  });
+});
+
+describe("isTradeAuctionSchemaAvailable (#2080 deploy window)", () => {
+  it("is true only when the catalog lookup finds the auction table", async () => {
+    // Same raw-SQL shape as src/lib/trade-auction.ts: getDb()'s postgres.js
+    // client (`sql`) is the tagged template, not Drizzle's db.execute (#2080
+    // review). The old shape could silently read `undefined` on a driver whose
+    // result is not an array.
+    const query = vi.fn().mockResolvedValue([{ available: true }]);
+    mocks.getDb.mockResolvedValue({ db: {}, sql: query });
+
+    await expect(isTradeAuctionSchemaAvailable()).resolves.toBe(true);
+    expect(query).toHaveBeenCalledTimes(1);
+    // the probe must be the catalog-only lookup, never a table scan
+    expect(String(query.mock.calls[0][0])).toContain(
+      "to_regclass('public.trade_auctions') IS NOT NULL AS available",
+    );
+  });
+
+  it.each([
+    ["the table is missing", [{ available: false }]],
+    ["the result is empty", []],
+  ])("fails closed when %s", async (_name, rows) => {
+    mocks.getDb.mockResolvedValue({
+      db: {},
+      sql: vi.fn().mockResolvedValue(rows),
+    });
+    await expect(isTradeAuctionSchemaAvailable()).resolves.toBe(false);
+  });
+
+  it("fails closed when the read throws instead of breaking the page", async () => {
+    mocks.getDb.mockResolvedValue({
+      db: {},
+      sql: vi.fn().mockRejectedValue(new Error("db down")),
+    });
+    await expect(isTradeAuctionSchemaAvailable()).resolves.toBe(false);
+  });
+});
+
+describe("listViewerTradeCollections (#2080)", () => {
+  function primeCollections(rows: unknown[]) {
+    const builder: Record<string, unknown> = {};
+    builder.from = () => builder;
+    builder.where = () => builder;
+    builder.orderBy = () => builder;
+    builder.then = (
+      onFulfilled: (value: unknown) => unknown,
+      onRejected: (reason: unknown) => unknown,
+    ) => Promise.resolve(rows).then(onFulfilled, onRejected);
+    const select = vi.fn(() => builder);
+    mocks.getDb.mockResolvedValue({ db: { select }, sql: {} });
+    return select;
+  }
+
+  it("reads every owned collection in one statement and maps the trade flags", async () => {
+    const select = primeCollections([
+      {
+        id: GIVE,
+        twitchDisplayName: "Alpha",
+        twitchProfileImageUrl: null,
+        tradeEnabled: true,
+        crossChannelTradeEnabled: false,
+      },
+      {
+        id: WANT,
+        twitchDisplayName: "Beta",
+        twitchProfileImageUrl: "https://img.example/beta.png",
+        // Columns can come back NULL from a partially applied schema.
+        tradeEnabled: null,
+        crossChannelTradeEnabled: null,
+      },
+    ]);
+
+    const result = await listViewerTradeCollections("viewer-1");
+
+    // One statement for the whole list, never one per collection.
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(result).toEqual([
+      {
+        id: GIVE,
+        twitchDisplayName: "Alpha",
+        twitchProfileImageUrl: null,
+        tradeEnabled: true,
+        crossChannelTradeEnabled: false,
+      },
+      {
+        id: WANT,
+        twitchDisplayName: "Beta",
+        twitchProfileImageUrl: "https://img.example/beta.png",
+        tradeEnabled: false,
+        crossChannelTradeEnabled: false,
+      },
+    ]);
+  });
+});

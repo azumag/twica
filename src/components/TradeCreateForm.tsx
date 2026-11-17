@@ -1,7 +1,6 @@
 "use client";
 
 import { useId, useMemo, useRef, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -9,17 +8,33 @@ import type { TradeableOwnedCopy, WantableCard } from "@/lib/trade";
 import {
   postTradeJson,
   TRADE_AUCTION_DURATION_OPTIONS,
-  tradeAuctionBoardPath,
   tradeErrorMessageKey,
+  type TradeCreateKind,
 } from "@/lib/trade-client";
 import { clearTradeListCache } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeCardChoiceList from "./TradeCardChoiceList";
 import TradeCardSummary from "./TradeCardSummary";
 
-/** Listing kind chosen first in the flow (#1791): a regular offer or an auction. */
-export type TradeCreateKind = "offer" | "auction";
 type AuctionDurationHours = (typeof TRADE_AUCTION_DURATION_OPTIONS)[number];
+
+/** The hub is both the form's back destination and where a successful create lands. */
+const TRADE_HUB_PATH = "/trade";
+
+/**
+ * Post-create destination per kind (#2080).
+ *
+ * The old flow landed on the board with `?listed=1`, where the board rendered
+ * the one-shot "listed" notice. The unified flow lands on the hub instead, so
+ * it must carry the same confirmation as an allowlisted kind: the hub picks
+ * the offer or auction copy from this value and its client component strips
+ * the parameter after showing it (no navigation / server re-render). Kept as
+ * one table so a new kind cannot silently lose the notice.
+ */
+const TRADE_HUB_LISTED_PATH: Record<TradeCreateKind, string> = {
+  offer: `${TRADE_HUB_PATH}?listed=offer`,
+  auction: `${TRADE_HUB_PATH}?listed=auction`,
+};
 
 /** i18n key of each duration option (24 hours / 3 days / 7 days). */
 const DURATION_LABEL_KEYS: Record<AuctionDurationHours, string> = {
@@ -28,20 +43,13 @@ const DURATION_LABEL_KEYS: Record<AuctionDurationHours, string> = {
   168: "createAuctionDuration7d",
 };
 
-/** Partner channel choice for cross-channel listings. */
-export type TradeCreatePartner = {
-  id: string;
-  twitchDisplayName: string;
-  twitchProfileImageUrl: string | null;
-};
-
 interface TradeCreateFormProps {
-  streamerId: string;
-  /** Present only for cross-channel listings. */
-  cross: {
-    partners: TradeCreatePartner[];
-    selectedPartnerId: string | null;
-  } | null;
+  /**
+   * Listing kind decided by the page's step 1 (#2080). The form does not
+   * switch it: an auction has no wanted card or counterpart channel, so the
+   * page keeps the two flows apart before the form mounts.
+   */
+  kind: TradeCreateKind;
   /** Viewer's copies of this channel's active cards (listTradeableOwnedCopies). */
   ownedCopies: TradeableOwnedCopy[];
   /**
@@ -57,8 +65,6 @@ interface TradeCreateFormProps {
   wantableRevealsUnowned: boolean;
   /** The wanted channel also reveals unowned card IMAGES (#2070). */
   wantableRevealsUnownedImages: boolean;
-  /** Board to return to after listing. */
-  boardHref: string;
   /**
    * Upper bound of the wanted quantity (TRADE_MAX_WANTED_QUANTITY, #1789).
    * Passed from the server page so this client component does not import the
@@ -66,15 +72,10 @@ interface TradeCreateFormProps {
    */
   maxWantedQuantity: number;
   /**
-   * Step 1 selection carried over the partner-selection navigation
-   * (?offered=<cardId>). Ignored unless it is a listable card of this viewer.
+   * Step 1 selection carried over from the flow URL (?offered=<cardId>).
+   * Ignored unless it is a listable card of this viewer.
    */
   initialOfferedCardId?: string | null;
-  /**
-   * Kind preselected by the entry point (?kind=auction from the board's
-   * auction tab). The viewer can still switch it in the first step.
-   */
-  initialKind?: TradeCreateKind;
 }
 
 /** One selectable card in Step 1 (copies grouped per card definition). */
@@ -127,32 +128,28 @@ function groupOwnedCopies(copies: TradeableOwnedCopy[]): OwnedCardGroup[] {
 }
 
 /**
- * Listing flow (§6.5): Step 1 choose the copy to give, Step 2 choose the
- * wanted card (cross-channel: first choose the partner channel), then confirm.
+ * Listing form (§6.5) for the last step of /trade/new (#2080).
  *
- * Partner selection navigates (?partner=) so that the server component loads
- * the partner's wantable cards with the visibility rule applied in SQL; no
- * new API endpoint is introduced for it.
+ * The page has already decided the listing kind, the collection to give and
+ * (for an offer) the collection to ask from, so this form only handles the
+ * cards: Step 1 chooses the copy to give, Step 2 chooses the wanted card and
+ * quantity. The kind is a fixed prop rather than a switch, and the counterpart
+ * channel is never selected here — the wanted catalogue passed by the page is
+ * already the chosen channel's.
  *
- * Auctions (#1791, design §6): the flow starts with the listing kind. For an
- * auction, Step 1 is the same copy choice (the same lock rule applies:
- * `isListed` covers offers, auctions and bids), Step 2 is the deadline
- * (24 hours / 3 days / 7 days) instead of a wanted card, and the POST goes to
- * /api/trades/auctions. An auction has no counterpart channel, so the cross
- * partner picker belongs to the regular offer only; the kind switch keeps the
- * Step 1 choice because it is state of this mounted form.
+ * Auctions (#1791, design §6): Step 1 is the same copy choice (the same lock
+ * rule applies: `isListed` covers offers, auctions and bids), Step 2 is the
+ * deadline (24 hours / 3 days / 7 days) instead of a wanted card, and the
+ * POST goes to /api/trades/auctions.
  */
 export default function TradeCreateForm({
-  streamerId,
-  cross,
+  kind,
   ownedCopies,
   wantableCards,
   wantableRevealsUnowned,
   wantableRevealsUnownedImages,
-  boardHref,
   maxWantedQuantity,
   initialOfferedCardId = null,
-  initialKind = "offer",
 }: TradeCreateFormProps) {
   const t = useTranslations("trade");
   const tMaintenance = useTranslations("maintenance");
@@ -165,11 +162,9 @@ export default function TradeCreateForm({
       ? initialOfferedCardId
       : null,
   );
-  const [kind, setKind] = useState<TradeCreateKind>(initialKind);
   // No default deadline: the viewer picks one explicitly, because it decides
   // how long the card (and every bid) stays locked.
   const [durationHours, setDurationHours] = useState<AuctionDurationHours | null>(null);
-  const kindName = useId();
   const durationName = useId();
   const [wantedCardId, setWantedCardId] = useState<string | null>(null);
   const [wantedQuantity, setWantedQuantity] = useState(1);
@@ -185,7 +180,6 @@ export default function TradeCreateForm({
   const offered = groups.find((group) => group.cardId === offeredCardId) ?? null;
   const wanted = wantableCards.find((card) => card.cardId === wantedCardId) ?? null;
   const offeredUserCardId = offered?.availableUserCardId ?? null;
-  const partnerMissing = cross !== null && !cross.selectedPartnerId;
 
   const requestIdFor = (selection: string) => {
     if (requestIdRef.current?.selection !== selection) {
@@ -223,7 +217,11 @@ export default function TradeCreateForm({
       // The listed copy is now locked: every cached list (offer boards'
       // canAccept, auction lists) may be stale.
       clearTradeListCache();
-      router.push(`${tradeAuctionBoardPath(streamerId, "in_channel")}&listed=1`);
+      // #2080: land on the hub instead of the old board. The hub remounts
+      // <MyTrades> on every request (key), so the new auction is visible there.
+      // `?listed=auction` asks the hub to show the same one-shot confirmation
+      // the auction board used to render after a create.
+      router.push(TRADE_HUB_LISTED_PATH.auction);
       return;
     }
     setErrorText(
@@ -253,7 +251,7 @@ export default function TradeCreateForm({
       requestId,
     });
     if (result.ok) {
-      // The board fetches on mount, so the new offer is shown first there.
+      // The hub's <MyTrades> fetches on mount, so the new offer is shown there.
       // Its client-side page cache (useTradeList) would otherwise serve a
       // fresh-looking list without the new offer, so drop it first. This also
       // applies to the mismatch branch below, where an offer WAS created.
@@ -275,8 +273,10 @@ export default function TradeCreateForm({
         setSubmitting(false);
         return;
       }
-      const separator = boardHref.includes("?") ? "&" : "?";
-      router.push(`${boardHref}${separator}listed=1`);
+      // #2080: the hub is the destination for both kinds. `?listed=offer`
+      // asks the hub to show the one-shot "listed" confirmation instead of the
+      // old board's ?listed=1 flash; MyTrades is remounted by key either way.
+      router.push(TRADE_HUB_LISTED_PATH.offer);
       return;
     }
     setErrorText(
@@ -296,38 +296,6 @@ export default function TradeCreateForm({
 
   return (
     <div className="flex flex-col gap-8">
-      {/* Native radios: one choice out of two with built-in arrow-key
-          navigation and labelling, no custom roving focus needed. */}
-      <fieldset>
-        <legend className="mb-3 text-lg font-semibold text-white">{t("createKindLabel")}</legend>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {(["offer", "auction"] as const).map((value) => (
-            <label key={value} className={radioCardClass(kind === value)}>
-              <input
-                type="radio"
-                name={kindName}
-                value={value}
-                checked={kind === value}
-                disabled={submitting}
-                onChange={() => {
-                  setKind(value);
-                  setErrorText(null);
-                }}
-                className="mt-1 accent-purple-500"
-              />
-              <span className="min-w-0">
-                <span className="block font-semibold text-white">
-                  {t(value === "auction" ? "createKindAuction" : "createKindOffer")}
-                </span>
-                <span className="mt-1 block text-gray-300">
-                  {t(value === "auction" ? "createKindAuctionHelp" : "createKindOfferHelp")}
-                </span>
-              </span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
-
       <section aria-labelledby="trade-step1">
         <h2 id="trade-step1" className="mb-3 text-lg font-semibold text-white">
           {t(isAuction ? "createAuctionStep1Title" : "createStep1Title")}
@@ -362,17 +330,17 @@ export default function TradeCreateForm({
                     </div>
                     <div className="ml-2 flex shrink-0 flex-col items-end gap-1 text-xs">
                       {group.ownedCount > 1 && (
-                        <span className="rounded bg-purple-600 px-1.5 py-0.5 font-semibold text-white">
+                        <span className="whitespace-nowrap rounded bg-purple-600 px-1.5 py-0.5 font-semibold text-white">
                           {t("quantityBadge", { count: group.ownedCount })}
                         </span>
                       )}
                       {!selectable ? (
-                        <span className="rounded bg-gray-600 px-1.5 py-0.5 text-gray-200">
+                        <span className="whitespace-nowrap rounded bg-gray-600 px-1.5 py-0.5 text-gray-200">
                           {t("createStep1ListedBadge")}
                         </span>
                       ) : (
                         group.listedCount > 0 && (
-                          <span className="text-gray-400">
+                          <span className="whitespace-nowrap text-gray-400">
                             {t("createStep1ListedCount", { count: group.listedCount })}
                           </span>
                         )
@@ -404,7 +372,9 @@ export default function TradeCreateForm({
                   }}
                   className="mt-1 accent-purple-500"
                 />
-                <span className="font-semibold text-white">{t(DURATION_LABEL_KEYS[hours])}</span>
+                <span className="shrink-0 whitespace-nowrap font-semibold text-white">
+                  {t(DURATION_LABEL_KEYS[hours])}
+                </span>
               </label>
             ))}
           </div>
@@ -415,121 +385,73 @@ export default function TradeCreateForm({
           <h2 id="trade-step2" className="mb-3 text-lg font-semibold text-white">
             {t("createStep2Title")}
           </h2>
-          {cross && (
-            <div className="mb-4">
-              <p className="mb-2 text-sm text-gray-300">{t("createStep2SelectStreamer")}</p>
-              {cross.partners.length === 0 ? (
-                <p className="rounded-xl bg-gray-800 p-4 text-sm text-gray-400">
-                  {t("createStep2NoPartners")}
-                </p>
-              ) : (
-                <ul className="flex flex-wrap gap-2">
-                  {cross.partners.map((partner) => {
-                    const selected = partner.id === cross.selectedPartnerId;
-                    return (
-                      <li key={partner.id}>
-                        <Link
-                          // Carry the Step 1 choice across this navigation
-                          // (the form remounts with the partner's catalogue).
-                          href={`/trade/${streamerId}/new?scope=cross&partner=${encodeURIComponent(partner.id)}${
-                            offeredCardId ? `&offered=${encodeURIComponent(offeredCardId)}` : ""
-                          }`}
-                          aria-current={selected ? "true" : undefined}
-                          className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm ${
-                            selected
-                              ? "border-purple-400 bg-purple-900/40 text-white"
-                              : "border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700"
-                          }`}
-                        >
-                          {partner.twitchProfileImageUrl && (
-                            // unoptimized: Twitch CDN avatar (same as Header).
-                            <Image
-                              src={partner.twitchProfileImageUrl}
-                              alt=""
-                              width={20}
-                              height={20}
-                              className="h-5 w-5 rounded-full"
-                              unoptimized
-                            />
-                          )}
-                          {partner.twitchDisplayName}
-                        </Link>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
+          {!wantableRevealsUnowned && (
+            <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
+              {t("createStep2UnrevealedNotice")}
+            </p>
           )}
-          {!partnerMissing && (
-            <>
-              {!wantableRevealsUnowned && (
-                <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
-                  {t("createStep2UnrevealedNotice")}
-                </p>
-              )}
-              {/* #2070: names are public but images are not. Say so, otherwise
-                  an unowned card tile with a "no image" placeholder looks like
-                  a broken upload. */}
-              {wantableRevealsUnowned && !wantableRevealsUnownedImages && (
-                <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
-                  {t("createStep2NameOnlyNotice")}
-                </p>
-              )}
-              {wantableCards.length === 0 ? (
-                <p className="rounded-xl bg-gray-800 p-4 text-gray-400">{t("createStep2Empty")}</p>
-              ) : (
-                <TradeCardChoiceList
-                  choices={wantableCards.map((card) => {
-                    const sameAsOffered = card.cardId === offeredCardId;
-                    return {
-                      cardId: card.cardId,
-                      card,
-                      disabled: sameAsOffered,
-                      title: sameAsOffered ? t("createStep2SameCard") : undefined,
-                      // Unowned cards are highlighted: they are what the
-                      // collector is missing (§6.5).
-                      highlighted: !card.isOwned,
-                      badge: !card.isOwned ? (
-                        <span className="ml-2 shrink-0 rounded bg-purple-700 px-1.5 py-0.5 text-xs text-white">
-                          {t("createStep2UnownedBadge")}
-                        </span>
-                      ) : undefined,
-                    };
-                  })}
-                  selectedCardId={wantedCardId}
-                  onSelect={(cardId) => {
-                    setWantedCardId(cardId);
-                    setErrorText(null);
-                  }}
-                  disabled={submitting}
-                />
-              )}
-              {wantableCards.length > 0 && (
-                // A native <select> (1..max) instead of a free number input:
-                // no parsing/clamping of typed text, and every value offered
-                // is one the API accepts. Options include the unit in their
-                // text so assistive technology need not interpret the ×N badge.
-                <label className="mt-4 flex items-center gap-3 text-sm text-gray-200">
-                  {t("createStep2QuantityLabel")}
-                  <select
-                    value={wantedQuantity}
-                    disabled={submitting}
-                    onChange={(event) => {
-                      setWantedQuantity(Number(event.target.value));
-                      setErrorText(null);
-                    }}
-                    className="rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
-                  >
-                    {Array.from({ length: maxWantedQuantity }, (_, index) => index + 1).map((value) => (
-                      <option key={value} value={value}>
-                        {t("createStep2QuantityOption", { count: value })}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-            </>
+          {/* #2070: names are public but images are not. Say so, otherwise
+              an unowned card tile with a "no image" placeholder looks like
+              a broken upload. */}
+          {wantableRevealsUnowned && !wantableRevealsUnownedImages && (
+            <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
+              {t("createStep2NameOnlyNotice")}
+            </p>
+          )}
+          {wantableCards.length === 0 ? (
+            <p className="rounded-xl bg-gray-800 p-4 text-gray-400">{t("createStep2Empty")}</p>
+          ) : (
+            <TradeCardChoiceList
+              choices={wantableCards.map((card) => {
+                const sameAsOffered = card.cardId === offeredCardId;
+                return {
+                  cardId: card.cardId,
+                  card,
+                  disabled: sameAsOffered,
+                  title: sameAsOffered ? t("createStep2SameCard") : undefined,
+                  // Unowned cards are highlighted: they are what the
+                  // collector is missing (§6.5).
+                  highlighted: !card.isOwned,
+                  badge: !card.isOwned ? (
+                    <span className="ml-2 shrink-0 whitespace-nowrap rounded bg-purple-700 px-1.5 py-0.5 text-xs text-white">
+                      {t("createStep2UnownedBadge")}
+                    </span>
+                  ) : undefined,
+                };
+              })}
+              selectedCardId={wantedCardId}
+              onSelect={(cardId) => {
+                setWantedCardId(cardId);
+                setErrorText(null);
+              }}
+              disabled={submitting}
+            />
+          )}
+          {wantableCards.length > 0 && (
+            // A native <select> (1..max) instead of a free number input:
+            // no parsing/clamping of typed text, and every value offered
+            // is one the API accepts. Options include the unit in their
+            // text so assistive technology need not interpret the ×N badge.
+            <label className="mt-4 flex min-w-0 flex-wrap items-center gap-2 text-sm text-gray-200">
+              <span className="shrink-0 whitespace-nowrap">
+                {t("createStep2QuantityLabel")}
+              </span>
+              <select
+                value={wantedQuantity}
+                disabled={submitting}
+                onChange={(event) => {
+                  setWantedQuantity(Number(event.target.value));
+                  setErrorText(null);
+                }}
+                className="shrink-0 rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+              >
+                {Array.from({ length: maxWantedQuantity }, (_, index) => index + 1).map((value) => (
+                  <option key={value} value={value}>
+                    {t("createStep2QuantityOption", { count: value })}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
         </section>
       )}
@@ -562,19 +484,19 @@ export default function TradeCreateForm({
             {errorText}
           </p>
         )}
-        <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <div className="mt-4 flex min-w-0 flex-wrap items-center justify-end gap-2">
           <Link
-            href={boardHref}
-            className="rounded-lg bg-gray-700 px-4 py-2 text-center text-sm text-white hover:bg-gray-600"
+            href={TRADE_HUB_PATH}
+            className="shrink-0 whitespace-nowrap rounded-lg bg-gray-700 px-4 py-2 text-center text-sm text-white hover:bg-gray-600"
           >
-            {t("createBackToBoard")}
+            {t("createFlowBackToHub")}
           </Link>
           <button
             type="button"
             onClick={submit}
             disabled={!canSubmit || submitting}
             aria-busy={submitting}
-            className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0 whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting
               ? t("createSubmitting")

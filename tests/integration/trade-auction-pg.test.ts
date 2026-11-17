@@ -1094,4 +1094,20 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // #2080: /trade/new disables the auction entry point before the first API
+  // call when the auction schema is missing. The probe therefore has to read
+  // the catalog through the same postgres.js client as every other raw query in
+  // src/lib/trade-auction.ts (getDb().sql), not through Drizzle's db.execute:
+  // a driver-shape mismatch would fail silently and always report false. On a
+  // migrated database the probe must report true. Read-only, so it neither
+  // seeds nor mutates anything and can share the suite's fixture.
+  // ---------------------------------------------------------------------------
+  describe("auction schema availability (#2080)", () => {
+    it("reports the migrated auction schema as available", async () => {
+      const { isTradeAuctionSchemaAvailable } = await import("@/lib/trade-create-flow");
+      await expect(isTradeAuctionSchemaAvailable()).resolves.toBe(true);
+    });
+  });
+
 });
