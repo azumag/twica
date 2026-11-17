@@ -35,6 +35,12 @@ function keyframesBlock(style: string): string {
   throw new Error(`@keyframes overlay-effect-${style} が閉じていません`)
 }
 
+/** キーフレーム内の `N% {` を列挙する（コメント中の % は除外する） */
+function keyframeOffsets(style: string): number[] {
+  const block = keyframesBlock(style).replace(/\/\*[\s\S]*?\*\//g, '')
+  return [...block.matchAll(/(?:^|\n)\s*(\d+(?:\.\d+)?)%\s*\{/g)].map((match) => Number(match[1]))
+}
+
 /** `--animate-overlay-effect-<style>: ...;` の宣言値を取り出す */
 function animateShorthand(style: string): string {
   const match = new RegExp(`--animate-overlay-effect-${style}:\\s*([^;]+);`).exec(GLOBALS_CSS)
@@ -88,6 +94,24 @@ describe('overlay-effect: globals.css との契約', () => {
         expect(tokens).toContain('backwards')
       }
     }
+  })
+
+  // 花火・シャボン玉・ハートは、timing-function を linear にしたうえで
+  // 動きの形をキーフレームの中間ストップで作る。ease-* / cubic-bezier に戻すと
+  // 各キーフレーム区間の末尾で速度が 0 に落ち、次の区間頭で再加速する退行になる。
+  const LINEARIZED_STYLES = ['hearts', 'fireworks', 'bubbles'] as const
+
+  it.each(LINEARIZED_STYLES)('%s の animate-* は linear タイミングである', (style) => {
+    const tokens = animateShorthand(style).trim().split(/\s+/)
+    expect(tokens).toContain('linear')
+    expect(tokens.filter((token) => /^(?:ease(?:-in|-out|-in-out)?|cubic-bezier\()/.test(token))).toEqual([])
+  })
+
+  it.each(LINEARIZED_STYLES)('%s は区間ごとの停止を避けるため中間ストップを8点以上持つ', (style) => {
+    const offsets = keyframeOffsets(style)
+    expect(new Set(offsets).size).toBeGreaterThanOrEqual(8)
+    expect(offsets).toContain(0)
+    expect(offsets).toContain(100)
   })
 
   it('animationClassName は keyframes 名と1対1で対応する', () => {
