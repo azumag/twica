@@ -46,19 +46,36 @@
   --animate-overlay-effect-petals: overlay-effect-petals 3.8s linear infinite backwards;
   --animate-overlay-effect-snow: overlay-effect-snow 4.6s linear infinite backwards;
   --animate-overlay-effect-coins: overlay-effect-coins 2.4s ease-in infinite backwards;
-  --animate-overlay-effect-aura: overlay-effect-aura 4s ease-in-out infinite;
+  --animate-overlay-effect-aura: overlay-effect-aura 1.4s ease-out infinite;
 }
 
 @keyframes overlay-effect-aura {
-  /* 淡い光輪をカード内でゆっくり呼吸させる。距離は粒子サイズに対する割合。 */
-  0%,
-  100% {
-    transform: translateX(calc(var(--fx-sway) * -1)) scale(0.97);
-    opacity: 0.45;
+  /*
+   * 縁の炎（Issue #2088 (3)）: カード縁上の粒子が上方向へ揺らぎながら昇り、
+   * 縦に伸びながら消える炎。粒子はカード背面のレイヤーに置かれ、粒子の
+   * 内側半分はカードに隠れて外側半分だけが見える（枠の後ろから炎が出る）。
+   * --fx-rise: 上昇距離(px) / --fx-sway: 横揺れ幅(px) / --fx-peak: 粒子毎の
+   * 最大不透明度。0% は translateY(25%) で基部をカード内に潜らせた状態から
+   * 始め、上昇するにつれ枠の外へ抜け出す。
+   */
+  0% {
+    transform: translate(0, 25%) scale(0.7, 0.4);
+    opacity: 0;
   }
-  50% {
-    transform: translateX(var(--fx-sway)) scale(1.03);
-    opacity: 0.75;
+  20% {
+    transform: translate(calc(var(--fx-sway) * 0.4), calc(var(--fx-rise) * -0.25))
+      scale(1, 0.9);
+    opacity: var(--fx-peak, 0.95);
+  }
+  60% {
+    transform: translate(calc(var(--fx-sway) * -0.8), calc(var(--fx-rise) * -0.6))
+      scale(0.9, 1.2);
+    opacity: var(--fx-peak, 0.95);
+  }
+  100% {
+    transform: translate(calc(var(--fx-sway) * 0.3), calc(var(--fx-rise) * -1))
+      scale(0.5, 1.6);
+    opacity: 0;
   }
 }
 
@@ -295,7 +312,7 @@
     animation: none !important;
     opacity: var(--fx-opacity, 0.9);
   }
-  /* 大きな光輪の拡縮・ゆらぎは止め、カード内の淡い光だけを残す。 */
+  /* 炎の上昇・揺らぎは止め、縁に沿った静止の炎粒だけを残す。 */
   .animate-overlay-effect-aura {
     animation: none !important;
     transform: none;

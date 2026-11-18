@@ -5,7 +5,10 @@ import type { GachaSoundRule } from '@/lib/gacha-sound-rules'
 import OverlayPage from '@/app/overlay/[streamerId]/page'
 import { logger } from '@/lib/logger'
 import { pickSoundBearingCardIndex } from '@/lib/gacha-sound-rules'
-import { OVERLAY_EFFECT_PARTICLE_CONFIG } from '@/lib/overlay-effect'
+import {
+  OVERLAY_EFFECT_PARTICLE_CONFIG,
+  OVERLAY_EFFECT_OVERFLOW_PX,
+} from '@/lib/overlay-effect'
 import { serializePollState } from '@/lib/overlay-version'
 
 type ResolvePlayableGachaSound = typeof import('@/lib/gacha-sound-rules')['resolvePlayableGachaSound']
@@ -2087,7 +2090,7 @@ describe('OverlayPage', () => {
     { label: '横長画像', query: '', width: 900, height: 600, renderedWidth: '300' },
     { label: '縮小カード', query: '', width: 200, height: 200, renderedWidth: '180' },
     { label: '縮小縦長画像', query: '', width: 200, height: 300, renderedWidth: '192' },
-  ])('aura はカード内の装飾レイヤーにだけ描画する($label)', async ({ query, width, height, renderedWidth }) => {
+  ])('aura はカード背面の縁レイヤーに描画する($label)', async ({ query, width, height, renderedWidth }) => {
     vi.useFakeTimers()
     class LoadedImage {
       onload: (() => void) | null = null
@@ -2103,16 +2106,57 @@ describe('OverlayPage', () => {
       id: 'card-aura', name: 'Aura Card', rarity: 'legendary', image_url: 'https://example.com/aura.png',
     })
 
-    // DOM テストではクリップを担う既存レイヤーへの所属を確認し、画素の境界は実ブラウザで検証する。
+    // Issue #2088 (3): aura はカード縁と一致する inset:0 の背面レイヤーに置く。
+    // 炎が枠の外へ出られるよう overflow-hidden ではクリップしない。
     const particles = container.querySelectorAll('.animate-overlay-effect-aura')
     expect(particles).toHaveLength(OVERLAY_EFFECT_PARTICLE_CONFIG.aura.particleCount)
     const cardRoot = container.querySelector('[data-overlay-card="true"]')
-    const effectLayer = particles[0].parentElement
+    const effectLayer = particles[0].parentElement as HTMLElement
     expect(effectLayer).toHaveAttribute('aria-hidden', 'true')
-    expect(effectLayer).toHaveClass('pointer-events-none', 'absolute', 'inset-0', 'overflow-hidden')
+    expect(effectLayer).toHaveClass('pointer-events-none', 'absolute', 'inset-0')
+    expect(effectLayer).not.toHaveClass('overflow-hidden')
     expect(effectLayer?.closest('[data-overlay-card="true"]')).toBe(cardRoot)
-    expect(screen.getByAltText('Aura Card')).toHaveAttribute('width', renderedWidth)
+    // 枠のレアリティ色（legendary = yellow-400→orange-500 の HEX 解決）が
+    // --fx-aura-* 変数としてレイヤーへ注入される
+    expect(effectLayer.style.getPropertyValue('--fx-aura-from')).toBe('#fdc700')
+    expect(effectLayer.style.getPropertyValue('--fx-aura-to')).toBe('#ff6900')
+    // DOM 順でカード内容より前＝背面に置く（z-index:-1 依存にしない方式）
+    const cardImage = screen.getByAltText('Aura Card')
+    expect(
+      effectLayer.compareDocumentPosition(cardImage) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(cardImage).toHaveAttribute('width', renderedWidth)
     expect(container.querySelectorAll('[class*="animate-overlay-effect-"]')).toHaveLength(particles.length)
+  })
+
+  it.each([
+    { label: '通常表示', query: '' },
+    { label: '画像のみ', query: '&imageOnly=true' },
+  ])('非 aura の粒子レイヤーはカード外箱にクリップされカード背面に置かれる($label)', async ({ query }) => {
+    vi.useFakeTimers()
+    const { container } = await renderWithGacha(`?effect=confetti${query}`, {
+      id: 'card-confetti',
+      name: 'Confetti',
+      rarity: 'legendary',
+    })
+
+    // Issue #2088 (2): レイヤーはカードより OVERLAY_EFFECT_OVERFLOW_PX 外側の箱で
+    // 自身の overflow-hidden にだけクリップされ、DOM 順でカードより前＝背面に置く。
+    const particles = container.querySelectorAll('.animate-overlay-effect-confetti')
+    expect(particles).toHaveLength(OVERLAY_EFFECT_PARTICLE_CONFIG.confetti.particleCount)
+    const cardRoot = container.querySelector('[data-overlay-card="true"]')
+    const effectLayer = particles[0].parentElement as HTMLElement
+    expect(effectLayer).toHaveAttribute('aria-hidden', 'true')
+    expect(effectLayer).toHaveClass('pointer-events-none', 'absolute', 'overflow-hidden')
+    expect(effectLayer).not.toHaveClass('inset-0')
+    expect(effectLayer.style.inset).toBe(`-${OVERLAY_EFFECT_OVERFLOW_PX}px`)
+    expect(effectLayer?.closest('[data-overlay-card="true"]')).toBe(cardRoot)
+    // 背面配置: 表示コンテンツより文書順で前にある
+    const content = cardRoot?.querySelector('.rounded-2xl, img, [data-overlay-card-fallback]')
+    expect(content).not.toBeNull()
+    expect(
+      effectLayer.compareDocumentPosition(content!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
   })
 
   it('レアリティ別: 既定では legendary 以外にエフェクトを出さない（従来挙動の維持）', async () => {

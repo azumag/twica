@@ -9,6 +9,8 @@ import {
   normalizeOverlayEffectStyle,
   isOverlayEffectStyle,
   generateOverlayEffectParticles,
+  resolveOverlayAuraColors,
+  OVERLAY_EFFECT_OVERFLOW_PX,
   resolveEffectForRarity,
   serializeRarityEffectMap,
   parseRarityEffectMap,
@@ -16,7 +18,7 @@ import {
 
 /**
  * 「表示開始時点で周期の途中にいる」負の delay を使う環境系スタイル。
- * fireworks（バースト同期）と aura（元から負の delay の光輪）は対象外。
+ * fireworks（バースト同期）と aura（delaySecRange で負の位相をずらす縁の炎）は対象外。
  */
 const PHASE_ALIGNED_STYLES = [
   'sparkle',
@@ -111,18 +113,26 @@ describe('overlay-effect: OVERLAY_EFFECT_PARTICLE_CONFIG', () => {
     }
   })
 
-  it('環境系8種は startAtRandomPhase、fireworks/aura は正の delay 範囲を持つ', () => {
+  it('環境系8種は startAtRandomPhase、fireworks/aura は delaySecRange を持つ', () => {
     for (const style of PHASE_ALIGNED_STYLES) {
       const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
       expect(config.startAtRandomPhase).toBe(true)
       // 負の delay を算出するため、正の delay 範囲は持たない（設定の二重管理を防ぐ）
       expect(config.delaySecRange).toBeUndefined()
     }
+    // fireworks は正のバースト間隔、aura は負の位相ずらし
     for (const style of ['fireworks', 'aura'] as const) {
       const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
       expect(config.startAtRandomPhase).toBeFalsy()
       expect(config.delaySecRange).toBeDefined()
     }
+  })
+
+  it('はみ出し幅 OVERLAY_EFFECT_OVERFLOW_PX は 800x600 の上下余白 76px を超えない', () => {
+    // Issue #2088 (2): 48〜64 を目安とし、800x600 での上下余白（実測 76px）以内に収める。
+    // OBS 表示領域から粒子が消えて見えなくなる退行を防ぐための上限を固定する。
+    expect(OVERLAY_EFFECT_OVERFLOW_PX).toBeGreaterThanOrEqual(48)
+    expect(OVERLAY_EFFECT_OVERFLOW_PX).toBeLessThanOrEqual(76)
   })
 })
 
@@ -273,15 +283,37 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
     }
   })
 
-  it('aura は少数の相対サイズ光輪を生成し、縮小表示でもカードの大きさに追従する', () => {
+  it('aura はカード縁に沿った炎粒子を生成する（Issue #2088 縁の炎）', () => {
     const particles = generateOverlayEffectParticles('aura')
-    expect(particles).toHaveLength(3)
+    expect(particles).toHaveLength(OVERLAY_EFFECT_PARTICLE_CONFIG.aura.particleCount)
+
+    const onTopEdge = (p: (typeof particles)[number]) => Number.parseFloat(p.top) <= 1.5
+    const onBottomEdge = (p: (typeof particles)[number]) => Number.parseFloat(p.top) >= 98.5
+    const onLeftEdge = (p: (typeof particles)[number]) => Number.parseFloat(p.left) <= 1.5
+    const onRightEdge = (p: (typeof particles)[number]) => Number.parseFloat(p.left) >= 98.5
+
     for (const particle of particles) {
       expect(particle.content).toBe('')
-      expect(particle.visualStyle.width).toMatch(/^\d+(\.\d+)?%$/)
-      expect(particle.visualStyle.height).toMatch(/^\d+(\.\d+)?%$/)
-      expect(particle.visualStyle.borderRadius).toBe('50%')
+      // すべての粒子は4辺のいずれかの縁上（0〜1.5% / 98.5〜100%）に置かれる
+      expect(
+        onTopEdge(particle) || onBottomEdge(particle) || onLeftEdge(particle) || onRightEdge(particle),
+      ).toBe(true)
+      // 炎粒はカード比ではなく炎の粒としての px サイズ（縦長）
+      expect(String(particle.visualStyle.width)).toMatch(/px$/)
+      expect(String(particle.visualStyle.height)).toMatch(/px$/)
+      // 炎色は生成時に決めず、レイヤー注入の --fx-aura-* 変数を参照する
+      expect(String(particle.visualStyle.backgroundImage)).toContain('var(--fx-aura-')
+      // 上昇距離・横揺れ・ピーク不透明度（globals.css の keyframes との契約）
+      expect(particle.visualStyle['--fx-rise']).toBeDefined()
+      expect(particle.visualStyle['--fx-sway']).toBeDefined()
+      expect(particle.visualStyle['--fx-peak']).toBeDefined()
     }
+
+    // 4辺すべてに粒子が配置される（片側だけの炎にならない）
+    expect(particles.filter(onTopEdge).length).toBeGreaterThan(0)
+    expect(particles.filter(onBottomEdge).length).toBeGreaterThan(0)
+    expect(particles.filter(onLeftEdge).length).toBeGreaterThan(0)
+    expect(particles.filter(onRightEdge).length).toBeGreaterThan(0)
   })
 
   it('各パーティクルの位置・タイミング・色はランダム化され、全てが同一にはならない（機械的な動き防止）', () => {
@@ -367,5 +399,44 @@ describe('overlay-effect: レアリティ別マップ', () => {
     // 手書きする場合も同様にエンコードすれば区切り文字を含むカスタム
     // レアリティ名を安全に指定できることを確認する
     expect(parseRarityEffectMap('boss%2Crare:fireworks', null)).toEqual({ 'boss,rare': 'fireworks' })
+  })
+})
+
+describe('overlay-effect: resolveOverlayAuraColors（縁の炎の色解決）', () => {
+  it('ビルトインのグラデーションクラスを枠と同じ HEX へ解決する', () => {
+    // legendary の枠と同じ色（tailwind-palette の yellow-400 / orange-500）
+    expect(resolveOverlayAuraColors('from-yellow-400 to-orange-500', {})).toEqual([
+      '#fdc700',
+      '#ff6900',
+    ])
+    // 未設定カスタムレアリティ等の既定枠（gray-400 / gray-600）も同じ対応表で引く
+    expect(resolveOverlayAuraColors('from-gray-400 to-gray-600', {})).toEqual([
+      '#99a1af',
+      '#4a5565',
+    ])
+  })
+
+  it('カスタムレアリティ色（--rarity-gradient-* 変数）をプリセットより優先する', () => {
+    const styleVars = {
+      '--rarity-gradient-from': '#12ab34',
+      '--rarity-gradient-to': '#cd56ef',
+    }
+    // var() 参照クラス（カスタム色あり）でもプリセットクラスでも同じ変数値を使う
+    expect(
+      resolveOverlayAuraColors(
+        'from-[color:var(--rarity-gradient-from)] to-[color:var(--rarity-gradient-to)]',
+        styleVars,
+      ),
+    ).toEqual(['#12ab34', '#cd56ef'])
+    expect(resolveOverlayAuraColors('from-yellow-400 to-orange-500', styleVars)).toEqual([
+      '#12ab34',
+      '#cd56ef',
+    ])
+  })
+
+  it('解決できない入力はフォールバック色に倒す（エラーにしない）', () => {
+    const [from, to] = resolveOverlayAuraColors('not-a-gradient', null)
+    expect(from).toMatch(/^#[0-9a-f]{6}$/)
+    expect(to).toMatch(/^#[0-9a-f]{6}$/)
   })
 })

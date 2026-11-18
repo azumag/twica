@@ -21,8 +21,11 @@ import {
   parseRarityEffectMap,
   resolveEffectForRarity,
   generateOverlayEffectParticles,
+  resolveOverlayAuraColors,
   DEFAULT_RARITY_EFFECT_MAP,
   OVERLAY_EFFECT_PARTICLE_CONFIG,
+  OVERLAY_EFFECT_OVERFLOW_PX,
+  OVERLAY_AURA_COLOR_VARS,
 } from "@/lib/overlay-effect";
 import {
   getRarityStylePresentation,
@@ -2243,6 +2246,14 @@ export default function OverlayPage() {
     label: getRarityDisplayInfo(result.card.rarity).label,
     color: rarityStyle.colorClass,
   };
+  // aura（縁の炎）の炎色は枠のグラデーション色と同じ2色を使う
+  // （カスタムレアリティ色があればその HEX、なければプリセットを HEX 解決）。
+  const [auraColorFrom, auraColorTo] = resolveOverlayAuraColors(
+    rarityColor,
+    // CSSProperties はカスタムプロパティのインデックス署名を持たないため、
+    // 実体が Record<string, string> であることを明示して渡す。
+    rarityStyleVars as unknown as Record<string, unknown>,
+  );
 
   // 画像のみ表示モードかどうかを判定
   // imageOnlyが有効、またはautoPortraitが有効で縦長画像の場合
@@ -2266,9 +2277,27 @@ export default function OverlayPage() {
     const config = OVERLAY_EFFECT_PARTICLE_CONFIG[activeEffectStyle];
     const animationClassName = config.animationClassName;
 
+    // Issue #2088: レイヤー箱とクリップはスタイルで分ける。
+    // - 通常の粒子スタイル: カードより OVERLAY_EFFECT_OVERFLOW_PX 外側の箱に
+    //   クリップし、「カード縁で粒子が途中切れする」代わりに背後から縁の外へ
+    //   はみ出して見せる。クリップはこのレイヤー自身の overflow-hidden のみ。
+    // - aura（縁の炎）: left/top の % がカード縁と一致するよう inset:0 の箱に
+    //   置き、炎が枠の外へ出られるようクリップしない（上昇量は生成側で
+    //   画面内に収まる範囲に抑えてある）。炎色は --fx-aura-* 変数で注入する。
+    const isAura = activeEffectStyle === "aura";
+    const layerStyle = (
+      isAura
+        ? {
+            [OVERLAY_AURA_COLOR_VARS.from]: auraColorFrom,
+            [OVERLAY_AURA_COLOR_VARS.to]: auraColorTo,
+          }
+        : { inset: `-${OVERLAY_EFFECT_OVERFLOW_PX}px` }
+    ) as CSSProperties;
+
     return (
       <div
-        className="pointer-events-none absolute inset-0 overflow-hidden"
+        className={`pointer-events-none absolute ${isAura ? "inset-0" : "overflow-hidden"}`}
+        style={layerStyle}
         // スクリーンリーダーには無意味な装飾なので非読み上げに
         aria-hidden="true"
       >
@@ -2329,6 +2358,11 @@ export default function OverlayPage() {
           // Image only mode: shows just the image without card frame
           // autoPortraitの場合は付帯情報オプションで追加情報を表示可能
           <div className="relative flex flex-col items-center">
+            {/* エフェクトレイヤー: DOM 順で画像より前に置き背面へ回す。
+                z-index:-1 は root の scale transition が作る stacking context に
+                依存するため使わない。root 内に留めているため退場の fade/scale と
+                unmount に追従し、unmount 後に粒子が残るリークも起きない。 */}
+            {renderOverlayEffects()}
             {/* ユーザー名（画像の上、オプションで表示） */}
             {/* Username above image (optional) */}
             {options.autoPortrait && isPortraitImage && options.portraitShowUsername && (
@@ -2397,13 +2431,14 @@ export default function OverlayPage() {
                 )}
               </div>
             )}
-
-            {renderOverlayEffects()}
           </div>
         ) : (
           // 通常のカード表示モード
           // Normal card display mode with frame and text
           <>
+            {/* エフェクトレイヤー: DOM 順でカードより前に置き背面へ回す
+                （imageOnly 側と同じ理由。z-index:-1 は使わない）。 */}
+            {renderOverlayEffects()}
             {/* Card Container - matches Collection style */}
             <div
               className={`relative ${cardSizeClass} overflow-hidden rounded-2xl bg-gradient-to-br ${rarityColor} p-1 shadow-2xl ${rarityGlow}`}
@@ -2462,8 +2497,6 @@ export default function OverlayPage() {
                 )}
               </div>
             </div>
-
-            {renderOverlayEffects()}
           </>
         )}
       </div>
