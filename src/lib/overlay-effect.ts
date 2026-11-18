@@ -1,4 +1,6 @@
 import { MAX_RARITY_KEY_LENGTH } from "./constants";
+import { RARITY_STYLE_CSS_VARS } from "./rarity";
+import { TAILWIND_PALETTE_HEX } from "./tailwind-palette";
 
 /**
  * Overlay effect style: shared single source of truth.
@@ -92,6 +94,25 @@ export function isOverlayEffectStyle(value: unknown): value is OverlayEffectStyl
 export function normalizeOverlayEffectStyle(value: unknown): OverlayEffectStyle {
   return isOverlayEffectStyle(value) ? value : DEFAULT_OVERLAY_EFFECT_STYLE;
 }
+
+/* -------------------------------------------------------------------------- */
+/* レイヤーのカード外はみ出し量（Issue #2088 (2) カード外へのはみ出し）             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 粒子レイヤーをカードの外側へ何 px 拡げるか。
+ *
+ * overlay page は粒子レイヤーを `inset: -N px` の箱（カードより一回り大きい
+ * 領域）に置き、レイヤー自身の `overflow: hidden` でその箱の縁にクリップする。
+ * これにより「カードの縁で粒子が途中切れする」代わりに「カードの背後から
+ * 粒子が外へはみ出して見える」演出になる。N が大きすぎると OBS の表示領域
+ * （800x600 を想定）から粒子が画面外へ消えて見えなくなるため、実測した
+ * 800x600 での上下余白 76px を超えない範囲（目安 48〜64px）から 56 を選ぶ。
+ *
+ * DOM 順でカードより前に置く（＝背面）前提の値で、カード全面を覆う
+ * 前面配置と違って「縁から覗く」量としてちょうどよい幅になっている。
+ */
+export const OVERLAY_EFFECT_OVERFLOW_PX = 56;
 
 /* -------------------------------------------------------------------------- */
 /* レアリティ → エフェクトのマッピング                                          */
@@ -363,7 +384,7 @@ const FIREWORK_BURSTS: readonly {
  * アニメーション未適用（fill-mode: none）× inline opacity 未指定となり、
  * 粒子が不透明のまま静止して見えるため。fireworks はバーストの同時性を優先して
  * 正の delay を保ち、CSS の fill-mode: backwards で開始前を透明にする。
- * aura は元から負の delay で、かつ複数の光輪を常時重ねる演出なので対象外。
+ * aura は負の delay のみ（縁の炎が常時燃え続ける位相ずらし）なので対象外。
  */
 export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
   Record<Exclude<OverlayEffectStyle, "none">, OverlayEffectParticleConfig>
@@ -492,20 +513,28 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     },
   },
 
-  // 流れ星: 尾を引く光の筋が斜めに横切る
+  // 流れ星: 尾を引く光の筋が斜めに横切る。
+  // Issue #2088 (2): 粒子レイヤーがカード外へ OVERLAY_EFFECT_OVERFLOW_PX だけ
+  // はみ出す箱にクリップされるのに対し、従来の stars は尾+移動量で最大
+  // 252.7px も突出し、クリップ境界で筋が断ち切れて見えた。専用の扱いとして
+  // 出現位置を左上寄りに寄せ（spawnLeft [-8,40] / spawnTop [0,45]）、尾の長さを
+  // [45,85]、移動量を dx [100,170] / dy [55,120] に縮める。標準カード
+  // （w-80 ≒ 320px、レイヤー幅 432px）での最右翼端到達点は
+  // 0.40*432 + 170 + 85*cosθ ≒ 415px < 432px（= カード右端 376px + 56px）で、
+  // カード外へ最大約 39px はみ出しつつクリップ境界内に収まる。
   stars: {
     animationClassName: "animate-overlay-effect-stars",
-    spawnLeftPercentRange: [-5, 70],
-    spawnTopPercentRange: [0, 55],
+    spawnLeftPercentRange: [-8, 40],
+    spawnTopPercentRange: [0, 45],
     durationSecRange: [1.3, 2.3],
     startAtRandomPhase: true,
     particleCount: 16,
     buildParticle: () => {
-      const length = rand(50, 110);
+      const length = rand(45, 85);
       const color = pick(STAR_COLORS);
       // 進行方向（右下がり）へ移動。角度から見た目の回転も一致させる
-      const dx = rand(160, 300);
-      const dy = rand(90, 200);
+      const dx = rand(100, 170);
+      const dy = rand(55, 120);
       const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
       return {
         content: "",
@@ -635,35 +664,134 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     },
   },
 
-  // オーラ: 既存のカード内クリップ領域に、中心が透けた淡い光輪を3層だけ重ねる。
-  // 幅・高さ・ゆらぎを相対値にして、画像のみ／縦横／縮小表示でも同じ比率を保つ。
-  // 負の開始遅延で表示直後から光を見せ、外側のhaloや新しい描画レイヤーは作らない。
+  // 縁の炎: カードの縁に沿って多数の小さな炎粒子を配置し、上方向へ揺らぎ
+  // ながら昇って消える演出（Issue #2088 (3)）。従来はカード内側に重なる
+  // 76/86/96% の円形リング3層だったが、「枠の外に炎が見える」見た目へ変える
+  // ため overlay page 側でカード背面（DOM 順でカードより前）の `inset:0`
+  // レイヤーに描画する。ここで生成する left/top の % はそのレイヤー箱＝
+  // カード枠と一致する（通常表示はカード容器、imageOnly は画像を含む
+  // 表示列）前提の座標系。
+  //
+  // 粒子の色は枠のレアリティ色に合わせる。色自体は生成時に決めず
+  // `var(--fx-aura-from)` / `var(--fx-aura-to)` を参照し、レイヤー側が
+  // resolveOverlayAuraColors で解決した枠グラデーション色を CSS 変数として
+  // 当てる（カスタムレアリティの HEX もそのまま炎色になる）。
   aura: {
     animationClassName: "animate-overlay-effect-aura",
-    spawnLeftPercentRange: [2, 12],
-    spawnTopPercentRange: [2, 12],
-    durationSecRange: [3.4, 4.6],
-    delaySecRange: [-2.4, 0],
-    particleCount: 3,
+    // 位置は buildParticle が縁上へ直接指定する。範囲そのものは使われないが
+    // 契約上 [0,100] の % 座標に収めるため目安として保持する。
+    spawnLeftPercentRange: [0, 100],
+    spawnTopPercentRange: [0, 100],
+    durationSecRange: [0.9, 1.7],
+    // 負の delay で表示開始時点から炎が燃え続けている位相にする（環境系と同じ
+    // 意図だが、位相範囲を遅延範囲として直に宣言する従来どおりの形式を維持）。
+    delaySecRange: [-1.4, 0],
+    // 周囲4辺に12個ずつ。320px の縁でおよそ26〜27px間隔の炎になる密度。
+    particleCount: 48,
     buildParticle: (index) => {
-      const size = 76 + index * 10;
-      const inset = `${(100 - size) / 2}%`;
+      // index%4 で4辺へ順に割り当て、辺上の位置は等間隔＋ジッターで散らす
+      // （等間隔だけだと数直線的に並んで見え、完全乱数だと疎密が出るため）。
+      const particlesPerEdge = 12;
+      const edge = index % 4;
+      const slot = Math.floor(index / 4);
+      const along = ((slot + rand(0.15, 0.85)) / particlesPerEdge) * 100;
+      // 炎の中心を縁から 0〜1.5% 内側へずらし、基部が枠の裏に食い込んで
+      // 「枠の後ろから炎が出ている」ように見せる。背面レイヤーなので
+      // 粒子の内側半分はカードに隠れ、外側半分だけが見える。
+      const edgeInset = rand(0, 1.5);
+      const left = edge === 1 ? 100 - edgeInset : edge === 3 ? edgeInset : along;
+      const top = edge === 2 ? 100 - edgeInset : edge === 0 ? edgeInset : along;
+
+      // 幅に対して縦長の揺らぐ粒。径は燃え立つ炎らしさと密度のバランスから。
+      const width = rand(5, 11);
+      const height = width * rand(1.4, 2.2);
+      // 交互に from/to を主色にして枠グラデーションの両端の色を炎に混ぜる。
+      // コアは白熱（白）→ 縁色 → 透明 の順で、どのレアリティ色でも炎らしい
+      // 中心の明るさが出る構成。
+      const mid = index % 2 === 0 ? "var(--fx-aura-from)" : "var(--fx-aura-to)";
+      const outer = index % 2 === 0 ? "var(--fx-aura-to)" : "var(--fx-aura-from)";
       return {
         content: "",
-        left: inset,
-        top: inset,
+        left: `${left.toFixed(2)}%`,
+        top: `${top.toFixed(2)}%`,
         visualStyle: {
-          width: `${size}%`,
-          height: `${size}%`,
-          borderRadius: "50%",
-          backgroundImage:
-            "radial-gradient(ellipse at center, transparent 54%, rgba(216,180,254,0.20) 62%, rgba(165,243,252,0.30) 67%, rgba(216,180,254,0.12) 72%, transparent 80%)",
-          "--fx-sway": `${rand(1, 2).toFixed(2)}%`,
+          width: px(width),
+          height: px(height),
+          // 上端を細くした雫形（炎のシルエット）
+          borderRadius: "50% 50% 50% 50% / 68% 68% 32% 32%",
+          backgroundImage: `radial-gradient(ellipse at 50% 80%, rgba(255,255,255,0.9) 0%, ${mid} 42%, ${outer} 68%, transparent 82%)`,
+          boxShadow: `0 0 ${px(width)} ${mid}`,
+          "--fx-rise": px(rand(28, 56)),
+          "--fx-sway": px(rand(3, 9)),
+          "--fx-peak": rand(0.7, 1).toFixed(2),
         },
       };
     },
   },
 } as const;
+
+/* -------------------------------------------------------------------------- */
+/* aura（縁の炎）の色解決                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * aura の炎粒子が参照する CSS 変数名。粒子の backgroundImage/boxShadow は
+ * この2変数を `var(...)` で参照し、実色は overlay page が aura レイヤー
+ * 要素へ inline style で当てる（粒子生成層は描画コンテキストを知らないため
+ * 「色は呼び出し側が注入する」分離にする）。
+ */
+export const OVERLAY_AURA_COLOR_VARS = {
+  from: "--fx-aura-from",
+  to: "--fx-aura-to",
+} as const;
+
+/**
+ * 色解決に失敗したときのフォールバック（炎らしい琥珀→橙）。
+ * 通常経路では枠グラデーションが常に解決できるため、クラス形式・変数欠落など
+ * 想定外の入力に対する安全側の値。
+ */
+const OVERLAY_AURA_FALLBACK_COLORS = ["#fbbf24", "#f97316"] as const;
+
+/**
+ * aura（縁の炎）の炎色を、カード枠と同じレアリティのグラデーション色から
+ * 解決する（Issue #2088 (3): 「粒子の色は枠のレアリティ色に合わせる」）。
+ *
+ * 解決順:
+ * 1. カスタムレアリティ色: getRarityStylePresentation が styleVars に展開した
+ *    `--rarity-gradient-from` / `--rarity-gradient-to` の HEX をそのまま使う。
+ * 2. ビルトイン/未設定: `from-{hue}-{shade} to-{hue}-{shade}` 形式の
+ *    グラデーションクラスを TAILWIND_PALETTE_HEX で HEX へ引く
+ *    （rarity-styles.ts の legacy 形式正規化と同じ対応表）。
+ * 3. どちらも解決できない異常入力はフォールバック色に倒す。
+ *
+ * 返り値は [from, to]。overlay page は aura レイヤーへ
+ * `--fx-aura-from` / `--fx-aura-to` として当てる。
+ */
+export function resolveOverlayAuraColors(
+  gradientClass: string,
+  styleVars: Record<string, unknown> | null | undefined,
+): readonly [string, string] {
+  const customFrom = styleVars?.[RARITY_STYLE_CSS_VARS.gradientFrom];
+  const customTo = styleVars?.[RARITY_STYLE_CSS_VARS.gradientTo];
+  if (
+    typeof customFrom === "string" && customFrom !== ""
+    && typeof customTo === "string" && customTo !== ""
+  ) {
+    return [customFrom, customTo];
+  }
+
+  const preset = /^from-([a-z]+-[0-9]{2,3})\s+to-([a-z]+-[0-9]{2,3})$/.exec(
+    gradientClass.trim(),
+  );
+  if (preset) {
+    const from = TAILWIND_PALETTE_HEX[preset[1]];
+    const to = TAILWIND_PALETTE_HEX[preset[2]];
+    if (from && to) {
+      return [from, to];
+    }
+  }
+  return [OVERLAY_AURA_FALLBACK_COLORS[0], OVERLAY_AURA_FALLBACK_COLORS[1]];
+}
 
 export interface OverlayEffectParticle extends OverlayEffectParticlePresentation {
   left: string;
