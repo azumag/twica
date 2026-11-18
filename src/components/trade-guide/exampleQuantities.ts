@@ -25,3 +25,10 @@ export const EXAMPLE_AUCTION_BIDS = [
   { key: "golem", quantity: 1, picked: true },
   { key: "pixie", quantity: 2, picked: false },
 ] as const;
+
+/**
+ * Example for the hub's per-collection list (#2081): a collection with this
+ * many open listings. It must exceed TRADE_COLLECTION_PREVIEW_SIZE so the
+ * "Show all N" button in the explanation is one that could actually appear.
+ */
+export const EXAMPLE_COLLECTION_TOTAL = 8;

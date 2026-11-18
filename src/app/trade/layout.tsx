@@ -43,6 +43,13 @@ export const metadata: Metadata = {
  * still hidden, so a general-purpose page must not advertise the feature.
  * It sits in the layout (not in each page) so the board, the listing flow,
  * the auction detail and My trades all get it without repeating the markup.
+ *
+ * #2081: the link stays at the top of the content column (right-aligned with
+ * the same max-w-4xl the pages use) rather than inside the sidebar. The
+ * sidebar's "トレード" item only exists for logged-in users, but the
+ * per-channel board is also reachable anonymously — where there is no
+ * sidebar — so the guide entry must live in the content column that both
+ * branches share, next to the page heading the sidebar item leads to.
  */
 export default async function TradeLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();

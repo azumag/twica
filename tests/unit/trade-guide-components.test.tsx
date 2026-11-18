@@ -12,6 +12,7 @@ import ExchangeFigure from "@/components/trade-guide/ExchangeFigure";
 import FaqAccordion from "@/components/trade-guide/FaqAccordion";
 import FlowSteps from "@/components/trade-guide/FlowSteps";
 import GuideIcon, { GUIDE_ICON_NAMES } from "@/components/trade-guide/GuideIcon";
+import HubMock from "@/components/trade-guide/HubMock";
 import ModeCard from "@/components/trade-guide/ModeCard";
 import PhaseChips, { PHASE_CHIP_CLASS } from "@/components/trade-guide/PhaseChips";
 import RuleList from "@/components/trade-guide/RuleList";
@@ -334,6 +335,31 @@ describe("settings mock-ups", () => {
     expect(tabs[0].className).toContain("bg-purple-600");
     expect(tabs[1].className).toContain("bg-gray-800");
     expect(container.querySelector('[role="group"]')!.getAttribute("aria-label")).toBe("Board");
+  });
+});
+
+describe("HubMock", () => {
+  // #2081: 入口（サイドバーの項目）とハブの構造（見出し・出品ボタン・コレクション別一覧）を
+  // 実画面と同じ言葉で示す。装飾だけでなくテキストの並びを検査する。
+  it("shows the sidebar entry and the hub chrome with the labels it is given", () => {
+    const { container } = render(
+      <HubMock
+        label="The trade hub"
+        sidebarLabel="Sidebar"
+        navItem="Trade"
+        hubTitle="Trade"
+        createButton="Create offer"
+        myTradesTitle="My trades"
+        collectionsTitle="Listings by collection"
+        expandButton="Show all 8"
+      />,
+    );
+    expect(container.querySelector('[role="group"]')!.getAttribute("aria-label")).toBe("The trade hub");
+    for (const text of ["Sidebar", "Create offer", "My trades", "Listings by collection", "Show all 8"]) {
+      expect(container.textContent).toContain(text);
+    }
+    // The highlighted sidebar item uses the nav's active colour, the create button the hub's primary style.
+    expect(container.querySelector("span.bg-purple-600")!.textContent).toContain("Trade");
   });
 });
 

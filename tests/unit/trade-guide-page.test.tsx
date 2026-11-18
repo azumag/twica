@@ -48,12 +48,17 @@ vi.mock("next-intl/server", async () => {
 });
 
 import TradeGuidePage, { metadata } from "@/app/guide/trade/page";
-import { TRADE_MAX_OPEN_OFFERS, TRADE_MAX_WANTED_QUANTITY } from "@/lib/trade";
+import {
+  TRADE_COLLECTION_PREVIEW_SIZE,
+  TRADE_MAX_OPEN_OFFERS,
+  TRADE_MAX_WANTED_QUANTITY,
+} from "@/lib/trade";
 import {
   EXAMPLE_ACCEPT_GET,
   EXAMPLE_ACCEPT_GIVE,
   EXAMPLE_AUCTION_BIDS,
   EXAMPLE_AUCTION_DURATION_HOURS,
+  EXAMPLE_COLLECTION_TOTAL,
   EXAMPLE_OFFER_GIVE,
   EXAMPLE_OFFER_WANT,
 } from "@/components/trade-guide/exampleQuantities";
@@ -118,7 +123,7 @@ describe.each(["ja", "en"] as const)("/guide/trade (%s)", (locale) => {
   it("renders every message of the namespace (no orphan copy, no raw key paths)", async () => {
     const page = readMessages(locale).tradeGuidePage;
     const { container } = render(await TradeGuidePage());
-    // Visible text plus aria-labels: a few strings (tabsLabel / termsLabel) are accessible names.
+    // Visible text plus aria-labels: a few strings (hubLabel / boardLabel / termsLabel) are accessible names.
     const labels = [...container.querySelectorAll("[aria-label]")].map((el) => el.getAttribute("aria-label"));
     const everything = `${container.textContent ?? ""}\n${labels.join("\n")}`;
 
@@ -146,7 +151,15 @@ describe.each(["ja", "en"] as const)("/guide/trade (%s)", (locale) => {
     // The labels are looked up per hour value; make sure the lookup covers the constant.
     expect([...TRADE_AUCTION_DURATIONS_HOURS]).toEqual([24, 72, 168]);
 
-    expect(text).toContain(fill(page.offer.steps.want.description, { max: TRADE_MAX_WANTED_QUANTITY }));
+    expect(text).toContain(fill(page.offer.steps.cards.description, { max: TRADE_MAX_WANTED_QUANTITY }));
+    // #2081: the {preview}/{count} of the per-collection lists come from the same
+    // constants the hub uses, so a change there cannot leave the guide stale.
+    expect(text).toContain(
+      fill(page.accept.steps.find.description, {
+        preview: TRADE_COLLECTION_PREVIEW_SIZE,
+        count: EXAMPLE_COLLECTION_TOTAL,
+      }),
+    );
     expect(text).toContain(fill(page.offer.rules.limit, { max: TRADE_MAX_OPEN_OFFERS }));
     expect(text).toContain(fill(page.auction.seller.create.description, { durations }));
     expect(text).toContain(fill(page.auction.seller.select.description, { hours }));
@@ -179,6 +192,9 @@ describe.each(["ja", "en"] as const)("/guide/trade (%s)", (locale) => {
     }
     expect(EXAMPLE_AUCTION_BIDS.filter((bid) => bid.picked)).toHaveLength(1);
     expect(EXAMPLE_AUCTION_BIDS.length).toBeLessThanOrEqual(TRADE_MAX_ACTIVE_BIDS);
+    // #2081: the "Show all N" example must exceed the real first-page size, or the
+    // button it illustrates could never appear.
+    expect(EXAMPLE_COLLECTION_TOTAL).toBeGreaterThan(TRADE_COLLECTION_PREVIEW_SIZE);
   });
 
   it("draws the example quantities into the figures (badge = the number in the caption)", async () => {
@@ -211,6 +227,14 @@ describe.each(["ja", "en"] as const)("/guide/trade (%s)", (locale) => {
       messages.trade.tabCrossChannel,
       messages.trade.tabAuction,
       messages.trade.myTradesLink,
+      // #2081 hub mock: the sidebar entry, the hub heading/button and the
+      // per-collection list controls are drawn from the real labels
+      messages.navigation.trade,
+      messages.trade.hubTitle,
+      messages.trade.hubCreateButton,
+      messages.trade.myTradesTitle,
+      messages.trade.collectionsTitle,
+      fill(messages.trade.collectionExpand, { count: EXAMPLE_COLLECTION_TOTAL }),
       // settings panel mock
       messages.tradeSettings.title,
       messages.tradeSettings.form.tradeEnabled,
@@ -282,7 +306,8 @@ describe.each(["ja", "en"] as const)("/guide/trade (%s)", (locale) => {
     const numberOf = (list: Element) =>
       [...list.children].map((li) => li.querySelector("span.rounded-full")?.textContent);
     expect(numberOf(container.querySelector("section#accept ol")!)).toEqual(["1", "2", "3"]);
-    expect(numberOf(container.querySelector("section#offer ol")!)).toEqual(["1", "2", "3"]);
+    // #2081: kind → two collections → cards → confirm
+    expect(numberOf(container.querySelector("section#offer ol")!)).toEqual(["1", "2", "3", "4"]);
     // auction: [0] is the timeline (no number badges), then the seller and bidder flows
     const auctionLists = [...container.querySelectorAll("section#auction ol")];
     expect(auctionLists).toHaveLength(3);
