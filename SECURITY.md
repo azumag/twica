@@ -157,6 +157,39 @@ summarized in the table above; dev/test graph overlap with issue #1899 is resolv
 major bump on the i18n path (plural/select syntax). Preview verification of the i18n real
 path is tracked as an external wait item (owner-only browser check).
 
+#### Next.js GHSA-mfr8-8qww-v76h (2026-11-18) - RESOLVED
+
+**Status:** Resolved (manifest and lockfile updated to patched version)
+**Refs:** issue #2092 (parent issue #2087, dashboard performance handoff item 6)
+
+**Updated dependencies:**
+
+| Package | Previous | Updated | Advisory |
+|---|---:|---:|---|
+| next | 16.4.2 | 16.4.6 | GHSA-mfr8-8qww-v76h |
+
+Affected range is `>=16.3.0, <=16.4.4`; the official patched release is 16.4.5 and
+16.4.6 (latest patch at the time) additionally carries the other November 2026
+security-release fixes. The lockfile entries for `next`, `@next/env`, and the eight
+`@next/swc-*` optional platform binaries were moved to 16.4.6 together.
+
+**Applicability assessment:**
+
+| Advisory / Package | 依存経路 | 実行環境 | 呼び出し | 攻撃者制御入力 |
+|---|---|---|---|---|
+| Next.js cross-tenant cache disclosure (GHSA-mfr8-8qww-v76h) | next (`'use cache'` を `unstable_cache()` 経由で呼ぶ経路) | OpenNext / Cloudflare Workers | `unstable_cache()` は route handler / lib で使用中だが、`'use cache'` ディレクティブは `src/` 全体に存在せず、`next.config.ts` でも Cache Components (`cacheComponents` / `dynamicIO` / `ppr`) は無効。脆弱性は両者の併用が前提のため現構成では条件不成立 | 該当なし（更新は監査解消の衛生措置として実施） |
+
+**OpenNext 適用条件（前例 #1898/#1912）:**
+`@opennextjs/cloudflare@1.20.12` の peer range は `next >=15.5.28 <16 || >=16.4.1` であり、
+16.4.6 を包含するため OpenNext の更新は不要。#1912 の全ルート 500 は 16.2→16.4 の
+マイナー跨ぎで起きた manifest 不整合であり、16.4.x 内のパッチ更新では再発しない想定。
+CI の `workers:build` 後 smoke (`scripts/smoke-opennext-worker.sh`) が同種の
+manifest 不整合を検出する。
+
+**Verification:**
+- deps.dev / javascriptlibraries.com: `next@16.4.6` に direct advisories なし
+- 本作業環境では npm 実行が不可のため、`npm audit` の最終確認は PR の CI を正とする
+
 ### Security Best Practices
 
 #### Session Management
