@@ -2084,13 +2084,13 @@ describe('OverlayPage', () => {
   })
 
   it.each([
-    { label: '通常表示', query: '', width: 600, height: 600, renderedWidth: '300' },
-    { label: '画像のみ', query: '&imageOnly=true', width: 600, height: 600, renderedWidth: '320' },
-    { label: '縦長画像', query: '', width: 600, height: 900, renderedWidth: '320' },
-    { label: '横長画像', query: '', width: 900, height: 600, renderedWidth: '300' },
-    { label: '縮小カード', query: '', width: 200, height: 200, renderedWidth: '180' },
-    { label: '縮小縦長画像', query: '', width: 200, height: 300, renderedWidth: '192' },
-  ])('aura はカード背面の縁レイヤーに描画する($label)', async ({ query, width, height, renderedWidth }) => {
+    { label: '通常表示', query: '', width: 600, height: 600, renderedWidth: '300', imageOnly: false },
+    { label: '画像のみ', query: '&imageOnly=true', width: 600, height: 600, renderedWidth: '320', imageOnly: true },
+    { label: '縦長画像と付帯情報', query: '&pUser=true&pName=true', width: 600, height: 900, renderedWidth: '320', imageOnly: true },
+    { label: '横長画像', query: '', width: 900, height: 600, renderedWidth: '300', imageOnly: false },
+    { label: '縮小カード', query: '', width: 200, height: 200, renderedWidth: '180', imageOnly: false },
+    { label: '縮小縦長画像', query: '', width: 200, height: 300, renderedWidth: '192', imageOnly: true },
+  ])('aura の炎を表示領域の背面に1枚だけ描画する($label)', async ({ query, width, height, renderedWidth, imageOnly }) => {
     vi.useFakeTimers()
     class LoadedImage {
       onload: (() => void) | null = null
@@ -2106,28 +2106,53 @@ describe('OverlayPage', () => {
       id: 'card-aura', name: 'Aura Card', rarity: 'legendary', image_url: 'https://example.com/aura.png',
     })
 
-    // Issue #2088 (3): aura はカード縁と一致する inset:0 の背面レイヤーに置く。
-    // 炎が枠の外へ出られるよう overflow-hidden ではクリップしない。
-    const particles = container.querySelectorAll('.animate-overlay-effect-aura')
-    expect(particles).toHaveLength(OVERLAY_EFFECT_PARTICLE_CONFIG.aura.particleCount)
+    // 炎は連続した面として1枚のキャンバスに描画され、画像・枠の後ろに重なる。
     const cardRoot = container.querySelector('[data-overlay-card="true"]')
-    const effectLayer = particles[0].parentElement as HTMLElement
+    const effectLayer = container.querySelector<HTMLElement>('[data-overlay-aura="true"]')!
     expect(effectLayer).toHaveAttribute('aria-hidden', 'true')
     expect(effectLayer).toHaveClass('pointer-events-none', 'absolute', 'inset-0')
     expect(effectLayer).not.toHaveClass('overflow-hidden')
     expect(effectLayer).not.toHaveClass('z-20')
-    expect(effectLayer?.closest('[data-overlay-card="true"]')).toBe(cardRoot)
-    // 枠のレアリティ色（legendary = yellow-400→orange-500 の HEX 解決）が
-    // --fx-aura-* 変数としてレイヤーへ注入される
+    expect(cardRoot).toContainElement(effectLayer)
+    expect(effectLayer.querySelectorAll('canvas')).toHaveLength(1)
     expect(effectLayer.style.getPropertyValue('--fx-aura-from')).toBe('#fdc700')
     expect(effectLayer.style.getPropertyValue('--fx-aura-to')).toBe('#ff6900')
-    // DOM 順でカード内容より前＝背面に置く（z-index:-1 依存にしない方式）
+    expect(effectLayer.style.borderRadius).toBe(imageOnly ? '8px' : '16px')
     const cardImage = screen.getByAltText('Aura Card')
-    expect(
-      effectLayer.compareDocumentPosition(cardImage) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
+    if (imageOnly) {
+      expect(effectLayer.parentElement).toBe(cardImage.parentElement)
+      expect(effectLayer.nextElementSibling).toBe(cardImage)
+      expect(cardImage).toHaveClass('relative')
+    } else {
+      expect(effectLayer.parentElement).toBe(cardRoot)
+      expect(effectLayer.nextElementSibling).toHaveClass('relative', 'rounded-2xl')
+      expect(effectLayer.nextElementSibling).toContainElement(cardImage)
+    }
+    if (query.includes('pUser')) {
+      // 縦長画像の上下の付帯情報は画像ラッパーの外に置き、立ち上がる炎より前に描く。
+      const imageWrapper = effectLayer.parentElement!
+      const viewerBadge = imageWrapper.previousElementSibling
+      const cardDetails = imageWrapper.nextElementSibling
+      expect(viewerBadge).toContainElement(screen.getByText('Viewer が引いたカード'))
+      expect(cardDetails).toContainElement(screen.getByText('Aura Card'))
+      expect(viewerBadge).toHaveClass('relative', 'z-10')
+      expect(cardDetails).toHaveClass('relative', 'z-10')
+    }
     expect(cardImage).toHaveAttribute('width', renderedWidth)
-    expect(container.querySelectorAll('[class*="animate-overlay-effect-"]')).toHaveLength(particles.length)
+    expect(container.querySelectorAll('[class*="animate-overlay-effect-"]')).toHaveLength(0)
+  })
+
+  it('画像のみ表示で画像のURLがない場合は、代替表示の縁にauraを描画する', async () => {
+    vi.useFakeTimers()
+    const { container } = await renderWithGacha('?imageOnly=true&fx=epic:aura', {
+      id: 'card-aura', name: 'Aura Card', rarity: 'epic',
+    })
+
+    const aura = container.querySelector('[data-overlay-aura="true"]')!
+    const fallback = screen.getByRole('img', { name: 'Aura Card の画像を表示できないため代替表示' })
+    expect(aura.parentElement).toBe(fallback.parentElement)
+    expect(aura.nextElementSibling).toBe(fallback)
+    expect(fallback).toHaveClass('relative')
   })
 
   it.each([
@@ -2193,6 +2218,7 @@ describe('OverlayPage', () => {
     })
 
     expect(container.querySelectorAll('[class*="animate-overlay-effect-"]')).toHaveLength(0)
+    expect(container.querySelector('[data-overlay-aura="true"]')).toBeNull()
   })
 
   it('複数の効果音ルールをルールごとにプリロードする', async () => {

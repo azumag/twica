@@ -11,7 +11,7 @@ import {
  * prefers-reduced-motion 環境では、overlay エフェクトは「動きを止めつつ
  * 見える状態を保つ」方針（Issue #2066 で DSH が推奨・採用された (a)）。
  * globals.css の @media (prefers-reduced-motion: reduce) ブロックが、
- * aura 以外の9スタイルに animation: none + 静的な不透明 opacity を
+ * 粒子を使う9スタイルに animation: none + 静的な不透明 opacity を
  * 与えることを、実際の CSS ファイルと突き合わせて担保する。
  *
  * 以前の 2 秒同期フェード（overlay-effect-reduced-fade）は周期の端で
@@ -100,15 +100,10 @@ function peakOpacity(style: string): string {
   return Math.max(...values.map(Number)).toString()
 }
 
-/** aura 以外の9スタイル（reduced-motion で静止表示する対象） */
-const STATIC_STYLES = ANIMATED_OVERLAY_EFFECT_STYLES.filter(
-  (style) => style !== 'aura',
-)
-
 describe('overlay-effect: reduced-motion 契約（Issue #2066 方針(a)）', () => {
   it('9スタイルが全て reduced-motion ブロックで対象になっている', () => {
     // 方針の対象漏れ（スタイル追加時の置き忘れ）を検出する
-    expect(STATIC_STYLES).toEqual([
+    expect(ANIMATED_OVERLAY_EFFECT_STYLES).toEqual([
       'sparkle',
       'confetti',
       'hearts',
@@ -119,7 +114,7 @@ describe('overlay-effect: reduced-motion 契約（Issue #2066 方針(a)）', () 
       'snow',
       'coins',
     ])
-    for (const style of STATIC_STYLES) {
+    for (const style of ANIMATED_OVERLAY_EFFECT_STYLES) {
       expect(
         OVERLAY_EFFECT_PARTICLE_CONFIG[style].animationClassName,
       ).toBe(`animate-overlay-effect-${style}`)
@@ -127,7 +122,7 @@ describe('overlay-effect: reduced-motion 契約（Issue #2066 方針(a)）', () 
     }
   })
 
-  it.each(STATIC_STYLES)(
+  it.each(ANIMATED_OVERLAY_EFFECT_STYLES)(
     '%s は animation: none と静的な不透明 opacity を持つ',
     (style) => {
       const declarations = declarationsOf(style)
@@ -137,13 +132,6 @@ describe('overlay-effect: reduced-motion 契約（Issue #2066 方針(a)）', () 
       expect(declarations.opacity).toBe(peakOpacity(style))
     },
   )
-
-  it('aura は従来の静的表示（animation: none + transform: none + opacity 0.55）を維持する', () => {
-    const declarations = declarationsOf('aura')
-    expect(declarations.animation).toMatch(/^none(\s+!important)?$/)
-    expect(declarations.transform).toBe('none')
-    expect(declarations.opacity).toBe('0.55')
-  })
 
   it('2秒同期フェード overlay-effect-reduced-fade は廃止されている', () => {
     // keyframes 定義・参照のどちらも残さない（周期端の全粒子透明 = strongMin 0 の原因）

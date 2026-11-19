@@ -84,15 +84,10 @@ describe('overlay-effect: globals.css との契約', () => {
     },
   )
 
-  it('aura 以外は遅延中を透明にする fill-mode backwards を持つ', () => {
+  it('各粒子スタイルは遅延中を透明にする fill-mode backwards を持つ', () => {
     for (const style of ANIMATED_OVERLAY_EFFECT_STYLES) {
       const tokens = animateShorthand(style).trim().split(/\s+/)
-      if (style === 'aura') {
-        // aura は負の delay のみで、reduced-motion では animation 自体を止めるため不要
-        expect(tokens).not.toContain('backwards')
-      } else {
-        expect(tokens).toContain('backwards')
-      }
+      expect(tokens).toContain('backwards')
     }
   })
 

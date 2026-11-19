@@ -1,0 +1,6 @@
+.glow {
+  /* 根元の光をカードの角丸に沿わせる。Canvas が使えない場合も縁は発光する。 */
+  box-shadow:
+    0 0 4px color-mix(in srgb, var(--fx-aura-from) 80%, transparent),
+    0 -3px 16px color-mix(in srgb, var(--fx-aura-to) 46%, transparent);
+}

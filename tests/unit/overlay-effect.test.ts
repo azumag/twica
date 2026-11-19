@@ -18,7 +18,7 @@ import {
 
 /**
  * 「表示開始時点で周期の途中にいる」負の delay を使う環境系スタイル。
- * fireworks（バースト同期）と aura（delaySecRange で負の位相をずらす縁の炎）は対象外。
+ * fireworks は火花の開始時刻をバースト単位で揃える。
  */
 const PHASE_ALIGNED_STYLES = [
   'sparkle',
@@ -69,10 +69,10 @@ describe('overlay-effect: normalizeOverlayEffectStyle', () => {
 })
 
 describe('overlay-effect: OVERLAY_EFFECT_PARTICLE_CONFIG', () => {
-  it('"none" を除く全スタイル分の設定が存在する', () => {
-    for (const style of ANIMATED_OVERLAY_EFFECT_STYLES) {
-      expect(OVERLAY_EFFECT_PARTICLE_CONFIG[style]).toBeDefined()
-    }
+  it('CSS でアニメーションする粒子スタイルに対応する設定を持つ', () => {
+    expect(new Set(Object.keys(OVERLAY_EFFECT_PARTICLE_CONFIG))).toEqual(
+      new Set(ANIMATED_OVERLAY_EFFECT_STYLES),
+    )
   })
 
   it('各スタイルは固有のアニメーションクラス（overlay-effect-<style>）を持ち、互いに重複しない', () => {
@@ -105,7 +105,6 @@ describe('overlay-effect: OVERLAY_EFFECT_PARTICLE_CONFIG', () => {
       expect(config.spawnTopPercentRange[0]).toBeLessThanOrEqual(config.spawnTopPercentRange[1])
       expect(config.durationSecRange[0]).toBeLessThanOrEqual(config.durationSecRange[1])
       // delaySecRange は「正の delay を使うスタイル」だけが持つ任意項目
-      // （aura は負の delay のみなので範囲も負側になる）
       if (config.delaySecRange) {
         expect(config.delaySecRange[0]).toBeLessThanOrEqual(config.delaySecRange[1])
       }
@@ -113,19 +112,16 @@ describe('overlay-effect: OVERLAY_EFFECT_PARTICLE_CONFIG', () => {
     }
   })
 
-  it('環境系8種は startAtRandomPhase、fireworks/aura は delaySecRange を持つ', () => {
+  it('環境系8種は startAtRandomPhase、fireworks は delaySecRange を持つ', () => {
     for (const style of PHASE_ALIGNED_STYLES) {
       const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
       expect(config.startAtRandomPhase).toBe(true)
       // 負の delay を算出するため、正の delay 範囲は持たない（設定の二重管理を防ぐ）
       expect(config.delaySecRange).toBeUndefined()
     }
-    // fireworks は正のバースト間隔、aura は負の位相ずらし
-    for (const style of ['fireworks', 'aura'] as const) {
-      const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
-      expect(config.startAtRandomPhase).toBeFalsy()
-      expect(config.delaySecRange).toBeDefined()
-    }
+    const fireworks = OVERLAY_EFFECT_PARTICLE_CONFIG.fireworks
+    expect(fireworks.startAtRandomPhase).toBeFalsy()
+    expect(fireworks.delaySecRange).toBeDefined()
   })
 
   it('はみ出し幅 OVERLAY_EFFECT_OVERFLOW_PX は 800x600 の上下余白 76px を超えない', () => {
@@ -137,8 +133,8 @@ describe('overlay-effect: OVERLAY_EFFECT_PARTICLE_CONFIG', () => {
 })
 
 describe('overlay-effect: generateOverlayEffectParticles', () => {
-  it('"none" は空配列を返す（演出なし）', () => {
-    expect(generateOverlayEffectParticles('none')).toEqual([])
+  it.each(['none', 'aura'] as const)('%s では粒子を生成しない', (style) => {
+    expect(generateOverlayEffectParticles(style)).toEqual([])
   })
 
   it('各スタイルの particleCount 個ちょうどを返す', () => {
@@ -195,19 +191,15 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
     }
   })
 
-  it('fireworks/aura の delay は宣言した delaySecRange に入る', () => {
-    for (const style of ['fireworks', 'aura'] as const) {
-      const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
-      expect(config.delaySecRange).toBeDefined()
-      const range = config.delaySecRange
-      if (!range) throw new Error(`${style} の delaySecRange が未設定`)
-      const [minDelay, maxDelay] = range
-      for (const particle of generateOverlayEffectParticles(style)) {
-        const delay = Number.parseFloat(particle.animationDelay)
-        expect(particle.animationDelay.endsWith('s')).toBe(true)
-        expect(delay).toBeGreaterThanOrEqual(minDelay)
-        expect(delay).toBeLessThanOrEqual(maxDelay)
-      }
+  it('fireworks の delay は宣言した delaySecRange に入る', () => {
+    const range = OVERLAY_EFFECT_PARTICLE_CONFIG.fireworks.delaySecRange
+    if (!range) throw new Error('fireworks の delaySecRange が未設定')
+    const [minDelay, maxDelay] = range
+    for (const particle of generateOverlayEffectParticles('fireworks')) {
+      const delay = Number.parseFloat(particle.animationDelay)
+      expect(particle.animationDelay.endsWith('s')).toBe(true)
+      expect(delay).toBeGreaterThanOrEqual(minDelay)
+      expect(delay).toBeLessThanOrEqual(maxDelay)
     }
   })
 
@@ -281,39 +273,6 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
     for (const particle of particles) {
       expect(particle.content).toBe('♥')
     }
-  })
-
-  it('aura はカード縁に沿った炎粒子を生成する（Issue #2088 縁の炎）', () => {
-    const particles = generateOverlayEffectParticles('aura')
-    expect(particles).toHaveLength(OVERLAY_EFFECT_PARTICLE_CONFIG.aura.particleCount)
-
-    const onTopEdge = (p: (typeof particles)[number]) => Number.parseFloat(p.top) <= 1.5
-    const onBottomEdge = (p: (typeof particles)[number]) => Number.parseFloat(p.top) >= 98.5
-    const onLeftEdge = (p: (typeof particles)[number]) => Number.parseFloat(p.left) <= 1.5
-    const onRightEdge = (p: (typeof particles)[number]) => Number.parseFloat(p.left) >= 98.5
-
-    for (const particle of particles) {
-      expect(particle.content).toBe('')
-      // すべての粒子は4辺のいずれかの縁上（0〜1.5% / 98.5〜100%）に置かれる
-      expect(
-        onTopEdge(particle) || onBottomEdge(particle) || onLeftEdge(particle) || onRightEdge(particle),
-      ).toBe(true)
-      // 炎粒はカード比ではなく炎の粒としての px サイズ（縦長）
-      expect(String(particle.visualStyle.width)).toMatch(/px$/)
-      expect(String(particle.visualStyle.height)).toMatch(/px$/)
-      // 炎色は生成時に決めず、レイヤー注入の --fx-aura-* 変数を参照する
-      expect(String(particle.visualStyle.backgroundImage)).toContain('var(--fx-aura-')
-      // 上昇距離・横揺れ・ピーク不透明度（globals.css の keyframes との契約）
-      expect(particle.visualStyle['--fx-rise']).toBeDefined()
-      expect(particle.visualStyle['--fx-sway']).toBeDefined()
-      expect(particle.visualStyle['--fx-peak']).toBeDefined()
-    }
-
-    // 4辺すべてに粒子が配置される（片側だけの炎にならない）
-    expect(particles.filter(onTopEdge).length).toBeGreaterThan(0)
-    expect(particles.filter(onBottomEdge).length).toBeGreaterThan(0)
-    expect(particles.filter(onLeftEdge).length).toBeGreaterThan(0)
-    expect(particles.filter(onRightEdge).length).toBeGreaterThan(0)
   })
 
   it('各パーティクルの位置・タイミング・色はランダム化され、全てが同一にはならない（機械的な動き防止）', () => {
