@@ -49,6 +49,8 @@ export type OverlayEffectStyle =
   | "coins"
   | "aura";
 
+type OverlayEffectParticleStyle = Exclude<OverlayEffectStyle, "none" | "aura">;
+
 /**
  * 設定 UI（OverlayPreview）でレアリティごとに選べるスタイルの一覧（＝表示順）。
  * 先頭の "none"（演出なし）はレアリティ別に演出を切りたい場合の選択肢。
@@ -68,13 +70,13 @@ export const OVERLAY_EFFECT_STYLES: readonly OverlayEffectStyle[] = [
 ];
 
 /**
- * 実際にパーティクルを描画するスタイル（"none" を除く）。
- * OVERLAY_EFFECT_STYLES から派生させ、リストの二重管理を避ける
- * （OVERLAY_EFFECT_PARTICLE_CONFIG のキー集合と一致する）。
+ * パーティクルを CSS で動かすスタイル。
+ * aura はカード縁を一続きの炎として描画するため専用のレイヤーが担当する。
+ * OVERLAY_EFFECT_STYLES から派生させて表示順を共有する。
  */
-export const ANIMATED_OVERLAY_EFFECT_STYLES: readonly Exclude<OverlayEffectStyle, "none">[] =
+export const ANIMATED_OVERLAY_EFFECT_STYLES: readonly OverlayEffectParticleStyle[] =
   OVERLAY_EFFECT_STYLES.filter(
-    (style): style is Exclude<OverlayEffectStyle, "none"> => style !== "none",
+    (style): style is OverlayEffectParticleStyle => style !== "none" && style !== "aura",
   );
 
 /**
@@ -104,13 +106,10 @@ export function normalizeOverlayEffectStyle(value: unknown): OverlayEffectStyle 
  *
  * overlay page は粒子レイヤーを `inset: -N px` の箱（カードより一回り大きい
  * 領域）に置き、レイヤー自身の `overflow: hidden` でその箱の縁にクリップする。
- * これにより「カードの縁で粒子が途中切れする」代わりに「カードの背後から
- * 粒子が外へはみ出して見える」演出になる。N が大きすぎると OBS の表示領域
- * （800x600 を想定）から粒子が画面外へ消えて見えなくなるため、実測した
+ * これにより粒子がカードの前面から枠の外へ連続して見える。
+ * N が大きすぎると OBS の表示領域（800x600 を想定）から粒子が
+ * はみ出して見えなくなるため、実測した
  * 800x600 での上下余白 76px を超えない範囲（目安 48〜64px）から 56 を選ぶ。
- *
- * DOM 順でカードより前に置く（＝背面）前提の値で、カード全面を覆う
- * 前面配置と違って「縁から覗く」量としてちょうどよい幅になっている。
  */
 export const OVERLAY_EFFECT_OVERFLOW_PX = 56;
 
@@ -384,10 +383,9 @@ const FIREWORK_BURSTS: readonly {
  * アニメーション未適用（fill-mode: none）× inline opacity 未指定となり、
  * 粒子が不透明のまま静止して見えるため。fireworks はバーストの同時性を優先して
  * 正の delay を保ち、CSS の fill-mode: backwards で開始前を透明にする。
- * aura は負の delay のみ（縁の炎が常時燃え続ける位相ずらし）なので対象外。
  */
 export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
-  Record<Exclude<OverlayEffectStyle, "none">, OverlayEffectParticleConfig>
+  Record<OverlayEffectParticleStyle, OverlayEffectParticleConfig>
 > = {
   // キラキラ: 画面全体にきらめく星形が明滅する（回転＋拡縮＋発光）
   sparkle: {
@@ -663,71 +661,6 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
       };
     },
   },
-
-  // 縁の炎: カードの縁に沿って多数の小さな炎粒子を配置し、上方向へ揺らぎ
-  // ながら昇って消える演出（Issue #2088 (3)）。従来はカード内側に重なる
-  // 76/86/96% の円形リング3層だったが、「枠の外に炎が見える」見た目へ変える
-  // ため overlay page 側でカード背面（DOM 順でカードより前）の `inset:0`
-  // レイヤーに描画する。ここで生成する left/top の % はそのレイヤー箱＝
-  // カード枠と一致する（通常表示はカード容器、imageOnly は画像を含む
-  // 表示列）前提の座標系。
-  //
-  // 粒子の色は枠のレアリティ色に合わせる。色自体は生成時に決めず
-  // `var(--fx-aura-from)` / `var(--fx-aura-to)` を参照し、レイヤー側が
-  // resolveOverlayAuraColors で解決した枠グラデーション色を CSS 変数として
-  // 当てる（カスタムレアリティの HEX もそのまま炎色になる）。
-  aura: {
-    animationClassName: "animate-overlay-effect-aura",
-    // 位置は buildParticle が縁上へ直接指定する。範囲そのものは使われないが
-    // 契約上 [0,100] の % 座標に収めるため目安として保持する。
-    spawnLeftPercentRange: [0, 100],
-    spawnTopPercentRange: [0, 100],
-    durationSecRange: [0.9, 1.7],
-    // 負の delay で表示開始時点から炎が燃え続けている位相にする（環境系と同じ
-    // 意図だが、位相範囲を遅延範囲として直に宣言する従来どおりの形式を維持）。
-    delaySecRange: [-1.4, 0],
-    // 周囲4辺に12個ずつ。320px の縁でおよそ26〜27px間隔の炎になる密度。
-    particleCount: 48,
-    buildParticle: (index) => {
-      // index%4 で4辺へ順に割り当て、辺上の位置は等間隔＋ジッターで散らす
-      // （等間隔だけだと数直線的に並んで見え、完全乱数だと疎密が出るため）。
-      const particlesPerEdge = 12;
-      const edge = index % 4;
-      const slot = Math.floor(index / 4);
-      const along = ((slot + rand(0.15, 0.85)) / particlesPerEdge) * 100;
-      // 炎の中心を縁から 0〜1.5% 内側へずらし、基部が枠の裏に食い込んで
-      // 「枠の後ろから炎が出ている」ように見せる。背面レイヤーなので
-      // 粒子の内側半分はカードに隠れ、外側半分だけが見える。
-      const edgeInset = rand(0, 1.5);
-      const left = edge === 1 ? 100 - edgeInset : edge === 3 ? edgeInset : along;
-      const top = edge === 2 ? 100 - edgeInset : edge === 0 ? edgeInset : along;
-
-      // 幅に対して縦長の揺らぐ粒。径は燃え立つ炎らしさと密度のバランスから。
-      const width = rand(5, 11);
-      const height = width * rand(1.4, 2.2);
-      // 交互に from/to を主色にして枠グラデーションの両端の色を炎に混ぜる。
-      // コアは白熱（白）→ 縁色 → 透明 の順で、どのレアリティ色でも炎らしい
-      // 中心の明るさが出る構成。
-      const mid = index % 2 === 0 ? "var(--fx-aura-from)" : "var(--fx-aura-to)";
-      const outer = index % 2 === 0 ? "var(--fx-aura-to)" : "var(--fx-aura-from)";
-      return {
-        content: "",
-        left: `${left.toFixed(2)}%`,
-        top: `${top.toFixed(2)}%`,
-        visualStyle: {
-          width: px(width),
-          height: px(height),
-          // 上端を細くした雫形（炎のシルエット）
-          borderRadius: "50% 50% 50% 50% / 68% 68% 32% 32%",
-          backgroundImage: `radial-gradient(ellipse at 50% 80%, rgba(255,255,255,0.9) 0%, ${mid} 42%, ${outer} 68%, transparent 82%)`,
-          boxShadow: `0 0 ${px(width)} ${mid}`,
-          "--fx-rise": px(rand(28, 56)),
-          "--fx-sway": px(rand(3, 9)),
-          "--fx-peak": rand(0.7, 1).toFixed(2),
-        },
-      };
-    },
-  },
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -735,10 +668,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
 /* -------------------------------------------------------------------------- */
 
 /**
- * aura の炎粒子が参照する CSS 変数名。粒子の backgroundImage/boxShadow は
- * この2変数を `var(...)` で参照し、実色は overlay page が aura レイヤー
- * 要素へ inline style で当てる（粒子生成層は描画コンテキストを知らないため
- * 「色は呼び出し側が注入する」分離にする）。
+ * aura レイヤーにレアリティのグラデーション色を渡す CSS 変数名。
  */
 export const OVERLAY_AURA_COLOR_VARS = {
   from: "--fx-aura-from",
@@ -754,7 +684,7 @@ const OVERLAY_AURA_FALLBACK_COLORS = ["#fbbf24", "#f97316"] as const;
 
 /**
  * aura（縁の炎）の炎色を、カード枠と同じレアリティのグラデーション色から
- * 解決する（Issue #2088 (3): 「粒子の色は枠のレアリティ色に合わせる」）。
+ * 解決する（Issue #2088 (3)）。
  *
  * 解決順:
  * 1. カスタムレアリティ色: getRarityStylePresentation が styleVars に展開した
@@ -764,8 +694,7 @@ const OVERLAY_AURA_FALLBACK_COLORS = ["#fbbf24", "#f97316"] as const;
  *    （rarity-styles.ts の legacy 形式正規化と同じ対応表）。
  * 3. どちらも解決できない異常入力はフォールバック色に倒す。
  *
- * 返り値は [from, to]。overlay page は aura レイヤーへ
- * `--fx-aura-from` / `--fx-aura-to` として当てる。
+ * 返り値は [from, to]。aura の描画と CSS の発光で色を共有する。
  */
 export function resolveOverlayAuraColors(
   gradientClass: string,
@@ -821,7 +750,7 @@ function formatSeconds(value: number): string {
  *   指定なので、fill-mode: none でも表示開始の最初のフレームからアニメーションが
  *   適用される。これが「遅延中は不透明なまま静止する」現象を無くす手段。
  * - それ以外: 宣言された delaySecRange から正の delay を選ぶ（fireworks の
- *   バースト間隔、aura の位相ずらし）。範囲が無い場合は即時開始（0）に倒す。
+ *   バースト間隔）。範囲が無い場合は即時開始（0）に倒す。
  */
 function resolveDelaySec(
   config: OverlayEffectParticleConfig,
@@ -835,7 +764,7 @@ function resolveDelaySec(
 
 /**
  * 指定スタイルのパーティクル（出現位置・タイミング・見た目）を生成する。
- * 個数は各スタイルの particleCount。"none" や未知スタイルは空配列。
+ * 個数は各スタイルの particleCount。粒子を使わない "none" / "aura" や未知入力は空配列。
  *
  * left/top はスタイルごとの出現エリアから、色・サイズ・軌道パラメータ（CSS変数）は
  * buildParticle が個別化することで、同一演出内でもパーティクルが機械的に同期しない
@@ -845,7 +774,7 @@ function resolveDelaySec(
 export function generateOverlayEffectParticles(
   style: OverlayEffectStyle,
 ): OverlayEffectParticle[] {
-  if (style === "none") return [];
+  if (style === "none" || style === "aura") return [];
   const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style];
   if (!config) return [];
   return Array.from({ length: config.particleCount }, (_, index) => {

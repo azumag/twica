@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProp
 import { flushSync } from "react-dom";
 import { useParams } from "next/navigation";
 import Image from "next/image";
+import { OverlayAura } from "@/components/OverlayAura";
 import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import {
@@ -25,7 +26,6 @@ import {
   DEFAULT_RARITY_EFFECT_MAP,
   OVERLAY_EFFECT_PARTICLE_CONFIG,
   OVERLAY_EFFECT_OVERFLOW_PX,
-  OVERLAY_AURA_COLOR_VARS,
 } from "@/lib/overlay-effect";
 import {
   getRarityStylePresentation,
@@ -2246,26 +2246,21 @@ export default function OverlayPage() {
     label: getRarityDisplayInfo(result.card.rarity).label,
     color: rarityStyle.colorClass,
   };
-  // aura（縁の炎）の炎色は枠のグラデーション色と同じ2色を使う
-  // （カスタムレアリティ色があればその HEX、なければプリセットを HEX 解決）。
-  const [auraColorFrom, auraColorTo] = resolveOverlayAuraColors(
-    rarityColor,
-    // CSSProperties はカスタムプロパティのインデックス署名を持たないため、
-    // 実体が Record<string, string> であることを明示して渡す。
-    rarityStyleVars as unknown as Record<string, unknown>,
+  // 炎の色はカスタム色を含めたカード枠の2色を使う。色の解決は炎の表示時だけ行う。
+  const auraColors = activeEffectStyle === "aura"
+    ? resolveOverlayAuraColors(rarityColor, rarityStyleVars as unknown as Record<string, unknown>)
+    : null;
+
+  const renderAura = (cornerRadius: number) => auraColors && (
+    <OverlayAura colorFrom={auraColors[0]} colorTo={auraColors[1]} cornerRadius={cornerRadius} />
   );
 
   // 画像のみ表示モードかどうかを判定
   // imageOnlyが有効、またはautoPortraitが有効で縦長画像の場合
   const shouldShowImageOnly = options.imageOnly || (options.autoPortrait && isPortraitImage);
 
-  // エフェクトを表示するかどうか。
-  // レアリティ別に解決したスタイル（activeEffectStyle）が "none" 以外で、
-  // かつパーティクルが生成されている場合のみ描画する。
-  const shouldShowEffects = activeEffectStyle !== "none" && effectParticles.length > 0;
-
-  const renderOverlayEffects = () => {
-    if (!shouldShowEffects) {
+  const renderOverlayParticles = () => {
+    if (activeEffectStyle === "none" || activeEffectStyle === "aura" || effectParticles.length === 0) {
       return null;
     }
 
@@ -2277,27 +2272,12 @@ export default function OverlayPage() {
     const config = OVERLAY_EFFECT_PARTICLE_CONFIG[activeEffectStyle];
     const animationClassName = config.animationClassName;
 
-    // Issue #2088: レイヤー箱とクリップはスタイルで分ける。
-    // - 通常の粒子スタイル: カードより OVERLAY_EFFECT_OVERFLOW_PX 広い箱で
-    //   クリップする。z-20 で画像と画像の読み込み失敗時の代替表示（z-10）の
-    //   前に重ね、カード面から枠外まで同じ粒子を描画する。
-    // - aura（縁の炎）: left/top の % がカード縁と一致するよう inset:0 の箱に
-    //   置き、炎が枠の外へ出られるようクリップしない（上昇量は生成側で
-    //   画面内に収まる範囲に抑えてある）。炎色は --fx-aura-* 変数で注入する。
-    const isAura = activeEffectStyle === "aura";
-    const layerStyle = (
-      isAura
-        ? {
-            [OVERLAY_AURA_COLOR_VARS.from]: auraColorFrom,
-            [OVERLAY_AURA_COLOR_VARS.to]: auraColorTo,
-          }
-        : { inset: `-${OVERLAY_EFFECT_OVERFLOW_PX}px` }
-    ) as CSSProperties;
-
+    // カードより広い箱でクリップし、z-20で画像と代替表示（z-10）の前に重ねる。
+    // 枠外までの粒子がカードと一緒にフェード・消去されるよう、カードの子要素に置く。
     return (
       <div
-        className={`pointer-events-none absolute ${isAura ? "inset-0" : "z-20 overflow-hidden"}`}
-        style={layerStyle}
+        className="pointer-events-none absolute z-20 overflow-hidden"
+        style={{ inset: `-${OVERLAY_EFFECT_OVERFLOW_PX}px` }}
         // スクリーンリーダーには無意味な装飾なので非読み上げに
         aria-hidden="true"
       >
@@ -2326,6 +2306,7 @@ export default function OverlayPage() {
   const shouldUseSmallMode = options.smallMode && isSmallImage;
   const cardSizeClass = shouldUseSmallMode ? "w-48" : "w-80";
   const imageOnlySizeClass = shouldUseSmallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
+  const imageOnlyFallbackClass = shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80";
   const showImageFallback = imageFallbackDisplayInstanceId === result.displayInstanceId;
 
   const renderImageFallback = (sizeClassName: string, overlay = false) => (
@@ -2358,10 +2339,7 @@ export default function OverlayPage() {
           // Image only mode: shows just the image without card frame
           // autoPortraitの場合は付帯情報オプションで追加情報を表示可能
           <div className="relative flex flex-col items-center">
-            {/* 炎のオーラは DOM 順で画像の背面に置き、通常の粒子は z-20 で
-                前面に重ねる。どちらもカードの子要素として退場の fade/scale と
-                unmount に追従する。 */}
-            {renderOverlayEffects()}
+            {renderOverlayParticles()}
             {/* ユーザー名（画像の上、オプションで表示） */}
             {/* Username above image (optional) */}
             {options.autoPortrait && isPortraitImage && options.portraitShowUsername && (
@@ -2384,20 +2362,27 @@ export default function OverlayPage() {
                 `priority`が付随して出すpreloadリンクの先読み効果が無く、
                 長時間開きっぱなしのOBSページのheadへ不要なリンクを溜める
                 だけになるため。 */}
-            {result.card.image_url ? (
+            {result.card.image_url || auraColors ? (
               <div className="relative">
-                <Image
-                  src={result.card.image_url}
-                  alt={result.card.name}
-                  width={shouldUseSmallMode ? 192 : 320}
-                  height={shouldUseSmallMode ? 268 : 448}
-                  className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
-                  unoptimized
-                  loading="eager"
-                />
-                {showImageFallback && renderImageFallback("h-full w-full", true)}
+                {/* 画像ラッパーの寸法を使い、上下の付帯情報を炎で囲わない。
+                    画像側も relative にして、DOM 順で炎の手前に描画する。 */}
+                {renderAura(8)}
+                {result.card.image_url ? (
+                  <>
+                    <Image
+                      src={result.card.image_url}
+                      alt={result.card.name}
+                      width={shouldUseSmallMode ? 192 : 320}
+                      height={shouldUseSmallMode ? 268 : 448}
+                      className={`${auraColors ? "relative " : ""}object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
+                      unoptimized
+                      loading="eager"
+                    />
+                    {showImageFallback && renderImageFallback("h-full w-full", true)}
+                  </>
+                ) : renderImageFallback(`relative ${imageOnlyFallbackClass}`)}
               </div>
-            ) : renderImageFallback(shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80")}
+            ) : renderImageFallback(imageOnlyFallbackClass)}
 
             {/* 付帯情報（画像の下、オプションで表示） */}
             {/* Info section below image (optional, for autoPortrait mode) */}
@@ -2435,8 +2420,9 @@ export default function OverlayPage() {
           // 通常のカード表示モード
           // Normal card display mode with frame and text
           <>
-            {/* 炎のオーラを枠の背面に描くため、画像のみ表示と同じ DOM 順にする。 */}
-            {renderOverlayEffects()}
+            {renderOverlayParticles()}
+            {/* 枠と同じ角丸を使い、DOM 順で枠の背面から炎を描く。 */}
+            {renderAura(16)}
             {/* Card Container - matches Collection style */}
             <div
               className={`relative ${cardSizeClass} overflow-hidden rounded-2xl bg-gradient-to-br ${rarityColor} p-1 shadow-2xl ${rarityGlow}`}

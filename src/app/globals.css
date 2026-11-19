@@ -29,13 +29,12 @@
    * duration の既定値（3s 等）は inline の animation-duration で上書きされるため、
    * ここでは timing-function（緩急）と方向づけのためだけの目安値。
    *
-   * fill-mode: aura 以外の9種に `backwards` を指定する。fireworks の後発バーストの
+   * fill-mode: 粒子エフェクト9種に `backwards` を指定する。fireworks の後発バーストの
    * ように正の delay が残る粒子は、遅延中にキーフレームが適用されないと、inline の
    * opacity 未指定のまま「不透明で静止」して見える。backwards は遅延中に 0%
    * キーフレーム（= 透明）を適用するため、開始前の置き去りの粒を防げる。
    * 環境系8種は負の delay（= 常に active）なので現状は効果が無いが、将来 delay を
-   * 正へ戻したときの退行を防ぐため同じ指定で揃えておく。aura は負の delay のみで、
-   * reduced-motion では animation 自体を停止するため対象外。
+   * 正へ戻したときの退行を防ぐため同じ指定で揃えておく。
    */
   --animate-overlay-effect-sparkle: overlay-effect-sparkle 1.6s ease-in-out infinite backwards;
   --animate-overlay-effect-confetti: overlay-effect-confetti 3s linear infinite backwards;
@@ -46,37 +45,6 @@
   --animate-overlay-effect-petals: overlay-effect-petals 3.8s linear infinite backwards;
   --animate-overlay-effect-snow: overlay-effect-snow 4.6s linear infinite backwards;
   --animate-overlay-effect-coins: overlay-effect-coins 2.4s ease-in infinite backwards;
-  --animate-overlay-effect-aura: overlay-effect-aura 1.4s ease-out infinite;
-}
-
-@keyframes overlay-effect-aura {
-  /*
-   * 縁の炎（Issue #2088 (3)）: カード縁上の粒子が上方向へ揺らぎながら昇り、
-   * 縦に伸びながら消える炎。粒子はカード背面のレイヤーに置かれ、粒子の
-   * 内側半分はカードに隠れて外側半分だけが見える（枠の後ろから炎が出る）。
-   * --fx-rise: 上昇距離(px) / --fx-sway: 横揺れ幅(px) / --fx-peak: 粒子毎の
-   * 最大不透明度。0% は translateY(25%) で基部をカード内に潜らせた状態から
-   * 始め、上昇するにつれ枠の外へ抜け出す。
-   */
-  0% {
-    transform: translate(0, 25%) scale(0.7, 0.4);
-    opacity: 0;
-  }
-  20% {
-    transform: translate(calc(var(--fx-sway) * 0.4), calc(var(--fx-rise) * -0.25))
-      scale(1, 0.9);
-    opacity: var(--fx-peak, 0.95);
-  }
-  60% {
-    transform: translate(calc(var(--fx-sway) * -0.8), calc(var(--fx-rise) * -0.6))
-      scale(0.9, 1.2);
-    opacity: var(--fx-peak, 0.95);
-  }
-  100% {
-    transform: translate(calc(var(--fx-sway) * 0.3), calc(var(--fx-rise) * -1))
-      scale(0.5, 1.6);
-    opacity: 0;
-  }
 }
 
 @keyframes overlay-effect-sparkle {
@@ -425,7 +393,7 @@
  * 以前は全スタイルを 2 秒同期フェード（overlay-effect-reduced-fade）で上書き
  * していたが、周期の端で全粒子が同時に透明になる ≒ 約2秒周期の明滅という
  * 動きであり、reduced-motion 環境でこそ排除されるべき性質だった。
- * 静止表示にすると aura（従来から animation: none の静的表示）とも揃う。
+ * オーラは Canvas 側で静止フレームを描画する。
  */
 @media (prefers-reduced-motion: reduce) {
   /*
@@ -455,12 +423,6 @@
   .animate-overlay-effect-snow {
     animation: none !important;
     opacity: var(--fx-opacity, 0.9);
-  }
-  /* 炎の上昇・揺らぎは止め、縁に沿った静止の炎粒だけを残す。 */
-  .animate-overlay-effect-aura {
-    animation: none !important;
-    transform: none;
-    opacity: 0.55;
   }
 }
 
