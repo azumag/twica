@@ -287,4 +287,15 @@ describe("Workers Issues deployment contract", () => {
     expect(config).not.toMatch(/^\[(?:env\.preview\.)?observability\.traces\]/m);
     expect(config).toMatch(/^compatibility_date\s*=\s*"2024-09-23"$/m);
   });
+
+  // Issue #1979: preview の実行場所を DB (PlanetScale AWS ap-northeast-1) の近くへ
+  // 固定する。mode = "smart" と region は排他なので preview では region だけを
+  // 指定し、本番 (top-level) には [placement] を置かない。本番の実行場所を
+  // 変えるつもりがないことを、設定の回帰として固定する。
+  it("pins preview placement to the Tokyo AWS region without touching production", () => {
+    const previewPlacement = section("env.preview.placement");
+    expect(previewPlacement).toMatch(/^\s*region\s*=\s*"aws:ap-northeast-1"\s*$/m);
+    expect(previewPlacement).not.toMatch(/^\s*mode\s*=/m);
+    expect(config).not.toMatch(/^\[placement\]\s*(?:#.*)?$/m);
+  });
 });
