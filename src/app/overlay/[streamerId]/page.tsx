@@ -2278,9 +2278,9 @@ export default function OverlayPage() {
     const animationClassName = config.animationClassName;
 
     // Issue #2088: レイヤー箱とクリップはスタイルで分ける。
-    // - 通常の粒子スタイル: カードより OVERLAY_EFFECT_OVERFLOW_PX 外側の箱に
-    //   クリップし、「カード縁で粒子が途中切れする」代わりに背後から縁の外へ
-    //   はみ出して見せる。クリップはこのレイヤー自身の overflow-hidden のみ。
+    // - 通常の粒子スタイル: カードより OVERLAY_EFFECT_OVERFLOW_PX 広い箱で
+    //   クリップする。z-20 で画像と画像の読み込み失敗時の代替表示（z-10）の
+    //   前に重ね、カード面から枠外まで同じ粒子を描画する。
     // - aura（縁の炎）: left/top の % がカード縁と一致するよう inset:0 の箱に
     //   置き、炎が枠の外へ出られるようクリップしない（上昇量は生成側で
     //   画面内に収まる範囲に抑えてある）。炎色は --fx-aura-* 変数で注入する。
@@ -2296,7 +2296,7 @@ export default function OverlayPage() {
 
     return (
       <div
-        className={`pointer-events-none absolute ${isAura ? "inset-0" : "overflow-hidden"}`}
+        className={`pointer-events-none absolute ${isAura ? "inset-0" : "z-20 overflow-hidden"}`}
         style={layerStyle}
         // スクリーンリーダーには無意味な装飾なので非読み上げに
         aria-hidden="true"
@@ -2358,10 +2358,9 @@ export default function OverlayPage() {
           // Image only mode: shows just the image without card frame
           // autoPortraitの場合は付帯情報オプションで追加情報を表示可能
           <div className="relative flex flex-col items-center">
-            {/* エフェクトレイヤー: DOM 順で画像より前に置き背面へ回す。
-                z-index:-1 は root の scale transition が作る stacking context に
-                依存するため使わない。root 内に留めているため退場の fade/scale と
-                unmount に追従し、unmount 後に粒子が残るリークも起きない。 */}
+            {/* 炎のオーラは DOM 順で画像の背面に置き、通常の粒子は z-20 で
+                前面に重ねる。どちらもカードの子要素として退場の fade/scale と
+                unmount に追従する。 */}
             {renderOverlayEffects()}
             {/* ユーザー名（画像の上、オプションで表示） */}
             {/* Username above image (optional) */}
@@ -2436,8 +2435,7 @@ export default function OverlayPage() {
           // 通常のカード表示モード
           // Normal card display mode with frame and text
           <>
-            {/* エフェクトレイヤー: DOM 順でカードより前に置き背面へ回す
-                （imageOnly 側と同じ理由。z-index:-1 は使わない）。 */}
+            {/* 炎のオーラを枠の背面に描くため、画像のみ表示と同じ DOM 順にする。 */}
             {renderOverlayEffects()}
             {/* Card Container - matches Collection style */}
             <div
