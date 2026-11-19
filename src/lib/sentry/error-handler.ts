@@ -44,6 +44,7 @@ import {
   sanitizeLogArg,
   extractErrorMessage,
 } from '@/lib/log-sanitizer'
+import { getErrorChain, getSqlState } from '@/lib/db/errors'
 import type { Json } from '@/types/database'
 
 /**
@@ -64,6 +65,57 @@ function resolveErrorInfo(error: unknown): { message: string; stack: string | nu
 // PostgreSQL TEXT 型は最大1GBだが、実用的な上限として定数化
 const MAX_MESSAGE_LENGTH = 10000
 const MAX_STACK_LENGTH = 50000
+
+// context に補完する cause メッセージの長さ上限。最深 cause は通常 postgres.js の
+// PostgresError（短い1行文）だが、想定外の長大な message が来ても errors テーブルと
+// error-reporter が生成する Issue 本文（context は先頭2000文字で切り出される）を
+// 圧迫しないよう打ち切る。
+const MAX_CAUSE_MESSAGE_LENGTH = 500
+
+/**
+ * #2094: エラーの cause チェーンから観測用の最小情報を取り出し、
+ * errors.context へ補完するためのキー/値を返す。
+ *
+ * 背景: Drizzle は postgres.js のエラーを DrizzleQueryError で1段ラップする。
+ * その message は `Failed query: <SQL全文>\nparams: <params>` であり、本当の
+ * 失敗理由（SQLSTATE と DB 側のエラーメッセージ）は `cause`（postgres.js の
+ * PostgresError / 接続系エラー）にだけ存在する。従来 errors テーブルには
+ * トップレベルの message と stack のみが残り、GitHub Issue 自動起票にも
+ * 根本原因が載らず原因推定を強いられた。ここでは同じ欠落を再発させないため、
+ * getSqlState（チェーン全体から最初に見つかった code）と最深 cause の
+ * message だけを記録する。
+ *
+ * 記録しないもの: DrizzleQueryError の message（SQL 全文）と stack、および
+ * チェーン中間層の詳細。これらを context へ複写すると errors テーブルと
+ * Issue 本文が SQL 全文で膨らむため、要約された2キーに限定する。
+ *
+ * 注意: chain.length === 1（cause 無し）では最深層＝エラー自身であり、その
+ * message は errors.message に既に記録されるため causeMessage は付けない。
+ */
+function errorCauseContext(error: unknown): Record<string, unknown> {
+  const derived: Record<string, unknown> = {}
+  const sqlState = getSqlState(error)
+  if (sqlState) derived.sqlState = sqlState
+
+  const chain = getErrorChain(error)
+  if (chain.length < 2) return derived
+
+  const deepest = chain[chain.length - 1]
+  // 最深層が Error / PostgresError 相当なら message、文字列 cause ならその文字列を
+  // 使う。message を持たないオブジェクト（稀なラップ形）は JSON 化すると巨大に
+  // なり得るため記録しない。
+  let causeMessage: string | null = null
+  if (typeof deepest === 'string') {
+    causeMessage = deepest
+  } else if (typeof deepest === 'object' && deepest !== null) {
+    const message = (deepest as { message?: unknown }).message
+    if (typeof message === 'string' && message !== '') causeMessage = message
+  }
+  if (causeMessage) {
+    derived.causeMessage = sanitizeErrorText(causeMessage).slice(0, MAX_CAUSE_MESSAGE_LENGTH)
+  }
+  return derived
+}
 
 function persistedContext(context: Record<string, unknown>): Json {
   // Drizzle intentionally accepts only JSON-compatible values for jsonb.  A
@@ -104,7 +156,11 @@ async function logErrorToDatabase(
   errorType: string,
   message: string,
   stackTrace: string | null,
-  context: Record<string, unknown>
+  context: Record<string, unknown>,
+  // #2094: cause チェーン抽出用の生エラー。persist 境界で sqlState /
+  // causeMessage を context へ補完するためだけに使い、message/stack の
+  // 記録内容（既存の sanitize 済み値）は変えない。
+  error?: unknown
 ): Promise<void> {
   // AsyncLocalStorageはNext.js server runtimeでのみ利用する。Client Componentから
   // このmoduleへ到達すること自体は`server-only`がcompile-timeに拒否する。
@@ -131,7 +187,7 @@ async function logErrorToDatabase(
         '[Error Tracking] Failed to load reentry guard, proceeding without it:',
         sanitizeLogArg(err),
       )
-      return persistErrorToDatabase(errorType, message, stackTrace, context)
+      return persistErrorToDatabase(errorType, message, stackTrace, context, error)
     }
 
     if (guard.getStore()) {
@@ -141,20 +197,27 @@ async function logErrorToDatabase(
       console.warn('[Error Tracking] Reentrant error logging suppressed:', sanitizeErrorText(message))
       return
     }
-    return guard.run(true, () => persistErrorToDatabase(errorType, message, stackTrace, context))
+    return guard.run(true, () => persistErrorToDatabase(errorType, message, stackTrace, context, error))
   }
 
-  return persistErrorToDatabase(errorType, message, stackTrace, context)
+  return persistErrorToDatabase(errorType, message, stackTrace, context, error)
 }
 
 async function persistErrorToDatabase(
   errorType: string,
   message: string,
   stackTrace: string | null,
-  context: Record<string, unknown>
+  context: Record<string, unknown>,
+  error?: unknown
 ): Promise<void> {
   try {
     const environment = resolveAppEnvironment()
+    // #2094: DrizzleQueryError の cause（postgres.js 側の SQLSTATE と DB 側
+    // メッセージ）はトップレベルの message/stack に残らないため、sqlState と
+    // 最深 cause の message を context へ補完する。呼び出し元が明示的に渡した
+    // 同名キーは尊重するため、補完分を先・呼び出し元の context を後に展開する。
+    const contextWithCause =
+      error === undefined ? context : { ...errorCauseContext(error), ...context }
     const values = {
       error_type: errorType,
       // message/context は最終書き込み境界でも再検閲する。stack は Error 境界で
@@ -163,7 +226,7 @@ async function persistErrorToDatabase(
       message: sanitizeErrorText(message).slice(0, MAX_MESSAGE_LENGTH),
       stack_trace: stackTrace ? stackTrace.slice(0, MAX_STACK_LENGTH) : null,
       // 機密情報（userId, token 等）を除外してから記録
-      context: persistedContext(context),
+      context: persistedContext(contextWithCause),
       environment,
     }
 
@@ -223,7 +286,7 @@ export async function reportError(error: Error | unknown, context?: Record<strin
   const label = info.isErrorInstance ? '[Error]' : '[Warning]'
   const log = info.isErrorInstance ? console.error : console.warn
   log(label, info.message, consoleContext(context))
-  await logErrorToDatabase(label, info.message, info.stack, context || {})
+  await logErrorToDatabase(label, info.message, info.stack, context || {}, error)
 }
 
 export async function reportApiError(endpoint: string, method: string, error: Error | unknown, additionalContext?: Record<string, unknown>) {
@@ -231,19 +294,19 @@ export async function reportApiError(endpoint: string, method: string, error: Er
   const ctx = { endpoint, method, ...additionalContext }
   const { message, stack } = resolveErrorInfo(error)
   console.error(`[API Error] ${label}:`, message, consoleContext(additionalContext))
-  await logErrorToDatabase('[API Error]', `${label}: ${message}`, stack, ctx)
+  await logErrorToDatabase('[API Error]', `${label}: ${message}`, stack, ctx, error)
 }
 
 export async function reportAuthError(error: Error | unknown, context: { provider?: string; action?: string; userId?: string }) {
   const { message, stack } = resolveErrorInfo(error)
   console.error('[Auth Error]', message, sanitizeContext(context as Record<string, unknown>))
-  await logErrorToDatabase('[Auth Error]', message, stack, context)
+  await logErrorToDatabase('[Auth Error]', message, stack, context, error)
 }
 
 export async function reportGachaError(error: Error | unknown, context: { streamerId?: string; userId?: string; cost?: number }) {
   const { message, stack } = resolveErrorInfo(error)
   console.error('[Gacha Error]', message, sanitizeContext(context as Record<string, unknown>))
-  await logErrorToDatabase('[Gacha Error]', message, stack, context)
+  await logErrorToDatabase('[Gacha Error]', message, stack, context, error)
 }
 
 export async function reportRealtimeError(error: unknown, context: { action?: string; streamerId?: string; status?: string; retryCount?: number; isExpected?: boolean }) {
@@ -258,13 +321,13 @@ export async function reportRealtimeError(error: unknown, context: { action?: st
 
   const { message, stack } = resolveErrorInfo(error)
   console.error('[Realtime Error]', message, sanitizeContext(context as Record<string, unknown>))
-  await logErrorToDatabase('[Realtime Error]', message, stack, context)
+  await logErrorToDatabase('[Realtime Error]', message, stack, context, error)
 }
 
 export async function reportSecurityError(error: Error | unknown, context: { action?: string; userId?: string; [key: string]: unknown }) {
   const { message, stack } = resolveErrorInfo(error)
   console.error('[Security Error]', message, sanitizeContext(context))
-  await logErrorToDatabase('[Security Error]', message, stack, context)
+  await logErrorToDatabase('[Security Error]', message, stack, context, error)
 }
 
 /**
@@ -277,6 +340,10 @@ export async function logErrorFromLogger(message: string, args: unknown[]): Prom
     let stack: string | null = null
     const context: Record<string, unknown> = {}
     let errorDetail = ''
+    // #2094: message/stack の抽出元となったエラー値。errors.context への
+    // sqlState / causeMessage 補完に使うため、errorDetail と同じ
+    // 「最初に採用された1つ」を記録する。
+    let primaryError: unknown
 
     for (const arg of args) {
       if (arg instanceof Error) {
@@ -284,11 +351,13 @@ export async function logErrorFromLogger(message: string, args: unknown[]): Prom
         if (!errorDetail) {
           errorDetail = sanitizeErrorText(arg.message)
           stack = arg.stack ? sanitizeErrorStack(arg.stack, arg.name, arg.message) : null
+          primaryError = arg
         }
       } else if (arg && typeof arg === 'object') {
         const obj = arg as Record<string, unknown>
         // { error: ... } パターンからエラー詳細を抽出
         if ('error' in obj && obj.error != null && !errorDetail) {
+          primaryError = obj.error
           if (obj.error instanceof Error) {
             errorDetail = sanitizeErrorText(obj.error.message)
             stack = obj.error.stack
@@ -301,13 +370,14 @@ export async function logErrorFromLogger(message: string, args: unknown[]): Prom
           // error プロパティがない場合、オブジェクト自体が PostgrestError 等のエラーと判定
           // See: https://github.com/azumag/twica/issues/262
           errorDetail = sanitizeErrorText(obj.message)
+          primaryError = obj
         }
         Object.assign(context, sanitizeContext(obj))
       }
     }
 
     const fullMessage = errorDetail ? `${message} ${errorDetail}` : message
-    await logErrorToDatabase('[Error]', fullMessage, stack, context)
+    await logErrorToDatabase('[Error]', fullMessage, stack, context, primaryError)
   } catch {
     // エラー記録自体の失敗は、呼び出し元のメイン処理を阻害しない。
   }
