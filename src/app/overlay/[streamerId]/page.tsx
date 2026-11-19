@@ -2307,6 +2307,8 @@ export default function OverlayPage() {
   const cardSizeClass = shouldUseSmallMode ? "w-48" : "w-80";
   const imageOnlySizeClass = shouldUseSmallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
   const imageOnlyFallbackClass = shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80";
+  // 炎が画像の外まで届いても、縦長画像の付帯情報は炎の手前で読めるようにする。
+  const portraitInfoLayer = auraColors ? "relative z-10 " : "";
   const showImageFallback = imageFallbackDisplayInstanceId === result.displayInstanceId;
 
   const renderImageFallback = (sizeClassName: string, overlay = false) => (
@@ -2343,7 +2345,7 @@ export default function OverlayPage() {
             {/* ユーザー名（画像の上、オプションで表示） */}
             {/* Username above image (optional) */}
             {options.autoPortrait && isPortraitImage && options.portraitShowUsername && (
-              <div className="mb-2 px-4 py-1 rounded-lg bg-gray-800/90 text-center">
+              <div className={`${portraitInfoLayer}mb-2 px-4 py-1 rounded-lg bg-gray-800/90 text-center`}>
                 <span className={`text-gray-300 ${shouldUseSmallMode ? "text-xs" : "text-sm"}`}>
                   {result.userTwitchUsername} が引いたカード
                 </span>
@@ -2389,7 +2391,7 @@ export default function OverlayPage() {
             {options.autoPortrait && isPortraitImage && (
               options.portraitShowName || options.portraitShowRarity || options.portraitShowDescription
             ) && (
-              <div className={`mt-2 px-4 py-2 rounded-lg bg-gray-800/90 ${shouldUseSmallMode ? "max-w-[192px]" : "max-w-[320px]"}`}>
+              <div className={`${portraitInfoLayer}mt-2 px-4 py-2 rounded-lg bg-gray-800/90 ${shouldUseSmallMode ? "max-w-[192px]" : "max-w-[320px]"}`}>
                 {/* カード名とレアリティ */}
                 {(options.portraitShowName || options.portraitShowRarity) && (
                   <div className="flex items-center justify-center gap-2 flex-wrap">

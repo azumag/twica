@@ -171,12 +171,13 @@ export function OverlayAura({ colorFrom, colorTo, cornerRadius }: OverlayAuraPro
     if (!edge || !canvas || !context) return;
 
     const colors = palette(colorFrom, colorTo);
-    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const motion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     const card = edge.closest<HTMLElement>('[data-overlay-card="true"]');
     const startedAt = performance.now();
     let frame: number | undefined;
     let lastFrame = -Infinity;
     let draw: ((time: number) => void) | undefined;
+    let dimensions: { width: number; height: number; topReach: number } | undefined;
 
     const animate = (now: number) => {
       if (now - lastFrame >= FRAME_INTERVAL) {
@@ -190,7 +191,7 @@ export function OverlayAura({ colorFrom, colorTo, cornerRadius }: OverlayAuraPro
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = undefined;
       // 静止時も根元と炎のシルエットは描画する。設定変更と再計測も同じ経路を通す。
-      if (motion.matches) draw?.(0.42);
+      if (motion?.matches) draw?.(0.42);
       else if (draw) frame = requestAnimationFrame(animate);
     };
 
@@ -200,6 +201,10 @@ export function OverlayAura({ colorFrom, colorTo, cornerRadius }: OverlayAuraPro
       // 応じて炎の上昇範囲を縮める。カードの入場 scale は寸法に含めない。
       const topMargin = (window.innerHeight - (card?.offsetHeight ?? clientHeight)) / 2;
       const topReach = Math.max(1, Math.min(61, topMargin - 6));
+      if (
+        dimensions?.width === clientWidth && dimensions.height === clientHeight && dimensions.topReach === topReach
+      ) return;
+      dimensions = { width: clientWidth, height: clientHeight, topReach };
       draw = clientWidth && clientHeight
         ? createFlame(canvas, context, clientWidth, clientHeight, cornerRadius, topReach, colors)
         : undefined;
@@ -208,15 +213,22 @@ export function OverlayAura({ colorFrom, colorTo, cornerRadius }: OverlayAuraPro
 
     // clientWidth/Height はカード入退場の scale を含まない。画像や小表示のサイズが
     // 確定し直したときだけバッファを作り直し、通常のアニメーション中は使い回す。
-    const observer = new ResizeObserver(resize);
-    observer.observe(edge);
-    if (card) observer.observe(card);
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(resize) : undefined;
+    if (observer) {
+      observer.observe(edge);
+      if (card) observer.observe(card);
+    } else {
+      // ResizeObserver を備えないブラウザーソースでも初期寸法と window resize で描画する。
+      resize();
+    }
     window.addEventListener("resize", resize);
-    motion.addEventListener("change", syncMotion);
+    if (motion?.addEventListener) motion.addEventListener("change", syncMotion);
+    else motion?.addListener?.(syncMotion);
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
       window.removeEventListener("resize", resize);
-      motion.removeEventListener("change", syncMotion);
+      if (motion?.removeEventListener) motion.removeEventListener("change", syncMotion);
+      else motion?.removeListener?.(syncMotion);
       if (frame !== undefined) cancelAnimationFrame(frame);
     };
   }, [colorFrom, colorTo, cornerRadius]);

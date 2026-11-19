@@ -2129,9 +2129,14 @@ describe('OverlayPage', () => {
       expect(effectLayer.nextElementSibling).toContainElement(cardImage)
     }
     if (query.includes('pUser')) {
-      // 縦長画像で上下に付帯情報を表示しても、炎は画像の寸法だけに合わせる。
-      expect(effectLayer.parentElement).not.toContainElement(screen.getByText('Viewer が引いたカード'))
-      expect(effectLayer.parentElement).not.toContainElement(screen.getByText('Aura Card'))
+      // 縦長画像の上下の付帯情報は画像ラッパーの外に置き、立ち上がる炎より前に描く。
+      const imageWrapper = effectLayer.parentElement!
+      const viewerBadge = imageWrapper.previousElementSibling
+      const cardDetails = imageWrapper.nextElementSibling
+      expect(viewerBadge).toContainElement(screen.getByText('Viewer が引いたカード'))
+      expect(cardDetails).toContainElement(screen.getByText('Aura Card'))
+      expect(viewerBadge).toHaveClass('relative', 'z-10')
+      expect(cardDetails).toHaveClass('relative', 'z-10')
     }
     expect(cardImage).toHaveAttribute('width', renderedWidth)
     expect(container.querySelectorAll('[class*="animate-overlay-effect-"]')).toHaveLength(0)

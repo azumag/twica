@@ -71,6 +71,23 @@ describe('OverlayAura', () => {
     expect(browser.requestFrame).not.toHaveBeenCalled()
   })
 
+  it('draws a static flame when browser sources only support legacy media-query listeners', () => {
+    const browser = stubBrowser({ reducedMotion: true })
+    vi.stubGlobal('ResizeObserver', undefined)
+    const addListener = vi.fn()
+    const removeListener = vi.fn()
+    vi.spyOn(window, 'matchMedia').mockReturnValue({
+      matches: true, addListener, removeListener,
+    } as unknown as MediaQueryList)
+
+    const { unmount } = render(aura)
+
+    expect(browser.putImageData).toHaveBeenCalledTimes(1)
+    expect(browser.requestFrame).not.toHaveBeenCalled()
+    unmount()
+    expect(removeListener).toHaveBeenCalledWith(addListener.mock.calls[0][0])
+  })
+
   it('cancels the next frame and releases browser listeners on unmount', () => {
     const browser = stubBrowser({ reducedMotion: false })
     const { unmount } = render(aura)
