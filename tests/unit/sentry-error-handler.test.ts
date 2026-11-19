@@ -642,4 +642,90 @@ describe('sentry/error-handler', () => {
       );
     });
   });
+
+  // #2094: DrizzleQueryError の cause（postgres.js の SQLSTATE / DB メッセージ）が
+  // errors.context へ残ることの回帰テスト。トップレベルの message/stack に
+  // 根本原因が載らないため、context 経由で確実に観測できるようにする。
+  describe('cause チェーンの context 記録 (#2094)', () => {
+    function drizzleWrappedError(causeCode: string, causeMessage: string) {
+      const cause = Object.assign(new Error(causeMessage), { code: causeCode });
+      const error = Object.assign(new Error('Failed query: SELECT synthetic_sql'), { cause });
+      error.name = 'DrizzleQueryError';
+      return error;
+    }
+
+    it('cause に SQLSTATE を持つエラーで sqlState と最深 cause の message が context に残る', async () => {
+      const error = drizzleWrappedError('26000', 'prepared statement "s_1" does not exist');
+      await logErrorFromLogger('Overlay Events API:', [error]);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.sqlState).toBe('26000');
+      expect(insertArg.context.causeMessage).toBe('prepared statement "s_1" does not exist');
+      // DrizzleQueryError の SQL 全文は context へ複写しない
+      expect(JSON.stringify(insertArg.context)).not.toContain('Failed query');
+    });
+
+    it('{ error: ... } オブジェクト経由でも cause チェーンを記録する', async () => {
+      const error = drizzleWrappedError('53300', 'too many connections for role');
+      await logErrorFromLogger('Failed:', [{ error, streamerId: 's1' }]);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.sqlState).toBe('53300');
+      expect(insertArg.context.causeMessage).toBe('too many connections for role');
+      expect(insertArg.context.streamerId).toBe('s1');
+    });
+
+    it('reportError でも cause チェーンを context に記録する', async () => {
+      const error = drizzleWrappedError('0A000', 'cached plan must not change result type');
+      await reportError(error, { context: 'dashboard:test' });
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.sqlState).toBe('0A000');
+      expect(insertArg.context.causeMessage).toBe('cached plan must not change result type');
+      expect(insertArg.context.context).toBe('dashboard:test');
+    });
+
+    it('多段 cause では最深層の message を記録する', async () => {
+      const innermost = Object.assign(new Error('admin shutdown'), { code: '57P01' });
+      const middle = Object.assign(new Error('middle wrap'), { cause: innermost });
+      const outer = Object.assign(new Error('Failed query: SELECT synthetic'), { cause: middle });
+      await logErrorFromLogger('Failed:', [outer]);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.sqlState).toBe('57P01');
+      expect(insertArg.context.causeMessage).toBe('admin shutdown');
+    });
+
+    it('cause を持たないエラーでは context に sqlState / causeMessage を付けない', async () => {
+      await reportError(new Error('plain error'), { key: 'value' });
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context).toEqual({ key: 'value' });
+    });
+
+    it('ラップなしの DB エラーオブジェクトでは code から sqlState を記録する', async () => {
+      await logErrorFromLogger('Insert failed:', [{ code: '23505', message: 'duplicate key' }]);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.sqlState).toBe('23505');
+      expect(insertArg.context).not.toHaveProperty('causeMessage');
+    });
+
+    it('cause メッセージが長大な場合は切り詰める', async () => {
+      const error = drizzleWrappedError('26000', 'x'.repeat(1000));
+      await logErrorFromLogger('Failed:', [error]);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.causeMessage).toBe('x'.repeat(500));
+    });
+
+    it('呼び出し元が明示した同名キーは cause 補完で上書きしない', async () => {
+      const error = drizzleWrappedError('26000', 'prepared statement gone');
+      await logErrorFromLogger('Failed:', [error, { sqlState: 'caller-value' }]);
+
+      const insertArg = mockInsert.mock.calls[0][0];
+      expect(insertArg.context.sqlState).toBe('caller-value');
+      expect(insertArg.context.causeMessage).toBe('prepared statement gone');
+    });
+  });
 });
