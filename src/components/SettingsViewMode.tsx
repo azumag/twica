@@ -251,6 +251,8 @@ const STATUS_DOT_CLASS: Record<NonNullable<SettingsSection["status"]>, string> =
  * sticky 左サイドバー + 右コンテンツの 2 カラムレイアウト。
  * 一度に 1 セクションだけ表示することで、情報過多を解消する。
  * モバイル (xl 未満) では横スクロールするピル型タブとして折り畳まれる。
+ * 1 カラムにも grid-cols-1（minmax(0, 1fr)）を指定し、タブの合計幅で
+ * ページ全体が広がらず、ナビの内側だけで横スクロールできるようにする。
  *
  * 2 カラム化の閾値は lg ではなく xl。ダッシュボードのサイドバー
  * （w-56 224px + gap-6 24px）が lg で常時表示されるため、1024px では
@@ -295,7 +297,7 @@ export function AdvancedSettingsLayout({
   };
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
+    <div className="grid grid-cols-1 gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
       {/* Sidebar — desktop = vertical sticky list, mobile = horizontal scroll */}
       <aside className="xl:sticky xl:top-6 xl:self-start">
         <nav
