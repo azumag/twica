@@ -2755,6 +2755,12 @@ async function getUserCardDetailPg(
 ): Promise<CardWithDetails | null> {
   const start = Date.now();
 
+  // Issue #2042: PostgreSQLのuuid列（cards.id / cards.streamer_id）へ不正文字列を
+  // 渡すとSQLSTATE 22P02になり、期待される404アクセスまでlogger.error経由で
+  // 本番Issue化されていた (#908 と対称の安全枠)。外部入力を最初の型境界で
+  // allowlistし、DB/retry/error-reporterへ一切流さない。
+  if (!isCanonicalUuid(streamerId) || !isCanonicalUuid(cardId)) return null;
+
   // #834: getTableColumns(cardsTable) は cards の全列を要求するが、本番実測で
   // 全列とも実在することを確認済みのため単一経路でよい。
   // Issue #738: streamers: streamersTable のネスト select は本PR追加の2列を
