@@ -1979,8 +1979,9 @@
     },
     "start": {
       "title": "Before you start",
-      "where": "Trading is available on channels where the streamer has turned it on. Open it with the \"Trade\" button on the channel's collection page.",
-      "tabsLabel": "The trade board",
+      "where": "Trading is available on channels where the streamer has turned it on. Open the trade hub from \"Trade\" in the sidebar: \"Create offer\" starts a new listing, \"My trades\" shows your own listings and bids, and \"Listings by collection\" is where you find everyone's listings.",
+      "hubLabel": "The trade hub",
+      "sidebarLabel": "Sidebar",
       "termsLabel": "Words used in this guide",
       "terms": {
         "offer": {
@@ -2006,13 +2007,14 @@
         "giveCard": "Slime",
         "getCard": "Dragon",
         "arrowLabel": "Trade",
-        "caption": "Say the board has a listing \"Dragon ×{get} ⇄ Slime ×{give}\". If you own Slime ×{give}, just accept it: you give Slime ×{give} and get Dragon ×{get}."
+        "caption": "Say the listings show \"Dragon ×{get} ⇄ Slime ×{give}\". If you own Slime ×{give}, just accept it: you give Slime ×{give} and get Dragon ×{get}."
       },
+      "boardLabel": "The per-channel board",
       "steps": {
         "title": "Steps",
         "find": {
-          "title": "Find a listing on the board",
-          "description": "The \"In-channel\" tab lists trades between cards of this channel. The \"Cross-channel\" tab lists trades with cards of other channels."
+          "title": "Find a listing in \"Listings by collection\"",
+          "description": "Listings are grouped by each collection you own cards in. When a collection has more than {preview} listings, press \"Show all {count}\" to expand the rest, and use \"Sort\" to switch between \"Newest\" and \"Closing soon\" (\"Closing soon\" only affects auctions). The per-channel board still exists: open it with the \"Trade\" button on a collection page. Its \"In-channel\" tab lists trades between cards of that channel, and the \"Cross-channel\" tab lists trades with cards of other channels."
         },
         "accept": {
           "title": "Press \"Accept this trade\"",
@@ -2037,13 +2039,17 @@
       },
       "steps": {
         "title": "Steps",
-        "card": {
-          "title": "Choose the card to give",
-          "description": "Press \"Create offer +\", then choose one of your cards in \"1. Choose the card to give\"."
+        "kind": {
+          "title": "Press \"Create offer\" and pick \"Regular listing\"",
+          "description": "Press \"Create offer\" on the trade hub and choose \"Regular listing\" in \"1. Listing type\"."
         },
-        "want": {
-          "title": "Choose the card you want",
-          "description": "In \"2. Choose the card you want\", pick a card and set \"Number of copies you want\" (1 to {max})."
+        "collections": {
+          "title": "Pick two collections",
+          "description": "In \"2. Choose the collection to offer\", pick the collection of the card you give; in \"3. Choose the collection to request\", pick the collection of the card you want. Picking the same collection makes it an \"In-channel\" listing; picking a different one makes it \"Cross-channel\"."
+        },
+        "cards": {
+          "title": "Pick the cards and the quantity",
+          "description": "Pick the card to give in \"1. Choose the card to give\" and the card you want in \"2. Choose the card you want\", then set \"Number of copies you want\" (1 to {max})."
         },
         "confirm": {
           "title": "Check and list it",
@@ -2056,13 +2062,13 @@
         "limit": "You can have up to {max} listings at a time, regular listings and auctions combined. A slot frees up when one is completed or cancelled, and also when an auction ends without a trade.",
         "locked": "A card in a listing cannot be used for another listing or a bid. It is free to use again when the listing ends or is cancelled.",
         "crossTitle": "To trade with cards of other channels",
-        "inChannelCaption": "Cards of this one channel",
-        "crossCaption": "Cards of another channel",
+        "inChannelCaption": "Same collection picked (cards of that channel)",
+        "crossCaption": "A different collection picked (cards of another channel)",
         "streamerA": "Streamer A",
         "streamerB": "Streamer B",
-        "sideA": "You give a card of the channel you are viewing",
-        "sideB": "You get a card of the streamer you pick in \"Choose the partner streamer\"",
-        "condition": "Works only when both streamers allow cross-channel trading"
+        "sideA": "You give a card of the collection you offer from",
+        "sideB": "You get a card of the collection you want from",
+        "condition": "You can pick another collection only when both streamers allow cross-channel trading and you own a tradeable card in it"
       }
     },
     "auction": {
@@ -2092,7 +2098,7 @@
         "title": "If you are the seller",
         "create": {
           "title": "List the card",
-          "description": "Press \"Start an auction +\" in the \"Auctions\" tab, then choose one card and a duration ({durations})."
+          "description": "Press \"Create offer\", pick \"Auction\" in \"1. Listing type\" and the collection in \"2. Choose the collection to offer\", then choose one card in \"1. Choose the card to auction\" and a duration ({durations}) in \"2. Choose the deadline\"."
         },
         "wait": {
           "title": "Wait for the deadline",
@@ -2108,7 +2114,7 @@
         "title": "If you are bidding",
         "bid": {
           "title": "Place a bid",
-          "description": "Open \"Details & bid\" on the auction and use \"Place a bid\" to choose one kind of card and how many (1 to {max})."
+          "description": "Open \"Details & bid\" on an auction in \"Listings by collection\" or in the board's \"Auctions\" tab, and use \"Place a bid\" to choose one kind of card and how many (1 to {max})."
         },
         "change": {
           "title": "Change or withdraw",
@@ -2124,7 +2130,7 @@
         "activeBids": "You can have up to {max} active bids at a time.",
         "privacy": "Only the seller and the bidder can see what a bid contains (cards, quantity, bidder).",
         "bidCardVisible": "A card used in a bid must be visible to the seller as well as to the bidder. If the streamer keeps unowned cards private, the card can only be used in a bid when the seller owns it; otherwise \"This card cannot be used for a bid\" is shown.",
-        "crossBid": "You can also bid on \"Other channels' auctions\" (when both channels allow cross-channel trading).",
+        "crossBid": "You can also bid on \"Other channels' auctions\" in the board's \"Auctions\" tab (when both channels allow cross-channel trading).",
         "statusTitle": "What the status labels mean",
         "status": {
           "bidding": "Bids are being accepted.",
@@ -2153,7 +2159,7 @@
       "alreadyDone": {
         "question": "\"This trade has already been completed (or is no longer valid)\" is shown",
         "reason": "The listing is completed or no longer valid: someone else accepted it first, the lister cancelled it, the lister gave up the card, or a card used in the listing was deleted.",
-        "action": "Reload the board and accept another listing."
+        "action": "Reload the list and accept another listing."
       },
       "notEnough": {
         "question": "The accept button says \"You don't own this card\" or \"Not enough copies\"",
@@ -2175,10 +2181,15 @@
         "reason": "One copy of a card cannot be used in a listing, an auction and a bid at the same time.",
         "action": "The listing form automatically uses a free copy if you own several, and a card with no free copy cannot be selected. If another listing or bid took the copy first, check \"My trades\" and wait until the card is free to use again."
       },
-      "noPartner": {
-        "question": "\"No streamers are available for cross-channel trades\" is shown",
-        "reason": "The channel of the board and the partner streamer must both allow cross-channel trading, and you must own a card of that streamer.",
-        "action": "Use the \"In-channel\" tab until there is a streamer that meets this."
+      "wantNotSelectable": {
+        "question": "In \"3. Choose the collection to request\", a collection of another channel cannot be picked",
+        "reason": "A cross-channel trade needs both streamers to allow cross-channel trading, and you must own a tradeable card in that collection. A collection you cannot pick shows the reason (e.g. \"This collection does not allow cross-channel trades\").",
+        "action": "Picking the same collection makes an \"In-channel\" listing. To trade with another channel, collect cards of that collection first."
+      },
+      "noCollections": {
+        "question": "\"You have no collections to list from\" is shown",
+        "reason": "You have no collection holding a card you can trade away.",
+        "action": "Collect cards and the collection appears here."
       },
       "notWantable": {
         "question": "\"The streamer does not allow requesting this card in trades\" is shown",
@@ -2212,7 +2223,7 @@
         "mockOff": "When trading is OFF",
         "stateOn": "ON",
         "stateOff": "OFF",
-        "off": "When it is OFF, current listings disappear from the board and cannot be accepted. Regular listings are not deleted and come back when you turn it on again. Auctions cannot be completed either, but their deadline and selection period keep running while it is OFF. An auction whose time has run out stays expired and does not come back when you turn it on again."
+        "off": "When it is OFF, current listings disappear from the listings and cannot be accepted. Regular listings are not deleted and come back when you turn it on again. Auctions cannot be completed either, but their deadline and selection period keep running while it is OFF. An auction whose time has run out stays expired and does not come back when you turn it on again."
       },
       "wantable": {
         "title": "Keep a card from being picked as a card viewers want",
@@ -2220,21 +2231,21 @@
         "checked": "Can be requested (default)",
         "unchecked": "Cannot be requested",
         "effectsTitle": "When unchecked",
-        "effect1": "Existing listings that want this card disappear from the board (they come back when you check it again).",
+        "effect1": "Existing listings that want this card disappear from the listings (they come back when you check it again).",
         "effect2": "Viewers can still give this card in a trade, but it can no longer be used for an auction bid."
       },
       "visibility": {
         "title": "How unowned cards are shown (three levels)",
-        "description": "Unowned cards can be shown in three levels. First turn on \"Show unowned cards to viewers\" in \"Collection visibility\", then choose one of two options. (1) Turn on \"Reveal name, image, and description of unowned cards\" to reveal everything, including the collection page. (2) Turn on \"Reveal only unowned card names in trades\" in \"Card Trading Settings\" to show only names and rarities on trade boards, bids, and acceptance screens, with images kept hidden (the collection page is unchanged). If neither is on, viewers can only trade cards they own.",
+        "description": "Unowned cards can be shown in three levels. First turn on \"Show unowned cards to viewers\" in \"Collection visibility\", then choose one of two options. (1) Turn on \"Reveal name, image, and description of unowned cards\" to reveal everything, including the collection page. (2) Turn on \"Reveal only unowned card names in trades\" in \"Card Trading Settings\" to show only names and rarities on trade screens (listing lists, bids, and acceptance screens), with images kept hidden (the collection page is unchanged). If neither is on, viewers can only trade cards they own.",
         "tableLabel": "What viewers see in trading, by visibility setting",
         "aspect": "A viewer sees",
         "public": "Everything (name and image)",
         "nameOnly": "Names only (trades)",
         "hidden": "Hidden (default)",
         "listings": "Listings and auctions that include a card the viewer does not own",
-        "listingsPublic": "Shown on the board",
-        "listingsNameOnly": "Shown on the board",
-        "listingsHidden": "Not shown on that viewer's board",
+        "listingsPublic": "Shown in the listing lists",
+        "listingsNameOnly": "Shown in the listing lists",
+        "listingsHidden": "Not shown in that viewer's lists",
         "wanted": "Picking an unowned card as the card you want",
         "wantedPublic": "Possible",
         "wantedNameOnly": "Possible",

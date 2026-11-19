@@ -212,6 +212,8 @@ describe("/trade layout", () => {
   // The usage guide (/guide/trade) is linked from the trade screens only; the
   // layout is the single place, so both the anonymous and the logged-in shell
   // must carry it, in front of the page content.
+  // #2081: it stays in the content column (not the sidebar) because the
+  // per-channel board is also reachable anonymously, where no sidebar exists.
   it("links the usage guide from both the anonymous and the logged-in shell", async () => {
     for (const session of [null, SESSION]) {
       cleanup();
