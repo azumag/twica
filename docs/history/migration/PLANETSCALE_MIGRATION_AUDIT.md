@@ -90,7 +90,7 @@ CREATE ROLE service_role NOLOGIN;
 | 依存 | 該当ファイル | 内容 |
 |---|---|---|
 | `auth.uid()` / `auth.jwt()` / `auth.role()` | 00004, 00006, 00008, 00012, 00017（コメントのみの00024を除く） | RLSポリシーの`USING`/`WITH CHECK`句 |
-| `realtime.messages` / `realtime.topic()` | 00034 | Supabase Realtimeのprivateチャンネル向けRLSポリシー |
+| `realtime.messages` / `realtime.topic()` | 00034 | Supabase Realtimeのprivateチャネル向けRLSポリシー |
 | `anon` / `authenticated` / `service_role`ロールへの`GRANT`・`CREATE POLICY ... TO` | 00008, 00011, 00013, 00015〜00019, 00021, 00024, 00027, 00030〜00033, 00036, 00038〜00040, 00045〜00047, 00050〜00052, 00059, 00063〜00065, 00067, 00069, 00070, 00073（計28ファイル） | PostgREST/Supabase標準ロールへの権限付与・RLSポリシー対象ロール指定 |
 | `storage.*` | 該当なし（`storage.`でのgrep一致は0件。`00006_add_storage_tracking.sql`はアプリ独自の`storage_usage`テーブルで、Supabase Storageスキーマとは無関係） | - |
 
@@ -310,7 +310,7 @@ CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$ SE
 CREATE OR REPLACE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$ SELECT 'anon'::text $$;
 ```
 （1章の監査で実際にDocker上で動作確認済みの構成と同一）。`realtime.messages`/`realtime.topic()`
-（00034、`TO authenticated`/`TO anon`対象）はSupabase Realtimeのprivateチャンネル向けで、Phase 2は
+（00034、`TO authenticated`/`TO anon`対象）はSupabase Realtimeのprivateチャネル向けで、Phase 2は
 `public`スキーマのみをdump対象にする方針（6.3節参照）のためそもそも移送対象にならない見込み。
 
 ### 6.2 #667 logical replicationの最終推奨（採用しない）

@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import type { TradeOfferDto, TradeOfferStatus } from "@/lib/trade";
 import {
@@ -56,6 +57,7 @@ function myTradesUrl(status: TradeOfferStatus, page: number) {
 export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeListPage | null }) {
   const t = useTranslations("trade");
   const tMaintenance = useTranslations("maintenance");
+  const router = useRouter();
   const locale = useLocale();
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const writeBlocked = maintenanceMode !== "off";
@@ -122,6 +124,13 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
     setCancellingId(null);
     if (res.ok) {
       setNotice({ text: t("cancelOfferSuccess"), isError: false });
+      // A successful cancel releases the offered card, so the collection
+      // listings rendered by the same hub page are stale as well. Re-render
+      // the server page: the hub gives this component a request-scoped key,
+      // so the refresh also remounts it and drops its per-mount list cache
+      // (which does not observe router.refresh()). Failures and a dismissed
+      // dialog change no server state and must not refresh.
+      router.refresh();
     } else {
       setNotice({
         text:

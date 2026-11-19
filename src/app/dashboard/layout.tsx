@@ -7,6 +7,7 @@ import { getMessages } from "next-intl/server";
 import { DASHBOARD_CLIENT_NAMESPACES, pick } from "@/i18n/client-namespaces";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
+import DashboardShell from "@/components/DashboardShell";
 import { TwitchLoginRedirect } from "@/components/TwitchLoginRedirect";
 import { MaintenanceStatusProvider } from "@/components/MaintenanceStatusProvider";
 import MaintenanceBanner from "@/components/MaintenanceBanner";
@@ -98,15 +99,16 @@ export default async function DashboardLayout({
               {/* チャット通知が有効なのに実効送信手段がない場合の非dismissable警告 */}
               <ChatDeliveryWarning needsAttention={chatDeliveryCapability?.needsAttention ?? false} />
 
-              {/* Navigation bar */}
-              {/* ナビゲーションバー */}
-              <div className="mb-6">
-                <DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />
-              </div>
-
-              {/* Page content */}
-              {/* ページコンテンツ */}
-              <main>{children}</main>
+              {/* ナビゲーションは DashboardShell がサイドバー（lg以上）と
+                  ドロワー（lg未満）を切り替える。バナーはナビ・本文の外側に
+                  残し、画面幅やドロワーの開閉に関係なく常に読めるようにする。 */}
+              <DashboardShell
+                nav={<DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />}
+              >
+                {/* Page content */}
+                {/* ページコンテンツ */}
+                <main>{children}</main>
+              </DashboardShell>
             </div>
           </div>
         </ChatReauthorizationProvider>

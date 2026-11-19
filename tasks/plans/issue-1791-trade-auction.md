@@ -19,7 +19,7 @@
 | 成立不能な入札 | 期限後でも、成立できない状態（配信者のトレード設定OFF、カードの無効化・削除、`trade_wantable=false`）なら、入札者は取り下げられる |
 | 自己入札 | 禁止 |
 | 入札カード | `cards.trade_wantable = true` のものに限る（#1790 の制限を適用。オーナー確定）。出品カードと同じカード種別での入札は禁止（既存の `trade_offers_different_cards` に揃える） |
-| チャンネル | 既存トレード設定に従う。入札カードの配信者がオークションの配信者と異なればクロスチャンネル扱いで、両配信者の `trade_enabled` と `cross_channel_trade_enabled` を要求する |
+| チャネル | 既存トレード設定に従う。入札カードの配信者がオークションの配信者と異なればクロスチャネル扱いで、両配信者の `trade_enabled` と `cross_channel_trade_enabled` を要求する |
 | 公開範囲 | 入札の中身（カード・枚数・入札者）は、出品者本人と、自分の入札について入札者本人だけに見せる。他の閲覧者には入札数だけを表示する |
 | 上限 | open な通常出品とオークション出品の合計で `TRADE_MAX_OPEN_OFFERS`（10）を共用する。有効な入札は1人10件まで |
 | 通知 | 画面内表示のみ。マイトレードに 出品中 / 入札中 / 選択待ち / 成立 / 流札 を表示する。リアルタイム通知は #729 |
@@ -195,7 +195,7 @@ CREATE INDEX ON public.trade_auction_bid_items (user_card_id);
 
 - 認証と rate limit は既存の `tradeWrite` / `tradeRead` を共用する（`src/lib/trade-api.ts`）。
 - エラーコードは既存のトレードエラー体系へ追加し、ja/en の文言を用意する。
-- クロスチャンネルの見つけ方: 既存ボードのクロスタブと同じ規則で、相手側のボードにも表示する。
+- クロスチャネルの見つけ方: 既存ボードのクロスタブと同じ規則で、相手側のボードにも表示する。
 
 ## 6. UI
 - トレードボード（`/trade/[streamerId]`）に「オークション」タブを追加する。行には、出品カード、残り時間（受付中）または「選択待ち」、入札数、自分の入札状態を表示する。
@@ -269,12 +269,12 @@ CREATE INDEX ON public.trade_auction_bid_items (user_card_id);
 | 取消・取り下げと選択期限後 | 未記載 | 選択期限後（導出上の流札）は、有効入札があっても取消でき、取り下げもできる | どちらも全カード解放済みで、記録を変えるだけで害が無い（マイトレードの整理用） |
 | 入札変更の失敗時 | 未記載 | 旧入札のコピーを再利用できるものとして選定し、検証がすべて通ってから旧入札を withdrawn にして新入札を INSERT する | JSONB エラーを返すとトランザクションは commit されるため、先に withdrawn にすると「変更に失敗したのに旧入札が消える」ことになる |
 | 未知ユーザー | 未記載 | RPC は JSONB `USER_NOT_FOUND` を返し、API は 401 `UNAUTHORIZED` | セッションがあるのに users 行が無い場合だけで、500 にする理由が無い |
-| オークション作成時の設定ゲート | 設定ゲート | 出品カードの配信者の `trade_enabled` だけ | オークションは出品時点では相手のチャンネルが決まらない。クロスチャンネルの可否は入札時に両配信者の設定で判定する |
-| クロスタブ | 既存ボードと同じ規則 | 配信者 X のボードのクロスタブ = X 以外のチャンネルのオークションで、X と出品チャンネルの両方が `trade_enabled` と `cross_channel_trade_enabled` を許可しているもの | オークションには「求」側が無い。X のカードで入札できるオークションを出すのが、通常のクロスタブ（X に関わる出品）に相当する |
+| オークション作成時の設定ゲート | 設定ゲート | 出品カードの配信者の `trade_enabled` だけ | オークションは出品時点では相手のチャネルが決まらない。クロスチャネルの可否は入札時に両配信者の設定で判定する |
+| クロスタブ | 既存ボードと同じ規則 | 配信者 X のボードのクロスタブ = X 以外のチャネルのオークションで、X と出品チャネルの両方が `trade_enabled` と `cross_channel_trade_enabled` を許可しているもの | オークションには「求」側が無い。X のカードで入札できるオークションを出すのが、通常のクロスタブ（X に関わる出品）に相当する |
 | マイトレード API | `/api/trades/auctions/mine` | `?role=selling\|bidding&page=`（既定 selling）。bidding は自分の非 withdrawn 入札があるオークション。入札の状態は `active / won / lost / released`（`released` = active のまま親が拘束しなくなった） | UI（PR-2）の2タブにそのまま対応させる |
 | 取り下げ API | `/bids/[bidId]/withdraw` | パスの `[id]` は URL の形だけで、RPC は入札から親オークションを引く（ロック順 オークション → 入札） | 設計どおり request_id 不要。所有者確認は RPC が行う |
 | エラーコード | 追加する | `TRADE_AUCTION_UNAVAILABLE`(503) / `TRADE_AUCTION_NOT_FOUND`(404) / `TRADE_AUCTION_NOT_OPEN` / `TRADE_AUCTION_STILL_BIDDING` / `TRADE_AUCTION_EXPIRED` / `TRADE_AUCTION_HAS_BIDS` / `TRADE_AUCTION_SELF_BID`(400) / `TRADE_AUCTION_BID_NOT_FOUND`(404) / `TRADE_AUCTION_BID_NOT_ACTIVE` / `TRADE_AUCTION_BID_LOCKED` / `TRADE_AUCTION_BID_LIMIT` / `TRADE_AUCTION_BID_INVALID` / `TRADE_BID_CARD_UNAVAILABLE`(400) / `TRADE_BID_CARD_NOT_WANTABLE` / `TRADE_NOT_ENOUGH_CARDS`（無印は 409）。ja/en 文言あり | ステータスは `src/lib/trade-api.ts` の `TRADE_AUCTION_ERROR_STATUS` に一元化 |
-| 既知の情報ビット | — | 入札カードが出品者に見えない場合も `TRADE_BID_CARD_UNAVAILABLE` を返す。入札者は「出品者がそのカードを持っていない（非公開チャンネル）」ことを1ビット知りうる。カード名は漏れない | 拒否しないと入札の中身が出品者への名前の漏えい経路になるため、こちらを優先した |
+| 既知の情報ビット | — | 入札カードが出品者に見えない場合も `TRADE_BID_CARD_UNAVAILABLE` を返す。入札者は「出品者がそのカードを持っていない（非公開チャネル）」ことを1ビット知りうる。カード名は漏れない | 拒否しないと入札の中身が出品者への名前の漏えい経路になるため、こちらを優先した |
 
 ### 12.1 独立レビュー（PR #1850）の必須指摘 M1 の反映（2026-10-18）
 
@@ -301,9 +301,9 @@ CREATE INDEX ON public.trade_auction_bid_items (user_card_id);
 
 | 項目 | 設計（§4.6・§6） | 実装 | 理由 |
 |---|---|---|---|
-| ボードのタブ | 「オークション」タブを追加 | `?tab=auction` を `?scope=cross` と直交させ、オークションタブの中に「このチャンネル / 他チャンネル」のサブタブを置く（クロス許可時のみ）。サブタブは `GET /api/trades/auctions` の `scope` にそのまま対応 | 既存の in_channel / cross の2タブ構造と API の scope を崩さずに、クロスチャンネルのオークションも辿れるようにするため。タブを4つ並べるより 375px で収まる |
+| ボードのタブ | 「オークション」タブを追加 | `?tab=auction` を `?scope=cross` と直交させ、オークションタブの中に「このチャネル / 他チャネル」のサブタブを置く（クロス許可時のみ）。サブタブは `GET /api/trades/auctions` の `scope` にそのまま対応 | 既存の in_channel / cross の2タブ構造と API の scope を崩さずに、クロスチャネルのオークションも辿れるようにするため。タブを4つ並べるより 375px で収まる |
 | migration 未適用の窓 | タブと導線を出さない | タブと出品形式の選択は常に出し、オークション API が 503 `TRADE_AUCTION_UNAVAILABLE` のとき、タブの中身（ボード・詳細・マイトレード）を「準備中」の表示にする。出品の送信が 503 なら既存のエラー文言（`errorTradeAuctionUnavailable`）を出す | タブを隠すにはボード描画ごとにサーバーでスキーマを確認する問い合わせが1本増える。窓はデプロイ時の短時間で、既存画面は別エンドポイントなので壊れない（指示の「または『準備中』」を採用） |
-| オークション詳細 | ページかモーダルか未定 | ページ `/trade/[streamerId]/auctions/[auctionId]`。`[streamerId]` は入札に使うカードのチャンネル（ボードのチャンネル） | 入札のカード候補（`trade_wantable`・可視性を SQL で適用済み）をサーバーで用意する必要があり、出品フロー（ページ）と同じ構成にした。オークション本体は API から取得（rate limit と入札内容の開示規則を API に一本化） |
+| オークション詳細 | ページかモーダルか未定 | ページ `/trade/[streamerId]/auctions/[auctionId]`。`[streamerId]` は入札に使うカードのチャネル（ボードのチャネル） | 入札のカード候補（`trade_wantable`・可視性を SQL で適用済み）をサーバーで用意する必要があり、出品フロー（ページ）と同じ構成にした。オークション本体は API から取得（rate limit と入札内容の開示規則を API に一本化） |
 | 入札カード候補 | Step 2 の UI を再利用 | `listWantableCards`（wantable + 可視性）∩ 自分の所持コピー。拘束されていないコピー数（`freeCount`）を表示し、0枚・出品カードと同種は選べない。入札変更時は、変更前の入札と同じカードならその枚数も使える枚数に足す | 入札は自分のカードでしか出せないため未所持カードは出さない（名前も送らない）。RPC は変更前の入札のコピーを再利用するため |
 | カード選択 UI | Step 2 を再利用 | Step 2 のタイル一覧を `TradeCardChoiceList` に切り出し、出品フローと入札フォームの両方で使う | 同じ見た目・`aria-pressed`・無効理由の `title` を保つため。どのカードを出すかは各フローが決める |
 | 期限の初期値 | 未記載 | 初期選択なし（明示的に選ぶまで送信不可） | 期限はカードと全入札の拘束期間を決めるため |

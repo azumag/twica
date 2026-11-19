@@ -449,6 +449,53 @@ describe("streamer/settings POST: PlanetScale契約 (#663)", () => {
     expect(pg.updateCalls[1].set).toEqual({ show_unowned_cards: true });
   });
 
+  it("trade_unowned_card_names_visible 列欠落 → 新列だけ剥がして再試行し、他のtrade設定は保存する", async () => {
+    // Issue #2070: 新列は trade_enabled / cross_channel_trade_enabled とは別 migration。
+    // そのため新列だけが欠落した窓では、既存2列（適用済み）を巻き添えにせず、
+    // 新列だけを剥がして再試行する必要がある。
+    const pg = createDrizzleDbMock({
+      selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],
+      updates: [
+        {
+          error: {
+            code: "42703",
+            message: 'column "trade_unowned_card_names_visible" of relation "streamers" does not exist',
+          },
+        },
+        { rows: [] },
+      ],
+    });
+    primePgDb(pg);
+
+    const { POST } = await loadRoute();
+    const response = await POST(
+      postRequest({
+        streamerId: "streamer123",
+        tradeEnabled: true,
+        crossChannelTradeEnabled: true,
+        tradeUnownedCardNamesVisible: true,
+        showUnownedCards: true,
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.tradeSettingsSkippedDeployWindow).toBe(true);
+    expect(pg.updateCalls).toHaveLength(2);
+    expect(pg.updateCalls[0].set).toEqual({
+      trade_enabled: true,
+      cross_channel_trade_enabled: true,
+      trade_unowned_card_names_visible: true,
+      show_unowned_cards: true,
+    });
+    // 2回目は新列だけが剥がれ、適用済みの既存trade設定と他の設定は保存される。
+    expect(pg.updateCalls[1].set).toEqual({
+      trade_enabled: true,
+      cross_channel_trade_enabled: true,
+      show_unowned_cards: true,
+    });
+  });
+
   it("publish_live_status/publish_stats を通常保存し、skip フラグを立てない", async () => {
     const pg = createDrizzleDbMock({
       selects: [{ rows: [{ id: "streamer123", channel_point_collection_name: null, card_pack_names: [], pack_rarity_weights: null }] }],

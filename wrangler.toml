@@ -107,45 +107,18 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 #   SESSION_COOKIE_SECRET  — required; missing → startup/runtime failure (fail-closed)
 # Production: `wrangler secret put SESSION_COOKIE_SECRET`
 
-# Issue #1979: preview の Worker 実行場所を DB と同じ東京の近くへ寄せる。
-# 本番適用前の perf 検証であり、top-level には [placement] を置かない
-# （本番 Worker の実行場所はこの変更では変えない）。
+# Issue #1979: preview の Worker を東京に寄せ、ダッシュボードの DB 往復時間を測る。
+# PlanetScale API で twica の唯一の branch（main）は AWS ap-northeast-1（東京）。
+# prod と preview はこの branch 内の論理 DB として構成している。2026-11-17 の
+# Hyperdrive 観測では origin ホストが共通で、そのラベルは ap-northeast-2 を
+# 示していた。現在の Hyperdrive の接続経路は未確認。
 #
-# 背景（2026-11 時点の実測）:
-# - 日本の特定回線（ASN 4713）からの認証済みリクエストは、24 時間の
-#   実測で 24/24 回とも日本以外（米国など）の Cloudflare colo で処理された。
-#   同じ /dashboard の p50 は日本 colo 224ms・日本以外 colo 1,084ms で、
-#   DB RPC getUserCards は 70ms・722ms。DB 内の実行は p50 約 10ms なので、
-#   差の大半は Worker→DB の network round trip。
-# - 参照先 DB は PlanetScale の AWS ap-northeast-1（東京）。PlanetScale の
-#   管理 API でリージョンを確認済み。
-# - preview では 2026-11-03 から Smart Placement（mode = "smart"）を有効化して
-#   いた。Issue #1979 の過去コメントでは、2026-11-03 時点の約 50 回はすべて
-#   local-* だった。その後 2026-11-17 06:20〜06:23 UTC に Cookie なしの GET で
-#   preview の /dashboard を 12 回取得した追加観測では、cf-placement は
-#   remote-SEA 8 回、local-SEA 2 回、local-SJC 1 回、local-LAX 1 回だった。
-#   つまり少なくともこの時間帯は、Smart Placement が間欠的に remote-SEA
-#   （シアトル）へ移動している。ただし SEA は DB（AWS ap-northeast-1）の近傍では
-#   ない。SEA が選ばれた理由は未確認（preview の Hyperdrive の接続先が本番と
-#   同じ東京かが未確認、という可能性を含む）。またこの観測は未認証 GET なので、
-#   認証済みで DB を叩く経路の配置は別途測る必要がある。
-#   以上から、決定的に配置できる Placement Hints へ切り替える。
-#
-# 設定:
-# - Cloudflare の Placement Hints で AWS ap-northeast-1 を指定し、そのリージョンに
-#   最も近い colo で Worker を実行させる。Smart Placement のような分析待ちはない。
-# - mode と region は排他（同時指定不可）なので region だけを書く。
-#
-# 効果の測り方（preview）:
-# - 応答の cf-placement ヘッダーで実行 colo を確認し、DB 近傍（東京）の colo に
-#   変わったことを確認する。remote-* でも SEA など DB から遠い colo は不合格。
-# - 同じ /dashboard を日本国内と日本以外から取得し、wall time と [Perf] ログの
-#   DB RPC（getUserCards など）を変更前・変更後・日本 colo/日本以外 colo で比較する。
-#   DB 内の実行時間（p50 約 10ms）が変わっていないことも併せて確認する。
-# - 対象回線（ASN 4713）での体感はユーザー端末での再測定が必要。
-#
-# 戻し方: この PR を revert して preview へ再デプロイする。設定の差分はこの
-# ブロックだけなので、preview は変更前の mode = "smart" に戻る。
+# 11-17 の認証済み preview /dashboard 10 回では、Smart Placement の
+# cf-placement は remote-SEA が 6 回、local-SEA が 4 回だった。
+# 東京を指定した後、同じ条件で cf-placement、getUserCards の RPC 時間、
+# ダッシュボードと maintenance-status の wall time を比較する。測定手順は
+# docs/handoff/2026-11-17-dashboard-performance.md、合否基準は PR #2072 を参照。
+# 切り戻す場合はこの region を mode = "smart" に戻し、preview に再配備する。
 [env.preview.placement]
 region = "aws:ap-northeast-1"
 

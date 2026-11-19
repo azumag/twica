@@ -15,12 +15,12 @@ import { getStreamerRanking } from "@/lib/services/streamer-ranking";
 
 /**
  * GET /api/streamer-ranking
- * 配信者本人向けの匿名化済み他チャンネル比較ランキング (Issue #742 子B)
+ * 配信者本人向けの匿名化済み他チャネル比較ランキング (Issue #742 子B)
  *
  * - 認可: セッション必須 + canUseStreamerFeatures(session)（/api/gacha-stats と同一ゲート）
  * - 自 streamer 解決: session.twitchUserId -> streamers.twitch_user_id
  * - クエリパラメータなし（4メトリクス × 全期間を1リクエストで返す。分割しない）
- * - 他チャンネルの識別子は DB 関数の応答に含まれず、この route は何も付加しない
+ * - 他チャネルの識別子は DB 関数の応答に含まれず、この route は何も付加しない
  *   （匿名化境界は DB 関数の応答生成時点で完結する）
  */
 export async function GET(request: NextRequest) {

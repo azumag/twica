@@ -250,7 +250,17 @@ const STATUS_DOT_CLASS: Record<NonNullable<SettingsSection["status"]>, string> =
  *
  * sticky 左サイドバー + 右コンテンツの 2 カラムレイアウト。
  * 一度に 1 セクションだけ表示することで、情報過多を解消する。
- * モバイル (lg 未満) では横スクロールするピル型タブとして折り畳まれる。
+ * モバイル (xl 未満) では横スクロールするピル型タブとして折り畳まれる。
+ *
+ * 2 カラム化の閾値は lg ではなく xl。ダッシュボードのサイドバー
+ * （w-56 224px + gap-6 24px）が lg で常時表示されるため、1024px では
+ * 本文が約 744px しかない。ここで lg:grid-cols-[260px_...] を発火させると
+ * 設定本文の列は 744 - 260 - 24 = 460px となり、480px を下回って
+ * フォームやカードが潰れる。xl（1280px）なら設定本文は約 716px
+ * （container 内側 1248px - サイドバー 248px - 260px - gap 24px）になる。
+ * 折り畳み時のピル型タブも同じ閾値に揃えないと、lg〜xl で縦並びの
+ * タブだけが 1 カラムの上に残って中途半端になるため、この
+ * コンポーネント内の lg: はすべて xl: にしている。
  */
 export function AdvancedSettingsLayout({
   sections,
@@ -285,12 +295,12 @@ export function AdvancedSettingsLayout({
   };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+    <div className="grid gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
       {/* Sidebar — desktop = vertical sticky list, mobile = horizontal scroll */}
-      <aside className="lg:sticky lg:top-6 lg:self-start">
+      <aside className="xl:sticky xl:top-6 xl:self-start">
         <nav
           aria-label={t("navAria")}
-          className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-2 lg:mx-0 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:pb-0"
+          className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-2 xl:mx-0 xl:flex-col xl:gap-0.5 xl:overflow-visible xl:pb-0"
         >
           {sections.map((section) => {
             const isActive = section.id === active.id;
@@ -300,7 +310,7 @@ export function AdvancedSettingsLayout({
                 type="button"
                 onClick={() => selectSection(section.id)}
                 aria-current={isActive ? "true" : undefined}
-                className={`group flex shrink-0 items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 lg:w-full lg:shrink ${
+                className={`group flex shrink-0 items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 xl:w-full xl:shrink ${
                   isActive
                     ? "border-violet-500/40 bg-gradient-to-br from-violet-500/15 to-indigo-500/5 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
                     : "border-transparent text-gray-400 hover:border-white/5 hover:bg-white/5 hover:text-gray-200"
@@ -333,7 +343,7 @@ export function AdvancedSettingsLayout({
                     )}
                   </span>
                   {section.description && (
-                    <span className="hidden truncate text-xs text-gray-500 lg:block">
+                    <span className="hidden truncate text-xs text-gray-500 xl:block">
                       {section.description}
                     </span>
                   )}

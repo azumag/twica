@@ -53,7 +53,7 @@ export function isDefinitiveCapabilityResult(
 export interface CancelRedemptionParams {
   /** 配信者のTwitchユーザーID（数値ID文字列。EventSub payload の broadcaster_user_id） */
   broadcasterTwitchUserId: string
-  /** チャンネルポイント報酬ID（EventSub payload の reward.id） */
+  /** チャネルポイント報酬ID（EventSub payload の reward.id） */
   rewardId: string
   /** 返還対象のredemption ID（EventSub payload の event.id） */
   redemptionId: string
@@ -67,16 +67,16 @@ export interface CancelRedemptionResult {
 
 /**
  * Twitch の Update Redemption Status API で redemption を CANCELED に更新し、
- * 視聴者のチャンネルポイントを自動返還する (Issue #546)。
+ * 視聴者のチャネルポイントを自動返還する (Issue #546)。
  *
  * 背景: カード発行枚数の上限到達等でガチャが失敗しても、EventSub は
- * チャンネルポイント消費後に発火するため、視聴者のポイントは既に消費されている。
+ * チャネルポイント消費後に発火するため、視聴者のポイントは既に消費されている。
  * このアプリが作成するカスタム報酬は `should_redemptions_skip_request_queue` を
  * 設定していない(= デフォルトfalse)ため、redemption は明示的に FULFILLED/CANCELED
  * へ更新するまで「未処理」のまま残り続ける。CANCELED に更新すると Twitch 側が
  * ポイントを自動返還する(Twitch公式仕様)。
  *
- * 認証には配信者本人のアクセストークンを使う。チャンネルポイント連携を有効化した
+ * 認証には配信者本人のアクセストークンを使う。チャネルポイント連携を有効化した
  * 配信者は `channel:manage:redemptions` スコープを既に付与済みの想定
  * (src/lib/twitch/scopes.ts の CHANNEL_POINT_SCOPES)。
  *

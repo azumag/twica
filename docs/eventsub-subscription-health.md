@@ -8,7 +8,7 @@
 運用依存の手順しかなかった。Twitch は webhook
 コールバック検証やnotification配信に連続失敗すると自動でサブスクリプションを
 終端状態へ落とすため、気づかれないまま該当streamerの視聴者はガチャ交換ボタンを
-押してもチャンネルポイントだけ消費されカードが付与されない、という無音の失敗が
+押してもチャネルポイントだけ消費されカードが付与されない、という無音の失敗が
 起き続ける。
 
 ## 仕組み
@@ -85,7 +85,7 @@ open のまま放置してよい**。上記のクールダウンにより、障�
 
 **A. 該当 streamer に依頼する（推奨・最も安全）**
 
-配信者ダッシュボードのチャンネルポイント設定画面
+配信者ダッシュボードのチャネルポイント設定画面
 （`src/components/ChannelPointSettings.tsx`）は、現在の EventSub
 サブスクリプション状態を表示し、`POST /api/twitch/eventsub/subscribe` /
 `DELETE /api/twitch/eventsub/subscribe` で自分の報酬のサブスクリプションを
@@ -98,7 +98,7 @@ open のまま放置してよい**。上記のクールダウンにより、障�
 `DELETE /api/twitch/eventsub/debug?id=<subscriptionId>`
 （`src/app/api/twitch/eventsub/debug/route.ts`、所有権を実データで検証する
 ため対象streamer本人のセッションが必要）でdisabledなサブスクリプションを
-削除したのち、A と同じ操作（チャンネルポイント設定の再有効化）を配信者に
+削除したのち、A と同じ操作（チャネルポイント設定の再有効化）を配信者に
 依頼して新規サブスクリプションを作らせる。
 
 ## 設定が必要な secrets

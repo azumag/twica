@@ -101,7 +101,7 @@ export default function DropRateTable() {
       : activeTab === "7d" || activeTab === "channelPoints"
         ? "7d"
         : null;
-  // 「他チャンネル比較」タブは期間統計を使わず、専用コンポーネント
+  // 「他チャネル比較」タブは期間統計を使わず、専用コンポーネント
   // (StreamerRanking) が自前でローディング/エラーを表示するため、
   // ここでは期間統計のスピナーを出さない。
   // 取得期間と一致するpayloadだけを表示し、新しい期間の取得失敗後に
@@ -533,7 +533,7 @@ export default function DropRateTable() {
 
       {/* Full period stats notice / 全期間統計についてのお知らせ
           「カード別」タブは全期間の所持統計そのものなので非表示にする。
-          「他チャンネル比較」タブは全期間の排出数を提供する当のタブであり、
+          「他チャネル比較」タブは全期間の排出数を提供する当のタブであり、
           「比較タブで確認できます」という案内をそのタブ上で出すのは冗長なため
           ここでも非表示にする。 */}
       {activeTab !== "byCard" && activeTab !== "comparison" && (

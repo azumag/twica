@@ -11,10 +11,10 @@ import {
 } from '@/lib/streamer-ranking-contract'
 
 /**
- * 統計ページ「他チャンネル比較」タブ (Issue #642 子C / #743)。
+ * 統計ページ「他チャネル比較」タブ (Issue #642 子C / #743)。
  *
  * - データ源は GET /api/streamer-ranking（子B #742 の匿名化済み contract）。
- *   レスポンスに他チャンネルの識別子は存在せず、このコンポーネントは
+ *   レスポンスに他チャネルの識別子は存在せず、このコンポーネントは
  *   contract に無い情報を描画できない（`streamer-ranking-contract.ts` 参照）。
  * - チャートライブラリは導入せず Tailwind の div 幅でバーを描く（既存統計UIと同一方針）。
  * - 順位は「表示 rank」（同値同順位）。近傍行は子Bが top と重複しないよう position で
@@ -51,7 +51,7 @@ function valueLabelKey(view: MetricView): string {
  *
  * 子B contract の `percentile` は「自分より上位でない参加者の割合」
  * (round(100 * (n - rank + 1) / n)、1位=100) で、ユーザー向けの「上位◯%」とは
- * 補数の関係にある（例: 87 チャンネル中 12 位 → percentile 87 / 上位 13.8%）。
+ * 補数の関係にある（例: 87 チャネル中 12 位 → percentile 87 / 上位 13.8%）。
  * #743 のデザインモックは後者（rank / 母集団）を表示しているため、表示値は
  * rank から導出する。contract の percentile は「順位が存在する（= 匿名化の
  * 最小母集団を満たす）」ことの表明として取得判定に使う。

@@ -5,6 +5,7 @@ import LiveDirectory from "@/components/LiveDirectory";
 import PublicFooter from "@/components/PublicFooter";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
+import DashboardShell from "@/components/DashboardShell";
 import {
   getLiveDirectory,
   getLiveDirectoryPresence,
@@ -138,7 +139,7 @@ export default async function LivePage() {
     );
   }
 
-  // ダッシュボードレイアウトと同じHeader+DashboardNavの組み合わせ。
+  // ダッシュボードレイアウトと同じHeader+DashboardShell（中身はDashboardNav）の組み合わせ。
   // 未読数・プラン判定はダッシュボードレイアウトと同じReact cache付き関数で、
   // 失敗時は basic / 0件 へ縮退する（公開ページを500にしない）。
   // /liveにはダッシュボードlayoutが無いためログイン済み訪問1回あたり2クエリは
@@ -150,14 +151,16 @@ export default async function LivePage() {
       <Header session={session} unreadAnnouncementsCount={unreadAnnouncements.length} />
 
       <div className="container mx-auto px-4 py-6">
-        <div className="mb-6">
-          <DashboardNav
-            isStreamer={canUseStreamerFeatures(session)}
-            isSupporter={plan !== "basic"}
-          />
-        </div>
-
-        <main>{pageBody}</main>
+        <DashboardShell
+          nav={
+            <DashboardNav
+              isStreamer={canUseStreamerFeatures(session)}
+              isSupporter={plan !== "basic"}
+            />
+          }
+        >
+          <main>{pageBody}</main>
+        </DashboardShell>
       </div>
 
       <PublicFooter />

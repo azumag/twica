@@ -57,7 +57,7 @@ export interface PacedMultiDrawSendOptions {
   maxSegments?: number
   /**
    * Issue #1665: 指定時、各segment送信の直前にDBバックエンドのチャネル送信gate
-   * （chat-channel-gate.ts）で予約してから送る。同じ配信者チャンネルへ向かう
+   * （chat-channel-gate.ts）で予約してから送る。同じ配信者チャネルへ向かう
    * 別のoutbox行・別の配送経路（summary/individual/chunked、別のN連バッチ）
    * との間隔も守れるようになる。
    *

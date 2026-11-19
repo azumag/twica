@@ -86,6 +86,8 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     raid_gacha_draw_count: 0,
     trade_enabled: false,
     cross_channel_trade_enabled: false,
+    // Issue #2070: トレード限定の未所持カード名公開（既定OFF）。
+    trade_unowned_card_names_visible: false,
     // #1765 フォローアップ: アルバム表示のパック別既定と初期表示。
     pack_album_grid_sizes: null,
     collection_default_view: 'grid',
@@ -600,66 +602,107 @@ describe('dashboard-data: Drizzle 読み取り', () => {
     })
 
     it('所有カードへ配信者と所持数を付与する', async () => {
+      const streamerId = '94cb6927-8733-4f1c-8e7e-0afb89773daa'
+      const cardId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+      const streamer = makeStreamerRow({ id: streamerId })
+      const card = makeCardRow({ id: cardId, streamer_id: streamerId })
       const { result } = await runWithDb(
         {
           tables: tableRows([
-            [cardsTable, [CARD_OLD]],
-            [streamersTable, [STREAMER]],
+            [cardsTable, [card]],
+            [streamersTable, [streamer]],
             [usersTable, [{ id: 'user-1', twitch_user_id: 'viewer-1' }]],
             [userCardsTable, []],
           ]),
           counts: new Map([[userCardsTable, 2]]),
         },
-        () => getUserCardDetail('viewer-1', 'streamer-1', 'card-old')
+        () => getUserCardDetail('viewer-1', streamerId, cardId)
       )
 
       expect(result).toMatchObject({
-        id: 'card-old',
+        id: cardId,
         count: 2,
-        streamer: { id: 'streamer-1' },
-        streamers: { id: 'streamer-1' },
+        streamer: { id: streamerId },
+        streamers: { id: streamerId },
       })
     })
 
     it('ユーザーがカードを所持していなければ null を返す', async () => {
+      const streamerId = '94cb6927-8733-4f1c-8e7e-0afb89773daa'
+      const cardId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+      const streamer = makeStreamerRow({ id: streamerId })
+      const card = makeCardRow({ id: cardId, streamer_id: streamerId })
       const { result } = await runWithDb(
         {
           tables: tableRows([
-            [cardsTable, [CARD_OLD]],
-            [streamersTable, [STREAMER]],
+            [cardsTable, [card]],
+            [streamersTable, [streamer]],
             [usersTable, [{ id: 'user-1', twitch_user_id: 'viewer-1' }]],
             [userCardsTable, []],
           ]),
           counts: new Map([[userCardsTable, 0]]),
         },
-        () => getUserCardDetail('viewer-1', 'streamer-1', 'card-old')
+        () => getUserCardDetail('viewer-1', streamerId, cardId)
       )
       expect(result).toBeNull()
     })
 
     it('streamers の新列が未デプロイなら安全な列集合で再試行する', async () => {
+      const streamerId = '94cb6927-8733-4f1c-8e7e-0afb89773daa'
+      const cardId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+      const streamer = makeStreamerRow({ id: streamerId })
+      const card = makeCardRow({ id: cardId, streamer_id: streamerId })
       const { result, db } = await runWithDb(
         {
           tables: tableRows([
-            [cardsTable, [CARD_OLD]],
-            [streamersTable, [STREAMER]],
+            [cardsTable, [card]],
+            [streamersTable, [streamer]],
             [usersTable, [{ id: 'user-1', twitch_user_id: 'viewer-1' }]],
             [userCardsTable, []],
           ]),
           counts: new Map([[userCardsTable, 2]]),
           errors: new Map([[cardsTable, [missingColumnError('publish_stats')]]]),
         },
-        () => getUserCardDetail('viewer-1', 'streamer-1', 'card-old')
+        () => getUserCardDetail('viewer-1', streamerId, cardId)
       )
 
       expect(result).toMatchObject({
-        id: 'card-old',
+        id: cardId,
         count: 2,
-        streamer: { id: 'streamer-1' },
+        streamer: { id: streamerId },
       })
       expect(result?.streamer).not.toHaveProperty('publish_stats')
       // 1回目(全列)が失敗 → 2回目(streamers のみ安全な列集合)で取得成功
       expect(db.select.mock.calls[1]?.[0]?.streamers).toEqual(STREAMERS_SAFE_COLUMNS)
+    })
+    it('不正なUUIDのcardIdはDBアクセスもエラー記録もせず null を返す (Issue #2042)', async () => {
+      const streamerId = '94cb6927-8733-4f1c-8e7e-0afb89773daa'
+      const malformedCardId = 'e92022fd-3d30-b840-c78bbea56920'
+      const { result, db } = await runWithDb(
+        { tables: tableRows([[cardsTable, [CARD_OLD]], [streamersTable, [STREAMER]]]) },
+        () => getUserCardDetail('viewer-1', streamerId, malformedCardId)
+      )
+
+      expect(result).toBeNull()
+      expect(getDb).not.toHaveBeenCalled()
+      expect(db.select).not.toHaveBeenCalled()
+      expect(logger.error).not.toHaveBeenCalled()
+      expect(logErrorFromLogger).not.toHaveBeenCalled()
+    })
+
+    it('不正なUUIDのstreamerIdはDBアクセスもエラー記録もせず null を返す (Issue #2042)', async () => {
+      const malformedStreamerId = 'e92022fd-3d30-b840-c78bbea56920'
+      const cardId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+      const { result, db } = await runWithDb(
+        { tables: tableRows([[cardsTable, [CARD_OLD]], [streamersTable, [STREAMER]]]) },
+        () => getUserCardDetail('viewer-1', malformedStreamerId, cardId)
+      )
+
+      expect(result).toBeNull()
+      expect(getDb).not.toHaveBeenCalled()
+      expect(db.select).not.toHaveBeenCalled()
+      expect(logger.error).not.toHaveBeenCalled()
+      expect(logErrorFromLogger).not.toHaveBeenCalled()
     })
   })
 
@@ -729,6 +772,7 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
                 show_unowned_card_details: true,
                 trade_enabled: true,
                 cross_channel_trade_enabled: true,
+                trade_unowned_card_names_visible: true,
               }),
             ],
           ],
@@ -743,6 +787,7 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
       showUnownedCardDetails: true,
       tradeEnabled: true,
       crossChannelTradeEnabled: true,
+      tradeUnownedCardNamesVisible: true,
       packNames: [],
       defaultPackName: null,
       albumGridSizes: {},
@@ -764,6 +809,7 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
       'show_unowned_card_details',
       'show_unowned_cards',
       'trade_enabled',
+      'trade_unowned_card_names_visible',
     ])
   })
 
@@ -795,11 +841,64 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
       showUnownedCardDetails: true,
       tradeEnabled: false,
       crossChannelTradeEnabled: false,
+      tradeUnownedCardNamesVisible: false,
       packNames: [],
       defaultPackName: null,
       albumGridSizes: {},
       albumDefaultView: 'grid',
       // Issue #1782: 既定レアリティ4種のみ（fixture の custom_rarities は空）。
+      rarities: ['common', 'rare', 'epic', 'legendary'],
+      duplicateDisplayTiers: {},
+    })
+    expect(db.select).toHaveBeenCalledTimes(2)
+    expect(Object.keys(db.select.mock.calls[1][0] as object).sort()).toEqual([
+      'card_pack_names',
+      'custom_rarities',
+      'default_card_pack_name',
+      'id',
+      'show_unowned_card_details',
+      'show_unowned_cards',
+    ])
+  })
+
+  it('trade_unowned_card_names_visible 列だけ未デプロイでも落ちず、新設定は false に縮退する', async () => {
+    // Issue #2070: 新列は trade 設定と同じ安全列フォールバックに乗る。安全列側には
+    // trade 列を一切含めないため、新列だけが無い窓でも trade 系は false（fail-closed）
+    // になり、アカウント設定ページ自体は表示され続けることを固定する。
+    const { result, db } = await runWithDb(
+      {
+        tables: tableRows([
+          [
+            streamersTable,
+            [
+              makeStreamerRow({
+                show_unowned_cards: true,
+                show_unowned_card_details: true,
+                trade_enabled: true,
+                cross_channel_trade_enabled: true,
+                trade_unowned_card_names_visible: true,
+              }),
+            ],
+          ],
+        ]),
+        errors: new Map([
+          [streamersTable, [missingColumnError('trade_unowned_card_names_visible')]],
+        ]),
+      },
+      () => getStreamerCollectionSettings('twitch-user-1')
+    )
+
+    expect(result).toEqual({
+      streamerId: 'streamer-1',
+      showUnownedCards: true,
+      showUnownedCardDetails: true,
+      tradeEnabled: false,
+      crossChannelTradeEnabled: false,
+      tradeUnownedCardNamesVisible: false,
+      packNames: [],
+      defaultPackName: null,
+      albumGridSizes: {},
+      albumDefaultView: 'grid',
       rarities: ['common', 'rare', 'epic', 'legendary'],
       duplicateDisplayTiers: {},
     })

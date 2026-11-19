@@ -14,6 +14,7 @@ import { parseMaintenanceError } from "@/lib/maintenance/client";
 export type TradeErrorMessageKey =
   | "errorTradeDisabled"
   | "errorTradeOfferNotFound"
+  | "errorTradeCollectionNotFound"
   | "errorTradeAlreadyCompletedOrInvalid"
   | "errorTradeBusy"
   | "errorTradeCardNotOwned"
@@ -63,6 +64,7 @@ export const TRADE_ERROR_MESSAGE_KEYS: Record<TradeApiErrorCode, TradeErrorMessa
   INTERNAL_ERROR: "errorGeneric",
   TRADE_DISABLED: "errorTradeDisabled",
   TRADE_OFFER_NOT_FOUND: "errorTradeOfferNotFound",
+  TRADE_COLLECTION_NOT_FOUND: "errorTradeCollectionNotFound",
   TRADE_OFFER_NOT_OPEN: "errorTradeAlreadyCompletedOrInvalid",
   TRADE_OFFER_INVALID: "errorTradeAlreadyCompletedOrInvalid",
   TRADE_SELF_ACCEPT: "errorTradeSelfAccept",
@@ -249,11 +251,44 @@ export function tradeBoardPath(streamerId: string, scope: "in_channel" | "cross_
   return scope === "cross_channel" ? `/trade/${streamerId}?scope=cross` : `/trade/${streamerId}`;
 }
 
-/** Listing-flow URL for a channel/scope. */
+/** Listing kind chosen in step 1 of the unified listing flow (#2080). */
+export type TradeCreateKind = "offer" | "auction";
+
+/**
+ * URL of the unified listing flow (/trade/new, #2080) for the selected steps.
+ *
+ * The steps are carried in the query (`kind` / `give` / `want` / `offered`)
+ * instead of a separate tab: the scope is derived from give === want, so no
+ * `scope` parameter exists here (the DB's generated `is_cross_channel` column
+ * remains the authority for the created offer). Omitted steps are left out
+ * entirely, which is what makes the page show that step as unselected.
+ */
+export function tradeCreateFlowPath(input: {
+  kind: TradeCreateKind;
+  give?: string | null;
+  want?: string | null;
+  offered?: string | null;
+}): string {
+  const params = new URLSearchParams({ kind: input.kind });
+  if (input.give) params.set("give", input.give);
+  if (input.want) params.set("want", input.want);
+  if (input.offered) params.set("offered", input.offered);
+  return `/trade/new?${params.toString()}`;
+}
+
+/**
+ * Listing-flow URL for a channel/scope.
+ *
+ * In-channel lists the same channel on both sides, so the old entry point
+ * (which opened the form with that channel's catalogue) keeps its meaning
+ * after the move to /trade/new. Cross-channel presets only the give side; the
+ * wanted collection is picked in step 3 of the new flow. The streamerId is
+ * still passed so the existing callers need no signature change.
+ */
 export function tradeCreatePath(streamerId: string, scope: "in_channel" | "cross_channel"): string {
   return scope === "cross_channel"
-    ? `/trade/${streamerId}/new?scope=cross`
-    : `/trade/${streamerId}/new`;
+    ? tradeCreateFlowPath({ kind: "offer", give: streamerId })
+    : tradeCreateFlowPath({ kind: "offer", give: streamerId, want: streamerId });
 }
 
 /** One side of a trade row as the viewer sees it (card + deleted snapshot). */
@@ -341,7 +376,7 @@ export function tradeAuctionDetailPath(
 
 /** Listing flow URL with the auction kind preselected. */
 export function tradeAuctionCreatePath(streamerId: string): string {
-  return `/trade/${streamerId}/new?kind=auction`;
+  return tradeCreateFlowPath({ kind: "auction", give: streamerId });
 }
 
 /**

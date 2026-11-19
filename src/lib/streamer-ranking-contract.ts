@@ -7,7 +7,7 @@
  * コンポーネントから安全に読める）ため、DB へ触れるサービス層とは分離している。
  *
  * 匿名化境界は DB 関数 `public.get_streamer_ranking(uuid)` の応答生成時点で完結しており、
- * 他チャンネルの `streamer_id` / 名前 / アイコン等の識別子を表すフィールドはこの
+ * 他チャネルの `streamer_id` / 名前 / アイコン等の識別子を表すフィールドはこの
  * contract に定義しない（受け取る余地・表示する余地を作らない）。子C の UI は
  * ここに無い情報を描画できない。
  */
@@ -20,7 +20,7 @@ export type RankingPeriod = "daily" | "weekly" | "total" | "current";
 
 /**
  * 匿名化済みのランキング1行。
- * 順位と数値のみを持ち、どのチャンネルの行かを示す情報は存在しない。
+ * 順位と数値のみを持ち、どのチャネルの行かを示す情報は存在しない。
  */
 export interface StreamerRankingRow {
   /** 表示用の順位（RANK()。同値は同順位で 1,1,3... と飛ぶ） */
@@ -41,7 +41,7 @@ export interface StreamerRankingSelf {
 export interface StreamerRankingEntry {
   metric: RankingMetric;
   period: RankingPeriod;
-  /** 母集団チャンネル数（= 順位の分母） */
+  /** 母集団チャネル数（= 順位の分母） */
   participantCount: number;
   /** participantCount < 5。匿名性が壊れるため top/neighbors は空で返る */
   insufficientData: boolean;

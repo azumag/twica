@@ -2,7 +2,11 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
-import { TRADE_MAX_OPEN_OFFERS, TRADE_MAX_WANTED_QUANTITY } from "@/lib/trade";
+import {
+  TRADE_COLLECTION_PREVIEW_SIZE,
+  TRADE_MAX_OPEN_OFFERS,
+  TRADE_MAX_WANTED_QUANTITY,
+} from "@/lib/trade";
 import {
   TRADE_AUCTION_DURATIONS_HOURS,
   TRADE_AUCTION_SELECTION_HOURS,
@@ -12,6 +16,7 @@ import {
 import PublicFooter from "@/components/PublicFooter";
 import AuctionTimeline from "@/components/trade-guide/AuctionTimeline";
 import BoardTabsMock from "@/components/trade-guide/BoardTabsMock";
+import HubMock from "@/components/trade-guide/HubMock";
 import Breadcrumb from "@/components/trade-guide/Breadcrumb";
 import Callout from "@/components/trade-guide/Callout";
 import CrossChannelFigure from "@/components/trade-guide/CrossChannelFigure";
@@ -32,6 +37,7 @@ import {
   EXAMPLE_ACCEPT_GIVE,
   EXAMPLE_AUCTION_BIDS,
   EXAMPLE_AUCTION_DURATION_HOURS,
+  EXAMPLE_COLLECTION_TOTAL,
   EXAMPLE_OFFER_GIVE,
   EXAMPLE_OFFER_WANT,
 } from "@/components/trade-guide/exampleQuantities";
@@ -48,14 +54,14 @@ export const metadata: Metadata = {
 // tests/unit/public-help-pages.test.ts の同期テストが、配列とメッセージ（ja/en 両方）の
 // キーが過不足なく1対1に対応していることを強制する。
 //
-// 数値（出品数・欲しい枚数・入札数・期限・選択期限）は文言に直書きせず、サーバーが実際に
-// 判定に使っている定数をプレースホルダーに差し込む。定数を変えれば図解も追従するので、
-// 「コードは変えたのにガイドが古いまま」という食い違いが起きない。例に使う枚数
-// （exampleQuantities.ts）は「ルール」ではなく「この数字ならこうなる」という説明用の数字で、
-// 上限の範囲内であることをテストが固定する。
+// 数値（出品数・欲しい枚数・入札数・期限・選択期限・一覧の先頭表示件数）は文言に直書きせず、
+// サーバーが実際に判定に使っている定数をプレースホルダーに差し込む。定数を変えれば図解も
+// 追従するので、「コードは変えたのにガイドが古いまま」という食い違いが起きない。例に使う
+// 枚数・件数（exampleQuantities.ts）は「ルール」ではなく「この数字ならこうなる」という説明用の
+// 数字で、上限の範囲内であることをテストが固定する。
 //
 // 文言の統一ルール（tests/unit/public-help-pages.test.ts が検査する）:
-//   視聴者向け = 出品 / 応じる / 入札、「欲しいカード」「渡す」「もらう」、「クロスチャンネル」、
+//   視聴者向け = 出品 / 応じる / 入札、「欲しいカード」「渡す」「もらう」、「クロスチャネル」、
 //   「だれとも交換されずに終了」、使えなくなったカードは「また使える」。
 //   配信者向けの設定だけ、画面どおり「求めるカード」を引用する。
 //
@@ -86,10 +92,13 @@ const acceptSteps = [
   { key: "confirm", icon: "check" },
 ] as const satisfies readonly { key: string; icon: GuideIconName }[];
 
-// B. 出品の3ステップ（messages: offer.steps.<key>）。
+// B. 出品の4ステップ（messages: offer.steps.<key>）。
+// /trade/new の画面どおり: 形式 → 出す/求めるコレクション（同じ=チャネル内、別=クロスチャネル）
+// → カードと欲しい枚数 → 確認。
 const offerSteps = [
-  { key: "card", icon: "tag" },
-  { key: "want", icon: "cards" },
+  { key: "kind", icon: "list" },
+  { key: "collections", icon: "cards" },
+  { key: "cards", icon: "swap" },
   { key: "confirm", icon: "check" },
 ] as const satisfies readonly { key: string; icon: GuideIconName }[];
 
@@ -130,11 +139,14 @@ const phaseChips = [
   { key: "unsettleable", labelKey: "auctionBidUnsettleableBadge" },
 ] as const;
 
-// 未所持カード非公開の表の行（messages: streamer.visibility.<key> と <key>Public / <key>Hidden）。
-// ok=false が ✗。「持っていないカードを欲しいカードに指定」は非公開だと不可（持っているカードだけ）。
+// 未所持カードの見せ方の表（#2070 で3段階）。
+// messages: streamer.visibility.<key> と <key>Public / <key>NameOnly / <key>Hidden。
+// ok=false が ✗。列は「すべて公開（詳細ON）」「名前だけ公開（トレードのみ）」「非公開」。
+// 名前だけ公開では、行（出品・欲しいカード）は見えるが画像だけが見えない。
 const visibilityRows = [
-  { key: "listings", publicOk: true, hiddenOk: false },
-  { key: "wanted", publicOk: true, hiddenOk: false },
+  { key: "listings", publicOk: true, nameOnlyOk: true, hiddenOk: false },
+  { key: "wanted", publicOk: true, nameOnlyOk: true, hiddenOk: false },
+  { key: "images", publicOk: true, nameOnlyOk: false, hiddenOk: false },
 ] as const;
 
 // うまくいかないとき（messages: faq.<key>.{question,reason,action}）。表示順は配列順、
@@ -147,10 +159,15 @@ const faqItems = [
   { key: "allListed", icon: "lock" },
   { key: "limitReached", icon: "list" },
   { key: "alreadyListed", icon: "lock" },
-  { key: "noPartner", icon: "globe" },
+  // #2081: 旧フローの「交換できる配信者がいません」は、新しい出品フローの
+  // 「コレクションが選べない（理由が表示される）」に置き換わった。
+  { key: "wantNotSelectable", icon: "globe" },
+  { key: "noCollections", icon: "cards" },
   { key: "notWantable", icon: "xCircle" },
   { key: "bidUnsettleable", icon: "warning" },
   { key: "selectionExpired", icon: "clock" },
+  // #2070: 名前は見えるが画像は出ない、という新しい中間状態の説明。
+  { key: "nameOnly", icon: "tag" },
 ] as const satisfies readonly { key: string; icon: GuideIconName }[];
 
 /**
@@ -287,11 +304,15 @@ export default async function TradeGuidePage() {
         <section id="start" className="mb-14 scroll-mt-8">
           <h2 className="mb-3 text-2xl font-semibold text-purple-400">{t("start.title")}</h2>
           <p className="text-gray-300">{t("start.where")}</p>
-          <BoardTabsMock
-            label={t("start.tabsLabel")}
-            tradeButton={tTrade("collectionTradeButton")}
-            tabs={[tTrade("tabInChannel"), tTrade("tabCrossChannel"), tTrade("tabAuction")]}
-            myTradesLink={tTrade("myTradesLink")}
+          <HubMock
+            label={t("start.hubLabel")}
+            sidebarLabel={t("start.sidebarLabel")}
+            navItem={tNav("trade")}
+            hubTitle={tTrade("hubTitle")}
+            createButton={tTrade("hubCreateButton")}
+            myTradesTitle={tTrade("myTradesTitle")}
+            collectionsTitle={tTrade("collectionsTitle")}
+            expandButton={tTrade("collectionExpand", { count: EXAMPLE_COLLECTION_TOTAL })}
           />
           <div className="mt-4">
             <TermList
@@ -334,9 +355,22 @@ export default async function TradeGuidePage() {
             steps={acceptSteps.map(({ key, icon }) => ({
               icon,
               title: t(`accept.steps.${key}.title`),
-              description: t(`accept.steps.${key}.description`),
+              // 先頭表示件数・「全N件を見る」の件数はサーバーの定数と説明用の例から差し込む
+              description: t(`accept.steps.${key}.description`, {
+                preview: TRADE_COLLECTION_PREVIEW_SIZE,
+                count: EXAMPLE_COLLECTION_TOTAL,
+              }),
             }))}
           />
+          {/* チャネルごとのボードは残っている画面なので、タブ名は実画面の見た目のまま示す */}
+          <div className="mt-6">
+            <BoardTabsMock
+              label={t("accept.boardLabel")}
+              tradeButton={tTrade("collectionTradeButton")}
+              tabs={[tTrade("tabInChannel"), tTrade("tabCrossChannel"), tTrade("tabAuction")]}
+              myTradesLink={tTrade("myTradesLink")}
+            />
+          </div>
         </section>
 
         {/* B. List the card you want (regular listing) */}
@@ -549,13 +583,19 @@ export default async function TradeGuidePage() {
           <VisibilityTable
             caption={t("streamer.visibility.tableLabel")}
             aspectHeader={t("streamer.visibility.aspect")}
-            revealedHeader={t("streamer.visibility.public")}
-            hiddenHeader={t("streamer.visibility.hidden")}
-            rows={visibilityRows.map(({ key, publicOk, hiddenOk }) => ({
+            columns={[
+              { key: "public", header: t("streamer.visibility.public"), icon: "eye" },
+              { key: "nameOnly", header: t("streamer.visibility.nameOnly"), icon: "tag" },
+              { key: "hidden", header: t("streamer.visibility.hidden"), icon: "eyeOff" },
+            ]}
+            rows={visibilityRows.map(({ key, publicOk, nameOnlyOk, hiddenOk }) => ({
               key,
               aspect: t(`streamer.visibility.${key}`),
-              revealed: { ok: publicOk, text: t(`streamer.visibility.${key}Public`) },
-              hidden: { ok: hiddenOk, text: t(`streamer.visibility.${key}Hidden`) },
+              cells: [
+                { ok: publicOk, text: t(`streamer.visibility.${key}Public`) },
+                { ok: nameOnlyOk, text: t(`streamer.visibility.${key}NameOnly`) },
+                { ok: hiddenOk, text: t(`streamer.visibility.${key}Hidden`) },
+              ],
             }))}
           />
         </section>

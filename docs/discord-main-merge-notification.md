@@ -12,7 +12,7 @@ GitHub Actions の Repository Secret として `DISCORD_WEBHOOK_URL` を設定�
 
 1. GitHub リポジトリの **Settings → Secrets and variables → Actions** を開く。
 2. **New repository secret** を選ぶ。
-3. Name に `DISCORD_WEBHOOK_URL`、Secret に通知先 Discord チャンネルの Webhook URL を設定する。
+3. Name に `DISCORD_WEBHOOK_URL`、Secret に通知先 Discord チャネルの Webhook URL を設定する。
 
 Webhook URL は認証情報として扱い、リポジトリ、Issue、PR、CI ログ、チャットへ値を貼り付けないでください。Workflow は Secret が未設定の場合、通知前の検証ステップで失敗します。
 
