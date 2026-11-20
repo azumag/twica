@@ -110,8 +110,24 @@ export default function Pagination({
 
   const pageNumbers = getPageNumbers();
 
+  // #2102: the previous single-line layout overflowed narrow viewports (e.g.
+  // 375px => clientWidth 360) when many pages exist, pushing the page-info
+  // text past the edge and forcing page-level horizontal scroll. This follows
+  // the standard responsive pagination pattern used by Tailwind UI (and the
+  // existing TradePager in this codebase): below `sm` the numbered list is
+  // replaced by a compact "current / total" pager whose width does not grow
+  // with the page count, while `sm` and up keep the original numbered layout.
+  // flex-wrap is a safeguard so the desktop page info can drop to a second
+  // centered line instead of overflowing when the row still cannot fit.
+  // #2102: 従来の単一行レイアウトはページ数が多いと狭い画面幅（例: 375px ⇒
+  // clientWidth 360）からはみ出し、ページ情報が押し出されてページ全体に横
+  // スクロールが発生していた。Tailwind UI や本コードベースの TradePager と
+  // 同じレスポンシブページネーションの標準パターンに従い、sm 未満では番号
+  // リストをページ数に依存しないコンパクトな「現在 / 総数」表示へ切り替え、
+  // sm 以上では従来の番号レイアウトを維持する。flex-wrap は、それでも一行に
+  // 収まらない場合にデスクトップのページ情報が次行へ折り返すための保険。
   return (
-    <div className="flex items-center justify-center gap-2">
+    <div className="flex flex-wrap items-center justify-center gap-2">
       {/* Previous button */}
       {/* 前へボタン */}
       <button
@@ -135,9 +151,20 @@ export default function Pagination({
         </svg>
       </button>
 
-      {/* Page numbers */}
-      {/* ページ番号 */}
-      <div className="flex items-center gap-1">
+      {/* Compact page info for < sm: doubles as the current-page indicator and
+          keeps prev/next + page info reachable without horizontal scroll */}
+      {/* sm 未満向けのコンパクトなページ情報。現在ページ表示を兼ね、
+          前へ/次へとページ情報へ横スクロールなしで到達できるようにする */}
+      <span
+        className="text-sm text-gray-400 sm:hidden"
+        aria-current="page"
+      >
+        {t("pageInfo", { current: currentPage, total: totalPages })}
+      </span>
+
+      {/* Page numbers (hidden below sm where the full list does not fit) */}
+      {/* ページ番号（sm 未満では全リストが収まらないため非表示） */}
+      <div className="hidden items-center gap-1 sm:flex">
         {pageNumbers.map((page, index) =>
           page === "..." ? (
             <span
@@ -186,9 +213,9 @@ export default function Pagination({
         </svg>
       </button>
 
-      {/* Page info */}
-      {/* ページ情報 */}
-      <span className="ml-2 text-sm text-gray-400">
+      {/* Page info (desktop; the compact variant above covers < sm) */}
+      {/* ページ情報（デスクトップ用。sm 未満は上記コンパクト表示が担う） */}
+      <span className="ml-2 hidden text-sm text-gray-400 sm:inline">
         {t("pageInfo", { current: currentPage, total: totalPages })}
       </span>
     </div>
