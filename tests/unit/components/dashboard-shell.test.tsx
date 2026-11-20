@@ -91,6 +91,7 @@ describe("DashboardShell sidebar", () => {
       trigger.getAttribute("aria-controls") ?? "",
     );
     expect(panel).toHaveClass("hidden", "lg:block", "lg:w-56");
+    expect(panel).toHaveClass("lg:self-stretch", "lg:border-r");
 
     // lg 以上では出さない閉じるボタンの行も同じ閾値であること。
     expect(
@@ -99,7 +100,9 @@ describe("DashboardShell sidebar", () => {
     ).toHaveClass("lg:hidden");
 
     fireEvent.click(trigger);
-    expect(panel).toHaveClass("lg:static", "lg:w-56");
+    expect(panel).toHaveClass(
+      "fixed", "bg-gray-900", "lg:static", "lg:w-56", "lg:self-stretch", "lg:border-r",
+    );
     expect(screen.getByTestId("dashboard-shell-backdrop")).toHaveClass(
       "lg:hidden",
     );
@@ -175,6 +178,9 @@ describe("DashboardShell sidebar", () => {
     );
     expect(active).toHaveLength(1);
     expect(active[0]).toHaveAttribute("href", "/dashboard/collection");
+    expect(active[0]).toHaveClass(
+      "bg-purple-600", "lg:border-s-2", "lg:border-purple-400", "lg:bg-purple-500/15", "lg:focus-visible:outline-2",
+    );
     expect(
       links.find((link) => link.getAttribute("href") === "/dashboard"),
     ).not.toHaveAttribute("aria-current");

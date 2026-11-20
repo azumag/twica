@@ -342,11 +342,11 @@ describe("HubMock", () => {
   // #2081: 入口（サイドバーの項目）とハブの構造（見出し・出品ボタン・コレクション別一覧）を
   // 実画面と同じ言葉で示す。装飾だけでなくテキストの並びを検査する。
   it("shows the sidebar entry and the hub chrome with the labels it is given", () => {
-    const { container } = render(
+    const { container, getByText } = render(
       <HubMock
         label="The trade hub"
         sidebarLabel="Sidebar"
-        navItem="Trade"
+        navItem="Trade navigation"
         hubTitle="Trade"
         createButton="Create offer"
         myTradesTitle="My trades"
@@ -358,8 +358,15 @@ describe("HubMock", () => {
     for (const text of ["Sidebar", "Create offer", "My trades", "Listings by collection", "Show all 8"]) {
       expect(container.textContent).toContain(text);
     }
-    // The highlighted sidebar item uses the nav's active colour, the create button the hub's primary style.
-    expect(container.querySelector("span.bg-purple-600")!.textContent).toContain("Trade");
+    // Find the selected navigation label directly: the primary action is purple too.
+    expect(getByText("Trade navigation")).toHaveClass(
+      "bg-purple-600",
+      "text-white",
+      "lg:border-s-2",
+      "lg:border-purple-400",
+      "lg:bg-purple-500/15",
+      "lg:text-purple-100",
+    );
   });
 });
 
