@@ -233,22 +233,30 @@ describe('SettingsViewMode', () => {
   })
 
   describe('AdvancedSettingsLayout', () => {
-    it('初期表示ではactive sectionだけをmountし、選択後は訪問済みsectionを保持する', () => {
+    it('上部ナビでセクションを切り替え、訪問済みのパネルを保持する', () => {
       renderWithProvider(
         <AdvancedSettingsLayout
           sections={[
-            { id: 'first', label: 'First', content: <div data-testid="first-panel">first</div> },
+            { id: 'first', label: 'First', description: 'First description', content: <div data-testid="first-panel">first</div> },
             { id: 'second', label: 'Second', content: <div data-testid="second-panel">second</div> },
           ]}
         />
       )
 
-      expect(screen.getByTestId('first-panel')).toBeInTheDocument()
+      const navigation = screen.getByRole('navigation', { name: '詳細設定ナビゲーション' })
+      const firstPanel = screen.getByTestId('first-panel')
+      // happy-dom では画面幅ごとの描画は検証できないため、ナビとパネルが同じ
+      // 1列グリッドに並び、PC幅でも列が増えないことを DOM とクラスで確認する。
+      expect(navigation.nextElementSibling).toContainElement(firstPanel)
+      expect(navigation.parentElement).toHaveClass('grid-cols-1')
+      expect(navigation.parentElement?.className).not.toMatch(/(?:^|\s)\S+:grid-cols-/)
+      expect(navigation).toHaveClass('overflow-x-auto', 'xl:flex-wrap')
+      expect(screen.getByRole('button', { name: 'First' })).toHaveAttribute('title', 'First description')
       expect(screen.queryByTestId('second-panel')).toBeNull()
 
       fireEvent.click(screen.getByRole('button', { name: /Second/ }))
 
-      expect(screen.getByTestId('first-panel').parentElement).toHaveAttribute('hidden')
+      expect(firstPanel.parentElement).toHaveAttribute('hidden')
       expect(screen.getByTestId('second-panel')).toBeInTheDocument()
     })
 

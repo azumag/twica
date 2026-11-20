@@ -24,7 +24,7 @@ type BotAccountDisplay = { username: string | null; displayName: string | null }
 
 // 配信設定ページのレイアウト切替クライアントコンポーネント。
 // Simple = 集中度の高いクイックスタート 2 ステップ表示。
-// Advanced = sticky 左サイドバー + 右コンテンツの単一セクション表示。
+// Advanced = 上部ナビゲーション + 単一セクション表示。
 // コレクション公開設定とカードトレード設定は配信設定ではなくアカウント側の
 // 設定として /dashboard/account へ移した（#715 §6.7）。ここには置かない。
 // 各モードで実コンポーネント (OverlayPreview / ChannelPointSettings 等) を
