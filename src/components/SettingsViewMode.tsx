@@ -249,8 +249,8 @@ const STATUS_DOT_CLASS: Record<NonNullable<SettingsSection["status"]>, string> =
  * AdvancedSettingsLayout
  *
  * 画面幅にかかわらず設定ナビを本文の上に置き、ダッシュボードの
- * サイドバーの隣でフォームが使える幅を確保する。広い画面で項目が
- * 収まらない場合は折り返し、狭い画面ではナビの内側だけを横スクロールする。
+ * サイドバーの隣でフォームが使える幅を確保する。親のサイドバーが出る
+ * lg 以上では項目を折り返し、狭い画面ではナビの内側だけを横スクロールする。
  * grid-cols-1 の minmax(0, 1fr) で、項目の合計幅によるページの横あふれを防ぐ。
  */
 export function AdvancedSettingsLayout({
@@ -289,7 +289,7 @@ export function AdvancedSettingsLayout({
     <div className="grid grid-cols-1 gap-6">
       <nav
         aria-label={t("navAria")}
-        className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-2 xl:flex-wrap"
+        className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-2 lg:flex-wrap"
       >
         {sections.map((section) => {
           const isActive = section.id === active.id;

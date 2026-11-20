@@ -250,7 +250,7 @@ describe('SettingsViewMode', () => {
       expect(navigation.nextElementSibling).toContainElement(firstPanel)
       expect(navigation.parentElement).toHaveClass('grid-cols-1')
       expect(navigation.parentElement?.className).not.toMatch(/(?:^|\s)\S+:grid-cols-/)
-      expect(navigation).toHaveClass('overflow-x-auto', 'xl:flex-wrap')
+      expect(navigation).toHaveClass('overflow-x-auto', 'lg:flex-wrap')
       expect(screen.getByRole('button', { name: 'First' })).toHaveAttribute('title', 'First description')
       expect(screen.queryByTestId('second-panel')).toBeNull()
 
