@@ -36,13 +36,10 @@ interface DashboardShellProps {
  *   when closed). Rendering one copy for desktop and another for mobile would
  *   duplicate every link, which breaks `getByRole` queries and makes screen
  *   readers announce the navigation twice.
- * - The drawer is a disclosure, not a modal dialog: it is opened by a button
- *   with `aria-expanded` / `aria-controls`, closed by Escape, a backdrop click,
- *   a navigation item click, or a route change, and focus returns to the
- *   trigger when the user closes it. A modal dialog would need focus trapping
- *   and `aria-modal`, but the nav is the only interactive content of the
- *   drawer and the desktop sidebar is visible at the same time; keeping it a
- *   disclosure avoids two competing focus-management models.
+ * - The drawer uses disclosure navigation with `aria-expanded` and
+ *   `aria-controls`. Escape, backdrop clicks and the close button dismiss it
+ *   and return focus to the trigger. A route change or moving focus outside
+ *   also dismisses it, so Tab can reach the page without a focus trap.
  * - Route changes are observed through `usePathname` instead of the click
  *   handler alone because browser back/forward and programmatic navigation can
  *   change the route while the drawer is open.
@@ -52,6 +49,8 @@ export default function DashboardShell({ nav, children }: DashboardShellProps) {
   const pathname = usePathname();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
   // 同じレイアウト内に複数の shell が置かれても id が衝突しないようにする。
   // aria-controls と aside の id を同じ値にするため、ここで一度だけ生成する。
   const sidebarId = useId();
@@ -67,6 +66,10 @@ export default function DashboardShell({ nav, children }: DashboardShellProps) {
 
   useEffect(() => {
     if (!isDrawerOpen) return;
+
+    // The panel covers the trigger on mobile. Put focus on the visible close
+    // button so the next Tab goes to the first link and Shift+Tab can leave.
+    closeButtonRef.current?.focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -110,9 +113,21 @@ export default function DashboardShell({ nav, children }: DashboardShellProps) {
     // まま列だけ細くなる」。例えば CardManager の md:grid-cols-8 は1枚が約81px
     // から約50pxになり、2列カードも1列約238pxから約119pxへ潰れる。
     // lg 以上なら 768〜1023px はドロワーで本文幅を従来どおり保ち、1024px でも
-    // 本文は約744px（container 内側 992px - w-56 224px - gap-6 24px）で、
+    // 本文は約744px（外枠内側 992px - w-56 224px - gap-6 24px）で、
     // 従来 md の段組みが発火していた幅（約736px）を下回らない。
-    <div className="lg:flex lg:items-start lg:gap-6">
+    <div
+      className="lg:flex lg:items-start lg:gap-6"
+      onBlur={(event) => {
+        const next = event.relatedTarget;
+        // Tab may move from the last nav link to a control in the content.
+        // Remove the backdrop in that case, leaving focus on the new control.
+        // A null destination can be a backdrop pointer press; let its click
+        // handler perform the dismissal and restore focus to the toggle.
+        if (isDrawerOpen && next && !sidebarRef.current?.contains(next)) {
+          setIsDrawerOpen(false);
+        }
+      }}
+    >
       {/* lg 未満専用の開閉ボタン。lg 以上ではサイドバーが常時表示されるため隠す。 */}
       <button
         ref={menuButtonRef}
@@ -121,7 +136,7 @@ export default function DashboardShell({ nav, children }: DashboardShellProps) {
         aria-controls={sidebarId}
         aria-label={t("menu")}
         onClick={() => setIsDrawerOpen((open) => !open)}
-        className="mb-4 inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-medium text-gray-200 transition-colors hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 lg:hidden"
+        className="mb-3 inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-medium text-gray-200 transition-colors hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 lg:hidden"
       >
         <svg
           className="h-5 w-5"
@@ -156,6 +171,7 @@ export default function DashboardShell({ nav, children }: DashboardShellProps) {
         `lg:block` が常に有効になるため、状態に関係なくサイドバーが見える。
       */}
       <aside
+        ref={sidebarRef}
         id={sidebarId}
         data-state={isDrawerOpen ? "open" : "closed"}
         onClick={handleSidebarClick}
@@ -172,6 +188,7 @@ export default function DashboardShell({ nav, children }: DashboardShellProps) {
         */}
         <div className="mb-3 flex justify-end lg:hidden">
           <button
+            ref={closeButtonRef}
             type="button"
             aria-label={t("closeMenu")}
             onClick={closeDrawer}

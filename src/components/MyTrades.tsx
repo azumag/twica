@@ -295,11 +295,12 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
 
   return (
     <section>
-      {/* WAI-ARIA tabs pattern: roving tabindex + Arrow/Home/End keys. */}
+      {/* Wrap on narrow screens so every tab is visible without a sideways
+          gesture. Keep the roving tabindex and Arrow/Home/End in reading order. */}
       <div
         role="tablist"
         aria-label={t("myTradesTitle")}
-        className="mb-4 flex gap-2 overflow-x-auto"
+        className="mb-4 flex flex-wrap gap-2"
         onKeyDown={(event) => {
           // Leave modified keys (e.g. Alt+Left = browser back) to the browser.
           if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -328,7 +329,7 @@ export default function MyTrades({ initialOpen = null }: { initialOpen?: TradeLi
               aria-controls="my-trades-panel"
               tabIndex={selected ? 0 : -1}
               onClick={() => selectTab(item.status)}
-              className={`shrink-0 rounded-lg px-4 py-2 text-sm ${
+              className={`shrink-0 rounded-lg px-2.5 py-2 text-sm sm:px-4 ${
                 selected ? "bg-purple-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
               }`}
             >

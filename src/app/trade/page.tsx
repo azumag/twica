@@ -10,6 +10,7 @@ import {
 } from "@/lib/trade-page-data";
 import MyTrades from "@/components/MyTrades";
 import TradeCollections from "@/components/TradeCollections";
+import TradeGuideLink from "@/components/TradeGuideLink";
 import TradeListedNotice, {
   type TradeListedKind,
 } from "@/components/TradeListedNotice";
@@ -74,8 +75,9 @@ export default async function TradeHubPage({
   // The heading, the "my trades" first page and the collection summaries are
   // independent, so start all three after the auth decision and before
   // rendering.
-  const [t, initialOpen, initialCollections] = await Promise.all([
+  const [t, tGuide, initialOpen, initialCollections] = await Promise.all([
     getTranslations("trade"),
+    getTranslations("tradeGuidePage"),
     loadInitialOpenTradePage(session.twitchUserId),
     loadInitialTradeCollections(session.twitchUserId, sort),
   ]);
@@ -104,20 +106,25 @@ export default async function TradeHubPage({
   const myTradesKey = crypto.randomUUID();
 
   return (
-    <div className="mx-auto max-w-4xl">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+    <>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <h1 className="text-2xl font-bold text-white">{t("hubTitle")}</h1>
         {/*
          * #2080: the primary action is a real link into the unified listing
          * flow. It is a <Link> (not a button with a router call) so it is
          * keyboard/middle-click friendly and can be prefetched.
+         * Help and the primary action share the title row when there is room,
+         * and wrap below it for longer translations or narrower viewports.
          */}
-        <Link
-          href="/trade/new"
-          className="shrink-0 whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-purple-700"
-        >
-          {t("hubCreateButton")}
-        </Link>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <TradeGuideLink label={tGuide("entryLink")} />
+          <Link
+            href="/trade/new"
+            className="shrink-0 whitespace-nowrap rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-purple-700"
+          >
+            {t("hubCreateButton")}
+          </Link>
+        </div>
       </div>
 
       {/*
@@ -160,6 +167,6 @@ export default async function TradeHubPage({
           sort={sort}
         />
       </section>
-    </div>
+    </>
   );
 }

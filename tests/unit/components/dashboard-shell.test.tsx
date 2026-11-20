@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import DashboardNav from "@/components/DashboardNav";
 import DashboardShell from "@/components/DashboardShell";
@@ -30,7 +30,9 @@ function renderShell({
       <DashboardShell
         nav={<DashboardNav isStreamer={isStreamer} isSupporter={isSupporter} />}
       >
-        <main>page content</main>
+        <main>
+          <button type="button">Page action</button>
+        </main>
       </DashboardShell>
     </NextIntlClientProvider>,
   );
@@ -189,7 +191,7 @@ describe("DashboardShell sidebar", () => {
     expect(current).toEqual(["/dashboard/history"]);
   });
 
-  it("toggles aria-expanded / the drawer and returns focus to the trigger", () => {
+  it("moves focus to the visible close control and restores it on dismissal", () => {
     renderShell();
 
     const trigger = screen.getByRole("button", {
@@ -208,9 +210,9 @@ describe("DashboardShell sidebar", () => {
 
     // The visible close control inside the drawer also closes it and restores
     // focus to the menu trigger (the element that opened the drawer).
-    fireEvent.click(
-      screen.getByRole("button", { name: jaMessages.navigation.closeMenu }),
-    );
+    const close = screen.getByRole("button", { name: jaMessages.navigation.closeMenu });
+    expect(close).toHaveFocus();
+    fireEvent.click(close);
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(panel).toHaveAttribute("data-state", "closed");
     expect(trigger).toHaveFocus();
@@ -267,6 +269,32 @@ describe("DashboardShell sidebar", () => {
     fireEvent.click(trigger);
     fireEvent.click(screen.getByTestId("dashboard-shell-backdrop"));
 
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+  });
+
+  it("closes when focus leaves the drawer without stealing focus from the page", () => {
+    renderShell();
+    const trigger = screen.getByRole("button", { name: jaMessages.navigation.menu });
+    const pageAction = screen.getByRole("button", { name: "Page action" });
+    fireEvent.click(trigger);
+
+    act(() => sidebarLinks()[0].focus());
+    act(() => sidebarLinks().at(-1)?.focus());
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+    act(() => pageAction.focus());
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("dashboard-shell-backdrop")).not.toBeInTheDocument();
+    expect(pageAction).toHaveFocus();
+  });
+
+  it("closes when moving focus backward to the trigger", () => {
+    renderShell();
+    const trigger = screen.getByRole("button", { name: jaMessages.navigation.menu });
+    fireEvent.click(trigger);
+
+    act(() => trigger.focus());
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveFocus();
   });

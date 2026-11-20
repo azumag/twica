@@ -92,7 +92,7 @@ export default async function DashboardLayout({
           <div className="min-h-screen bg-gray-900">
             <Header session={session} unreadAnnouncementsCount={unreadAnnouncementsCount} />
 
-            <div className="container mx-auto px-4 py-6">
+            <div className="dashboard-container py-4 sm:py-6">
               {/* メンテナンスバナー: read-only中であることをダッシュボード全体で常時表示 */}
               <MaintenanceBanner />
 

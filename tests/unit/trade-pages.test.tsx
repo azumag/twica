@@ -209,21 +209,19 @@ describe("/trade layout", () => {
     expect(screen.getByTestId("maintenance-provider")).toHaveTextContent("board content");
   });
 
-  // The usage guide (/guide/trade) is linked from the trade screens only; the
-  // layout is the single place, so both the anonymous and the logged-in shell
-  // must carry it, in front of the page content.
-  // #2081: it stays in the content column (not the sidebar) because the
-  // per-channel board is also reachable anonymously, where no sidebar exists.
-  it("links the usage guide from both the anonymous and the logged-in shell", async () => {
+  // The board's help link must stay in the page for both visitors and signed-in
+  // users after moving it out of the separate row in the shared layout.
+  it("links the usage guide from the board for both anonymous and logged-in visitors", async () => {
     for (const session of [null, SESSION]) {
       cleanup();
       mocks.getSession.mockResolvedValue(session);
-      render(await TradeLayout({ children: <p>board content</p> }));
+      const board = await TradeBoardPage({ params, searchParams: Promise.resolve({}) });
+      render(await TradeLayout({ children: board }));
       const link = screen.getByRole("link", { name: "entryLink" });
       expect(link).toHaveAttribute("href", "/guide/trade");
-      // The link comes before the page content in document order.
-      const content = screen.getByText("board content");
-      expect(link.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const main = screen.getByRole("main");
+      expect(main).toContainElement(link);
+      expect(main).toContainElement(screen.getByRole("heading", { name: "boardTitle" }));
     }
   });
 });

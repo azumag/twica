@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { NextIntlClientProvider } from "next-intl";
-import { getMessages, getTranslations } from "next-intl/server";
+import { getMessages } from "next-intl/server";
 import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUnreadAnnouncements } from "@/lib/announcements";
 import { getUserPlan } from "@/lib/plan";
@@ -37,19 +37,9 @@ export const metadata: Metadata = {
  * /collection/[streamerId]. The per-channel board and auction detail
  * (/trade/[streamerId] and below) stay readable anonymously.
  *
- * Every /trade/** page also carries a small "how it works" link to the public
- * usage guide (/guide/trade). The guide is deliberately linked from here only,
- * not from /guide or the footer: in production the trade entry points are
- * still hidden, so a general-purpose page must not advertise the feature.
- * It sits in the layout (not in each page) so the board, the listing flow,
- * the auction detail and My trades all get it without repeating the markup.
- *
- * #2081: the link stays at the top of the content column (right-aligned with
- * the same max-w-4xl the pages use) rather than inside the sidebar. The
- * sidebar's "トレード" item only exists for logged-in users, but the
- * per-channel board is also reachable anonymously — where there is no
- * sidebar — so the guide entry must live in the content column that both
- * branches share, next to the page heading the sidebar item leads to.
+ * The pages put the guide link with their heading or back link so it remains
+ * available on public boards and does not introduce a separate row above
+ * the title when moving from the dashboard to trade.
  */
 export default async function TradeLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();
@@ -57,16 +47,6 @@ export default async function TradeLayout({ children }: { children: React.ReactN
   // branch にも client component（TradeBoard など）がいるため、両方の返り値を
   // 同じ list の provider で包み、root の list に依存させない。
   const messages = await getMessages();
-  const tGuide = await getTranslations("tradeGuidePage");
-  // Right-aligned and capped at the same max-w-4xl the trade pages use, so the
-  // link lines up with their content column instead of the viewport edge.
-  const guideLink = (
-    <div className="mx-auto mb-3 flex max-w-4xl justify-end">
-      <Link href="/guide/trade" className="text-sm text-purple-300 transition-colors hover:text-purple-200">
-        {tGuide("entryLink")}
-      </Link>
-    </div>
-  );
 
   if (!session) {
     return (
@@ -80,8 +60,7 @@ export default async function TradeLayout({ children }: { children: React.ReactN
             </div>
           </header>
           <main className="container mx-auto px-4 py-6">
-            {guideLink}
-            {children}
+            <div className="mx-auto max-w-4xl">{children}</div>
           </main>
           <PublicFooter />
         </div>
@@ -105,15 +84,13 @@ export default async function TradeLayout({ children }: { children: React.ReactN
       <MaintenanceStatusProvider>
         <div className="min-h-screen bg-gray-900">
           <Header session={session} unreadAnnouncementsCount={unreadAnnouncements.length} />
-          <div className="container mx-auto px-4 py-6">
+          <div className="dashboard-container py-4 sm:py-6">
             <MaintenanceBanner />
             <DashboardShell
               nav={<DashboardNav isStreamer={isStreamer} isSupporter={plan !== "basic"} />}
             >
-              <main>
-                {guideLink}
-                {children}
-              </main>
+              {/* Use the same left edge and available width as other signed-in pages. */}
+              <main>{children}</main>
             </DashboardShell>
           </div>
         </div>

@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Header and signed-in pages resize together up to the previous 2xl limit.
+ * Tailwind's `container` stepped between fixed widths, moving the sidebar and
+ * content sideways even when the viewport itself changed by only one pixel. */
+@utility dashboard-container {
+  @apply mx-auto w-full max-w-[96rem] px-4;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
