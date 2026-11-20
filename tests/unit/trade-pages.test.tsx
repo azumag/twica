@@ -7,6 +7,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
  * channel gates, and that only server-filtered data reaches client props.
  */
 const mocks = vi.hoisted(() => ({
+  tradeUiVisible: true,
   getSession: vi.fn(),
   getTradeBoardStreamer: vi.fn(),
   listWantableCards: vi.fn(),
@@ -22,6 +23,12 @@ const mocks = vi.hoisted(() => ({
   }),
 }));
 
+vi.mock("@/lib/constants", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/constants")>(),
+  get CARD_TRADE_UI_VISIBLE() {
+    return mocks.tradeUiVisible;
+  },
+}));
 vi.mock("@/lib/session", () => ({
   getSession: mocks.getSession,
   canUseStreamerFeatures: () => false,
@@ -177,6 +184,7 @@ function findElement(node: ReactNode, type: ElementType): ReactElement | null {
 const params = Promise.resolve({ streamerId: STREAMER_ID });
 
 beforeEach(() => {
+  mocks.tradeUiVisible = true;
   vi.clearAllMocks();
   mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer());
   mocks.listWantableCards.mockResolvedValue([
@@ -566,7 +574,7 @@ describe("/trade hub page (#2078)", () => {
     mocks.listMyTradeOffers.mockResolvedValue({ offers: [offer], page: 1, pageSize: 20, hasMore: true });
     render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
 
-    expect(screen.getByRole("heading", { name: "hubTitle" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "hubTitle" })).toHaveClass("lg:sr-only");
     // #2080: the primary action opens the unified listing flow. It must be a
     // real link (not the old disabled placeholder) so the hub has no dead end.
     const create = screen.getByRole("link", { name: "hubCreateButton" });
@@ -579,6 +587,14 @@ describe("/trade hub page (#2078)", () => {
     expect(props("my-trades")).toEqual({ initialOpen: { offers: [offer], hasMore: true } });
     expect(screen.getByRole("heading", { name: "collectionsTitle" })).toBeInTheDocument();
     expect(props("trade-collections")).toEqual({ initialCollections: [], sort: "newest" });
+  });
+
+  it("keeps the hub title visible when the sidebar has no trade entry", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.tradeUiVisible = false;
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByRole("heading", { name: "hubTitle" })).not.toHaveClass("lg:sr-only");
   });
 
   it.each(["offer", "auction"] as const)(

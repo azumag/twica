@@ -58,7 +58,7 @@ export default async function GachaHistoryPage() {
 
     return (
       <div>
-        <h1 className="mb-6 text-2xl font-bold text-white">{t("title")}</h1>
+        <h1 className="mb-6 text-2xl font-bold text-white lg:sr-only">{t("title")}</h1>
         <p className="mb-4 text-sm text-gray-400">{t("streamerDescription")}</p>
         <GachaHistoryTable
           initialHistory={result.history}
@@ -76,7 +76,7 @@ export default async function GachaHistoryPage() {
 
     return (
       <div>
-        <h1 className="mb-6 text-2xl font-bold text-white">{t("title")}</h1>
+        <h1 className="mb-6 text-2xl font-bold text-white lg:sr-only">{t("title")}</h1>
         <p className="mb-4 text-sm text-gray-400">{t("viewerDescription")}</p>
         <GachaHistoryTable
           initialHistory={result.history}

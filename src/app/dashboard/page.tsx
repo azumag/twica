@@ -171,8 +171,10 @@ export default async function DashboardPage() {
       {/* Collection summary section */}
       {/* コレクション概要セクション */}
       <section className="mb-8">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-white">
+        <div className="mb-4 flex items-center justify-between lg:justify-end">
+          {/* Desktop already shows the current section in the sidebar. Keep
+              the heading available to assistive technology and mobile users. */}
+          <h2 className="text-xl font-semibold text-white lg:sr-only">
             {t("overview.collectionSummary")}
           </h2>
           <Link

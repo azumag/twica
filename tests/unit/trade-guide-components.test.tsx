@@ -362,8 +362,6 @@ describe("HubMock", () => {
     expect(getByText("Trade navigation")).toHaveClass(
       "bg-purple-600",
       "text-white",
-      "lg:border-s-2",
-      "lg:border-purple-400",
       "lg:bg-purple-500/15",
       "lg:text-purple-100",
     );

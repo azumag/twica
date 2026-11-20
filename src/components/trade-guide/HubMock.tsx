@@ -40,7 +40,7 @@ export default function HubMock({
     <div className="mt-3 grid gap-3 sm:grid-cols-2" role="group" aria-label={label}>
       <div className="space-y-2 rounded-lg bg-gray-900/60 p-3">
         <p className="text-xs text-gray-400">{sidebarLabel}</p>
-        <span className="inline-flex items-center gap-3 rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium text-white lg:border-s-2 lg:border-purple-400 lg:bg-purple-500/15 lg:text-purple-100">
+        <span className="inline-flex items-center gap-3 rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium text-white lg:bg-purple-500/15 lg:text-purple-100">
           <GuideIcon name="swap" />
           {navItem}
         </span>

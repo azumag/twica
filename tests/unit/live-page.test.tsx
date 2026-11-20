@@ -153,7 +153,7 @@ describe("LivePage", () => {
     expect(mocks.getLiveDirectoryRankings).toHaveBeenCalledOnce();
     expect(
       screen.getByRole("heading", { name: "TwiCaチャネルとランキング" }),
-    ).toBeInTheDocument();
+    ).not.toHaveClass("lg:sr-only");
     expect(screen.getByTestId("live-directory")).toHaveTextContent(
       "entries:1;rankings:1/2",
     );
@@ -188,6 +188,7 @@ describe("LivePage", () => {
     const nav = screen.getByTestId("dashboard-nav");
     expect(nav).toHaveAttribute("data-streamer", "true");
     expect(nav).toHaveAttribute("data-supporter", "true");
+    expect(screen.getByRole("heading", { name: "TwiCaチャネルとランキング" })).toHaveClass("lg:sr-only");
     expect(screen.queryByRole("link", { name: "ホーム" })).not.toBeInTheDocument();
     expect(screen.getByText("public footer")).toBeInTheDocument();
 

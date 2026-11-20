@@ -412,8 +412,8 @@ function PageHeader({ title, description }: { title: string; description?: strin
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight text-white">{title}</h1>
-        {description && <p className="mt-2 text-sm text-gray-400">{description}</p>}
+        <h1 className="text-3xl font-bold tracking-tight text-white lg:sr-only">{title}</h1>
+        {description && <p className="mt-2 text-sm text-gray-400 lg:mt-0">{description}</p>}
       </div>
       <SettingsViewToggle />
     </div>
