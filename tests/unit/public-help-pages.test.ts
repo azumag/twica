@@ -747,14 +747,28 @@ describe("trade guide page", () => {
 
   it("is linked only from the trade screens, not from /guide or the public footer", () => {
     // 本番ではトレード入口がまだ非表示のため、一般向けの導線には出さない
-    expect(readSource("src/app/guide/page.tsx")).not.toContain("/guide/trade");
-    expect(readSource("src/app/usages/page.tsx")).not.toContain("/guide/trade");
-    expect(readSource("src/components/PublicFooter.tsx")).not.toContain("/guide/trade");
-    expect(readSource("src/app/page.tsx")).not.toContain("/guide/trade");
+    for (const path of [
+      "src/app/guide/page.tsx",
+      "src/app/usages/page.tsx",
+      "src/components/PublicFooter.tsx",
+      "src/app/page.tsx",
+    ]) {
+      const publicSource = readSource(path);
+      expect(publicSource, path).not.toContain("/guide/trade");
+      expect(publicSource, path).not.toContain("TradeGuideLink");
+    }
 
-    const layout = readSource("src/app/trade/layout.tsx");
-    expect(layout).toContain('href="/guide/trade"');
-    expect(layout).toContain('getTranslations("tradeGuidePage")');
+    expect(readSource("src/components/TradeGuideLink.tsx")).toContain('href="/guide/trade"');
+    for (const path of [
+      "src/app/trade/page.tsx",
+      "src/app/trade/new/page.tsx",
+      "src/app/trade/[streamerId]/page.tsx",
+      "src/app/trade/[streamerId]/auctions/[auctionId]/page.tsx",
+    ]) {
+      const tradeSource = readSource(path);
+      expect(tradeSource, path).toContain("<TradeGuideLink ");
+      expect(tradeSource, path).toContain('getTranslations("tradeGuidePage")');
+    }
     for (const { name, messages } of locales) {
       expect(messages.tradeGuidePage.entryLink, name).toBeTruthy();
     }

@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import TradeGuideLink from "@/components/TradeGuideLink";
 
 import TradeCreateForm from "@/components/TradeCreateForm";
 import { getSession } from "@/lib/session";
@@ -161,10 +162,11 @@ export default async function TradeNewPage({ searchParams }: { searchParams: Sea
   // Only the step-1 choice and the auction flow render the auction entry
   // point, so a regular offer does not pay for the schema probe.
   const needAuctionProbe = !kindChosen || kind === "auction";
-  const [collections, auctionAvailable, t] = await Promise.all([
+  const [collections, auctionAvailable, t, tGuide] = await Promise.all([
     listViewerTradeCollections(viewerId),
     needAuctionProbe ? isTradeAuctionSchemaAvailable() : Promise.resolve(true),
     getTranslations("trade"),
+    getTranslations("tradeGuidePage"),
   ]);
 
   // --- Step 2: give collection ------------------------------------------------
@@ -212,16 +214,19 @@ export default async function TradeNewPage({ searchParams }: { searchParams: Sea
   const kindLabel = t(kind === "auction" ? "createKindAuction" : "createKindOffer");
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <>
       {/* The unified flow's parent is the hub, and the form returns there on
           success as well (#2080). The hub remounts MyTrades by key, so the new
           listing is visible without an extra ?listed=1 parameter. */}
-      <Link
-        href="/trade"
-        className="shrink-0 whitespace-nowrap text-sm text-purple-400 transition-colors hover:text-purple-300"
-      >
-        ← {t("createFlowBackToHub")}
-      </Link>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <Link
+          href="/trade"
+          className="text-sm text-purple-400 transition-colors hover:text-purple-300"
+        >
+          ← {t("createFlowBackToHub")}
+        </Link>
+        <TradeGuideLink label={tGuide("entryLink")} />
+      </div>
       <h1 className="mt-3 mb-4 text-2xl font-bold text-white">{t("createFlowTitle")}</h1>
 
       {kindChosen && (
@@ -411,6 +416,6 @@ export default async function TradeNewPage({ searchParams }: { searchParams: Sea
           initialOfferedCardId={rawOffered}
         />
       ) : null}
-    </div>
+    </>
   );
 }

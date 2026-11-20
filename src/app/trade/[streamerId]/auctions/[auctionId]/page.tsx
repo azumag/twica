@@ -16,6 +16,7 @@ import {
 } from "@/lib/trade-client";
 import { isCanonicalUuid } from "@/lib/uuid-validation";
 import TradeAuctionDetail, { type TradeAuctionBidCard } from "@/components/TradeAuctionDetail";
+import TradeGuideLink from "@/components/TradeGuideLink";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -51,9 +52,10 @@ export default async function TradeAuctionDetailPage({
   if (!isCanonicalUuid(auctionId)) notFound();
   const scope = parseTradeScope(query.scope);
   const session = await getSession();
-  const [streamer, t] = await Promise.all([
+  const [streamer, t, tGuide] = await Promise.all([
     getTradeBoardStreamer(streamerId),
     getTranslations("trade"),
+    getTranslations("tradeGuidePage"),
   ]);
   if (!streamer) notFound();
 
@@ -85,13 +87,16 @@ export default async function TradeAuctionDetailPage({
   }
 
   return (
-    <div className="mx-auto max-w-4xl">
-      <Link
-        href={tradeAuctionBoardPath(streamer.id, scope)}
-        className="text-sm text-purple-400 transition-colors hover:text-purple-300"
-      >
-        ← {t("auctionBackToBoard")}
-      </Link>
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <Link
+          href={tradeAuctionBoardPath(streamer.id, scope)}
+          className="text-sm text-purple-400 transition-colors hover:text-purple-300"
+        >
+          ← {t("auctionBackToBoard")}
+        </Link>
+        <TradeGuideLink label={tGuide("entryLink")} />
+      </div>
       <h1 className="mt-3 mb-4 text-2xl font-bold text-white">
         {t("auctionDetailPageTitle", { channelName: streamer.twitchDisplayName })}
       </h1>
@@ -102,6 +107,6 @@ export default async function TradeAuctionDetailPage({
         bidCards={bidCards}
         maxBidQuantity={TRADE_MAX_BID_QUANTITY}
       />
-    </div>
+    </>
   );
 }
