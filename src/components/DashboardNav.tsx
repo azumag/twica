@@ -296,17 +296,17 @@ export default function DashboardNav({ isStreamer, isSupporter }: DashboardNavPr
       <ul className="flex flex-col gap-1">
         {visibleNavItems.map((item) => {
           const active = isActive(item.href);
-          // デスクトップでは紫の線と薄い面で現在地を示す。選択とフォーカスは
-          // 別の状態なので、キーボード移動時はリンク全周の輪郭でも示す。
+          // デスクトップでは薄い紫の背景で現在地を示す。キーボードのフォーカスは
+          // リンク全周の輪郭で示し、現在地と区別できるようにする。
           return (
             <li key={item.href}>
               <Link
                 href={item.href}
                 aria-current={active ? "page" : undefined}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors lg:border-s-2 lg:focus-visible:-outline-offset-2 lg:focus-visible:outline-2 lg:focus-visible:outline-purple-200 ${
+                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors lg:focus-visible:-outline-offset-2 lg:focus-visible:outline-2 lg:focus-visible:outline-purple-200 ${
                   active
-                    ? "bg-purple-600 text-white lg:border-purple-400 lg:bg-purple-500/15 lg:text-purple-100"
-                    : "text-gray-300 hover:bg-gray-700 hover:text-white lg:border-transparent lg:hover:bg-gray-800"
+                    ? "bg-purple-600 text-white lg:bg-purple-500/15 lg:text-purple-100"
+                    : "text-gray-300 hover:bg-gray-700 hover:text-white lg:hover:bg-gray-800"
                 }`}
               >
                 {item.icon}

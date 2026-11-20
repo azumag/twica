@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { getSession } from "@/lib/session";
+import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
 import { parseTradeCollectionSort } from "@/lib/trade";
 import { tradeLoginHref } from "@/lib/trade-client";
 import {
@@ -107,8 +108,13 @@ export default async function TradeHubPage({
 
   return (
     <>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <h1 className="text-2xl font-bold text-white">{t("hubTitle")}</h1>
+      <div className={`mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 ${
+        CARD_TRADE_UI_VISIBLE ? "lg:justify-end" : ""
+      }`}>
+        {/* Direct visits to the hub remain possible while the nav item is hidden. */}
+        <h1 className={`text-2xl font-bold text-white ${CARD_TRADE_UI_VISIBLE ? "lg:sr-only" : ""}`}>
+          {t("hubTitle")}
+        </h1>
         {/*
          * #2080: the primary action is a real link into the unified listing
          * flow. It is a <Link> (not a button with a router call) so it is

@@ -611,9 +611,7 @@ describe("trade guide page", () => {
     const hubMock = readSource("src/components/trade-guide/HubMock.tsx");
     expect(nav).toContain('href: "/trade"');
     expect(nav).toContain("bg-purple-600 text-white");
-    for (const desktopStyle of [
-      "lg:border-s-2", "lg:border-purple-400", "lg:bg-purple-500/15", "lg:text-purple-100",
-    ]) {
+    for (const desktopStyle of ["lg:bg-purple-500/15", "lg:text-purple-100"]) {
       expect(nav).toContain(desktopStyle);
       expect(hubMock).toContain(desktopStyle);
     }

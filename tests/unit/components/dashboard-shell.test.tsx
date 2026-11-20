@@ -179,8 +179,9 @@ describe("DashboardShell sidebar", () => {
     expect(active).toHaveLength(1);
     expect(active[0]).toHaveAttribute("href", "/dashboard/collection");
     expect(active[0]).toHaveClass(
-      "bg-purple-600", "lg:border-s-2", "lg:border-purple-400", "lg:bg-purple-500/15", "lg:focus-visible:outline-2",
+      "bg-purple-600", "lg:bg-purple-500/15", "lg:focus-visible:outline-2",
     );
+    expect(active[0]).not.toHaveClass("lg:border-s-2");
     expect(
       links.find((link) => link.getAttribute("href") === "/dashboard"),
     ).not.toHaveAttribute("aria-current");

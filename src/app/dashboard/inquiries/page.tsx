@@ -46,7 +46,7 @@ export default async function InquiriesPage() {
 
   return (
     <div>
-      <h1 className="mb-2 text-2xl font-bold text-white">{t("title")}</h1>
+      <h1 className="mb-2 text-2xl font-bold text-white lg:sr-only">{t("title")}</h1>
       <p className="mb-6 text-sm text-gray-400">{t("description")}</p>
 
       {/* 新規投稿フォーム */}
