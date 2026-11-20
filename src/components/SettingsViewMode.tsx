@@ -15,9 +15,9 @@ import { useTranslations } from "next-intl";
 // 配信設定ページの表示モード切り替え用コンポーネント群。
 // Progressive disclosure パターン (Gmail Basic/Standard, Stripe Advanced, GitHub Settings 等の業界標準)
 // に倣い、初心者向けの最小構成 ("simple") と全設定を露出する "advanced" を切り替える。
-// 詳細モードは sidebar nav パターンで section を一つずつ表示し情報過多を回避する。
+// 詳細モードは設定項目を切り替え、一度に一つのセクションを表示する。
 // Simple mode = 最小限のクイックセットアップカード。
-// Advanced mode = 左 sticky sidebar + 右ペインの単一セクション表示。
+// Advanced mode = 上部ナビゲーション + 単一セクション表示。
 // 保存先は localStorage 限定 (DB 変更なし、ブラウザ毎)。
 
 type SettingsViewMode = "simple" | "advanced";
@@ -223,7 +223,7 @@ export function AdvancedSettings({ children }: { children: ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
-// Advanced mode: sidebar navigation
+// Advanced mode: section navigation
 // ---------------------------------------------------------------------------
 
 export interface SettingsSection {
@@ -248,21 +248,10 @@ const STATUS_DOT_CLASS: Record<NonNullable<SettingsSection["status"]>, string> =
 /**
  * AdvancedSettingsLayout
  *
- * sticky 左サイドバー + 右コンテンツの 2 カラムレイアウト。
- * 一度に 1 セクションだけ表示することで、情報過多を解消する。
- * モバイル (xl 未満) では横スクロールするピル型タブとして折り畳まれる。
- * 1 カラムにも grid-cols-1（minmax(0, 1fr)）を指定し、タブの合計幅で
- * ページ全体が広がらず、ナビの内側だけで横スクロールできるようにする。
- *
- * 2 カラム化の閾値は lg ではなく xl。ダッシュボードのサイドバー
- * （w-56 224px + gap-6 24px）が lg で常時表示されるため、1024px では
- * 本文が約 744px しかない。ここで lg:grid-cols-[260px_...] を発火させると
- * 設定本文の列は 744 - 260 - 24 = 460px となり、480px を下回って
- * フォームやカードが潰れる。xl（1280px）なら設定本文は約 716px
- * （container 内側 1248px - サイドバー 248px - 260px - gap 24px）になる。
- * 折り畳み時のピル型タブも同じ閾値に揃えないと、lg〜xl で縦並びの
- * タブだけが 1 カラムの上に残って中途半端になるため、この
- * コンポーネント内の lg: はすべて xl: にしている。
+ * 画面幅にかかわらず設定ナビを本文の上に置き、ダッシュボードの
+ * サイドバーの隣でフォームが使える幅を確保する。親のサイドバーが出る
+ * lg 以上では項目を折り返し、狭い画面ではナビの内側だけを横スクロールする。
+ * grid-cols-1 の minmax(0, 1fr) で、項目の合計幅によるページの横あふれを防ぐ。
  */
 export function AdvancedSettingsLayout({
   sections,
@@ -297,64 +286,57 @@ export function AdvancedSettingsLayout({
   };
 
   return (
-    <div className="grid grid-cols-1 gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
-      {/* Sidebar — desktop = vertical sticky list, mobile = horizontal scroll */}
-      <aside className="xl:sticky xl:top-6 xl:self-start">
-        <nav
-          aria-label={t("navAria")}
-          className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-2 xl:mx-0 xl:flex-col xl:gap-0.5 xl:overflow-visible xl:pb-0"
-        >
-          {sections.map((section) => {
-            const isActive = section.id === active.id;
-            return (
-              <button
-                key={section.id}
-                type="button"
-                onClick={() => selectSection(section.id)}
-                aria-current={isActive ? "true" : undefined}
-                className={`group flex shrink-0 items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 xl:w-full xl:shrink ${
-                  isActive
-                    ? "border-violet-500/40 bg-gradient-to-br from-violet-500/15 to-indigo-500/5 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
-                    : "border-transparent text-gray-400 hover:border-white/5 hover:bg-white/5 hover:text-gray-200"
-                }`}
-              >
-                {section.icon && (
-                  <span
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
-                      isActive
-                        ? "bg-violet-500/20 text-violet-200"
-                        : "bg-white/5 text-gray-500 group-hover:text-gray-300"
-                    }`}
-                  >
-                    {section.icon}
-                  </span>
-                )}
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="flex items-center gap-2 font-medium">
-                    <span className="truncate">{section.label}</span>
-                    {section.status && (
-                      <span
-                        aria-hidden="true"
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT_CLASS[section.status]}`}
-                      />
-                    )}
-                    {section.status === "attention" && section.attentionLabel && (
-                      <span className="shrink-0 rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                        {section.attentionLabel}
-                      </span>
-                    )}
-                  </span>
-                  {section.description && (
-                    <span className="hidden truncate text-xs text-gray-500 xl:block">
-                      {section.description}
+    <div className="grid grid-cols-1 gap-6">
+      <nav
+        aria-label={t("navAria")}
+        className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-2 lg:flex-wrap"
+      >
+        {sections.map((section) => {
+          const isActive = section.id === active.id;
+          return (
+            <button
+              key={section.id}
+              type="button"
+              title={section.description}
+              onClick={() => selectSection(section.id)}
+              aria-current={isActive ? "true" : undefined}
+              className={`group flex shrink-0 items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 ${
+                isActive
+                  ? "border-violet-500/40 bg-gradient-to-br from-violet-500/15 to-indigo-500/5 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+                  : "border-transparent text-gray-400 hover:border-white/5 hover:bg-white/5 hover:text-gray-200"
+              }`}
+            >
+              {section.icon && (
+                <span
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
+                    isActive
+                      ? "bg-violet-500/20 text-violet-200"
+                      : "bg-white/5 text-gray-500 group-hover:text-gray-300"
+                  }`}
+                >
+                  {section.icon}
+                </span>
+              )}
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="flex items-center gap-2 font-medium">
+                  <span className="truncate">{section.label}</span>
+                  {section.status && (
+                    <span
+                      aria-hidden="true"
+                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT_CLASS[section.status]}`}
+                    />
+                  )}
+                  {section.status === "attention" && section.attentionLabel && (
+                    <span className="shrink-0 rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                      {section.attentionLabel}
                     </span>
                   )}
                 </span>
-              </button>
-            );
-          })}
-        </nav>
-      </aside>
+              </span>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Content pane */}
       <div className="min-w-0">
