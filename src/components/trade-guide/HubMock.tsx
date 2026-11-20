@@ -21,7 +21,7 @@ type HubMockProps = {
 
 /**
  * Static strip of the real trade-hub chrome: the sidebar's highlighted "Trade"
- * item (same classes as the active DashboardNav item) and the hub's own
+ * item (matching the active DashboardNav styles) and the hub's own
  * heading, "Create" button and section headings. It shows the reader which
  * words to look for on the screen: the sidebar is the entry, and the hub is
  * where listing, "My trades" and the per-collection lists live.
@@ -40,7 +40,7 @@ export default function HubMock({
     <div className="mt-3 grid gap-3 sm:grid-cols-2" role="group" aria-label={label}>
       <div className="space-y-2 rounded-lg bg-gray-900/60 p-3">
         <p className="text-xs text-gray-400">{sidebarLabel}</p>
-        <span className="inline-flex items-center gap-3 rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium text-white">
+        <span className="inline-flex items-center gap-3 rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium text-white lg:border-s-2 lg:border-purple-400 lg:bg-purple-500/15 lg:text-purple-100">
           <GuideIcon name="swap" />
           {navItem}
         </span>

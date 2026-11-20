@@ -610,8 +610,13 @@ describe("trade guide page", () => {
     const collections = readSource("src/components/TradeCollections.tsx");
     const hubMock = readSource("src/components/trade-guide/HubMock.tsx");
     expect(nav).toContain('href: "/trade"');
-    expect(nav).toContain('"bg-purple-600 text-white"');
-    expect(hubMock).toContain("bg-purple-600");
+    expect(nav).toContain("bg-purple-600 text-white");
+    for (const desktopStyle of [
+      "lg:border-s-2", "lg:border-purple-400", "lg:bg-purple-500/15", "lg:text-purple-100",
+    ]) {
+      expect(nav).toContain(desktopStyle);
+      expect(hubMock).toContain(desktopStyle);
+    }
     expect(hub).toContain("rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white");
     expect(hubMock).toContain("rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white");
     expect(collections).toContain("rounded-lg bg-gray-700 px-3 py-1 text-xs text-white");

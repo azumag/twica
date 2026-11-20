@@ -169,17 +169,19 @@ export default function DashboardShell({ nav, children }: DashboardShellProps) {
         ナビは1つだけ描画し、CSS でデスクトップのサイドバーと lg 未満の
         ドロワーを切り替える。閉じている lg 未満では `hidden`、lg 以上では
         `lg:block` が常に有効になるため、状態に関係なくサイドバーが見える。
+        デスクトップの境界線はナビ項目の高さで途切れず、隣の本文に沿って伸ばす。
+        これによりナビが本文のカードと同じ独立したパネルに見えるのを防ぐ。
       */}
       <aside
         ref={sidebarRef}
         id={sidebarId}
         data-state={isDrawerOpen ? "open" : "closed"}
         onClick={handleSidebarClick}
-        className={
+        className={`lg:block lg:w-56 lg:shrink-0 lg:self-stretch lg:border-r lg:border-gray-800 ${
           isDrawerOpen
-            ? "fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] overflow-y-auto bg-gray-900 p-4 shadow-xl lg:static lg:z-auto lg:block lg:w-56 lg:shrink-0 lg:overflow-visible lg:bg-transparent lg:p-0 lg:shadow-none"
-            : "hidden lg:block lg:w-56 lg:shrink-0"
-        }
+            ? "fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] overflow-y-auto bg-gray-900 p-4 shadow-xl lg:static lg:z-auto lg:overflow-visible lg:bg-transparent lg:p-0 lg:shadow-none"
+            : "hidden"
+        }`}
       >
         {/*
           ドロワー内の閉じるボタン。オーバーレイの外側をタップできない
