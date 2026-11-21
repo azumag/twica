@@ -97,6 +97,9 @@ export default function MyTradeAuctions() {
               : "in_channel";
           const detailHref = tradeAuctionDetailPath(detailStreamerId, auction.id, detailScope);
           const needsSelection = role === "selling" && auction.phase === "selecting";
+          // The API counts only active bids. After the auction ends, the bid
+          // outcome above and the detail link describe what happened.
+          const showsActiveBidCount = auction.phase === "bidding" || auction.phase === "selecting";
           const dateText =
             auction.phase === "completed"
               ? t("myTradesCompletedAt", { date: formatTradeDateTime(auction.completedAt, locale) })
@@ -151,8 +154,10 @@ export default function MyTradeAuctions() {
                   </>
                 )}
               </div>
-              <div className="mt-3 flex flex-col gap-2 border-t border-gray-700 pt-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-                <span className="text-gray-300">{t("auctionBidCount", { count: auction.bidCount })}</span>
+              <div className="mt-3 flex flex-col gap-2 border-t border-gray-700 pt-3 text-sm sm:flex-row sm:items-center sm:justify-end">
+                {showsActiveBidCount && (
+                  <span className="text-gray-300 sm:mr-auto">{t("auctionBidCount", { count: auction.bidCount })}</span>
+                )}
                 <Link
                   href={detailHref}
                   className={
