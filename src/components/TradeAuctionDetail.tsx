@@ -347,6 +347,9 @@ export default function TradeAuctionDetail({
   const myBid = auction.myBid ?? null;
   const myActiveBid = myBid && myBid.state === "active" ? myBid : null;
   const isOpenStatus = auction.status === "open";
+  // The API's count tracks active bids. After the auction ends, the seller's
+  // bid list and the viewer's own bid show the outcome.
+  const showsActiveBidCount = auction.phase === "bidding" || auction.phase === "selecting";
 
   const bidCardView = (bid: TradeAuctionBidDto, label: string) => (
     <TradeCardSummary card={bid.bidCard} deleted={bid.bidCardId === null} quantity={bid.quantity} label={label} />
@@ -375,10 +378,12 @@ export default function TradeAuctionDetail({
               <TradeAuctionPhaseBadge auction={auction} />
             </dd>
           </div>
-          <div>
-            <dt className="sr-only">{t("auctionBidCountLabel")}</dt>
-            <dd>{t("auctionBidCount", { count: auction.bidCount })}</dd>
-          </div>
+          {showsActiveBidCount && (
+            <div>
+              <dt className="sr-only">{t("auctionBidCountLabel")}</dt>
+              <dd>{t("auctionBidCount", { count: auction.bidCount })}</dd>
+            </div>
+          )}
           <div>
             <dt className="sr-only">{t("auctionSellerLabel")}</dt>
             <dd>{t("offeredByLabel", { name: auction.seller?.twitchDisplayName ?? t("unknownUser") })}</dd>

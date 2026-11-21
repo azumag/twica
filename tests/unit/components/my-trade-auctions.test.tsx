@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { NextIntlClientProvider } from "next-intl";
+import { createTranslator, NextIntlClientProvider } from "next-intl";
 import MyTrades from "@/components/MyTrades";
 import type { TradeAuctionDto } from "@/lib/trade-auction";
 import jaMessages from "../../../messages/ja.json";
@@ -14,6 +14,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 const ja = jaMessages.trade;
+const trJa = createTranslator({ locale: "ja", messages: jaMessages, namespace: "trade" });
 
 function renderMine() {
   return render(
@@ -90,12 +91,14 @@ describe("MyTrades auction tab (#1791)", () => {
     await openAuctionTab();
     const selecting = (await screen.findByText("Selecting Card")).closest("li")!;
     expect(within(selecting).getByText(ja.auctionPhaseSelecting)).toBeInTheDocument();
+    expect(within(selecting).getByText(trJa("auctionBidCount", { count: 2 }))).toBeInTheDocument();
     expect(within(selecting).getByRole("link", { name: ja.myAuctionsSettleLink })).toHaveAttribute(
       "href",
       "/trade/s-1/auctions/a-selecting",
     );
     const bidding = screen.getByText("Auction Dragon").closest("li")!;
     expect(within(bidding).getByText(ja.auctionPhaseBidding)).toBeInTheDocument();
+    expect(within(bidding).getByText(trJa("auctionBidCount", { count: 1 }))).toBeInTheDocument();
     expect(within(bidding).getByRole("link", { name: ja.myAuctionsDetailLink })).toBeInTheDocument();
     const expired = screen.getByText("Expired Card").closest("li")!;
     expect(within(expired).getByText(ja.auctionPhaseExpired)).toBeInTheDocument();
@@ -135,7 +138,10 @@ describe("MyTrades auction tab (#1791)", () => {
       "href",
       "/trade/s-9/auctions/a-active?scope=cross",
     );
-    expect(within(screen.getByText("Won Card").closest("li")!).getByText(ja.auctionBidStateWon)).toBeInTheDocument();
+    const won = within(screen.getByText("Won Card").closest("li")!);
+    expect(won.getByText(ja.auctionBidStateWon)).toBeInTheDocument();
+    expect(won.queryByText(trJa("auctionBidCount", { count: 0 }))).not.toBeInTheDocument();
+    expect(won.getByRole("link", { name: ja.myAuctionsDetailLink })).toBeInTheDocument();
     expect(
       within(screen.getByText("Released Card").closest("li")!).getByText(ja.auctionBidStateReleased),
     ).toBeInTheDocument();
