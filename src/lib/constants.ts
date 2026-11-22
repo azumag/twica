@@ -311,6 +311,7 @@ export const ERROR_MESSAGES = {
   TRADE_SAME_CARD: 'Offered and wanted cards must be different',
   TRADE_WANTED_CARD_UNAVAILABLE: 'The requested card is not available for trading',
   TRADE_WANTED_CARD_NOT_WANTABLE: 'The streamer does not allow requesting this card in trades',
+  TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED: 'The streamer does not allow trading this card for the offered card',
   TRADE_OFFERED_CARD_INACTIVE: 'This card is no longer available for trading',
   TRADE_OFFER_UNAVAILABLE: 'This trade offer is not currently available',
   // Trade auctions (Issue #1791)
@@ -328,6 +329,7 @@ export const ERROR_MESSAGES = {
   TRADE_AUCTION_BID_INVALID: 'This bid can no longer be completed',
   TRADE_BID_CARD_UNAVAILABLE: 'This card cannot be used for a bid',
   TRADE_BID_CARD_NOT_WANTABLE: 'The streamer does not allow using this card in trades',
+  TRADE_BID_CARD_NOT_ALLOWED_FOR_OFFERED: 'The streamer does not allow bidding this card on the listed card',
   TRADE_NOT_ENOUGH_CARDS: 'You do not have enough free copies of this card',
   UNEXPECTED_ERROR: 'Unexpected error',
 

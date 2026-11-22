@@ -236,6 +236,7 @@ function checkRow() {
     wantedRarity: "legendary",
     wantedImageUrl: SECRET,
     wantedWantable: true,
+    wantedAllowed: true,
     offeredTradeEnabled: true,
     offeredCrossEnabled: false,
     wantedTradeEnabled: true,
@@ -257,6 +258,7 @@ function precheckRow() {
     offeredActive: true,
     wantedActive: true,
     wantedWantable: true,
+    wantedAllowed: true,
     offeredVisible: true,
   };
 }

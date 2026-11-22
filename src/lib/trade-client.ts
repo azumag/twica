@@ -23,6 +23,7 @@ export type TradeErrorMessageKey =
   | "errorTradeOfferedCardInactive"
   | "errorTradeWantedCardUnavailable"
   | "errorTradeWantedCardNotWantable"
+  | "errorTradeWantedCardNotAllowedForOffered"
   | "errorTradeOfferUnavailable"
   | "errorTradeSameCard"
   | "errorTradeCardAlreadyListed"
@@ -40,6 +41,7 @@ export type TradeErrorMessageKey =
   | "errorTradeAuctionBidInvalid"
   | "errorTradeBidCardUnavailable"
   | "errorTradeBidCardNotWantable"
+  | "errorTradeBidCardNotAllowedForOffered"
   | "errorTradeNotEnoughCards"
   | "errorUnauthorized"
   | "errorRateLimited"
@@ -75,6 +77,7 @@ export const TRADE_ERROR_MESSAGE_KEYS: Record<TradeApiErrorCode, TradeErrorMessa
   TRADE_SAME_CARD: "errorTradeSameCard",
   TRADE_WANTED_CARD_UNAVAILABLE: "errorTradeWantedCardUnavailable",
   TRADE_WANTED_CARD_NOT_WANTABLE: "errorTradeWantedCardNotWantable",
+  TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED: "errorTradeWantedCardNotAllowedForOffered",
   TRADE_OFFERED_CARD_INACTIVE: "errorTradeOfferedCardInactive",
   TRADE_OFFER_UNAVAILABLE: "errorTradeOfferUnavailable",
   // Auctions (#1791).
@@ -92,6 +95,7 @@ export const TRADE_ERROR_MESSAGE_KEYS: Record<TradeApiErrorCode, TradeErrorMessa
   TRADE_AUCTION_BID_INVALID: "errorTradeAuctionBidInvalid",
   TRADE_BID_CARD_UNAVAILABLE: "errorTradeBidCardUnavailable",
   TRADE_BID_CARD_NOT_WANTABLE: "errorTradeBidCardNotWantable",
+  TRADE_BID_CARD_NOT_ALLOWED_FOR_OFFERED: "errorTradeBidCardNotAllowedForOffered",
   TRADE_NOT_ENOUGH_CARDS: "errorTradeNotEnoughCards",
 };
 

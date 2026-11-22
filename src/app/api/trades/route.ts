@@ -31,6 +31,9 @@ function createErrorStatus(code: TradeServiceErrorCode): number {
     // #1790: the wanted card exists and is visible, but its streamer does not
     // allow requesting it (usually a form opened before the setting changed).
     case "TRADE_WANTED_CARD_NOT_WANTABLE":
+    // The offered card's streamer restricted its exchange targets (whitelist)
+    // and the wanted card is not in it (a form opened before the rule changed).
+    case "TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED":
       return 409;
     default:
       return 400;

@@ -50,6 +50,9 @@ const ACCEPT_ERRORS: Record<AcceptError, { code: TradeAcceptApiErrorCode; status
   // common case). The offer stays open but is hidden from the board, so the
   // client treats it as gone and refetches.
   WANTED_CARD_NOT_WANTABLE: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
+  // The offered card's exchange-target restriction no longer includes the wanted
+  // card (same "this row is outdated" answer as the precheck).
+  WANTED_CARD_NOT_ALLOWED_FOR_OFFERED: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
   // Card retired or offered card hidden from this acceptor (API precheck).
   TRADE_OFFER_UNAVAILABLE: { code: "TRADE_OFFER_UNAVAILABLE", status: 409 },
   TRADE_BUSY: { code: "TRADE_BUSY", status: 503 },

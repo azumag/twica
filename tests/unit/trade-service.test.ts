@@ -246,6 +246,7 @@ function checkRow(overrides: Record<string, unknown> = {}) {
     wantedRarity: "epic",
     wantedImageUrl: "https://example.test/b.png",
     wantedWantable: true,
+    wantedAllowed: true,
     offeredTradeEnabled: true,
     offeredCrossEnabled: false,
     wantedTradeEnabled: true,
@@ -425,6 +426,13 @@ describe("trade service (#723)", () => {
     // #1790: checked after the channel gates and before the listing checks.
     ["wanted card not wantable", { selects: [{ rows: [checkRow({ wantedWantable: false, offeredCopyListed: true, openOfferCount: 10 })] }] }, "TRADE_WANTED_CARD_NOT_WANTABLE"],
     ["wanted card wantable flag NULL (fail closed)", { selects: [{ rows: [checkRow({ wantedWantable: null })] }] }, "TRADE_WANTED_CARD_NOT_WANTABLE"],
+    // Exchange-target whitelist of the offered card: checked right after the
+    // wantable check and before the listing checks; only an explicit TRUE passes.
+    ["wanted card outside the whitelist", { selects: [{ rows: [checkRow({ wantedAllowed: false, offeredCopyListed: true, openOfferCount: 10 })] }] }, "TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED"],
+    ["whitelist flag NULL (fail closed)", { selects: [{ rows: [checkRow({ wantedAllowed: null })] }] }, "TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED"],
+    ["not wantable wins over outside the whitelist", { selects: [{ rows: [checkRow({ wantedWantable: false, wantedAllowed: false })] }] }, "TRADE_WANTED_CARD_NOT_WANTABLE"],
+    ["hidden card wins over outside the whitelist", { selects: [{ rows: [checkRow({ wantedCardId: null, wantedStreamerId: null, wantedAllowed: false })] }] }, "TRADE_WANTED_CARD_UNAVAILABLE"],
+    ["channel disabled wins over outside the whitelist", { selects: [{ rows: [checkRow({ wantedAllowed: false, wantedTradeEnabled: false })] }] }, "TRADE_DISABLED"],
     ["channel disabled wins over not wantable", { selects: [{ rows: [checkRow({ wantedWantable: false, wantedTradeEnabled: false })] }] }, "TRADE_DISABLED"],
     ["copy already listed", { selects: [{ rows: [checkRow({ offeredCopyListed: true, openOfferCount: 10 })] }] }, "TRADE_CARD_ALREADY_LISTED"],
     ["open-offer limit", { selects: [{ rows: [checkRow({ openOfferCount: 10 })] }] }, "TRADE_OFFER_LIMIT"],
@@ -1752,6 +1760,41 @@ describe("trade wantable restriction (#1790)", () => {
       expect(wantable.sql).toMatch(
         /"cards" AS wantable_card\s+WHERE wantable_card\.id = "wanted_card"\."id"\s+AND wantable_card\.trade_wantable = TRUE/,
       );
+    });
+
+    it("reads the exchange-target whitelist of the OFFERED card in the same statement", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow()] }], inserts: [{ rows: [OFFER] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await createTradeOffer(createInput);
+      const allowed = render((pg.selectCalls[0].fields as Record<string, unknown>).wantedAllowed);
+      expect(allowed.sql).toMatch(
+        /NOT EXISTS \(\s*SELECT 1\s+FROM "trade_wanted_restriction_rules" AS restriction_rule\s+WHERE restriction_rule\.offered_card_id = "offered_card"\."id"\s*\)/,
+      );
+      expect(allowed.sql).toMatch(
+        /restriction_item\.offered_card_id = "offered_card"\."id"\s+AND restriction_item\.wanted_card_id = "wanted_card"\."id"/,
+      );
+    });
+
+    it("rejects a wanted card outside the whitelist without INSERT", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow({ wantedAllowed: false })] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toEqual({
+        kind: "error",
+        code: "TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED",
+      });
+      expect(pg.insertCalls).toHaveLength(0);
+    });
+
+    it("replays by requestId before the whitelist check", async () => {
+      const pg = createDbMock({ selects: [{ rows: [checkRow({ replay: OFFER, wantedAllowed: false })] }] });
+      primeDb(pg);
+
+      const { createTradeOffer } = await import("@/lib/trade");
+      await expect(createTradeOffer(createInput)).resolves.toEqual(maskedOk(OFFER, true));
     });
 
     it("rejects a non-wantable wanted card without INSERT", async () => {

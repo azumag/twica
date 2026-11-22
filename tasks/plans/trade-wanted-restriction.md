@@ -88,7 +88,7 @@ CREATE INDEX idx_trade_wanted_restriction_items_wanted ON public.trade_wanted_re
 
 ### 4.1 migration とアプリの順序（デプロイ窓 #788）
 CLAUDE.md の「アプリ先行が必要な migration は別リリース」規約に該当するか: **該当しない（migration 先行で安全）**。テーブル追加と RPC 差し替えだけで、旧アプリは新テーブルを参照せず、未知エラーコードも出ない（ルールが空なら新ブロックは通過する）。逆にアプリ先行のデプロイ窓では:
-- 運用の正本は「DB先行適用」（`docs/QA.md`「migrationとアプリの適用順序」）なので、フォールバックは既存パターンへの追従として入れる（入れ子増の負担と比べ、実装時に最終判断）。入れる場合: `42P01` を**テーブル名で限定**（`isTradeAuctionSchemaMissingError` と同じ。他の 42P01 を飲み込まない）して**制限なしへ縮退**（migration 前は制限が存在し得ないので正確）。`withTradeRestrictionFallback` を既存の入れ子（auction → wantable → nameOnly）の最内に1段足す。
+- 運用の正本は「DB先行適用」（`docs/QA.md`「migrationとアプリの適用順序」）。**PR-1 実装時の決定: アプリ側のデプロイ窓フォールバックは入れない**（migration は main/preview への push で即時適用されアプリより先に入る。6 関数に入れ子を増やす負担と YAGNI を優先。`wantedAllowedForOffered` のコメントに明記）。アプリ先行になった場合は新テーブル無し（42P01）で出品・ボードが一時的にエラーになるが、migration 適用後に自然復旧する。設定 API（PR-2）は未適用時 503 を返す。
 - 書き込み（設定API）: 保存不可で `tradeWantedRestrictionsSkippedDeployWindow` を返し、UI は楽観反映をロールバック（既存 `tradeSettingsSkippedDeployWindow` と同じ契約）。
 
 ## 5. アプリ側（`src/lib/trade.ts` 中心）
@@ -168,7 +168,7 @@ export function wantedAllowedForOffered(offeredCardIdExpr: AnyColumn | SQL, want
 
 | PR | 内容 |
 |---|---|
-| PR-1 | migration（親子テーブル、`accept_trade_offer` 4/3引数、オークション2関数）、`trade.ts`（SQL断片・6判定箇所）、`trade-auction.ts` のエラー対応、エラーコード/文言（`constants.ts`・`trade-api.ts`・`trade-client.ts`・route 対応表・`TRADE_ACCEPT_RPC_ERRORS`・#1801 旧アプリ差分テスト）、migration テスト、PG 結合テスト。**設定手段が無いのでユーザー向け挙動は変わらない** |
+| PR-1（実装済み: migration `20261123000000_trade_wanted_restrictions.sql`、実PG結合テストで検証） | migration（親子テーブル、`accept_trade_offer` 4/3引数、オークション2関数）、`trade.ts`（SQL断片・6判定箇所）、`trade-auction.ts` のエラー対応、エラーコード/文言（`constants.ts`・`trade-api.ts`・`trade-client.ts`・route 対応表・`TRADE_ACCEPT_RPC_ERRORS`・#1801 旧アプリ差分テスト）、migration テスト、PG 結合テスト。**設定手段が無いのでユーザー向け挙動は変わらない** |
 | PR-2 | 設定 API、`dashboard-data.ts` の取得、`TradeSettings` UI、出品フォーム／オークション入札候補の絞り込み（サーバー側交差）、ガイド更新 |
 
 オークション適用を PR-1 に含めることで、PR-2 で UI を公開した時点で通常出品・オークションの両方が制限される。
