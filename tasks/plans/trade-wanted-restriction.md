@@ -175,6 +175,7 @@ export function wantedAllowedForOffered(offeredCardIdExpr: AnyColumn | SQL, want
 
 ## 10. テスト計画
 - 単体: `wantedAllowedForOffered` 断片、**ボード・ハブ・マイトレード・precheck で同じオファーの可否が一致する**ケース、`createTradeOffer`（ルール無し=従来／許可内／許可外／`trade_wantable=false`との AND／デプロイ窓縮退）、`precheckTradeAccept`、`tradeableStateFor`、設定 API（認可・他人のカード・自己指定・上限・重複・空配列=解除・冪等・メンテナンス・デプロイ窓）、`TradeSettings`（追加・編集・解除・失敗ロールバック）、`TradeCreateForm`（絞り込み・交差が空）。
+- migration テスト（既存データ保全）: 新migrationに `DROP` / `ALTER TABLE`（既存テーブル）/ `UPDATE` / `DELETE` / `TRUNCATE` が無く、操作が「新2テーブルの CREATE・索引・GRANT・既存関数の `CREATE OR REPLACE`」だけであることを固定する。
 - migration テスト: `accept_trade_offer` の差分が1ブロックのみであること、3引数ラッパーの読み替え、grants。
 - PG 結合テスト（`tests/integration/*-pg.test.ts` の流儀）: ルールあり/なしでの応諾、ルール変更後の既存オファーの応諾拒否→戻して復活、CASCADE。
 - Preview 実経路: トレードは `docs/QA.md` の実経路ゲート対象（ガチャ/overlay/chat/upload）外。ブラウザで「ルール設定 → 許可外が選べない → 許可内で出品 → 別アカウントで応諾」を確認する（本番アカウントを変更する操作は CLAUDE.md の制約に従い、preview の検証用データで行う）。
