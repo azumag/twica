@@ -76,6 +76,18 @@ describe("TradeCancelModal (#1754)", () => {
     expect(screen.getByText(ja.myTradesWant).parentElement).not.toHaveTextContent("×");
   });
 
+  it("shows hidden-name cards by #N or the deleted fallback (#2070 follow-up)", () => {
+    renderModal({
+      offer: makeOffer({
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 21 },
+        wantedCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+        wantedCardId: null,
+      }),
+    });
+    expect(screen.getByText("#21")).toBeInTheDocument();
+    expect(screen.getByText(ja.deletedCardName)).toBeInTheDocument();
+  });
+
   it("puts initial focus on the dismiss button (not the irreversible action)", () => {
     renderModal();
     expect(screen.getByRole("button", { name: ja.cancelOfferModalDismissButton })).toHaveFocus();

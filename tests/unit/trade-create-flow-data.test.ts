@@ -55,7 +55,7 @@ beforeEach(() => {
   mocks.listTradeableOwnedCopies.mockResolvedValue([COPIED]);
   mocks.listWantableCards.mockResolvedValue([WANTABLE]);
   mocks.getTradeBoardStreamer.mockResolvedValue({
-    // 行としての未所持カードは出るが、名前だけ公開・画像は非公開の状態。
+    // 行としても名前としても未所持カードを公開している状態（画像だけ非公開）。
     revealsUnownedCards: true,
     revealsUnownedCardNames: true,
     revealsUnownedCardImages: false,
@@ -76,9 +76,27 @@ describe("loadTradeCreateFormData (#2080)", () => {
     expect(data).toEqual({
       ownedCopies: [COPIED],
       wantableCards: [WANTABLE],
-      wantableRevealsUnowned: true,
-      wantableRevealsUnownedImages: false,
+      // 行の可視性と名前の可視性は独立したフラグとして渡す（C4a）。
+      wantableRevealsUnownedCards: true,
+      wantableRevealsUnownedNames: true,
     });
+  });
+
+  it("forwards the row and name flags independently (names hidden, rows visible)", async () => {
+    // 行は見える（未所持カードを #N で選べる）が名前は非公開、という C3a 以降の
+    // 典型状態。2つの案内を取り違えないよう、値がそのまま分かれて届くことを固定する。
+    mocks.getTradeBoardStreamer.mockResolvedValue({
+      revealsUnownedCards: true,
+      revealsUnownedCardNames: false,
+      revealsUnownedCardImages: false,
+    });
+    const data = await loadTradeCreateFormData({
+      viewerId: "viewer-1",
+      giveStreamerId: GIVE,
+      wantStreamerId: WANT,
+    });
+    expect(data.wantableRevealsUnownedCards).toBe(true);
+    expect(data.wantableRevealsUnownedNames).toBe(false);
   });
 
   it("does not read a wanted catalogue for an auction (no wanted channel)", async () => {
@@ -95,8 +113,8 @@ describe("loadTradeCreateFormData (#2080)", () => {
       ownedCopies: [COPIED],
       wantableCards: [],
       // Deny-by-default: the auction branch renders no wanted-catalogue notice.
-      wantableRevealsUnowned: false,
-      wantableRevealsUnownedImages: false,
+      wantableRevealsUnownedCards: false,
+      wantableRevealsUnownedNames: false,
     });
   });
 
@@ -107,8 +125,8 @@ describe("loadTradeCreateFormData (#2080)", () => {
       giveStreamerId: GIVE,
       wantStreamerId: WANT,
     });
-    expect(data.wantableRevealsUnowned).toBe(false);
-    expect(data.wantableRevealsUnownedImages).toBe(false);
+    expect(data.wantableRevealsUnownedCards).toBe(false);
+    expect(data.wantableRevealsUnownedNames).toBe(false);
   });
 });
 

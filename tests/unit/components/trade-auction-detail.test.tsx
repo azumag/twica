@@ -15,9 +15,11 @@ const clearTradeListCache = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/use-trade-list", () => ({ clearTradeListCache }));
 
 const BID_CARDS: TradeAuctionBidCard[] = [
-  { cardId: "card-coin", name: "Coin", rarity: "common", imageUrl: null, freeCount: 4 },
-  { cardId: "card-gem", name: "Gem", rarity: "rare", imageUrl: null, freeCount: 0 },
-  { cardId: "card-dragon", name: "Auction Dragon", rarity: "epic", imageUrl: null, freeCount: 2 },
+  { cardId: "card-coin", name: "Coin", rarity: "common", imageUrl: null, collectionNumber: 1, freeCount: 4 },
+  { cardId: "card-gem", name: "Gem", rarity: "rare", imageUrl: null, collectionNumber: 2, freeCount: 0 },
+  { cardId: "card-dragon", name: "Auction Dragon", rarity: "epic", imageUrl: null, collectionNumber: 3, freeCount: 2 },
+  // 名前が非公開の入札候補（DTO の name が ""）。#N で選択できること。
+  { cardId: "card-secret", name: "", rarity: "rare", imageUrl: null, collectionNumber: 8, freeCount: 2 },
 ];
 
 type Detail = { auction: TradeAuctionDto; bids: TradeAuctionBidDto[] | null };
@@ -160,6 +162,17 @@ describe("TradeAuctionDetail bidder", () => {
     setupFetch({ auction: makeAuction(), bids: null });
     renderDetail({ bidCards: [] });
     expect(await screen.findByText(ja.auctionBidCardsEmpty)).toBeInTheDocument();
+  });
+
+  it("labels a hidden-name bid card by #N in the tile and the summary (#2070 follow-up)", async () => {
+    setupFetch({ auction: makeAuction(), bids: null });
+    renderDetail();
+    await screen.findByRole("region", { name: ja.auctionDetailTitle });
+    const form = bidForm();
+    const secret = within(form).getByRole("button", { name: /#8/ });
+    expect(secret).toBeEnabled();
+    fireEvent.click(secret);
+    expect(screen.getByText(trJa("auctionBidSummary", { card: "#8", count: 1 }))).toBeInTheDocument();
   });
 
   it("places a bid: quantity limited to usable copies, POST body, success notice and refresh", async () => {
@@ -416,6 +429,31 @@ describe("TradeAuctionDetail seller", () => {
     expect(screen.getByText(ja.auctionCancelHasBidsHelp)).toBeInTheDocument();
     // The seller never sees a bid form for their own auction.
     expect(screen.queryByRole("region", { name: ja.auctionBidFormTitle })).toBeNull();
+  });
+
+  it("labels hidden-name bids by #N or the deleted fallback (#2070 follow-up)", async () => {
+    setupFetch({
+      auction: own({ bidCount: 2 }),
+      bids: [
+        // 入札カードの名前が非公開（name="" + 表示番号）。
+        makeBid({
+          id: "bid-number",
+          bidCard: { name: "", rarity: "rare", imageUrl: null, collectionNumber: 31 },
+        }),
+        // 入札カードの定義が削除済み（番号も null）。
+        makeBid({
+          id: "bid-deleted",
+          bidCardId: null,
+          bidCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+        }),
+      ],
+    });
+    renderDetail();
+    const list = await screen.findByRole("region", { name: ja.auctionBidsTitle });
+    expect(within(list).getByText("#31")).toBeInTheDocument();
+    expect(within(list).getByText(ja.deletedCardName)).toBeInTheDocument();
+    // 同じ意味の削除バッジは重ねない。
+    expect(within(list).queryByText(ja.deletedCardLabel)).toBeNull();
   });
 
   it("no bids: cancels through the confirmation dialog (before or after the deadline)", async () => {

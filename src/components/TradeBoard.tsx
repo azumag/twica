@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import type { TradeOfferDto, TradeScope } from "@/lib/trade";
+import { useTradeCardLabel } from "@/lib/trade-card-label";
 import { useTradeList } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeOfferRow from "./TradeOfferRow";
@@ -11,8 +12,19 @@ import TradeAcceptModal from "./TradeAcceptModal";
 import TradePager from "./TradePager";
 import TradeRefreshFailedNotice from "./TradeRefreshFailedNotice";
 
-/** Filter option. Only cards already visible to the viewer are ever passed. */
-export type TradeBoardFilterCard = { cardId: string; name: string };
+/**
+ * Filter option. Only cards already visible to the viewer are ever passed.
+ *
+ * 名前が非公開のカードは name が "" で来る（C3a）。その場合は
+ * collectionNumber（閲覧者に依存しない表示番号 #N）で選択肢を出す。
+ * 番号も無い（削除済み・不明）場合は「削除されたカード」と表示する。
+ * 並びはサーバー（listWantableCards の rarity → 表示番号 → cardId）のまま。
+ */
+export type TradeBoardFilterCard = {
+  cardId: string;
+  name: string;
+  collectionNumber: number | null;
+};
 
 interface TradeBoardProps {
   streamerId: string;
@@ -70,6 +82,7 @@ export default function TradeBoard({
   justListed = false,
 }: TradeBoardProps) {
   const t = useTranslations("trade");
+  const cardLabel = useTradeCardLabel();
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const writeBlocked = maintenanceMode !== "off";
   const [page, setPage] = useState(1);
@@ -250,9 +263,11 @@ export default function TradeBoard({
               onChange={(event) => changeFilter(setWantedCardId, event.target.value)}
             >
               <option value="">{t("filterAll")}</option>
+              {/* 名前が非公開なら #N。サーバー順を保つため、ここで並べ替えない
+                  （名前順ソートは非公開名の大小関係を漏らす）。 */}
               {filterCards.map((card) => (
                 <option key={card.cardId} value={card.cardId}>
-                  {card.name}
+                  {cardLabel(card)}
                 </option>
               ))}
             </select>
@@ -267,7 +282,7 @@ export default function TradeBoard({
               <option value="">{t("filterAll")}</option>
               {filterCards.map((card) => (
                 <option key={card.cardId} value={card.cardId}>
-                  {card.name}
+                  {cardLabel(card)}
                 </option>
               ))}
             </select>

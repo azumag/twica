@@ -177,6 +177,21 @@ describe("TradeOfferRow accept states (§11.3)", () => {
     expect(screen.getByText(ja.receiveLabel).parentElement).toHaveTextContent("ChanOne");
     expect(screen.getByText(ja.giveLabel).parentElement).toHaveTextContent("ChanTwo");
   });
+
+  it("labels hidden-name cards by #N or the deleted fallback, never a blank name (#2070 follow-up)", () => {
+    renderRow(
+      makeOffer({
+        // 名前が非公開のスナップショット（C3a: name="" + 表示番号）。
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 12 },
+        // カード定義が削除済み（番号も null）。
+        wantedCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+      }),
+    );
+    expect(screen.getByText("#12")).toBeInTheDocument();
+    expect(screen.getByText(ja.deletedCardName)).toBeInTheDocument();
+    // 「削除されたカード」を表示名にしたときは、同じ意味の削除バッジを重ねない。
+    expect(screen.queryByText(ja.deletedCardLabel)).toBeNull();
+  });
 });
 
 function renderBoard(props: Partial<React.ComponentProps<typeof TradeBoard>> = {}) {
@@ -189,8 +204,8 @@ function renderBoard(props: Partial<React.ComponentProps<typeof TradeBoard>> = {
         viewerKey="viewer-a"
         revealsUnownedCards
         filterCards={[
-          { cardId: "card-a", name: "Card A" },
-          { cardId: "card-b", name: "Card B" },
+          { cardId: "card-a", name: "Card A", collectionNumber: 1 },
+          { cardId: "card-b", name: "Card B", collectionNumber: 2 },
         ]}
         loginHref="/login"
         createHref="/trade/s-1/new"
@@ -242,6 +257,33 @@ describe("TradeBoard", () => {
     renderBoard({ scope: "cross_channel" });
     await screen.findByText(ja.emptyStateMessage);
     expect(screen.queryByLabelText(ja.filterWantedCard)).toBeNull();
+  });
+
+  it("labels filter options by name / #N / deleted and keeps the server order (#2070 follow-up)", async () => {
+    fetchMock.mockImplementation(async () => listResponse([]));
+    renderBoard({
+      filterCards: [
+        { cardId: "card-named", name: "Named Card", collectionNumber: 3 },
+        // 名前が非公開のカード: name は "" で、閲覧者非依存の表示番号だけが来る。
+        { cardId: "card-number", name: "", collectionNumber: 7 },
+        // カード定義が削除済み: 番号も証明できない。
+        { cardId: "card-deleted", name: "", collectionNumber: null },
+      ],
+    });
+    const expectedLabels = [ja.filterAll, "Named Card", "#7", ja.deletedCardName];
+    const expectedValues = ["", "card-named", "card-number", "card-deleted"];
+    const wanted = await screen.findByLabelText(ja.filterWantedCard);
+    expect(within(wanted).getAllByRole("option").map((option) => option.textContent)).toEqual(
+      expectedLabels,
+    );
+    // サーバー（listWantableCards: rarity → 表示番号 → cardId）の順をそのまま使う。
+    expect(within(wanted).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(
+      expectedValues,
+    );
+    const offered = screen.getByLabelText(ja.filterOfferedCard);
+    expect(within(offered).getAllByRole("option").map((option) => option.textContent)).toEqual(
+      expectedLabels,
+    );
   });
 
   it("shows the normal empty state with a create CTA", async () => {

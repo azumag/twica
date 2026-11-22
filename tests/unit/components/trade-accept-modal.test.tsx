@@ -76,6 +76,20 @@ describe("TradeAcceptModal (#726 §6.4)", () => {
     expect(screen.getByText(ja.confirmModalReceiveLabel)).toBeInTheDocument();
   });
 
+  it("shows hidden-name cards by #N or the deleted fallback (#2070 follow-up)", () => {
+    renderModal({
+      offer: makeOffer({
+        // 応諾者が受け取るカードは名前非公開（name="" + 表示番号）。
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 12 },
+        // 応諾者が渡すカードは定義が削除済み（番号も null）。
+        wantedCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+      }),
+    });
+    expect(screen.getByText("#12")).toBeInTheDocument();
+    expect(screen.getByText(ja.deletedCardName)).toBeInTheDocument();
+    expect(screen.queryByText(ja.deletedCardLabel)).toBeNull();
+  });
+
   it("locks background scrolling while open and restores it on unmount", () => {
     document.body.style.overflow = "auto";
     const { unmount } = renderModal();

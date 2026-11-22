@@ -115,6 +115,43 @@ describe("TradeAuctionBoard (#1791 board auction tab)", () => {
     ).toBeInTheDocument();
   });
 
+  it("labels the viewer's own bid by #N or the deleted fallback when the name is hidden (#2070 follow-up)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, {
+      auctions: [
+        makeAuction({
+          id: "a-number",
+          offeredCard: { name: "Number Card", rarity: "rare", imageUrl: null, collectionNumber: null },
+          myBid: makeBid({
+            bidCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: 44 },
+          }),
+        }),
+        makeAuction({
+          id: "a-deleted",
+          offeredCard: { name: "Deleted Card", rarity: "rare", imageUrl: null, collectionNumber: null },
+          myBid: makeBid({
+            id: "bid-deleted",
+            bidCardId: null,
+            bidCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+          }),
+        }),
+      ],
+      hasMore: false,
+    }));
+    renderBoard();
+    const numbered = (await screen.findByText("Number Card")).closest("li")!;
+    expect(
+      within(numbered).getByText(
+        trJa("auctionRowMyBid", { card: "#44", count: 3, state: ja.auctionBidStateActive }),
+      ),
+    ).toBeInTheDocument();
+    const deleted = screen.getByText("Deleted Card").closest("li")!;
+    expect(
+      within(deleted).getByText(
+        trJa("auctionRowMyBid", { card: ja.deletedCardName, count: 3, state: ja.auctionBidStateActive }),
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("cross tab: shows the auction's channel and keeps the scope in the detail link", async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, {
       auctions: [makeAuction({ offeredStreamerId: "s-2", offeredStreamer: { id: "s-2", twitchUsername: "two", twitchDisplayName: "ChanTwo", twitchProfileImageUrl: null } })],

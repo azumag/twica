@@ -62,8 +62,8 @@ function renderForm(
         kind="offer"
         ownedCopies={OWNED}
         wantableCards={WANTABLE}
-        wantableRevealsUnowned
-        wantableRevealsUnownedImages
+        wantableRevealsUnownedCards
+        wantableRevealsUnownedNames
         maxWantedQuantity={10}
         {...props}
       />
@@ -122,19 +122,76 @@ describe("TradeCreateForm (#727 §6.5)", () => {
   });
 
   it("shows the owned-only notice when the wanted channel hides unowned cards", () => {
-    renderForm({ wantableRevealsUnowned: false });
+    renderForm({ wantableRevealsUnownedCards: false });
     expect(screen.getByText(ja.createStep2UnrevealedNotice)).toBeInTheDocument();
+    // 未所持カードが候補に無いので、#N の案内は出さない。
+    expect(screen.queryByText(ja.createStep2NumberOnlyNotice)).toBeNull();
   });
 
-  it("explains that a name-only channel lists unowned cards without images (#2070)", () => {
-    renderForm({ wantableRevealsUnowned: true, wantableRevealsUnownedImages: false });
-    expect(screen.getByText(ja.createStep2NameOnlyNotice)).toBeInTheDocument();
-    expect(screen.queryByText(ja.createStep2UnrevealedNotice)).not.toBeInTheDocument();
+  it("explains that unowned cards are chosen by display number when names are hidden (#2070 follow-up)", () => {
+    renderForm({
+      wantableRevealsUnownedCards: true,
+      wantableRevealsUnownedNames: false,
+      // 名前が非公開の未所持カードが候補に含まれる状態。
+      wantableCards: [WANTABLE[0], { ...WANTABLE[1], name: "" }],
+    });
+    expect(screen.getByText(ja.createStep2NumberOnlyNotice)).toBeInTheDocument();
+    expect(screen.queryByText(ja.createStep2UnrevealedNotice)).toBeNull();
+    // 旧「名前だけ公開」前提の案内は撤去済み（キー自体が存在しない）。
+    expect(ja).not.toHaveProperty("createStep2NameOnlyNotice");
   });
 
-  it("does not show the name-only notice when images are public too", () => {
-    renderForm({ wantableRevealsUnowned: true, wantableRevealsUnownedImages: true });
-    expect(screen.queryByText(ja.createStep2NameOnlyNotice)).not.toBeInTheDocument();
+  it("does not show the number-only notice when every candidate is owned", () => {
+    renderForm({
+      wantableRevealsUnownedCards: true,
+      wantableRevealsUnownedNames: false,
+      // 未所持カードが 1 枚も無ければ #N 表記も発生しない。
+      wantableCards: [WANTABLE[0]],
+    });
+    expect(screen.queryByText(ja.createStep2NumberOnlyNotice)).toBeNull();
+    expect(screen.queryByText(ja.createStep2UnrevealedNotice)).toBeNull();
+  });
+
+  it("does not show either notice when the wanted channel reveals names", () => {
+    renderForm({ wantableRevealsUnownedCards: true, wantableRevealsUnownedNames: true });
+    expect(screen.queryByText(ja.createStep2NumberOnlyNotice)).toBeNull();
+    expect(screen.queryByText(ja.createStep2UnrevealedNotice)).toBeNull();
+  });
+
+  it("labels hidden-name choices by #N / deleted and keeps the server order (#2070 follow-up)", () => {
+    // サーバー順（rarity_order → 表示番号 → cardId）をそのまま渡す。
+    const wantable: WantableCard[] = [
+      { cardId: "c-named", name: "Named Card", rarity: "common", imageUrl: null, collectionNumber: 1, isOwned: true },
+      { cardId: "c-number", name: "", rarity: "rare", imageUrl: null, collectionNumber: 9, isOwned: false },
+      { cardId: "c-deleted", name: "", rarity: "epic", imageUrl: null, collectionNumber: null, isOwned: false },
+    ];
+    renderForm({
+      wantableCards: wantable,
+      wantableRevealsUnownedCards: true,
+      wantableRevealsUnownedNames: false,
+    });
+    const step2 = step(ja.createStep2Title);
+    const buttons = within(step2).getAllByRole("button");
+    // DOM 順 = サーバー順。名前でソートし直していないことを、並びごと固定する。
+    expect(buttons).toHaveLength(3);
+    expect(buttons[0]).toHaveTextContent("Named Card");
+    expect(buttons[1]).toHaveTextContent("#9");
+    expect(buttons[2]).toHaveTextContent(ja.deletedCardName);
+    // 名前が空でも空白のタイルにしない。
+    expect(buttons[1].textContent).not.toBe("");
+  });
+
+  it("embeds the #N label in the confirmation summary when the wanted name is hidden", () => {
+    renderForm({
+      wantableRevealsUnownedNames: false,
+      wantableCards: [
+        { cardId: "c-number", name: "", rarity: "rare", imageUrl: null, collectionNumber: 9, isOwned: false },
+      ],
+    });
+    fireEvent.click(tile(step(ja.createStep1Title), "Single Card"));
+    fireEvent.click(tile(step(ja.createStep2Title), "#9"));
+    // 確認文の wantedCard は name を直接埋め込まず共通ヘルパーを通す。
+    expect(step(ja.createConfirmTitle)).toHaveTextContent("#9");
   });
 
   it("confirms and POSTs the oldest unlisted copy with the selection-bound requestId", async () => {

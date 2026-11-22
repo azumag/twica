@@ -40,6 +40,11 @@ vi.mock("next-intl/server", () => ({
   getMessages: async () => ({}),
 }));
 vi.mock("@/lib/logger", () => ({ logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } }));
+vi.mock("@/components/TradeBoard", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="trade-board-props" data-props={JSON.stringify(props)} />
+  ),
+}));
 vi.mock("@/components/TradeCreateForm", () => ({
   default: (props: Record<string, unknown>) => (
     <div data-testid="create-props" data-props={JSON.stringify(props)} />
@@ -242,8 +247,42 @@ describe("trade RSC props on a name-only channel (#2070)", () => {
         isOwned: true,
       },
     ]);
-    // The channel reveals names, so the form must not claim it hides them.
-    expect(passed.wantableRevealsUnowned).toBe(true);
+    // The channel reveals row visibility and names. The form receives them as
+    // separate flags (C4a) so each notice can be decided correctly.
+    expect(passed.wantableRevealsUnownedCards).toBe(true);
+    expect(passed.wantableRevealsUnownedNames).toBe(true);
+  });
+
+  it("the trade board never serializes a hidden card name, but passes its display number", async () => {
+    primeDb({
+      streamers: [STREAMER_ROW],
+      cards: [
+        {
+          ...WANTABLE_ROW,
+          // 名前は非公開（C3a のマスク後は name: ""）だが、番号は閲覧者非依存。
+          nameVisible: false,
+          // 番号表クエリ（createCollectionNumberMap）用の列。
+          id: CARD_ID,
+          streamerId: STREAMER_ID,
+          cardNumber: 12,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      user_cards: [],
+    });
+    const { default: TradeBoardPage } = await import("@/app/trade/[streamerId]/page");
+
+    render(await TradeBoardPage({
+      params: Promise.resolve({ streamerId: STREAMER_ID }),
+      searchParams: Promise.resolve({}),
+    }));
+
+    const passed = props("trade-board-props");
+    expectNoSecret(passed);
+    // 名前の実値は props に載せず、選択肢の表示は #N で組み立てる。
+    expect(passed.filterCards).toEqual([
+      { cardId: CARD_ID, name: "", collectionNumber: 12 },
+    ]);
   });
 
   it("the auction detail page never serializes a bid candidate image", async () => {
@@ -260,7 +299,15 @@ describe("trade RSC props on a name-only channel (#2070)", () => {
     const passed = props("auction-detail-props");
     expectNoSecret(passed);
     expect(passed.bidCards).toEqual([
-      { cardId: CARD_ID, name: "Secret Card", rarity: "legendary", imageUrl: null, freeCount: 0 },
+      {
+        cardId: CARD_ID,
+        name: "Secret Card",
+        rarity: "legendary",
+        imageUrl: null,
+        // 入札候補は所持カードのみだが、表示名フォールバック用に番号も渡す。
+        collectionNumber: null,
+        freeCount: 0,
+      },
     ]);
   });
 

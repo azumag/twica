@@ -306,6 +306,25 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(screen.getByText(`取引相手: ${ja.unknownUser}`)).toBeInTheDocument();
   });
 
+  it("shows hidden-name cards by #N or the deleted fallback (#2070 follow-up)", async () => {
+    byStatus.open = [
+      makeOffer({
+        id: "offer-hidden",
+        // 出品側は名前が非公開（name="" + 表示番号）。
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 42 },
+        // 欲しい側はカード定義が削除済み（番号も null）。
+        wantedCardId: null,
+        wantedCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+      }),
+    ];
+    renderMine();
+    const item = (await screen.findByText("#42")).closest("li")!;
+    expect(within(item).getByText("#42")).toBeInTheDocument();
+    expect(within(item).getByText(ja.deletedCardName)).toBeInTheDocument();
+    // 空白のカード名を描画していない。
+    expect(item.querySelector("p.break-words")?.textContent).not.toBe("");
+  });
+
   it("marks open offers that can no longer be accepted (deleted card)", async () => {
     byStatus.open = [makeOffer({ wantedCardId: null, tradeable: false })];
     renderMine();

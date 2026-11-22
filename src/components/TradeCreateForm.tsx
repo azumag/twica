@@ -11,6 +11,7 @@ import {
   tradeErrorMessageKey,
   type TradeCreateKind,
 } from "@/lib/trade-client";
+import { useTradeCardLabel } from "@/lib/trade-card-label";
 import { clearTradeListCache } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeCardChoiceList from "./TradeCardChoiceList";
@@ -58,13 +59,21 @@ interface TradeCreateFormProps {
    */
   wantableCards: WantableCard[];
   /**
-   * The wanted channel reveals the NAMES of unowned cards (else only owned are
-   * wantable). Since #2070 this can be true while the images are still hidden
-   * (name-only setting), which the separate flag below reports.
+   * The wanted channel reveals unowned cards as rows (`show_unowned_cards`).
+   * False means the catalogue below contains only cards the viewer owns, so the
+   * "you can request your own cards only" notice is shown.
+   *
+   * 旧名 wantableRevealsUnowned は C3a で「行の可視性」から「名前の可視性」へ
+   * 意味だけが差し替わり、案内文と食い違う状態になっていた。C4a で行と名前を
+   * 別フラグに分け、それぞれの案内に対応させている。
    */
-  wantableRevealsUnowned: boolean;
-  /** The wanted channel also reveals unowned card IMAGES (#2070). */
-  wantableRevealsUnownedImages: boolean;
+  wantableRevealsUnownedCards: boolean;
+  /**
+   * The wanted channel reveals the NAMES of unowned cards
+   * (`revealsUnownedCardNames`). False means unowned entries arrive with
+   * `name: ""` and are chosen by their display number (#N) instead.
+   */
+  wantableRevealsUnownedNames: boolean;
   /**
    * Upper bound of the wanted quantity (TRADE_MAX_WANTED_QUANTITY, #1789).
    * Passed from the server page so this client component does not import the
@@ -146,13 +155,14 @@ export default function TradeCreateForm({
   kind,
   ownedCopies,
   wantableCards,
-  wantableRevealsUnowned,
-  wantableRevealsUnownedImages,
+  wantableRevealsUnownedCards,
+  wantableRevealsUnownedNames,
   maxWantedQuantity,
   initialOfferedCardId = null,
 }: TradeCreateFormProps) {
   const t = useTranslations("trade");
   const tMaintenance = useTranslations("maintenance");
+  const cardLabel = useTradeCardLabel();
   const router = useRouter();
   const { mode: maintenanceMode } = useMaintenanceStatus();
   const writeBlocked = maintenanceMode !== "off";
@@ -180,6 +190,12 @@ export default function TradeCreateForm({
   const offered = groups.find((group) => group.cardId === offeredCardId) ?? null;
   const wanted = wantableCards.find((card) => card.cardId === wantedCardId) ?? null;
   const offeredUserCardId = offered?.availableUserCardId ?? null;
+  // 未所持カードが選択肢に含まれるか。名前が非公開でも未所持カードは
+  // #N で選べる（C3a）ため、「全候補が所持済み」のときに #N の案内を出さない
+  // よう、フラグだけでなく実データも見る。
+  const hasUnownedChoice = wantableCards.some((card) => !card.isOwned);
+  // #N 表記の理由を説明する案内（名前が非公開 かつ 未所持カードが候補にある）。
+  const showsNumberOnlyNotice = !wantableRevealsUnownedNames && hasUnownedChoice;
 
   const requestIdFor = (selection: string) => {
     if (requestIdRef.current?.selection !== selection) {
@@ -385,22 +401,27 @@ export default function TradeCreateForm({
           <h2 id="trade-step2" className="mb-3 text-lg font-semibold text-white">
             {t("createStep2Title")}
           </h2>
-          {!wantableRevealsUnowned && (
+          {/* 未所持カードが候補に出ない（show_unowned_cards=false）場合の案内。
+              これは行の可視性の話で、名前だけの公開可否とは独立している（C3a）。 */}
+          {!wantableRevealsUnownedCards && (
             <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
               {t("createStep2UnrevealedNotice")}
             </p>
           )}
-          {/* #2070: names are public but images are not. Say so, otherwise
-              an unowned card tile with a "no image" placeholder looks like
-              a broken upload. */}
-          {wantableRevealsUnowned && !wantableRevealsUnownedImages && (
+          {/* 未所持カードは候補に出るが名前が非公開（#2070 フォローアップ）の場合、
+              タイルが #N 表記になる理由を先に説明する。旧 createStep2NameOnlyNotice
+              （「名前だけ公開」前提）は撤去した。 */}
+          {showsNumberOnlyNotice && (
             <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
-              {t("createStep2NameOnlyNotice")}
+              {t("createStep2NumberOnlyNotice")}
             </p>
           )}
           {wantableCards.length === 0 ? (
             <p className="rounded-xl bg-gray-800 p-4 text-gray-400">{t("createStep2Empty")}</p>
           ) : (
+            // 選択肢は listWantableCards が返した順（rarity_order → 表示番号 →
+            // cardId）をそのまま使う。クライアント側で名前順に並べ替えると、
+            // 名前非公開カードの名前の大小関係を漏らす side channel になる。
             <TradeCardChoiceList
               choices={wantableCards.map((card) => {
                 const sameAsOffered = card.cardId === offeredCardId;
@@ -461,21 +482,26 @@ export default function TradeCreateForm({
           {t("createConfirmTitle")}
         </h2>
         <p className="text-sm text-gray-200">
+          {/* 確認文へ名前を埋め込む箇所は共通ヘルパーを通す。欲しいカードは名前が
+              非公開だと name が "" で来るため、そのまま埋め込むと空欄になる。 */}
           {isAuction
             ? offered && durationHours !== null
               ? t("createAuctionConfirmSummary", {
-                  offeredCard: offered.name,
+                  offeredCard: cardLabel(offered),
                   duration: t(DURATION_LABEL_KEYS[durationHours]),
                 })
               : t("createAuctionConfirmPending")
             : offered && wanted
             ? wantedQuantity > 1
               ? t("createConfirmSummaryMultiple", {
-                  offeredCard: offered.name,
-                  wantedCard: wanted.name,
+                  offeredCard: cardLabel(offered),
+                  wantedCard: cardLabel(wanted),
                   count: wantedQuantity,
                 })
-              : t("createConfirmSummary", { offeredCard: offered.name, wantedCard: wanted.name })
+              : t("createConfirmSummary", {
+                  offeredCard: cardLabel(offered),
+                  wantedCard: cardLabel(wanted),
+                })
             : t("createConfirmPending")}
         </p>
         <p className="mt-2 text-xs text-gray-400">{t("createLimitNotice")}</p>

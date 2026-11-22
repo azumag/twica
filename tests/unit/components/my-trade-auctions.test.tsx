@@ -158,6 +158,25 @@ describe("MyTrades auction tab (#1791)", () => {
     expect(await screen.findByText(ja.myAuctionsEmptyBidding)).toBeInTheDocument();
   });
 
+  it("shows hidden-name cards by #N or the deleted fallback (#2070 follow-up)", async () => {
+    auctions.bidding = [
+      makeAuction({
+        id: "a-hidden",
+        // 出品カードは名前非公開（name="" + 表示番号）、入札カードは削除済み。
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 15 },
+        myBid: makeBid({
+          bidCardId: null,
+          bidCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+        }),
+      }),
+    ];
+    await openAuctionTab();
+    fireEvent.click(screen.getByRole("button", { name: ja.myAuctionsRoleBidding }));
+    const row = (await screen.findByText("#15")).closest("li")!;
+    expect(within(row).getByText("#15")).toBeInTheDocument();
+    expect(within(row).getByText(ja.deletedCardName)).toBeInTheDocument();
+  });
+
   it("deploy window: 503 shows 'not available yet' and the offer tabs keep working", async () => {
     auctions.selling = "unavailable";
     await openAuctionTab();
