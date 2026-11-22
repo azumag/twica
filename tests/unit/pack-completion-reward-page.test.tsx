@@ -8,6 +8,7 @@ vi.mock('@/lib/dashboard-data', () => ({
   getStreamerById: async () => ({ id: 'streamer', card_pack_names: ['A'] }),
   getUserCardsForStreamer: async () => [fixtures.normal],
   getActiveCardsForStreamer: async () => [fixtures.normal],
+  getAllCardsForStreamer: async () => [fixtures.normal],
   getCollectionCompletions: async () => [],
   recordCollectionCompletion: vi.fn(), recordPackCompletion: vi.fn(),
 }));

@@ -147,8 +147,12 @@ export async function POST(request: NextRequest) {
         wantedCardId: result.offer.wanted_card_id,
         wantedStreamerId: result.offer.wanted_streamer_id,
         wantedQuantity: result.offer.wanted_quantity,
-        offeredCard: result.offer.offered_card_snapshot,
-        wantedCard: result.offer.wanted_card_snapshot,
+        // #2070 フォローアップ: snapshot は生の JSONB を返さず、createTradeOffer が
+        // maskTradeCards でマスクし collectionNumber を付けた DTO を返す。
+        // 冪等リプレイ経路（idempotentReplay=true）も同じ値を通るため、
+        // ここで offer.*_snapshot を読み直してはならない。
+        offeredCard: result.offeredCard,
+        wantedCard: result.wantedCard,
         isCrossChannel: Boolean(result.offer.is_cross_channel),
         status: result.offer.status,
         createdAt: result.offer.created_at,

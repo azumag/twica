@@ -10,14 +10,22 @@ vi.mock('@/lib/logger')
 
 // #694 Stage 6b: 「設定保存」カテゴリの代表として CardVisibilitySettings
 // (/api/streamer/settings への書き込み) を検証する。
-function renderSettings(status: MaintenanceStatusResponse, currentShowUnowned = false) {
+// #2070 フォローアップ (C4b): 詳細公開の一括トグルは廃止し、名前・画像・説明の
+// 3チェックボックスになった。props も3項目の初期値を受け取る。
+function renderSettings(
+  status: MaintenanceStatusResponse,
+  currentShowUnowned = false,
+  items: { name?: boolean; image?: boolean; description?: boolean } = {}
+) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <MaintenanceStatusContext.Provider value={status}>
         <CardVisibilitySettings
           streamerId="streamer-1"
           currentShowUnowned={currentShowUnowned}
-          currentShowUnownedDetails={false}
+          currentShowUnownedName={items.name ?? false}
+          currentShowUnownedImage={items.image ?? false}
+          currentShowUnownedDescription={items.description ?? false}
         />
       </MaintenanceStatusContext.Provider>
     </NextIntlClientProvider>
@@ -32,7 +40,13 @@ function getToggles() {
       name: jaMessages.cardVisibilitySettings.form.showUnowned,
     }),
     screen.getByRole('checkbox', {
-      name: jaMessages.cardVisibilitySettings.form.showDetails,
+      name: jaMessages.cardVisibilitySettings.form.showName,
+    }),
+    screen.getByRole('checkbox', {
+      name: jaMessages.cardVisibilitySettings.form.showImage,
+    }),
+    screen.getByRole('checkbox', {
+      name: jaMessages.cardVisibilitySettings.form.showDescription,
     }),
   ] as const
 }
@@ -55,21 +69,137 @@ describe('CardVisibilitySettings accessible descriptions', () => {
     )
   })
 
-  it('詳細トグルは未所持カード非表示時だけ前提条件も説明する', () => {
+  it('項目別チェックボックスは未所持カード非表示時だけ前提条件も説明する', () => {
     const { unmount } = renderSettings({ mode: 'off' })
-    const [, hiddenDetailsToggle] = getToggles()
+    const [, hiddenNameToggle] = getToggles()
 
-    expect(hiddenDetailsToggle).toHaveAccessibleDescription(
-      `${jaMessages.cardVisibilitySettings.form.showDetailsHelp} (${jaMessages.cardVisibilitySettings.form.requiresShowUnowned})`
+    expect(hiddenNameToggle).toHaveAccessibleDescription(
+      `${jaMessages.cardVisibilitySettings.form.showNameHelp} ${jaMessages.cardVisibilitySettings.form.requiresShowUnowned}`
     )
 
     unmount()
     renderSettings({ mode: 'off' }, true)
-    const [, visibleDetailsToggle] = getToggles()
+    const [, visibleNameToggle] = getToggles()
 
-    expect(visibleDetailsToggle).toHaveAccessibleDescription(
-      jaMessages.cardVisibilitySettings.form.showDetailsHelp
+    expect(visibleNameToggle).toHaveAccessibleDescription(
+      jaMessages.cardVisibilitySettings.form.showNameHelp
     )
+  })
+
+  it('名前・画像・説明の3チェックボックスを初期値どおりに表示する', () => {
+    renderSettings({ mode: 'off' }, true, { name: true, image: false, description: true })
+    const [, nameToggle, imageToggle, descriptionToggle] = getToggles()
+
+    expect(nameToggle).toBeChecked()
+    expect(imageToggle).not.toBeChecked()
+    expect(descriptionToggle).toBeChecked()
+  })
+
+  it('未所持カードを表示しないときは3項目ともdisabledにする', () => {
+    renderSettings({ mode: 'off' }, false)
+    const [, nameToggle, imageToggle, descriptionToggle] = getToggles()
+
+    expect(nameToggle).toBeDisabled()
+    expect(imageToggle).toBeDisabled()
+    expect(descriptionToggle).toBeDisabled()
+    // 依存が満たされない理由を画面にも出す。
+    expect(
+      screen.getByText(jaMessages.cardVisibilitySettings.form.requiresShowUnowned)
+    ).toBeInTheDocument()
+  })
+
+  it('説明はトレード・オークションに出ないことと、#Nで取引できることを注記する', () => {
+    renderSettings({ mode: 'off' }, true)
+
+    expect(
+      screen.getByText(jaMessages.cardVisibilitySettings.form.descriptionTradeNote)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(jaMessages.cardVisibilitySettings.form.tradeNumberNote)
+    ).toBeInTheDocument()
+  })
+
+  it('表示をOFFにする操作で3項目もfalseにして同じリクエストで保存する', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), { status: 200 })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    renderSettings({ mode: 'off' }, true, { name: true, image: true, description: true })
+
+    const [showUnownedToggle, nameToggle, imageToggle, descriptionToggle] = getToggles()
+    fireEvent.click(showUnownedToggle)
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/streamer/settings',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            streamerId: 'streamer-1',
+            showUnownedCards: false,
+            showUnownedCardName: false,
+            showUnownedCardImage: false,
+            showUnownedCardDescription: false,
+          }),
+        })
+      )
+    })
+
+    // 楽観反映として3項目も即座にOFFになり、DBにtrueが残らない。
+    await waitFor(() => {
+      expect(nameToggle).not.toBeChecked()
+      expect(imageToggle).not.toBeChecked()
+      expect(descriptionToggle).not.toBeChecked()
+    })
+  })
+
+  it('項目別チェックボックスは変更した1項目だけをAPIへ送る', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), { status: 200 })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    renderSettings({ mode: 'off' }, true)
+
+    const [, nameToggle] = getToggles()
+    fireEvent.click(nameToggle)
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/streamer/settings',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            streamerId: 'streamer-1',
+            showUnownedCardName: true,
+          }),
+        })
+      )
+    })
+    expect(nameToggle).toBeChecked()
+  })
+
+  it('項目別公開の保存がデプロイ窓でskipされたら楽観反映を戻す', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ success: true, unownedCardItemSettingsSkippedDeployWindow: true }),
+          { status: 200 }
+        )
+      )
+    )
+    renderSettings({ mode: 'off' }, true)
+
+    const [, nameToggle] = getToggles()
+    fireEvent.click(nameToggle)
+    expect(nameToggle).toBeChecked()
+
+    await waitFor(() => {
+      expect(nameToggle).not.toBeChecked()
+    })
+    expect(
+      screen.getByText(jaMessages.cardVisibilitySettings.errors.deployWindow)
+    ).toBeInTheDocument()
   })
 })
 
@@ -127,9 +257,11 @@ describe('CardVisibilitySettings maintenance integration', () => {
     expect(showUnownedToggle).not.toBeChecked()
   })
 
-  it('mode!=off でもshowDetailsトグルは元々のshowUnowned依存disableと重複してdisableされる', () => {
-    renderSettings({ mode: 'read-only' })
-    const [, showDetailsToggle] = getToggles()
-    expect(showDetailsToggle).toBeDisabled()
+  it('mode!=off のときは3項目のチェックボックスもdisableされる', () => {
+    renderSettings({ mode: 'read-only' }, true)
+    const [, nameToggle, imageToggle, descriptionToggle] = getToggles()
+    expect(nameToggle).toBeDisabled()
+    expect(imageToggle).toBeDisabled()
+    expect(descriptionToggle).toBeDisabled()
   })
 })

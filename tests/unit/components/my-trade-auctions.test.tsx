@@ -78,14 +78,14 @@ describe("MyTrades auction tab (#1791)", () => {
         myBid: undefined,
         phase: "selecting",
         bidCount: 2,
-        offeredCard: { name: "Selecting Card", rarity: "rare", imageUrl: null },
+        offeredCard: { name: "Selecting Card", rarity: "rare", imageUrl: null, collectionNumber: null },
       }),
       makeAuction({
         id: "a-expired",
         isOwnAuction: true,
         myBid: undefined,
         phase: "expired",
-        offeredCard: { name: "Expired Card", rarity: "rare", imageUrl: null },
+        offeredCard: { name: "Expired Card", rarity: "rare", imageUrl: null, collectionNumber: null },
       }),
     ];
     await openAuctionTab();
@@ -113,19 +113,19 @@ describe("MyTrades auction tab (#1791)", () => {
         id: "a-won",
         phase: "completed",
         status: "completed",
-        offeredCard: { name: "Won Card", rarity: "rare", imageUrl: null },
+        offeredCard: { name: "Won Card", rarity: "rare", imageUrl: null, collectionNumber: null },
         myBid: makeBid({ id: "b-won", status: "won", state: "won" }),
       }),
       makeAuction({
         id: "a-released",
         phase: "expired",
-        offeredCard: { name: "Released Card", rarity: "rare", imageUrl: null },
+        offeredCard: { name: "Released Card", rarity: "rare", imageUrl: null, collectionNumber: null },
         myBid: makeBid({ id: "b-rel", state: "released" }),
       }),
       makeAuction({
         id: "a-stuck",
         phase: "selecting",
-        offeredCard: { name: "Stuck Card", rarity: "rare", imageUrl: null },
+        offeredCard: { name: "Stuck Card", rarity: "rare", imageUrl: null, collectionNumber: null },
         myBid: makeBid({ id: "b-stuck", settleable: false }),
       }),
     ];
@@ -156,6 +156,25 @@ describe("MyTrades auction tab (#1791)", () => {
     expect(await screen.findByText(ja.myAuctionsEmptySelling)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: ja.myAuctionsRoleBidding }));
     expect(await screen.findByText(ja.myAuctionsEmptyBidding)).toBeInTheDocument();
+  });
+
+  it("shows hidden-name cards by #N or the deleted fallback (#2070 follow-up)", async () => {
+    auctions.bidding = [
+      makeAuction({
+        id: "a-hidden",
+        // 出品カードは名前非公開（name="" + 表示番号）、入札カードは削除済み。
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 15 },
+        myBid: makeBid({
+          bidCardId: null,
+          bidCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+        }),
+      }),
+    ];
+    await openAuctionTab();
+    fireEvent.click(screen.getByRole("button", { name: ja.myAuctionsRoleBidding }));
+    const row = (await screen.findByText("#15")).closest("li")!;
+    expect(within(row).getByText("#15")).toBeInTheDocument();
+    expect(within(row).getByText(ja.deletedCardName)).toBeInTheDocument();
   });
 
   it("deploy window: 503 shows 'not available yet' and the offer tabs keep working", async () => {

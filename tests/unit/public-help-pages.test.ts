@@ -415,16 +415,17 @@ describe("trade guide page", () => {
     }
   });
 
-  it("has one row per visibility question (<key>, <key>Public, <key>NameOnly, <key>Hidden) in both locales", () => {
+  it("has one row per visibility question (<key>, <key>AllItems, <key>SomeItems, <key>NoUnowned) in both locales", () => {
     for (const { name, messages } of locales) {
       const visibility = messages.tradeGuidePage.streamer.visibility;
       for (const key of listedProps(source, "visibilityRows", "key")) {
-        for (const suffix of ["", "Public", "NameOnly", "Hidden"]) {
+        for (const suffix of ["", "AllItems", "SomeItems", "NoUnowned"]) {
           expect(visibility[`${key}${suffix}`], `${name}.${key}${suffix}`).toBeTruthy();
         }
       }
-      // #2070: the three states are columns, so the headers must exist too.
-      for (const header of ["public", "nameOnly", "hidden"]) {
+      // #2070 フォローアップ (C4b): 項目別公開とマスターOFFの2軸ではなく、
+      // 「すべて公開 / 一部だけ公開 / 未所持カードを表示しない」の3列で説明する。
+      for (const header of ["allItems", "someItems", "noUnowned"]) {
         expect(visibility[header], `${name}.${header}`).toBeTruthy();
       }
     }
@@ -539,7 +540,9 @@ describe("trade guide page", () => {
         "tradeSettings.form.crossChannelEnabled": messages.tradeSettings.form.crossChannelEnabled,
         "cardManager.form.tradeWantable": messages.cardManager.form.tradeWantable,
         "cardVisibilitySettings.form.showUnowned": messages.cardVisibilitySettings.form.showUnowned,
-        "cardVisibilitySettings.form.showDetails": messages.cardVisibilitySettings.form.showDetails,
+        // #2070 フォローアップ (C4b): ガイドは「未所持カードの扱い」の見出しと
+        // 説明を引用する。旧 showDetails（一括公開）は廃止した。
+        "cardVisibilitySettings.form.itemsTitle": messages.cardVisibilitySettings.form.itemsTitle,
         // 取引が失敗したときに画面へ出る文言（「うまくいかないとき」の見出しとして引用している）
         "trade.errorTradeDisabled": trade.errorTradeDisabled,
         "trade.errorTradeOfferedCardInactive": trade.errorTradeOfferedCardInactive,

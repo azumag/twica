@@ -95,10 +95,19 @@ function formData() {
       },
     ],
     wantableCards: [
-      { cardId: "card-2", name: "Visible Card", rarity: "rare", imageUrl: null, isOwned: false },
+      {
+        cardId: "card-2",
+        name: "Visible Card",
+        rarity: "rare",
+        imageUrl: null,
+        collectionNumber: 2,
+        isOwned: false,
+      },
     ],
-    wantableRevealsUnowned: true,
-    wantableRevealsUnownedImages: false,
+    // 行は見えるが名前は非公開（C3a 以降の項目別公開）。フォームへは
+    // 2つのフラグがそのまま渡る。
+    wantableRevealsUnownedCards: true,
+    wantableRevealsUnownedNames: false,
   };
 }
 
@@ -175,6 +184,11 @@ describe("/trade/new scope decision", () => {
     expect(form).not.toHaveProperty("initialKind");
     expect(form).not.toHaveProperty("streamerId");
     expect(form.wantableCards).toEqual(formData().wantableCards);
+    // 行の可視性と名前の可視性は別々に渡す（案内文の取り違え防止、C4a）。
+    expect(form).toMatchObject({
+      wantableRevealsUnownedCards: true,
+      wantableRevealsUnownedNames: false,
+    });
     expect(screen.getAllByText("tabInChannel").length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /createFlowBackToHub/ })).toHaveAttribute(
       "href",

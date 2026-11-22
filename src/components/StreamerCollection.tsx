@@ -11,6 +11,10 @@ import type { CollectionPackDisplay } from "./CollectionPackFilter";
 import type { Streamer, Card } from "@/types/database";
 import type { AlbumDefaultView, AlbumGridSizeMap } from "@/lib/collection-album";
 import { CARD_TRADE_UI_VISIBLE } from "@/lib/constants";
+import {
+  HIDDEN_UNOWNED_CARD_ITEM_VISIBILITY,
+  type UnownedCardItemVisibility,
+} from "@/lib/unowned-card-visibility";
 
 export interface StreamerCollectionCard extends Card {
   count: number;
@@ -44,10 +48,12 @@ interface StreamerCollectionProps {
   visibleCardTypes: number;
   // 過去のコンプリート達成履歴（デフォルト空配列で後方互換）
   completionHistory?: { total_cards: number; completed_at: string }[];
-  // 未所持カードの画像/説明を隠すか（プレースホルダー表示にするか）
-  // Issue #395: streamer の show_unowned_card_details=false のときに true。
-  // When true, unowned cards are rendered as placeholders (no image / no description).
-  hideUnownedDetails?: boolean;
+  // 未所持カードの名前/画像/説明を項目別に表示するか（Issue #2070 フォローアップ）。
+  // ページ側が resolveUnownedCardVisibility で解決し、非公開項目の実値は
+  // RSC ペイロードへ載せる前に落としている。ここは表示上のマスクだけを担う。
+  // Per-item visibility for unowned cards. Actual private values are stripped
+  // server-side before this component receives the cards.
+  unownedCardVisibility?: UnownedCardItemVisibility;
   // パック絞り込みタブに表示するパック一覧 (Issue #557)。空配列（デフォルト）
   // のときはフィルタUIを一切出さず従来表示のまま（名前付きパック未使用の
   // 配信者では見た目・挙動とも完全に不変）。
@@ -77,7 +83,7 @@ export default async function StreamerCollection({
   progress,
   visibleCardTypes,
   completionHistory = [],
-  hideUnownedDetails = false,
+  unownedCardVisibility = HIDDEN_UNOWNED_CARD_ITEM_VISIBILITY,
   packs = [],
   completionRewards = [],
   tradeEnabled = false,
@@ -183,7 +189,7 @@ export default async function StreamerCollection({
           <CollectionPackFilter
             cards={cards}
             streamerId={streamer.id}
-            hideUnownedDetails={hideUnownedDetails}
+            unownedCardVisibility={unownedCardVisibility}
             overallProgress={progress}
             overallCompletionHistory={completionHistory}
             packs={packs}
@@ -212,7 +218,7 @@ export default async function StreamerCollection({
               <SortedCardGrid
                 cards={cards}
                 streamerId={streamer.id}
-                hideUnownedDetails={hideUnownedDetails}
+                unownedCardVisibility={unownedCardVisibility}
                 translations={gridTranslations}
                 albumGridSizes={albumGridSizes}
                 albumDefaultView={albumDefaultView}

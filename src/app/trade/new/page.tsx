@@ -410,8 +410,8 @@ export default async function TradeNewPage({ searchParams }: { searchParams: Sea
           kind={kind}
           ownedCopies={formData.ownedCopies}
           wantableCards={formData.wantableCards}
-          wantableRevealsUnowned={formData.wantableRevealsUnowned}
-          wantableRevealsUnownedImages={formData.wantableRevealsUnownedImages}
+          wantableRevealsUnownedCards={formData.wantableRevealsUnownedCards}
+          wantableRevealsUnownedNames={formData.wantableRevealsUnownedNames}
           maxWantedQuantity={TRADE_MAX_WANTED_QUANTITY}
           initialOfferedCardId={rawOffered}
         />

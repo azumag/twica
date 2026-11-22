@@ -12,6 +12,7 @@ vi.mock('@/lib/dashboard-data', () => ({
   getStreamerById: async () => streamerRow.current,
   getUserCardsForStreamer: async () => [],
   getActiveCardsForStreamer: async () => [],
+  getAllCardsForStreamer: async () => [],
   getCollectionCompletions: async () => [],
   recordCollectionCompletion: vi.fn(), recordPackCompletion: vi.fn(),
 }));

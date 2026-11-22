@@ -62,13 +62,34 @@ function toOverlayDemoCard(card: OverlayDemoCard): OverlayDemoCard {
  *   （設定画面のプレビューDEMO。resolveNonBroadcastAccess 参照）。
  *   自分のカードなので公開設定に関係なく実カードを使える。
  * - "public": 無認証を含むそれ以外。コレクションページと同じ公開設定に従い、配信者が
- *   `show_unowned_cards` と `show_unowned_card_details` の「両方」をオンにしている
- *   場合だけ実カードを返す。どちらかがオフなら、未所持カードの存在・名前・画像を
- *   見せない設定のため取得結果は空になり、呼び出し側が組み込みデモカードへ縮退する。
+ *   未所持カードの名前・画像・説明を「3項目すべて」オンにしている場合だけ実カードを
+ *   返す。どれかがオフなら、未所持カードの存在・名前・画像を見せない設定のため
+ *   取得結果は空になり、呼び出し側が組み込みデモカードへ縮退する。
  *   （これが無いと、OBS 用に URL を知られた/推測された配信者の非公開カードを、
  *   誰でもこの無認証 API から取得できてしまう。）
- *   公開設定は streamers との JOIN 条件で判定し、1クエリで原子的に絞り込む
- *   （別クエリで先に確認する方式は確認後の設定変更との競合を生み、往復も増える）。
+ *
+ *   Issue #2070 フォローアップ: 公開判定は SQL（streamers との JOIN 条件）で行う。
+ *   同じ規則は src/lib/unowned-card-visibility.ts の resolveUnownedCardVisibility に
+ *   あるが、resolver は行を取得した後の純関数であり、ここでは「非公開なら行自体を
+ *   返さない」原子的な絞り込みが必要なため SQL 条件として再実装している。
+ *   条件は次の AND で、resolver が全項目公開を返す場合と同値:
+ *
+ *     show_unowned_cards
+ *       AND show_unowned_card_name
+ *       AND show_unowned_card_image
+ *       AND show_unowned_card_description
+ *       AND show_unowned_card_details
+ *
+ *   最後の show_unowned_card_details は resolver の規則 c（旧アプリの OFF
+ *   取りこぼしガード）と同じ理由で必須。新アプリは details = name && image &&
+ *   description をミラーするため、details=false かつ新3列が全 true という状態は
+ *   旧アプリで「詳細公開」を OFF にした場合にしか生じない。この条件を落とすと、
+ *   配信者が旧画面で切った設定をデモ API だけが復活させてしまう。
+ *
+ *   デプロイ窓（新3列の migration 未適用）ではこの JOIN 条件自体が 42703 で失敗するが、
+ *   呼び出し元の catch が組み込みデモカードへ縮退するため fail-closed（実カードは
+ *   一切返らない）。旧 show_unowned_card_details だけでの再試行は行わない
+ *   （配信者の項目別設定を無視して全公開に倒すことになるため）。
  */
 type CardAccess = "owner" | "public";
 
@@ -122,7 +143,13 @@ function selectOverlayCards(
     .where(
       and(
         condition,
+        // resolver（src/lib/unowned-card-visibility.ts）の「全項目公開」と同値。
+        // details を最後に AND するのは旧アプリの OFF 取りこぼしガード（規則 c）を
+        // SQL でも再現するため。詳細は CardAccess のコメント参照。
         eq(streamersTable.show_unowned_cards, true),
+        eq(streamersTable.show_unowned_card_name, true),
+        eq(streamersTable.show_unowned_card_image, true),
+        eq(streamersTable.show_unowned_card_description, true),
         eq(streamersTable.show_unowned_card_details, true),
       ),
     );

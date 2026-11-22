@@ -88,8 +88,10 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
  * #722 の trade_enabled / cross_channel_trade_enabled、#2070 の
  * trade_unowned_card_names_visible、#934 の publish_card_ranking も同じ安全列集合へ
  * フォールバックする。
- * 対象列の定義は LIVE_DIRECTORY_SETTINGS_COLUMNS / TRADE_SETTINGS_COLUMNS /
- * CARD_RANKING_SETTINGS_COLUMNS に分け、検知条件だけを共有する。
+ * 対象列の定義は用途別のグループ定数（LIVE_DIRECTORY_SETTINGS_COLUMNS /
+ * TRADE_SETTINGS_COLUMNS / ALBUM_SETTINGS_COLUMNS / CARD_RANKING_SETTINGS_COLUMNS /
+ * DUPLICATE_DISPLAY_TIER_COLUMNS / RARITY_STYLES_COLUMNS /
+ * UNOWNED_CARD_ITEM_COLUMNS）に分け、検知条件だけを共有する。
  *
  * 元々は cards テーブルの「本番未デプロイ8列」フォールバック
  * （旧 cards-safe-columns.ts の withCardsBattleColumnFallback）と同型の設計だったが、そちらは
@@ -110,7 +112,8 @@ export async function withLiveDirectorySettingsColumnFallback<T>(
       !isMissingAlbumSettingsColumnError(error) &&
       !isMissingCardRankingSettingsColumnError(error) &&
       !isMissingDuplicateDisplayTiersColumnError(error) &&
-      !isMissingRarityStylesColumnError(error)
+      !isMissingRarityStylesColumnError(error) &&
+      !isMissingUnownedCardItemColumnError(error)
     ) {
       throw error;
     }
@@ -124,6 +127,12 @@ export async function withLiveDirectorySettingsColumnFallback<T>(
  * trade_unowned_card_names_visible は 20261117120000 (#2070) で追加された。
  * migration は別だが、どれも「トレード設定の追加列」として同じデプロイ窓
  * フォールバックで検知する必要があるため、1つの検知グループにまとめる。
+ *
+ * #2070 フォローアップ (C4b): trade_unowned_card_names_visible は設定としては
+ * 廃止し、書き込み経路からは撤去した。ただし schema.ts に列定義が残っており、
+ * getStreamerById / getStreamerData の全列 SELECT がまだ参照するため、検知対象
+ * としては残す（読み取りのデプロイ窓フォールバックを維持する）。ルート側の
+ * UPDATE フォールバックは、この列を updateData に含めない。
  *
  * STREAMERS_SAFE_COLUMNS はこの3列を含まない（＝再試行側では undefined に
  * なりうる）。消費側は欠落時に false（fail-closed）へ倒すこと。
@@ -227,4 +236,35 @@ export const RARITY_STYLES_COLUMNS = ["rarity_styles"] as const;
  */
 export function isMissingRarityStylesColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, RARITY_STYLES_COLUMNS);
+}
+
+/**
+ * デプロイ窓で欠落しうる streamers の新3列(20261122120000 の migration で追加。
+ * Issue #2070 フォローアップ)。未所持カードの公開内容を名前・画像・説明で個別に
+ * 切り替えるための設定列で、上記各グループと同じ「アプリデプロイと migration 適用が
+ * 独立したタイミングで完了する」リスクを持つため、同型のフォールバック検知に追加する。
+ *
+ * 3列は1つの migration で同時に追加されるため、デプロイ窓では3列まとめて欠落する。
+ * どれか1列でも 42703 になれば同じ安全列集合での再試行へ倒せばよいので、上の各グループと
+ * 同様に1つの検知グループへまとめる。
+ *
+ * STREAMERS_SAFE_COLUMNS には含めない。消費側は欠落時、旧 show_unowned_card_details から
+ * 導出（true→3項目すべて true / false→すべて false）して fail-closed に倒すこと
+ * （C4b で resolver・dashboard-data・設定API に実装済み）。この導出は現行の
+ * 「詳細公開」と同じ公開内容を維持するためのもので、項目別フラグが undefined のまま
+ * 個別判定に流れると、設定意図と異なる公開・非公開になりうる。
+ */
+export const UNOWNED_CARD_ITEM_COLUMNS = [
+  "show_unowned_card_name",
+  "show_unowned_card_image",
+  "show_unowned_card_description",
+] as const;
+
+/**
+ * streamers の show_unowned_card_name / show_unowned_card_image /
+ * show_unowned_card_description 列の欠落
+ * (20261122120000 の migration 未適用の環境)を検知する。
+ */
+export function isMissingUnownedCardItemColumnError(error: unknown): boolean {
+  return isPgMissingNamedColumnError(error, UNOWNED_CARD_ITEM_COLUMNS);
 }

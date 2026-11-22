@@ -8,6 +8,10 @@ const fixtures = vi.hoisted(() => ({
     card_pack_names: ['A'],
     show_unowned_cards: false as boolean,
     show_unowned_card_details: false as boolean | null | undefined,
+    // Issue #2070 フォローアップ: 項目別公開。既定は undefined（旧 details から導出）。
+    show_unowned_card_name: undefined as boolean | null | undefined,
+    show_unowned_card_image: undefined as boolean | null | undefined,
+    show_unowned_card_description: undefined as boolean | null | undefined,
   },
   owned: {} as Card & { count: number },
   views: [] as Array<{ collectionName: string; state: 'locked' | 'granted' | 'grantedNow'; rarity?: string; card?: Card }>,
@@ -18,6 +22,8 @@ vi.mock('@/lib/dashboard-data', () => ({
   getStreamerById: async () => fixtures.streamer,
   getUserCardsForStreamer: async () => [fixtures.owned],
   getActiveCardsForStreamer: async () => [fixtures.owned],
+  // 表示番号の入力は「その配信者の全カード（無効化含む）」。
+  getAllCardsForStreamer: async () => [fixtures.owned],
   getCollectionCompletions: async () => [],
   recordCollectionCompletion: vi.fn(),
   recordPackCompletion: vi.fn(),
@@ -64,6 +70,9 @@ const SECRET = 'GRANTED_SECRET';
 beforeEach(() => {
   fixtures.streamer.show_unowned_cards = false;
   fixtures.streamer.show_unowned_card_details = false;
+  fixtures.streamer.show_unowned_card_name = undefined;
+  fixtures.streamer.show_unowned_card_image = undefined;
+  fixtures.streamer.show_unowned_card_description = undefined;
   fixtures.owned = { ...card('owned'), count: 3 } as Card & { count: number };
   fixtures.views = [
     { collectionName: 'A', state: 'granted', card: card(SECRET) } as any,
@@ -115,5 +124,24 @@ describe('collection page completionReward privacy boundary', () => {
     const rewards = page.props.completionRewards as any[];
     expect(rewards).toHaveLength(1);
     expect(rewards[0].state).toBe('locked');
+  });
+
+  it('drops granted-but-unowned reward when only some items are public (保守的な全項目公開条件)', async () => {
+    // Issue #2070 フォローアップ: 部分公開のカードを報酬一覧へ渡すと、非公開項目の
+    // 実値が報酬オブジェクト経由で RSC ペイロードに載る。既存挙動を保つため、
+    // 「3項目すべて公開」のときだけ未所持報酬を残す。
+    fixtures.streamer.show_unowned_cards = true;
+    fixtures.streamer.show_unowned_card_details = false;
+    fixtures.streamer.show_unowned_card_name = true;
+    fixtures.streamer.show_unowned_card_image = true;
+    fixtures.streamer.show_unowned_card_description = false;
+    const page = await renderPage();
+
+    const rewards = page.props.completionRewards as any[];
+    expect(rewards).toEqual([]);
+    const serialized = JSON.stringify(rewards);
+    for (const secret of [`${SECRET} secret name`, `${SECRET} secret description`, `https://example.test/${SECRET}-secret.png`]) {
+      expect(serialized, secret).not.toContain(secret);
+    }
   });
 });
