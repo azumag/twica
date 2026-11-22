@@ -92,6 +92,16 @@ export interface Database {
           // 未所持カード表示時に画像/説明まで公開するか（false=プレースホルダーのみ）
           // When unowned cards are shown, whether to reveal card image/description
           show_unowned_card_details: boolean
+          // 未所持カードの項目別公開設定（#2070 フォローアップ）。
+          // show_unowned_cards=true のときだけ有効で、名前・画像・説明を個別に公開する。
+          // 旧 show_unowned_card_details は後続リリースまで残し、新アプリは3列の AND を
+          // 旧列へミラー書込みする（旧アプリ・旧画面の表示互換のため）。
+          // Per-item visibility for unowned cards, gated by show_unowned_cards
+          // (#2070 follow-up). The new app mirrors name && image && description
+          // into the retained show_unowned_card_details column for old clients.
+          show_unowned_card_name: boolean
+          show_unowned_card_image: boolean
+          show_unowned_card_description: boolean
           // 視聴者間のカードトレード許可フラグ (#722/#725)
           // Whether viewers may trade this channel's cards (#722/#725)
           trade_enabled: boolean
@@ -159,6 +169,9 @@ export interface Database {
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          show_unowned_card_name?: boolean
+          show_unowned_card_image?: boolean
+          show_unowned_card_description?: boolean
           trade_enabled?: boolean
           cross_channel_trade_enabled?: boolean
           trade_unowned_card_names_visible?: boolean
@@ -200,6 +213,9 @@ export interface Database {
           default_card_pack_name?: string | null
           show_unowned_cards?: boolean
           show_unowned_card_details?: boolean
+          show_unowned_card_name?: boolean
+          show_unowned_card_image?: boolean
+          show_unowned_card_description?: boolean
           trade_enabled?: boolean
           cross_channel_trade_enabled?: boolean
           trade_unowned_card_names_visible?: boolean
