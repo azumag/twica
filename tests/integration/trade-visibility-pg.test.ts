@@ -286,9 +286,18 @@ async function seed() {
     (${U.NO}, ${TW.NO}, ${TW.NO}, 'NameOnly Offerer'),
     (${U.NOV}, ${TW.NOV}, ${TW.NOV}, 'NameOnly Viewer')`;
 
-  const card = (cid: string, sid: string, name: string, rarity: string, active: boolean) =>
-    s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
-      VALUES (${cid}, ${sid}, ${name}, ${rarity}, 0.1, ${active})`;
+  // imageUrl は listWantableCards（ピッカー）が cards.image_url を直接読むために
+  // 必要。省略時は NULL のまま（既存のカードは画像に依存しない）。
+  const card = (
+    cid: string,
+    sid: string,
+    name: string,
+    rarity: string,
+    active: boolean,
+    imageUrl: string | null = null,
+  ) =>
+    s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active, image_url)
+      VALUES (${cid}, ${sid}, ${name}, ${rarity}, 0.1, ${active}, ${imageUrl})`;
   await card(C.PUB_A, S.PUB, "Pub A", "common", true);
   await card(C.PUB_B, S.PUB, "Pub B", "rare", true);
   await card(C.PUB_INACTIVE, S.PUB, "Pub Retired", "epic", false);
@@ -297,10 +306,10 @@ async function seed() {
   await card(C.PRIV_C, S.PRIV, "Priv C", "rare", true);
   await card(C.HALF_A, S.HALF, "Half A", "common", true);
   await card(C.HALF_B, S.HALF, "Secret Half B", "rare", true);
-  await card(C.NAMEONLY_A, S.NAMEONLY, "NameOnly A", "common", true);
-  await card(C.NAMEONLY_B, S.NAMEONLY, "NameOnly B", "rare", true);
-  await card(C.IMAGEONLY_A, S.IMAGEONLY, "ImageOnly A", "common", true);
-  await card(C.IMAGEONLY_B, S.IMAGEONLY, "ImageOnly B", "rare", true);
+  await card(C.NAMEONLY_A, S.NAMEONLY, "NameOnly A", "common", true, NAMEONLY_IMAGES.A);
+  await card(C.NAMEONLY_B, S.NAMEONLY, "NameOnly B", "rare", true, NAMEONLY_IMAGES.B);
+  await card(C.IMAGEONLY_A, S.IMAGEONLY, "ImageOnly A", "common", true, NAMEONLY_IMAGES.IMAGE_A);
+  await card(C.IMAGEONLY_B, S.IMAGEONLY, "ImageOnly B", "rare", true, NAMEONLY_IMAGES.IMAGE_B);
   await card(C.HIDDEN_ALL_A, S.HIDDEN_ALL, "Hidden All A", "common", true);
   await card(C.HIDDEN_ALL_B, S.HIDDEN_ALL, "Hidden All B", "rare", true);
   await card(C.GUARD_C_A, S.GUARD_C, "Guard C A", "common", true);

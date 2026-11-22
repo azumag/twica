@@ -2190,15 +2190,23 @@ describe("trade unowned card item visibility (follow-up of #2070)", () => {
 
   it("row visibility is ownership OR show_unowned_cards, with is_active, and never the item columns", async () => {
     const { cardVisibleTo } = await import("@/lib/trade");
-    const rendered = render(cardVisibleTo(cards.id, null));
-    expect(rendered.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
-    expect(rendered.sql).toContain("visible_owned.user_id");
-    // is_active は従来どおり必須。
-    expect(rendered.sql).toContain("visible_card.is_active = TRUE");
-    // 旧 details / 旧 trade-only 設定 / 新3列は行の可視性に現れない。
-    expect(rendered.sql).not.toContain("show_unowned_card_details");
-    expect(rendered.sql).not.toContain("trade_unowned_card_names_visible");
-    expect(rendered.sql).not.toContain("show_unowned_card_name");
+    // 閲覧者あり: 所持の分岐（visible_owned）と show_unowned_cards の OR。
+    const viewer = render(cardVisibleTo(cards.id, drizzleSql`${VIEWER_ID}::uuid`));
+    expect(viewer.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
+    expect(viewer.sql).toContain("visible_owned.user_id");
+    // 匿名閲覧者: 所持の分岐を持たず（FALSE）、マスタースイッチだけで決まる。
+    const anonymous = render(cardVisibleTo(cards.id, null));
+    expect(anonymous.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
+    expect(anonymous.sql).not.toContain("visible_owned");
+
+    for (const rendered of [viewer, anonymous]) {
+      // is_active は従来どおり必須。
+      expect(rendered.sql).toContain("visible_card.is_active = TRUE");
+      // 旧 details / 旧 trade-only 設定 / 新3列は行の可視性に現れない。
+      expect(rendered.sql).not.toContain("show_unowned_card_details");
+      expect(rendered.sql).not.toContain("trade_unowned_card_names_visible");
+      expect(rendered.sql).not.toContain("show_unowned_card_name");
+    }
   });
 
   // SQL 断片は drizzle の列オブジェクト（別名 streamers）を使うため
