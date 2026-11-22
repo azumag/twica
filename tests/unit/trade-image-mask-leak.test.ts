@@ -419,9 +419,16 @@ describe("trade image leaks on name-only channels (#2070)", () => {
     const { listWantableCards } = await import("@/lib/trade");
     const result = await listWantableCards("viewer-1", ID.streamer);
 
-    expect(result[0].imageUrl).toBeNull();
-    expect(result[0].name).toBe("Wanted Name");
-    expect(result[1].imageUrl).toBe(SECRET);
+    // 並び（rarity_order 昇順）は JS 側で決まり、モックの行順には従わない。
+    // マスクの検証は行順に依存させず cardId で引く。
+    const wanted = result.find((card) => card.cardId === ID.wantedCard);
+    const owned = result.find((card) => card.cardId === ID.offeredCard);
+    expect(wanted?.imageUrl).toBeNull();
+    expect(wanted?.name).toBe("Wanted Name");
+    expect(owned?.imageUrl).toBe(SECRET);
+    // モックの行順は [wanted(rarityOrder 2), owned(rarityOrder 1)]。
+    // rarity_order 昇順に並び替わることを明示する。
+    expect(result.map((card) => card.cardId)).toEqual([ID.offeredCard, ID.wantedCard]);
   });
 
   it("listTradeAuctions: masks the offered snapshot of a name-only auction", async () => {
