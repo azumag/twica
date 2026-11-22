@@ -135,7 +135,7 @@ export default function TradeSettings({
           href="#collection-sharing-heading"
           className="mt-1 inline-block text-xs text-purple-300 underline-offset-2 hover:text-purple-200 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
         >
-          {t("visibilityNoticeLink")}
+          {t("visibilityNoticeLink", { itemsTitle: tVisibility("form.itemsTitle") })}
         </a>
       </div>
       {isMaintenanceBlocked && (

@@ -104,7 +104,14 @@ export function formatTradeCardLabel(
  */
 export function useTradeCardLabel(): (card: TradeCardLabelSource) => string {
   const t = useTranslations("trade");
-  const cardNumberTemplate = t(TRADE_CARD_LABEL_MESSAGE_KEYS.cardNumber);
+  // messages の値は "#{number}"（ICU プレースホルダー付き）。引数なしで t() を呼ぶと
+  // next-intl は {number} を埋められずフォーマットに失敗し、キー名
+  // （trade.cardNumberLabel）をそのまま返す。そこで { number: "{number}" } を渡して
+  // プレースホルダーを文字列のまま残し、formatTradeCardLabel が実番号へ置換する
+  // （StreamerCollection の t("cardCount", { count: "{count}" }) と同じ手法）。
+  const cardNumberTemplate = t(TRADE_CARD_LABEL_MESSAGE_KEYS.cardNumber, {
+    number: "{number}",
+  });
   const deletedLabel = t(TRADE_CARD_LABEL_MESSAGE_KEYS.deletedName);
   return useCallback(
     (card: TradeCardLabelSource) =>
