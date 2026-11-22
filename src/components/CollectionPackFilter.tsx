@@ -12,6 +12,7 @@ import {
   type AlbumGridSizeMap,
 } from "@/lib/collection-album";
 import type { StreamerCollectionCard } from "./StreamerCollection";
+import type { UnownedCardItemVisibility } from "@/lib/unowned-card-visibility";
 
 // SortedCardGrid の translations 契約をそのまま再利用する（Server→Client の
 // シリアライズ済み文字列オブジェクト）。型を再宣言せず参照することで、
@@ -39,7 +40,8 @@ interface CollectionPackFilterProps {
   // the unfiltered page renders.
   cards: StreamerCollectionCard[];
   streamerId: string;
-  hideUnownedDetails: boolean;
+  // 未所持カードの名前/画像/説明の項目別公開可否（Issue #2070 フォローアップ）。
+  unownedCardVisibility: UnownedCardItemVisibility;
   overallProgress: { owned: number; total: number };
   overallCompletionHistory: { total_cards: number; completed_at: string }[];
   packs: CollectionPackDisplay[];
@@ -67,7 +69,7 @@ interface CollectionPackFilterProps {
 export default function CollectionPackFilter({
   cards,
   streamerId,
-  hideUnownedDetails,
+  unownedCardVisibility,
   overallProgress,
   overallCompletionHistory,
   packs,
@@ -164,7 +166,7 @@ export default function CollectionPackFilter({
         <SortedCardGrid
           cards={visibleCards}
           streamerId={streamerId}
-          hideUnownedDetails={hideUnownedDetails}
+          unownedCardVisibility={unownedCardVisibility}
           translations={gridTranslations}
           rarityStyles={rarityStyles}
           // 「すべて」タブは __all__、パック選択時はそのパックの既定を使う。

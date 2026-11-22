@@ -137,7 +137,9 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
 
     expect(response.status).toBe(200)
     // 無認証（broadcast なし）経路では、上記の絞り込みに加えて配信者の公開設定
-    // （show_unowned_cards / show_unowned_card_details が両方 true）が AND で付く。
+    // （show_unowned_cards と名前・画像・説明の3項目、および旧 details）が AND で付く。
+    // 旧 details は resolver の規則 c（旧アプリの OFF 取りこぼしガード）と同じ理由で
+    // 必須で、新3列が全 true でも details=false なら実カードを返さない。
     expect(pg.whereConditions[0]).toEqual(
       and(
         and(
@@ -146,6 +148,9 @@ describe('POST /api/gacha/demo: PlanetScale-only reads', () => {
           eq(cardsTable.is_active, true)
         ),
         eq(streamersTable.show_unowned_cards, true),
+        eq(streamersTable.show_unowned_card_name, true),
+        eq(streamersTable.show_unowned_card_image, true),
+        eq(streamersTable.show_unowned_card_description, true),
         eq(streamersTable.show_unowned_card_details, true)
       )
     )

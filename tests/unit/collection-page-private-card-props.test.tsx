@@ -9,6 +9,11 @@ const fixtures = vi.hoisted(() => ({
     card_pack_names: ['A'],
     show_unowned_cards: true,
     show_unowned_card_details: false as boolean | null | undefined,
+    // Issue #2070 フォローアップ: 新3列はデプロイ窓では undefined になるため、
+    // 既定は undefined（旧 details から導出）にしておく。
+    show_unowned_card_name: undefined as boolean | null | undefined,
+    show_unowned_card_image: undefined as boolean | null | undefined,
+    show_unowned_card_description: undefined as boolean | null | undefined,
   },
   owned: {} as Card & { count: number },
   unowned: {} as Card & { private_metadata: { secret: string } },
@@ -67,6 +72,9 @@ function card(id: string): Card {
 beforeEach(() => {
   fixtures.streamer.show_unowned_cards = true;
   fixtures.streamer.show_unowned_card_details = false;
+  fixtures.streamer.show_unowned_card_name = undefined;
+  fixtures.streamer.show_unowned_card_image = undefined;
+  fixtures.streamer.show_unowned_card_description = undefined;
   fixtures.streamer.card_pack_names = ['A'];
   fixtures.owned = { ...card('owned'), count: 3 };
   fixtures.unowned = {
@@ -118,7 +126,11 @@ describe('collection page private unowned card props', () => {
     const page = await renderPage();
 
     expectPrivatePlaceholder(page.props.cards);
-    expect(page.props.hideUnownedDetails).toBe(true);
+    expect(page.props.unownedCardVisibility).toEqual({
+      name: false,
+      image: false,
+      description: false,
+    });
     expect(page.props.cards.find((entry: Card) => entry.id === 'unowned')).toMatchObject({
       id: 'unowned',
       streamer_id: 'streamer',
@@ -147,15 +159,59 @@ describe('collection page private unowned card props', () => {
     }]);
   });
 
-  it('retains unowned details when their disclosure is explicitly enabled', async () => {
+  it('retains unowned details when all three items are explicitly enabled', async () => {
     fixtures.streamer.show_unowned_card_details = true;
+    fixtures.streamer.show_unowned_card_name = true;
+    fixtures.streamer.show_unowned_card_image = true;
+    fixtures.streamer.show_unowned_card_description = true;
     const page = await renderPage();
 
-    expect(page.props.hideUnownedDetails).toBe(false);
+    expect(page.props.unownedCardVisibility).toEqual({
+      name: true,
+      image: true,
+      description: true,
+    });
     expect(page.props.cards.find((entry: Card) => entry.id === 'unowned')).toMatchObject({
-      ...fixtures.unowned, count: 0, isOwned: false, collectionNumber: 21,
+      id: fixtures.unowned.id,
+      streamer_id: fixtures.unowned.streamer_id,
+      rarity: fixtures.unowned.rarity,
+      card_number: fixtures.unowned.card_number,
+      collection_name: fixtures.unowned.collection_name,
+      is_active: fixtures.unowned.is_active,
+      created_at: fixtures.unowned.created_at,
+      name: fixtures.unowned.name,
+      image_url: fixtures.unowned.image_url,
+      description: fixtures.unowned.description,
+      image_padding_color: fixtures.unowned.image_padding_color,
+      // ステータスは項目別公開の対象外なので、全公開でも常に中立値。
+      hp: 0,
+      atk: 0,
+      def: 0,
+      spd: 0,
+      skill_type: 'attack',
+      skill_name: '',
+      skill_power: 0,
+      count: 0,
+      isOwned: false,
+      collectionNumber: 21,
     });
   });
+
+  /**
+   * Issue #2070 フォローアップ: 項目別の組合せで、非公開項目の実値が RSC
+   * ペイロードに残らないことを固定する。details は C4 のミラー
+   * （name && image && description）を再現する。
+   */
+  const itemCombinations = [
+    { name: false, image: false, description: false },
+    { name: true, image: false, description: false },
+    { name: false, image: true, description: false },
+    { name: false, image: false, description: true },
+    { name: true, image: true, description: false },
+    { name: true, image: false, description: true },
+    { name: false, image: true, description: true },
+    { name: true, image: true, description: true },
+  ];
 
   it('excludes unowned cards when their visibility is disabled', async () => {
     fixtures.streamer.show_unowned_cards = false;
@@ -196,4 +252,48 @@ describe('collection page private unowned card props', () => {
     expect(boundaries).toHaveLength(1);
     expectPrivatePlaceholder(boundaries[0]);
   });
+
+  it.each(itemCombinations)(
+    '項目別の組合せ $name/$image/$description で非公開項目の実値だけを落とす',
+    async (visibility) => {
+      fixtures.streamer.show_unowned_card_details =
+        visibility.name && visibility.image && visibility.description;
+      fixtures.streamer.show_unowned_card_name = visibility.name;
+      fixtures.streamer.show_unowned_card_image = visibility.image;
+      fixtures.streamer.show_unowned_card_description = visibility.description;
+
+      const page = await renderPage();
+      const unowned = page.props.cards.find((entry: Card) => entry.id === 'unowned');
+
+      expect(page.props.unownedCardVisibility).toEqual(visibility);
+      expect(unowned.name).toBe(visibility.name ? fixtures.unowned.name : '');
+      expect(unowned.image_url).toBe(
+        visibility.image ? fixtures.unowned.image_url : null,
+      );
+      expect(unowned.description).toBe(
+        visibility.description ? fixtures.unowned.description : null,
+      );
+      // 画像非公開時は余白色も落とす（画像の表示属性のため）。
+      expect(unowned.image_padding_color).toBe(
+        visibility.image ? fixtures.unowned.image_padding_color : null,
+      );
+
+      const serialized = JSON.stringify(page.props.cards);
+      const secrets = [
+        [visibility.name, fixtures.unowned.name],
+        [visibility.image, fixtures.unowned.image_url],
+        [visibility.description, fixtures.unowned.description],
+      ] as const;
+      for (const [visible, secret] of secrets) {
+        if (visible) {
+          expect(serialized).toContain(secret);
+        } else {
+          expect(serialized).not.toContain(secret);
+        }
+      }
+      // 設定対象外の実値（スキル名・将来列）は全公開でもペイロードへ載せない。
+      expect(serialized).not.toContain(fixtures.unowned.skill_name);
+      expect(serialized).not.toContain(fixtures.unowned.private_metadata.secret);
+    },
+  );
 });

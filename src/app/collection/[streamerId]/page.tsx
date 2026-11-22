@@ -29,6 +29,10 @@ import {
   resolveDuplicateTier,
   sanitizeDuplicateDisplayTiers,
 } from "@/lib/duplicate-display-tiers";
+import {
+  allUnownedCardItemsVisible,
+  resolveUnownedCardVisibility,
+} from "@/lib/unowned-card-visibility";
 
 // Note: Page is automatically dynamic due to cookies() usage in getSession()
 // cookies()使用により自動的に動的ページになるため、force-dynamicは不要
@@ -113,40 +117,60 @@ export default async function StreamerCollectionPage({
   // Unowned-card visibility for viewers (Issue #395):
   //  - show_unowned_cards=false (default): viewer sees only owned cards (legacy behavior)
   //  - show_unowned_cards=true: viewer also sees unowned active cards (sorted by rarity, after owned)
+  //
+  // Issue #2070 フォローアップ: 公開可否は名前・画像・説明の項目別に解決する。
+  // getStreamerById は通常経路で streamers の全列（新3列を含む）を取得し、
+  // デプロイ窓で 42703 になった場合だけ STREAMERS_SAFE_COLUMNS（新3列を含まない）
+  // へ縮退する。その場合は resolveUnownedCardVisibility が旧 show_unowned_card_details
+  // から導出し、欠落を fail-closed に扱う（詳細は src/lib/unowned-card-visibility.ts の
+  // 規則 a〜d を参照）。ここで列を個別に足す必要はない。
+  const unownedCardVisibility = resolveUnownedCardVisibility(streamer);
+
   // Client-side masking cannot protect the RSC payload. For private unowned
   // cards, copy only public metadata and use neutral values for the detail
   // fields required by the grid's Card type. Do not spread the database row:
-  // skill names or future columns could otherwise reveal private details.
-  // 公開メタデータは番号・ソート・パック絞り込みを維持し、元のカード行は変更しない。
+  // skill names, drop rates or future columns could otherwise reveal private
+  // details. 項目別公開でも同じ方針を徹底し、非公開項目の実値（name /
+  // image_url / description）はこの時点で落としてから props へ渡す。
+  // クライアント側のマスクは表示上の保険であり、RSC ペイロード防御の代わりにはならない。
   const ownedCardIds = new Set(ownedCards.map((card) => card.id));
   const unownedCards: StreamerCollectionCard[] = streamer.show_unowned_cards
     ? sortCollectedCards(
         activeCards.filter((card) => !ownedCardIds.has(card.id))
       ).map((card) => ({
-        ...(streamer.show_unowned_card_details === true ? card : {
-          id: card.id,
-          streamer_id: card.streamer_id,
-          rarity: card.rarity,
-          card_number: card.card_number,
-          collection_name: card.collection_name,
-          is_active: card.is_active,
-          created_at: card.created_at,
-          updated_at: "",
-          name: "",
-          description: null,
-          image_url: null,
-          image_padding_color: null,
-          max_issuance_count: null,
-          drop_rate: 0,
-          intra_rarity_weight: 0,
-          hp: 0,
-          atk: 0,
-          def: 0,
-          spd: 0,
-          skill_type: "attack" as const,
-          skill_name: "",
-          skill_power: 0,
-        }),
+        // 公開メタデータ: 図鑑番号・レアリティ・パック絞り込み・並び順に必要な
+        // 列だけを明示的にコピーする。...(spread) は使わない。
+        id: card.id,
+        streamer_id: card.streamer_id,
+        // レアリティと表示番号は常に公開（Issue #2070 の要件）。
+        rarity: card.rarity,
+        card_number: card.card_number,
+        collection_name: card.collection_name,
+        is_active: card.is_active,
+        created_at: card.created_at,
+        updated_at: "",
+        // 項目別の公開判定。非公開項目は空文字 / null にして実値を落とす。
+        name: unownedCardVisibility.name ? card.name : "",
+        description: unownedCardVisibility.description ? card.description : null,
+        image_url: unownedCardVisibility.image ? card.image_url : null,
+        // 余白色は画像の表示属性なので、画像非公開時は併せて落とす。
+        image_padding_color: unownedCardVisibility.image
+          ? card.image_padding_color
+          : null,
+        // ステータス（HP/攻撃/防御/速度/スキル）は項目別公開の設定対象外。
+        // 未所持カードには常に中立値を渡し、実値を RSC ペイロードへ載せない。
+        // これは詳細公開時も同じ（以前はカード行を spread していたが、
+        // 設定対象外の実値までクライアントへ送っていた）。
+        max_issuance_count: null,
+        drop_rate: 0,
+        intra_rarity_weight: 0,
+        hp: 0,
+        atk: 0,
+        def: 0,
+        spd: 0,
+        skill_type: "attack" as const,
+        skill_name: "",
+        skill_power: 0,
         count: 0,
         isOwned: false,
         collectionNumber: collectionNumberMap.get(card.id),
@@ -154,9 +178,12 @@ export default async function StreamerCollectionPage({
     : [];
 
   // 付与履歴は現在所持を意味しない。serviceが最新countで補正したカードを
-  // 正本とし、未所持報酬は両設定が明示公開の場合だけクライアントへ渡す。
-  const showUnownedRewardDetails = streamer.show_unowned_cards === true
-    && streamer.show_unowned_card_details === true;
+  // 正本とし、未所持報酬は「3項目すべて公開」の場合だけクライアントへ渡す。
+  // 部分公開のカードを報酬一覧へ出すと、非公開項目の実値が報酬オブジェクト経由で
+  // RSC ペイロードに載るため、既存挙動を保つ保守的な条件に限定する（項目別の
+  // 報酬表示は後続タスク）。allUnownedCardItemsVisible は show_unowned_cards が
+  // false なら resolve が全 false を返すため、マスタースイッチも間接的に効く。
+  const showUnownedRewardDetails = allUnownedCardItemsVisible(unownedCardVisibility);
   const completionRewards = rewardResult.views.filter((view) =>
     view.state === 'locked' || ownedCardIds.has(view.card?.id ?? '') || showUnownedRewardDetails
   );
@@ -259,8 +286,9 @@ export default async function StreamerCollectionPage({
       // visibleCardTypes is the number of card types the viewer sees on this page.
       visibleCardTypes={cards.length}
       completionHistory={completionHistoryForDisplay}
-      // 未所持カードの画像/詳細を隠すかどうか（show_unowned_cards=false の場合は意味を持たない）
-      hideUnownedDetails={!streamer.show_unowned_card_details}
+      // 未所持カードの名前/画像/説明を項目別に隠すためのフラグ（Issue #2070
+      // フォローアップ）。実値は上でマスク済み。ここで渡すのは公開可否の boolean だけ。
+      unownedCardVisibility={unownedCardVisibility}
       // #726: getStreamerById selects every streamers column, so trade_enabled
       // is present at runtime (the shared Streamer type predates it). During
       // the trade-columns deploy window the safe-column fallback omits it and

@@ -12,8 +12,8 @@ import { createOverlayDemoEvent } from '@/lib/overlay/demo-event-store'
 
 /**
  * /api/gacha/demo の無認証経路は、配信者が未所持カードの公開
- * （show_unowned_cards と show_unowned_card_details の両方）を許可している場合に
- * だけ実カードを返し、返す列もオーバーレイ表示に必要な6項目に限る。
+ * （show_unowned_cards と名前・画像・説明の3項目、および旧 details）をすべて
+ * 許可している場合にだけ実カードを返し、返す列もオーバーレイ表示に必要な6項目に限る。
  *
  * 回帰テストの対象: 以前は公開設定を見ずに streamerId だけで is_active=true の
  * 全カードを db.select() の全列（drop_rate / max_issuance_count 等を含む）で
@@ -141,7 +141,7 @@ describe('POST /api/gacha/demo: 無認証経路の公開設定と返却列', () 
     }) as ReturnType<typeof createOverlayDemoEvent>)
   })
 
-  it('無認証（ランダム）: streamers.show_unowned_cards / show_unowned_card_details の両方 true を JOIN 条件に含める', async () => {
+  it('無認証（ランダム）: streamers のマスター+3項目+旧details のすべて true を JOIN 条件に含める', async () => {
     const captured = primeDb([FULL_ROW])
 
     await POST(request({ streamerId: 'streamer-1' }))
@@ -149,11 +149,16 @@ describe('POST /api/gacha/demo: 無認証経路の公開設定と返却列', () 
     expect(captured.joins).toBe(1)
     const { sql, params } = renderWhere(captured.where[0])
     expect(sql).toContain('"streamers"."show_unowned_cards" = $')
+    expect(sql).toContain('"streamers"."show_unowned_card_name" = $')
+    expect(sql).toContain('"streamers"."show_unowned_card_image" = $')
+    expect(sql).toContain('"streamers"."show_unowned_card_description" = $')
+    // details は resolver の規則 c（旧アプリの OFF 取りこぼしガード）と同じ理由で
+    // 必須。details=false かつ新3列が全 true の状態を公開しない。
     expect(sql).toContain('"streamers"."show_unowned_card_details" = $')
     expect(sql).toContain('"cards"."is_active" = $')
     expect(sql).toContain('"cards"."streamer_id" = $')
     // 公開設定の比較値は true（false を許す条件ではない）
-    expect(params.filter((p) => p === true)).toHaveLength(3) // is_active + 公開設定2つ
+    expect(params.filter((p) => p === true)).toHaveLength(6) // is_active + 公開設定5つ
   })
 
   it('無認証（cardId 指定）でも同じ公開設定の条件が付く', async () => {
@@ -165,6 +170,9 @@ describe('POST /api/gacha/demo: 無認証経路の公開設定と返却列', () 
     const { sql } = renderWhere(captured.where[0])
     expect(sql).toContain('"cards"."id" = $')
     expect(sql).toContain('"streamers"."show_unowned_cards" = $')
+    expect(sql).toContain('"streamers"."show_unowned_card_name" = $')
+    expect(sql).toContain('"streamers"."show_unowned_card_image" = $')
+    expect(sql).toContain('"streamers"."show_unowned_card_description" = $')
     expect(sql).toContain('"streamers"."show_unowned_card_details" = $')
   })
 
@@ -305,7 +313,12 @@ describe('POST /api/gacha/demo: 無認証経路の公開設定と返却列', () 
       const json = await response.json()
 
       expect(captured.joins).toBeGreaterThan(0)
-      expect(renderWhere(captured.where[0]).sql).toContain('"streamers"."show_unowned_card_details" = $')
+      const { sql } = renderWhere(captured.where[0])
+      expect(sql).toContain('"streamers"."show_unowned_card_details" = $')
+      // 項目別公開の新3列も公開条件に含める（1つでも false なら実カードを返さない）。
+      expect(sql).toContain('"streamers"."show_unowned_card_name" = $')
+      expect(sql).toContain('"streamers"."show_unowned_card_image" = $')
+      expect(sql).toContain('"streamers"."show_unowned_card_description" = $')
       expect(json.card.id).not.toBe('card-1')
       expect(json.card.name).toContain('デモカード')
     })

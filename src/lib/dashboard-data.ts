@@ -2559,6 +2559,14 @@ async function getStreamerByIdPg(streamerId: string): Promise<Streamer | null> {
   try {
     // Issue #738: 無指定 select() は streamers の全列（本PR追加の2列を含む）を
     // 要求する。デプロイ窓の列欠落エラーなら STREAMERS_SAFE_COLUMNS で再試行する。
+    //
+    // Issue #2070 フォローアップ: 全列射影には未所持カードの項目別公開列
+    // (show_unowned_card_name / show_unowned_card_image /
+    // show_unowned_card_description) も含まれるが、STREAMERS_SAFE_COLUMNS の
+    // 再試行側には含まれない（PR1 でデプロイ窓の検知グループにだけ追加した）。
+    // 呼び出し側は resolveUnownedCardVisibility に渡し、欠落時は旧
+    // show_unowned_card_details から fail-closed に導出する。ここで個別に列を
+    // 足すと全列 SELECT の契約が崩れるため、射影は変更しない。
     const rows = await withLiveDirectorySettingsColumnFallback(async (useSafeColumns) =>
       withDbRetry(
         async () => {
