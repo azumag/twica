@@ -10,7 +10,7 @@ import type {
 import jaMessages from '../../../messages/ja.json'
 
 /**
- * 統計ページ「他チャンネル比較」タブ (#642 子C / #743) のコンポーネントテスト。
+ * 統計ページ「他チャネル比較」タブ (#642 子C / #743) のコンポーネントテスト。
  *
  * 匿名性そのものは子B (#742) の DB/contract テストが担保する。ここでは
  * 「UI が contract の情報だけで描画され、上位50%ルールや各状態を設計どおり
@@ -108,7 +108,7 @@ describe('StreamerRanking (#642 子C)', () => {
     vi.useRealTimers()
   })
 
-  it('自分の順位サマリーと匿名ランキングを描画し、他チャンネル識別子を拾わない', async () => {
+  it('自分の順位サマリーと匿名ランキングを描画し、他チャネル識別子を拾わない', async () => {
     // contract 外の識別子を混ぜ、UI がそれらを描画しないことを固定する。
     const payload = response()
     ;(payload as unknown as Record<string, unknown>).SENTINEL_NAME = 'SENTINEL_OTHER_CHANNEL'

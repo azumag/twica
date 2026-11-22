@@ -36,9 +36,12 @@ describe("CardManager form layout", () => {
 
     // ボタン数が増えても折り返せるよう flex-wrap を維持する（issue #719）
     expect(source).toContain('<div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">');
-    // 折り返し時にタイトルが2行目のボタンと中央揃えにならないよう items-start にする
-    expect(source).toContain(
-      'className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"',
-    );
+    const header = source.match(/<div className="([^"]+)">\s*<h2 className="([^"]+)">\{t\("title"\)\}<\/h2>/);
+    // モバイルでは縦並びにし、sm では折り返すボタンとタイトルを上端で揃える。
+    // サイドバーが出る PC 幅では、見出しを音声読み上げ用に残して操作ボタンを右に寄せる。
+    expect(header?.[1].split(/\s+/)).toEqual(expect.arrayContaining([
+      "mb-4", "flex", "flex-col", "gap-3", "sm:flex-row", "sm:items-start", "sm:justify-between", "lg:justify-end",
+    ]));
+    expect(header?.[2].split(/\s+/)).toContain("lg:sr-only");
   });
 });

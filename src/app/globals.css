@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Header and signed-in pages resize together up to the previous 2xl limit.
+ * Tailwind's `container` stepped between fixed widths, moving the sidebar and
+ * content sideways even when the viewport itself changed by only one pixel. */
+@utility dashboard-container {
+  @apply mx-auto w-full max-w-[96rem] px-4;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -28,30 +35,23 @@
    *
    * duration の既定値（3s 等）は inline の animation-duration で上書きされるため、
    * ここでは timing-function（緩急）と方向づけのためだけの目安値。
+   *
+   * fill-mode: 粒子エフェクト9種に `backwards` を指定する。fireworks の後発バーストの
+   * ように正の delay が残る粒子は、遅延中にキーフレームが適用されないと、inline の
+   * opacity 未指定のまま「不透明で静止」して見える。backwards は遅延中に 0%
+   * キーフレーム（= 透明）を適用するため、開始前の置き去りの粒を防げる。
+   * 環境系8種は負の delay（= 常に active）なので現状は効果が無いが、将来 delay を
+   * 正へ戻したときの退行を防ぐため同じ指定で揃えておく。
    */
-  --animate-overlay-effect-sparkle: overlay-effect-sparkle 1.6s ease-in-out infinite;
-  --animate-overlay-effect-confetti: overlay-effect-confetti 3s linear infinite;
-  --animate-overlay-effect-hearts: overlay-effect-hearts 3.4s ease-in infinite;
-  --animate-overlay-effect-fireworks: overlay-effect-fireworks 1.5s cubic-bezier(0.15, 0.6, 0.3, 1) infinite;
-  --animate-overlay-effect-stars: overlay-effect-stars 1.8s ease-in infinite;
-  --animate-overlay-effect-bubbles: overlay-effect-bubbles 4s ease-out infinite;
-  --animate-overlay-effect-petals: overlay-effect-petals 3.8s linear infinite;
-  --animate-overlay-effect-snow: overlay-effect-snow 4.6s linear infinite;
-  --animate-overlay-effect-coins: overlay-effect-coins 2.4s ease-in infinite;
-  --animate-overlay-effect-aura: overlay-effect-aura 4s ease-in-out infinite;
-}
-
-@keyframes overlay-effect-aura {
-  /* 淡い光輪をカード内でゆっくり呼吸させる。距離は粒子サイズに対する割合。 */
-  0%,
-  100% {
-    transform: translateX(calc(var(--fx-sway) * -1)) scale(0.97);
-    opacity: 0.45;
-  }
-  50% {
-    transform: translateX(var(--fx-sway)) scale(1.03);
-    opacity: 0.75;
-  }
+  --animate-overlay-effect-sparkle: overlay-effect-sparkle 1.6s ease-in-out infinite backwards;
+  --animate-overlay-effect-confetti: overlay-effect-confetti 3s linear infinite backwards;
+  --animate-overlay-effect-hearts: overlay-effect-hearts 3.4s linear infinite backwards;
+  --animate-overlay-effect-fireworks: overlay-effect-fireworks 1.5s linear infinite backwards;
+  --animate-overlay-effect-stars: overlay-effect-stars 1.8s ease-in infinite backwards;
+  --animate-overlay-effect-bubbles: overlay-effect-bubbles 4s linear infinite backwards;
+  --animate-overlay-effect-petals: overlay-effect-petals 3.8s linear infinite backwards;
+  --animate-overlay-effect-snow: overlay-effect-snow 4.6s linear infinite backwards;
+  --animate-overlay-effect-coins: overlay-effect-coins 2.4s ease-in infinite backwards;
 }
 
 @keyframes overlay-effect-sparkle {
@@ -105,41 +105,131 @@
 }
 
 @keyframes overlay-effect-hearts {
-  /* ハート: 左右に揺れながら拡縮しつつ上へ浮かび上がる（--fx-rise は正の距離、上方向へ） */
+  /* ハート: 左右に揺れながら拡縮しつつ上へ浮かび上がる（--fx-rise は正の距離、上方向へ）。
+   * 上昇は translateY(-rise*t) の等速。横揺れは sin(2*pi*t) を 16 等分で
+   * サンプルし、linear の区間補間でも折れ線がジグザグにならないようにする。
+   * 以前は ease-in が 0/15/50/80/100% の各区間に個別適用され、区間末尾で
+   * 速度が 0 近くまで落ちていた。 */
   0% {
-    transform: translateY(0) translateX(0) scale(0.5);
+    transform: translateY(0) translateX(0) scale(calc(var(--fx-scale, 1) * 0.5));
     opacity: 0;
   }
-  15% {
+  6.25% {
+    transform: translateY(calc(var(--fx-rise) * -0.0625)) translateX(calc(var(--fx-sway) * 0.382683)) scale(calc(var(--fx-scale, 1) * 0.62));
+    opacity: 0;
+  }
+  12.5% {
+    transform: translateY(calc(var(--fx-rise) * -0.125)) translateX(calc(var(--fx-sway) * 0.707107)) scale(calc(var(--fx-scale, 1) * 0.72));
     opacity: 1;
-    transform: translateY(calc(var(--fx-rise) * -0.15)) translateX(var(--fx-sway)) scale(var(--fx-scale, 1));
+  }
+  18.75% {
+    transform: translateY(calc(var(--fx-rise) * -0.1875)) translateX(calc(var(--fx-sway) * 0.92388)) scale(calc(var(--fx-scale, 1) * 0.81));
+    opacity: 1;
+  }
+  25% {
+    transform: translateY(calc(var(--fx-rise) * -0.25)) translateX(var(--fx-sway)) scale(calc(var(--fx-scale, 1) * 0.88));
+    opacity: 1;
+  }
+  31.25% {
+    transform: translateY(calc(var(--fx-rise) * -0.3125)) translateX(calc(var(--fx-sway) * 0.92388)) scale(calc(var(--fx-scale, 1) * 0.93));
+    opacity: 1;
+  }
+  37.5% {
+    transform: translateY(calc(var(--fx-rise) * -0.375)) translateX(calc(var(--fx-sway) * 0.707107)) scale(calc(var(--fx-scale, 1) * 0.97));
+    opacity: 1;
+  }
+  43.75% {
+    transform: translateY(calc(var(--fx-rise) * -0.4375)) translateX(calc(var(--fx-sway) * 0.382683)) scale(calc(var(--fx-scale, 1) * 1));
+    opacity: 1;
   }
   50% {
-    transform: translateY(calc(var(--fx-rise) * -0.5)) translateX(calc(var(--fx-sway) * -1)) scale(var(--fx-scale, 1));
+    transform: translateY(calc(var(--fx-rise) * -0.5)) translateX(0) scale(calc(var(--fx-scale, 1) * 1.02));
+    opacity: 1;
   }
-  80% {
+  56.25% {
+    transform: translateY(calc(var(--fx-rise) * -0.5625)) translateX(calc(var(--fx-sway) * -0.382683)) scale(calc(var(--fx-scale, 1) * 1.035));
+    opacity: 1;
+  }
+  62.5% {
+    transform: translateY(calc(var(--fx-rise) * -0.625)) translateX(calc(var(--fx-sway) * -0.707107)) scale(calc(var(--fx-scale, 1) * 1.045));
+    opacity: 1;
+  }
+  68.75% {
+    transform: translateY(calc(var(--fx-rise) * -0.6875)) translateX(calc(var(--fx-sway) * -0.92388)) scale(calc(var(--fx-scale, 1) * 1.045));
+    opacity: 1;
+  }
+  75% {
+    transform: translateY(calc(var(--fx-rise) * -0.75)) translateX(calc(var(--fx-sway) * -1)) scale(calc(var(--fx-scale, 1) * 1.03));
+    opacity: 1;
+  }
+  81.25% {
+    transform: translateY(calc(var(--fx-rise) * -0.8125)) translateX(calc(var(--fx-sway) * -0.92388)) scale(calc(var(--fx-scale, 1) * 1));
+    opacity: 1;
+  }
+  87.5% {
+    transform: translateY(calc(var(--fx-rise) * -0.875)) translateX(calc(var(--fx-sway) * -0.707107)) scale(calc(var(--fx-scale, 1) * 0.95));
     opacity: 0.8;
-    transform: translateY(calc(var(--fx-rise) * -0.8)) translateX(var(--fx-sway)) scale(calc(var(--fx-scale, 1) * 0.9));
+  }
+  93.75% {
+    transform: translateY(calc(var(--fx-rise) * -0.9375)) translateX(calc(var(--fx-sway) * -0.382683)) scale(calc(var(--fx-scale, 1) * 0.82));
+    opacity: 0;
   }
   100% {
-    transform: translateY(calc(var(--fx-rise) * -1)) translateX(0) scale(0.55);
+    transform: translateY(calc(var(--fx-rise) * -1)) translateX(0) scale(calc(var(--fx-scale, 1) * 0.5));
     opacity: 0;
   }
 }
 
 @keyframes overlay-effect-fireworks {
-  /* 花火: 放射方向（--fx-dx/--fx-dy）へ飛び散り、後半は重力で少し落ちて消える */
+  /* 花火: 放射方向（--fx-dx/--fx-dy）へ飛び散り、後半は重力で少し落ちて消える。
+   * 放射の進行 p(t)=1-(1-t)^3 を 0/4/8/12/18/25/35/45/60/75/90/100% の
+   * 12 点でサンプルし、重力 60px*t^2 を y に加える（60% で 21.6px、100% で
+   * 60px。変更前の 60% +18px / 100% +60px と同じ見え方に戻す）。timing-function
+   * は linear なので各キーフレーム区間の速度は一定で、区間境界で 0 に落ちない。
+   * opacity は変更前と同じ 0%→12% の立ち上がりと 60%→100% のフェードに戻す。 */
   0% {
     transform: translate(0, 0) scale(0.2);
     opacity: 0;
   }
+  4% {
+    transform: translate(calc(var(--fx-dx) * 0.115264), calc(var(--fx-dy) * 0.115264 + 0.096px)) scale(0.75);
+    opacity: 0.333;
+  }
+  8% {
+    transform: translate(calc(var(--fx-dx) * 0.221312), calc(var(--fx-dy) * 0.221312 + 0.384px)) scale(1);
+    opacity: 0.667;
+  }
   12% {
+    transform: translate(calc(var(--fx-dx) * 0.318528), calc(var(--fx-dy) * 0.318528 + 0.864px)) scale(1);
     opacity: 1;
-    transform: translate(calc(var(--fx-dx) * 0.35), calc(var(--fx-dy) * 0.35)) scale(1);
+  }
+  18% {
+    transform: translate(calc(var(--fx-dx) * 0.448632), calc(var(--fx-dy) * 0.448632 + 1.944px)) scale(1);
+    opacity: 1;
+  }
+  25% {
+    transform: translate(calc(var(--fx-dx) * 0.578125), calc(var(--fx-dy) * 0.578125 + 3.75px)) scale(1);
+    opacity: 1;
+  }
+  35% {
+    transform: translate(calc(var(--fx-dx) * 0.725375), calc(var(--fx-dy) * 0.725375 + 7.35px)) scale(0.98);
+    opacity: 1;
+  }
+  45% {
+    transform: translate(calc(var(--fx-dx) * 0.833625), calc(var(--fx-dy) * 0.833625 + 12.15px)) scale(0.94);
+    opacity: 1;
   }
   60% {
+    transform: translate(calc(var(--fx-dx) * 0.936), calc(var(--fx-dy) * 0.936 + 21.6px)) scale(0.85);
     opacity: 1;
-    transform: translate(calc(var(--fx-dx) * 0.9), calc(var(--fx-dy) * 0.9 + 18px)) scale(0.85);
+  }
+  75% {
+    transform: translate(calc(var(--fx-dx) * 0.984375), calc(var(--fx-dy) * 0.984375 + 33.75px)) scale(0.72);
+    opacity: 0.625;
+  }
+  90% {
+    transform: translate(calc(var(--fx-dx) * 0.999), calc(var(--fx-dy) * 0.999 + 48.6px)) scale(0.5);
+    opacity: 0.25;
   }
   100% {
     transform: translate(var(--fx-dx), calc(var(--fx-dy) + 60px)) scale(0.3);
@@ -166,20 +256,74 @@
 }
 
 @keyframes overlay-effect-bubbles {
-  /* シャボン玉: ゆらゆら（--fx-sway）揺れながら上昇（--fx-rise）してわずかに膨らむ */
+  /* シャボン玉: ゆらゆら（--fx-sway）揺れながら上昇（--fx-rise）してわずかに膨らむ。
+   * 上昇は translateY(-rise*t) の等速。横揺れは sin(2*pi*t) を 16 等分で
+   * サンプルする（2 点の往復を linear で結ぶとジグザグになるため）。
+   * scale は単調増加、opacity は 6.25% までと 93.75% 以降を 0 にして、
+   * 周期の折り返しが透明になるようにする。 */
   0% {
     transform: translateY(0) translateX(0) scale(0.6);
     opacity: 0;
   }
-  15% {
+  6.25% {
+    transform: translateY(calc(var(--fx-rise) * -0.0625)) translateX(calc(var(--fx-sway) * 0.382683)) scale(0.66);
+    opacity: 0;
+  }
+  12.5% {
+    transform: translateY(calc(var(--fx-rise) * -0.125)) translateX(calc(var(--fx-sway) * 0.707107)) scale(0.71);
+    opacity: 0.9;
+  }
+  18.75% {
+    transform: translateY(calc(var(--fx-rise) * -0.1875)) translateX(calc(var(--fx-sway) * 0.92388)) scale(0.76);
+    opacity: 0.9;
+  }
+  25% {
+    transform: translateY(calc(var(--fx-rise) * -0.25)) translateX(var(--fx-sway)) scale(0.81);
+    opacity: 0.9;
+  }
+  31.25% {
+    transform: translateY(calc(var(--fx-rise) * -0.3125)) translateX(calc(var(--fx-sway) * 0.92388)) scale(0.85);
+    opacity: 0.9;
+  }
+  37.5% {
+    transform: translateY(calc(var(--fx-rise) * -0.375)) translateX(calc(var(--fx-sway) * 0.707107)) scale(0.89);
+    opacity: 0.9;
+  }
+  43.75% {
+    transform: translateY(calc(var(--fx-rise) * -0.4375)) translateX(calc(var(--fx-sway) * 0.382683)) scale(0.925);
     opacity: 0.9;
   }
   50% {
-    transform: translateY(calc(var(--fx-rise) * -0.5)) translateX(var(--fx-sway)) scale(1);
-  }
-  85% {
+    transform: translateY(calc(var(--fx-rise) * -0.5)) translateX(0) scale(0.955);
     opacity: 0.9;
-    transform: translateY(calc(var(--fx-rise) * -0.85)) translateX(calc(var(--fx-sway) * -1)) scale(1.05);
+  }
+  56.25% {
+    transform: translateY(calc(var(--fx-rise) * -0.5625)) translateX(calc(var(--fx-sway) * -0.382683)) scale(0.98);
+    opacity: 0.9;
+  }
+  62.5% {
+    transform: translateY(calc(var(--fx-rise) * -0.625)) translateX(calc(var(--fx-sway) * -0.707107)) scale(1);
+    opacity: 0.9;
+  }
+  68.75% {
+    transform: translateY(calc(var(--fx-rise) * -0.6875)) translateX(calc(var(--fx-sway) * -0.92388)) scale(1.02);
+    opacity: 0.9;
+  }
+  75% {
+    transform: translateY(calc(var(--fx-rise) * -0.75)) translateX(calc(var(--fx-sway) * -1)) scale(1.04);
+    opacity: 0.9;
+  }
+  81.25% {
+    transform: translateY(calc(var(--fx-rise) * -0.8125)) translateX(calc(var(--fx-sway) * -0.92388)) scale(1.06);
+    opacity: 0.9;
+  }
+  87.5% {
+    transform: translateY(calc(var(--fx-rise) * -0.875)) translateX(calc(var(--fx-sway) * -0.707107)) scale(1.08);
+    opacity: 0.9;
+  }
+  93.75% {
+    transform: translateY(calc(var(--fx-rise) * -0.9375)) translateX(calc(var(--fx-sway) * -0.382683)) scale(1.095);
+    opacity: 0;
   }
   100% {
     transform: translateY(calc(var(--fx-rise) * -1)) translateX(0) scale(1.1);
@@ -249,27 +393,43 @@
 
 /*
  * OBS 等でアニメーション抑制設定（prefers-reduced-motion）が有効な環境では
- * 目に負担のある高速演出を止め、静かにフェードのみ行う（アクセシビリティ配慮）。
+ * 演出の「動き」を止め、静止した粒子をそのまま表示する（アクセシビリティ配慮）。
+ *
+ * reduced-motion の趣旨はコンテンツの非表示ではなく動きの停止のため、粒子を
+ * 消すのではなく各スタイルのキーフレームが取るピークの opacity で固定する。
+ * 以前は全スタイルを 2 秒同期フェード（overlay-effect-reduced-fade）で上書き
+ * していたが、周期の端で全粒子が同時に透明になる ≒ 約2秒周期の明滅という
+ * 動きであり、reduced-motion 環境でこそ排除されるべき性質だった。
+ * オーラは Canvas 側で静止フレームを描画する。
  */
 @media (prefers-reduced-motion: reduce) {
-  [class*="animate-overlay-effect-"] {
-    animation: overlay-effect-reduced-fade 2s ease-in-out infinite !important;
-  }
-  /* 大きな光輪の拡縮・ゆらぎは止め、カード内の淡い光だけを残す。 */
-  .animate-overlay-effect-aura {
+  /*
+   * ピーク opacity が 1 のスタイル。静止時は出現位置（inline の left/top）に
+   * そのまま残る。fireworks は「破裂途中で静止した火花」になるが、静的な点
+   * として見えるだけなので他スタイルと扱いを統一する。
+   */
+  .animate-overlay-effect-sparkle,
+  .animate-overlay-effect-confetti,
+  .animate-overlay-effect-hearts,
+  .animate-overlay-effect-fireworks,
+  .animate-overlay-effect-stars,
+  .animate-overlay-effect-petals,
+  .animate-overlay-effect-coins {
     animation: none !important;
-    transform: none;
-    opacity: 0.55;
+    opacity: 1;
   }
-}
-
-@keyframes overlay-effect-reduced-fade {
-  0%,
-  100% {
-    opacity: 0;
-  }
-  50% {
+  /* シャボン玉は半透明の演出なのでピーク値の 0.9 に固定する */
+  .animate-overlay-effect-bubbles {
+    animation: none !important;
     opacity: 0.9;
+  }
+  /*
+   * 雪は粒子ごとの透明度を --fx-opacity で持つため、静止時もそれを優先する
+   * （キーフレーム側のピーク値と同じ var() 参照で揃える）。
+   */
+  .animate-overlay-effect-snow {
+    animation: none !important;
+    opacity: var(--fx-opacity, 0.9);
   }
 }
 

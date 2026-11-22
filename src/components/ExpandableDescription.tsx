@@ -164,7 +164,10 @@ export default function ExpandableDescription({
           className="text-xs text-purple-400 hover:text-purple-300 mt-1 flex items-center gap-1"
         >
           <span aria-hidden="true">{isExpanded ? "▲" : "▼"}</span>
-          <span>{tCommon(isExpanded ? "collapse" : "expand")}</span>
+          {/* 「開く」「閉じる」は1行で読ませたい短いラベル。サイドバー化（#2082）で
+              説明欄が狭くなっても、flex の縮小で1文字ずつ縦積みにならないよう
+              折り返しを禁止し、縮小もさせない。 */}
+          <span className="shrink-0 whitespace-nowrap">{tCommon(isExpanded ? "collapse" : "expand")}</span>
         </button>
       )}
     </div>

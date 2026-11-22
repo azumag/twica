@@ -104,12 +104,18 @@ vi.mock('@/components/TradeSettings', () => ({
     streamerId: string
     currentTradeEnabled: boolean
     currentCrossChannelTradeEnabled: boolean
+    currentShowUnownedCards: boolean
+    currentShowUnownedCardDetails: boolean
+    currentTradeUnownedCardNamesVisible: boolean
   }) => (
     <div
       data-testid="trade-probe"
       data-streamer-id={props.streamerId}
       data-trade={String(props.currentTradeEnabled)}
       data-cross={String(props.currentCrossChannelTradeEnabled)}
+      data-show-unowned={String(props.currentShowUnownedCards)}
+      data-show-details={String(props.currentShowUnownedCardDetails)}
+      data-unowned-names={String(props.currentTradeUnownedCardNamesVisible)}
     />
   ),
 }))
@@ -120,6 +126,7 @@ const SETTINGS = {
   showUnownedCardDetails: false,
   tradeEnabled: true,
   crossChannelTradeEnabled: false,
+  tradeUnownedCardNamesVisible: true,
   packNames: ['weapons', 'armors'],
   defaultPackName: '基本パック',
   albumGridSizes: { __all__: 6, weapons: 9 },
@@ -173,6 +180,11 @@ describe('AccountSettingsPage collection sharing section', () => {
     expect(trade).toHaveAttribute('data-streamer-id', 'streamer-1')
     expect(trade).toHaveAttribute('data-trade', 'true')
     expect(trade).toHaveAttribute('data-cross', 'false')
+    // Issue #2070: 新トグルの disabled 理由を判定するため、公開設定の現在値と
+    // トレード限定の新設定値を同じ TradeSettings へ渡す。
+    expect(trade).toHaveAttribute('data-show-unowned', 'true')
+    expect(trade).toHaveAttribute('data-show-details', 'false')
+    expect(trade).toHaveAttribute('data-unowned-names', 'true')
 
     // #1765 フォローアップ: アルバムのパック別既定も同じ初期値を受け取る
     const album = screen.getByTestId('album-probe')
@@ -225,6 +237,7 @@ describe('AccountSettingsPage collection sharing section', () => {
 
     expect(screen.getByTestId('trade-probe')).toHaveAttribute('data-trade', 'false')
     expect(screen.getByTestId('trade-probe')).toHaveAttribute('data-cross', 'false')
+    expect(screen.getByTestId('trade-probe')).toHaveAttribute('data-unowned-names', 'true')
   })
 
   it('CARD_TRADE_UI_VISIBLE=false ならトレード設定だけを出さず、他の公開設定は残す (#715)', async () => {

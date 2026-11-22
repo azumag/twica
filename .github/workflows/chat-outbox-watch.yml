@@ -180,7 +180,7 @@ jobs:
       #     sweep の対象外のため flag ON では誰も起こせず永久滞留する。
       #     手動での確認・dead 化判断が必要。
       #   - pending_far_future_rows / gate_far_future_rows: 30 分を超えて未来に
-      #     予約された行・gate。channel gate の詰まり（同一チャンネルへの大量
+      #     予約された行・gate。channel gate の詰まり（同一チャネルへの大量
       #     積みなど）で due に到達できない行があると増える。アラート条件からは
       #     外し、滞留原因の切分けのための参考値として常時出力する。
       #

@@ -9,10 +9,27 @@ import {
   normalizeOverlayEffectStyle,
   isOverlayEffectStyle,
   generateOverlayEffectParticles,
+  resolveOverlayAuraColors,
+  OVERLAY_EFFECT_OVERFLOW_PX,
   resolveEffectForRarity,
   serializeRarityEffectMap,
   parseRarityEffectMap,
 } from '@/lib/overlay-effect'
+
+/**
+ * 「表示開始時点で周期の途中にいる」負の delay を使う環境系スタイル。
+ * fireworks は火花の開始時刻をバースト単位で揃える。
+ */
+const PHASE_ALIGNED_STYLES = [
+  'sparkle',
+  'confetti',
+  'hearts',
+  'stars',
+  'bubbles',
+  'petals',
+  'snow',
+  'coins',
+] as const
 
 describe('overlay-effect: normalizeOverlayEffectStyle', () => {
   it('既知のスタイル文字列はそのまま返す', () => {
@@ -52,10 +69,10 @@ describe('overlay-effect: normalizeOverlayEffectStyle', () => {
 })
 
 describe('overlay-effect: OVERLAY_EFFECT_PARTICLE_CONFIG', () => {
-  it('"none" を除く全スタイル分の設定が存在する', () => {
-    for (const style of ANIMATED_OVERLAY_EFFECT_STYLES) {
-      expect(OVERLAY_EFFECT_PARTICLE_CONFIG[style]).toBeDefined()
-    }
+  it('CSS でアニメーションする粒子スタイルに対応する設定を持つ', () => {
+    expect(new Set(Object.keys(OVERLAY_EFFECT_PARTICLE_CONFIG))).toEqual(
+      new Set(ANIMATED_OVERLAY_EFFECT_STYLES),
+    )
   })
 
   it('各スタイルは固有のアニメーションクラス（overlay-effect-<style>）を持ち、互いに重複しない', () => {
@@ -87,15 +104,37 @@ describe('overlay-effect: OVERLAY_EFFECT_PARTICLE_CONFIG', () => {
       expect(config.spawnLeftPercentRange[0]).toBeLessThanOrEqual(config.spawnLeftPercentRange[1])
       expect(config.spawnTopPercentRange[0]).toBeLessThanOrEqual(config.spawnTopPercentRange[1])
       expect(config.durationSecRange[0]).toBeLessThanOrEqual(config.durationSecRange[1])
-      expect(config.delaySecRange[0]).toBeLessThanOrEqual(config.delaySecRange[1])
+      // delaySecRange は「正の delay を使うスタイル」だけが持つ任意項目
+      if (config.delaySecRange) {
+        expect(config.delaySecRange[0]).toBeLessThanOrEqual(config.delaySecRange[1])
+      }
       expect(config.particleCount).toBeGreaterThan(0)
     }
+  })
+
+  it('環境系8種は startAtRandomPhase、fireworks は delaySecRange を持つ', () => {
+    for (const style of PHASE_ALIGNED_STYLES) {
+      const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
+      expect(config.startAtRandomPhase).toBe(true)
+      // 負の delay を算出するため、正の delay 範囲は持たない（設定の二重管理を防ぐ）
+      expect(config.delaySecRange).toBeUndefined()
+    }
+    const fireworks = OVERLAY_EFFECT_PARTICLE_CONFIG.fireworks
+    expect(fireworks.startAtRandomPhase).toBeFalsy()
+    expect(fireworks.delaySecRange).toBeDefined()
+  })
+
+  it('はみ出し幅 OVERLAY_EFFECT_OVERFLOW_PX は 800x600 の上下余白 76px を超えない', () => {
+    // Issue #2088 (2): 48〜64 を目安とし、800x600 での上下余白（実測 76px）以内に収める。
+    // OBS 表示領域から粒子が消えて見えなくなる退行を防ぐための上限を固定する。
+    expect(OVERLAY_EFFECT_OVERFLOW_PX).toBeGreaterThanOrEqual(48)
+    expect(OVERLAY_EFFECT_OVERFLOW_PX).toBeLessThanOrEqual(76)
   })
 })
 
 describe('overlay-effect: generateOverlayEffectParticles', () => {
-  it('"none" は空配列を返す（演出なし）', () => {
-    expect(generateOverlayEffectParticles('none')).toEqual([])
+  it.each(['none', 'aura'] as const)('%s では粒子を生成しない', (style) => {
+    expect(generateOverlayEffectParticles(style)).toEqual([])
   })
 
   it('各スタイルの particleCount 個ちょうどを返す', () => {
@@ -105,7 +144,7 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
     }
   })
 
-  it('各パーティクルのleft/top/animationDelay/animationDurationがスタイルの設定範囲内に収まる', () => {
+  it('各パーティクルの left/top/animationDuration がスタイルの設定範囲内に収まる', () => {
     for (const style of ANIMATED_OVERLAY_EFFECT_STYLES) {
       const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style]
       const particles = generateOverlayEffectParticles(style)
@@ -113,23 +152,94 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
       for (const particle of particles) {
         const left = Number.parseFloat(particle.left)
         const top = Number.parseFloat(particle.top)
-        const delay = Number.parseFloat(particle.animationDelay)
         const duration = Number.parseFloat(particle.animationDuration)
 
         expect(particle.left.endsWith('%')).toBe(true)
         expect(particle.top.endsWith('%')).toBe(true)
-        expect(particle.animationDelay.endsWith('s')).toBe(true)
         expect(particle.animationDuration.endsWith('s')).toBe(true)
 
         expect(left).toBeGreaterThanOrEqual(config.spawnLeftPercentRange[0])
         expect(left).toBeLessThanOrEqual(config.spawnLeftPercentRange[1])
         expect(top).toBeGreaterThanOrEqual(config.spawnTopPercentRange[0])
         expect(top).toBeLessThanOrEqual(config.spawnTopPercentRange[1])
-        expect(delay).toBeGreaterThanOrEqual(config.delaySecRange[0])
-        expect(delay).toBeLessThanOrEqual(config.delaySecRange[1])
         expect(duration).toBeGreaterThanOrEqual(config.durationSecRange[0])
         expect(duration).toBeLessThanOrEqual(config.durationSecRange[1])
       }
+    }
+  })
+
+  it('環境系8種は delay が必ず [-duration, 0] に入る（表示開始時点で周期の途中）', () => {
+    for (const style of PHASE_ALIGNED_STYLES) {
+      const particles = generateOverlayEffectParticles(style)
+      expect(particles.length).toBeGreaterThan(0)
+
+      for (const particle of particles) {
+        const delay = Number.parseFloat(particle.animationDelay)
+        const duration = Number.parseFloat(particle.animationDuration)
+
+        expect(particle.animationDelay.endsWith('s')).toBe(true)
+        expect(duration).toBeGreaterThan(0)
+        // 負の delay。0 は「周期の先頭」なので許容するが、正にはしない。
+        expect(delay).toBeLessThanOrEqual(0)
+        // 絶対値が 1 周期を超えると 2 周目に入り、開始位相の意図が崩れる
+        expect(delay).toBeGreaterThanOrEqual(-duration)
+      }
+
+      // 全粒子が同じ位相だと同期して見えるため、位相がばらけていることも確認する
+      const uniqueDelays = new Set(particles.map((p) => p.animationDelay))
+      expect(uniqueDelays.size).toBeGreaterThan(1)
+    }
+  })
+
+  it('fireworks の delay は宣言した delaySecRange に入る', () => {
+    const range = OVERLAY_EFFECT_PARTICLE_CONFIG.fireworks.delaySecRange
+    if (!range) throw new Error('fireworks の delaySecRange が未設定')
+    const [minDelay, maxDelay] = range
+    for (const particle of generateOverlayEffectParticles('fireworks')) {
+      const delay = Number.parseFloat(particle.animationDelay)
+      expect(particle.animationDelay.endsWith('s')).toBe(true)
+      expect(delay).toBeGreaterThanOrEqual(minDelay)
+      expect(delay).toBeLessThanOrEqual(maxDelay)
+    }
+  })
+
+  it('fireworks の火花はバースト内で delay と duration を共有する', () => {
+    const particles = generateOverlayEffectParticles('fireworks')
+    const sparksPerBurst = 12
+    const bursts = new Map<number, { delay: string; duration: string }[]>()
+    for (let index = 0; index < particles.length; index += 1) {
+      const burstIndex = Math.floor(index / sparksPerBurst)
+      const entry = {
+        delay: particles[index].animationDelay,
+        duration: particles[index].animationDuration,
+      }
+      const list = bursts.get(burstIndex)
+      if (list) list.push(entry)
+      else bursts.set(burstIndex, [entry])
+    }
+
+    expect(bursts.size).toBe(4)
+    for (const sparks of bursts.values()) {
+      expect(sparks).toHaveLength(sparksPerBurst)
+      expect(new Set(sparks.map((s) => s.delay)).size).toBe(1)
+      expect(new Set(sparks.map((s) => s.duration)).size).toBe(1)
+    }
+
+    // バースト間では開始時刻がずれる（全バーストが同時に破裂しない）
+    const burstDelays = [...bursts.values()].map((sparks) => Number.parseFloat(sparks[0].delay))
+    expect(new Set(burstDelays).size).toBe(bursts.size)
+    const burstDurations = [...bursts.values()].map((sparks) => Number.parseFloat(sparks[0].duration))
+    // 周期は全バーストで共通。バーストごとに変えると位相がずれ、全バーストが
+    // 同時に暗転して火花が消える時間帯が周期的に生まれる（実測で確認済み）。
+    expect(new Set(burstDurations).size).toBe(1)
+    // 開始時刻は周期をバースト数で等分した間隔（暗い区間 12% より広い）で並ぶ。
+    // これにより「少なくとも1バーストは明るい」状態が保たれる。
+    const period = burstDurations[0]
+    expect(period).toBeGreaterThan(0)
+    for (let index = 1; index < burstDelays.length; index += 1) {
+      expect(burstDelays[index] - burstDelays[index - 1]).toBeCloseTo(period / bursts.size, 2)
+      // 1バーストの暗転は周期の約12%。間隔がそれより広いことを保証する
+      expect(burstDelays[index] - burstDelays[index - 1]).toBeGreaterThan(period * 0.12)
     }
   })
 
@@ -162,17 +272,6 @@ describe('overlay-effect: generateOverlayEffectParticles', () => {
     const particles = generateOverlayEffectParticles('hearts')
     for (const particle of particles) {
       expect(particle.content).toBe('♥')
-    }
-  })
-
-  it('aura は少数の相対サイズ光輪を生成し、縮小表示でもカードの大きさに追従する', () => {
-    const particles = generateOverlayEffectParticles('aura')
-    expect(particles).toHaveLength(3)
-    for (const particle of particles) {
-      expect(particle.content).toBe('')
-      expect(particle.visualStyle.width).toMatch(/^\d+(\.\d+)?%$/)
-      expect(particle.visualStyle.height).toMatch(/^\d+(\.\d+)?%$/)
-      expect(particle.visualStyle.borderRadius).toBe('50%')
     }
   })
 
@@ -259,5 +358,44 @@ describe('overlay-effect: レアリティ別マップ', () => {
     // 手書きする場合も同様にエンコードすれば区切り文字を含むカスタム
     // レアリティ名を安全に指定できることを確認する
     expect(parseRarityEffectMap('boss%2Crare:fireworks', null)).toEqual({ 'boss,rare': 'fireworks' })
+  })
+})
+
+describe('overlay-effect: resolveOverlayAuraColors（縁の炎の色解決）', () => {
+  it('ビルトインのグラデーションクラスを枠と同じ HEX へ解決する', () => {
+    // legendary の枠と同じ色（tailwind-palette の yellow-400 / orange-500）
+    expect(resolveOverlayAuraColors('from-yellow-400 to-orange-500', {})).toEqual([
+      '#fdc700',
+      '#ff6900',
+    ])
+    // 未設定カスタムレアリティ等の既定枠（gray-400 / gray-600）も同じ対応表で引く
+    expect(resolveOverlayAuraColors('from-gray-400 to-gray-600', {})).toEqual([
+      '#99a1af',
+      '#4a5565',
+    ])
+  })
+
+  it('カスタムレアリティ色（--rarity-gradient-* 変数）をプリセットより優先する', () => {
+    const styleVars = {
+      '--rarity-gradient-from': '#12ab34',
+      '--rarity-gradient-to': '#cd56ef',
+    }
+    // var() 参照クラス（カスタム色あり）でもプリセットクラスでも同じ変数値を使う
+    expect(
+      resolveOverlayAuraColors(
+        'from-[color:var(--rarity-gradient-from)] to-[color:var(--rarity-gradient-to)]',
+        styleVars,
+      ),
+    ).toEqual(['#12ab34', '#cd56ef'])
+    expect(resolveOverlayAuraColors('from-yellow-400 to-orange-500', styleVars)).toEqual([
+      '#12ab34',
+      '#cd56ef',
+    ])
+  })
+
+  it('解決できない入力はフォールバック色に倒す（エラーにしない）', () => {
+    const [from, to] = resolveOverlayAuraColors('not-a-gradient', null)
+    expect(from).toMatch(/^#[0-9a-f]{6}$/)
+    expect(to).toMatch(/^#[0-9a-f]{6}$/)
   })
 })

@@ -19,7 +19,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 /**
  * GET /api/trades/auctions?streamerId=&scope=in_channel|cross_channel&page=N
@@ -36,8 +36,10 @@ export async function GET(request: NextRequest) {
     if (limited) return limited;
 
     const { searchParams } = request.nextUrl;
-    const streamerId = searchParams.get("streamerId") ?? "";
-    if (!isCanonicalUuid(streamerId)) {
+    // #2061: normalize to the DB's lowercase spelling so the SQL argument and
+    // the service-side string comparisons see the same value.
+    const streamerId = normalizeCanonicalUuid(searchParams.get("streamerId") ?? "");
+    if (!streamerId) {
       return tradeErrorResponse("INVALID_REQUEST", 400);
     }
     const rawScope = searchParams.get("scope") ?? "in_channel";
@@ -83,12 +85,17 @@ export async function POST(request: NextRequest) {
     const parsed = await readTradeJsonBody(request);
     if (!parsed.ok) return parsed.response;
     const { body } = parsed;
-    const offeredUserCardId =
-      typeof body.offeredUserCardId === "string" ? body.offeredUserCardId : "";
-    const requestId = typeof body.requestId === "string" ? body.requestId : "";
+    // #2061: normalize client UUIDs (copy id / idempotency key) at the
+    // boundary; the service and DB use the lowercase form.
+    const offeredUserCardId = normalizeCanonicalUuid(
+      typeof body.offeredUserCardId === "string" ? body.offeredUserCardId : "",
+    );
+    const requestId = normalizeCanonicalUuid(
+      typeof body.requestId === "string" ? body.requestId : "",
+    );
     if (
-      !isCanonicalUuid(offeredUserCardId)
-      || !isCanonicalUuid(requestId)
+      !offeredUserCardId
+      || !requestId
       || !isDurationHours(body.durationHours)
     ) {
       return tradeErrorResponse("INVALID_REQUEST", 400);

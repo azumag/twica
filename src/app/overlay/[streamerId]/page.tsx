@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProp
 import { flushSync } from "react-dom";
 import { useParams } from "next/navigation";
 import Image from "next/image";
+import { OverlayAura } from "@/components/OverlayAura";
 import type { Card } from "@/types/database";
 import { logger } from "@/lib/logger";
 import {
@@ -21,8 +22,10 @@ import {
   parseRarityEffectMap,
   resolveEffectForRarity,
   generateOverlayEffectParticles,
+  resolveOverlayAuraColors,
   DEFAULT_RARITY_EFFECT_MAP,
   OVERLAY_EFFECT_PARTICLE_CONFIG,
+  OVERLAY_EFFECT_OVERFLOW_PX,
 } from "@/lib/overlay-effect";
 import {
   getRarityStylePresentation,
@@ -2143,6 +2146,18 @@ export default function OverlayPage() {
     }
   }, [enqueueResult, streamerId]);
 
+  // Issue #2065: triggerDemoはenqueueResult経由でsoundSettings.soundRulesを
+  // 依存に持つため、効果音設定のfetch解決（devのStrictModeでは同fetchが2回走り
+  // 2回解決する）ごとに再生成される。デモ起動effectがtriggerDemo自体を依存に
+  // 含めると、タイマー発火後に来た再生成でもeffectが再実行されて追加の
+  // demo POSTが発火していた（観測: 2〜3回）。OverlayPreview.tsxの同名refと
+  // 同じく、最新版をrefで参照して起動effect自体はstreamerId変更時のみ
+  // 再スケジュールする。
+  const triggerDemoRef = useRef(triggerDemo);
+  useEffect(() => {
+    triggerDemoRef.current = triggerDemo;
+  }, [triggerDemo]);
+
   // Check URL for demo param and optional cardId
   // URLパラメータでdemo=trueの場合にデモを実行、cardIdが指定されていればそのカードを表示
   useEffect(() => {
@@ -2151,11 +2166,13 @@ export default function OverlayPage() {
       // cardIdパラメータが指定されていれば特定のカードを表示
       const cardId = urlParams.get("cardId") || undefined;
       const timeoutId = setTimeout(() => {
-        triggerDemo(cardId);
+        // triggerDemoを依存に含めずref経由で呼ぶ（再生成によるデモ再発火を防ぐ）
+        void triggerDemoRef.current(cardId);
       }, 500);
       return () => clearTimeout(timeoutId);
     }
-  }, [triggerDemo]);
+    // streamerId変更時だけ1回だけ再スケジュールする（callbackの再生成では走らせない）
+  }, [streamerId]);
 
   // Issue #638(回帰): レガシーミラー(soundEnabled && soundUrl)を「効果音が
   // 設定されているか」の判定に使うと、レアリティ別・報酬別ルールしか
@@ -2229,18 +2246,21 @@ export default function OverlayPage() {
     label: getRarityDisplayInfo(result.card.rarity).label,
     color: rarityStyle.colorClass,
   };
+  // 炎の色はカスタム色を含めたカード枠の2色を使う。色の解決は炎の表示時だけ行う。
+  const auraColors = activeEffectStyle === "aura"
+    ? resolveOverlayAuraColors(rarityColor, rarityStyleVars as unknown as Record<string, unknown>)
+    : null;
+
+  const renderAura = (cornerRadius: number) => auraColors && (
+    <OverlayAura colorFrom={auraColors[0]} colorTo={auraColors[1]} cornerRadius={cornerRadius} />
+  );
 
   // 画像のみ表示モードかどうかを判定
   // imageOnlyが有効、またはautoPortraitが有効で縦長画像の場合
   const shouldShowImageOnly = options.imageOnly || (options.autoPortrait && isPortraitImage);
 
-  // エフェクトを表示するかどうか。
-  // レアリティ別に解決したスタイル（activeEffectStyle）が "none" 以外で、
-  // かつパーティクルが生成されている場合のみ描画する。
-  const shouldShowEffects = activeEffectStyle !== "none" && effectParticles.length > 0;
-
-  const renderOverlayEffects = () => {
-    if (!shouldShowEffects) {
+  const renderOverlayParticles = () => {
+    if (activeEffectStyle === "none" || activeEffectStyle === "aura" || effectParticles.length === 0) {
       return null;
     }
 
@@ -2252,9 +2272,12 @@ export default function OverlayPage() {
     const config = OVERLAY_EFFECT_PARTICLE_CONFIG[activeEffectStyle];
     const animationClassName = config.animationClassName;
 
+    // カードより広い箱でクリップし、z-20で画像と代替表示（z-10）の前に重ねる。
+    // 枠外までの粒子がカードと一緒にフェード・消去されるよう、カードの子要素に置く。
     return (
       <div
-        className="pointer-events-none absolute inset-0 overflow-hidden"
+        className="pointer-events-none absolute z-20 overflow-hidden"
+        style={{ inset: `-${OVERLAY_EFFECT_OVERFLOW_PX}px` }}
         // スクリーンリーダーには無意味な装飾なので非読み上げに
         aria-hidden="true"
       >
@@ -2283,6 +2306,9 @@ export default function OverlayPage() {
   const shouldUseSmallMode = options.smallMode && isSmallImage;
   const cardSizeClass = shouldUseSmallMode ? "w-48" : "w-80";
   const imageOnlySizeClass = shouldUseSmallMode ? "max-w-[192px] max-h-[268px]" : "max-w-[320px] max-h-[448px]";
+  const imageOnlyFallbackClass = shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80";
+  // 炎が画像の外まで届いても、縦長画像の付帯情報は炎の手前で読めるようにする。
+  const portraitInfoLayer = auraColors ? "relative z-10 " : "";
   const showImageFallback = imageFallbackDisplayInstanceId === result.displayInstanceId;
 
   const renderImageFallback = (sizeClassName: string, overlay = false) => (
@@ -2315,10 +2341,11 @@ export default function OverlayPage() {
           // Image only mode: shows just the image without card frame
           // autoPortraitの場合は付帯情報オプションで追加情報を表示可能
           <div className="relative flex flex-col items-center">
+            {renderOverlayParticles()}
             {/* ユーザー名（画像の上、オプションで表示） */}
             {/* Username above image (optional) */}
             {options.autoPortrait && isPortraitImage && options.portraitShowUsername && (
-              <div className="mb-2 px-4 py-1 rounded-lg bg-gray-800/90 text-center">
+              <div className={`${portraitInfoLayer}mb-2 px-4 py-1 rounded-lg bg-gray-800/90 text-center`}>
                 <span className={`text-gray-300 ${shouldUseSmallMode ? "text-xs" : "text-sm"}`}>
                   {result.userTwitchUsername} が引いたカード
                 </span>
@@ -2337,27 +2364,34 @@ export default function OverlayPage() {
                 `priority`が付随して出すpreloadリンクの先読み効果が無く、
                 長時間開きっぱなしのOBSページのheadへ不要なリンクを溜める
                 だけになるため。 */}
-            {result.card.image_url ? (
+            {result.card.image_url || auraColors ? (
               <div className="relative">
-                <Image
-                  src={result.card.image_url}
-                  alt={result.card.name}
-                  width={shouldUseSmallMode ? 192 : 320}
-                  height={shouldUseSmallMode ? 268 : 448}
-                  className={`object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
-                  unoptimized
-                  loading="eager"
-                />
-                {showImageFallback && renderImageFallback("h-full w-full", true)}
+                {/* 画像ラッパーの寸法を使い、上下の付帯情報を炎で囲わない。
+                    画像側も relative にして、DOM 順で炎の手前に描画する。 */}
+                {renderAura(8)}
+                {result.card.image_url ? (
+                  <>
+                    <Image
+                      src={result.card.image_url}
+                      alt={result.card.name}
+                      width={shouldUseSmallMode ? 192 : 320}
+                      height={shouldUseSmallMode ? 268 : 448}
+                      className={`${auraColors ? "relative " : ""}object-contain ${imageOnlySizeClass} rounded-lg shadow-2xl`}
+                      unoptimized
+                      loading="eager"
+                    />
+                    {showImageFallback && renderImageFallback("h-full w-full", true)}
+                  </>
+                ) : renderImageFallback(`relative ${imageOnlyFallbackClass}`)}
               </div>
-            ) : renderImageFallback(shouldUseSmallMode ? "w-48 h-48" : "w-80 h-80")}
+            ) : renderImageFallback(imageOnlyFallbackClass)}
 
             {/* 付帯情報（画像の下、オプションで表示） */}
             {/* Info section below image (optional, for autoPortrait mode) */}
             {options.autoPortrait && isPortraitImage && (
               options.portraitShowName || options.portraitShowRarity || options.portraitShowDescription
             ) && (
-              <div className={`mt-2 px-4 py-2 rounded-lg bg-gray-800/90 ${shouldUseSmallMode ? "max-w-[192px]" : "max-w-[320px]"}`}>
+              <div className={`${portraitInfoLayer}mt-2 px-4 py-2 rounded-lg bg-gray-800/90 ${shouldUseSmallMode ? "max-w-[192px]" : "max-w-[320px]"}`}>
                 {/* カード名とレアリティ */}
                 {(options.portraitShowName || options.portraitShowRarity) && (
                   <div className="flex items-center justify-center gap-2 flex-wrap">
@@ -2383,13 +2417,14 @@ export default function OverlayPage() {
                 )}
               </div>
             )}
-
-            {renderOverlayEffects()}
           </div>
         ) : (
           // 通常のカード表示モード
           // Normal card display mode with frame and text
           <>
+            {renderOverlayParticles()}
+            {/* 枠と同じ角丸を使い、DOM 順で枠の背面から炎を描く。 */}
+            {renderAura(16)}
             {/* Card Container - matches Collection style */}
             <div
               className={`relative ${cardSizeClass} overflow-hidden rounded-2xl bg-gradient-to-br ${rarityColor} p-1 shadow-2xl ${rarityGlow}`}
@@ -2448,8 +2483,6 @@ export default function OverlayPage() {
                 )}
               </div>
             </div>
-
-            {renderOverlayEffects()}
           </>
         )}
       </div>

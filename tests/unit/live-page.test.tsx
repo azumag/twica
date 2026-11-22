@@ -75,6 +75,17 @@ vi.mock("@/components/DashboardNav", () => ({
     </nav>
   ),
 }));
+// LivePage now renders the nav inside DashboardShell. The shell owns client-only
+// hooks (useTranslations / usePathname) that have no provider in this server
+// component test, so pass its two slots through in the same order.
+vi.mock("@/components/DashboardShell", () => ({
+  default: ({ nav, children }: { nav: React.ReactNode; children: React.ReactNode }) => (
+    <div>
+      {nav}
+      {children}
+    </div>
+  ),
+}));
 vi.mock("@/components/PublicFooter", () => ({
   default: () => <footer>public footer</footer>,
 }));
@@ -142,7 +153,7 @@ describe("LivePage", () => {
     expect(mocks.getLiveDirectoryRankings).toHaveBeenCalledOnce();
     expect(
       screen.getByRole("heading", { name: "TwiCaチャネルとランキング" }),
-    ).toBeInTheDocument();
+    ).not.toHaveClass("lg:sr-only");
     expect(screen.getByTestId("live-directory")).toHaveTextContent(
       "entries:1;rankings:1/2",
     );
@@ -177,6 +188,7 @@ describe("LivePage", () => {
     const nav = screen.getByTestId("dashboard-nav");
     expect(nav).toHaveAttribute("data-streamer", "true");
     expect(nav).toHaveAttribute("data-supporter", "true");
+    expect(screen.getByRole("heading", { name: "TwiCaチャネルとランキング" })).toHaveClass("lg:sr-only");
     expect(screen.queryByRole("link", { name: "ホーム" })).not.toBeInTheDocument();
     expect(screen.getByText("public footer")).toBeInTheDocument();
 

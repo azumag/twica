@@ -57,8 +57,11 @@ import postgres from 'postgres'
 function resolveDashboardDatabaseUrl(env: Record<string, string>): string {
   const url = env.DASHBOARD_DATABASE_URL?.trim()
   if (!url) {
+    // 置き場所は起動 mode ごとに分ける（.env.local は全 mode で読まれ prod/preview を
+    // 取り違えるため）。詳細は docs/analysis-dashboard-db-permissions.md。
     throw new Error(
-      'DASHBOARD_DATABASE_URL の設定が必要です（analysis/.env.local 等）。'
+      'DASHBOARD_DATABASE_URL の設定が必要です（npm run dev → analysis/.env.production.local、' +
+        'npm run dev:preview → analysis/.env.preview.local）。'
     )
   }
   return url

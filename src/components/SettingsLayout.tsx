@@ -24,7 +24,7 @@ type BotAccountDisplay = { username: string | null; displayName: string | null }
 
 // 配信設定ページのレイアウト切替クライアントコンポーネント。
 // Simple = 集中度の高いクイックスタート 2 ステップ表示。
-// Advanced = sticky 左サイドバー + 右コンテンツの単一セクション表示。
+// Advanced = 上部ナビゲーション + 単一セクション表示。
 // コレクション公開設定とカードトレード設定は配信設定ではなくアカウント側の
 // 設定として /dashboard/account へ移した（#715 §6.7）。ここには置かない。
 // 各モードで実コンポーネント (OverlayPreview / ChannelPointSettings 等) を
@@ -412,8 +412,8 @@ function PageHeader({ title, description }: { title: string; description?: strin
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight text-white">{title}</h1>
-        {description && <p className="mt-2 text-sm text-gray-400">{description}</p>}
+        <h1 className="text-3xl font-bold tracking-tight text-white lg:sr-only">{title}</h1>
+        {description && <p className="mt-2 text-sm text-gray-400 lg:mt-0">{description}</p>}
       </div>
       <SettingsViewToggle />
     </div>

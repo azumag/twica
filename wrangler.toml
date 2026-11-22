@@ -107,16 +107,20 @@ NEXT_PUBLIC_TWITCH_CLIENT_ID = "okxjgv064gr80kcijf1b0e182x394o"
 #   SESSION_COOKIE_SECRET  — required; missing → startup/runtime failure (fail-closed)
 # Production: `wrangler secret put SESSION_COOKIE_SECRET`
 
-# Issue #1979: Smart Placement を preview にだけ有効化し、本番適用前に
-# DB 往復の遅延改善を実測する。本番 Worker (twica) と preview の DB
-# (PlanetScale ap-northeast-2 系) の距離が /dashboard/collection などの
-# wall time を支配しているため、Worker を DB 近接拠点で実行させる。
-# top-level には [placement] を置かない: 本番の実行場所は変えず、
-# preview の有効化前後で [Perf] ログと wall time を比較してから判断する。
-# なお Smart Placement は確立まで最大15分の分析期間があり、preview の
-# 呼び出し数が少ないと INSUFFICIENT_INVOCATIONS になる点に注意。
+# Issue #1979: preview の Worker を東京に寄せ、ダッシュボードの DB 往復時間を測る。
+# PlanetScale API で twica の唯一の branch（main）は AWS ap-northeast-1（東京）。
+# prod と preview はこの branch 内の論理 DB として構成している。2026-11-17 の
+# Hyperdrive 観測では origin ホストが共通で、そのラベルは ap-northeast-2 を
+# 示していた。現在の Hyperdrive の接続経路は未確認。
+#
+# 11-17 の認証済み preview /dashboard 10 回では、Smart Placement の
+# cf-placement は remote-SEA が 6 回、local-SEA が 4 回だった。
+# 東京を指定した後、同じ条件で cf-placement、getUserCards の RPC 時間、
+# ダッシュボードと maintenance-status の wall time を比較する。測定手順は
+# docs/handoff/2026-11-17-dashboard-performance.md、合否基準は PR #2072 を参照。
+# 切り戻す場合はこの region を mode = "smart" に戻し、preview に再配備する。
 [env.preview.placement]
-mode = "smart"
+region = "aws:ap-northeast-1"
 
 [env.preview.observability]
 enabled = true

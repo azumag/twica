@@ -6,6 +6,7 @@ import {
   isOfferGoneCode,
   postTradeJson,
   tradeBoardPath,
+  tradeCreateFlowPath,
   tradeCreatePath,
   tradeErrorMessageKey,
   tradeLoginHref,
@@ -29,6 +30,7 @@ const ALL_CODES: Record<TradeApiErrorCode, true> = {
   INTERNAL_ERROR: true,
   TRADE_DISABLED: true,
   TRADE_OFFER_NOT_FOUND: true,
+  TRADE_COLLECTION_NOT_FOUND: true,
   TRADE_OFFER_NOT_OPEN: true,
   TRADE_OFFER_INVALID: true,
   TRADE_SELF_ACCEPT: true,
@@ -179,8 +181,22 @@ describe("trade URLs", () => {
 
   it("builds board/create paths per scope", () => {
     expect(tradeBoardPath("s-1", "in_channel")).toBe("/trade/s-1");
-    expect(tradeCreatePath("s-1", "in_channel")).toBe("/trade/s-1/new");
-    expect(tradeCreatePath("s-1", "cross_channel")).toBe("/trade/s-1/new?scope=cross");
+    // #2080: the unified flow encodes the scope as give/want instead of a tab.
+    expect(tradeCreatePath("s-1", "in_channel")).toBe(
+      "/trade/new?kind=offer&give=s-1&want=s-1",
+    );
+    // Cross: the wanted collection is picked in step 3, so it is not preset.
+    expect(tradeCreatePath("s-1", "cross_channel")).toBe("/trade/new?kind=offer&give=s-1");
+  });
+
+  it("builds the unified flow URL from the selected steps", () => {
+    expect(tradeCreateFlowPath({ kind: "offer" })).toBe("/trade/new?kind=offer");
+    expect(tradeCreateFlowPath({ kind: "auction", give: "s-1" })).toBe(
+      "/trade/new?kind=auction&give=s-1",
+    );
+    expect(
+      tradeCreateFlowPath({ kind: "offer", give: "s-1", want: "s-2", offered: "card-1" }),
+    ).toBe("/trade/new?kind=offer&give=s-1&want=s-2&offered=card-1");
   });
 });
 

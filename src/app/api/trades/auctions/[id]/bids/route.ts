@@ -9,7 +9,7 @@ import {
   tradeErrorResponse,
   tradeInternalErrorResponse,
 } from "@/lib/trade-api";
-import { isCanonicalUuid } from "@/lib/uuid-validation";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 /**
  * POST /api/trades/auctions/[id]/bids  { bidCardId, quantity: 1..10, requestId }
@@ -25,8 +25,11 @@ export async function POST(
   const auth = await authorizeTradeWrite(request);
   if (!auth.ok) return auth.response;
 
-  const { id } = await params;
-  if (!isCanonicalUuid(id)) {
+  // #2061: normalize every client UUID to the DB's lowercase spelling before
+  // the service uses it in SQL and in JS-side comparisons.
+  const { id: rawId } = await params;
+  const id = normalizeCanonicalUuid(rawId);
+  if (!id) {
     return tradeErrorResponse("INVALID_REQUEST", 400);
   }
 
@@ -34,12 +37,16 @@ export async function POST(
     const parsed = await readTradeJsonBody(request);
     if (!parsed.ok) return parsed.response;
     const { body } = parsed;
-    const bidCardId = typeof body.bidCardId === "string" ? body.bidCardId : "";
-    const requestId = typeof body.requestId === "string" ? body.requestId : "";
+    const bidCardId = normalizeCanonicalUuid(
+      typeof body.bidCardId === "string" ? body.bidCardId : "",
+    );
+    const requestId = normalizeCanonicalUuid(
+      typeof body.requestId === "string" ? body.requestId : "",
+    );
     const quantity = body.quantity;
     if (
-      !isCanonicalUuid(bidCardId)
-      || !isCanonicalUuid(requestId)
+      !bidCardId
+      || !requestId
       || typeof quantity !== "number"
       || !Number.isInteger(quantity)
       || quantity < 1

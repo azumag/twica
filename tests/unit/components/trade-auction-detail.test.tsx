@@ -387,12 +387,15 @@ describe("TradeAuctionDetail bidder", () => {
     const mine = await screen.findByRole("region", { name: ja.auctionMyBidTitle });
     expect(within(mine).getByText(ja.auctionBidStateLost)).toBeInTheDocument();
     expect(within(mine).queryByRole("button")).toBeNull();
+    const header = screen.getByRole("region", { name: ja.auctionDetailTitle });
+    expect(within(header).queryByText(trJa("auctionBidCount", { count: 0 }))).not.toBeInTheDocument();
   });
 
   it("selecting without an own bid: bidding is closed", async () => {
     setupFetch({ auction: makeAuction({ phase: "selecting", bidCount: 2 }), bids: null });
     renderDetail();
     expect(await screen.findByText(ja.auctionBiddingClosedNotice)).toBeInTheDocument();
+    expect(screen.getByText(trJa("auctionBidCount", { count: 2 }))).toBeInTheDocument();
   });
 });
 

@@ -5,7 +5,7 @@ import { getDb } from '@/lib/db/client'
 // EventSub の redemption ハンドラーで reportError (= GitHub Issue 化) を呼ばずに warn ログのみで終わること。
 // We verify that limit_reached errors do not trigger reportError, while unrelated errors still do.
 //
-// Issue #544/#546: 上記の売り切れ確定後に、チャンネルポイント返還(cancelRedemption)と
+// Issue #544/#546: 上記の売り切れ確定後に、チャネルポイント返還(cancelRedemption)と
 // チャット通知(TwitchChatService.sendChatMessage)が正しい条件で呼ばれることも検証する。
 
 const mocks = vi.hoisted(() => ({
@@ -213,7 +213,7 @@ describe('EventSub redemption: card issuance limit error handling', () => {
     // これは「発行枚数上限に達した」という運用上正常な状態ではなく、
     // 「RPC関数が本番に存在しない」という本来あってはならない異常事態なので、
     // reportError で確実にアラートされることを検証する。
-    // 一方で視聴者は soldOut のときと同様に既にチャンネルポイントを消費済みで
+    // 一方で視聴者は soldOut のときと同様に既にチャネルポイントを消費済みで
     // カードを受け取れていないため、reportError とは独立に #544/#546 の
     // 返還・チャット通知も必ず行われることを検証する(このガードが漏れていると、
     // 視聴者はポイントを失ったまま何の救済も受けられなくなる)。

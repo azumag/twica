@@ -313,7 +313,7 @@ BEGIN
       END IF;
   END;
 
-  -- 存在しない配信者も同じ P0002（opt-in 済みチャンネルの探索を許さない）。
+  -- 存在しない配信者も同じ P0002（opt-in 済みチャネルの探索を許さない）。
   BEGIN
     PERFORM public.get_published_card_ranking(
       '50000000-0000-4000-8000-0000000000ff', 'all', 10);

@@ -25,7 +25,7 @@ export default async function Header({ session, unreadAnnouncementsCount = 0 }: 
 
   return (
     <header className="border-b border-gray-800 bg-gray-900/95 backdrop-blur">
-      <div className="container mx-auto flex items-center justify-between gap-3 px-4 py-3">
+      <div className="dashboard-container flex items-center justify-between gap-3 py-3">
         <Link href="/" className="shrink-0 text-xl font-bold text-white sm:text-2xl">
           TwiCa
         </Link>

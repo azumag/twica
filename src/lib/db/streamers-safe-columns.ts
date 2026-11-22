@@ -85,8 +85,9 @@ export function isMissingLiveDirectorySettingsColumnError(error: unknown): boole
  * 対象列以外のエラーはそのまま再送出し、呼び出し側の既存 catch に委ねる。
  *
  * 関数名は #738 で live directory 設定列用として導入した時の名前を維持しているが、現在は
- * #722 の trade_enabled / cross_channel_trade_enabled と #934 の publish_card_ranking も
- * 同じ安全列集合へフォールバックする。
+ * #722 の trade_enabled / cross_channel_trade_enabled、#2070 の
+ * trade_unowned_card_names_visible、#934 の publish_card_ranking も同じ安全列集合へ
+ * フォールバックする。
  * 対象列の定義は LIVE_DIRECTORY_SETTINGS_COLUMNS / TRADE_SETTINGS_COLUMNS /
  * CARD_RANKING_SETTINGS_COLUMNS に分け、検知条件だけを共有する。
  *
@@ -118,23 +119,24 @@ export async function withLiveDirectorySettingsColumnFallback<T>(
 }
 
 /**
- * デプロイ窓で欠落しうる streamers の新列(20260817100000 の migration で追加。
- * Issue #722, #715 子2)。publish_live_status / publish_stats (#738) と同じ
- * 「アプリデプロイとmigration適用が独立したタイミングで完了する」リスクを
- * 持つため、同型のフォールバックを追加する。
+ * デプロイ窓で欠落しうる streamers の trade 設定列。
+ * trade_enabled / cross_channel_trade_enabled は 20260817100000 (#722) で、
+ * trade_unowned_card_names_visible は 20261117120000 (#2070) で追加された。
+ * migration は別だが、どれも「トレード設定の追加列」として同じデプロイ窓
+ * フォールバックで検知する必要があるため、1つの検知グループにまとめる。
  *
- * STREAMERS_SAFE_COLUMNS は #738 より前の列だけの固定リストであり、
- * この2列も元々含まれていない。そのため再投影先(STREAMERS_SAFE_COLUMNS)は
- * 変更不要で、検知条件だけをこの2列にも広げればよい。
+ * STREAMERS_SAFE_COLUMNS はこの3列を含まない（＝再試行側では undefined に
+ * なりうる）。消費側は欠落時に false（fail-closed）へ倒すこと。
  */
 export const TRADE_SETTINGS_COLUMNS = [
   "trade_enabled",
   "cross_channel_trade_enabled",
+  "trade_unowned_card_names_visible",
 ] as const;
 
 /**
- * streamers の trade_enabled / cross_channel_trade_enabled 列の欠落
- * (20260817100000 の migration 未適用の環境)を検知する。
+ * streamers の trade 設定列の欠落
+ * (20260817100000 / 20261117120000 の migration 未適用の環境)を検知する。
  */
 export function isMissingTradeSettingsColumnError(error: unknown): boolean {
   return isPgMissingNamedColumnError(error, TRADE_SETTINGS_COLUMNS);

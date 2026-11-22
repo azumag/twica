@@ -68,6 +68,18 @@ vi.mock('next/navigation', () => ({
   redirect: mocks.redirect,
 }))
 
+// DashboardLayout now wraps its subtree in a nested NextIntlClientProvider with
+// the dashboard-only namespace list. Server-component unit tests run outside the
+// Next.js request scope, so the real provider (and getMessages) cannot infer the
+// request locale; a passthrough provider is enough for this wiring test.
+vi.mock('next-intl', () => ({
+  NextIntlClientProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}))
+
+vi.mock('next-intl/server', () => ({
+  getMessages: async () => ({}),
+}))
+
 vi.mock('@/lib/perf', () => ({
   perfStart: () => 0,
   logPerf: () => undefined,
@@ -75,6 +87,17 @@ vi.mock('@/lib/perf', () => ({
 
 vi.mock('@/components/Header', () => ({ default: () => null }))
 vi.mock('@/components/DashboardNav', () => ({ default: () => null }))
+// DashboardLayout now wraps the nav and page content in DashboardShell. This test
+// checks the server helper wiring, not the drawer, and the suite's next-intl mock
+// only provides the provider, so render the two slots without the client hooks.
+vi.mock('@/components/DashboardShell', () => ({
+  default: ({ nav, children }: { nav: ReactNode; children: ReactNode }) => (
+    <>
+      {nav}
+      {children}
+    </>
+  ),
+}))
 vi.mock('@/components/TwitchLoginRedirect', () => ({ TwitchLoginRedirect: () => null }))
 vi.mock('@/components/MaintenanceBanner', () => ({ default: () => null }))
 vi.mock('@/components/MaintenanceStatusProvider', () => ({

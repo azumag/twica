@@ -3,7 +3,7 @@
  *
  * paced-multi-draw-sender.ts の既存 `await delay(MULTI_DRAW_CHAT_INTERVAL_MS)` は
  * 同一プロセス内・同一N連シーケンス内の間隔しか守れない。専用Queue Workerの
- * bounded配送は同じ配信者チャンネルへ向けた複数outbox行（別のN連バッチ、
+ * bounded配送は同じ配信者チャネルへ向けた複数outbox行（別のN連バッチ、
  * summary、単発ガチャ）を別々のHTTP呼び出し・別々のWorker実行で処理しうるため、
  * プロセス内のsleepだけでは間隔を保証できない。
  *

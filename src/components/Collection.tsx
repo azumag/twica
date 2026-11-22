@@ -204,8 +204,10 @@ export default async function Collection({
 
   return (
     <section>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-2xl font-semibold text-white">{t("title")}</h2>
+      <div className={`mb-6 flex flex-wrap items-center justify-between gap-3 ${
+        CARD_TRADE_UI_VISIBLE ? "lg:justify-end" : "lg:mb-0"
+      }`}>
+        <h2 className="text-2xl font-semibold text-white lg:sr-only">{t("title")}</h2>
         {/* #727: permanent entry point to /trade/mine. Trade completion has no
             notifications in the MVP, so users must be able to reach their
             listings without going back through a streamer's board.

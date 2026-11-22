@@ -415,13 +415,17 @@ describe("trade guide page", () => {
     }
   });
 
-  it("has one row per visibility question (<key>, <key>Public, <key>Hidden) in both locales", () => {
+  it("has one row per visibility question (<key>, <key>Public, <key>NameOnly, <key>Hidden) in both locales", () => {
     for (const { name, messages } of locales) {
       const visibility = messages.tradeGuidePage.streamer.visibility;
       for (const key of listedProps(source, "visibilityRows", "key")) {
-        for (const suffix of ["", "Public", "Hidden"]) {
+        for (const suffix of ["", "Public", "NameOnly", "Hidden"]) {
           expect(visibility[`${key}${suffix}`], `${name}.${key}${suffix}`).toBeTruthy();
         }
+      }
+      // #2070: the three states are columns, so the headers must exist too.
+      for (const header of ["public", "nameOnly", "hidden"]) {
+        expect(visibility[header], `${name}.${header}`).toBeTruthy();
       }
     }
   });
@@ -449,12 +453,16 @@ describe("trade guide page", () => {
       "TRADE_AUCTION_SELECTION_HOURS",
       "TRADE_MAX_ACTIVE_BIDS",
       "TRADE_MAX_BID_QUANTITY",
+      // #2081: コレクション別一覧の先頭表示件数も同じくコード定数から差し込む
+      "TRADE_COLLECTION_PREVIEW_SIZE",
+      "EXAMPLE_COLLECTION_TOTAL",
     ]) {
       expect(source, constant).toContain(constant);
     }
     // 値そのものは、ここで実コードの定義と突き合わせる（定数が変わったらガイドの確認を促す）。
     const tradeSource = readSource("src/lib/trade.ts");
     const auctionSource = readSource("src/lib/trade-auction.ts");
+    expect(tradeSource).toMatch(/export const TRADE_COLLECTION_PREVIEW_SIZE = 5;/);
     expect(tradeSource).toMatch(/export const TRADE_MAX_OPEN_OFFERS = 10;/);
     expect(tradeSource).toMatch(/export const TRADE_MAX_WANTED_QUANTITY = 10;/);
     expect(auctionSource).toMatch(/TRADE_AUCTION_DURATIONS_HOURS = \[24, 72, 168\] as const;/);
@@ -478,12 +486,33 @@ describe("trade guide page", () => {
       // 長い案内文・件数つきの文言は、ガイドが引用する冒頭の部分だけを比較する
       const head = (text: string, pattern: RegExp) => text.split(pattern)[0];
       const labels: Record<string, string> = {
+        // #2081 の入口: サイドバー項目とトレードハブの見出し・ボタン
+        "navigation.trade": messages.navigation.trade,
+        "trade.hubTitle": trade.hubTitle,
+        "trade.hubCreateButton": trade.hubCreateButton,
+        "trade.myTradesTitle": trade.myTradesTitle,
+        "trade.collectionsTitle": trade.collectionsTitle,
+        // コレクション別一覧の操作（展開・並び替え）のラベル
+        "trade.collectionExpand": trade.collectionExpand,
+        "trade.collectionSortLabel": trade.collectionSortLabel,
+        "trade.collectionSortNewest": trade.collectionSortNewest,
+        "trade.collectionSortEndingSoon": trade.collectionSortEndingSoon,
+        // 統一された出品フローのステップ見出しと種別
+        "trade.createFlowStepKindTitle": trade.createFlowStepKindTitle,
+        "trade.createFlowStepGiveTitle": trade.createFlowStepGiveTitle,
+        "trade.createFlowStepWantTitle": trade.createFlowStepWantTitle,
+        "trade.createKindOffer": trade.createKindOffer,
+        "trade.createKindAuction": trade.createKindAuction,
+        "trade.createAuctionStep1Title": trade.createAuctionStep1Title,
+        "trade.createAuctionStep2Title": trade.createAuctionStep2Title,
+        // FAQ が引用するフローの状態メッセージ（冒頭の文だけ）
+        "trade.createFlowNoCollections": head(trade.createFlowNoCollections, /[.。]/),
+        "trade.createFlowWantCrossDisabled": trade.createFlowWantCrossDisabled,
         "trade.collectionTradeButton": trade.collectionTradeButton,
         "trade.tabInChannel": trade.tabInChannel,
         "trade.tabCrossChannel": trade.tabCrossChannel,
         "trade.tabAuction": trade.tabAuction,
         "trade.myTradesLink": trade.myTradesLink,
-        "trade.createOfferButton": trade.createOfferButton,
         "trade.createSubmitButton": trade.createSubmitButton,
         "trade.acceptButton": trade.acceptButton,
         "trade.acceptButtonNotOwned": trade.acceptButtonNotOwned,
@@ -496,9 +525,6 @@ describe("trade guide page", () => {
         "trade.createStep2Title": trade.createStep2Title,
         "trade.createConfirmTitle": trade.createConfirmTitle,
         "trade.createStep2QuantityLabel": trade.createStep2QuantityLabel,
-        "trade.createStep2SelectStreamer": trade.createStep2SelectStreamer,
-        "trade.createStep2NoPartners": head(trade.createStep2NoPartners, /[。.]/),
-        "trade.createAuctionButton": trade.createAuctionButton,
         "trade.auctionRowDetailLink": trade.auctionRowDetailLink,
         "trade.auctionBidFormTitle": trade.auctionBidFormTitle,
         "trade.auctionScopeCrossChannel": trade.auctionScopeCrossChannel,
@@ -576,6 +602,23 @@ describe("trade guide page", () => {
       "rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white",
     );
     expect(tabs).toContain("rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white");
+
+    // #2081 ハブのモック: サイドバー項目（アクティブ色）、ハブの「出品する」ボタン、
+    // コレクション別一覧の「全N件を見る」ボタンは実画面と同じクラスを使う
+    const nav = readSource("src/components/DashboardNav.tsx");
+    const hub = readSource("src/app/trade/page.tsx");
+    const collections = readSource("src/components/TradeCollections.tsx");
+    const hubMock = readSource("src/components/trade-guide/HubMock.tsx");
+    expect(nav).toContain('href: "/trade"');
+    expect(nav).toContain("bg-purple-600 text-white");
+    for (const desktopStyle of ["lg:bg-purple-500/15", "lg:text-purple-100"]) {
+      expect(nav).toContain(desktopStyle);
+      expect(hubMock).toContain(desktopStyle);
+    }
+    expect(hub).toContain("rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white");
+    expect(hubMock).toContain("rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white");
+    expect(collections).toContain("rounded-lg bg-gray-700 px-3 py-1 text-xs text-white");
+    expect(hubMock).toContain("rounded-lg bg-gray-700 px-3 py-1 text-xs text-white");
 
     // 「求めるカード」チェックボックス（accent-purple-500 の h-4 w-4）と数量バッジ
     expect(readSource("src/components/CardManager.tsx")).toContain('className="mt-0.5 h-4 w-4 rounded accent-purple-500"');
@@ -678,7 +721,7 @@ describe("trade guide page", () => {
 
     it("glosses \"cross-channel\" where the tab is first introduced and uses the tab's own name after that", () => {
       for (const [name, messages, gloss] of [
-        ["ja", jaMessages, "ほかのチャンネルのカードとの交換"],
+        ["ja", jaMessages, "ほかのチャネルのカードとの交換"],
         ["en", enMessages, "trades with cards of other channels"],
       ] as const) {
         const find = messages.tradeGuidePage.accept.steps.find.description as string;
@@ -707,14 +750,28 @@ describe("trade guide page", () => {
 
   it("is linked only from the trade screens, not from /guide or the public footer", () => {
     // 本番ではトレード入口がまだ非表示のため、一般向けの導線には出さない
-    expect(readSource("src/app/guide/page.tsx")).not.toContain("/guide/trade");
-    expect(readSource("src/app/usages/page.tsx")).not.toContain("/guide/trade");
-    expect(readSource("src/components/PublicFooter.tsx")).not.toContain("/guide/trade");
-    expect(readSource("src/app/page.tsx")).not.toContain("/guide/trade");
+    for (const path of [
+      "src/app/guide/page.tsx",
+      "src/app/usages/page.tsx",
+      "src/components/PublicFooter.tsx",
+      "src/app/page.tsx",
+    ]) {
+      const publicSource = readSource(path);
+      expect(publicSource, path).not.toContain("/guide/trade");
+      expect(publicSource, path).not.toContain("TradeGuideLink");
+    }
 
-    const layout = readSource("src/app/trade/layout.tsx");
-    expect(layout).toContain('href="/guide/trade"');
-    expect(layout).toContain('getTranslations("tradeGuidePage")');
+    expect(readSource("src/components/TradeGuideLink.tsx")).toContain('href="/guide/trade"');
+    for (const path of [
+      "src/app/trade/page.tsx",
+      "src/app/trade/new/page.tsx",
+      "src/app/trade/[streamerId]/page.tsx",
+      "src/app/trade/[streamerId]/auctions/[auctionId]/page.tsx",
+    ]) {
+      const tradeSource = readSource(path);
+      expect(tradeSource, path).toContain("<TradeGuideLink ");
+      expect(tradeSource, path).toContain('getTranslations("tradeGuidePage")');
+    }
     for (const { name, messages } of locales) {
       expect(messages.tradeGuidePage.entryLink, name).toBeTruthy();
     }

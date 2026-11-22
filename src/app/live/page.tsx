@@ -5,6 +5,7 @@ import LiveDirectory from "@/components/LiveDirectory";
 import PublicFooter from "@/components/PublicFooter";
 import Header from "@/components/Header";
 import DashboardNav from "@/components/DashboardNav";
+import DashboardShell from "@/components/DashboardShell";
 import {
   getLiveDirectory,
   getLiveDirectoryPresence,
@@ -71,8 +72,13 @@ export default async function LivePage() {
   const pageBody = (
     <>
       <div className="mb-10 max-w-3xl">
-        <h1 className="text-3xl font-bold text-white sm:text-4xl">{t("title")}</h1>
-        <p className="mt-3 text-base leading-7 text-gray-400">{t("description")}</p>
+        {/* Only signed-in visitors have a sidebar entry for this page. */}
+        <h1 className={`text-3xl font-bold text-white sm:text-4xl ${session ? "lg:sr-only" : ""}`}>
+          {t("title")}
+        </h1>
+        <p className={`mt-3 text-base leading-7 text-gray-400 ${session ? "lg:mt-0" : ""}`}>
+          {t("description")}
+        </p>
         <div className="mt-3 border-l-2 border-gray-600 pl-3 text-sm leading-6 text-gray-400">
           <p>{t("consentNotice")}</p>
           {/*
@@ -138,7 +144,7 @@ export default async function LivePage() {
     );
   }
 
-  // ダッシュボードレイアウトと同じHeader+DashboardNavの組み合わせ。
+  // ダッシュボードレイアウトと同じHeader+DashboardShell（中身はDashboardNav）の組み合わせ。
   // 未読数・プラン判定はダッシュボードレイアウトと同じReact cache付き関数で、
   // 失敗時は basic / 0件 へ縮退する（公開ページを500にしない）。
   // /liveにはダッシュボードlayoutが無いためログイン済み訪問1回あたり2クエリは
@@ -149,15 +155,17 @@ export default async function LivePage() {
     <div className="min-h-screen bg-gray-900">
       <Header session={session} unreadAnnouncementsCount={unreadAnnouncements.length} />
 
-      <div className="container mx-auto px-4 py-6">
-        <div className="mb-6">
-          <DashboardNav
-            isStreamer={canUseStreamerFeatures(session)}
-            isSupporter={plan !== "basic"}
-          />
-        </div>
-
-        <main>{pageBody}</main>
+      <div className="dashboard-container py-4 sm:py-6">
+        <DashboardShell
+          nav={
+            <DashboardNav
+              isStreamer={canUseStreamerFeatures(session)}
+              isSupporter={plan !== "basic"}
+            />
+          }
+        >
+          <main>{pageBody}</main>
+        </DashboardShell>
       </div>
 
       <PublicFooter />

@@ -16,7 +16,7 @@
     "test:all": "vitest run",
     "test:unit:ui": "vitest --ui tests/unit",
     "test:cleanup": "node scripts/vitest-agent.mjs --cleanup",
-    "test:agent": "node scripts/vitest-agent.mjs run --no-watch --no-file-parallelism --pool=forks --poolOptions.forks.singleFork=true --bail 1",
+    "test:agent": "node scripts/vitest-agent.mjs run --no-watch --no-file-parallelism --pool=forks --maxWorkers=1 --bail 1",
     "workers:build": "bash scripts/cloudflare-workers-build.sh",
     "workers:dev": "npx wrangler dev",
     "workers:deploy": "npx opennextjs-cloudflare deploy",
@@ -70,7 +70,7 @@
   "dependencies": {
     "drizzle-orm": "^0.45.2",
     "heic-to": "1.5.2",
-    "next": "16.4.2",
+    "next": "16.4.6",
     "next-intl": "^4.14.9",
     "postgres": "^3.4.9",
     "react": "^19.0.0-rc.1",

@@ -16,6 +16,7 @@ import {
 } from "@/lib/trade-client";
 import TradeAuctionBoard from "@/components/TradeAuctionBoard";
 import TradeBoard from "@/components/TradeBoard";
+import TradeGuideLink from "@/components/TradeGuideLink";
 
 const CREATE_CLASS =
   "rounded-lg bg-purple-600 px-4 py-2 text-center text-sm font-semibold text-white hover:bg-purple-700";
@@ -67,9 +68,10 @@ export default async function TradeBoardPage({
           (error: unknown) => ({ ok: false as const, error }),
         )
       : null;
-  const [streamer, t] = await Promise.all([
+  const [streamer, t, tGuide] = await Promise.all([
     getTradeBoardStreamer(streamerId),
     getTranslations("trade"),
+    getTranslations("tradeGuidePage"),
   ]);
   if (!streamer) notFound();
 
@@ -113,13 +115,16 @@ export default async function TradeBoardPage({
     }`;
 
   return (
-    <div className="mx-auto max-w-4xl">
-      <Link
-        href={`/collection/${streamer.id}`}
-        className="text-sm text-purple-400 transition-colors hover:text-purple-300"
-      >
-        ← {t("backToCollection")}
-      </Link>
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <Link
+          href={`/collection/${streamer.id}`}
+          className="text-sm text-purple-400 transition-colors hover:text-purple-300"
+        >
+          ← {t("backToCollection")}
+        </Link>
+        <TradeGuideLink label={tGuide("entryLink")} />
+      </div>
       <div className="mt-3 mb-4 flex items-center gap-3">
         {streamer.twitchProfileImageUrl && (
           // unoptimized: Twitch CDN image (same as StreamerCollection).
@@ -243,6 +248,6 @@ export default async function TradeBoardPage({
           )}
         </>
       )}
-    </div>
+    </>
   );
 }

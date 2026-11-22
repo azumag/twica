@@ -12,6 +12,7 @@ import ExchangeFigure from "@/components/trade-guide/ExchangeFigure";
 import FaqAccordion from "@/components/trade-guide/FaqAccordion";
 import FlowSteps from "@/components/trade-guide/FlowSteps";
 import GuideIcon, { GUIDE_ICON_NAMES } from "@/components/trade-guide/GuideIcon";
+import HubMock from "@/components/trade-guide/HubMock";
 import ModeCard from "@/components/trade-guide/ModeCard";
 import PhaseChips, { PHASE_CHIP_CLASS } from "@/components/trade-guide/PhaseChips";
 import RuleList from "@/components/trade-guide/RuleList";
@@ -337,35 +338,71 @@ describe("settings mock-ups", () => {
   });
 });
 
+describe("HubMock", () => {
+  // #2081: 入口（サイドバーの項目）とハブの構造（見出し・出品ボタン・コレクション別一覧）を
+  // 実画面と同じ言葉で示す。装飾だけでなくテキストの並びを検査する。
+  it("shows the sidebar entry and the hub chrome with the labels it is given", () => {
+    const { container, getByText } = render(
+      <HubMock
+        label="The trade hub"
+        sidebarLabel="Sidebar"
+        navItem="Trade navigation"
+        hubTitle="Trade"
+        createButton="Create offer"
+        myTradesTitle="My trades"
+        collectionsTitle="Listings by collection"
+        expandButton="Show all 8"
+      />,
+    );
+    expect(container.querySelector('[role="group"]')!.getAttribute("aria-label")).toBe("The trade hub");
+    for (const text of ["Sidebar", "Create offer", "My trades", "Listings by collection", "Show all 8"]) {
+      expect(container.textContent).toContain(text);
+    }
+    // Find the selected navigation label directly: the primary action is purple too.
+    expect(getByText("Trade navigation")).toHaveClass(
+      "bg-purple-600",
+      "text-white",
+      "lg:bg-purple-500/15",
+      "lg:text-purple-100",
+    );
+  });
+});
+
 describe("VisibilityTable", () => {
+  // #2070: three states (all public / names only / hidden) are the columns.
+  const columns = [
+    { key: "public", header: "Revealed", icon: "eye" as const },
+    { key: "nameOnly", header: "Names only", icon: "tag" as const },
+    { key: "hidden", header: "Hidden", icon: "eyeOff" as const },
+  ];
   const rows = [
-    { key: "names", aspect: "Names", revealed: { ok: true, text: "Visible" }, hidden: { ok: false, text: "Hidden" } },
-    { key: "wanted", aspect: "Wanted", revealed: { ok: true, text: "Any card" }, hidden: { ok: false, text: "Owned only" } },
+    { key: "names", aspect: "Names", cells: [{ ok: true, text: "Visible" }, { ok: true, text: "Visible" }, { ok: false, text: "Hidden" }] },
+    { key: "images", aspect: "Images", cells: [{ ok: true, text: "Visible" }, { ok: false, text: "Hidden" }, { ok: false, text: "Hidden" }] },
   ];
 
   it("is a real table with a caption, column and row headers", () => {
     const { container } = render(
-      <VisibilityTable caption="Visibility" aspectHeader="Viewer sees" revealedHeader="Revealed" hiddenHeader="Hidden" rows={rows} />,
+      <VisibilityTable caption="Visibility" aspectHeader="Viewer sees" columns={columns} rows={rows} />,
     );
     expect(container.querySelector("caption")!.textContent).toBe("Visibility");
-    expect([...container.querySelectorAll("thead th")].map((th) => th.getAttribute("scope"))).toEqual(["col", "col", "col"]);
-    expect([...container.querySelectorAll("tbody th")].map((th) => th.textContent)).toEqual(["Names", "Wanted"]);
+    expect([...container.querySelectorAll("thead th")].map((th) => th.getAttribute("scope"))).toEqual(["col", "col", "col", "col"]);
+    expect([...container.querySelectorAll("tbody th")].map((th) => th.textContent)).toEqual(["Names", "Images"]);
   });
 
   it("gives every cell a check or cross icon AND text, so no cell relies on colour", () => {
     const { container } = render(
-      <VisibilityTable caption="Visibility" aspectHeader="Viewer sees" revealedHeader="Revealed" hiddenHeader="Hidden" rows={rows} />,
+      <VisibilityTable caption="Visibility" aspectHeader="Viewer sees" columns={columns} rows={rows} />,
     );
     const cells = [...container.querySelectorAll("tbody td")];
-    expect(cells).toHaveLength(4);
+    expect(cells).toHaveLength(6);
     for (const cell of cells) {
       expect(cell.querySelector("svg")).not.toBeNull();
       expect((cell.textContent ?? "").trim().length).toBeGreaterThan(0);
     }
     // ok cells are green, not-ok cells are red (and differ in icon, not just colour)
     expect(cells[0].querySelector("span span")!.className).toContain("emerald");
-    expect(cells[1].querySelector("span span")!.className).toContain("rose");
-    expect(cells[0].querySelector("path")!.getAttribute("d")).not.toBe(cells[1].querySelector("path")!.getAttribute("d"));
+    expect(cells[2].querySelector("span span")!.className).toContain("rose");
+    expect(cells[0].querySelector("path")!.getAttribute("d")).not.toBe(cells[2].querySelector("path")!.getAttribute("d"));
   });
 });
 

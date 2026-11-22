@@ -50,6 +50,7 @@ import type { Json } from '@/types/database'
 //       00062 card_pack_names, 00063 default_card_pack_name,
 //       00065 rarity_weights_scope / pack_rarity_weights, 00066 gacha_sound_rules,
 //       20260817100000 trade_enabled / cross_channel_trade_enabled (#722)
+//       20261117120000 trade_unowned_card_names_visible (#2070)
 // -----------------------------------------------------------------------------
 // 列定義を関数にしているのは、Issue #1994 の channel_point_pack_names 列を持つ
 // UPDATE 専用の拡張定義（streamersWithChannelPointPackNames）と列を共有するため。
@@ -112,6 +113,12 @@ const streamerBaseColumns = () => ({
   // 20260817100000 (#722): トレード機能の配信者オプトイン（両方デフォルトOFF）
   trade_enabled: boolean('trade_enabled').notNull().default(false),
   cross_channel_trade_enabled: boolean('cross_channel_trade_enabled').notNull().default(false),
+  // 20261117120000 (#2070): 未所持カードの名前とレアリティだけをトレードで公開する。
+  // show_unowned_cards=true かつ show_unowned_card_details=false のときだけ意味を持つ。
+  // 画像・説明は公開せず、コレクション画面の表示にも影響しない（既定OFF）。
+  trade_unowned_card_names_visible: boolean('trade_unowned_card_names_visible')
+    .notNull()
+    .default(false),
   // 20261014120000 (#1765 フォローアップ): アルバム表示の並び (N×N) を
   // コレクション(パック)ごとに指定する JSONB マップ。
   // キー: __all__（すべてのパック / 個別指定が無いパックの既定）,
@@ -370,7 +377,7 @@ export const chatNotificationOutbox = pgTable('chat_notification_outbox', {
 // chat_channel_send_gate（Issue #1665: チャネル単位の送信間隔gate）
 // 根拠: 20260922100000 chat_outbox_continuation_and_channel_gate
 // summary/individual/chunkedのどの経路から送っても、また別outbox行・別Worker
-// 実行にまたがっても、同じ配信者チャンネルへの外部送信間隔（既定1.6秒）を守る。
+// 実行にまたがっても、同じ配信者チャネルへの外部送信間隔（既定1.6秒）を守る。
 // -----------------------------------------------------------------------------
 export const chatChannelSendGate = pgTable('chat_channel_send_gate', {
   broadcaster_twitch_user_id: text('broadcaster_twitch_user_id').primaryKey(),

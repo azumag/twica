@@ -7,7 +7,7 @@
 --
 -- 検証対象（Issue #742 の受け入れ条件）:
 --   * 応答 contract（4 メトリクス・rank/position の使い分け・固定順）
---   * 匿名性: 応答 JSON に他チャンネルの streamer_id / username / display_name が一切現れない
+--   * 匿名性: 応答 JSON に他チャネルの streamer_id / username / display_name が一切現れない
 --   * top = position <= 10、neighbors = self の position ± 2 から top を除いたもの
 --   * self フォールバック（母集団外の配信者でも自分の累計値だけは返す）
 --   * 世代一貫性: self/top/neighbors が同じ computed_at 世代の行から返ること
@@ -556,7 +556,7 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- 4. 匿名性: 応答 JSON に他チャンネルの識別子が一切現れない
+-- 4. 匿名性: 応答 JSON に他チャネルの識別子が一切現れない
 -- ---------------------------------------------------------------------------
 
 DO $$
@@ -585,7 +585,7 @@ BEGIN
       RAISE EXCEPTION '応答に識別子キーが存在する';
     END IF;
 
-    -- 他チャンネルの username / display_name が文字列として現れない
+    -- 他チャネルの username / display_name が文字列として現れない
     SELECT s.twitch_user_id, s.twitch_username, s.twitch_display_name
       INTO v_leak
     FROM public.streamers s

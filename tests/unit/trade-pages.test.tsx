@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isValidElement, type ElementType, type ReactElement, type ReactNode } from "react";
 import { cleanup, render, screen, within } from "@testing-library/react";
 
 /**
@@ -6,6 +7,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
  * channel gates, and that only server-filtered data reaches client props.
  */
 const mocks = vi.hoisted(() => ({
+  tradeUiVisible: true,
   getSession: vi.fn(),
   getTradeBoardStreamer: vi.fn(),
   listWantableCards: vi.fn(),
@@ -21,6 +23,12 @@ const mocks = vi.hoisted(() => ({
   }),
 }));
 
+vi.mock("@/lib/constants", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/constants")>(),
+  get CARD_TRADE_UI_VISIBLE() {
+    return mocks.tradeUiVisible;
+  },
+}));
 vi.mock("@/lib/session", () => ({
   getSession: mocks.getSession,
   canUseStreamerFeatures: () => false,
@@ -36,17 +44,40 @@ vi.mock("@/lib/trade", () => ({
   listTradeableOwnedCopies: mocks.listTradeableOwnedCopies,
   listCrossTradePartnerStreamers: mocks.listCrossTradePartnerStreamers,
   listMyTradeOffers: mocks.listMyTradeOffers,
+  // The hub parses ?sort= before loading the collection section (#2079).
+  parseTradeCollectionSort: (value: string | string[] | undefined) =>
+    value === "ending_soon" ? "ending_soon" : "newest",
 }));
 // The detail page passes TRADE_MAX_BID_QUANTITY (#1791); the real module
 // pulls in the DB layer, so the value is mirrored here.
 vi.mock("@/lib/trade-auction", () => ({ TRADE_MAX_BID_QUANTITY: 10 }));
 vi.mock("@/lib/logger", () => ({ logger: { warn: mocks.loggerWarn, info: vi.fn(), error: vi.fn() } }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect, notFound: mocks.notFound }));
+vi.mock("next-intl", () => ({
+  // The trade layout now owns a nested provider (per-segment message payloads).
+  // Unit tests render server components outside the Next.js request scope, where
+  // the real client provider cannot infer its locale, so keep it as a passthrough.
+  NextIntlClientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 vi.mock("next-intl/server", () => ({
+  // The layout picks its segment payload from the request messages.
+  getMessages: async () => ({}),
   getTranslations: async () => (key: string) => key,
 }));
 vi.mock("@/components/Header", () => ({ default: () => <div data-testid="app-header" /> }));
 vi.mock("@/components/DashboardNav", () => ({ default: () => <nav data-testid="dashboard-nav" /> }));
+// The layout wraps the nav and page content in DashboardShell now. This suite is
+// about the trade layout's data/guard wiring, not the shell's client-side drawer,
+// so a passthrough keeps the same document order (nav, then main) without
+// requiring the next-intl/usePathname context the real client component needs.
+vi.mock("@/components/DashboardShell", () => ({
+  default: ({ nav, children }: { nav: React.ReactNode; children: React.ReactNode }) => (
+    <div>
+      {nav}
+      {children}
+    </div>
+  ),
+}));
 vi.mock("@/components/PublicFooter", () => ({ default: () => <footer data-testid="public-footer" /> }));
 vi.mock("@/components/MaintenanceBanner", () => ({ default: () => null }));
 vi.mock("@/components/MaintenanceStatusProvider", () => ({
@@ -82,8 +113,28 @@ vi.mock("@/components/MyTrades", () => ({
     <div data-testid="my-trades" data-props={JSON.stringify(props)} />
   ),
 }));
+vi.mock("@/components/TradeCollections", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="trade-collections" data-props={JSON.stringify(props)} />
+  ),
+}));
+// The notice's own rendering/URL cleanup is covered by
+// tests/unit/components/trade-listed-notice.test.tsx; here the hub only needs
+// to prove it accepts the allowlisted ?listed value and positions the notice.
+vi.mock("@/components/TradeListedNotice", () => ({
+  default: (props: Record<string, unknown>) => (
+    <div data-testid="trade-listed-notice" data-props={JSON.stringify(props)} />
+  ),
+}));
+// The collection lists have their own service suite (#2079); here the hub
+// only needs to prove it passes the parsed sort and the loaded sections down.
+vi.mock("@/lib/trade-collections", () => ({
+  listTradeCollections: async () => [],
+}));
 
+import MyTrades from "@/components/MyTrades";
 import TradeLayout, { metadata } from "@/app/trade/layout";
+import TradeHubPage from "@/app/trade/page";
 import TradeBoardPage from "@/app/trade/[streamerId]/page";
 import TradeCreatePage from "@/app/trade/[streamerId]/new/page";
 import MyTradesPage from "@/app/trade/mine/page";
@@ -109,9 +160,31 @@ function props(testId: string) {
   return JSON.parse(screen.getByTestId(testId).getAttribute("data-props")!);
 }
 
+/**
+ * React consumes `key` instead of passing it as a prop, so the mocked
+ * component cannot expose it through data-props. Walk the server component's
+ * returned element tree instead and read the key off the <MyTrades> element.
+ */
+function findElement(node: ReactNode, type: ElementType): ReactElement | null {
+  // Do not use Children.toArray(): it clones unkeyed elements with synthetic
+  // keys (".1"), which would hide the key this test is checking.
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findElement(child, type);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isValidElement(node)) return null;
+  if (node.type === type) return node;
+  const children = (node.props as { children?: ReactNode }).children;
+  return findElement(children, type);
+}
+
 const params = Promise.resolve({ streamerId: STREAMER_ID });
 
 beforeEach(() => {
+  mocks.tradeUiVisible = true;
   vi.clearAllMocks();
   mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer());
   mocks.listWantableCards.mockResolvedValue([
@@ -144,19 +217,19 @@ describe("/trade layout", () => {
     expect(screen.getByTestId("maintenance-provider")).toHaveTextContent("board content");
   });
 
-  // The usage guide (/guide/trade) is linked from the trade screens only; the
-  // layout is the single place, so both the anonymous and the logged-in shell
-  // must carry it, in front of the page content.
-  it("links the usage guide from both the anonymous and the logged-in shell", async () => {
+  // The board's help link must stay in the page for both visitors and signed-in
+  // users after moving it out of the separate row in the shared layout.
+  it("links the usage guide from the board for both anonymous and logged-in visitors", async () => {
     for (const session of [null, SESSION]) {
       cleanup();
       mocks.getSession.mockResolvedValue(session);
-      render(await TradeLayout({ children: <p>board content</p> }));
+      const board = await TradeBoardPage({ params, searchParams: Promise.resolve({}) });
+      render(await TradeLayout({ children: board }));
       const link = screen.getByRole("link", { name: "entryLink" });
       expect(link).toHaveAttribute("href", "/guide/trade");
-      // The link comes before the page content in document order.
-      const content = screen.getByText("board content");
-      expect(link.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const main = screen.getByRole("main");
+      expect(main).toContainElement(link);
+      expect(main).toContainElement(screen.getByRole("heading", { name: "boardTitle" }));
     }
   });
 });
@@ -172,7 +245,7 @@ describe("/trade/[streamerId] board page", () => {
       `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}?scope=cross`)}`,
     );
     expect(board.createHref).toBe(
-      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}/new?scope=cross`)}`,
+      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/new?kind=offer&give=${STREAMER_ID}`)}`,
     );
     // Cross tab: no card filter, so the catalogue is not even queried.
     expect(board.filterCards).toEqual([]);
@@ -201,7 +274,9 @@ describe("/trade/[streamerId] board page", () => {
     expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
     const board = props("trade-board");
     expect(board.filterCards).toEqual([{ cardId: "c-1", name: "Visible Card" }]);
-    expect(board.createHref).toBe(`/trade/${STREAMER_ID}/new`);
+    expect(board.createHref).toBe(
+      `/trade/new?kind=offer&give=${STREAMER_ID}&want=${STREAMER_ID}`,
+    );
     expect(board.isLoggedIn).toBe(true);
   });
 
@@ -264,77 +339,68 @@ describe("/trade/[streamerId] board page", () => {
   });
 });
 
-describe("/trade/[streamerId]/new listing page", () => {
-  it("redirects anonymous visitors to login with an encoded returnTo (scope kept)", async () => {
+describe("/trade/[streamerId]/new legacy listing route (#2080)", () => {
+  const legacyRedirect = (searchParams: Record<string, string | string[] | undefined> = {}) =>
+    TradeCreatePage({ params, searchParams: Promise.resolve(searchParams) });
+
+  it("redirects to the unified flow preserving the old in-channel meaning (give === want)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(legacyRedirect({})).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=offer&give=${STREAMER_ID}&want=${STREAMER_ID}`,
+    );
+  });
+
+  it("keeps ?scope=cross as give-only: the wanted collection is chosen in step 3", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(legacyRedirect({ scope: "cross" })).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=offer&give=${STREAMER_ID}`,
+    );
+  });
+
+  it("keeps ?scope=cross&partner=P as give=X&want=P and carries ?offered=", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(
+      legacyRedirect({ scope: "cross", partner: "p-1", offered: "card-keep" }),
+    ).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=offer&give=${STREAMER_ID}&want=p-1&offered=card-keep`,
+    );
+  });
+
+  it("keeps ?kind=auction as the auction kind (no wanted collection)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(legacyRedirect({ kind: "auction" })).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=auction&give=${STREAMER_ID}`,
+    );
+  });
+
+  it("does not read the streamer or its catalogue before redirecting (no 404 gate)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    // Even if the channel is unknown/disabled, the legacy URL is just a view
+    // alias: the new page owns the gates.
+    mocks.getTradeBoardStreamer.mockResolvedValue(null);
+    await expect(legacyRedirect({ scope: "cross" })).rejects.toThrow("REDIRECT:");
+    expect(mocks.getTradeBoardStreamer).not.toHaveBeenCalled();
+    expect(mocks.listTradeableOwnedCopies).not.toHaveBeenCalled();
+    expect(mocks.listWantableCards).not.toHaveBeenCalled();
+    expect(mocks.listCrossTradePartnerStreamers).not.toHaveBeenCalled();
+  });
+
+  it("sends anonymous visitors to login with the CONVERTED URL as returnTo", async () => {
+    mocks.getSession.mockResolvedValue(null);
+    const converted = `/trade/new?kind=offer&give=${STREAMER_ID}`;
+    await expect(legacyRedirect({ scope: "cross" })).rejects.toThrow(
+      `REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(converted)}`,
+    );
+  });
+
+  it("sends an invalid streamer id to the bare /trade/new instead of 404", async () => {
     mocks.getSession.mockResolvedValue(null);
     await expect(
-      TradeCreatePage({ params, searchParams: Promise.resolve({ scope: "cross" }) }),
-    ).rejects.toThrow(
-      `REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}/new?scope=cross`)}`,
-    );
-    expect(mocks.listTradeableOwnedCopies).not.toHaveBeenCalled();
-  });
-
-  it("in-channel: Step 2 candidates come from listWantableCards for this channel", async () => {
-    mocks.getSession.mockResolvedValue(SESSION);
-    render(await TradeCreatePage({ params, searchParams: Promise.resolve({}) }));
-    expect(mocks.listTradeableOwnedCopies).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
-    expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
-    const form = props("trade-create-form");
-    expect(form.cross).toBeNull();
-    expect(form.wantableCards).toHaveLength(1);
-    expect(form.boardHref).toBe(`/trade/${STREAMER_ID}`);
-    // #1789: the server page hands the quantity ceiling to the client form.
-    expect(form.maxWantedQuantity).toBe(10);
-  });
-
-  it("cross: ignores a ?partner= that is not an allowed partner and loads no catalogue", async () => {
-    mocks.getSession.mockResolvedValue(SESSION);
-    mocks.listCrossTradePartnerStreamers.mockResolvedValue([
-      { id: "p-1", twitchUsername: "p1", twitchDisplayName: "P1", twitchProfileImageUrl: null },
-    ]);
-    render(
-      await TradeCreatePage({ params, searchParams: Promise.resolve({ scope: "cross", partner: "not-allowed" }) }),
-    );
-    const form = props("trade-create-form");
-    // Only the rendered fields are serialized to the client.
-    expect(form.cross).toEqual({
-      partners: [{ id: "p-1", twitchDisplayName: "P1", twitchProfileImageUrl: null }],
-      selectedPartnerId: null,
-    });
-    expect(form.wantableCards).toEqual([]);
-    expect(mocks.listWantableCards).not.toHaveBeenCalled();
-  });
-
-  it("cross: loads the chosen partner's wantable cards and reveal setting", async () => {
-    mocks.getSession.mockResolvedValue(SESSION);
-    mocks.listCrossTradePartnerStreamers.mockResolvedValue([
-      { id: "p-1", twitchUsername: "p1", twitchDisplayName: "P1", twitchProfileImageUrl: null },
-    ]);
-    mocks.getTradeBoardStreamer.mockImplementation(async (id: string) =>
-      id === "p-1" ? boardStreamer({ id: "p-1", revealsUnownedCards: false }) : boardStreamer(),
-    );
-    render(
-      await TradeCreatePage({
-        params,
-        searchParams: Promise.resolve({ scope: "cross", partner: "p-1", offered: "card-keep" }),
+      TradeCreatePage({
+        params: Promise.resolve({ streamerId: "not-a-uuid" }),
+        searchParams: Promise.resolve({}),
       }),
-    );
-    expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", "p-1");
-    // Step 1 choice is carried over the partner navigation (validated by the form).
-    expect(props("trade-create-form").initialOfferedCardId).toBe("card-keep");
-    const form = props("trade-create-form");
-    expect(form.cross.selectedPartnerId).toBe("p-1");
-    expect(form.wantableRevealsUnowned).toBe(false);
-    expect(form.boardHref).toBe(`/trade/${STREAMER_ID}?scope=cross`);
-  });
-
-  it("shows a notice instead of the form when cross trading is disabled", async () => {
-    mocks.getSession.mockResolvedValue(SESSION);
-    mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer({ crossChannelTradeEnabled: false }));
-    render(await TradeCreatePage({ params, searchParams: Promise.resolve({ scope: "cross" }) }));
-    expect(screen.getByText("crossDisabledNotice")).toBeInTheDocument();
-    expect(screen.queryByTestId("trade-create-form")).toBeNull();
+    ).rejects.toThrow("REDIRECT:/trade/new");
   });
 });
 
@@ -360,7 +426,7 @@ describe("/trade/[streamerId] auction tab (#1791)", () => {
       streamerId: STREAMER_ID,
       scope: "in_channel",
       isLoggedIn: true,
-      createHref: `/trade/${STREAMER_ID}/new?kind=auction`,
+      createHref: `/trade/new?kind=auction&give=${STREAMER_ID}`,
       justListed: true,
     });
     expect(board.viewerKey).toMatch(/^u:[0-9a-f]{16}$/);
@@ -369,7 +435,7 @@ describe("/trade/[streamerId] auction tab (#1791)", () => {
     expect(screen.getByRole("link", { name: "tabInChannel" })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("link", { name: "createAuctionButton +" })).toHaveAttribute(
       "href",
-      `/trade/${STREAMER_ID}/new?kind=auction`,
+      `/trade/new?kind=auction&give=${STREAMER_ID}`,
     );
   });
 
@@ -402,19 +468,22 @@ describe("/trade/[streamerId] auction tab (#1791)", () => {
     mocks.getSession.mockResolvedValue(null);
     render(await TradeBoardPage({ params, searchParams: Promise.resolve({ tab: "auction" }) }));
     expect(props("trade-auction-board").createHref).toBe(
-      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/${STREAMER_ID}/new?kind=auction`)}`,
+      `/api/auth/twitch/login?redirect=true&returnTo=${encodeURIComponent(`/trade/new?kind=auction&give=${STREAMER_ID}`)}`,
     );
   });
 });
 
-describe("/trade/[streamerId]/new kind preselection (#1791)", () => {
-  it("?kind=auction preselects the auction kind; anything else is a regular offer", async () => {
+describe("/trade/[streamerId]/new kind allowlist (#1791)", () => {
+  it("?kind=auction maps to the auction flow; anything else is a regular offer", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
-    render(await TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "auction" }) }));
-    expect(props("trade-create-form").initialKind).toBe("auction");
-    cleanup();
-    render(await TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "other" }) }));
-    expect(props("trade-create-form").initialKind).toBe("offer");
+    await expect(
+      TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "auction" }) }),
+    ).rejects.toThrow(`REDIRECT:/trade/new?kind=auction&give=${STREAMER_ID}`);
+    await expect(
+      TradeCreatePage({ params, searchParams: Promise.resolve({ kind: "other" }) }),
+    ).rejects.toThrow(
+      `REDIRECT:/trade/new?kind=offer&give=${STREAMER_ID}&want=${STREAMER_ID}`,
+    );
   });
 });
 
@@ -489,34 +558,134 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
   });
 });
 
-describe("/trade/mine page", () => {
-  it("redirects anonymous visitors to login returning to /trade/mine", async () => {
+describe("/trade hub page (#2078)", () => {
+  it("redirects anonymous visitors to login returning to /trade", async () => {
     mocks.getSession.mockResolvedValue(null);
-    await expect(MyTradesPage()).rejects.toThrow(
-      "REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade%2Fmine",
+    await expect(TradeHubPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
+      "REDIRECT:/api/auth/twitch/login?redirect=true&returnTo=%2Ftrade",
     );
+    // The hub is login-only: no per-viewer list is loaded before the redirect.
+    expect(mocks.listMyTradeOffers).not.toHaveBeenCalled();
   });
 
-  it("renders the trade list for logged-in users with the open tab's first page prefetched", async () => {
+  it("renders the heading, the create link to the unified flow and the viewer's trades", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     const offer = { id: "o-1", status: "open", mineRole: "offerer" };
     mocks.listMyTradeOffers.mockResolvedValue({ offers: [offer], page: 1, pageSize: 20, hasMore: true });
-    render(await MyTradesPage());
-    expect(mocks.listMyTradeOffers).toHaveBeenCalledWith("viewer-1", { status: "open", page: 1 });
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByRole("heading", { name: "hubTitle" })).toHaveClass("lg:sr-only");
+    // #2080: the primary action opens the unified listing flow. It must be a
+    // real link (not the old disabled placeholder) so the hub has no dead end.
+    const create = screen.getByRole("link", { name: "hubCreateButton" });
+    expect(create).toHaveAttribute("href", "/trade/new");
+    expect(create).not.toHaveAttribute("disabled");
+    expect(create).not.toHaveAttribute("aria-disabled");
+    // The removed "coming soon" explanation must not linger anywhere.
+    expect(screen.queryByText("hubCreateUnavailable")).toBeNull();
+    expect(screen.getByRole("heading", { name: "myTradesTitle" })).toBeInTheDocument();
     expect(props("my-trades")).toEqual({ initialOpen: { offers: [offer], hasMore: true } });
+    expect(screen.getByRole("heading", { name: "collectionsTitle" })).toBeInTheDocument();
+    expect(props("trade-collections")).toEqual({ initialCollections: [], sort: "newest" });
+  });
+
+  it("keeps the hub title visible when the sidebar has no trade entry", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.tradeUiVisible = false;
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByRole("heading", { name: "hubTitle" })).not.toHaveClass("lg:sr-only");
+  });
+
+  it.each(["offer", "auction"] as const)(
+    "shows the post-listing notice for ?listed=%s between the heading and my trades",
+    async (listed) => {
+      mocks.getSession.mockResolvedValue(SESSION);
+      render(await TradeHubPage({ searchParams: Promise.resolve({ listed }) }));
+
+      // The hub reuses the board's two notices instead of new copy (#2080).
+      expect(props("trade-listed-notice")).toEqual({ kind: listed });
+      // The notice belongs under the heading and above "my trades", where the
+      // viewer looks after being sent back from the form.
+      const notice = screen.getByTestId("trade-listed-notice");
+      const myTradesHeading = screen.getByRole("heading", { name: "myTradesTitle" });
+      expect(
+        notice.compareDocumentPosition(myTradesHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    },
+  );
+
+  it.each([
+    ["absent", {}],
+    ["unrelated", { listed: "1" }],
+    ["unknown", { listed: "redeemed" }],
+    ["repeated", { listed: ["offer", "auction"] }],
+  ])("ignores a %s ?listed value and shows no notice", async (_name, query) => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeHubPage({ searchParams: Promise.resolve(query) }));
+    expect(screen.queryByTestId("trade-listed-notice")).toBeNull();
+  });
+
+  it("passes the allowlisted sort to the server-rendered collection list", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeHubPage({ searchParams: Promise.resolve({ sort: "ending_soon" }) }));
+    expect(props("trade-collections")).toEqual({ initialCollections: [], sort: "ending_soon" });
+
+    cleanup();
+    render(await TradeHubPage({ searchParams: Promise.resolve({ sort: "unknown" }) }));
+    expect(props("trade-collections")).toEqual({ initialCollections: [], sort: "newest" });
+  });
+
+  it("remounts MyTrades on every server render with a fresh key", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    // A request-scoped key: router.refresh() must produce a different one so
+    // the client component and its per-mount cache are discarded.
+    const first = findElement(
+      await TradeHubPage({ searchParams: Promise.resolve({}) }),
+      MyTrades,
+    );
+    const second = findElement(
+      await TradeHubPage({ searchParams: Promise.resolve({}) }),
+      MyTrades,
+    );
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first!.key).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second!.key).not.toBe(first!.key);
+  });
+
+  it("prefetches the open tab's first page for logged-in users", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
+    expect(mocks.listMyTradeOffers).toHaveBeenCalledWith("viewer-1", { status: "open", page: 1 });
   });
 
   it("falls back to the client fetch when the prefetch fails", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     mocks.listMyTradeOffers.mockRejectedValue(new Error("db down"));
-    render(await MyTradesPage());
+    render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
     expect(props("my-trades")).toEqual({ initialOpen: null });
     expect(mocks.loggerWarn).toHaveBeenCalledTimes(1);
   });
+});
 
-  it("does not prefetch for anonymous visitors", async () => {
+// #2078: /trade/mine is now a permanent alias of the /trade hub. The hub suite
+// above owns the login gate, SSR prefetch and <MyTrades> coverage that used to
+// live here; this page must only redirect, even for anonymous visitors (the hub
+// then sends them to login with returnTo=/trade).
+describe("/trade/mine page", () => {
+  it("redirects logged-in visitors to the trade hub", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    await expect(MyTradesPage()).rejects.toThrow("REDIRECT:/trade");
+    // The alias must not perform the SSR prefetch itself any more.
+    expect(mocks.getSession).not.toHaveBeenCalled();
+    expect(mocks.listMyTradeOffers).not.toHaveBeenCalled();
+  });
+
+  it("redirects anonymous visitors to /trade as well", async () => {
     mocks.getSession.mockResolvedValue(null);
-    await expect(MyTradesPage()).rejects.toThrow("REDIRECT:");
+    await expect(MyTradesPage()).rejects.toThrow("REDIRECT:/trade");
     expect(mocks.listMyTradeOffers).not.toHaveBeenCalled();
   });
 });

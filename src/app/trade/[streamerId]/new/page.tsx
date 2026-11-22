@@ -1,40 +1,35 @@
-import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
-import { getTranslations } from "next-intl/server";
+import { redirect } from "next/navigation";
+
 import { getSession } from "@/lib/session";
-import {
-  getTradeBoardStreamer,
-  listCrossTradePartnerStreamers,
-  listTradeableOwnedCopies,
-  listWantableCards,
-  type WantableCard,
-  TRADE_MAX_WANTED_QUANTITY,
-} from "@/lib/trade";
-import {
-  parseTradeScope,
-  tradeBoardPath,
-  tradeCreatePath,
-  tradeLoginHref,
-} from "@/lib/trade-client";
-import TradeCreateForm, { type TradeCreatePartner } from "@/components/TradeCreateForm";
+import { parseTradeScope, tradeCreateFlowPath, tradeLoginHref } from "@/lib/trade-client";
+import { normalizeCanonicalUuid } from "@/lib/uuid-validation";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 /**
- * Listing flow /trade/[streamerId]/new (§6.5). Login required.
+ * Legacy listing route /trade/[streamerId]/new (#2080).
  *
- * In-channel: give a copy of this channel's card, want another card of this
- * channel. Cross-channel (?scope=cross): give a copy of this channel's card,
- * want a card of a partner channel chosen via ?partner=<streamerId>. The
- * reverse direction (give the partner's card) is listed from the partner's
- * board, which keeps one "give from this channel" rule for Step 1.
+ * It is now a pure view alias of the unified /trade/new flow. Converting the
+ * URL (instead of keeping two implementations) preserves the old meaning for
+ * bookmarks and for links on the board:
+ *   - no parameters       → kind=offer&give=X&want=X (the old in-channel form)
+ *   - ?scope=cross        → kind=offer&give=X        (the wanted channel was
+ *                                                     picked in the old page)
+ *   - ?scope=cross&partner=P → kind=offer&give=X&want=P
+ *   - ?kind=auction       → kind=auction&give=X      (an auction has no want)
+ *   - ?offered=           → carried through in every case so step 4 keeps the
+ *                           viewer's card choice.
  *
- * All data comes from server helpers (no new API): partner candidates are
- * channels the viewer collects from that allow cross trade, and wantable
- * cards are visibility-filtered in SQL, so hidden card names/images are never
- * serialized into the client component props.
+ * No session or streamer lookup is needed to build the target, so an unknown
+ * id is not an error here: an unparsable id goes to the bare /trade/new
+ * (step 1), and an id that no longer exists is handled by the new page's own
+ * gates. The session is only read afterwards to choose between the login
+ * redirect and the target.
+ * Anonymous visitors are sent to login with the CONVERTED URL, which is what
+ * makes OAuth return to the new flow rather than this alias (one redirect
+ * less after login).
  */
-export default async function TradeCreatePage({
+export default async function LegacyTradeCreatePage({
   params,
   searchParams,
 }: {
@@ -42,125 +37,25 @@ export default async function TradeCreatePage({
   searchParams: SearchParams;
 }) {
   const [{ streamerId }, query] = await Promise.all([params, searchParams]);
-  const scope = parseTradeScope(query.scope);
+  const give = normalizeCanonicalUuid(streamerId);
+  if (!give) redirect("/trade/new");
+
+  const kind = query.kind === "auction" ? "auction" : "offer";
+  const partner = typeof query.partner === "string" ? query.partner : null;
+  const offered = typeof query.offered === "string" ? query.offered : null;
+
+  let target: string;
+  if (kind === "auction") {
+    target = tradeCreateFlowPath({ kind, give, offered });
+  } else if (parseTradeScope(query.scope) === "cross_channel") {
+    // No partner selected yet: step 3 of the new flow asks for the wanted
+    // collection. With a partner, keep the old choice.
+    target = tradeCreateFlowPath({ kind, give, want: partner, offered });
+  } else {
+    target = tradeCreateFlowPath({ kind, give, want: give, offered });
+  }
+
   const session = await getSession();
-  if (!session) {
-    // Same server-side returnTo pattern as /collection/[streamerId].
-    redirect(tradeLoginHref(tradeCreatePath(streamerId, scope)));
-  }
-
-  const [streamer, t] = await Promise.all([
-    getTradeBoardStreamer(streamerId),
-    getTranslations("trade"),
-  ]);
-  if (!streamer) notFound();
-
-  const boardHref = tradeBoardPath(streamer.id, scope);
-  const header = (
-    <>
-      <Link href={boardHref} className="text-sm text-purple-400 transition-colors hover:text-purple-300">
-        ← {t("createBackToBoard")}
-      </Link>
-      <h1 className="mt-3 mb-4 text-2xl font-bold text-white">
-        {t("createPageTitle", { channelName: streamer.twitchDisplayName })}
-      </h1>
-    </>
-  );
-
-  const scopeEnabled =
-    streamer.tradeEnabled && (scope === "in_channel" || streamer.crossChannelTradeEnabled);
-  if (!scopeEnabled) {
-    return (
-      <div className="mx-auto max-w-4xl">
-        {header}
-        <p className="rounded-xl bg-gray-800 p-6 text-center text-gray-300">
-          {streamer.tradeEnabled ? t("crossDisabledNotice") : t("tradeDisabledNotice")}
-        </p>
-      </div>
-    );
-  }
-
-  const viewerId = session.twitchUserId;
-  const loadWanted = async (): Promise<{
-    wantableCards: WantableCard[];
-    wantableRevealsUnowned: boolean;
-    cross: { partners: TradeCreatePartner[]; selectedPartnerId: string | null } | null;
-  }> => {
-    if (scope === "in_channel") {
-      return {
-        wantableCards: await listWantableCards(viewerId, streamer.id),
-        wantableRevealsUnowned: streamer.revealsUnownedCards,
-        cross: null,
-      };
-    }
-    // Only the fields the picker renders are serialized to the client.
-    const partners = (await listCrossTradePartnerStreamers(viewerId, streamer.id)).map((item) => ({
-      id: item.id,
-      twitchDisplayName: item.twitchDisplayName,
-      twitchProfileImageUrl: item.twitchProfileImageUrl,
-    }));
-    // Only a partner from the allowed candidate list is honoured; an arbitrary
-    // ?partner= id cannot be used to read another channel's catalogue.
-    const partner = partners.find((item) => item.id === query.partner) ?? null;
-    const cross = { partners, selectedPartnerId: partner?.id ?? null };
-    if (!partner) return { wantableCards: [], wantableRevealsUnowned: true, cross };
-    const [cards, partnerInfo] = await Promise.all([
-      listWantableCards(viewerId, partner.id),
-      getTradeBoardStreamer(partner.id),
-    ]);
-    return {
-      wantableCards: cards,
-      wantableRevealsUnowned: partnerInfo?.revealsUnownedCards ?? false,
-      cross,
-    };
-  };
-  const [ownedCopies, { wantableCards, wantableRevealsUnowned, cross }] = await Promise.all([
-    listTradeableOwnedCopies(viewerId, streamer.id),
-    loadWanted(),
-  ]);
-
-  const tabClass = (active: boolean) =>
-    `shrink-0 rounded-lg px-4 py-2 text-sm ${
-      active ? "bg-purple-600 text-white" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-    }`;
-
-  return (
-    <div className="mx-auto max-w-4xl">
-      {header}
-      {streamer.crossChannelTradeEnabled && (
-        <nav aria-label={t("createModeLabel")} className="mb-6 flex gap-2 overflow-x-auto">
-          <Link
-            href={tradeCreatePath(streamer.id, "in_channel")}
-            aria-current={scope === "in_channel" ? "page" : undefined}
-            className={tabClass(scope === "in_channel")}
-          >
-            {t("tabInChannel")}
-          </Link>
-          <Link
-            href={tradeCreatePath(streamer.id, "cross_channel")}
-            aria-current={scope === "cross_channel" ? "page" : undefined}
-            className={tabClass(scope === "cross_channel")}
-          >
-            {t("tabCrossChannel")}
-          </Link>
-        </nav>
-      )}
-      <TradeCreateForm
-        // Remount when the wanted catalogue changes so selections never refer
-        // to cards that are no longer listed.
-        key={`${scope}:${cross?.selectedPartnerId ?? ""}`}
-        streamerId={streamer.id}
-        cross={cross}
-        ownedCopies={ownedCopies}
-        wantableCards={wantableCards}
-        wantableRevealsUnowned={wantableRevealsUnowned}
-        boardHref={boardHref}
-        maxWantedQuantity={TRADE_MAX_WANTED_QUANTITY}
-        initialOfferedCardId={typeof query.offered === "string" ? query.offered : null}
-        // ?kind=auction comes from the board's auction tab (#1791); the
-        // first step of the form still lets the viewer switch the kind.
-        initialKind={query.kind === "auction" ? "auction" : "offer"}
-      />
-    </div>
-  );
+  if (!session) redirect(tradeLoginHref(target));
+  redirect(target);
 }

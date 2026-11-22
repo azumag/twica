@@ -1,4 +1,6 @@
 import { MAX_RARITY_KEY_LENGTH } from "./constants";
+import { RARITY_STYLE_CSS_VARS } from "./rarity";
+import { TAILWIND_PALETTE_HEX } from "./tailwind-palette";
 
 /**
  * Overlay effect style: shared single source of truth.
@@ -17,6 +19,14 @@ import { MAX_RARITY_KEY_LENGTH } from "./constants";
  *   自然なばらつき（揺れ幅・回転量・落下距離・色）を生む。
  * - レアリティ紐付け: 単一の effectStyle ではなく「レアリティ→スタイル」の
  *   マップ（RarityEffectMap）で表現し、OBS URL の `fx=` パラメータに符号化する。
+ * - 開始位相: globals.css の animate-* は `animation-fill-mode` を指定しない
+ *   （= none）ため、正の delay を持つ粒子は遅延中にアニメーションが適用されず、
+ *   inline の opacity 未指定のまま「不透明で静止」する。表示直後は全粒子が
+ *   この状態になり、短い表示時間では一度も動かない粒子が残る。これを避けるため
+ *   環境系8種は「duration を先に決め、-[0, duration) の負の delay を付ける」
+ *   ことで表示開始時点で必ず周期の途中に置く。バーストの同時性を優先する
+ *   fireworks だけは正の delay を残し、CSS 側の `fill-mode: backwards` で
+ *   開始前を透明にする。
  *
  * 描画は overlay page が唯一の実体。OverlayPreview は overlay page を iframe で
  * 埋め込んでプレビューするため、この設定を直接参照しなくても本番と同じ見た目になる。
@@ -39,6 +49,8 @@ export type OverlayEffectStyle =
   | "coins"
   | "aura";
 
+type OverlayEffectParticleStyle = Exclude<OverlayEffectStyle, "none" | "aura">;
+
 /**
  * 設定 UI（OverlayPreview）でレアリティごとに選べるスタイルの一覧（＝表示順）。
  * 先頭の "none"（演出なし）はレアリティ別に演出を切りたい場合の選択肢。
@@ -58,13 +70,13 @@ export const OVERLAY_EFFECT_STYLES: readonly OverlayEffectStyle[] = [
 ];
 
 /**
- * 実際にパーティクルを描画するスタイル（"none" を除く）。
- * OVERLAY_EFFECT_STYLES から派生させ、リストの二重管理を避ける
- * （OVERLAY_EFFECT_PARTICLE_CONFIG のキー集合と一致する）。
+ * パーティクルを CSS で動かすスタイル。
+ * aura はカード縁を一続きの炎として描画するため専用のレイヤーが担当する。
+ * OVERLAY_EFFECT_STYLES から派生させて表示順を共有する。
  */
-export const ANIMATED_OVERLAY_EFFECT_STYLES: readonly Exclude<OverlayEffectStyle, "none">[] =
+export const ANIMATED_OVERLAY_EFFECT_STYLES: readonly OverlayEffectParticleStyle[] =
   OVERLAY_EFFECT_STYLES.filter(
-    (style): style is Exclude<OverlayEffectStyle, "none"> => style !== "none",
+    (style): style is OverlayEffectParticleStyle => style !== "none" && style !== "aura",
   );
 
 /**
@@ -84,6 +96,22 @@ export function isOverlayEffectStyle(value: unknown): value is OverlayEffectStyl
 export function normalizeOverlayEffectStyle(value: unknown): OverlayEffectStyle {
   return isOverlayEffectStyle(value) ? value : DEFAULT_OVERLAY_EFFECT_STYLE;
 }
+
+/* -------------------------------------------------------------------------- */
+/* レイヤーのカード外はみ出し量（Issue #2088 (2) カード外へのはみ出し）             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 粒子レイヤーをカードの外側へ何 px 拡げるか。
+ *
+ * overlay page は粒子レイヤーを `inset: -N px` の箱（カードより一回り大きい
+ * 領域）に置き、レイヤー自身の `overflow: hidden` でその箱の縁にクリップする。
+ * これにより粒子がカードの前面から枠の外へ連続して見える。
+ * N が大きすぎると OBS の表示領域（800x600 を想定）から粒子が
+ * はみ出して見えなくなるため、実測した
+ * 800x600 での上下余白 76px を超えない範囲（目安 48〜64px）から 56 を選ぶ。
+ */
+export const OVERLAY_EFFECT_OVERFLOW_PX = 56;
 
 /* -------------------------------------------------------------------------- */
 /* レアリティ → エフェクトのマッピング                                          */
@@ -240,7 +268,16 @@ export interface OverlayEffectParticlePresentation {
    */
   left?: string;
   top?: string;
-  animationDelay?: string;
+  /**
+   * 開始遅延（秒）の上書き。負値は「周期の途中から開始」を意味する。
+   * CSS では `animation-delay: -0.4s` のように負の time として出力される。
+   */
+  delaySec?: number;
+  /**
+   * 1周期（秒）の上書き。同じ開始時刻を共有する粒子に同じ速さを与えたい
+   * 演出（fireworks のバースト）で使う。
+   */
+  durationSec?: number;
 }
 
 /** スタイルごとのパーティクル生成設定 */
@@ -253,8 +290,19 @@ export interface OverlayEffectParticleConfig {
   spawnTopPercentRange: readonly [number, number];
   /** 1周期の所要秒数の範囲 [min, max] */
   durationSecRange: readonly [number, number];
-  /** 開始遅延秒数の範囲 [min, max] */
-  delaySecRange: readonly [number, number];
+  /**
+   * 正の delay を使うスタイルの開始遅延秒数の範囲 [min, max]。
+   * `startAtRandomPhase: true` のスタイルでは参照しない（負の delay を算出する）ため
+   * 省略する。省略された場合は delay 0（即時開始）にフォールバックする。
+   */
+  delaySecRange?: readonly [number, number];
+  /**
+   * true: 粒子ごとに duration を先に決め、その範囲内の**負の** delay を付ける。
+   * 表示開始時点で必ず周期の途中にいるため、fill-mode: none でも
+   * 「不透明なまま静止する」フレームが生じない（環境系8種が該当）。
+   * false/未指定: delaySecRange から正の delay を選ぶ（fireworks のバースト等）。
+   */
+  startAtRandomPhase?: boolean;
   /** このスタイルの既定パーティクル数（花火/雪など密度が要るものは多めにする） */
   particleCount: number;
   /** index からこのパーティクル固有の見た目（色・サイズ・軌道パラメータ）を生成する */
@@ -289,11 +337,55 @@ const SPARKLE_STAR_CLIP =
   "polygon(50% 0%, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0% 50%, 39% 39%)";
 
 /**
+ * 花火のバースト周期（秒）。全バーストで共通。
+ *
+ * 同じバーストの火花へ同じ delaySec / durationSec を与えるため、乱数ではなく
+ * 固定テーブルにしている。粒子ごとに duration を乱数化すると、同じ中心から
+ * 同時に出た火花の到達距離と消える瞬間がばらけ、「1点から破裂して広がる」形が
+ * 崩れて散発的な点の集まりに見える。ランダム性は火花ごとの放射角・距離・色・
+ * サイズと、中心の±2%ジッターで担保する。
+ *
+ * 周期を全バーストで揃え、開始時刻を period/4 ずつ等間隔に置くのは、
+ * 「全バーストが同時に暗転して画面から火花が消える時間帯」を無くすため。
+ * overlay-effect-fireworks の opacity は 0%(0) → 4%(0.333) → 8%(0.667) →
+ * 12%(1) → 60%(1) → 75%(0.625) → 90%(0.25) → 100%(0) で線形補間される。
+ * 0.3 を下回るのは先頭 0〜約3.6%（1.8s で約0.0649s）と末尾 88〜100%
+ * （同 0.216s）で、周期の折り返しでは連続する約15.6%（約0.2809s）。
+ * 開始時刻を 0.45s 間隔にすれば 0.45s > 0.2809s なので暗い区間は重ならず、
+ * 常に3バースト以上が明るい状態を保てる。周期をバーストごとに変えると、
+ * 位相がずれて全バーストが同時に暗転する瞬間が周期的に現れる（実測: 6秒表示の
+ * 4.3s 付近で最大 opacity 0.17 まで低下）。
+ */
+const FIREWORK_BURST_PERIOD_SEC = 1.8;
+
+/**
+ * バーストの中心（%）と開始時刻（秒）。
+ * 中心は spawnLeft [20,80] / spawnTop [12,48] の内側に置く。
+ * delaySec は 0.05 + period/4 × index（= 0.45s 間隔）。
+ */
+const FIREWORK_BURSTS: readonly {
+  center: readonly [number, number];
+  delaySec: number;
+}[] = [
+  { center: [34, 24], delaySec: 0.05 },
+  { center: [66, 30], delaySec: 0.5 },
+  { center: [50, 20], delaySec: 0.95 },
+  { center: [46, 42], delaySec: 1.4 },
+];
+
+/**
  * スタイルごとの設定。animationClassName は globals.css の @theme inline で
  * 定義した animate-* ユーティリティ名（キーフレーム overlay-effect-<style>）。
+ *
+ * `startAtRandomPhase: true` を付けた環境系8種（sparkle / confetti / hearts /
+ * stars / bubbles / petals / snow / coins）は、粒子ごとに duration を先に決めて
+ * -[0, duration) の負の delay を付ける。正の delay のままだと、遅延中は
+ * アニメーション未適用（fill-mode: none）× inline opacity 未指定となり、
+ * 粒子が不透明のまま静止して見えるため。fireworks はバーストの同時性を優先して
+ * 正の delay を保ち、CSS の fill-mode: backwards で開始前を透明にする。
  */
 export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
-  Record<Exclude<OverlayEffectStyle, "none">, OverlayEffectParticleConfig>
+  Record<OverlayEffectParticleStyle, OverlayEffectParticleConfig>
 > = {
   // キラキラ: 画面全体にきらめく星形が明滅する（回転＋拡縮＋発光）
   sparkle: {
@@ -301,7 +393,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [0, 100],
     durationSecRange: [1.1, 2.2],
-    delaySecRange: [0, 2],
+    startAtRandomPhase: true,
     particleCount: 22,
     buildParticle: () => {
       const size = rand(6, 16);
@@ -327,7 +419,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [-8, 8],
     durationSecRange: [2.4, 3.8],
-    delaySecRange: [0, 2.4],
+    startAtRandomPhase: true,
     particleCount: 26,
     buildParticle: (index) => {
       const color = pick(CONFETTI_COLORS);
@@ -356,7 +448,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [50, 100],
     durationSecRange: [2.6, 4.2],
-    delaySecRange: [0, 2.4],
+    startAtRandomPhase: true,
     particleCount: 20,
     buildParticle: () => {
       const size = rand(14, 30);
@@ -377,8 +469,8 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
   },
 
   // 花火: 複数の共通中心（バースト）から放射状に飛び散り、重力で少し落ちながら消える火花。
-  // 各パーティクルは1個の火花で、同じバーストに属する火花は出現位置と開始タイミングを
-  // 共有する（buildParticle が left/top/animationDelay を上書きする）。これにより
+  // 各パーティクルは1個の火花で、同じバーストに属する火花は出現位置・開始時刻・周期を
+  // 共有する（buildParticle が left/top/delaySec/durationSec を上書きする）。これにより
   // 「1点から破裂する花火」らしく見える（レビュー指摘: 独立した出現点だと散発的な
   // 火花に見えてしまう）。バースト位置は固定＋微ジッターで、常に spawn 範囲内に収める。
   fireworks: {
@@ -390,15 +482,9 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     // 4バースト × 12火花 = 48。バースト単位でまとまるよう割り切れる数にする。
     particleCount: 48,
     buildParticle: (index) => {
-      // バーストの中心（%）。spawnLeft [20,80] / spawnTop [12,48] の内側に置く。
-      const burstCenters: readonly [number, number][] = [
-        [34, 24],
-        [66, 30],
-        [50, 20],
-        [46, 42],
-      ];
       const sparksPerBurst = 12;
-      const burst = burstCenters[Math.floor(index / sparksPerBurst) % burstCenters.length];
+      const burstIndex = Math.floor(index / sparksPerBurst) % FIREWORK_BURSTS.length;
+      const burst = FIREWORK_BURSTS[burstIndex];
 
       const size = rand(3, 6);
       const color = pick(FIREWORK_COLORS);
@@ -407,10 +493,11 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
       const radius = rand(60, 150);
       return {
         content: "",
-        // 同じバーストの火花は同一中心（±微ジッター）から、ほぼ同時に破裂する
-        left: `${(burst[0] + rand(-2, 2)).toFixed(2)}%`,
-        top: `${(burst[1] + rand(-2, 2)).toFixed(2)}%`,
-        animationDelay: `${((Math.floor(index / sparksPerBurst) % burstCenters.length) * 0.55 + rand(0, 0.25)).toFixed(2)}s`,
+        // 同じバーストの火花は同一中心（±微ジッター）から、同じ時刻に同じ速さで破裂する
+        left: `${(burst.center[0] + rand(-2, 2)).toFixed(2)}%`,
+        top: `${(burst.center[1] + rand(-2, 2)).toFixed(2)}%`,
+        delaySec: burst.delaySec,
+        durationSec: FIREWORK_BURST_PERIOD_SEC,
         visualStyle: {
           width: px(size),
           height: px(size),
@@ -424,20 +511,28 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     },
   },
 
-  // 流れ星: 尾を引く光の筋が斜めに横切る
+  // 流れ星: 尾を引く光の筋が斜めに横切る。
+  // Issue #2088 (2): 粒子レイヤーがカード外へ OVERLAY_EFFECT_OVERFLOW_PX だけ
+  // はみ出す箱にクリップされるのに対し、従来の stars は尾+移動量で最大
+  // 252.7px も突出し、クリップ境界で筋が断ち切れて見えた。専用の扱いとして
+  // 出現位置を左上寄りに寄せ（spawnLeft [-8,40] / spawnTop [0,45]）、尾の長さを
+  // [45,85]、移動量を dx [100,170] / dy [55,120] に縮める。標準カード
+  // （w-80 ≒ 320px、レイヤー幅 432px）での最右翼端到達点は
+  // 0.40*432 + 170 + 85*cosθ ≒ 415px < 432px（= カード右端 376px + 56px）で、
+  // カード外へ最大約 39px はみ出しつつクリップ境界内に収まる。
   stars: {
     animationClassName: "animate-overlay-effect-stars",
-    spawnLeftPercentRange: [-5, 70],
-    spawnTopPercentRange: [0, 55],
+    spawnLeftPercentRange: [-8, 40],
+    spawnTopPercentRange: [0, 45],
     durationSecRange: [1.3, 2.3],
-    delaySecRange: [0, 2.8],
+    startAtRandomPhase: true,
     particleCount: 16,
     buildParticle: () => {
-      const length = rand(50, 110);
+      const length = rand(45, 85);
       const color = pick(STAR_COLORS);
       // 進行方向（右下がり）へ移動。角度から見た目の回転も一致させる
-      const dx = rand(160, 300);
-      const dy = rand(90, 200);
+      const dx = rand(100, 170);
+      const dy = rand(55, 120);
       const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
       return {
         content: "",
@@ -462,7 +557,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [55, 100],
     durationSecRange: [3.0, 5.0],
-    delaySecRange: [0, 2.6],
+    startAtRandomPhase: true,
     particleCount: 24,
     buildParticle: () => {
       const size = rand(10, 34);
@@ -490,7 +585,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [-8, 8],
     durationSecRange: [3.0, 4.8],
-    delaySecRange: [0, 2.8],
+    startAtRandomPhase: true,
     particleCount: 28,
     buildParticle: () => {
       const width = rand(9, 15);
@@ -519,7 +614,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [-8, 8],
     durationSecRange: [3.4, 6.0],
-    delaySecRange: [0, 3.0],
+    startAtRandomPhase: true,
     particleCount: 40,
     buildParticle: () => {
       const size = rand(4, 11);
@@ -546,7 +641,7 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
     spawnLeftPercentRange: [0, 100],
     spawnTopPercentRange: [-8, 6],
     durationSecRange: [1.8, 3.0],
-    delaySecRange: [0, 2.4],
+    startAtRandomPhase: true,
     particleCount: 22,
     buildParticle: () => {
       const size = rand(12, 22);
@@ -566,36 +661,66 @@ export const OVERLAY_EFFECT_PARTICLE_CONFIG: Readonly<
       };
     },
   },
-
-  // オーラ: 既存のカード内クリップ領域に、中心が透けた淡い光輪を3層だけ重ねる。
-  // 幅・高さ・ゆらぎを相対値にして、画像のみ／縦横／縮小表示でも同じ比率を保つ。
-  // 負の開始遅延で表示直後から光を見せ、外側のhaloや新しい描画レイヤーは作らない。
-  aura: {
-    animationClassName: "animate-overlay-effect-aura",
-    spawnLeftPercentRange: [2, 12],
-    spawnTopPercentRange: [2, 12],
-    durationSecRange: [3.4, 4.6],
-    delaySecRange: [-2.4, 0],
-    particleCount: 3,
-    buildParticle: (index) => {
-      const size = 76 + index * 10;
-      const inset = `${(100 - size) / 2}%`;
-      return {
-        content: "",
-        left: inset,
-        top: inset,
-        visualStyle: {
-          width: `${size}%`,
-          height: `${size}%`,
-          borderRadius: "50%",
-          backgroundImage:
-            "radial-gradient(ellipse at center, transparent 54%, rgba(216,180,254,0.20) 62%, rgba(165,243,252,0.30) 67%, rgba(216,180,254,0.12) 72%, transparent 80%)",
-          "--fx-sway": `${rand(1, 2).toFixed(2)}%`,
-        },
-      };
-    },
-  },
 } as const;
+
+/* -------------------------------------------------------------------------- */
+/* aura（縁の炎）の色解決                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * aura レイヤーにレアリティのグラデーション色を渡す CSS 変数名。
+ */
+export const OVERLAY_AURA_COLOR_VARS = {
+  from: "--fx-aura-from",
+  to: "--fx-aura-to",
+} as const;
+
+/**
+ * 色解決に失敗したときのフォールバック（炎らしい琥珀→橙）。
+ * 通常経路では枠グラデーションが常に解決できるため、クラス形式・変数欠落など
+ * 想定外の入力に対する安全側の値。
+ */
+const OVERLAY_AURA_FALLBACK_COLORS = ["#fbbf24", "#f97316"] as const;
+
+/**
+ * aura（縁の炎）の炎色を、カード枠と同じレアリティのグラデーション色から
+ * 解決する（Issue #2088 (3)）。
+ *
+ * 解決順:
+ * 1. カスタムレアリティ色: getRarityStylePresentation が styleVars に展開した
+ *    `--rarity-gradient-from` / `--rarity-gradient-to` の HEX をそのまま使う。
+ * 2. ビルトイン/未設定: `from-{hue}-{shade} to-{hue}-{shade}` 形式の
+ *    グラデーションクラスを TAILWIND_PALETTE_HEX で HEX へ引く
+ *    （rarity-styles.ts の legacy 形式正規化と同じ対応表）。
+ * 3. どちらも解決できない異常入力はフォールバック色に倒す。
+ *
+ * 返り値は [from, to]。aura の描画と CSS の発光で色を共有する。
+ */
+export function resolveOverlayAuraColors(
+  gradientClass: string,
+  styleVars: Record<string, unknown> | null | undefined,
+): readonly [string, string] {
+  const customFrom = styleVars?.[RARITY_STYLE_CSS_VARS.gradientFrom];
+  const customTo = styleVars?.[RARITY_STYLE_CSS_VARS.gradientTo];
+  if (
+    typeof customFrom === "string" && customFrom !== ""
+    && typeof customTo === "string" && customTo !== ""
+  ) {
+    return [customFrom, customTo];
+  }
+
+  const preset = /^from-([a-z]+-[0-9]{2,3})\s+to-([a-z]+-[0-9]{2,3})$/.exec(
+    gradientClass.trim(),
+  );
+  if (preset) {
+    const from = TAILWIND_PALETTE_HEX[preset[1]];
+    const to = TAILWIND_PALETTE_HEX[preset[2]];
+    if (from && to) {
+      return [from, to];
+    }
+  }
+  return [OVERLAY_AURA_FALLBACK_COLORS[0], OVERLAY_AURA_FALLBACK_COLORS[1]];
+}
 
 export interface OverlayEffectParticle extends OverlayEffectParticlePresentation {
   left: string;
@@ -609,28 +734,60 @@ function randomInRange([min, max]: readonly [number, number]): number {
 }
 
 /**
- * 指定スタイルのパーティクル（出現位置・タイミング・見た目）を生成する。
- * 個数は各スタイルの particleCount。"none" や未知スタイルは空配列。
+ * 秒数を CSS の time 値へ整形する。`-0.00s` のような負のゼロは有効な CSS だが
+ * DOM 上で紛らわしいため 0 に丸める。
+ */
+function formatSeconds(value: number): string {
+  const normalized = Math.abs(value) < 0.005 ? 0 : value;
+  return `${normalized.toFixed(2)}s`;
+}
+
+/**
+ * 1粒子の開始遅延（秒）を決める。
  *
- * left/top はスタイルごとの出現エリアから、delay/duration も範囲からランダムに決め、
- * さらに buildParticle で色・サイズ・軌道パラメータ（CSS変数）を個別化することで、
- * 同一演出内でもパーティクルが機械的に同期しない自然な見た目にする。
+ * - startAtRandomPhase のスタイル: `-[0, duration]` の負の delay を返す。負の delay は
+ *   「あたかも duration のうち [0, |delay|) の時間が既に経過した状態」から開始する
+ *   指定なので、fill-mode: none でも表示開始の最初のフレームからアニメーションが
+ *   適用される。これが「遅延中は不透明なまま静止する」現象を無くす手段。
+ * - それ以外: 宣言された delaySecRange から正の delay を選ぶ（fireworks の
+ *   バースト間隔）。範囲が無い場合は即時開始（0）に倒す。
+ */
+function resolveDelaySec(
+  config: OverlayEffectParticleConfig,
+  durationSec: number,
+): number {
+  if (config.startAtRandomPhase) {
+    return -randomInRange([0, durationSec]);
+  }
+  return config.delaySecRange ? randomInRange(config.delaySecRange) : 0;
+}
+
+/**
+ * 指定スタイルのパーティクル（出現位置・タイミング・見た目）を生成する。
+ * 個数は各スタイルの particleCount。粒子を使わない "none" / "aura" や未知入力は空配列。
+ *
+ * left/top はスタイルごとの出現エリアから、色・サイズ・軌道パラメータ（CSS変数）は
+ * buildParticle が個別化することで、同一演出内でもパーティクルが機械的に同期しない
+ * 自然な見た目にする。duration は「先に」確定してから delay を決める（負の delay の
+ * 絶対値が 1 周期を超えると 2 周目に入り、開始位相の意図が崩れるため）。
  */
 export function generateOverlayEffectParticles(
   style: OverlayEffectStyle,
 ): OverlayEffectParticle[] {
-  if (style === "none") return [];
+  if (style === "none" || style === "aura") return [];
   const config = OVERLAY_EFFECT_PARTICLE_CONFIG[style];
   if (!config) return [];
   return Array.from({ length: config.particleCount }, (_, index) => {
     const presentation = config.buildParticle(index);
+    const durationSec = presentation.durationSec ?? randomInRange(config.durationSecRange);
+    const delaySec = presentation.delaySec ?? resolveDelaySec(config, durationSec);
     return {
-      // presentation が left/top/animationDelay を上書きしていればそれを使う
-      // （fireworks の共通バースト中心など、位置・タイミングの協調が必要な演出用）。
+      // presentation が left/top/delaySec/durationSec を上書きしていればそれを使う
+      // （fireworks の共通バースト中心・同時破裂など、位置とタイミングの協調が必要な演出用）。
       left: presentation.left ?? `${randomInRange(config.spawnLeftPercentRange).toFixed(2)}%`,
       top: presentation.top ?? `${randomInRange(config.spawnTopPercentRange).toFixed(2)}%`,
-      animationDelay: presentation.animationDelay ?? `${randomInRange(config.delaySecRange).toFixed(2)}s`,
-      animationDuration: `${randomInRange(config.durationSecRange).toFixed(2)}s`,
+      animationDelay: formatSeconds(delaySec),
+      animationDuration: formatSeconds(durationSec),
       content: presentation.content,
       visualStyle: presentation.visualStyle,
     };

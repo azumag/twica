@@ -126,6 +126,29 @@ describe("acceptTradeOffer (#724)", () => {
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
 
+  // #2061: PostgreSQL's uuid output is lowercase, while isCanonicalUuid also
+  // accepts the uppercase spelling a client may send. The RPC already
+  // committed the transfer by the time this payload is validated, so an
+  // exact-string comparison would turn a successful accept into a 500. The
+  // id comparison alone must ignore case.
+  it("accepts a lowercase RPC result when the caller supplied an uppercase offer id (#2061)", async () => {
+    // A real hex id: the TRADE_ID fixture is digits only, which do not change
+    // under toUpperCase().
+    const hexTradeId = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+    const result = rpcSuccess({ tradeOfferId: hexTradeId });
+    const sqlMock = vi.fn().mockResolvedValue([{ result }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(
+      acceptTradeOffer({
+        ...ACCEPT_INPUT,
+        tradeOfferId: hexTradeId.toUpperCase(),
+      }),
+    ).resolves.toEqual(result);
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["missing success fields", { success: true }],
     ["mismatched trade offer", rpcSuccess({ tradeOfferId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" })],

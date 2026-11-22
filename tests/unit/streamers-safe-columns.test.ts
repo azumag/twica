@@ -90,6 +90,24 @@ describe('streamers デプロイ窓の列集合契約', () => {
     expect(isMissingAlbumSettingsColumnError(error)).toBe(false)
   })
 
+  it('trade_unowned_card_names_visible は trade 設定列として検知し、安全列には含めない', () => {
+    // Issue #2070: 既存の TRADE_SETTINGS_COLUMNS に登録されていない状態では、
+    // この列だけが未適用のDBで withLiveDirectorySettingsColumnFallback が
+    // 42703 を対象外として再送出してしまう。検知と再試行の契約を直接固定する。
+    const column = 'trade_unowned_card_names_visible'
+    const error = missingColumnError(column)
+
+    expect(TRADE_SETTINGS_COLUMNS).toContain(column)
+    expect(isMissingTradeSettingsColumnError(error)).toBe(true)
+    expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+    expect(isMissingAlbumSettingsColumnError(error)).toBe(false)
+    // STREAMERS_SAFE_COLUMNS に含めると、再試行のSELECTでも同じ42703になり
+    // フォールバックが機能しない。実SQL列として含まれないことを固定する。
+    expect(
+      Object.values(STREAMERS_SAFE_COLUMNS).map((safeColumn) => safeColumn.name),
+    ).not.toContain(column)
+  })
+
   it.each(ALBUM_SETTINGS_COLUMNS)('%s は album 設定列としてのみ検知する', (column) => {
     const error = missingColumnError(column)
 
@@ -148,6 +166,9 @@ describe('streamers デプロイ窓の列集合契約', () => {
     expect(TRADE_SETTINGS_COLUMNS).toEqual([
       'trade_enabled',
       'cross_channel_trade_enabled',
+      // #2070: トレード限定の未所持カード名公開。既存2列とは別 migration だが、
+      // 読み取り側のデプロイ窓フォールバックでは同じ検知グループにまとめる。
+      'trade_unowned_card_names_visible',
     ])
     expect(ALBUM_SETTINGS_COLUMNS).toEqual([
       'pack_album_grid_sizes',

@@ -56,6 +56,13 @@ const S = {
   NOCROSS: id(4), // trade on, cross off
   OFF: id(5), // trade off
   READ: id(6), // trade + cross, names public; only used by the board test
+  // #2070: names only in trades (images hidden) and the same setting with
+  // show_unowned_cards off (must reveal nothing).
+  NAMEONLY: id(7),
+  NAMEONLY_HIDDEN: id(8),
+  // #2079: dedicated channels for the hub's per-collection auction list.
+  HUB: id(9), // the viewer owns a card here
+  HUB2: id(10), // the viewer owns nothing here
 };
 const C = {
   A_MAIN: id(11),
@@ -67,6 +74,19 @@ const C = {
   NOCROSS_COIN: id(41),
   OFF_COIN: id(51),
   READ_GEM: id(61),
+  NAMEONLY_MAIN: id(71),
+  NAMEONLY_BID: id(72),
+  NAMEONLY_HIDDEN_MAIN: id(73),
+  NAMEONLY_HIDDEN_BID: id(74),
+  HUB_MAIN: id(75),
+  HUB_SIDE: id(76),
+  HUB2_MAIN: id(77),
+};
+/** Secret image URLs (stored on the cards; snapshots copy them at listing time). */
+const NAMEONLY_IMAGES = {
+  MAIN: "https://secret.example/auction-main.png",
+  BID: "https://secret.example/auction-bid.png",
+  HIDDEN: "https://secret.example/auction-hidden.png",
 };
 const USER_PREFIX = "ta1791-";
 
@@ -87,14 +107,24 @@ async function seed() {
   const streamer = (
     sid: string,
     name: string,
-    flags: { trade: boolean; cross: boolean; reveal: boolean },
+    flags: {
+      trade: boolean;
+      cross: boolean;
+      /** show_unowned_cards */
+      reveal: boolean;
+      /** show_unowned_card_details (defaults to `reveal`) */
+      details?: boolean;
+      namesVisible?: boolean;
+    },
   ) => s`
     INSERT INTO streamers (
       id, twitch_user_id, twitch_username, twitch_display_name,
-      trade_enabled, cross_channel_trade_enabled, show_unowned_cards, show_unowned_card_details
+      trade_enabled, cross_channel_trade_enabled, show_unowned_cards,
+      show_unowned_card_details, trade_unowned_card_names_visible
     ) VALUES (
       ${sid}, ${`ta-${name}`}, ${`ta-${name}`}, ${`TA ${name}`},
-      ${flags.trade}, ${flags.cross}, ${flags.reveal}, ${flags.reveal}
+      ${flags.trade}, ${flags.cross}, ${flags.reveal}, ${flags.details ?? flags.reveal},
+      ${flags.namesVisible ?? false}
     )`;
   await streamer(S.A, "a", { trade: true, cross: true, reveal: true });
   await streamer(S.B, "b", { trade: true, cross: true, reveal: true });
@@ -102,10 +132,23 @@ async function seed() {
   await streamer(S.NOCROSS, "nocross", { trade: true, cross: false, reveal: true });
   await streamer(S.OFF, "off", { trade: false, cross: true, reveal: true });
   await streamer(S.READ, "read", { trade: true, cross: true, reveal: true });
+  // #2070: namesVisible without details = name-only channel; the hidden one
+  // additionally has show_unowned_cards=false.
+  await streamer(S.NAMEONLY, "nameonly", {
+    trade: true, cross: true, reveal: true, details: false, namesVisible: true,
+  });
+  await streamer(S.NAMEONLY_HIDDEN, "nameonly-hidden", {
+    trade: true, cross: true, reveal: false, namesVisible: true,
+  });
+  // #2079: the hub's per-collection auction list needs one channel the viewer
+  // owns (HUB) and one it does not (HUB2). Both reveal their cards so the
+  // auction stays visible; only collection ownership decides the placement.
+  await streamer(S.HUB, "hub", { trade: true, cross: true, reveal: true });
+  await streamer(S.HUB2, "hub2", { trade: true, cross: true, reveal: true });
 
-  const card = (cid: string, sid: string, name: string, active = true) =>
-    s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
-      VALUES (${cid}, ${sid}, ${name}, 'common', 0.1, ${active})`;
+  const card = (cid: string, sid: string, name: string, active = true, imageUrl: string | null = null) =>
+    s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active, image_url)
+      VALUES (${cid}, ${sid}, ${name}, 'common', 0.1, ${active}, ${imageUrl})`;
   await card(C.A_MAIN, S.A, "A Main");
   await card(C.A_COIN, S.A, "A Coin");
   await card(C.A_GEM, S.A, "A Gem");
@@ -115,6 +158,13 @@ async function seed() {
   await card(C.NOCROSS_COIN, S.NOCROSS, "NoCross Coin");
   await card(C.OFF_COIN, S.OFF, "Off Coin");
   await card(C.READ_GEM, S.READ, "Read Gem");
+  await card(C.NAMEONLY_MAIN, S.NAMEONLY, "NameOnly Main", true, NAMEONLY_IMAGES.MAIN);
+  await card(C.NAMEONLY_BID, S.NAMEONLY, "NameOnly Bid", true, NAMEONLY_IMAGES.BID);
+  await card(C.NAMEONLY_HIDDEN_MAIN, S.NAMEONLY_HIDDEN, "Hidden Main", true, NAMEONLY_IMAGES.HIDDEN);
+  await card(C.NAMEONLY_HIDDEN_BID, S.NAMEONLY_HIDDEN, "Hidden Bid", true, NAMEONLY_IMAGES.HIDDEN);
+  await card(C.HUB_MAIN, S.HUB, "Hub Main");
+  await card(C.HUB_SIDE, S.HUB, "Hub Side");
+  await card(C.HUB2_MAIN, S.HUB2, "Hub2 Main");
 }
 
 /** A fresh user; returns its twitch id and users.id. */
@@ -838,4 +888,226 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
         .resolves.toMatchObject({ auctions: [], hasMore: false });
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // #2070: 名前だけ公開のチャネルでは、オークションの行（名前・レアリティ）は
+  // 見えるが画像は見えない。入札カードは入札者と出品者の両方の名前可視性を通る。
+  // 既存の PUB/HALF 相当のケースはそのまま残し、ここで新しい中間状態を固定する。
+  // ---------------------------------------------------------------------------
+  describe("name-only visibility (#2070)", () => {
+    it("lists a name-only auction without the image and shows bid names without bid images to the seller", async () => {
+      const seller = await newUser("no-seller");
+      const bidder = await newUser("no-bidder");
+      const [mainCopy] = await giveCopies(seller.id, C.NAMEONLY_MAIN, 1);
+      await giveCopies(bidder.id, C.NAMEONLY_BID, 1);
+      const auctionId = await createAuctionOk(seller.twitch, mainCopy);
+      const { listTradeAuctions, getTradeAuction, placeTradeAuctionBid } = await svc();
+
+      const board = await listTradeAuctions({
+        streamerId: S.NAMEONLY,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: bidder.twitch,
+      });
+      const row = board.auctions.find((auction) => auction.id === auctionId);
+      expect(row?.offeredCard).toEqual({
+        name: "NameOnly Main",
+        rarity: "common",
+        imageUrl: null,
+      });
+      expect(JSON.stringify(board)).not.toContain(NAMEONLY_IMAGES.MAIN);
+
+      // Anonymous viewers see the name too (name-level rule, no ownership).
+      const anonymous = await listTradeAuctions({
+        streamerId: S.NAMEONLY,
+        scope: "in_channel",
+        page: 1,
+      });
+      expect(anonymous.auctions.find((auction) => auction.id === auctionId)?.offeredCard)
+        .toMatchObject({ name: "NameOnly Main", imageUrl: null });
+
+      // The name-level rule lets the bid through (the bid card is also visible
+      // to the seller by NAME, which is what the precheck needs).
+      const placed = await placeTradeAuctionBid({
+        twitchUserId: bidder.twitch,
+        auctionId,
+        bidCardId: C.NAMEONLY_BID,
+        quantity: 1,
+        requestId: randomUUID(),
+      });
+      expect(placed.kind).toBe("ok");
+
+      // Bidder: the auction card is not owned -> no image; their own bid card
+      // is owned -> the image stays.
+      const asBidder = await getTradeAuction({ auctionId, twitchUserId: bidder.twitch });
+      expect(asBidder?.auction.offeredCard.imageUrl).toBeNull();
+      expect(asBidder?.auction.myBid?.bidCard).toEqual({
+        name: "NameOnly Bid",
+        rarity: "common",
+        imageUrl: NAMEONLY_IMAGES.BID,
+      });
+
+      // Seller: owns the auction card -> image stays; the bid card is visible
+      // by name only (details off) -> no image, but the name remains.
+      const asSeller = await getTradeAuction({ auctionId, twitchUserId: seller.twitch });
+      expect(asSeller?.auction.offeredCard.imageUrl).toBe(NAMEONLY_IMAGES.MAIN);
+      expect(asSeller?.bids?.[0].bidCard).toEqual({
+        name: "NameOnly Bid",
+        rarity: "common",
+        imageUrl: null,
+      });
+      expect(JSON.stringify(asSeller)).not.toContain(NAMEONLY_IMAGES.BID);
+
+      // /mine (selling) is not exempt from the image rule either.
+      const { listMyTradeAuctions } = await svc();
+      const mine = await listMyTradeAuctions(seller.twitch, { role: "selling" });
+      const mineRow = mine.auctions.find((auction) => auction.id === auctionId);
+      expect(mineRow?.offeredCard.imageUrl).toBe(NAMEONLY_IMAGES.MAIN);
+    });
+
+    it("hides a NAMEONLY_BUT_HIDDEN auction and rejects a bid as not found", async () => {
+      const seller = await newUser("nh-seller");
+      const bidder = await newUser("nh-bidder");
+      const [mainCopy] = await giveCopies(seller.id, C.NAMEONLY_HIDDEN_MAIN, 1);
+      await giveCopies(bidder.id, C.NAMEONLY_HIDDEN_BID, 1);
+      const auctionId = await createAuctionOk(seller.twitch, mainCopy);
+      const { listTradeAuctions, getTradeAuction, placeTradeAuctionBid } = await svc();
+
+      const board = await listTradeAuctions({
+        streamerId: S.NAMEONLY_HIDDEN,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: bidder.twitch,
+      });
+      expect(board.auctions.find((auction) => auction.id === auctionId)).toBeUndefined();
+      expect(JSON.stringify(board)).not.toContain("Hidden Main");
+
+      await expect(getTradeAuction({ auctionId, twitchUserId: bidder.twitch })).resolves.toBeNull();
+
+      await expect(placeTradeAuctionBid({
+        twitchUserId: bidder.twitch,
+        auctionId,
+        bidCardId: C.NAMEONLY_HIDDEN_BID,
+        quantity: 1,
+        requestId: randomUUID(),
+      })).resolves.toEqual({ kind: "error", code: "TRADE_AUCTION_NOT_FOUND" });
+    });
+  });
+  // ---------------------------------------------------------------------------
+  // #2079: ハブのコレクション別オークション一覧。専用ユーザーを作り、HUB の
+  // カードだけを所持する viewer で「所持コレクションだけに出る」ことと、
+  // ending_soon の並び（入札中 → 選択待ち）を実 DB で固定する。
+  // 後片付けは共通 cleanup()（twitch id prefix と S の streamer id）。
+  // ---------------------------------------------------------------------------
+  describe("collection lists (#2079)", () => {
+    it("puts bidding before selecting for ending_soon and omits unowned collections", async () => {
+      const seller = await newUser("hub-seller");
+      const viewer = await newUser("hub-viewer");
+      const bidder = await newUser("hub-bidder");
+      const [biddingSoonCopy, biddingFarCopy, selectingNewCopy, selectingOldCopy] =
+        await giveCopies(seller.id, C.HUB_MAIN, 4);
+      const [hub2Copy] = await giveCopies(seller.id, C.HUB2_MAIN, 1);
+      await giveCopies(viewer.id, C.HUB_SIDE, 1);
+      await giveCopies(bidder.id, C.A_COIN, 2);
+
+      const biddingSoon = await createAuctionOk(seller.twitch, biddingSoonCopy);
+      const biddingFar = await createAuctionOk(seller.twitch, biddingFarCopy);
+      const selectingNew = await createAuctionOk(seller.twitch, selectingNewCopy);
+      const selectingOld = await createAuctionOk(seller.twitch, selectingOldCopy);
+      const unowned = await createAuctionOk(seller.twitch, hub2Copy);
+
+      // Active bids keep the selecting auctions holding their cards after
+      // ends_at (trade_auction_holds_cards). Place them before moving the
+      // deadlines into the past; the RPC accepts bids only before ends_at.
+      await placeBidOk(bidder.twitch, selectingNew, C.A_COIN, 1);
+      await placeBidOk(bidder.twitch, selectingOld, C.A_COIN, 1);
+
+      // Move the DB clock windows instead of waiting. clock_timestamp() is the
+      // same reference trade_auction_holds_cards() uses.
+      const setWindow = (auctionId: string, endsOffset: string, selectionOffset: string) => sql!`
+        UPDATE trade_auctions
+        SET ends_at = clock_timestamp() + ${endsOffset}::interval,
+            selection_deadline = clock_timestamp() + ${selectionOffset}::interval
+        WHERE id = ${auctionId}`;
+      await setWindow(biddingSoon, "1 hour", "73 hours");
+      await setWindow(biddingFar, "3 hours", "75 hours");
+      await setWindow(selectingNew, "-1 minute", "1 hour");
+      await setWindow(selectingOld, "-5 minutes", "1 hour");
+      await setWindow(unowned, "2 hours", "74 hours");
+
+      const { listTradeAuctionsByCollection } = await svc();
+      const groups = await listTradeAuctionsByCollection({
+        twitchUserId: viewer.twitch,
+        sort: "ending_soon",
+      });
+      const group = groups.find((item) => item.streamer.id === S.HUB);
+
+      expect(group?.total).toBe(4);
+      // Bidding: ends_at ASC (soonest first). Selecting: ends_at DESC (the
+      // auction that just ended first), always after every bidding auction.
+      expect(group?.auctions.map((auction) => auction.id)).toEqual([
+        biddingSoon,
+        biddingFar,
+        selectingNew,
+        selectingOld,
+      ]);
+      expect(group?.auctions.map((auction) => auction.phase)).toEqual([
+        "bidding",
+        "bidding",
+        "selecting",
+        "selecting",
+      ]);
+      // The viewer owns no HUB2 card, so its auction is not placed there.
+      expect(groups.map((item) => item.streamer.id)).not.toContain(S.HUB2);
+
+      // Same Date normalization as the offer list.
+      expect(typeof group?.latestCreatedAt).toBe("string");
+      expect(Number.isNaN(Date.parse(group!.latestCreatedAt))).toBe(false);
+
+      // The expand API runs the same window query for one streamer; the
+      // ownership precheck turns an unowned collection into null (404).
+      const { listTradeCollectionPage } = await import("@/lib/trade-collections");
+      const page = await listTradeCollectionPage({
+        twitchUserId: viewer.twitch,
+        streamerId: S.HUB,
+        kind: "auction",
+        sort: "ending_soon",
+        page: 1,
+      });
+      expect(page).toMatchObject({
+        kind: "auction",
+        streamer: { id: S.HUB },
+        total: 4,
+        page: 1,
+        pageSize: 20,
+        hasMore: false,
+      });
+      expect(page?.kind === "auction" ? page.auctions.map((auction) => auction.id) : [])
+        .toEqual([biddingSoon, biddingFar, selectingNew, selectingOld]);
+      await expect(listTradeCollectionPage({
+        twitchUserId: viewer.twitch,
+        streamerId: S.HUB2,
+        kind: "auction",
+        sort: "ending_soon",
+        page: 1,
+      })).resolves.toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #2080: /trade/new disables the auction entry point before the first API
+  // call when the auction schema is missing. The probe therefore has to read
+  // the catalog through the same postgres.js client as every other raw query in
+  // src/lib/trade-auction.ts (getDb().sql), not through Drizzle's db.execute:
+  // a driver-shape mismatch would fail silently and always report false. On a
+  // migrated database the probe must report true. Read-only, so it neither
+  // seeds nor mutates anything and can share the suite's fixture.
+  // ---------------------------------------------------------------------------
+  describe("auction schema availability (#2080)", () => {
+    it("reports the migrated auction schema as available", async () => {
+      const { isTradeAuctionSchemaAvailable } = await import("@/lib/trade-create-flow");
+      await expect(isTradeAuctionSchemaAvailable()).resolves.toBe(true);
+    });
+  });
+
 });

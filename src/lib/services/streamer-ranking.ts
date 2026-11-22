@@ -4,7 +4,7 @@
  * 匿名化は DB 関数 public.get_streamer_ranking(uuid) の応答生成時点で完結する
  * (migration 20261007190000_streamer_ranking_read_function.sql)。このモジュールは
  * その関数を1文で呼び、postgres.js が返す jsonb を contract 型へ正規化するだけの
- * 薄い層であり、他チャンネルの識別子を扱うコードを一切持たない（そもそも受け取らない）。
+ * 薄い層であり、他チャネルの識別子を扱うコードを一切持たない（そもそも受け取らない）。
  * PostgREST / dual-driver 分岐は持たない（現行 PlanetScale 単一 runtime）。
  *
  * 読み取り量: snapshot への数行 lookup（PK lookup + position index range）と、

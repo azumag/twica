@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
 import { sql as drizzleSql, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
@@ -11,9 +12,34 @@ import { getDb } from "@/lib/db/client";
 // reads. The SQL itself runs on real PostgreSQL in
 // tests/integration/trade-auction-pg.test.ts.
 
+// Route prelude for the #2061 boundary test in the withdraw describe below.
+// The service is the real module (only the DB is mocked), so that test runs
+// the exact path that used to answer 404 for an uppercase auction id.
+const routeMocks = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  validateCSRFToken: vi.fn(),
+  checkRateLimit: vi.fn(),
+  validateContentType: vi.fn(),
+  recordApiError: vi.fn(),
+}));
+
 vi.mock("@/lib/db/client", () => ({ getDb: vi.fn() }));
 vi.mock("@/lib/db/retry", () => ({
   withDbRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock("@/lib/session", () => ({ getSession: routeMocks.getSession }));
+vi.mock("@/lib/csrf", () => ({ validateCSRFToken: routeMocks.validateCSRFToken }));
+vi.mock("@/lib/rate-limit", () => ({
+  checkRateLimit: routeMocks.checkRateLimit,
+  getRateLimitIdentifier: vi.fn().mockResolvedValue("user:viewer-1"),
+  rateLimits: { tradeWrite: { name: "tradeWrite" }, tradeRead: { name: "tradeRead" } },
+}));
+vi.mock("@/lib/request-validation", () => ({
+  validateContentType: routeMocks.validateContentType,
+}));
+vi.mock("@/lib/error-handler", () => ({ recordApiError: routeMocks.recordApiError }));
+vi.mock("@/lib/logger.server", () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 function render(fragment: unknown) {
@@ -211,6 +237,82 @@ describe("RPC result mapping", () => {
   });
 });
 
+// #2061: before the RPC, withdrawTradeAuctionBid compares the [id] path value
+// with bids.auction_id exactly as Drizzle returned it. PostgreSQL prints uuid
+// values in lowercase, so an uppercase path value never matches even though
+// the database would treat both as the same uuid. The fix normalizes at the
+// API boundary; these fixtures pin the service contract (lowercase in, match)
+// and reproduce the pre-fix mismatch.
+describe("withdraw path auction-id check (#2061)", () => {
+  const HEX_AUCTION_ID = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+  const HEX_BID_ID = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e";
+
+  it("reproduces the 404 when an uppercase auctionId reaches the service unnormalized", async () => {
+    prime({ selects: [{ rows: [{ auctionId: HEX_AUCTION_ID }] }] });
+    const { withdrawTradeAuctionBid } = await import("@/lib/trade-auction");
+    await expect(withdrawTradeAuctionBid({
+      twitchUserId: "b",
+      bidId: HEX_BID_ID,
+      auctionId: HEX_AUCTION_ID.toUpperCase(),
+    })).resolves.toEqual({ kind: "error", code: "TRADE_AUCTION_BID_NOT_FOUND" });
+  });
+
+  it("matches the bid's auction after the boundary normalized the id", async () => {
+    const pg = prime({
+      selects: [{ rows: [{ auctionId: HEX_AUCTION_ID }] }],
+      rpc: [rpc({ success: true, bidId: HEX_BID_ID, alreadyWithdrawn: false })],
+    });
+    const { withdrawTradeAuctionBid } = await import("@/lib/trade-auction");
+    await expect(withdrawTradeAuctionBid({
+      twitchUserId: "b",
+      bidId: HEX_BID_ID,
+      auctionId: HEX_AUCTION_ID,
+    })).resolves.toEqual({ kind: "ok", bidId: HEX_BID_ID, alreadyWithdrawn: false });
+    expect(pg.rpcCalls).toHaveLength(1);
+  });
+
+  it("POST withdraw answers 200 for uppercase path ids after boundary normalization (#2061)", async () => {
+    routeMocks.getSession.mockResolvedValue({ twitchUserId: "viewer-1" });
+    routeMocks.validateContentType.mockReturnValue(null);
+    routeMocks.validateCSRFToken.mockResolvedValue({ valid: true });
+    routeMocks.checkRateLimit.mockResolvedValue({
+      success: true,
+      limit: 10,
+      remaining: 9,
+      reset: Date.now() + 60_000,
+    });
+    routeMocks.recordApiError.mockResolvedValue(undefined);
+    prime({
+      selects: [{ rows: [{ auctionId: HEX_AUCTION_ID }] }],
+      rpc: [rpc({ success: true, bidId: HEX_BID_ID, alreadyWithdrawn: false })],
+    });
+
+    const { POST } = await import(
+      "@/app/api/trades/auctions/[id]/bids/[bidId]/withdraw/route"
+    );
+    const response = await POST(
+      new NextRequest(
+        `http://localhost/api/trades/auctions/${HEX_AUCTION_ID.toUpperCase()}`
+        + `/bids/${HEX_BID_ID.toUpperCase()}/withdraw`,
+        { method: "POST", headers: { "content-type": "application/json" } },
+      ),
+      {
+        params: Promise.resolve({
+          id: HEX_AUCTION_ID.toUpperCase(),
+          bidId: HEX_BID_ID.toUpperCase(),
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      success: true,
+      bidId: HEX_BID_ID,
+      alreadyWithdrawn: false,
+    });
+  });
+});
+
 describe("40P01 and the deploy window", () => {
   it("retries a deadlock once with the same arguments", async () => {
     const pg = prime({ rpc: [{ error: deadlock }, rpc({ success: true, auctionId: AUCTION_ID, alreadyCancelled: false })] });
@@ -366,7 +468,7 @@ describe("read DTOs", () => {
     expect(anonymous).not.toHaveProperty("offeredUserCardId");
   });
 
-  it("detail: non-sellers get no bid list and cost one statement; the seller gets the list", async () => {
+  it("detail: non-sellers get no bid list; the seller gets the list", async () => {
     const { getTradeAuction } = await import("@/lib/trade-auction");
     let pg = prime({ selects: [{ rows: [auctionRow()] }] });
     await expect(getTradeAuction({ auctionId: AUCTION_ID, twitchUserId: "v" })).resolves.toMatchObject({ bids: null });
@@ -423,5 +525,86 @@ describe("read DTOs", () => {
     const phase = render((pg.selectCalls[0].fields as Record<string, unknown>).phase).sql;
     expect(phase).toContain('clock_timestamp() < "trade_auctions"."ends_at"');
     expect(phase).not.toContain("now()");
+  });
+});
+
+
+// -----------------------------------------------------------------------------
+// #2070: 未所持カードは名前だけの公開にする設定のデプロイ窓（オークション側）。
+// cardVisibleTo を呼ぶ 5 か所（listTradeAuctions / getTradeAuction /
+// precheckBidVisibility の 3 判定）が、新列の 42703 で旧規則に縮退することを固定する。
+// -----------------------------------------------------------------------------
+describe("name-only trade visibility deploy window (#2070, auctions)", () => {
+  const MISSING_NAME_ONLY_COLUMN = {
+    code: "42703",
+    message: 'column visible_streamer.trade_unowned_card_names_visible does not exist',
+  };
+
+  const cases = [
+    {
+      name: "listTradeAuctions",
+      async run() {
+        const pg = prime({ selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [] }] });
+        const { listTradeAuctions } = await import("@/lib/trade-auction");
+        await expect(listTradeAuctions({ streamerId: AUCTION_ID, scope: "in_channel", page: 1 }))
+          .resolves.toMatchObject({ auctions: [] });
+        return {
+          before: render(pg.selectCalls[0].where).sql,
+          after: render(pg.selectCalls[1].where).sql,
+        };
+      },
+    },
+    {
+      name: "getTradeAuction",
+      async run() {
+        const pg = prime({ selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [] }] });
+        const { getTradeAuction } = await import("@/lib/trade-auction");
+        await expect(getTradeAuction({ auctionId: AUCTION_ID })).resolves.toBeNull();
+        return {
+          before: render(pg.selectCalls[0].where).sql,
+          after: render(pg.selectCalls[1].where).sql,
+        };
+      },
+    },
+    {
+      name: "precheckBidVisibility (bidder and seller checks)",
+      async run() {
+        const pg = prime({
+          selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [visibleRow] }],
+          rpc: [rpc(okBidResult)],
+        });
+        const { placeTradeAuctionBid } = await import("@/lib/trade-auction");
+        await expect(placeTradeAuctionBid(bidInput)).resolves.toMatchObject({ kind: "ok" });
+        const before = pg.selectCalls[0].fields as Record<string, unknown>;
+        const after = pg.selectCalls[1].fields as Record<string, unknown>;
+        return {
+          before: [
+            render(before.offeredVisible).sql,
+            render(before.bidCardVisibleToBidder).sql,
+            render(before.bidCardVisibleToSeller).sql,
+          ].join("\n"),
+          after: [
+            render(after.offeredVisible).sql,
+            render(after.bidCardVisibleToBidder).sql,
+            render(after.bidCardVisibleToSeller).sql,
+          ].join("\n"),
+        };
+      },
+    },
+  ] as const;
+
+  it.each(cases)("$name retries once with the legacy rule", async ({ run }) => {
+    const { before, after } = await run();
+    expect(before).toContain("trade_unowned_card_names_visible");
+    expect(after).not.toContain("trade_unowned_card_names_visible");
+  });
+
+  it("rethrows an unrelated 42703 without retrying", async () => {
+    const other = { code: "42703", message: 'column trade_auctions.some_other_column does not exist' };
+    const pg = prime({ selects: [{ error: other }, { rows: [] }] });
+    const { listTradeAuctions } = await import("@/lib/trade-auction");
+    await expect(listTradeAuctions({ streamerId: AUCTION_ID, scope: "in_channel", page: 1 }))
+      .rejects.toBe(other);
+    expect(pg.selectCalls).toHaveLength(1);
   });
 });
