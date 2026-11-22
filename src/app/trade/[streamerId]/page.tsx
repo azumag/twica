@@ -93,13 +93,19 @@ export default async function TradeBoardPage({
 
   // Card filter is in-channel only (MVP decision); the query is not even
   // started for the cross tab.
-  let filterCards: Array<{ cardId: string; name: string }> = [];
+  //
+  // #2070 フォローアップ (C4a): 名前が非公開のカードは name が "" で返るため、
+  // 選択肢の表示名をクライアント（<TradeBoard>）が組み立てられるよう
+  // collectionNumber も渡す。並びは listWantableCards の
+  // rarity_order → 表示番号 → cardId のまま（ここで並べ替えない）。
+  let filterCards: Array<{ cardId: string; name: string; collectionNumber: number | null }> = [];
   if (scopeEnabled && filterCardsTask) {
     const filterResult = await filterCardsTask;
     if (!filterResult.ok) throw filterResult.error;
     filterCards = filterResult.cards.map((card) => ({
       cardId: card.cardId,
       name: card.name,
+      collectionNumber: card.collectionNumber,
     }));
   }
 

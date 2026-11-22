@@ -50,6 +50,7 @@ import { validateRarityStylesInput } from "@/lib/rarity-styles";
 // getDb() は各 withDbRetry queryFn 内で取得し、リトライ時に接続状態を引き継がない。
 // -----------------------------------------------------------------------------
 import { and, eq } from "drizzle-orm";
+import { unownedCardDetailsMirrorSql } from "@/lib/unowned-card-visibility";
 import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
@@ -58,7 +59,9 @@ import {
   isMissingAlbumSettingsColumnError,
   isMissingDuplicateDisplayTiersColumnError,
   isMissingTradeSettingsColumnError,
+  isMissingUnownedCardItemColumnError,
   TRADE_SETTINGS_COLUMNS,
+  UNOWNED_CARD_ITEM_COLUMNS,
 } from "@/lib/db/streamers-safe-columns";
 import { validateDuplicateDisplayTiers } from "@/lib/duplicate-display-tiers";
 import {
@@ -569,6 +572,10 @@ interface ApplyStreamerSettingsUpdateResult {
   // Issue #1994: channel_point_pack_names 列未デプロイ窓で配列列を剥がし、かつ
   // 旧単一列（先頭要素）だけでは表せない2要素以上の割り当てだった場合に true。
   channelPointPackNamesWriteSkipped: boolean;
+  // #2070 フォローアップ (C4b): 未所持カードの項目別公開列
+  // (show_unowned_card_name / _image / _description) が未デプロイで、
+  // 3列とそのANDミラー(show_unowned_card_details)を剥がして再試行した場合に true。
+  unownedCardItemSettingsWriteSkipped: boolean;
 }
 
 /**
@@ -655,7 +662,14 @@ function isMissingLiveDirectorySettingsColumnsError(error: unknown): boolean {
 async function applyStreamerSettingsUpdatePg(
   streamerId: string,
   updateData: Record<string, unknown>,
-  gachaSoundRulesRequested: boolean
+  gachaSoundRulesRequested: boolean,
+  // #2070 フォローアップ (C4b): show_unowned_card_details が「新3列のANDを
+  // 同一UPDATE内で計算する SQL 式」として updateData に入っているか。
+  // デプロイ窓で新3列を剥がすとき、この式は存在しない列を参照してしまうため
+  // 一緒に取り除く必要がある。旧クライアントの showUnownedCardDetails 単独送信は
+  // boolean を直接書く（ミラー式ではない）ので、このフラグが false でも
+  // details 列への書き込みは維持される。
+  unownedCardItemDetailsMirrorRequested: boolean
 ): Promise<ApplyStreamerSettingsUpdateResult> {
   let rarityWeightsScopeWriteSkipped = false;
   let packRarityWeightsWriteSkipped = false;
@@ -669,6 +683,7 @@ async function applyStreamerSettingsUpdatePg(
   // skip-and-flag パターンを踏襲する。1列のみの migration のため1段だけ。
   let duplicateDisplayTiersWriteSkipped = false;
   let rarityStylesWriteSkipped = false;
+  let unownedCardItemSettingsWriteSkipped = false;
   let channelPointPackNamesWriteSkipped = false;
 
   // Issue #1994（PR #1995 必須1）: Drizzle の .set() はテーブル定義にある列だけを
@@ -804,27 +819,45 @@ async function applyStreamerSettingsUpdatePg(
     // #725: migration未反映窓では該当キーを剥がし、他の設定だけ保存する。
     // UIにはskipフラグを返して楽観反映をロールバックさせる。
     //
-    // #2070: 新列 trade_unowned_card_names_visible は既存2列とは別 migration で
-    // 追加される。そのため、新列だけが未適用の窓で既存2列（適用済み）まで
-    // 剥がすと、同じリクエストで変更した trade_enabled / cross_channel が
-    // 保存されない退行になる。欠落が報告されたグループだけを剥がす。
-    // 既存2列は同一 migration で入るため、片方の欠落報告で両方を剥がす。
-    const missingNewTradeColumn = isPgMissingNamedColumnError(error, [
-      "trade_unowned_card_names_visible",
-    ]);
-    const missingLegacyTradeColumns = isPgMissingNamedColumnError(error, [
-      "trade_enabled",
-      "cross_channel_trade_enabled",
-    ]);
-    if (missingNewTradeColumn) {
-      delete updateData.trade_unowned_card_names_visible;
-    }
-    if (missingLegacyTradeColumns) {
-      delete updateData.trade_enabled;
-      delete updateData.cross_channel_trade_enabled;
-    }
+    // #2070 フォローアップ (C4b): trade_unowned_card_names_visible は廃止し、
+    // 書き込み経路から完全に撤去した。ただし同列は schema.ts に残っており、
+    // getStreamerById / getStreamerData の全列 SELECT がまだ参照するため、
+    // 検知グループ (TRADE_SETTINGS_COLUMNS) からは外さない（読み取りの
+    // デプロイ窓フォールバックを維持する）。書き込み側ではこの列が
+    // updateData に載ることはないので、剥がす対象は trade_enabled /
+    // cross_channel_trade_enabled の2列だけでよい。旧実装の「新列だけ剥がす」
+    // 専用分岐は、列が updateData に存在しなくなったため撤去した。
+    delete updateData.trade_enabled;
+    delete updateData.cross_channel_trade_enabled;
     tradeSettingsWriteSkipped = true;
     error = await attempt(updateData, "applyStreamerSettingsUpdate(no trade settings)");
+  }
+
+  if (
+    error
+    && isMissingUnownedCardItemColumnError(error)
+    && UNOWNED_CARD_ITEM_COLUMNS.some((column) => column in updateData)
+  ) {
+    // #2070 フォローアップ (C4b): 未所持カードの項目別公開列（新3列）が
+    // 未適用のデプロイ窓。3列は同一 migration で追加されるためまとめて
+    // 欠落する。新3列だけを剥がして他の設定を保存し、UIへ skip フラグを返す
+    // （trade 設定の既存 skip-and-flag と同じ設計）。
+    //
+    // 同時に show_unowned_card_details のミラー式も剥がす。この式は
+    // COALESCE(... AND "show_unowned_card_name" ...) の形で欠落列を参照する
+    // ため、残すと同じ 42703 で再試行が再度失敗する。旧クライアントの
+    // showUnownedCardDetails 単独送信は boolean を直接 SET しており
+    // （ミラー式ではない）、その場合は旧列が実在するので剥がさずに保存する。
+    // これにより「新3列が無い環境でも旧クライアントの詳細公開設定は失わない」
+    // という互換契約を保てる。
+    delete updateData.show_unowned_card_name;
+    delete updateData.show_unowned_card_image;
+    delete updateData.show_unowned_card_description;
+    if (unownedCardItemDetailsMirrorRequested) {
+      delete updateData.show_unowned_card_details;
+    }
+    unownedCardItemSettingsWriteSkipped = true;
+    error = await attempt(updateData, "applyStreamerSettingsUpdate(no unowned card items)");
   }
 
   if (
@@ -877,6 +910,7 @@ async function applyStreamerSettingsUpdatePg(
     duplicateDisplayTiersWriteSkipped,
     rarityStylesWriteSkipped,
     channelPointPackNamesWriteSkipped,
+    unownedCardItemSettingsWriteSkipped,
   };
 }
 
@@ -885,10 +919,16 @@ async function applyStreamerSettingsUpdatePg(
 async function applyStreamerSettingsUpdate(
   streamerId: string,
   updateData: Record<string, unknown>,
-  gachaSoundRulesRequested: boolean
+  gachaSoundRulesRequested: boolean,
+  unownedCardItemDetailsMirrorRequested: boolean
 ): Promise<ApplyStreamerSettingsUpdateResult> {
   // #663: 書き込みのみの関数のため PlanetScale の単一接続を使用。
-  return applyStreamerSettingsUpdatePg(streamerId, updateData, gachaSoundRulesRequested);
+  return applyStreamerSettingsUpdatePg(
+    streamerId,
+    updateData,
+    gachaSoundRulesRequested,
+    unownedCardItemDetailsMirrorRequested
+  );
 
 }
 
@@ -983,9 +1023,15 @@ export async function POST(request: NextRequest) {
       // Issue #554). null resets it back to the generic label. No catalog
       // membership/uniqueness check needed — this is a standalone display string.
       defaultCardPackName,
-      // 未所持カード表示設定（オプション、Issue #395）
-      // Unowned-card visibility settings (optional, Issue #395)
+      // 未所持カード表示設定（オプション、Issue #395 / #2070 フォローアップ）
+      // Unowned-card visibility settings (optional, Issue #395 / #2070 follow-up)
       showUnownedCards,
+      // #2070 フォローアップ (C4b): 名前・画像・説明の項目別公開（新API）。
+      showUnownedCardName,
+      showUnownedCardImage,
+      showUnownedCardDescription,
+      // 旧クライアント互換: 旧「詳細公開」単一トグル。新3項目が1つも来ない
+      // ときだけ3項目へ展開し、来ていれば無視する（後述）。
       showUnownedCardDetails,
       // 配信中一覧への掲載・ランキング上のチャネル表示オプトイン
       // （オプション、Issue #632/#738/#740）
@@ -995,9 +1041,9 @@ export async function POST(request: NextRequest) {
       // カードトレード設定（オプション、Issue #725）
       tradeEnabled,
       crossChannelTradeEnabled,
-      // 未所持カードは名前だけの公開にする（オプション、Issue #2070）。
-      // コレクション画面の showUnownedCardDetails とは独立して保存する。
-      tradeUnownedCardNamesVisible,
+      // #2070 の tradeUnownedCardNamesVisible は廃止（列は残す）。
+      // 旧クライアントが送っても 400 にせず無視する。この経路では body から
+      // 分割代入すらしない = 検証も保存もしない（未知キーとして読み捨てる）。
       // アルバム表示設定（オプション、#1765 フォローアップ）。
       // packAlbumGridSizes: コレクション(パック)ごとの並び N（null で全クリア）。
       // collectionDefaultView: コレクションページの初期表示 ('grid' | 'album')。
@@ -1122,7 +1168,31 @@ export async function POST(request: NextRequest) {
     if (showUnownedCards !== undefined && typeof showUnownedCards !== "boolean") {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
-    if (showUnownedCardDetails !== undefined && typeof showUnownedCardDetails !== "boolean") {
+    // #2070 フォローアップ (C4b): 新3項目が1つでも来ているリクエストでは
+    // 旧 showUnownedCardDetails を「無視する」ため、型検証もしない
+    // （新APIが正で、旧キーは未知キー扱い）。新3項目が無い旧クライアントの
+    // リクエストだけ、従来どおり boolean を厳密に検証する。
+    const unownedCardItemRequested =
+      showUnownedCardName !== undefined ||
+      showUnownedCardImage !== undefined ||
+      showUnownedCardDescription !== undefined;
+    if (
+      !unownedCardItemRequested &&
+      showUnownedCardDetails !== undefined &&
+      typeof showUnownedCardDetails !== "boolean"
+    ) {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    // #2070 フォローアップ (C4b): 新3項目も既存の boolean 検証と同じく
+    // typeof で厳密に判定する。truthy な文字列や 1 を黙って保存すると、
+    // チェックボックスと DB の実値が食い違う。
+    if (showUnownedCardName !== undefined && typeof showUnownedCardName !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (showUnownedCardImage !== undefined && typeof showUnownedCardImage !== "boolean") {
+      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
+    }
+    if (showUnownedCardDescription !== undefined && typeof showUnownedCardDescription !== "boolean") {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (publishLiveStatus !== undefined && typeof publishLiveStatus !== "boolean") {
@@ -1135,14 +1205,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (crossChannelTradeEnabled !== undefined && typeof crossChannelTradeEnabled !== "boolean") {
-      return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
-    }
-    // Issue #2070: 新設定も既存の trade 設定と同じく厳密な boolean のみ受理する。
-    // truthy な文字列や 1 を黙って保存すると、UI のトグルと DB の実値が食い違う。
-    if (
-      tradeUnownedCardNamesVisible !== undefined
-      && typeof tradeUnownedCardNamesVisible !== "boolean"
-    ) {
       return NextResponse.json({ error: ERROR_MESSAGES.INVALID_REQUEST }, { status: 400 });
     }
     if (disconnectBot !== undefined && typeof disconnectBot !== "boolean") {
@@ -1604,8 +1666,65 @@ export async function POST(request: NextRequest) {
     if (showUnownedCards !== undefined) {
       updateData.show_unowned_cards = showUnownedCards;
     }
-    if (showUnownedCardDetails !== undefined) {
+
+    // #2070 フォローアップ (C4b): 未所持カードの項目別公開（名前・画像・説明）。
+    //
+    // 保存規則:
+    // 1. 新3項目が1つでも来たら、その値を各列へ保存する。来ていない項目は
+    //    触らない（部分更新）。
+    // 2. 旧 show_unowned_card_details は「新3項目が1つも来なかったとき」だけ
+    //    受理し、3項目すべてへ同じ値を展開する（true→3つ true / false→3つ false）。
+    //    新3項目と同時に来た場合は無視する（新APIが常に優先。新旧が食い違う
+    //    リクエストでどちらを採るかを曖昧にしない）。
+    // 3. 3項目のうち1つでも更新対象なら、旧 show_unowned_card_details に
+    //    「新name AND 新image AND 新description」を **同一 UPDATE 内で** 書く。
+    //    リクエストに無い項目は COALESCE(送信値, 現在列) で補う。別SELECTで
+    //    現在値を読んでからUPDATEすると、読み書きの間に別リクエストが挟まって
+    //    details と3列が食い違うため、PostgreSQL の SET 式が更新前の行値を
+    //    参照する性質を使って1本のUPDATEに閉じ込める。
+    //    （旧アプリ・旧画面は details だけを読むので、このミラーが互換の要）。
+    // 4. show_unowned_cards=false にするだけの更新では、API側で3項目を強制
+    //    リセットしない。UIがリセットを同時送信し、万一残っていても
+    //    resolveUnownedCardVisibility の規則a（マスターOFFは全項目false）が
+    //    公開を止めるため安全である。APIが勝手に値を書き換えると、後で
+    //    show_unowned_cards を再ONしたときに配信者の項目別設定が失われる。
+    //
+    // 旧クライアント互換のミラー式を updateData に入れたか。
+    // デプロイ窓で新3列を剥がすとき、この式も一緒に剥がす必要がある
+    // （applyStreamerSettingsUpdate の引数として渡す）。
+    let unownedCardItemDetailsMirrorRequested = false;
+
+    if (unownedCardItemRequested) {
+      // 新APIが優先。旧 showUnownedCardDetails はここでは一切参照しない。
+      if (showUnownedCardName !== undefined) {
+        updateData.show_unowned_card_name = showUnownedCardName;
+      }
+      if (showUnownedCardImage !== undefined) {
+        updateData.show_unowned_card_image = showUnownedCardImage;
+      }
+      if (showUnownedCardDescription !== undefined) {
+        updateData.show_unowned_card_description = showUnownedCardDescription;
+      }
+
+      // リクエストに無い項目は「その行の現在値」を使う。COALESCE の第1引数に
+      // null を渡すと現在列へフォールバックする。::boolean はパラメータ型を
+      // 明示し、PostgreSQL の型推論に依存しないためのもの。
+      updateData.show_unowned_card_details = unownedCardDetailsMirrorSql(
+        {
+          name: showUnownedCardName,
+          image: showUnownedCardImage,
+          description: showUnownedCardDescription,
+        },
+        streamersTable,
+      );
+      unownedCardItemDetailsMirrorRequested = true;
+    } else if (showUnownedCardDetails !== undefined) {
+      // 旧クライアント（showUnownedCardDetails 単独送信）。3項目へ展開し、
+      // 旧列にも同じ値を直接書く。4列が同じ値になるため矛盾しない。
       updateData.show_unowned_card_details = showUnownedCardDetails;
+      updateData.show_unowned_card_name = showUnownedCardDetails;
+      updateData.show_unowned_card_image = showUnownedCardDetails;
+      updateData.show_unowned_card_description = showUnownedCardDetails;
     }
     // 配信中一覧への掲載・ランキング上のチャネル表示オプトイン（Issue #632/#738/#740）。
     // クライアント送信値がそのまま正（サーバ側の加工・却下シナリオ無し）のため
@@ -1625,13 +1744,9 @@ export async function POST(request: NextRequest) {
     if (crossChannelTradeEnabled !== undefined) {
       updateData.cross_channel_trade_enabled = crossChannelTradeEnabled;
     }
-    // Issue #2070: トレード限定の未所持カード名公開。サーバ側で依存関係
-    // （show_unowned_cards 等）を勝手に補正しない。UI が依存を満たさない間は
-    // disabled にし、保存された値はそのまま保持する（後から公開設定を変えたときに
-    // 配信者の意思を失わないため）。
-    if (tradeUnownedCardNamesVisible !== undefined) {
-      updateData.trade_unowned_card_names_visible = tradeUnownedCardNamesVisible;
-    }
+    // #2070 フォローアップ (C4b): tradeUnownedCardNamesVisible の保存は廃止。
+    // 旧クライアントからの送信は上の分割代入で読み捨てており、ここでは
+    // updateData に一切触れない（列自体は migration 履歴のため残す）。
 
     let botDisconnected = false;
     if (disconnectBot === true) {
@@ -1681,12 +1796,15 @@ export async function POST(request: NextRequest) {
     let rarityStylesWriteSkipped = false;
     // Issue #1994: メイン報酬の複数パック割り当てがデプロイ窓で先頭1件へ縮退した場合。
     let channelPointPackNamesWriteSkipped = false;
+    // #2070 フォローアップ (C4b): 未所持カード項目別公開列のデプロイ窓 skip。
+    let unownedCardItemSettingsWriteSkipped = false;
 
     if (Object.keys(updateData).length > 0) {
       const updateResult = await applyStreamerSettingsUpdate(
         streamerId,
         updateData,
-        gachaSoundRules !== undefined
+        gachaSoundRules !== undefined,
+        unownedCardItemDetailsMirrorRequested
       );
       rarityWeightsScopeWriteSkipped = updateResult.rarityWeightsScopeWriteSkipped;
       packRarityWeightsWriteSkipped = updateResult.packRarityWeightsWriteSkipped;
@@ -1699,6 +1817,7 @@ export async function POST(request: NextRequest) {
       duplicateDisplayTiersWriteSkipped = updateResult.duplicateDisplayTiersWriteSkipped;
       rarityStylesWriteSkipped = updateResult.rarityStylesWriteSkipped;
       channelPointPackNamesWriteSkipped = updateResult.channelPointPackNamesWriteSkipped;
+      unownedCardItemSettingsWriteSkipped = updateResult.unownedCardItemSettingsWriteSkipped;
 
       if (updateResult.error) {
         return handleDatabaseError(updateResult.error, "Streamer Settings API: PUT");
@@ -1788,6 +1907,12 @@ export async function POST(request: NextRequest) {
       ...(gachaSoundRulesPremiumRequired ? { gachaSoundRulesPremiumRequired: true } : {}),
       ...(liveDirectorySettingsWriteSkipped ? { liveDirectorySettingsSkippedDeployWindow: true } : {}),
       ...(tradeSettingsWriteSkipped ? { tradeSettingsSkippedDeployWindow: true } : {}),
+      // #2070 フォローアップ (C4b): 新3列が未デプロイで、項目別公開とミラー式を
+      // 剥がして他の設定だけ保存した場合。クライアントはこのフラグで楽観反映を
+      // ロールバックし、「保存できた」と偽らない。
+      ...(unownedCardItemSettingsWriteSkipped
+        ? { unownedCardItemSettingsSkippedDeployWindow: true }
+        : {}),
       // #1765 フォローアップ: packAlbumGridSizes はサーバ側で prune（カタログから
       // 消えたパックの既定を除去）されるシナリオがあるため、確定後の永続値を
       // エコーバックしてクライアントを再同期させる。デプロイ窓 skip 時は

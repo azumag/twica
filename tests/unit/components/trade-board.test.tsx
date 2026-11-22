@@ -25,8 +25,8 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
     wantedQuantity: 1,
-    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
-    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null, collectionNumber: null },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, collectionNumber: null },
     isCrossChannel: false,
     status: "open",
     createdAt: "2026-10-01T00:00:00.000Z",
@@ -177,6 +177,21 @@ describe("TradeOfferRow accept states (§11.3)", () => {
     expect(screen.getByText(ja.receiveLabel).parentElement).toHaveTextContent("ChanOne");
     expect(screen.getByText(ja.giveLabel).parentElement).toHaveTextContent("ChanTwo");
   });
+
+  it("labels hidden-name cards by #N or the deleted fallback, never a blank name (#2070 follow-up)", () => {
+    renderRow(
+      makeOffer({
+        // 名前が非公開のスナップショット（C3a: name="" + 表示番号）。
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 12 },
+        // カード定義が削除済み（番号も null）。
+        wantedCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+      }),
+    );
+    expect(screen.getByText("#12")).toBeInTheDocument();
+    expect(screen.getByText(ja.deletedCardName)).toBeInTheDocument();
+    // 「削除されたカード」を表示名にしたときは、同じ意味の削除バッジを重ねない。
+    expect(screen.queryByText(ja.deletedCardLabel)).toBeNull();
+  });
 });
 
 function renderBoard(props: Partial<React.ComponentProps<typeof TradeBoard>> = {}) {
@@ -189,8 +204,8 @@ function renderBoard(props: Partial<React.ComponentProps<typeof TradeBoard>> = {
         viewerKey="viewer-a"
         revealsUnownedCards
         filterCards={[
-          { cardId: "card-a", name: "Card A" },
-          { cardId: "card-b", name: "Card B" },
+          { cardId: "card-a", name: "Card A", collectionNumber: 1 },
+          { cardId: "card-b", name: "Card B", collectionNumber: 2 },
         ]}
         loginHref="/login"
         createHref="/trade/s-1/new"
@@ -242,6 +257,33 @@ describe("TradeBoard", () => {
     renderBoard({ scope: "cross_channel" });
     await screen.findByText(ja.emptyStateMessage);
     expect(screen.queryByLabelText(ja.filterWantedCard)).toBeNull();
+  });
+
+  it("labels filter options by name / #N / deleted and keeps the server order (#2070 follow-up)", async () => {
+    fetchMock.mockImplementation(async () => listResponse([]));
+    renderBoard({
+      filterCards: [
+        { cardId: "card-named", name: "Named Card", collectionNumber: 3 },
+        // 名前が非公開のカード: name は "" で、閲覧者非依存の表示番号だけが来る。
+        { cardId: "card-number", name: "", collectionNumber: 7 },
+        // カード定義が削除済み: 番号も証明できない。
+        { cardId: "card-deleted", name: "", collectionNumber: null },
+      ],
+    });
+    const expectedLabels = [ja.filterAll, "Named Card", "#7", ja.deletedCardName];
+    const expectedValues = ["", "card-named", "card-number", "card-deleted"];
+    const wanted = await screen.findByLabelText(ja.filterWantedCard);
+    expect(within(wanted).getAllByRole("option").map((option) => option.textContent)).toEqual(
+      expectedLabels,
+    );
+    // サーバー（listWantableCards: rarity → 表示番号 → cardId）の順をそのまま使う。
+    expect(within(wanted).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(
+      expectedValues,
+    );
+    const offered = screen.getByLabelText(ja.filterOfferedCard);
+    expect(within(offered).getAllByRole("option").map((option) => option.textContent)).toEqual(
+      expectedLabels,
+    );
   });
 
   it("shows the normal empty state with a create CTA", async () => {
@@ -371,12 +413,12 @@ describe("TradeBoard", () => {
           init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
         }),
     );
-    fetchMock.mockImplementation(async () => listResponse([makeOffer({ id: "new", offeredCard: { name: "Filtered Card", rarity: "rare", imageUrl: null } })]));
+    fetchMock.mockImplementation(async () => listResponse([makeOffer({ id: "new", offeredCard: { name: "Filtered Card", rarity: "rare", imageUrl: null, collectionNumber: null } })]));
     renderBoard();
     fireEvent.change(screen.getByLabelText(ja.filterOfferedCard), { target: { value: "card-a" } });
     expect(await screen.findByText("Filtered Card")).toBeInTheDocument();
     // The first request was aborted; even if its body arrives late it is not shown.
-    resolveFirst(listResponse([makeOffer({ offeredCard: { name: "Stale Card", rarity: "rare", imageUrl: null } })]));
+    resolveFirst(listResponse([makeOffer({ offeredCard: { name: "Stale Card", rarity: "rare", imageUrl: null, collectionNumber: null } })]));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByText("Stale Card")).toBeNull();
     expect(screen.getByText("Filtered Card")).toBeInTheDocument();
@@ -447,7 +489,7 @@ describe("TradeBoard", () => {
         const page = new URL(url, "https://x.test").searchParams.get("page");
         return page === "1"
           ? listResponse([makeOffer()], true)
-          : listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+          : listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null, collectionNumber: null } })]);
       });
       renderBoard();
       await screen.findByText("Offered Dragon");
@@ -464,7 +506,7 @@ describe("TradeBoard", () => {
     it("reuses pages across remounts (scope tab switch) for the same streamer and scope", async () => {
       fetchMock.mockImplementation(async (url: string) => {
         const scope = new URL(url, "https://x.test").searchParams.get("scope");
-        return listResponse([makeOffer({ offeredCard: { name: `${scope} card`, rarity: "rare", imageUrl: null } })]);
+        return listResponse([makeOffer({ offeredCard: { name: `${scope} card`, rarity: "rare", imageUrl: null, collectionNumber: null } })]);
       });
       const first = renderBoard();
       await screen.findByText("in_channel card");
@@ -495,8 +537,8 @@ describe("TradeBoard", () => {
       // Same URL, different viewer: the row is "yes" for A and "not_owned" for B.
       fetchMock.mockImplementation(async () =>
         fetchMock.mock.calls.length === 1
-          ? listResponse([makeOffer({ offeredCard: { name: "Row for A", rarity: "rare", imageUrl: null }, canAccept: "yes" })])
-          : listResponse([makeOffer({ offeredCard: { name: "Row for B", rarity: "rare", imageUrl: null }, canAccept: "not_owned" })]),
+          ? listResponse([makeOffer({ offeredCard: { name: "Row for A", rarity: "rare", imageUrl: null, collectionNumber: null }, canAccept: "yes" })])
+          : listResponse([makeOffer({ offeredCard: { name: "Row for B", rarity: "rare", imageUrl: null, collectionNumber: null }, canAccept: "not_owned" })]),
       );
       const a = renderBoard({ viewerKey: "u:aaaa" });
       await screen.findByText("Row for A");
@@ -542,7 +584,7 @@ describe("TradeBoard", () => {
       expect(listCallsFor(() => true)).toBe(2);
 
       fetchMock.mockImplementationOnce(async () => listResponse([
-        makeOffer({ id: "offer-2", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null } }),
+        makeOffer({ id: "offer-2", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null, collectionNumber: null } }),
       ]));
       fireEvent.click(within(notice).getByRole("button", { name: ja.retryButton }));
       expect(screen.queryByText(ja.loading)).toBeNull();
@@ -563,7 +605,7 @@ describe("TradeBoard", () => {
           listCalls += 1;
           const query = new URL(url, "https://x.test").searchParams;
           if (query.get("page") === "2") {
-            return listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+            return listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null, collectionNumber: null } })]);
           }
           // Hold the post-accept refresh of page 1.
           if (listCalls > 2) await refreshGate;
@@ -651,8 +693,8 @@ describe("TradeBoard wanted quantity (#1789)", () => {
   it("renders the badge for multi-copy offers only, per row", async () => {
     const fetchMock = vi.fn(async () =>
       listResponse([
-        makeOffer({ id: "multi", wantedQuantity: 3, wantedCard: { name: "Triple Slime", rarity: "common", imageUrl: null } }),
-        makeOffer({ id: "single", wantedQuantity: 1, wantedCard: { name: "Single Slime", rarity: "common", imageUrl: null } }),
+        makeOffer({ id: "multi", wantedQuantity: 3, wantedCard: { name: "Triple Slime", rarity: "common", imageUrl: null, collectionNumber: null } }),
+        makeOffer({ id: "single", wantedQuantity: 1, wantedCard: { name: "Single Slime", rarity: "common", imageUrl: null, collectionNumber: null } }),
       ]),
     );
     vi.stubGlobal("fetch", fetchMock);

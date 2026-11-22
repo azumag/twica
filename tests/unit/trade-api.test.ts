@@ -286,6 +286,43 @@ describe("POST /api/trades (#723, #715 PR-C)", () => {
     });
   });
 
+  it("returns the service's masked card DTOs, never the raw stored snapshots (#2070)", async () => {
+    // createTradeOffer が maskTradeCards で名前・画像を伏せて #N を付けた DTO を
+    // offeredCard / wantedCard で返す。offer 行の *_snapshot は保存形（完全な JSONB）
+    // なので、ルートがそちらを読み直すと非公開の名前・画像 URL が応答に載ってしまう。
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.createTradeOffer.mockResolvedValue({
+      kind: "ok",
+      idempotentReplay: false,
+      offeredCard: { name: "", rarity: "rare", imageUrl: null, collectionNumber: 3 },
+      wantedCard: { name: "B", rarity: "epic", imageUrl: null, collectionNumber: 9 },
+      offer: {
+        id: OFFER_ID,
+        offered_user_card_id: USER_CARD_ID,
+        offered_card_id: "66666666-6666-4666-8666-666666666666",
+        offered_streamer_id: STREAMER_ID,
+        wanted_card_id: WANTED_CARD_ID,
+        wanted_streamer_id: STREAMER_ID,
+        wanted_quantity: 1,
+        offered_card_snapshot: { name: "SecretName", rarity: "rare", imageUrl: "https://secret.example/a.png" },
+        wanted_card_snapshot: { name: "B", rarity: "epic", imageUrl: "https://secret.example/b.png" },
+        is_cross_channel: false,
+        status: "open",
+        created_at: "2026-10-04T00:00:00.000Z",
+      },
+    });
+
+    const { POST } = await import("@/app/api/trades/route");
+    const response = await POST(postJson("/api/trades", VALID_CREATE_BODY));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.tradeOffer.offeredCard).toEqual({ name: "", rarity: "rare", imageUrl: null, collectionNumber: 3 });
+    expect(body.tradeOffer.wantedCard).toEqual({ name: "B", rarity: "epic", imageUrl: null, collectionNumber: 9 });
+    expect(JSON.stringify(body)).not.toContain("secret.example");
+    expect(JSON.stringify(body)).not.toContain("SecretName");
+  });
+
   describe("wantedQuantity (#1789)", () => {
     const createdOffer = (wantedQuantity: number) => ({
       kind: "ok",

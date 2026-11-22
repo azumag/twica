@@ -99,7 +99,7 @@ const renderFilter = (overrides: Partial<React.ComponentProps<typeof CollectionP
       <CollectionPackFilter
         cards={cards}
         streamerId="streamer-1"
-        hideUnownedDetails={false}
+        unownedCardVisibility={{ name: true, image: true, description: true }}
         overallProgress={{ owned: 2, total: 5 }}
         overallCompletionHistory={[]}
         packs={packs}

@@ -16,6 +16,10 @@ import {
   type AlbumDefaultView,
   type AlbumGridSizeMap,
 } from "@/lib/collection-album";
+import {
+  HIDDEN_UNOWNED_CARD_ITEM_VISIBILITY,
+  type UnownedCardItemVisibility,
+} from "@/lib/unowned-card-visibility";
 
 /**
  * レアリティの表示情報（ラベル + クラス + CSS変数）を返す。
@@ -46,9 +50,12 @@ interface SortedCardGridProps {
   // Streamer ID for linking to card detail pages
   // カード詳細ページへのリンク用配信者ID
   streamerId: string;
-  // 未所持カードの画像/説明を隠すか（プレースホルダー表示）
-  // Issue #395: when true, unowned cards render without image/description (rarity badge + "???" only).
-  hideUnownedDetails?: boolean;
+  // 未所持カードの名前/画像/説明を項目別に表示するか（Issue #2070 フォローアップ）。
+  // 非公開項目の実値はサーバー側（RSC）で既に落とされている。ここでは表示上の
+  // プレースホルダー置換だけを行い、公開項目はそのまま描画する。
+  // Per-item visibility for unowned cards. Private values are stripped server-side
+  // before serialization; this flag only controls placeholder rendering.
+  unownedCardVisibility?: UnownedCardItemVisibility;
   // Translation strings - must be serializable (no functions)
   // 翻訳文字列 - シリアライズ可能である必要あり（関数不可）
   translations: {
@@ -101,7 +108,7 @@ export type CollectionViewMode = "grid" | "album";
 export default function SortedCardGrid({
   cards,
   streamerId,
-  hideUnownedDetails = false,
+  unownedCardVisibility = HIDDEN_UNOWNED_CARD_ITEM_VISIBILITY,
   translations,
   albumGridSizes,
   albumDefaultView,
@@ -195,22 +202,24 @@ export default function SortedCardGrid({
             // 最初の4枚のカードはLCP最適化のためpriority設定
             const isPriority = index < 4;
 
-            // 未所持カードの「詳細マスク」モード:
-            //   show_unowned_card_details=false (=hideUnownedDetails=true) のときに有効。
-            //   名前/画像/説明をプレースホルダーに置き換え、レアリティバッジのみ残す。
+            // 未所持カードの項目別マスク（Issue #2070 フォローアップ）:
+            //   名前・画像・説明をそれぞれの公開フラグで出し分ける。非公開項目は
+            //   プレースホルダー（名前は既存の unownedCard = 「？？？」、画像は
+            //   noImageText、説明は非表示）に置き換える。
             //
-            // 「詳細公開」モード (hideUnownedDetails=false) のときは未所持カードでも
-            //   名前・画像・説明を本来のまま表示する。所持済カードとの違いはロック表示と
-            //   グレースケール、所有数の非表示のみ。
+            // 所持カードは従来どおりフラグに関係なく全項目を表示する。また
+            // ページ側で非公開の実値は RSC ペイロードから除去済みのため、ここでの
+            // マスクは表示の一貫性のための保険でもある（ペイロード防御の代わりではない）。
             //
             // Issue #395 の要求:
             //   - 視聴者は所持していないカードを「⑤???」のような形で見られる (placeholder)
             //   - もしくは公開モードでは画像と説明まで含めて見られる
-            const maskUnownedDetails = !isOwned && hideUnownedDetails;
-            const displayName = maskUnownedDetails ? translations.unownedCard : card.name;
-            const displayImageUrl = maskUnownedDetails ? null : card.image_url;
-            const showDescription =
-              (isOwned || !hideUnownedDetails) && Boolean(card.description);
+            const showUnownedName = isOwned || unownedCardVisibility.name;
+            const showUnownedImage = isOwned || unownedCardVisibility.image;
+            const showUnownedDescription = isOwned || unownedCardVisibility.description;
+            const displayName = showUnownedName ? card.name : translations.unownedCard;
+            const displayImageUrl = showUnownedImage ? card.image_url : null;
+            const showDescription = showUnownedDescription && Boolean(card.description);
 
             return (
               <CollectionCard
@@ -239,7 +248,9 @@ export default function SortedCardGrid({
                 }
                 priority={isPriority}
                 noImageText={
-                  maskUnownedDetails ? translations.unownedCard : translations.noImage
+                  !isOwned && !unownedCardVisibility.image
+                    ? translations.unownedCard
+                    : translations.noImage
                 }
                 isOwned={isOwned}
                 unownedLabel={translations.unownedStatus}

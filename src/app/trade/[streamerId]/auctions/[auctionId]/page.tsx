@@ -75,6 +75,10 @@ export default async function TradeAuctionDetailPage({
       if (!copy.isListed) freeByCard.set(copy.cardId, (freeByCard.get(copy.cardId) ?? 0) + 1);
     }
     // Only the fields the picker renders are serialized to the client.
+    // #2070 フォローアップ (C4a): 入札候補は「閲覧者が所持しているカード」に
+    // 限るため名前は常に見えるが、表示名の組み立て（名前 → #N → 削除）は
+    // クライアントの共通ヘルパーに任せ、番号も一緒に渡してフォールバックを
+    // 効かせる（可視性列のデプロイ窓で名前が落ちた場合の保険）。
     bidCards = wantable
       .filter((card) => card.isOwned)
       .map((card) => ({
@@ -82,6 +86,7 @@ export default async function TradeAuctionDetailPage({
         name: card.name,
         rarity: card.rarity,
         imageUrl: card.imageUrl,
+        collectionNumber: card.collectionNumber,
         freeCount: freeByCard.get(card.cardId) ?? 0,
       }));
   }

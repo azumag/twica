@@ -63,6 +63,10 @@ const S = {
   // #2079: dedicated channels for the hub's per-collection auction list.
   HUB: id(9), // the viewer owns a card here
   HUB2: id(10), // the viewer owns nothing here
+  // C3b: 項目別可視性の完成を実 DB で固定するための専用チャネル。
+  ALLPRIVATE: id(81), // reveal=true, 名前/画像/説明すべて false
+  IMAGEONLY: id(82), // reveal=true, 画像だけ true
+  GUARDC: id(83), // details=false かつ新3列すべて true（旧アプリ OFF ガード）
 };
 const C = {
   A_MAIN: id(11),
@@ -81,12 +85,27 @@ const C = {
   HUB_MAIN: id(75),
   HUB_SIDE: id(76),
   HUB2_MAIN: id(77),
+  ALLPRIVATE_MAIN: id(91),
+  ALLPRIVATE_BID: id(92),
+  IMAGEONLY_MAIN: id(93),
+  IMAGEONLY_BID: id(94),
+  GUARDC_MAIN: id(95),
+  GUARDC_BID: id(96),
 };
 /** Secret image URLs (stored on the cards; snapshots copy them at listing time). */
 const NAMEONLY_IMAGES = {
   MAIN: "https://secret.example/auction-main.png",
   BID: "https://secret.example/auction-bid.png",
   HIDDEN: "https://secret.example/auction-hidden.png",
+};
+/** C3b: 全項目非公開・画像のみ公開・ガード c のカード画像（漏えい検査用）。 */
+const ITEM_IMAGES = {
+  ALLPRIVATE_MAIN: "https://secret.example/all-private-main.png",
+  ALLPRIVATE_BID: "https://secret.example/all-private-bid.png",
+  IMAGEONLY_MAIN: "https://secret.example/image-only-main.png",
+  IMAGEONLY_BID: "https://secret.example/image-only-bid.png",
+  GUARDC_MAIN: "https://secret.example/guard-c-main.png",
+  GUARDC_BID: "https://secret.example/guard-c-bid.png",
 };
 const USER_PREFIX = "ta1791-";
 
@@ -114,17 +133,23 @@ async function seed() {
       reveal: boolean;
       /** show_unowned_card_details (defaults to `reveal`) */
       details?: boolean;
-      namesVisible?: boolean;
+      /** 項目別公開。省略時は details（さらに省略時は reveal）と同じ。 */
+      name?: boolean;
+      image?: boolean;
+      description?: boolean;
     },
   ) => s`
     INSERT INTO streamers (
       id, twitch_user_id, twitch_username, twitch_display_name,
       trade_enabled, cross_channel_trade_enabled, show_unowned_cards,
-      show_unowned_card_details, trade_unowned_card_names_visible
+      show_unowned_card_details, show_unowned_card_name, show_unowned_card_image,
+      show_unowned_card_description
     ) VALUES (
       ${sid}, ${`ta-${name}`}, ${`ta-${name}`}, ${`TA ${name}`},
       ${flags.trade}, ${flags.cross}, ${flags.reveal}, ${flags.details ?? flags.reveal},
-      ${flags.namesVisible ?? false}
+      ${flags.name ?? flags.details ?? flags.reveal},
+      ${flags.image ?? flags.details ?? flags.reveal},
+      ${flags.description ?? flags.details ?? flags.reveal}
     )`;
   await streamer(S.A, "a", { trade: true, cross: true, reveal: true });
   await streamer(S.B, "b", { trade: true, cross: true, reveal: true });
@@ -132,19 +157,35 @@ async function seed() {
   await streamer(S.NOCROSS, "nocross", { trade: true, cross: false, reveal: true });
   await streamer(S.OFF, "off", { trade: false, cross: true, reveal: true });
   await streamer(S.READ, "read", { trade: true, cross: true, reveal: true });
-  // #2070: namesVisible without details = name-only channel; the hidden one
-  // additionally has show_unowned_cards=false.
+  // 項目別公開: 名前だけ公開のチャネルと、show_unowned_cards=false で
+  // 行自体を出さないチャネル。
   await streamer(S.NAMEONLY, "nameonly", {
-    trade: true, cross: true, reveal: true, details: false, namesVisible: true,
+    trade: true, cross: true, reveal: true, details: false,
+    name: true, image: false, description: false,
   });
   await streamer(S.NAMEONLY_HIDDEN, "nameonly-hidden", {
-    trade: true, cross: true, reveal: false, namesVisible: true,
+    trade: true, cross: true, reveal: false, details: false,
+    name: true, image: true, description: true,
   });
   // #2079: the hub's per-collection auction list needs one channel the viewer
   // owns (HUB) and one it does not (HUB2). Both reveal their cards so the
   // auction stays visible; only collection ownership decides the placement.
   await streamer(S.HUB, "hub", { trade: true, cross: true, reveal: true });
   await streamer(S.HUB2, "hub2", { trade: true, cross: true, reveal: true });
+  // C3b: 行は出るが項目はすべて非公開 / 画像だけ公開 / 旧 details=false と
+  // 新3列 all true の取りこぼしガード。
+  await streamer(S.ALLPRIVATE, "all-private", {
+    trade: true, cross: true, reveal: true, details: false,
+    name: false, image: false, description: false,
+  });
+  await streamer(S.IMAGEONLY, "image-only", {
+    trade: true, cross: true, reveal: true, details: false,
+    name: false, image: true, description: false,
+  });
+  await streamer(S.GUARDC, "guard-c", {
+    trade: true, cross: true, reveal: true, details: false,
+    name: true, image: true, description: true,
+  });
 
   const card = (cid: string, sid: string, name: string, active = true, imageUrl: string | null = null) =>
     s`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active, image_url)
@@ -165,6 +206,12 @@ async function seed() {
   await card(C.HUB_MAIN, S.HUB, "Hub Main");
   await card(C.HUB_SIDE, S.HUB, "Hub Side");
   await card(C.HUB2_MAIN, S.HUB2, "Hub2 Main");
+  await card(C.ALLPRIVATE_MAIN, S.ALLPRIVATE, "AllPrivate Main", true, ITEM_IMAGES.ALLPRIVATE_MAIN);
+  await card(C.ALLPRIVATE_BID, S.ALLPRIVATE, "AllPrivate Bid", true, ITEM_IMAGES.ALLPRIVATE_BID);
+  await card(C.IMAGEONLY_MAIN, S.IMAGEONLY, "ImageOnly Main", true, ITEM_IMAGES.IMAGEONLY_MAIN);
+  await card(C.IMAGEONLY_BID, S.IMAGEONLY, "ImageOnly Bid", true, ITEM_IMAGES.IMAGEONLY_BID);
+  await card(C.GUARDC_MAIN, S.GUARDC, "GuardC Main", true, ITEM_IMAGES.GUARDC_MAIN);
+  await card(C.GUARDC_BID, S.GUARDC, "GuardC Bid", true, ITEM_IMAGES.GUARDC_BID);
 }
 
 /** A fresh user; returns its twitch id and users.id. */
@@ -890,12 +937,20 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // #2070: 名前だけ公開のチャネルでは、オークションの行（名前・レアリティ）は
-  // 見えるが画像は見えない。入札カードは入札者と出品者の両方の名前可視性を通る。
-  // 既存の PUB/HALF 相当のケースはそのまま残し、ここで新しい中間状態を固定する。
+  // C3b: オークションの項目別可視性。
+  //
+  // 規則（src/lib/trade.ts の cardVisibleTo / maskTradeCards と同一）:
+  //   * 行が出るか = is_active AND (所持 OR show_unowned_cards)。名前・画像の
+  //     公開可否は行の存在に影響しない。全項目非公開でも #N で選べる。
+  //   * 名前 = 所持 OR resolveUnownedCardVisibility(...).name
+  //   * 画像 = 所持 OR resolveUnownedCardVisibility(...).image
+  //   * 番号 #N は閲覧者に依存しない（その配信者の全カードから作る）ので、
+  //     出品者・入札者・匿名で同じカードは同じ番号になる。
+  //   * 旧 details=false かつ新3列 all true は全項目非公開（ガード c）。
+  //   * show_unowned_cards=false は行自体を出さない（入札も not found）。
   // ---------------------------------------------------------------------------
-  describe("name-only visibility (#2070)", () => {
-    it("lists a name-only auction without the image and shows bid names without bid images to the seller", async () => {
+  describe("item-level visibility", () => {
+    it("name-only: the row is visible by name, the image is hidden, and a bid is allowed by the row rule", async () => {
       const seller = await newUser("no-seller");
       const bidder = await newUser("no-bidder");
       const [mainCopy] = await giveCopies(seller.id, C.NAMEONLY_MAIN, 1);
@@ -910,10 +965,11 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
         twitchUserId: bidder.twitch,
       });
       const row = board.auctions.find((auction) => auction.id === auctionId);
-      expect(row?.offeredCard).toEqual({
+      expect(row?.offeredCard).toMatchObject({
         name: "NameOnly Main",
         rarity: "common",
         imageUrl: null,
+        collectionNumber: expect.any(Number),
       });
       expect(JSON.stringify(board)).not.toContain(NAMEONLY_IMAGES.MAIN);
 
@@ -926,8 +982,8 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
       expect(anonymous.auctions.find((auction) => auction.id === auctionId)?.offeredCard)
         .toMatchObject({ name: "NameOnly Main", imageUrl: null });
 
-      // The name-level rule lets the bid through (the bid card is also visible
-      // to the seller by NAME, which is what the precheck needs).
+      // 入札可否は行ルール（所持 OR show_unowned_cards）だけで決まる。名前が
+      // 公開されているかどうかは precheck の条件ではない。
       const placed = await placeTradeAuctionBid({
         twitchUserId: bidder.twitch,
         auctionId,
@@ -941,7 +997,7 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
       // is owned -> the image stays.
       const asBidder = await getTradeAuction({ auctionId, twitchUserId: bidder.twitch });
       expect(asBidder?.auction.offeredCard.imageUrl).toBeNull();
-      expect(asBidder?.auction.myBid?.bidCard).toEqual({
+      expect(asBidder?.auction.myBid?.bidCard).toMatchObject({
         name: "NameOnly Bid",
         rarity: "common",
         imageUrl: NAMEONLY_IMAGES.BID,
@@ -951,7 +1007,7 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
       // by name only (details off) -> no image, but the name remains.
       const asSeller = await getTradeAuction({ auctionId, twitchUserId: seller.twitch });
       expect(asSeller?.auction.offeredCard.imageUrl).toBe(NAMEONLY_IMAGES.MAIN);
-      expect(asSeller?.bids?.[0].bidCard).toEqual({
+      expect(asSeller?.bids?.[0].bidCard).toMatchObject({
         name: "NameOnly Bid",
         rarity: "common",
         imageUrl: null,
@@ -965,7 +1021,184 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
       expect(mineRow?.offeredCard.imageUrl).toBe(NAMEONLY_IMAGES.MAIN);
     });
 
-    it("hides a NAMEONLY_BUT_HIDDEN auction and rejects a bid as not found", async () => {
+    it("image-only: the name is hidden but the image stays; both sides keep the same #N", async () => {
+      const seller = await newUser("io-seller");
+      const bidder = await newUser("io-bidder");
+      const [mainCopy] = await giveCopies(seller.id, C.IMAGEONLY_MAIN, 1);
+      await giveCopies(bidder.id, C.IMAGEONLY_BID, 1);
+      const auctionId = await createAuctionOk(seller.twitch, mainCopy);
+      const { listTradeAuctions, getTradeAuction, placeTradeAuctionBid } = await svc();
+
+      // 入札者は IMAGEONLY_MAIN を所持していない。名前は非公開、画像だけ公開。
+      const board = await listTradeAuctions({
+        streamerId: S.IMAGEONLY,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: bidder.twitch,
+      });
+      const row = board.auctions.find((auction) => auction.id === auctionId);
+      expect(row?.offeredCard).toMatchObject({
+        name: "",
+        rarity: "common",
+        imageUrl: ITEM_IMAGES.IMAGEONLY_MAIN,
+        collectionNumber: expect.any(Number),
+      });
+      expect(JSON.stringify(board)).not.toContain("ImageOnly Main");
+
+      const placed = await placeTradeAuctionBid({
+        twitchUserId: bidder.twitch,
+        auctionId,
+        bidCardId: C.IMAGEONLY_BID,
+        quantity: 1,
+        requestId: randomUUID(),
+      });
+      expect(placed.kind).toBe("ok");
+
+      const asBidder = await getTradeAuction({ auctionId, twitchUserId: bidder.twitch });
+      const bidderBidCardNumber = asBidder?.auction.myBid?.bidCard.collectionNumber;
+      expect(bidderBidCardNumber).toEqual(expect.any(Number));
+
+      // 売り手は出品カードを所持しているので名前・画像とも見える。入札カードは
+      // 所持していないので名前だけ隠れ、画像は項目別設定どおり見える。
+      const asSeller = await getTradeAuction({ auctionId, twitchUserId: seller.twitch });
+      expect(asSeller?.auction.offeredCard).toMatchObject({
+        name: "ImageOnly Main",
+        imageUrl: ITEM_IMAGES.IMAGEONLY_MAIN,
+        // 番号は閲覧者に依存しない（#N は同じ）。
+        collectionNumber: row?.offeredCard.collectionNumber,
+      });
+      expect(asSeller?.bids?.[0].bidCard).toMatchObject({
+        name: "",
+        imageUrl: ITEM_IMAGES.IMAGEONLY_BID,
+        collectionNumber: bidderBidCardNumber,
+      });
+      expect(JSON.stringify(asSeller)).not.toContain("ImageOnly Bid");
+    });
+
+    it("all items private: the auction is listed and bid by #N only; seller and bidder see the same #N", async () => {
+      const seller = await newUser("ap-seller");
+      const bidder = await newUser("ap-bidder");
+      const [mainCopy] = await giveCopies(seller.id, C.ALLPRIVATE_MAIN, 1);
+      await giveCopies(bidder.id, C.ALLPRIVATE_BID, 1);
+      const auctionId = await createAuctionOk(seller.twitch, mainCopy);
+      const { listTradeAuctions, getTradeAuction, placeTradeAuctionBid } = await svc();
+
+      // 行は show_unowned_cards=true で出る。名前・画像は一切出ない。
+      const board = await listTradeAuctions({
+        streamerId: S.ALLPRIVATE,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: bidder.twitch,
+      });
+      const row = board.auctions.find((auction) => auction.id === auctionId);
+      expect(row?.offeredCard).toEqual({
+        name: "",
+        rarity: "common",
+        imageUrl: null,
+        collectionNumber: expect.any(Number),
+      });
+      expect(JSON.stringify(board)).not.toContain("AllPrivate Main");
+      expect(JSON.stringify(board)).not.toContain(ITEM_IMAGES.ALLPRIVATE_MAIN);
+
+      // 匿名でも行は出る（#N だけで識別できる）。番号は入札者と同じ。
+      const anonymous = await listTradeAuctions({
+        streamerId: S.ALLPRIVATE,
+        scope: "in_channel",
+        page: 1,
+      });
+      expect(anonymous.auctions.find((auction) => auction.id === auctionId)?.offeredCard)
+        .toEqual({
+          name: "",
+          rarity: "common",
+          imageUrl: null,
+          collectionNumber: row?.offeredCard.collectionNumber,
+        });
+
+      // 全項目非公開でも、行が見えるので入札できる（名前・画像は precheck の条件外）。
+      const placed = await placeTradeAuctionBid({
+        twitchUserId: bidder.twitch,
+        auctionId,
+        bidCardId: C.ALLPRIVATE_BID,
+        quantity: 1,
+        requestId: randomUUID(),
+      });
+      expect(placed.kind).toBe("ok");
+
+      // 入札者は自分の入札カードを所持しているので名前・画像が見える。
+      // 出品カードは未所持なので #N のみ。
+      const asBidder = await getTradeAuction({ auctionId, twitchUserId: bidder.twitch });
+      expect(asBidder?.auction.offeredCard).toMatchObject({
+        name: "",
+        imageUrl: null,
+        collectionNumber: row?.offeredCard.collectionNumber,
+      });
+      const bidderBidCardNumber = asBidder?.auction.myBid?.bidCard.collectionNumber;
+      expect(bidderBidCardNumber).toEqual(expect.any(Number));
+
+      // 売り手は出品カードを所持しているので見えるが、入札カードは未所持なので
+      // 名前・画像とも隠れ、#N だけが残る。両者の #N は一致する。
+      const asSeller = await getTradeAuction({ auctionId, twitchUserId: seller.twitch });
+      expect(asSeller?.auction.offeredCard).toMatchObject({
+        name: "AllPrivate Main",
+        imageUrl: ITEM_IMAGES.ALLPRIVATE_MAIN,
+        collectionNumber: row?.offeredCard.collectionNumber,
+      });
+      expect(asSeller?.bids?.[0].bidCard).toEqual({
+        name: "",
+        rarity: "common",
+        imageUrl: null,
+        collectionNumber: bidderBidCardNumber,
+      });
+      expect(JSON.stringify(asSeller)).not.toContain("AllPrivate Bid");
+      expect(JSON.stringify(asSeller)).not.toContain(ITEM_IMAGES.ALLPRIVATE_BID);
+    });
+
+    it("guard c: details=false with all three item flags true is treated as all private for auctions", async () => {
+      const seller = await newUser("gc-seller");
+      const bidder = await newUser("gc-bidder");
+      const [mainCopy] = await giveCopies(seller.id, C.GUARDC_MAIN, 1);
+      await giveCopies(bidder.id, C.GUARDC_BID, 1);
+      const auctionId = await createAuctionOk(seller.twitch, mainCopy);
+      const { listTradeAuctions, getTradeAuction, placeTradeAuctionBid } = await svc();
+
+      const board = await listTradeAuctions({
+        streamerId: S.GUARDC,
+        scope: "in_channel",
+        page: 1,
+        twitchUserId: bidder.twitch,
+      });
+      const row = board.auctions.find((auction) => auction.id === auctionId);
+      // 行は出る（show_unowned_cards=true）。しかしガード c により全項目非公開。
+      expect(row?.offeredCard).toEqual({
+        name: "",
+        rarity: "common",
+        imageUrl: null,
+        collectionNumber: expect.any(Number),
+      });
+      expect(JSON.stringify(board)).not.toContain("GuardC Main");
+      expect(JSON.stringify(board)).not.toContain(ITEM_IMAGES.GUARDC_MAIN);
+
+      const placed = await placeTradeAuctionBid({
+        twitchUserId: bidder.twitch,
+        auctionId,
+        bidCardId: C.GUARDC_BID,
+        quantity: 1,
+        requestId: randomUUID(),
+      });
+      expect(placed.kind).toBe("ok");
+
+      // 売り手から見た入札カードもガード c で名前・画像が隠れる。
+      const asSeller = await getTradeAuction({ auctionId, twitchUserId: seller.twitch });
+      expect(asSeller?.bids?.[0].bidCard).toMatchObject({
+        name: "",
+        imageUrl: null,
+        collectionNumber: expect.any(Number),
+      });
+      expect(JSON.stringify(asSeller)).not.toContain("GuardC Bid");
+      expect(JSON.stringify(asSeller)).not.toContain(ITEM_IMAGES.GUARDC_BID);
+    });
+
+    it("show_unowned_cards=false keeps the row (and the bid) away even when every item flag is true", async () => {
       const seller = await newUser("nh-seller");
       const bidder = await newUser("nh-bidder");
       const [mainCopy] = await giveCopies(seller.id, C.NAMEONLY_HIDDEN_MAIN, 1);
@@ -993,6 +1226,7 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
       })).resolves.toEqual({ kind: "error", code: "TRADE_AUCTION_NOT_FOUND" });
     });
   });
+
   // ---------------------------------------------------------------------------
   // #2079: ハブのコレクション別オークション一覧。専用ユーザーを作り、HUB の
   // カードだけを所持する viewer で「所持コレクションだけに出る」ことと、

@@ -51,6 +51,8 @@ import type { Json } from '@/types/database'
 //       00065 rarity_weights_scope / pack_rarity_weights, 00066 gacha_sound_rules,
 //       20260817100000 trade_enabled / cross_channel_trade_enabled (#722)
 //       20261117120000 trade_unowned_card_names_visible (#2070)
+//       20261122120000 show_unowned_card_name / show_unowned_card_image /
+//                      show_unowned_card_description (#2070 フォローアップ)
 // -----------------------------------------------------------------------------
 // 列定義を関数にしているのは、Issue #1994 の channel_point_pack_names 列を持つ
 // UPDATE 専用の拡張定義（streamersWithChannelPointPackNames）と列を共有するため。
@@ -100,6 +102,16 @@ const streamerBaseColumns = () => ({
   // 00035
   show_unowned_cards: boolean('show_unowned_cards').notNull().default(false),
   show_unowned_card_details: boolean('show_unowned_card_details').notNull().default(false),
+  // 20261122120000 (#2070 フォローアップ): 未所持カードの項目別公開設定。
+  // show_unowned_cards=true のときだけ有効で、名前・画像・説明を個別に公開する。
+  // 旧 show_unowned_card_details は後続リリースまで残す。新アプリは3列の AND を
+  // 旧列へミラー書込みし、旧アプリ・旧画面の「詳細公開」表示との互換を保つ
+  // （部分公開を旧列 true として過大に公開しないため AND）。
+  // HP/攻撃/防御/速度/スキルは設定対象外で未所持カードには常に出さない。
+  // レアリティと表示番号は本設定に関係なく常に公開する。既定はすべて false。
+  show_unowned_card_name: boolean('show_unowned_card_name').notNull().default(false),
+  show_unowned_card_image: boolean('show_unowned_card_image').notNull().default(false),
+  show_unowned_card_description: boolean('show_unowned_card_description').notNull().default(false),
   // 20260811000000: 配信掲載とランキング識別情報のオプトイン（両方OFF）
   publish_live_status: boolean('publish_live_status').notNull().default(false),
   publish_stats: boolean('publish_stats').notNull().default(false),
@@ -114,8 +126,9 @@ const streamerBaseColumns = () => ({
   trade_enabled: boolean('trade_enabled').notNull().default(false),
   cross_channel_trade_enabled: boolean('cross_channel_trade_enabled').notNull().default(false),
   // 20261117120000 (#2070): 未所持カードの名前とレアリティだけをトレードで公開する。
-  // show_unowned_cards=true かつ show_unowned_card_details=false のときだけ意味を持つ。
-  // 画像・説明は公開せず、コレクション画面の表示にも影響しない（既定OFF）。
+  // 設定としては C4b で廃止した（列は migration 履歴と旧アプリの読み取り互換のため残す）。
+  // 現行アプリはこの列を書き込みも参照もしない。未所持カードの項目別公開は
+  // show_unowned_card_name / _image / _description に一本化している。
   trade_unowned_card_names_visible: boolean('trade_unowned_card_names_visible')
     .notNull()
     .default(false),

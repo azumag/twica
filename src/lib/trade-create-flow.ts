@@ -157,8 +157,18 @@ export function wantCollectionGate(
 export type TradeCreateFormData = {
   ownedCopies: TradeableOwnedCopy[];
   wantableCards: WantableCard[];
-  wantableRevealsUnowned: boolean;
-  wantableRevealsUnownedImages: boolean;
+  /**
+   * 欲しいチャネルが未所持カードを行として公開しているか
+   * （show_unowned_cards = revealsUnownedCards）。false なら候補は所持カードだけに
+   * なるため「持っているカードのみ指定できる」案内を出す。
+   */
+  wantableRevealsUnownedCards: boolean;
+  /**
+   * 欲しいチャネルが未所持カードの名前を公開しているか
+   * （revealsUnownedCardNames）。false なら未所持カードの name は "" で届き、
+   * UI は表示番号 #N で選ぶ。このとき理由の案内を出す。
+   */
+  wantableRevealsUnownedNames: boolean;
 };
 
 /**
@@ -168,10 +178,10 @@ export type TradeCreateFormData = {
  *
  * `wantStreamerId = null` means an auction: it has no counterpart channel, so
  * no wanted catalogue is read at all and the client receives an empty list.
- * For offers, the wanted channel's reveal flags decide the two notices in the
- * form, and listWantableCards has already applied the visibility rule in SQL —
- * this function only forwards its result, so hidden card names/images are
- * never serialized into the client props.
+ * For offers, the wanted channel's two reveal flags (rows / names) decide the
+ * form's notices, and listWantableCards has already applied the visibility rule
+ * in SQL — this function only forwards its result, so hidden card names/images
+ * are never serialized into the client props.
  */
 export async function loadTradeCreateFormData(input: {
   viewerId: string;
@@ -192,9 +202,14 @@ export async function loadTradeCreateFormData(input: {
     ownedCopies,
     wantableCards,
     // Fail closed if the channel disappeared between the candidate read and
-    // this read: no unowned name/image notice is better than a wrong one.
-    wantableRevealsUnowned: wantStreamer?.revealsUnownedCards ?? false,
-    wantableRevealsUnownedImages: wantStreamer?.revealsUnownedCardImages ?? false,
+    // this read: no notice (and no wrong claim) is better than a wrong one.
+    //
+    // 20261122 の項目別公開以降、行の可視性（show_unowned_cards）と名前の
+    // 可視性（show_unowned_card_name）は独立している。名前が非公開でも行が
+    // 見えていれば未所持カードは #N で選べるので、2つの案内を取り違えないよう
+    // 別々のフラグとして渡す（C4a）。
+    wantableRevealsUnownedCards: wantStreamer?.revealsUnownedCards ?? false,
+    wantableRevealsUnownedNames: wantStreamer?.revealsUnownedCardNames ?? false,
   };
 }
 

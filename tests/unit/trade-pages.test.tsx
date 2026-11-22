@@ -188,7 +188,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer());
   mocks.listWantableCards.mockResolvedValue([
-    { cardId: "c-1", name: "Visible Card", rarity: "common", imageUrl: "https://img/x.png", isOwned: true },
+    {
+      cardId: "c-1",
+      name: "Visible Card",
+      rarity: "common",
+      imageUrl: "https://img/x.png",
+      // 閲覧者に依存しない表示番号（#N）。フィルタの選択肢もこの値で表示する。
+      collectionNumber: 1,
+      isOwned: true,
+    },
   ]);
   mocks.listTradeableOwnedCopies.mockResolvedValue([]);
   mocks.listCrossTradePartnerStreamers.mockResolvedValue([]);
@@ -273,7 +281,9 @@ describe("/trade/[streamerId] board page", () => {
     render(await TradeBoardPage({ params, searchParams: Promise.resolve({}) }));
     expect(mocks.listWantableCards).toHaveBeenCalledWith("viewer-1", STREAMER_ID);
     const board = props("trade-board");
-    expect(board.filterCards).toEqual([{ cardId: "c-1", name: "Visible Card" }]);
+    expect(board.filterCards).toEqual([
+      { cardId: "c-1", name: "Visible Card", collectionNumber: 1 },
+    ]);
     expect(board.createHref).toBe(
       `/trade/new?kind=offer&give=${STREAMER_ID}&want=${STREAMER_ID}`,
     );
@@ -285,6 +295,26 @@ describe("/trade/[streamerId] board page", () => {
     mocks.getTradeBoardStreamer.mockResolvedValue(boardStreamer({ revealsUnownedCards: false }));
     render(await TradeBoardPage({ params, searchParams: Promise.resolve({}) }));
     expect(props("trade-board").revealsUnownedCards).toBe(false);
+  });
+
+  it("hands the board the display number of a hidden-name filter card (#2070 follow-up)", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    // 名前が非公開の未所持カード: name は "" で、表示番号だけが分かる。
+    mocks.listWantableCards.mockResolvedValue([
+      {
+        cardId: "c-hidden",
+        name: "",
+        rarity: "rare",
+        imageUrl: "https://img/secret.png",
+        collectionNumber: 12,
+        isOwned: false,
+      },
+    ]);
+    render(await TradeBoardPage({ params, searchParams: Promise.resolve({}) }));
+    // 名前（""）と番号だけを渡す。画像 URL はフィルタの props に含めない。
+    expect(props("trade-board").filterCards).toEqual([
+      { cardId: "c-hidden", name: "", collectionNumber: 12 },
+    ]);
   });
 
   it("shows a notice instead of the board when trading is disabled", async () => {
@@ -314,7 +344,9 @@ describe("/trade/[streamerId] board page", () => {
     // The channel read has not finished yet when the filter query starts.
     resolveStreamer(boardStreamer());
     render(await pending);
-    expect(props("trade-board").filterCards).toEqual([{ cardId: "c-1", name: "Visible Card" }]);
+    expect(props("trade-board").filterCards).toEqual([
+      { cardId: "c-1", name: "Visible Card", collectionNumber: 1 },
+    ]);
   });
 
   it("ignores a failed (unused) filter query when trading is disabled", async () => {
@@ -494,9 +526,9 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
   it("offers only owned, wantable cards as bid candidates with their free copy counts", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     mocks.listWantableCards.mockResolvedValue([
-      { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, isOwned: true },
-      { cardId: "c-locked", name: "Locked", rarity: "common", imageUrl: null, isOwned: true },
-      { cardId: "c-unowned", name: "Unowned", rarity: "epic", imageUrl: null, isOwned: false },
+      { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, collectionNumber: 1, isOwned: true },
+      { cardId: "c-locked", name: "Locked", rarity: "common", imageUrl: null, collectionNumber: 2, isOwned: true },
+      { cardId: "c-unowned", name: "Unowned", rarity: "epic", imageUrl: null, collectionNumber: 3, isOwned: false },
     ]);
     mocks.listTradeableOwnedCopies.mockResolvedValue([
       { userCardId: "u1", cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, obtainedAt: null, isListed: false, ownedCount: 3 },
@@ -512,8 +544,8 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
     const detail = props("trade-auction-detail");
     expect(detail).toMatchObject({ auctionId: AUCTION_ID, isLoggedIn: true, maxBidQuantity: 10 });
     expect(detail.bidCards).toEqual([
-      { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, freeCount: 2 },
-      { cardId: "c-locked", name: "Locked", rarity: "common", imageUrl: null, freeCount: 0 },
+      { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, collectionNumber: 1, freeCount: 2 },
+      { cardId: "c-locked", name: "Locked", rarity: "common", imageUrl: null, collectionNumber: 2, freeCount: 0 },
     ]);
   });
 

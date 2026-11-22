@@ -369,7 +369,8 @@ describe("HubMock", () => {
 });
 
 describe("VisibilityTable", () => {
-  // #2070: three states (all public / names only / hidden) are the columns.
+  // #2070 フォローアップ (C4b): three visibility states are the columns
+  // (all items revealed / some items revealed / unowned cards hidden).
   const columns = [
     { key: "public", header: "Revealed", icon: "eye" as const },
     { key: "nameOnly", header: "Names only", icon: "tag" as const },

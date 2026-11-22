@@ -54,13 +54,17 @@ vi.mock('@/components/CardVisibilitySettings', () => ({
   default: (props: {
     streamerId: string
     currentShowUnowned: boolean
-    currentShowUnownedDetails: boolean
+    currentShowUnownedName: boolean
+    currentShowUnownedImage: boolean
+    currentShowUnownedDescription: boolean
   }) => (
     <div
       data-testid="visibility-probe"
       data-streamer-id={props.streamerId}
       data-show-unowned={String(props.currentShowUnowned)}
-      data-show-details={String(props.currentShowUnownedDetails)}
+      data-show-name={String(props.currentShowUnownedName)}
+      data-show-image={String(props.currentShowUnownedImage)}
+      data-show-description={String(props.currentShowUnownedDescription)}
     />
   ),
 }))
@@ -104,18 +108,12 @@ vi.mock('@/components/TradeSettings', () => ({
     streamerId: string
     currentTradeEnabled: boolean
     currentCrossChannelTradeEnabled: boolean
-    currentShowUnownedCards: boolean
-    currentShowUnownedCardDetails: boolean
-    currentTradeUnownedCardNamesVisible: boolean
   }) => (
     <div
       data-testid="trade-probe"
       data-streamer-id={props.streamerId}
       data-trade={String(props.currentTradeEnabled)}
       data-cross={String(props.currentCrossChannelTradeEnabled)}
-      data-show-unowned={String(props.currentShowUnownedCards)}
-      data-show-details={String(props.currentShowUnownedCardDetails)}
-      data-unowned-names={String(props.currentTradeUnownedCardNamesVisible)}
     />
   ),
 }))
@@ -123,10 +121,12 @@ vi.mock('@/components/TradeSettings', () => ({
 const SETTINGS = {
   streamerId: 'streamer-1',
   showUnownedCards: true,
-  showUnownedCardDetails: false,
+  // #2070 フォローアップ (C4b): 設定UIは旧 details ではなく新3項目を読む。
+  showUnownedCardName: true,
+  showUnownedCardImage: false,
+  showUnownedCardDescription: true,
   tradeEnabled: true,
   crossChannelTradeEnabled: false,
-  tradeUnownedCardNamesVisible: true,
   packNames: ['weapons', 'armors'],
   defaultPackName: '基本パック',
   albumGridSizes: { __all__: 6, weapons: 9 },
@@ -174,17 +174,18 @@ describe('AccountSettingsPage collection sharing section', () => {
     const visibility = screen.getByTestId('visibility-probe')
     expect(visibility).toHaveAttribute('data-streamer-id', 'streamer-1')
     expect(visibility).toHaveAttribute('data-show-unowned', 'true')
-    expect(visibility).toHaveAttribute('data-show-details', 'false')
+    expect(visibility).toHaveAttribute('data-show-name', 'true')
+    expect(visibility).toHaveAttribute('data-show-image', 'false')
+    expect(visibility).toHaveAttribute('data-show-description', 'true')
 
     const trade = screen.getByTestId('trade-probe')
     expect(trade).toHaveAttribute('data-streamer-id', 'streamer-1')
     expect(trade).toHaveAttribute('data-trade', 'true')
     expect(trade).toHaveAttribute('data-cross', 'false')
-    // Issue #2070: 新トグルの disabled 理由を判定するため、公開設定の現在値と
-    // トレード限定の新設定値を同じ TradeSettings へ渡す。
-    expect(trade).toHaveAttribute('data-show-unowned', 'true')
-    expect(trade).toHaveAttribute('data-show-details', 'false')
-    expect(trade).toHaveAttribute('data-unowned-names', 'true')
+    // #2070 フォローアップ (C4b): 未所持カードの項目別公開は
+    // CardVisibilitySettings へ一本化し、TradeSettings には渡さない。
+    expect(trade).not.toHaveAttribute('data-show-unowned')
+    expect(trade).not.toHaveAttribute('data-unowned-names')
 
     // #1765 フォローアップ: アルバムのパック別既定も同じ初期値を受け取る
     const album = screen.getByTestId('album-probe')
@@ -231,13 +232,21 @@ describe('AccountSettingsPage collection sharing section', () => {
       ...SETTINGS,
       tradeEnabled: false,
       crossChannelTradeEnabled: false,
+      // 新3列が欠落し、旧 details からの導出も false（fail-closed）になった状態。
+      showUnownedCardName: false,
+      showUnownedCardImage: false,
+      showUnownedCardDescription: false,
     })
 
     render(await AccountSettingsPage())
 
     expect(screen.getByTestId('trade-probe')).toHaveAttribute('data-trade', 'false')
     expect(screen.getByTestId('trade-probe')).toHaveAttribute('data-cross', 'false')
-    expect(screen.getByTestId('trade-probe')).toHaveAttribute('data-unowned-names', 'true')
+
+    // 新3列が欠落した窓では旧 details から導出した値をそのまま渡す（ここでは false）。
+    expect(screen.getByTestId('visibility-probe')).toHaveAttribute('data-show-name', 'false')
+    expect(screen.getByTestId('visibility-probe')).toHaveAttribute('data-show-image', 'false')
+    expect(screen.getByTestId('visibility-probe')).toHaveAttribute('data-show-description', 'false')
   })
 
   it('CARD_TRADE_UI_VISIBLE=false ならトレード設定だけを出さず、他の公開設定は残す (#715)', async () => {

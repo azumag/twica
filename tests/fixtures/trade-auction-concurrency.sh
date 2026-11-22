@@ -126,8 +126,10 @@ blocked() {
 "${PSQL[@]}" -1 <<SQL
 INSERT INTO public.streamers (
   id, twitch_user_id, twitch_username, twitch_display_name,
-  trade_enabled, cross_channel_trade_enabled, show_unowned_cards, show_unowned_card_details
-) VALUES ('$STREAMER_ID', 'ta-conc-streamer', 'ta-conc-streamer', 'TA Conc', true, true, true, true);
+  trade_enabled, cross_channel_trade_enabled, show_unowned_cards, show_unowned_card_details,
+  show_unowned_card_name, show_unowned_card_image, show_unowned_card_description
+) VALUES ('$STREAMER_ID', 'ta-conc-streamer', 'ta-conc-streamer', 'TA Conc', true, true, true, true,
+  true, true, true);
 
 INSERT INTO public.users (id, twitch_user_id, twitch_username, twitch_display_name) VALUES
   ('$SELLER_ID', 'ta-conc-seller', 'ta-conc-seller', 'Seller'),

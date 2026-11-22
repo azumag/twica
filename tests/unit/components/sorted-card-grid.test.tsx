@@ -14,12 +14,13 @@ vi.mock('next-intl', () => ({
   },
 }))
 
-// Issue #395: 未所持カードを視聴者向けに表示するときの「詳細を隠す」モードを検証する。
-// hideUnownedDetails=true のとき、未所持カードは画像が表示されず、プレースホルダーテキスト ("???")
-// のみが noImageText 経由で表示される。所持カードは常に画像と本来の名前で表示される。
+// Issue #395 / #2070 フォローアップ: 未所持カードの名前・画像・説明を項目別に
+// マスクする表示を検証する。非公開項目はプレースホルダー（名前は unownedCard の
+// 「？？？」、画像は noImageText、説明は非表示）になる。所持カードは常に
+// 全項目を本来の値で表示する。
 //
-// hideUnownedDetails=true: unowned cards must mask the image (placeholder text only).
-// Owned cards must always render their actual name and image regardless of the flag.
+// Per-item masking: private unowned items render placeholders; owned cards always
+// render their actual name/image/description regardless of the flags.
 
 const baseCard = (overrides: Partial<Card>): Card => ({
   id: 'card-1',
@@ -49,6 +50,9 @@ const baseCard = (overrides: Partial<Card>): Card => ({
   updated_at: '2026-04-01T00:00:00Z',
   ...overrides,
 })
+
+const ALL_VISIBLE = { name: true, image: true, description: true }
+const ALL_HIDDEN = { name: false, image: false, description: false }
 
 const baseTranslations = {
   cardCountTemplate: 'x{count}',
@@ -111,8 +115,8 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     expect(screen.getByRole('link', { name: 'OwnedCard: x2' })).toBeInTheDocument()
   })
 
-  it('reveals name/image/description for unowned cards when hideUnownedDetails=false (公開モード)', () => {
-    // show_unowned_card_details=true → hideUnownedDetails=false の経路。
+  it('reveals name/image/description for unowned cards when all items are public (公開モード)', () => {
+    // show_unowned_cards=true かつ新3列がすべて true の経路。
     // i18n ラベル「画像・説明を公開」の契約どおり、未所持カードでも本来の name / image_url
     // / description が表示される必要がある（所持カードとの差はロックアイコンと所有数の非表示のみ）。
     // The "reveal details" mode contract: name, image, and description must be visible
@@ -132,7 +136,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
       <SortedCardGrid
         cards={cards}
         streamerId="streamer-1"
-        hideUnownedDetails={false}
+        unownedCardVisibility={ALL_VISIBLE}
         translations={baseTranslations}
       />
     )
@@ -172,7 +176,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
         <SortedCardGrid
           cards={cards}
           streamerId="streamer-1"
-          hideUnownedDetails={false}
+          unownedCardVisibility={ALL_VISIBLE}
           translations={baseTranslations}
         />
       )
@@ -200,7 +204,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     }
   })
 
-  it('hides unowned card image / name / description when hideUnownedDetails=true (placeholder only)', () => {
+  it('hides unowned card image / name / description when all items are private (placeholder only)', () => {
     const cards = [
       {
         ...baseCard({
@@ -216,7 +220,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
       <SortedCardGrid
         cards={cards}
         streamerId="streamer-1"
-        hideUnownedDetails
+        unownedCardVisibility={ALL_HIDDEN}
         translations={baseTranslations}
       />
     )
@@ -230,7 +234,69 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     expect(screen.getAllByText('???').length).toBeGreaterThan(0)
   })
 
-  it('always shows the rarity badge regardless of hideUnownedDetails (Issue #395 core requirement)', () => {
+  /**
+   * Issue #2070 フォローアップ: 項目別の組合せで、公開した項目だけが本来の値で
+   * 表示され、非公開項目はプレースホルダーになることを固定する。
+   * （RSC ペイロードからの実値除去は collection page 側のテストが担う）
+   */
+  it.each([
+    { visibility: { name: true, image: false, description: false }, label: '名前のみ' },
+    { visibility: { name: false, image: true, description: false }, label: '画像のみ' },
+    { visibility: { name: false, image: false, description: true }, label: '説明のみ' },
+    { visibility: { name: true, image: true, description: false }, label: '名前+画像' },
+    { visibility: { name: true, image: false, description: true }, label: '名前+説明' },
+    { visibility: { name: false, image: true, description: true }, label: '画像+説明' },
+  ])('項目別マスク($label)で公開項目だけを表示する', ({ visibility }) => {
+    const cards = [
+      {
+        ...baseCard({
+          id: 'unowned-1',
+          name: 'SecretCard',
+          description: 'カード説明テキスト',
+        }),
+        count: 0,
+        isOwned: false,
+      },
+    ]
+    render(
+      <SortedCardGrid
+        cards={cards}
+        streamerId="streamer-1"
+        unownedCardVisibility={visibility}
+        translations={baseTranslations}
+      />
+    )
+
+    if (visibility.name) {
+      expect(screen.getByText('SecretCard')).toBeInTheDocument()
+    } else {
+      expect(screen.queryByText('SecretCard')).not.toBeInTheDocument()
+      // 名前のプレースホルダーは既存の unownedCard（「？？？」）。
+      expect(screen.getAllByText('???').length).toBeGreaterThan(0)
+    }
+
+    if (visibility.image) {
+      // 名前が非公開でも alt は表示名（「？？？」）になり、実名は漏れない。
+      const img = screen.getByRole('img')
+      expect(img).toHaveAttribute(
+        'alt',
+        visibility.name ? 'SecretCard' : '???',
+      )
+    } else {
+      expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    }
+
+    if (visibility.description) {
+      expect(screen.getByText(/カード説明テキスト/)).toBeInTheDocument()
+    } else {
+      expect(screen.queryByText(/カード説明テキスト/)).not.toBeInTheDocument()
+    }
+
+    // レアリティと表示番号は常に公開。
+    expect(screen.getByText('コモン')).toBeInTheDocument()
+  })
+
+  it('always shows the rarity badge regardless of unowned item visibility (Issue #395 core requirement)', () => {
     // Issue 本文の「⑤???」ように、レアリティ（または序列）は常に視聴者に出すのが要点。
     // The rarity badge must always be visible — that is what makes "placeholder mode"
     // useful at all (otherwise the placeholder would carry zero information).
@@ -241,7 +307,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
       <SortedCardGrid
         cards={cards}
         streamerId="streamer-1"
-        hideUnownedDetails
+        unownedCardVisibility={ALL_HIDDEN}
         translations={baseTranslations}
       />
     )
@@ -250,7 +316,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
     expect(screen.getByText("レジェンダリー")).toBeInTheDocument()
   })
 
-  it('still shows owned card details even when hideUnownedDetails=true', () => {
+  it('still shows owned card details even when all unowned items are private', () => {
     // 同じグリッドに所持・未所持が混在しても、所持側はマスクされない
     // Owned cards remain fully visible even when the flag is on.
     const cards = [
@@ -261,7 +327,7 @@ describe('SortedCardGrid - unowned card visibility (Issue #395)', () => {
       <SortedCardGrid
         cards={cards}
         streamerId="streamer-1"
-        hideUnownedDetails
+        unownedCardVisibility={ALL_HIDDEN}
         translations={baseTranslations}
       />
     )
