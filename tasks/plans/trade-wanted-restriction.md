@@ -97,15 +97,14 @@ CLAUDE.md の「アプリ先行が必要な migration は別リリース」規�
 
 ```ts
 /** offeredCardIdExpr のカードにルール（親行）が無い、または wantedCardIdExpr がそのルールの許可集合（子行）に入っている */
-export function wantedAllowedForOffered(offeredCardIdExpr: AnyColumn | SQL, wantedCardIdExpr: AnyColumn, withoutRestrictions: boolean)
-//  withoutRestrictions → TRUE（デプロイ窓）
+export function wantedAllowedForOffered(offeredCardIdExpr: AnyColumn, wantedCardIdExpr: AnyColumn)
 //  NOT EXISTS (… WHERE r.offered_card_id = :offered) OR EXISTS (… WHERE r.offered_card_id = :offered AND r.wanted_card_id = :wanted)
 ```
 
 | 箇所 | 変更 |
 |---|---|
 | `createTradeOffer`（`runChecks`） | `wantedAllowed` を 1 行の select 列として追加（追加クエリ無し）。`wantedWantable` の判定の直後に `TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED` を返す |
-| `openOfferConditions`（ボード・ハブ） | `withoutRestrictions` 引数を足し、`cardIsWantable` の隣に `wantedAllowedForOffered` を AND。`listTradeOffers` / `listTradeOffersByCollection` の各呼び出しでフォールバックを入れ子にする |
+| `openOfferConditions`（ボード・ハブ） | `cardIsWantable` の隣に `wantedAllowedForOffered` を AND（フォールバックは入れない。§4.1） |
 | `tradeableStateFor`（マイトレード） | 同じ断片を AND に追加（`listMyTradeOffers` のみが使う） |
 | `precheckTradeAccept` | `wantedAllowed` を select に足し、既存の `TRADE_OFFER_UNAVAILABLE` 条件へ合流 |
 | `listWantableCards(twitchUserId, streamerId)` | **シグネチャは変えない**（返す一覧は従来どおり全 wantable）。代わりに §6 のとおり出品フォームへ「ルール表」を別途渡す |
