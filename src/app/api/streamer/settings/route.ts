@@ -49,7 +49,8 @@ import { validateRarityStylesInput } from "@/lib/rarity-styles";
 // 設定更新の全 DB 操作は PlanetScale の単一接続を使う。
 // getDb() は各 withDbRetry queryFn 内で取得し、リトライ時に接続状態を引き継がない。
 // -----------------------------------------------------------------------------
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { unownedCardDetailsMirrorSql } from "@/lib/unowned-card-visibility";
 import { getDb } from "@/lib/db/client";
 
 import { withDbRetry } from "@/lib/db/retry";
@@ -1708,11 +1709,14 @@ export async function POST(request: NextRequest) {
       // リクエストに無い項目は「その行の現在値」を使う。COALESCE の第1引数に
       // null を渡すと現在列へフォールバックする。::boolean はパラメータ型を
       // 明示し、PostgreSQL の型推論に依存しないためのもの。
-      updateData.show_unowned_card_details = sql`(
-        COALESCE(${showUnownedCardName ?? null}::boolean, ${streamersTable.show_unowned_card_name})
-        AND COALESCE(${showUnownedCardImage ?? null}::boolean, ${streamersTable.show_unowned_card_image})
-        AND COALESCE(${showUnownedCardDescription ?? null}::boolean, ${streamersTable.show_unowned_card_description})
-      )`;
+      updateData.show_unowned_card_details = unownedCardDetailsMirrorSql(
+        {
+          name: showUnownedCardName,
+          image: showUnownedCardImage,
+          description: showUnownedCardDescription,
+        },
+        streamersTable,
+      );
       unownedCardItemDetailsMirrorRequested = true;
     } else if (showUnownedCardDetails !== undefined) {
       // 旧クライアント（showUnownedCardDetails 単独送信）。3項目へ展開し、

@@ -288,3 +288,45 @@ export function unownedCardItemVisibleSql(
     )
   )`;
 }
+
+/**
+ * unownedCardDetailsMirrorSql() が参照する streamers の列（新3項目の現在値）。
+ *
+ * テーブル定義（@/lib/db/schema）を import しないために列だけを受け取る。
+ * このモジュールはクライアントコンポーネントからも参照されるため、DB スキーマを
+ * クライアントバンドルへ引き込まない。
+ */
+export interface UnownedCardDetailsMirrorColumns {
+  show_unowned_card_name: AnyColumn;
+  show_unowned_card_image: AnyColumn;
+  show_unowned_card_description: AnyColumn;
+}
+
+/**
+ * 項目別設定の保存時に、旧 show_unowned_card_details へミラー書込みする
+ * SQL 式（UPDATE の SET 右辺）を組み立てる（設定 API が使用）。
+ *
+ * mirrorUnownedCardDetails() の「3項目の AND」を、リクエストに無い項目は
+ * 「その行の現在列」で補う形で DB 側に計算させる。別 SELECT で現在値を読んで
+ * から UPDATE すると、読み書きの間に別リクエストが挟まって details と3列が
+ * 食い違うため、PostgreSQL の SET 式が更新前の行値を参照する性質を使って
+ * 1本の UPDATE に閉じ込める。
+ *
+ * - 未送信（undefined）の項目は null として渡し、COALESCE が現在列へ
+ *   フォールバックする。
+ * - `::boolean` はパラメータ型を明示し、PostgreSQL の型推論（null リテラルの
+ *   型不明）に依存しないためのもの。
+ *
+ * 実 PostgreSQL で UPDATE として実行できることは
+ * tests/integration/streamer-settings-mirror-pg.test.ts が検証する。
+ */
+export function unownedCardDetailsMirrorSql(
+  input: { name?: boolean; image?: boolean; description?: boolean },
+  columns: UnownedCardDetailsMirrorColumns,
+): SQL {
+  return sql`(
+        COALESCE(${input.name ?? null}::boolean, ${columns.show_unowned_card_name})
+        AND COALESCE(${input.image ?? null}::boolean, ${columns.show_unowned_card_image})
+        AND COALESCE(${input.description ?? null}::boolean, ${columns.show_unowned_card_description})
+      )`;
+}
