@@ -40,7 +40,7 @@ import {
   cardVisibleTo,
   crossEnabledGate,
   isTradeAuctionSchemaMissingError,
-  maskTradeCardImages,
+  maskTradeCards,
   normalizeSnapshot,
   qualifiedColumn,
   toIsoTimestamp,
@@ -49,7 +49,6 @@ import {
   tradeEnabledGate,
   viewerUserIdOf,
   waitForTradeRetry,
-  withUnownedCardItemColumnFallback,
   type TradeCardSnapshot,
   type TradeCollectionSort,
   type TradeScope,
@@ -483,19 +482,28 @@ function toAuctionDto(row: AuctionRow): TradeAuctionDto {
 }
 
 /**
- * Read-time image mask for a page of auction DTOs (#2070): the offered card of
- * each auction plus the viewer's own bid card, in ONE statement. Rows are never
- * dropped (paging/hasMore stay intact); only imageUrl is nulled.
+ * オークション一覧・詳細のカードスナップショットを読み取り時にマスクする
+ * （C3b: オークション側の項目別可視性の完成）。
  *
- * The viewer id comes from the page SELECT itself (NULL for anonymous), so no
- * extra users lookup is needed.
+ * 対象は offeredCard と、閲覧者自身の入札 myBid.bidCard。1ページ分を
+ * maskTradeCards() にまとめて渡すので、可視性クエリ（名前・画像）と番号表
+ * （#N）はページ全体でそれぞれ1回だけになる。行は落とさず name / imageUrl を
+ * 伏せ、collectionNumber を付けるだけなので、LIMIT/hasMore や並びは変わらない。
+ *
+ * ここを maskTradeCardImages（C3a の互換ラッパー）ではなく maskTradeCards に
+ * 直接そろえたのは、オークションの DTO が「画像だけ」ではなく名前・画像・番号の
+ * 3点セットでマスクされることを型と import の両方で明示するため。
+ * 全項目非公開でも show_unowned_cards=true なら行は残り、#N だけで選べる。
+ *
+ * viewerUserId はページ SELECT が解決した users.id（匿名は NULL）。追加の
+ * users ルックアップは不要。
  */
-async function maskAuctionListImages(
+async function maskAuctionListCards(
   auctions: TradeAuctionDto[],
   viewerUserId: string | null,
 ): Promise<TradeAuctionDto[]> {
   if (auctions.length === 0) return auctions;
-  const masked = await maskTradeCardImages(
+  const masked = await maskTradeCards(
     auctions.flatMap((auction) => [
       { cardId: auction.offeredCardId, snapshot: auction.offeredCard },
       ...(auction.myBid
@@ -539,17 +547,18 @@ async function guardAuctionRead<T>(read: () => Promise<T>): Promise<T> {
  * Gates for everybody (the seller included, like the regular board): the
  * auction still holds its card, active offered card and trade_enabled.
  * Visibility: the offered card must be visible to the viewer (cardVisibleTo);
- * the seller always sees their own. cardVisibleTo now uses the row rule
- * (owned OR show_unowned_cards) and no longer reads the item columns, but
- * withoutItemColumns is still threaded from the shared deploy-window fallback
- * so every statement of one request shares the same decision.
+ * the seller always sees their own.
+ *
+ * C3b: cardVisibleTo は行ルール（所持 OR show_unowned_cards）だけを見て、
+ * 新3列（show_unowned_card_name/_image/_description）を読まない。したがって
+ * この WHERE には項目別公開のデプロイ窓は存在せず、
+ * withUnownedCardItemColumnFallback で包む必要もない。名前・画像の 42703 は
+ * 応答直前に呼ぶ maskAuctionListCards() → maskTradeCards() が自分で処理する。
+ * これは「行が出るか」と「名前/画像を出してよいか」を混ぜないための分離でも
+ * ある（全項目非公開でも show_unowned_cards=true なら行は出る）。
  */
-function auctionBoardConditions(viewerUserId: SQL | null, withoutItemColumns: boolean) {
-  const visible = cardVisibleTo(
-    auctionsTable.offered_card_id,
-    viewerUserId,
-    withoutItemColumns,
-  );
+function auctionBoardConditions(viewerUserId: SQL | null) {
+  const visible = cardVisibleTo(auctionsTable.offered_card_id, viewerUserId);
   return [
     eq(auctionsTable.status, "open"),
     sql`public.trade_auction_holds_cards(${qualifiedColumn(auctionsTable.id)})`,
@@ -583,8 +592,8 @@ export async function listTradeAuctions(input: {
   twitchUserId?: string;
 }) {
   const viewerUserId = input.twitchUserId ? viewerUserIdOf(input.twitchUserId) : null;
-  const conditionsFor = (withoutItemColumns: boolean) => {
-    const conditions = auctionBoardConditions(viewerUserId, withoutItemColumns);
+  const conditionsFor = () => {
+    const conditions = auctionBoardConditions(viewerUserId);
     if (input.scope === "cross_channel") {
       conditions.push(
         ne(auctionsTable.offered_streamer_id, input.streamerId),
@@ -603,8 +612,9 @@ export async function listTradeAuctions(input: {
   };
 
   const offset = (input.page - 1) * TRADE_PAGE_SIZE;
-  const rows = await guardAuctionRead(() =>
-    withUnownedCardItemColumnFallback((withoutItemColumns) => withDbRetry(
+  // C3b: この SELECT は行ルールしか読まないので項目列のフォールバックは不要。
+  // 返す DTO の name/imageUrl は下の maskAuctionListCards() がマスクする。
+  const rows = await guardAuctionRead(() => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -612,7 +622,7 @@ export async function listTradeAuctions(input: {
         .from(auctionsTable)
         .leftJoin(sellerMeta, eq(sellerMeta.id, auctionsTable.seller_user_id))
         .leftJoin(auctionStreamerMeta, eq(auctionStreamerMeta.id, auctionsTable.offered_streamer_id))
-        .where(and(...conditionsFor(withoutItemColumns)))
+        .where(and(...conditionsFor()))
         // Soonest deadline first: that is what a bidder acts on.
         .orderBy(asc(auctionsTable.ends_at), asc(auctionsTable.id))
         .limit(TRADE_PAGE_SIZE + 1)
@@ -620,12 +630,12 @@ export async function listTradeAuctions(input: {
     },
     "trade-auction:list",
     { idempotent: true },
-  ))) as AuctionRow[];
+  )) as AuctionRow[];
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
   return {
-    auctions: await maskAuctionListImages(
+    auctions: await maskAuctionListCards(
       pageRows.map(toAuctionDto),
       rows[0]?.viewerUserId ?? null,
     ),
@@ -649,7 +659,7 @@ export async function listTradeAuctions(input: {
  * src/lib/trade.ts の TradeCollectionSort を参照。
  *
  * ゲート・可視性・DTO・画像マスクは listTradeAuctions と同じ
- * auctionBoardConditions / toAuctionDto / maskAuctionListImages を使う。
+ * auctionBoardConditions / toAuctionDto / maskAuctionListCards を使う。
  */
 export async function listTradeAuctionsByCollection(input: {
   twitchUserId: string;
@@ -663,8 +673,8 @@ export async function listTradeAuctionsByCollection(input: {
   const page = input.page ?? 1;
   const offset = (page - 1) * TRADE_PAGE_SIZE;
 
-  const rows = await guardAuctionRead(() =>
-    withUnownedCardItemColumnFallback((withoutItemColumns) => withDbRetry(
+  // C3b: 一覧と同じく行ルールだけ。項目列のフォールバックは mask 側に任せる。
+  const rows = await guardAuctionRead(() => withDbRetry(
     async () => {
       const { db } = await getDb();
       const partition = qualifiedColumn(auctionsTable.offered_streamer_id);
@@ -708,7 +718,7 @@ export async function listTradeAuctionsByCollection(input: {
         })
         .from(auctionsTable)
         .where(and(
-          ...auctionBoardConditions(viewerUserId, withoutItemColumns),
+          ...auctionBoardConditions(viewerUserId),
           sql`${partition} IN ${collectedStreamerIdsSubquery(input.twitchUserId)}`,
           // Push the single-collection filter below the window (the hub path
           // has no streamerId and ranks every owned collection).
@@ -748,7 +758,7 @@ export async function listTradeAuctionsByCollection(input: {
     },
     "trade-auction:list-collections",
     { idempotent: true },
-  ))) as Array<AuctionRow & {
+  )) as Array<AuctionRow & {
     placement: AuctionRow["offeredStreamer"];
     placementStreamerId: string;
     rn: number;
@@ -757,7 +767,7 @@ export async function listTradeAuctionsByCollection(input: {
     latestCreatedAt: string | Date;
   }>;
 
-  const masked = await maskAuctionListImages(
+  const masked = await maskAuctionListCards(
     rows.map(toAuctionDto),
     rows[0]?.viewerUserId ?? null,
   );
@@ -794,13 +804,15 @@ export async function listTradeAuctionsByCollection(input: {
  */
 export async function getTradeAuction(input: { auctionId: string; twitchUserId?: string }) {
   const viewerUserId = input.twitchUserId ? viewerUserIdOf(input.twitchUserId) : null;
-  // #2070: name-level visibility is a deploy-window-dependent fragment.
-  const publicConditionFor = (withoutItemColumns: boolean) => and(
+  // C3b: 公開条件は行ルールだけ。提供カードの名前/画像は、この行を返した後に
+  // maskAuctionListCards() / maskTradeCards() が個別に伏せる。したがって
+  // 項目列の有無で WHERE の形が変わることはない（デプロイ窓の再試行も不要）。
+  const publicConditionFor = () => and(
     eq(auctionsTable.status, "open"),
     sql`public.trade_auction_holds_cards(${qualifiedColumn(auctionsTable.id)})`,
     cardIsActive(auctionsTable.offered_card_id),
     tradeEnabledGate(auctionsTable.offered_streamer_id),
-    cardVisibleTo(auctionsTable.offered_card_id, viewerUserId, withoutItemColumns),
+    cardVisibleTo(auctionsTable.offered_card_id, viewerUserId),
   )!;
   const participantCondition = viewerUserId
     ? or(
@@ -814,11 +826,10 @@ export async function getTradeAuction(input: { auctionId: string; twitchUserId?:
     )!
     : null;
 
-  const rows = await guardAuctionRead(() =>
-    withUnownedCardItemColumnFallback((withoutItemColumns) => withDbRetry(
+  const rows = await guardAuctionRead(() => withDbRetry(
     async () => {
       const { db } = await getDb();
-      const publicCondition = publicConditionFor(withoutItemColumns);
+      const publicCondition = publicConditionFor();
       return db
         .select(auctionFields(viewerUserId))
         .from(auctionsTable)
@@ -832,22 +843,25 @@ export async function getTradeAuction(input: { auctionId: string; twitchUserId?:
     },
     "trade-auction:detail",
     { idempotent: true },
-  ))) as AuctionRow[];
+  )) as AuctionRow[];
   const row = rows[0];
   if (!row) return null;
 
   const auction = toAuctionDto(row);
   const viewerId = row.viewerUserId;
   if (!auction.isOwnAuction) {
-    // #2070: mask the offered snapshot (and the viewer's own bid, if any) with
-    // the same one-statement rule as every other read.
-    const [maskedAuction] = await maskAuctionListImages([auction], viewerId);
+    // C3b: 非出品者には offeredCard と自分の myBid.bidCard だけを返す。両方とも
+    // maskAuctionListCards() を通すので、名前・画像は項目別公開に従って伏せられ、
+    // #N が付く。入札者が参加者として行を見られることと、名前が見えることは
+    // 独立である（全項目非公開でも #N で自分の入札を確認できる）。
+    const [maskedAuction] = await maskAuctionListCards([auction], viewerId);
     return { auction: maskedAuction, bids: null };
   }
 
   // Seller only: every non-withdrawn bid with its bidder (only reached by the
-  // one user entitled to the contents). The image mask (#2070) is one more
-  // statement, shared with the auction's own offered snapshot below.
+  // one user entitled to the contents). 売り手が見る bids[].bidCard も下の
+  // maskTradeCards() で名前・画像・#N をそろえる。入札可否の precheck は行ルール
+  // だけを見ているため、ここで初めて項目別のマスクが適用される。
   const bidRows = await guardAuctionRead(() => withDbRetry(
     async () => {
       const { db } = await getDb();
@@ -872,10 +886,9 @@ export async function getTradeAuction(input: { auctionId: string; twitchUserId?:
     { idempotent: true },
   ));
 
-  // #2070: the seller's bid list and the auction itself are masked in ONE
-  // statement. The mapping goes through the same toBidDto as myBid, so a mask
-  // added there cannot be bypassed here (the previous hand-written copy was
-  // exactly the kind of place that leaks).
+  // C3b: 売り手の bids[] と出品カードを maskTradeCards() 1回にまとめる。
+  // マッピングは myBid と同じ toBidDto を通すので、片方だけマスクを足し忘れる
+  // ことがない（以前の手書きコピーはまさに漏えいしやすい箇所だった）。
   const bids = bidRows.map((bidRow): TradeAuctionBidDto => ({
     ...toBidDto({
       id: bidRow.bid.id,
@@ -892,7 +905,7 @@ export async function getTradeAuction(input: { auctionId: string; twitchUserId?:
     }),
     bidder: toUser(bidRow.bidder),
   }));
-  const masked = await maskTradeCardImages(
+  const masked = await maskTradeCards(
     [
       { cardId: auction.offeredCardId, snapshot: auction.offeredCard },
       ...bids.map((bid) => ({ cardId: bid.bidCardId, snapshot: bid.bidCard })),
@@ -961,11 +974,12 @@ export async function listMyTradeAuctions(
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
   return {
-    // #2070: /mine has no row filter (the viewer chose/received these cards),
-    // but the IMAGE rule still applies per card: offering/receiving a card is
-    // not current ownership of the wanted/bid card, so only "owned now or
-    // details public" keeps an image.
-    auctions: await maskAuctionListImages(
+    // /mine は行フィルタを持たない（閲覧者が自分で選んだ/受け取ったカードなので、
+    // 後から show_unowned_cards が OFF になっても行は残す）。ただし項目マスクは
+    // 全 DTO に適用する: 出品/入札したことは「今そのカードを所持している」ことを
+    // 意味しないため、名前は所持 OR 名前公開、画像は所持 OR 画像公開のときだけ
+    // 残る（C3b で名前も maskTradeCards の対象になった）。
+    auctions: await maskAuctionListCards(
       pageRows.map(toAuctionDto),
       rows[0]?.viewerUserId ?? null,
     ),
@@ -1015,6 +1029,15 @@ export async function createTradeAuction(input: {
  *   * the bid card must be visible to the bidder AND to the seller: the seller
  *     will see the bid contents, so a bid must not become a side channel that
  *     reveals a card name the seller is not entitled to see.
+ *
+ * C3b の規則: 「可視」は行ルール（所持 ≥1 OR show_unowned_cards）だけを指す。
+ * 名前や画像が非公開でも行が見えていれば入札できる。全項目非公開のカードでも
+ * #N で選べる、という要件をここで止めてしまわないよう、新3列
+ * (show_unowned_card_name/_image/_description) はこの判定に使わない。
+ * 実際、売り手が後から見る bids[].bidCard は maskTradeCards() が名前・画像を
+ * 個別に伏せるので、入札の成立可否と項目の公開可否は独立でよい。
+ * （description はトレード DTO に存在しないため判定対象外。）
+ *
  * Everything the RPC classifies itself (unknown auction/user, idempotent
  * replay, self-bid, same card, inactive cards, gates) is delegated so that
  * those answers and their precedence stay in one place. Race note as in
@@ -1030,11 +1053,12 @@ async function precheckBidVisibility(input: {
   requestId: string;
 }): Promise<TradeAuctionServiceErrorCode | null> {
   const bidderUserId = viewerUserIdOf(input.twitchUserId);
-  // #2070: all three cardVisibleTo calls share the deploy-window flag. The
-  // bid card is checked against BOTH the bidder and the seller (the seller
-  // will see the bid contents), so both sides must use the same rule.
-  const rows = await guardAuctionRead(() =>
-    withUnownedCardItemColumnFallback((withoutItemColumns) => withDbRetry(
+  // 入札カードは入札者と売り手の両方の行ルールを通す必要がある。売り手は
+  // 入札内容（bids[].bidCard）を見るため、売り手が行として見られないカードを
+  // 入札させると、入札が名前の side channel になる。逆に、行が見えれば名前・
+  // 画像が非公開でもよい（応答時に maskTradeCards() が伏せる）。
+  // C3b: この SELECT に新3列は無いので、デプロイ窓の再試行も不要。
+  const rows = await guardAuctionRead(() => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -1049,13 +1073,11 @@ async function precheckBidVisibility(input: {
           offeredVisible: cardVisibleTo(
             auctionsTable.offered_card_id,
             bidderUserId,
-            withoutItemColumns,
           ),
-          bidCardVisibleToBidder: cardVisibleTo(bidCardJoin.id, bidderUserId, withoutItemColumns),
+          bidCardVisibleToBidder: cardVisibleTo(bidCardJoin.id, bidderUserId),
           bidCardVisibleToSeller: cardVisibleTo(
             bidCardJoin.id,
             qualifiedColumn(auctionsTable.seller_user_id),
-            withoutItemColumns,
           ),
         })
         .from(auctionsTable)
@@ -1065,7 +1087,7 @@ async function precheckBidVisibility(input: {
     },
     "trade-auction:bid-precheck",
     { idempotent: true },
-  )));
+  ));
   const row = rows[0];
   if (!row || !row.bidderUserId) return null;
   if (row.isReplay === true) return null;

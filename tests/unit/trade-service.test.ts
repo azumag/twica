@@ -2201,14 +2201,6 @@ describe("trade unowned card item visibility (follow-up of #2070)", () => {
     expect(rendered.sql).not.toContain("show_unowned_card_name");
   });
 
-  it("the retained legacy flag argument no longer changes the row SQL (auction compatibility)", async () => {
-    const { cardVisibleTo } = await import("@/lib/trade");
-    const modern = render(cardVisibleTo(cards.id, null, false)).sql;
-    const legacy = render(cardVisibleTo(cards.id, null, true)).sql;
-    expect(legacy).toBe(modern);
-    expect(legacy).not.toContain("trade_unowned_card_names_visible");
-  });
-
   // SQL 断片は drizzle の列オブジェクト（別名 streamers）を使うため
   // `"name_streamer"."..."` と引用符付きで描画される。判定用に引用符を落とす。
   const unquoted = (fragment: unknown) => render(fragment).sql.replace(/"/g, "");

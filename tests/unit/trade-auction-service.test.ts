@@ -96,6 +96,9 @@ const CARD_ID = "44444444-4444-4444-8444-444444444444";
 const REQUEST_ID = "55555555-5555-4555-8555-555555555555";
 const SELLER_ID = "66666666-6666-4666-8666-666666666666";
 const VIEWER_ID = "77777777-7777-4777-8777-777777777777";
+// C3b: offeredCard と myBid.bidCard / bids[].bidCard を別々にマスクできる
+// ことを確かめるための2枚目。UUID の形だけ満たせばよい。
+const BID_CARD_ID = "88888888-8888-4888-8888-888888888888";
 
 const okBidResult = {
   success: true,
@@ -412,34 +415,35 @@ describe("bid visibility precheck (planning review M8)", () => {
   });
 });
 
-describe("read DTOs", () => {
-  const auctionRow = (overrides: Record<string, unknown> = {}) => ({
-    auction: {
-      id: AUCTION_ID,
-      seller_user_id: SELLER_ID,
-      offered_user_card_id: COPY_ID,
-      offered_card_id: CARD_ID,
-      offered_streamer_id: AUCTION_ID,
-      offered_card_snapshot: { name: "Main", rarity: "rare", imageUrl: null },
-      ends_at: "2026-10-18T00:00:00Z",
-      selection_deadline: "2026-10-21T00:00:00Z",
-      status: "open",
-      winning_bid_id: null,
-      request_id: REQUEST_ID,
-      settle_request_id: null,
-      completed_at: null,
-      created_at: "2026-10-17T00:00:00Z",
-      updated_at: "2026-10-17T00:00:00Z",
-    },
-    phase: "bidding",
-    bidCount: "3",
-    viewerUserId: VIEWER_ID,
-    myBid: null,
-    seller: { id: SELLER_ID, twitchUsername: "seller", twitchDisplayName: "Seller", twitchProfileImageUrl: null },
-    offeredStreamer: { id: AUCTION_ID, twitchUsername: "ch", twitchDisplayName: "Ch", twitchProfileImageUrl: null },
-    ...overrides,
-  });
+const auctionRow = (overrides: Record<string, unknown> = {}) => ({
+  auction: {
+    id: AUCTION_ID,
+    seller_user_id: SELLER_ID,
+    offered_user_card_id: COPY_ID,
+    offered_card_id: CARD_ID,
+    offered_streamer_id: AUCTION_ID,
+    offered_card_snapshot: { name: "Main", rarity: "rare", imageUrl: null },
+    ends_at: "2026-10-18T00:00:00Z",
+    selection_deadline: "2026-10-21T00:00:00Z",
+    status: "open",
+    winning_bid_id: null,
+    request_id: REQUEST_ID,
+    settle_request_id: null,
+    completed_at: null,
+    created_at: "2026-10-17T00:00:00Z",
+    updated_at: "2026-10-17T00:00:00Z",
+  },
+  phase: "bidding",
+  bidCount: "3",
+  viewerUserId: VIEWER_ID,
+  myBid: null,
+  seller: { id: SELLER_ID, twitchUsername: "seller", twitchDisplayName: "Seller", twitchProfileImageUrl: null },
+  offeredStreamer: { id: AUCTION_ID, twitchUsername: "ch", twitchDisplayName: "Ch", twitchProfileImageUrl: null },
+  ...overrides,
+});
 
+
+describe("read DTOs", () => {
   it("board: the copy id only for the seller; a bidder's own bid with its derived state", async () => {
     prime({
       selects: [{
@@ -472,7 +476,9 @@ describe("read DTOs", () => {
     const { getTradeAuction } = await import("@/lib/trade-auction");
     let pg = prime({ selects: [{ rows: [auctionRow()] }] });
     await expect(getTradeAuction({ auctionId: AUCTION_ID, twitchUserId: "v" })).resolves.toMatchObject({ bids: null });
-    expect(pg.selectCalls).toHaveLength(1);
+    // ページ SELECT + maskTradeCards の可視性 SELECT（モックの行が空なので
+    // 番号表クエリは発行されない）。
+    expect(pg.selectCalls).toHaveLength(2);
 
     pg = prime({
       selects: [
@@ -492,7 +498,8 @@ describe("read DTOs", () => {
       ],
     });
     const detail = await getTradeAuction({ auctionId: AUCTION_ID, twitchUserId: "seller" });
-    expect(pg.selectCalls).toHaveLength(2);
+    // ページ SELECT + 入札一覧 SELECT + maskTradeCards の可視性 SELECT。
+    expect(pg.selectCalls).toHaveLength(3);
     expect(detail?.bids).toEqual([expect.objectContaining({
       id: BID_ID, quantity: 4, isCrossChannel: true, state: "active", settleable: false,
       bidder: { twitchUsername: "bidder", twitchDisplayName: "Bidder", twitchProfileImageUrl: null },
@@ -526,93 +533,287 @@ describe("read DTOs", () => {
     expect(phase).toContain('clock_timestamp() < "trade_auctions"."ends_at"');
     expect(phase).not.toContain("now()");
   });
+
+  // ---------------------------------------------------------------------------
+  // C3b: オークションの全 DTO が maskTradeCards（名前・画像・#N）を通る。
+  //
+  // maskTradeCards は「可視性1クエリ + 配信者ごとの番号表1クエリ」の2回だけ
+  // SELECT を発行する。ここではページ SELECT の後ろにその2回を並べ、
+  // offeredCard / myBid.bidCard / bids[].bidCard のすべてが
+  // name=""・imageUrl=null・collectionNumber 付きになることを固定する。
+  // 実 SQL の可視性判定は tests/integration/trade-auction-pg.test.ts。
+  // ---------------------------------------------------------------------------
+  const maskRow = (cardId: string, streamerId: string, nameVisible: boolean, imageVisible: boolean) => ({
+    cardId,
+    streamerId,
+    nameVisible,
+    imageVisible,
+  });
+  const numberRow = (id: string, streamerId: string, cardNumber: number) => ({
+    id,
+    streamerId,
+    cardNumber,
+    createdAt: "2026-01-01T00:00:00Z",
+  });
+
+  it("board: offeredCard and myBid.bidCard are masked and numbered in one page", async () => {
+    const pg = prime({
+      selects: [
+        {
+          rows: [auctionRow({
+            myBid: {
+              id: BID_ID, auctionId: AUCTION_ID, bidCardId: BID_CARD_ID, bidStreamerId: AUCTION_ID,
+              bidCard: { name: "Coin", rarity: "common", imageUrl: "https://img.example/coin.png" },
+              quantity: 2, isCrossChannel: false, status: "active", holds: true, settleable: true, createdAt: "c",
+            },
+          })],
+        },
+        {
+          rows: [
+            maskRow(CARD_ID, AUCTION_ID, false, false),
+            maskRow(BID_CARD_ID, AUCTION_ID, true, false),
+          ],
+        },
+        {
+          rows: [
+            numberRow(CARD_ID, AUCTION_ID, 7),
+            numberRow(BID_CARD_ID, AUCTION_ID, 8),
+          ],
+        },
+      ],
+    });
+    const { listTradeAuctions } = await import("@/lib/trade-auction");
+    const result = await listTradeAuctions({
+      streamerId: AUCTION_ID, scope: "in_channel", page: 1, twitchUserId: "v",
+    });
+    expect(result.auctions[0].offeredCard).toEqual({
+      name: "", rarity: "rare", imageUrl: null, collectionNumber: 7,
+    });
+    expect(result.auctions[0].myBid?.bidCard).toEqual({
+      name: "Coin", rarity: "common", imageUrl: null, collectionNumber: 8,
+    });
+    expect(pg.selectCalls).toHaveLength(3);
+  });
+
+  it("detail (seller): offeredCard and every bids[].bidCard are masked and numbered", async () => {
+    prime({
+      selects: [
+        { rows: [auctionRow({ viewerUserId: SELLER_ID })] },
+        {
+          rows: [{
+            bid: {
+              id: BID_ID, auction_id: AUCTION_ID, bidder_user_id: VIEWER_ID, bid_card_id: BID_CARD_ID,
+              bid_streamer_id: AUCTION_ID, quantity: 1,
+              bid_card_snapshot: { name: "Coin", rarity: "common", imageUrl: "https://img.example/coin.png" },
+              is_cross_channel: false, status: "active", request_id: REQUEST_ID, created_at: "c", updated_at: "u",
+            },
+            holds: true,
+            settleable: true,
+            bidder: { id: VIEWER_ID, twitchUsername: "bidder", twitchDisplayName: "Bidder", twitchProfileImageUrl: null },
+          }],
+        },
+        {
+          rows: [
+            maskRow(CARD_ID, AUCTION_ID, true, true),
+            maskRow(BID_CARD_ID, AUCTION_ID, false, false),
+          ],
+        },
+        {
+          rows: [
+            numberRow(CARD_ID, AUCTION_ID, 7),
+            numberRow(BID_CARD_ID, AUCTION_ID, 8),
+          ],
+        },
+      ],
+    });
+    const { getTradeAuction } = await import("@/lib/trade-auction");
+    const detail = await getTradeAuction({ auctionId: AUCTION_ID, twitchUserId: "seller" });
+    expect(detail?.auction.offeredCard).toEqual({
+      name: "Main", rarity: "rare", imageUrl: null, collectionNumber: 7,
+    });
+    expect(detail?.bids?.[0].bidCard).toEqual({
+      name: "", rarity: "common", imageUrl: null, collectionNumber: 8,
+    });
+  });
+
+  it("mine: the offered card and the viewer's own bid card are masked like the board", async () => {
+    prime({
+      selects: [
+        {
+          rows: [auctionRow({
+            myBid: {
+              id: BID_ID, auctionId: AUCTION_ID, bidCardId: BID_CARD_ID, bidStreamerId: AUCTION_ID,
+              bidCard: { name: "Coin", rarity: "common", imageUrl: "https://img.example/coin.png" },
+              quantity: 2, isCrossChannel: false, status: "active", holds: true, settleable: true, createdAt: "c",
+            },
+          })],
+        },
+        {
+          rows: [
+            maskRow(CARD_ID, AUCTION_ID, false, false),
+            maskRow(BID_CARD_ID, AUCTION_ID, false, true),
+          ],
+        },
+        {
+          rows: [
+            numberRow(CARD_ID, AUCTION_ID, 7),
+            numberRow(BID_CARD_ID, AUCTION_ID, 8),
+          ],
+        },
+      ],
+    });
+    const { listMyTradeAuctions } = await import("@/lib/trade-auction");
+    const mine = await listMyTradeAuctions("v", { role: "bidding" });
+    expect(mine.auctions[0].offeredCard).toEqual({
+      name: "", rarity: "rare", imageUrl: null, collectionNumber: 7,
+    });
+    expect(mine.auctions[0].myBid?.bidCard).toEqual({
+      name: "", rarity: "common", imageUrl: "https://img.example/coin.png", collectionNumber: 8,
+    });
+  });
+
+  it("deleted definitions (null card id) stay name=\"\" / imageUrl=null / collectionNumber=null", async () => {
+    const base = auctionRow();
+    // カード定義が削除されると offered_card_id / bid_card_id は NULL になる。
+    // この場合は可視性も番号も証明できないので、deny-by-default のまま返す。
+    const row = {
+      ...base,
+      auction: { ...base.auction, offered_card_id: null },
+      myBid: {
+        id: BID_ID, auctionId: AUCTION_ID, bidCardId: null, bidStreamerId: AUCTION_ID,
+        bidCard: { name: "Gone", rarity: "common", imageUrl: "https://img.example/gone.png" },
+        quantity: 1, isCrossChannel: false, status: "active", holds: true, settleable: true, createdAt: "c",
+      },
+    };
+    const pg = prime({ selects: [{ rows: [row] }] });
+    const { listTradeAuctions } = await import("@/lib/trade-auction");
+    const result = await listTradeAuctions({
+      streamerId: AUCTION_ID, scope: "in_channel", page: 1, twitchUserId: "v",
+    });
+    expect(result.auctions[0].offeredCard).toEqual({
+      name: "", rarity: "rare", imageUrl: null, collectionNumber: null,
+    });
+    expect(result.auctions[0].myBid?.bidCard).toEqual({
+      name: "", rarity: "common", imageUrl: null, collectionNumber: null,
+    });
+    // ID が1つも無いので maskTradeCards は DB へ問い合わせない。
+    expect(pg.selectCalls).toHaveLength(1);
+  });
 });
 
 
 // -----------------------------------------------------------------------------
-// 未所持カードの項目別公開のデプロイ窓（オークション側）。
+// 未所持カードの項目別公開のデプロイ窓（オークション側、C3b）。
 //
-// オークションは PR2 の範囲外で、名前・画像・番号のマスクは
-// maskTradeCardImages（実体は maskTradeCards）の互換ラッパーを共有する。
-// 行の可視性（cardVisibleTo）は新しい規則「所持 OR show_unowned_cards」だけを
-// 参照し、新3列 (show_unowned_card_name/_image/_description) には依存しない。
+// C3b でオークションの読み取り SQL は行ルール（所持 OR show_unowned_cards）
+// しか参照しなくなった。新3列 (show_unowned_card_name/_image/_description) を
+// 読むのは応答直前の maskTradeCards() だけなので、42703 の再試行もそこだけに
+// 残す。ページ SELECT を withUnownedCardItemColumnFallback で包む旧構造は、
+// 中に項目列が無く「一度も発火しない死んだ層」になるため削除した。
 //
-// それでも withUnownedCardItemColumnFallback を通すのは、同じリクエスト内の
-// マスクや将来の item SQL が 42703 になったときに、旧 details 規則へ一度だけ
-// 縮退する経路をオークション側にも残すため。旧
-// trade_unowned_card_names_visible (#2070) はもう参照しない。
+// ここでは実在する縮退経路（マスクの可視性クエリが 42703 → 旧 details 規則で
+// 1回だけ再試行 → 番号表）を固定する。旧 trade_unowned_card_names_visible
+// (#2070) は通常時も再試行時も参照しない。
 // -----------------------------------------------------------------------------
 describe("unowned card item visibility deploy window (auctions)", () => {
   const MISSING_ITEM_COLUMN = {
     code: "42703",
-    message: "column visible_streamer.show_unowned_card_name does not exist",
+    message: "column name_streamer.show_unowned_card_name does not exist",
+  };
+  const maskRow = (nameVisible: boolean, imageVisible: boolean) => ({
+    cardId: CARD_ID,
+    streamerId: AUCTION_ID,
+    nameVisible,
+    imageVisible,
+  });
+  const numberRow = {
+    id: CARD_ID,
+    streamerId: AUCTION_ID,
+    cardNumber: 7,
+    createdAt: "2026-01-01T00:00:00Z",
   };
 
-  const cases = [
-    {
-      name: "listTradeAuctions",
-      async run() {
-        const pg = prime({ selects: [{ error: MISSING_ITEM_COLUMN }, { rows: [] }] });
-        const { listTradeAuctions } = await import("@/lib/trade-auction");
-        await expect(listTradeAuctions({ streamerId: AUCTION_ID, scope: "in_channel", page: 1 }))
-          .resolves.toMatchObject({ auctions: [] });
-        return {
-          calls: pg.selectCalls.length,
-          before: render(pg.selectCalls[0].where).sql,
-          after: render(pg.selectCalls[1].where).sql,
-        };
-      },
-    },
-    {
-      name: "getTradeAuction",
-      async run() {
-        const pg = prime({ selects: [{ error: MISSING_ITEM_COLUMN }, { rows: [] }] });
-        const { getTradeAuction } = await import("@/lib/trade-auction");
-        await expect(getTradeAuction({ auctionId: AUCTION_ID })).resolves.toBeNull();
-        return {
-          calls: pg.selectCalls.length,
-          before: render(pg.selectCalls[0].where).sql,
-          after: render(pg.selectCalls[1].where).sql,
-        };
-      },
-    },
-    {
-      name: "precheckBidVisibility (bidder and seller checks)",
-      async run() {
-        const pg = prime({
-          selects: [{ error: MISSING_ITEM_COLUMN }, { rows: [visibleRow] }],
-          rpc: [rpc(okBidResult)],
-        });
-        const { placeTradeAuctionBid } = await import("@/lib/trade-auction");
-        await expect(placeTradeAuctionBid(bidInput)).resolves.toMatchObject({ kind: "ok" });
-        const before = pg.selectCalls[0].fields as Record<string, unknown>;
-        const after = pg.selectCalls[1].fields as Record<string, unknown>;
-        return {
-          calls: pg.selectCalls.length,
-          before: [
-            render(before.offeredVisible).sql,
-            render(before.bidCardVisibleToBidder).sql,
-            render(before.bidCardVisibleToSeller).sql,
-          ].join("\n"),
-          after: [
-            render(after.offeredVisible).sql,
-            render(after.bidCardVisibleToBidder).sql,
-            render(after.bidCardVisibleToSeller).sql,
-          ].join("\n"),
-        };
-      },
-    },
-  ] as const;
+  it("board: the page query does not depend on item columns; only the mask retries once", async () => {
+    const pg = prime({
+      selects: [
+        { rows: [auctionRow()] },
+        { error: MISSING_ITEM_COLUMN },
+        { rows: [maskRow(true, true)] },
+        { rows: [numberRow] },
+      ],
+    });
+    const { listTradeAuctions } = await import("@/lib/trade-auction");
+    const result = await listTradeAuctions({ streamerId: AUCTION_ID, scope: "in_channel", page: 1 });
+    expect(pg.selectCalls).toHaveLength(4);
+    // 1回目（インデックス1）は新3列、再試行（インデックス2）は旧 details だけ。
+    const before = pg.selectCalls[1].fields as Record<string, unknown>;
+    const after = pg.selectCalls[2].fields as Record<string, unknown>;
+    expect(render(before.nameVisible).sql).toContain("show_unowned_card_name");
+    expect(render(after.nameVisible).sql).not.toContain("show_unowned_card_name");
+    expect(render(after.nameVisible).sql).toContain("show_unowned_card_details");
+    expect(result.auctions[0].offeredCard).toMatchObject({
+      name: "Main", imageUrl: null, collectionNumber: 7,
+    });
+  });
 
-  it.each(cases)("$name retries once on a missing item column without using the retired setting", async ({ run }) => {
-    const { calls, before, after } = await run();
-    expect(calls).toBeGreaterThanOrEqual(2);
-    // 旧 trade-only 設定は通常時も再試行時も参照しない。
-    expect(before).not.toContain("trade_unowned_card_names_visible");
-    expect(after).not.toContain("trade_unowned_card_names_visible");
-    // 行の可視性は常に「所持 OR show_unowned_cards」。旧 details には依存しない。
-    expect(after).toContain("visible_streamer.show_unowned_cards = TRUE");
-    expect(after).not.toContain("show_unowned_card_details");
+  it("detail (seller): the bid mask retries once with the legacy details rule", async () => {
+    const pg = prime({
+      selects: [
+        { rows: [auctionRow({ viewerUserId: SELLER_ID })] },
+        {
+          rows: [{
+            bid: {
+              id: BID_ID, auction_id: AUCTION_ID, bidder_user_id: VIEWER_ID, bid_card_id: BID_CARD_ID,
+              bid_streamer_id: AUCTION_ID, quantity: 1,
+              bid_card_snapshot: { name: "Coin", rarity: "common", imageUrl: null },
+              is_cross_channel: false, status: "active", request_id: REQUEST_ID, created_at: "c", updated_at: "u",
+            },
+            holds: true,
+            settleable: true,
+            bidder: { id: VIEWER_ID, twitchUsername: "bidder", twitchDisplayName: "Bidder", twitchProfileImageUrl: null },
+          }],
+        },
+        { error: MISSING_ITEM_COLUMN },
+        {
+          rows: [
+            { cardId: CARD_ID, streamerId: AUCTION_ID, nameVisible: true, imageVisible: true },
+            { cardId: BID_CARD_ID, streamerId: AUCTION_ID, nameVisible: false, imageVisible: false },
+          ],
+        },
+        {
+          rows: [
+            { ...numberRow },
+            { ...numberRow, id: BID_CARD_ID, cardNumber: 8 },
+          ],
+        },
+      ],
+    });
+    const { getTradeAuction } = await import("@/lib/trade-auction");
+    const detail = await getTradeAuction({ auctionId: AUCTION_ID, twitchUserId: "seller" });
+    expect(pg.selectCalls).toHaveLength(5);
+    const after = pg.selectCalls[3].fields as Record<string, unknown>;
+    expect(render(after.nameVisible).sql).toContain("show_unowned_card_details");
+    expect(render(after.nameVisible).sql).not.toContain("show_unowned_card_name");
+    expect(detail?.bids?.[0].bidCard).toMatchObject({
+      name: "", imageUrl: null, collectionNumber: 8,
+    });
+  });
+
+  it("precheck: the row rule alone decides, so an all-items-private bid is still allowed", async () => {
+    const pg = prime({ selects: [{ rows: [visibleRow] }], rpc: [rpc(okBidResult)] });
+    const { placeTradeAuctionBid } = await import("@/lib/trade-auction");
+    await expect(placeTradeAuctionBid(bidInput)).resolves.toMatchObject({ kind: "ok" });
+    const fields = pg.selectCalls[0].fields as Record<string, unknown>;
+    for (const key of ["offeredVisible", "bidCardVisibleToBidder", "bidCardVisibleToSeller"]) {
+      const sqlText = render(fields[key]).sql;
+      // 入札可否は行ルールだけ。名前・画像の項目列は一切読まない。
+      expect(sqlText).toContain("visible_streamer.show_unowned_cards = TRUE");
+      expect(sqlText).not.toContain("show_unowned_card_name");
+      expect(sqlText).not.toContain("show_unowned_card_image");
+      expect(sqlText).not.toContain("show_unowned_card_description");
+      expect(sqlText).not.toContain("trade_unowned_card_names_visible");
+    }
+    expect(pg.rpcCalls).toHaveLength(1);
   });
 
   it("rethrows an unrelated 42703 without retrying", async () => {

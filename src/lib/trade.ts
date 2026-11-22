@@ -529,18 +529,16 @@ function isTradeOfferTriggerError(
  * read-time mask; a row with every item hidden is still tradeable (the viewer
  * picks it by #N).
  *
- * `withoutNameOnly` is retained only for source compatibility with the
- * auction service, which still passes its deploy-window flag here. The current
- * rule does not read any new streamers column, so the flag has no effect; the
- * auction side is migrated in a follow-up task. `void` keeps the unused
- * parameter explicit instead of silently dropping it from the signature.
+ * C3b: 旧第3引数 withoutNameOnly は撤去した。C3a ではオークション側の
+ * 呼び出しを一度に変えないための互換引数として残し `void` で握り潰していたが、
+ * 行ルールが streamers の項目列を一切読まなくなった以上、引数は意味を持たない。
+ * デプロイ窓の面倒は maskTradeCards() 側の withUnownedCardItemColumnFallback
+ * が単独で見る（この関数には 42703 を再試行する材料がない）。
  */
 export function cardVisibleTo(
   cardIdExpr: AnyColumn,
   viewerUserId: SQL | null,
-  withoutNameOnly = false,
 ) {
-  void withoutNameOnly;
   // Anonymous viewers have no ownership branch at all instead of comparing
   // against NULL, so the intent is explicit in the generated SQL.
   const ownedByViewer = viewerUserId
@@ -817,8 +815,9 @@ export async function maskTradeCards(
  * 「所持 OR show_unowned_cards」へ広がったため、オークションの行も
  * 名前非公開のまま表示され得る。ここで名前を素通しすると、オークションが
  * 未所持カード名の side channel になってしまう（トレード板と同一の
- * セキュリティ境界）。オークションの UI が #N を表示するのは次タスクだが、
- * DTO には collectionNumber が載るので、データはすでに揃っている。
+ * セキュリティ境界）。C3b 以降、オークションサービスはこの互換名ではなく
+ * maskTradeCards() を直接呼ぶ（名前・画像・#N の3点セットであることを
+ * import で明示するため）。旧名は既存の呼び出し・テストとの互換に残す。
  */
 export async function maskTradeCardImages(
   refs: readonly TradeCardImageRef[],
@@ -1093,16 +1092,15 @@ export async function createTradeOffer(input: {
   // inside withTradeAuctionSchemaFallback (outermost). Any combination of the
   // deploy windows converges (each layer only handles its own 42703/42P01/
   // 42883 and rethrows the rest outward, and the retry keeps the flags it
-  // already resolved), only during the windows. The item-column window
-  // (show_unowned_card_name/_image/_description) is innermost; the JOIN below
-  // only needs the row rule (show_unowned_cards), but the flag is threaded
-  // through so the whole operation shares one deploy-window decision with the
-  // mask helper (which retries on its own as well).
+  // already resolved), only during the windows. C3b: この読み取りは行ルール
+  // (show_unowned_cards) しか使わないため、新3列のデプロイ窓
+  // (withUnownedCardItemColumnFallback) はここには不要になった。名前・画像の
+  // マスクは応答直前に呼ぶ maskTradeCards() が自分で 42703 を検出して
+  // 旧 details 規則へ縮退する（C3a で入った一元化）。
   const wantedQuantity = input.wantedQuantity ?? 1;
   const runChecks = async (
     withoutWantable: boolean,
     withoutAuctions: boolean,
-    withoutItemColumns: boolean,
   ) => ({
     rows: await withDbRetry(
       async () => {
@@ -1174,7 +1172,6 @@ export async function createTradeOffer(input: {
               cardVisibleTo(
                 createWantedCard.id,
                 qualifiedColumn(usersTable.id),
-                withoutItemColumns,
               ),
             ),
           )
@@ -1189,10 +1186,7 @@ export async function createTradeOffer(input: {
   });
   const { rows: checkRows } = await withTradeAuctionSchemaFallback(
     (withoutAuctions) => withTradeWantableColumnFallback(
-      (withoutWantable) => withUnownedCardItemColumnFallback(
-        (withoutItemColumns) =>
-          runChecks(withoutWantable, withoutAuctions, withoutItemColumns),
-      ),
+      (withoutWantable) => runChecks(withoutWantable, withoutAuctions),
     ),
   );
   const check = checkRows[0];
@@ -1720,18 +1714,17 @@ async function maskOfferListCards(
  * card back brings the offer back. The condition depends on the deploy-window
  * shape, so withoutWantable is passed explicitly.
  *
- * The row rule itself no longer reads the item columns, but withoutItemColumns
- * is still passed through so every statement in one request shares the same
- * deploy-window decision (and so the auction call sites keep their arg list).
+ * 行ルール (cardVisibleTo) は新3列を読まないため、C3b で
+ * withoutItemColumns の受け渡しを削除した。新3列のデプロイ窓は、名前・画像を
+ * 実際に読む maskTradeCards() 側のフォールバックだけが扱う。
  */
 function openOfferConditions(
   viewerUserId: SQL | null,
-  withoutItemColumns: boolean,
   withoutWantable: boolean,
 ) {
   const bothSidesVisible = and(
-    cardVisibleTo(tradeOffersTable.offered_card_id, viewerUserId, withoutItemColumns),
-    cardVisibleTo(tradeOffersTable.wanted_card_id, viewerUserId, withoutItemColumns),
+    cardVisibleTo(tradeOffersTable.offered_card_id, viewerUserId),
+    cardVisibleTo(tradeOffersTable.wanted_card_id, viewerUserId),
   )!;
   const visibilityCondition = viewerUserId
     ? or(eq(tradeOffersTable.offerer_user_id, viewerUserId), bothSidesVisible)!
@@ -1773,10 +1766,11 @@ export async function listTradeOffers(input: {
 
   // The shared conditions are rebuilt inside the deploy-window closures so
   // that one request keeps a single fallback decision (cardIsWantable reads
-  // cards.trade_wantable; the item columns are read by the mask below).
-  const conditionsFor = (withoutItemColumns: boolean, withoutWantable: boolean) => {
+  // cards.trade_wantable). The item columns are only read by the mask below,
+  // which owns its own fallback (C3b).
+  const conditionsFor = (withoutWantable: boolean) => {
     const conditions = [
-      ...openOfferConditions(viewerUserId, withoutItemColumns, withoutWantable),
+      ...openOfferConditions(viewerUserId, withoutWantable),
     ];
 
     if (input.scope === "cross_channel") {
@@ -1809,9 +1803,7 @@ export async function listTradeOffers(input: {
   // #1791: canAccept reads the copy locks (acceptStateFor), hence the
   // outermost auction-schema fallback (only reachable for a logged-in viewer).
   const rows: OfferListRow[] = await withTradeAuctionSchemaFallback((withoutAuctions) =>
-    withTradeWantableColumnFallback((withoutWantable) =>
-    withUnownedCardItemColumnFallback((withoutItemColumns) =>
-    withDbRetry(
+    withTradeWantableColumnFallback((withoutWantable) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -1826,14 +1818,14 @@ export async function listTradeOffers(input: {
         .leftJoin(wantedStreamerMeta, eq(wantedStreamerMeta.id, tradeOffersTable.wanted_streamer_id))
         .leftJoin(offererMeta, eq(offererMeta.id, tradeOffersTable.offerer_user_id))
         .leftJoin(acceptorMeta, eq(acceptorMeta.id, tradeOffersTable.accepted_by_user_id))
-        .where(and(...conditionsFor(withoutItemColumns, withoutWantable)))
+        .where(and(...conditionsFor(withoutWantable)))
         .orderBy(desc(tradeOffersTable.created_at), desc(tradeOffersTable.id))
         .limit(TRADE_PAGE_SIZE + 1)
         .offset(offset);
     },
     "trade:list-open",
     { idempotent: true },
-  ))));
+  )));
 
   const hasMore = rows.length > TRADE_PAGE_SIZE;
   const pageRows = hasMore ? rows.slice(0, TRADE_PAGE_SIZE) : rows;
@@ -1913,16 +1905,10 @@ export async function listTradeOffersByCollection(input: {
   const offset = (page - 1) * TRADE_PAGE_SIZE;
 
   const rows: CollectionOfferRow[] = await withTradeAuctionSchemaFallback((withoutAuctions) =>
-    withTradeWantableColumnFallback((withoutWantable) =>
-    withUnownedCardItemColumnFallback((withoutItemColumns) =>
-    withDbRetry(
+    withTradeWantableColumnFallback((withoutWantable) => withDbRetry(
     async () => {
       const { db } = await getDb();
-      const conditions = openOfferConditions(
-        viewerUserId,
-        withoutItemColumns,
-        withoutWantable,
-      );
+      const conditions = openOfferConditions(viewerUserId, withoutWantable);
 
       // 分岐1: offered 側が所持コレクション（in-channel も cross も含む）。
       const offeredPlacement = db
@@ -2023,7 +2009,7 @@ export async function listTradeOffersByCollection(input: {
     },
     "trade:list-collections-offers",
     { idempotent: true },
-  ))));
+  )));
 
   // Name/image/number are masked in ONE maskTradeCards() call for every
   // collection on this page, exactly like listTradeOffers. The mapping keeps
@@ -2348,8 +2334,7 @@ async function precheckTradeAccept(input: {
   // The acceptor id is resolved inside the same statement (previously a
   // separate users lookup round trip before this read).
   const acceptorUserId = viewerUserIdOf(input.twitchUserId);
-  const rows = await withTradeWantableColumnFallback((withoutWantable) =>
-    withUnownedCardItemColumnFallback((withoutItemColumns) => withDbRetry(
+  const rows = await withTradeWantableColumnFallback((withoutWantable) => withDbRetry(
     async () => {
       const { db } = await getDb();
       return db
@@ -2374,7 +2359,6 @@ async function precheckTradeAccept(input: {
           offeredVisible: cardVisibleTo(
             tradeOffersTable.offered_card_id,
             acceptorUserId,
-            withoutItemColumns,
           ),
         })
         .from(tradeOffersTable)
@@ -2383,7 +2367,7 @@ async function precheckTradeAccept(input: {
     },
     "trade:accept-precheck",
     { idempotent: true },
-  )));
+  ));
   const offer = rows[0];
   const empty: TradeAcceptPrecheck = {
     error: null,
