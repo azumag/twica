@@ -10,6 +10,8 @@ import {
   isMissingDuplicateDisplayTiersColumnError,
   RARITY_STYLES_COLUMNS,
   isMissingRarityStylesColumnError,
+  UNOWNED_CARD_ITEM_COLUMNS,
+  isMissingUnownedCardItemColumnError,
   isMissingLiveDirectorySettingsColumnError,
   isMissingTradeSettingsColumnError,
   LIVE_DIRECTORY_SETTINGS_COLUMNS,
@@ -27,6 +29,9 @@ const DEPLOY_WINDOW_COLUMNS = [
   ...DUPLICATE_DISPLAY_TIER_COLUMNS,
   // Issue #1783: カスタムレアリティの表示スタイル。1列のみの migration のため1件。
   ...RARITY_STYLES_COLUMNS,
+  // Issue #2070 フォローアップ: 未所持カードの項目別公開設定。名前・画像・説明の
+  // 3列を1つの migration で追加するため、デプロイ窓では3列まとめて欠落する。
+  ...UNOWNED_CARD_ITEM_COLUMNS,
 ] as const
 
 function missingColumnError(column: string) {
@@ -155,6 +160,24 @@ describe('streamers デプロイ窓の列集合契約', () => {
     },
   )
 
+  it.each(UNOWNED_CARD_ITEM_COLUMNS)(
+    '%s は未所持カード項目別設定列としてのみ検知する',
+    (column) => {
+      // Issue #2070 フォローアップ: 新3列は STREAMERS_SAFE_COLUMNS に含めないため、
+      // 検知グループへの登録が漏れると withLiveDirectorySettingsColumnFallback が
+      // 42703 を対象外として再送出し、ダッシュボードが null になる。
+      const error = missingColumnError(column)
+
+      expect(isMissingUnownedCardItemColumnError(error)).toBe(true)
+      expect(isMissingLiveDirectorySettingsColumnError(error)).toBe(false)
+      expect(isMissingTradeSettingsColumnError(error)).toBe(false)
+      expect(isMissingAlbumSettingsColumnError(error)).toBe(false)
+      expect(isMissingCardRankingSettingsColumnError(error)).toBe(false)
+      expect(isMissingDuplicateDisplayTiersColumnError(error)).toBe(false)
+      expect(isMissingRarityStylesColumnError(error)).toBe(false)
+    },
+  )
+
   it('デプロイ窓の対象列集合を明示的に固定する', () => {
     // 各列の検知経路自体は上の it.each で直接検証している。
     // `cross_channel_trade_enabled` は `trade_enabled` を部分文字列として含むため、
@@ -181,6 +204,13 @@ describe('streamers デプロイ窓の列集合契約', () => {
     expect(DUPLICATE_DISPLAY_TIER_COLUMNS).toEqual(['duplicate_display_tiers'])
     // Issue #1783: 1列のみの migration なので1件（上のコメントと同じ理由で明示固定）。
     expect(RARITY_STYLES_COLUMNS).toEqual(['rarity_styles'])
+    // Issue #2070 フォローアップ: 未所持カードの項目別公開設定。名前・画像・説明を
+    // 1 migration で追加するため3件。旧 show_unowned_card_details は安全列に残る。
+    expect(UNOWNED_CARD_ITEM_COLUMNS).toEqual([
+      'show_unowned_card_name',
+      'show_unowned_card_image',
+      'show_unowned_card_description',
+    ])
   })
 
   it('安全な列集合にはデプロイ窓で欠落しうる実SQL列を含めない', () => {
