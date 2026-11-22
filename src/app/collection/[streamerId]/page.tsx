@@ -5,6 +5,7 @@ import {
   getUserCardsForStreamer,
   getStreamerById,
   getActiveCardsForStreamer,
+  getAllCardsForStreamer,
   getCollectionCompletions,
   recordCollectionCompletion,
   recordPackCompletion,
@@ -87,9 +88,13 @@ export default async function StreamerCollectionPage({
 
   // Fetch user's cards, all active cards, and completion history in parallel
   // ユーザー所持カード・全アクティブカード・コンプリート履歴を並列取得
-  const [initialUserCards, activeCards, completionHistory] = await Promise.all([
+  const [initialUserCards, activeCards, allCards, completionHistory] = await Promise.all([
     getUserCardsForStreamer(session.twitchUserId, streamerId),
     getActiveCardsForStreamer(streamerId),
+    // 表示番号（#N）の入力は「その配信者の全カード（無効化含む）」でなければ
+    // ならない。アクティブカードだけを渡すと無効化カードの分だけ番号がずれ、
+    // トレード側（src/lib/trade.ts の番号表）と一致しなくなる。
+    getAllCardsForStreamer(streamerId),
     getCollectionCompletions(session.twitchUserId, streamerId),
   ]);
 
@@ -97,7 +102,10 @@ export default async function StreamerCollectionPage({
   const userCards = rewardResult.cards;
   const rewardCardIds = new Set(rewardResult.rewardCardIds);
   const activeCardIds = new Set(activeCards.map((card) => card.id));
-  const collectionNumberMap = createCollectionNumberMap([...activeCards, ...userCards]);
+  // トレードの DTO と同じ createCollectionNumberMap を、同じ「全カード」集合へ
+  // 適用する。表示集合（所有カード + 公開された未所持カード）は変えず、
+  // 番号表だけをトレードと揃える。
+  const collectionNumberMap = createCollectionNumberMap(allCards);
   // Issue #1782: 配信者がレアリティ別に設定した「被り枚数 → 表示段階」のしきい値。
   // デプロイ窓で列が未作成の間は undefined になるため、sanitize で空マップ
   // （＝全カード段階 0 = バッジなし）へ fail-closed に倒す。

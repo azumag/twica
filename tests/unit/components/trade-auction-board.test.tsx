@@ -85,7 +85,7 @@ describe("TradeAuctionBoard (#1791 board auction tab)", () => {
         makeAuction({ id: "a-own", isOwnAuction: true, myBid: undefined }),
         makeAuction({
           id: "a-bid",
-          offeredCard: { name: "Other Card", rarity: "rare", imageUrl: null },
+          offeredCard: { name: "Other Card", rarity: "rare", imageUrl: null, collectionNumber: null },
           myBid: makeBid({ auctionId: "a-bid" }),
         }),
       ],
@@ -169,7 +169,7 @@ describe("TradeAuctionBoard (#1791 board auction tab)", () => {
     fetchMock.mockImplementation(async (url: string) => {
       const page = new URL(url, "https://x.test").searchParams.get("page");
       return jsonResponse(200, {
-        auctions: [makeAuction({ id: `a-${page}`, offeredCard: { name: `Card p${page}`, rarity: "common", imageUrl: null } })],
+        auctions: [makeAuction({ id: `a-${page}`, offeredCard: { name: `Card p${page}`, rarity: "common", imageUrl: null, collectionNumber: null } })],
         hasMore: page === "1",
       });
     });

@@ -24,6 +24,8 @@ vi.mock('@/lib/dashboard-data', () => ({
   getStreamerById: async () => fixtures.streamer,
   getUserCardsForStreamer: async () => [fixtures.owned],
   getActiveCardsForStreamer: async () => [fixtures.owned, fixtures.unowned],
+  // 表示番号の入力は「その配信者の全カード（無効化含む）」。
+  getAllCardsForStreamer: async () => [fixtures.owned, fixtures.unowned],
   getCollectionCompletions: async () => [],
   recordCollectionCompletion: vi.fn(),
   recordPackCompletion: vi.fn(),

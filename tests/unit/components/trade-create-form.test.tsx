@@ -40,9 +40,9 @@ const OWNED: TradeableOwnedCopy[] = [
 ];
 
 const WANTABLE: WantableCard[] = [
-  { cardId: "card-dup", name: "Dup Card", rarity: "common", imageUrl: null, isOwned: true },
-  { cardId: "card-want", name: "Want Card", rarity: "epic", imageUrl: null, isOwned: false },
-  { cardId: "card-want-2", name: "Want Card Two", rarity: "rare", imageUrl: null, isOwned: true },
+  { cardId: "card-dup", name: "Dup Card", rarity: "common", imageUrl: null, collectionNumber: 1, isOwned: true },
+  { cardId: "card-want", name: "Want Card", rarity: "epic", imageUrl: null, collectionNumber: 2, isOwned: false },
+  { cardId: "card-want-2", name: "Want Card Two", rarity: "rare", imageUrl: null, collectionNumber: 3, isOwned: true },
 ];
 
 function jsonResponse(status: number, body: unknown) {

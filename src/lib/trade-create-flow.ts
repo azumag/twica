@@ -193,7 +193,13 @@ export async function loadTradeCreateFormData(input: {
     wantableCards,
     // Fail closed if the channel disappeared between the candidate read and
     // this read: no unowned name/image notice is better than a wrong one.
-    wantableRevealsUnowned: wantStreamer?.revealsUnownedCards ?? false,
+    //
+    // 20261122 の項目別公開以降、revealsUnownedCards は「未所持カードが
+    // 行として存在するか（show_unowned_cards = 欲しいカードにできるか）」を
+    // 表す。このフォームの注意書きは「名前が見えるか」の話なので、
+    // 解決済みの name フラグ（revealsUnownedCardNames）を使う。画像は
+    // 独立した項目なので別フラグのまま。
+    wantableRevealsUnowned: wantStreamer?.revealsUnownedCardNames ?? false,
     wantableRevealsUnownedImages: wantStreamer?.revealsUnownedCardImages ?? false,
   };
 }

@@ -449,7 +449,7 @@ describe("TradeAuctionDetail seller", () => {
       auction: own({ phase: "selecting", bidCount: 2 }),
       bids: [
         makeBid({ id: "bid-ok", bidder: { twitchUsername: "bob", twitchDisplayName: "Bob", twitchProfileImageUrl: null } }),
-        makeBid({ id: "bid-bad", settleable: false, bidCard: { name: "Gem", rarity: "rare", imageUrl: null }, bidder: { twitchUsername: "eve", twitchDisplayName: "Eve", twitchProfileImageUrl: null } }),
+        makeBid({ id: "bid-bad", settleable: false, bidCard: { name: "Gem", rarity: "rare", imageUrl: null, collectionNumber: null }, bidder: { twitchUsername: "eve", twitchDisplayName: "Eve", twitchProfileImageUrl: null } }),
       ],
     });
     writes.set("/api/trades/auctions/auction-1/settle", () => {

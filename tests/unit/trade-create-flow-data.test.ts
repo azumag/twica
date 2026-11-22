@@ -46,6 +46,7 @@ const WANTABLE = {
   name: "Visible Card",
   rarity: "rare",
   imageUrl: null,
+  collectionNumber: null,
   isOwned: false,
 };
 
@@ -54,7 +55,9 @@ beforeEach(() => {
   mocks.listTradeableOwnedCopies.mockResolvedValue([COPIED]);
   mocks.listWantableCards.mockResolvedValue([WANTABLE]);
   mocks.getTradeBoardStreamer.mockResolvedValue({
+    // 行としての未所持カードは出るが、名前だけ公開・画像は非公開の状態。
     revealsUnownedCards: true,
+    revealsUnownedCardNames: true,
     revealsUnownedCardImages: false,
   });
 });

@@ -114,17 +114,23 @@ async function seed() {
       reveal: boolean;
       /** show_unowned_card_details (defaults to `reveal`) */
       details?: boolean;
-      namesVisible?: boolean;
+      /** 項目別公開。省略時は details（さらに省略時は reveal）と同じ。 */
+      name?: boolean;
+      image?: boolean;
+      description?: boolean;
     },
   ) => s`
     INSERT INTO streamers (
       id, twitch_user_id, twitch_username, twitch_display_name,
       trade_enabled, cross_channel_trade_enabled, show_unowned_cards,
-      show_unowned_card_details, trade_unowned_card_names_visible
+      show_unowned_card_details, show_unowned_card_name, show_unowned_card_image,
+      show_unowned_card_description
     ) VALUES (
       ${sid}, ${`ta-${name}`}, ${`ta-${name}`}, ${`TA ${name}`},
       ${flags.trade}, ${flags.cross}, ${flags.reveal}, ${flags.details ?? flags.reveal},
-      ${flags.namesVisible ?? false}
+      ${flags.name ?? flags.details ?? flags.reveal},
+      ${flags.image ?? flags.details ?? flags.reveal},
+      ${flags.description ?? flags.details ?? flags.reveal}
     )`;
   await streamer(S.A, "a", { trade: true, cross: true, reveal: true });
   await streamer(S.B, "b", { trade: true, cross: true, reveal: true });
@@ -132,13 +138,15 @@ async function seed() {
   await streamer(S.NOCROSS, "nocross", { trade: true, cross: false, reveal: true });
   await streamer(S.OFF, "off", { trade: false, cross: true, reveal: true });
   await streamer(S.READ, "read", { trade: true, cross: true, reveal: true });
-  // #2070: namesVisible without details = name-only channel; the hidden one
-  // additionally has show_unowned_cards=false.
+  // 項目別公開: 名前だけ公開のチャネルと、show_unowned_cards=false で
+  // 行自体を出さないチャネル。
   await streamer(S.NAMEONLY, "nameonly", {
-    trade: true, cross: true, reveal: true, details: false, namesVisible: true,
+    trade: true, cross: true, reveal: true, details: false,
+    name: true, image: false, description: false,
   });
   await streamer(S.NAMEONLY_HIDDEN, "nameonly-hidden", {
-    trade: true, cross: true, reveal: false, namesVisible: true,
+    trade: true, cross: true, reveal: false, details: false,
+    name: true, image: true, description: true,
   });
   // #2079: the hub's per-collection auction list needs one channel the viewer
   // owns (HUB) and one it does not (HUB2). Both reveal their cards so the
@@ -910,7 +918,7 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
         twitchUserId: bidder.twitch,
       });
       const row = board.auctions.find((auction) => auction.id === auctionId);
-      expect(row?.offeredCard).toEqual({
+      expect(row?.offeredCard).toMatchObject({
         name: "NameOnly Main",
         rarity: "common",
         imageUrl: null,
@@ -941,7 +949,7 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
       // is owned -> the image stays.
       const asBidder = await getTradeAuction({ auctionId, twitchUserId: bidder.twitch });
       expect(asBidder?.auction.offeredCard.imageUrl).toBeNull();
-      expect(asBidder?.auction.myBid?.bidCard).toEqual({
+      expect(asBidder?.auction.myBid?.bidCard).toMatchObject({
         name: "NameOnly Bid",
         rarity: "common",
         imageUrl: NAMEONLY_IMAGES.BID,
@@ -951,7 +959,7 @@ describe.skipIf(!sql)("trade auctions on actual PostgreSQL", () => {
       // by name only (details off) -> no image, but the name remains.
       const asSeller = await getTradeAuction({ auctionId, twitchUserId: seller.twitch });
       expect(asSeller?.auction.offeredCard.imageUrl).toBe(NAMEONLY_IMAGES.MAIN);
-      expect(asSeller?.bids?.[0].bidCard).toEqual({
+      expect(asSeller?.bids?.[0].bidCard).toMatchObject({
         name: "NameOnly Bid",
         rarity: "common",
         imageUrl: null,

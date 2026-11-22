@@ -530,25 +530,34 @@ describe("read DTOs", () => {
 
 
 // -----------------------------------------------------------------------------
-// #2070: 未所持カードは名前だけの公開にする設定のデプロイ窓（オークション側）。
-// cardVisibleTo を呼ぶ 5 か所（listTradeAuctions / getTradeAuction /
-// precheckBidVisibility の 3 判定）が、新列の 42703 で旧規則に縮退することを固定する。
+// 未所持カードの項目別公開のデプロイ窓（オークション側）。
+//
+// オークションは PR2 の範囲外で、名前・画像・番号のマスクは
+// maskTradeCardImages（実体は maskTradeCards）の互換ラッパーを共有する。
+// 行の可視性（cardVisibleTo）は新しい規則「所持 OR show_unowned_cards」だけを
+// 参照し、新3列 (show_unowned_card_name/_image/_description) には依存しない。
+//
+// それでも withUnownedCardItemColumnFallback を通すのは、同じリクエスト内の
+// マスクや将来の item SQL が 42703 になったときに、旧 details 規則へ一度だけ
+// 縮退する経路をオークション側にも残すため。旧
+// trade_unowned_card_names_visible (#2070) はもう参照しない。
 // -----------------------------------------------------------------------------
-describe("name-only trade visibility deploy window (#2070, auctions)", () => {
-  const MISSING_NAME_ONLY_COLUMN = {
+describe("unowned card item visibility deploy window (auctions)", () => {
+  const MISSING_ITEM_COLUMN = {
     code: "42703",
-    message: 'column visible_streamer.trade_unowned_card_names_visible does not exist',
+    message: "column visible_streamer.show_unowned_card_name does not exist",
   };
 
   const cases = [
     {
       name: "listTradeAuctions",
       async run() {
-        const pg = prime({ selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [] }] });
+        const pg = prime({ selects: [{ error: MISSING_ITEM_COLUMN }, { rows: [] }] });
         const { listTradeAuctions } = await import("@/lib/trade-auction");
         await expect(listTradeAuctions({ streamerId: AUCTION_ID, scope: "in_channel", page: 1 }))
           .resolves.toMatchObject({ auctions: [] });
         return {
+          calls: pg.selectCalls.length,
           before: render(pg.selectCalls[0].where).sql,
           after: render(pg.selectCalls[1].where).sql,
         };
@@ -557,10 +566,11 @@ describe("name-only trade visibility deploy window (#2070, auctions)", () => {
     {
       name: "getTradeAuction",
       async run() {
-        const pg = prime({ selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [] }] });
+        const pg = prime({ selects: [{ error: MISSING_ITEM_COLUMN }, { rows: [] }] });
         const { getTradeAuction } = await import("@/lib/trade-auction");
         await expect(getTradeAuction({ auctionId: AUCTION_ID })).resolves.toBeNull();
         return {
+          calls: pg.selectCalls.length,
           before: render(pg.selectCalls[0].where).sql,
           after: render(pg.selectCalls[1].where).sql,
         };
@@ -570,7 +580,7 @@ describe("name-only trade visibility deploy window (#2070, auctions)", () => {
       name: "precheckBidVisibility (bidder and seller checks)",
       async run() {
         const pg = prime({
-          selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [visibleRow] }],
+          selects: [{ error: MISSING_ITEM_COLUMN }, { rows: [visibleRow] }],
           rpc: [rpc(okBidResult)],
         });
         const { placeTradeAuctionBid } = await import("@/lib/trade-auction");
@@ -578,6 +588,7 @@ describe("name-only trade visibility deploy window (#2070, auctions)", () => {
         const before = pg.selectCalls[0].fields as Record<string, unknown>;
         const after = pg.selectCalls[1].fields as Record<string, unknown>;
         return {
+          calls: pg.selectCalls.length,
           before: [
             render(before.offeredVisible).sql,
             render(before.bidCardVisibleToBidder).sql,
@@ -593,10 +604,15 @@ describe("name-only trade visibility deploy window (#2070, auctions)", () => {
     },
   ] as const;
 
-  it.each(cases)("$name retries once with the legacy rule", async ({ run }) => {
-    const { before, after } = await run();
-    expect(before).toContain("trade_unowned_card_names_visible");
+  it.each(cases)("$name retries once on a missing item column without using the retired setting", async ({ run }) => {
+    const { calls, before, after } = await run();
+    expect(calls).toBeGreaterThanOrEqual(2);
+    // 旧 trade-only 設定は通常時も再試行時も参照しない。
+    expect(before).not.toContain("trade_unowned_card_names_visible");
     expect(after).not.toContain("trade_unowned_card_names_visible");
+    // 行の可視性は常に「所持 OR show_unowned_cards」。旧 details には依存しない。
+    expect(after).toContain("visible_streamer.show_unowned_cards = TRUE");
+    expect(after).not.toContain("show_unowned_card_details");
   });
 
   it("rethrows an unrelated 42703 without retrying", async () => {

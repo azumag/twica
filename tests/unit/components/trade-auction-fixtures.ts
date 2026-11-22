@@ -13,7 +13,7 @@ export function makeBid(overrides: Partial<TradeAuctionBidDto> = {}): TradeAucti
     auctionId: "auction-1",
     bidCardId: "card-coin",
     bidStreamerId: "s-1",
-    bidCard: { name: "Coin", rarity: "common", imageUrl: null },
+    bidCard: { name: "Coin", rarity: "common", imageUrl: null, collectionNumber: null },
     quantity: 3,
     isCrossChannel: false,
     status: "active",
@@ -29,7 +29,7 @@ export function makeAuction(overrides: Partial<TradeAuctionDto> = {}): TradeAuct
     id: "auction-1",
     offeredCardId: "card-dragon",
     offeredStreamerId: "s-1",
-    offeredCard: { name: "Auction Dragon", rarity: "epic", imageUrl: null },
+    offeredCard: { name: "Auction Dragon", rarity: "epic", imageUrl: null, collectionNumber: null },
     // 2 days 5 hours after NOW.
     endsAt: new Date(NOW + 53 * HOUR).toISOString(),
     selectionDeadline: new Date(NOW + 125 * HOUR).toISOString(),

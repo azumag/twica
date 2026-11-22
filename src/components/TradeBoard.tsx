@@ -25,9 +25,11 @@ interface TradeBoardProps {
    */
   viewerKey: string;
   /**
-   * The channel shows unowned cards with details. When false the API only
-   * returns offers whose cards the viewer owns (design doc §3 visibility), so
-   * the board says so explicitly and uses a dedicated empty state.
+   * The channel's show_unowned_cards master switch. When false the API only
+   * returns offers whose cards the viewer owns (or the viewer's own offers),
+   * so the board says so explicitly and uses a dedicated empty state. When
+   * true, unowned rows may exist with every item hidden (#N-only); the
+   * per-item masking is decided by the DTO (name/image/collectionNumber).
    */
   revealsUnownedCards: boolean;
   /** In-channel tab only (cross tab has no card filter in the MVP). */
@@ -178,12 +180,12 @@ export default function TradeBoard({
     );
   } else if (list.offers.length === 0) {
     // Three distinct empty states: a filter matched nothing; the channel hides
-    // unowned cards (so "no offers" only means "none you can see": the server
-    // lists an offer only when BOTH its offered and wanted cards are visible to
-    // the viewer, i.e. revealed by their streamer or owned by the viewer, see
-    // bothSidesVisible in src/lib/trade.ts; the viewer's own offers are always
-    // listed); or the
-    // board is genuinely empty (invite the first listing, §6.8).
+    // unowned cards (show_unowned_cards=false, so "no offers" only means "none
+    // you can see": the server lists an offer only when BOTH its offered and
+    // wanted rows are visible to the viewer, i.e. owned or revealed by their
+    // streamer; see bothSidesVisible in src/lib/trade.ts; the viewer's own
+    // offers are always listed); or the board is genuinely empty (invite the
+    // first listing, §6.8).
     body = (
       <div className="rounded-xl bg-gray-800 p-8 text-center">
         {isFiltered ? (

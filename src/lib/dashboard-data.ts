@@ -2201,6 +2201,64 @@ export const getActiveCardsForStreamer = cache(async (
   return result;
 });
 
+/**
+ * 配信者の全カード（is_active=false を含む）から、コレクション画面の
+ * 百科事典番号（#N）を作るための最小列を取得する（#2070 フォローアップ）。
+ *
+ * なぜ「全カード」なのか:
+ * - createCollectionNumberMap() は「その配信者のカード集合」を時系列で並べて
+ *   番号を決める。アクティブカードや所持カードだけを渡すと、無効化カードや
+ *   未所持カードの分だけ番号がずれる。
+ * - トレードの DTO も同じ全カード集合から番号表を作るため、この関数を
+ *   コレクション画面の唯一の入力にすることで「出品者と応諾者で同じ #N」
+ *   「トレード画面とコレクション画面で同じ #N」を保証する。
+ *
+ * 取得列は番号表に必要な id / card_number / created_at だけに絞る
+ * （表示集合は変えない）。トレード API 側は同じ目的のクエリを
+ * src/lib/trade.ts の loadCollectionNumberMapsForStreamers() で持つが、
+ * 画面表示用のこの関数とは呼び出し元（RSC とサービス層）が異なるため、
+ * ここでは dashboard-data の既存パターン（withDbRetry + 失敗時は空）に従う。
+ *
+ * 失敗時に空配列を返すのは既存の getActiveCardsForStreamer と同じ
+ * fail-closed。その場合 createCollectionNumberMap([]) は空マップを返し、
+ * 画面は collectionNumber=undefined（#N 非表示）になるだけで表示集合は
+ * 変わらない。
+ */
+export const getAllCardsForStreamer = cache(async (
+  streamerId: string
+): Promise<Array<{ id: string; card_number: number | null; created_at: string }>> => {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: cardsTable.id,
+            card_number: cardsTable.card_number,
+            created_at: cardsTable.created_at,
+          })
+          .from(cardsTable)
+          .where(eq(cardsTable.streamer_id, streamerId))
+          // created_at 昇順は createCollectionNumberMap の内部ソートと同じ。
+          // id を第2キーにして同時刻でも順序を決定的にする。
+          .orderBy(asc(cardsTable.created_at), asc(cardsTable.id));
+      },
+      "getAllCardsForStreamer",
+      { idempotent: true },
+    );
+    // DDL 上 created_at は NOT NULL ではない（DEFAULT のみ）。番号表の型に
+    // 合わせて null は空文字へ落とす（最古扱い）。実運用では全行に値がある。
+    return rows.map((row) => ({
+      id: row.id,
+      card_number: row.card_number,
+      created_at: row.created_at ?? "",
+    }));
+  } catch (error) {
+    logger.error("Error in getAllCardsForStreamer (pg)", { error });
+    return [];
+  }
+});
+
 export interface ActiveCardCountForStreamer {
   totalActive: number;
   activeCardIds: Set<string>;

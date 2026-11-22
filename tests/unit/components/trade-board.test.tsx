@@ -25,8 +25,8 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
     wantedQuantity: 1,
-    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
-    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null, collectionNumber: null },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, collectionNumber: null },
     isCrossChannel: false,
     status: "open",
     createdAt: "2026-10-01T00:00:00.000Z",
@@ -371,12 +371,12 @@ describe("TradeBoard", () => {
           init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
         }),
     );
-    fetchMock.mockImplementation(async () => listResponse([makeOffer({ id: "new", offeredCard: { name: "Filtered Card", rarity: "rare", imageUrl: null } })]));
+    fetchMock.mockImplementation(async () => listResponse([makeOffer({ id: "new", offeredCard: { name: "Filtered Card", rarity: "rare", imageUrl: null, collectionNumber: null } })]));
     renderBoard();
     fireEvent.change(screen.getByLabelText(ja.filterOfferedCard), { target: { value: "card-a" } });
     expect(await screen.findByText("Filtered Card")).toBeInTheDocument();
     // The first request was aborted; even if its body arrives late it is not shown.
-    resolveFirst(listResponse([makeOffer({ offeredCard: { name: "Stale Card", rarity: "rare", imageUrl: null } })]));
+    resolveFirst(listResponse([makeOffer({ offeredCard: { name: "Stale Card", rarity: "rare", imageUrl: null, collectionNumber: null } })]));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByText("Stale Card")).toBeNull();
     expect(screen.getByText("Filtered Card")).toBeInTheDocument();
@@ -447,7 +447,7 @@ describe("TradeBoard", () => {
         const page = new URL(url, "https://x.test").searchParams.get("page");
         return page === "1"
           ? listResponse([makeOffer()], true)
-          : listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+          : listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null, collectionNumber: null } })]);
       });
       renderBoard();
       await screen.findByText("Offered Dragon");
@@ -464,7 +464,7 @@ describe("TradeBoard", () => {
     it("reuses pages across remounts (scope tab switch) for the same streamer and scope", async () => {
       fetchMock.mockImplementation(async (url: string) => {
         const scope = new URL(url, "https://x.test").searchParams.get("scope");
-        return listResponse([makeOffer({ offeredCard: { name: `${scope} card`, rarity: "rare", imageUrl: null } })]);
+        return listResponse([makeOffer({ offeredCard: { name: `${scope} card`, rarity: "rare", imageUrl: null, collectionNumber: null } })]);
       });
       const first = renderBoard();
       await screen.findByText("in_channel card");
@@ -495,8 +495,8 @@ describe("TradeBoard", () => {
       // Same URL, different viewer: the row is "yes" for A and "not_owned" for B.
       fetchMock.mockImplementation(async () =>
         fetchMock.mock.calls.length === 1
-          ? listResponse([makeOffer({ offeredCard: { name: "Row for A", rarity: "rare", imageUrl: null }, canAccept: "yes" })])
-          : listResponse([makeOffer({ offeredCard: { name: "Row for B", rarity: "rare", imageUrl: null }, canAccept: "not_owned" })]),
+          ? listResponse([makeOffer({ offeredCard: { name: "Row for A", rarity: "rare", imageUrl: null, collectionNumber: null }, canAccept: "yes" })])
+          : listResponse([makeOffer({ offeredCard: { name: "Row for B", rarity: "rare", imageUrl: null, collectionNumber: null }, canAccept: "not_owned" })]),
       );
       const a = renderBoard({ viewerKey: "u:aaaa" });
       await screen.findByText("Row for A");
@@ -542,7 +542,7 @@ describe("TradeBoard", () => {
       expect(listCallsFor(() => true)).toBe(2);
 
       fetchMock.mockImplementationOnce(async () => listResponse([
-        makeOffer({ id: "offer-2", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null } }),
+        makeOffer({ id: "offer-2", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null, collectionNumber: null } }),
       ]));
       fireEvent.click(within(notice).getByRole("button", { name: ja.retryButton }));
       expect(screen.queryByText(ja.loading)).toBeNull();
@@ -563,7 +563,7 @@ describe("TradeBoard", () => {
           listCalls += 1;
           const query = new URL(url, "https://x.test").searchParams;
           if (query.get("page") === "2") {
-            return listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null } })]);
+            return listResponse([makeOffer({ id: "offer-2", offeredCard: { name: "Page Two Card", rarity: "rare", imageUrl: null, collectionNumber: null } })]);
           }
           // Hold the post-accept refresh of page 1.
           if (listCalls > 2) await refreshGate;
@@ -651,8 +651,8 @@ describe("TradeBoard wanted quantity (#1789)", () => {
   it("renders the badge for multi-copy offers only, per row", async () => {
     const fetchMock = vi.fn(async () =>
       listResponse([
-        makeOffer({ id: "multi", wantedQuantity: 3, wantedCard: { name: "Triple Slime", rarity: "common", imageUrl: null } }),
-        makeOffer({ id: "single", wantedQuantity: 1, wantedCard: { name: "Single Slime", rarity: "common", imageUrl: null } }),
+        makeOffer({ id: "multi", wantedQuantity: 3, wantedCard: { name: "Triple Slime", rarity: "common", imageUrl: null, collectionNumber: null } }),
+        makeOffer({ id: "single", wantedQuantity: 1, wantedCard: { name: "Single Slime", rarity: "common", imageUrl: null, collectionNumber: null } }),
       ]),
     );
     vi.stubGlobal("fetch", fetchMock);

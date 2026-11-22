@@ -48,6 +48,7 @@ vi.mock('@/lib/dashboard-data', () => ({
   }),
   getUserCardsForStreamer: async () => [fixtures.owned],
   getActiveCardsForStreamer: async () => [fixtures.owned, fixtures.unowned],
+  getAllCardsForStreamer: async () => [fixtures.owned, fixtures.unowned],
   getCollectionCompletions: async () => [],
   recordCollectionCompletion: vi.fn(), recordPackCompletion: vi.fn(),
 }));

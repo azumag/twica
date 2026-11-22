@@ -21,6 +21,9 @@
  *   ペイロード防御の代わりにはならない。
  */
 
+import type { AnyColumn } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm/sql";
+
 /**
  * resolveUnownedCardVisibility の入力。
  *
@@ -182,4 +185,106 @@ export function allUnownedCardItemsVisible(
   visibility: UnownedCardItemVisibility,
 ): boolean {
   return visibility.name && visibility.image && visibility.description;
+}
+
+// -----------------------------------------------------------------------------
+// SQL 版の解決規則（トレード API 用）
+//
+// なぜ SQL に同じ規則を持つのか:
+// - トレードの一覧・作成・応諾は「閲覧者が見てよい行/名前/画像か」を SQL の
+//   WHERE / JOIN 条件で先に絞る（ページングや hasMore の件数から隠しカードの
+//   存在が漏れないようにするため）。RSC のように行を取得してから TS で判定する
+//   方式だと、行数や LIMIT の結果自体が side channel になる。
+// - そのため resolveUnownedCardVisibility() と同じ規則を SQL でも表現する必要が
+//   ある。2箇所に規則が分かれるため、**この2つは常に同値でなければならない**。
+//   変更するときは tests/unit/unowned-card-visibility-sql.test.ts の
+//   TS/SQL 同値テストと、tests/integration/trade-visibility-pg.test.ts の
+//   実 PostgreSQL テストを必ず更新すること。
+//
+// 規則との対応:
+//   a. show_unowned_cards = TRUE を外側の条件にする（マスタースイッチ）。
+//   b. 新3列が取得できないデプロイ窓では withoutItemColumns = true で呼び、
+//      旧 show_unowned_card_details だけから導出する（true → 公開 /
+//      それ以外 → 非公開）。これは resolve の「3列のどれかが取れなければ
+//      旧設定へ all-or-nothing でフォールバック」と同じ意味。SQL では
+//      「列が存在しない」を値では表現できないので、42703 を検知した
+//      呼び出し側（withUnownedCardItemColumnFallback）がこのフラグを立てる。
+//   c. details = FALSE かつ新3列がすべて TRUE のときは全項目非公開。
+//      旧アプリで詳細公開を OFF にした取りこぼしガード。部分公開は
+//      ミラー書込みで details = FALSE になる正当な状態なので、
+//      「3列すべて TRUE」のときにだけ発動させる（resolve と同じ）。
+//   d. それ以外は対象項目の列が TRUE のときだけ公開。
+//
+// NULL の扱い: 新3列は migration で NOT NULL DEFAULT false。万一 NULL が
+// 混入しても `= TRUE` は NULL（≠TRUE）になるため fail-closed（非公開）になる。
+// resolve の `=== true` と同じ方向へ倒れる。
+// -----------------------------------------------------------------------------
+
+/** 未所持カードの公開対象項目。 */
+export type UnownedCardVisibilityItem = "name" | "image" | "description";
+
+/**
+ * unownedCardItemVisibleSql() が参照する streamers の列。
+ *
+ * テーブルそのものではなく列だけを受け取るのは、呼び出し側が相関サブクエリの
+ * 別名（visible_streamer / image_streamer など）を渡せるようにするため。
+ * drizzle の `${column}` は WHERE 句では `"別名"."列"` に展開されるので、
+ * 外側の streamers 行を安全に参照できる。
+ */
+export interface UnownedCardVisibilityColumns {
+  show_unowned_cards: AnyColumn;
+  /** 旧「詳細公開」列。STREAMERS_SAFE_COLUMNS にも含まれるため常に取得できる。 */
+  show_unowned_card_details: AnyColumn;
+  show_unowned_card_name: AnyColumn;
+  show_unowned_card_image: AnyColumn;
+  show_unowned_card_description: AnyColumn;
+}
+
+/**
+ * resolveUnownedCardVisibility() の item 判定を SQL の boolean 式にする。
+ *
+ * 返り値は「その streamer の未所持カードについて、item を公開してよいか」だけを
+ * 表す。所持している場合の判定（所持 ≥ 1 なら常に公開）は呼び出し側が
+ * OR で足す。これは resolve が「未所持カードの公開設定」だけを扱い、所持の
+ * 可否を知らないのと同じ責務分担である。
+ *
+ * @param streamer 相関サブクエリ内の streamers 別名の列一式。
+ * @param item 判定する項目。
+ * @param options.withoutItemColumns デプロイ窓（新3列が 42703 で欠落）用。
+ *   true のときは旧 show_unowned_card_details だけを参照する。
+ */
+export function unownedCardItemVisibleSql(
+  streamer: UnownedCardVisibilityColumns,
+  item: UnownedCardVisibilityItem,
+  options: { withoutItemColumns?: boolean } = {},
+): SQL {
+  // 規則 b: 新3列が無いデプロイ窓では旧設定だけを見る。
+  if (options.withoutItemColumns === true) {
+    return sql<boolean>`(
+      ${streamer.show_unowned_cards} = TRUE
+      AND ${streamer.show_unowned_card_details} = TRUE
+    )`;
+  }
+
+  const itemColumn =
+    item === "name"
+      ? streamer.show_unowned_card_name
+      : item === "image"
+        ? streamer.show_unowned_card_image
+        : streamer.show_unowned_card_description;
+
+  // 規則 a（マスタースイッチ）→ d（項目列）→ c（旧アプリ OFF ガード）の順。
+  // ガード c を最後に NOT で打ち消すのは、「3列すべて TRUE」の組み合わせだけを
+  // 非公開へ倒すため。部分公開では NOT(...) が TRUE になり、項目列の値が
+  // そのまま採用される（resolve の規則 d と同じ）。
+  return sql<boolean>`(
+    ${streamer.show_unowned_cards} = TRUE
+    AND ${itemColumn} = TRUE
+    AND NOT (
+      ${streamer.show_unowned_card_details} = FALSE
+      AND ${streamer.show_unowned_card_name} = TRUE
+      AND ${streamer.show_unowned_card_image} = TRUE
+      AND ${streamer.show_unowned_card_description} = TRUE
+    )
+  )`;
 }

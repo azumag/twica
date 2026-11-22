@@ -74,7 +74,10 @@ const STREAMER_ROW = {
   twitchProfileImageUrl: null,
   showUnownedCards: true,
   showUnownedCardDetails: false,
-  tradeUnownedCardNamesVisible: true,
+  // 項目別公開: 名前だけ公開、画像は非公開（#2070 フォローアップ）。
+  showUnownedCardName: true,
+  showUnownedCardImage: false,
+  showUnownedCardDescription: false,
   tradeEnabled: true,
   crossChannelTradeEnabled: true,
 };
@@ -83,9 +86,11 @@ const WANTABLE_ROW = {
   cardId: CARD_ID,
   name: "Secret Card",
   rarity: "legendary",
+  rarityOrder: 2,
   imageUrl: SECRET,
   isOwned: true,
-  // details=false, name-only=true: the name is visible but the image is not.
+  // 名前は公開、画像は非公開（項目別）。
+  nameVisible: true,
   imageVisible: false,
 };
 
@@ -228,7 +233,14 @@ describe("trade RSC props on a name-only channel (#2070)", () => {
     const passed = props("create-props");
     expectNoSecret(passed);
     expect(passed.wantableCards).toEqual([
-      { cardId: CARD_ID, name: "Secret Card", rarity: "legendary", imageUrl: null, isOwned: true },
+      {
+        cardId: CARD_ID,
+        name: "Secret Card",
+        rarity: "legendary",
+        imageUrl: null,
+        collectionNumber: null,
+        isOwned: true,
+      },
     ]);
     // The channel reveals names, so the form must not claim it hides them.
     expect(passed.wantableRevealsUnowned).toBe(true);
@@ -253,7 +265,32 @@ describe("trade RSC props on a name-only channel (#2070)", () => {
   });
 
   it("the /trade hub prefetch never serializes an image of an unowned wanted card", async () => {
-    primeDb({ trade_offers: [LIST_ROW], cards: [] });
+    primeDb({
+      trade_offers: [LIST_ROW],
+      // maskTradeCards の可視性クエリと番号表クエリはどちらも cards から
+      // 読む。名前は公開・画像は非公開の行を返す（同じ行に番号表の列も
+      // 持たせ、2本のクエリを1つのフィクスチャで賄う）。
+      cards: [
+        {
+          cardId: LIST_ROW.offer.offered_card_id,
+          streamerId: STREAMER_ID,
+          nameVisible: true,
+          imageVisible: false,
+          id: LIST_ROW.offer.offered_card_id,
+          cardNumber: 1,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          cardId: CARD_ID,
+          streamerId: STREAMER_ID,
+          nameVisible: true,
+          imageVisible: false,
+          id: CARD_ID,
+          cardNumber: 2,
+          createdAt: "2026-01-02T00:00:00.000Z",
+        },
+      ],
+    });
     const { default: TradeHubPage } = await import("@/app/trade/page");
 
     render(await TradeHubPage({ searchParams: Promise.resolve({}) }));
@@ -272,7 +309,29 @@ describe("trade RSC props on a name-only channel (#2070)", () => {
     // The offer is visible by name (trade_unowned_card_names_visible) but its
     // wanted card's image must be denied by the service mask, exactly as on
     // the board and /mine.
-    primeDb({ ranked_collection_offers: [COLLECTION_LIST_ROW], cards: [] });
+    primeDb({
+      ranked_collection_offers: [COLLECTION_LIST_ROW],
+      cards: [
+        {
+          cardId: COLLECTION_LIST_ROW.offer.offered_card_id,
+          streamerId: STREAMER_ID,
+          nameVisible: true,
+          imageVisible: false,
+          id: COLLECTION_LIST_ROW.offer.offered_card_id,
+          cardNumber: 1,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          cardId: CARD_ID,
+          streamerId: STREAMER_ID,
+          nameVisible: true,
+          imageVisible: false,
+          id: CARD_ID,
+          cardNumber: 2,
+          createdAt: "2026-01-02T00:00:00.000Z",
+        },
+      ],
+    });
     const { default: TradeHubPage } = await import("@/app/trade/page");
 
     render(await TradeHubPage({ searchParams: Promise.resolve({}) }));

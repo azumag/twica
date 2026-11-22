@@ -29,6 +29,25 @@ function rpcSuccess(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * 成功応答は読み取り時マスク（maskTradeCards）を通る。DB ダブルが可視性
+ * クエリに何も返さない既定では、名前・画像・番号がすべて落ちる
+ * （deny-by-default / fail-closed）。
+ */
+function maskedRpcSuccess(result: Record<string, unknown> = rpcSuccess()): Record<string, unknown> {
+  const mask = (snapshot: unknown) => ({
+    ...(snapshot as Record<string, unknown>),
+    name: "",
+    imageUrl: null,
+    collectionNumber: null,
+  });
+  return {
+    ...result,
+    offeredCardSnapshot: mask(result.offeredCardSnapshot),
+    wantedCardSnapshot: mask(result.wantedCardSnapshot),
+  };
+}
+
 const ACCEPTOR_ID = "55555555-5555-4555-8555-555555555555";
 const OFFERER_ID = "66666666-6666-4666-8666-666666666666";
 const OFFERED_CARD_ID = "77777777-7777-4777-8777-777777777777";
@@ -110,7 +129,7 @@ describe("acceptTradeOffer (#724)", () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
   });
 
-  it("returns the RPC success payload unchanged", async () => {
+  it("returns the RPC success payload with the name/image/number mask applied", async () => {
     const result = rpcSuccess();
     const sqlMock = vi.fn().mockResolvedValue([{ result }]);
     primeSql(sqlMock);
@@ -122,7 +141,7 @@ describe("acceptTradeOffer (#724)", () => {
         tradeOfferId: TRADE_ID,
         requestId: REQUEST_ID,
       }),
-    ).resolves.toEqual(result);
+    ).resolves.toEqual(maskedRpcSuccess(result));
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
 
@@ -145,7 +164,7 @@ describe("acceptTradeOffer (#724)", () => {
         ...ACCEPT_INPUT,
         tradeOfferId: hexTradeId.toUpperCase(),
       }),
-    ).resolves.toEqual(result);
+    ).resolves.toEqual(maskedRpcSuccess(result));
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
 
@@ -185,7 +204,7 @@ describe("acceptTradeOffer (#724)", () => {
         tradeOfferId: TRADE_ID,
         requestId: REQUEST_ID,
       }),
-    ).resolves.toEqual(success);
+    ).resolves.toEqual(maskedRpcSuccess(success));
 
     expect(sqlMock).toHaveBeenCalledTimes(2);
     expect(sqlMock.mock.calls[0].slice(1)).toEqual(sqlMock.mock.calls[1].slice(1));
@@ -304,8 +323,9 @@ describe("acceptTradeOffer (#724)", () => {
     const { calls } = primeSql(sqlMock, [{ error: missing }, [precheckRow()]]);
 
     const { acceptTradeOffer } = await import("@/lib/trade");
-    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(rpcSuccess());
-    expect(calls).toHaveLength(2);
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(maskedRpcSuccess());
+    // precheck + retried precheck + the read-time mask statement.
+    expect(calls).toHaveLength(3);
     const dialect = new PgDialect();
     const first = (calls[0].fields as Record<string, SQL>).wantedWantable;
     const retry = (calls[1].fields as Record<string, SQL>).wantedWantable;
@@ -331,7 +351,8 @@ describe("acceptTradeOffer (#724)", () => {
     primeSql(sqlMock);
 
     const { acceptTradeOffer } = await import("@/lib/trade");
-    await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity: 2 })).resolves.toEqual(success);
+    await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity: 2 }))
+      .resolves.toEqual(maskedRpcSuccess(success));
 
     expect(sqlMock).toHaveBeenCalledTimes(2);
     for (const n of [0, 1]) {
@@ -348,9 +369,10 @@ describe("acceptTradeOffer (#724)", () => {
     const { db } = primeSql(sqlMock);
 
     const { acceptTradeOffer } = await import("@/lib/trade");
-    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(success);
-    // Round-trip budget: one precheck statement + the RPC attempts.
-    expect(db.select).toHaveBeenCalledTimes(1);
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(maskedRpcSuccess(success));
+    // Round-trip budget: one precheck statement + one mask statement (the
+    // number query is skipped when the mask returns no streamer).
+    expect(db.select).toHaveBeenCalledTimes(2);
     expect(sqlMock).toHaveBeenCalledTimes(2);
   });
 });
@@ -395,7 +417,7 @@ describe("acceptTradeOffer visibility / is_active precheck (#715 PR-C)", () => {
     ]);
 
     const { acceptTradeOffer } = await import("@/lib/trade");
-    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(replay);
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(maskedRpcSuccess(replay));
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
 
@@ -446,7 +468,8 @@ describe("acceptTradeOffer visibility / is_active precheck (#715 PR-C)", () => {
     const { acceptTradeOffer } = await import("@/lib/trade");
     await acceptTradeOffer(ACCEPT_INPUT);
 
-    expect(calls).toHaveLength(1);
+    // precheck + the read-time mask statement (names/images/number).
+    expect(calls).toHaveLength(2);
     const fields = calls[0].fields as Record<string, SQL>;
     const dialect = new PgDialect();
     const acceptor = dialect.sqlToQuery(drizzleSql`${fields.acceptorUserId}`);
@@ -454,7 +477,7 @@ describe("acceptTradeOffer visibility / is_active precheck (#715 PR-C)", () => {
     expect(acceptor.params).toEqual(["viewer-1"]);
     const visible = dialect.sqlToQuery(drizzleSql`${fields.offeredVisible}`);
     expect(visible.sql).toContain('visible_card.id = "trade_offers"."offered_card_id"');
-    expect(visible.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
+    expect(visible.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
     expect(visible.sql).toMatch(/visible_owned\.user_id = \(\s*SELECT viewer\.id/);
     expect(visible.params).toEqual(["viewer-1"]);
     const wantedActive = dialect.sqlToQuery(drizzleSql`${fields.wantedActive}`);
@@ -478,7 +501,8 @@ describe("acceptTradeOffer: accepts call the 4-argument RPC directly (#1789, #17
     primeSql(sqlMock);
 
     const { acceptTradeOffer } = await import("@/lib/trade");
-    await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity: 3 })).resolves.toEqual(success);
+    await expect(acceptTradeOffer({ ...ACCEPT_INPUT, expectedQuantity: 3 }))
+      .resolves.toEqual(maskedRpcSuccess(success));
 
     expect(sqlMock).toHaveBeenCalledTimes(1);
     expect(sqlCall(sqlMock, 0).text).toContain("::smallint");
