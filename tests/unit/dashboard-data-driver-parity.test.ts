@@ -91,6 +91,11 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     raid_gacha_draw_count: 0,
     trade_enabled: false,
     cross_channel_trade_enabled: false,
+    // Issue #2070: 設定としては C4b で廃止したが、列は schema に残る（後続 PR で削除）。
+    // DB モックは schema の全列を射影し、fixture に無い列は null で返す。
+    // getStreamerData の全列 SELECT が返す行と STREAMER を一致させる
+    // （schema と1対1に保つ）ため、廃止済みの列も既定値 false で持つ。
+    trade_unowned_card_names_visible: false,
     // #1765 フォローアップ: アルバム表示のパック別既定と初期表示。
     pack_album_grid_sizes: null,
     collection_default_view: 'grid',
