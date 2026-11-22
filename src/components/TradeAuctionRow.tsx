@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useTranslations } from "next-intl";
 import type { TradeAuctionDto } from "@/lib/trade-auction";
 import { auctionBidStateLabelKey } from "@/lib/trade-client";
+import { useTradeCardLabel } from "@/lib/trade-card-label";
 import TradeCardSummary from "./TradeCardSummary";
 import { TradeAuctionPhaseBadge } from "./TradeAuctionStatus";
 
@@ -30,6 +31,11 @@ const LINK_CLASS =
  */
 export default function TradeAuctionRow({ auction, showStreamer, detailHref }: TradeAuctionRowProps) {
   const t = useTranslations("trade");
+  // 入札カードの名前は相手のカード定義に由来し、閲覧者が名前を見られない場合は
+  // DTO の name が "" で来る（C3b）。文へ埋め込む前に共通ヘルパーで #N /
+  // 削除されたカードへフォールバックする（旧 `name || deletedCardLabel` は
+  // 表示番号を持たないため、#N で入札を識別できなかった）。
+  const cardLabel = useTradeCardLabel();
   const myBid = auction.myBid ?? null;
 
   const linkLabel = auction.isOwnAuction
@@ -65,7 +71,7 @@ export default function TradeAuctionRow({ auction, showStreamer, detailHref }: T
           {myBid && (
             <span className="break-words text-gray-200">
               {t("auctionRowMyBid", {
-                card: myBid.bidCard.name || t("deletedCardLabel"),
+                card: cardLabel(myBid.bidCard),
                 count: myBid.quantity,
                 state: t(auctionBidStateLabelKey(myBid.state, auction.phase)),
               })}

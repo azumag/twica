@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+import { SQL } from 'drizzle-orm'
 import { POST } from '@/app/api/streamer/settings/route'
 import { getSession, canUseStreamerFeatures } from '@/lib/session'
 import { checkRateLimit } from '@/lib/rate-limit'
@@ -79,6 +80,30 @@ function createDbFixture() {
 
 function installDbFixture(fixture: any) {
   currentDbFixture = fixture
+}
+
+/**
+ * Drizzle の SQL 式を、アサーションできる最小の文字列へ落とす。
+ * SQL 式そのものは Column / Param / StringChunk の入れ子なので、
+ * 「SET に COALESCE と現在列が含まれるか」を確認するためだけに使う。
+ * 本番の SQL 生成器を再実装するのではなく、生成物の構造を読むヘルパー。
+ */
+function sqlChunkText(chunk: unknown): string {
+  if (chunk instanceof SQL) return chunk.queryChunks.map(sqlChunkText).join('')
+  if (Array.isArray(chunk)) return chunk.map(sqlChunkText).join('')
+  if (chunk && typeof chunk === 'object') {
+    const candidate = chunk as { value?: unknown; name?: unknown }
+    if (Array.isArray(candidate.value)) return candidate.value.join('')
+    if (
+      typeof candidate.value === 'string' ||
+      typeof candidate.value === 'number' ||
+      typeof candidate.value === 'boolean'
+    ) {
+      return String(candidate.value)
+    }
+    if (typeof candidate.name === 'string') return candidate.name
+  }
+  return String(chunk)
 }
 
 function tableName(table: unknown): string {
@@ -346,9 +371,9 @@ describe('POST /api/streamer/settings', () => {
       expect(response.status).toBe(400)
     })
 
-    // Issue #2070: トレード限定の「未所持カードの名前だけを公開する」設定。
-    // 可視性判定は次回実装だが、設定値の保存・読み出しは今回のリリースで先に配線する。
-    it('accepts and persists tradeUnownedCardNamesVisible', async () => {
+    // Issue #2070: トレード限定の「未所持カードの名前だけを公開する」設定は
+    // C4b で廃止した。旧クライアントが送っても 400 にせず無視し、DBへも書かない。
+    it('ignores the retired tradeUnownedCardNamesVisible key without failing', async () => {
       const builder = createDbFixture()
         .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
       const mockDbFixture = builder.build()
@@ -360,60 +385,153 @@ describe('POST /api/streamer/settings', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           streamerId: 'streamer123',
+          showUnownedCards: true,
           tradeUnownedCardNamesVisible: true,
         }),
       })
 
       const response = await POST(request)
       expect(response.status).toBe(200)
-      // 新キーだけを送ったときに既存の trade キーを勝手に補完しないことも固定する。
-      expect(query.update).toHaveBeenCalledWith({
-        trade_unowned_card_names_visible: true,
-      })
+      expect(query.update).toHaveBeenCalledWith({ show_unowned_cards: true })
+      for (const call of query.update.mock.calls) {
+        expect(call[0]).not.toHaveProperty('trade_unowned_card_names_visible')
+      }
     })
 
     it.each([
       { tradeUnownedCardNamesVisible: 'true' },
       { tradeUnownedCardNamesVisible: 1 },
       { tradeUnownedCardNamesVisible: null },
-    ])('rejects non-boolean tradeUnownedCardNamesVisible: %j', async (payload) => {
-      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ streamerId: 'streamer123', ...payload }),
-      })
+    ])('ignores a non-boolean retired trade key too: %j', async (payload) => {
+      // 廃止キーは「未知のキー」として読み捨てる。旧UIの型揺れで保存全体が
+      // 400 になる退行を避けるため、boolean 以外でも検証しない。
+      const builder = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      installDbFixture(builder.build())
 
-      const response = await POST(request)
+      const response = await POST(
+        new NextRequest('http://localhost:3000/api/streamer/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ streamerId: 'streamer123', showUnownedCards: false, ...payload }),
+        })
+      )
+      expect(response.status).toBe(200)
+    })
+  })
+
+  // #2070 フォローアップ (C4b): 未所持カードの項目別公開。
+  // 新3項目の保存・検証と、旧 showUnownedCardDetails との互換規則を固定する。
+  describe('unowned card item visibility (C4b)', () => {
+    const okFixture = () => {
+      const builder = createDbFixture()
+        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
+      installDbFixture(builder.build())
+      return builder.getQueryBuilder()
+    }
+
+    const post = (body: Record<string, unknown>) =>
+      POST(
+        new NextRequest('http://localhost:3000/api/streamer/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ streamerId: 'streamer123', ...body }),
+        })
+      )
+
+    it('persists the three booleans independently and mirrors details from the same UPDATE', async () => {
+      const query = okFixture()
+      const response = await post({
+        showUnownedCardName: true,
+        showUnownedCardImage: false,
+        showUnownedCardDescription: true,
+      })
+      expect(response.status).toBe(200)
+
+      const set = query.update.mock.calls[0][0] as Record<string, unknown>
+      expect(set.show_unowned_card_name).toBe(true)
+      expect(set.show_unowned_card_image).toBe(false)
+      expect(set.show_unowned_card_description).toBe(true)
+      // 旧列は boolean ではなく SQL 式（同一UPDATE内で AND を計算）になる。
+      expect(set.show_unowned_card_details).toBeInstanceOf(SQL)
+    })
+
+    it.each([
+      { showUnownedCardName: 'true' },
+      { showUnownedCardImage: 1 },
+      { showUnownedCardDescription: null },
+    ])('rejects non-boolean item flags: %j', async (payload) => {
+      okFixture()
+      const response = await post(payload)
       expect(response.status).toBe(400)
     })
 
-    it('persists tradeUnownedCardNamesVisible independently of the other trade keys', async () => {
-      const builder = createDbFixture()
-        .withMaybeSingleResponse({ id: 'streamer123', twitch_user_id: 'streamer123' })
-      const mockDbFixture = builder.build()
-      const query = builder.getQueryBuilder()
-      installDbFixture(mockDbFixture)
-
-      const request = new NextRequest('http://localhost:3000/api/streamer/settings', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          streamerId: 'streamer123',
-          tradeEnabled: true,
-          crossChannelTradeEnabled: false,
-          tradeUnownedCardNamesVisible: true,
-        }),
-      })
-
-      const response = await POST(request)
+    it('computes the legacy details mirror from current columns for a partial update', async () => {
+      // 名前だけを更新する（画像・説明はリクエストに無い）。
+      // 旧列のミラー式は、無い項目を COALESCE(送信値, 現在列) で補う必要がある。
+      // 別SELECTで現在値を読んでからUPDATEするとレースが生じるため、SET式に
+      // 現在列が含まれていることを直接固定する。
+      const query = okFixture()
+      const response = await post({ showUnownedCardName: true })
       expect(response.status).toBe(200)
-      // 3キーは独立した boolean として同じ UPDATE に載る。既存キーと同時に
-      // 送っても新キーが落ちないことを固定する。
-      expect(query.update).toHaveBeenCalledWith(expect.objectContaining({
-        trade_enabled: true,
-        cross_channel_trade_enabled: false,
-        trade_unowned_card_names_visible: true,
-      }))
+
+      const set = query.update.mock.calls[0][0] as Record<string, unknown>
+      expect(set.show_unowned_card_name).toBe(true)
+      // 送っていない項目は SET に載せない（部分更新）。
+      expect(set).not.toHaveProperty('show_unowned_card_image')
+      expect(set).not.toHaveProperty('show_unowned_card_description')
+
+      const mirror = set.show_unowned_card_details as SQL
+      expect(mirror).toBeInstanceOf(SQL)
+      const chunks = (mirror as unknown as { queryChunks: unknown[] }).queryChunks
+      const text = chunks.map(sqlChunkText).join('')
+      expect(text).toContain('COALESCE')
+      expect(text).toContain('show_unowned_card_name')
+      expect(text).toContain('show_unowned_card_image')
+      expect(text).toContain('show_unowned_card_description')
+      // 送信した名前の値がパラメータとして載っている。
+      expect(text).toContain('true')
+    })
+
+    it('expands legacy showUnownedCardDetails alone into all three columns and the details column', async () => {
+      const query = okFixture()
+      const response = await post({ showUnownedCardDetails: true })
+      expect(response.status).toBe(200)
+
+      expect(query.update).toHaveBeenCalledWith({
+        show_unowned_card_details: true,
+        show_unowned_card_name: true,
+        show_unowned_card_image: true,
+        show_unowned_card_description: true,
+      })
+    })
+
+    it('expands legacy showUnownedCardDetails=false into three false columns (no contradiction)', async () => {
+      const query = okFixture()
+      const response = await post({ showUnownedCardDetails: false })
+      expect(response.status).toBe(200)
+
+      expect(query.update).toHaveBeenCalledWith({
+        show_unowned_card_details: false,
+        show_unowned_card_name: false,
+        show_unowned_card_image: false,
+        show_unowned_card_description: false,
+      })
+    })
+
+    it('lets the new item flags win when new and legacy inputs are sent together', async () => {
+      const query = okFixture()
+      const response = await post({
+        showUnownedCardName: true,
+        showUnownedCardDetails: false,
+      })
+      expect(response.status).toBe(200)
+
+      const set = query.update.mock.calls[0][0] as Record<string, unknown>
+      expect(set.show_unowned_card_name).toBe(true)
+      // 旧入力は無視され、details は boolean false ではなくミラーSQLになる。
+      expect(set.show_unowned_card_details).toBeInstanceOf(SQL)
+      expect(set.show_unowned_card_details).not.toBe(false)
     })
   })
 

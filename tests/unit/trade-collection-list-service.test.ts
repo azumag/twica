@@ -319,9 +319,11 @@ describe("listTradeOffersByCollection (#2079)", () => {
     expect(groups[0].offers).toHaveLength(5);
     expect(groups[0].latestCreatedAt).toBe("2026-10-04T00:00:00.000Z");
     expect(groups[0].offers[0].wantedCard).toEqual({
-      name: "Wanted",
+      // マスククエリが空 = deny-by-default。名前も画像も番号も証明できない。
+      name: "",
       rarity: "mythic",
       imageUrl: null,
+      collectionNumber: null,
     });
     expect(groups[0].offers[0].offeredCard.imageUrl).toBeNull();
     expect(JSON.stringify(groups[0].offers)).not.toContain(SECRET);
@@ -335,10 +337,15 @@ describe("listTradeOffersByCollection (#2079)", () => {
   it("masks each side independently: a wanted-side image may stay when the offered side is hidden", async () => {
     createDbMock((call) => {
       if ("offer" in call.fields) return [offerRow({ total: 1 })];
-      // The mask query is evaluated per card id by cardImageVisibleTo. Return
-      // only the wanted card: the wanted snapshot (owned/revealed by its own
-      // streamer) keeps its image, while the offered image is nulled.
-      return [{ cardId: WANTED_CARD_ID }];
+      // The mask query is evaluated per card id by maskTradeCards. Return the
+      // wanted card as visible: the wanted snapshot (owned/revealed by its own
+      // streamer) keeps its name/image, while the offered side is nulled.
+      return [{
+        cardId: WANTED_CARD_ID,
+        streamerId: OTHER_COLLECTION_ID,
+        nameVisible: true,
+        imageVisible: true,
+      }];
     });
 
     const { listTradeOffersByCollection } = await import("@/lib/trade");

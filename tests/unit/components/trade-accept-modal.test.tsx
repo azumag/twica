@@ -17,8 +17,8 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
     wantedQuantity: 1,
-    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
-    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null, collectionNumber: null },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, collectionNumber: null },
     isCrossChannel: false,
     status: "open",
     createdAt: "2026-10-01T00:00:00.000Z",
@@ -74,6 +74,20 @@ describe("TradeAcceptModal (#726 §6.4)", () => {
     expect(dialog).toHaveAccessibleDescription(trJa("confirmModalWarning", { count: 1 }));
     expect(screen.getByText(ja.confirmModalGiveLabel)).toBeInTheDocument();
     expect(screen.getByText(ja.confirmModalReceiveLabel)).toBeInTheDocument();
+  });
+
+  it("shows hidden-name cards by #N or the deleted fallback (#2070 follow-up)", () => {
+    renderModal({
+      offer: makeOffer({
+        // 応諾者が受け取るカードは名前非公開（name="" + 表示番号）。
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 12 },
+        // 応諾者が渡すカードは定義が削除済み（番号も null）。
+        wantedCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+      }),
+    });
+    expect(screen.getByText("#12")).toBeInTheDocument();
+    expect(screen.getByText(ja.deletedCardName)).toBeInTheDocument();
+    expect(screen.queryByText(ja.deletedCardLabel)).toBeNull();
   });
 
   it("locks background scrolling while open and restores it on unmount", () => {

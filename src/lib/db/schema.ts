@@ -126,8 +126,9 @@ const streamerBaseColumns = () => ({
   trade_enabled: boolean('trade_enabled').notNull().default(false),
   cross_channel_trade_enabled: boolean('cross_channel_trade_enabled').notNull().default(false),
   // 20261117120000 (#2070): 未所持カードの名前とレアリティだけをトレードで公開する。
-  // show_unowned_cards=true かつ show_unowned_card_details=false のときだけ意味を持つ。
-  // 画像・説明は公開せず、コレクション画面の表示にも影響しない（既定OFF）。
+  // 設定としては C4b で廃止した（列は migration 履歴と旧アプリの読み取り互換のため残す）。
+  // 現行アプリはこの列を書き込みも参照もしない。未所持カードの項目別公開は
+  // show_unowned_card_name / _image / _description に一本化している。
   trade_unowned_card_names_visible: boolean('trade_unowned_card_names_visible')
     .notNull()
     .default(false),

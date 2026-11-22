@@ -16,8 +16,8 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
     wantedQuantity: 1,
-    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
-    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null, collectionNumber: null },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, collectionNumber: null },
     isCrossChannel: false,
     status: "open",
     createdAt: "2026-10-01T00:00:00.000Z",
@@ -74,6 +74,18 @@ describe("TradeCancelModal (#1754)", () => {
 
     renderModal({ offer: makeOffer({ wantedQuantity: 1 }) });
     expect(screen.getByText(ja.myTradesWant).parentElement).not.toHaveTextContent("×");
+  });
+
+  it("shows hidden-name cards by #N or the deleted fallback (#2070 follow-up)", () => {
+    renderModal({
+      offer: makeOffer({
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 21 },
+        wantedCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+        wantedCardId: null,
+      }),
+    });
+    expect(screen.getByText("#21")).toBeInTheDocument();
+    expect(screen.getByText(ja.deletedCardName)).toBeInTheDocument();
   });
 
   it("puts initial focus on the dismiss button (not the irreversible action)", () => {

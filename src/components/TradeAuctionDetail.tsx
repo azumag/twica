@@ -11,6 +11,7 @@ import {
   tradeErrorMessageKey,
   type TradePostResult,
 } from "@/lib/trade-client";
+import { useTradeCardLabel } from "@/lib/trade-card-label";
 import { clearTradeListCache } from "@/lib/use-trade-list";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 import TradeAuctionConfirmModal from "./TradeAuctionConfirmModal";
@@ -23,12 +24,19 @@ import TradeRefreshFailedNotice from "./TradeRefreshFailedNotice";
  * A card the viewer could bid with, prepared by the server page from
  * listWantableCards (trade_wantable + visibility, #1790) ∩ the viewer's
  * copies. `freeCount` = copies not locked by an offer, auction or bid.
+ *
+ * The page passes only cards the viewer OWNS, so `name` is normally the real
+ * name. `collectionNumber` is forwarded anyway so the shared label helper can
+ * fall back to #N instead of a blank name if the mask ever hides it (for
+ * example during the visibility-column deploy window). #N is viewer-independent
+ * and therefore safe to show.
  */
 export type TradeAuctionBidCard = {
   cardId: string;
   name: string;
   rarity: string;
   imageUrl: string | null;
+  collectionNumber: number | null;
   freeCount: number;
 };
 
@@ -97,6 +105,10 @@ export default function TradeAuctionDetail({
 }: TradeAuctionDetailProps) {
   const t = useTranslations("trade");
   const tMaintenance = useTranslations("maintenance");
+  // 入札一覧・入札サマリのカード名は、名前非公開なら #N、番号も無ければ
+  // 「削除されたカード」にする（C3b の DTO マスク前提）。カードタイル自体は
+  // <TradeCardSummary> が同じフックを使うため、ここでは文へ埋め込む箇所だけ呼ぶ。
+  const cardLabel = useTradeCardLabel();
   const locale = useLocale();
   const router = useRouter();
   const { mode: maintenanceMode } = useMaintenanceStatus();
@@ -584,7 +596,7 @@ export default function TradeAuctionDetail({
           )}
           <p className="mt-3 text-sm text-gray-200">
             {selectedCard && effectiveQuantity > 0
-              ? t("auctionBidSummary", { card: selectedCard.name, count: effectiveQuantity })
+              ? t("auctionBidSummary", { card: cardLabel(selectedCard), count: effectiveQuantity })
               : t("auctionBidPending")}
           </p>
           <p className="mt-1 text-xs text-gray-400">{t("auctionBidLockNotice")}</p>

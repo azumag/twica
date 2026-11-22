@@ -189,17 +189,39 @@ const OFFER = {
 };
 
 /**
- * #2070: every service function masks imageUrl at read time. The default DB
- * double returns an empty "visible card id" set, so fixtures with image URLs
- * come back with imageUrl: null. Use this for `offer` equality assertions.
+ * 読み取り時のマスク（maskTradeCards）は deny-by-default。DB ダブルが
+ * 可視性クエリに何も返さない既定では、名前・画像・番号がすべて落ちる。
+ * `offer` の等値比較はこの形を使う。
  */
+function maskedSnapshot(snapshot: Record<string, unknown>): Record<string, unknown> {
+  return { ...snapshot, name: "", imageUrl: null, collectionNumber: null };
+}
+
 function maskedOffer<T extends { offered_card_snapshot: Record<string, unknown>; wanted_card_snapshot: Record<string, unknown> }>(
   offer: T,
 ): T {
   return {
     ...offer,
-    offered_card_snapshot: { ...offer.offered_card_snapshot, imageUrl: null },
-    wanted_card_snapshot: { ...offer.wanted_card_snapshot, imageUrl: null },
+    offered_card_snapshot: maskedSnapshot(offer.offered_card_snapshot),
+    wanted_card_snapshot: maskedSnapshot(offer.wanted_card_snapshot),
+  };
+}
+
+/**
+ * createTradeOffer の ok 応答（offer 行 + ルートが返す DTO スナップショット）。
+ * mask が失敗した場合も同じ形（fail-closed）。
+ */
+function maskedOk(
+  offer: { offered_card_snapshot: Record<string, unknown>; wanted_card_snapshot: Record<string, unknown> },
+  idempotentReplay: boolean,
+): Record<string, unknown> {
+  const masked = maskedOffer(offer);
+  return {
+    kind: "ok",
+    offer: masked,
+    offeredCard: masked.offered_card_snapshot,
+    wantedCard: masked.wanted_card_snapshot,
+    idempotentReplay,
   };
 }
 
@@ -293,11 +315,7 @@ describe("trade service (#723)", () => {
       requestId: OFFER.request_id!,
     });
 
-    expect(result).toEqual({
-      kind: "ok",
-      offer: maskedOffer(OFFER),
-      idempotentReplay: true,
-    });
+    expect(result).toEqual(maskedOk(OFFER, true));
     // 1 check + 1 image mask (#2070): the replay row is masked too.
     expect(roundTrips()).toBe(2);
     expect(pg.insertCalls).toHaveLength(0);
@@ -488,11 +506,7 @@ describe("trade service (#723)", () => {
       requestId: OFFER.request_id!,
     });
 
-    expect(result).toEqual({
-      kind: "ok",
-      offer: maskedOffer(OFFER),
-      idempotentReplay: true,
-    });
+    expect(result).toEqual(maskedOk(OFFER, true));
     expect(pg.insertCalls).toHaveLength(1);
     // The recovery lookup uses the users.id resolved by the check statement.
     expect(render(pg.selectCalls[1].where).params).toEqual([
@@ -515,11 +529,14 @@ describe("trade service (#723)", () => {
       wantedCardId: OFFER.wanted_card_id!,
       requestId: OFFER.request_id!,
     };
-    /** The committed row after masking: names/rarities stay, images are hidden. */
+    /**
+     * マスク失敗時の fail-closed 応答。名前・画像・番号は証明できないので
+     * 空/null、rarity だけは常に公開なので残る。
+     */
     const hiddenOffer = {
       ...OFFER,
-      offered_card_snapshot: { name: "Offer", rarity: "rare", imageUrl: null },
-      wanted_card_snapshot: { name: "Want", rarity: "epic", imageUrl: null },
+      offered_card_snapshot: { name: "", rarity: "rare", imageUrl: null, collectionNumber: null },
+      wanted_card_snapshot: { name: "", rarity: "epic", imageUrl: null, collectionNumber: null },
     };
 
     it("returns the committed offer with both images hidden when the post-INSERT mask fails", async () => {
@@ -532,14 +549,20 @@ describe("trade service (#723)", () => {
       const { createTradeOffer } = await import("@/lib/trade");
       const result = await createTradeOffer(input);
 
-      expect(result).toEqual({ kind: "ok", offer: hiddenOffer, idempotentReplay: false });
+      expect(result).toEqual({
+        kind: "ok",
+        offer: hiddenOffer,
+        offeredCard: hiddenOffer.offered_card_snapshot,
+        wantedCard: hiddenOffer.wanted_card_snapshot,
+        idempotentReplay: false,
+      });
       // The committed INSERT is not rolled back or repeated by the failed read.
       expect(pg.insertCalls).toHaveLength(1);
       expect(roundTrips()).toBe(3);
       // One warning carrying only the error (never the snapshots / image URLs).
       expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
-        expect.stringContaining("image mask"),
+        expect.stringContaining("card mask"),
         { error: MASK_ERROR },
       );
       expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain("example.test");
@@ -554,7 +577,13 @@ describe("trade service (#723)", () => {
       const { createTradeOffer } = await import("@/lib/trade");
       const result = await createTradeOffer(input);
 
-      expect(result).toEqual({ kind: "ok", offer: hiddenOffer, idempotentReplay: true });
+      expect(result).toEqual({
+        kind: "ok",
+        offer: hiddenOffer,
+        offeredCard: hiddenOffer.offered_card_snapshot,
+        wantedCard: hiddenOffer.wanted_card_snapshot,
+        idempotentReplay: true,
+      });
       expect(pg.insertCalls).toHaveLength(0);
       expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
     });
@@ -574,19 +603,52 @@ describe("trade service (#723)", () => {
       const { createTradeOffer } = await import("@/lib/trade");
       const result = await createTradeOffer(input);
 
-      expect(result).toEqual({ kind: "ok", offer: hiddenOffer, idempotentReplay: true });
+      expect(result).toEqual({
+        kind: "ok",
+        offer: hiddenOffer,
+        offeredCard: hiddenOffer.offered_card_snapshot,
+        wantedCard: hiddenOffer.wanted_card_snapshot,
+        idempotentReplay: true,
+      });
       expect(pg.insertCalls).toHaveLength(1);
       expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
     });
 
-    it("keeps the images on the normal path when the mask succeeds", async () => {
+    it("keeps the name/image when the mask proves them visible, and adds #N", async () => {
       const pg = createDbMock({
         selects: [
           { rows: [checkRow()] },
           {
             rows: [
-              { cardId: OFFER.offered_card_id },
-              { cardId: OFFER.wanted_card_id },
+              {
+                cardId: OFFER.offered_card_id,
+                streamerId: OFFER.offered_streamer_id,
+                nameVisible: true,
+                imageVisible: true,
+              },
+              {
+                cardId: OFFER.wanted_card_id,
+                streamerId: OFFER.wanted_streamer_id,
+                nameVisible: true,
+                imageVisible: true,
+              },
+            ],
+          },
+          {
+            // その配信者の全カード（無効化含む）から #N を作る。
+            rows: [
+              {
+                id: OFFER.offered_card_id,
+                streamerId: OFFER.offered_streamer_id,
+                cardNumber: 4,
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+              {
+                id: OFFER.wanted_card_id,
+                streamerId: OFFER.wanted_streamer_id,
+                cardNumber: null,
+                createdAt: "2026-01-02T00:00:00.000Z",
+              },
             ],
           },
         ],
@@ -597,7 +659,19 @@ describe("trade service (#723)", () => {
       const { createTradeOffer } = await import("@/lib/trade");
       const result = await createTradeOffer(input);
 
-      expect(result).toEqual({ kind: "ok", offer: OFFER, idempotentReplay: false });
+      const offeredCard = { ...OFFER.offered_card_snapshot, collectionNumber: 4 };
+      const wantedCard = { ...OFFER.wanted_card_snapshot, collectionNumber: 1 };
+      expect(result).toEqual({
+        kind: "ok",
+        offer: {
+          ...OFFER,
+          offered_card_snapshot: offeredCard,
+          wanted_card_snapshot: wantedCard,
+        },
+        offeredCard,
+        wantedCard,
+        idempotentReplay: false,
+      });
       expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
     });
   });
@@ -731,7 +805,9 @@ describe("listTradeOffers visibility (#715 PR-C)", () => {
     expect(where.sql).toContain('visible_card.id = "trade_offers"."offered_card_id"');
     expect(where.sql).toContain('visible_card.id = "trade_offers"."wanted_card_id"');
     expect(where.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
-    expect(where.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
+    // 行の可視性はマスタースイッチ OR 所持。名前/画像の項目別公開は
+    // 行の WHERE ではなく読み取り時マスク（maskTradeCards）が担当する。
+    expect(where.sql).not.toContain("show_unowned_card_details");
     expect(where.sql).toMatch(/visible_owned\.user_id = \(\s*SELECT viewer\.id/);
     // is_active is a separate AND condition (applies to own offers too).
     expect(where.sql).toContain('active_card.id = "trade_offers"."offered_card_id"');
@@ -1001,11 +1077,7 @@ describe("createTradeOffer visibility / is_active (#715 PR-C)", () => {
     primeDb(pg);
 
     const { createTradeOffer } = await import("@/lib/trade");
-    await expect(createTradeOffer(input)).resolves.toEqual({
-      kind: "ok",
-      offer: maskedOffer(OFFER),
-      idempotentReplay: true,
-    });
+    await expect(createTradeOffer(input)).resolves.toEqual(maskedOk(OFFER, true));
     expect(roundTrips()).toBe(2);
   });
 });
@@ -1203,23 +1275,32 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
     });
 
     it.each([
-      // show_unowned_cards, details, name-only, revealsUnownedCards, revealsUnownedCardImages
-      [true, true, false, true, true],
-      [true, true, true, true, true],
-      [true, false, false, false, false],
-      // #2070: names are revealed by the trade-only setting, images are not.
-      [true, false, true, true, false],
-      [false, true, false, false, false],
-      [false, false, true, false, false],
+      // unowned, details, name, image, description,
+      // rows, revealsUnownedCardNames, revealsUnownedCardImages
+      //
+      // 新3列が取得できない（undefined）ときは規則 b: 旧 details から導出。
+      [true, true, undefined, undefined, undefined, true, true, true],
+      // 部分公開: 名前だけ / 画像だけを独立に扱う。
+      [true, false, true, false, false, true, true, false],
+      [true, false, false, true, false, true, false, true],
+      // 全非公開でも行は出る（#N だけで選べる）。
+      [true, false, false, false, false, true, false, false],
+      // 規則 c: details=false かつ新3列すべて true は旧アプリ OFF の
+      // 取りこぼしなので全非公開へ倒す。
+      [true, false, true, true, true, true, false, false],
+      // マスタースイッチ OFF は項目別設定より常に優先。
+      [false, true, true, true, true, false, false, false],
     ])(
-      "show_unowned_cards=%s details=%s name_only=%s → revealsUnownedCards=%s images=%s",
-      async (unowned, details, nameOnly, reveals, revealsImages) => {
+      "unowned=%s details=%s name=%s image=%s description=%s → rows=%s names=%s images=%s",
+      async (unowned, details, name, image, description, rows, names, images) => {
         const pg = createDbMock({
           selects: [{
             rows: [streamerRow({
               showUnownedCards: unowned,
               showUnownedCardDetails: details,
-              tradeUnownedCardNamesVisible: nameOnly,
+              showUnownedCardName: name,
+              showUnownedCardImage: image,
+              showUnownedCardDescription: description,
             })],
           }],
         });
@@ -1232,8 +1313,9 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
           twitchProfileImageUrl: null,
           tradeEnabled: true,
           crossChannelTradeEnabled: true,
-          revealsUnownedCards: reveals,
-          revealsUnownedCardImages: revealsImages,
+          revealsUnownedCards: rows,
+          revealsUnownedCardNames: names,
+          revealsUnownedCardImages: images,
         });
         expect(roundTrips()).toBe(1);
       },
@@ -1255,8 +1337,11 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
       const retryFields = pg.selectCalls[1].fields as Record<string, unknown>;
       expect(render(retryFields.tradeEnabled).sql).toBe("FALSE");
       expect(render(retryFields.crossChannelTradeEnabled).sql).toBe("FALSE");
-      // #2070: the new name-only setting must also fail closed in this window.
-      expect(render(retryFields.tradeUnownedCardNamesVisible).sql).toBe("FALSE");
+      // 項目別公開の新3列も安全列には無いので NULL へ fail-closed し、
+      // resolveUnownedCardVisibility の規則 b が旧 details から導出する。
+      expect(render(retryFields.showUnownedCardName).sql).toBe("NULL");
+      expect(render(retryFields.showUnownedCardImage).sql).toBe("NULL");
+      expect(render(retryFields.showUnownedCardDescription).sql).toBe("NULL");
     });
   });
 
@@ -1332,18 +1417,56 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
       expect(render(fields.isOwned).sql).toBe("FALSE");
     });
 
-    it("logged in: visibility includes the viewer's ownership (resolved in SQL) and maps isOwned", async () => {
+    it("logged in: visibility includes the viewer's ownership (resolved in SQL) and maps items + #N", async () => {
       const pg = createDbMock({
         selects: [
-          { rows: [{ cardId: OFFER.wanted_card_id, name: "Want", rarity: "epic", imageUrl: null, isOwned: true }] },
+          {
+            rows: [{
+              cardId: OFFER.wanted_card_id,
+              name: "Want",
+              rarity: "epic",
+              rarityOrder: 3,
+              imageUrl: null,
+              isOwned: true,
+              // 所持（または名前公開）と画像公開を別々に解決した結果。
+              nameVisible: true,
+              imageVisible: false,
+            }],
+          },
+          {
+            // その配信者の全カード（無効化含む）から #N を作る。既存の
+            // 無効化カードが先に採番されることを確かめる。
+            rows: [
+              {
+                id: "99999999-9999-4999-8999-999999999999",
+                streamerId: STREAMER_ID,
+                cardNumber: null,
+                createdAt: "2025-01-01T00:00:00.000Z",
+              },
+              {
+                id: OFFER.wanted_card_id,
+                streamerId: STREAMER_ID,
+                cardNumber: null,
+                createdAt: "2025-02-01T00:00:00.000Z",
+              },
+            ],
+          },
         ],
       });
       primeDb(pg);
       const { listWantableCards } = await import("@/lib/trade");
       await expect(listWantableCards("viewer-2", STREAMER_ID)).resolves.toEqual([
-        { cardId: OFFER.wanted_card_id, name: "Want", rarity: "epic", imageUrl: null, isOwned: true },
+        {
+          cardId: OFFER.wanted_card_id,
+          name: "Want",
+          rarity: "epic",
+          imageUrl: null,
+          collectionNumber: 2,
+          isOwned: true,
+        },
       ]);
-      expect(roundTrips()).toBe(1);
+      // 1 statement for the cards + 1 for the number table.
+      expect(roundTrips()).toBe(2);
       const where = render(pg.selectCalls[0].where);
       expect(where.sql).toMatch(/visible_owned\.user_id = \(\s*SELECT viewer\.id/);
       expect(where.params).toContain("viewer-2");
@@ -1351,6 +1474,9 @@ describe("viewer UI server helpers (#715 PR-C)", () => {
       const isOwned = render(fields.isOwned);
       expect(isOwned.sql).toContain('wanted_owned.card_id = "cards"."id"');
       expect(isOwned.params).toEqual(["viewer-2"]);
+      // 並びは名前順ではない（ORDER BY name は名前を漏らす）。SQL では
+      // 並べず、JS で rarity_order → collectionNumber → cardId にする。
+      expect((pg.selectCalls[0] as Record<string, unknown>).orderBy).toBeUndefined();
     });
 
     it("returns [] for a malformed streamer id without querying", async () => {
@@ -1462,7 +1588,7 @@ describe("trade wanted quantity (#1789)", () => {
       const { createTradeOffer } = await import("@/lib/trade");
       const result = await createTradeOffer({ ...createInput, wantedQuantity: 3 });
 
-      expect(result).toEqual({ kind: "ok", offer: maskedOffer(stored), idempotentReplay: false });
+      expect(result).toEqual(maskedOk(stored, false));
       // Normal path: 1 check + 1 INSERT + 1 image mask (#2070).
       expect(roundTrips()).toBe(3);
       expect(pg.insertCalls).toHaveLength(1);
@@ -1658,11 +1784,7 @@ describe("trade wantable restriction (#1790)", () => {
       primeDb(pg);
 
       const { createTradeOffer } = await import("@/lib/trade");
-      await expect(createTradeOffer(createInput)).resolves.toEqual({
-        kind: "ok",
-        offer: maskedOffer(OFFER),
-        idempotentReplay: true,
-      });
+      await expect(createTradeOffer(createInput)).resolves.toEqual(maskedOk(OFFER, true));
     });
 
     it("deploy window: retries the check with every card wantable, for any quantity", async () => {
@@ -1784,14 +1906,24 @@ describe("trade wantable restriction (#1790)", () => {
       const pg = createDbMock({
         selects: [
           { error: MISSING_WANTABLE_COLUMN },
-          { rows: [{ cardId: OFFER.wanted_card_id, name: "Want", rarity: "epic", imageUrl: null, isOwned: false }] },
+          { rows: [{
+            cardId: OFFER.wanted_card_id,
+            name: "Want",
+            rarity: "epic",
+            rarityOrder: 1,
+            imageUrl: null,
+            isOwned: false,
+            nameVisible: true,
+            imageVisible: true,
+          }] },
         ],
       });
       primeDb(pg);
 
       const { listWantableCards } = await import("@/lib/trade");
       await expect(listWantableCards(null, STREAMER_ID)).resolves.toHaveLength(1);
-      expect(pg.selectCalls).toHaveLength(2);
+      // failed query + retried query + the #N number-table query (rows exist).
+      expect(pg.selectCalls).toHaveLength(3);
       expect(render(pg.selectCalls[1].where).sql).not.toContain("trade_wantable");
     });
   });
@@ -1954,7 +2086,7 @@ describe("trade copy locks / auction deploy window (#1791)", () => {
       primeDb(pg);
       const { createTradeOffer } = await import("@/lib/trade");
       await expect(createTradeOffer(createInput))
-        .resolves.toEqual({ kind: "ok", offer: maskedOffer(OFFER), idempotentReplay: true });
+        .resolves.toEqual(maskedOk(OFFER, true));
     });
   });
 
@@ -2014,27 +2146,27 @@ describe("trade copy locks / auction deploy window (#1791)", () => {
     const where = render(pg.selectCalls[0].where);
     expect(where.sql).toContain('visible_card.id = "trade_offers"."offered_card_id"');
     expect(where.sql).toContain('visible_card.id = "trade_offers"."wanted_card_id"');
-    expect(where.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
+    expect(where.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
     expect(where.sql).not.toContain("visible_owned");
   });
 });
 
 
 // -----------------------------------------------------------------------------
-// #2070: 未所持カードの「名前だけ」をトレードで公開する設定
-// (streamers.trade_unowned_card_names_visible) の可視性判定とデプロイ窓。
+// 未所持カードの項目別可視性（#2070 フォローアップ）
 //
 // 規則の根拠:
-//   * 名前レベル（行を返す）= is_active AND (所持 OR (show_unowned_cards AND
-//     (show_unowned_card_details OR trade_unowned_card_names_visible)))。
-//     show_unowned_cards を落とすと、コレクション画面では非公開なのにトレード板
-//     だけが名前の side channel になる（棚卸しの指摘）。
-//   * 画像レベル = 所持 OR (show_unowned_cards AND show_unowned_card_details)。
-//     is_active は問わない（行は名前レベルで既に絞られている）。
-//   * 新列は名前レベルの SQL にだけ現れ、画像レベルの SQL には現れない。
-// 42703 のときは旧規則（details のみ）で再試行し、新列を参照しない。
+//   * 行レベル（行を返す）= is_active AND (所持 OR show_unowned_cards)。
+//     マスタースイッチを落とすと、コレクション画面では非公開なのにトレード板
+//     だけが side channel になる。名前/画像の公開可否は行の存在に影響しない
+//     （全項目非公開でも #N で選べる）。
+//   * 名前 = 所持 OR resolveUnownedCardVisibility(...).name
+//   * 画像 = 所持 OR resolveUnownedCardVisibility(...).image
+//   * 旧 trade_unowned_card_names_visible (#2070) は廃止。コードは参照しない。
+//   * 新3列の 42703 は withUnownedCardItemColumnFallback が旧 details 規則で
+//     1回だけ再試行する。
 // -----------------------------------------------------------------------------
-describe("trade unowned card name-only visibility (#2070)", () => {
+describe("trade unowned card item visibility (follow-up of #2070)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -2051,181 +2183,135 @@ describe("trade unowned card name-only visibility (#2070)", () => {
     page: 1,
     twitchUserId: "viewer-2",
   };
-  const MISSING_NAME_ONLY_COLUMN = {
+  const MISSING_ITEM_COLUMN = {
     code: "42703",
-    message: 'column visible_streamer.trade_unowned_card_names_visible does not exist',
+    message: "column name_streamer.show_unowned_card_name does not exist",
   };
 
-  // 名前レベルの可視性（cardVisibleTo）だけが新列を参照する。
-  it("keeps show_unowned_cards in the name-level rule and accepts details OR name-only", async () => {
+  it("row visibility is ownership OR show_unowned_cards, with is_active, and never the item columns", async () => {
     const { cardVisibleTo } = await import("@/lib/trade");
-    const rendered = render(cardVisibleTo(cards.id, null));
-    expect(rendered.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
-    expect(rendered.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
-    expect(rendered.sql).toContain("visible_streamer.trade_unowned_card_names_visible = TRUE");
-    // 詳細公開は名前を包含し、名前だけ公開は詳細公開を含まない。
-    expect(rendered.sql).toMatch(
-      /visible_streamer\.show_unowned_cards = TRUE\s+AND \(\s*visible_streamer\.show_unowned_card_details = TRUE\s+OR visible_streamer\.trade_unowned_card_names_visible = TRUE\s*\)/,
-    );
-    // is_active は従来どおり必須。
-    expect(rendered.sql).toContain("visible_card.is_active = TRUE");
+    // 閲覧者あり: 所持の分岐（visible_owned）と show_unowned_cards の OR。
+    const viewer = render(cardVisibleTo(cards.id, drizzleSql`${VIEWER_ID}::uuid`));
+    expect(viewer.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
+    expect(viewer.sql).toContain("visible_owned.user_id");
+    // 匿名閲覧者: 所持の分岐を持たず（FALSE）、マスタースイッチだけで決まる。
+    const anonymous = render(cardVisibleTo(cards.id, null));
+    expect(anonymous.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
+    expect(anonymous.sql).not.toContain("visible_owned");
+
+    for (const rendered of [viewer, anonymous]) {
+      // is_active は従来どおり必須。
+      expect(rendered.sql).toContain("visible_card.is_active = TRUE");
+      // 旧 details / 旧 trade-only 設定 / 新3列は行の可視性に現れない。
+      expect(rendered.sql).not.toContain("show_unowned_card_details");
+      expect(rendered.sql).not.toContain("trade_unowned_card_names_visible");
+      expect(rendered.sql).not.toContain("show_unowned_card_name");
+    }
   });
 
-  it("renders the legacy name rule without touching the new column during the deploy window", async () => {
-    const { cardVisibleTo } = await import("@/lib/trade");
-    const rendered = render(cardVisibleTo(cards.id, null, true));
-    expect(rendered.sql).toContain("visible_streamer.show_unowned_cards = TRUE");
-    expect(rendered.sql).toContain("visible_streamer.show_unowned_card_details = TRUE");
-    expect(rendered.sql).not.toContain("trade_unowned_card_names_visible");
+  // SQL 断片は drizzle の列オブジェクト（別名 streamers）を使うため
+  // `"name_streamer"."..."` と引用符付きで描画される。判定用に引用符を落とす。
+  const unquoted = (fragment: unknown) => render(fragment).sql.replace(/"/g, "");
+  const occurrences = (text: string, needle: string) =>
+    text.split(needle).length - 1;
+
+  it("name visibility uses the resolved name flag (rule a/c/d) and never is_active", async () => {
+    const { cardNameVisibleTo } = await import("@/lib/trade");
+    const sql = unquoted(cardNameVisibleTo(cards.id, drizzleSql`${VIEWER_ID}::uuid`));
+    expect(sql).toContain("name_streamer.show_unowned_cards = TRUE");
+    // 対象列は「項目の判定」と「ガード c」の2回、他の項目列はガード c の1回だけ。
+    expect(occurrences(sql, "name_streamer.show_unowned_card_name = TRUE")).toBe(2);
+    expect(occurrences(sql, "name_streamer.show_unowned_card_image = TRUE")).toBe(1);
+    // ガード c: details=false かつ3列すべて true のときだけ全非公開へ倒す。
+    expect(sql).toContain("name_streamer.show_unowned_card_details = FALSE");
+    expect(sql).toContain("name_streamer.show_unowned_card_description = TRUE");
+    expect(sql).toContain("name_owned.user_id");
+    expect(sql).not.toContain("trade_unowned_card_names_visible");
+    expect(sql).not.toContain("is_active");
   });
 
-  it("decides images by ownership or full details only, and never by is_active or the name-only setting", async () => {
+  it("image visibility uses the resolved image flag only (name-only and image-only are independent)", async () => {
     const { cardImageVisibleTo } = await import("@/lib/trade");
-    const rendered = render(cardImageVisibleTo(cards.id, drizzleSql`${VIEWER_ID}::uuid`));
-    expect(rendered.sql).toContain("image_streamer.show_unowned_cards = TRUE");
-    expect(rendered.sql).toContain("image_streamer.show_unowned_card_details = TRUE");
-    // 画像の判定は新設定にも is_active にも依存しない（行は名前レベルで先に絞られる）。
-    expect(rendered.sql).not.toContain("trade_unowned_card_names_visible");
-    expect(rendered.sql).not.toContain("is_active");
-    // 所持が最優先（未所持でも詳細公開なら見える）。
-    expect(rendered.sql).toContain("image_owned.user_id");
+    const sql = unquoted(cardImageVisibleTo(cards.id, drizzleSql`${VIEWER_ID}::uuid`));
+    expect(sql).toContain("image_streamer.show_unowned_cards = TRUE");
+    // 画像の項目列が2回（項目 + ガード c）、名前の項目列はガード c の1回だけ。
+    expect(occurrences(sql, "image_streamer.show_unowned_card_image = TRUE")).toBe(2);
+    expect(occurrences(sql, "image_streamer.show_unowned_card_name = TRUE")).toBe(1);
+    expect(sql).not.toContain("trade_unowned_card_names_visible");
+    expect(sql).not.toContain("is_active");
+    expect(sql).toContain("image_owned.user_id");
   });
 
-  it("uses the new column in the board WHERE by default", async () => {
+  it("the board WHERE uses the row rule only (item masking happens at read time)", async () => {
     const pg = createDbMock({ selects: [{ rows: [] }] });
     primeDb(pg);
     const { listTradeOffers } = await import("@/lib/trade");
     await listTradeOffers(listInput);
-    expect(render(pg.selectCalls[0].where).sql).toContain("trade_unowned_card_names_visible");
+    const where = render(pg.selectCalls[0].where).sql;
+    expect(where).toContain("visible_streamer.show_unowned_cards = TRUE");
+    expect(where).not.toContain("show_unowned_card_name");
+    expect(where).not.toContain("trade_unowned_card_names_visible");
   });
 
   // ---------------------------------------------------------------------------
-  // 列欠落の縮退（it.each の表）: 新列の 42703 を検知したら、cardVisibleTo を
-  // 使う各読み取りが旧規則でもう一度だけ実行され、成功する。42703 以外は
-  // 再試行しない（最後のケース）。
+  // 列欠落の縮退: 新3列の 42703 を検知したら、旧 details 規則でもう一度だけ
+  // 実行され、成功する。42703 以外は再試行しない。
   //
-  // 対象は 10 か所の cardVisibleTo 呼び出し: trade.ts の createTradeOffer
-  // (wanted JOIN) / listTradeOffers (offered・wanted) / precheckTradeAccept /
-  // listWantableCards、trade-auction.ts の listTradeAuctions / getTradeAuction /
-  // precheckBidVisibility (入札者・出品者の両判定)。オークション側の表は
+  // 画像/名前マスク自身のフォールバックは
+  // tests/unit/trade-image-mask.test.ts、オークション側は
   // tests/unit/trade-auction-service.test.ts に置く。
   // ---------------------------------------------------------------------------
-  describe("deploy window: streamers.trade_unowned_card_names_visible is missing", () => {
-    const cases = [
-      {
-        name: "createTradeOffer (wanted JOIN)",
-        async run() {
-          const pg = createDbMock({
-            selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [checkRow()] }],
-            inserts: [{ rows: [OFFER] }],
-          });
-          primeDb(pg);
-          const { createTradeOffer } = await import("@/lib/trade");
-          await expect(createTradeOffer(createInput)).resolves.toMatchObject({ kind: "ok" });
-          const before = (pg.selectCalls[0].leftJoins as Array<{ on: unknown }>)[3].on;
-          const after = (pg.selectCalls[1].leftJoins as Array<{ on: unknown }>)[3].on;
-          return { before: render(before).sql, after: render(after).sql };
-        },
-      },
-      {
-        name: "listTradeOffers (offered + wanted)",
-        async run() {
-          const pg = createDbMock({ selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [] }] });
-          primeDb(pg);
-          const { listTradeOffers } = await import("@/lib/trade");
-          await expect(listTradeOffers(listInput)).resolves.toMatchObject({ offers: [] });
-          return {
-            before: render(pg.selectCalls[0].where).sql,
-            after: render(pg.selectCalls[1].where).sql,
-          };
-        },
-      },
-      {
-        name: "precheckTradeAccept (offered card)",
-        async run() {
-          const precheck = {
-            acceptorUserId: VIEWER_ID,
-            status: "open",
-            offererUserId: OFFER.offerer_user_id,
-            acceptedByUserId: null,
-            acceptedRequestId: null,
-            offeredCardId: OFFER.offered_card_id,
-            wantedCardId: OFFER.wanted_card_id,
-            offeredActive: true,
-            wantedActive: true,
-            wantedWantable: true,
-            offeredVisible: false,
-          };
-          const pg = createDbMock({
-            selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [precheck] }],
-          });
-          primeDb(pg);
-          const { acceptTradeOffer } = await import("@/lib/trade");
-          await expect(acceptTradeOffer({
-            twitchUserId: "viewer-1",
-            tradeOfferId: OFFER.id,
-            requestId: OFFER.request_id,
-          })).resolves.toEqual({ success: false, error: "TRADE_OFFER_UNAVAILABLE" });
-          const fieldsBefore = pg.selectCalls[0].fields as Record<string, unknown>;
-          const fieldsAfter = pg.selectCalls[1].fields as Record<string, unknown>;
-          return {
-            before: render(fieldsBefore.offeredVisible).sql,
-            after: render(fieldsAfter.offeredVisible).sql,
-          };
-        },
-      },
-      {
-        name: "listWantableCards",
-        async run() {
-          const pg = createDbMock({ selects: [{ error: MISSING_NAME_ONLY_COLUMN }, { rows: [] }] });
-          primeDb(pg);
-          const { listWantableCards } = await import("@/lib/trade");
-          await expect(listWantableCards("viewer-2", STREAMER_ID)).resolves.toEqual([]);
-          return {
-            before: render(pg.selectCalls[0].where).sql,
-            after: render(pg.selectCalls[1].where).sql,
-          };
-        },
-      },
-      {
-        name: "getTradeBoardStreamer (revealsUnownedCards)",
-        async run() {
-          const pg = createDbMock({
-            selects: [
-              { error: MISSING_NAME_ONLY_COLUMN },
-              {
-                rows: [{
-                  id: STREAMER_ID,
-                  twitchUsername: "channel",
-                  twitchDisplayName: "Channel",
-                  twitchProfileImageUrl: null,
-                  showUnownedCards: true,
-                  showUnownedCardDetails: false,
-                  tradeEnabled: true,
-                  crossChannelTradeEnabled: true,
-                }],
-              },
-            ],
-          });
-          primeDb(pg);
-          const { getTradeBoardStreamer } = await import("@/lib/trade");
-          const board = await getTradeBoardStreamer(STREAMER_ID);
-          // 旧規則 = show_unowned_cards AND details。
-          expect(board?.revealsUnownedCards).toBe(false);
-          const firstFields = pg.selectCalls[0].fields as Record<string, unknown>;
-          const safeFields = pg.selectCalls[1].fields as Record<string, unknown>;
-          return {
-            before: render(firstFields.tradeUnownedCardNamesVisible).sql,
-            after: render(safeFields.tradeUnownedCardNamesVisible).sql,
-          };
-        },
-      },
-    ] as const;
+  describe("deploy window: the three item columns are missing", () => {
+    it("listWantableCards retries with the legacy details rule", async () => {
+      const pg = createDbMock({
+        selects: [{ error: MISSING_ITEM_COLUMN }, { rows: [] }],
+      });
+      primeDb(pg);
+      const { listWantableCards } = await import("@/lib/trade");
+      await expect(listWantableCards("viewer-2", STREAMER_ID)).resolves.toEqual([]);
+      // 項目別公開の SQL は WHERE ではなく SELECT の nameVisible/imageVisible。
+      const before = render(
+        (pg.selectCalls[0].fields as Record<string, unknown>).nameVisible,
+      ).sql;
+      const after = render(
+        (pg.selectCalls[1].fields as Record<string, unknown>).nameVisible,
+      ).sql;
+      expect(before).toContain("show_unowned_card_name");
+      expect(after).not.toContain("show_unowned_card_name");
+      expect(after).toContain("show_unowned_card_details");
+    });
 
-    it.each(cases)("$name retries with the legacy rule and succeeds", async ({ run }) => {
-      const { before, after } = await run();
-      expect(before).toContain("trade_unowned_card_names_visible");
-      expect(after).not.toContain("trade_unowned_card_names_visible");
+    it("getTradeBoardStreamer selects NULL item flags in the safe-column retry and resolves via details", async () => {
+      const pg = createDbMock({
+        selects: [
+          { error: MISSING_ITEM_COLUMN },
+          {
+            rows: [{
+              id: STREAMER_ID,
+              twitchUsername: "channel",
+              twitchDisplayName: "Channel",
+              twitchProfileImageUrl: null,
+              showUnownedCards: true,
+              showUnownedCardDetails: true,
+              tradeEnabled: true,
+              crossChannelTradeEnabled: true,
+            }],
+          },
+        ],
+      });
+      primeDb(pg);
+      const { getTradeBoardStreamer } = await import("@/lib/trade");
+      const board = await getTradeBoardStreamer(STREAMER_ID);
+      // 規則 b: 新3列が取れない → 旧 details=true で名前・画像とも公開。
+      expect(board).toMatchObject({
+        revealsUnownedCards: true,
+        revealsUnownedCardNames: true,
+        revealsUnownedCardImages: true,
+      });
+      const safeFields = pg.selectCalls[1].fields as Record<string, unknown>;
+      expect(render(safeFields.showUnownedCardName).sql).toBe("NULL");
+      expect(render(safeFields.showUnownedCardImage).sql).toBe("NULL");
+      expect(render(safeFields.showUnownedCardDescription).sql).toBe("NULL");
     });
 
     it("rethrows an unrelated 42703 without retrying", async () => {

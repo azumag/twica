@@ -128,6 +128,12 @@ export async function withLiveDirectorySettingsColumnFallback<T>(
  * migration は別だが、どれも「トレード設定の追加列」として同じデプロイ窓
  * フォールバックで検知する必要があるため、1つの検知グループにまとめる。
  *
+ * #2070 フォローアップ (C4b): trade_unowned_card_names_visible は設定としては
+ * 廃止し、書き込み経路からは撤去した。ただし schema.ts に列定義が残っており、
+ * getStreamerById / getStreamerData の全列 SELECT がまだ参照するため、検知対象
+ * としては残す（読み取りのデプロイ窓フォールバックを維持する）。ルート側の
+ * UPDATE フォールバックは、この列を updateData に含めない。
+ *
  * STREAMERS_SAFE_COLUMNS はこの3列を含まない（＝再試行側では undefined に
  * なりうる）。消費側は欠落時に false（fail-closed）へ倒すこと。
  */
@@ -244,8 +250,9 @@ export function isMissingRarityStylesColumnError(error: unknown): boolean {
  *
  * STREAMERS_SAFE_COLUMNS には含めない。消費側は欠落時、旧 show_unowned_card_details から
  * 導出（true→3項目すべて true / false→すべて false）して fail-closed に倒すこと
- * （消費側はPR2で実装）。この導出は現行の「詳細公開」と同じ公開内容を維持するためのもので、
- * 項目別フラグが undefined のまま個別判定に流れると、設定意図と異なる公開・非公開になりうる。
+ * （C4b で resolver・dashboard-data・設定API に実装済み）。この導出は現行の
+ * 「詳細公開」と同じ公開内容を維持するためのもので、項目別フラグが undefined のまま
+ * 個別判定に流れると、設定意図と異なる公開・非公開になりうる。
  */
 export const UNOWNED_CARD_ITEM_COLUMNS = [
   "show_unowned_card_name",

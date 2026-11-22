@@ -139,14 +139,15 @@ const phaseChips = [
   { key: "unsettleable", labelKey: "auctionBidUnsettleableBadge" },
 ] as const;
 
-// 未所持カードの見せ方の表（#2070 で3段階）。
-// messages: streamer.visibility.<key> と <key>Public / <key>NameOnly / <key>Hidden。
-// ok=false が ✗。列は「すべて公開（詳細ON）」「名前だけ公開（トレードのみ）」「非公開」。
-// 名前だけ公開では、行（出品・欲しいカード）は見えるが画像だけが見えない。
+// 未所持カードの見せ方（#2070 フォローアップ C4b）。
+// messages: streamer.visibility.<key> と <key>AllItems / <key>SomeItems / <key>NoUnowned。
+// ok=false が ✗。列は「すべて公開」「一部だけ公開」「未所持カードを表示しない」。
+// 項目別公開では、非公開の項目だけが見えなくなり、行（出品・欲しいカード）自体は
+// 表示番号（#N）で扱える。マスタースイッチOFFのときだけ行そのものが出ない。
 const visibilityRows = [
-  { key: "listings", publicOk: true, nameOnlyOk: true, hiddenOk: false },
-  { key: "wanted", publicOk: true, nameOnlyOk: true, hiddenOk: false },
-  { key: "images", publicOk: true, nameOnlyOk: false, hiddenOk: false },
+  { key: "listings", allItemsOk: true, someItemsOk: true, noUnownedOk: false },
+  { key: "wanted", allItemsOk: true, someItemsOk: true, noUnownedOk: false },
+  { key: "items", allItemsOk: true, someItemsOk: true, noUnownedOk: false },
 ] as const;
 
 // うまくいかないとき（messages: faq.<key>.{question,reason,action}）。表示順は配列順、
@@ -166,8 +167,9 @@ const faqItems = [
   { key: "notWantable", icon: "xCircle" },
   { key: "bidUnsettleable", icon: "warning" },
   { key: "selectionExpired", icon: "clock" },
-  // #2070: 名前は見えるが画像は出ない、という新しい中間状態の説明。
-  { key: "nameOnly", icon: "tag" },
+  // #2070 フォローアップ (C4b): 未所持カードの項目別公開。名前・画像・説明の
+  // どれかが見えないときの説明。トレード限定の「名前だけ公開」は廃止した。
+  { key: "hiddenItems", icon: "tag" },
 ] as const satisfies readonly { key: string; icon: GuideIconName }[];
 
 /**
@@ -584,17 +586,17 @@ export default async function TradeGuidePage() {
             caption={t("streamer.visibility.tableLabel")}
             aspectHeader={t("streamer.visibility.aspect")}
             columns={[
-              { key: "public", header: t("streamer.visibility.public"), icon: "eye" },
-              { key: "nameOnly", header: t("streamer.visibility.nameOnly"), icon: "tag" },
-              { key: "hidden", header: t("streamer.visibility.hidden"), icon: "eyeOff" },
+              { key: "allItems", header: t("streamer.visibility.allItems"), icon: "eye" },
+              { key: "someItems", header: t("streamer.visibility.someItems"), icon: "tag" },
+              { key: "noUnowned", header: t("streamer.visibility.noUnowned"), icon: "eyeOff" },
             ]}
-            rows={visibilityRows.map(({ key, publicOk, nameOnlyOk, hiddenOk }) => ({
+            rows={visibilityRows.map(({ key, allItemsOk, someItemsOk, noUnownedOk }) => ({
               key,
               aspect: t(`streamer.visibility.${key}`),
               cells: [
-                { ok: publicOk, text: t(`streamer.visibility.${key}Public`) },
-                { ok: nameOnlyOk, text: t(`streamer.visibility.${key}NameOnly`) },
-                { ok: hiddenOk, text: t(`streamer.visibility.${key}Hidden`) },
+                { ok: allItemsOk, text: t(`streamer.visibility.${key}AllItems`) },
+                { ok: someItemsOk, text: t(`streamer.visibility.${key}SomeItems`) },
+                { ok: noUnownedOk, text: t(`streamer.visibility.${key}NoUnowned`) },
               ],
             }))}
           />

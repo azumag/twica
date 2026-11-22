@@ -283,7 +283,10 @@ beforeEach(() => {
 
 describe("trade image leaks on name-only channels (#2070)", () => {
   it("listTradeOffers: masks both sides but keeps name and rarity", async () => {
-    prime({ selects: [{ rows: [listRow()] }, { rows: [] }] });
+    prime({ selects: [{ rows: [listRow()] }, { rows: [
+          { cardId: ID.offeredCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+          { cardId: ID.wantedCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+        ] }] });
     const { listTradeOffers } = await import("@/lib/trade");
     const result = await listTradeOffers({
       streamerId: ID.streamer,
@@ -301,7 +304,10 @@ describe("trade image leaks on name-only channels (#2070)", () => {
     prime({
       selects: [
         { rows: [listRow()] },
-        { rows: [{ cardId: ID.offeredCard }, { cardId: ID.wantedCard }] },
+        { rows: [
+          { cardId: ID.offeredCard, streamerId: ID.streamer, nameVisible: true, imageVisible: true },
+          { cardId: ID.wantedCard, streamerId: ID.streamer, nameVisible: true, imageVisible: true },
+        ] },
       ],
     });
     const { listTradeOffers } = await import("@/lib/trade");
@@ -327,7 +333,10 @@ describe("trade image leaks on name-only channels (#2070)", () => {
             }),
           ],
         },
-        { rows: [] },
+        { rows: [
+          { cardId: ID.offeredCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+          { cardId: ID.wantedCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+        ] },
       ],
     });
     const { listMyTradeOffers } = await import("@/lib/trade");
@@ -340,7 +349,13 @@ describe("trade image leaks on name-only channels (#2070)", () => {
 
   it("createTradeOffer: the POST response carries no image", async () => {
     prime({
-      selects: [{ rows: [checkRow()] }, { rows: [] }],
+      selects: [
+        { rows: [checkRow()] },
+        { rows: [
+          { cardId: ID.offeredCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+          { cardId: ID.wantedCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+        ] },
+      ],
       inserts: [{ rows: [{ ...OFFER_ROW, offered_card_snapshot: secretSnapshot("Offered Name"), wanted_card_snapshot: secretSnapshot("Wanted Name") }] }],
     });
     const { createTradeOffer } = await import("@/lib/trade");
@@ -371,7 +386,10 @@ describe("trade image leaks on name-only channels (#2070)", () => {
 
   it("acceptTradeOffer: the response snapshots are masked", async () => {
     prime({
-      selects: [{ rows: [precheckRow()] }, { rows: [] }],
+      selects: [{ rows: [precheckRow()] }, { rows: [
+        { cardId: ID.offeredCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+        { cardId: ID.wantedCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+      ] }],
       rpc: [{ rows: [{ result: ACCEPT_RESULT }] }],
     });
     const { acceptTradeOffer } = await import("@/lib/trade");
@@ -393,17 +411,24 @@ describe("trade image leaks on name-only channels (#2070)", () => {
     prime({
       selects: [{
         rows: [
-          { cardId: ID.wantedCard, name: "Wanted Name", rarity: "legendary", imageUrl: SECRET, isOwned: false, imageVisible: false },
-          { cardId: ID.offeredCard, name: "Owned", rarity: "rare", imageUrl: SECRET, isOwned: true, imageVisible: true },
+          { cardId: ID.wantedCard, name: "Wanted Name", rarity: "legendary", rarityOrder: 2, imageUrl: SECRET, isOwned: false, nameVisible: true, imageVisible: false },
+          { cardId: ID.offeredCard, name: "Owned", rarity: "rare", rarityOrder: 1, imageUrl: SECRET, isOwned: true, nameVisible: true, imageVisible: true },
         ],
       }],
     });
     const { listWantableCards } = await import("@/lib/trade");
     const result = await listWantableCards("viewer-1", ID.streamer);
 
-    expect(result[0].imageUrl).toBeNull();
-    expect(result[0].name).toBe("Wanted Name");
-    expect(result[1].imageUrl).toBe(SECRET);
+    // 並び（rarity_order 昇順）は JS 側で決まり、モックの行順には従わない。
+    // マスクの検証は行順に依存させず cardId で引く。
+    const wanted = result.find((card) => card.cardId === ID.wantedCard);
+    const owned = result.find((card) => card.cardId === ID.offeredCard);
+    expect(wanted?.imageUrl).toBeNull();
+    expect(wanted?.name).toBe("Wanted Name");
+    expect(owned?.imageUrl).toBe(SECRET);
+    // モックの行順は [wanted(rarityOrder 2), owned(rarityOrder 1)]。
+    // rarity_order 昇順に並び替わることを明示する。
+    expect(result.map((card) => card.cardId)).toEqual([ID.offeredCard, ID.wantedCard]);
   });
 
   it("listTradeAuctions: masks the offered snapshot of a name-only auction", async () => {
@@ -412,7 +437,9 @@ describe("trade image leaks on name-only channels (#2070)", () => {
     const result = await listTradeAuctions({ streamerId: ID.streamer, scope: "in_channel", page: 1, twitchUserId: "viewer-1" });
 
     expectNoSecret(result);
-    expect(result.auctions[0].offeredCard).toMatchObject({ name: "Auction Card", rarity: "legendary" });
+    // 行ルール変更後は、名前非公開のオークション行も #N だけで表示され得る。
+    // 共有マスクは名前も落とす（UI の #N 表示は次タスク）。
+    expect(result.auctions[0].offeredCard).toMatchObject({ name: "", rarity: "legendary" });
     expect(result.auctions[0].offeredCard.imageUrl).toBeNull();
   });
 
@@ -437,7 +464,10 @@ describe("trade image leaks on name-only channels (#2070)", () => {
             bid: { ...BID_DB_ROW.bid, bid_card_snapshot: { name: "Bid Card", rarity: "legendary", imageUrl: BID_SECRET } },
           }],
         },
-        { rows: [{ cardId: ID.offeredCard }] },
+        { rows: [
+          { cardId: ID.offeredCard, streamerId: ID.streamer, nameVisible: true, imageVisible: true },
+          { cardId: ID.wantedCard, streamerId: ID.streamer, nameVisible: true, imageVisible: false },
+        ] },
       ],
     });
     const { getTradeAuction } = await import("@/lib/trade-auction");

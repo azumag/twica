@@ -91,7 +91,10 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     raid_gacha_draw_count: 0,
     trade_enabled: false,
     cross_channel_trade_enabled: false,
-    // Issue #2070: トレード限定の未所持カード名公開（既定OFF）。
+    // Issue #2070: 設定としては C4b で廃止したが、列は schema に残る（後続 PR で削除）。
+    // DB モックは schema の全列を射影し、fixture に無い列は null で返す。
+    // getStreamerData の全列 SELECT が返す行と STREAMER を一致させる
+    // （schema と1対1に保つ）ため、廃止済みの列も既定値 false で持つ。
     trade_unowned_card_names_visible: false,
     // #1765 フォローアップ: アルバム表示のパック別既定と初期表示。
     pack_album_grid_sizes: null,
@@ -775,9 +778,11 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
               makeStreamerRow({
                 show_unowned_cards: true,
                 show_unowned_card_details: true,
+                show_unowned_card_name: true,
+                show_unowned_card_image: false,
+                show_unowned_card_description: true,
                 trade_enabled: true,
                 cross_channel_trade_enabled: true,
-                trade_unowned_card_names_visible: true,
               }),
             ],
           ],
@@ -789,10 +794,12 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
     expect(result).toEqual({
       streamerId: 'streamer-1',
       showUnownedCards: true,
-      showUnownedCardDetails: true,
+      // #2070 フォローアップ (C4b): 旧 details ではなく新3項目を返す。
+      showUnownedCardName: true,
+      showUnownedCardImage: false,
+      showUnownedCardDescription: true,
       tradeEnabled: true,
       crossChannelTradeEnabled: true,
-      tradeUnownedCardNamesVisible: true,
       packNames: [],
       defaultPackName: null,
       albumGridSizes: {},
@@ -811,10 +818,12 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
       'duplicate_display_tiers',
       'id',
       'pack_album_grid_sizes',
+      'show_unowned_card_description',
       'show_unowned_card_details',
+      'show_unowned_card_image',
+      'show_unowned_card_name',
       'show_unowned_cards',
       'trade_enabled',
-      'trade_unowned_card_names_visible',
     ])
   })
 
@@ -843,10 +852,13 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
     expect(result).toEqual({
       streamerId: 'streamer-1',
       showUnownedCards: true,
-      showUnownedCardDetails: true,
+      // 新3列が取れないため、旧 details=true から3項目すべて true を導出する
+      // （resolver の規則b と同じ all-or-nothing）。
+      showUnownedCardName: true,
+      showUnownedCardImage: true,
+      showUnownedCardDescription: true,
       tradeEnabled: false,
       crossChannelTradeEnabled: false,
-      tradeUnownedCardNamesVisible: false,
       packNames: [],
       defaultPackName: null,
       albumGridSizes: {},
@@ -866,10 +878,12 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
     ])
   })
 
-  it('trade_unowned_card_names_visible 列だけ未デプロイでも落ちず、新設定は false に縮退する', async () => {
-    // Issue #2070: 新列は trade 設定と同じ安全列フォールバックに乗る。安全列側には
-    // trade 列を一切含めないため、新列だけが無い窓でも trade 系は false（fail-closed）
-    // になり、アカウント設定ページ自体は表示され続けることを固定する。
+  it('未所持カード項目別公開の新3列だけ未デプロイでも落ちず、旧 details から3項目を導出する', async () => {
+    // #2070 フォローアップ (C4b): 新3列は STREAMERS_SAFE_COLUMNS に含めないため、
+    // 42703 で安全列へ再試行し、resolver の規則b と同じ導出（旧 details を
+    // 3項目へ一括適用）でアカウント設定ページを表示し続ける。
+    // 部分公開の値が fixture にあっても、1列でも取れなければ all-or-nothing で
+    // 旧 details を優先する（配信者が設定していない項目を公開しない）。
     const { result, db } = await runWithDb(
       {
         tables: tableRows([
@@ -879,15 +893,17 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
               makeStreamerRow({
                 show_unowned_cards: true,
                 show_unowned_card_details: true,
+                show_unowned_card_name: true,
+                show_unowned_card_image: false,
+                show_unowned_card_description: true,
                 trade_enabled: true,
                 cross_channel_trade_enabled: true,
-                trade_unowned_card_names_visible: true,
               }),
             ],
           ],
         ]),
         errors: new Map([
-          [streamersTable, [missingColumnError('trade_unowned_card_names_visible')]],
+          [streamersTable, [missingColumnError('show_unowned_card_name')]],
         ]),
       },
       () => getStreamerCollectionSettings('twitch-user-1')
@@ -896,10 +912,11 @@ describe('dashboard-data: getStreamerCollectionSettings', () => {
     expect(result).toEqual({
       streamerId: 'streamer-1',
       showUnownedCards: true,
-      showUnownedCardDetails: true,
+      showUnownedCardName: true,
+      showUnownedCardImage: true,
+      showUnownedCardDescription: true,
       tradeEnabled: false,
       crossChannelTradeEnabled: false,
-      tradeUnownedCardNamesVisible: false,
       packNames: [],
       defaultPackName: null,
       albumGridSizes: {},

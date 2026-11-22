@@ -24,8 +24,8 @@ function makeOffer(overrides: Partial<TradeOfferDto> = {}): TradeOfferDto {
     wantedCardId: "card-wanted",
     wantedStreamerId: "s-1",
     wantedQuantity: 1,
-    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null },
-    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null },
+    offeredCard: { name: "Offered Dragon", rarity: "epic", imageUrl: null, collectionNumber: null },
+    wantedCard: { name: "Wanted Slime", rarity: "common", imageUrl: null, collectionNumber: null },
     isCrossChannel: false,
     status: "open",
     createdAt: "2026-10-01T00:00:00.000Z",
@@ -183,8 +183,8 @@ describe("MyTrades (#727 §6.6)", () => {
         completedAt: "2026-10-03T00:00:00.000Z",
         offerer: { twitchUsername: "carol", twitchDisplayName: "Carol", twitchProfileImageUrl: null },
         acceptedBy: { twitchUsername: "me", twitchDisplayName: "Me", twitchProfileImageUrl: null },
-        offeredCard: { name: "Carol Card", rarity: "rare", imageUrl: null },
-        wantedCard: { name: "My Old Card", rarity: "common", imageUrl: null },
+        offeredCard: { name: "Carol Card", rarity: "rare", imageUrl: null, collectionNumber: null },
+        wantedCard: { name: "My Old Card", rarity: "common", imageUrl: null, collectionNumber: null },
         isOwnOffer: false,
         mineRole: "acceptor",
       }),
@@ -259,7 +259,7 @@ describe("MyTrades (#727 §6.6)", () => {
     byStatus.completed = [makeOffer({
       id: "completed-offer",
       status: "completed",
-      offeredCard: { name: "Completed Dragon", rarity: "epic", imageUrl: null },
+      offeredCard: { name: "Completed Dragon", rarity: "epic", imageUrl: null, collectionNumber: null },
       acceptedBy: { twitchUsername: "bob", twitchDisplayName: "Bob", twitchProfileImageUrl: null },
     })];
     renderMine();
@@ -294,7 +294,7 @@ describe("MyTrades (#727 §6.6)", () => {
       makeOffer({
         status: "completed",
         offeredCardId: null,
-        offeredCard: { name: "Retired Hero", rarity: "legendary", imageUrl: null },
+        offeredCard: { name: "Retired Hero", rarity: "legendary", imageUrl: null, collectionNumber: null },
         acceptedBy: null,
       }),
     ];
@@ -304,6 +304,25 @@ describe("MyTrades (#727 §6.6)", () => {
     expect(await screen.findByText("Retired Hero")).toBeInTheDocument();
     expect(screen.getByText(ja.deletedCardLabel)).toBeInTheDocument();
     expect(screen.getByText(`取引相手: ${ja.unknownUser}`)).toBeInTheDocument();
+  });
+
+  it("shows hidden-name cards by #N or the deleted fallback (#2070 follow-up)", async () => {
+    byStatus.open = [
+      makeOffer({
+        id: "offer-hidden",
+        // 出品側は名前が非公開（name="" + 表示番号）。
+        offeredCard: { name: "", rarity: "epic", imageUrl: null, collectionNumber: 42 },
+        // 欲しい側はカード定義が削除済み（番号も null）。
+        wantedCardId: null,
+        wantedCard: { name: "", rarity: "common", imageUrl: null, collectionNumber: null },
+      }),
+    ];
+    renderMine();
+    const item = (await screen.findByText("#42")).closest("li")!;
+    expect(within(item).getByText("#42")).toBeInTheDocument();
+    expect(within(item).getByText(ja.deletedCardName)).toBeInTheDocument();
+    // 空白のカード名を描画していない。
+    expect(item.querySelector("p.break-words")?.textContent).not.toBe("");
   });
 
   it("marks open offers that can no longer be accepted (deleted card)", async () => {
@@ -396,7 +415,7 @@ describe("MyTrades (#727 §6.6)", () => {
 
   describe("client cache (tab switching without reloading)", () => {
     it("renders the server-rendered open tab immediately and revalidates it once in the background", async () => {
-      renderMine({ initialOpen: { offers: [makeOffer({ offeredCard: { name: "SSR Dragon", rarity: "epic", imageUrl: null } })], hasMore: false } });
+      renderMine({ initialOpen: { offers: [makeOffer({ offeredCard: { name: "SSR Dragon", rarity: "epic", imageUrl: null, collectionNumber: null } })], hasMore: false } });
       // Synchronously present: no loading state before the client round trip.
       expect(screen.getByText("SSR Dragon")).toBeInTheDocument();
       expect(screen.queryByText(ja.loading)).toBeNull();
@@ -433,7 +452,7 @@ describe("MyTrades (#727 §6.6)", () => {
 
       // Past the freshness window: shown from cache at once, then replaced.
       now.mockReturnValue(1_000_000 + 31_000);
-      byStatus.open = [makeOffer({ id: "offer-new", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null } })];
+      byStatus.open = [makeOffer({ id: "offer-new", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null, collectionNumber: null } })];
       fireEvent.click(screen.getByRole("tab", { name: ja.myTradesTabOpen }));
       expect(screen.getByText("Offered Dragon")).toBeInTheDocument();
       expect(screen.queryByText(ja.loading)).toBeNull();
@@ -463,7 +482,7 @@ describe("MyTrades (#727 §6.6)", () => {
 
       // The notice's retry refreshes in the background without a loading state.
       fetchMock.mockImplementation(async () => jsonResponse(200, {
-        offers: [makeOffer({ id: "offer-new", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null } })],
+        offers: [makeOffer({ id: "offer-new", offeredCard: { name: "Fresh Golem", rarity: "rare", imageUrl: null, collectionNumber: null } })],
         page: 1,
         pageSize: 20,
         hasMore: false,

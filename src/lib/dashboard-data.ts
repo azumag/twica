@@ -91,9 +91,6 @@ type StreamerWithTradeSettings = Streamer & {
   // STREAMERS_SAFE_COLUMNSへ縮退した行だけundefinedになり得るためoptionalにする。
   trade_enabled?: boolean;
   cross_channel_trade_enabled?: boolean;
-  // Issue #2070: トレード限定の未所持カード名公開。同じデプロイ窓で undefined に
-  // なり得るため optional。消費側は `?? false` で fail-closed に倒す。
-  trade_unowned_card_names_visible?: boolean;
   // Issue #1783: カスタムレアリティの表示スタイル。同じ理由（デプロイ窓の
   // STREAMERS_SAFE_COLUMNS 縮退）で undefined になり得るため optional。
   // 消費側は `?? {}` で「上書きなし = 既定表示」へ倒すこと。
@@ -2201,6 +2198,64 @@ export const getActiveCardsForStreamer = cache(async (
   return result;
 });
 
+/**
+ * 配信者の全カード（is_active=false を含む）から、コレクション画面の
+ * 百科事典番号（#N）を作るための最小列を取得する（#2070 フォローアップ）。
+ *
+ * なぜ「全カード」なのか:
+ * - createCollectionNumberMap() は「その配信者のカード集合」を時系列で並べて
+ *   番号を決める。アクティブカードや所持カードだけを渡すと、無効化カードや
+ *   未所持カードの分だけ番号がずれる。
+ * - トレードの DTO も同じ全カード集合から番号表を作るため、この関数を
+ *   コレクション画面の唯一の入力にすることで「出品者と応諾者で同じ #N」
+ *   「トレード画面とコレクション画面で同じ #N」を保証する。
+ *
+ * 取得列は番号表に必要な id / card_number / created_at だけに絞る
+ * （表示集合は変えない）。トレード API 側は同じ目的のクエリを
+ * src/lib/trade.ts の loadCollectionNumberMapsForStreamers() で持つが、
+ * 画面表示用のこの関数とは呼び出し元（RSC とサービス層）が異なるため、
+ * ここでは dashboard-data の既存パターン（withDbRetry + 失敗時は空）に従う。
+ *
+ * 失敗時に空配列を返すのは既存の getActiveCardsForStreamer と同じ
+ * fail-closed。その場合 createCollectionNumberMap([]) は空マップを返し、
+ * 画面は collectionNumber=undefined（#N 非表示）になるだけで表示集合は
+ * 変わらない。
+ */
+export const getAllCardsForStreamer = cache(async (
+  streamerId: string
+): Promise<Array<{ id: string; card_number: number | null; created_at: string }>> => {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({
+            id: cardsTable.id,
+            card_number: cardsTable.card_number,
+            created_at: cardsTable.created_at,
+          })
+          .from(cardsTable)
+          .where(eq(cardsTable.streamer_id, streamerId))
+          // created_at 昇順は createCollectionNumberMap の内部ソートと同じ。
+          // id を第2キーにして同時刻でも順序を決定的にする。
+          .orderBy(asc(cardsTable.created_at), asc(cardsTable.id));
+      },
+      "getAllCardsForStreamer",
+      { idempotent: true },
+    );
+    // DDL 上 created_at は NOT NULL ではない（DEFAULT のみ）。番号表の型に
+    // 合わせて null は空文字へ落とす（最古扱い）。実運用では全行に値がある。
+    return rows.map((row) => ({
+      id: row.id,
+      card_number: row.card_number,
+      created_at: row.created_at ?? "",
+    }));
+  } catch (error) {
+    logger.error("Error in getAllCardsForStreamer (pg)", { error });
+    return [];
+  }
+});
+
 export interface ActiveCardCountForStreamer {
   totalActive: number;
   activeCardIds: Set<string>;
@@ -2559,6 +2614,14 @@ async function getStreamerByIdPg(streamerId: string): Promise<Streamer | null> {
   try {
     // Issue #738: 無指定 select() は streamers の全列（本PR追加の2列を含む）を
     // 要求する。デプロイ窓の列欠落エラーなら STREAMERS_SAFE_COLUMNS で再試行する。
+    //
+    // Issue #2070 フォローアップ: 全列射影には未所持カードの項目別公開列
+    // (show_unowned_card_name / show_unowned_card_image /
+    // show_unowned_card_description) も含まれるが、STREAMERS_SAFE_COLUMNS の
+    // 再試行側には含まれない（PR1 でデプロイ窓の検知グループにだけ追加した）。
+    // 呼び出し側は resolveUnownedCardVisibility に渡し、欠落時は旧
+    // show_unowned_card_details から fail-closed に導出する。ここで個別に列を
+    // 足すと全列 SELECT の契約が崩れるため、射影は変更しない。
     const rows = await withLiveDirectorySettingsColumnFallback(async (useSafeColumns) =>
       withDbRetry(
         async () => {
@@ -2595,12 +2658,13 @@ export const getStreamerById = cache(async (streamerId: string): Promise<Streame
 export interface StreamerCollectionSettings {
   streamerId: string;
   showUnownedCards: boolean;
-  showUnownedCardDetails: boolean;
+  // #2070 フォローアップ (C4b): 未所持カードの項目別公開。
+  // 旧 showUnownedCardDetails は互換のため残るが、設定UIは新3項目を使う。
+  showUnownedCardName: boolean;
+  showUnownedCardImage: boolean;
+  showUnownedCardDescription: boolean;
   tradeEnabled: boolean;
   crossChannelTradeEnabled: boolean;
-  // Issue #2070: トレード画面に限り未所持カードの名前とレアリティを公開する。
-  // コレクション画面の showUnownedCardDetails とは独立した設定。
-  tradeUnownedCardNamesVisible: boolean;
   // #1765 フォローアップ: パック別アルバム既定の設定UIが必要とする値。
   // カタログ(card_pack_names)・デフォルトパック表示名・保存済みの並び既定
   // マップ・初期表示モード。列未デプロイ時は安全側（空マップ / 'grid'）。
@@ -2621,10 +2685,16 @@ export interface StreamerCollectionSettings {
  * getStreamerData は cards を全件 JOIN するため、設定UIの初期値のためだけに使うには
  * 重すぎる。twitch_user_id(UNIQUE) で streamers を1行・必要な列だけ読む。
  *
- * - trade_enabled / cross_channel_trade_enabled / trade_unowned_card_names_visible が
- *   未デプロイ(42703)のデプロイ窓では既存の withLiveDirectorySettingsColumnFallback で
- *   これらの列を除いた射影へ再試行し、欠けた値は false(fail-closed)にする。
+ * - trade_enabled / cross_channel_trade_enabled が未デプロイ(42703)のデプロイ窓では
+ *   既存の withLiveDirectorySettingsColumnFallback でこれらの列を除いた射影へ再試行し、
+ *   欠けた値は false(fail-closed)にする。
  *   show_unowned_* は STREAMERS_SAFE_COLUMNS にも含まれる既存列なので再試行側にも残す。
+ * - #2070 フォローアップ (C4b): 新3列 (show_unowned_card_name / _image /
+ *   _description) も同じデプロイ窓で欠落しうる。全列射影にだけ含め、再試行側の
+ *   射影では取得できないため、resolver の規則b と同じ導出（3列のどれかが
+ *   undefined/null なら旧 show_unowned_card_details の true/false を3項目へ
+ *   一括適用）で補う。1列だけ欠けた場合も all-or-nothing にするのは、
+ *   配信者が設定していない項目を誤って公開しないため（resolver と同じ判断）。
  * - 配信者行が無い / DBエラーの場合は null。呼び出し側は null ならセクションを出さない。
  *   設定セクションの初期値が取れないだけでアカウントページ全体を落とさないため、例外は
  *   ここで握りつぶしてログだけ残す。
@@ -2653,6 +2723,12 @@ export const getStreamerCollectionSettings = cache(
                   id: streamersTable.id,
                   show_unowned_cards: streamersTable.show_unowned_cards,
                   show_unowned_card_details: streamersTable.show_unowned_card_details,
+                  // #2070 フォローアップ (C4b): 項目別公開の初期値。この3列は
+                  // STREAMERS_SAFE_COLUMNS に無いため、デプロイ窓の再試行側では
+                  // 取得できず undefined になる（下で規則bと同じ導出を行う）。
+                  show_unowned_card_name: streamersTable.show_unowned_card_name,
+                  show_unowned_card_image: streamersTable.show_unowned_card_image,
+                  show_unowned_card_description: streamersTable.show_unowned_card_description,
                   card_pack_names: streamersTable.card_pack_names,
                   default_card_pack_name: streamersTable.default_card_pack_name,
                   // Issue #1782: 被りカード表示段階の設定行に既定 + カスタム
@@ -2661,10 +2737,6 @@ export const getStreamerCollectionSettings = cache(
                   custom_rarities: streamersTable.custom_rarities,
                   trade_enabled: streamersTable.trade_enabled,
                   cross_channel_trade_enabled: streamersTable.cross_channel_trade_enabled,
-                  // Issue #2070: トレード限定の未所持カード名公開。safe 側の射影には
-                  // 含めない（未デプロイ時に同じ42703を繰り返さないため）。
-                  trade_unowned_card_names_visible:
-                    streamersTable.trade_unowned_card_names_visible,
                   pack_album_grid_sizes: streamersTable.pack_album_grid_sizes,
                   collection_default_view: streamersTable.collection_default_view,
                   duplicate_display_tiers: streamersTable.duplicate_display_tiers,
@@ -2678,18 +2750,20 @@ export const getStreamerCollectionSettings = cache(
           { idempotent: true },
         )
       );
-      // 再試行側の行型には trade 列が無いため、実行時に undefined になり得る列を
-      // optional として読み、`?? false` で fail-closed に倒す。
+      // 再試行側の行型には trade 列・新3列が無いため、実行時に undefined に
+      // なり得る列を optional として読み、`?? false` 等で fail-closed に倒す。
       const row = rows[0] as
         | {
             id: string;
             show_unowned_cards: boolean | null;
             show_unowned_card_details: boolean | null;
+            show_unowned_card_name?: boolean | null;
+            show_unowned_card_image?: boolean | null;
+            show_unowned_card_description?: boolean | null;
             card_pack_names?: string[] | null;
             default_card_pack_name?: string | null;
             trade_enabled?: boolean | null;
             cross_channel_trade_enabled?: boolean | null;
-            trade_unowned_card_names_visible?: boolean | null;
             pack_album_grid_sizes?: unknown;
             collection_default_view?: string | null;
             duplicate_display_tiers?: unknown;
@@ -2697,14 +2771,32 @@ export const getStreamerCollectionSettings = cache(
           }
         | undefined;
       if (!row) return null;
+
+      // #2070 フォローアップ (C4b): resolver の規則b と同じ導出。
+      // 新3列が1列でも取得できなければ、旧 show_unowned_card_details の値
+      // （明示的な true のときだけ公開）を3項目へ一括適用する。部分的な採用は
+      // しない（配信者が設定していない項目の公開につながるため）。
+      const hasAllUnownedCardItemFlags =
+        row.show_unowned_card_name !== undefined && row.show_unowned_card_name !== null &&
+        row.show_unowned_card_image !== undefined && row.show_unowned_card_image !== null &&
+        row.show_unowned_card_description !== undefined &&
+        row.show_unowned_card_description !== null;
+      const legacyUnownedCardDetailsVisible = row.show_unowned_card_details === true;
+
       return {
         streamerId: row.id,
         showUnownedCards: row.show_unowned_cards ?? false,
-        showUnownedCardDetails: row.show_unowned_card_details ?? false,
+        showUnownedCardName: hasAllUnownedCardItemFlags
+          ? row.show_unowned_card_name === true
+          : legacyUnownedCardDetailsVisible,
+        showUnownedCardImage: hasAllUnownedCardItemFlags
+          ? row.show_unowned_card_image === true
+          : legacyUnownedCardDetailsVisible,
+        showUnownedCardDescription: hasAllUnownedCardItemFlags
+          ? row.show_unowned_card_description === true
+          : legacyUnownedCardDetailsVisible,
         tradeEnabled: row.trade_enabled ?? false,
         crossChannelTradeEnabled: row.cross_channel_trade_enabled ?? false,
-        // Issue #2070: 列未デプロイ時は false（トレードで未所持カード名を出さない）。
-        tradeUnownedCardNamesVisible: row.trade_unowned_card_names_visible ?? false,
         // デプロイ窓（列未作成）や破損値は空配列 / 空マップ / 'grid' へ縮退する。
         packNames: Array.isArray(row.card_pack_names) ? row.card_pack_names : [],
         defaultPackName: row.default_card_pack_name ?? null,
