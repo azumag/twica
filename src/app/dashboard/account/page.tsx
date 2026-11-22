@@ -116,7 +116,9 @@ export default async function AccountSettingsPage() {
             <CardVisibilitySettings
               streamerId={collectionSettings.streamerId}
               currentShowUnowned={collectionSettings.showUnownedCards}
-              currentShowUnownedDetails={collectionSettings.showUnownedCardDetails}
+              currentShowUnownedName={collectionSettings.showUnownedCardName}
+              currentShowUnownedImage={collectionSettings.showUnownedCardImage}
+              currentShowUnownedDescription={collectionSettings.showUnownedCardDescription}
             />
             {/* #1765 フォローアップ: アルバム表示（並び N×N・初期表示）の
                 コレクション(パック)別既定。公開設定と同じ保存経路を使う。 */}
@@ -151,14 +153,6 @@ export default async function AccountSettingsPage() {
                 streamerId={collectionSettings.streamerId}
                 currentTradeEnabled={collectionSettings.tradeEnabled}
                 currentCrossChannelTradeEnabled={collectionSettings.crossChannelTradeEnabled}
-                // Issue #2070: 新トグルはコレクション公開設定に依存する。
-                // 依存判定に必要な現在値を同じセクションの CardVisibilitySettings と
-                // 同じ初期値から渡す（新たなAPI往復は増やさない）。
-                currentShowUnownedCards={collectionSettings.showUnownedCards}
-                currentShowUnownedCardDetails={collectionSettings.showUnownedCardDetails}
-                currentTradeUnownedCardNamesVisible={
-                  collectionSettings.tradeUnownedCardNamesVisible
-                }
               />
             )}
           </section>

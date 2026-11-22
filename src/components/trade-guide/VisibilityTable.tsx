@@ -41,10 +41,10 @@ function Cell({ ok, text }: { ok: boolean; text: string }) {
 
 /**
  * Small matrix: what a viewer can see / pick, for each unowned-card visibility
- * setting. #2070 made this a THREE-state setting (off / name-only in trades /
- * full details), so the settings are the columns and the questions are the
- * rows. Every cell has a check/cross icon AND text, so no cell relies on
- * colour, and the row headers keep the table readable at 360px.
+ * setting. #2070 フォローアップ (C4b) made the setting item-level, so the
+ * columns are "all items / some items / unowned cards hidden" and the
+ * questions are the rows. Every cell has a check/cross icon AND text, so no
+ * cell relies on colour, and the row headers keep the table readable at 360px.
  */
 export default function VisibilityTable({
   caption,

@@ -108,9 +108,10 @@ export interface Database {
           // クロスチャネルトレード許可フラグ (#722/#725)
           // Whether cross-channel trades are allowed (#722/#725)
           cross_channel_trade_enabled: boolean
-          // 未所持カードの名前とレアリティだけをトレードで公開するか (#2070)
-          // show_unowned_cards=true かつ show_unowned_card_details=false のときだけ有効。
-          // Whether unowned card names/rarities are revealed in trade screens only (#2070)
+          // 未所持カードの名前とレアリティだけをトレードで公開するか (#2070)。
+          // 設定としては廃止済み（列は migration 履歴のため残す）。旧アプリ・
+          // 旧データの読み取り互換のため型だけ保持し、現行コードは参照しない。
+          // Retired setting column kept for migration history and old readers.
           trade_unowned_card_names_visible: boolean
           // 配信中ディレクトリ(/live)への掲載オプトイン（デフォルトfalse）
           // Whether the streamer opts into the live directory listing (default false)

@@ -402,7 +402,7 @@ export default function TradeCreateForm({
             {t("createStep2Title")}
           </h2>
           {/* 未所持カードが候補に出ない（show_unowned_cards=false）場合の案内。
-              これは行の可視性の話で、名前だけの公開可否とは独立している（C3a）。 */}
+              これは行の可視性の話で、名前の公開可否（項目別）とは独立している（C3a）。 */}
           {!wantableRevealsUnownedCards && (
             <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
               {t("createStep2UnrevealedNotice")}
