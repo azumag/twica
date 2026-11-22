@@ -79,6 +79,11 @@ function makeStreamerRow(overrides: Record<string, unknown> = {}) {
     default_card_pack_name: null,
     show_unowned_cards: false,
     show_unowned_card_details: false,
+    // #2070 フォローアップ: 未所持カードの項目別公開設定（既定OFF）。
+    // schema へ3列を追加した migration 20261122120000 に対応する。
+    show_unowned_card_name: false,
+    show_unowned_card_image: false,
+    show_unowned_card_description: false,
     publish_live_status: false,
     publish_stats: false,
     publish_card_ranking: false,
