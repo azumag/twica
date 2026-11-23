@@ -698,7 +698,7 @@
       "crossChannelEnabledHelp": "The other channel must also allow cross-channel trading.",
       "requiresTradeEnabled": "Enable channel trading to change this setting"
     },
-    "notice": "Turning this off temporarily hides open offers and prevents acceptance; offers are not deleted.",
+    "notice": "Turning this off temporarily hides open offers and prevents acceptance; offers are not deleted. Auctions also cannot be completed while it is off, and their deadlines and selection periods keep running. An auction whose selection deadline has passed stays expired after you turn it back on.",
     "messages": {
       "enabled": "Card trading enabled",
       "disabled": "Card trading disabled",
@@ -715,7 +715,7 @@
   },
   "tradeWantedRestriction": {
     "title": "Exchange target limits",
-    "description": "Limit which cards can be requested in exchange when your cards are listed. Without a limit, anything can be requested.",
+    "description": "Limit which cards can be requested as the wanted card when your cards are listed. Without a limit, any card can be requested.",
     "scopeNote": "There is one list per streamer, and it applies to all of your cards (regular listings and auction bids). Only cards from your own channel can be allowed; once limited, your cards can no longer be traded for cards of other channels.",
     "empty": "No exchange target limit is set.",
     "listLabel": "Current exchange target list",
@@ -895,7 +895,7 @@
     "myTradesUpdatedAt": "Cancelled: {date}",
     "myTradesUnavailableBadge": "No longer acceptable",
     "myTradesUnavailableHelp": "A card in this offer was deleted, so nobody can accept it.",
-    "myTradesUnavailableHelpNotTradeable": "This offer can no longer be accepted: the channel's trade setting is off, the wanted card can no longer be requested, or a card is no longer available.",
+    "myTradesUnavailableHelpNotTradeable": "This offer can no longer be accepted: the channel's trade setting is off, the wanted card can no longer be requested, the exchange target limit no longer allows it, or a card is no longer available.",
     "myTradesBoardLink": "View trade board",
     "myTradesLoadError": "Could not load your trades.",
     "cancelOfferButton": "Cancel",
