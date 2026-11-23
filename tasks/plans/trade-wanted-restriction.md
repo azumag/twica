@@ -113,6 +113,7 @@ v3 の `trade_wanted_restriction_rules` / `trade_wanted_restriction_items` は *
 - 本 migration で `DROP TABLE` を入れると、その承認リスト追加と手動適用（contract フェーズ）が同一 PR に必要になり、範囲と危険が増える。旧テーブルは新 RPC・新アプリから参照しない置き去りにし、**本ブランチのリリース後（旧 migration が本番 DB に適用された後）に別 Issue（contract migration）で削除**する。
 - データ移行は不要: #2116 は未リリースで、旧テーブルには preview の検証データしか無い。production には現時点で旧テーブルが無い（main 未適用）。本ブランチを main へ昇格すると v3 migration も同時に適用され、旧テーブルは**空のまま**作られるが、新 RPC・新アプリは参照しない。preview に残る旧行も新アプリからは見えない。
 - `src/lib/db/schema.ts` には、DB に残る旧テーブルを `scripts/verify-db-schema.js` の双方向突き合わせで「DB にだけ存在するテーブル」と誤検出しないため、**削除までの間だけ**旧定義を【旧】コメント付きで残す。
+- **#2118 で削除した**: `db/planetscale/migrations/20261125000000_drop_trade_wanted_restriction_tables.sql` が旧2テーブルを `DROP TABLE` する（本番・preview とも0件、旧テーブルを参照する関数が無いことを migration 内で確認してから削除）。同じ変更で `src/lib/db/schema.ts` の【旧】定義も削除した。
 
 ### 4.2 migration とアプリの順序（デプロイ窓 #788）
 

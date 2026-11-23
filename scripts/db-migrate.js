@@ -455,6 +455,18 @@ const APPROVED_CONTRACT_MIGRATIONS = new Map([
         'PlanetScale Insights でも 2026-10-03 以降 prod/preview の呼び出しは 0 件（後継は _by_period）',
     },
   ],
+  [
+    '20261125000000',
+    {
+      checksum: 'e7c81023a2505a18421c3801362a66597c5f36ce0d7dd8938a40fc60d83a6521',
+      reason:
+        'DROP TABLE trade_wanted_restriction_items / _rules（#2118）。#2117 で配信者ごとの ' +
+        'trade_wanted_allowlist_* に置き換え済みで、本番は #2117 以降の版（Workers 実行バージョン ' +
+        'b9ee6cda）が動作中。src・Worker・判定に関わる関数から旧テーブルへの参照は無く、' +
+        '本番・preview とも行は 0 件。migration 内でルーチン定義の非参照と 0 件を確認し、' +
+        '崩れていれば DROP せず中止する',
+    },
+  ],
 ])
 
 /**
