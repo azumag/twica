@@ -67,6 +67,7 @@ function precheckRow(overrides: Record<string, unknown> = {}) {
     offeredActive: true,
     wantedActive: true,
     wantedWantable: true,
+    wantedAllowed: true,
     offeredVisible: true,
     ...overrides,
   };
@@ -280,6 +281,18 @@ describe("acceptTradeOffer (#724)", () => {
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
 
+  it("passes WANTED_CARD_NOT_ALLOWED_FOR_OFFERED through as a known RPC error", async () => {
+    // The precheck saw an allowed pair, but the streamer changed the exchange-target
+    // restriction before the RPC ran: the RPC's answer is a known code, not a 500.
+    const notAllowed = { success: false, error: "WANTED_CARD_NOT_ALLOWED_FOR_OFFERED" };
+    const sqlMock = vi.fn().mockResolvedValue([{ result: notAllowed }]);
+    primeSql(sqlMock);
+
+    const { acceptTradeOffer } = await import("@/lib/trade");
+    await expect(acceptTradeOffer(ACCEPT_INPUT)).resolves.toEqual(notAllowed);
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
   it("rollback: a pre-#1790 app does not know WANTED_CARD_NOT_WANTABLE and fails closed with 500 (#1801)", async () => {
     // アプリを #1790 の前へロールバックしたときの挙動を固定する（レビュー任意指摘:
     // コメントだけで説明されていた点のテスト化）。
@@ -312,8 +325,19 @@ describe("acceptTradeOffer (#724)", () => {
     // ことも固定する: accept 系の新しい RPC コードを足すとき、このテストが
     // ロールバック契約の再検討を強制する。
     const { TRADE_ACCEPT_RPC_ERRORS } = await import("@/lib/trade");
+    //
+    // 交換対象の制限（20261123000000）の WANTED_CARD_NOT_ALLOWED_FOR_OFFERED も同じ契約:
+    // ロールバック先のアプリ（#1790 版を含む）はこのコードを知らず、結果検証が例外にして
+    // 500 を返す = 何も移転しない fail-closed。旧アプリにはルールを作る経路が無いので、
+    // 到達するのはロールバック時だけ。3引数ラッパーは OFFER_NOT_OPEN へ読み替える
+    // （tests/unit/trade-wanted-restriction-migration.test.ts で固定）。
+    expect(pre1790AppKnownErrors.has("WANTED_CARD_NOT_ALLOWED_FOR_OFFERED")).toBe(false);
     expect([...TRADE_ACCEPT_RPC_ERRORS].sort()).toEqual(
-      [...pre1790AppKnownErrors, "WANTED_CARD_NOT_WANTABLE"].sort(),
+      [
+        ...pre1790AppKnownErrors,
+        "WANTED_CARD_NOT_WANTABLE",
+        "WANTED_CARD_NOT_ALLOWED_FOR_OFFERED",
+      ].sort(),
     );
   });
 
@@ -389,6 +413,9 @@ describe("acceptTradeOffer visibility / is_active precheck (#715 PR-C)", () => {
     ["wanted card inactive", { wantedActive: false }],
     // #1790: the board hides such offers; an API call must not complete one.
     ["wanted card no longer wantable", { wantedWantable: false }],
+    // The offered card's streamer restricted its exchange targets and the wanted card is not in the whitelist.
+    ["wanted card outside the exchange-target whitelist", { wantedAllowed: false }],
+    ["whitelist flag NULL (fail closed)", { wantedAllowed: null }],
     ["is_active NULL is treated as inactive", { offeredActive: null }],
   ])("rejects an open offer whose %s with TRADE_OFFER_UNAVAILABLE and never calls the RPC", async (_label, overrides) => {
     const sqlMock = vi.fn();
@@ -486,6 +513,15 @@ describe("acceptTradeOffer visibility / is_active precheck (#715 PR-C)", () => {
     const wantedWantable = dialect.sqlToQuery(drizzleSql`${fields.wantedWantable}`);
     expect(wantedWantable.sql).toContain('wantable_card.id = "trade_offers"."wanted_card_id"');
     expect(wantedWantable.sql).toContain("wantable_card.trade_wantable = TRUE");
+    // Exchange-target whitelist: keyed by the OFFERED card; no rule = allowed;
+    // a rule with an empty allowed set allows nothing.
+    const wantedAllowed = dialect.sqlToQuery(drizzleSql`${fields.wantedAllowed}`);
+    expect(wantedAllowed.sql).toMatch(
+      /NOT EXISTS \(\s*SELECT 1\s+FROM "trade_wanted_restriction_rules" AS restriction_rule\s+WHERE restriction_rule\.offered_card_id = "trade_offers"\."offered_card_id"\s*\)/,
+    );
+    expect(wantedAllowed.sql).toMatch(
+      /OR EXISTS \(\s*SELECT 1\s+FROM "trade_wanted_restriction_items" AS restriction_item\s+WHERE restriction_item\.offered_card_id = "trade_offers"\."offered_card_id"\s+AND restriction_item\.wanted_card_id = "trade_offers"\."wanted_card_id"\s*\)/,
+    );
   });
 });
 

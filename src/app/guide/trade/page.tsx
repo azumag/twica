@@ -188,6 +188,7 @@ export default async function TradeGuidePage() {
   // ガイド用に言い換えを持つと、画面の文言を変えたときにガイドだけ古くなる。
   const tTrade = await getTranslations("trade");
   const tSettings = await getTranslations("tradeSettings");
+  const tRestriction = await getTranslations("tradeWantedRestriction");
   const tCardManager = await getTranslations("cardManager");
   const tCardVisibility = await getTranslations("cardVisibilitySettings");
   const tAccount = await getTranslations("accountPage");
@@ -570,6 +571,30 @@ export default async function TradeGuidePage() {
               items={iconLines("streamer.wantable", [
                 ["effect1", "eyeOff"],
                 ["effect2", "swap"],
+              ])}
+            />
+          </div>
+
+          <h3 className="mb-3 text-lg font-semibold text-white">{t("streamer.restriction.title")}</h3>
+          <div className="mb-4">
+            <Breadcrumb
+              label={t("streamer.whereLabel")}
+              items={[
+                tHeader("userSettings"),
+                tAccount("collectionSharing.title"),
+                tSettings("title"),
+                tRestriction("title"),
+              ]}
+            />
+          </div>
+          <p className="mb-3 text-gray-300">{t("streamer.restriction.description")}</p>
+          <div className="mb-10">
+            <RuleList
+              columns={1}
+              items={iconLines("streamer.restriction", [
+                ["effect1", "swap"],
+                ["effect2", "eyeOff"],
+                ["effect3", "swap"],
               ])}
             />
           </div>

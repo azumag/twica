@@ -103,6 +103,7 @@ export type TradeAuctionErrorCode =
   | "TRADE_AUCTION_BID_INVALID"
   | "TRADE_BID_CARD_UNAVAILABLE"
   | "TRADE_BID_CARD_NOT_WANTABLE"
+  | "TRADE_BID_CARD_NOT_ALLOWED_FOR_OFFERED"
   | "TRADE_NOT_ENOUGH_CARDS";
 
 /** Every code an auction service call can return. */
@@ -140,6 +141,7 @@ const RPC_ERRORS = {
   SAME_CARD: "TRADE_SAME_CARD",
   BID_CARD_UNAVAILABLE: "TRADE_BID_CARD_UNAVAILABLE",
   BID_CARD_NOT_WANTABLE: "TRADE_BID_CARD_NOT_WANTABLE",
+  BID_CARD_NOT_ALLOWED_FOR_OFFERED: "TRADE_BID_CARD_NOT_ALLOWED_FOR_OFFERED",
   BID_LIMIT: "TRADE_AUCTION_BID_LIMIT",
   NOT_ENOUGH_CARDS: "TRADE_NOT_ENOUGH_CARDS",
   BID_NOT_FOUND: "TRADE_AUCTION_BID_NOT_FOUND",
@@ -802,18 +804,30 @@ export async function listTradeAuctionsByCollection(input: {
  * non-withdrawn bid, and to a bidder for their own bid only (myBid). Other
  * viewers get bidCount alone (spec, planning review M8).
  */
-export async function getTradeAuction(input: { auctionId: string; twitchUserId?: string }) {
-  const viewerUserId = input.twitchUserId ? viewerUserIdOf(input.twitchUserId) : null;
-  // C3b: 公開条件は行ルールだけ。提供カードの名前/画像は、この行を返した後に
-  // maskAuctionListCards() / maskTradeCards() が個別に伏せる。したがって
-  // 項目列の有無で WHERE の形が変わることはない（デプロイ窓の再試行も不要）。
-  const publicConditionFor = () => and(
+/**
+ * 詳細を「公開として」見られるオークションの条件(受付中・カードを拘束している・有効な
+ * 出品カード・トレード有効・出品カードが閲覧者に見える)。GET の詳細と、詳細ページが
+ * 閲覧者に渡す入札用の制限表(loadAllowedBidCardsForAuction)が同じ条件を使う。
+ * 条件がずれると、詳細 API が 404 にするオークション(トレード停止後など)の制限の有無が
+ * 保存したリンクからページ応答に漏れる。
+ *
+ * C3b: 公開条件は行ルールだけ。提供カードの名前/画像は、この行を返した後に
+ * maskAuctionListCards() / maskTradeCards() が個別に伏せる。したがって
+ * 項目列の有無で WHERE の形が変わることはない（デプロイ窓の再試行も不要）。
+ */
+export function auctionPublicDetailCondition(viewerUserId: SQL | null) {
+  return and(
     eq(auctionsTable.status, "open"),
     sql`public.trade_auction_holds_cards(${qualifiedColumn(auctionsTable.id)})`,
     cardIsActive(auctionsTable.offered_card_id),
     tradeEnabledGate(auctionsTable.offered_streamer_id),
     cardVisibleTo(auctionsTable.offered_card_id, viewerUserId),
   )!;
+}
+
+export async function getTradeAuction(input: { auctionId: string; twitchUserId?: string }) {
+  const viewerUserId = input.twitchUserId ? viewerUserIdOf(input.twitchUserId) : null;
+  const publicConditionFor = () => auctionPublicDetailCondition(viewerUserId);
   const participantCondition = viewerUserId
     ? or(
       eq(auctionsTable.seller_user_id, viewerUserId),

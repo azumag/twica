@@ -992,6 +992,33 @@ export const tradeAuctionBidItems = pgTable('trade_auction_bid_items', {
   user_card_id: uuid('user_card_id').notNull(),
 })
 
+// -----------------------------------------------------------------------------
+// トレードの「交換対象の制限」（20261123000000_trade_wanted_restrictions.sql）
+//
+// 出品カード A ごとに、求めるカード（オークションでは入札カード）に指定できる
+// カードの集合 W(A)（ホワイトリスト）を持つ。設計は
+// tasks/plans/trade-wanted-restriction.md。
+//
+//   rules: 出品カードごとに1行。行がある A は W(A) 内のカードしか指定できない。
+//          許可0件でも行は残り、その場合は誰も指定できない（fail-closed）。
+//          行が無い A は制限なし。
+//   items: 許可カード。(offered_card_id, wanted_card_id) が主キー。
+//
+// 親子2テーブルにする理由は migration 冒頭の注記を参照（許可カードを全部削除しても
+// 制限が外れない / 設定更新の直列化ロック行になる）。
+// -----------------------------------------------------------------------------
+export const tradeWantedRestrictionRules = pgTable('trade_wanted_restriction_rules', {
+  offered_card_id: uuid('offered_card_id').primaryKey(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+export const tradeWantedRestrictionItems = pgTable('trade_wanted_restriction_items', {
+  offered_card_id: uuid('offered_card_id').notNull(),
+  wanted_card_id: uuid('wanted_card_id').notNull(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
 // =============================================================================
 // database.ts（src/types/database.ts）と migrations（DDL）の食い違い一覧
 // いずれも migration の DDL を正としてこのファイルへ反映済み。

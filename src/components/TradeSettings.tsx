@@ -4,12 +4,17 @@ import { useCallback, useState } from "react";
 import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
+import type { TradeWantedRestrictionSettings as RestrictionData } from "@/lib/trade-wanted-restrictions";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
+import TradeWantedRestrictionSettings from "./TradeWantedRestrictionSettings";
 
 interface TradeSettingsProps {
   streamerId: string;
   currentTradeEnabled: boolean;
   currentCrossChannelTradeEnabled: boolean;
+  // 交換対象の制限（出品カードごとのホワイトリスト）の初期値。取得できなかった場合
+  // （migration 前・DB 障害）は null/未指定で、設定欄だけを出さない。
+  restrictionSettings?: RestrictionData | null;
   // #2070 フォローアップ (C4b): 未所持カードの見え方を制御する
   // show_unowned_card_name / _image / _description は CardVisibilitySettings
   // へ一本化した。このコンポーネントはトレード可否だけを扱う。
@@ -19,6 +24,7 @@ export default function TradeSettings({
   streamerId,
   currentTradeEnabled,
   currentCrossChannelTradeEnabled,
+  restrictionSettings = null,
 }: TradeSettingsProps) {
   const t = useTranslations("tradeSettings");
   const tVisibility = useTranslations("cardVisibilitySettings");
@@ -181,6 +187,13 @@ export default function TradeSettings({
         )}
         {saving && <p className="text-sm text-gray-400">{t("messages.saving")}</p>}
       </div>
+
+      {restrictionSettings && (
+        <TradeWantedRestrictionSettings
+          cards={restrictionSettings.cards}
+          initialRules={restrictionSettings.rules}
+        />
+      )}
     </div>
   );
 }
