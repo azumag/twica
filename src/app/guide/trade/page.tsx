@@ -165,6 +165,10 @@ const faqItems = [
   { key: "wantNotSelectable", icon: "globe" },
   { key: "noCollections", icon: "cards" },
   { key: "notWantable", icon: "xCircle" },
+  // #2117: 出品カードの配信者の「交換対象の制限」で候補が絞られる／無くなる。
+  // 画面の案内文（createStep2RestrictedNotice / auctionBidRestrictedNotice）を
+  // 引用し、出品フォームとオークション入札の両方を1つのFAQで説明する。
+  { key: "restricted", icon: "ban" },
   { key: "bidUnsettleable", icon: "warning" },
   { key: "selectionExpired", icon: "clock" },
   // #2070 フォローアップ (C4b): 未所持カードの項目別公開。名前・画像・説明の
@@ -595,6 +599,7 @@ export default async function TradeGuidePage() {
                 ["effect1", "swap"],
                 ["effect2", "eyeOff"],
                 ["effect3", "swap"],
+                ["effect4", "warning"],
               ])}
             />
           </div>
@@ -603,7 +608,11 @@ export default async function TradeGuidePage() {
           <div className="mb-4">
             <Breadcrumb
               label={t("streamer.whereLabel")}
-              items={[tHeader("userSettings"), tCardVisibility("title")]}
+              items={[
+                tHeader("userSettings"),
+                tAccount("collectionSharing.title"),
+                tCardVisibility("title"),
+              ]}
             />
           </div>
           <p className="mb-3 text-gray-300">{t("streamer.visibility.description")}</p>

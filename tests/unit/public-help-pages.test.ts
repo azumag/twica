@@ -552,6 +552,9 @@ describe("trade guide page", () => {
         "trade.errorTradeCardAlreadyListed": trade.errorTradeCardAlreadyListed,
         "trade.errorTradeWantedCardNotWantable": trade.errorTradeWantedCardNotWantable,
         "trade.errorTradeAuctionExpired": trade.errorTradeAuctionExpired,
+        // #2117: FAQ が引用する「交換対象の制限」の案内文（出品フォーム／入札）
+        "trade.createStep2RestrictedNotice": trade.createStep2RestrictedNotice,
+        "trade.auctionBidRestrictedNotice": trade.auctionBidRestrictedNotice,
       };
       for (const [path, label] of Object.entries(labels)) {
         // エラー文言は文末の句点だけ落として引用しているため正規化して比較する。
