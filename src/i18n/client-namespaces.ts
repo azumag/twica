@@ -87,6 +87,7 @@ export const DASHBOARD_CLIENT_NAMESPACES = [
   "settingsPage",
   "supportPlan",
   "tradeSettings",
+  "tradeWantedRestriction",
   "twitchSub",
   "voteCampaign",
 ] as const;

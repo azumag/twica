@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   listWantableCards: vi.fn(),
   getTradeBoardStreamer: vi.fn(),
   getDb: vi.fn(),
+  loadAllowedWantedByOffered: vi.fn(),
 }));
 
 vi.mock("@/lib/trade", () => ({
@@ -21,6 +22,9 @@ vi.mock("@/lib/trade", () => ({
   getTradeBoardStreamer: mocks.getTradeBoardStreamer,
 }));
 vi.mock("@/lib/db/client", () => ({ getDb: mocks.getDb }));
+vi.mock("@/lib/trade-wanted-restrictions", () => ({
+  loadAllowedWantedByOffered: mocks.loadAllowedWantedByOffered,
+}));
 
 import {
   isTradeAuctionSchemaAvailable,
@@ -54,6 +58,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.listTradeableOwnedCopies.mockResolvedValue([COPIED]);
   mocks.listWantableCards.mockResolvedValue([WANTABLE]);
+  mocks.loadAllowedWantedByOffered.mockResolvedValue({});
   mocks.getTradeBoardStreamer.mockResolvedValue({
     // 行としても名前としても未所持カードを公開している状態（画像だけ非公開）。
     revealsUnownedCards: true,
@@ -76,6 +81,7 @@ describe("loadTradeCreateFormData (#2080)", () => {
     expect(data).toEqual({
       ownedCopies: [COPIED],
       wantableCards: [WANTABLE],
+      allowedWantedByOfferedCardId: {},
       // 行の可視性と名前の可視性は独立したフラグとして渡す（C4a）。
       wantableRevealsUnownedCards: true,
       wantableRevealsUnownedNames: true,
@@ -109,13 +115,45 @@ describe("loadTradeCreateFormData (#2080)", () => {
     expect(mocks.listTradeableOwnedCopies).toHaveBeenCalledWith("viewer-1", GIVE);
     expect(mocks.listWantableCards).not.toHaveBeenCalled();
     expect(mocks.getTradeBoardStreamer).not.toHaveBeenCalled();
+    // An auction has no wanted card, so there is no restriction to read.
+    expect(mocks.loadAllowedWantedByOffered).not.toHaveBeenCalled();
     expect(data).toEqual({
       ownedCopies: [COPIED],
       wantableCards: [],
+      allowedWantedByOfferedCardId: {},
       // Deny-by-default: the auction branch renders no wanted-catalogue notice.
       wantableRevealsUnownedCards: false,
       wantableRevealsUnownedNames: false,
     });
+  });
+
+  it("passes the exchange-target restriction map, built from the owned copies and ONLY the visible wanted cards", async () => {
+    // The map is serialized to the client: the loader must intersect with the
+    // already-visibility-filtered catalogue (selectable ids = wantableCards).
+    mocks.listTradeableOwnedCopies.mockResolvedValue([COPIED, { ...COPIED, userCardId: "uc-2" }]);
+    mocks.loadAllowedWantedByOffered.mockResolvedValue({ "card-1": ["card-2"] });
+    const data = await loadTradeCreateFormData({
+      viewerId: "viewer-1",
+      giveStreamerId: GIVE,
+      wantStreamerId: WANT,
+    });
+    expect(mocks.loadAllowedWantedByOffered).toHaveBeenCalledTimes(1);
+    const [where, selectable] = mocks.loadAllowedWantedByOffered.mock.calls[0];
+    // De-duplicated offered card ids (two copies of card-1).
+    expect(where).toEqual({ offeredCardIds: ["card-1"] });
+    expect([...selectable]).toEqual(["card-2"]);
+    expect(data.allowedWantedByOfferedCardId).toEqual({ "card-1": ["card-2"] });
+  });
+
+  it("does not read the restriction map when there is nothing to choose from", async () => {
+    mocks.listWantableCards.mockResolvedValue([]);
+    const data = await loadTradeCreateFormData({
+      viewerId: "viewer-1",
+      giveStreamerId: GIVE,
+      wantStreamerId: WANT,
+    });
+    expect(mocks.loadAllowedWantedByOffered).not.toHaveBeenCalled();
+    expect(data.allowedWantedByOfferedCardId).toEqual({});
   });
 
   it("fails closed when the wanted channel disappeared between the gate and the read", async () => {

@@ -713,6 +713,39 @@
     "visibilityNotice": "How unowned cards appear in trades follows the collection visibility section \"{itemsTitle}\" on this page.",
     "visibilityNoticeLink": "Open \"{itemsTitle}\" in collection visibility"
   },
+  "tradeWantedRestriction": {
+    "title": "Exchange target limits",
+    "description": "Limit which cards can be requested in exchange for each card you list. Example: when A is offered, only C and D can be requested.",
+    "scopeNote": "Cards without a limit work as before. A limit applies to both regular listings and auction bids. Only cards from your own channel can be allowed, so a limited card cannot be listed for cards of other channels.",
+    "empty": "No card has an exchange target limit.",
+    "listLabel": "Current limits",
+    "allowedLabel": "Cards that can be requested",
+    "edit": "Edit",
+    "remove": "Remove limit",
+    "add": "Add a limit",
+    "save": "Save",
+    "saving": "Saving...",
+    "cancel": "Cancel",
+    "offeredLabel": "Listed card",
+    "offeredPlaceholder": "Select a card",
+    "allowedAddLabel": "Add a card that can be requested",
+    "allowedPlaceholder": "Add a card…",
+    "allowedEmptyHint": "Select at least one card to save. Only the selected cards can be requested.",
+    "removeAllowed": "Remove {card} from the allowed cards",
+    "inactiveBadge": "(inactive)",
+    "cardLabel": "{name} ({rarity})",
+    "deletedCard": "Deleted card",
+    "emptyRuleWarning": "No card can be requested for this card (the allowed cards were deleted). Nobody can request anything for it right now. Edit the limit or remove it.",
+    "messages": {
+      "saved": "Saved the exchange target limit for {card}",
+      "removed": "Removed the exchange target limit for {card}"
+    },
+    "errors": {
+      "saveFailed": "Failed to save the exchange target limit.",
+      "unavailable": "The database update for exchange target limits has not finished yet. Please try again shortly.",
+      "tooManyRules": "You have reached the maximum number of limits. Remove ones you no longer need."
+    }
+  },
   "trade": {
     "hubTitle": "Trade",
     "hubCreateButton": "Create offer",
@@ -834,6 +867,8 @@
     "createStep2UnownedBadge": "Not owned",
     "createStep2SameCard": "You cannot choose the same card you give.",
     "createStep2Empty": "There are no cards you can request.",
+    "createStep2RestrictedNotice": "The streamer limits which cards this card can be traded for.",
+    "createStep2RestrictedEmpty": "No card can currently be requested for this card (limited by the streamer's settings).",
     "createStep2UnrevealedNotice": "This streamer doesn't reveal cards you don't own, so you can only request cards you own.",
     "createStep2NumberOnlyNotice": "This collection doesn't reveal the names of cards you don't own, so you choose them by display number (#N).",
     "createConfirmTitle": "3. Confirm",
@@ -949,6 +984,8 @@
     "auctionBidChangeTitle": "Change your bid",
     "auctionBidFormHelp": "Choose one kind of card and how many copies to bid. You can have one bid per auction and change or withdraw it before the deadline.",
     "auctionBidCardsEmpty": "You don't have any cards you can bid with (only cards the streamer allows as payment can be used)",
+    "auctionBidRestrictedNotice": "The streamer limits which cards can be used to bid on this card.",
+    "auctionBidRestrictedEmpty": "None of your cards can currently be used to bid on this card (limited by the streamer's settings).",
     "auctionBidSameCard": "You can't bid the same card that is up for auction",
     "auctionBidSameCardBadge": "Same card",
     "auctionBidUsableBadge": "{count, plural, =0 {None usable} one {# usable} other {# usable}}",
@@ -2236,6 +2273,13 @@
         "stateOn": "ON",
         "stateOff": "OFF",
         "off": "When it is OFF, current listings disappear from the listings and cannot be accepted. Regular listings are not deleted and come back when you turn it on again. Auctions cannot be completed either, but their deadline and selection period keep running while it is OFF. An auction whose time has run out stays expired and does not come back when you turn it on again."
+      },
+      "restriction": {
+        "title": "Limiting what each card can be traded for",
+        "description": "For each card that is listed, you can choose which cards can be requested in exchange. For example, when A is offered, only C and D can be requested. Cards without a limit work as before.",
+        "effect1": "Only the cards you choose can be requested. Listings or bids with any other card are refused (both regular listings and auctions).",
+        "effect2": "Open offers that no longer match after you set a limit are not cancelled; they just disappear from the list (they come back if you remove the limit).",
+        "effect3": "Only cards from your own channel can be chosen. A limited card can no longer be listed for cards of other channels."
       },
       "wantable": {
         "title": "Keep a card from being picked as a card viewers want",

@@ -35,14 +35,17 @@ vi.mock("@/lib/db/retry", () => ({
   withDbRetry: async (fn: () => Promise<unknown>) => fn(),
 }));
 
-const sql = url ? postgres(url, { max: 4, onnotice: () => {} }) : null;
+// fetch_types: false is the production client setting (src/lib/db/client.ts): JS arrays cannot be
+// bound and array columns / array_agg results are not parsed. The data layer under test must work
+// under it, so this suite uses the same setting.
+const sql = url ? postgres(url, { max: 4, onnotice: () => {}, fetch_types: false }) : null;
 if (sql) handle.current = { db: drizzle(sql, { schema }), sql };
 
 // Deterministic ids (prefix 7e1c… is reserved for this suite and cleaned up).
 const id = (n: number) => `7e1c0000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const USER_PREFIX = "restriction-pg-";
 
-const S = { MAIN: id(1), OTHER: id(2) };
+const S = { MAIN: id(1), OTHER: id(2), LIMIT: id(3) };
 // A = the offered card of every test; C / D = whitelisted; E = not whitelisted.
 const C = {
   A: id(11),
@@ -60,8 +63,8 @@ async function cleanup() {
   await s`DELETE FROM user_cards WHERE user_id IN (SELECT id FROM users WHERE twitch_user_id LIKE ${USER_PREFIX + "%"})`;
   await s`DELETE FROM users WHERE twitch_user_id LIKE ${USER_PREFIX + "%"}`;
   // Deleting the cards cascades to the rule tables.
-  await s`DELETE FROM cards WHERE streamer_id IN (${S.MAIN}, ${S.OTHER})`;
-  await s`DELETE FROM streamers WHERE id IN (${S.MAIN}, ${S.OTHER})`;
+  await s`DELETE FROM cards WHERE streamer_id IN (${S.MAIN}, ${S.OTHER}, ${S.LIMIT})`;
+  await s`DELETE FROM streamers WHERE id IN (${S.MAIN}, ${S.OTHER}, ${S.LIMIT})`;
 }
 
 async function streamer(streamerId: string, name: string) {
@@ -347,6 +350,147 @@ describe.skipIf(!url)("trade exchange-target restriction (real PostgreSQL)", () 
           .rejects.toMatchObject({ code: "23514" });
       } finally {
         await clearRule(C.A);
+      }
+    });
+  });
+
+  describe("settings data layer (the PUT API's writes and the UI's reads)", () => {
+    const lib = () => import("@/lib/trade-wanted-restrictions");
+    const allowedOf = async (offeredCardId: string) => {
+      const rows = await sql!`SELECT wanted_card_id FROM trade_wanted_restriction_items
+        WHERE offered_card_id = ${offeredCardId} ORDER BY wanted_card_id`;
+      return rows.map((row) => row.wanted_card_id as string);
+    };
+
+    it("creates, replaces (not unions) and removes a rule; the replacement is idempotent", async () => {
+      const { replaceTradeWantedRestriction } = await lib();
+      const put = (allowed: string[]) =>
+        replaceTradeWantedRestriction({ streamerId: S.MAIN, offeredCardId: C.A, allowedWantedCardIds: allowed });
+      try {
+        await expect(put([C.C, C.D])).resolves.toEqual({ kind: "ok", ruleRemoved: false });
+        expect(await allowedOf(C.A)).toEqual([C.C, C.D].sort());
+        await expect(put([C.D, C.E])).resolves.toEqual({ kind: "ok", ruleRemoved: false });
+        expect(await allowedOf(C.A)).toEqual([C.D, C.E].sort());
+        // The same final state again is a no-op, not an error (retry-safe).
+        await expect(put([C.D, C.E])).resolves.toEqual({ kind: "ok", ruleRemoved: false });
+        expect(await allowedOf(C.A)).toEqual([C.D, C.E].sort());
+        await expect(put([])).resolves.toEqual({ kind: "ok", ruleRemoved: true });
+        expect(await allowedOf(C.A)).toEqual([]);
+        const [{ count }] = await sql!`SELECT count(*)::int AS count FROM trade_wanted_restriction_rules WHERE offered_card_id = ${C.A}`;
+        expect(count).toBe(0);
+        // Removing a rule that does not exist is fine too.
+        await expect(put([])).resolves.toEqual({ kind: "ok", ruleRemoved: true });
+      } finally {
+        await clearRule(C.A);
+      }
+    });
+
+    it("refuses cards that are not the streamer's (other channel, missing) without writing anything", async () => {
+      const { replaceTradeWantedRestriction } = await lib();
+      const put = (offeredCardId: string, allowed: string[]) =>
+        replaceTradeWantedRestriction({ streamerId: S.MAIN, offeredCardId, allowedWantedCardIds: allowed });
+      await expect(put(C.A, [C.OTHER])).resolves.toEqual({ kind: "error", code: "CARD_NOT_FOUND" });
+      await expect(put(C.A, [id(999)])).resolves.toEqual({ kind: "error", code: "CARD_NOT_FOUND" });
+      await expect(put(C.OTHER, [C.C])).resolves.toEqual({ kind: "error", code: "CARD_NOT_FOUND" });
+      const [{ count }] = await sql!`SELECT count(*)::int AS count FROM trade_wanted_restriction_rules WHERE offered_card_id IN (${C.A}, ${C.OTHER})`;
+      expect(count).toBe(0);
+    });
+
+    it("allows an inactive card in the whitelist, so a rule with a later-retired card can still be re-saved", async () => {
+      const { replaceTradeWantedRestriction } = await lib();
+      await sql!`UPDATE cards SET is_active = false WHERE id = ${C.E}`;
+      try {
+        await expect(replaceTradeWantedRestriction({
+          streamerId: S.MAIN, offeredCardId: C.A, allowedWantedCardIds: [C.C, C.E],
+        })).resolves.toEqual({ kind: "ok", ruleRemoved: false });
+      } finally {
+        await sql!`UPDATE cards SET is_active = true WHERE id = ${C.E}`;
+        await clearRule(C.A);
+      }
+    });
+
+    it("concurrent replacements of the same rule end in exactly one of the submitted sets (no union, no error)", async () => {
+      const { replaceTradeWantedRestriction } = await lib();
+      try {
+        for (let round = 0; round < 8; round += 1) {
+          const results = await Promise.all([
+            replaceTradeWantedRestriction({ streamerId: S.MAIN, offeredCardId: C.A, allowedWantedCardIds: [C.C] }),
+            replaceTradeWantedRestriction({ streamerId: S.MAIN, offeredCardId: C.A, allowedWantedCardIds: [C.D] }),
+            replaceTradeWantedRestriction({ streamerId: S.MAIN, offeredCardId: C.A, allowedWantedCardIds: [C.E] }),
+          ]);
+          for (const result of results) expect(result).toEqual({ kind: "ok", ruleRemoved: false });
+          const allowed = await allowedOf(C.A);
+          expect(allowed).toHaveLength(1);
+          expect([C.C, C.D, C.E]).toContain(allowed[0]);
+          await clearRule(C.A);
+        }
+      } finally {
+        await clearRule(C.A);
+      }
+    });
+
+    it("caps the number of rules per streamer, but still lets an existing rule be edited at the cap", async () => {
+      const { replaceTradeWantedRestriction, TRADE_WANTED_RESTRICTION_MAX_RULES } = await lib();
+      await streamer(S.LIMIT, "limit");
+      await sql!`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
+        SELECT gen_random_uuid(), ${S.LIMIT}, 'L' || n, 'common', 0.1, TRUE
+        FROM generate_series(1, ${TRADE_WANTED_RESTRICTION_MAX_RULES + 2}) AS n`;
+      const limitCards = (await sql!`SELECT id FROM cards WHERE streamer_id = ${S.LIMIT} ORDER BY name`).map((row) => row.id as string);
+      const target = limitCards[0];
+      await sql!`INSERT INTO trade_wanted_restriction_rules (offered_card_id)
+        SELECT id FROM cards WHERE streamer_id = ${S.LIMIT} ORDER BY name LIMIT ${TRADE_WANTED_RESTRICTION_MAX_RULES}`;
+      // 201st rule is refused; the 200 existing rules are untouched.
+      await expect(replaceTradeWantedRestriction({
+        streamerId: S.LIMIT, offeredCardId: limitCards[TRADE_WANTED_RESTRICTION_MAX_RULES], allowedWantedCardIds: [target],
+      })).resolves.toEqual({ kind: "error", code: "TOO_MANY_RULES" });
+      // Editing one of the existing rules is not blocked by the cap.
+      await expect(replaceTradeWantedRestriction({
+        streamerId: S.LIMIT, offeredCardId: target, allowedWantedCardIds: [limitCards[1]],
+      })).resolves.toEqual({ kind: "ok", ruleRemoved: false });
+    });
+
+    it("reads the settings: all cards (inactive included), and rules with empty ones kept", async () => {
+      const { getTradeWantedRestrictionSettings } = await lib();
+      await setRule(C.A, [C.C, C.D]);
+      await setRule(C.B, []);
+      try {
+        const settings = await getTradeWantedRestrictionSettings(S.MAIN);
+        expect(settings).not.toBeNull();
+        expect(settings!.cards.map((card) => card.id).sort()).toEqual(
+          [C.A, C.B, C.C, C.D, C.E].sort(),
+        );
+        expect(settings!.cards.every((card) => card.isActive)).toBe(true);
+        expect(Object.keys(settings!.rules).sort()).toEqual([C.A, C.B].sort());
+        expect([...settings!.rules[C.A]].sort()).toEqual([C.C, C.D].sort());
+        // A rule whose allowed cards are all gone stays (restricted, nothing allowed).
+        expect(settings!.rules[C.B]).toEqual([]);
+        // Another channel's rules never show up here.
+        expect((await getTradeWantedRestrictionSettings(S.OTHER))!.rules).toEqual({});
+      } finally {
+        await clearRule(C.A);
+        await clearRule(C.B);
+      }
+    });
+
+    it("builds the form's allowed map: only rules, intersected with the selectable cards (no hidden ids)", async () => {
+      const { loadAllowedWantedByOffered } = await lib();
+      await setRule(C.A, [C.C, C.D]);
+      await setRule(C.B, [C.E]);
+      try {
+        // C.D is not selectable for this viewer (hidden): it must not appear.
+        const map = await loadAllowedWantedByOffered(
+          { offeredCardIds: [C.A, C.B, C.C] },
+          new Set([C.C, C.E]),
+        );
+        expect(map).toEqual({ [C.A]: [C.C], [C.B]: [C.E] }); // C.C has no rule → no key
+        // The whole-streamer variant used by the auction page.
+        const byStreamer = await loadAllowedWantedByOffered({ streamerId: S.MAIN }, new Set([C.E]));
+        expect(byStreamer).toEqual({ [C.A]: [], [C.B]: [C.E] }); // restricted but nothing selectable → []
+        // No candidates → nothing is read.
+        await expect(loadAllowedWantedByOffered({ offeredCardIds: [] }, new Set([C.C]))).resolves.toEqual({});
+      } finally {
+        await clearRule(C.A);
+        await clearRule(C.B);
       }
     });
   });

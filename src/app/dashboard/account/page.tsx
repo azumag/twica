@@ -4,6 +4,7 @@ import { getSession, canUseStreamerFeatures } from "@/lib/session";
 import { getUserPlan } from "@/lib/plan";
 import { getTwitchSubRow } from "@/lib/user-data";
 import { getStreamerCollectionSettings } from "@/lib/dashboard-data";
+import { getTradeWantedRestrictionSettings } from "@/lib/trade-wanted-restrictions";
 import { LanguageSwitcherSettings } from "@/components/LanguageSwitcher";
 import SupportPlanSection from "@/components/SupportPlanSection";
 import TwitchSubCheckSection from "@/components/TwitchSubCheckSection";
@@ -59,6 +60,13 @@ export default async function AccountSettingsPage() {
     getTwitchSubInfo(session.twitchUserId),
     isStreamer ? getStreamerCollectionSettings(session.twitchUserId) : null,
   ]);
+
+  // 交換対象の制限（出品カードごとのホワイトリスト）の初期値。トレード設定の一部なので
+  // トレードUIを出すときだけ読む。取得に失敗しても null になるだけで、ページは落とさない。
+  const tradeRestrictionSettings =
+    CARD_TRADE_UI_VISIBLE && collectionSettings
+      ? await getTradeWantedRestrictionSettings(collectionSettings.streamerId)
+      : null;
 
   return (
     <div>
@@ -153,6 +161,7 @@ export default async function AccountSettingsPage() {
                 streamerId={collectionSettings.streamerId}
                 currentTradeEnabled={collectionSettings.tradeEnabled}
                 currentCrossChannelTradeEnabled={collectionSettings.crossChannelTradeEnabled}
+                restrictionSettings={tradeRestrictionSettings}
               />
             )}
           </section>
