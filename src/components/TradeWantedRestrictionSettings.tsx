@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { logger } from "@/lib/logger";
 import { parseMaintenanceError } from "@/lib/maintenance/client";
 import { getRarityDisplayInfo } from "@/lib/rarity";
+import { TRADE_WANTED_RESTRICTION_MAX_ITEMS } from "@/lib/trade-wanted-restriction-limits";
 import type { TradeWantedRestrictionSettings as RestrictionData } from "@/lib/trade-wanted-restrictions";
 import { useMaintenanceStatus } from "./MaintenanceStatusProvider";
 
@@ -122,7 +123,9 @@ export default function TradeWantedRestrictionSettings({ cards, initialRules }: 
   // 出品カードに選べるのは、まだルールが無い有効なカード。
   const offeredChoices = cards.filter((card) => card.isActive && !(card.id in rules));
   // 許可カードに追加できるのは、出品カード自身と追加済みを除いた有効なカード。
-  const allowedChoices = draft?.offeredCardId
+  // 許可カードは1ルールにつき上限がある(API も同じ値で検証する)。上限に達したら追加を止める。
+  const atItemLimit = (draft?.allowed.length ?? 0) >= TRADE_WANTED_RESTRICTION_MAX_ITEMS;
+  const allowedChoices = draft?.offeredCardId && !atItemLimit
     ? cards.filter(
         (card) => card.isActive && card.id !== draft.offeredCardId && !draft.allowed.includes(card.id),
       )
@@ -236,7 +239,7 @@ export default function TradeWantedRestrictionSettings({ cards, initialRules }: 
               <select
                 id={allowedSelectId}
                 value=""
-                disabled={disabled || allowedChoices.length === 0}
+                disabled={disabled || allowedChoices.length === 0 || atItemLimit}
                 onChange={(event) => {
                   const cardId = event.target.value;
                   if (cardId) setDraft({ ...draft, allowed: [...draft.allowed, cardId] });
@@ -250,6 +253,11 @@ export default function TradeWantedRestrictionSettings({ cards, initialRules }: 
                   </option>
                 ))}
               </select>
+              {atItemLimit && (
+                <p className="mt-2 text-xs text-yellow-300">
+                  {t("allowedLimitReached", { max: TRADE_WANTED_RESTRICTION_MAX_ITEMS })}
+                </p>
+              )}
               {draft.allowed.length > 0 ? (
                 <ul className="mt-2 flex flex-wrap gap-1.5" aria-label={t("allowedLabel")}>
                   {draft.allowed.map((cardId) => (

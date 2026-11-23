@@ -93,6 +93,39 @@ describe("TradeWantedRestrictionSettings", () => {
     expect(screen.queryByLabelText(ja.offeredLabel)).toBeNull();
   });
 
+  it("stops offering more cards at the per-rule limit and explains it (the API enforces the same limit)", async () => {
+    const { TRADE_WANTED_RESTRICTION_MAX_ITEMS: MAX } = await import("@/lib/trade-wanted-restriction-limits");
+    const many = [
+      { id: "offered", name: "Offered", rarity: "common", isActive: true },
+      ...Array.from({ length: MAX + 1 }, (_, index) => ({
+        id: `w-${index}`, name: `W${index}`, rarity: "common", isActive: true,
+      })),
+    ];
+    render(
+      <NextIntlClientProvider locale="ja" messages={jaMessages}>
+        <MaintenanceStatusContext.Provider value={{ mode: "off" } as unknown as MaintenanceStatusResponse}>
+          <TradeWantedRestrictionSettings cards={many} initialRules={{}} />
+        </MaintenanceStatusContext.Provider>
+      </NextIntlClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: ja.add }));
+    fireEvent.change(screen.getByLabelText(ja.offeredLabel), { target: { value: "offered" } });
+    for (let index = 0; index < MAX - 1; index += 1) {
+      fireEvent.change(screen.getByLabelText(ja.allowedAddLabel), { target: { value: `w-${index}` } });
+    }
+    // One below the limit: still addable, no notice.
+    expect(screen.getByLabelText(ja.allowedAddLabel)).toBeEnabled();
+    expect(screen.queryByText(jaMessages.tradeWantedRestriction.allowedLimitReached.replace("{max}", String(MAX)))).toBeNull();
+    fireEvent.change(screen.getByLabelText(ja.allowedAddLabel), { target: { value: `w-${MAX - 1}` } });
+    // At the limit: the picker is disabled (the 101st candidate is not selectable) and the limit is shown.
+    expect(screen.getByLabelText(ja.allowedAddLabel)).toBeDisabled();
+    expect(
+      screen.getByText(jaMessages.tradeWantedRestriction.allowedLimitReached.replace("{max}", String(MAX))),
+    ).toBeInTheDocument();
+    // Saving the full set is still allowed.
+    expect(screen.getByRole("button", { name: ja.save })).toBeEnabled();
+  });
+
   it("removing an allowed chip before saving changes the PUT body", async () => {
     renderEditor({ rules: { "card-a": ["card-b", "card-c"] } });
     fireEvent.click(screen.getByRole("button", { name: ja.edit }));

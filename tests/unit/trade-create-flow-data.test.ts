@@ -140,7 +140,7 @@ describe("loadTradeCreateFormData (#2080)", () => {
     expect(mocks.loadAllowedWantedByOffered).toHaveBeenCalledTimes(1);
     const [where, selectable] = mocks.loadAllowedWantedByOffered.mock.calls[0];
     // De-duplicated offered card ids (two copies of card-1).
-    expect(where).toEqual({ offeredCardIds: ["card-1"] });
+    expect(where).toEqual(["card-1"]);
     expect([...selectable]).toEqual(["card-2"]);
     expect(data.allowedWantedByOfferedCardId).toEqual({ "card-1": ["card-2"] });
   });

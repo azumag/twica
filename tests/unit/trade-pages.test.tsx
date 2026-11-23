@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   listTradeableOwnedCopies: vi.fn(),
   listCrossTradePartnerStreamers: vi.fn(),
   listMyTradeOffers: vi.fn(),
-  loadAllowedWantedByOffered: vi.fn(),
+  loadAllowedBidCardsForAuction: vi.fn(),
   loggerWarn: vi.fn(),
   redirect: vi.fn((url: string) => {
     throw new Error(`REDIRECT:${url}`);
@@ -54,7 +54,7 @@ vi.mock("@/lib/trade", () => ({
 vi.mock("@/lib/trade-auction", () => ({ TRADE_MAX_BID_QUANTITY: 10 }));
 // The detail page loads the exchange-target restriction map (whitelist per offered card).
 vi.mock("@/lib/trade-wanted-restrictions", () => ({
-  loadAllowedWantedByOffered: mocks.loadAllowedWantedByOffered,
+  loadAllowedBidCardsForAuction: mocks.loadAllowedBidCardsForAuction,
 }));
 vi.mock("@/lib/logger", () => ({ logger: { warn: mocks.loggerWarn, info: vi.fn(), error: vi.fn() } }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect, notFound: mocks.notFound }));
@@ -554,7 +554,7 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
     ]);
   });
 
-  it("passes the exchange-target restriction map built for THIS viewer: visible offered cards only, intersected with the viewer's bid candidates", async () => {
+  it("passes the restriction map of THIS auction's offered card (not the board channel's rules), intersected with the viewer's bid candidates", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     mocks.listWantableCards.mockResolvedValue([
       { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, collectionNumber: 1, isOwned: true },
@@ -563,14 +563,17 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
     mocks.listTradeableOwnedCopies.mockResolvedValue([
       { userCardId: "u1", cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, obtainedAt: null, isListed: false, ownedCount: 1 },
     ]);
-    mocks.loadAllowedWantedByOffered.mockResolvedValue({ "c-offered": ["c-own"] });
+    mocks.loadAllowedBidCardsForAuction.mockResolvedValue({ "c-offered": ["c-own"] });
     render(await TradeAuctionDetailPage({ params: detailParams, searchParams: Promise.resolve({}) }));
 
-    // The loader filters the KEYS by this viewer's visibility (viewerTwitchUserId) and the
-    // values by the viewer's own bid candidates (only owned cards), so nothing hidden is serialized.
-    expect(mocks.loadAllowedWantedByOffered).toHaveBeenCalledTimes(1);
-    const [where, selectable] = mocks.loadAllowedWantedByOffered.mock.calls[0];
-    expect(where).toEqual({ streamerId: STREAMER_ID, viewerTwitchUserId: "viewer-1" });
+    // The page path is the BIDDER's channel (it differs from the offered card's channel on the
+    // cross-channel tab), so the rule is looked up from the auction itself, for this viewer
+    // (the loader applies the visibility rule to the offered card), with the viewer's own bid
+    // candidates as the only values that can be serialized.
+    expect(mocks.loadAllowedBidCardsForAuction).toHaveBeenCalledTimes(1);
+    const [auctionId, viewerTwitchUserId, selectable] = mocks.loadAllowedBidCardsForAuction.mock.calls[0];
+    expect(auctionId).toBe(AUCTION_ID);
+    expect(viewerTwitchUserId).toBe("viewer-1");
     expect([...selectable]).toEqual(["c-own"]);
     expect(props("trade-auction-detail").allowedBidCardIdsByOfferedCardId).toEqual({ "c-offered": ["c-own"] });
   });
@@ -580,7 +583,7 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
     mocks.listWantableCards.mockResolvedValue([]);
     mocks.listTradeableOwnedCopies.mockResolvedValue([]);
     render(await TradeAuctionDetailPage({ params: detailParams, searchParams: Promise.resolve({}) }));
-    expect(mocks.loadAllowedWantedByOffered).not.toHaveBeenCalled();
+    expect(mocks.loadAllowedBidCardsForAuction).not.toHaveBeenCalled();
     expect(props("trade-auction-detail").allowedBidCardIdsByOfferedCardId).toEqual({});
   });
 

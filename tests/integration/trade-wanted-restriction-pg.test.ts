@@ -479,14 +479,14 @@ describe.skipIf(!url)("trade exchange-target restriction (real PostgreSQL)", () 
       try {
         // C.D is not selectable for this viewer (hidden): it must not appear.
         const map = await loadAllowedWantedByOffered(
-          { offeredCardIds: [C.A, C.B, C.C] },
+          [C.A, C.B, C.C],
           new Set([C.C, C.E]),
         );
         expect(map).toEqual({ [C.A]: [C.C], [C.B]: [C.E] }); // C.C has no rule → no key
         // The whole-streamer variant (auction page) is covered by its own test below: its KEYS
         // must be filtered by what the viewer can see, not only its values.
         // No candidates → nothing is read.
-        await expect(loadAllowedWantedByOffered({ offeredCardIds: [] }, new Set([C.C]))).resolves.toEqual({});
+        await expect(loadAllowedWantedByOffered([], new Set([C.C]))).resolves.toEqual({});
       } finally {
         await clearRule(C.A);
         await clearRule(C.B);
@@ -494,7 +494,7 @@ describe.skipIf(!url)("trade exchange-target restriction (real PostgreSQL)", () 
     });
   });
 
-  describe("allowed map for the auction page never exposes keys the viewer cannot see", () => {
+  describe("auction detail: the restriction map of THIS auction's offered card", () => {
     const PRIVATE = id(4);
     const P = { HIDDEN: id(31), OWNED: id(32), SELECTABLE: id(33), RETIRED: id(34) };
 
@@ -511,55 +511,76 @@ describe.skipIf(!url)("trade exchange-target restriction (real PostgreSQL)", () 
         await sql!`INSERT INTO cards (id, streamer_id, name, rarity, drop_rate, is_active)
           VALUES (${cardId}, ${PRIVATE}, ${name}, 'common', 0.1, ${active})`;
       }
-      // Rules on a card the viewer cannot see, on a card they own, an empty rule, and on a retired card.
       await setRule(P.HIDDEN, [P.SELECTABLE]);
       await setRule(P.OWNED, [P.SELECTABLE]);
-      await setRule(P.RETIRED, [P.SELECTABLE]);
     });
 
     afterAll(async () => {
+      await sql!`DELETE FROM trade_auctions WHERE offered_streamer_id = ${PRIVATE}`;
       await sql!`DELETE FROM cards WHERE streamer_id = ${PRIVATE}`;
       await sql!`DELETE FROM streamers WHERE id = ${PRIVATE}`;
     });
 
-    it("returns only the rules of offered cards visible to the viewer (no hidden / retired ids, no rule count)", async () => {
-      const { loadAllowedWantedByOffered } = await import("@/lib/trade-wanted-restrictions");
+    /** An open auction row of `offeredCardId` (inserted directly: visibility is what is under test). */
+    async function auctionOf(offeredCardId: string, streamerId: string) {
+      const seller = await newUser("seller");
+      const [copy] = await giveCopies(seller.id, offeredCardId, 1);
+      const rows = await sql!`
+        INSERT INTO trade_auctions (
+          seller_user_id, offered_user_card_id, offered_card_id, offered_streamer_id,
+          offered_card_snapshot, ends_at, selection_deadline, request_id
+        ) VALUES (
+          ${seller.id}, ${copy}, ${offeredCardId}, ${streamerId}, '{}'::jsonb,
+          now() + interval '1 day', now() + interval '4 days', ${randomUUID()}
+        ) RETURNING id`;
+      return rows[0].id as string;
+    }
+
+    it("returns the rule of a visible offered card only; a card the viewer cannot see (or a retired one) yields nothing", async () => {
+      const { loadAllowedBidCardsForAuction } = await import("@/lib/trade-wanted-restrictions");
       const viewer = await newUser("viewer");
       await giveCopies(viewer.id, P.OWNED, 1);
-      const map = await loadAllowedWantedByOffered(
-        { streamerId: PRIVATE, viewerTwitchUserId: viewer.twitch },
-        new Set([P.SELECTABLE]),
-      );
-      // HIDDEN (not owned, channel hides unowned cards) and RETIRED never appear as keys.
-      expect(Object.keys(map)).toEqual([P.OWNED]);
-      expect(map[P.OWNED]).toEqual([P.SELECTABLE]);
-      expect(JSON.stringify(map)).not.toContain(P.HIDDEN);
-      expect(JSON.stringify(map)).not.toContain(P.RETIRED);
+      const selectable = new Set([P.SELECTABLE]);
 
-      // A viewer who owns nothing of the channel sees no rule at all (not even an empty map entry).
-      const stranger = await newUser("stranger");
-      await expect(loadAllowedWantedByOffered(
-        { streamerId: PRIVATE, viewerTwitchUserId: stranger.twitch },
-        new Set([P.SELECTABLE]),
-      )).resolves.toEqual({});
+      // Visible to the viewer (they own a copy): the rule is returned, intersected with their candidates.
+      await expect(loadAllowedBidCardsForAuction(await auctionOf(P.OWNED, PRIVATE), viewer.twitch, selectable))
+        .resolves.toEqual({ [P.OWNED]: [P.SELECTABLE] });
+
+      // The offered card is hidden from this viewer (not owned, channel hides unowned cards): the
+      // auction id alone must not reveal that the card has a rule, nor the card's id.
+      const hidden = await loadAllowedBidCardsForAuction(await auctionOf(P.HIDDEN, PRIVATE), viewer.twitch, selectable);
+      expect(hidden).toEqual({});
+      expect(JSON.stringify(hidden)).not.toContain(P.HIDDEN);
+
+      // A retired offered card and an unknown auction id yield nothing.
+      await expect(loadAllowedBidCardsForAuction(await auctionOf(P.RETIRED, PRIVATE), viewer.twitch, selectable))
+        .resolves.toEqual({});
+      await expect(loadAllowedBidCardsForAuction(randomUUID(), viewer.twitch, selectable)).resolves.toEqual({});
     });
 
-    it("on a channel that reveals its cards, still hides retired cards' rules and keeps empty-intersection rules for visible ones", async () => {
-      const { loadAllowedWantedByOffered } = await import("@/lib/trade-wanted-restrictions");
-      await sql!`UPDATE cards SET is_active = false WHERE id = ${C.E}`;
+    it("cross-channel: the offered card's rule is read even though the bidder's cards are from another channel (nothing can be bid)", async () => {
+      const { loadAllowedBidCardsForAuction } = await import("@/lib/trade-wanted-restrictions");
+      const { placeTradeAuctionBid, createTradeAuction } = await auctions();
       await setRule(C.A, [C.C]);
-      await setRule(C.E, [C.C]);
       try {
-        const viewer = await newUser("viewer");
-        const map = await loadAllowedWantedByOffered(
-          { streamerId: S.MAIN, viewerTwitchUserId: viewer.twitch },
-          new Set([C.D]),
-        );
-        expect(map).toEqual({ [C.A]: [] }); // C.E (retired) is not a key; C.A's allowed ∩ selectable is empty
+        const seller = await newUser("seller");
+        const bidder = await newUser("bidder");
+        const [copy] = await giveCopies(seller.id, C.A, 1);
+        await giveCopies(bidder.id, C.OTHER, 1);
+        const created = await createTradeAuction({
+          twitchUserId: seller.twitch, offeredUserCardId: copy, durationHours: 24, requestId: randomUUID(),
+        });
+        if (created.kind !== "ok") throw new Error(`auction create failed: ${created.code}`);
+
+        // The bidder's channel is S.OTHER; its own rules (none) must not hide A's rule.
+        const map = await loadAllowedBidCardsForAuction(created.auction.id, bidder.twitch, new Set([C.OTHER]));
+        expect(map).toEqual({ [C.A]: [] });
+        // And the RPC refuses exactly what the (empty) candidate list implies.
+        await expect(placeTradeAuctionBid({
+          twitchUserId: bidder.twitch, auctionId: created.auction.id, bidCardId: C.OTHER, quantity: 1, requestId: randomUUID(),
+        })).resolves.toEqual({ kind: "error", code: "TRADE_BID_CARD_NOT_ALLOWED_FOR_OFFERED" });
       } finally {
-        await sql!`UPDATE cards SET is_active = true WHERE id = ${C.E}`;
         await clearRule(C.A);
-        await clearRule(C.E);
       }
     });
   });

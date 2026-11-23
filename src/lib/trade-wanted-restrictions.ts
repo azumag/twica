@@ -28,16 +28,19 @@ import { withDbRetry } from "@/lib/db/retry";
 import {
   cards as cardsTable,
   streamers as streamersTable,
+  tradeAuctions as auctionsTable,
   tradeWantedRestrictionItems as itemsTable,
   tradeWantedRestrictionRules as rulesTable,
 } from "@/lib/db/schema";
 import { logger } from "@/lib/logger.server";
-import { cardVisibleTo, viewerUserIdOf } from "@/lib/trade";
+import { cardIsActive, cardVisibleTo, viewerUserIdOf } from "@/lib/trade";
 
-/** 1つのルール(出品カード1枚)に入れられる許可カードの上限。 */
-export const TRADE_WANTED_RESTRICTION_MAX_ITEMS = 100;
-/** 配信者1人が持てるルール(出品カード)数の上限。 */
-export const TRADE_WANTED_RESTRICTION_MAX_RULES = 200;
+// 上限は設定画面(クライアント)と共有するため、DB を読み込まない別モジュールに置く。
+export {
+  TRADE_WANTED_RESTRICTION_MAX_ITEMS,
+  TRADE_WANTED_RESTRICTION_MAX_RULES,
+} from "@/lib/trade-wanted-restriction-limits";
+import { TRADE_WANTED_RESTRICTION_MAX_RULES } from "@/lib/trade-wanted-restriction-limits";
 
 export type TradeWantedRestrictionCard = {
   id: string;
@@ -197,57 +200,37 @@ export async function replaceTradeWantedRestriction(input: {
 }
 
 /**
- * フォーム・入札候補の絞り込み用の許可表: 出品カード id → 選べる card id の配列。
+ * 出品フォームの絞り込み用の許可表: 出品カード id → 選べる card id の配列。
  * ルールが無い出品カードはキー自体を持たない(= 制限なし)。ルールがあって、
  * 選択肢(`selectableCardIds`)との交差が空なら `[]`(= 指定できるカードが無い)。
  *
  * この値は RSC の props としてクライアントへ直列化されるため、閲覧者に公開されて
  * いないカードの id・ルールの件数を、キーにも値にも含めてはならない:
- *   - 値(許可カード)は必ず `selectableCardIds` と交差させる(listWantableCards や
- *     閲覧者の入札候補など、公開判定済みの集合)。
- *   - キー(出品カード)は、出品カード id 群を渡す形(`offeredCardIds`)では呼び出し側が
- *     閲覧者の所持コピーから選ぶので公開済み。配信者を渡す形(`streamerId`)では
- *     `viewerTwitchUserId` の可視性(cardVisibleTo。オークションの一覧・詳細と同じ規則)を
- *     満たす出品カードのルールだけを返す。そうしないと、配信者の全ルール(無効カード・
- *     未公開カード・許可0件のルールを含む)のキーがそのまま props に載る。
+ *   - 値(許可カード)は必ず `selectableCardIds` と交差させる(listWantableCards など
+ *     公開判定済みの集合)。
+ *   - キーは、呼び出し側が閲覧者の所持コピーから選んだ出品カード(`offeredCardIds`)だけ。
+ *     配信者の全ルールを読む形は作らない(無効・未公開カードの id とルール件数が載る)。
  *
- * `where` は対象のルールを選ぶ: 出品カードの id 群、または配信者(その配信者のルールのうち
- * 閲覧者に公開されている出品カードのもの)。
  * 取得に失敗した場合(migration 前など)は絞り込みなし(空表)に縮退する。UI 補助であり、
  * 権威は出品 API・応諾/入札 RPC なので、縮退しても制限を素通りする経路は生じない。
  */
 export async function loadAllowedWantedByOffered(
-  where:
-    | { offeredCardIds: string[] }
-    | { streamerId: string; viewerTwitchUserId: string },
+  offeredCardIds: string[],
   selectableCardIds: ReadonlySet<string>,
 ): Promise<Record<string, string[]>> {
-  if ("offeredCardIds" in where && where.offeredCardIds.length === 0) return {};
+  if (offeredCardIds.length === 0) return {};
   try {
     const rows = await withDbRetry(
       async () => {
         const { db } = await getDb();
-        const query = db
+        return db
           .select({
             offeredCardId: rulesTable.offered_card_id,
             wantedCardId: itemsTable.wanted_card_id,
           })
           .from(rulesTable)
-          .leftJoin(itemsTable, eq(itemsTable.offered_card_id, rulesTable.offered_card_id));
-        if ("offeredCardIds" in where) {
-          return query.where(inArray(rulesTable.offered_card_id, where.offeredCardIds));
-        }
-        return query
-          .innerJoin(cardsTable, eq(cardsTable.id, rulesTable.offered_card_id))
-          .where(
-            and(
-              eq(cardsTable.streamer_id, where.streamerId),
-              // 無効カード(オークションに出せず、一覧にも出ない)のルールは返さない。
-              eq(cardsTable.is_active, true),
-              // 閲覧者に公開されている出品カードのルールだけ(キーの露出を防ぐ)。
-              cardVisibleTo(rulesTable.offered_card_id, viewerUserIdOf(where.viewerTwitchUserId)),
-            ),
-          );
+          .leftJoin(itemsTable, eq(itemsTable.offered_card_id, rulesTable.offered_card_id))
+          .where(inArray(rulesTable.offered_card_id, offeredCardIds));
       },
       "trade-wanted-restrictions:allowed-map",
       { idempotent: true },
@@ -261,6 +244,54 @@ export async function loadAllowedWantedByOffered(
   } catch (error) {
     if (!isPgMissingTableError(error)) {
       logger.error("loadAllowedWantedByOffered failed", { error });
+    }
+    return {};
+  }
+}
+
+/**
+ * オークション詳細の入札フォーム用の許可表(`loadAllowedWantedByOffered` と同じ形)。
+ * 詳細ページのパスは入札に使うカードのチャネルで、クロスチャネルでは出品カードの
+ * チャネルと異なる。そのため配信者単位ではなく、**その1つのオークションの出品カード**の
+ * ルールだけを読む(出品カードのチャネルのルールを見落とすと、入札フォームで選べる
+ * カードがすべて入札時に拒否される)。
+ *
+ * 出品カードは、閲覧者に公開されている有効なカード(オークションの一覧・詳細と同じ
+ * `cardVisibleTo` + `cardIsActive`)に限る。URL の auctionId から他人の非公開カードの
+ * id・ルールを引き出せないようにするため。見えない/存在しないオークションは空表。
+ * クロスチャネルで制限付きのとき、入札側のカードは許可集合(出品側チャネルのカード)に
+ * 入らないので、結果は `[出品カード id]: []`(= 入札できるカードが無い)になり、RPC と一致する。
+ */
+export async function loadAllowedBidCardsForAuction(
+  auctionId: string,
+  viewerTwitchUserId: string,
+  selectableCardIds: ReadonlySet<string>,
+): Promise<Record<string, string[]>> {
+  try {
+    const rows = await withDbRetry(
+      async () => {
+        const { db } = await getDb();
+        return db
+          .select({ offeredCardId: auctionsTable.offered_card_id })
+          .from(auctionsTable)
+          .where(
+            and(
+              eq(auctionsTable.id, auctionId),
+              cardIsActive(auctionsTable.offered_card_id),
+              cardVisibleTo(auctionsTable.offered_card_id, viewerUserIdOf(viewerTwitchUserId)),
+            ),
+          )
+          .limit(1);
+      },
+      "trade-wanted-restrictions:auction-offered-card",
+      { idempotent: true },
+    );
+    const offeredCardId = rows[0]?.offeredCardId;
+    if (!offeredCardId) return {};
+    return await loadAllowedWantedByOffered([offeredCardId], selectableCardIds);
+  } catch (error) {
+    if (!isPgMissingTableError(error)) {
+      logger.error("loadAllowedBidCardsForAuction failed", { error });
     }
     return {};
   }

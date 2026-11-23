@@ -212,7 +212,7 @@ export async function loadTradeCreateFormData(input: {
   const allowedWantedByOfferedCardId =
     input.wantStreamerId && wantableCards.length > 0
       ? await loadAllowedWantedByOffered(
-          { offeredCardIds: [...new Set(ownedCopies.map((copy) => copy.cardId))] },
+          [...new Set(ownedCopies.map((copy) => copy.cardId))],
           new Set(wantableCards.map((card) => card.cardId)),
         )
       : {};

@@ -731,6 +731,7 @@
     "allowedAddLabel": "交換対象に追加するカード",
     "allowedPlaceholder": "カードを追加…",
     "allowedEmptyHint": "1枚以上選ぶと保存できます。選んだカードだけが交換対象になります。",
+    "allowedLimitReached": "1つの出品カードに設定できる交換対象は最大{max}枚です。これ以上は追加できません。",
     "removeAllowed": "{card} を交換対象から外す",
     "inactiveBadge": "（無効）",
     "cardLabel": "{name}（{rarity}）",

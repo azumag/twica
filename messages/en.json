@@ -731,6 +731,7 @@
     "allowedAddLabel": "Add a card that can be requested",
     "allowedPlaceholder": "Add a card…",
     "allowedEmptyHint": "Select at least one card to save. Only the selected cards can be requested.",
+    "allowedLimitReached": "A card can have at most {max} allowed cards. You cannot add more.",
     "removeAllowed": "Remove {card} from the allowed cards",
     "inactiveBadge": "(inactive)",
     "cardLabel": "{name} ({rarity})",
