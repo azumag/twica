@@ -33,7 +33,8 @@ import {
   tradeWantedRestrictionRules as rulesTable,
 } from "@/lib/db/schema";
 import { logger } from "@/lib/logger.server";
-import { cardIsActive, cardVisibleTo, viewerUserIdOf } from "@/lib/trade";
+import { viewerUserIdOf } from "@/lib/trade";
+import { auctionPublicDetailCondition } from "@/lib/trade-auction";
 
 // 上限は設定画面(クライアント)と共有するため、DB を読み込まない別モジュールに置く。
 export {
@@ -256,9 +257,12 @@ export async function loadAllowedWantedByOffered(
  * ルールだけを読む(出品カードのチャネルのルールを見落とすと、入札フォームで選べる
  * カードがすべて入札時に拒否される)。
  *
- * 出品カードは、閲覧者に公開されている有効なカード(オークションの一覧・詳細と同じ
- * `cardVisibleTo` + `cardIsActive`)に限る。URL の auctionId から他人の非公開カードの
- * id・ルールを引き出せないようにするため。見えない/存在しないオークションは空表。
+ * 対象は、詳細 API が公開として返すオークション(`auctionPublicDetailCondition`: 受付中・
+ * カードを拘束している・有効な出品カード・トレード有効・出品カードが閲覧者に見える)に
+ * 限る。詳細が 404 になるオークション(トレード停止後など)について、保存したリンクから
+ * 制限の有無や非公開カードの id を引き出せないようにするため。条件は詳細と同じ関数を
+ * 共有する。見えない/存在しないオークションは空表。参加者(売り手・入札者)にだけ見える
+ * 状態のオークションも空表になるが、その状態では新しい入札ができない(RPC も拒否する)。
  * クロスチャネルで制限付きのとき、入札側のカードは許可集合(出品側チャネルのカード)に
  * 入らないので、結果は `[出品カード id]: []`(= 入札できるカードが無い)になり、RPC と一致する。
  */
@@ -277,8 +281,7 @@ export async function loadAllowedBidCardsForAuction(
           .where(
             and(
               eq(auctionsTable.id, auctionId),
-              cardIsActive(auctionsTable.offered_card_id),
-              cardVisibleTo(auctionsTable.offered_card_id, viewerUserIdOf(viewerTwitchUserId)),
+              auctionPublicDetailCondition(viewerUserIdOf(viewerTwitchUserId)),
             ),
           )
           .limit(1);

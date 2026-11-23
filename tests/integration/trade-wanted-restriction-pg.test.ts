@@ -558,6 +558,35 @@ describe.skipIf(!url)("trade exchange-target restriction (real PostgreSQL)", () 
       await expect(loadAllowedBidCardsForAuction(randomUUID(), viewer.twitch, selectable)).resolves.toEqual({});
     });
 
+    it("returns nothing for an auction the detail API would not show (trade disabled, ended without bids, cancelled), so a saved link reveals no rule", async () => {
+      const { loadAllowedBidCardsForAuction } = await import("@/lib/trade-wanted-restrictions");
+      const viewer = await newUser("viewer");
+      await giveCopies(viewer.id, P.OWNED, 1);
+      const selectable = new Set([P.SELECTABLE]);
+      const auctionId = await auctionOf(P.OWNED, PRIVATE);
+      const load = () => loadAllowedBidCardsForAuction(auctionId, viewer.twitch, selectable);
+      // Baseline: an open auction that holds its card is shown.
+      await expect(load()).resolves.toEqual({ [P.OWNED]: [P.SELECTABLE] });
+
+      // The seller's channel stops trading: the detail API answers 404, so must this.
+      await sql!`UPDATE streamers SET trade_enabled = FALSE WHERE id = ${PRIVATE}`;
+      try {
+        await expect(load()).resolves.toEqual({});
+      } finally {
+        await sql!`UPDATE streamers SET trade_enabled = TRUE WHERE id = ${PRIVATE}`;
+      }
+
+      // Bidding ended without any bid: the card is released (the auction no longer holds it).
+      await sql!`UPDATE trade_auctions SET ends_at = now() - interval '1 hour',
+        selection_deadline = now() + interval '1 hour' WHERE id = ${auctionId}`;
+      await expect(load()).resolves.toEqual({});
+
+      // Cancelled.
+      await sql!`UPDATE trade_auctions SET ends_at = now() + interval '1 day',
+        selection_deadline = now() + interval '4 days', status = 'cancelled' WHERE id = ${auctionId}`;
+      await expect(load()).resolves.toEqual({});
+    });
+
     it("cross-channel: the offered card's rule is read even though the bidder's cards are from another channel (nothing can be bid)", async () => {
       const { loadAllowedBidCardsForAuction } = await import("@/lib/trade-wanted-restrictions");
       const { placeTradeAuctionBid, createTradeAuction } = await auctions();
