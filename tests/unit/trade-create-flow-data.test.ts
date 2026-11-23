@@ -127,7 +127,7 @@ describe("loadTradeCreateFormData (#2080)", () => {
     });
   });
 
-  it("passes the exchange-target restriction map, built from the owned copies and ONLY the visible wanted cards", async () => {
+  it("passes the exchange-target restriction map (per streamer, keyed by offered card) built from owned copies and ONLY the visible wanted cards", async () => {
     // The map is serialized to the client: the loader must intersect with the
     // already-visibility-filtered catalogue (selectable ids = wantableCards).
     mocks.listTradeableOwnedCopies.mockResolvedValue([COPIED, { ...COPIED, userCardId: "uc-2" }]);

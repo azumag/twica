@@ -1,13 +1,14 @@
 // PUT /api/streamer/trade-wanted-restrictions
 //
-// トレードの「交換対象の制限」(出品カードごとのホワイトリスト)を保存する。
-// 設計: tasks/plans/trade-wanted-restriction.md §6。判定そのものは出品 API・応諾 RPC・
+// トレードの「交換対象の制限」(配信者ごとの許可リスト)を保存する。
+// 設計: tasks/plans/trade-wanted-restriction.md v4 §6。判定そのものは出品 API・応諾 RPC・
 // オークション RPC が行い、この API は設定(ルール)の書き込みだけを担う。
 //
-// body: { offeredCardId: string, allowedWantedCardIds: string[] }
-//   - 出品カード1枚ぶんのルールを、許可カードの集合へ丸ごと置換する。
+// body: { allowedWantedCardIds: string[] }
+//   - セッションの配信者が持つ「交換対象リスト」を、許可カードの集合へ丸ごと置換する。
 //   - 空配列 = ルールの削除(制限なしに戻す)。
-//   - 配信者はセッションから解決する(body では受けない。他人の設定を書く余地が無い)。
+//   - 配信者はセッションから解決する(body では受けない。他人の設定を書く余地が無い。
+//     streamerId が body に含まれても無視する)。
 //
 // POST /api/streamer/settings とは別 route にする: あちらは boolean 列の部分更新で、
 // 集合の置換(1トランザクション・配信者ロック)とは契約が違うため。
@@ -79,13 +80,11 @@ export async function PUT(request: NextRequest) {
 
     const result = await replaceTradeWantedRestriction({
       streamerId: streamer.id,
-      offeredCardId: parsed.offeredCardId,
       allowedWantedCardIds: parsed.allowedWantedCardIds,
     });
     if (result.kind === "error") {
       // 他配信者のカードと存在しないカードは区別しない(404)。
-      if (result.code === "CARD_NOT_FOUND") return respond({ error: "Not found" }, 404);
-      return respond({ error: ERROR_MESSAGES.INVALID_REQUEST, code: result.code }, 409);
+      return respond({ error: "Not found" }, 404);
     }
     return respond({ success: true, ruleRemoved: result.ruleRemoved }, 200);
   } catch (error) {
@@ -100,22 +99,19 @@ export async function PUT(request: NextRequest) {
 }
 
 /** body の形を検証し、UUID を小文字へ正規化する。不正なら null。 */
-function parseBody(
-  body: unknown,
-): { offeredCardId: string; allowedWantedCardIds: string[] } | null {
+function parseBody(body: unknown): { allowedWantedCardIds: string[] } | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-  const { offeredCardId, allowedWantedCardIds } = body as Record<string, unknown>;
-  if (typeof offeredCardId !== "string" || !Array.isArray(allowedWantedCardIds)) return null;
+  const { allowedWantedCardIds } = body as Record<string, unknown>;
+  if (!Array.isArray(allowedWantedCardIds)) return null;
   if (allowedWantedCardIds.length > TRADE_WANTED_RESTRICTION_MAX_ITEMS) return null;
-  const offered = normalizeCanonicalUuid(offeredCardId);
-  if (!offered) return null;
   const allowed = new Set<string>();
   for (const value of allowedWantedCardIds) {
     if (typeof value !== "string") return null;
     const normalized = normalizeCanonicalUuid(value);
-    // 出品カード自身は許可に入れられない(DB の CHECK と同じ条件を境界で弾く)。
-    if (!normalized || normalized === offered) return null;
+    // 出品カード自身を許可に入れることは許す(リストは出品カードに依存しない)。
+    // 「自分自身を求むにして出品」は出品 API の TRADE_SAME_CARD が止める。
+    if (!normalized) return null;
     allowed.add(normalized);
   }
-  return { offeredCardId: offered, allowedWantedCardIds: [...allowed] };
+  return { allowedWantedCardIds: [...allowed] };
 }

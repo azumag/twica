@@ -12,7 +12,7 @@ interface TradeSettingsProps {
   streamerId: string;
   currentTradeEnabled: boolean;
   currentCrossChannelTradeEnabled: boolean;
-  // 交換対象の制限（出品カードごとのホワイトリスト）の初期値。取得できなかった場合
+  // 交換対象の制限（配信者ごとの許可リスト）の初期値。取得できなかった場合
   // （migration 前・DB 障害）は null/未指定で、設定欄だけを出さない。
   restrictionSettings?: RestrictionData | null;
   // #2070 フォローアップ (C4b): 未所持カードの見え方を制御する
@@ -191,7 +191,7 @@ export default function TradeSettings({
       {restrictionSettings && (
         <TradeWantedRestrictionSettings
           cards={restrictionSettings.cards}
-          initialRules={restrictionSettings.rules}
+          initialAllowedWantedCardIds={restrictionSettings.allowedWantedCardIds}
         />
       )}
     </div>

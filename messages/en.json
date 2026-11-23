@@ -715,10 +715,10 @@
   },
   "tradeWantedRestriction": {
     "title": "Exchange target limits",
-    "description": "Limit which cards can be requested in exchange for each card you list. Example: when A is offered, only C and D can be requested.",
-    "scopeNote": "Cards without a limit work as before. A limit applies to both regular listings and auction bids. Only cards from your own channel can be allowed, so a limited card cannot be listed for cards of other channels.",
-    "empty": "No card has an exchange target limit.",
-    "listLabel": "Current limits",
+    "description": "Limit which cards can be requested in exchange when your cards are listed. Without a limit, anything can be requested.",
+    "scopeNote": "There is one list per streamer, and it applies to all of your cards (regular listings and auction bids). Only cards from your own channel can be allowed; once limited, your cards can no longer be traded for cards of other channels.",
+    "empty": "No exchange target limit is set.",
+    "listLabel": "Current exchange target list",
     "allowedLabel": "Cards that can be requested",
     "edit": "Edit",
     "remove": "Remove limit",
@@ -726,25 +726,22 @@
     "save": "Save",
     "saving": "Saving...",
     "cancel": "Cancel",
-    "offeredLabel": "Listed card",
-    "offeredPlaceholder": "Select a card",
     "allowedAddLabel": "Add a card that can be requested",
     "allowedPlaceholder": "Add a card…",
-    "allowedEmptyHint": "Select at least one card to save. Only the selected cards can be requested.",
-    "allowedLimitReached": "A card can have at most {max} allowed cards. You cannot add more.",
+    "allowedEmptyHint": "Select at least one card to save. Only the selected cards can be requested for your cards.",
+    "allowedLimitReached": "Your exchange target list can have at most {max} cards. You cannot add more.",
     "removeAllowed": "Remove {card} from the allowed cards",
     "inactiveBadge": "(inactive)",
     "cardLabel": "{name} ({rarity})",
     "deletedCard": "Deleted card",
-    "emptyRuleWarning": "No card can be requested for this card (the allowed cards were deleted). Nobody can request anything for it right now. Edit the limit or remove it.",
+    "emptyRuleWarning": "No card can be requested (the allowed cards were deleted). None of your cards can currently be requested in exchange. Edit the limit or remove it.",
     "messages": {
-      "saved": "Saved the exchange target limit for {card}",
-      "removed": "Removed the exchange target limit for {card}"
+      "saved": "Saved the exchange target limit.",
+      "removed": "Removed the exchange target limit."
     },
     "errors": {
       "saveFailed": "Failed to save the exchange target limit.",
-      "unavailable": "The database update for exchange target limits has not finished yet. Please try again shortly.",
-      "tooManyRules": "You have reached the maximum number of limits. Remove ones you no longer need."
+      "unavailable": "The database update for exchange target limits has not finished yet. Please try again shortly."
     }
   },
   "trade": {
@@ -2276,11 +2273,11 @@
         "off": "When it is OFF, current listings disappear from the listings and cannot be accepted. Regular listings are not deleted and come back when you turn it on again. Auctions cannot be completed either, but their deadline and selection period keep running while it is OFF. An auction whose time has run out stays expired and does not come back when you turn it on again."
       },
       "restriction": {
-        "title": "Limiting what each card can be traded for",
-        "description": "For each card that is listed, you can choose which cards can be requested in exchange. For example, when A is offered, only C and D can be requested. Cards without a limit work as before.",
-        "effect1": "Only the cards you choose can be requested. Listings or bids with any other card are refused (both regular listings and auctions).",
+        "title": "Limiting what your cards can be traded for",
+        "description": "You can keep one exchange target list per streamer. When one of your cards is listed, only the cards on that list can be requested in exchange. Without a list, anything can be requested as before.",
+        "effect1": "Only the cards on your list can be requested. Listings or bids with any other card are refused (both regular listings and auctions).",
         "effect2": "Open offers that no longer match after you set a limit are not cancelled; they just disappear from the list (they come back if you remove the limit).",
-        "effect3": "Only cards from your own channel can be chosen. A limited card can no longer be listed for cards of other channels."
+        "effect3": "Only cards from your own channel can be chosen. Once limited, your cards can no longer be traded for cards of other channels."
       },
       "wantable": {
         "title": "Keep a card from being picked as a card viewers want",

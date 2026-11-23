@@ -18,15 +18,18 @@ const CARDS = [
 ];
 
 function renderEditor({
-  rules = {},
+  allowed = null,
   maintenance = "off",
-}: { rules?: Record<string, string[]>; maintenance?: "off" | "on" } = {}) {
+}: { allowed?: string[] | null; maintenance?: "off" | "on" } = {}) {
   return render(
     <NextIntlClientProvider locale="ja" messages={jaMessages}>
       <MaintenanceStatusContext.Provider
         value={{ mode: maintenance } as unknown as MaintenanceStatusResponse}
       >
-        <TradeWantedRestrictionSettings cards={CARDS} initialRules={rules} />
+        <TradeWantedRestrictionSettings
+          cards={CARDS}
+          initialAllowedWantedCardIds={allowed}
+        />
       </MaintenanceStatusContext.Provider>
     </NextIntlClientProvider>,
   );
@@ -48,27 +51,23 @@ describe("TradeWantedRestrictionSettings", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("shows the empty state and an add button when no rule is set", () => {
+  it("shows the empty state and an add button when no list is set", () => {
     renderEditor();
     expect(screen.getByText(ja.empty)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: ja.add })).toBeEnabled();
+    // 配信者ごとに1つのリストなので、出品カードを選ぶドロップダウンは無い。
+    expect(screen.queryByLabelText(ja.allowedAddLabel)).toBeNull();
   });
 
-  it("adds a rule: pick the offered card, add allowed cards one by one, save with a PUT of the final set", async () => {
+  it("adds cards one by one and saves the whole list with a PUT", async () => {
     renderEditor();
     fireEvent.click(screen.getByRole("button", { name: ja.add }));
 
-    const offered = screen.getByLabelText(ja.offeredLabel);
-    // Only active cards without a rule can be the offered card.
-    expect(optionNames(offered).map((text) => text.split("（")[0])).toEqual([
-      ja.offeredPlaceholder, "Alpha", "Bravo", "Charlie", "Delta",
-    ]);
-    expect(optionNames(offered).join("")).not.toContain("Retired");
-    fireEvent.change(offered, { target: { value: "card-a" } });
-
-    // The offered card itself and inactive cards cannot be allowed; Save needs ≥1 card.
+    // 自分の有効なカードはすべて候補になる(出品カードという概念は無い)。無効カードは出ない。
     const add = screen.getByLabelText(ja.allowedAddLabel);
-    expect(optionNames(add).join("")).not.toContain("Alpha");
+    expect(optionNames(add).map((text) => text.split("（")[0])).toEqual([
+      ja.allowedPlaceholder, "Alpha", "Bravo", "Charlie", "Delta",
+    ]);
     expect(optionNames(add).join("")).not.toContain("Retired");
     expect(screen.getByRole("button", { name: ja.save })).toBeDisabled();
 
@@ -82,34 +81,30 @@ describe("TradeWantedRestrictionSettings", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/streamer/trade-wanted-restrictions");
     expect(init.method).toBe("PUT");
-    // The streamer is resolved from the session; the body never carries one.
-    expect(JSON.parse(init.body)).toEqual({ offeredCardId: "card-a", allowedWantedCardIds: ["card-c", "card-d"] });
+    // The streamer is resolved from the session; the body carries only the list.
+    expect(JSON.parse(init.body)).toEqual({ allowedWantedCardIds: ["card-c", "card-d"] });
 
-    // The saved rule is listed with its allowed cards and the form closes.
-    const list = await screen.findByRole("list", { name: ja.listLabel });
-    expect(within(list).getByText(/Alpha/)).toBeInTheDocument();
+    // The saved list is shown and the form closes.
+    const list = await screen.findByRole("list", { name: ja.allowedLabel });
     expect(within(list).getByText(/Charlie/)).toBeInTheDocument();
     expect(within(list).getByText(/Delta/)).toBeInTheDocument();
-    expect(screen.queryByLabelText(ja.offeredLabel)).toBeNull();
+    expect(screen.getByText(ja.messages.saved)).toBeInTheDocument();
+    expect(screen.queryByLabelText(ja.allowedAddLabel)).toBeNull();
   });
 
-  it("stops offering more cards at the per-rule limit and explains it (the API enforces the same limit)", async () => {
+  it("stops offering more cards at the list limit and explains it (the API enforces the same limit)", async () => {
     const { TRADE_WANTED_RESTRICTION_MAX_ITEMS: MAX } = await import("@/lib/trade-wanted-restriction-limits");
-    const many = [
-      { id: "offered", name: "Offered", rarity: "common", isActive: true },
-      ...Array.from({ length: MAX + 1 }, (_, index) => ({
-        id: `w-${index}`, name: `W${index}`, rarity: "common", isActive: true,
-      })),
-    ];
+    const many = Array.from({ length: MAX + 1 }, (_, index) => ({
+      id: `w-${index}`, name: `W${index}`, rarity: "common", isActive: true,
+    }));
     render(
       <NextIntlClientProvider locale="ja" messages={jaMessages}>
         <MaintenanceStatusContext.Provider value={{ mode: "off" } as unknown as MaintenanceStatusResponse}>
-          <TradeWantedRestrictionSettings cards={many} initialRules={{}} />
+          <TradeWantedRestrictionSettings cards={many} initialAllowedWantedCardIds={null} />
         </MaintenanceStatusContext.Provider>
       </NextIntlClientProvider>,
     );
     fireEvent.click(screen.getByRole("button", { name: ja.add }));
-    fireEvent.change(screen.getByLabelText(ja.offeredLabel), { target: { value: "offered" } });
     for (let index = 0; index < MAX - 1; index += 1) {
       fireEvent.change(screen.getByLabelText(ja.allowedAddLabel), { target: { value: `w-${index}` } });
     }
@@ -126,70 +121,61 @@ describe("TradeWantedRestrictionSettings", () => {
     expect(screen.getByRole("button", { name: ja.save })).toBeEnabled();
   });
 
-  it("removing an allowed chip before saving changes the PUT body", async () => {
-    renderEditor({ rules: { "card-a": ["card-b", "card-c"] } });
+  it("removing a card before saving changes the PUT body", async () => {
+    renderEditor({ allowed: ["card-b", "card-c"] });
     fireEvent.click(screen.getByRole("button", { name: ja.edit }));
     fireEvent.click(screen.getByRole("button", { name: /Bravo.*交換対象から外す/ }));
     fireEvent.click(screen.getByRole("button", { name: ja.save }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      offeredCardId: "card-a",
       allowedWantedCardIds: ["card-c"],
     });
   });
 
-  it("edit keeps the offered card fixed and disables Save until something changes", () => {
-    renderEditor({ rules: { "card-a": ["card-b"] } });
+  it("disables Save until the list changes", () => {
+    renderEditor({ allowed: ["card-b"] });
     fireEvent.click(screen.getByRole("button", { name: ja.edit }));
-    expect(screen.getByLabelText(ja.offeredLabel)).toBeDisabled();
     expect(screen.getByRole("button", { name: ja.save })).toBeDisabled();
     fireEvent.change(screen.getByLabelText(ja.allowedAddLabel), { target: { value: "card-c" } });
     expect(screen.getByRole("button", { name: ja.save })).toBeEnabled();
   });
 
-  it("a card that already has a rule cannot be picked as a new offered card", () => {
-    renderEditor({ rules: { "card-a": ["card-b"] } });
-    fireEvent.click(screen.getByRole("button", { name: ja.add }));
-    expect(optionNames(screen.getByLabelText(ja.offeredLabel)).join("")).not.toContain("Alpha");
-  });
-
-  it("removes a rule by saving an empty set, and drops it from the list only on success", async () => {
-    renderEditor({ rules: { "card-a": ["card-b"] } });
+  it("removes the whole list by saving an empty set, and drops it from the UI only on success", async () => {
+    renderEditor({ allowed: ["card-b"] });
     fireEvent.click(screen.getByRole("button", { name: ja.remove }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ offeredCardId: "card-a", allowedWantedCardIds: [] });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ allowedWantedCardIds: [] });
     await waitFor(() => expect(screen.getByText(ja.empty)).toBeInTheDocument());
+    expect(screen.getByText(ja.messages.removed)).toBeInTheDocument();
   });
 
   it("keeps the saved state and shows the error when saving fails (no optimistic update)", async () => {
     fetchMock.mockResolvedValue(jsonResponse(500, { error: "x" }));
-    renderEditor({ rules: { "card-a": ["card-b"] } });
+    renderEditor({ allowed: ["card-b"] });
     fireEvent.click(screen.getByRole("button", { name: ja.remove }));
     expect(await screen.findByText(ja.errors.saveFailed)).toBeInTheDocument();
-    // The rule is still listed.
-    expect(screen.getByRole("list", { name: ja.listLabel })).toBeInTheDocument();
+    // The list is still shown, not replaced by the empty state.
+    expect(screen.queryByText(ja.empty)).toBeNull();
+    expect(screen.getByRole("list", { name: ja.allowedLabel })).toBeInTheDocument();
   });
 
-  it("explains a 503 (migration not applied yet) and the rule-count limit", async () => {
+  it("explains a 503 (migration not applied yet)", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(503, { unavailable: true }));
-    renderEditor({ rules: { "card-a": ["card-b"] } });
+    renderEditor({ allowed: ["card-b"] });
     fireEvent.click(screen.getByRole("button", { name: ja.remove }));
     expect(await screen.findByText(ja.errors.unavailable)).toBeInTheDocument();
-
-    fetchMock.mockResolvedValueOnce(jsonResponse(409, { code: "TOO_MANY_RULES" }));
-    fireEvent.click(screen.getByRole("button", { name: ja.remove }));
-    expect(await screen.findByText(ja.errors.tooManyRules)).toBeInTheDocument();
   });
 
-  it("warns about a rule with no allowed card (nobody can request anything) and badges inactive allowed cards", () => {
-    renderEditor({ rules: { "card-a": [], "card-b": ["card-old"] } });
+  it("warns about an empty list (nobody can request anything) and badges inactive allowed cards", () => {
+    renderEditor({ allowed: [] });
     expect(screen.getByText(ja.emptyRuleWarning)).toBeInTheDocument();
+
+    renderEditor({ allowed: ["card-old"] });
     expect(screen.getByText(ja.inactiveBadge)).toBeInTheDocument();
   });
 
   it("disables every control during maintenance", () => {
-    renderEditor({ rules: { "card-a": ["card-b"] }, maintenance: "on" });
-    expect(screen.getByRole("button", { name: ja.add })).toBeDisabled();
+    renderEditor({ allowed: ["card-b"], maintenance: "on" });
     expect(screen.getByRole("button", { name: ja.edit })).toBeDisabled();
     expect(screen.getByRole("button", { name: ja.remove })).toBeDisabled();
   });
@@ -209,7 +195,7 @@ describe("TradeWantedRestrictionSettings", () => {
     );
     const view = render(tree(null));
     expect(screen.queryByTestId("trade-wanted-restriction-settings")).toBeNull();
-    view.rerender(tree({ cards: CARDS, rules: {} }));
+    view.rerender(tree({ cards: CARDS, allowedWantedCardIds: null }));
     expect(screen.getByTestId("trade-wanted-restriction-settings")).toBeInTheDocument();
   });
 });

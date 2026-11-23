@@ -326,7 +326,7 @@ describe("acceptTradeOffer (#724)", () => {
     // ロールバック契約の再検討を強制する。
     const { TRADE_ACCEPT_RPC_ERRORS } = await import("@/lib/trade");
     //
-    // 交換対象の制限（20261123000000）の WANTED_CARD_NOT_ALLOWED_FOR_OFFERED も同じ契約:
+    // 交換対象の制限（20261124000000）の WANTED_CARD_NOT_ALLOWED_FOR_OFFERED も同じ契約:
     // ロールバック先のアプリ（#1790 版を含む）はこのコードを知らず、結果検証が例外にして
     // 500 を返す = 何も移転しない fail-closed。旧アプリにはルールを作る経路が無いので、
     // 到達するのはロールバック時だけ。3引数ラッパーは OFFER_NOT_OPEN へ読み替える
@@ -413,9 +413,9 @@ describe("acceptTradeOffer visibility / is_active precheck (#715 PR-C)", () => {
     ["wanted card inactive", { wantedActive: false }],
     // #1790: the board hides such offers; an API call must not complete one.
     ["wanted card no longer wantable", { wantedWantable: false }],
-    // The offered card's streamer restricted its exchange targets and the wanted card is not in the whitelist.
-    ["wanted card outside the exchange-target whitelist", { wantedAllowed: false }],
-    ["whitelist flag NULL (fail closed)", { wantedAllowed: null }],
+    // The offered card's streamer restricted its exchange targets and the wanted card is not in its list.
+    ["wanted card outside the streamer's exchange-target list", { wantedAllowed: false }],
+    ["allowlist flag NULL (fail closed)", { wantedAllowed: null }],
     ["is_active NULL is treated as inactive", { offeredActive: null }],
   ])("rejects an open offer whose %s with TRADE_OFFER_UNAVAILABLE and never calls the RPC", async (_label, overrides) => {
     const sqlMock = vi.fn();
@@ -513,14 +513,14 @@ describe("acceptTradeOffer visibility / is_active precheck (#715 PR-C)", () => {
     const wantedWantable = dialect.sqlToQuery(drizzleSql`${fields.wantedWantable}`);
     expect(wantedWantable.sql).toContain('wantable_card.id = "trade_offers"."wanted_card_id"');
     expect(wantedWantable.sql).toContain("wantable_card.trade_wantable = TRUE");
-    // Exchange-target whitelist: keyed by the OFFERED card; no rule = allowed;
-    // a rule with an empty allowed set allows nothing.
+    // Exchange-target list of the OFFERED card's streamer: resolved through
+    // cards.streamer_id; no rule = allowed; a rule with an empty set allows nothing.
     const wantedAllowed = dialect.sqlToQuery(drizzleSql`${fields.wantedAllowed}`);
     expect(wantedAllowed.sql).toMatch(
-      /NOT EXISTS \(\s*SELECT 1\s+FROM "trade_wanted_restriction_rules" AS restriction_rule\s+WHERE restriction_rule\.offered_card_id = "trade_offers"\."offered_card_id"\s*\)/,
+      /NOT EXISTS \(\s*SELECT 1\s+FROM "cards" AS restriction_offered_card\s+JOIN "trade_wanted_allowlist_rules" AS restriction_rule\s+ON restriction_rule\.streamer_id = restriction_offered_card\.streamer_id\s+WHERE restriction_offered_card\.id = "trade_offers"\."offered_card_id"\s*\)/,
     );
     expect(wantedAllowed.sql).toMatch(
-      /OR EXISTS \(\s*SELECT 1\s+FROM "trade_wanted_restriction_items" AS restriction_item\s+WHERE restriction_item\.offered_card_id = "trade_offers"\."offered_card_id"\s+AND restriction_item\.wanted_card_id = "trade_offers"\."wanted_card_id"\s*\)/,
+      /OR EXISTS \(\s*SELECT 1\s+FROM "cards" AS restriction_offered_card\s+JOIN "trade_wanted_allowlist_items" AS restriction_item\s+ON restriction_item\.streamer_id = restriction_offered_card\.streamer_id\s+WHERE restriction_offered_card\.id = "trade_offers"\."offered_card_id"\s+AND restriction_item\.wanted_card_id = "trade_offers"\."wanted_card_id"\s*\)/,
     );
   });
 });

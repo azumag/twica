@@ -89,7 +89,7 @@ describe("POST /api/trades/[id]/accept (#724)", () => {
     // #1790: the wanted card became non-wantable after the precheck. The
     // board already hides such offers, so the client treats it as gone.
     ["WANTED_CARD_NOT_WANTABLE", 409, "TRADE_OFFER_UNAVAILABLE"],
-    // The offered card's exchange-target whitelist no longer includes the wanted card.
+    // The offered card's streamer's exchange-target list no longer includes the wanted card.
     ["WANTED_CARD_NOT_ALLOWED_FOR_OFFERED", 409, "TRADE_OFFER_UNAVAILABLE"],
     ["TRADE_OFFER_UNAVAILABLE", 409, "TRADE_OFFER_UNAVAILABLE"],
     ["TRADE_BUSY", 503, "TRADE_BUSY"],

@@ -52,7 +52,7 @@ vi.mock("@/lib/trade", () => ({
 // The detail page passes TRADE_MAX_BID_QUANTITY (#1791); the real module
 // pulls in the DB layer, so the value is mirrored here.
 vi.mock("@/lib/trade-auction", () => ({ TRADE_MAX_BID_QUANTITY: 10 }));
-// The detail page loads the exchange-target restriction map (whitelist per offered card).
+// The detail page loads the exchange-target restriction map (the offered card's streamer's list).
 vi.mock("@/lib/trade-wanted-restrictions", () => ({
   loadAllowedBidCardsForAuction: mocks.loadAllowedBidCardsForAuction,
 }));
@@ -554,7 +554,7 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
     ]);
   });
 
-  it("passes the restriction map of THIS auction's offered card (not the board channel's rules), intersected with the viewer's bid candidates", async () => {
+  it("passes the restriction map of THIS auction's offered card's streamer (not the board channel's rules), intersected with the viewer's bid candidates", async () => {
     mocks.getSession.mockResolvedValue(SESSION);
     mocks.listWantableCards.mockResolvedValue([
       { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, collectionNumber: 1, isOwned: true },

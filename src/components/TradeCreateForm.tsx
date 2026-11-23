@@ -197,7 +197,7 @@ export default function TradeCreateForm({
   const requestIdRef = useRef<{ selection: string; id: string } | null>(null);
 
   const offered = groups.find((group) => group.cardId === offeredCardId) ?? null;
-  // 選んだ出品カードにルールがあれば、選択肢を許可カードだけに絞る(サーバー順は維持)。
+  // 選んだ出品カードの配信者にルールがあれば、選択肢を許可カードだけに絞る(サーバー順は維持)。
   // 出品カードを変えて許可外になった選択は、`wanted` が null になり送信できない。
   const allowedForOffered = offeredCardId
     ? allowedWantedByOfferedCardId?.[offeredCardId]

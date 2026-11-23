@@ -993,19 +993,40 @@ export const tradeAuctionBidItems = pgTable('trade_auction_bid_items', {
 })
 
 // -----------------------------------------------------------------------------
-// トレードの「交換対象の制限」（20261123000000_trade_wanted_restrictions.sql）
+// トレードの「交換対象の制限」（配信者ごとの許可リスト, 20261124000000）
 //
-// 出品カード A ごとに、求めるカード（オークションでは入札カード）に指定できる
-// カードの集合 W(A)（ホワイトリスト）を持つ。設計は
-// tasks/plans/trade-wanted-restriction.md。
+// 配信者 S は「交換対象リスト」W(S) を1つだけ持てる。S のカードが出品カード
+// （オークションでは出品カード）になるとき、求めるカード（入札カード）に指定できるのは
+// W(S) のカードだけ。設計は tasks/plans/trade-wanted-restriction.md v4。
 //
-//   rules: 出品カードごとに1行。行がある A は W(A) 内のカードしか指定できない。
+//   rules: 配信者ごとに1行。行がある S のカードは W(S) 内のカードしか指定できない。
 //          許可0件でも行は残り、その場合は誰も指定できない（fail-closed）。
-//          行が無い A は制限なし。
-//   items: 許可カード。(offered_card_id, wanted_card_id) が主キー。
+//          行が無い配信者は制限なし。
+//   items: 許可カード。(streamer_id, wanted_card_id) が主キー。出品カード自身を
+//          含められる（リストは出品カードに依存しない）。
 //
 // 親子2テーブルにする理由は migration 冒頭の注記を参照（許可カードを全部削除しても
 // 制限が外れない / 設定更新の直列化ロック行になる）。
+// -----------------------------------------------------------------------------
+export const tradeWantedAllowlistRules = pgTable('trade_wanted_allowlist_rules', {
+  streamer_id: uuid('streamer_id').primaryKey(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+export const tradeWantedAllowlistItems = pgTable('trade_wanted_allowlist_items', {
+  streamer_id: uuid('streamer_id').notNull(),
+  wanted_card_id: uuid('wanted_card_id').notNull(),
+  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
+})
+
+// -----------------------------------------------------------------------------
+// 【旧】出品カードごとの「交換対象の制限」（20261123000000_trade_wanted_restrictions.sql）
+//
+// 20261124000000 で配信者単位の trade_wanted_allowlist_* に置き換えた。旧テーブルは
+// 追加migrationの非加法ガード（DROP TABLE 禁止）のため DB に残してあり、新 RPC・新アプリは
+// 参照しない。scripts/verify-db-schema.js が「DB にだけ存在するテーブル」を差分として
+// 報告しないよう、削除までの間だけ定義を残す（削除は後続 Issue の contract migration）。
 // -----------------------------------------------------------------------------
 export const tradeWantedRestrictionRules = pgTable('trade_wanted_restriction_rules', {
   offered_card_id: uuid('offered_card_id').primaryKey(),

@@ -48,7 +48,7 @@ interface TradeAuctionDetailProps {
   /** Bid candidates of the board's channel (empty for anonymous viewers). */
   bidCards: TradeAuctionBidCard[];
   /**
-   * 交換対象の制限(出品カードごとのホワイトリスト): オークションの出品カード id →
+   * 交換対象の制限(出品カードの配信者ごとの許可リスト): オークションの出品カード id →
    * 入札に使える card id。サーバーが閲覧者の入札候補(bidCards)との交差を取って渡す
    * (非公開カードの id を含まない)。キーが無い出品カードは制限なし。UI の補助で、
    * 権威は入札 RPC(BID_CARD_NOT_ALLOWED_FOR_OFFERED)。
@@ -511,7 +511,7 @@ export default function TradeAuctionDetail({
     // Copies of the viewer's current bid are reusable for its change (the
     // RPC re-selects them), so they count as usable for the same card.
     card.freeCount + (myActiveBid && myActiveBid.bidCardId === card.cardId ? myActiveBid.quantity : 0);
-  // 出品カードにルールがあれば、入札候補を許可カードだけに絞る。
+  // 出品カードの配信者にルールがあれば、入札候補を許可カードだけに絞る。
   const allowedForAuction = auction?.offeredCardId
     ? allowedBidCardIdsByOfferedCardId?.[auction.offeredCardId]
     : undefined;

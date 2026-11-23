@@ -121,7 +121,7 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     expect(within(step2).getByRole("button", { name: /Dup Card/ })).toBeDisabled();
   });
 
-  describe("exchange-target restriction (whitelist per offered card)", () => {
+  describe("exchange-target restriction (streamer list applied to the offered card)", () => {
     const names = (region: HTMLElement) =>
       within(region).getAllByRole("button").map((button) => button.textContent ?? "");
 
@@ -153,11 +153,11 @@ describe("TradeCreateForm (#727 §6.5)", () => {
       expect(screen.getByRole("button", { name: ja.createSubmitButton })).toBeEnabled();
 
       fireEvent.click(tile(step1, "Single Card"));
-      // "Want Card" is outside the whitelist: no selection survives, submit is disabled.
+      // "Want Card" is outside the streamer's list: no selection survives, submit is disabled.
       expect(screen.getByRole("button", { name: ja.createSubmitButton })).toBeDisabled();
     });
 
-    it("explains when a restricted card currently has no requestable card (empty whitelist)", () => {
+    it("explains when a restricted card currently has no requestable card (empty list)", () => {
       renderForm({ allowedWantedByOfferedCardId: { "card-single": [] } });
       fireEvent.click(tile(step(ja.createStep1Title), "Single Card"));
       expect(screen.getByText(ja.createStep2RestrictedEmpty)).toBeInTheDocument();

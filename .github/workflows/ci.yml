@@ -759,8 +759,8 @@ jobs:
         run: npx vitest run tests/integration/trade-auction-pg.test.ts
 
       - name: Verify trade exchange-target restriction against PostgreSQL
-        # 交換対象の制限（出品カードごとのホワイトリスト）: 出品・ボード・応諾 RPC・
-        # オークション入札と、カード削除でも制限が外れない fail-closed の保存を、
+        # 交換対象の制限（配信者ごとの許可リスト）: 出品・ボード・応諾 RPC・
+        # オークション入札と、カード削除でもルールが残る fail-closed の保存を、
         # アプリの service 関数経由で実 DB に対して検証する。
         env:
           TRADE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
