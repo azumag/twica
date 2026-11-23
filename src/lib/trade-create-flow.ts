@@ -171,10 +171,11 @@ export type TradeCreateFormData = {
    */
   wantableRevealsUnownedNames: boolean;
   /**
-   * 交換対象の制限(出品カードごとのホワイトリスト): 出品カード id → 選べる card id。
-   * 対象は閲覧者の出品可能コピーのカードのうちルールを持つものだけ(キー無し =
-   * 制限なし)。値は公開済みの候補(wantableCards)との交差で、閲覧者に非公開の
-   * カード id・件数を含まない。
+   * 交換対象の制限(配信者ごとの許可リスト): 出品カード id → 選べる card id。
+   * ルールは配信者単位だが、クライアントが出品カードで引く既存の形を維持する。
+   * 対象は閲覧者の出品可能コピーのカードのうち、その配信者がルールを持つものだけ
+   * (キー無し = 制限なし)。値は公開済みの候補(wantableCards)との交差で、閲覧者に
+   * 非公開のカード id・件数を含まない。
    */
   allowedWantedByOfferedCardId: Record<string, string[]>;
 };

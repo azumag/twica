@@ -61,7 +61,7 @@ export default async function AccountSettingsPage() {
     isStreamer ? getStreamerCollectionSettings(session.twitchUserId) : null,
   ]);
 
-  // 交換対象の制限（出品カードごとのホワイトリスト）の初期値。トレード設定の一部なので
+  // 交換対象の制限（配信者ごとの許可リスト）の初期値。トレード設定の一部なので
   // トレードUIを出すときだけ読む。取得に失敗しても null になるだけで、ページは落とさない。
   const tradeRestrictionSettings =
     CARD_TRADE_UI_VISIBLE && collectionSettings

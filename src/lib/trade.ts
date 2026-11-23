@@ -22,8 +22,8 @@ import {
   cardTradeSettings as cardTradeSettingsTable,
   streamers as streamersTable,
   tradeOffers as tradeOffersTable,
-  tradeWantedRestrictionItems as tradeWantedRestrictionItemsTable,
-  tradeWantedRestrictionRules as tradeWantedRestrictionRulesTable,
+  tradeWantedAllowlistItems as tradeWantedAllowlistItemsTable,
+  tradeWantedAllowlistRules as tradeWantedAllowlistRulesTable,
   userCards as userCardsTable,
   users as usersTable,
 } from "@/lib/db/schema";
@@ -129,8 +129,8 @@ export type TradeServiceErrorCode =
   // #1790: the wanted card is visible and active, but its streamer turned
   // off "can be requested in trades" (cards.trade_wantable = false).
   | "TRADE_WANTED_CARD_NOT_WANTABLE"
-  // The offered card's streamer restricted what it can be traded for (the
-  // exchange-target whitelist) and the wanted card is not in it.
+  // The offered card's streamer restricted what its cards can be traded for
+  // (the streamer's exchange-target list) and the wanted card is not in it.
   | "TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED"
   // The copy the offerer wants to give belongs to a card definition that is
   // no longer active (including pack completion reward cards, which are kept
@@ -400,18 +400,27 @@ export function cardIsWantable(cardIdExpr: AnyColumn, withoutWantable: boolean) 
 
 /**
  * The wanted card may be requested against the offered card under the
- * exchange-target restriction (whitelist) of the offered card's streamer:
+ * exchange-target restriction (allowlist) of the offered card's streamer:
  *
- *   allowed ⇔ the offered card has no rule
- *            OR the wanted card is in the rule's allowed set
+ *   restricted(offered) ⇔ the offered card's streamer has a rule
+ *   allowed(offered, wanted) ⇔ not restricted
+ *                              OR the wanted card is in that streamer's rule
  *
- * A rule with an empty allowed set allows nothing (the rule row itself is the
- * restriction), so deleting every allowed card never lifts it. The rule is
- * keyed by the OFFERED card (an auction's listed card for bids), and ANDs
- * with cardIsWantable. Like cardIsWantable it is advisory in the app queries
- * and authoritative in createTradeOffer and the accept / bid RPCs
- * (20261123000000). No deploy-window fallback: migrations are applied before
- * the app deploys (docs/QA.md "migrationとアプリの適用順序").
+ * The rule is keyed by the STREAMER of the offered card (an auction's listed
+ * card for bids), resolved through cards.streamer_id, because a streamer has a
+ * single list that applies to every one of their cards. A rule with an empty
+ * allowed set allows nothing (the rule row itself is the restriction), so
+ * deleting every allowed card never lifts it. ANDs with cardIsWantable. Like
+ * cardIsWantable it is advisory in the app queries and authoritative in
+ * createTradeOffer and the accept / bid RPCs (20261124000000). No deploy-window
+ * fallback: migrations are applied before the app deploys (docs/QA.md
+ * "migrationとアプリの適用順序").
+ *
+ * A missing offered card row (NULL id after a card deletion) makes the
+ * "restricted" test false, so the pair passes here. Every caller also requires
+ * cardIsActive(offered) / an existing card, and accept_trade_offer rejects a
+ * NULL offered_card_id with OFFER_INVALID before this check, so this cannot let
+ * a deleted card through (the same shape as the RPC).
  */
 export function wantedAllowedForOffered(
   offeredCardIdExpr: AnyColumn,
@@ -420,13 +429,17 @@ export function wantedAllowedForOffered(
   return sql<boolean>`(
     NOT EXISTS (
       SELECT 1
-      FROM ${tradeWantedRestrictionRulesTable} AS restriction_rule
-      WHERE restriction_rule.offered_card_id = ${qualifiedColumn(offeredCardIdExpr)}
+      FROM ${cardsTable} AS restriction_offered_card
+      JOIN ${tradeWantedAllowlistRulesTable} AS restriction_rule
+        ON restriction_rule.streamer_id = restriction_offered_card.streamer_id
+      WHERE restriction_offered_card.id = ${qualifiedColumn(offeredCardIdExpr)}
     )
     OR EXISTS (
       SELECT 1
-      FROM ${tradeWantedRestrictionItemsTable} AS restriction_item
-      WHERE restriction_item.offered_card_id = ${qualifiedColumn(offeredCardIdExpr)}
+      FROM ${cardsTable} AS restriction_offered_card
+      JOIN ${tradeWantedAllowlistItemsTable} AS restriction_item
+        ON restriction_item.streamer_id = restriction_offered_card.streamer_id
+      WHERE restriction_offered_card.id = ${qualifiedColumn(offeredCardIdExpr)}
         AND restriction_item.wanted_card_id = ${qualifiedColumn(wantedCardIdExpr)}
     )
   )`;
@@ -1165,7 +1178,8 @@ export async function createTradeOffer(input: {
             // read for a card that already passed the visibility JOIN, so it
             // reveals nothing about hidden cards.
             wantedWantable: cardIsWantable(createWantedCard.id, withoutWantable),
-            // Exchange-target restriction of the offered card (whitelist).
+            // Exchange-target restriction of the offered card's streamer
+            // (the streamer's allowlist, resolved through cards.streamer_id).
             wantedAllowed: wantedAllowedForOffered(createOfferedCard.id, createWantedCard.id),
             offeredTradeEnabled: createOfferedGate.trade_enabled,
             offeredCrossEnabled: createOfferedGate.cross_channel_trade_enabled,
@@ -1365,7 +1379,7 @@ export async function createTradeOffer(input: {
   }
 
   // The offered card's streamer restricted its exchange targets and the wanted
-  // card is not in the whitelist. Ordered after the visibility / gate /
+  // card is not in the streamer's list. Ordered after the visibility / gate /
   // wantable checks for the same reason as above (a hidden card must keep
   // answering TRADE_WANTED_CARD_UNAVAILABLE). The accept RPC re-checks it for
   // offers that become disallowed after listing. Only an explicit TRUE passes.
@@ -1787,9 +1801,9 @@ function openOfferConditions(
     cardIsActive(tradeOffersTable.offered_card_id),
     cardIsActive(tradeOffersTable.wanted_card_id),
     cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable),
-    // The offered card's exchange-target restriction (whitelist): an offer
-    // that the streamer's rule no longer allows leaves the board (and the
-    // hub) like a no-longer-wantable one, and returns if the rule is lifted.
+    // The offered card's streamer's exchange-target list: an offer that the
+    // streamer's rule no longer allows leaves the board (and the hub) like a
+    // no-longer-wantable one, and returns if the rule is lifted.
     wantedAllowedForOffered(tradeOffersTable.offered_card_id, tradeOffersTable.wanted_card_id),
     // A cross-channel offer exists on the board only while BOTH channels
     // still allow cross-channel trade (same predicate as tradeableStateFor).
@@ -2245,9 +2259,9 @@ export type TradeAcceptRpcError =
   // The offer stays open (it comes back if the streamer switches the card
   // back). Nothing was transferred.
   | "WANTED_CARD_NOT_WANTABLE"
-  // 20261123000000: the offered card's exchange-target restriction (whitelist)
-  // does not include the wanted card. The offer stays open (it comes back if
-  // the streamer lifts the rule). Nothing was transferred.
+  // 20261124000000: the offered card's streamer's exchange-target list does
+  // not include the wanted card. The offer stays open (it comes back if the
+  // streamer lifts the rule). Nothing was transferred.
   | "WANTED_CARD_NOT_ALLOWED_FOR_OFFERED";
 
 // テストが旧アプリ（ロールバック時）の既知コード集合との差分を固定できるよう公開する
@@ -2414,7 +2428,7 @@ async function precheckTradeAccept(input: {
           // read only turns the common case into the board's
           // "offer unavailable" answer without calling the RPC.
           wantedWantable: cardIsWantable(tradeOffersTable.wanted_card_id, withoutWantable),
-          // The same for the offered card's exchange-target restriction
+          // The same for the offered card's streamer's exchange-target list
           // (accept_trade_offer: WANTED_CARD_NOT_ALLOWED_FOR_OFFERED).
           wantedAllowed: wantedAllowedForOffered(
             tradeOffersTable.offered_card_id,

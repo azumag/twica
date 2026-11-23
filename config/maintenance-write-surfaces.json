@@ -563,7 +563,7 @@
     ],
     "category": "streamer",
     "maintenanceBehavior": "block",
-    "reason": "トレードの交換対象の制限（出品カードごとのホワイトリスト）の保存・解除。DB書き込みを伴うため、既存の一般 write 拒否に従う。",
+    "reason": "トレードの交換対象の制限（配信者ごとの許可リスト）の保存・解除。DB書き込みを伴うため、既存の一般 write 拒否に従う。",
     "owner": "azumag",
     "reviewedAt": "2026-11-23"
   }

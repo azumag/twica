@@ -159,10 +159,10 @@ describe("TradeAuctionDetail bidder", () => {
   });
 
   describe("exchange-target restriction on bids", () => {
-    it("narrows the bid candidates to the allowed cards of THIS auction's offered card", async () => {
+    it("narrows the bid candidates to the allowed cards of THIS auction's offered card's streamer", async () => {
       setupFetch({ auction: makeAuction(), bids: null });
-      // The auction offers card-dragon; only card-coin may be used. A rule of another
-      // offered card must not affect this auction.
+      // The auction offers card-dragon; only card-coin may be used. A rule keyed by another
+      // offered card must not affect this auction (the form is keyed by the offered card id).
       renderDetail({
         allowedBidCardIdsByOfferedCardId: { "card-dragon": ["card-coin"], "card-other": ["card-gem"] },
       });

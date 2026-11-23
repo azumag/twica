@@ -68,28 +68,39 @@ beforeEach(() => {
 });
 
 describe("PUT /api/streamer/trade-wanted-restrictions", () => {
-  it("saves the whitelist for the session's own streamer (never a body-supplied one)", async () => {
-    const response = await PUT(put({ offeredCardId: A, allowedWantedCardIds: [C, D], streamerId: "evil" }));
+  it("replaces the allowlist of the session's own streamer (never a body-supplied one)", async () => {
+    const response = await PUT(put({ allowedWantedCardIds: [C, D], streamerId: "evil" }));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ success: true, ruleRemoved: false });
+    // 配信者はセッションの twitchUserId から解決する。body の streamerId は使わない。
     expect(mocks.replace).toHaveBeenCalledWith({
       streamerId: STREAMER_ID,
-      offeredCardId: A,
       allowedWantedCardIds: [C, D],
     });
     expect(response.headers.get("cache-control")).toContain("no-store");
   });
 
   it("normalizes UUIDs to lower case and drops duplicates", async () => {
-    await PUT(put({ offeredCardId: A.toUpperCase(), allowedWantedCardIds: [C, C.toUpperCase()] }));
+    await PUT(put({ allowedWantedCardIds: [C.toUpperCase(), C] }));
     expect(mocks.replace).toHaveBeenCalledWith(
-      expect.objectContaining({ offeredCardId: A, allowedWantedCardIds: [C] }),
+      expect.objectContaining({ allowedWantedCardIds: [C] }),
     );
+  });
+
+  it("accepts the card being listed in the list (the old self-reference rule is gone)", async () => {
+    // リストは出品カードに依存しない。自分自身を「求む」にして出品する操作は
+    // 出品 API の TRADE_SAME_CARD が止める(この API の責務ではない)。
+    const response = await PUT(put({ allowedWantedCardIds: [A, C] }));
+    expect(response.status).toBe(200);
+    expect(mocks.replace).toHaveBeenCalledWith({
+      streamerId: STREAMER_ID,
+      allowedWantedCardIds: [A, C],
+    });
   });
 
   it("an empty list removes the rule", async () => {
     mocks.replace.mockResolvedValue({ kind: "ok", ruleRemoved: true });
-    const response = await PUT(put({ offeredCardId: A, allowedWantedCardIds: [] }));
+    const response = await PUT(put({ allowedWantedCardIds: [] }));
     expect(await response.json()).toEqual({ success: true, ruleRemoved: true });
   });
 
@@ -101,7 +112,7 @@ describe("PUT /api/streamer/trade-wanted-restrictions", () => {
     ["no streamer row", () => mocks.selectStreamer.mockResolvedValue([]), 401],
   ])("rejects: %s", async (_label, arrange, status) => {
     arrange();
-    const response = await PUT(put({ offeredCardId: A, allowedWantedCardIds: [C] }));
+    const response = await PUT(put({ allowedWantedCardIds: [C] }));
     expect(response.status).toBe(status);
     expect(mocks.replace).not.toHaveBeenCalled();
   });
@@ -109,13 +120,11 @@ describe("PUT /api/streamer/trade-wanted-restrictions", () => {
   it.each([
     ["invalid JSON", "{nope"],
     ["not an object", "[]"],
-    ["missing offeredCardId", { allowedWantedCardIds: [C] }],
-    ["offeredCardId not a uuid", { offeredCardId: "x", allowedWantedCardIds: [C] }],
-    ["allowedWantedCardIds not an array", { offeredCardId: A, allowedWantedCardIds: C }],
-    ["allowed id not a uuid", { offeredCardId: A, allowedWantedCardIds: ["x"] }],
-    ["allowed id not a string", { offeredCardId: A, allowedWantedCardIds: [1] }],
-    ["the offered card allows itself", { offeredCardId: A, allowedWantedCardIds: [A] }],
-    ["over the item limit", { offeredCardId: A, allowedWantedCardIds: [C, D, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "ffffffff-ffff-4fff-8fff-ffffffffffff"] }],
+    ["missing allowedWantedCardIds", { streamerId: STREAMER_ID }],
+    ["allowedWantedCardIds not an array", { allowedWantedCardIds: C }],
+    ["allowed id not a uuid", { allowedWantedCardIds: ["x"] }],
+    ["allowed id not a string", { allowedWantedCardIds: [1] }],
+    ["over the item limit", { allowedWantedCardIds: [C, D, A, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"] }],
   ])("400 for an invalid body: %s", async (_label, body) => {
     const response = await PUT(put(body));
     expect(response.status).toBe(400);
@@ -124,27 +133,20 @@ describe("PUT /api/streamer/trade-wanted-restrictions", () => {
 
   it("answers 404 for a card that is not the streamer's (other channel and missing are indistinguishable)", async () => {
     mocks.replace.mockResolvedValue({ kind: "error", code: "CARD_NOT_FOUND" });
-    const response = await PUT(put({ offeredCardId: A, allowedWantedCardIds: [C] }));
+    const response = await PUT(put({ allowedWantedCardIds: [C] }));
     expect(response.status).toBe(404);
-  });
-
-  it("answers 409 with the code when the rule limit is reached", async () => {
-    mocks.replace.mockResolvedValue({ kind: "error", code: "TOO_MANY_RULES" });
-    const response = await PUT(put({ offeredCardId: A, allowedWantedCardIds: [C] }));
-    expect(response.status).toBe(409);
-    expect((await response.json()).code).toBe("TOO_MANY_RULES");
   });
 
   it("answers 503 (never a fake success) while the tables are missing (migration not applied)", async () => {
     mocks.replace.mockRejectedValue(Object.assign(new Error("relation does not exist"), { code: "42P01" }));
-    const response = await PUT(put({ offeredCardId: A, allowedWantedCardIds: [C] }));
+    const response = await PUT(put({ allowedWantedCardIds: [C] }));
     expect(response.status).toBe(503);
     expect((await response.json()).unavailable).toBe(true);
   });
 
   it("answers 500 without internal details for any other failure", async () => {
     mocks.replace.mockRejectedValue(new Error("secret db detail"));
-    const response = await PUT(put({ offeredCardId: A, allowedWantedCardIds: [C] }));
+    const response = await PUT(put({ allowedWantedCardIds: [C] }));
     expect(response.status).toBe(500);
     expect(JSON.stringify(await response.json())).not.toContain("secret");
   });
