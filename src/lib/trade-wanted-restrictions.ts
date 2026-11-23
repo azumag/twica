@@ -32,6 +32,7 @@ import {
   tradeWantedRestrictionRules as rulesTable,
 } from "@/lib/db/schema";
 import { logger } from "@/lib/logger.server";
+import { cardVisibleTo, viewerUserIdOf } from "@/lib/trade";
 
 /** 1つのルール(出品カード1枚)に入れられる許可カードの上限。 */
 export const TRADE_WANTED_RESTRICTION_MAX_ITEMS = 100;
@@ -200,16 +201,25 @@ export async function replaceTradeWantedRestriction(input: {
  * ルールが無い出品カードはキー自体を持たない(= 制限なし)。ルールがあって、
  * 選択肢(`selectableCardIds`)との交差が空なら `[]`(= 指定できるカードが無い)。
  *
- * 配列を返す前に必ず `selectableCardIds` と交差させる。この値は RSC の props として
- * クライアントへ直列化されるため、閲覧者に公開されていないカードの id・件数を
- * 含めてはならない(selectableCardIds は listWantableCards など公開判定済みの集合)。
+ * この値は RSC の props としてクライアントへ直列化されるため、閲覧者に公開されて
+ * いないカードの id・ルールの件数を、キーにも値にも含めてはならない:
+ *   - 値(許可カード)は必ず `selectableCardIds` と交差させる(listWantableCards や
+ *     閲覧者の入札候補など、公開判定済みの集合)。
+ *   - キー(出品カード)は、出品カード id 群を渡す形(`offeredCardIds`)では呼び出し側が
+ *     閲覧者の所持コピーから選ぶので公開済み。配信者を渡す形(`streamerId`)では
+ *     `viewerTwitchUserId` の可視性(cardVisibleTo。オークションの一覧・詳細と同じ規則)を
+ *     満たす出品カードのルールだけを返す。そうしないと、配信者の全ルール(無効カード・
+ *     未公開カード・許可0件のルールを含む)のキーがそのまま props に載る。
  *
- * `where` は対象のルールを選ぶ: 出品カードの id 群、または配信者(その配信者の全ルール)。
+ * `where` は対象のルールを選ぶ: 出品カードの id 群、または配信者(その配信者のルールのうち
+ * 閲覧者に公開されている出品カードのもの)。
  * 取得に失敗した場合(migration 前など)は絞り込みなし(空表)に縮退する。UI 補助であり、
  * 権威は出品 API・応諾/入札 RPC なので、縮退しても制限を素通りする経路は生じない。
  */
 export async function loadAllowedWantedByOffered(
-  where: { offeredCardIds: string[] } | { streamerId: string },
+  where:
+    | { offeredCardIds: string[] }
+    | { streamerId: string; viewerTwitchUserId: string },
   selectableCardIds: ReadonlySet<string>,
 ): Promise<Record<string, string[]>> {
   if ("offeredCardIds" in where && where.offeredCardIds.length === 0) return {};
@@ -229,7 +239,15 @@ export async function loadAllowedWantedByOffered(
         }
         return query
           .innerJoin(cardsTable, eq(cardsTable.id, rulesTable.offered_card_id))
-          .where(eq(cardsTable.streamer_id, where.streamerId));
+          .where(
+            and(
+              eq(cardsTable.streamer_id, where.streamerId),
+              // 無効カード(オークションに出せず、一覧にも出ない)のルールは返さない。
+              eq(cardsTable.is_active, true),
+              // 閲覧者に公開されている出品カードのルールだけ(キーの露出を防ぐ)。
+              cardVisibleTo(rulesTable.offered_card_id, viewerUserIdOf(where.viewerTwitchUserId)),
+            ),
+          );
       },
       "trade-wanted-restrictions:allowed-map",
       { idempotent: true },
