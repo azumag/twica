@@ -121,6 +121,51 @@ describe("TradeCreateForm (#727 §6.5)", () => {
     expect(within(step2).getByRole("button", { name: /Dup Card/ })).toBeDisabled();
   });
 
+  describe("exchange-target restriction (streamer list applied to the offered card)", () => {
+    const names = (region: HTMLElement) =>
+      within(region).getAllByRole("button").map((button) => button.textContent ?? "");
+
+    it("keeps every candidate until a restricted card is chosen, then narrows to the allowed cards in server order", () => {
+      // card-single is restricted to card-want-2 only; card-dup has no rule.
+      renderForm({ allowedWantedByOfferedCardId: { "card-single": ["card-want-2"] } });
+      const step1 = step(ja.createStep1Title);
+      const step2 = step(ja.createStep2Title);
+      expect(names(step2).filter((text) => /Card/.test(text))).toHaveLength(3);
+
+      fireEvent.click(tile(step1, "Single Card"));
+      expect(screen.getByText(ja.createStep2RestrictedNotice)).toBeInTheDocument();
+      const narrowed = names(step(ja.createStep2Title));
+      expect(narrowed.some((text) => /Want Card Two/.test(text))).toBe(true);
+      expect(narrowed.some((text) => /Want Card(?! Two)/.test(text))).toBe(false);
+      expect(narrowed.some((text) => /Dup Card/.test(text))).toBe(false);
+
+      // A card without a rule restores the full list and drops the notice.
+      fireEvent.click(tile(step1, "Dup Card"));
+      expect(screen.queryByText(ja.createStep2RestrictedNotice)).toBeNull();
+      expect(names(step(ja.createStep2Title)).filter((text) => /Card/.test(text))).toHaveLength(3);
+    });
+
+    it("drops a wanted selection that the newly chosen offered card does not allow, so it cannot be submitted", () => {
+      renderForm({ allowedWantedByOfferedCardId: { "card-single": ["card-want-2"] } });
+      const step1 = step(ja.createStep1Title);
+      fireEvent.click(tile(step1, "Dup Card"));
+      fireEvent.click(within(step(ja.createStep2Title)).getByRole("button", { name: /Want Card(?! Two)/ }));
+      expect(screen.getByRole("button", { name: ja.createSubmitButton })).toBeEnabled();
+
+      fireEvent.click(tile(step1, "Single Card"));
+      // "Want Card" is outside the streamer's list: no selection survives, submit is disabled.
+      expect(screen.getByRole("button", { name: ja.createSubmitButton })).toBeDisabled();
+    });
+
+    it("explains when a restricted card currently has no requestable card (empty list)", () => {
+      renderForm({ allowedWantedByOfferedCardId: { "card-single": [] } });
+      fireEvent.click(tile(step(ja.createStep1Title), "Single Card"));
+      expect(screen.getByText(ja.createStep2RestrictedEmpty)).toBeInTheDocument();
+      expect(screen.queryByText(ja.createStep2Empty)).toBeNull();
+      expect(screen.getByRole("button", { name: ja.createSubmitButton })).toBeDisabled();
+    });
+  });
+
   it("shows the owned-only notice when the wanted channel hides unowned cards", () => {
     renderForm({ wantableRevealsUnownedCards: false });
     expect(screen.getByText(ja.createStep2UnrevealedNotice)).toBeInTheDocument();

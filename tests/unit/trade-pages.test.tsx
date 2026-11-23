@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   listTradeableOwnedCopies: vi.fn(),
   listCrossTradePartnerStreamers: vi.fn(),
   listMyTradeOffers: vi.fn(),
+  loadAllowedBidCardsForAuction: vi.fn(),
   loggerWarn: vi.fn(),
   redirect: vi.fn((url: string) => {
     throw new Error(`REDIRECT:${url}`);
@@ -51,6 +52,10 @@ vi.mock("@/lib/trade", () => ({
 // The detail page passes TRADE_MAX_BID_QUANTITY (#1791); the real module
 // pulls in the DB layer, so the value is mirrored here.
 vi.mock("@/lib/trade-auction", () => ({ TRADE_MAX_BID_QUANTITY: 10 }));
+// The detail page loads the exchange-target restriction map (the offered card's streamer's list).
+vi.mock("@/lib/trade-wanted-restrictions", () => ({
+  loadAllowedBidCardsForAuction: mocks.loadAllowedBidCardsForAuction,
+}));
 vi.mock("@/lib/logger", () => ({ logger: { warn: mocks.loggerWarn, info: vi.fn(), error: vi.fn() } }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect, notFound: mocks.notFound }));
 vi.mock("next-intl", () => ({
@@ -547,6 +552,39 @@ describe("/trade/[streamerId]/auctions/[auctionId] detail page (#1791)", () => {
       { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, collectionNumber: 1, freeCount: 2 },
       { cardId: "c-locked", name: "Locked", rarity: "common", imageUrl: null, collectionNumber: 2, freeCount: 0 },
     ]);
+  });
+
+  it("passes the restriction map of THIS auction's offered card's streamer (not the board channel's rules), intersected with the viewer's bid candidates", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.listWantableCards.mockResolvedValue([
+      { cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, collectionNumber: 1, isOwned: true },
+      { cardId: "c-unowned", name: "Unowned", rarity: "epic", imageUrl: null, collectionNumber: 3, isOwned: false },
+    ]);
+    mocks.listTradeableOwnedCopies.mockResolvedValue([
+      { userCardId: "u1", cardId: "c-own", name: "Own", rarity: "rare", imageUrl: null, obtainedAt: null, isListed: false, ownedCount: 1 },
+    ]);
+    mocks.loadAllowedBidCardsForAuction.mockResolvedValue({ "c-offered": ["c-own"] });
+    render(await TradeAuctionDetailPage({ params: detailParams, searchParams: Promise.resolve({}) }));
+
+    // The page path is the BIDDER's channel (it differs from the offered card's channel on the
+    // cross-channel tab), so the rule is looked up from the auction itself, for this viewer
+    // (the loader applies the visibility rule to the offered card), with the viewer's own bid
+    // candidates as the only values that can be serialized.
+    expect(mocks.loadAllowedBidCardsForAuction).toHaveBeenCalledTimes(1);
+    const [auctionId, viewerTwitchUserId, selectable] = mocks.loadAllowedBidCardsForAuction.mock.calls[0];
+    expect(auctionId).toBe(AUCTION_ID);
+    expect(viewerTwitchUserId).toBe("viewer-1");
+    expect([...selectable]).toEqual(["c-own"]);
+    expect(props("trade-auction-detail").allowedBidCardIdsByOfferedCardId).toEqual({ "c-offered": ["c-own"] });
+  });
+
+  it("does not read the restriction map when the viewer has no bid candidate or is anonymous", async () => {
+    mocks.getSession.mockResolvedValue(SESSION);
+    mocks.listWantableCards.mockResolvedValue([]);
+    mocks.listTradeableOwnedCopies.mockResolvedValue([]);
+    render(await TradeAuctionDetailPage({ params: detailParams, searchParams: Promise.resolve({}) }));
+    expect(mocks.loadAllowedBidCardsForAuction).not.toHaveBeenCalled();
+    expect(props("trade-auction-detail").allowedBidCardIdsByOfferedCardId).toEqual({});
   });
 
   it("is readable anonymously without loading any card data, with a login link back to it", async () => {

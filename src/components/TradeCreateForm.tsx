@@ -75,6 +75,14 @@ interface TradeCreateFormProps {
    */
   wantableRevealsUnownedNames: boolean;
   /**
+   * 出品カードの配信者が設定した「交換対象の制限」(ホワイトリスト)。出品カード id →
+   * 選べる card id。キーが無いカードは制限なし、キーがあって空配列なら「指定できる
+   * カードが無い」。サーバー(loadTradeCreateFormData)が公開済みの候補
+   * (wantableCards)との交差を取って返すので、閲覧者に非公開のカード id は含まれない。
+   * この絞り込みは UI の補助で、権威は出品 API(TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED)。
+   */
+  allowedWantedByOfferedCardId?: Record<string, string[]>;
+  /**
    * Upper bound of the wanted quantity (TRADE_MAX_WANTED_QUANTITY, #1789).
    * Passed from the server page so this client component does not import the
    * server-only trade module; the API re-validates the range.
@@ -157,6 +165,7 @@ export default function TradeCreateForm({
   wantableCards,
   wantableRevealsUnownedCards,
   wantableRevealsUnownedNames,
+  allowedWantedByOfferedCardId,
   maxWantedQuantity,
   initialOfferedCardId = null,
 }: TradeCreateFormProps) {
@@ -188,12 +197,25 @@ export default function TradeCreateForm({
   const requestIdRef = useRef<{ selection: string; id: string } | null>(null);
 
   const offered = groups.find((group) => group.cardId === offeredCardId) ?? null;
-  const wanted = wantableCards.find((card) => card.cardId === wantedCardId) ?? null;
+  // 選んだ出品カードの配信者にルールがあれば、選択肢を許可カードだけに絞る(サーバー順は維持)。
+  // 出品カードを変えて許可外になった選択は、`wanted` が null になり送信できない。
+  const allowedForOffered = offeredCardId
+    ? allowedWantedByOfferedCardId?.[offeredCardId]
+    : undefined;
+  const isRestricted = allowedForOffered !== undefined;
+  const choiceCards = useMemo(
+    () =>
+      allowedForOffered === undefined
+        ? wantableCards
+        : wantableCards.filter((card) => allowedForOffered.includes(card.cardId)),
+    [wantableCards, allowedForOffered],
+  );
+  const wanted = choiceCards.find((card) => card.cardId === wantedCardId) ?? null;
   const offeredUserCardId = offered?.availableUserCardId ?? null;
   // 未所持カードが選択肢に含まれるか。名前が非公開でも未所持カードは
   // #N で選べる（C3a）ため、「全候補が所持済み」のときに #N の案内を出さない
   // よう、フラグだけでなく実データも見る。
-  const hasUnownedChoice = wantableCards.some((card) => !card.isOwned);
+  const hasUnownedChoice = choiceCards.some((card) => !card.isOwned);
   // #N 表記の理由を説明する案内（名前が非公開 かつ 未所持カードが候補にある）。
   const showsNumberOnlyNotice = !wantableRevealsUnownedNames && hasUnownedChoice;
 
@@ -416,14 +438,22 @@ export default function TradeCreateForm({
               {t("createStep2NumberOnlyNotice")}
             </p>
           )}
-          {wantableCards.length === 0 ? (
-            <p className="rounded-xl bg-gray-800 p-4 text-gray-400">{t("createStep2Empty")}</p>
+          {/* 出品カードに「交換対象の制限」があるとき、候補が絞られている理由を先に伝える。 */}
+          {isRestricted && (
+            <p className="mb-3 rounded-xl border border-gray-600 bg-gray-800 p-3 text-sm text-gray-300">
+              {t("createStep2RestrictedNotice")}
+            </p>
+          )}
+          {choiceCards.length === 0 ? (
+            <p className="rounded-xl bg-gray-800 p-4 text-gray-400">
+              {isRestricted ? t("createStep2RestrictedEmpty") : t("createStep2Empty")}
+            </p>
           ) : (
             // 選択肢は listWantableCards が返した順（rarity_order → 表示番号 →
             // cardId）をそのまま使う。クライアント側で名前順に並べ替えると、
             // 名前非公開カードの名前の大小関係を漏らす side channel になる。
             <TradeCardChoiceList
-              choices={wantableCards.map((card) => {
+              choices={choiceCards.map((card) => {
                 const sameAsOffered = card.cardId === offeredCardId;
                 return {
                   cardId: card.cardId,
@@ -448,7 +478,7 @@ export default function TradeCreateForm({
               disabled={submitting}
             />
           )}
-          {wantableCards.length > 0 && (
+          {choiceCards.length > 0 && (
             // A native <select> (1..max) instead of a free number input:
             // no parsing/clamping of typed text, and every value offered
             // is one the API accepts. Options include the unit in their

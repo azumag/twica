@@ -8,6 +8,7 @@ import {
   listWantableCards,
 } from "@/lib/trade";
 import { TRADE_MAX_BID_QUANTITY } from "@/lib/trade-auction";
+import { loadAllowedBidCardsForAuction } from "@/lib/trade-wanted-restrictions";
 import {
   parseTradeScope,
   tradeAuctionBoardPath,
@@ -60,6 +61,12 @@ export default async function TradeAuctionDetailPage({
   if (!streamer) notFound();
 
   let bidCards: TradeAuctionBidCard[] = [];
+  // 交換対象の制限(配信者ごとの許可リスト)。このページのパスは入札に使うカードの
+  // チャネルで、クロスチャネルでは出品カードのチャネルと異なる。そのため本オークションの
+  // 出品カード(閲覧者に公開されているものに限る)から配信者を引き、そのリストだけを、
+  // 入札候補(閲覧者が所持する公開済みカード)との交差で渡し、クライアントが絞る。
+  // 非公開カードの id・ルール件数は含まれない。
+  let allowedBidCardIdsByOfferedCardId: Record<string, string[]> = {};
   // O3: bid candidates are only useful to a non-seller while the auction is
   // still in bidding. Determining that requires the auction row, which this
   // page deliberately does not read (it is fetched by <TradeAuctionDetail>).
@@ -89,6 +96,13 @@ export default async function TradeAuctionDetailPage({
         collectionNumber: card.collectionNumber,
         freeCount: freeByCard.get(card.cardId) ?? 0,
       }));
+    if (bidCards.length > 0) {
+      allowedBidCardIdsByOfferedCardId = await loadAllowedBidCardsForAuction(
+        auctionId,
+        session.twitchUserId,
+        new Set(bidCards.map((card) => card.cardId)),
+      );
+    }
   }
 
   return (
@@ -110,6 +124,7 @@ export default async function TradeAuctionDetailPage({
         isLoggedIn={Boolean(session)}
         loginHref={tradeLoginHref(tradeAuctionDetailPath(streamer.id, auctionId, scope))}
         bidCards={bidCards}
+        allowedBidCardIdsByOfferedCardId={allowedBidCardIdsByOfferedCardId}
         maxBidQuantity={TRADE_MAX_BID_QUANTITY}
       />
     </>

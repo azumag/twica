@@ -5,6 +5,7 @@ import { getDb } from "@/lib/db/client";
 import { withDbRetry } from "@/lib/db/retry";
 import { streamers as streamersTable } from "@/lib/db/schema";
 import { withLiveDirectorySettingsColumnFallback } from "@/lib/db/streamers-safe-columns";
+import { loadAllowedWantedByOffered } from "@/lib/trade-wanted-restrictions";
 import {
   getTradeBoardStreamer,
   listTradeableOwnedCopies,
@@ -169,6 +170,14 @@ export type TradeCreateFormData = {
    * UI は表示番号 #N で選ぶ。このとき理由の案内を出す。
    */
   wantableRevealsUnownedNames: boolean;
+  /**
+   * 交換対象の制限(配信者ごとの許可リスト): 出品カード id → 選べる card id。
+   * ルールは配信者単位だが、クライアントが出品カードで引く既存の形を維持する。
+   * 対象は閲覧者の出品可能コピーのカードのうち、その配信者がルールを持つものだけ
+   * (キー無し = 制限なし)。値は公開済みの候補(wantableCards)との交差で、閲覧者に
+   * 非公開のカード id・件数を含まない。
+   */
+  allowedWantedByOfferedCardId: Record<string, string[]>;
 };
 
 /**
@@ -198,9 +207,21 @@ export async function loadTradeCreateFormData(input: {
       : Promise.resolve(null),
   ]);
 
+  // 交換対象の制限。オークションは求めるカードを持たない(wantStreamerId = null)ので読まない。
+  // 値は公開判定済みの wantableCards との交差だけを返す(非公開カード id をクライアントへ
+  // 直列化しない)。UI 補助であり、権威は出品 API と応諾 RPC。
+  const allowedWantedByOfferedCardId =
+    input.wantStreamerId && wantableCards.length > 0
+      ? await loadAllowedWantedByOffered(
+          [...new Set(ownedCopies.map((copy) => copy.cardId))],
+          new Set(wantableCards.map((card) => card.cardId)),
+        )
+      : {};
+
   return {
     ownedCopies,
     wantableCards,
+    allowedWantedByOfferedCardId,
     // Fail closed if the channel disappeared between the candidate read and
     // this read: no notice (and no wrong claim) is better than a wrong one.
     //

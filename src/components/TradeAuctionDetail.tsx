@@ -47,6 +47,13 @@ interface TradeAuctionDetailProps {
   loginHref: string;
   /** Bid candidates of the board's channel (empty for anonymous viewers). */
   bidCards: TradeAuctionBidCard[];
+  /**
+   * 交換対象の制限(出品カードの配信者ごとの許可リスト): オークションの出品カード id →
+   * 入札に使える card id。サーバーが閲覧者の入札候補(bidCards)との交差を取って渡す
+   * (非公開カードの id を含まない)。キーが無い出品カードは制限なし。UI の補助で、
+   * 権威は入札 RPC(BID_CARD_NOT_ALLOWED_FOR_OFFERED)。
+   */
+  allowedBidCardIdsByOfferedCardId?: Record<string, string[]>;
   /** TRADE_MAX_BID_QUANTITY, passed from the server page (API re-validates). */
   maxBidQuantity: number;
 }
@@ -101,6 +108,7 @@ export default function TradeAuctionDetail({
   isLoggedIn,
   loginHref,
   bidCards,
+  allowedBidCardIdsByOfferedCardId,
   maxBidQuantity,
 }: TradeAuctionDetailProps) {
   const t = useTranslations("trade");
@@ -503,7 +511,15 @@ export default function TradeAuctionDetail({
     // Copies of the viewer's current bid are reusable for its change (the
     // RPC re-selects them), so they count as usable for the same card.
     card.freeCount + (myActiveBid && myActiveBid.bidCardId === card.cardId ? myActiveBid.quantity : 0);
-  const selectedCard = bidCards.find((card) => card.cardId === bidCardId) ?? null;
+  // 出品カードの配信者にルールがあれば、入札候補を許可カードだけに絞る。
+  const allowedForAuction = auction?.offeredCardId
+    ? allowedBidCardIdsByOfferedCardId?.[auction.offeredCardId]
+    : undefined;
+  const isBidRestricted = allowedForAuction !== undefined;
+  const candidateCards = allowedForAuction === undefined
+    ? bidCards
+    : bidCards.filter((card) => allowedForAuction.includes(card.cardId));
+  const selectedCard = candidateCards.find((card) => card.cardId === bidCardId) ?? null;
   const selectedUsable = selectedCard ? Math.min(usableCount(selectedCard), maxBidQuantity) : 0;
   // `bidCards` is a server prop refreshed after every write, and its free
   // counts can shrink while this form stays open: another tab can lock the
@@ -544,12 +560,19 @@ export default function TradeAuctionDetail({
         {t(myActiveBid ? "auctionBidChangeTitle" : "auctionBidFormTitle")}
       </h2>
       <p className="mb-3 text-sm text-gray-300">{t("auctionBidFormHelp")}</p>
-      {bidCards.length === 0 ? (
-        <p className="rounded-lg bg-gray-900/40 p-4 text-sm text-gray-400">{t("auctionBidCardsEmpty")}</p>
+      {isBidRestricted && (
+        <p className="mb-3 rounded-lg border border-gray-600 bg-gray-900/40 p-3 text-sm text-gray-300">
+          {t("auctionBidRestrictedNotice")}
+        </p>
+      )}
+      {candidateCards.length === 0 ? (
+        <p className="rounded-lg bg-gray-900/40 p-4 text-sm text-gray-400">
+          {isBidRestricted ? t("auctionBidRestrictedEmpty") : t("auctionBidCardsEmpty")}
+        </p>
       ) : (
         <>
           <TradeCardChoiceList
-            choices={bidCards.map((card) => {
+            choices={candidateCards.map((card) => {
               const sameAsOffered = card.cardId === auction.offeredCardId;
               const usable = usableCount(card);
               return {
@@ -566,7 +589,7 @@ export default function TradeAuctionDetail({
             })}
             selectedCardId={bidCardId}
             onSelect={(cardId) => {
-              const card = bidCards.find((item) => item.cardId === cardId);
+              const card = candidateCards.find((item) => item.cardId === cardId);
               setBidCardId(cardId);
               // Keep the quantity within what the new card allows.
               if (card) setQuantity((value) => Math.max(1, Math.min(value, usableCount(card), maxBidQuantity)));

@@ -713,6 +713,37 @@
     "visibilityNotice": "トレード画面での未所持カードの見え方は、同じページのコレクション公開設定「{itemsTitle}」に従います。",
     "visibilityNoticeLink": "コレクション公開設定の「{itemsTitle}」を開く"
   },
+  "tradeWantedRestriction": {
+    "title": "交換対象の制限",
+    "description": "あなたのカードが出品されるとき、「求む」に指定できるカードを限定できます。未設定のときは制限なしです。",
+    "scopeNote": "設定は配信者ごとに1つで、あなたのすべてのカード（通常の出品とオークションの入札）に適用されます。指定できるのは自分のチャネルのカードだけで、制限すると、あなたのカードは他チャネルのカードとのトレードには出せなくなります。",
+    "empty": "交換対象の制限は設定されていません。",
+    "listLabel": "設定中の交換対象リスト",
+    "allowedLabel": "交換対象にできるカード",
+    "edit": "編集",
+    "remove": "制限を解除",
+    "add": "制限を追加",
+    "save": "保存",
+    "saving": "保存中...",
+    "cancel": "キャンセル",
+    "allowedAddLabel": "交換対象に追加するカード",
+    "allowedPlaceholder": "カードを追加…",
+    "allowedEmptyHint": "1枚以上選ぶと保存できます。追加したカードだけが、あなたのカードの交換対象になります。",
+    "allowedLimitReached": "交換対象に設定できるカードは最大{max}枚です。これ以上は追加できません。",
+    "removeAllowed": "{card} を交換対象から外す",
+    "inactiveBadge": "（無効）",
+    "cardLabel": "{name}（{rarity}）",
+    "deletedCard": "削除されたカード",
+    "emptyRuleWarning": "交換対象に指定できるカードがありません（許可していたカードが削除されました）。現在、あなたのカードはどれも交換対象に指定できません。編集するか制限を解除してください。",
+    "messages": {
+      "saved": "交換対象の制限を保存しました",
+      "removed": "交換対象の制限を解除しました"
+    },
+    "errors": {
+      "saveFailed": "交換対象の制限の保存に失敗しました",
+      "unavailable": "交換対象の制限のDB反映がまだ完了していません。少し待ってから再度お試しください。"
+    }
+  },
   "trade": {
     "hubTitle": "トレード",
     "hubCreateButton": "出品する",
@@ -793,6 +824,7 @@
     "errorTradeOfferedCardInactive": "このカードは現在トレードに出せません",
     "errorTradeWantedCardUnavailable": "このカードは指定できません",
     "errorTradeWantedCardNotWantable": "このカードは配信者の設定により「求めるカード」に指定できません",
+    "errorTradeWantedCardNotAllowedForOffered": "このカードは配信者の設定により、出品するカードとは交換できません",
     "errorTradeOfferUnavailable": "この取引は現在応じられません",
     "errorTradeSameCard": "同じカード同士は交換できません",
     "errorTradeCardAlreadyListed": "このカードは既に出品中か入札中です",
@@ -810,6 +842,7 @@
     "errorTradeAuctionBidInvalid": "この入札では成立できません。別の入札を選んでください",
     "errorTradeBidCardUnavailable": "このカードは入札に使えません",
     "errorTradeBidCardNotWantable": "このカードは配信者の設定によりトレードの対価に使えません",
+    "errorTradeBidCardNotAllowedForOffered": "このカードは配信者の設定により、この出品カードへの入札に使えません",
     "errorTradeNotEnoughCards": "入札に使える手持ちが足りません（出品中・入札中のカードは使えません）",
     "errorUnauthorized": "ログインが必要です。ページを再読み込みしてログインし直してください",
     "errorRateLimited": "操作が多すぎます。しばらくしてから再試行してください",
@@ -832,6 +865,8 @@
     "createStep2UnownedBadge": "未所持",
     "createStep2SameCard": "渡すカードと同じカードは選べません",
     "createStep2Empty": "指定できるカードがありません",
+    "createStep2RestrictedNotice": "この出品カードは、配信者の設定により交換できるカードが限られています",
+    "createStep2RestrictedEmpty": "この出品カードには、現在指定できる交換対象がありません（配信者の設定による制限）",
     "createStep2UnrevealedNotice": "この配信者は未所持カードを公開していないため、あなたが持っているカードのみ指定できます",
     "createStep2NumberOnlyNotice": "このコレクションでは未所持カードの名前が公開されていないため、表示番号（#N）で選びます",
     "createConfirmTitle": "3. 確認",
@@ -947,6 +982,8 @@
     "auctionBidChangeTitle": "入札を変更する",
     "auctionBidFormHelp": "入札に出すカードを1種類選び、枚数を指定します。入札は1つのオークションにつき1件で、締切前なら変更・取り下げできます。",
     "auctionBidCardsEmpty": "入札に使えるカードを持っていません（配信者が対価に指定できるカードのみ使えます）",
+    "auctionBidRestrictedNotice": "この出品カードには、配信者の設定により入札に使えるカードが限られています",
+    "auctionBidRestrictedEmpty": "この出品カードには、現在入札に使えるカードがありません（配信者の設定による制限）",
     "auctionBidSameCard": "出品カードと同じカードでは入札できません",
     "auctionBidSameCardBadge": "同じカード",
     "auctionBidUsableBadge": "{count, plural, =0 {使える手持ちなし} other {使える手持ち #枚}}",
@@ -2234,6 +2271,13 @@
         "stateOn": "ON",
         "stateOff": "OFF",
         "off": "OFFにすると、進行中の出品は一覧から見えなくなり、応じられなくなります。通常出品は削除されず、ONに戻すと復活します。オークションも成立できなくなりますが、締切と選択期限はOFFの間も進みます。期限が過ぎたものは、ONに戻しても流札のままで復活しません。"
+      },
+      "restriction": {
+        "title": "あなたのカードが出品されるときに、交換できるカードを限定したいとき",
+        "description": "配信者ごとに1つの「交換対象リスト」を設定できます。あなたのカードが出品されるとき、「求む」に指定できるのはリストのカードだけです。設定していないときは、これまでどおり制限なしです。",
+        "effect1": "リストのカードだけが交換対象になります。ほかのカードを指定した出品や入札はできません（通常の出品とオークションの両方に適用）。",
+        "effect2": "設定したあとで条件に合わなくなった出品中のオファーは、取り消されずに一覧から見えなくなります（制限を解除すると復活）。",
+        "effect3": "指定できるのは自分のチャネルのカードだけです。制限すると、あなたのカードは他チャネルのカードとの交換には出せなくなります。"
       },
       "wantable": {
         "title": "特定のカードを欲しいカードに指定させたくないとき",

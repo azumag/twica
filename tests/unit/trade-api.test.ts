@@ -230,6 +230,8 @@ describe("POST /api/trades (#723, #715 PR-C)", () => {
     ["TRADE_OFFERED_CARD_INACTIVE", 409],
     // #1790: the streamer does not allow requesting the wanted card.
     ["TRADE_WANTED_CARD_NOT_WANTABLE", 409],
+    // The offered card's streamer's exchange-target list excludes the wanted card.
+    ["TRADE_WANTED_CARD_NOT_ALLOWED_FOR_OFFERED", 409],
   ])("maps service error %s to HTTP %d with the same code", async (code, status) => {
     mocks.getSession.mockResolvedValue(SESSION);
     mocks.createTradeOffer.mockResolvedValue({ kind: "error", code });

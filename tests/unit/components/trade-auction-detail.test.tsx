@@ -158,6 +158,42 @@ describe("TradeAuctionDetail bidder", () => {
     expect(same).toHaveAttribute("title", ja.auctionBidSameCard);
   });
 
+  describe("exchange-target restriction on bids", () => {
+    it("narrows the bid candidates to the allowed cards of THIS auction's offered card's streamer", async () => {
+      setupFetch({ auction: makeAuction(), bids: null });
+      // The auction offers card-dragon; only card-coin may be used. A rule keyed by another
+      // offered card must not affect this auction (the form is keyed by the offered card id).
+      renderDetail({
+        allowedBidCardIdsByOfferedCardId: { "card-dragon": ["card-coin"], "card-other": ["card-gem"] },
+      });
+      await screen.findByRole("region", { name: ja.auctionDetailTitle });
+      const form = bidForm();
+      expect(within(form).getByText(ja.auctionBidRestrictedNotice)).toBeInTheDocument();
+      expect(cardTile(form, "Coin")).toBeEnabled();
+      expect(within(form).queryByRole("button", { name: /Gem/ })).toBeNull();
+      expect(within(form).queryByRole("button", { name: /#8/ })).toBeNull();
+    });
+
+    it("explains when none of the viewer's cards may be used for a restricted auction", async () => {
+      setupFetch({ auction: makeAuction(), bids: null });
+      renderDetail({ allowedBidCardIdsByOfferedCardId: { "card-dragon": [] } });
+      await screen.findByRole("region", { name: ja.auctionDetailTitle });
+      const form = bidForm();
+      expect(within(form).getByText(ja.auctionBidRestrictedEmpty)).toBeInTheDocument();
+      expect(within(form).queryByText(ja.auctionBidCardsEmpty)).toBeNull();
+    });
+
+    it("keeps every candidate and shows no notice when the offered card has no rule", async () => {
+      setupFetch({ auction: makeAuction(), bids: null });
+      renderDetail({ allowedBidCardIdsByOfferedCardId: { "card-other": ["card-gem"] } });
+      await screen.findByRole("region", { name: ja.auctionDetailTitle });
+      const form = bidForm();
+      expect(within(form).queryByText(ja.auctionBidRestrictedNotice)).toBeNull();
+      expect(cardTile(form, "Coin")).toBeEnabled();
+      expect(cardTile(form, "Gem")).toBeDisabled();
+    });
+  });
+
   it("explains when the viewer has no card to bid with", async () => {
     setupFetch({ auction: makeAuction(), bids: null });
     renderDetail({ bidCards: [] });
