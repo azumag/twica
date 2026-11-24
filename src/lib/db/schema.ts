@@ -1020,26 +1020,6 @@ export const tradeWantedAllowlistItems = pgTable('trade_wanted_allowlist_items',
   created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
 })
 
-// -----------------------------------------------------------------------------
-// 【旧】出品カードごとの「交換対象の制限」（20261123000000_trade_wanted_restrictions.sql）
-//
-// 20261124000000 で配信者単位の trade_wanted_allowlist_* に置き換えた。旧テーブルは
-// 追加migrationの非加法ガード（DROP TABLE 禁止）のため DB に残してあり、新 RPC・新アプリは
-// 参照しない。scripts/verify-db-schema.js が「DB にだけ存在するテーブル」を差分として
-// 報告しないよう、削除までの間だけ定義を残す（削除は後続 Issue の contract migration）。
-// -----------------------------------------------------------------------------
-export const tradeWantedRestrictionRules = pgTable('trade_wanted_restriction_rules', {
-  offered_card_id: uuid('offered_card_id').primaryKey(),
-  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
-  updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
-})
-
-export const tradeWantedRestrictionItems = pgTable('trade_wanted_restriction_items', {
-  offered_card_id: uuid('offered_card_id').notNull(),
-  wanted_card_id: uuid('wanted_card_id').notNull(),
-  created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().default(sql`now()`),
-})
-
 // =============================================================================
 // database.ts（src/types/database.ts）と migrations（DDL）の食い違い一覧
 // いずれも migration の DDL を正としてこのファイルへ反映済み。
