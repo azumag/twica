@@ -24,6 +24,18 @@ describe("chat-delivery deploy preparation (#1665)", () => {
     );
   });
 
+  it("rootとpreviewの両方でWorkers Logsを有効化する (#2114)", () => {
+    const workerWrangler = read("workers/chat-delivery/wrangler.toml");
+
+    // #2114: preview実経路ゲートではcron実行形跡があるのにcf o11yへ
+    // イベントが出なかった。root/previewの両方へ明示した有効化を退行させない。
+    // 既存のoverlay-realtime/rate-limitと同じ最小構成を採用したことを、
+    // 両環境の表と有効化行の行頭一致で固定する（コメント中の同名表を
+    // 有効化と誤認しないため）。
+    expect(workerWrangler).toMatch(/^\[observability\]\nenabled = true$/m);
+    expect(workerWrangler).toMatch(/^\[env\.preview\.observability\]\nenabled = true$/m);
+  });
+
   it("keeps real deployment behind an explicit repository variable", () => {
     const workflow = read(".github/workflows/deploy-cloudflare.yml");
 

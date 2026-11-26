@@ -15,6 +15,19 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# Workers Logs を有効化し、queue consumer/cron の console.* 出力を
+# Cloudflare Observability（cf o11y・dashboard・tail）へ残す。
+# overlay-realtime/rate-limit で動作している最小構成に合わせて enabled=true
+# のみを明示する。sampling率はCloudflareの既定（1=全件）に委ねる。
+# このWorkerは1分cronとqueue consumerだけの低流量で、実経路ゲートでは
+# 取りこぼしなく相関できることを優先する。tracesはこのIssueの対象外なので
+# 有効化しない。
+# この設定自体はenvや認証ヘッダーを自動収集しないが、console.*へ渡した値は
+# そのままログ化される。src/index.ts は CHAT_DELIVERY_SECRET・認証ヘッダー・
+# カード本文・視聴者名をログへ出さない構成を維持すること。
+[observability]
+enabled = true
+
 # Issue #1665設計: 最初はmax_batch_size=1、小さな明示的concurrencyから
 # 検証する。Queue全体を1並列にすることを同一チャネルの正しさの根拠には
 # しない（正しさはchat_channel_send_gate側のDB原子性で担保する）。
@@ -54,6 +67,13 @@ CHAT_APP_BASE_URL = "https://twica.bluemoon.works"
 # Preview環境
 # ============================================================
 [env.preview]
+
+# previewでもWorkers Logsを有効化する。既存のoverlay-realtime/rate-limitと
+# 同様にrootとは別へ明示し、`--env preview`のdry-run/deploy出力でこの環境の
+# 有効性を直接確認できるようにする。preview実経路ゲートでcron/queue consumerの
+# ログをcf o11yから確認する用途のため、rootより緩い設定にはしない。
+[env.preview.observability]
+enabled = true
 
 [[env.preview.queues.consumers]]
 queue = "chat-notification-wakeup-preview"
