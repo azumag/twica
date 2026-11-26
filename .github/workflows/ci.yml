@@ -119,6 +119,8 @@ jobs:
               - 'tests/integration/trade-visibility-pg.test.ts'
               # 設定 API の旧列ミラー UPDATE（unownedCardDetailsMirrorSql）を実PGで検証する。
               - 'tests/integration/streamer-settings-mirror-pg.test.ts'
+              # Issue #2112: 新旧列の食い違いを補正する migration の対象条件と冪等性を実PGで検証する。
+              - 'tests/integration/unowned-card-visibility-reconciliation-migration-pg.test.ts'
               - 'src/lib/unowned-card-visibility.ts'
               - 'src/app/api/streamer/settings/route.ts'
               - 'tests/integration/trade-auction-pg.test.ts'
@@ -750,6 +752,14 @@ jobs:
         env:
           STREAMER_SETTINGS_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: npx vitest run tests/integration/streamer-settings-mirror-pg.test.ts
+
+      - name: Verify unowned-card visibility reconciliation migration against PostgreSQL
+        # Issue #2112: 食い違い行だけを補正し、正当な部分公開・整合済み行を
+        # 変更しないことと、同じ migration ファイルの再実行が no-op であることを
+        # 実 PostgreSQL 17 で確認する。
+        env:
+          UNOWNED_RECONCILIATION_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: npx vitest run tests/integration/unowned-card-visibility-reconciliation-migration-pg.test.ts
 
       - name: Verify trade auctions against PostgreSQL
         # #1791: オークションの RPC・拘束判定・trade_offers トリガー・accept の
